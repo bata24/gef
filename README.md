@@ -1,91 +1,221 @@
-<p align="center">
-  <img src="https://i.imgur.com/v3PUqPx.png" alt="logo"/>
-</p>
-
-`GEF` (pronounced ʤɛf - "Jeff") is a set of commands for x86/64, ARM, MIPS, PowerPC and SPARC to assist exploit developers and reverse-engineers when using old school GDB. It provides additional features to GDB using the Python API to assist during the process of dynamic analysis and exploit development. Application developers will also benefit from it, as GEF lifts a great part of regular GDB obscurity, avoiding repeating traditional commands, or bringing out the relevant information from the debugging runtime.
-
-
-## Instant Setup ##
-
-Simply make sure you have [GDB 7.7 or higher](https://www.gnu.org/s/gdb) compiled with Python3 bindings, then:
-
+## Install
 
 ```bash
-# via the install script
-## using curl
-$ bash -c "$(curl -fsSL http://gef.blah.cat/sh)"
-
-## using wget
-$ bash -c "$(wget http://gef.blah.cat/sh -O -)"
-
-# or manually
-$ wget -O ~/.gdbinit-gef.py -q http://gef.blah.cat/py
-$ echo source ~/.gdbinit-gef.py >> ~/.gdbinit
-
-# or alternatively from inside gdb directly
-$ gdb -q
-(gdb) pi import urllib.request as u, tempfile as t; g=t.NamedTemporaryFile(suffix='-gef.py'); open(g.name, 'wb+').write(u.urlopen('https://tinyurl.com/gef-master').read()); gdb.execute('source %s' % g.name)
+# Run with root privileges
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install.sh -O- | sh
 ```
 
-_Note_: to fetch the latest of GEF (i.e. from the `dev` branch), simply replace in the URL to http://gef.blah.cat/dev.
+## Upgrade (replace itself)
+```bash
+python3 /root/.gdbinit-gef.py --upgrade
+```
 
-You can immediately see that GEF is correctly installed by launching GDB:
+## Uninstall
 
 ```bash
-$ gdb -q /path/to/my/bin
-GEF for linux ready, type `gef' to start, `gef config' to configure
-80 commands loaded for GDB 9.1 using Python engine 3.8
-gef➤  gef help
+rm -f /root/.gdbinit-gef.py /root/.gef.rc
 ```
 
-_Note_: As of January 2020, GEF doesn't officially support Python 2 any longer, due to Python 2 becoming officially deprecated.
-If you really need GDB+Python2, use [`gef-legacy`](https://github.com/hugsy/gef-legacy) instead.
+## Added / Improved features
 
+All of these features are experimental. Tested on Ubuntu 18.04 / 20.04 / Debian 10.x.
 
-## Community ##
+### qemu-system cooperation
+* It works with qemu-system installed with apt, but qemu-6.x is recommended
+* `qreg`: prints register values from qemu-monitor (allows to get like `$cs` even under qemu 2.x)
+    * It also prints the details of the each bit of the system register when x64/x86
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/qreg.png)
+* `msr`: prints MSR (Machine Specific Register) values by embedding/executing dynamic assembly
+    * Supported on x64/x86
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/msr.png)
+* `pagewalk`: prints pagetables from scanning of physical memory
+    * x64 (Supported: PML5T/PML4T)
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/pagewalk-x64.png)
+    * x86 (Supported: PAE/Non-PAE)
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/pagewalk-x86.png)
+    * ARM64 (Supported: EL0/EL1/EL2/VEL2/EL3)
+        * 32bit mode is NOT supported
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/pagewalk-arm64.png)
+    * ARM (Cortex-A only, LPAE/Non-LPAE, PL0/PL1)
+        * PL2 is NOT supported
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/pagewalk-arm.png)
+* `xp`: is a shortcut for physical memory dump
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/xp.png)
+* `ksymaddr-remote`: prints kallsyms informations from scanning of kernel memory (heuristic)
+    * Supported: the symbol of kernel itself
+    * Unsupported: the symbol of kernel modules
+    * Supported on x64/x86/ARM64/ARM
+    * Supported on both kASLR is enabled or not
+    * Unsupported: to resolve no-function address when kernel built as `CONFIG_KALLSYMS_ALL=n`
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/ksymaddr-remote.png)
+* `ksymaddr-remote-apply`: applies kallsyms informations obtained with `ksymaddr-remote` to gdb
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/ksymaddr-remote-apply.png)
+* `slab`: dumps slab free-list (heuristic)
+    * Supported on x64/x86/ARM64/ARM + SLUB
+    * Unsupported SLAB, SLOB
+    * Supported on both kASLR is enabled or not
+    * Supported on both `CONFIG_SLAB_FREELIST_HARDENED` is `y` or `n`
+    * Supported on both the vmlinux symbol exists or not
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/slab.png)
+* `uefi-ovmf-info`: displays addresses of important structures in each boot phase of UEFI when OVMF is used (heuristic)
+    * Supported on x64 only
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/uefi-ovmf-info.png)
 
-[![Discord](https://img.shields.io/badge/Discord-GDB--GEF-yellow)](https://discordapp.com/channels/705160148813086841/705160148813086843) [[invite link](https://discord.gg/HCS8Hg7)]
+### New heap dump features
+* `tcmalloc-dump`: dumps tcmalloc free-list (heuristic)
+    * For tcmalloc, there are 3 major versions
+        1. tcmalloc that is a part of gperftools published in 2005: supported
+        2. tcmalloc that is included in chrome mainline: supported
+        3. tcmalloc that is maintained in Google Inc. published in 2020: unsupported
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/tcmalloc-dump.png)
+* `musl-dump`: dumps musl-libc unused chunks (heuristic)
+    * Supported on x64/x86, based on musl-libc v1.2.2
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/musl-dump.png)
+* `partition-alloc-dump`: dumps partition-alloc free-list (heuristic)
+    * Supported on x64 only
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/partition-alloc-dump.png)
 
-_Note_: For maintenance simplicity, the unified communities on IRC/Gitter/Slack/Discord based [MatterBridge](https://github.com/42wim/matterbridge) are now discontinued. The GEF Discord is now the only way for talking with us!
+### Other improved features
+* Glibc heap commands are improved
+    * Thread arena is supported for all heap commands
+        * Use `-a` option
+    * They print the chunk is in free-list or not
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-if-in-freelist.png)
+    * `find-fake-fast`: searches for a memory with a size-like value that can be linked to the fastbin free-list
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/find-fake-fast.png)
+    * `visual-heap`: is colorized heap viewer
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/visual-heap.png)
+    * `extract-heap-addr`: analyzes tcache-protected-fd introduced from glibc-2.32
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/extract-heap-addr.png)
+* `vmmap` is improved
+    * It prints meomry map informations even when connecting to gdb stub like qemu-user (heuristic), intel pin and intel SDE
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/vmmap-qemu-user.png)
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/vmmap-pin.png)
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/vmmap-sde.png)
+    * It is redirected to `pagewalk` when connecting to gdb stub of qemu-system
+* `registers` is improved
+    * It also shows raw values of `$eflags` and `$cpsr`
+    * It prints current ring for x64/x86 when prints `$eflags` (from `$cs`)
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/registers-x64.png)
+    * It prints current exception level for ARM64 when prints `$cpsr`
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/registers-arm64.png)
+    * It prints current mode for ARM when prints `$cpsr`
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/registers-arm.png)
+* `context` is improved
+    * It supports automatic display of system call arguments when calling a system call
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/context-syscall-args.png)
+    * It supports automatic display of address and value when accessing memory
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/context-memory-access.png)
+    * It supports smart symbol printing for cpp function
+        * ex: `std::map<int, std::map<int, int>>` will be replaced by `std::map<...>`
+        * command: `gef config context.smart_cpp_function_name true` or `smart-cpp-function-name` (later is used to toggle)
+* `telescope` is improved
+    * It prints ordinal numbers as well as offsets
+    * It prints if there are canary and ret-addr on the target area
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/telescope.png)
+    * It supports blacklist address features (to avoid dying when touching the address mapped to the serial device)
+* `procinfo` is improved
+    * It prints some additional informations
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/procinfo.png)
+* `elf-info` is improved
+    * It prints Program Header and Section Header
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/elf-info.png)
+    * It supports parsing from memory
+* `checksec` is improved
+    * It prints Intel CET is enabled or not
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/checksec.png)
+* `got` improved
+    * It prints not only GOT address but also PLT address
+    * It scans `.plt.sec` section if Intel CET is enabled
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/got.png)
+* `canary` is improved
+    * It prints all canary positions in memory
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/canary.png)
+* `edit-flags` is improved
+    * It prints the meaning of each bit if `-v` option is provided
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/edit-flags-x64.png)
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/edit-flags-arm.png)
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/edit-flags-arm64.png)
+* `unicorn-emulate` is improved
+    * It reads and writes correctly to the address pointed to by `$fs`/`$gs`
+* `ropper` is improved
+    * It does not reset autocomplete settings after calling imported ropper
+* `hexdump` is improved
+    * It supports physical memory if under qemu-system
+    * It will retry with adjusting read size when failed reading memory
+* `patch` is improved
+    * It supports physical memory if under qemu-system
+* `search-pattern` is improved
+    * It supports physical memory if under qemu-system
+    * It supports aligned search
+    * It supports hex string specification
+    * It also searches utf-16 string if target string is ascii
 
-## Highlights ##
+### Other new features
+* `pid`: prints pid
+* `filename`: prints filename
+* `auxv`: pretty prints ELF auxiliary vector
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/auxv.png)
+    * Supported also under qemu-user (heuristic)
+* `argv`: pretty prints argv
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/argv.png)
+* `envp`: pretty prints envp
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/envp.png)
+* `gdtinfo`: pretty prints GDT sample
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/gdtinfo.png)
+* `tls`: pretty prints `$fs` base / `$gs` base
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/tls.png)
+* `magic`: is useful addresses resolver in gilbc
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/magic.png)
+* `libc`/`ld`/`heapbase`/`codebase`: prints each of the base address
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/base.png)
+* `mmx`/`sse`/`avx`/`fpu`: pretty prints MMX/SSE/AVX/FPU registers 
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/mmx-sse-avx-fpu.png)
+* `sysreg`: pretty prints system registers under ARM/ARM64
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/sysreg.png)
+* `exec-until`: executes until specific operation
+    * Supported on x64/x86/ARM64/ARM for call/jmp/syscall/ret/mem-access/specific-keyword
+* `add-symbol-temporary`: adds symbol information from command-line
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/add-symbol-temporary.png)
+* `errno`: prints errno list or specific errno
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/errno.png)
+* `u2d`: is cast/transformation u64 <-> double
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/u2d.png)
+* `hash-memory`: calculations hash
+    * Supported: md5, sha1, sha224, sha256, sha384, sha512, crc16, crc32, crc64
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/hash-memory.png)
+* `memcmp`: compares the contents of address A and B, whether virtual or physical
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/memcmp.png)
+* `is-mem-zero`: checks the contents of address range is all zero or not
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/is-mem-zero.png)
+* `byteswap`: is transformation little-endian <-> big-endian
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/byteswap.png)
+* `pdisas`: is a shortcut for `cs-dis $pc LENGTH=50 OPCODES`
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/pdisas.png)
+* `ii`: is a shortcut for `x/50i $pc`
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/ii.png)
+    * It prints the value if memory access operation
+    * tips: gef has 3 types to print instructions. `context`, `pdisas`, and `ii`
+* `version`: shows software version that gef used
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/version.png)
+* `follow`: changes `follow-fork-mode` setting
+* `smart-cpp-function-name`: toggles `context.smart_cpp_function_name` setting
+* `seccomp-tools`: invokes `seccomp-tools`
+* `onegadget`: invokes `one_gadget`
+* `ls`/`cat`: invokes `ls`/`cat` directly
+* `constgrep`: invokes `grep` under `/usr/include`
+* `rp`: invokes `rp++`
 
-![gef-context](https://i.imgur.com/E3EuQPs.png)
-
-A few of `GEF` features include:
-
-  * **One** single GDB script
-  * Entirely **OS Agnostic**, **NO** dependencies: `GEF` is battery-included and [is installable instantly](https://gef.readthedocs.io/en/master/#setup)
-  * **Fast** limiting the number of dependencies and optimizing code to make the commands as fast as possible
-  * Provides [a great variety of commands](https://gef.readthedocs.io/en/master/commands/) to drastically change your experience in GDB.
-  * [**Easily** extensible](https://gef.readthedocs.io/en/master/api/) to create other commands by providing more comprehensible layout to GDB Python API.
-  * Full Python3 support ([Python2 support was dropped](https://github.com/hugsy/gef/releases/tag/2020.03) - see [`gef-legacy`](https://github.com/hugsy/gef-legacy)).
-  * Built around an architecture abstraction layer, so all commands work in any GDB-supported architecture such as x86-32/64, ARMv5/6/7, AARCH64, SPARC, MIPS, PowerPC, etc.
-  * Suited for real-life apps debugging, exploit development, just as much as CTF
-
-Check out the [Screenshot page](docs/screenshots.md) for more.
-
-Or [try it online](https://demo.gef.blah.cat) (user:`gef`/password:`gef-demo`)
-
-
-## Documentation ##
-
-Unlike other GDB plugins, GEF has an extensive and up-to-date [documentation](https://gef.readthedocs.io/). Users are recommended to refer to it as it may help them in their attempts to use GEF. In particular, new users should navigate through it (see the [FAQ](https://gef.readthedocs.io/en/master/faq/) for common installation problems), and the problem persists, try to reach out for help on the Discord channel or submit an issue.
-
-
-## Current status ##
-
-
-| Documentation |License | Compatibility |
-|---|---|---|
-| [![ReadTheDocs](https://readthedocs.org/projects/gef/badge/?version=master)](https://gef.readthedocs.org/en/master/) | [![MIT](https://img.shields.io/packagist/l/doctrine/orm.svg?maxAge=2592000?style=plastic)](https://github.com/hugsy/gef/blob/master/LICENSE) | [![Python 3](https://img.shields.io/badge/Python-3-green.svg)](https://github.com/hugsy/gef/) |
-
-
-## Contribute ##
-
-To get involved, refer to the [Contribution documentation](https://gef.readthedocs.io/en/master/#contribution) and the [guidelines](https://github.com/hugsy/gef/blob/dev/.github/CONTRIBUTING.md) to start.
-
-And special thanks to [Pedro "TheZakMan" Araujo](https://thezakman.tumblr.com/) for the logo!.
-
-
-## Happy Hacking ##
+### Other
+* Replace the unicode character to ascii
+    * ex: &#x27a4; to `>`
+    * ex: &#x2713; to `OK`
+* The category introduced in `gef help`
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/gef-help.png)
+* Combined into one file (from gef-extra)
+    * `peek-pointers`, `current-stack-frame`, `xref-telescope`, `bytearray`, `bincompare`, and `ftrace` are moved from gef-extras
+* The system-call table used by `syscall-args` is moved from gef-extras
+    * It was updated up to linux kernel 5.12.8 (only x64/x86/ARM64/ARM yet)
+* Removed some features I don't use
+    * `ida-interact`, `gef-remote`, `pie`, and `pcustom`
+* Many bugs fix / formatting / made it easy for me to use

@@ -1,5 +1,0 @@
-capstone
-keystone-engine
-pylint
-ropper
-unicorn
