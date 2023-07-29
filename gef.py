@@ -64216,6 +64216,449 @@ class ThunkHunterCommand(GenericCommand):
         return
 
 
+class KmallocBreakpoint(gdb.Breakpoint):
+    """Create a breakpoint to print information of kmalloc."""
+    def __init__(self, loc, sym, index_of_size_arg, task, option, extra):
+        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
+        self.sym = sym
+        self.index_of_size_arg = index_of_size_arg
+        self.task_addr = task
+        self.option = option
+        self.extra = extra
+        self.enabled = False
+        return
+
+    def stop(self):
+        reset_gef_caches()
+
+        task_addr, _ = KmallocHunterCommand.get_task()
+        if self.task_addr and task_addr != self.task_addr:
+            return False
+
+        if self.index_of_size_arg >= 0:
+            _, size = current_arch.get_ith_parameter(self.index_of_size_arg)
+        else:
+            _, kmem_cache = current_arch.get_ith_parameter(0)
+            slub_cache_name_ptr = read_int_from_memory(kmem_cache + self.extra.kmem_cache_offset_name)
+            slub_cache_name = read_cstring_from_memory(slub_cache_name_ptr)
+            if not slub_cache_name.startswith("kmalloc-"):
+                return False
+            size = u32(read_memory(kmem_cache + self.extra.kmem_cache_offset_size, 4))
+
+        KmallocRetBreakpoint(size, self.sym, self.option, self.extra)
+        return False
+
+
+class KmallocRetBreakpoint(gdb.FinishBreakpoint):
+    """Create a breakpoint to print information of kmalloc."""
+    def __init__(self, size, sym, option, extra):
+        super().__init__(gdb.newest_frame(), internal=True)
+        # gdb.FinishBreakpoint detects that it is desired task or not, from frame information
+        self.size = size
+        self.sym = sym
+        self.option = option
+        self.extra = extra
+        return
+
+    def stop(self):
+        reset_gef_caches()
+
+        task_addr, task_name = KmallocHunterCommand.get_task()
+        task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
+
+        if self.return_value:
+            loc = int(self.return_value)
+        else:
+            loc = parse_address(current_arch.return_register)
+        loc_s = Color.colorify("{:#x}".format(loc), get_gef_setting("theme.heap_chunk_address_used"))
+
+        if self.extra:
+            ret = KmallocHunterCommand.virt2name_and_size(self.extra, loc)
+            if ret:
+                # print more info
+                name, chunk_size = ret
+                if self.option.filter and name not in self.option.filter:
+                    return False
+                name_s = Color.colorify(name, get_gef_setting("theme.heap_chunk_label"))
+                chunk_size_s = Color.colorify("{:<#6x}".format(chunk_size), get_gef_setting("theme.heap_chunk_size"))
+                gef_print("{:s} {:30s}: {:s} (size: {:s} name: {:s})".format(task_prefix, self.sym, loc_s, chunk_size_s, name_s))
+                KmallocHunterCommand.print_backtrace(self.option.backtrace)
+                KmallocHunterCommand.dump_chunk(self.option.dump_chunk, loc)
+                return False
+            # fall through
+
+        # print less info
+        gef_print("{:s} {:30s}: {:s} (size: {:<#6x})".format(task_prefix, self.sym, loc_s, self.size))
+        KmallocHunterCommand.print_backtrace(self.option.backtrace)
+        KmallocHunterCommand.dump_chunk(self.option.dump_chunk, loc)
+        return False
+
+
+class KfreeBreakpoint(gdb.Breakpoint):
+    """Create a breakpoint to print information of kfree."""
+    def __init__(self, loc, sym, index_of_size_arg, task, option, extra):
+        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
+        self.sym = sym
+        self.index_of_size_arg = index_of_size_arg
+        self.task_addr = task
+        self.option = option
+        self.extra = extra
+        self.enabled = False
+        return
+
+    def stop(self):
+        reset_gef_caches()
+
+        _, loc = current_arch.get_ith_parameter(self.index_of_size_arg)
+        if not self.option.print_null and loc == 0:
+            return False
+
+        task_addr, task_name = KmallocHunterCommand.get_task()
+        if self.task_addr and task_addr != self.task_addr:
+            return False
+        task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
+
+        loc_s = Color.colorify("{:#x}".format(loc), get_gef_setting("theme.heap_chunk_address_freed"))
+
+        if self.extra:
+            ret = KmallocHunterCommand.virt2name_and_size(self.extra, loc)
+            if ret:
+                # print more info
+                name, chunk_size = ret
+                if self.option.filter and name not in self.option.filter:
+                    return False
+                name_s = Color.colorify(name, get_gef_setting("theme.heap_chunk_label"))
+                chunk_size_s = Color.colorify("{:<#6x}".format(chunk_size), get_gef_setting("theme.heap_chunk_size"))
+                gef_print("{:s} {:30s}: {:s} (size: {:s} name: {:s})".format(task_prefix, self.sym, loc_s, chunk_size_s, name_s))
+                KmallocHunterCommand.print_backtrace(self.option.backtrace)
+                KmallocHunterCommand.dump_chunk(self.option.dump_chunk, loc)
+                return False
+            # fall through
+
+        # print less info
+        gef_print("{:s} {:30s}: {:s}".format(task_prefix, self.sym, loc_s))
+        KmallocHunterCommand.print_backtrace(self.option.backtrace)
+        KmallocHunterCommand.dump_chunk(self.option.dump_chunk, loc)
+        return False
+
+
+@register_command
+class KmallocHunterCommand(GenericCommand):
+    """Collect and displays information when kmalloc/kfree."""
+    _cmdline_ = "kmalloc-hunter"
+    _category_ = "08-b. Qemu-system Cooperation - Linux"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-f", "--filter", default=[], help="filter specified name (ex: kmalloc-XX)")
+    parser.add_argument("--print-null", action="store_true", help="display free(NULL).")
+    parser.add_argument("-t", "--backtrace", action="store_true", help="display backtrace.")
+    parser.add_argument("-d", "--dump-chunk", action="store_true", help="dump the first 0x40 bytes of each chunk.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="print meta information.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "{:s}         # simple output\n".format(_cmdline_)
+    _example_ += "{:s} -dtv    # useful output\n".format(_cmdline_)
+    _example_ += "\n"
+    _example_ += "NOTE: Disable `-enable-kvm` option for qemu-system. (#PF may occur)\n"
+    _example_ += "NOTE: Append `tsc=unstable` option for kernel cmdline."
+
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.initialized = False
+        return
+
+    @staticmethod
+    def create_option_info(args):
+        dic = {
+            "print_null": args.print_null,
+            "backtrace": args.backtrace,
+            "filter": args.filter,
+            "dump_chunk": args.dump_chunk,
+        }
+        OptionInfo = collections.namedtuple("OptionInfo", dic.keys())
+        option_info = OptionInfo(*dic.values())
+        return option_info
+
+    @staticmethod
+    def initialize(allocator, verbose):
+        if allocator != "SLUB":
+            # Do nothing other than SLUB.
+            extra_info = None
+            return extra_info
+
+        res = gdb.execute("slub-dump --meta", to_string=True)
+
+        r = re.search(r"offsetof\(page, slab_cache\): (0x\S+)", res)
+        if not r:
+            return False
+        page_offset_slab_cache = int(r.group(1), 16)
+        if verbose:
+            info("offsetof(page, slab_cache): {:#x}".format(page_offset_slab_cache))
+
+        r = re.search(r"offsetof\(kmem_cache, name\): (0x\S+)", res)
+        if not r:
+            return False
+        kmem_cache_offset_name = int(r.group(1), 16)
+        if verbose:
+            info("offsetof(kmem_cache, name): {:#x}".format(kmem_cache_offset_name))
+
+        r = re.search(r"offsetof\(kmem_cache, size\): (0x\S+)", res)
+        if not r:
+            return False
+        kmem_cache_offset_size = int(r.group(1), 16)
+        if verbose:
+            info("offsetof(kmem_cache, size): {:#x}".format(kmem_cache_offset_size))
+
+        r = re.search(r"vmemmap: (0x\S+)", res)
+        if not r:
+            return False
+        vmemmap = int(r.group(1), 16)
+        if verbose:
+            info("vmemmap: {:#x}".format(vmemmap))
+
+        # create extra_info
+        dic = {
+            "kmem_cache_offset_name": kmem_cache_offset_name,
+            "kmem_cache_offset_size": kmem_cache_offset_size,
+            "page_offset_slab_cache": page_offset_slab_cache,
+            "vmemmap": vmemmap,
+        }
+        ExtraInfo = collections.namedtuple("ExtraInfo", dic.keys())
+        extra_info = ExtraInfo(*dic.values())
+        return extra_info
+
+    @staticmethod
+    def get_task():
+        th_num = gdb.selected_thread().num
+        res = gdb.execute("kcurrent --quiet", to_string=True)
+        r = re.search(r"current \(cpu{:d}\): (0x\S+) (.*)".format(th_num - 1), res)
+        if r:
+            task = int(r.group(1), 16)
+            name = r.group(2)
+            return task, name
+        return 0, ""
+
+    @staticmethod
+    def virt2name_and_size(extra, vaddr):
+        def virt2page(vmemmap, vaddr):
+            # assume CONFIG_SPARSEMEM_VMEMMAP
+            ret = gdb.execute("monitor gva2gpa {:#x}".format(vaddr), to_string=True)
+            r = re.search(r"gpa: (0x\S+)", ret)
+            if r:
+                paddr = int(r.group(1), 16)
+                return (paddr >> 6) + vmemmap
+            return None
+
+        current = vaddr & gef_getpagesize_mask()
+        while True:
+            page = virt2page(extra.vmemmap, current)
+            if page is None:
+                return None
+
+            kmem_cache = read_int_from_memory(page + extra.page_offset_slab_cache)
+            if kmem_cache == 0:
+                return None
+
+            if (kmem_cache & ~0xfff) == 0xdead000000000000:
+                current -= gef_getpagesize()
+                continue
+
+            if kmem_cache & 1:
+                current -= gef_getpagesize()
+                continue
+            break
+
+        slub_cache_name_ptr = read_int_from_memory(kmem_cache + extra.kmem_cache_offset_name)
+        slub_cache_name = read_cstring_from_memory(slub_cache_name_ptr)
+        slub_cache_size = u32(read_memory(kmem_cache + extra.kmem_cache_offset_size, 4))
+        return slub_cache_name, slub_cache_size
+
+    @staticmethod
+    def print_backtrace(backtrace):
+        if not backtrace:
+            return
+
+        try:
+            frame = gdb.newest_frame()
+            while frame and frame.is_valid():
+                addr = frame.pc()
+                if not is_valid_addr(addr):
+                    break
+                sym = get_symbol_string(addr, nosymbol_string=" <NO_SYMBOL>")
+                gef_print("  {:#018x}{:s}".format(addr, sym))
+                frame = frame.older()
+        except gdb.error:
+            return
+
+    @staticmethod
+    def dump_chunk(dump, loc):
+        if not dump:
+            return
+        if not is_valid_addr(loc):
+            err("Invalid address")
+            return
+        gdb.execute("telescope -n {:#x} 8".format(loc))
+        return
+
+    @staticmethod
+    def set_bp_to_kmalloc(option_info, extra_info, task_addr=None):
+        # Since `kmalloc` is always inlined and not exported, so the symbol cannot be determined.
+        # So put a breakpoint in each non-inlined function called from kmalloc.
+        """
+        - static __always_inline void *kmalloc(size_t size, gfp_t flags)
+            - [~v6.1]
+                - static __always_inline void *kmalloc_large(size_t size, gfp_t flags)
+                    - [CONFIG_TRACING=n]
+                        - static __always_inline void *kmalloc_order_trace(size_t size, gfp_t flags, unsigned int order)
+                            - void *kmalloc_order(size_t size, gfp_t flags, unsigned int order) <-- bp here
+                    - [CONFIG_TRACING=y]
+                        - void *kmalloc_order_trace(size_t size, gfp_t flags, unsigned int order)
+                            - void *kmalloc_order(size_t size, gfp_t flags, unsigned int order) <-- bp here
+                - [CONFIG_TRACING=y]
+                    - void *kmem_cache_alloc_trace(struct kmem_cache *s, gfp_t flags, size_t size) <-- bp here
+                - [CONFIG_TRACING=n]
+                    - static __always_inline void *kmem_cache_alloc_trace(struct kmem_cache *s, gfp_t flags, size_t size)
+                        - void *kmem_cache_alloc(struct kmem_cache *s, gfp_t flags) <-- bp here
+
+            - [v6.1~]
+                - void *kmalloc_large(size_t size, gfp_t flags) <-- bp here
+                - void *kmalloc_trace(struct kmem_cache *s, gfp_t flags, size_t size) <-- bp here
+
+            - void *__kmalloc(size_t size, gfp_t flags) <-- bp here
+
+        - static __always_inline void *kmalloc_node(size_t size, gfp_t flags, int node)
+            - [~v6.1]
+                - [CONFIG_NUMA=n]
+                    - redirect to kmem_cache_alloc_trace
+                - [CONFIG_TRACING=y]
+                    - void *kmem_cache_alloc_node_trace(struct kmem_cache *s, gfp_t flags, int node, size_t size) <-- bp here
+                - [CONFIG_TRACING=n && CONFIG_NUMA=n]
+                    - redirect to kmem_cache_alloc
+                - [CONFIG_TRACING=n && CONFIG_NUMA=y]
+                    - static __always_inline void *kmem_cache_alloc_node_trace(struct kmem_cache *s, gfp_t gfpflags, int node, size_t size)
+                        - void *kmem_cache_alloc_node(struct kmem_cache *s, gfp_t flags, int node) <-- bp here
+
+            - [v6.1~]
+                - void *kmalloc_node_trace(struct kmem_cache *s, gfp_t flags, int node, size_t size) <-- bp here
+
+            - [CONFIG_NUMA=n]
+                - redirect to __kmalloc
+            - [CONFIG_NUMA=y]
+                void *__kmalloc_node(size_t size, gfp_t flags, int node) <-- bp here
+
+        (3) void *krealloc(const void *p, size_t new_size, gfp_t flags) <-- bp here
+
+        (4) void kfree(const void *object) <-- bp here
+
+        (Other)
+        * kmalloc_array -> kmalloc or __kmalloc
+        * kmalloc_array_node -> kmalloc_node or __kmalloc_node
+        * krealloc_array -> krealloc
+        * kcalloc -> kmalloc_array
+        * kcalloc_node -> kmalloc_array_node
+        * kzalloc -> kmalloc
+        * kzalloc_node -> kmalloc_node
+        """
+
+        kversion = KernelVersionCommand.kernel_version()
+        if kversion < "6.1":
+            # -1 means index 0 is `struct kmem_cache*`
+            kmalloc_syms = [
+                # for kmalloc
+                [0, "kmalloc_order"],
+                [2, "kmem_cache_alloc_trace"],
+                [-1, "kmem_cache_alloc"],
+                [0, "__kmalloc"],
+                # for kmalloc_node
+                [3, "kmem_cache_alloc_node_trace"],
+                [-1, "kmem_cache_alloc_node"],
+                [0, "__kmalloc_node"],
+                # for krealloc
+                [1, "krealloc"],
+            ]
+        else:
+            kmalloc_syms = [
+                # for kmalloc
+                [0, "kmalloc_large"],
+                [2, "kmalloc_trace"],
+                [0, "__kmalloc"],
+                # for kmalloc_node
+                [3, "kmalloc_node_trace"],
+                [0, "__kmalloc_node"],
+                # for krealloc
+                [1, "krealloc"],
+            ]
+
+        kfree_syms = [
+            [0, "kfree"],
+        ]
+
+        breakpoints = []
+        for index_of_size_arg, sym in kmalloc_syms:
+            func_addr = get_ksymaddr(sym)
+            if func_addr:
+                gef_print(sym + ": ", end="")
+                bp = KmallocBreakpoint(func_addr, sym, index_of_size_arg, task_addr, option_info, extra_info)
+                breakpoints.append(bp)
+        for index_of_size_arg, sym in kfree_syms:
+            func_addr = get_ksymaddr(sym)
+            if func_addr:
+                gef_print(sym + ": ", end="")
+                bp = KfreeBreakpoint(func_addr, sym, index_of_size_arg, task_addr, option_info, extra_info)
+                breakpoints.append(bp)
+        return breakpoints
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_qemu_system
+    @only_if_in_kernel
+    def do_invoke(self, args):
+        self.dont_repeat()
+
+        if is_kvm_enabled():
+            err("Disable `-enable-kvm` option for qemu-system.")
+            return
+
+        # create option_info
+        option_info = KmallocHunterCommand.create_option_info(args)
+
+        # initialize
+        info("Wait for memory scan")
+        allocator = KernelChecksecCommand.get_slab_type()
+        if allocator != "SLUB":
+            warn("Unsupported viewing detailed information for SLAB, SLOB, SLUB_TINY")
+            # fall through
+
+        if not self.initialized:
+            ret = KmallocHunterCommand.initialize(allocator, args.verbose)
+            if ret is False:
+                err("Failed to initialize")
+                return
+            self.initialized = True
+            self.extra_info = ret # allow None
+        else:
+            if args.verbose and self.extra_info:
+                info("offsetof(page, slab_cache): {:#x}".format(self.extra_info.page_offset_slab_cache))
+                info("offsetof(kmem_cache, name): {:#x}".format(self.extra_info.kmem_cache_offset_name))
+                info("offsetof(kmem_cache, size): {:#x}".format(self.extra_info.kmem_cache_offset_size))
+                info("vmemmap: {:#x}".format(self.extra_info.vmemmap))
+
+        # set kmalloc break points
+        breakpoints = KmallocHunterCommand.set_bp_to_kmalloc(option_info, self.extra_info)
+        for bp in breakpoints:
+            bp.enabled = True
+
+        # doit
+        info("Setup is complete. continueing...")
+        gdb.execute("c")
+
+        # clean up
+        info("kmalloc-hunter is complete, cleaning up...")
+        for bp in breakpoints:
+            bp.delete()
+        return
+
+
 @register_command
 class UefiOvmfInfoCommand(GenericCommand):
     """Print UEFI OVMF info."""
