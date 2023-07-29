@@ -237,6 +237,8 @@ Tested on Ubuntu 22.04. It may work under Ubuntu 20.04 and 23.04.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/xslubobj.png)
 * `kmalloc-hunter`: collects and displays information when kmalloc/kfree.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/kmalloc-hunter.png)
+* `kmalloc-allocated-by`: calls a predefined set of system calls and prints structures allocated by kmalloc or freed by kfree.
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/kmalloc-allocated-by.png)
 
 ### Qemu-system cooperation - Arch specific
 * `uefi-ovmf-info`: dumps addresses of some important structures in each boot phase of UEFI when OVMF is used (heuristic).

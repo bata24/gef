@@ -64659,6 +64659,612 @@ class KmallocHunterCommand(GenericCommand):
         return
 
 
+class KmallocAllocatedBy_UserlandHardwareBreakpoint(gdb.Breakpoint):
+    """Breakpoint to userland `sleep` process for KmallocAllocatedByCommand."""
+    def __init__(self, loc):
+        super().__init__("*{:#x}".format(loc), gdb.BP_HARDWARE_BREAKPOINT, internal=False)
+        self.silent = True
+        return
+
+    def stop(self):
+        return True # stop
+
+
+@register_command
+class KmallocAllocatedByCommand(GenericCommand):
+    """Call a predefined set of system calls and prints structures allocated by kmalloc or freed by kfree."""
+    _cmdline_ = "kmalloc-allocated-by"
+    _category_ = "08-b. Qemu-system Cooperation - Linux"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-f", "--filter", default=[], help="filter specified name (ex: kmalloc-XX)")
+    parser.add_argument("--print-null", action="store_true", help="display free(NULL).")
+    parser.add_argument("-t", "--backtrace", action="store_true", help="display backtrace.")
+    parser.add_argument("-d", "--dump-chunk", action="store_true", help="dump the first 0x40 bytes of each chunk.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="print meta information.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "{:s}         # simple output\n".format(_cmdline_)
+    _example_ += "{:s} -dtv    # useful output\n".format(_cmdline_)
+    _example_ += "\n"
+    _example_ += "NOTE: Disable `-enable-kvm` option for qemu-system. (#PF may occur)\n"
+    _example_ += "NOTE: Append `tsc=unstable` option for kernel cmdline."
+
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.initialized = False
+        self.allocator = None
+        return
+
+    def setup_syscall(self, nr, args):
+        gdb.execute("set $pc-={:#x}".format(len(current_arch.syscall_insn)), to_string=True)
+        gdb.execute("set $rax={:#x}".format(nr), to_string=True)
+        sp = current_arch.sp
+        for reg, arg in zip(current_arch.syscall_parameters, args):
+            if arg is None:
+                break
+            if isinstance(arg, str):
+                arg = str2bytes(arg)
+            if isinstance(arg, bytes):
+                write_memory(sp, arg)
+                gdb.execute("set {:s}={:#x}".format(reg, sp), to_string=True)
+                sp = align_address_to_size(sp + len(arg), current_arch.ptrsize * 2)
+            else:
+                gdb.execute("set {:s}={:#x}".format(reg, arg), to_string=True)
+        self.tested_syscall.add(nr)
+        return
+
+    def dump_untested_syscall(self):
+        gef_print(titlify("Untested syscall"))
+
+        valid_syscalls = []
+        for line in self.syscall_table_view.splitlines():
+            tag, _, valid, name, *__ = Color.remove_color(line).split()
+            if tag != "x86_64":
+                continue
+            if valid != "valid":
+                continue
+            valid_syscalls.append(name)
+
+        untested_syscall = []
+        for n, e in get_syscall_table(None, None).table.items():
+            if n >= 0x1000:
+                continue
+            if n in self.tested_syscall:
+                continue
+            if e.name not in valid_syscalls:
+                continue
+            untested_syscall.append(e.name)
+        gef_print(untested_syscall)
+        return
+
+    def test_syscall(self, breakpoints):
+
+        def u2i(x):
+            x = struct.pack("<Q", ret & 0xffffffffffffffff)
+            return struct.unpack("<q", x)[0]
+
+        def gen_testcase():
+            nonlocal ret_history
+
+            st = {e.name: n for n, e in get_syscall_table(None, None).table.items() if n < 0x1000} # syscall table
+
+            # It is implemented with a generator because it requires delayed execution in order to use the previous result.
+            yield "msgget -> msgsnd -> msgrcv -> msgctl"
+            yield ('msgget(IPC_PRIVATE, IPC_CREAT|0666)', st["msgget"], [0, 0o1000|0o666])
+            msgsize = 0x100
+            msg = p64(1) + b"A" * msgsize
+            if u2i(ret_history[-1]) >= 0:
+                yield ('msgsnd(msqid, msgp, msgsize, 0)', st["msgsnd"], [ret_history[-1], msg, msgsize, 0])
+                yield ('msgrcv(msqid, msgp, msgsize, 0, 0)', st["msgrcv"], [ret_history[-2], msg, msgsize, 0, 0])
+                yield ('msgctl(msqid, IPC_RMID, 0)', st["msgctl"], [ret_history[-3], 0, 0])
+
+            yield "shmget -> shmat -> shmdt -> shmctl"
+            yield ('shmget(IPC_PRIVATE, 1024, IPC_CREAT|0666)', st["shmget"], [0, 0x400, 0o1000|0o666])
+            if u2i(ret_history[-1]) >= 0:
+                yield ('shmat(shmid, NULL, 0)', st["shmat"], [ret_history[-1], 0, 0])
+                yield ('shmdt(addr)', st["shmdt"], [ret_history[-1]])
+                yield ('shmctl(shmid, IPC_RMID, 0)', st["shmctl"], [ret_history[-3], 0, 0])
+
+            yield "semget -> semctl"
+            yield ('semget(IPC_PRIVATE, 1, IPC_CREAT|0666)', st["semget"], [0, 1, 0o1000|0o666])
+            if u2i(ret_history[-1]) >= 0:
+                yield ('semctl(semid, 0, IPC_RMID)', st["semctl"], [ret_history[-1], 0, 0])
+
+            yield "mq_open -> mq_timedsend -> mq_timedreceive -> mq_unlink -> close"
+            MQ_NAME = "mq_test\0"
+            attr = p64(0o4000)  # mq_flags: O_NONBLOCK
+            attr += p64(10)     # mq_maxmsg
+            attr += p64(0x100)  # mq_msgsize
+            attr += p64(0)      # mq_curmsgs
+            attr += p64(0) * 4  # reserved[4]
+            yield ('mq_open("mq_test", O_RDWR|O_CREAT, 0700, attr)', st["mq_open"], [MQ_NAME, 0o2|0o100, 0o700, attr])
+            if u2i(ret_history[-1]) >= 0:
+                fd = ret_history[-1]
+                msg = "A" * 0x40
+                yield ('mq_timedsend(fd, msg, sizeof(msg), 0, NULL)', st["mq_timedsend"], [fd, msg, len(msg), 0, 0])
+                buf = "\0" * 0x100
+                prio = p32(0)
+                timeout = p64(0) + p64(0)
+                yield ('mq_timedreceive(fd, buf, sizeof(buf), &prio, timeout)', st["mq_timedreceive"], [fd, buf, len(buf), prio, timeout])
+                yield ('mq_unlink("mq_test")', st["mq_unlink"], [MQ_NAME])
+                yield ('close(fd)', st["close"], [fd])
+
+            yield "signalfd4 -> close"
+            mask = "\0" * 8
+            yield ('signalfd4(-1, mask, sizemask, 0)', st["signalfd4"], [-1, mask, len(mask), 0])
+            self.tested_syscall.add(st["signalfd"])
+            if u2i(ret_history[-1]) >= 0:
+                yield ('close(fd)', st["close"], [ret_history[-1]])
+
+            yield "timerfd_create -> close"
+            yield ('timerfd_create(CLOCK_MONOTONIC, 0)', st["timerfd_create"], [1, 0])
+            if u2i(ret_history[-1]) >= 0:
+                yield ('close(fd)', st["close"], [ret_history[-1]])
+
+            yield "epoll_create1 -> close"
+            yield ('epoll_create1(0)', st["epoll_create1"], [0])
+            self.tested_syscall.add(st["epoll_create"])
+            if u2i(ret_history[-1]) >= 0:
+                yield ('close(fd)', st["close"], [ret_history[-1]])
+
+            yield "eventfd2 -> close"
+            yield ('eventfd2(0, 0)', st["eventfd2"], [0, 0])
+            self.tested_syscall.add(st["eventfd"])
+            if u2i(ret_history[-1]) >= 0:
+                yield ('close(fd)', st["close"], [ret_history[-1]])
+
+            yield "inotify_init1 -> close"
+            yield ('inotify_init1(0)', st["inotify_init1"], [0])
+            self.tested_syscall.add(st["inotify_init"])
+            if u2i(ret_history[-1]) >= 0:
+                yield ('close(fd)', st["close"], [ret_history[-1]])
+
+            yield "perf_event_open -> close"
+            attr = p32(1)         # type: PERF_TYPE_SOFTWARE
+            attr += p32(0)        # size:
+            attr += p64(10)       # config: PERF_COUNT_SW_BPF_OUTPUT
+            attr += p64(0)        # sample_period:
+            attr += p64(1 << 10)  # sample_type: PERF_SAMPLE_RAW
+            attr = attr.ljust(128, b"\0")
+            yield ('perf_event_open(attr, 0, -1, -1, 0)', st["perf_event_open"], [attr, 0, -1, -1, 0])
+            if u2i(ret_history[-1]) >= 0:
+                yield ('close(fd)', st["close"], [ret_history[-1]])
+
+            yield "pipe -> close*2"
+            pipefd_array = p32(0) + p32(0)
+            yield ('pipe(pipefd[2])', st["pipe"], [pipefd_array])
+            self.tested_syscall.add(st["pipe2"])
+            if u2i(ret_history[-1]) >= 0:
+                fd0 = u32(read_memory(current_arch.sp, 4))
+                fd1 = u32(read_memory(current_arch.sp + 4, 4))
+                yield ('close(fd[0])', st["close"], [fd0])
+                yield ('close(fd[1])', st["close"], [fd1])
+
+            yield "mmap -> mprotect -> mremap -> msync -> madvise -> munmap"
+            size = 0x1000
+            yield ('mmap(0, 0x1000, RWX, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0)', st["mmap"], [0, size, 7, 0x22, -1, 0])
+            if u2i(ret_history[-1]) >= 0:
+                addr = ret_history[-1]
+                yield ('mprotect(addr, 0x1000, R--)', st["mprotect"], [addr, size, 1])
+                size2 = size * 2
+                new_addr = 0x100000
+                yield ('mremnap(addr, 0x1000, 0x2000, MREMAP_FIXED|MREMAP_MAYMOVE, 0x100000)',
+                       st["mremap"], [addr, size, size2, 2|1, new_addr])
+                if u2i(ret_history[-1]) >= 0:
+                    addr = ret_history[-1]
+                yield ('msync(addr, 0x2000, 0)', st["msync"], [addr, size2, 0])
+                yield ('madvise(addr, 0x2000, MADV_DONTNEED)', st["madvise"], [addr, size2, 4])
+                self.tested_syscall.add(st["process_madvise"])
+                yield ('munmap(addr, 0x2000)', st["munmap"], [addr, size2])
+
+            yield "mlockall -> munlockall"
+            yield ('mlockall(MCL_CURRENT)', st["mlockall"], [1])
+            self.tested_syscall.add(st["mlock"])
+            self.tested_syscall.add(st["mlock2"])
+            yield ('munlockall()', st["munlockall"], [1])
+            self.tested_syscall.add(st["munlock"])
+
+            yield "alarm"
+            yield ('alarm(1000)', st["alarm"], [1000])
+
+            yield "sched_yield"
+            yield ('sched_yield()', st["sched_yield"], [])
+
+            yield "times"
+            buf = "\0" * 0x100
+            yield ('times(buf)', st["times"], [buf])
+
+            yield "gettimeofday"
+            tv = tz = "\0" * 16
+            yield ('gettimeofday(tv, tz)', st["gettimeofday"], [tv, tz])
+
+            yield "getrandom"
+            buf = "\0" * 0x100
+            yield ('getrandom(buf, sizeof(buf), 0)', st["getrandom"], [buf, len(buf), 0])
+
+            yield "nanosleep"
+            req = p64(1) # sec
+            req += p64(0) # nano sec
+            rem = p64(0) + p64(0)
+            yield ('nanosleep(req, rem)', st["nanosleep"], [req, rem])
+
+            yield "getcwd"
+            buf = "\0" * 0x100
+            yield ('getcwd(buf, sizeof(buf))', st["getcwd"], [buf, len(buf)])
+
+            yield "uname"
+            buf = "\0" * 0x400
+            yield ('uname(buf)', st["uname"], [buf])
+
+            yield "getrlimit"
+            rlim = "\0" * 16
+            yield ('getrlimit(RLIMIT_STACK, rlim, sizeof(rlim))', st["getrlimit"], [3, rlim, len(rlim)])
+
+            yield "sysinfo"
+            buf = "\0" * 0x100
+            yield ('sysinfo(buf)', st["sysinfo"], [buf])
+
+            yield "getrusage"
+            buf = "\0" * 0x100
+            yield ('getrusage(RUSAGE_SELF, buf)', st["getrusage"], [0, buf])
+
+            yield "getpid -> getppid -> getsid -> setsid -> gettid -> getpgid -> setpgid -> getpgrp"
+            yield ('getpid()', st["getpid"], [])
+            pid = ret_history[-1]
+            yield ('getppid()', st["getppid"], [])
+            yield ('getsid(pid)', st["getsid"], [pid])
+            yield ('setsid()', st["setsid"], [])
+            yield ('gettid()', st["gettid"], [])
+            yield ('getpgid(pid)', st["getpgid"], [pid])
+            pgid = ret_history[-1]
+            yield ('setpgid(pid, pgid)', st["setpgid"], [pid, pgid])
+            yield ('getpgrp()', st["getpgrp"], [])
+
+            yield "pidfd_open -> pidfd_getfd -> close*2"
+            yield ('pidfd_open(pid, 0)', st["pidfd_open"], [pid, 0])
+            if u2i(ret_history[-1]) >= 0:
+                pidfd = ret_history[-1]
+                yield ('pidfd_getfd(pid, STDIN_FILENO, 0)', st["pidfd_open"], [pidfd, 0, 0])
+                if u2i(ret_history[-1]) >= 0:
+                    fd = ret_history[-1]
+                    yield ('close(fd)', st["close"], [fd])
+                yield ('close(fd2)', st["close"], [pidfd])
+
+            yield "getuid -> setuid -> setreuid -> setfsuid -> geteuid -> getresuid -> setresuid"
+            yield ('getuid()', st["getuid"], [])
+            uid = ret_history[-1]
+            yield ('setuid(uid)', st["setuid"], [uid])
+            yield ('setreuid(uid, uid)', st["setreuid"], [uid, uid])
+            yield ('setfsuid(uid)', st["setfsuid"], [uid])
+            yield ('geteuid()', st["geteuid"], [])
+            buf = "\0" * 8
+            yield ('getresuid()', st["getresuid"], [buf, buf, buf])
+            yield ('setresuid()', st["setresuid"], [uid, uid, uid])
+
+            yield "getgid -> setgid -> setregid -> setfsgid -> getegid -> getresgid -> setresgid"
+            yield ('getgid()', st["getgid"], [])
+            gid = ret_history[-1]
+            yield ('setgid(gid)', st["setgid"], [gid])
+            yield ('setregid(gid, gid)', st["setregid"], [gid, gid])
+            yield ('setfsgid(uid)', st["setfsgid"], [gid])
+            yield ('getegid()', st["getegid"], [])
+            buf = "\0" * 8
+            yield ('getresgid()', st["getresgid"], [buf, buf, buf])
+            yield ('setresgid()', st["setresgid"], [gid, gid, gid])
+
+            yield "capget"
+            hdr = p32(0x20080522) + p32(pid)
+            data = p32(0) + p32(0) + p32(0)
+            yield ('capget(hdrp, datap)', st["capget"], [hdr, data])
+
+            yield "open -> flock -> fallocate -> write -> fdatasync -> fsync -> syncfs -> lseek -> read -> dup -> close*2"
+            TMP_XXX = "/tmp/xxx\0"
+            yield ('open("/tmp/xxx", 0_RDWR|O_CREAT, 0666)', st["open"], [TMP_XXX, 0o2|0o100, 0o666])
+            self.tested_syscall.add(st["creat"])
+            self.tested_syscall.add(st["openat"])
+            self.tested_syscall.add(st["openat2"])
+            if u2i(ret_history[-1]) >= 0:
+                fd = ret_history[-1]
+                yield ('flock(fd, LOCK_SH|LOCK_NB)', st["flock"], [fd, 1|4])
+                yield ('fallocate(fd, 0, 0, 0x100)', st["fallocate"], [fd, 0, 0, 0x100])
+                buf = "A" * 4
+                yield ('write(fd, "AAAA", 4)', st["write"], [fd, buf, len(buf)])
+                self.tested_syscall.add(st["writev"])
+                self.tested_syscall.add(st["pwrite64"])
+                self.tested_syscall.add(st["pwritev"])
+                self.tested_syscall.add(st["pwritev2"])
+                self.tested_syscall.add(st["process_vm_writev"])
+                yield ('fdatasync(fd)', st["fdatasync"], [fd])
+                yield ('fsync(fd)', st["fsync"], [fd])
+                yield ('syncfs(fd)', st["syncfs"], [fd])
+                self.tested_syscall.add(st["sync"])
+                yield ('lseek(fd, SEEK_SET, 0)', st["lseek"], [fd, 0, 0])
+                yield ('readahead(fd, 0, 0x1000)', st["readahead"], [fd, 0, 0x1000])
+                buf = "\0" * 4
+                yield ('read(fd, buf, 4)', st["read"], [fd, buf, len(buf)])
+                self.tested_syscall.add(st["readv"])
+                self.tested_syscall.add(st["pread64"])
+                self.tested_syscall.add(st["preadv"])
+                self.tested_syscall.add(st["preadv2"])
+                self.tested_syscall.add(st["process_vm_readv"])
+                yield ('dup(fd)', st["dup"], [fd])
+                self.tested_syscall.add(st["dup2"])
+                self.tested_syscall.add(st["dup3"])
+                fd2 = ret_history[-1]
+                yield ('close(fd)', st["close"], [fd])
+                yield ('close(fd2)', st["close"], [fd2])
+
+            yield "access -> utime -> stat -> truncate -> setxattr -> getxattr -> listxattr -> removexattr"
+            yield ('access("/tmp/xxx", F_OK)', st["access"], [TMP_XXX, 0])
+            self.tested_syscall.add(st["faccessat"])
+            self.tested_syscall.add(st["faccessat2"])
+            if u2i(ret_history[-1]) >= 0:
+                yield ('utime("/tmp/xxx", NULL)', st["utime"], [TMP_XXX, 0])
+                self.tested_syscall.add(st["utimes"])
+                self.tested_syscall.add(st["futimesat"])
+                self.tested_syscall.add(st["utimensat"])
+                buf = "\0" * 0x100
+                yield ('stat("/tmp/xxx", buf)', st["stat"], [TMP_XXX, buf])
+                self.tested_syscall.add(st["fstat"])
+                self.tested_syscall.add(st["lstat"])
+                self.tested_syscall.add(st["newfstatat"])
+                yield ('truncate(/tmp/xxx", 10)', st["truncate"], [TMP_XXX, 10])
+                self.tested_syscall.add(st["ftruncate"])
+                value = "A" * 0xff + "\0"
+                yield ('setxattr("/tmp/xxx", "user.x", value, sizeof(value), 0)',
+                       st["setxattr"], [TMP_XXX, "user.x\0", value, len(value), 0])
+                self.tested_syscall.add(st["lsetxattr"])
+                self.tested_syscall.add(st["fsetxattr"])
+                if u2i(ret_history[-1]) >= 0:
+                    value = "\0" * 0x100
+                    yield ('getxattr("/tmp/xxx", "user.x", buf, sizeof(buf))',
+                           st["getxattr"], [TMP_XXX, "user.x\0", value, len(value)])
+                    self.tested_syscall.add(st["lgetxattr"])
+                    self.tested_syscall.add(st["fgetxattr"])
+                    buf = "\0" * 0x100
+                    yield ('listxattr("/tmp/xxx", buf, sizeof(buf))', st["listxattr"], [TMP_XXX, buf, len(buf)])
+                    self.tested_syscall.add(st["llistxattr"])
+                    self.tested_syscall.add(st["flistxattr"])
+                    yield ('removexattr("/tmp/xxx", "user.x")', st["removexattr"], [TMP_XXX, "user.x\0"])
+                    self.tested_syscall.add(st["lremovexattr"])
+                    self.tested_syscall.add(st["fremovexattr"])
+
+            yield "link -> unlink"
+            TMP_XXX2 = "/tmp/xxx2\0"
+            yield ('link("/tmp/xxx", "/tmp/xxx2")', st["link"], [TMP_XXX, TMP_XXX2])
+            self.tested_syscall.add(st["linkat"])
+            if u2i(ret_history[-1]) >= 0:
+                    yield ('unlink("/tmp/xxx2")', st["unlink"], [TMP_XXX2])
+                    self.tested_syscall.add(st["unlinkat"])
+
+            yield "symlink -> readlink -> rename -> unlink"
+            TMP_XXX3 = "/tmp/xxx3\0"
+            yield ('symlink("/tmp/xxx", "/tmp/xxx3")', st["symlink"], [TMP_XXX, TMP_XXX3])
+            self.tested_syscall.add(st["symlinkat"])
+            if u2i(ret_history[-1]) >= 0:
+                buf = "\0" * 0x100
+                yield ('readlink("/tmp/xxx3", buf, sizeof(buf))', st["readlink"], [TMP_XXX3, buf, len(buf)])
+                self.tested_syscall.add(st["readlinkat"])
+                TMP_XXX4 = "/tmp/xxx4\0"
+                yield ('rename("/tmp/xxx3", "/tmp/xxx4")', st["rename"], [TMP_XXX3, TMP_XXX4])
+                self.tested_syscall.add(st["renameat"])
+                self.tested_syscall.add(st["renameat2"])
+                if u2i(ret_history[-1]) >= 0:
+                    yield ('unlink("/tmp/xxx4")', st["unlink"], [TMP_XXX4])
+                    self.tested_syscall.add(st["unlinkat"])
+
+            yield "mkdir -> chroot -> chdir -> chroot -> rmdir"
+            TMP_YYY = "/tmp/yyy\0"
+            yield ('mkdir("/tmp/yyy", 0777)', st["mkdir"], [TMP_YYY, 0o777])
+            self.tested_syscall.add(st["mkdirat"])
+            if u2i(ret_history[-1]) >= 0:
+                yield ('chroot("/tmp/yyy")', st["chroot"], [TMP_YYY])
+                if u2i(ret_history[-1]) >= 0:
+                    yield ('chdir("..")', st["chdir"], ["..\0"])
+                    self.tested_syscall.add(st["fchdir"])
+                    yield ('chroot(".")', st["chroot"], [".\0"])
+                yield ('rmdir("/tmp/yyy")', st["rmdir"], [TMP_YYY])
+
+            yield "statfs"
+            buf = "\0" * 0x100
+            yield ('statfs("/", buf)', st["statfs"], ["/\0", buf])
+            self.tested_syscall.add(st["fstatfs"])
+
+            yield "open -> getdents -> fcntl -> close"
+            yield ('open("/", 0_RDONLY)', st["open"], ["/\0", 0])
+            if u2i(ret_history[-1]) >= 0:
+                fd = ret_history[-1]
+                buf = "\0" * 0x200
+                yield ('getdents("/", buf, sizeof(buf))', st["getdents"], [fd, buf, len(buf)])
+                self.tested_syscall.add(st["getdents64"])
+                yield ('fcntl(fd, F_GETFD)', st["fcntl"], [fd, 1])
+                yield ('close(fd)', st["close"], [fd])
+
+            yield "invalid socket -> close"
+            yield ('socket(22, SOCK_STREAM, 0)', st["socket"], [22, 1, 0])
+
+            yield "socket AF_INET/TCP -> bind -> listen -> setsockopt -> getsockopt -> close"
+            yield ('socket(AF_INET, SOCK_STREAM, 0)', st["socket"], [2, 1, 0])
+            if u2i(ret_history[-1]) >= 0:
+                fd = ret_history[-1]
+                sockaddr_in = p16(socket.AF_INET)           # sin_len, sin_family
+                sockaddr_in += p16(socket.htons(13337))     # sin_port
+                sockaddr_in += socket.inet_aton("0.0.0.0")  # sin_addr.s_addr
+                sockaddr_in += b"\0" * 8                    # sin_zero[8]
+                yield ('bind(fd, sockaddr, sizeof(sockaddr))', st["bind"], [fd, sockaddr_in, len(sockaddr_in)])
+                yield ('listen(fd, 16)', st["listen"], [fd, 16])
+                buf = "\0" * 4
+                yield ('setsockopt(fd, SOL_SOCKET, SO_DEBUG, buf, sizeof(buf))', st["setsockopt"], [fd, 1, 1, buf, len(buf)])
+                yield ('getsockopt(fd, SOL_SOCKET, SO_DEBUG, buf, &buflen)', st["getsockopt"], [fd, 1, 1, buf, buf])
+                yield ('close(fd)', st["close"], [fd])
+
+            yield "socketpair AF_UNIX -> sendto -> recvfrom -> shutdown -> close*2"
+            sv_array = p32(0) + p32(0)
+            yield ('socketpair(AF_UNIX, SOCK_STREAM, 0, sv[2])', st["socketpair"], [1, 1, 0, sv_array])
+            if u2i(ret_history[-1]) >= 0:
+                sv0 = u32(read_memory(current_arch.sp, 4))
+                sv1 = u32(read_memory(current_arch.sp + 4, 4))
+                buf = "A" * 4
+                yield ('sendto(sv[0], "AAAA", 4, 0, NULL, 0)', st["sendto"], [sv0, buf, len(buf), 0, 0, 0])
+                buf = "\0" * 4
+                yield ('recvfrom(sv[1], buf, 4, 0, NULL, NULL)', st["recvfrom"], [sv1, buf, len(buf), 0, 0, 0])
+                yield ('shutdown(sv[0], SHUT_RDWR)', st["shutdown"], [sv0, 2])
+                yield ('close(sv[0])', st["close"], [sv0])
+                yield ('close(sv[1])', st["close"], [sv1])
+
+            yield "memfd_create -> close"
+            yield ('memfd_create("test", 0)', st["memfd_create"], ["test\0", 0])
+            if u2i(ret_history[-1]) >= 0:
+                yield ('close(fd)', st["close"], [ret_history[-1]])
+
+            yield "open /dev/ptmx -> close"
+            yield ('open("/dev/ptmx", O_RDWR|O_NOCTTY)', st["open"], ["/dev/ptmx\0", 0o2|0o400])
+            if u2i(ret_history[-1]) >= 0:
+                yield ('close(fd)', st["close"], [ret_history[-1]])
+
+            yield "open /proc/self/stat -> close"
+            yield ('open("/proc/self/stat", O_RDONLY)', st["open"], ["/proc/self/stat\0", 0])
+            if u2i(ret_history[-1]) >= 0:
+                yield ('close(fd)', st["close"], [ret_history[-1]])
+
+            self.tested_syscall.add(st["clone"])
+            self.tested_syscall.add(st["execve"])
+            self.tested_syscall.add(st["execveat"])
+            self.tested_syscall.add(st["fork"])
+            self.tested_syscall.add(st["vfork"])
+            self.tested_syscall.add(st["exit"])
+            self.tested_syscall.add(st["exit_group"])
+            self.tested_syscall.add(st["wait4"])
+            self.tested_syscall.add(st["waitid"])
+            self.tested_syscall.add(st["reboot"])
+            self.tested_syscall.add(st["vhangup"])
+            self.tested_syscall.add(st["modify_ldt"])
+            self.tested_syscall.add(st["kexec_load"])
+            self.tested_syscall.add(st["kexec_file_load"])
+            return None
+
+        self.tested_syscall = set()
+
+        ret_history = []
+        for testcase in gen_testcase():
+            if isinstance(testcase, str):
+                gef_print(titlify(testcase, msg_color="bold"))
+                continue
+
+            desc, nr, args = testcase
+            gef_print(titlify("{:s};".format(desc)))
+            self.setup_syscall(nr, args)
+            for bp in breakpoints:
+                bp.enabled = True
+            gdb.execute("c")
+
+            # here, stop at hw breakpoint
+            ret = get_register(current_arch.return_register)
+            gef_print("ret: {:#x}".format(ret))
+            if u2i(ret) < 0:
+                gef_print(Color.colorify("WARNING: r < 0", "bold red underline"))
+                gdb.execute("errno {:#x}".format(ret))
+            ret_history.append(ret)
+
+            for bp in breakpoints:
+                bp.enabled = False
+
+        self.dump_untested_syscall()
+
+        self.setup_syscall(0x3c, [0]) # exit(0);
+        return
+
+    @parse_args
+    @only_if_specific_arch(arch=("x86_64",))
+    def do_invoke(self, args):
+        self.dont_repeat()
+
+        if is_kvm_enabled():
+            err("Disable `-enable-kvm` option for qemu-system.")
+            return
+
+        # create option_info
+        option_info = KmallocHunterCommand.create_option_info(args)
+
+        # initialize
+        info("Wait for memory scan")
+        allocator = KernelChecksecCommand.get_slab_type()
+        if allocator != "SLUB":
+            warn("Unsupported viewing detailed information for SLAB, SLOB, SLUB_TINY")
+            # fall through
+
+        if not self.initialized:
+            ret = KmallocHunterCommand.initialize(allocator, args.verbose)
+            if ret is False:
+                err("Failed to initialize")
+                return
+            self.initialized = True
+            self.extra_info = ret # allow None
+        else:
+            if args.verbose and self.extra_info:
+                info("offsetof(page, slab_cache): {:#x}".format(self.extra_info.page_offset_slab_cache))
+                info("offsetof(kmem_cache, name): {:#x}".format(self.extra_info.kmem_cache_offset_name))
+                info("offsetof(kmem_cache, size): {:#x}".format(self.extra_info.kmem_cache_offset_size))
+                info("vmemmap: {:#x}".format(self.extra_info.vmemmap))
+
+        # get syscall table
+        self.syscall_table_view = gdb.execute("syscall-table-view --no-pager --quiet", to_string=True)
+
+        # get task
+        res = gdb.execute("ktask --print-regs --no-pager --quiet --filter sleep", to_string=True)
+        r = re.findall(r"(?:^|\n)(0x\S+)", res)
+        if not r:
+            err("`sleep` process is not found. Unable to continue.")
+            info("Do `/bin/sleep 5` in the guest environment (need full path if busybox sh), then `{:s}` again.".format(self._cmdline_))
+            return
+        if len(r) != 1:
+            err("Multiple sleep processes are found. Unable to continue.")
+            return
+        target_task = int(r[0], 16)
+        info("sleep's task: {:#x}".format(target_task))
+
+        # get rip for breakpoint
+        # get rsp for checking process
+        r1 = re.search(r"rip\s*: (0x\S+)", res)
+        r2 = re.search(r"rsp\s*: (0x\S+)", res)
+        if not r or not r2:
+            err("Failed to get rip and rsp.")
+            return
+        sleep_pc = int(r1.group(1), 16)
+        stack_ptr = int(r2.group(1), 16)
+        info("sleep's rip: {:#x}, rsp: {:#x} (after return from nanosleep syscall)".format(sleep_pc, stack_ptr))
+
+        # set a hw breakpoints
+        hwbp = KmallocAllocatedBy_UserlandHardwareBreakpoint(sleep_pc)
+
+        # set kmalloc breakpoints (but disabled)
+        breakpoints = KmallocHunterCommand.set_bp_to_kmalloc(option_info, self.extra_info, target_task)
+
+        # wait to stop at userland `sleep` process
+        gdb.execute("ctx off")
+        info("Setup is complete. continueing...")
+        gdb.execute("c")
+
+        # here, stop in userland `sleep` process
+        if current_arch.sp != stack_ptr:
+            err("Stack pointer is different from expected. Unable to continue.")
+            return
+
+        # do test
+        self.test_syscall(breakpoints)
+
+        # clean up
+        info("Syscall test is complete, cleaning up...")
+        hwbp.delete()
+        for bp in breakpoints:
+            bp.delete()
+        gdb.execute("ctx on")
+        info("Exiting `sleep` process... (Please issue Ctrl+C)")
+        gdb.execute("c")
+        return
+
+
 @register_command
 class UefiOvmfInfoCommand(GenericCommand):
     """Print UEFI OVMF info."""
