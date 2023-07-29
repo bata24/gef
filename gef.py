@@ -10935,7 +10935,7 @@ class GenericCommand(gdb.Command):
             self.__set_repeat_count(argv, from_tty)
             self.do_invoke(argv)
         except Exception:
-            # Note: since we are intercepting cleaning exceptions here, commands preferably should avoid
+            # Since we are intercepting cleaning exceptions here, commands preferably should avoid
             # catching generic Exception, but rather specific ones. This is allows a much cleaner use.
             show_last_exception()
         return
@@ -22854,7 +22854,7 @@ class PatchNopCommand(PatchCommand):
 
 @register_command
 class PatchInfloopCommand(PatchCommand):
-    """Patch the instruction(s) pointed by parameters with Infinity loop. Note: this command is architecture aware."""
+    """Patch the instruction(s) pointed by parameters with infinity loop."""
     _cmdline_ = "patch inf"
     _category_ = "03-c. Memory - Patch"
 
@@ -22924,7 +22924,7 @@ class PatchInfloopCommand(PatchCommand):
 
 @register_command
 class PatchTrapCommand(PatchCommand):
-    """Patch the instruction(s) pointed by parameters with BKPT."""
+    """Patch the instruction(s) pointed by parameters with breakpoint or trap (if available)."""
     _cmdline_ = "patch trap"
     _category_ = "03-c. Memory - Patch"
 
@@ -22992,7 +22992,7 @@ class PatchTrapCommand(PatchCommand):
 
 @register_command
 class PatchRetCommand(PatchCommand):
-    """Patch the instruction(s) pointed by parameters with RET."""
+    """Patch the instruction(s) pointed by parameters with return."""
     _cmdline_ = "patch ret"
     _category_ = "03-c. Memory - Patch"
 
@@ -23060,7 +23060,7 @@ class PatchRetCommand(PatchCommand):
 
 @register_command
 class PatchSyscallCommand(PatchCommand):
-    """Patch the instruction(s) pointed by parameters with syscall. Note: this command is architecture aware."""
+    """Patch the instruction(s) pointed by parameters with syscall."""
     _cmdline_ = "patch syscall"
     _category_ = "03-c. Memory - Patch"
 
@@ -39304,7 +39304,7 @@ class MmxSetCommand(GenericCommand):
 
     _example_ = "{:s} $mm0=0x1122334455667788".format(_cmdline_)
     _example_ += "\n"
-    _example_ += "DISABLE `-enable-kvm` option for qemu-system."
+    _example_ += "NOTE: Disable `-enable-kvm` option for qemu-system."
 
     def execute_movq_mm(self, value, reg):
         REG_CODE = {
@@ -39334,7 +39334,7 @@ class MmxSetCommand(GenericCommand):
         self.dont_repeat()
 
         if is_kvm_enabled():
-            err("DISABLE `-enable-kvm` option for qemu-system.")
+            err("Disable `-enable-kvm` option for qemu-system.")
             return
 
         # arg parse
@@ -48248,7 +48248,7 @@ class SyscallTableViewCommand(GenericCommand):
 
 class ExecAsm:
     """Execute embeded asm. ex: ExecAsm(asm_op_list).exec_code().
-    WARNING: DISABLE `-enable-kvm` option for qemu-system; If set, this code will crash the guest OS."""
+    WARNING: Disable `-enable-kvm` option for qemu-system; If set, this code will crash the guest OS."""
     def __init__(self, _codes, regs=None, debug=False):
         self.stdout = 1
         self.debug = debug
@@ -48391,7 +48391,7 @@ class ExecAsm:
 
 class ExecSyscall(ExecAsm):
     """Execute embeded asm for syscall. ex: ExecSyscall(nr, args).exec_code().
-    WARNING: DISABLE `-enable-kvm` option for qemu-system; If set, this code will crash the guest OS."""
+    WARNING: Disable `-enable-kvm` option for qemu-system; If set, this code will crash the guest OS."""
     def __init__(self, nr, args, debug=False):
         self.stdout = 1
         self.debug = debug
@@ -54419,7 +54419,6 @@ class TcmallocDumpCommand(GenericCommand):
     _example_ += "{:s} all               # print freelist of thread cache for all thread\n".format(_cmdline_)
     _example_ += "{:s} central           # print freelist of central cache\n".format(_cmdline_)
     _example_ += "\n"
-    _example_ += "THIS FEATURE IS EXPERIMENTAL AND HEURISTIC."
 
     def __init__(self):
         super().__init__()
@@ -54897,7 +54896,6 @@ class PartitionAllocDumpCommand(GenericCommand):
     _example_ = "{:s} array_buffer # walk from array_buffer_root_\n".format(_cmdline_)
     _example_ += "{:s} ab           # same above\n".format(_cmdline_)
     _example_ += "\n"
-    _example_ += "THIS FEATURE IS EXPERIMENTAL AND HEURISTIC.\n"
     _example_ += "Chromium mainline is too fast to develop. So if parse is failed, you need fix this gef.py."
 
     """
@@ -57665,7 +57663,7 @@ class CpuidCommand(GenericCommand):
 
     _example_ = "{:s}\n".format(_cmdline_)
     _example_ += "\n"
-    _example_ += "DISABLE `-enable-kvm` option for qemu-system."
+    _example_ += "NOTE: Disable `-enable-kvm` option for qemu-system."
 
     def execute_cpuid(self, num, subnum=0):
         codes = [b"\x0f\xa2"] # cpuid
@@ -58433,7 +58431,7 @@ class CpuidCommand(GenericCommand):
         self.dont_repeat()
 
         if is_kvm_enabled():
-            err("DISABLE `-enable-kvm` option for qemu-system.")
+            err("Disable `-enable-kvm` option for qemu-system.")
             return
 
         # Basic Information
@@ -58506,7 +58504,7 @@ class MsrCommand(GenericCommand):
     _example_ = "{:s} 0xc0000080              # rcx value\n".format(_cmdline_)
     _example_ += "{:s} MSR_EFER                # another valid format\n".format(_cmdline_)
     _example_ += "\n"
-    _example_ += "DISABLE `-enable-kvm` option for qemu-system."
+    _example_ += "NOTE: Disable`-enable-kvm` option for qemu-system."
 
     msr_table = [
         ["MSR_EFER",                         0xc0000080, "Extended feature register"],
@@ -58592,7 +58590,7 @@ class MsrCommand(GenericCommand):
             return
 
         if is_kvm_enabled():
-            err("DISABLE `-enable-kvm` option for qemu-system.")
+            err("Disable `-enable-kvm` option for qemu-system.")
             return
 
         # search const table
@@ -64731,7 +64729,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = "add-symbol-temporary your_func_name $rip $rip+0x20"
+    _example_ = "{:s} your_func_name $rip $rip+0x20".format(_cmdline_)
 
     @staticmethod
     def create_blank_elf(text_base, text_end):
