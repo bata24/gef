@@ -43369,7 +43369,7 @@ class KernelbaseCommand(GenericCommand):
         }
         Kinfo = collections.namedtuple("Kinfo", dic.keys())
 
-        REGION_MIN_SIZE = 0x100000
+        REGION_MIN_SIZE = 0x10000
 
         # maps is not found, so fast return
         if dic["maps"] is None:
