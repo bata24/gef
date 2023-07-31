@@ -44863,6 +44863,149 @@ class KernelModuleCommand(GenericCommand):
             err("Not found module->name[MODULE_NAME_LEN]")
         return None
 
+    def get_offset_mem(self, module_addrs):
+        """
+        ac3b43283923440900b4f36ca5f9f0b1ca43b70e changed the module layout information structure
+        MOD_TEXT = 0,
+        MOD_DATA,
+        MOD_RODATA,
+        MOD_RO_AFTER_INIT,
+        MOD_INIT_TEXT,
+        MOD_INIT_DATA,
+        MOD_INIT_RODATA,
+
+        struct module {
+            enum module_state state;
+
+            /* Member of list of modules */
+            struct list_head list;
+
+            /* Unique handle for this module */
+            char name[MODULE_NAME_LEN];
+
+        #ifdef CONFIG_STACKTRACE_BUILD_ID
+            /* Module build ID */
+            unsigned char build_id[BUILD_ID_SIZE_MAX];
+        #endif
+
+            /* Sysfs stuff. */
+            struct module_kobject mkobj;
+            struct module_attribute *modinfo_attrs;
+            const char *version;
+            const char *srcversion;
+            struct kobject *holders_dir;
+
+            /* Exported symbols */
+            const struct kernel_symbol *syms;
+            const s32 *crcs;
+            unsigned int num_syms;
+
+        #ifdef CONFIG_ARCH_USES_CFI_TRAPS
+            s32 *kcfi_traps;
+            s32 *kcfi_traps_end;
+        #endif
+
+            /* Kernel parameters. */
+        #ifdef CONFIG_SYSFS
+            struct mutex param_lock;
+        #endif
+            struct kernel_param *kp;
+            unsigned int num_kp;
+
+            /* GPL-only exported symbols. */
+            unsigned int num_gpl_syms;
+            const struct kernel_symbol *gpl_syms;
+            const s32 *gpl_crcs;
+            bool using_gplonly_symbols;
+
+        #ifdef CONFIG_MODULE_SIG
+            /* Signature was verified. */
+            bool sig_ok;
+        #endif
+
+            bool async_probe_requested;
+
+            /* Exception table */
+            unsigned int num_exentries;
+            struct exception_table_entry *extable;
+
+            /* Startup function. */
+            int (*init)(void);
+
+            struct module_memory mem[MOD_MEM_NUM_TYPES] __module_memory_align;
+            /* Arch-specific module values */
+            struct mod_arch_specific arch;
+
+            unsigned long taints;    /* same bits as kernel:taint_flags */
+
+        #ifdef CONFIG_GENERIC_BUG
+            /* Support for BUG */
+            unsigned num_bugs;
+            struct list_head bug_list;
+            struct bug_entry *bug_table;
+        #endif
+
+        #ifdef CONFIG_KALLSYMS
+            /* Protected by RCU and/or module_mutex: use rcu_dereference() */
+            struct mod_kallsyms __rcu *kallsyms;
+            struct mod_kallsyms core_kallsyms;
+
+            /* Section attributes */
+            struct module_sect_attrs *sect_attrs;
+
+            /* Notes attributes */
+            struct module_notes_attrs *notes_attrs;
+        #endif
+        }
+
+        struct module_memory {
+            void *base;
+            unsigned int size;
+
+        #ifdef CONFIG_MODULES_TREE_LOOKUP
+            struct mod_tree_node mtn; (0x38)
+        #endif
+        };
+        """
+        MOD_TEXT = 0
+        MOD_DATA = 1
+        MOD_RODATA = 2
+        MOD_RO_AFTER_INIT = 3
+        MOD_INIT_TEXT = 4
+        MOD_INIT_DATA = 5
+        MOD_INIT_RODATA = 6
+        MOD_MEM_NUM_TYPES = 7
+        # TODO: only handles non init module type
+        for i in range(300):
+            offset_mem = i * current_arch.ptrsize
+            for sizeof_module_memory in (8, 0x48):
+                valid = True
+                for module in module_addrs:
+                    for mem_type in (MOD_TEXT, MOD_DATA, MOD_RODATA):
+                        # memory access check
+                        if not is_valid_addr(module + offset_mem + mem_type * sizeof_module_memory):
+                            valid = False
+                            break
+                        # base align check
+                        cand_base = read_int_from_memory(module + offset_mem + mem_type * sizeof_module_memory )
+                        if cand_base == 0 or cand_base & 0xfff:
+                            valid = False
+                            break
+                        # size check
+                        cand_size = u32(read_memory(module + offset_mem + mem_type * sizeof_module_memory + current_arch.ptrsize + 4 * 0, 4))
+                        if cand_size == 0 or cand_size > 0x100000:
+                            valid = False
+                            break
+                if valid:
+                    if not self.quiet:
+                        info(f"offsetof(module, mem): {offset_mem:#x}")
+                        info(f"sizeof(module_memory): {sizeof_module_memory:#x}")
+                    return offset_mem
+        if not self.quiet:
+            err("not found module->mem")
+        return None
+
+
     def get_offset_layout(self, module_addrs):
         """
         struct module { // kernel v4.5-rc1 ~
@@ -45170,7 +45313,12 @@ class KernelModuleCommand(GenericCommand):
             return
 
         kversion = KernelVersionCommand.kernel_version()
-        if kversion >= "4.5":
+        if kversion >= "6.4":
+            offset_mem = self.get_offset_mem(module_addrs)
+            if offset_mem is None:
+                return
+
+        elif kversion >= "4.5":
             offset_layout = self.get_offset_layout(module_addrs)
             if offset_layout is None:
                 return
@@ -45192,7 +45340,10 @@ class KernelModuleCommand(GenericCommand):
 
         for module in module_addrs:
             name_string = read_cstring_from_memory(module + offset_name)
-            if kversion >= "4.5":
+            if kversion >= "6.4":
+                base = read_int_from_memory(module + offset_mem)
+                size = u32(read_memory(module + offset_mem + current_arch.ptrsize, 4))
+            elif kversion >= "4.5":
                 base = read_int_from_memory(module + offset_layout)
                 size = u32(read_memory(module + offset_layout + current_arch.ptrsize, 4))
             else:
