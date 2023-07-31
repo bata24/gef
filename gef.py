@@ -54169,7 +54169,7 @@ class KsymaddrRemoteCommand(GenericCommand):
                     relative_base_address: 0xffffffff85c00000
                     """
                     position = self.offset_kallsyms_token_index + 0x200
-                    position_relative_base = position + (self.num_symbols + 1) * offset_byte_size
+                    position_relative_base = position + self.num_symbols * offset_byte_size
                     relative_base_address_data = self.kernel_img[position_relative_base:position_relative_base + address_byte_size]
                     relative_base_address = int.from_bytes(relative_base_address_data, endian_str)
                     if not is_valid_addr(relative_base_address):
