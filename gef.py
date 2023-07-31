@@ -50355,7 +50355,7 @@ class SlubDumpCommand(GenericCommand):
             i = 1
             while True:
                 off = read_int_from_memory(__per_cpu_offset + i * current_arch.ptrsize)
-                if off == 0:
+                if off < 10:
                     break
                 if off == self.cpu_offset[-1]:
                     self.cpu_offset = self.cpu_offset[:-1]
