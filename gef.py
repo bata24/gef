@@ -491,22 +491,50 @@ def gef_print(x="", less=False, *args, **kwargs):
         except FileNotFoundError:
             less = False
 
-    always_no_pager = Config.get_gef_setting("gef.always_no_pager")
-    pager_min_lines = Config.get_gef_setting("gef.pager_min_lines")
-    if less and not always_no_pager and len(x.splitlines()) > pager_min_lines:
-        if not x:
-            return
-        tmp_fd, tmp_path = GefUtil.mkstemp(prefix="gef_print", suffix=".txt")
-        os.fdopen(tmp_fd, "wb").write(String.str2bytes(x))
-        os.system("{!r} -Rf {!r}".format(less, tmp_path))
-
-        keep_pager_result = Config.get_gef_setting("gef.keep_pager_result")
-        if keep_pager_result:
-            print("result saved at {:s}".format(tmp_path))
-        else:
-            os.unlink(tmp_path)
-    else:
+    if not less:
+        # if x is blank, prints a blank line.
         print(x, *args, **kwargs)
+        return
+
+    # use pager but x is blank
+    if not x:
+        return
+
+    always_no_pager = Config.get_gef_setting("gef.always_no_pager")
+    if always_no_pager:
+        print(x, *args, **kwargs)
+        return
+
+    pager_min_lines = Config.get_gef_setting("gef.pager_min_lines")
+    if len(x.splitlines()) < pager_min_lines:
+        print(x, *args, **kwargs)
+        return
+
+    # write to file and less
+    if isinstance(x, bytes):
+        tmp_fd, tmp_path = GefUtil.mkstemp(prefix="gef_print", suffix=".txt")
+        os.fdopen(tmp_fd, "wb").write(x)
+    else:
+        try:
+            # this is faster than converting to bytes and then writing.
+            tmp_fd, tmp_path = GefUtil.mkstemp(prefix="gef_print", suffix=".txt")
+            os.fdopen(tmp_fd, "w").write(x)
+        except Exception:
+            # fallback if a write error occurs
+            # tmp_fd is closed at this point, so delete it and reopen it
+            os.unlink(tmp_path)
+            tmp_fd, tmp_path = GefUtil.mkstemp(prefix="gef_print", suffix=".txt")
+            os.fdopen(tmp_fd, "wb").write(String.str2bytes(x))
+
+    # less
+    os.system("{!r} -Rf {!r}".format(less, tmp_path))
+
+    # cleanup
+    keep_pager_result = Config.get_gef_setting("gef.keep_pager_result")
+    if keep_pager_result:
+        print("result saved at {:s}".format(tmp_path))
+    else:
+        os.unlink(tmp_path)
     return
 
 
@@ -93000,7 +93028,7 @@ class GefCommand(GenericCommand):
         self.add_setting("readline_compat", False, "Workaround for readline SOH/ETX issue (SEGV)")
         self.add_setting("disable_color", False, "Disable all colors in GEF")
         self.add_setting("always_no_pager", False, "Always disable pager in gef_print()")
-        self.add_setting("pager_min_lines", 10, "Show pager only if output is longer than this value")
+        self.add_setting("pager_min_lines", 11, "Show pager only if output is longer than this value")
         self.add_setting("keep_pager_result", False, "Leaves temporary files in gef_print()")
         self.missing_commands = {}
         return
