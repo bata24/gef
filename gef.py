@@ -74215,7 +74215,7 @@ class KernelNetDeviceCommand(GenericCommand):
 
 
 @register_command
-class VmallocDumpCommand(GenericCommand):
+class VmallocDumpCommand(GenericCommand, BufferingOutput):
     """Dump vmalloc used list and freed list."""
 
     _cmdline_ = "vmalloc-dump"
@@ -74234,29 +74234,22 @@ class VmallocDumpCommand(GenericCommand):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "Simplified vmalloc structure:\n"
+        "Simplified vmalloc structure:"
         "",
         "                           +-vmap_area--+",
         "                           | va_start   |",
-        "                           | va_end     |",
+        "(~v6.8)                    | va_end     |",
         "+---------------------+    | ...        |",
         "| vmap_area_list      |--->| list       |--->...",
         "+---------------------+    | ...        |",
-        "                           | vm         |----+",
-        "                           | ...        |    |",
-        "                           +------------+    |",
-        "                                             |",
-        "                       +---------------------+",
-        "                       |",
-        "                       +-->+-vm_struct--+",
-        "                           | ...        |",
-        "                           | flags      |",
-        "                           | ...        |",
-        "                           +------------+",
-        "",
+        "                           | vm         |---->+-vm_struct--+",
+        "                           | ...        |     | ...        |",
+        "                           +------------+     | flags      |",
+        "                                              | ...        |",
+        "                                              +------------+",
         "                           +-vmap_area--+",
         "                           | va_start   |",
-        "(This also exists v5.2~)   | va_end     |",
+        "(v5.2~)                    | va_end     |",
         "+---------------------+    | ...        |",
         "| free_vmap_area_list |--->| list       |--->...",
         "+---------------------+    | ...        |",
@@ -74313,13 +74306,16 @@ class VmallocDumpCommand(GenericCommand):
 
         kversion = Kernel.kernel_version()
 
-        self.vmap_area_list = KernelAddressHeuristicFinder.get_vmap_area_list()
-        if not self.vmap_area_list:
-            if not self.quiet:
-                err("Not found vmap_area_list")
+        if kversion and kversion < "6.9":
+            self.vmap_area_list = KernelAddressHeuristicFinder.get_vmap_area_list()
+            if not self.vmap_area_list:
+                if not self.quiet:
+                    err("Not found vmap_area_list")
+            else:
+                if not self.quiet:
+                    info("vmap_area_list: {:#x}".format(self.vmap_area_list))
         else:
-            if not self.quiet:
-                info("vmap_area_list: {:#x}".format(self.vmap_area_list))
+            self.vmap_area_list = None
 
         if kversion and kversion >= "5.2":
             self.free_vmap_area_list = KernelAddressHeuristicFinder.get_free_vmap_area_list()
@@ -74458,17 +74454,22 @@ class VmallocDumpCommand(GenericCommand):
         self.out = []
         areas = []
 
-        if not args.only_freed:
-            areas += self.parse_vmap_area_list(self.vmap_area_list, used=True)
-
         kversion = Kernel.kernel_version()
-        if kversion and kversion >= "5.2":
-            if not args.only_used:
+
+        # parse used list
+        if not args.only_freed:
+            if kversion and kversion < "6.9":
+                areas += self.parse_vmap_area_list(self.vmap_area_list, used=True)
+
+        # parse freed list
+        if not args.only_used:
+            if kversion and kversion >= "5.2":
                 areas += self.parse_vmap_area_list(self.free_vmap_area_list, used=False)
 
-        self.dump_areas(sorted(areas, key=lambda x:x[1]))
+        areas = sorted(areas, key=lambda x:x[1])
+        self.dump_areas(areas)
 
-        gef_print("\n".join(self.out), less=not args.no_pager)
+        self.print_output(args)
         return
 
 
