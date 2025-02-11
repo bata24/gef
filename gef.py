@@ -29493,6 +29493,7 @@ class DereferenceCommand(GenericCommand):
         self.add_setting("max_recursion", 4, "Maximum level of pointer recursion")
         self.add_setting("blacklist", "[]", 'Dereference black list address ranges (e.g.: "[[start1, end1], [start2, end2],]")')
         self.add_setting("nb_lines", 64, "Number of lines to display")
+        self.add_setting("no_pager", False, "Always enable --no-pager option for this telescope command only")
         return
 
     @staticmethod
@@ -29765,7 +29766,8 @@ class DereferenceCommand(GenericCommand):
                 return
 
         out = self.dereference_line_by_line(args, start_address, from_idx, to_idx, step)
-        gef_print("\n".join(out), less=not args.no_pager)
+        no_pager = args.no_pager | Config.get_gef_setting("dereference.no_pager")
+        gef_print("\n".join(out), less=not no_pager)
         return
 
 
