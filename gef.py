@@ -189,6 +189,7 @@ DEFAULT_PAGE_SIZE           = 1 << 12
 DEFAULT_PAGE_SIZE_MASK_LOW  = DEFAULT_PAGE_SIZE - 1
 DEFAULT_PAGE_SIZE_MASK_HIGH = ~DEFAULT_PAGE_SIZE_MASK_LOW
 
+# Each is assumed to be 4 bytes wide
 LEFT_ARROW                  = " <- "
 RIGHT_ARROW                 = " -> "
 
@@ -27104,11 +27105,11 @@ class ContextCommand(GenericCommand):
 
         try:
             frame = gdb.selected_frame()
-            arch_name = "{}:{}".format(current_arch.arch.lower(), current_arch.mode)
+            arch_name = "{:s}:{:s}".format(current_arch.arch.lower(), current_arch.mode)
         except gdb.error:
             # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
             frame = None
-            arch_name = "{}:{}".format(current_arch.arch.lower(), "???")
+            arch_name = "{:s}:{:s}".format(current_arch.arch.lower(), "???")
 
         if use_native_x_command:
             arch_name += " (gdb-native)"
@@ -27117,7 +27118,7 @@ class ContextCommand(GenericCommand):
         else:
             arch_name += " (gdb-native)"
 
-        self.context_title("code: {}".format(arch_name))
+        self.context_title("code: {:s}".format(arch_name))
         if use_native_x_command:
             gdb.execute("x/16i {:#x}".format(current_arch.pc))
             return
@@ -27136,24 +27137,24 @@ class ContextCommand(GenericCommand):
 
             # insn to string with coloring by address against pc
             if insn.address < pc:
-                text = "{:{}o}".format(insn, show_opcodes_size)
+                text = "{:{:d}o}".format(insn, show_opcodes_size)
                 if past_lines_color:
                     text = Color.remove_color(text)
                     text = Color.colorify(text, past_lines_color)
             elif insn.address == pc:
-                text = "{:{}O}".format(insn, show_opcodes_size)
+                text = "{:{:d}O}".format(insn, show_opcodes_size)
             else:
-                text = "{:{}o}".format(insn, show_opcodes_size)
+                text = "{:{:d}o}".format(insn, show_opcodes_size)
                 if future_lines_color:
                     text = Color.remove_color(text)
                     text = Color.colorify(text, future_lines_color)
 
             # bp prefix and branch info
             if insn.address != pc:
-                line += "{}{}{}".format(bp_prefix, padding, text)
+                line += "{:s}{:s}{:s}".format(bp_prefix, padding, text)
 
             elif insn.address == pc:
-                line += "{}{}{}".format(bp_prefix, RIGHT_ARROW[1:], text)
+                line += "{:s}{:s}{:s}".format(bp_prefix, RIGHT_ARROW[1:], text)
 
                 # branch info
                 if current_arch.is_conditional_branch(insn):
@@ -27191,8 +27192,10 @@ class ContextCommand(GenericCommand):
                 try:
                     if delay_slot:
                         next_insn = list(Disasm.gef_disassemble(insn.address, 2))[-1]
-                        text = "{:{}o}".format(next_insn, show_opcodes_size)
-                        text = "{}{}{}\t{}".format(bp_prefix, padding, text, Color.colorify("Maybe delay-slot", "bold yellow"))
+                        text = "{:s}{:s}{:{:d}o}\t{:s}".format(
+                            bp_prefix, padding, next_insn, show_opcodes_size,
+                            Color.colorify("Maybe delay-slot", "bold yellow"),
+                        )
                         gef_print(text)
                 except Exception:
                     pass
@@ -27200,7 +27203,7 @@ class ContextCommand(GenericCommand):
                 # branch target address
                 try:
                     for i, tinsn in enumerate(Disasm.gef_disassemble(target, nb_insn)):
-                        text = "{:{}o}".format(tinsn, show_opcodes_size)
+                        text = "{:{:d}o}".format(tinsn, show_opcodes_size)
                         if i == 0:
                             gef_print("") # need blank line
                             text = "   {} {}".format(RIGHT_ARROW[1:-1], text)
