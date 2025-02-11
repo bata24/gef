@@ -26784,8 +26784,10 @@ class ContextCommand(GenericCommand):
         self.add_setting("show_registers_raw", False, "Show the registers pane with raw values (no dereference)")
         self.add_setting("show_opcodes_size", 8, "Number of bytes of opcodes to display next to the disassembly")
         self.add_setting("show_opcodes_size_x64_x86", 10, "Number of bytes of opcodes to display next to the disassembly")
-        self.add_setting("peek_calls", True, "Peek into calls")
-        self.add_setting("peek_ret", True, "Peek at return address")
+        self.add_setting("peek_call", True, "Peek into call opcode")
+        self.add_setting("peek_conditional_branch", True, "Emulates a conditional branch and peeks if it is taken")
+        self.add_setting("peek_jump", True, "Peek into jump opcode")
+        self.add_setting("peek_ret", True, "Peek into ret opcode")
         self.add_setting("nb_lines_stack", 8, "Number of line in the stack pane")
         self.add_setting("nb_guessed_arguments", 6, "Number to display when guessing functions arguments")
         self.add_setting("nb_lines_backtrace", 10, "Number of line in the backtrace pane")
@@ -27158,24 +27160,28 @@ class ContextCommand(GenericCommand):
 
                 # branch info
                 if current_arch.is_conditional_branch(insn):
-                    is_taken, reason = current_arch.is_branch_taken(insn)
-                    if is_taken:
-                        target = self.get_branch_addr(insn)
-                        reason = "[Reason: {:s}]".format(reason) if reason else ""
-                        line += "\t" + Color.colorify("TAKEN {:s}".format(reason), "bold green")
-                        delay_slot = current_arch.has_delay_slot
-                    else:
-                        reason = "[Reason: !({:s})]".format(reason) if reason else ""
-                        line += "\t" + Color.colorify("NOT taken {:s}".format(reason), "bold red")
+                    if Config.get_gef_setting("context.peek_conditional_branch") is True:
+                        is_taken, reason = current_arch.is_branch_taken(insn)
+                        if is_taken:
+                            target = self.get_branch_addr(insn)
+                            reason = "[Reason: {:s}]".format(reason) if reason else ""
+                            line += "\t" + Color.colorify("TAKEN {:s}".format(reason), "bold green")
+                            delay_slot = current_arch.has_delay_slot
+                        else:
+                            reason = "[Reason: !({:s})]".format(reason) if reason else ""
+                            line += "\t" + Color.colorify("NOT taken {:s}".format(reason), "bold red")
                 elif current_arch.is_jump(insn):
-                    target = self.get_branch_addr(insn)
-                    delay_slot = current_arch.has_delay_slot
-                elif current_arch.is_call(insn) and Config.get_gef_setting("context.peek_calls") is True:
-                    target = self.get_branch_addr(insn)
-                    delay_slot = current_arch.has_delay_slot
-                elif current_arch.is_ret(insn) and Config.get_gef_setting("context.peek_ret") is True:
-                    target = current_arch.get_ra(insn, frame)
-                    delay_slot = current_arch.has_ret_delay_slot
+                    if Config.get_gef_setting("context.peek_jump") is True:
+                        target = self.get_branch_addr(insn)
+                        delay_slot = current_arch.has_delay_slot
+                elif current_arch.is_call(insn):
+                    if Config.get_gef_setting("context.peek_call") is True:
+                        target = self.get_branch_addr(insn)
+                        delay_slot = current_arch.has_delay_slot
+                elif current_arch.is_ret(insn):
+                    if Config.get_gef_setting("context.peek_ret") is True:
+                        target = current_arch.get_ra(insn, frame)
+                        delay_slot = current_arch.has_ret_delay_slot
 
                 if is_arc32() or is_arc64():
                     delay_slot = insn.mnemonic.endswith(".d") or insn.mnemonic.endswith(".d.nt")
