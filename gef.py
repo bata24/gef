@@ -20809,9 +20809,11 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
         # Get tcache_perthread_struct for this arena
         tcache_perthread_struct = arena.heap_base + 0x10
 
-        gef_print(titlify("Tcache Bins for arena '{:s}'".format(arena.name)))
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+        gef_print(titlify("Tcache Bins for arena '{:s}' (&tcache_perthread_struct->entries[0]: {:#x})".format(
+            arena.name, arena.tcachebins_addr(0),
+        )))
 
+        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
         nb_chunk = 0
         for i in range(GlibcHeap.GlibcArena.TCACHE_MAX_BINS):
             chunk = arena.tcachebin(i)
@@ -21118,7 +21120,7 @@ class GlibcHeapLargeBinsCommand(GenericCommand):
     _aliases_ = ["largebins"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-a", "--arena_addr", type=AddressUtil.parse_address,
+    parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
                         help="the address or number to interpret as an arena. (default: main_arena)")
     parser.add_argument("-v", "--verbose", action="store_true", help="display empty bins.")
     parser.add_argument("--all", action="store_true", help="dump all arenas.")
