@@ -281,11 +281,12 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
         * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-bins.png)
     * They print bins information if the chunk is in free-list.
         * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-if-in-freelist.png)
-    * It supports new modes `heap arenas`, `heap top`, `heap bins-simple` and `heap try-free`.
+    * It supports new modes `heap arenas`, `heap top`, `heap bins-simple`, `heap try-free` and `heap tcache-index-helper`.
         * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-arenas.png)
         * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-top.png)
         * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-bins-simple.png)
         * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-try-free.png)
+        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-index-helper.png)
     * Thread arena is supported for all `heap` commands.
         * Use `-a` option.
     * `find-fake-fast`: searches for a memory with a size-like value that can be linked to the fastbin free-list.

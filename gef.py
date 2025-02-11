@@ -21264,6 +21264,83 @@ class GlibcTryFreeCommand(GenericCommand):
 
 
 @register_command
+class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
+    """Helper for calculating tcache index etc."""
+    _cmdline_ = "heap tcache-index-helper"
+    _category_ = "06-a. Heap - Glibc"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
+                        help="the address or number to interpret as an arena. (default: main_arena)")
+    parser.add_argument("-i", "--index", type=lambda x: int(x, 0),
+                        help="the index of tcache entry (0 ~ 0x3f).")
+    parser.add_argument("-c", "--count-addr", type=AddressUtil.parse_address,
+                        help="the address of &tcache.counts[i].")
+    parser.add_argument("-e", "--entry-addr", type=AddressUtil.parse_address,
+                        help="the address of &tcache.entries[i].")
+    _syntax_ = parser.format_help()
+
+    def print_tcache_info(self, arena, index):
+        if index < 0:
+            err("Invalid index (< 0)")
+            return
+        if index >= arena.TCACHE_MAX_BINS:
+            err("Invalid index (>= TCACHE_MAX_BINS)")
+            return
+
+        tcache_perthread_struct = arena.heap_base + 0x10
+        if get_libc_version() < (2, 30):
+            count_addr = tcache_perthread_struct + index
+        else:
+            count_addr = tcache_perthread_struct + index * 2
+        entry_addr = arena.tcachebins_addr(index)
+        info("&tcache.counts[{:d}] = {!s}".format(index, ProcessMap.lookup_address(count_addr)))
+        info("&tcache.entries[{:d}] = {!s}".format(index, ProcessMap.lookup_address(entry_addr)))
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    def do_invoke(self, args):
+        # parse arena
+        arena = GlibcHeap.get_arena(args.arena_addr)
+
+        if arena is None:
+            err("No valid arena")
+            return
+
+        if arena.heap_base is None or not is_valid_addr(arena.heap_base):
+            err("Heap is not initialized")
+            return
+
+        if get_libc_version() < (2, 30):
+            err("No Tcache in this version of libc")
+            return
+
+        # doit
+        info("heap_base: {!s}".format(ProcessMap.lookup_address(arena.heap_base)))
+        info("tcache: {!s} (tcache_perthread_struct)".format(ProcessMap.lookup_address(arena.heap_base + 0x10)))
+
+        if args.index is not None:
+            self.print_tcache_info(arena, args.index)
+
+        if args.count_addr is not None:
+            tcache_perthread_struct = arena.heap_base + 0x10
+            if get_libc_version() < (2, 30):
+                index = args.count_addr - tcache_perthread_struct
+            else:
+                if args.count_addr % 2 == 1:
+                    err("Invalid address (count_addr % 2 == 1)")
+                    return
+                index = (args.count_addr - tcache_perthread_struct) // 2
+            self.print_tcache_info(arena, index)
+
+        if args.entry_addr is not None:
+            index = (args.entry_addr - arena.tcachebins_addr(0)) // current_arch.ptrsize
+            self.print_tcache_info(arena, index)
+        return
+
+
+@register_command
 class RegistersCommand(GenericCommand):
     """Display full details on one, many or all registers value from current architecture."""
 
