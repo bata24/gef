@@ -48799,7 +48799,7 @@ class MmxCommand(GenericCommand):
         legend = ["Name", "64-bit hex"]
         gef_print(GefUtil.make_legend(fmt.format(*legend)))
 
-        red = lambda x: Color.colorify("{:4s}".format(x), "bold red")
+        red = lambda x: Color.colorify("{:s}".format(x), "bold red")
         for i in range(len(regs)):
             regname = "$mm{:d}".format(i)
             reghex = ""
@@ -48826,7 +48826,7 @@ class XmmSetCommand(GenericCommand):
     _category_ = "04-b. Register - Modify"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("reg_and_value", metavar="REG=VALUE", help="XMM/YMM register and value to set.")
+    parser.add_argument("reg_and_value", metavar="REG=VALUE", help="XMM/YMM/ZMM register and value to set.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -48863,6 +48863,10 @@ class XmmSetCommand(GenericCommand):
             for i in range(4):
                 v = (value >> (64 * i)) & ((1 << 64) - 1)
                 gdb.execute(f"set {reg}.v4_int64[{i}]={v:#x}", to_string=True)
+        elif "$zmm" in reg:
+            for i in range(8):
+                v = (value >> (64 * i)) & ((1 << 64) - 1)
+                gdb.execute(f"set {reg}.v8_int64[{i}]={v:#x}", to_string=True)
         else:
             err("Unsupported")
         return
@@ -48897,7 +48901,7 @@ class SseCommand(GenericCommand):
         legend = ["Name", "128-bit hex"]
         gef_print(GefUtil.make_legend(fmt.format(*legend)))
 
-        red = lambda x: Color.colorify("{:4s}".format(x), "bold red")
+        red = lambda x: Color.colorify("{:s}".format(x), "bold red")
         for i in range(len(regs)):
             if i == 8:
                 gef_print("* xmm8-15 are introduced by AVX")
@@ -48968,7 +48972,10 @@ class AvxCommand(GenericCommand):
             except Exception:
                 continue
             result = result.replace("\n", "")
-            r = re.findall(r"v2_int128 = \{.*?\[0x0\] = (0x[0-9a-f]+),.*?\[0x1\] = (0x[0-9a-f]+).*?\}", result)
+            r = re.findall(r"v2_int128 = \{"
+                           r".*?\[0x0\] = (0x[0-9a-f]+),"
+                           r".*?\[0x1\] = (0x[0-9a-f]+)"
+                           r".*?\}", result)
             if r:
                 reg = (int(r[0][1], 16) << 128) + int(r[0][0], 16)
                 regs.append(reg)
@@ -48979,7 +48986,7 @@ class AvxCommand(GenericCommand):
             legend = ["Name", "256-bit hex"]
             gef_print(GefUtil.make_legend(fmt.format(*legend)))
 
-            red = lambda x: Color.colorify("{:4s}".format(x), "bold red")
+            red = lambda x: Color.colorify("{:s}".format(x), "bold red")
             for i in range(len(regs)):
                 regname = "$ymm{:<2d}".format(i)
                 reghex = ""
@@ -48997,6 +49004,65 @@ class AvxCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         self.print_avx()
+        return
+
+
+@register_command
+class Avx512Command(GenericCommand):
+    """Display AVX512 registers."""
+
+    _cmdline_ = "avx512"
+    _category_ = "04-a. Register - View"
+    _aliases_ = ["zmm"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    _syntax_ = parser.format_help()
+
+    def print_avx512(self):
+        regs = []
+        for i in range(32):
+            try:
+                result = gdb.execute(f"info registers $zmm{i}", to_string=True)
+            except Exception:
+                continue
+            result = result.replace("\n", "")
+            r = re.findall(r"v4_int128 = \{"
+                           r".*?\[0x0\] = (0x[0-9a-f]+),"
+                           r".*?\[0x1\] = (0x[0-9a-f]+),"
+                           r".*?\[0x2\] = (0x[0-9a-f]+),"
+                           r".*?\[0x3\] = (0x[0-9a-f]+)"
+                           r".*?\}", result)
+            if r:
+                reg = int(r[0][0], 16)
+                reg += (int(r[0][1], 16) << 128)
+                reg += (int(r[0][2], 16) << 256)
+                reg += (int(r[0][3], 16) << 384)
+                regs.append(reg)
+        if regs:
+            gef_print(titlify("AVX Register"))
+
+            fmt = "{:7s}: {:s}"
+            legend = ["Name", "512-bit hex"]
+            gef_print(GefUtil.make_legend(fmt.format(*legend)))
+
+            red = lambda x: Color.colorify("{:s}".format(x), "bold red")
+            for i in range(len(regs)):
+                regname = "$zmm{:<2d}".format(i)
+                reghex = ""
+                for j in range(64):
+                    c = (regs[i] >> (8 * j)) & 0xff
+                    reghex += chr(c) if 0x20 <= c < 0x7f else "."
+                gef_print("{:s} : {:#0130x}  |  {:s}  |".format(red(regname), regs[i], reghex))
+        else:
+            err("Not found avx512 registers")
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("kgdb",))
+    @only_if_specific_arch(arch=("x86_64",))
+    def do_invoke(self, args):
+        self.print_avx512()
         return
 
 
@@ -49040,7 +49106,7 @@ class FpuCommand(GenericCommand):
         return int("".join(x), 16)
 
     def print_fpu_arm(self):
-        red = lambda x: Color.colorify("{:4s}".format(x), "bold red")
+        red = lambda x: Color.colorify("{:4s}".format(x), "bold red") # need padding
 
         # s0-s31, d0-d31, q0-q15
         gef_print(titlify("FPU/NEON Data Register"))
@@ -49084,7 +49150,7 @@ class FpuCommand(GenericCommand):
         return
 
     def print_fpu_x86(self):
-        red = lambda x: Color.colorify("{:4s}".format(x), "bold red")
+        red = lambda x: Color.colorify("{:s}".format(x), "bold red")
 
         # st0-7
         gef_print(titlify("FPU Data Register"))

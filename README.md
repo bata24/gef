@@ -527,9 +527,9 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
 * `break-if-taken`/`break-if-not-taken`: sets a breakpoint which breaks if branch is taken (or not taken).
 * `distance`: calculates the offset from its base address.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/distance.png)
-* `fpu`/`mmx`/`sse`/`avx`: pretty prints FPU/MMX/SSE/AVX registers.
+* `fpu`/`mmx`/`sse`/`avx`/`avx512`: pretty prints FPU/MMX/SSE/AVX/AVX512 registers.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/fpu-mmx-sse-avx.png)
-* `xmmset`: sets the value to xmm/ymm register simply.
+* `xmmset`: sets the value to xmm/ymm/zmm register simply.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/xmmset.png)
 * `mmxset`: sets the value to mm register simply.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/mmxset.png)
