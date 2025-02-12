@@ -20056,6 +20056,7 @@ class GlibcHeapCommand(GenericCommand):
     subparsers.add_parser("chunks")
     subparsers.add_parser("top")
     subparsers.add_parser("try-free")
+    subparsers.add_parser("try-malloc")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -21263,6 +21264,120 @@ class GlibcTryFreeCommand(GenericCommand):
             err("The free function was failed")
         else:
             ok("The free function was successful")
+
+        # revert
+        for regname, regvalue in old_regs.items():
+            gdb.execute("set {:s}={:#x}".format(regname, regvalue))
+        gdb.execute("patch revert {:d}".format(revert_num), to_string=True)
+        return
+
+
+@register_command
+class GlibcTryMallocCommand(GenericCommand):
+    """Emulate with unicorn to check whether any errors occur when allocating a chunk."""
+
+    _cmdline_ = "heap try-malloc"
+    _category_ = "06-a. Heap - Glibc"
+    _aliases_ = ["try-malloc"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address,
+                        help="the size to be allocated.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
+    _syntax_ = parser.format_help()
+
+    _note_ = [
+        "It may work even if NOT Glibc (untested).",
+        "It may be detected as a failure even though it actually succeeded.",
+        "e.g.:",
+        "- Any system call was called.",
+        "- An instruction that unicorn does not support was executed.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def __init__(self):
+        super().__init__(complete=gdb.COMPLETE_LOCATION)
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    def do_invoke(self, args):
+        try:
+            malloc = int(gdb.parse_and_eval("&'malloc@plt'"))
+        except gdb.error:
+            try:
+                malloc = int(gdb.parse_and_eval("&malloc"))
+            except gdb.error:
+                err("Not found `malloc`")
+                return
+
+        if is_x86_64():
+            target_regs = {"$rdi": args.size, "$rax": malloc}
+            patch_code = "ffd0" # call rax
+            current_address = current_arch.pc
+            stop_address = current_address + 2
+        elif is_x86_32():
+            target_regs = {"$edi": args.size, "$eax": malloc}
+            patch_code = "57ffd0" # push edi; call eax
+            current_address = current_arch.pc
+            stop_address = current_address + 3
+        elif is_arm32():
+            # Check if malloc() is thumb2
+            # The reason for checking only 3 instructions is that xxx@plt is 3 instructions.
+            res = gdb.execute("x/3i {:#x}".format(malloc), to_string=True)
+            addrs = [int(x.strip().split()[0], 16) for x in res.splitlines()]
+            if any(a % 4 == 2 for a in addrs):
+                malloc += 1
+            # Check current $pc is thumb2
+            if current_arch.is_thumb():
+                target_regs = {"$r0": args.size, "$r1": malloc}
+                patch_code = "8847" # blx r1
+                current_address = current_arch.pc & ~1
+                stop_address = current_address + 2
+            else:
+                target_regs = {"$r0": args.size, "$r1": malloc}
+                patch_code = "31ff2fe1" # blx r1
+                current_address = current_arch.pc
+                stop_address = current_arch.pc + 4
+        elif is_arm64():
+            target_regs = {"$x0": args.size, "$x1": malloc}
+            patch_code = "20003fd6" # blr x1
+            current_address = current_arch.pc
+            stop_address = current_address + 4
+
+        # backup & modify
+        old_regs = {}
+        for regname, regvalue in target_regs.items():
+            old_regs[regname] = get_register(regname)
+            gdb.execute("set {:s}={:#x}".format(regname, regvalue))
+        gdb.execute("patch hex {:#x} {:s}".format(current_address, patch_code), to_string=True)
+        revert_num = len(PatchCommand.patch_history) - 1
+
+        # doit
+        res = ""
+        try:
+            res = gdb.execute("unicorn-emulate -t {:#x}".format(stop_address), to_string=True)
+            if args.verbose:
+                gef_print(res)
+        except Exception:
+            pass
+
+        if "Emulation failed" in res:
+            err("The malloc function was failed")
+        else:
+            final_registers = res[res.find("Final registers"):]
+            if is_x86_64():
+                m = re.search(r"\$rax\s+=\s+(0x\S+)", final_registers)
+            elif is_x86_32():
+                m = re.search(r"\$eax\s+=\s+(0x\S+)", final_registers)
+            elif is_arm32():
+                m = re.search(r"\$r0\s+=\s+(0x\S+)", final_registers)
+            elif is_arm64():
+                m = re.search(r"\$x0\s+=\s+(0x\S+)", final_registers)
+            allocated_address = int(m.group(1), 16)
+            ok("The malloc function was successful: {:#x}".format(allocated_address))
 
         # revert
         for regname, regvalue in old_regs.items():
