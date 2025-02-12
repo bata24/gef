@@ -21219,6 +21219,13 @@ class GlibcTryFreeCommand(GenericCommand):
             current_address = current_arch.pc
             stop_address = current_address + 3
         elif is_arm32():
+            # Check if malloc() is thumb2
+            # The reason for checking only 3 instructions is that xxx@plt is 3 instructions.
+            res = gdb.execute("x/3i {:#x}".format(free), to_string=True)
+            addrs = [int(x.strip().split()[0], 16) for x in res.splitlines()]
+            if any(a % 4 == 2 for a in addrs):
+                free += 1
+            # Check current $pc is thumb2
             if current_arch.is_thumb():
                 target_regs = {"$r0": args.address, "$r1": free}
                 patch_code = "8847" # blx r1
@@ -21244,6 +21251,7 @@ class GlibcTryFreeCommand(GenericCommand):
         revert_num = len(PatchCommand.patch_history) - 1
 
         # doit
+        res = ""
         try:
             res = gdb.execute("unicorn-emulate -t {:#x}".format(stop_address), to_string=True)
             if args.verbose:
