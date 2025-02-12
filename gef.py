@@ -82247,7 +82247,10 @@ class PageMap:
     @staticmethod
     @Cache.cache_until_next
     def get_page_maps_by_pagewalk(command):
-        return gdb.execute(command, to_string=True)
+        res = gdb.execute(command, to_string=True)
+        if 'Exception raised' in res:
+            gef_print(res)
+        return res
 
     @staticmethod
     @Cache.cache_until_next
