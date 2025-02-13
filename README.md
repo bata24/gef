@@ -31,9 +31,9 @@ Many other commands have been added and improved. Enjoy!
 ## Setup
 
 ### Supported environment
-- Tested on ubuntu 24.04.
-- It may work on ubuntu 22.04 - 23.10.
-- It might work on ubuntu 20.04 - 21.10, but not recommended.
+- Tested on Ubuntu 24.04.
+- It may work on Ubuntu 22.04 - 23.10.
+- It might work on Ubuntu 20.04 - 21.10, but it is not recommended.
 
 ### Install
 * Run following commands as root user.
@@ -73,7 +73,7 @@ See [install.sh](https://github.com/bata24/gef/blob/dev/install.sh) or
 ### Supported mode
 * Normal debugging
 * Attach to the process
-* Attach to the process in another namespace (e.g. attaching from outside of `docker`)
+* Attach to the process in another namespace (e.g., attaching from outside of `docker`)
 * Connect to `gdbserver`
 * Connect to the gdb stub of `qemu-system`
 * Connect to the gdb stub of `qemu-user`
@@ -114,14 +114,14 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
 * `xp`: is a shortcut for physical memory dump.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/xp.png)
 * `qreg`: displays the register values from qemu-monitor (allows to get like `$cs` even under qemu 2.x).
-    * It is shortcut for `monitor info registers`.
+    * It is a shortcut for `monitor info registers`.
     * It also prints the details of the each bit of the system register when x64/x86.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/qreg.png)
 * `sysreg`: pretty prints system registers.
-    * It is the result of `info registers` with filtering general registers.
+    * It shows `info registers` results, excluding general registers.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/sysreg.png)
 * `msr`: reads/writes MSR (Model Specific Registers) value by embedding/executing dynamic assembly.
-    * Supported on only x64 and x86.
+    * Supported on x64 and x86.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/msr.png)
 * `kbase`: displays the kernel base address.
 * `kversion`: displays the kernel version.
@@ -244,22 +244,22 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
 * `ktrace`: traces kernel functions and arguments.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/ktrace.png)
 * `xsm`: dumps secure memory when gdb is in normal world.
-    * Supported on only ARM64 and ARM.
+    * Supported on ARM64 and ARM.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/xsm.png)
 * `wsm`: writes the value to secure memory when gdb is in normal world.
-    * Supported on only ARM64 and ARM.
+    * Supported on ARM64 and ARM.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/wsm.png)
 * `bsm`: sets the breakpoint to secure memory when gdb is in normal world.
-    * Supported on only ARM64 and ARM.
+    * Supported on ARM64 and ARM.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/bsm.png)
 * `optee-break-ta`: sets the breakpoint to the offset of OPTEE-Trusted-App when gdb is in normal world.
-    * Supported on only ARM64 and ARM.
+    * Supported on ARM64 and ARM.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/optee-break-ta.png)
 * `pac-keys`: pretty prints ARM64 PAC keys.
-    * Supported on only ARM64.
+    * Supported on ARM64.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/pac-keys.png)
 * `uefi-ovmf-info`: dumps addresses of some important structures in each boot phase of UEFI when OVMF is used.
-    * Supported on only x64.
+    * Supported on x64.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/uefi-ovmf-info.png)
 * `qemu-device-info`: dumps device information for qemu-escape (WIP).
 
@@ -306,7 +306,7 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
         * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/calc-protected-fd.png)
 * uClibc heap commands are added.
     * `uclibc-ng-heap-dump`: dumps uClibc-ng heap chunks.
-        * Supported on x64/x86, based on uClibc-ng v1.0.42 malloc-standard.
+        * Supported on x64 and x86, based on uClibc-ng v1.0.42 malloc-standard.
         * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/uclibc-ng-heap-dump.png)
         * How to test (x64):
             * Download and extract `x86-64--uclibc--stable-2024.05-1.tar.bz2` from https://toolchains.bootlin.com/
@@ -318,20 +318,18 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/partition-alloc-dump.png)
     * This command is reserved for the implementation of latest version of chromium.
         * Currently tested: v133.x / [1376806](https://commondatastorage.googleapis.com/chromium-browser-snapshots/index.html?prefix=Linux_x64/1376806/) / 13d27cee758fcdacc9e7cb09c439a5757d0e2723
-    * Supported on only x64/ARM64 (maybe it works on x86/ARM too, but not tested).
+    * Supported on x64 and ARM64 (maybe it works on x86/ARM too, but not tested).
     * It will try heuristic search if binary has no symbol.
     * How to test:
         * See [dev/partition-alloc-dump/downloader.py](https://github.com/bata24/gef/blob/dev/dev/partition-alloc-dump/downloader.py).
-* `tcmalloc-dump`: dumps tcmalloc free-list.
-    * Supported on only x64, based on gperftools-2.9.1 (named `libgoogle-perftools{4,-dev}`)
+* `tcmalloc-dump`: dumps tcmalloc (`gperftools-2.9.1` or named `libgoogle-perftools{4,-dev}`) free-list (only x64).
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/tcmalloc-dump.png)
     * How to test:
         * Execute as `LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc.so ./a.out`.
-* `musl-heap-dump`: dumps musl-libc heap chunks.
-    * Supported on x64/x86, based on musl-libc v1.2.5.
+* `musl-heap-dump`: dumps musl-libc v1.2.5 heap chunks (only x64/x86).
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/musl-heap-dump.png)
     * How to test:
-        * Get and extract latest source from https://musl.libc.org/
+        * Get and extract the latest source from https://musl.libc.org/
         * Build with `./configure && make install`.
         * Build as `/usr/local/musl/bin/musl-gcc test.c`.
 * `go-heap-dump`: dumps go language v1.22.2 mheap (only x64).
@@ -339,18 +337,18 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
 * `tlsf-heap-dump`: dumps TLSF (Two-Level Segregated Fit) v2.4.6 free-list (only x64).
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/tlsf-heap-dump.png)
     * How to test (x64):
-        * Get and extract latest source from http://www.gii.upv.es/tlsf/
+        * Get and extract the latest source from http://www.gii.upv.es/tlsf/
         * Build with `cd TLSF-2.4.6/src && make && cd ../examples && make` then use `test1` etc.
 * `hoard-heap-dump`: dumps Hoard v3.13 free-list (only x64).
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/hoard-heap-dump.png)
     * How to test (x64):
-        * Get and extract latest source from https://github.com/emeryberger/Hoard
+        * Get and extract the latest source from https://github.com/emeryberger/Hoard
         * Build with `cd Hoard/src && make`.
         * Execute as `LD_PRELOAD=/path/to/libhoard.so ./a.out`.
 * `mimalloc-heap-dump`: dumps mimalloc free-list (only x64).
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/mimalloc-heap-dump.png)
     * How to test (x64):
-        * Get and extract latest source from https://github.com/microsoft/mimalloc
+        * Get and extract the latest source from https://github.com/microsoft/mimalloc
         * Build with `mkdir build && cd build && cmake .. && make`.
         * Execute as `LD_PRELOAD=/path/to/libmimalloc.so ./a.out`.
 * `optee-bget-dump`: dumps bget allocator of OPTEE-Trusted-App.
@@ -618,7 +616,7 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
 * `call-syscall`: calls system call with specified values.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/call-syscall.png)
 * `mmap`: allocates a new memory by `call-syscall`.
-* `killthreads`: kill specific or all pthread.
+* `killthreads`: kills specific or all pthread.
 * `constgrep`: invokes `grep` under `/usr/include/`.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/constgrep.png)
 * `proc-dump`: dumps each file under `/proc/PID/`.
@@ -694,7 +692,7 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
     * It also loads more commands from latest gdbinit for v8.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/v8-load.png)
 * `mte-tags`: displays the MTE tags for the specified address.
-    * Supported on only ARM64.
+    * Supported on ARM64.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/mte-tags.png)
 * `iouring-dump`: dumps the area of iouring (only x64).
     * This area is mapped to userland, but cannot be accessed from gdb.
@@ -743,7 +741,7 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
     * bufferize
     * output redirect
     * `shellcode`
-* Many bugs fix / formatting / made it easy for me to use.
+* Many bug fixes / formatting improvements / usability enhancements (made it easy for me to use).
 
 ## FAQ
 * See [docs/FAQ.md](https://github.com/bata24/gef/blob/dev/docs/FAQ.md).
