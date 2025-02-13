@@ -18172,6 +18172,11 @@ class KillThreadsCommand(GenericCommand):
     parser.add_argument("-c", "--commit", action="store_true", help="commit to kill.")
     _syntax_ = parser.format_help()
 
+    _example_ = [
+        '{0:s} 2 3   # kill threads that `Thread Id` is 2 or 3',
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
@@ -18179,11 +18184,11 @@ class KillThreadsCommand(GenericCommand):
     def do_invoke(self, args):
         # print tid list and exit
         if not args.all and not args.thread_id:
-            info("Among the threads shown below, `Thread Id` that is not the current thread can be used")
+            info("Non-current `Thread Id`(s) from the list are available")
             # back up
             nb_lines_threads = Config.get_gef_setting("context.nb_lines_threads")
             # change temporarily
-            Config.set_gef_setting("context.nb_lines_threads", 0x100)
+            Config.set_gef_setting("context.nb_lines_threads", -1)
             # print
             gdb.execute("context threads")
             # restore
