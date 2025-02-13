@@ -33065,7 +33065,8 @@ class GotCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output.")
-    parser.add_argument("filter", metavar="FILTER", nargs="*", help="filter string.")
+    parser.add_argument("filter", metavar="FILTER", nargs="*", default=[], help="filter string.")
+    parser.add_argument("--exact", action="store_true", help="use exact match for function name.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -33309,7 +33310,7 @@ class GotCommand(GenericCommand, BufferingOutput):
                 return " <{:s}+{:#x}>".format(name, addr - start)
         return ""
 
-    def parse_plt_got(self):
+    def parse_plt_got(self, args):
         # retrieve jump slots using readelf
         jmpslots = self.get_jmp_slots()
         if jmpslots == []:
@@ -33361,7 +33362,7 @@ class GotCommand(GenericCommand, BufferingOutput):
             try:
                 got_value = read_int_from_memory(got_address)
             except gdb.error:
-                if not self.quiet:
+                if not args.quiet:
                     err("Memory access error")
                 return
 
@@ -33406,19 +33407,19 @@ class GotCommand(GenericCommand, BufferingOutput):
             resolved_info.append(plt_got_info)
         return resolved_info
 
-    def make_output(self, resolved_info):
+    def make_output(self, args, resolved_info):
         # calc each width
         width = AddressUtil.get_format_address_width()
         name_width = min(max([len(info.name) for info in resolved_info] + [len("Name")]), 50)
-        if self.verbose:
+        if args.verbose:
             got_section_width = max([len(info.got_section) for info in resolved_info] + [len("Section")])
             plt_section_width = max([len(info.plt_section) for info in resolved_info] + [len("Section")])
             got_offset_width = max([len(hex(info.got_offset)) for info in resolved_info] + [len("Offset")])
             plt_offset_width = max([len(hex(info.plt_offset)) for info in resolved_info] + [len("Offset")])
 
         # print legend
-        if not self.quiet:
-            if self.verbose:
+        if not args.quiet:
+            if args.verbose:
                 name_s = "{:<{:d}}".format("Name", name_width)
                 type_s = "{:9s}".format("Type")
                 plt_s = "{:{:d}s} @{:{:d}s} {:>{:d}s} {:>9s}".format(
@@ -33457,7 +33458,7 @@ class GotCommand(GenericCommand, BufferingOutput):
                 name_info = "{:{:d}s}".format(info.name[:name_width - 3] + "...", name_width)
 
             # make plt format
-            if self.verbose:
+            if args.verbose:
                 if info.plt_address:
                     plt_info = "{!s} @{:{:d}s} {:#{:d}x} {:9s}".format(
                         ProcessMap.lookup_address(info.plt_address),
@@ -33479,7 +33480,7 @@ class GotCommand(GenericCommand, BufferingOutput):
                     plt_info = "{:{:d}s}".format("Not found", width)
 
             # make got format
-            if self.verbose:
+            if args.verbose:
                 got_info = "{!s} @{:{:d}s} {:#{:d}x}".format(
                     ProcessMap.lookup_address(info.got_address),
                     info.got_section, got_section_width,
@@ -33495,7 +33496,7 @@ class GotCommand(GenericCommand, BufferingOutput):
             )
 
             # make line
-            if self.verbose:
+            if args.verbose:
                 type_info = "{:9s}".format(info.type)
                 line_element = [name_info, type_info, plt_info, got_info, got_value_info]
             else:
@@ -33503,23 +33504,27 @@ class GotCommand(GenericCommand, BufferingOutput):
             line = " | ".join(line_element)
 
             # save temporarily
-            entries.append([info.got_address, info.section_name, line])
+            entries.append([info.got_address, info, line])
 
         # sort by GOT address
         entries = sorted(entries)
 
         # print
         prev_section = None
-        for _, section_name, line in sorted(entries):
+        for _, info, line in sorted(entries):
             # print section name
-            if prev_section != section_name:
-                if not self.quiet:
-                    self.out.append(titlify(section_name))
-            prev_section = section_name
+            if prev_section != info.section_name:
+                if not args.quiet:
+                    self.out.append(titlify(info.section_name))
+            prev_section = info.section_name
             # if we have a filter let's skip the entries that are not requested
-            if self.filter:
-                if not any(pattern in line for pattern in self.filter):
-                    continue
+            if args.filter:
+                if args.exact:
+                    if not any(pattern == info.name for pattern in args.filter):
+                        continue
+                else:
+                    if not any(pattern in line for pattern in args.filter):
+                        continue
             self.out.append(line)
         return
 
@@ -33659,15 +33664,12 @@ class GotCommand(GenericCommand, BufferingOutput):
                     return
 
         # get the filtering parameter
-        self.filter = args.filter or []
         self.filename = local_filepath
         self.base_address = base_address
-        self.verbose = args.verbose
-        self.quiet = args.quiet
 
         # doit
-        resolved_info = self.parse_plt_got()
-        self.make_output(resolved_info)
+        resolved_info = self.parse_plt_got(args)
+        self.make_output(args, resolved_info)
         self.print_output(args, term=True)
 
         # clean up
