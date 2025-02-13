@@ -33511,6 +33511,7 @@ class GotCommand(GenericCommand, BufferingOutput):
         # It should be removed later.
         tmp_filepath = None
 
+        # get local_filepath
         if args.remote:
             if not is_remote_debug():
                 if not args.quiet:
@@ -33550,6 +33551,7 @@ class GotCommand(GenericCommand, BufferingOutput):
             local_filepath = Path.get_filepath() # /proc/<PID>/root/path/to/binary if another mnt namespace
             vmmap_filepath = Path.get_filepath(append_proc_root_prefix=False)
 
+        # check local filepath
         if local_filepath is None:
             if not args.quiet:
                 err("File name could not be determined")
@@ -33566,6 +33568,7 @@ class GotCommand(GenericCommand, BufferingOutput):
                 err("Invalid elf")
             return
 
+        # title
         self.out = []
         if not args.quiet:
             if remote_filepath:
@@ -33586,7 +33589,7 @@ class GotCommand(GenericCommand, BufferingOutput):
         if args.elf_address:
             if not args.file:
                 if not args.quiet:
-                    err("-e option needs -f option")
+                    err("-e option needs -f option: in-memory ELF lacks Shdr, preventing full information resolution")
                 return
             base_address = args.elf_address
         else:
@@ -33598,7 +33601,8 @@ class GotCommand(GenericCommand, BufferingOutput):
             if path_match:
                 base_address = min(path_match)
             else:
-                # When using the -L option with qemu-user, the file path on the disk and the file path on vmmap are different.
+                # When using the -L option with qemu-user,
+                # the file path on the disk and the file path on vmmap are different.
                 #
                 # e.g. qemu-arm -g 1234 -L /usr/arm-linux-gnueabihf ./a.out
                 # gef> vmm
