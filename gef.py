@@ -1899,12 +1899,21 @@ class Elf:
     @Cache.cache_until_next
     def get_elf(filepath=None):
         """Return an Elf object with caching."""
-        return Elf(filepath)
+        try:
+            elf = Elf(filepath)
+        except Exception:
+            elf = None
+        return elf
 
     def __init__(self, elf=None):
         """Instantiate an ELF object."""
         if elf is None:
             elf = Path.get_filepath()
+            if elf is None:
+                self.e_magic = None
+                err("Not found path")
+                return
+
         if isinstance(elf, str):
             if not os.access(elf, os.R_OK):
                 err("'{:s}' not found/readable".format(elf))
@@ -12342,10 +12351,11 @@ class ProcessMap:
                 if addr < 0 or addr > upper_bound:
                     return None
                 try:
-                    if read_memory(addr, 4) == b"\x7fELF":
-                        return Elf.get_elf(addr)
+                    e_magic = read_memory(addr, 4)
                 except gdb.MemoryError:
                     return None
+                if e_magic == b"\x7fELF":
+                    return Elf.get_elf(addr)
                 addr -= gef_getpagesize()
             return None
 
@@ -13384,7 +13394,7 @@ def set_arch(arch_str=None):
     else:
         # Determined from loaded ELF
         elf = Elf.get_elf()
-        if not elf or not elf.is_valid():
+        if elf is None or not elf.is_valid():
             raise OSError("Could not determine architecture.")
 
         if elf.e_machine not in [Elf.EM_MIPS, Elf.EM_RISCV, Elf.EM_PARISC]:
@@ -15052,7 +15062,7 @@ class BreakRelativeVirtualAddressCommand(GenericCommand):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         elf = Elf.get_elf()
-        if not elf.is_valid():
+        if elf is None or not elf.is_valid():
             err("Invalid elf")
             return
 
@@ -15669,7 +15679,7 @@ class VdsoCommand(GenericCommand, BufferingOutput):
 
         # get dump area
         elf = Elf.get_elf(entry.page_start)
-        if not elf or not elf.is_valid:
+        if elf is None or not elf.is_valid():
             err("parse failed")
             return
         shdr = elf.get_shdr(".text")
@@ -23417,7 +23427,7 @@ class ChecksecCommand(GenericCommand):
 
     def print_security_properties(self, filename):
         elf = Elf.get_elf(filename)
-        if not elf.is_valid():
+        if elf is None or not elf.is_valid():
             err("checksec is failed")
             return
 
@@ -26511,6 +26521,9 @@ class MainBreakCommand(GenericCommand):
 
         if libc_start_main == 0:
             elf = Elf.get_elf()
+            if elf is None or not elf.is_valid():
+                return None
+
             entry = elf.e_entry
             if elf.is_pie():
                 codebase = ProcessMap.get_section_base_address(Path.get_filepath(append_proc_root_prefix=False))
@@ -26664,7 +26677,7 @@ class EntryBreakCommand(GenericCommand):
         else:
             # stopped in ld, so continue to entry-point.
             base_address = ProcessMap.process_lookup_path(fpath).page_start
-            entry_address = base_address + Elf.get_elf().e_entry
+            entry_address = base_address + Elf.get_elf(fpath).e_entry
             info("Breaking at entry-point: {:#x}".format(entry_address))
             EntryBreakBreakpoint("*{:#x}".format(entry_address))
 
@@ -26689,6 +26702,11 @@ class EntryBreakCommand(GenericCommand):
             warn("The file '{}' is not executable".format(fpath))
             return
 
+        elf = Elf.get_elf(fpath)
+        if elf is None or not elf.is_valid():
+            warn("Invalid elf")
+            return
+
         # use symbol if loaded
         entrypoints = Config.get_gef_setting("entry_break.entrypoint_symbols").split()
         for sym in entrypoints:
@@ -26705,8 +26723,8 @@ class EntryBreakCommand(GenericCommand):
 
         # no symbols. use elf entry point
         # non-PIE
-        if not Elf.get_elf(fpath).is_pie():
-            entry = Elf.get_elf().e_entry
+        if not elf.is_pie():
+            entry = elf.e_entry
             info("Breaking at entry-point: {:#x}".format(entry))
             EntryBreakBreakpoint("*{:#x}".format(entry))
             gdb.execute("run {}".format(" ".join(argv)))
@@ -32676,6 +32694,9 @@ class DestructorDumpCommand(GenericCommand):
         # filepath and elf
         self.local_filepath = local_filepath
         self.elf = Elf.get_elf(local_filepath)
+        if self.elf is None or not self.elf.is_valid():
+            err("Invalid elf")
+            return
 
         # codebase
         if remote_filepath:
@@ -33539,6 +33560,12 @@ class GotCommand(GenericCommand, BufferingOutput):
                 err("{:s} does not exist".format(local_filepath))
             return
 
+        elf = Elf.get_elf(local_filepath)
+        if elf is None or not elf.is_valid():
+            if not args.quiet:
+                err("Invalid elf")
+            return
+
         self.out = []
         if not args.quiet:
             if remote_filepath:
@@ -33546,7 +33573,6 @@ class GotCommand(GenericCommand, BufferingOutput):
             else:
                 print_filename = local_filepath
 
-            elf = Elf.get_elf(local_filepath)
             if elf.is_relro():
                 if elf.is_full_relro():
                     relro_status = "Full RELRO"
@@ -47904,7 +47930,7 @@ class CodebaseCommand(GenericCommand):
 
         # Any other area should use a section header.
         elf = Elf.get_elf()
-        if not elf.is_valid():
+        if elf is None or not elf.is_valid():
             if not self.quiet:
                 err("Failed to load an elf")
             return
@@ -76728,6 +76754,9 @@ class GoHeapDumpCommand(GenericCommand):
 
         # use heuristic search (TODO: Check if it is always correct)
         elf = Elf.get_elf()
+        if elf is None or not elf.is_valid():
+            return None
+
         bss = elf.get_shdr(".bss")
         mheap = bss.sh_addr + bss.sh_size - self.sizeof_mheap
         if is_valid_addr(mheap):
