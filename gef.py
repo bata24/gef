@@ -5221,9 +5221,11 @@ class Symbol:
         i = sym.find(" in section ")
         sym = sym[:i].split()
         if len(sym) >= 3 and sym[-1].isdigit():
+            # e.g., ptmalloc_init.part + 1 in section .text of /lib/x86_64-linux-gnu/libc.so.6
             name = " ".join(sym[:-2])
             offset = int(sym[-1])
         else:
+            # e.g., ptmalloc_init.part in section .text of /lib/x86_64-linux-gnu/libc.so.6
             name = " ".join(sym)
             offset = 0
         return name, offset
@@ -27411,7 +27413,7 @@ class ContextCommand(GenericCommand):
                     if Config.get_gef_setting("context.peek_conditional_branch") is True:
                         is_taken, reason = current_arch.is_branch_taken(insn)
                         if is_taken:
-                            target = self.get_branch_addr(insn)
+                            target = ContextCommand.get_branch_addr(insn)
                             reason = "[Reason: {:s}]".format(reason) if reason else ""
                             line += "\t" + Color.colorify("TAKEN {:s}".format(reason), "bold green")
                             delay_slot = current_arch.has_delay_slot
@@ -27420,11 +27422,11 @@ class ContextCommand(GenericCommand):
                             line += "\t" + Color.colorify("NOT taken {:s}".format(reason), "bold red")
                 elif current_arch.is_jump(insn):
                     if Config.get_gef_setting("context.peek_jump") is True:
-                        target = self.get_branch_addr(insn)
+                        target = ContextCommand.get_branch_addr(insn)
                         delay_slot = current_arch.has_delay_slot
                 elif current_arch.is_call(insn):
                     if Config.get_gef_setting("context.peek_call") is True:
-                        target = self.get_branch_addr(insn)
+                        target = ContextCommand.get_branch_addr(insn)
                         delay_slot = current_arch.has_delay_slot
                 elif current_arch.is_ret(insn):
                     if Config.get_gef_setting("context.peek_ret") is True:
@@ -27805,126 +27807,194 @@ class ContextCommand(GenericCommand):
 
         return None
 
-    RE_SUB_ARGS_SYMBOL = re.compile(r".*<([^\(\)\ \>]*?)>.*")
+    @staticmethod
+    def get_got_value(addr):
+        # GOT cannot be detected in kernel mode
+        if is_qemu_system() or is_vmware() or is_kgdb():
+            return None
+
+        # GOT Cannot be detected if no file is specified
+        addr_obj = ProcessMap.lookup_address(addr)
+        if not addr_obj:
+            return None
+        if not addr_obj.section:
+            return None
+        if not addr_obj.section.path:
+            return None
+        filepath = addr_obj.section.path
+        if not os.path.exists(filepath):
+            return None
+
+        # something is wrong
+        ret = Symbol.gdb_get_location(addr)
+        if not ret:
+            return None
+
+        # check if PLT
+        func_name = ret[0]
+        if not func_name.endswith("@plt"):
+            return None
+        func_name = func_name[:-4]
+
+        # use `got` command to obtain function address
+        try:
+            ret = gdb.execute("got -q -f {!r} --exact {:s}".format(filepath, func_name), to_string=True)
+            ret = Color.remove_color(ret).splitlines()
+            if len(ret) != 1:
+                return None
+            ret = ret[0]
+            got_value = int(ret.split("|")[-1].split()[0], 16)
+        except Exception:
+            return None
+
+        return got_value
+
+    @staticmethod
+    def get_call_destination_function_block(insn):
+        # call insn -> destination addr
+        addr = ContextCommand.get_branch_addr(insn)
+        if addr is None:
+            return None
+
+        # check if addr is PLT or not
+        ret = ContextCommand.get_got_value(addr)
+        if ret:
+            # use got value
+            addr = ret
+            # Even if the GOT is unresolved in Partial RELRO, there is no problem.
+            # This is because the subsequent gdb.block_for_pc(addr) returns None.
+
+        # addr -> block
+        block = gdb.block_for_pc(addr)
+        if block and not block.function:
+            return None
+        return block
 
     def context_args(self):
         if current_arch is None and is_remote_debug():
             err("Missing info about architecture. Please set: `file /path/to/target_binary`")
             return
 
+        # get insn
         try:
             insn = get_insn()
         except gdb.MemoryError:
             return
-
         if insn is None:
             return
 
+        # syscall case
         if current_arch.is_syscall(insn):
             self.context_title("arguments")
             gdb.execute("syscall-args")
             return
 
+        # non-call case
         if not current_arch.is_call(insn):
             return
 
-        def get_sym_obj(insn):
-            # insn -> addr
-            addr = self.get_branch_addr(insn)
-            if addr is None:
-                return None
-
-            # addr -> sym_str
-            ret = Symbol.gdb_get_location(addr)
-            if not ret:
-                return None
-            sym_str, _ = ret
-
-            # If it's a PLT call, it should resolve the symbol for the actual function.
-            # e.g., puts@plt -> puts
-            if sym_str.endswith("@plt"):
-                sym_str = sym_str[:-4]
-
-            # weak symbol -> real symbol
-            # e.g., puts -> __GI__IO_puts
-            try:
-                ret = gdb.execute("p '{:s}'".format(sym_str), to_string=True).strip()
-                real_sym_str = self.RE_SUB_ARGS_SYMBOL.sub(r"\1", ret)
-            except gdb.error:
-                # Some functions do not have PLT names.
-                # e.g., *ABS*+0xXXXX
-                return None
-
-            # If it resolves the real symbol, it may not be the beginning of the function. This is not the symbol I want.
-            # To determine whether it is the beginning of a function, use whether a "+" symbol is included.
-            # Another option is to check whether AddressUtil.parse_address(real_symbol) returns the original address.
-            # However, this cannot be used in cases where addresses exceeding the PLT are handled, so this should not be used.
-            if "+" not in real_sym_str:
-                sym_str = real_sym_str
-            else:
-                # e.g., ptmalloc_init -> __GI___libc_malloc+528
-                pass
-
-            # sym_str -> sym_obj
-            sym_obj = gdb.lookup_symbol(sym_str)[0]
-            if sym_obj is None:
-                # There are cases where the symbol string is found but the symbol object is not.
-                # e.g., __do_global_dtors_aux
-                return None
-            if sym_obj.type.code != gdb.TYPE_CODE_FUNC:
-                return None
-
-            # found
-            return sym_obj, sym_str
-
-        ret = get_sym_obj(insn)
-        if ret:
-            # okay, it has a symbol
-            self.print_arguments_from_symbol(*ret)
+        # call case (from symbol)
+        block = ContextCommand.get_call_destination_function_block(insn)
+        if block:
+            # okay, it has symbols and not in blacklist
+            self.print_arguments_from_symbol(block)
             return
 
-        # no, try extract target address
-        function_name = self.get_branch_addr(insn, to_str=True)
-        if function_name is None:
+        # call case (guessing)
+        # no symbols, try extract target address
+        addr = ContextCommand.get_branch_addr(insn)
+        if addr is not None:
+            function_name = "{:#x}{:s}".format(
+                addr, Symbol.get_symbol_string(addr, nosymbol_string=" <NO_SYMBOL>"),
+            )
+        else:
             # failed, use raw operands
             function_name = " ".join(insn.operands)
         self.print_guessed_arguments(function_name)
         return
 
-    def print_arguments_from_symbol(self, sym_obj, function_name):
+    def print_arguments_from_symbol_x86(self, block):
+        suffix_words = ("_avx2", "_avx", "_avx512", "_sse", "_sse2", "_ssse3", "_sse4_1", "_sse42")
+        inner_words = ("_avx2_", "_avx_", "_avx512_", "_sse2_")
+
+        if block.function.name.endswith(suffix_words):
+            match = True
+        elif any(x in block.function.name for x in inner_words):
+            match = True
+        else:
+            match = False
+
+        if match:
+            function_name = "{:#x} <{:s}>".format(block.start, block.function.name)
+            self.print_guessed_arguments(function_name)
+            return True
+
+        return False
+
+    def print_arguments_from_symbol(self, block):
         """If symbols were found, parse them and print the argument adequately."""
+
+        # setup iterator
+        args_info = [x for x in block if x.is_argument]
+        if len(args_info) == len(block.function.type.fields()):
+            # new implementation; get args information from the block.
+            # we can get both type names and variable names.
+            iterator = args_info
+            title = "arguments (from block)"
+
+            # special case
+            if len(args_info) == 0:
+                # Some string processing functions are implemented in assembly for speed.
+                # Since there is no type information for these arguments, the number of arguments is always 0.
+                # Here, if a function name matches the blacklist, type information is not used and
+                # print_guessed_arguments is forcibly called to display context.nb_guessed_arguments arguments.
+                if is_x86():
+                    if self.print_arguments_from_symbol_x86(block):
+                        return
+        else:
+            # old implementation.
+            # we can get type names, but not variable names
+            iterator = block.function.type.fields()
+            title = "arguments (from fields)"
+
+        # helper function
+        def get_type_name(t):
+            try:
+                pointer_nest = 0
+                while t.code == gdb.TYPE_CODE_PTR:
+                    pointer_nest += 1
+                    t = t.target()
+                if not t.name:
+                    return None
+                return t.name + "*" * pointer_nest
+            except Exception:
+                return None
+
+        # get each values
         args = []
-
-        # In gdb, there is no way to get the argument names of a function before call the function.
-        # You can get the argument names with `info args`, but only after the function is called.
-        # Also, the arguments obtained with info args may differ from the source code due to
-        # optimization reasons. (e.g., _int_malloc)
-        # Since only the type of the argument can be obtained, only the type information is used.
-
-        size2type = {
-            1: "BYTE",
-            2: "WORD",
-            4: "DWORD",
-            8: "QWORD",
-        }
-
-        for i, f in enumerate(sym_obj.type.fields()):
-            _value = current_arch.get_ith_parameter(i, in_func=False)[1]
-            if _value is None:
+        for i, f in enumerate(iterator):
+            # value
+            value = current_arch.get_ith_parameter(i, in_func=False)[1]
+            if value is None:
                 break
-            _value = AddressUtil.recursive_dereference_to_string(_value)
-            _name = f.name or "var_{}".format(i)
-            _type = f.type.name or size2type[f.type.sizeof]
-            args.append("{} {} = {}".format(_type, _name, _value))
+            value = AddressUtil.recursive_dereference_to_string(value)
 
-        self.context_title("arguments")
+            # name
+            name = f.name or "var_{:d}".format(i)
 
-        if not args:
-            gef_print("{} (<void>)".format(function_name))
-            return
+            # type name
+            typ = get_type_name(f.type)
+            if typ is None:
+                typ = {1: "BYTE", 2: "WORD", 4: "DWORD", 8: "QWORD"}[f.type.sizeof]
 
-        gef_print("{} (".format(function_name))
-        gef_print("   " + ",\n   ".join(args))
+            # ok
+            args.append("{:s} {:s} = {:s}".format(typ, name, value))
+
+        # output
+        self.context_title(title)
+        gef_print("{:#x} <{:s}> (".format(block.start, block.function.name))
+        for a in args:
+            gef_print("   {:s},".format(a))
         gef_print(")")
         return
 
@@ -27932,24 +28002,22 @@ class ContextCommand(GenericCommand):
         """When no symbol, print six arguments."""
         arg_key_color = Config.get_gef_setting("theme.registers_register_name")
         nb_argument = Config.get_gef_setting("context.nb_guessed_arguments")
-        _arch_mode = "{}_{}".format(current_arch.arch.lower(), current_arch.mode)
-        _function_name = None
-        if function_name.endswith("@plt"):
-            _function_name = function_name.split("@")[0]
 
+        # get each values
         args = []
         for i in range(nb_argument):
             try:
-                _key, _value = current_arch.get_ith_parameter(i, in_func=False)
-                _value = AddressUtil.recursive_dereference_to_string(_value)
+                key, value = current_arch.get_ith_parameter(i, in_func=False)
+                value = AddressUtil.recursive_dereference_to_string(value)
             except Exception:
                 break
-            args.append("{} = {}".format(Color.colorify(_key, arg_key_color), _value))
+            args.append("{:s} = {:s}".format(Color.colorify(key, arg_key_color), value))
 
+        # output
         self.context_title("arguments (guessed)")
-        gef_print("{:s}{:s} (".format(function_name, Symbol.get_symbol_string(function_name, nosymbol_string=" <NO_SYMBOL>")))
-        if args:
-            gef_print("   " + ",\n   ".join(args))
+        gef_print("{:s} (".format(function_name))
+        for a in args:
+            gef_print("   {:s},".format(a))
         gef_print(")")
         return
 
