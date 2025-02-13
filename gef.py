@@ -4011,7 +4011,7 @@ class GlibcHeap:
                     chunk = self.tcachebin(i)
                 except gdb.MemoryError:
                     sz = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
-                    err("tcache[idx={:d}, sz={:#x}] is corrupted.".format(i, sz))
+                    err("tcache[idx={:d}, sz={:#x}] is corrupted".format(i, sz))
                     continue
                 chunks = []
                 while True:
@@ -4019,7 +4019,7 @@ class GlibcHeap:
                         break
                     if chunk.address in chunks:
                         sz = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
-                        err("tcache[idx={:d}, sz={:#x}] has a loop.".format(i, sz))
+                        err("tcache[idx={:d}, sz={:#x}] has a loop".format(i, sz))
                         break # loop detected
                     chunks.append(chunk.address)
                     next_chunk = chunk.get_fwd_ptr(True)
@@ -4027,7 +4027,7 @@ class GlibcHeap:
                         break
                     if next_chunk is None:
                         sz = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
-                        err("tcache[idx={:d}, sz={:#x}] is corrupted.".format(i, sz))
+                        err("tcache[idx={:d}, sz={:#x}] is corrupted".format(i, sz))
                         break
                     chunk = GlibcHeap.GlibcChunk(next_chunk)
                 chunks_all[i] = chunks
@@ -4046,7 +4046,7 @@ class GlibcHeap:
                     chunk = self.fastbin(i)
                 except gdb.MemoryError:
                     sz = GlibcHeap.get_binsize_table()["fastbins"][i]["size"]
-                    err("fastbins[idx={:d}, sz={:#x}] is corrupted.".format(i, sz))
+                    err("fastbins[idx={:d}, sz={:#x}] is corrupted".format(i, sz))
                     continue
                 chunks = []
                 while True:
@@ -4054,7 +4054,7 @@ class GlibcHeap:
                         break
                     if chunk.address in chunks:
                         sz = GlibcHeap.get_binsize_table()["fastbins"][i]["size"]
-                        err("fastbins[idx={:d}, sz={:#x}] has a loop.".format(i, sz))
+                        err("fastbins[idx={:d}, sz={:#x}] has a loop".format(i, sz))
                         break # loop detected
                     chunks.append(chunk.address)
                     next_chunk = chunk.get_fwd_ptr(True)
@@ -4062,7 +4062,7 @@ class GlibcHeap:
                         break
                     if next_chunk is None:
                         sz = GlibcHeap.get_binsize_table()["fastbins"][i]["size"]
-                        err("fastbins[idx={:d}, sz={:#x}] is corrupted.".format(i, sz))
+                        err("fastbins[idx={:d}, sz={:#x}] is corrupted".format(i, sz))
                         break
                     chunk = GlibcHeap.GlibcChunk(next_chunk, from_base=True)
                 chunks_all[i] = chunks
@@ -4085,28 +4085,28 @@ class GlibcHeap:
                 chunk = GlibcHeap.GlibcChunk(bk, from_base=True)
                 if chunk.chunk_base_address in chunks_bk:
                     if index == 0:
-                        err("unsortedbin has a loop.")
+                        err("unsortedbin has a loop")
                     elif index in GlibcHeap.get_binsize_table()["small_bins"]:
                         sz = GlibcHeap.get_binsize_table()["small_bins"][index]["size"]
-                        err("small_bins[idx={:d}, sz={:#x}] has a loop.".format(index, sz))
+                        err("small_bins[idx={:d}, sz={:#x}] has a loop".format(index, sz))
                     elif index in GlibcHeap.get_binsize_table()["large_bins"]:
                         sz_min = GlibcHeap.get_binsize_table()["large_bins"][index]["size_min"]
                         sz_max = GlibcHeap.get_binsize_table()["large_bins"][index]["size_max"]
-                        err("large_bins[idx={:d}, sz={:#x}-{:#x}] has a loop.".format(index, sz_min, sz_max))
+                        err("large_bins[idx={:d}, sz={:#x}-{:#x}] has a loop".format(index, sz_min, sz_max))
                     corrupted = True
                     break
                 chunks_bk.append(chunk.chunk_base_address)
                 bk = chunk.bck
                 if bk is None:
                     if index == 0:
-                        err("unsortedbin is corrupted.")
+                        err("unsortedbin is corrupted")
                     elif index in GlibcHeap.get_binsize_table()["small_bins"]:
                         sz = GlibcHeap.get_binsize_table()["small_bins"][index]["size"]
-                        err("small_bins[idx={:d}, sz={:#x}] is corrupted.".format(index, sz))
+                        err("small_bins[idx={:d}, sz={:#x}] is corrupted".format(index, sz))
                     elif index in GlibcHeap.get_binsize_table()["large_bins"]:
                         sz_min = GlibcHeap.get_binsize_table()["large_bins"][index]["size_min"]
                         sz_max = GlibcHeap.get_binsize_table()["large_bins"][index]["size_max"]
-                        err("large_bins[idx={:d}, sz={:#x}-{:#x}] is corrupted.".format(index, sz_min, sz_max))
+                        err("large_bins[idx={:d}, sz={:#x}-{:#x}] is corrupted".format(index, sz_min, sz_max))
                     corrupted = True
                     break
             chunks = chunks_bk[::-1]
@@ -4241,7 +4241,7 @@ class GlibcHeap:
                 str(arena) # check memory error
                 return arena
             except (OSError, AttributeError, gdb.MemoryError):
-                err("Failed to get the arena, heap commands may not work properly.")
+                err("Failed to get the arena, heap commands may not work properly")
                 return None
         else:
             # interpret `address` as the number following next from main_arena, not the address of arena.
@@ -4255,7 +4255,7 @@ class GlibcHeap:
                 arena = arena.get_next()
 
             if arena_number >= len(arenas):
-                err("Failed to get the arena, heap commands may not work properly.")
+                err("Failed to get the arena, heap commands may not work properly")
                 return None
 
             return arenas[arena_number]
@@ -5285,7 +5285,7 @@ def load_capstone(f):
             __import__("capstone")
             return f(*args, **kwargs)
         except ImportError as err:
-            msg = "Missing `capstone` package for Python. Install with `pip install capstone`."
+            msg = "Missing `capstone` package for Python, try install with `pip install capstone`"
             raise ImportWarning(msg) from err
 
     return wrapper
@@ -5319,7 +5319,7 @@ def load_unicorn(f):
 
             return f(*args, **kwargs)
         except ImportError as err:
-            msg = "Missing `unicorn` package for Python. Install with `pip install unicorn`."
+            msg = "Missing `unicorn` package for Python, try install with `pip install unicorn`"
             raise ImportWarning(msg) from err
 
     return wrapper
@@ -5334,7 +5334,7 @@ def load_keystone(f):
             __import__("keystone")
             return f(*args, **kwargs)
         except ImportError as err:
-            msg = "Missing `keystone-engine` package, install with: `pip install keystone-engine`."
+            msg = "Missing `keystone-engine` package for Python, try install with `pip install keystone-engine`"
             raise ImportWarning(msg) from err
 
     return wrapper
@@ -5349,7 +5349,7 @@ def load_ropper(f):
             __import__("ropper")
             return f(*args, **kwargs)
         except ImportError as err:
-            msg = "Missing `ropper` package, install with: `pip install ropper`."
+            msg = "Missing `ropper` package for Python, try install with `pip install ropper`"
             raise ImportWarning(msg) from err
 
     return wrapper
@@ -5364,7 +5364,7 @@ def load_binwalk(f):
             __import__("binwalk")
             return f(*args, **kwargs)
         except ImportError as err:
-            msg = "Missing `binwalk` package for Python. Install with `apt install binwalk`."
+            msg = "Missing `binwalk` package for Python, try install with `apt install binwalk`"
             raise ImportWarning(msg) from err
 
     return wrapper
@@ -5379,7 +5379,7 @@ def load_crccheck(f):
             __import__("crccheck")
             return f(*args, **kwargs)
         except ImportError as err:
-            msg = "Missing `crcheck` package for Python. Install with `pip install crccheck`."
+            msg = "Missing `crcheck` package for Python, try install with `pip install crccheck`"
             raise ImportWarning(msg) from err
 
     return wrapper
@@ -5394,7 +5394,7 @@ def load_codext(f):
             __import__("codext")
             return f(*args, **kwargs)
         except ImportError as err:
-            msg = "Missing `codext` package for Python. Install with `pip install codext`."
+            msg = "Missing `codext` package for Python, try install with `pip install codext`"
             raise ImportWarning(msg) from err
 
     return wrapper
@@ -5409,7 +5409,7 @@ def load_angr(f):
             __import__("angr")
             return f(*args, **kwargs)
         except ImportError as err:
-            msg = "Missing `angr` package for Python. Install with `pip install angr`."
+            msg = "Missing `angr` package for Python, try install with `pip install angr`"
             raise ImportWarning(msg) from err
 
     return wrapper
@@ -11448,7 +11448,7 @@ def only_if_gdb_target_local(f):
         if not is_remote_debug():
             return f(*args, **kwargs)
         else:
-            warn("This command cannot work for remote sessions.")
+            warn("This command cannot work for remote sessions")
             return
 
     return wrapper
@@ -11462,7 +11462,7 @@ def only_if_in_kernel(f):
         if is_in_kernel():
             return f(*args, **kwargs)
         else:
-            warn("Run in kernel context.")
+            warn("Run in kernel context")
             return
 
     return wrapper
@@ -11486,7 +11486,7 @@ def only_if_in_kernel_or_kpti_disabled(f):
         elif not is_kpti_enabled():
             return f(*args, **kwargs)
         else:
-            warn("Run in kernel context, or disable KPTI.")
+            warn("Run in kernel context, or disable KPTI")
             return
 
     return wrapper
@@ -11498,7 +11498,7 @@ def only_if_kvm_disabled(f):
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
         if is_kvm_enabled():
-            err("Disable `-enable-kvm` option for qemu-system.")
+            err("Disable `-enable-kvm` option for qemu-system")
             return
         return f(*args, **kwargs)
 
@@ -11511,7 +11511,7 @@ def only_if_smp_disabled(f):
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
         if is_smp_enabled():
-            err("Disable `-smp N` option for qemu-system.")
+            err("Disable `-smp N` option for qemu-system")
             return
         return f(*args, **kwargs)
 
@@ -11537,7 +11537,7 @@ def only_if_specific_gdb_mode(mode=()):
             for m in mode:
                 if dic.get(m, lambda: False)():
                     return f(*args, **kwargs)
-            warn("This command cannot work under this gdb mode.")
+            warn("This command cannot work under this gdb mode")
             return
 
         return inner_f
@@ -11563,7 +11563,7 @@ def exclude_specific_gdb_mode(mode=()):
             }
             for m in mode:
                 if dic.get(m, lambda: False)():
-                    warn("This command cannot work under this gdb mode.")
+                    warn("This command cannot work under this gdb mode")
                     return
             return f(*args, **kwargs)
 
@@ -11614,7 +11614,7 @@ def only_if_specific_arch(arch=()):
             for a in arch:
                 if dic.get(a, lambda: False)():
                     return f(*args, **kwargs)
-            warn("This command cannot work under this architecture.")
+            warn("This command cannot work under this architecture")
             return
 
         return inner_f
@@ -11663,7 +11663,7 @@ def exclude_specific_arch(arch=()):
             }
             for a in arch:
                 if dic.get(a, lambda: False)():
-                    warn("This command cannot work under this architecture.")
+                    warn("This command cannot work under this architecture")
                     return
             return f(*args, **kwargs)
 
@@ -12873,8 +12873,8 @@ class EventHandler:
         if EventHandler.__gef_check_once__:
             if not (is_qemu_system() or is_kgdb() or is_vmware()):
                 if not gdb.current_progspace().filename:
-                    err("Missing info about architecture. Please set: `file /path/to/target_binary`")
-                    err("Some architectures may not be automatically recognized. Please set: `set architecture YOUR_ARCH`.")
+                    err("Missing info about architecture, please set: `file /path/to/target_binary`")
+                    err("Some architectures may not be automatically recognized, please set: `set architecture YOUR_ARCH`")
             EventHandler.__gef_check_once__ = False
         return
 
@@ -13918,7 +13918,7 @@ class ResetBreakpointsCommand(GenericCommand):
                 info("Breakpoint is found: {:s}".format(bp_str))
 
         if not args.commit and n > 0:
-            warn('This is dry run mode. No breakpoint is deleted yet. To delete, please add "--commit".')
+            warn('This dry run mode skips deleting breakpoint; add "--commit" to proceed')
         return
 
 
@@ -14822,7 +14822,7 @@ class UpCommand(GenericCommand):
             current_frame = gdb.selected_frame()
         except gdb.error:
             # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
-            err("Failed to get frame information.")
+            err("Failed to get frame information")
             return
 
         # check if target frame is available
@@ -14874,7 +14874,7 @@ class DownCommand(GenericCommand):
             current_frame = gdb.selected_frame()
         except gdb.error:
             # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
-            err("Failed to get frame information.")
+            err("Failed to get frame information")
             return
 
         # check if target frame is available
@@ -16327,7 +16327,7 @@ class FileDescriptorsCommand(GenericCommand):
                 fstat_nr = nr
                 break
         else:
-            err("System call `fstat` is not found.")
+            err("System call `fstat` is not found")
             return
 
         # prepare
@@ -16895,8 +16895,8 @@ class SmartMemoryDumpCommand(GenericCommand):
         self.smart_memory_dump()
 
         if not args.commit:
-            info("The directory name will use the most recent time.")
-            warn('This is dry run mode. No dump has been performed yet. To dump, please add "--commit".')
+            info("The directory name is replaced with the latest timestamp")
+            warn('This dry run mode skips dumping; add "--commit" to proceed')
         return
 
 
@@ -17760,7 +17760,7 @@ class SearchMangledPtrCommand(GenericCommand):
 
         # check
         if current_arch.decode_cookie(0, 1) == 0:
-            err("In this architecture, the value is not encrypted with cookies.")
+            err("In this architecture, the value is not encrypted with cookies")
             return
 
         # search
@@ -18143,7 +18143,7 @@ class EditFlagsCommand(GenericCommand):
     @only_if_gdb_running
     def do_invoke(self, args):
         if current_arch.flag_register is None:
-            warn("This command cannot work under this architecture.")
+            warn("This command cannot work under this architecture")
             return
 
         self.edit_flags(args.flagname)
@@ -18179,7 +18179,7 @@ class KillThreadsCommand(GenericCommand):
     def do_invoke(self, args):
         # print tid list and exit
         if not args.all and not args.thread_id:
-            info("Among the threads shown below, `Thread Id` that is not the current thread can be used.")
+            info("Among the threads shown below, `Thread Id` that is not the current thread can be used")
             # back up
             nb_lines_threads = Config.get_gef_setting("context.nb_lines_threads")
             # change temporarily
@@ -18218,7 +18218,7 @@ class KillThreadsCommand(GenericCommand):
             orig_thread.switch()
             gdb.execute("set scheduler-locking {:s}".format(sched_lock), to_string=True)
         else:
-            warn('This is dry run mode. Thread is not killed yet. To kill, please add "--commit".')
+            warn('This dry run mode skips killing; add "--commit" to proceed')
         return
 
 
@@ -18246,7 +18246,7 @@ class CallSyscallCommand(GenericCommand):
     @exclude_specific_arch(arch=("CRIS",))
     def do_invoke(self, args):
         if current_arch is None:
-            err("current_arch is not set.")
+            err("current_arch is not set")
             return
 
         try:
@@ -18262,12 +18262,12 @@ class CallSyscallCommand(GenericCommand):
             if args.syscall_name == entry.name:
                 break
         else:
-            err("System call `{:s}` is not found.".format(args.syscall_name))
+            err("System call `{:s}` is not found".format(args.syscall_name))
             return
 
         # length check
         if len(args.syscall_args) != len(entry.args_full):
-            err("Argument count mismatch.")
+            err("Argument count mismatch")
             params = "(" + ", ".join(entry.args_full) + ");"
             gef_print("Prototype: {:s}{:s}".format(Color.boldify(args.syscall_name), params))
             return
@@ -18516,7 +18516,7 @@ class ReadControlRegisterCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         if current_arch is None:
-            err("current_arch is not set.")
+            err("current_arch is not set")
             return
 
         getter_address = self.get_getter_address(args.reg_name)
@@ -19210,7 +19210,7 @@ class ReadSystemRegisterCommand(GenericCommand):
         # It jumps to the undefined exception vector if an attempt is made to a register that does not exist.
         # Even though I just stepped through it, the PC register values are very different.
         if abs(after_pc - before_pc) > 0x10:
-            err("Undefined register. It probably crashes the kernel.")
+            err("Undefined register, it probably crashes the kernel")
             return None
         return ret["reg"][current_arch.return_register]
 
@@ -19220,7 +19220,7 @@ class ReadSystemRegisterCommand(GenericCommand):
     @only_if_specific_arch(arch=("ARM32",))
     def do_invoke(self, args):
         if current_arch is None:
-            err("current_arch is not set.")
+            err("current_arch is not set")
             return
 
         reg_name = args.reg_name.upper()
@@ -19305,7 +19305,7 @@ class UnicornEmulateCommand(GenericCommand):
         Cache.reset_gef_caches(all=True)
         vmmap = ProcessMap.get_process_maps()
         if not vmmap:
-            warn("An error occurred when reading memory map.")
+            warn("An error occurred when reading memory map")
             return
 
         # header
@@ -19648,7 +19648,7 @@ class UnicornEmulateCommand(GenericCommand):
     @load_unicorn
     def do_invoke(self, args):
         if current_arch.unicorn_support is False:
-            warn("This command cannot work under this architecture.")
+            warn("This command cannot work under this architecture")
             return
 
         # start_insn
@@ -19845,7 +19845,7 @@ class AngrCommand(GenericCommand):
             content += '    print("  raw:", repr(solution))\n'
             content += '    print("  hex:", solution.hex())\n'
         content += "else:\n"
-        content += '    print("No solution found.")\n'
+        content += '    print("No solution found")\n'
         content += 'print("")\n'
         content += "\n"
 
@@ -19893,7 +19893,7 @@ class AngrCommand(GenericCommand):
 
         if args.type:
             if len(args.type) != len(args.sym):
-                err("The --type option must be specified for all symbols.")
+                err("The --type option must be specified for all symbols")
                 return
             for t in args.type:
                 for tc in t:
@@ -20753,7 +20753,7 @@ class GlibcHeapBinsCommand(GenericCommand):
             # unsorted bin
             gef_print(titlify("Unsorted Bin for arena '{:s}'".format(arena.name)))
             nb_chunk = GlibcHeapBinsCommand.pprint_bin(arena, 0, "unsorted_bin", args.verbose)
-            info("Found {:d} valid chunks in unsorted bin (when traced from `bk`).".format(nb_chunk))
+            info("Found {:d} valid chunks in unsorted bin (when traced from `bk`)".format(nb_chunk))
 
             # small bins
             gef_print(titlify("Small Bins for arena '{:s}'".format(arena.name)))
@@ -20764,7 +20764,7 @@ class GlibcHeapBinsCommand(GenericCommand):
                     break
                 if nb_chunk > 0:
                     bins[i] = nb_chunk
-            info("Found {:d} valid chunks in {:d} small bins (when traced from `bk`).".format(
+            info("Found {:d} valid chunks in {:d} small bins (when traced from `bk`)".format(
                 sum(bins.values()), len(bins),
             ))
 
@@ -20777,7 +20777,7 @@ class GlibcHeapBinsCommand(GenericCommand):
                     break
                 if nb_chunk > 0:
                     bins[i] = nb_chunk
-            info("Found {:d} valid chunks in {:d} large bins (when traced from `bk`).".format(
+            info("Found {:d} valid chunks in {:d} large bins (when traced from `bk`)".format(
                 sum(bins.values()), len(bins),
             ))
         return
@@ -20863,7 +20863,7 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
                 if m:
                     gef_print("\n".join(m))
 
-        info("Found {:d} valid chunks in tcache.".format(nb_chunk))
+        info("Found {:d} valid chunks in tcache".format(nb_chunk))
         return
 
     @parse_args
@@ -20978,7 +20978,7 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
                     if m:
                         gef_print("\n".join(m))
 
-        info("Found {:d} valid chunks in fastbins.".format(nb_chunk))
+        info("Found {:d} valid chunks in fastbins".format(nb_chunk))
         return
 
     @parse_args
@@ -21052,7 +21052,7 @@ class GlibcHeapUnsortedBinsCommand(GenericCommand):
             arena.reset_bins_info()
             gef_print(titlify("Unsorted Bin for arena '{:s}'".format(arena.name)))
             nb_chunk = GlibcHeapBinsCommand.pprint_bin(arena, 0, "unsorted_bin", args.verbose)
-            info("Found {:d} valid chunks in unsorted bin (when traced from `bk`).".format(nb_chunk))
+            info("Found {:d} valid chunks in unsorted bin (when traced from `bk`)".format(nb_chunk))
         return
 
 
@@ -21106,7 +21106,7 @@ class GlibcHeapSmallBinsCommand(GenericCommand):
                     break
                 if nb_chunk > 0:
                     bins[i] = nb_chunk
-            info("Found {:d} valid chunks in {:d} small bins (when traced from `bk`).".format(
+            info("Found {:d} valid chunks in {:d} small bins (when traced from `bk`)".format(
                 sum(bins.values()), len(bins),
             ))
         return
@@ -21162,7 +21162,7 @@ class GlibcHeapLargeBinsCommand(GenericCommand):
                     break
                 if nb_chunk > 0:
                     bins[i] = nb_chunk
-            info("Found {:d} valid chunks in {:d} large bins (when traced from `bk`).".format(
+            info("Found {:d} valid chunks in {:d} large bins (when traced from `bk`)".format(
                 sum(bins.values()), len(bins),
             ))
         return
@@ -21801,14 +21801,14 @@ class RpCommand(GenericCommand):
             path = args.file
         elif args.kernel:
             if not is_qemu_system():
-                err("--kernel are supported only under qemu-system.")
+                err("--kernel are supported only under qemu-system")
                 return
 
             info("Wait for memory scan")
             # dump kernel then apply vmlinux-to-elf
             symboled_vmlinux_file = VmlinuxToElfApplyCommand.dump_kernel_elf()
             if symboled_vmlinux_file is None:
-                err("Failed to create kernel ELF.")
+                err("Failed to create kernel ELF")
                 return
             path = symboled_vmlinux_file
 
@@ -23061,11 +23061,11 @@ class ElfInfoCommand(GenericCommand):
             try:
                 elf = Elf.get_elf(args.address)
             except gdb.MemoryError:
-                err("Memory error.")
+                err("Memory error")
                 return
 
             if elf is None or not elf.is_valid():
-                err("Failed to parse elf.")
+                err("Failed to parse elf")
             else:
                 self.elf_info(elf)
                 gef_print("\n".join(self.out), less=not args.no_pager)
@@ -23074,10 +23074,10 @@ class ElfInfoCommand(GenericCommand):
         # file parse pattern
         if args.remote:
             if not is_remote_debug():
-                err("-r option is allowed only remote debug.")
+                err("-r option is allowed only remote debug")
                 return
             if is_qemu_system():
-                err("-r option is unsupported under qemu-system.")
+                err("-r option is unsupported under qemu-system")
                 return
 
             if args.file:
@@ -23090,12 +23090,12 @@ class ElfInfoCommand(GenericCommand):
             elif Pid.get_pid(remote=True):
                 remote_filepath = "/proc/{:d}/exe".format(Pid.get_pid(remote=True))
             else:
-                err("File name could not be determined.")
+                err("File name could not be determined")
                 return
 
             data = Path.read_remote_file(remote_filepath, as_byte=True) # qemu-user is failed here, it is ok
             if not data:
-                err("Failed to read remote filepath.")
+                err("Failed to read remote filepath")
                 return
             tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix="elf-info", suffix=".elf")
             os.fdopen(tmp_fd, "wb").write(data)
@@ -23107,12 +23107,12 @@ class ElfInfoCommand(GenericCommand):
 
         elif args.file is None:
             if is_qemu_system():
-                err("Argument-less calls are unsupported under qemu-system.")
+                err("Argument-less calls are unsupported under qemu-system")
                 return
             local_filepath = Path.get_filepath()
 
         if local_filepath is None:
-            err("File name could not be determined.")
+            err("File name could not be determined")
             return
 
         # readelf pattern
@@ -23120,7 +23120,7 @@ class ElfInfoCommand(GenericCommand):
             try:
                 readelf = GefUtil.which("readelf")
             except FileNotFoundError:
-                err("Not found readelf.")
+                err("Not found readelf")
                 return
             try:
                 less = GefUtil.which("less")
@@ -23137,7 +23137,7 @@ class ElfInfoCommand(GenericCommand):
         # self parse pattern
         elf = Elf.get_elf(local_filepath)
         if elf is None or not elf.is_valid():
-            err("Failed to parse elf.")
+            err("Failed to parse elf")
         else:
             data = open(local_filepath, "rb").read()
             self.out.append("size: {:d} bytes, sha1: {:s}".format(len(data), hashlib.sha1(data).hexdigest()))
@@ -23526,7 +23526,7 @@ class ChecksecCommand(GenericCommand):
 
         if args.remote:
             if not is_remote_debug():
-                err("-r option is allowed only remote debug.")
+                err("-r option is allowed only remote debug")
                 return
 
             if args.file:
@@ -23539,7 +23539,7 @@ class ChecksecCommand(GenericCommand):
             elif Pid.get_pid(remote=True):
                 remote_filepath = "/proc/{:d}/exe".format(Pid.get_pid(remote=True))
             else:
-                err("File name could not be determined.")
+                err("File name could not be determined")
                 return
 
             data = Path.read_remote_file(remote_filepath, as_byte=True) # qemu-user is failed here, it is ok
@@ -23556,12 +23556,12 @@ class ChecksecCommand(GenericCommand):
 
         elif args.file is None:
             if is_qemu_system():
-                err("Argument-less calls are unsupported under qemu-system.")
+                err("Argument-less calls are unsupported under qemu-system")
                 return
             local_filepath = Path.get_filepath()
 
         if local_filepath is None:
-            err("File name could not be determined.")
+            err("File name could not be determined")
             return
 
         self.print_security_properties(local_filepath)
@@ -24591,7 +24591,7 @@ class KernelChecksecCommand(GenericCommand):
         self.arm64_specific()
 
         if Symbol.get_ksymaddr("_stext") is None:
-            err("ksymaddr-remote is failed.")
+            err("ksymaddr-remote is failed")
             return
 
         gef_print(titlify("Memory settings"))
@@ -24961,7 +24961,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
             return 8
         elif encoding == self.DW_EH_PE_omit:
             return 0
-        err("Unsupported pointer encoding: {:#x}, assuming pointer size of {:d}.".format(encoding, ptr_size))
+        err("Unsupported pointer encoding: {:#x}, assuming pointer size of {:d}".format(encoding, ptr_size))
         return 0
 
     def parse_eh_frame_hdr(self, eh_frame_hdr):
@@ -26393,7 +26393,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
 
         if args.remote:
             if not is_remote_debug():
-                err("-r option is allowed only remote debug.")
+                err("-r option is allowed only remote debug")
                 return
 
             if args.file:
@@ -26406,7 +26406,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
             elif Pid.get_pid(remote=True):
                 remote_filepath = "/proc/{:d}/exe".format(Pid.get_pid(remote=True))
             else:
-                err("File name could not be determined.")
+                err("File name could not be determined")
                 return
 
             data = Path.read_remote_file(remote_filepath, as_byte=True) # qemu-user is failed here, it is ok
@@ -26423,17 +26423,17 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
 
         elif args.file is None:
             if is_qemu_system():
-                err("Argument-less calls are unsupported under qemu-system.")
+                err("Argument-less calls are unsupported under qemu-system")
                 return
             local_filepath = Path.get_filepath()
 
         if local_filepath is None:
-            err("File name could not be determined.")
+            err("File name could not be determined")
             return
 
         self.elf = Elf.get_elf(local_filepath)
         if self.elf is None or not self.elf.is_valid():
-            err("Failed to parse elf.")
+            err("Failed to parse elf")
             if tmp_filepath and os.path.exists(tmp_filepath):
                 os.unlink(tmp_filepath)
             return
@@ -26543,7 +26543,7 @@ class MainBreakCommand(GenericCommand):
             main_address = self.search_main()
 
         if main_address is None:
-            err("Failed to set a breakpoint to main.")
+            err("Failed to set a breakpoint to main")
             return
 
         EntryBreakBreakpoint("*{:#x}".format(main_address))
@@ -26681,7 +26681,7 @@ class EntryBreakCommand(GenericCommand):
             return
 
         if not os.access(fpath, os.X_OK):
-            warn("The file '{}' is not executable.".format(fpath))
+            warn("The file '{}' is not executable".format(fpath))
             return
 
         # use symbol if loaded
@@ -28033,7 +28033,7 @@ class ContextCommand(GenericCommand):
             current_frame = gdb.newest_frame()
         except gdb.error:
             # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
-            err("Failed to get frame information.")
+            err("Failed to get frame information")
             return
 
         frames = [current_frame]
@@ -29207,12 +29207,12 @@ class PatchNopCommand(PatchCommand):
     @exclude_specific_gdb_mode(mode=("rr",))
     def do_invoke(self, args):
         if current_arch.nop_insn is None:
-            err("This command cannot work under this architecture.")
+            err("This command cannot work under this architecture")
             return
 
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported. Check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
+                err("Unsupported, try check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -29230,7 +29230,7 @@ class PatchNopCommand(PatchCommand):
             else:
                 num_bytes = args.byte_length
         except Exception:
-            err("Failed to get patch bytes.")
+            err("Failed to get patch bytes")
             if args.phys:
                 if orig_mode == "virt":
                     disable_phys()
@@ -29239,7 +29239,7 @@ class PatchNopCommand(PatchCommand):
         try:
             self.patch_nop(location, num_bytes)
         except Exception:
-            err("Failed to patch.")
+            err("Failed to patch")
 
         if args.phys:
             if orig_mode == "virt":
@@ -29295,12 +29295,12 @@ class PatchInfloopCommand(PatchCommand):
     @exclude_specific_gdb_mode(mode=("rr",))
     def do_invoke(self, args):
         if current_arch.infloop_insn is None:
-            err("This command cannot work under this architecture.")
+            err("This command cannot work under this architecture")
             return
 
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported. Check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
+                err("Unsupported, try check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -29315,7 +29315,7 @@ class PatchInfloopCommand(PatchCommand):
         try:
             self.patch_infloop(location)
         except Exception:
-            err("Failed to patch.")
+            err("Failed to patch")
 
         if args.phys:
             if orig_mode == "virt":
@@ -29367,12 +29367,12 @@ class PatchTrapCommand(PatchCommand):
     @exclude_specific_gdb_mode(mode=("rr",))
     def do_invoke(self, args):
         if current_arch.trap_insn is None:
-            err("This command cannot work under this architecture.")
+            err("This command cannot work under this architecture")
             return
 
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported. Check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
+                err("Unsupported, try check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -29387,7 +29387,7 @@ class PatchTrapCommand(PatchCommand):
         try:
             self.patch_trap(location)
         except Exception:
-            err("Failed to patch.")
+            err("Failed to patch")
 
         if args.phys:
             if orig_mode == "virt":
@@ -29439,12 +29439,12 @@ class PatchRetCommand(PatchCommand):
     @exclude_specific_gdb_mode(mode=("rr",))
     def do_invoke(self, args):
         if current_arch.ret_insn is None:
-            err("This command cannot work under this architecture.")
+            err("This command cannot work under this architecture")
             return
 
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported. Check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
+                err("Unsupported, try check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -29459,7 +29459,7 @@ class PatchRetCommand(PatchCommand):
         try:
             self.patch_ret(location)
         except Exception:
-            err("Failed to patch.")
+            err("Failed to patch")
 
         if args.phys:
             if orig_mode == "virt":
@@ -29511,12 +29511,12 @@ class PatchSyscallCommand(PatchCommand):
     @exclude_specific_gdb_mode(mode=("rr", "wine"))
     def do_invoke(self, args):
         if current_arch.syscall_insn is None:
-            err("This command cannot work under this architecture.")
+            err("This command cannot work under this architecture")
             return
 
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported. Check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
+                err("Unsupported, try check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -29531,7 +29531,7 @@ class PatchSyscallCommand(PatchCommand):
         try:
             self.patch_syscall(location)
         except Exception:
-            err("Failed to patch.")
+            err("Failed to patch")
 
         if args.phys:
             if orig_mode == "virt":
@@ -29572,7 +29572,7 @@ class PatchHistoryCommand(PatchCommand):
                 gef_print("[{:s}] {:#x}{:s}: {:s}{:s}{:s}".format(i_str, hist["addr"], sym, b, RIGHT_ARROW, a))
             gef_print("[OLD]")
         else:
-            info("Patch history is empty.")
+            info("Patch history is empty")
         return
 
 
@@ -29605,7 +29605,7 @@ class PatchRevertCommand(PatchCommand):
     @exclude_specific_gdb_mode(mode=("rr",))
     def do_invoke(self, args):
         if len(PatchCommand.patch_history) == 0:
-            info("Patch history is empty.")
+            info("Patch history is empty")
             return
 
         if args.all:
@@ -30505,8 +30505,8 @@ class VMMapCommand(GenericCommand, BufferingOutput):
 
         if is_qemu_user() and not args.outer:
             if ProcessMap.__gef_use_info_proc_mappings__ is False:
-                self.info("Searched from auxv, registers and stack values. There may be areas that cannot be detected.")
-                self.info("Permission is based on ELF header or default value `rw-`. Dynamic permission changes cannot be detected.")
+                self.info("Some areas may be undetectable due to heuristic search (auxv, registers, stack)")
+                self.info("Permissions use ELF header or default rw-; dynamic changes undetectable")
 
         self.print_output(args, term=True)
         return
@@ -31475,7 +31475,7 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
 
     def dump_link_map(self, link_map):
         if link_map is None:
-            info("Not found link_map.")
+            info("Not found link_map")
             return
 
         info("link_map: {!s} [{!s}]".format(link_map, link_map.section.permission))
@@ -31613,14 +31613,14 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
             try:
                 link_map = self.get_link_map(args.elf_address)
             except gdb.error:
-                err("Failed to get link_map.")
+                err("Failed to get link_map")
                 return
 
         self.out = []
         try:
             self.dump_link_map(link_map)
         except Exception:
-            err("Failed to parse link_map.")
+            err("Failed to parse link_map")
             return
 
         self.print_output(args, term=True)
@@ -31898,7 +31898,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
         base_address_color = Config.get_gef_setting("theme.dereference_base_address")
 
         if dynamic is None:
-            info("_DYNAMIC is not found.")
+            info("_DYNAMIC is not found")
             return
 
         width = AddressUtil.get_format_address_width()
@@ -31947,23 +31947,23 @@ class DynamicCommand(GenericCommand, BufferingOutput):
             filename_or_addr = Path.get_filepath()
             if filename_or_addr is None:
                 if not silent:
-                    err("Failed to get filename.")
+                    err("Failed to get filename")
                 return
 
         if isinstance(filename_or_addr, str):
             if not os.path.exists(filename_or_addr):
                 if not silent:
-                    err("{:s} is not found.".format(filename_or_addr))
+                    err("{:s} is not found".format(filename_or_addr))
                 return
 
             if not Elf.get_elf(filename_or_addr).has_dynamic():
                 if not silent:
-                    info("The binary has no _DYNAMIC.")
+                    info("The binary has no _DYNAMIC")
                 return
 
             if ProcessMap.get_section_base_address(filename_or_addr) is None:
                 if not silent:
-                    err("{:s} is not loaded.".format(filename_or_addr))
+                    err("{:s} is not loaded".format(filename_or_addr))
                 return
 
         # slow path
@@ -32008,14 +32008,14 @@ class DynamicCommand(GenericCommand, BufferingOutput):
             try:
                 dynamic = self.get_dynamic(args.elf_address or args.filename)
             except gdb.error:
-                err("Failed to get _DYNAMIC.")
+                err("Failed to get _DYNAMIC")
                 return
 
         self.out = []
         try:
             self.dump_dynamic(dynamic, args.dynamic_size)
         except Exception:
-            err("Failed to parse _DYNAMIC.")
+            err("Failed to parse _DYNAMIC")
             return
 
         self.print_output(args, term=True)
@@ -32315,7 +32315,7 @@ class DestructorDumpCommand(GenericCommand):
         return None
 
     def dump_tls_dtors(self, offset_tls_dtor_list):
-        info("Probably only exists in glibc.")
+        info("Probably only exists in glibc")
         if not self.tls:
             err("TLS is not found")
             return
@@ -32633,7 +32633,7 @@ class DestructorDumpCommand(GenericCommand):
 
         if args.remote:
             if not is_remote_debug():
-                err("-r option is allowed only remote debug.")
+                err("-r option is allowed only remote debug")
                 return
 
             if args.file:
@@ -32646,7 +32646,7 @@ class DestructorDumpCommand(GenericCommand):
             elif Pid.get_pid(remote=True):
                 remote_filepath = "/proc/{:d}/exe".format(Pid.get_pid(remote=True))
             else:
-                err("File name could not be determined.")
+                err("File name could not be determined")
                 return
 
             data = Path.read_remote_file(remote_filepath, as_byte=True) # qemu-user is failed here, it is ok
@@ -32665,7 +32665,7 @@ class DestructorDumpCommand(GenericCommand):
             local_filepath = Path.get_filepath()
 
         if local_filepath is None:
-            err("File name could not be determined.")
+            err("File name could not be determined")
             return
 
         # filepath and elf
@@ -33488,7 +33488,7 @@ class GotCommand(GenericCommand, BufferingOutput):
         if args.remote:
             if not is_remote_debug():
                 if not args.quiet:
-                    err("-r option is allowed only remote debug.")
+                    err("-r option is allowed only remote debug")
                 return
 
             if args.file:
@@ -33504,7 +33504,7 @@ class GotCommand(GenericCommand, BufferingOutput):
                 remote_filepath = "/proc/{:d}/exe".format(Pid.get_pid(remote=True))
             else:
                 if not args.quiet:
-                    err("File name could not be determined.")
+                    err("File name could not be determined")
                 return
 
             data = Path.read_remote_file(remote_filepath, as_byte=True) # qemu-user is failed here, it is ok
@@ -33526,7 +33526,7 @@ class GotCommand(GenericCommand, BufferingOutput):
 
         if local_filepath is None:
             if not args.quiet:
-                err("File name could not be determined.")
+                err("File name could not be determined")
             return
 
         if not os.path.exists(local_filepath):
@@ -48705,7 +48705,7 @@ class OneGadgetCommand(GenericCommand):
         try:
             one_gadget_command = GefUtil.which("one_gadget")
         except FileNotFoundError:
-            err("Missing `one_gadget`, install with: `gem install one_gadget`.")
+            err("Missing `one_gadget`, install with: `gem install one_gadget`")
             return
 
         if args.apply_smart_filter and not is_x86_64():
@@ -48722,7 +48722,7 @@ class OneGadgetCommand(GenericCommand):
         if args.apply_smart_filter:
             condition = Color.boldify("`... is a valid ...`")
             false = Color.boldify("false")
-            info("The condition {:s} is always assumed to be {:s}.".format(condition, false))
+            info("The condition {:s} is always assumed to be {:s}".format(condition, false))
 
             res = self.get_filtered_result(one_gadget_command, libc.path)
             gef_print(res)
@@ -48749,7 +48749,7 @@ class SeccompCommand(GenericCommand):
         try:
             seccomp_tools_command = GefUtil.which("seccomp-tools")
         except FileNotFoundError:
-            err("Missing `seccomp-tools`, install with: `gem install seccomp-tools`.")
+            err("Missing `seccomp-tools`, install with: `gem install seccomp-tools`")
             return
 
         path = Path.get_filepath()
@@ -63817,7 +63817,7 @@ class KernelConfigCommand(GenericCommand):
 
             start_pos = ro_data.find(b"IKCFG_ST")
             if start_pos == -1:
-                err("Not found IKCFG_ST. This kernel is built as CONFIG_IKCONFIG_PROC=n.")
+                err("Not found IKCFG_ST, maybe this kernel is built as CONFIG_IKCONFIG_PROC=n")
                 return
             end_pos = ro_data.find(b"IKCFG_ED")
 
@@ -63928,11 +63928,11 @@ class KernelSearchCodePtrCommand(GenericCommand):
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.max_range and args.max_range % current_arch.ptrsize:
-            err("range must be a multiple of the pointer size.")
+            err("range must be a multiple of the pointer size")
             return
 
         if args.depth <= 0:
-            err("depth must be larger than 0.")
+            err("depth must be larger than 0")
             return
 
         info("Wait for memory scan")
@@ -65006,7 +65006,7 @@ class TlsCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
         if not current_arch.tls_supported:
-            warn("This command cannot work under this architecture.")
+            warn("This command cannot work under this architecture")
             return
 
         if args.all:
@@ -66069,7 +66069,7 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
                 return
 
         if args.size == 0:
-            self.info("The size is zero, maybe wrong.")
+            self.info("The size is zero, maybe wrong")
 
         self.args = args
 
@@ -66146,7 +66146,7 @@ class MemorySetCommand(GenericCommand):
                 return
 
         if args.size == 0:
-            info("The size is zero, maybe wrong.")
+            info("The size is zero, maybe wrong")
 
         if args.value < 0 or 256 <= args.value:
             err("Wrong value (it must be 0x00-0xff)")
@@ -66234,7 +66234,7 @@ class MemoryCopyCommand(GenericCommand):
                 return
 
         if args.size == 0:
-            info("The size is zero, maybe wrong.")
+            info("The size is zero, maybe wrong")
 
         self.memcpy(args.phys1, args.to_addr, args.phys2, args.from_addr, args.size)
         return
@@ -66323,7 +66323,7 @@ class MemorySwapCommand(GenericCommand):
                 return
 
         if args.size == 0:
-            info("The size is zero, maybe wrong.")
+            info("The size is zero, maybe wrong")
 
         self.memswap(args.phys1, args.swap_addr1, args.phys2, args.swap_addr2, args.size)
         return
@@ -66406,7 +66406,7 @@ class MemoryInsertCommand(GenericCommand):
                 return
 
         if args.size2 == 0:
-            info("The size2 is zero, maybe wrong.")
+            info("The size2 is zero, maybe wrong")
 
         self.meminsert(args.phys1, args.to_addr, args.size1, args.phys2, args.from_addr, args.size2)
         return
@@ -67313,7 +67313,7 @@ class IsMemoryZeroCommand(GenericCommand):
             info("{:#x} - {:#x} is {:s}".format(start, end, Color.colorify("All 0xFF", "bold yellow")))
         else:
             info("{:#x} - {:#x} is {:s}".format(start, end, Color.colorify("NON-ZERO", "bold red")))
-        info("If data is non-zero, it will be fast return.")
+        info("If data is non-zero, it will be fast return")
         return
 
     @parse_args
@@ -67325,7 +67325,7 @@ class IsMemoryZeroCommand(GenericCommand):
                 return
 
         if args.size == 0:
-            info("The size is zero, maybe wrong.")
+            info("The size is zero, maybe wrong")
 
         self.memcheck(args.phys, args.addr, args.size)
         return
@@ -72005,7 +72005,7 @@ class KernelPipeCommand(GenericCommand):
         self.kinfo = Kernel.get_kernel_base()
         if self.kinfo.has_none:
             if not self.quiet:
-                err("The kernel .text area could not be determined correctly.")
+                err("The kernel .text area could not be determined correctly")
             return False
 
         # struct file of pipe
@@ -74464,8 +74464,8 @@ class KernelNetDeviceCommand(GenericCommand):
 
         kversion = Kernel.kernel_version()
         if kversion >= "6.8":
-            info("In kernel 6.8 and later, the order of the members of `struct net_device` has changed significantly.")
-            info("Please note that the address detected as `net_device` is precisely the address of &net_device.name.")
+            info("In kernel 6.8 and later, the order of the members of `struct net_device` has changed significantly")
+            info("Please note that the address detected as `net_device` is precisely the address of &net_device.name")
         return
 
     @parse_args
@@ -76059,7 +76059,7 @@ class VmlinuxToElfApplyCommand(GenericCommand):
 
         # check if it can be reused
         if (not reparse) and os.path.exists(symboled_vmlinux_file) and os.path.getsize(symboled_vmlinux_file) > 0:
-            info("A previously used file was found. reuse.")
+            info("A previously used file found, will be reused")
             return symboled_vmlinux_file
 
         # resolve text_base, ro_base
@@ -76154,7 +76154,7 @@ class VmlinuxToElfApplyCommand(GenericCommand):
 
         symboled_vmlinux_file = self.dump_kernel_elf(args.reparse)
         if symboled_vmlinux_file is None:
-            err("Failed to create kernel ELF.")
+            err("Failed to create kernel ELF")
             return
 
         # load symbol
@@ -77062,7 +77062,7 @@ class TlsfHeapDumpCommand(GenericCommand):
 
         pool = self.parse_pool(pool_addr)
         if pool is None:
-            err("Failed to parse pool.")
+            err("Failed to parse pool")
             return
 
         self.out = []
@@ -77184,8 +77184,8 @@ class HoardHeapDumpCommand(GenericCommand):
 
         reap_count = u32(read_memory(sb + current_arch.ptrsize * 8, 4))
         if reap_count > 0:
-            self.out.append("Before allocating from freelist, you must use up all unused blocks.")
-            self.out.append("There are {:s} unused blocks left.".format(Color.colorify_hex(reap_count, "bold")))
+            self.out.append("Before allocating from freelist, you must use up all unused blocks")
+            self.out.append("There are {:s} unused blocks left".format(Color.colorify_hex(reap_count, "bold")))
 
         self.out.append("freelist @{:#x}:".format(current))
         seen = []
@@ -77451,9 +77451,9 @@ class V8Command(GenericCommand):
             import base64
             gdbinit_data = base64.b64decode(gdbinit_data)
             open(gdbinit_filename, "wb").write(gdbinit_data)
-            info("download gdbinit from internet.")
+            info("download gdbinit from internet")
         else:
-            info("reuse gdbinit cached previously.")
+            info("reuse gdbinit cached previously")
         return gdbinit_filename
 
     @parse_args
@@ -77464,9 +77464,9 @@ class V8Command(GenericCommand):
             gdbinit_filename = self.get_gdbinit()
             try:
                 gdb.execute("source {:s}".format(gdbinit_filename))
-                info("Successfully loaded.")
+                info("Successfully loaded")
             except gdb.error:
-                err("Failed to load.")
+                err("Failed to load")
             return
 
         if args.list_command:
@@ -77712,7 +77712,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
         # debug print
         if len(roots) == 0:
-            err("roots were not found. try check code")
+            err("roots were not found, try check code")
             return []
 
         elif len(roots) == 1:
@@ -77721,7 +77721,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             return roots[0]
 
         else:
-            err("candidates for root are found in multiple places. try check code")
+            err("candidates for root are found in multiple places, try check code")
             for root in roots:
                 for r in root:
                     gef_print("  candidate: {:20s} {:#x}".format(r.name, r.address))
@@ -77744,11 +77744,11 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 roots += get_root(root_string)
         # maybe no symbols, try heuristic
         if len(roots) == 0:
-            info("Use heuristic search.")
+            info("Use heuristic search")
             roots = PartitionAllocDumpCommand.get_roots_heuristic()
         # retry checking
         if len(roots) == 0:
-            info("Symbol is not found.")
+            info("Symbol is not found")
         return roots
 
     def get_sentinel_slot_spans(self):
@@ -78502,7 +78502,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         try:
             return AddressUtil.parse_address("&__malloc_context")
         except gdb.error:
-            self.info("Symbol is not found. It will use heuristic search")
+            self.info("Symbol is not found, it will use heuristic search")
             return self.get_malloc_context_heuristic()
 
     def class_to_size(self, cl):
@@ -84065,7 +84065,7 @@ class PagewalkX64Command(PagewalkCommand):
             if self.user_specified_cr3:
                 self.ept = args.ept
             else:
-                err("Unsupported --ept option without --cr3 option.")
+                err("Unsupported --ept option without --cr3 option")
                 return
         else:
             self.ept = False
@@ -86693,7 +86693,7 @@ class PagewalkArm64Command(PagewalkCommand):
     def pagewalk_init(self):
         res = gdb.execute("info registers", to_string=True)
         if "TTBR" not in res:
-            self.err("Not found system registers. Check qemu version (at least: 3.x~, recommend: 5.x~).")
+            self.err("Not found system registers, try check qemu version (at least: 3.x~, recommend: 5.x~)")
             return
 
         SCTLR_EL1 = get_register("$SCTLR_EL1")
@@ -88079,7 +88079,7 @@ class PageCommand(GenericCommand):
         elif args.mode == "from_virt":
             vaddr = args.address
             if args.address & 0xfff:
-                warn("The address must be 0x1000 aligned, round down and then calculate.")
+                warn("The address must be 0x1000 aligned, round down and then calculate")
                 vaddr = args.address & gef_getpagesize_mask_high()
 
             # A virtual address is always associated with one physical address.
@@ -88092,7 +88092,7 @@ class PageCommand(GenericCommand):
         elif args.mode == "from_phys":
             paddr = args.address
             if args.address & 0xfff:
-                warn("The address must be 0x1000 aligned, round down and then calculate.")
+                warn("The address must be 0x1000 aligned, round down and then calculate")
                 paddr = args.address & gef_getpagesize_mask_high()
 
             r = Kernel.p2v(paddr)
@@ -88286,7 +88286,7 @@ class QemuDeviceInfoCommand(GenericCommand):
                 info("  {:s}".format(line))
 
         if not args.device:
-            info("use `-d` if less information.")
+            info("use `-d` if less information")
         return
 
 
@@ -88914,7 +88914,7 @@ class ExecUntilCondCommand(ExecUntilCommand):
 
         condition = args.condition
         if re.search(r"[^><!=]=[^=]", condition):
-            err("Should not use `=` since it will be replace register/memory value. Use `==`.")
+            err("Should not use `=` since it will be replace register/memory value, try use `==`")
             return
 
         match = re.search(r"\$ALL_REG==(\w+)", condition)
@@ -89127,7 +89127,7 @@ class UsermodehelperTracerCommand(GenericCommand):
             err("Not found call_usermodehelper_setup")
             return
         CallUsermodehelperSetupBreakpoint(addr)
-        info("Setup is complete. Try `continue`.")
+        info("Setup is complete. Try `continue`")
         return
 
 
@@ -89228,7 +89228,7 @@ class ThunkTracerCommand(GenericCommand):
                 continue
             gef_print(sym + ": ", end="")
             ThunkBreakpoint(addr, sym, reg, maps)
-        info("Setup is complete. Try `continue`.")
+        info("Setup is complete, try `continue`")
         return
 
 
@@ -91060,13 +91060,13 @@ class KmallocAllocatedByCommand(GenericCommand):
         res = gdb.execute("ktask --print-regs --no-pager --quiet --filter sleep", to_string=True)
         r = re.findall(r"(?:^|\n)(0x\S+)", res)
         if not r:
-            err("`sleep` process is not found. Unable to continue.")
-            info("Do `/bin/sleep 5` in the guest (use full path), then `{:s}` again.".format(
+            err("`sleep` process is not found, unable to continue")
+            info("Do `/bin/sleep 5` in the guest (use full path), then `{:s}` again".format(
                 self._cmdline_,
             ))
             return
         if len(r) != 1:
-            err("Multiple sleep processes are found. Unable to continue.")
+            err("Multiple sleep processes are found, unable to continue")
             return
         target_task = int(r[0], 16)
         info("task of `sleep`: {:#x}".format(target_task))
@@ -91076,7 +91076,7 @@ class KmallocAllocatedByCommand(GenericCommand):
         r1 = re.search(r"rip\s*: (0x\S+)", res)
         r2 = re.search(r"rsp\s*: (0x\S+)", res)
         if not r1 or not r2:
-            err("Failed to get rip and rsp.")
+            err("Failed to get rip and rsp")
             return
         rip_of_sleep = int(r1.group(1), 16)
         rsp_of_sleep = int(r2.group(1), 16)
@@ -91097,7 +91097,7 @@ class KmallocAllocatedByCommand(GenericCommand):
 
         # here, stop in userland `sleep` process
         if current_arch.sp != rsp_of_sleep:
-            err("Stack pointer is different from expected. Unable to continue.")
+            err("Stack pointer is different from expected. Unable to continue")
             self.cleanup(hwbp, breakpoints)
             return
         # rsp align
@@ -91216,7 +91216,7 @@ class KtraceRetBreakpoint(gdb.FinishBreakpoint):
         # print
         task_addr, task_name = KmallocTracerCommand.get_task()
         task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
-        warn("{:s} {:#x} <{:s}> (random_id{:#x}) has been disabled due to out of scope.".format(
+        warn("{:s} {:#x} <{:s}> (random_id{:#x}) has been disabled due to out of scope".format(
             task_prefix, self.loc, self.sym, self.random_id,
         ))
         return
@@ -91264,7 +91264,7 @@ class KernelTraceCommand(GenericCommand):
             return False
 
         # set break points
-        info("Set breakpoints in all functions that match the specified criteria.")
+        info("Set breakpoints in all functions that match the specified criteria")
         tqdm = GefUtil.get_tqdm(not args.quiet)
         res = gdb.execute("ksymaddr-remote --quiet --no-pager --type t", to_string=True)
         breakpoints = []
@@ -91934,7 +91934,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
             seq_to_write = p64(new_size)
         else:
             if text_base > 0xffffffff:
-                err("Unsupported adding 64 bit guest symbols when you use 32 bit host.")
+                err("Unsupported adding 64 bit guest symbols when you use 32 bit host")
                 return None
             seq_to_find = p32(text_base)
             target_offset = data.rfind(seq_to_find) + 0x8
@@ -92089,7 +92089,7 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
         sym_elf_path = os.path.join(GEF_TEMP_DIR, "ks-apply-{:s}.elf".format(h))
         if (not args.reparse) and os.path.exists(sym_elf_path) and os.path.getsize(sym_elf_path) > 0:
             if not args.quiet:
-                info("A previously used file was found. reuse.")
+                info("A previously used file found, will be reused")
         else:
             if os.path.exists(sym_elf_path):
                 os.unlink(sym_elf_path)
@@ -92713,7 +92713,7 @@ class BytearrayCommand(GenericCommand):
             info("Nothing to dump")
             return
 
-        info("Dumping table.")
+        info("Dumping table")
         outt_arr = []
         outb_arr = []
         for c in included:
@@ -92978,7 +92978,7 @@ class BinwalkMemoryCommand(GenericCommand):
                 gef_print(dumpfile_name)
 
         if not self.commit:
-            warn('This is dry run mode. binwalk has not been performed yet. To execute, please add "--commit".')
+            warn('This dry run mode skips executing binwalk; add "--commit" to proceed')
         return
 
     @parse_args
@@ -93099,7 +93099,7 @@ class BincompareCommand(GenericCommand):
             file_data = file_data[:size]
 
         if size == 0:
-            err("comparing size is 0, nothing to do.")
+            err("comparing size is 0, nothing to do")
             return
 
         # memory_data
@@ -93346,7 +93346,7 @@ class GefCommand(GenericCommand):
 
                 if self.DEBUG_CHECK_COMMAND_CONFLICT and FIRST_TIME:
                     if cmd_class._cmdline_ in self.loaded_commands:
-                        warn("{:s} already loaded.".format(Color.boldify(cmd_class._cmdline_)))
+                        warn("{:s} is already loaded".format(Color.boldify(cmd_class._cmdline_)))
 
                 if cmd_class._cmdline_ == "gef":
                     instance = self
@@ -93368,7 +93368,7 @@ class GefCommand(GenericCommand):
                     for alias in cmd_class._aliases_:
                         if self.DEBUG_CHECK_COMMAND_CONFLICT and FIRST_TIME:
                             if alias in self.loaded_commands:
-                                warn("{:s} already loaded.".format(Color.boldify(alias)))
+                                warn("{:s} is already loaded".format(Color.boldify(alias)))
                         GefAlias(alias, cmd_class._cmdline_, pre_defined=True)
 
             except Exception as reason:
@@ -94196,7 +94196,7 @@ class GefCheckUpdateCommand(GenericCommand):
         if hash_gef_local == hash_gef_remote:
             info("No update")
         else:
-            info("Update found. Try `python3 {:s} --upgrade`".format(GEF_FILEPATH))
+            info("Update found, try `python3 {:s} --upgrade`".format(GEF_FILEPATH))
         return
 
 
@@ -94333,7 +94333,7 @@ class AliasesRmCommand(AliasesCommand):
         if args.alias in __gef_alias_instances__:
             del __gef_alias_instances__[args.alias]
         else:
-            err("{:s} is not found in aliases.".format(args.alias))
+            err("{:s} is not found in aliases".format(args.alias))
         return
 
 
@@ -94614,7 +94614,7 @@ class Gef:
     @staticmethod
     def main():
         if GDB_VERSION < GDB_MIN_VERSION:
-            err("GDB is too old. Try upgrading it.")
+            err("GDB is too old. Try upgrading it")
             return
 
         # create tmp dir
