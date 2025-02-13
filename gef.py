@@ -94751,6 +94751,11 @@ class Gef:
 
         # python-interactive
         hexon()
+
+        # If GEF is loaded after gdb is connected
+        if is_alive():
+            if current_arch is None:
+                set_arch(get_arch())
         return
 
 
