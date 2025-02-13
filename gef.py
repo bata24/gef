@@ -31971,35 +31971,50 @@ class DynamicCommand(GenericCommand, BufferingOutput):
             if filename_or_addr is None:
                 if not silent:
                     err("Failed to get filename")
-                return
+                return None
 
+        # slow path
         if isinstance(filename_or_addr, str):
+            # use as filename
+            if not silent:
+                info("filename: {:s}".format(filename_or_addr))
+
             if not os.path.exists(filename_or_addr):
                 if not silent:
                     err("{:s} is not found".format(filename_or_addr))
-                return
+                return None
 
-            if not Elf.get_elf(filename_or_addr).has_dynamic():
+            elf = Elf.get_elf(filename_or_addr)
+            if elf is None or not elf.is_valid():
+                if not silent:
+                    err("Invalid elf")
+                return None
+
+            if not elf.has_dynamic():
                 if not silent:
                     info("The binary has no _DYNAMIC")
-                return
+                return None
 
             if ProcessMap.get_section_base_address(filename_or_addr) is None:
                 if not silent:
                     err("{:s} is not loaded".format(filename_or_addr))
-                return
-
-        # slow path
-        if not silent:
-            if isinstance(filename_or_addr, str):
-                info("filename: {:s}".format(filename_or_addr))
-            else:
+                return None
+        else:
+            # use as address
+            if not silent:
                 info("address: {:#x}".format(filename_or_addr))
 
-        try:
-            elf = Elf.get_elf(filename_or_addr)
-        except gdb.MemoryError:
-            return None
+            try:
+                elf = Elf.get_elf(filename_or_addr)
+            except gdb.MemoryError:
+                if not silent:
+                    err("Memory read error")
+                return None
+            if elf is None or not elf.is_valid():
+                if not silent:
+                    err("Invalid elf")
+                return None
+
         phdr = elf.get_phdr(Elf.Phdr.PT_DYNAMIC)
         if phdr is None:
             return None
