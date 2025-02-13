@@ -1303,7 +1303,7 @@ class AddressUtil:
 
     @staticmethod
     def parse_string_range(s):
-        """Parses an address range (e.g. 0x400000-0x401000)"""
+        """Parses an address range (e.g., 0x400000-0x401000)"""
         addrs = s.split("-")
         return [int(x, 16) for x in addrs]
 
@@ -1423,7 +1423,7 @@ class AddressUtil:
         # dereference
         addrs, error = AddressUtil.recursive_dereference(value, phys=phys)
 
-        # if addrs has one element and it is address with error (e.g.: address_A -> [loop detected]),
+        # if addrs has one element and it is address with error (e.g., address_A -> [loop detected]),
         # don't skip the element even if skip_idx=1
         if skip_idx == 1:
             if len(addrs) == 1:
@@ -2074,7 +2074,7 @@ class Elf:
             if shdr.sh_addr > 0:
                 read_addr = shdr.sh_addr
             else:
-                # e.g. .comment section of vdso
+                # e.g., .comment section of vdso
                 """
                 [ #] Name                      Type Address Offset Size EntSiz Flags Link Info Align
                 ...
@@ -2726,7 +2726,7 @@ class Instruction:
         self.location = location
         self.mnemonic = mnemo
 
-        # merge symbol includes ","; e.g.: <... , ...>
+        # merge symbol includes ","; e.g., <... , ...>
         operands = [x.strip() for x in operands.split(",")]
         if len(operands) > 1:
             operands, o = operands[:-1], operands[-1]
@@ -2766,7 +2766,7 @@ class Instruction:
     RE_SPLIT_SYMBOL_OFFSET = re.compile(r"(.+)\+(\d+)$")
 
     # Allow formatting an instruction with {:o} to show opcodes.
-    # The number of bytes to display can be configured, e.g. {:4o} to only show 4 bytes of the opcodes
+    # The number of bytes to display can be configured, e.g., {:4o} to only show 4 bytes of the opcodes
     def __format__(self, format_spec):
         if len(format_spec) == 0:
             return str(self)
@@ -2791,7 +2791,7 @@ class Instruction:
         if opcodes_len == 0:
             opcodes_text = ""
         else:
-            opcodes_text = "".join("{:02x}".format(b) for b in self.opcodes) # e.g.: "488d0de51e0100"
+            opcodes_text = "".join("{:02x}".format(b) for b in self.opcodes) # e.g., "488d0de51e0100"
             # ex1: spec:"4o", opcodes:01020304   -> 01020304
             # ex2: spec:"4o", opcodes:0102030405 -> 010203..
             if opcodes_len < len(self.opcodes):
@@ -4958,7 +4958,7 @@ class String:
                 return bytes(ord(xx) for xx in x)
             except ValueError:
                 # If str is UTF-8 multi-byte string, raise an error.
-                # e.g.: `pi String.str2bytes(b"\xc5\x82".decode("utf-8"))`
+                # e.g., `pi String.str2bytes(b"\xc5\x82".decode("utf-8"))`
                 # In that case, you should simply encode it as UTF-8.
                 return x.encode("utf-8")
         raise
@@ -5199,13 +5199,13 @@ class Symbol:
 
     # `info symbol` called from gdb_get_location is heavy processing.
     # Moreover, AddressUtil.recursive_dereference causes each address to be resolved every time.
-    # Cache.cache_until_next is not effective as-is, as it is cleared by Cache.reset_gef_caches() each time the `stepi` runs.
+    # Cache.cache_until_next is ineffective due to frequent resets (each time the `stepi` runs).
     # Fortunately, symbol information rarely changes.
     # I decided to keep the cache until it is explicitly cleared.
     @staticmethod
     @Cache.cache_this_session
     def gdb_get_location(address):
-        """ex: 0xffffffff9f6bd2a0 -> ('commit_creds', 0)"""
+        """e.g., 0xffffffff9f6bd2a0 -> ('commit_creds', 0)"""
         if address is None:
             return None
 
@@ -12271,13 +12271,16 @@ class ProcessMap:
 
             off = int(off, 16)
             perm = Permission.from_process_maps(perm)
-            sect = Section(page_start=addr_start, page_end=addr_end, offset=off, permission=perm, inode=inode, path=pathname)
+            sect = Section(
+                page_start=addr_start, page_end=addr_end,
+                offset=off, permission=perm, inode=inode, path=pathname,
+            )
             maps.append(sect)
         return maps
 
     # get_explored_regions (used at qemu-user mode) is very slow,
     # Because it repeats read_memory many times to find the upper and lower bounds of the page.
-    # Cache.cache_until_next is not effective as-is, as it is cleared by Cache.reset_gef_caches() each time the `stepi` runs.
+    # Cache.cache_until_next is ineffective due to frequent resets (each time the `stepi` runs).
     # Fortunately, memory maps rarely change.
     # I decided to clear and recheck the cache when the `vmmap` command is called explicitly.
     @staticmethod
@@ -12421,7 +12424,10 @@ class ProcessMap:
                 page_start = page["vaddr"]
                 page_end = page["vaddr"] + page["memsize"]
                 off = page["offset"]
-                sect = Section(page_start=page_start, page_end=page_end, offset=off, permission=perm, path=label)
+                sect = Section(
+                    page_start=page_start, page_end=page_end,
+                    offset=off, permission=perm, path=label,
+                )
                 sects.append(sect)
             return sects
 
@@ -12633,7 +12639,10 @@ class ProcessMap:
                 path = path[0]
             else:
                 path = ""
-            sect = Section(page_start=addr_start, page_end=addr_end, offset=offset, permission=perm, inode=None, path=path)
+            sect = Section(
+                page_start=addr_start, page_end=addr_end,
+                offset=offset, permission=perm, inode=None, path=path,
+            )
             maps.append(sect)
         return maps
 
@@ -12712,7 +12721,7 @@ class ProcessMap:
 
     # `info files` called from get_info_files is heavy processing.
     # Moreover, AddressUtil.recursive_dereference causes each address to be resolved every time.
-    # Cache.cache_until_next is not effective as-is, as it is cleared by Cache.reset_gef_caches() each time the `stepi` runs.
+    # Cache.cache_until_next is ineffective due to frequent resets (each time the `stepi` runs).
     # Fortunately, zone information rarely changes.
     # I decided to keep the cache until it is explicitly cleared.
     @staticmethod
@@ -12835,7 +12844,7 @@ class EventHandler:
         """GDB event handler for stop cases."""
         Cache.reset_gef_caches()
 
-        # There seems to be a bug in some architecture (e.g. i386) where temporary breakpoints are
+        # There seems to be a bug in some architecture (e.g., i386) where temporary breakpoints are
         # not deleted even if they are hit. I don't know the conditions under which this happens,
         # but if remains, gef would manually remove them.
         if EventHandler.__gef_check_disabled_bp__:
@@ -12884,7 +12893,7 @@ class EventHandler:
             if not (is_qemu_system() or is_kgdb() or is_vmware()):
                 if not gdb.current_progspace().filename:
                     err("Missing info about architecture, please set: `file /path/to/target_binary`")
-                    err("Some architectures may not be automatically recognized, please set: `set architecture YOUR_ARCH`")
+                    err("If the architecture isn't automatically detected, use: `set architecture YOUR_ARCH`")
             EventHandler.__gef_check_once__ = False
         return
 
@@ -13153,7 +13162,7 @@ def is_emulated32():
         return False
 
     if is_qemu_system():
-        # corner case (e.g.: using qemu-system-x86_64, but process is executed as 32bit mode)
+        # corner case (e.g., using qemu-system-x86_64, but process is executed as 32bit mode)
         # is not able to be detected
         return True
 
@@ -13500,7 +13509,7 @@ class Auxv:
 
     # Auxv.get_auxiliary_values (under qemu-user mode) is very slow,
     # Because it may call Auxv.get_auxiliary_walk that repeats read_memory many times to find the auxv value.
-    # Cache.cache_until_next is not effective as-is, as it is cleared by Cache.reset_gef_caches() each time the `stepi` runs.
+    # Cache.cache_until_next is ineffective due to frequent resets (each time the `stepi` runs).
     # Fortunately, auxv rarely changes.
     # I decided to keep the cache until it is explicitly cleared.
     @staticmethod
@@ -13958,7 +13967,7 @@ class GefThemeCommand(GenericCommand):
         self.add_setting("context_title_message", "cyan", "Color of the title in context window")
         self.add_setting("default_title_line", "cyan", "Default color of borders")
         self.add_setting("default_title_message", "cyan", "Default color of title")
-        self.add_setting("table_heading", "bold blue", "Color of the column headings to tables (e.g. vmmap)")
+        self.add_setting("table_heading", "bold blue", "Color of the column headings to tables (e.g., vmmap)")
         self.add_setting("context_code_past", "bright_black", "Color to display past code")
         self.add_setting("context_code_future", "", "Color to display future code")
         self.add_setting("disassemble_address", "", "Color of address when disassembling")
@@ -16858,7 +16867,7 @@ class SmartMemoryDumpCommand(GenericCommand):
                 path = entry.path
                 path = path.replace("[", "").replace("]", "") # consider [heap], [stack], [vdso]
                 path = path.replace("<", "").replace(">", "") # consider <tls-th1>, <explored>
-            path = path.replace(" ", "_") # consider deleted case. e.g.: /path/to/file (deleted)
+            path = path.replace(" ", "_") # consider deleted case. e.g., /path/to/file (deleted)
 
             dumpfile_name = "{:s}{:0{:d}x}-{:0{:d}x}_{:s}_{:s}{:s}.raw".format(
                 self.prefix, start, addr_len, end, addr_len, perm, path, self.suffix,
@@ -19286,7 +19295,7 @@ class UnicornEmulateCommand(GenericCommand):
 
     _note_ = [
         "unicorn does not support emulating syscall.",
-        "unicorn does not support some instructions. (e.g.: xsavec, xrstor, vpbroadcastb, vldr, etc.)",
+        "unicorn does not support some instructions. (e.g., xsavec, xrstor, vpbroadcastb, vldr, etc.)",
         "unicorn does not emulate ARM kernel-provided-user-helpers like $pc=0xffff0fe0, 0xffff0fc0, etc.",
         "see: https://www.kernel.org/doc/Documentation/arm/kernel_user_helpers.txt",
     ]
@@ -19805,7 +19814,7 @@ class AngrCommand(GenericCommand):
         content += "    try:\n"
         content += "        setattr(state.regs, reg, addr)\n"
         content += "    except:\n"
-        content += "        pass\n" # e.g.: ARM32 cpsr
+        content += "        pass\n" # e.g., ARM32 cpsr
         content += "\n"
         if hasattr(current_arch, "gpr_registers"):
             target_registers = current_arch.gpr_registers
@@ -19944,7 +19953,7 @@ class StubBreakpoint(gdb.Breakpoint):
 
 @register_command
 class StubCommand(GenericCommand):
-    """Stub out the specified function to skip it. (e.g.: fork)"""
+    """Stub out the specified function to skip it. (e.g., fork)"""
 
     _cmdline_ = "stub"
     _category_ = "03-c. Memory - Patch"
@@ -21200,7 +21209,7 @@ class GlibcTryFreeCommand(GenericCommand):
     _note_ = [
         "It may work even if NOT Glibc (untested).",
         "It may be detected as a failure even though it actually succeeded.",
-        "e.g.:",
+        "e.g.,",
         "- Any system call was called.",
         "- An instruction that unicorn does not support was executed.",
     ]
@@ -21304,7 +21313,7 @@ class GlibcTryMallocCommand(GenericCommand):
     _note_ = [
         "It may work even if NOT Glibc (untested).",
         "It may be detected as a failure even though it actually succeeded.",
-        "e.g.:",
+        "e.g.,",
         "- Any system call was called.",
         "- An instruction that unicorn does not support was executed.",
     ]
@@ -21567,7 +21576,7 @@ class RegistersCommand(GenericCommand):
             else:
                 color = changed_color
 
-            # Special (e.g. segment) registers go on their own line
+            # Special (e.g., segment) registers go on their own line
             if current_arch.special_registers:
                 if regname in current_arch.special_registers:
                     special_line += "{}: ".format(Color.colorify(regname, color))
@@ -22237,7 +22246,7 @@ class AsmListCommand(GenericCommand):
             if "XOP" in opcodes.split()[0].split("."):
                 continue
 
-            # e.g.: "FF /2" -> ["FF10", "FF5011", ...]
+            # e.g., "FF /2" -> ["FF10", "FF5011", ...]
             bytecodes = get_typical_bytecodes(opcodes)
 
             # check it is valid or not
@@ -26732,7 +26741,7 @@ class EntryBreakCommand(GenericCommand):
 
         # PIE
         warn("PIC binary detected, retrieving text base address")
-        # Some ELF does not use ld. (e.g.: ELF built by zig)
+        # Some ELF does not use ld. (e.g., ELF built by zig)
         # So use gef_on_new_hook (use gdb.events.new_objfile internally),
         # instead of `set stop-on-solib-events 1` because shared object are never loaded.
         # At least gdb 10.1 (Ubuntu 18.04) supports gdb.events.new_objfile.
@@ -27021,7 +27030,7 @@ class ContextCommand(GenericCommand):
         self.add_setting("nb_lines_code", 6, "Number of instruction after $pc")
         self.add_setting("nb_lines_code_prev", 3, "Number of instruction before $pc")
         self.add_setting("nb_max_string_length", 0x40, "Number of bytes of strings to show")
-        self.add_setting("ignore_registers", "", "Space-separated list of registers not to display (e.g. '$cs $ds $gs')")
+        self.add_setting("ignore_registers", "", "Space-separated list of registers not to display (e.g., '$cs $ds $gs')")
         self.add_setting("clear_screen", True, "Clear the screen before printing the context")
         default_legend = "legend regs stack code args source memory threads trace extra"
         self.add_setting("layout", default_legend, "Change the order/presence of the context sections")
@@ -27818,18 +27827,18 @@ class ContextCommand(GenericCommand):
             sym_str, _ = ret
 
             # If it's a PLT call, it should resolve the symbol for the actual function.
-            # e.g.: puts@plt -> puts
+            # e.g., puts@plt -> puts
             if sym_str.endswith("@plt"):
                 sym_str = sym_str[:-4]
 
             # weak symbol -> real symbol
-            # e.g.: puts -> __GI__IO_puts
+            # e.g., puts -> __GI__IO_puts
             try:
                 ret = gdb.execute("p '{:s}'".format(sym_str), to_string=True).strip()
                 real_sym_str = self.RE_SUB_ARGS_SYMBOL.sub(r"\1", ret)
             except gdb.error:
                 # Some functions do not have PLT names.
-                # e.g.: *ABS*+0xXXXX
+                # e.g., *ABS*+0xXXXX
                 return None
 
             # If it resolves the real symbol, it may not be the beginning of the function. This is not the symbol I want.
@@ -27839,14 +27848,14 @@ class ContextCommand(GenericCommand):
             if "+" not in real_sym_str:
                 sym_str = real_sym_str
             else:
-                # e.g.: ptmalloc_init -> __GI___libc_malloc+528
+                # e.g., ptmalloc_init -> __GI___libc_malloc+528
                 pass
 
             # sym_str -> sym_obj
             sym_obj = gdb.lookup_symbol(sym_str)[0]
             if sym_obj is None:
                 # There are cases where the symbol string is found but the symbol object is not.
-                # e.g.: __do_global_dtors_aux
+                # e.g., __do_global_dtors_aux
                 return None
             if sym_obj.type.code != gdb.TYPE_CODE_FUNC:
                 return None
@@ -27875,7 +27884,7 @@ class ContextCommand(GenericCommand):
         # In gdb, there is no way to get the argument names of a function before call the function.
         # You can get the argument names with `info args`, but only after the function is called.
         # Also, the arguments obtained with info args may differ from the source code due to
-        # optimization reasons. (e.g.: _int_malloc)
+        # optimization reasons. (e.g., _int_malloc)
         # Since only the type of the argument can be obtained, only the type information is used.
 
         size2type = {
@@ -29718,14 +29727,14 @@ class DereferenceCommand(GenericCommand):
 
     _note_ = [
         "Use blacklist feature if reading the address causes process crash.",
-        'e.g.: `gef config dereference.blacklist "[ [0xffffffffc9000000, 0xffffffffc9001000], ]"`, then `gef save`',
+        'e.g., `gef config dereference.blacklist "[ [0xffffffffc9000000, 0xffffffffc9001000], ]"`, then `gef save`',
     ]
     _note_ = "\n".join(_note_)
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         self.add_setting("max_recursion", 4, "Maximum level of pointer recursion")
-        self.add_setting("blacklist", "[]", 'Dereference black list address ranges (e.g.: "[[start1, end1], [start2, end2],]")')
+        self.add_setting("blacklist", "[]", 'Dereference black list address ranges (e.g., "[[start1, end1], [start2, end2],]")')
         self.add_setting("nb_lines", 64, "Number of lines to display")
         self.add_setting("no_pager", False, "Always enable --no-pager option for this telescope command only")
         return
@@ -29917,7 +29926,7 @@ class DereferenceCommand(GenericCommand):
 
                 out.append(line)
             except (RuntimeError, gdb.MemoryError):
-                # e.g.: nop DWORD PTR [rax+rax*1+0x0]
+                # e.g., nop DWORD PTR [rax+rax*1+0x0]
                 msg = "Cannot access memory at address {:#x}".format(current_address)
                 out.append("{} {}".format(Color.colorify("[!]", "bold red"), msg))
                 break
@@ -33619,7 +33628,7 @@ class GotCommand(GenericCommand, BufferingOutput):
                 # When using the -L option with qemu-user,
                 # the file path on the disk and the file path on vmmap are different.
                 #
-                # e.g. qemu-arm -g 1234 -L /usr/arm-linux-gnueabihf ./a.out
+                # e.g., qemu-arm -g 1234 -L /usr/arm-linux-gnueabihf ./a.out
                 # gef> vmm
                 # [ Legend:  Code | Heap | Stack | Writable | ReadOnly | None | RWX ]
                 # Start      End        Size       Offset     Perm Path
@@ -58344,7 +58353,7 @@ class KernelModuleCommand(GenericCommand):
         "- You can check the added symbols with the `symbols` command.",
         "- Added symbols are in the format `module_name.symbol` to avoid collisions.",
         "  When used from the command line, they must be enclosed in single quotes.",
-        "  e.g. `p 'virtio_net.__this_module'`",
+        "  e.g., `p 'virtio_net.__this_module'`",
     ]
     _note_ = "\n".join(_note_)
 
@@ -64592,7 +64601,7 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
                     insn2 = get_insn_next(insn.address + codelen)
                     insn = get_insn(insn.address + codelen)
 
-                # detect `call non-essential-function` e.g.: perf, trace, debug, ...
+                # detect `call non-essential-function` e.g., perf, trace, debug, ...
                 while insn and insn2 and insn.mnemonic == "call":
                     codelen = len(insn.opcodes)
                     insn2 = get_insn_next(insn.address + codelen)
@@ -64605,14 +64614,14 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
                     insn2 = get_insn_next(insn.address + codelen)
                     insn = get_insn(insn.address + codelen)
 
-                # detect `bl non-essential-function` e.g.: perf, trace, debug, ...
+                # detect `bl non-essential-function` e.g., perf, trace, debug, ...
                 while insn and insn2 and insn.mnemonic == "bl":
                     codelen = len(insn.opcodes)
                     insn2 = get_insn_next(insn.address + codelen)
                     insn = get_insn(insn.address + codelen)
 
             elif is_arm32():
-                # detect `bl non-essential-function` e.g.: perf, trace, debug, ...
+                # detect `bl non-essential-function` e.g., perf, trace, debug, ...
                 while insn and insn2 and insn.mnemonic in ["bl", "blx"]:
                     codelen = len(insn.opcodes)
                     insn2 = get_insn_next(insn.address + codelen)
@@ -64765,7 +64774,7 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
 
 
 class ExecAsm:
-    """Execute embedded asm. e.g.: ExecAsm(asm_op_list).exec_code().
+    """Execute embedded asm. e.g., ExecAsm(asm_op_list).exec_code().
     WARNING: Disable `-enable-kvm` option for qemu-system; If set, this code will crash the guest OS."""
 
     def __init__(self, target_codes, regs=None, step=None, debug=False):
@@ -64913,7 +64922,7 @@ class ExecAsm:
 
 
 class ExecSyscall(ExecAsm):
-    """Execute embedded asm for syscall. e.g.: ExecSyscall(nr, args).exec_code().
+    """Execute embedded asm for syscall. e.g., ExecSyscall(nr, args).exec_code().
     WARNING: Disable `-enable-kvm` option for qemu-system; If set, this code will crash the guest OS."""
 
     def __init__(self, nr, args, debug=False):
@@ -67667,7 +67676,7 @@ class SaveOutputCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     _note_ = [
-        "Saving the output of external commands is unsupported (e.g.: pipe, !ls).",
+        "Saving the output of external commands is unsupported (e.g., pipe, !ls).",
     ]
     _note_ = "\n".join(_note_)
 
@@ -68708,7 +68717,7 @@ class SlubDumpCommand(GenericCommand):
 
         # heuristic detection pattern 2
         # if there is only one pattern with good alignment, use it
-        # e.g.: num_pages = 5
+        # e.g., num_pages = 5
         # 0xXXXX0000
         # 0xXXXX1000   <----------------------------------- most_top_page   ^
         # 0xXXXX2000                                                       ^|
@@ -69567,7 +69576,7 @@ class SlubTinyDumpCommand(GenericCommand):
 
         # heuristic detection pattern 2
         # if there is only one pattern with good alignment, use it
-        # e.g.: num_pages = 5
+        # e.g., num_pages = 5
         # 0xXXXX0000
         # 0xXXXX1000   <----------------------------------- most_top_page   ^
         # 0xXXXX2000                                                       ^|
@@ -74999,10 +75008,10 @@ class KsymaddrRemoteCommand(GenericCommand):
 
         # The important thing for parsing is whether it is 6.1.42 or later.
         # However, some distributions may have a patch version of 0.
-        # e.g.: debian 6.1.119-1 -> 6.1.0-28-amd64
+        # e.g., debian 6.1.119-1 -> 6.1.0-28-amd64
         # In this case, special processing is required to find a different version string.
         if self.kernel_version[:2] == (6, 1):
-            # e.g.: Linux version 6.1.0-28-amd64 (debian-kernel@lists.debian.org) (gcc-12 (Debian 12.2.0-14) 12.2.0,
+            # e.g., Linux version 6.1.0-28-amd64 (debian-kernel@lists.debian.org) (gcc-12 (Debian 12.2.0-14) 12.2.0,
             # GNU ld (GNU Binutils for Debian) 2.40) #1 SMP PREEMPT_DYNAMIC Debian 6.1.119-1 (2024-11-22)
             r = re.findall(rb" 6\.1\.(\d+)", self.version_string)
             for patch_version in r:
@@ -81883,7 +81892,7 @@ class BitInfo:
 
     @staticmethod
     def bits_split(x, bits):
-        # split by 4bits. e.g.: 0bXXYYYY -> 0b00XX_YYYY
+        # split by 4bits. e.g., 0bXXYYYY -> 0b00XX_YYYY
         out = ""
         for i in range(bits):
             if x & (1 << i):
@@ -81924,9 +81933,9 @@ class BitInfo:
                 b = "{:d}".format(bits)
                 bit_range_strs.append(b)
             else:
-                # e.g.: [11, 12, 0, 1, 2, 10] -> [0, 1, 2, 10, 11, 12]
+                # e.g., [11, 12, 0, 1, 2, 10] -> [0, 1, 2, 10, 11, 12]
                 bits = sorted(bits)
-                # e.g.: [0, 1, 2, 10, 11, 12] -> [[0, 1, 2], [10, 11, 12]]
+                # e.g., [0, 1, 2, 10, 11, 12] -> [[0, 1, 2], [10, 11, 12]]
                 gr_bits = [list(g) for _, g in itertools.groupby(bits, key=lambda n, c=itertools.count(): n - next(c))] # noqa: B008
 
                 tmp = []
@@ -81958,8 +81967,8 @@ class BitInfo:
         # - max_width_bits
         # - max_width_sym
         # - max_width_val
-        # - bit_range_strs # e.g.: ["0", "4-1", "8-7,5"]
-        # - bit_values     # e.g.: [0b1, 0b1111, 0b1101]
+        # - bit_range_strs # e.g., ["0", "4-1", "8-7,5"]
+        # - bit_values     # e.g., [0b1, 0b1111, 0b1101]
 
         # actual perform
         for i, (_, sym, *desc) in enumerate(self.bit_info):
@@ -88948,7 +88957,7 @@ class ExecUntilCondCommand(ExecUntilCommand):
     _example_ = [
         '{0:s} "$rax==0xdead && $rbx==0xcafe"  # execute until specified condition is filled',
         '{0:s} "*(int*)$rbx==0x12"             # memory access is supported',
-        '{0:s} "$ALL_REG==0x34"                # compare with all regs. e.g.: `($rax==0x34||$rbx==0x34||...)`',
+        '{0:s} "$ALL_REG==0x34"                # compare with all regs. e.g., `($rax==0x34||$rbx==0x34||...)`',
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -89309,10 +89318,10 @@ class KmallocBreakpoint(gdb.Breakpoint):
 
         # get size from arguments
         if self.index_of_size_arg >= 0:
-            # e.g.: kmalloc(size, ...)
+            # e.g., kmalloc(size, ...)
             _, size = current_arch.get_ith_parameter(self.index_of_size_arg)
         else:
-            # e.g.: kmem_cache_alloc_node has no `size` argument
+            # e.g., kmem_cache_alloc_node has no `size` argument
             _, kmem_cache = current_arch.get_ith_parameter(0)
             slab_cache_name_ptr = read_int_from_memory(kmem_cache + self.extra.kmem_cache_offset_name)
             slab_cache_name = read_cstring_from_memory(slab_cache_name_ptr)
@@ -89440,7 +89449,7 @@ class KmallocTracerCommand(GenericCommand):
     _category_ = "08-f. Qemu-system Cooperation - Linux Dynamic Inspection"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-f", "--filter", default=[], help="filter specified name (e.g.: kmalloc-XX)")
+    parser.add_argument("-f", "--filter", default=[], help="filter specified name (e.g., kmalloc-XX)")
     parser.add_argument("-N", "--print-null", action="store_true", help="display free(NULL).")
     parser.add_argument("-t", "--backtrace", action="store_true", help="display backtrace.")
     parser.add_argument("-d", "--dump-chunk", action="store_true", help="dump the first 0x40 bytes of each chunk.")
@@ -89803,7 +89812,7 @@ class KmallocAllocatedByCommand(GenericCommand):
     _category_ = "08-f. Qemu-system Cooperation - Linux Dynamic Inspection"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-f", "--filter", default=[], help="filter specified name (e.g.: kmalloc-XX)")
+    parser.add_argument("-f", "--filter", default=[], help="filter specified name (e.g., kmalloc-XX)")
     parser.add_argument("-N", "--print-null", action="store_true", help="display free(NULL).")
     parser.add_argument("-t", "--backtrace", action="store_true", help="display backtrace.")
     parser.add_argument("-d", "--dump-chunk", action="store_true", help="dump the first 0x40 bytes of each chunk.")
@@ -91916,7 +91925,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
                     continue
                 if s.sh_name == ".dynamic": # cannot remove
                     continue
-                if s.sh_name == ".data": # broken if remove (e.g.: add-symbol-temporary hoge 0x1234)
+                if s.sh_name == ".data": # broken if remove (e.g., add-symbol-temporary hoge 0x1234)
                     continue
                 if s.sh_name == ".bss": # broken if remove
                     continue
@@ -93003,7 +93012,7 @@ class BinwalkMemoryCommand(GenericCommand):
                 path = entry.path
                 path = path.replace("[", "").replace("]", "") # consider [heap], [stack], [vdso]
                 path = path.replace("<", "").replace(">", "") # consider <tls-th1>, <explored>
-            path = path.replace(" ", "_") # consider deleted case. e.g.: /path/to/file (deleted)
+            path = path.replace(" ", "_") # consider deleted case. e.g., /path/to/file (deleted)
 
             fmt = "binwalk-{:0{}x}-{:0{}x}_{:s}_{:s}.raw"
             dumpfile_name = fmt.format(start, addr_len, end, addr_len, perm, path)
