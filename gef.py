@@ -12719,6 +12719,20 @@ class ProcessMap:
 
         return ProcessMap.get_process_maps_heuristic()
 
+    @staticmethod
+    @Cache.cache_until_next
+    def get_loaded_files():
+        files = set()
+        for m in ProcessMap.get_process_maps():
+            if not m.path:
+                continue
+            if m.path.startswith(("<", "[")):
+                continue
+            if not os.path.exists(m.path):
+                continue
+            files.add(m.path)
+        return files
+
     # `info files` called from get_info_files is heavy processing.
     # Moreover, AddressUtil.recursive_dereference causes each address to be resolved every time.
     # Cache.cache_until_next is ineffective due to frequent resets (each time the `stepi` runs).
@@ -93188,33 +93202,78 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
+    def get_build_id(self, filename):
+        e = Elf.get_elf(filename)
+        if e is None or not e.is_valid():
+            return None
+        try:
+            build_id = e.read_shdr(".note.gnu.build-id")
+        except Exception:
+            return None
+        return build_id
+
+    def get_build_ids(self):
+        build_id_dict = {}
+        for filename in ProcessMap.get_loaded_files():
+            build_id = self.get_build_id(filename)
+            if build_id is None:
+                continue
+            build_id_dict[build_id] = filename
+        return build_id_dict
+
     def get_symbols(self, args):
         ret = gdb.execute("maintenance print msymbols", to_string=True).strip()
-        PATTERN = re.compile(r"^(\[ ?\d+\]) (.) (0x[0-9a-f]+) (.*)")
+        SYMBOL_INFO_LINE_PATTERN = re.compile(r"^(\[ ?\d+\]) (.) (0x[0-9a-f]+) (.*)")
+        SYMBOL_FILE_PATTERN = re.compile(r"^Object file (/.*):$")
+        build_id_dict = self.get_build_ids()
 
         tqdm = GefUtil.get_tqdm()
         for line in tqdm(ret.splitlines(), leave=False):
             line = line.strip()
+
+            # blank line
             if not line:
                 self.out.append(line)
                 continue
 
-            r = PATTERN.search(line)
-            if not r:
+            # filename line
+            # e.g., Object file /root/.cache/debuginfod_client/1c8db5f83bba514f8fd5f1fb6d7be975be1bb855/debuginfo:
+            r = SYMBOL_FILE_PATTERN.search(line)
+            if r:
                 self.out.append(line)
+
+                filename = r.group(1)
+                build_id = self.get_build_id(filename)
+                if build_id in build_id_dict:
+                    if build_id_dict[build_id] != filename:
+                        self.out.append("(={:s})".format(build_id_dict[build_id]))
                 continue
 
-            t = r.group(2)
-            if args.type and t.lower() not in args.type:
+            # symbol info line
+            # e.g., [2875] T 0x7ffff7cad650 malloc section .text  sofini.c
+            r = SYMBOL_INFO_LINE_PATTERN.search(line)
+            if r:
+                # type filtering
+                typ = r.group(2)
+                if args.type:
+                    if typ.lower() not in args.type:
+                        continue
+
+                # invalid address filtering
+                addr = int(r.group(3), 16)
+                if not is_valid_addr(addr):
+                    self.out.append(line)
+                    continue
+                addr = ProcessMap.lookup_address(addr)
+
+                index = r.group(1)
+                remain = r.group(4)
+                self.out.append("{:s} {:s} {!s} {:s}".format(index, typ, addr, remain))
                 continue
 
-            addr = int(r.group(3), 16)
-            if not is_valid_addr(addr):
-                self.out.append(line)
-                continue
+            # other line
+            self.out.append(line)
 
-            fixed_line = r.group(1) + " {:s} {!s} {:s}".format(t, ProcessMap.lookup_address(addr), r.group(4))
-            self.out.append(fixed_line)
         return
 
     @parse_args
