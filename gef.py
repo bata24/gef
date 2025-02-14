@@ -2765,43 +2765,35 @@ class Instruction:
     RE_SPLIT_SYMBOL = re.compile(r"(.*?)<(.+)>(.*)$")
     RE_SPLIT_SYMBOL_OFFSET = re.compile(r"(.+)\+(\d+)$")
 
-    # Allow formatting an instruction with {:o} to show opcodes.
-    # The number of bytes to display can be configured, e.g., {:4o} to only show 4 bytes of the opcodes
-    def __format__(self, format_spec):
-        if len(format_spec) == 0:
-            return str(self)
-        if format_spec[-1] not in ["o", "O"]:
+    def colored_text(self, opcodes_len=0, highlight=False, disable_color=False):
+        if opcodes_len == 0:
             return str(self)
 
-        to_highlight = format_spec[-1] == "O"
+        enable_color = not disable_color
 
         # format address
-        if to_highlight:
-            color_address = Config.get_gef_setting("theme.disassemble_address_highlight")
-        else:
-            color_address = Config.get_gef_setting("theme.disassemble_address")
-        address = Color.colorify(hex(self.address), color_address)
+        address = hex(self.address)
+        if enable_color:
+            if highlight:
+                color_address = Config.get_gef_setting("theme.disassemble_address_highlight")
+            else:
+                color_address = Config.get_gef_setting("theme.disassemble_address")
+            address = Color.colorify(address, color_address)
 
         # format opcode
-        if format_spec in ["o", "O"]: # no specified length
-            opcodes_len = len(self.opcodes)
-        else:
-            opcodes_len = int(format_spec[:-1])
+        opcodes_text = "".join("{:02x}".format(b) for b in self.opcodes) # e.g., "488d0de51e0100"
+        # e.g., len=4: opcodes:01020304   -> 01020304
+        # e.g., len=4: opcodes:0102030405 -> 010203..
+        if opcodes_len < len(self.opcodes):
+            opcodes_text = opcodes_text[:opcodes_len * 2 - 2] + ".."
 
-        if opcodes_len == 0:
-            opcodes_text = ""
-        else:
-            opcodes_text = "".join("{:02x}".format(b) for b in self.opcodes) # e.g., "488d0de51e0100"
-            # ex1: spec:"4o", opcodes:01020304   -> 01020304
-            # ex2: spec:"4o", opcodes:0102030405 -> 010203..
-            if opcodes_len < len(self.opcodes):
-                opcodes_text = opcodes_text[:opcodes_len * 2 - 2] + ".."
-
-        if to_highlight:
-            color_opcode = Config.get_gef_setting("theme.disassemble_opcode_highlight")
-        else:
-            color_opcode = Config.get_gef_setting("theme.disassemble_opcode")
-        opcodes_text = Color.colorify("{:{:d}}".format(opcodes_text, opcodes_len * 2), color_opcode)
+        opcodes_text = "{:{:d}}".format(opcodes_text, opcodes_len * 2)
+        if enable_color:
+            if highlight:
+                color_opcode = Config.get_gef_setting("theme.disassemble_opcode_highlight")
+            else:
+                color_opcode = Config.get_gef_setting("theme.disassemble_opcode")
+            opcodes_text = Color.colorify(opcodes_text, color_opcode)
 
         # format location
         location = self.smartify_text(self.location)
@@ -2820,17 +2812,19 @@ class Instruction:
         else:
             is_branch = False
 
-        if is_branch:
-            if to_highlight:
-                color_mnemonic = Config.get_gef_setting("theme.disassemble_mnemonic_branch_highlight")
+        mnemonic = "{:6s}".format(self.mnemonic)
+        if enable_color:
+            if is_branch:
+                if highlight:
+                    color_mnemonic = Config.get_gef_setting("theme.disassemble_mnemonic_branch_highlight")
+                else:
+                    color_mnemonic = Config.get_gef_setting("theme.disassemble_mnemonic_branch")
             else:
-                color_mnemonic = Config.get_gef_setting("theme.disassemble_mnemonic_branch")
-        else:
-            if to_highlight:
-                color_mnemonic = Config.get_gef_setting("theme.disassemble_mnemonic_normal_highlight")
-            else:
-                color_mnemonic = Config.get_gef_setting("theme.disassemble_mnemonic_normal")
-        mnemonic = Color.colorify("{:6s}".format(self.mnemonic), color_mnemonic)
+                if highlight:
+                    color_mnemonic = Config.get_gef_setting("theme.disassemble_mnemonic_normal_highlight")
+                else:
+                    color_mnemonic = Config.get_gef_setting("theme.disassemble_mnemonic_normal")
+            mnemonic = Color.colorify(mnemonic, color_mnemonic)
 
         # break down last operands
         operands = self.operands[::]
@@ -2869,48 +2863,51 @@ class Instruction:
         additional_1 = self.hexlify_symbol_offset(additional_1)
 
         # format operands
-        if to_highlight:
-            color_operands_normal = Config.get_gef_setting("theme.disassemble_operands_normal_highlight")
-            color_operands_const = Config.get_gef_setting("theme.disassemble_operands_const_highlight")
-            color_operands_symbol = Config.get_gef_setting("theme.disassemble_operands_symbol_highlight")
-        else:
-            color_operands_normal = Config.get_gef_setting("theme.disassemble_operands_normal")
-            color_operands_const = Config.get_gef_setting("theme.disassemble_operands_const")
-            color_operands_symbol = Config.get_gef_setting("theme.disassemble_operands_symbol")
+        if enable_color:
+            if highlight:
+                color_operands_normal = Config.get_gef_setting("theme.disassemble_operands_normal_highlight")
+                color_operands_const = Config.get_gef_setting("theme.disassemble_operands_const_highlight")
+                color_operands_symbol = Config.get_gef_setting("theme.disassemble_operands_symbol_highlight")
+            else:
+                color_operands_normal = Config.get_gef_setting("theme.disassemble_operands_normal")
+                color_operands_const = Config.get_gef_setting("theme.disassemble_operands_const")
+                color_operands_symbol = Config.get_gef_setting("theme.disassemble_operands_symbol")
 
-        # extract -> coloring -> join
-        colored_operands = []
-        for o1 in operands:
-            colored_o1 = []
-            # split by *, [, ], (, ), %, :, space, non-first +, - (without #, @, %), <...>
-            for o2 in self.RE_SPLIT_ELEM.split(o1): # r"([*%\[\](): ]|(?<![#@%])(?<=.)[-+]|<.+>)"
-                o2 = o2.strip()
-                if o2 == "":
-                    continue
-                if o2[0] == "<":
-                    colored_o1.append(self.hexlify_symbol_offset(o2))
-                    colored_o1.append(" ")
-                elif o2 in ["-", "+", "*"]:
-                    colored_o1.append(Color.colorify(o2, color_operands_symbol))
-                    colored_o1.append(" ")
-                elif o2 in [":", "%"]:
-                    if colored_o1 and colored_o1[-1] == " ":
-                        colored_o1 = colored_o1[:-1]
-                    colored_o1.append(Color.colorify(o2, color_operands_symbol))
-                elif o2 in ["[", "("]:
-                    colored_o1.append(Color.colorify(o2, color_operands_symbol))
-                elif o2 in ["]", ")"]:
-                    if colored_o1 and colored_o1[-1] == " ":
-                        colored_o1 = colored_o1[:-1]
-                    colored_o1.append(Color.colorify(o2, color_operands_symbol))
-                elif self.RE_IS_DIGIT_COMMENT.match(o2): # r"#?-?(0x[0-9a-f]+|\d+)"
-                    colored_o1.append(Color.colorify(o2, color_operands_const))
-                    colored_o1.append(" ")
-                else:
-                    colored_o1.append(Color.colorify(o2, color_operands_normal))
-                    colored_o1.append(" ")
-            colored_operands.append("".join(colored_o1).strip())
-        operands = Color.colorify(", ", color_operands_symbol).join(colored_operands)
+            # extract -> coloring -> join
+            colored_operands = []
+            for o1 in operands:
+                colored_o1 = []
+                # split by *, [, ], (, ), %, :, space, non-first +, - (without #, @, %), <...>
+                for o2 in self.RE_SPLIT_ELEM.split(o1): # r"([*%\[\](): ]|(?<![#@%])(?<=.)[-+]|<.+>)"
+                    o2 = o2.strip()
+                    if o2 == "":
+                        continue
+                    if o2[0] == "<":
+                        colored_o1.append(self.hexlify_symbol_offset(o2))
+                        colored_o1.append(" ")
+                    elif o2 in ["-", "+", "*"]:
+                        colored_o1.append(Color.colorify(o2, color_operands_symbol))
+                        colored_o1.append(" ")
+                    elif o2 in [":", "%"]:
+                        if colored_o1 and colored_o1[-1] == " ":
+                            colored_o1 = colored_o1[:-1]
+                        colored_o1.append(Color.colorify(o2, color_operands_symbol))
+                    elif o2 in ["[", "("]:
+                        colored_o1.append(Color.colorify(o2, color_operands_symbol))
+                    elif o2 in ["]", ")"]:
+                        if colored_o1 and colored_o1[-1] == " ":
+                            colored_o1 = colored_o1[:-1]
+                        colored_o1.append(Color.colorify(o2, color_operands_symbol))
+                    elif self.RE_IS_DIGIT_COMMENT.match(o2): # r"#?-?(0x[0-9a-f]+|\d+)"
+                        colored_o1.append(Color.colorify(o2, color_operands_const))
+                        colored_o1.append(" ")
+                    else:
+                        colored_o1.append(Color.colorify(o2, color_operands_normal))
+                        colored_o1.append(" ")
+                colored_operands.append("".join(colored_o1).strip())
+            operands = Color.colorify(", ", color_operands_symbol).join(colored_operands)
+        else:
+            operands = ", ".join(operands)
 
         # the case that gdb does not append symbol but symbol exists
         if is_branch:
@@ -2921,7 +2918,7 @@ class Instruction:
                     additional_1 = sym
 
         # formatting
-        out = "{:s} {:s}   {:s}   {:s} {:s} {:s}".format(
+        out = "{:s} {:s} {:s}   {:s} {:s} {:s}".format(
             address, opcodes_text, location, mnemonic, operands, additional_1,
         )
         return out
@@ -20063,11 +20060,9 @@ class CapstoneDisassembleCommand(GenericCommand):
             skip = length * self.repeat_count
             for insn in Disasm.capstone_disassemble(location, length, skip=skip, **kwargs):
                 if insn.address == current_arch.pc:
-                    text_insn = "{:12O}".format(insn)
-                    msg = "{}  {}".format(RIGHT_ARROW, text_insn)
+                    msg = "{:s}{:s}".format(RIGHT_ARROW, insn.colored_text(10, highlight=True))
                 else:
-                    text_insn = "{:12o}".format(insn)
-                    msg = "{} {}".format(" " * 5, text_insn)
+                    msg = "    {:s}".format(insn.colored_text(10, highlight=False))
                 gef_print(msg)
         except AttributeError:
             err("Maybe unsupported architecture")
@@ -27389,17 +27384,19 @@ class ContextCommand(GenericCommand):
 
             # insn to string with coloring by address against pc
             if insn.address < pc:
-                text = "{:{:d}o}".format(insn, show_opcodes_size)
                 if past_lines_color:
-                    text = Color.remove_color(text)
+                    text = insn.colored_text(show_opcodes_size, highlight=False, disable_color=True)
                     text = Color.colorify(text, past_lines_color)
+                else:
+                    text = insn.colored_text(show_opcodes_size, highlight=False)
             elif insn.address == pc:
-                text = "{:{:d}O}".format(insn, show_opcodes_size)
+                text = insn.colored_text(show_opcodes_size, highlight=True)
             else:
-                text = "{:{:d}o}".format(insn, show_opcodes_size)
                 if future_lines_color:
-                    text = Color.remove_color(text)
+                    text = insn.colored_text(show_opcodes_size, highlight=False, disable_color=True)
                     text = Color.colorify(text, future_lines_color)
+                else:
+                    text = insn.colored_text(show_opcodes_size, highlight=False)
 
             # bp prefix and branch info
             if insn.address != pc:
@@ -27448,8 +27445,9 @@ class ContextCommand(GenericCommand):
                 try:
                     if delay_slot:
                         next_insn = list(Disasm.gef_disassemble(insn.address, 2))[-1]
-                        text = "{:s}{:s}{:{:d}o}\t{:s}".format(
-                            bp_prefix, padding, next_insn, show_opcodes_size,
+                        text = "{:s}{:s}{:s}\t{:s}".format(
+                            bp_prefix, padding,
+                            next_insn.colored_text(show_opcodes_size, highlight=False),
                             Color.colorify("Maybe delay-slot", "bold yellow"),
                         )
                         gef_print(text)
@@ -27459,7 +27457,7 @@ class ContextCommand(GenericCommand):
                 # branch target address
                 try:
                     for i, tinsn in enumerate(Disasm.gef_disassemble(target, nb_insn)):
-                        text = "{:{:d}o}".format(tinsn, show_opcodes_size)
+                        text = tinsn.colored_text(show_opcodes_size, highlight=False)
                         if i == 0:
                             gef_print("") # need blank line
                             text = "   {} {}".format(RIGHT_ARROW[1:-1], text)
@@ -80022,8 +80020,7 @@ class XphysAddrCommand(GenericCommand):
         out = []
         try:
             for insn in Disasm.capstone_disassemble(target, count, **kwargs):
-                text_insn = "{:12o}".format(insn)
-                msg = "{} {}".format(" " * 5, text_insn)
+                msg = "    {:s}".format(insn.colored_text(12, highlight=False))
                 out.append(msg)
         except gdb.error:
             pass
