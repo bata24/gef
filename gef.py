@@ -55224,7 +55224,7 @@ class KernelbaseCommand(GenericCommand):
     _category_ = "08-b. Qemu-system Cooperation - Linux Basic"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-r", "--reparse", action="store_true", help="do not use cache.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
@@ -55234,7 +55234,7 @@ class KernelbaseCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        if args.reparse:
+        if args.rescan:
             Cache.reset_gef_caches(all=True)
 
         # resolve text_base, ro_base
@@ -55271,7 +55271,7 @@ class KernelVersionCommand(GenericCommand):
     _category_ = "08-b. Qemu-system Cooperation - Linux Basic"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-r", "--reparse", action="store_true", help="do not use cache.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
@@ -55281,7 +55281,7 @@ class KernelVersionCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        if args.reparse:
+        if args.rescan:
             Cache.reset_gef_caches(all=True)
 
         if not args.quiet:
@@ -55307,7 +55307,7 @@ class KernelCmdlineCommand(GenericCommand):
     _category_ = "08-b. Qemu-system Cooperation - Linux Basic"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-r", "--reparse", action="store_true", help="do not use cache.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
@@ -55317,7 +55317,7 @@ class KernelCmdlineCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        if args.reparse:
+        if args.rescan:
             Cache.reset_gef_caches(all=True)
 
         if not args.quiet:
@@ -61913,7 +61913,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="REGEXP filter.")
     parser.add_argument("-s", "--skip-symlink", action="store_true", help="do not follow symlink (net.* and user.*).")
     parser.add_argument("-e", "--exact", action="store_true", help="use exact match.")
-    parser.add_argument("-r", "--reparse", action="store_true", help="do not use cache.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-v", "--verbose", action="store_true", help="dump zero-sized entries too.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
@@ -62341,7 +62341,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                 err("Filter string is needed")
             return
 
-        if args.reparse:
+        if args.rescan:
             self.initialized = False
             self.cache = []
 
@@ -63930,7 +63930,7 @@ class KernelConfigCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[],
                         help="REGEXP include filter.")
-    parser.add_argument("-r", "--reparse", action="store_true", help="do not use cache.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
@@ -63946,7 +63946,7 @@ class KernelConfigCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        if args.reparse:
+        if args.rescan:
             self.configs = None
 
         if self.configs is None:
@@ -71312,7 +71312,7 @@ class SlabContainsCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address, help="target address.")
-    parser.add_argument("-r", "--reparse", action="store_true", help="do not use cache.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
@@ -71392,7 +71392,7 @@ class SlabContainsCommand(GenericCommand):
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.verbose = args.verbose
-        if args.reparse:
+        if args.rescan:
             self.initialized = False
 
         if self.allocator is None:
@@ -71504,7 +71504,7 @@ class BuddyDumpCommand(GenericCommand):
     parser.add_argument("--sort", action="store_true",
                         help="sort by page address instead of link list order of each size. filter options are ignored.")
     parser.add_argument("--sort-verbose", action="store_true", help="enable --sort and add information of used area.")
-    parser.add_argument("-r", "--reparse", action="store_true", help="do not use cache.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
@@ -72020,7 +72020,7 @@ class BuddyDumpCommand(GenericCommand):
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         # parse args
-        if args.reparse:
+        if args.rescan:
             self.initialized = False
 
         self.quiet = args.quiet
@@ -74909,7 +74909,7 @@ class KsymaddrRemoteCommand(GenericCommand):
     parser.add_argument("keyword", metavar="KEYWORD", nargs="*", help="filter by specific symbol name.")
     parser.add_argument("-t", "--type", action="append", default=[], help="filter by symbol type.")
     parser.add_argument("-e", "--exact", action="store_true", help="use exact match.")
-    parser.add_argument("-r", "--reparse", action="store_true", help="do not use cache.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-s", "--smart", action="store_true", help="filter __pfx_*, __ksymtab_*, etc.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
@@ -75129,7 +75129,7 @@ class KsymaddrRemoteCommand(GenericCommand):
         return
 
     def get_saved_config(self, param_names):
-        if self.reparse:
+        if self.rescan:
             return False
 
         cfg_file_name = self.get_cfg_name()
@@ -76086,7 +76086,7 @@ class KsymaddrRemoteCommand(GenericCommand):
         return True
 
     def parse_kallsyms(self):
-        if self.reparse:
+        if self.rescan:
             self.kallsyms = [] # clear cache
 
         if self.kallsyms:
@@ -76146,7 +76146,7 @@ class KsymaddrRemoteCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, args):
         self.verbose = args.verbose
-        self.reparse = args.reparse
+        self.rescan = args.rescan
         self.quiet = args.quiet
         self.exact = args.exact
 
@@ -76156,8 +76156,8 @@ class KsymaddrRemoteCommand(GenericCommand):
         ret = self.parse_kallsyms()
         if not ret:
             # slow path
-            self.quiet_info("Try to re-parse (ignore cached config)")
-            self.reparse = True
+            self.quiet_info("Try to rescan (ignore cached config)")
+            self.rescan = True
             ret = self.parse_kallsyms()
         if not ret:
             self.quiet_err("Failed to parse")
@@ -76181,12 +76181,12 @@ class VmlinuxToElfApplyCommand(GenericCommand):
     _category_ = "08-c. Qemu-system Cooperation - Linux Symbol"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-r", "--reparse", action="store_true",
+    parser.add_argument("-r", "--rescan", action="store_true",
                         help="force applying again. (default: reuse vmlinux-to-elf-dump-memory.elf if exists)")
     _syntax_ = parser.format_help()
 
     @staticmethod
-    def dump_kernel_elf(reparse=False):
+    def dump_kernel_elf(rescan=False):
         """Dump the kernel from the memory, then apply vmlinux-to-elf to create symboled ELF."""
         # check
         try:
@@ -76202,7 +76202,7 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         symboled_vmlinux_file = os.path.join(GEF_TEMP_DIR, "dump-memory-{:s}.elf".format(h))
 
         # check if it can be reused
-        if (not reparse) and os.path.exists(symboled_vmlinux_file) and os.path.getsize(symboled_vmlinux_file) > 0:
+        if (not rescan) and os.path.exists(symboled_vmlinux_file) and os.path.getsize(symboled_vmlinux_file) > 0:
             info("A previously used file found, will be reused")
             return symboled_vmlinux_file
 
@@ -76296,7 +76296,7 @@ class VmlinuxToElfApplyCommand(GenericCommand):
             err("Failed to resolve kbase")
             return
 
-        symboled_vmlinux_file = self.dump_kernel_elf(args.reparse)
+        symboled_vmlinux_file = self.dump_kernel_elf(args.rescan)
         if symboled_vmlinux_file is None:
             err("Failed to create kernel ELF")
             return
@@ -87068,7 +87068,7 @@ class PagewalkWithHintsCommand(GenericCommand):
     parser.add_argument("-s", "--skip-full-slab-cache", action="store_true",
                         help="skip search full slab cache. use this option if take a long time to parse.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
-    parser.add_argument("-r", "--reparse", action="store_true", help="do not use map cache.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use map cache.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
@@ -87711,7 +87711,7 @@ class PagewalkWithHintsCommand(GenericCommand):
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     def do_invoke(self, args):
-        if not args.reparse and self.prev_out:
+        if not args.rescan and self.prev_out:
             gef_print("\n".join(self.prev_out), less=not args.no_pager)
             return
 
@@ -87757,7 +87757,7 @@ class PageCommand(GenericCommand):
     parser.add_argument("mode", choices=modes, help="conversion mode.")
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
                         help="the address to convert.")
-    parser.add_argument("-r", "--reparse", action="store_true", help="do not use map cache.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use map cache.")
     _syntax_ = parser.format_help()
 
     _note_ = [
@@ -88182,7 +88182,7 @@ class PageCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     @only_if_in_kernel
     def do_invoke(self, args):
-        if args.reparse:
+        if args.rescan:
             self.initialized = False
 
         if is_arm64():
@@ -88271,7 +88271,7 @@ class Page2VirtCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("page", metavar="ADDRESS", type=AddressUtil.parse_address,
                         help="the page address to translate.")
-    parser.add_argument("-r", "--reparse", action="store_true", help="do not use cache.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     _syntax_ = parser.format_help()
 
     @parse_args
@@ -88280,7 +88280,7 @@ class Page2VirtCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     @only_if_in_kernel
     def do_invoke(self, args):
-        rstr = "-r" if args.reparse else ""
+        rstr = "-r" if args.rescan else ""
         gdb.execute("page to_virt {:s} {:#x}".format(rstr, args.page))
         return
 
@@ -88295,7 +88295,7 @@ class Virt2PageCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("virt", metavar="ADDRESS", type=AddressUtil.parse_address,
                         help="the virtual address to translate.")
-    parser.add_argument("-r", "--reparse", action="store_true", help="do not use cache.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     _syntax_ = parser.format_help()
 
     @parse_args
@@ -88304,7 +88304,7 @@ class Virt2PageCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     @only_if_in_kernel
     def do_invoke(self, args):
-        rstr = "-r" if args.reparse else ""
+        rstr = "-r" if args.rescan else ""
         gdb.execute("page from_virt {:s} {:#x}".format(rstr, args.virt))
         return
 
@@ -88319,7 +88319,7 @@ class Page2PhysCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("page", metavar="ADDRESS", type=AddressUtil.parse_address,
                         help="the page address to translate.")
-    parser.add_argument("-r", "--reparse", action="store_true", help="do not use cache.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     _syntax_ = parser.format_help()
 
     @parse_args
@@ -88328,7 +88328,7 @@ class Page2PhysCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     @only_if_in_kernel
     def do_invoke(self, args):
-        rstr = "-r" if args.reparse else ""
+        rstr = "-r" if args.rescan else ""
         gdb.execute("page to_phys {:s} {:#x}".format(rstr, args.page))
         return
 
@@ -88343,7 +88343,7 @@ class Phys2PageCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("phys", metavar="ADDRESS", type=AddressUtil.parse_address,
                         help="the physical address to translate.")
-    parser.add_argument("-r", "--reparse", action="store_true", help="do not use cache.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     _syntax_ = parser.format_help()
 
     @parse_args
@@ -88352,7 +88352,7 @@ class Phys2PageCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     @only_if_in_kernel
     def do_invoke(self, args):
-        rstr = "-r" if args.reparse else ""
+        rstr = "-r" if args.rescan else ""
         gdb.execute("page from_phys {:s} {:#x}".format(rstr, args.phys))
         return
 
@@ -92150,7 +92150,7 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
     _aliases_ = ["ks-apply"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-r", "--reparse", action="store_true", help="do not use cache.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
@@ -92233,7 +92233,7 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
         kversion = Kernel.kernel_version()
         h = hashlib.sha256(String.str2bytes(kversion.version_string)).hexdigest()[-16:]
         sym_elf_path = os.path.join(GEF_TEMP_DIR, "ks-apply-{:s}.elf".format(h))
-        if (not args.reparse) and os.path.exists(sym_elf_path) and os.path.getsize(sym_elf_path) > 0:
+        if (not args.rescan) and os.path.exists(sym_elf_path) and os.path.getsize(sym_elf_path) > 0:
             if not args.quiet:
                 info("A previously used file found, will be reused")
         else:
