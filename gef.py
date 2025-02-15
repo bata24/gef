@@ -17825,13 +17825,14 @@ class SearchMangledPtrCommand(GenericCommand):
 
 
 @register_command
-class SearchCfiGadgetsCommand(GenericCommand):
+class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
     """Search CFI-valid and controllable generally gadgets from executable area."""
 
     _cmdline_ = "search-cfi-gadgets"
     _category_ = "03-a. Memory - Search"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
@@ -17909,18 +17910,13 @@ class SearchCfiGadgetsCommand(GenericCommand):
                 self.out.extend([str(x) for x in Disasm.gdb_disassemble(start, nb_insn=inscount)])
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
-    def do_invoke(self, args):
+    def exec_search(self):
         # get map entry
         maps = ProcessMap.get_process_maps()
         if maps is None:
             err("Failed to get maps")
             return
 
-        self.out = []
         for entry in maps:
             if not entry.is_executable():
                 continue
@@ -17932,9 +17928,35 @@ class SearchCfiGadgetsCommand(GenericCommand):
             addrs = self.find_endbr(entry.page_start, entry.page_end)
             filtered_addrs = self.filter_gadgets(addrs)
             self.disasm_addrs(filtered_addrs)
+        return
 
-        if self.out:
-            gef_print("\n".join(self.out).rstrip(), less=not args.no_pager)
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    def do_invoke(self, args):
+        # get saved filename (for caching)
+        filepath = Path.get_filepath()
+        if filepath is None:
+            output_path = ""
+        else:
+            output_file = "cfi_{:s}.txt".format(os.path.basename(filepath))
+            output_path = os.path.join(GEF_TEMP_DIR, output_file)
+
+        if os.path.exists(output_path) and not args.rescan:
+            # read previous output
+            info("A previously used file found, will be reused")
+            self.out = open(output_path).read().splitlines()
+        else:
+            # doit
+            self.out = []
+            self.exec_search()
+            # save
+            if output_path:
+                open(output_path, "w").write("\n".join(self.out).rstrip())
+
+        # output
+        self.print_output(args)
         return
 
 
