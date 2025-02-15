@@ -528,7 +528,8 @@ def gef_print(x="", less=False, *args, **kwargs):
             os.fdopen(tmp_fd, "wb").write(String.str2bytes(x))
 
     # less
-    os.system("{!r} -Rf {!r}".format(less, tmp_path))
+    less_option = Config.get_gef_setting("gef.less_option")
+    os.system("{!r} {:s} {!r}".format(less, less_option, tmp_path))
 
     # cleanup
     keep_pager_result = Config.get_gef_setting("gef.keep_pager_result")
@@ -93503,6 +93504,7 @@ class GefCommand(GenericCommand):
         self.add_setting("always_no_pager", False, "Always disable pager in gef_print()")
         self.add_setting("pager_min_lines", 11, "Show pager only if output is longer than this value")
         self.add_setting("keep_pager_result", False, "Leaves temporary files in gef_print()")
+        self.add_setting("less_option", "-Rf -j.5", "LESS command option used in gef_print()")
         self.missing_commands = {}
         return
 
