@@ -4006,8 +4006,9 @@ class GlibcHeap:
 
         def tcache_list(self):
             if get_libc_version() < (2, 26):
-                info("No Tcache in this version of libc")
+                info("No tcache in this version of libc")
                 return {}
+
             if self.heap_base is None:
                 return {}
 
@@ -20907,7 +20908,7 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
     def do_invoke(self, args):
         # Determine if we are using libc with tcache built in (2.26+)
         if get_libc_version() < (2, 26):
-            info("No Tcache in this version of libc")
+            info("No tcache in this version of libc")
             return
 
         # parse arena
@@ -21459,6 +21460,11 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
+        # Determine if we are using libc with tcache built in (2.26+)
+        if get_libc_version() < (2, 26):
+            err("No tcache in this version of libc")
+            return
+
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
 
@@ -21468,10 +21474,6 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
 
         if arena.heap_base is None or not is_valid_addr(arena.heap_base):
             err("Heap is not initialized")
-            return
-
-        if get_libc_version() < (2, 30):
-            err("No Tcache in this version of libc")
             return
 
         # doit
