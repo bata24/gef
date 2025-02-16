@@ -20129,6 +20129,8 @@ class GlibcHeapCommand(GenericCommand):
     subparsers.add_parser("try-malloc")
     subparsers.add_parser("tcache-index-helper")
     subparsers.add_parser("find-fake-fast")
+    subparsers.add_parser("extract-heap-addr")
+    subparsers.add_parser("calc-protected-fd")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -21630,6 +21632,85 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
         self.out = []
         self.find_fake_fast(args.size)
         self.print_output(args, term=True)
+        return
+
+
+@register_command
+class GlibcExtractHeapAddrCommand(GenericCommand):
+    """Extract heap address from protected `fd` pointer of single linked-list (glibc 2.32~)."""
+
+    _cmdline_ = "heap extract-heap-addr"
+    _category_ = "06-a. Heap - Glibc"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("value", metavar="VALUE", nargs="?", type=lambda x: int(x, 0),
+                       help="the value to extract.")
+    group.add_argument("--source", action="store_true",
+                       help="shows the source instead of displaying extractedd value.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} 0x000055500000C7F9",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    def reveal(self, fd):
+        # https://smallkirby.hatenablog.com/entry/safeunlinking
+        L = fd >> 36
+        for i in range(3):
+            temp = (fd >> (36 - (i + 1) * 8)) & 0xff
+            element = ((L >> 4) ^ temp) & 0xff
+            L = (L << 8) + element
+        return L << 12
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        if args.source:
+            s = GefUtil.get_source(GlibcExtractHeapAddrCommand.reveal)
+            gef_print(s)
+            return
+
+        ptr = args.value
+        extracted_ptr = self.reveal(ptr)
+        extracted_ptr = ProcessMap.lookup_address(extracted_ptr)
+        gef_print("Protected fd pointer: {:#x}".format(ptr))
+        gef_print("{:s}Extracted heap address: {!s} (=fd & ~0xfff)".format(RIGHT_ARROW, extracted_ptr))
+        return
+
+
+@register_command
+class GlibcCalcProtectedFdCommand(GenericCommand):
+    """Calculate a valid value as protected `fd` pointer of single linked-list (glibc 2.32~)."""
+
+    _cmdline_ = "heap calc-protected-fd"
+    _category_ = "06-a. Heap - Glibc"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("fd", type=lambda x: int(x, 0), help="the fd value.")
+    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
+                        help="the address to interpret as a chunk.")
+    parser.add_argument("-b", "--as-base", action="store_true",
+                        help="use LOCATION as chunk base address (chunk_base_address = chunk_address - ptrsize * 2).")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} 0 0x5555555594e0",
+        "{0:s} 0 0x5555555594e0 -b",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        loc = args.location
+        if args.as_base:
+            loc -= current_arch.ptrsize * 2
+        ptr = (loc >> 12) ^ args.fd
+        gef_print("Protected fd pointer: {:#x}".format(ptr))
         return
 
 
@@ -50451,85 +50532,6 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
             gef_print('{:3d} (={:#4x}): {:<15s}: "{:s}"'.format(val, val, sym, desc))
         else:
             err("Not found value in ERRNO_DICT")
-        return
-
-
-@register_command
-class ExtractHeapAddrCommand(GenericCommand):
-    """Extract heap address from protected `fd` pointer of single linked-list (glibc 2.32~)."""
-
-    _cmdline_ = "extract-heap-addr"
-    _category_ = "06-a. Heap - Glibc"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("value", metavar="VALUE", nargs="?", type=lambda x: int(x, 0),
-                       help="the value to extract.")
-    group.add_argument("--source", action="store_true",
-                       help="shows the source instead of displaying extractedd value.")
-    _syntax_ = parser.format_help()
-
-    _example_ = [
-        "{0:s} 0x000055500000C7F9",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
-
-    def reveal(self, fd):
-        # https://smallkirby.hatenablog.com/entry/safeunlinking
-        L = fd >> 36
-        for i in range(3):
-            temp = (fd >> (36 - (i + 1) * 8)) & 0xff
-            element = ((L >> 4) ^ temp) & 0xff
-            L = (L << 8) + element
-        return L << 12
-
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    def do_invoke(self, args):
-        if args.source:
-            s = GefUtil.get_source(ExtractHeapAddrCommand.reveal)
-            gef_print(s)
-            return
-
-        ptr = args.value
-        extracted_ptr = self.reveal(ptr)
-        extracted_ptr = ProcessMap.lookup_address(extracted_ptr)
-        gef_print("Protected fd pointer: {:#x}".format(ptr))
-        gef_print("{:s}Extracted heap address: {!s} (=fd & ~0xfff)".format(RIGHT_ARROW, extracted_ptr))
-        return
-
-
-@register_command
-class CalcProtectedFdCommand(GenericCommand):
-    """Calculate a valid value as protected `fd` pointer of single linked-list (glibc 2.32~)."""
-
-    _cmdline_ = "calc-protected-fd"
-    _category_ = "06-a. Heap - Glibc"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("fd", type=lambda x: int(x, 0), help="the fd value.")
-    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
-                        help="the address to interpret as a chunk.")
-    parser.add_argument("-b", "--as-base", action="store_true",
-                        help="use LOCATION as chunk base address (chunk_base_address = chunk_address - ptrsize * 2).")
-    _syntax_ = parser.format_help()
-
-    _example_ = [
-        "{0:s} 0 0x5555555594e0",
-        "{0:s} 0 0x5555555594e0 -b",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
-
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    def do_invoke(self, args):
-        loc = args.location
-        if args.as_base:
-            loc -= current_arch.ptrsize * 2
-        ptr = (loc >> 12) ^ args.fd
-        gef_print("Protected fd pointer: {:#x}".format(ptr))
         return
 
 

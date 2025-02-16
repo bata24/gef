@@ -296,14 +296,14 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
             * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-index-helper.png)
         * `heap find-fake-fast`: searches for a memory with a size-like value that can be linked to the fastbin free-list.
             * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-find-fake-fast.png)
+        * `heap extract-heap-addr`: analyzes tcache-protected-fd introduced from glibc-2.32.
+            * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-extract-heap-addr.png)
+        * `heap calc-protected-fd`: calculates a valid value as protected fd.
+            * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-calc-protected-fd.png)
     * Thread arena is supported for all `heap` commands.
         * Use `-a` option.
     * `visual-heap`: is colorized heap viewer.
         * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/visual-heap.png)
-    * `extract-heap-addr`: analyzes tcache-protected-fd introduced from glibc-2.32.
-        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/extract-heap-addr.png)
-    * `calc-protected-fd`: calculates a valid value as protected fd.
-        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/calc-protected-fd.png)
 * uClibc heap commands are added.
     * `uclibc-ng-heap-dump`: dumps uClibc-ng heap chunks.
         * Supported on x64 and x86, based on uClibc-ng v1.0.42 malloc-standard.
