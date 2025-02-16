@@ -294,10 +294,10 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
             * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-try-malloc.png)
         * `heap tcache-index-helper`
             * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-index-helper.png)
+        * `heap find-fake-fast`: searches for a memory with a size-like value that can be linked to the fastbin free-list.
+            * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-find-fake-fast.png)
     * Thread arena is supported for all `heap` commands.
         * Use `-a` option.
-    * `find-fake-fast`: searches for a memory with a size-like value that can be linked to the fastbin free-list.
-        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/find-fake-fast.png)
     * `visual-heap`: is colorized heap viewer.
         * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/visual-heap.png)
     * `extract-heap-addr`: analyzes tcache-protected-fd introduced from glibc-2.32.

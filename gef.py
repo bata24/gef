@@ -20127,6 +20127,8 @@ class GlibcHeapCommand(GenericCommand):
     subparsers.add_parser("top")
     subparsers.add_parser("try-free")
     subparsers.add_parser("try-malloc")
+    subparsers.add_parser("tcache-index-helper")
+    subparsers.add_parser("find-fake-fast")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -21531,6 +21533,103 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
         if args.entry_addr is not None:
             index = (args.entry_addr - arena.tcachebins_addr(0)) // current_arch.ptrsize
             self.print_tcache_info(arena, index)
+        return
+
+
+@register_command
+class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
+    """Find candidate fake fast chunks from RW memory."""
+
+    _cmdline_ = "heap find-fake-fast"
+    _category_ = "06-a. Heap - Glibc"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--include-heap", action="store_true", help="heap is also included in the search target.")
+    parser.add_argument("--aligned", action="store_true", help="search only aligned chunks.")
+    parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address, help="search target size.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    _syntax_ = parser.format_help()
+
+    def print_result(self, m, pos, size_candidate):
+        path = "unknown" if m.path == "" else m.path
+        address = ProcessMap.lookup_address(m.page_start + pos)
+        self.info("Found at {!s} in {!r} [{!s}]".format(address, path, m.permission))
+
+        if is_32bit():
+            res = gdb.execute("x/6xw {:#x}".format(address.value), to_string=True)
+        else:
+            res = gdb.execute("x/6xg {:#x}".format(address.value), to_string=True)
+
+        flag = []
+        if size_candidate & 0b100:
+            flag += [Color.colorify("NON_MAIN_ARENA", Config.get_gef_setting("theme.heap_chunk_flag_non_main_arena"))]
+        else:
+            flag += ["NON_MAIN_ARENA"]
+
+        if size_candidate & 0b10:
+            flag += [Color.colorify("IS_MMAPED", Config.get_gef_setting("theme.heap_chunk_flag_is_mmapped"))]
+        else:
+            flag += ["IS_MMAPED"]
+
+        if size_candidate & 0b1:
+            flag += [Color.colorify("PREV_INUSE", Config.get_gef_setting("theme.heap_chunk_flag_prev_inuse"))]
+        else:
+            flag += ["PREV_INUSED"]
+
+        self.out.append("    [{:s}]".format(" ".join(flag)))
+        for line in res.splitlines():
+            self.out.append("    {:s}".format(line))
+        return
+
+    def find_fake_fast(self, target_size):
+        mask = ~0x7 if current_arch.ptrsize == 4 else ~0xf
+        target_size &= mask
+        vmmap = ProcessMap.get_process_maps()
+        unpack = u32 if current_arch.ptrsize == 4 else u64
+        for m in vmmap:
+            if not (m.permission & Permission.READ) or not (m.permission & Permission.WRITE):
+                continue
+            if m.path in ["[vvar]", "[vsyscall]", "[vectors]", "[sigpage]"]:
+                continue
+            if not self.include_heap and m.path.startswith("[heap]"):
+                continue
+            data = read_memory(m.page_start, m.size)
+            # Scanning page-by-page
+            for pos in range(0, m.size, gef_getpagesize()):
+                # fast check for all zero, because there may be huge mmap-ed memory
+                if b"\0" * gef_getpagesize() == data[pos:pos + gef_getpagesize()]:
+                    continue
+                # this page has some data
+                unit = 0x10 if self.aligned else 1
+                for posb in range(pos, pos + gef_getpagesize(), unit):
+                    size_candidate = data[posb + current_arch.ptrsize:posb + current_arch.ptrsize * 2]
+                    if len(size_candidate) != current_arch.ptrsize:
+                        break
+                    size_candidate = unpack(size_candidate)
+                    if (size_candidate & mask) != target_size:
+                        continue
+                    self.print_result(m, posb, size_candidate)
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        if is_64bit():
+            MIN_SIZE = 0x20
+        else:
+            MIN_SIZE = 0x10
+
+        if args.size < MIN_SIZE:
+            err("Wrong size")
+            return
+
+        self.include_heap = args.include_heap
+        self.aligned = args.aligned
+
+        self.out = []
+        self.find_fake_fast(args.size)
+        self.print_output(args, term=True)
         return
 
 
@@ -50431,103 +50530,6 @@ class CalcProtectedFdCommand(GenericCommand):
             loc -= current_arch.ptrsize * 2
         ptr = (loc >> 12) ^ args.fd
         gef_print("Protected fd pointer: {:#x}".format(ptr))
-        return
-
-
-@register_command
-class FindFakeFastCommand(GenericCommand, BufferingOutput):
-    """Find candidate fake fast chunks from RW memory."""
-
-    _cmdline_ = "find-fake-fast"
-    _category_ = "06-a. Heap - Glibc"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("--include-heap", action="store_true", help="heap is also included in the search target.")
-    parser.add_argument("--aligned", action="store_true", help="search only aligned chunks.")
-    parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address, help="search target size.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
-    _syntax_ = parser.format_help()
-
-    def print_result(self, m, pos, size_candidate):
-        path = "unknown" if m.path == "" else m.path
-        address = ProcessMap.lookup_address(m.page_start + pos)
-        self.info("Found at {!s} in {!r} [{!s}]".format(address, path, m.permission))
-
-        if is_32bit():
-            res = gdb.execute("x/6xw {:#x}".format(address.value), to_string=True)
-        else:
-            res = gdb.execute("x/6xg {:#x}".format(address.value), to_string=True)
-
-        flag = []
-        if size_candidate & 0b100:
-            flag += [Color.colorify("NON_MAIN_ARENA", Config.get_gef_setting("theme.heap_chunk_flag_non_main_arena"))]
-        else:
-            flag += ["NON_MAIN_ARENA"]
-
-        if size_candidate & 0b10:
-            flag += [Color.colorify("IS_MMAPED", Config.get_gef_setting("theme.heap_chunk_flag_is_mmapped"))]
-        else:
-            flag += ["IS_MMAPED"]
-
-        if size_candidate & 0b1:
-            flag += [Color.colorify("PREV_INUSE", Config.get_gef_setting("theme.heap_chunk_flag_prev_inuse"))]
-        else:
-            flag += ["PREV_INUSED"]
-
-        self.out.append("    [{:s}]".format(" ".join(flag)))
-        for line in res.splitlines():
-            self.out.append("    {:s}".format(line))
-        return
-
-    def find_fake_fast(self, target_size):
-        mask = ~0x7 if current_arch.ptrsize == 4 else ~0xf
-        target_size &= mask
-        vmmap = ProcessMap.get_process_maps()
-        unpack = u32 if current_arch.ptrsize == 4 else u64
-        for m in vmmap:
-            if not (m.permission & Permission.READ) or not (m.permission & Permission.WRITE):
-                continue
-            if m.path in ["[vvar]", "[vsyscall]", "[vectors]", "[sigpage]"]:
-                continue
-            if not self.include_heap and m.path.startswith("[heap]"):
-                continue
-            data = read_memory(m.page_start, m.size)
-            # Scanning page-by-page
-            for pos in range(0, m.size, gef_getpagesize()):
-                # fast check for all zero, because there may be huge mmap-ed memory
-                if b"\0" * gef_getpagesize() == data[pos:pos + gef_getpagesize()]:
-                    continue
-                # this page has some data
-                unit = 0x10 if self.aligned else 1
-                for posb in range(pos, pos + gef_getpagesize(), unit):
-                    size_candidate = data[posb + current_arch.ptrsize:posb + current_arch.ptrsize * 2]
-                    if len(size_candidate) != current_arch.ptrsize:
-                        break
-                    size_candidate = unpack(size_candidate)
-                    if (size_candidate & mask) != target_size:
-                        continue
-                    self.print_result(m, posb, size_candidate)
-        return
-
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    def do_invoke(self, args):
-        if is_64bit():
-            MIN_SIZE = 0x20
-        else:
-            MIN_SIZE = 0x10
-
-        if args.size < MIN_SIZE:
-            err("Wrong size")
-            return
-
-        self.include_heap = args.include_heap
-        self.aligned = args.aligned
-
-        self.out = []
-        self.find_fake_fast(args.size)
-        self.print_output(args, term=True)
         return
 
 
