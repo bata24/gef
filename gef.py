@@ -14968,7 +14968,7 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
         "   However, using a pager, the color information disappears. This command calls the pager with preserving colors.",
         "2. When `ptype /ox TYPE`, interpreting member type recursively often result is too long and difficult to read.",
         "   This command keeps result compact by displaying only top-level members.",
-        "3. When `p ((TYPE*) ADDRESS)[0]` for large struct, the setting of `max-value-size` is too small to display.",
+        "3. When `p ((TYPE*) ADDRESS)[0]` for large struct, the gdb setting of `max-value-size` is too small to display.",
         "   This command adjusts it automatically.",
         "4. When debugging a binary written in the golang, the offset information of the type is not displayed.",
         "   This command also displays the offset.",
@@ -14977,6 +14977,60 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
         "   This command creates the display results on the python side, so we can display it without any problems.",
     ]
     _note_ = "\n".join(_note_)
+
+    def dump_type(self, args, tp):
+        if tp.code == gdb.TYPE_CODE_STRUCT:
+            type_prefix = "struct"
+        elif tp.code == gdb.TYPE_CODE_UNION:
+            type_prefix = "union"
+        elif tp.code == gdb.TYPE_CODE_ENUM:
+            type_prefix = "enum"
+        else:
+            err("{:s} is not struct or union".format(tp.name or args.type))
+            return
+
+        self.out = [
+            "{:s} {:s} {{".format(type_prefix, Instruction.smartify_text(tp.name or args.type)),
+            "    /* offset | size   */",
+        ]
+        for name, field in tp.items():
+            if tp.code in [gdb.TYPE_CODE_STRUCT, gdb.TYPE_CODE_UNION]:
+                if hasattr(field, "bitpos") and hasattr(field.type, "sizeof"):
+                    offsz_str = "/* {:#06x} | {:#06x} */".format(field.bitpos // 8, field.type.sizeof)
+                elif hasattr(field.type, "sizeof"):
+                    offsz_str = "/*        | {:#06x} */".format(field.type.sizeof)
+                elif hasattr(field, "bitpos"):
+                    offsz_str = "/* {:#06x} |        */".format(field.bitpos // 8)
+                else:
+                    offsz_str = "/*        |        */"
+                type_str = Instruction.smartify_text(str(field.type))
+                name_str = Color.cyanify(Instruction.smartify_text(name))
+                if field.bitsize == 0:
+                    msg = "    {:s}    {} {:s};".format(offsz_str, type_str, name_str)
+                else:
+                    msg = "    {:s}    {} {:s} : {:d};".format(offsz_str, type_str, name_str, field.bitsize)
+            else: # gdb.TYPE_CODE_ENUM
+                offsz_str = "/* {:#06x} | {:#06x} */".format(0, 4)
+                type_str = "int"
+                name_str = Color.cyanify(Instruction.smartify_text(name))
+                msg = "    {:s}    {} {:s} = {:#x};".format(offsz_str, type_str, name_str, field.enumval)
+            self.out.append(msg)
+        self.out.append("}} // total: {:#x} bytes".format(tp.sizeof))
+        return
+
+    def apply_type(self, args, tp):
+        if not is_valid_addr(args.address):
+            err("Memory access error")
+            return
+
+        # change setting
+        if tp.sizeof > 2200: # 2200 is default value of max-value-size
+            gdb.execute("set max-value-size {:#x}".format(tp.sizeof))
+
+        v = gdb.Value(args.address)
+        s = v.cast(tp.pointer()).dereference()
+        self.out = s.format_string(styling=True).splitlines()
+        return
 
     @parse_args
     @only_if_gdb_running
@@ -14999,68 +15053,25 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
         while str(tp).endswith("*"):
             tp = tp.target()
 
+        # check if valid type
         if tp.code not in [gdb.TYPE_CODE_STRUCT, gdb.TYPE_CODE_UNION, gdb.TYPE_CODE_ENUM]:
             err("{:s} is not struct or union or enum".format(tp.name or args.type))
             return
 
+        # change setting temporarily
         if args.smart:
             old_smart_setting = Config.get_gef_setting("context.smart_cpp_function_name")
             Config.set_gef_setting("context.smart_cpp_function_name", True)
 
+        # doit
         if args.address is None:
-            if tp.code == gdb.TYPE_CODE_STRUCT:
-                type_prefix = "struct"
-            elif tp.code == gdb.TYPE_CODE_UNION:
-                type_prefix = "union"
-            elif tp.code == gdb.TYPE_CODE_ENUM:
-                type_prefix = "enum"
-            else:
-                err("{:s} is not struct or union".format(tp.name or args.type))
-                return
-
-            self.out = [
-                "{:s} {:s} {{".format(type_prefix, Instruction.smartify_text(tp.name or args.type)),
-                "    /* offset | size   */",
-            ]
-            for name, field in tp.items():
-                if tp.code in [gdb.TYPE_CODE_STRUCT, gdb.TYPE_CODE_UNION]:
-                    if hasattr(field, "bitpos") and hasattr(field.type, "sizeof"):
-                        offsz_str = "/* {:#06x} | {:#06x} */".format(field.bitpos // 8, field.type.sizeof)
-                    elif hasattr(field.type, "sizeof"):
-                        offsz_str = "/*        | {:#06x} */".format(field.type.sizeof)
-                    elif hasattr(field, "bitpos"):
-                        offsz_str = "/* {:#06x} |        */".format(field.bitpos // 8)
-                    else:
-                        offsz_str = "/*        |        */"
-                    type_str = Instruction.smartify_text(str(field.type))
-                    name_str = Color.cyanify(Instruction.smartify_text(name))
-                    if field.bitsize == 0:
-                        msg = "    {:s}    {} {:s};".format(offsz_str, type_str, name_str)
-                    else:
-                        msg = "    {:s}    {} {:s} : {:d};".format(offsz_str, type_str, name_str, field.bitsize)
-
-                else: # gdb.TYPE_CODE_ENUM
-                    offsz_str = "/* {:#06x} | {:#06x} */".format(0, 4)
-                    type_str = "int"
-                    name_str = Color.cyanify(Instruction.smartify_text(name))
-                    msg = "    {:s}    {} {:s} = {:#x};".format(offsz_str, type_str, name_str, field.enumval)
-
-                self.out.append(msg)
-
-            self.out.append("}} // total: {:#x} bytes".format(tp.sizeof))
-            self.print_output(args)
-
+            self.dump_type(args, tp)
         else:
-            if not is_valid_addr(args.address):
-                err("Memory access error")
-                return
-            if tp.sizeof > 2200: # 2200 is default value of max-value-size
-                gdb.execute("set max-value-size {:#x}".format(tp.sizeof))
-            v = gdb.Value(args.address)
-            s = v.cast(tp.pointer()).dereference()
-            out = s.format_string(styling=True)
-            gef_print(out, less=not args.no_pager)
+            self.apply_type(args, tp)
 
+        self.print_output(args)
+
+        # revert setting
         if args.smart:
             Config.set_gef_setting("context.smart_cpp_function_name", old_smart_setting)
         return
