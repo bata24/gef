@@ -281,6 +281,8 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
         * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-bins.png)
     * They print bins information if the chunk is in free-list.
         * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-if-in-freelist.png)
+    * Thread arena is supported for all `heap` commands.
+        * Use `-a` option.
     * It supports some new sub-commands.
         * `heap arenas`
             * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-arenas.png)
@@ -300,10 +302,8 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
             * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-extract-heap-addr.png)
         * `heap calc-protected-fd`: calculates a valid value as protected fd.
             * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-calc-protected-fd.png)
-    * Thread arena is supported for all `heap` commands.
-        * Use `-a` option.
-    * `visual-heap`: is colorized heap viewer.
-        * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/visual-heap.png)
+        * `heap visual-heap`: is colorized heap viewer.
+            * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-visual-heap.png)
 * uClibc heap commands are added.
     * `uclibc-ng-heap-dump`: dumps uClibc-ng heap chunks.
         * Supported on x64 and x86, based on uClibc-ng v1.0.42 malloc-standard.

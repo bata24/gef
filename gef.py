@@ -20131,6 +20131,7 @@ class GlibcHeapCommand(GenericCommand):
     subparsers.add_parser("find-fake-fast")
     subparsers.add_parser("extract-heap-addr")
     subparsers.add_parser("calc-protected-fd")
+    subparsers.add_parser("visual-heap")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -21711,6 +21712,217 @@ class GlibcCalcProtectedFdCommand(GenericCommand):
             loc -= current_arch.ptrsize * 2
         ptr = (loc >> 12) ^ args.fd
         gef_print("Protected fd pointer: {:#x}".format(ptr))
+        return
+
+
+@register_command
+class GlibcVisualHeapCommand(GenericCommand):
+    """Visualize chunks on a heap."""
+
+    _cmdline_ = "heap visual-heap"
+    _category_ = "06-a. Heap - Glibc"
+    _aliases_ = ["visual-heap"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
+                        help="the address interpreted as the beginning of a contiguous chunk. (default: arena.heap_base)")
+    parser.add_argument("-a", dest="arena_addr", type=AddressUtil.parse_address,
+                        help="the address or number to interpret as an arena. (default: main_arena)")
+    parser.add_argument("-c", dest="max_count", type=AddressUtil.parse_address,
+                        help="Maximum count to parse. It is used when there is a very large amount of chunks.")
+    parser.add_argument("-f", "--full", action="store_true",
+                        help="display the same line without omitting.")
+    parser.add_argument("-d", "--dark-color", action="store_true",
+                        help="use the dark color if chunk is allocated.")
+    parser.add_argument("-s", "--safe-linking-decode", action="store_true",
+                        help="decode safe-linking encoded pointer if tcache or fastbins.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    _syntax_ = parser.format_help()
+
+    color = [
+        Color.redify,
+        Color.greenify,
+        Color.blueify,
+        Color.yellowify
+    ]
+    dark_color = [
+        lambda x: Color.colorify(x, "bright_black"),
+        lambda x: Color.colorify(x, "graphite"),
+    ]
+
+    def __init__(self):
+        super().__init__(complete=gdb.COMPLETE_LOCATION)
+        return
+
+    def generate_visual_chunk(self, arena, chunk, idx):
+        unpack = u32 if current_arch.ptrsize == 4 else u64
+        data = slicer(chunk.data, current_arch.ptrsize * 2)
+        group_line_threshold = 8
+
+        addr = chunk.chunk_base_address
+        width = current_arch.ptrsize * 2 + 2
+        exceed_top = False
+        has_subinfo = False
+
+        out_tmp = []
+        # Group rows to display rows with the same value together.
+        for blk, blks in itertools.groupby(data):
+            repeat_count = len(list(blks))
+            d1, d2 = unpack(blk[:current_arch.ptrsize]), unpack(blk[current_arch.ptrsize:])
+            dascii = "".join([chr(x) if 0x20 <= x < 0x7f else "." for x in blk])
+
+            if self.full or repeat_count < group_line_threshold:
+                # non-collapsed line
+                for _ in range(repeat_count):
+                    sub_info = arena.make_bins_info(addr)
+                    if sub_info:
+                        sub_info = "{:s} {:s}".format(LEFT_ARROW, ", ".join(sub_info))
+                        has_subinfo = True
+                    else:
+                        sub_info = ""
+
+                    if self.safe_linking_decode:
+                        if chunk.address == addr and ("tcache" in sub_info or "fastbins" in sub_info):
+                            d1 = chunk.get_fwd_ptr(True)
+
+                    offset1 = addr - chunk.chunk_base_address
+                    offset2 = addr - arena.heap_base
+                    out_tmp.append("{:#x}|{:+#08x}|{:+#08x}: {:#0{:d}x} {:#0{:d}x} | {:s} | {:s}".format(
+                        addr, offset1, offset2, d1, width, d2, width, dascii, sub_info,
+                    ).rstrip())
+                    addr += current_arch.ptrsize * 2
+
+                    if addr > arena.top + current_arch.ptrsize * 4:
+                        exceed_top = True
+                        break
+            else:
+                # collapsed line
+                sub_info = arena.make_bins_info(addr)
+                if sub_info:
+                    sub_info = "{:s} {:s}".format(LEFT_ARROW, ", ".join(sub_info))
+                    has_subinfo = True
+                else:
+                    sub_info = ""
+
+                offset1 = addr - chunk.chunk_base_address
+                offset2 = addr - arena.heap_base
+                out_tmp.append("{:#x}|{:+#08x}|{:+#08x}: {:#0{:d}x} {:#0{:d}x} | {:s} | {:s}".format(
+                    addr, offset1, offset2, d1, width, d2, width, dascii, sub_info,
+                ).rstrip())
+                addr += current_arch.ptrsize * 2 * repeat_count
+                out_tmp.append("* {:#d} lines, {:#x} bytes".format(
+                    repeat_count - 1, (repeat_count - 1) * current_arch.ptrsize * 2,
+                ))
+
+            if exceed_top:
+                break
+
+        # coloring
+        if self.use_dark_color and not has_subinfo:
+            color_func = self.dark_color[idx % len(self.dark_color)]
+        else:
+            color_func = self.color[idx % len(self.color)]
+        self.out.append("\n".join(map(color_func, out_tmp)))
+
+        # corrupted case
+        if exceed_top:
+            self.out.append(Color.boldify("..."))
+        return
+
+    def generate_visual_heap(self, arena, dump_start, max_count):
+        sect = ProcessMap.process_lookup_address(dump_start)
+        if sect:
+            end = sect.page_end
+        else:
+            # If qemu-user 8.1 or higher, the `process_lookup_address` to obtain the section list
+            # uses `info proc mappings` internally.
+            # This is fast, but does not return an accurate list in some cases.
+            # For example, sparc64 may not include the heap area.
+            # So it detects the end of the page from arena.top.
+            end = arena.top + GlibcHeap.GlibcChunk(arena.top, from_base=True).size
+
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            tqdm = None
+        if tqdm:
+            pbar = tqdm(total=end - dump_start, leave=False)
+
+        addr = dump_start
+        i = 0
+        while addr < end:
+            chunk = GlibcHeap.GlibcChunk(addr + current_arch.ptrsize * 2)
+            # corrupt check
+            if chunk.size == 0:
+                msg = "{} Corrupted (chunk.size == 0)".format(Color.colorify("[!]", "bold red"))
+                self.out.append(msg)
+                chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
+                self.generate_visual_chunk(arena, chunk, i)
+                break
+            elif addr != arena.top and addr + chunk.size > arena.top:
+                msg = "{} Corrupted (addr + chunk.size > arena.top)".format(Color.colorify("[!]", "bold red"))
+                self.out.append(msg)
+                chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
+                self.generate_visual_chunk(arena, chunk, i)
+                break
+            elif addr + chunk.size > end:
+                msg = "{} Corrupted (addr + chunk.size > sect.page_end)".format(Color.colorify("[!]", "bold red"))
+                self.out.append(msg)
+                chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
+                self.generate_visual_chunk(arena, chunk, i)
+                break
+            # maybe not corrupted
+            try:
+                chunk.data = read_memory(addr, chunk.size)
+            except gdb.MemoryError:
+                break
+            self.generate_visual_chunk(arena, chunk, i)
+            addr += chunk.size
+            i += 1
+
+            if tqdm:
+                pbar.update(chunk.size)
+
+            if max_count and max_count <= i:
+                break
+
+        if tqdm:
+            pbar.close()
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        self.full = args.full
+        self.use_dark_color = args.dark_color
+        self.safe_linking_decode = args.safe_linking_decode
+
+        # parse arena
+        arena = GlibcHeap.get_arena(args.arena_addr)
+
+        if arena is None:
+            err("No valid arena")
+            return
+
+        if arena.heap_base is None or not is_valid_addr(arena.heap_base):
+            err("Heap is not initialized")
+            return
+
+        if args.location is None:
+            dump_start = arena.heap_base
+            # specific pattern
+            if arena.is_main_arena:
+                if (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
+                    dump_start += 8
+        else:
+            dump_start = args.location
+
+        self.out = []
+        Cache.reset_gef_caches(all=True)
+        arena.reset_bins_info()
+        self.generate_visual_heap(arena, dump_start, args.max_count)
+        gef_print("\n".join(self.out), less=not args.no_pager)
         return
 
 
@@ -50532,216 +50744,6 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
             gef_print('{:3d} (={:#4x}): {:<15s}: "{:s}"'.format(val, val, sym, desc))
         else:
             err("Not found value in ERRNO_DICT")
-        return
-
-
-@register_command
-class VisualHeapCommand(GenericCommand):
-    """Visualize chunks on a heap."""
-
-    _cmdline_ = "visual-heap"
-    _category_ = "06-a. Heap - Glibc"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
-                        help="the address interpreted as the beginning of a contiguous chunk. (default: arena.heap_base)")
-    parser.add_argument("-a", dest="arena_addr", type=AddressUtil.parse_address,
-                        help="the address or number to interpret as an arena. (default: main_arena)")
-    parser.add_argument("-c", dest="max_count", type=AddressUtil.parse_address,
-                        help="Maximum count to parse. It is used when there is a very large amount of chunks.")
-    parser.add_argument("-f", "--full", action="store_true",
-                        help="display the same line without omitting.")
-    parser.add_argument("-d", "--dark-color", action="store_true",
-                        help="use the dark color if chunk is allocated.")
-    parser.add_argument("-s", "--safe-linking-decode", action="store_true",
-                        help="decode safe-linking encoded pointer if tcache or fastbins.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
-    _syntax_ = parser.format_help()
-
-    color = [
-        Color.redify,
-        Color.greenify,
-        Color.blueify,
-        Color.yellowify
-    ]
-    dark_color = [
-        lambda x: Color.colorify(x, "bright_black"),
-        lambda x: Color.colorify(x, "graphite"),
-    ]
-
-    def __init__(self):
-        super().__init__(complete=gdb.COMPLETE_LOCATION)
-        return
-
-    def generate_visual_chunk(self, arena, chunk, idx):
-        unpack = u32 if current_arch.ptrsize == 4 else u64
-        data = slicer(chunk.data, current_arch.ptrsize * 2)
-        group_line_threshold = 8
-
-        addr = chunk.chunk_base_address
-        width = current_arch.ptrsize * 2 + 2
-        exceed_top = False
-        has_subinfo = False
-
-        out_tmp = []
-        # Group rows to display rows with the same value together.
-        for blk, blks in itertools.groupby(data):
-            repeat_count = len(list(blks))
-            d1, d2 = unpack(blk[:current_arch.ptrsize]), unpack(blk[current_arch.ptrsize:])
-            dascii = "".join([chr(x) if 0x20 <= x < 0x7f else "." for x in blk])
-
-            if self.full or repeat_count < group_line_threshold:
-                # non-collapsed line
-                for _ in range(repeat_count):
-                    sub_info = arena.make_bins_info(addr)
-                    if sub_info:
-                        sub_info = "{:s} {:s}".format(LEFT_ARROW, ", ".join(sub_info))
-                        has_subinfo = True
-                    else:
-                        sub_info = ""
-
-                    if self.safe_linking_decode:
-                        if chunk.address == addr and ("tcache" in sub_info or "fastbins" in sub_info):
-                            d1 = chunk.get_fwd_ptr(True)
-
-                    offset1 = addr - chunk.chunk_base_address
-                    offset2 = addr - arena.heap_base
-                    out_tmp.append("{:#x}|{:+#08x}|{:+#08x}: {:#0{:d}x} {:#0{:d}x} | {:s} | {:s}".format(
-                        addr, offset1, offset2, d1, width, d2, width, dascii, sub_info,
-                    ).rstrip())
-                    addr += current_arch.ptrsize * 2
-
-                    if addr > arena.top + current_arch.ptrsize * 4:
-                        exceed_top = True
-                        break
-            else:
-                # collapsed line
-                sub_info = arena.make_bins_info(addr)
-                if sub_info:
-                    sub_info = "{:s} {:s}".format(LEFT_ARROW, ", ".join(sub_info))
-                    has_subinfo = True
-                else:
-                    sub_info = ""
-
-                offset1 = addr - chunk.chunk_base_address
-                offset2 = addr - arena.heap_base
-                out_tmp.append("{:#x}|{:+#08x}|{:+#08x}: {:#0{:d}x} {:#0{:d}x} | {:s} | {:s}".format(
-                    addr, offset1, offset2, d1, width, d2, width, dascii, sub_info,
-                ).rstrip())
-                addr += current_arch.ptrsize * 2 * repeat_count
-                out_tmp.append("* {:#d} lines, {:#x} bytes".format(
-                    repeat_count - 1, (repeat_count - 1) * current_arch.ptrsize * 2,
-                ))
-
-            if exceed_top:
-                break
-
-        # coloring
-        if self.use_dark_color and not has_subinfo:
-            color_func = self.dark_color[idx % len(self.dark_color)]
-        else:
-            color_func = self.color[idx % len(self.color)]
-        self.out.append("\n".join(map(color_func, out_tmp)))
-
-        # corrupted case
-        if exceed_top:
-            self.out.append(Color.boldify("..."))
-        return
-
-    def generate_visual_heap(self, arena, dump_start, max_count):
-        sect = ProcessMap.process_lookup_address(dump_start)
-        if sect:
-            end = sect.page_end
-        else:
-            # If qemu-user 8.1 or higher, the `process_lookup_address` to obtain the section list
-            # uses `info proc mappings` internally.
-            # This is fast, but does not return an accurate list in some cases.
-            # For example, sparc64 may not include the heap area.
-            # So it detects the end of the page from arena.top.
-            end = arena.top + GlibcHeap.GlibcChunk(arena.top, from_base=True).size
-
-        try:
-            from tqdm import tqdm
-        except ImportError:
-            tqdm = None
-        if tqdm:
-            pbar = tqdm(total=end - dump_start, leave=False)
-
-        addr = dump_start
-        i = 0
-        while addr < end:
-            chunk = GlibcHeap.GlibcChunk(addr + current_arch.ptrsize * 2)
-            # corrupt check
-            if chunk.size == 0:
-                msg = "{} Corrupted (chunk.size == 0)".format(Color.colorify("[!]", "bold red"))
-                self.out.append(msg)
-                chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
-                self.generate_visual_chunk(arena, chunk, i)
-                break
-            elif addr != arena.top and addr + chunk.size > arena.top:
-                msg = "{} Corrupted (addr + chunk.size > arena.top)".format(Color.colorify("[!]", "bold red"))
-                self.out.append(msg)
-                chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
-                self.generate_visual_chunk(arena, chunk, i)
-                break
-            elif addr + chunk.size > end:
-                msg = "{} Corrupted (addr + chunk.size > sect.page_end)".format(Color.colorify("[!]", "bold red"))
-                self.out.append(msg)
-                chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
-                self.generate_visual_chunk(arena, chunk, i)
-                break
-            # maybe not corrupted
-            try:
-                chunk.data = read_memory(addr, chunk.size)
-            except gdb.MemoryError:
-                break
-            self.generate_visual_chunk(arena, chunk, i)
-            addr += chunk.size
-            i += 1
-
-            if tqdm:
-                pbar.update(chunk.size)
-
-            if max_count and max_count <= i:
-                break
-
-        if tqdm:
-            pbar.close()
-        return
-
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    def do_invoke(self, args):
-        self.full = args.full
-        self.use_dark_color = args.dark_color
-        self.safe_linking_decode = args.safe_linking_decode
-
-        # parse arena
-        arena = GlibcHeap.get_arena(args.arena_addr)
-
-        if arena is None:
-            err("No valid arena")
-            return
-
-        if arena.heap_base is None or not is_valid_addr(arena.heap_base):
-            err("Heap is not initialized")
-            return
-
-        if args.location is None:
-            dump_start = arena.heap_base
-            # specific pattern
-            if arena.is_main_arena:
-                if (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
-                    dump_start += 8
-        else:
-            dump_start = args.location
-
-        self.out = []
-        Cache.reset_gef_caches(all=True)
-        arena.reset_bins_info()
-        self.generate_visual_heap(arena, dump_start, args.max_count)
-        gef_print("\n".join(self.out), less=not args.no_pager)
         return
 
 
