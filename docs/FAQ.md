@@ -29,11 +29,11 @@ This includes the current values of items configurable with `gef config` and use
 ## What is `/tmp/gef`?
 This is the directory where GEF temporarily stores files.
 
-Since it is used for caching, there is no problem in deleting it.
+As it is used for caching, deleting it does not cause any issues.
 It will be created automatically the next time GEF starts.
 
 ## What is `install-minimal.sh`?
-This is an installer for running GEF in limited environments where required packages cannot be installed for some reason.
+This is an installer for running GEF in restricted environments where required packages cannot be installed due to various limitations.
 
 Usage:
 ```
@@ -41,16 +41,16 @@ Usage:
 wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-minimal.sh -O- | sh
 ```
 
-Use this if you do not need some features (used in a limited environment).
-It should work at least except some commands.
-The essence of it is very simple. Just download `gef.py`, place it, and add its path to `.gdbinit`.
+Use this if you don't require all features (suitable for restricted environments).
+It should work for most functionalities, though some commands may not be available.
+The process is straightforward: download `gef.py`, place it in the appropriate location, and add its path to `.gdbinit`.
 You could also do the same thing manually.
 
 ## What is `install-venv.sh`?
-This is the `venv` version of `install.sh`.
+This is the virtual environment (`venv`) version of `install.sh`.
 
 This will install the same packages as `install.sh`.
-The only difference is that the python package will be installed into the `venv` environment.
+The only difference is that the Python package will be installed into the `venv` environment.
 By default, it will be installed into `/root/.venv-gef`.
 
 Usage:
@@ -59,7 +59,7 @@ Usage:
 wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-venv.sh -O- | sh
 ```
 
-Before starting gdb, you need to execute following and transition to the `venv` environment.
+Before starting `gdb`, you need to execute the following command to activate the `venv` environment:
 ```
 source /root/.venv-gef/bin/activate
 ```
@@ -91,7 +91,7 @@ Following are the breakdown. It may not be comprehensive.
 
 If you install using `install-minimal.sh`, these commands will not be available unless you manually install the required packages and tools yourself.
 
-|GEF command/feature|required apt package|required python3 package|required other tools|
+|GEF command/feature|Required apt package|Required python3 package|Required other tools|
 |:---|:---|:---|:---|
 |(`gef`)|`gdb` or `gdb-multiarch`|-|-|
 |`got`|`binutils` (`objdump`, `readelf`)|-|-|
@@ -126,7 +126,7 @@ If you install using `install-minimal.sh`, these commands will not be available 
 # About the host environment
 
 ## Does GEF work properly on OS other than Ubuntu?
-Yes, it probably works fine for regular Linux.
+Yes, it likely works well on most standard Linux distributions.
 
 I have used it on debian. Some users are running it on Arch Linux.
 Also it seems to be working fine on WSL2 (ubuntu) so far.
@@ -136,7 +136,7 @@ However, I have not confirmed that all commands work correctly.
 No, it doesn't work. It replaces `hugsy/gef`.
 
 The compatibility with `hugsy/gef` has already been lost. Of course, `hugsy/gef-extras` too.
-Think of it as a completely different product.
+It should be considered as an entirely separate product.
 
 Similarly, this GEF cannot be used at the same time as `peda` or `pwndbg`.
 Make sure you only load one of them.
@@ -144,7 +144,7 @@ Make sure you only load one of them.
 ## GDB will not load GEF.
 This is probably because gdb does not support cooperation with python3.
 
-Consider building gdb from latest tarball or git.
+Consider building GDB from the latest tarball or Git repository.
 
 * from latest tarball
     * Download latest tarball from https://ftp.gnu.org/gnu/gdb/
@@ -162,7 +162,7 @@ Consider building gdb from latest tarball or git.
     ```
 
 ## When debugging with gdb, how can I display the source code of preinstalled libraries and commands?
-Although it is limited to Ubuntu 22.10 or later, it is recommended to use `debuginfod`.
+For Ubuntu 22.10 and later versions, it is recommended to use `debuginfod`.
 
 * Enable `debuginfod` (ubuntu 22.10~)
     ```
@@ -210,13 +210,13 @@ If you have any trouble, please report it on the issue page.
 ## Is there a way to get a pre-built kernel of each version?
 I use [https://kernel.ubuntu.com/](https://kernel.ubuntu.com/mainline).
 
-Download `linux-image-unsigned-*_amd64.deb` your preferred, and extract `/boot/vmlinuz-*`.
+Download your preferred `linux-image-unsigned-*_amd64.deb` file, then extract `/boot/vmlinuz-*` file from it.
 No filesystem image is provided. Please use the one created with `buildroot` or provided in past CTF challenges.
 
 Download `linux-modules-*_amd64.deb` for `System.map` and `config`.
 
 ## Will each GEF command be more accurate if I have `vmlinux` with debug symbols?
-No, whether `vmlinux` includes debug information has no effect on GEF behavior.
+No, the presence or absence of debug information in `vmlinux` does not impact GEF's functionality or behavior.
 
 GEF always uses its own resolved address with `ksymaddr-remote`.
 It also performs its own heuristic structure member detection in each command.
@@ -227,9 +227,9 @@ Yes, GEF supports real mode experimentally.
 Use `qemu-system-i386`, and do NOT use `qemu-system-x86_64`.
 Explicitly specify the i8086 architecture before connecting: `gdb -ex 'set architecture i8086' -ex 'target remote localhost:1234'`.
 
-GEF will switch to and from 32-bit mode automatically.
+GEF automatically handles the transition between 16-bit real mode and 32-bit protected mode.
 
-## Does GEF support to debug Android?
+## Does GEF support debugging Android?
 I have never tried it, so I don't know.
 
 I think it will work for userland debugging.
@@ -241,8 +241,6 @@ Regarding kernel debugging, I haven't been able to confirm how much the structur
 ## Does GEF support TEE OS other than OP-TEE?
 No, GEF does not support it.
 
-If there is publicly available test image, I consider developing to support that OS.
-
 ## Is it possible to debug userland with GEF when using qemu-system?
 Partially yes.
 
@@ -251,7 +249,7 @@ However, of course, I do not recommend continually debugging userland with qemu-
 This is because many commands are restricted for various reasons.
 Consider setting up `gdbserver` in the guest and connecting from the outside.
 
-Note: If KPTI is enabled, many kernel-related commands cannot be used.
+Note: If KPTI is enabled, many kernel-related commands cannot be used in userland.
 The reason is that most memory access to kernel space is unavailable if KPTI is enabled.
 
 ## How do I break in userland when using qemu-system?
@@ -268,19 +266,20 @@ However, hardware breakpoints can be used without any problems.
 # About GEF settings
 
 ## I prefer the AT&T style.
-Please specify each time using the `set disassembly-flavor att` command.
+You can set the AT&T style for each session using the `set disassembly-flavor att` command.
 
 Or, since the `set disassembly-flavor intel` command is executed in the main function of GEF, it may be a good idea to comment it out.
-However, since GEF does not take AT&T syntax parsing into consideration, so some commands may do not work fine.
+However, as GEF is not optimized for AT&T syntax parsing, some commands may not function correctly.
 If you find a case where it doesn't work, please report it on the issue page.
 
 ## I don't like the color scheme.
-Customize it using the `theme` command, then `gef save`. The config is saved to `~/.gef.rc`.
+Customize it using the `theme` command, then `gef save`.
+This will save the configuration to `~/.gef.rc`.
 
 Another option is to disable colors. Try `gef config gef.disable_color True`.
 
 ## I don't want to add `-n` to every command to disable pager.
-Try `gef config gef.always_no_pager True` then `gef save`.
+To permanently disable the pager, use the command `gef config gef.always_no_pager True` followed by `gef save`.
 
 
 # About commands
