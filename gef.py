@@ -29280,6 +29280,50 @@ class HexdumpFlexibleCommand(GenericCommand):
 
 
 @register_command
+class LoadFileCommand(GenericCommand):
+    """Load the file into memory."""
+
+    _cmdline_ = "load-file"
+    _category_ = "03-g. Memory - Load"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("filepath", metavar="FILEPATH", help="the filepath to load.")
+    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
+                        help="the memory address to load.")
+    _syntax_ = parser.format_help()
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    def do_invoke(self, args):
+        if not os.path.exists(args.filepath):
+            err("Not found {:s}".format(args.filepath))
+            return
+
+        size = os.path.getsize(args.filepath)
+        size = AddressUtil.align_address_to_size(size, gef_getpagesize())
+
+        res = gdb.execute("mmap {:#x} {:#x}".format(args.location, size), to_string=True)
+        output_line = res.splitlines()[-1]
+        ret = int(output_line.split()[2], 0)
+
+        if AddressUtil.is_msb_on(ret):
+            err("Failed to mmap")
+            return
+
+        fd = open(args.filepath, "rb")
+        offset = 0
+        while True:
+            data = fd.read(0x1000)
+            if len(data) == 0:
+                break
+            write_memory(args.location + offset, data)
+            offset += len(data)
+
+        return
+
+
+@register_command
 class PatchCommand(GenericCommand):
     """The base command to write specified values to the specified address."""
 

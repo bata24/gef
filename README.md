@@ -667,6 +667,7 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/sigreturn.png)
 * `smart-memory-dump`: dumps all regions of the memory to each file.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/smart-memory-dump.png)
+* `load-file`: loads the file into memory.
 * `search-cfi-gadgets`: searches CFI-valid (for CET IBT) and controllable generally gadgets from executable area.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/search-cfi-gadgets.png)
 * `symbols`: lists up all symbols with coloring.
