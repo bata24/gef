@@ -33605,6 +33605,7 @@ class GotCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output.")
     parser.add_argument("filter", metavar="FILTER", nargs="*", default=[], help="filter string.")
     parser.add_argument("--exact", action="store_true", help="use exact match for function name.")
+    parser.add_argument("--cppfilt", action="store_true", help="use c++filt to demangle.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -33924,6 +33925,12 @@ class GotCommand(GenericCommand, BufferingOutput):
             else:
                 got_value_color = Config.get_gef_setting("got.function_resolved")
 
+            # c++filt
+            if args.cppfilt:
+                res = GefUtil.gef_execute_external([GefUtil.which("c++filt"), name], as_list=True)
+                if len(res) == 1:
+                    name = res[0]
+
             # aggregate
             dic = {
                 "name": name,
@@ -34073,6 +34080,8 @@ class GotCommand(GenericCommand, BufferingOutput):
         try:
             GefUtil.which("objdump")
             GefUtil.which("readelf")
+            if args.cppfilt:
+                GefUtil.which("c++filt")
         except FileNotFoundError as e:
             if not args.quiet:
                 err("{}".format(e))
@@ -34193,12 +34202,12 @@ class GotCommand(GenericCommand, BufferingOutput):
                 # 0x3f79f000 0x3f7b9000 0x0001a000 0x0010a000 r-- /lib/libc.so.6
                 # 0x3f7b9000 0x3f7c4000 0x0000b000 0x00124000 rw- /lib/libc.so.6
                 # ...
-                path_match_end = [x.page_start for x in vmmap if target_filepath.endswith(x.path)]
+                path_match_end = [x.page_start for x in vmmap if x.path and target_filepath.endswith(x.path)]
                 if path_match_end:
                     base_address = min(path_match_end)
                 else:
                     if not args.quiet:
-                        err("Not found {:s} in memory".format(target_filepath))
+                        err("Not found {:s} in memory (specify the address with the -e option)".format(target_filepath))
                     return
 
         # get the filtering parameter
