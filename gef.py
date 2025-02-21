@@ -29300,10 +29300,34 @@ class LoadFileCommand(GenericCommand):
             err("Not found {:s}".format(args.filepath))
             return
 
-        size = os.path.getsize(args.filepath)
-        size = AddressUtil.align_address_to_size(size, gef_getpagesize())
+        data_size = os.path.getsize(args.filepath)
+        if data_size == 0:
+            err("Unsupported zero size mapping")
+            return
 
-        res = gdb.execute("mmap {:#x} {:#x}".format(args.location, size), to_string=True)
+        # +-mmap_start--+               ^             ^
+        # |             |               |             |
+        # |             |               |             | page_size
+        # | data_start  | ^             |             |
+        # | ...         | |             |             |
+        # +-------------+ | data_size   | mmap_size   v
+        # | ...         | |             |
+        # | data_end    | v             |
+        # |             |               |
+        # |             |               |
+        # +-mmap_end----+               v
+
+        mmap_start = args.location & gef_getpagesize_mask_high()
+        data_start = args.location
+        data_end = data_start + data_size
+        mmap_end = AddressUtil.align_address_to_size(data_end, gef_getpagesize())
+        mmap_size = mmap_end - mmap_start
+
+        res = gdb.execute("mmap {:#x} {:#x}".format(mmap_start, mmap_size), to_string=True)
+        if "[!]" in res:
+            err("Failed to mmap")
+            return
+
         output_line = res.splitlines()[-1]
         ret = int(output_line.split()[2], 0)
 
@@ -29317,7 +29341,7 @@ class LoadFileCommand(GenericCommand):
             data = fd.read(0x1000)
             if len(data) == 0:
                 break
-            write_memory(args.location + offset, data)
+            write_memory(data_start + offset, data)
             offset += len(data)
 
         return
