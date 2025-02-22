@@ -66733,54 +66733,126 @@ class HashCommand(GenericCommand):
 
         # from pycryptodome
         try:
-            import Crypto.Hash.SHA512
-            hfunc = Crypto.Hash.SHA512.new(truncate="224")
-            yield ("sha512/224", hfunc)
-            hfunc = Crypto.Hash.SHA512.new(truncate="256")
-            yield ("sha512/256", hfunc)
-
-            import Crypto.Hash.cSHAKE128
-            hfunc = Crypto.Hash.cSHAKE128.new(custom=b"") # SHAKE128 is empty `custom`
-            hfunc.hexdigest = lambda: hfunc.read(32).hex()
-            yield ("shake-128", hfunc)
-
-            import Crypto.Hash.cSHAKE256
-            hfunc = Crypto.Hash.cSHAKE256.new(custom=b"") # SHAKE256 is empty `custom`
-            hfunc.hexdigest = lambda: hfunc.read(64).hex()
-            yield ("shake-256", hfunc)
-
-            import Crypto.Hash.keccak
-            hfunc = Crypto.Hash.keccak.new(digest_bits=224)
-            yield ("keccak-224", hfunc)
-            hfunc = Crypto.Hash.keccak.new(digest_bits=256)
-            yield ("keccak-256", hfunc)
-            hfunc = Crypto.Hash.keccak.new(digest_bits=384)
-            yield ("keccak-384", hfunc)
-            hfunc = Crypto.Hash.keccak.new(digest_bits=512)
-            yield ("keccak-512", hfunc)
-
-            import Crypto.Hash.KangarooTwelve
-            hfunc = Crypto.Hash.KangarooTwelve.new(custom=b"") # use empty `custom`
-            hfunc.hexdigest = lambda: hfunc.read(32).hex()
-            yield ("k12-256", hfunc)
-            hfunc = Crypto.Hash.KangarooTwelve.new(custom=b"") # use empty `custom`
-            hfunc.hexdigest = lambda: hfunc.read(64).hex()
-            yield ("k12-512", hfunc)
-
-            import Crypto.Hash.MD2
-            hfunc = Crypto.Hash.MD2.new()
-            yield ("md2", hfunc)
-
-            import Crypto.Hash.MD4
-            hfunc = Crypto.Hash.MD4.new()
-            yield ("md4", hfunc)
-
-            import Crypto.Hash.RIPEMD160
-            hfunc = Crypto.Hash.RIPEMD160.new()
-            yield ("ripemd-160", hfunc)
-
+            hname = "sha512/224"
+            if not args.filter or any(filt.search(hname) for filt in args.filter):
+                import Crypto.Hash.SHA512
+                hfunc = Crypto.Hash.SHA512.new(truncate="224")
+                yield (hname, hfunc)
         except Exception:
             pass
+
+        try:
+            hname = "sha512/256"
+            if not args.filter or any(filt.search(hname) for filt in args.filter):
+                import Crypto.Hash.SHA512
+                hfunc = Crypto.Hash.SHA512.new(truncate="256")
+                yield (hname, hfunc)
+        except Exception:
+            pass
+
+        try:
+            hname = "shake-128"
+            if not args.filter or any(filt.search(hname) for filt in args.filter):
+                import Crypto.Hash.cSHAKE128
+                hfunc = Crypto.Hash.cSHAKE128.new(custom=b"") # SHAKE128 is empty `custom`
+                hfunc.hexdigest = lambda: hfunc.read(32).hex()
+                yield (hname, hfunc)
+        except Exception:
+            pass
+
+        try:
+            hname = "shake-256"
+            if not args.filter or any(filt.search(hname) for filt in args.filter):
+                import Crypto.Hash.cSHAKE256
+                hfunc = Crypto.Hash.cSHAKE256.new(custom=b"") # SHAKE256 is empty `custom`
+                hfunc.hexdigest = lambda: hfunc.read(64).hex()
+                yield (hname, hfunc)
+        except Exception:
+            pass
+
+        try:
+            hname = "keccak-224"
+            if not args.filter or any(filt.search(hname) for filt in args.filter):
+                import Crypto.Hash.keccak
+                hfunc = Crypto.Hash.keccak.new(digest_bits=224)
+                yield (hname, hfunc)
+        except Exception:
+            pass
+
+        try:
+            hname = "keccak-256"
+            if not args.filter or any(filt.search(hname) for filt in args.filter):
+                import Crypto.Hash.keccak
+                hfunc = Crypto.Hash.keccak.new(digest_bits=256)
+                yield (hname, hfunc)
+        except Exception:
+            pass
+
+        try:
+            hname = "keccak-384"
+            if not args.filter or any(filt.search(hname) for filt in args.filter):
+                import Crypto.Hash.keccak
+                hfunc = Crypto.Hash.keccak.new(digest_bits=384)
+                yield (hname, hfunc)
+        except Exception:
+            pass
+
+        try:
+            hname = "keccak-512"
+            if not args.filter or any(filt.search(hname) for filt in args.filter):
+                import Crypto.Hash.keccak
+                hfunc = Crypto.Hash.keccak.new(digest_bits=512)
+                yield (hname, hfunc)
+        except Exception:
+            pass
+
+        try:
+            hname = "k12-256"
+            if not args.filter or any(filt.search(hname) for filt in args.filter):
+                import Crypto.Hash.KangarooTwelve
+                hfunc = Crypto.Hash.KangarooTwelve.new(custom=b"") # use empty `custom`
+                hfunc.hexdigest = lambda: hfunc.read(32).hex()
+                yield (hname, hfunc)
+        except Exception:
+            pass
+
+        try:
+            hname = "k12-512"
+            if not args.filter or any(filt.search(hname) for filt in args.filter):
+                import Crypto.Hash.KangarooTwelve
+                hfunc = Crypto.Hash.KangarooTwelve.new(custom=b"") # use empty `custom`
+                hfunc.hexdigest = lambda: hfunc.read(64).hex()
+                yield (hname, hfunc)
+        except Exception:
+            pass
+
+        try:
+            hname = "md2"
+            if not args.filter or any(filt.search(hname) for filt in args.filter):
+                import Crypto.Hash.MD2
+                hfunc = Crypto.Hash.MD2.new()
+                yield (hname, hfunc)
+        except Exception:
+            pass
+
+        try:
+            hname = "md4"
+            if not args.filter or any(filt.search(hname) for filt in args.filter):
+                import Crypto.Hash.MD4
+                hfunc = Crypto.Hash.MD4.new()
+                yield (hname, hfunc)
+        except Exception:
+            pass
+
+        try:
+            hname = "ripemd-160"
+            if not args.filter or any(filt.search(hname) for filt in args.filter):
+                import Crypto.Hash.RIPEMD160
+                hfunc = Crypto.Hash.RIPEMD160.new()
+                yield (hname, hfunc)
+        except Exception:
+            pass
+
         return None
 
     @parse_args
