@@ -65366,6 +65366,14 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
+    _note_ = [
+        "This command is intended to dump the GDTR and LDTR when working with qemu-system.",
+        "When you're debugging a normal userland app you can't read the GDTR or LDTR,",
+        "so this is just to show you an example of what information is stored there.",
+        "However, the segment registers show the correct (real) values.",
+    ]
+    _note_ = "\n".join(_note_)
+
     # arch/x86/include/asm/segment.h
     SEGMENT_DESCRIPTION_64 = {
         0: "NULL",
@@ -65930,6 +65938,13 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-v", "--verbose", action="store_true", help="also display bit information of idt entries.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
+
+    _note_ = [
+        "This command is intended to dump the IDTR when working with qemu-system.",
+        "When you're debugging a normal userland app you can't read the IDTR,",
+        "so this is just to show you an example of what information is stored there.",
+    ]
+    _note_ = "\n".join(_note_)
 
     # arch/x86/include/asm/trapnr.h
     INTERRUPT_DESCRIPTION = {
