@@ -68423,23 +68423,23 @@ class SlubDumpCommand(GenericCommand):
                         help="telescope `used chunks` if layout is resolved.")
     parser.add_argument("--telescope-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
                         help="telescope `unused (freed) chunks` if layout is resolved.")
-    parser.add_argument("--skip-page2virt", action="store_true",
-                        help="used internally in gef, please don't use it.")
-    parser.add_argument("--no-xor", action="store_true",
-                        help="skip xor to chunk->next when `kmem_cache.random` is falsely detected.")
-    parser.add_argument("--offset-random", type=lambda x: int(x, 16),
-                        help="specified offsetof(kmem_cache, random) when `kmem_cache.random` is falsely detected.")
-    parser.add_argument("--no-byte-swap", action="store_true", default=None,
-                        help="skip byteswap to chunk->next. when `kmem_cache.random` is falsely detected.")
-    parser.add_argument("--offset-node", type=lambda x: int(x, 16),
-                        help="specified offsetof(kmem_cache, node) when `kmem_cache.node` is falsely detected.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-v", "--verbose", "--partial", action="store_true", help="dump with partial pages.")
     parser.add_argument("-vv", "--vverbose", "--node", action="store_true",
                         help="dump with partial pages and node pages.")
     parser.add_argument("--only-partial", action="store_true", help="dump only partial pages.")
     parser.add_argument("--only-node", action="store_true", help="dump only node pages.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    parser.add_argument("--skip-page2virt", action="store_true",
+                        help="[FOR DEVELOPPER] used internally in gef, please don't use it.")
+    parser.add_argument("--no-xor", action="store_true",
+                        help="[FOR DEVELOPPER] skip xor to chunk->next when `kmem_cache.random` is falsely detected.")
+    parser.add_argument("--offset-random", type=lambda x: int(x, 16),
+                        help="[FOR DEVELOPPER] specified offsetof(kmem_cache, random) when `kmem_cache.random` is falsely detected.")
+    parser.add_argument("--no-byte-swap", action="store_true", default=None,
+                        help="[FOR DEVELOPPER] skip byteswap to chunk->next when `kmem_cache.random` is falsely detected.")
+    parser.add_argument("--offset-node", type=lambda x: int(x, 16),
+                        help="[FOR DEVELOPPER] specified offsetof(kmem_cache, node) when `kmem_cache.node` is falsely detected.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -69525,9 +69525,10 @@ class SlubTinyDumpCommand(GenericCommand):
                         help="telescope `used chunks` if layout is resolved.")
     parser.add_argument("--telescope-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
                         help="telescope `unused (freed) chunks` if layout is resolved.")
-    parser.add_argument("--skip-page2virt", action="store_true", help="used internally in gef, please don't use it.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    parser.add_argument("--skip-page2virt", action="store_true",
+                        help="[FOR DEVELOPPER] used internally in gef, please don't use it.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -71085,8 +71086,8 @@ class SlobDumpCommand(GenericCommand):
     parser.add_argument("--large", action="store_true", help="display only free_slob_large.")
     parser.add_argument("--medium", action="store_true", help="display only free_slob_medium.")
     parser.add_argument("--small", action="store_true", help="display only free_slob_small.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode (print kmem_cache).")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
