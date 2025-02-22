@@ -16731,7 +16731,9 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
             [0, "CAP_CHOWN", "Make arbitrary changes to file UIDs and GIDs"],
         ]
         out = BitInfo(name, 64, bit_info).make_out(cap)
+        self.out.append(titlify(""))
         self.out.extend(out)
+        self.out.append(titlify(""))
         return
 
     def print_capability_from_pid(self, verbose):
@@ -16784,7 +16786,8 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
             if "cap_eff" in caps:
                 msg = "Capability set that kernel actually uses to determine privileges"
                 self.out.append("Effective  : {:#018x} - {:s}".format(caps["cap_eff"], msg))
-                self.print_cap_details("cap_eff", caps["cap_eff"])
+                if verbose:
+                    self.print_cap_details("cap_eff", caps["cap_eff"])
             if "cap_bnd" in caps:
                 msg = "Capability set that limits the capabilities set that can be acquired"
                 self.out.append("Bounding   : {:#018x} - {:s}".format(caps["cap_bnd"], msg))
