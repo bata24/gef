@@ -51921,7 +51921,7 @@ class KernelAddressHeuristicFinder:
                 elif is_x86_32():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.x86_dword_ptr_ds(res),
-                        KernelAddressHeuristicFinderUtil.x86_dword_ptr_fs(res, skip_msb_check=True)
+                        KernelAddressHeuristicFinderUtil.x86_dword_ptr_fs(res, skip_msb_check=True),
                     )
                 for x in g:
                     if x < 0x100:
@@ -52593,7 +52593,7 @@ class KernelAddressHeuristicFinder:
                 elif is_x86_32():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.x86_dword_ptr_array_base(res),
-                        KernelAddressHeuristicFinderUtil.x86_dword_ptr(res)
+                        KernelAddressHeuristicFinderUtil.x86_dword_ptr(res),
                     )
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
