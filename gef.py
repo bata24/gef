@@ -51543,6 +51543,11 @@ class KernelAddressHeuristicFinderUtil:
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
 
     @staticmethod
+    def x64_qword_ptr_gs_rip_base(res, skip=0, skip_msb_check=False, read_valid=False):
+        regexp = r"QWORD PTR gs:\[rip\+0x\w+\].*#\s*(0x\w+)"
+        return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
+
+    @staticmethod
     def x64_qword_ptr_array_base(res, skip=0, skip_msb_check=False, read_valid=False):
         regexp = r"QWORD PTR \[.*\*8([-+]0x\w+)\]"
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
@@ -51909,6 +51914,10 @@ class KernelAddressHeuristicFinder:
                 for x in g:
                     if x < 0x100:
                         continue
+                    if is_x86_64() and (x & 0x7):
+                        continue
+                    elif is_x86_32() and (x & 0x3):
+                        continue
                     return x
 
         # plan 3 (available v2.5.33 or later)
@@ -51920,6 +51929,7 @@ class KernelAddressHeuristicFinder:
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.x64_qword_ptr_ds(res),
                         KernelAddressHeuristicFinderUtil.x64_qword_ptr_gs(res, skip_msb_check=True),
+                        KernelAddressHeuristicFinderUtil.x64_qword_ptr_gs_rip_base(res, skip_msb_check=True),
                     )
                 elif is_x86_32():
                     g = itertools.chain(
@@ -51928,6 +51938,10 @@ class KernelAddressHeuristicFinder:
                     )
                 for x in g:
                     if x < 0x100:
+                        continue
+                    if is_x86_64() and (x & 0x7):
+                        continue
+                    elif is_x86_32() and (x & 0x3):
                         continue
                     return x
         return None
