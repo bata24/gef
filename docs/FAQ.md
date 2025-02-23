@@ -229,18 +229,6 @@ Explicitly specify the i8086 architecture before connecting: `gdb -ex 'set archi
 
 GEF automatically handles the transition between 16-bit real mode and 32-bit protected mode.
 
-## Does GEF support debugging Android?
-I have never tried it, so I don't know.
-
-I think it will work for userland debugging.
-However, Android does not use `glibc`, so the heap structure is different.
-Therefore, I think at least `heap` related commands will not work.
-
-Regarding kernel debugging, I haven't been able to confirm how much the structure is different.
-
-## Does GEF support TEE OS other than OP-TEE?
-No, GEF does not support it.
-
 ## Is it possible to debug userland with GEF when using qemu-system?
 Partially yes.
 
@@ -261,6 +249,30 @@ But if you're stuck in the kernel context of a different user process than you e
 the virtual address of the process you wanted isn't mapped.
 For this reason, software breakpoints that embed `0xcc` in virtual memory cannot be used in some situations.
 However, hardware breakpoints can be used without any problems.
+
+## Does GEF support debugging of the Android kernel?
+Yes, it is supported, but not fully.
+
+When I tried using `Android Studio`, most commands seemed to work.
+* I used `Android Studio` on Windows and connected from Linux.
+* Refer to [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORTED-MODE.md) for the commands I used.
+
+However, the QEMU in `Android Studio` is based on an older version, 2.12.0, and seems to have compatibility issues with recent GDB versions (16.x~).
+Specifically, repeated memory reads may cause QEMU's GDB stub to return incorrect results.
+This is especially noticeable for commands that do repeated memory access, such as `ktask` and `kchecksec`.
+
+## Does GEF support debugging of the Android userland binary?
+Yes, it is supported, but not fully.
+
+When I tried using `Android Studio`, most commands seemed to work.
+* I used `Android Studio` on Windows and connected from Linux.
+* Refer to [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORTED-MODE.md) for the commands I used.
+
+However, Android does not use glibc (it uses the bionic C library).
+So be aware that all glibc-specific commands cannot be used, such as the `heap` command.
+
+## Does GEF support TEE OS other than OP-TEE?
+No, GEF does not support it.
 
 
 # About GEF settings
