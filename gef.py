@@ -4484,7 +4484,7 @@ class GlibcHeap:
                         if sll and a.value == 0:
                             # single link-list && 0: ok
                             continue
-                        return ", {:s}".format(Color.colorify("corrupted",  Config.get_gef_setting("theme.heap_corrupted_msg")))
+                        return ", {:s}".format(Color.colorify("corrupted", Config.get_gef_setting("theme.heap_corrupted_msg")))
                 return ""
 
             chunk_c = Color.colorify("Chunk", Config.get_gef_setting("theme.heap_chunk_label"))
@@ -61182,13 +61182,13 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
         self.members["tty_operations"] = adapt_to_kernel_version(tty_operations)
 
         tty_ldisc_ops = [
-            # type       name                                       minver     maxver       additinoal_flag
+            # type       name                                       minver     maxver      additinoal_flag
             ["int",      "magic",                                   None,      "5.12.19"],
             ["char*",    "name",                                    None,      None],
             ["int",      "num",                                     "5.16.0",  None],
-            ["int",      "num",                                     None,      "5.15.120",  is_32bit()],
-            ["int",      "flags",                                   None,      "5.15.120",  is_32bit()],
-            ["int, int", "flags, num",                              None,      "5.15.120",  is_64bit()],
+            ["int",      "num",                                     None,      "5.15.120", is_32bit()],
+            ["int",      "flags",                                   None,      "5.15.120", is_32bit()],
+            ["int, int", "flags, num",                              None,      "5.15.120", is_64bit()],
             ["func_ptr", "open",                                    None,      None],
             ["func_ptr", "close",                                   None,      None],
             ["func_ptr", "flush_buffer",                            None,      None],
@@ -92560,7 +92560,7 @@ class WalkLinkListCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class PeekPageFrameCommand(GenericCommand):
+class PeekPageFrameCommand(GenericCommand, BufferingOutput):
     """Read page frame data from a single address or an address range."""
 
     _cmdline_ = "peek-pageframe"
@@ -92739,12 +92739,12 @@ class PeekPageFrameCommand(GenericCommand):
             err("You must provide either a single address or both --from-addr and --to-addr")
             return
 
-        gef_print("\n".join(self.out), less=not args.no_pager)
+        self.print_output(args)
         return
 
 
 @register_command
-class PeekPageFlagsCommand(GenericCommand):
+class PeekPageFlagsCommand(GenericCommand, BufferingOutput):
     """Read the page flags of a page frame (needs root)."""
 
     _cmdline_ = "peek-pageflags"
@@ -92849,14 +92849,14 @@ class PeekPageFlagsCommand(GenericCommand):
         flags = self.KPageFlags(flags_value)
         set_flags = flags.get_set_flags()
 
-        output = []
-        output.append("/proc/kpagecount: {:d}".format(count))
-        output.append("Pageflags: {:#x}".format(flags.get_flag()))
-        output.append("Flags:")
+        self.out = []
+        self.out.append("/proc/kpagecount: {:d}".format(count))
+        self.out.append("Pageflags: {:#x}".format(flags.get_flag()))
+        self.out.append("Flags:")
         for flag in set_flags:
-            output.append("  {:s}".format(flag))
+            self.out.append("  {:s}".format(flag))
 
-        gef_print("\n".join(output), less=not args.no_pager)
+        self.print_output(args)
         return
 
 
@@ -94206,7 +94206,7 @@ class GefReloadCommand(GenericCommand):
 
 
 @register_command
-class GefArchListCommand(GenericCommand):
+class GefArchListCommand(GenericCommand, BufferingOutput):
     """Display defined architecture information."""
 
     _cmdline_ = "gef arch-list"
@@ -94216,7 +94216,7 @@ class GefArchListCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
-    def print_arch_info(self, arch):
+    def dump_arch_info(self, arch):
         # unsupported currently.
         # I made a definition for displaying syscalls, so it's just provisional.
         if arch.arch == "HPPA" and arch.mode == "64":
@@ -94272,16 +94272,19 @@ class GefArchListCommand(GenericCommand):
         self.out.append("{:30s} {:s} {!s}".format("unicorn support", RIGHT_ARROW, arch.unicorn_support))
         return
 
-    @parse_args
-    def do_invoke(self, args):
-        self.out = []
+    def listup_arch_info(self):
         queue = Architecture.__subclasses__()
         while queue:
             cls = queue.pop(0)
-            self.print_arch_info(cls())
+            self.dump_arch_info(cls())
             queue = cls.__subclasses__() + queue
+        return
 
-        gef_print("\n".join(self.out), less=not args.no_pager)
+    @parse_args
+    def do_invoke(self, args):
+        self.out = []
+        self.listup_arch_info()
+        self.print_output(args)
         return
 
 
@@ -94301,7 +94304,7 @@ class GefRaiseExceptionCommand(GenericCommand):
 
 
 @register_command
-class GefPyObjListCommand(GenericCommand):
+class GefPyObjListCommand(GenericCommand, BufferingOutput):
     """Display defined global python object."""
 
     _cmdline_ = "gef pyobj-list"
@@ -94311,8 +94314,7 @@ class GefPyObjListCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    def do_invoke(self, args):
+    def listup_pyobject(self):
         skip_name_list = [
             "__name__",
             "__loader__",
@@ -94395,38 +94397,42 @@ class GefPyObjListCommand(GenericCommand):
             else:
                 others.append("{!s} {!s}".format(t, gobj))
 
-        # print
-        output = []
-        output.append(titlify("GEF global configs"))
-        output.extend(sorted(global_configs))
-        output.append(titlify("Command classes"))
-        output.extend(sorted(command_classes))
-        output.append(titlify("Breakpoint classes"))
-        output.extend(sorted(bp_classes))
-        output.append(titlify("Architecture classes"))
-        output.extend(sorted(arch_classes))
-        output.append(titlify("Architecture determination function"))
-        output.extend(sorted(arch_determinations))
-        output.append(titlify("GDB mode determination function"))
-        output.extend(sorted(gdb_mode_determinations))
-        output.append(titlify("Classes"))
-        output.extend(sorted(classes))
-        output.append(titlify("Syscall defines"))
-        output.extend(sorted(syscall_defines))
-        output.append(titlify("Decorators"))
-        output.extend(sorted(decorators))
-        output.append(titlify("gef_print wrapper"))
-        output.extend(sorted(gef_print_wrappers))
-        output.append(titlify("read/write memory functions"))
-        output.extend(sorted(read_write_mems))
-        output.append(titlify("Other functions"))
-        output.extend(sorted(others))
-        gef_print("\n".join(output), less=not args.no_pager)
+        self.out.append(titlify("GEF global configs"))
+        self.out.extend(sorted(global_configs))
+        self.out.append(titlify("Command classes"))
+        self.out.extend(sorted(command_classes))
+        self.out.append(titlify("Breakpoint classes"))
+        self.out.extend(sorted(bp_classes))
+        self.out.append(titlify("Architecture classes"))
+        self.out.extend(sorted(arch_classes))
+        self.out.append(titlify("Architecture determination function"))
+        self.out.extend(sorted(arch_determinations))
+        self.out.append(titlify("GDB mode determination function"))
+        self.out.extend(sorted(gdb_mode_determinations))
+        self.out.append(titlify("Classes"))
+        self.out.extend(sorted(classes))
+        self.out.append(titlify("Syscall defines"))
+        self.out.extend(sorted(syscall_defines))
+        self.out.append(titlify("Decorators"))
+        self.out.extend(sorted(decorators))
+        self.out.append(titlify("gef_print wrapper"))
+        self.out.extend(sorted(gef_print_wrappers))
+        self.out.append(titlify("read/write memory functions"))
+        self.out.extend(sorted(read_write_mems))
+        self.out.append(titlify("Other functions"))
+        self.out.extend(sorted(others))
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        self.out = []
+        self.listup_pyobject()
+        self.print_output(args)
         return
 
 
 @register_command
-class GefAvailableCommandListCommand(GenericCommand):
+class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
     """Displays a list of commands available for the current architecture and gdb execution mode."""
 
     _cmdline_ = "gef avail-comm-list"
@@ -94503,41 +94509,42 @@ class GefAvailableCommandListCommand(GenericCommand):
                 return arch_name in line
         return False
 
-    @parse_args
-    @only_if_gdb_running
-    def do_invoke(self, args):
+    def listup_avail_comms(self):
         arch_name = self.get_arch_name()
-
-        out = []
         for cmdline, instance in __gef_command_instances__.items():
             s = GefUtil.get_source(instance.do_invoke)
             decorators = [line for line in s.splitlines() if line.lstrip().startswith("@")]
             if not self.check_include_mode(decorators):
-                out.append("{:<30s}: {:s} ({:s})".format(
+                self.out.append("{:<30s}: {:s} ({:s})".format(
                     cmdline, Color.colorify("Unavailable", "red bold"), "Unsupported gdb mode"),
                 )
                 continue
             if self.check_exclude_mode(decorators):
-                out.append("{:<30s}: {:s} ({:s})".format(
+                self.out.append("{:<30s}: {:s} ({:s})".format(
                     cmdline, Color.colorify("Unavailable", "red bold"), "Unsupported gdb mode"),
                 )
                 continue
             if not self.check_include_arch(decorators, arch_name):
-                out.append("{:<30s}: {:s} ({:s})".format(
+                self.out.append("{:<30s}: {:s} ({:s})".format(
                     cmdline, Color.colorify("Unavailable", "red bold"), "Unsupported arch"),
                 )
                 continue
             if self.check_exclude_arch(decorators, arch_name):
-                out.append("{:<30s}: {:s} ({:s})".format(
+                self.out.append("{:<30s}: {:s} ({:s})".format(
                     cmdline, Color.colorify("Unavailable", "red bold"), "Unsupported arch"),
                 )
                 continue
-            out.append("{:<30s}: {:s}".format(cmdline, Color.colorify("Available", "green bold")))
+            self.out.append("{:<30s}: {:s}".format(cmdline, Color.colorify("Available", "green bold")))
+        return
 
+    @parse_args
+    @only_if_gdb_running
+    def do_invoke(self, args):
+        self.out = []
+        self.listup_avail_comms()
         if args.sort:
-            out = sorted(out)
-
-        gef_print("\n".join(out), less=not args.no_pager)
+            self.out = sorted(self.out)
+        self.print_output(args, term=True)
         return
 
 
