@@ -3124,286 +3124,253 @@ class GlibcHeap:
                 length = (-6 * self.size_t.sizeof) & self.MALLOC_ALIGN_MASK
             return self.get_char_t_array(self.addrof_pad, length)
 
-    class MallocPar:
+    class MallocPar(GenericType):
         """GEF representation of malloc_par."""
-
-        def __init__(self, addr):
-            self.__addr = addr
-
-            self.char_t = GefUtil.cached_lookup_type("unsigned char")
-            self.int_t = GefUtil.cached_lookup_type("unsigned int")
-            self.long_t = GefUtil.cached_lookup_type("unsigned long")
-            self.size_t = GefUtil.cached_lookup_type("size_t")
-            if not self.size_t:
-                ptr_type = "unsigned long" if current_arch.ptrsize == 8 else "unsigned int"
-                self.size_t = GefUtil.cached_lookup_type(ptr_type)
-            return
 
         # struct offsets
         @property
-        def addr(self):
-            return self.__addr
+        def addrof_trim_threshold(self):
+            return self.addr
 
         @property
-        def trim_threshold_addr(self):
-            return self.__addr
+        def addrof_top_pad(self):
+            return self.addrof_trim_threshold + self.long_t.sizeof
 
         @property
-        def top_pad_addr(self):
-            return self.trim_threshold_addr + self.long_t.sizeof
+        def addrof_mmap_threshold(self):
+            return self.addrof_top_pad + self.size_t.sizeof
 
         @property
-        def mmap_threshold_addr(self):
-            return self.top_pad_addr + self.size_t.sizeof
+        def addrof_arena_test(self):
+            return self.addrof_mmap_threshold + self.size_t.sizeof
 
         @property
-        def arena_test_addr(self):
-            return self.mmap_threshold_addr + self.size_t.sizeof
+        def addrof_arena_max(self):
+            return self.addrof_arena_test + self.size_t.sizeof
 
         @property
-        def arena_max_addr(self):
-            return self.arena_test_addr + self.size_t.sizeof
-
-        @property
-        def thp_pagesize_addr(self):
+        def addrof_thp_pagesize(self):
             if get_libc_version() >= (2, 35):
-                return self.arena_max_addr + self.size_t.sizeof
+                return self.addrof_arena_max + self.size_t.sizeof
             else:
                 return None
 
         @property
-        def hp_pagesize_addr(self):
+        def addrof_hp_pagesize(self):
             if get_libc_version() >= (2, 35):
-                return self.thp_pagesize_addr + self.size_t.sizeof
+                return self.addrof_thp_pagesize + self.size_t.sizeof
             else:
                 return None
 
         @property
-        def hp_flags_addr(self):
+        def addrof_hp_flags(self):
             if get_libc_version() >= (2, 35):
-                return self.hp_pagesize_addr + self.size_t.sizeof
+                return self.addrof_hp_pagesize + self.size_t.sizeof
             else:
                 return None
 
         @property
-        def n_mmaps_addr(self):
+        def addrof_n_mmaps(self):
             if get_libc_version() >= (2, 35):
-                return self.hp_flags_addr + self.int_t.sizeof
+                return self.addrof_hp_flags + self.int_t.sizeof
             else:
-                return self.arena_max_addr + self.size_t.sizeof
+                return self.addrof_arena_max + self.size_t.sizeof
 
         @property
-        def n_mmaps_max_addr(self):
-            return self.n_mmaps_addr + self.int_t.sizeof
+        def addrof_n_mmaps_max(self):
+            return self.addrof_n_mmaps + self.int_t.sizeof
 
         @property
-        def max_n_mmaps_addr(self):
-            return self.n_mmaps_max_addr + self.int_t.sizeof
+        def addrof_max_n_mmaps(self):
+            return self.addrof_n_mmaps_max + self.int_t.sizeof
 
         @property
-        def no_dyn_threshold_addr(self):
-            return self.max_n_mmaps_addr + self.int_t.sizeof
+        def addrof_no_dyn_threshold(self):
+            return self.addrof_max_n_mmaps + self.int_t.sizeof
 
         @property
-        def pagesize_addr(self):
+        def addrof_pagesize(self):
             if get_libc_version() >= (2, 15):
                 return None
             else:
-                return self.max_n_mmaps_addr + self.int_t.sizeof
+                return self.addrof_max_n_mmaps + self.int_t.sizeof
 
         @property
-        def mmapped_mem_addr(self):
+        def addrof_mmapped_mem(self):
             if get_libc_version() >= (2, 15):
                 return AddressUtil.align_address_to_size(
-                    self.no_dyn_threshold_addr + self.int_t.sizeof, current_arch.ptrsize,
+                    self.addrof_no_dyn_threshold + self.int_t.sizeof, current_arch.ptrsize,
                 )
             else:
                 return AddressUtil.align_address_to_size(
-                    self.pagesize_addr + self.int_t.sizeof, current_arch.ptrsize,
+                    self.addrof_pagesize + self.int_t.sizeof, current_arch.ptrsize,
                 )
 
         @property
-        def max_mmapped_mem_addr(self):
-            return self.mmapped_mem_addr + self.size_t.sizeof
+        def addrof_max_mmapped_mem(self):
+            return self.addrof_mmapped_mem + self.size_t.sizeof
 
         @property
-        def max_total_mem_addr(self):
+        def addrof_max_total_mem(self):
             if get_libc_version() >= (2, 24):
                 return None
             else:
-                return self.mmapped_mem_addr + self.size_t.sizeof
+                return self.addrof_mmapped_mem + self.size_t.sizeof
 
         @property
-        def sbrk_base_addr(self):
+        def addrof_sbrk_base(self):
             if get_libc_version() >= (2, 24):
-                return self.max_mmapped_mem_addr + self.size_t.sizeof
+                return self.addrof_max_mmapped_mem + self.size_t.sizeof
             else:
-                return self.max_total_mem_addr + self.size_t.sizeof
+                return self.addrof_max_total_mem + self.size_t.sizeof
 
         @property
-        def tcache_bins_addr(self):
+        def addrof_tcache_bins(self):
             if get_libc_version() >= (2, 26):
-                return self.sbrk_base_addr + self.char_t.pointer().sizeof
-            else:
-                return None
-
-        @property
-        def tcache_max_bytes_addr(self):
-            if get_libc_version() >= (2, 26):
-                return self.tcache_bins_addr + self.size_t.sizeof
+                return self.addrof_sbrk_base + self.char_t.pointer().sizeof
             else:
                 return None
 
         @property
-        def tcache_count_addr(self):
+        def addrof_tcache_max_bytes(self):
             if get_libc_version() >= (2, 26):
-                return self.tcache_max_bytes_addr + self.size_t.sizeof
+                return self.addrof_tcache_bins + self.size_t.sizeof
             else:
                 return None
 
         @property
-        def tcache_unsorted_limit_addr(self):
+        def addrof_tcache_count(self):
             if get_libc_version() >= (2, 26):
-                return self.tcache_count_addr + self.size_t.sizeof
+                return self.addrof_tcache_max_bytes + self.size_t.sizeof
+            else:
+                return None
+
+        @property
+        def addrof_tcache_unsorted_limit(self):
+            if get_libc_version() >= (2, 26):
+                return self.addrof_tcache_count + self.size_t.sizeof
             else:
                 return None
 
         @property
         def sizeof(self):
             if get_libc_version() >= (2, 26):
-                end = self.tcache_unsorted_limit_addr + self.size_t.sizeof
+                end = self.addrof_tcache_unsorted_limit + self.size_t.sizeof
             else:
-                end = self.sbrk_base_addr + self.char_t.pointer().sizeof
-            return end - self.__addr
+                end = self.addrof_sbrk_base + self.char_t.pointer().sizeof
+            return end - self.addr
 
         # struct members
         @property
         def trim_threshold(self):
-            return self.get_long_t(self.trim_threshold_addr)
+            return self.get_long_t(self.addrof_trim_threshold)
 
         @property
         def top_pad(self):
-            return self.get_size_t(self.top_pad_addr)
+            return self.get_size_t(self.addrof_top_pad)
 
         @property
         def mmap_threshold(self):
-            return self.get_size_t(self.mmap_threshold_addr)
+            return self.get_size_t(self.addrof_mmap_threshold)
 
         @property
         def arena_test(self):
-            return self.get_size_t(self.arena_test_addr)
+            return self.get_size_t(self.addrof_arena_test)
 
         @property
         def arena_max(self):
-            return self.get_size_t(self.arena_max_addr)
+            return self.get_size_t(self.addrof_arena_max)
 
         @property
         def thp_pagesize(self):
             if get_libc_version() >= (2, 35):
-                return self.get_size_t(self.thp_pagesize_addr)
+                return self.get_size_t(self.addrof_thp_pagesize)
             else:
                 return None
 
         @property
         def hp_pagesize(self):
             if get_libc_version() >= (2, 35):
-                return self.get_size_t(self.hp_pagesize_addr)
+                return self.get_size_t(self.addrof_hp_pagesize)
             else:
                 return None
 
         @property
         def hp_flags(self):
             if get_libc_version() >= (2, 35):
-                return self.get_int_t(self.hp_flags_addr)
+                return self.get_int_t(self.addrof_hp_flags)
             else:
                 return None
 
         @property
         def n_mmaps(self):
-            return self.get_int_t(self.n_mmaps_addr)
+            return self.get_int_t(self.addrof_n_mmaps)
 
         @property
         def n_mmaps_max(self):
-            return self.get_int_t(self.n_mmaps_max_addr)
+            return self.get_int_t(self.addrof_n_mmaps_max)
 
         @property
         def max_n_mmaps(self):
-            return self.get_int_t(self.max_n_mmaps_addr)
+            return self.get_int_t(self.addrof_max_n_mmaps)
 
         @property
         def no_dyn_threshold(self):
-            return self.get_int_t(self.no_dyn_threshold_addr)
+            return self.get_int_t(self.addrof_no_dyn_threshold)
 
         @property
         def pagesize(self):
             if get_libc_version() >= (2, 15):
                 return None
             else:
-                return self.get_int_t(self.pagesize_addr)
+                return self.get_int_t(self.addrof_pagesize)
 
         @property
         def mmapped_mem(self):
-            return self.get_size_t(self.mmapped_mem_addr)
+            return self.get_size_t(self.addrof_mmapped_mem)
 
         @property
         def max_mmapped_mem(self):
-            return self.get_size_t(self.max_mmapped_mem_addr)
+            return self.get_size_t(self.addrof_max_mmapped_mem)
 
         @property
         def max_total_mem(self):
             if get_libc_version() >= (2, 24):
                 return None
             else:
-                return self.get_size_t(self.max_total_mem_addr)
+                return self.get_size_t(self.addrof_max_total_mem)
 
         @property
         def sbrk_base(self):
-            return self.get_char_t_pointer(self.sbrk_base_addr)
+            return self.get_char_t_pointer(self.addrof_sbrk_base)
 
         @property
         def tcache_bins(self):
             if get_libc_version() >= (2, 26):
-                return self.get_size_t(self.tcache_bins_addr)
+                return self.get_size_t(self.addrof_tcache_bins)
             else:
                 return None
 
         @property
         def tcache_max_bytes(self):
             if get_libc_version() >= (2, 26):
-                return self.get_size_t(self.tcache_max_bytes_addr)
+                return self.get_size_t(self.addrof_tcache_max_bytes)
             else:
                 return None
 
         @property # noqa
         def tcache_count(self):
             if get_libc_version() >= (2, 26):
-                return self.get_size_t(self.tcache_count_addr)
+                return self.get_size_t(self.addrof_tcache_count)
             else:
                 return None
 
         @property
         def tcache_unsorted_limit(self):
             if get_libc_version() >= (2, 26):
-                return self.get_size_t(self.tcache_unsorted_limit_addr)
+                return self.get_size_t(self.addrof_tcache_unsorted_limit)
             else:
                 return None
-
-        # helper methods
-        def get_size_t(self, addr):
-            return AddressUtil.dereference(addr).cast(self.size_t)
-
-        def get_int_t(self, addr):
-            return AddressUtil.dereference(addr).cast(self.int_t)
-
-        def get_long_t(self, addr):
-            return AddressUtil.dereference(addr).cast(self.long_t)
-
-        def get_char_t_pointer(self, addr):
-            char_t_pointer = self.char_t.pointer()
-            return AddressUtil.dereference(addr).cast(char_t_pointer)
-
-        def __getitem__(self, item):
-            return getattr(self, item)
 
     @staticmethod
     @Cache.cache_until_next
@@ -3418,7 +3385,7 @@ class GlibcHeap:
         if heap_base is None:
             return None
 
-        offsetof_sbrk_base = GlibcHeap.MallocPar(0).sbrk_base_addr
+        offsetof_sbrk_base = GlibcHeap.MallocPar(0).addrof_sbrk_base
         current = main_arena - GlibcHeap.MallocPar(0).sizeof
         for _ in range(0, 500):
             try:
