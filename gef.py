@@ -68422,15 +68422,15 @@ class SlubDumpCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     parser.add_argument("--skip-page2virt", action="store_true",
-                        help="[FOR DEVELOPPER] used internally in gef, please don't use it.")
+                        help="[FOR DEVELOPER] used internally in gef, please don't use it.")
     parser.add_argument("--no-xor", action="store_true",
-                        help="[FOR DEVELOPPER] skip xor to chunk->next when `kmem_cache.random` is falsely detected.")
+                        help="[FOR DEVELOPER] skip xor to chunk->next when `kmem_cache.random` is falsely detected.")
     parser.add_argument("--offset-random", type=lambda x: int(x, 16),
-                        help="[FOR DEVELOPPER] specified offsetof(kmem_cache, random) when `kmem_cache.random` is falsely detected.")
+                        help="[FOR DEVELOPER] specified offsetof(kmem_cache, random) when `kmem_cache.random` is falsely detected.")
     parser.add_argument("--no-byte-swap", action="store_true", default=None,
-                        help="[FOR DEVELOPPER] skip byteswap to chunk->next when `kmem_cache.random` is falsely detected.")
+                        help="[FOR DEVELOPER] skip byteswap to chunk->next when `kmem_cache.random` is falsely detected.")
     parser.add_argument("--offset-node", type=lambda x: int(x, 16),
-                        help="[FOR DEVELOPPER] specified offsetof(kmem_cache, node) when `kmem_cache.node` is falsely detected.")
+                        help="[FOR DEVELOPER] specified offsetof(kmem_cache, node) when `kmem_cache.node` is falsely detected.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -69519,7 +69519,7 @@ class SlubTinyDumpCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     parser.add_argument("--skip-page2virt", action="store_true",
-                        help="[FOR DEVELOPPER] used internally in gef, please don't use it.")
+                        help="[FOR DEVELOPER] used internally in gef, please don't use it.")
     _syntax_ = parser.format_help()
 
     _example_ = [
