@@ -89,7 +89,7 @@ If you do not install external tools, the features that are not available are li
 ## If I do not install external tools, which commands will no longer be available?
 Following are the breakdown. It may not be comprehensive.
 
-If you install using `install-minimal.sh`, these commands will not be available unless you manually install the required packages and tools yourself.
+To use these commands fully, you need to manually install the necessary packages and tools.
 
 |GEF command/feature|Required apt package|Required python3 package|Required other tools|
 |:---|:---|:---|:---|
@@ -106,18 +106,20 @@ If you install using `install-minimal.sh`, these commands will not be available 
 |`ktask -S`|`ruby-dev`|-|`seccomp-tools`|
 |`seccomp-tools`|`ruby-dev`|-|`seccomp-tools`|
 |`onegadget`|`ruby-dev`|-|`one_gadget`|
-|(Progress Indicator)|`python3-pip`|`tqdm`|-|
+|Progress Indicator|`python3-pip`|`tqdm`|-|
 |`angr`|`python3-pip`|`angr`|-|
 |`asm-list`|`python3-pip`|`capstone`|-|
 |`capstone-disassemble`|`python3-pip`|`capstone`|-|
 |`dasm`|`python3-pip`|`capstone`|-|
 |`i8086` mode|`python3-pip`|`capstone`|-|
-|`unicorn-emulate`|`python3-pip`|`capstone`, `unicorn`, `setuptools`(after python 3.12)|-|
-|`heap try-free`|`python3-pip`|`capstone`, `unicorn`, `setuptools`(after python 3.12)|-|
+|`unicorn-emulate`|`python3-pip`|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
+|`heap try-free`|`python3-pip`|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
+|`heap try-malloc`|`python3-pip`|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
 |`asm`|`python3-pip`|`keystone-engine`|-|
-|`base-n-decode`/`base-n-encode`|`python3-pip`|`codext`|-|
+|`base-n-decode`|`python3-pip`|`codext`|-|
+|`base-n-encode`|`python3-pip`|`codext`|-|
 |`crc`|`python3-pip`|`crccheck`|-|
-|`hash` (for what is not in `hashlib`)|`python3-pip`|`pycryptodome`|-|
+|`hash`|`python3-pip`|`pycryptodome`|-|
 |`uefi-ovmf-info`|`python3-pip`|`crccheck`|-|
 |`filetype-memory`|`python3-pip`, `file`|`magika`|-|
 |`ropper`|`python3-pip`|`ropper`|-|
