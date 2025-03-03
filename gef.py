@@ -376,6 +376,7 @@ class Cache:
     cached_context_legend = None
     cached_heap_base = None
     cached_main_arena = None
+    cached_libc_version = None
 
     @staticmethod
     def cache_until_next(f):
@@ -443,6 +444,7 @@ class Cache:
             Cache.cached_context_legend = None
             Cache.cached_main_arena = None
             Cache.cached_heap_base = None
+            Cache.cached_libc_version = None
         return
 
 
@@ -4733,7 +4735,7 @@ class GlibcHeap:
         return table
 
 
-def get_libc_version():
+def get_libc_version(verbose=False):
     RE_LIBC_PATH = re.compile(r"libc6?[-_](\d+)\.(\d+)\.so")
     RE_GLIBC_VERSION = re.compile(rb"glibc (\d+)\.(\d+)")
 
@@ -4796,19 +4798,40 @@ def get_libc_version():
         return None
 
     # use cache
+    if Cache.cached_libc_version is not None:
+        if verbose:
+            info("use cache")
+        return Cache.cached_libc_version
+
+    # use manual settings
     libc_assume_version = eval(Config.get_gef_setting("libc.assume_version"))
     if libc_assume_version != ():
+        if verbose:
+            info("use libc.assume_version")
+        Cache.cached_libc_version = libc_assume_version
         return libc_assume_version
 
-    # resolve
+    # resolve from maps information
     libc_version = get_libc_version_from_path()
-    if libc_version is None:
-        libc_version = get_system_libc_version()
-    if libc_version is None:
-        libc_version = (2, 39) # assume Ubuntu 24.04
+    if libc_version is not None:
+        if verbose:
+            info("resolve from maps")
+        Cache.cached_libc_version = libc_version
+        return libc_version
 
-    # set cache
-    Config.set_gef_setting("libc.assume_version", libc_version)
+    # resolve from system libc
+    libc_version = get_system_libc_version()
+    if libc_version is not None:
+        if verbose:
+            info("resolve from system libc")
+        Cache.cached_libc_version = libc_version
+        return libc_version
+
+    # assume Ubuntu 24.04
+    libc_version = (2, 39)
+    if verbose:
+        info("use fixed value (2.39)")
+    Cache.cached_libc_version = libc_version
     return libc_version
 
 
