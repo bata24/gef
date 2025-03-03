@@ -4213,7 +4213,7 @@ class GlibcHeap:
             return info
 
     @staticmethod
-    def get_arena(address):
+    def get_arena(address=None):
         if address is None or is_valid_addr(address):
             try:
                 arena = GlibcHeap.GlibcArena(address)
@@ -4254,6 +4254,7 @@ class GlibcHeap:
 
     class GlibcChunk:
         """Glibc chunk class."""
+
         def __init__(self, addr, from_base=False):
             self.ptrsize = current_arch.ptrsize
             if from_base:
@@ -4437,6 +4438,9 @@ class GlibcHeap:
             return "|".join(flags)
 
         def to_str(self, arena):
+            # The reason I define to_str instead of __str__ is:
+            # because arena information is required to dump correctly, but GlibcChunk itself does not have arena information.
+
             def get_sym(addr):
                 a = ProcessMap.lookup_address(addr)
                 b = Symbol.get_symbol_string(addr)
