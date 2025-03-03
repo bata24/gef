@@ -93091,6 +93091,7 @@ class SixelMemoryCommand(GenericCommand):
                         help="start address of the image.")
     parser.add_argument("size", metavar="SIZE", nargs="?", type=AddressUtil.parse_address,
                         help="the size of the image.")
+    parser.add_argument("-b", "--decode-barcode", action="store_true", help="decode barcode if found.")
     _syntax_ = parser.format_help()
 
     def get_jpg_size(self, start_address):
@@ -93149,6 +93150,24 @@ class SixelMemoryCommand(GenericCommand):
             read_size = gef_getpagesize()
         return None
 
+    def decode_barcode(self, path):
+        try:
+            import PIL.Image
+            import pyzbar.pyzbar
+        except ImportError as e:
+            err("Import error {}".format(e))
+            return
+
+        image = PIL.Image.open(path)
+        decoded = pyzbar.pyzbar.decode(image)
+        if decoded == []:
+            err("Not found")
+            return
+
+        for i, data in enumerate(decoded):
+            gef_print("[{}] type:{} data:{}".format(i, data.type, data.data))
+        return
+
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
@@ -93182,6 +93201,10 @@ class SixelMemoryCommand(GenericCommand):
         tmp_fd, tmp_path = GefUtil.mkstemp(prefix="sixel-memory", suffix=".img")
         os.fdopen(tmp_fd, "wb").write(data)
         os.system("{!r} {!r} sixel:-".format(convert_command, tmp_path))
+
+        if args.decode_barcode:
+            self.decode_barcode(tmp_path)
+
         os.unlink(tmp_path)
         return
 

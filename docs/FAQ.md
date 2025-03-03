@@ -103,6 +103,7 @@ To use these commands fully, you need to manually install the necessary packages
 |`diffo colordiff`|`colordiff`|-|-|
 |`diffo git-diff`|`git`|-|-|
 |`sixel-memory`|`imagemagick`|-|-|
+|`sixel-memory -b`|`python3-pip`|`pillow`, `pyzbar`|-|
 |`ktask -S`|`ruby-dev`|-|`seccomp-tools`|
 |`seccomp-tools`|`ruby-dev`|-|`seccomp-tools`|
 |`onegadget`|`ruby-dev`|-|`one_gadget`|
