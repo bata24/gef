@@ -20245,9 +20245,6 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     def parse_arena(self, arena):
-        if arena is None:
-            return
-
         try:
             cmd = "p ((struct malloc_state*) {:#x})[0]".format(arena.addr)
             title = titlify("[arena] ----- {:s}".format(cmd))
@@ -20332,9 +20329,6 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
         return
 
     def parse_heap_info(self, arena):
-        if arena is None:
-            return []
-
         if arena.is_main_arena:
             self.out.append(titlify("[heap_info]"))
             self.out.append("Not thread arena")
@@ -20369,6 +20363,11 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
 
+        if arena is None:
+            err("No valid arena")
+            return
+
+        # dump
         self.out = []
         self.parse_arena(arena)
         self.parse_mp()
