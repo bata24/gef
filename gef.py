@@ -3398,10 +3398,12 @@ class GlibcHeap:
             current -= current_arch.ptrsize
         return None
 
-    class MallocStateStruct:
+    class MallocStateStruct(GenericType):
         """GEF representation of malloc_state."""
 
         def __init__(self, addr):
+            super().__init__(addr)
+
             if (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
                 # MALLOC_ALIGNMENT is changed from libc 2.26.
                 # for x86_32, MALLOC_ALIGNMENT = 16, so NFASTBINS = 11.
@@ -3411,179 +3413,146 @@ class GlibcHeap:
 
             self.num_bins = 254
             self.num_binmap = 4
-            self.__addr = addr
-
-            self.int_t = GefUtil.cached_lookup_type("unsigned int")
-            self.size_t = GefUtil.cached_lookup_type("size_t")
-            if not self.size_t:
-                ptr_type = "unsigned long" if current_arch.ptrsize == 8 else "unsigned int"
-                self.size_t = GefUtil.cached_lookup_type(ptr_type)
             return
 
         # struct offsets
         @property
-        def addr(self):
-            return self.__addr
+        def addrof_mutex(self):
+            return self.addr
 
         @property
-        def mutex_addr(self):
-            return self.__addr
+        def addrof_flags(self):
+            return self.addrof_mutex + self.int_t.sizeof
 
         @property
-        def flags_addr(self):
-            return self.mutex_addr + self.int_t.sizeof
-
-        @property
-        def have_fastchunks_addr(self):
+        def addrof_have_fastchunks(self):
             if get_libc_version() >= (2, 27):
-                return self.flags_addr + self.int_t.sizeof
+                return self.addrof_flags + self.int_t.sizeof
             else:
                 return None
 
         @property
-        def fastbins_addr(self):
+        def addrof_fastbins(self):
             if get_libc_version() >= (2, 27):
                 fastbin_offset = AddressUtil.align_address_to_size(self.int_t.sizeof * 3, self.size_t.sizeof)
             else:
                 fastbin_offset = self.int_t.sizeof * 2
-            return self.__addr + fastbin_offset
+            return self.addr + fastbin_offset
 
         @property
-        def top_addr(self):
-            return self.fastbins_addr + self.size_t.sizeof * self.num_fastbins
+        def addrof_top(self):
+            return self.addrof_fastbins + self.size_t.sizeof * self.num_fastbins
 
         @property
-        def last_remainder_addr(self):
-            return self.top_addr + self.size_t.sizeof
+        def addrof_last_remainder(self):
+            return self.addrof_top + self.size_t.sizeof
 
         @property
-        def bins_addr(self):
-            return self.last_remainder_addr + self.size_t.sizeof
+        def addrof_bins(self):
+            return self.addrof_last_remainder + self.size_t.sizeof
 
         @property
-        def binmap_addr(self):
-            return self.bins_addr + self.size_t.sizeof * self.num_bins
+        def addrof_binmap(self):
+            return self.addrof_bins + self.size_t.sizeof * self.num_bins
 
         @property
-        def next_addr(self):
-            return self.binmap_addr + self.int_t.sizeof * self.num_binmap
+        def addrof_next(self):
+            return self.addrof_binmap + self.int_t.sizeof * self.num_binmap
 
         @property
-        def next_free_addr(self):
+        def addrof_next_free(self):
             if get_libc_version() >= (2, 19):
-                return self.next_addr + self.size_t.sizeof
+                return self.addrof_next + self.size_t.sizeof
             else:
                 # before glibc 2.19, the existence of next_free depends on the environment.
                 # however, it seems that it is more likely that it does not exist, so I return None.
                 return None
 
         @property
-        def attached_threads_addr(self):
+        def addrof_attached_threads(self):
             if get_libc_version() >= (2, 23):
-                return self.next_free_addr + self.size_t.sizeof
+                return self.addrof_next_free + self.size_t.sizeof
             else:
                 return None
 
         @property
-        def system_mem_addr(self):
+        def addrof_system_mem(self):
             if get_libc_version() >= (2, 23):
-                return self.attached_threads_addr + self.size_t.sizeof
+                return self.addrof_attached_threads + self.size_t.sizeof
             elif get_libc_version() >= (2, 19):
-                return self.next_free_addr + self.size_t.sizeof
+                return self.addrof_next_free + self.size_t.sizeof
             else:
-                return self.next_addr + self.size_t.sizeof
+                return self.addrof_next + self.size_t.sizeof
 
         @property
-        def max_system_mem_addr(self):
-            return self.system_mem_addr + self.size_t.sizeof
+        def addrof_max_system_mem(self):
+            return self.addrof_system_mem + self.size_t.sizeof
 
         @property
-        def struct_size(self):
-            return self.max_system_mem_addr + self.size_t.sizeof - self.__addr
+        def sizeof(self):
+            return self.addrof_max_system_mem + self.size_t.sizeof - self.addr
 
         # struct members
         @property
         def mutex(self):
-            return self.get_int_t(self.mutex_addr)
+            return self.get_int_t(self.addrof_mutex)
 
         @property
         def flags(self):
-            return self.get_int_t(self.flags_addr)
+            return self.get_int_t(self.addrof_flags)
 
         @property
         def have_fastchunks(self):
             if get_libc_version() >= (2, 27):
-                return self.get_int_t(self.have_fastchunks_addr)
+                return self.get_int_t(self.addrof_have_fastchunks)
             else:
                 return None
 
         @property
         def fastbinsY(self):
-            return self.get_size_t_array(self.fastbins_addr, self.num_fastbins)
+            return self.get_size_t_array(self.addrof_fastbins, self.num_fastbins)
 
         @property
         def top(self):
-            return self.get_size_t_pointer(self.top_addr)
+            return self.get_size_t_pointer(self.addrof_top)
 
         @property
         def last_remainder(self):
-            return self.get_size_t_pointer(self.last_remainder_addr)
+            return self.get_size_t_pointer(self.addrof_last_remainder)
 
         @property
         def bins(self):
-            return self.get_size_t_array(self.bins_addr, self.num_bins)
+            return self.get_size_t_array(self.addrof_bins, self.num_bins)
 
         @property
         def binmap(self):
-            return self.get_int_t_array(self.binmap_addr, self.num_binmap)
+            return self.get_int_t_array(self.addrof_binmap, self.num_binmap)
 
         @property
         def next(self):
-            return self.get_size_t_pointer(self.next_addr)
+            return self.get_size_t_pointer(self.addrof_next)
 
         @property
         def next_free(self):
             if get_libc_version() >= (2, 19):
-                return self.get_size_t_pointer(self.next_free_addr)
+                return self.get_size_t_pointer(self.addrof_next_free)
             else:
                 return None
 
         @property
         def attached_threads(self):
             if get_libc_version() >= (2, 23):
-                return self.get_size_t(self.attached_threads_addr)
+                return self.get_size_t(self.addrof_attached_threads)
             else:
                 return None
 
         @property
         def system_mem(self):
-            return self.get_size_t(self.system_mem_addr)
+            return self.get_size_t(self.addrof_system_mem)
 
         @property
         def max_system_mem(self):
-            return self.get_size_t(self.max_system_mem_addr)
-
-        # helper methods
-        def get_size_t(self, addr):
-            return AddressUtil.dereference(addr).cast(self.size_t)
-
-        def get_int_t(self, addr):
-            return AddressUtil.dereference(addr).cast(self.int_t)
-
-        def get_size_t_pointer(self, addr):
-            size_t_pointer = self.size_t.pointer()
-            return AddressUtil.dereference(addr).cast(size_t_pointer)
-
-        def get_size_t_array(self, addr, length):
-            size_t_array = self.size_t.array(length)
-            return AddressUtil.dereference(addr).cast(size_t_array)
-
-        def get_int_t_array(self, addr, length):
-            int_t_array = self.int_t.array(length)
-            return AddressUtil.dereference(addr).cast(int_t_array)
-
-        def __getitem__(self, item):
-            return getattr(self, item)
+            return self.get_size_t(self.addrof_max_system_mem)
 
     @staticmethod
     @Cache.cache_until_next
@@ -3728,7 +3697,7 @@ class GlibcHeap:
                 self.__size = malloc_state_t.sizeof
             except RuntimeError:
                 self.__arena = GlibcHeap.MallocStateStruct(self.__addr)
-                self.__size = self.__arena.struct_size
+                self.__size = self.__arena.sizeof
 
             # cache for frequent use (see __getattr__)
             self.top = int(self.top)
@@ -3777,10 +3746,10 @@ class GlibcHeap:
                             malloc_hook_addr + current_arch.ptrsize, 0x20,
                         )
                     elif is_arm64():
-                        mstate_size = GlibcHeap.MallocStateStruct("*0").struct_size
+                        mstate_size = GlibcHeap.MallocStateStruct(0).sizeof
                         Cache.cached_main_arena = malloc_hook_addr - current_arch.ptrsize * 2 - mstate_size
                     elif is_arm32():
-                        mstate_size = GlibcHeap.MallocStateStruct("*0").struct_size
+                        mstate_size = GlibcHeap.MallocStateStruct(0).sizeof
                         Cache.cached_main_arena = malloc_hook_addr - current_arch.ptrsize - mstate_size
                     else:
                         raise
@@ -3883,56 +3852,56 @@ class GlibcHeap:
             return tcachebins_base + offset
 
         def fastbins_addr(self, i):
-            if hasattr(self.__arena, "fastbins_addr"):
-                fastbins_addr = self.__arena.fastbins_addr
+            if hasattr(self.__arena, "addrof_fastbins"):
+                fastbins_addr = self.__arena.addrof_fastbins
             else:
                 fastbins_type = [x for x in self.__arena.type.fields() if x.name == "fastbinsY"][0]
                 fastbins_addr = self.__addr + fastbins_type.bitpos // 8
             return fastbins_addr + i * current_arch.ptrsize
 
         def top_addr(self):
-            if hasattr(self.__arena, "top_addr"):
-                top_addr = self.__arena.top_addr
+            if hasattr(self.__arena, "addrof_top"):
+                top_addr = self.__arena.addrof_top
             else:
                 top_type = [x for x in self.__arena.type.fields() if x.name == "top"][0]
                 top_addr = self.__addr + top_type.bitpos // 8
             return top_addr
 
         def last_remainder_addr(self):
-            if hasattr(self.__arena, "last_remainder_addr"):
-                last_remainder_addr = self.__arena.last_remainder_addr
+            if hasattr(self.__arena, "addrof_last_remainder"):
+                last_remainder_addr = self.__arena.addrof_last_remainder
             else:
                 last_remainder_type = [x for x in self.__arena.type.fields() if x.name == "last_remainder"][0]
                 last_remainder_addr = self.__addr + last_remainder_type.bitpos // 8
             return last_remainder_addr
 
         def bins_addr(self, i):
-            if hasattr(self.__arena, "bins_addr"):
-                bins_addr = self.__arena.bins_addr
+            if hasattr(self.__arena, "addrof_bins"):
+                bins_addr = self.__arena.addrof_bins
             else:
                 bins_type = [x for x in self.__arena.type.fields() if x.name == "bins"][0]
                 bins_addr = self.__addr + bins_type.bitpos // 8
             return bins_addr + i * current_arch.ptrsize * 2
 
         def next_addr(self):
-            if hasattr(self.__arena, "next_addr"):
-                next_addr = self.__arena.next_addr
+            if hasattr(self.__arena, "addrof_next"):
+                next_addr = self.__arena.addrof_next
             else:
                 next_type = [x for x in self.__arena.type.fields() if x.name == "next"][0]
                 next_addr = self.__addr + next_type.bitpos // 8
             return next_addr
 
         def next_free_addr(self):
-            if hasattr(self.__arena, "next_free_addr"):
-                next_free_addr = self.__arena.next_free_addr
+            if hasattr(self.__arena, "addrof_next_free"):
+                next_free_addr = self.__arena.addrof_next_free
             else:
                 next_free_type = [x for x in self.__arena.type.fields() if x.name == "next_free"][0]
                 next_free_addr = self.__addr + next_free_type.bitpos // 8
             return next_free_addr
 
         def system_mem_addr(self):
-            if hasattr(self.__arena, "system_mem_addr"):
-                system_mem_addr = self.__arena.system_mem_addr
+            if hasattr(self.__arena, "addrof_system_mem"):
+                system_mem_addr = self.__arena.addrof_system_mem
             else:
                 system_mem_type = [x for x in self.__arena.type.fields() if x.name == "system_mem"][0]
                 system_mem_addr = self.__addr + system_mem_type.bitpos // 8
