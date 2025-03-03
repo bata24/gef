@@ -2980,6 +2980,61 @@ class Instruction:
         return text
 
 
+class GenericType:
+    def __init__(self, addr):
+        self.__addr = addr
+
+        self.char_t = GefUtil.cached_lookup_type("unsigned char")
+        self.int_t = GefUtil.cached_lookup_type("unsigned int")
+        self.long_t = GefUtil.cached_lookup_type("unsigned long")
+        self.size_t = GefUtil.cached_lookup_type("size_t")
+        if not self.size_t:
+            ptr_type = "unsigned long" if current_arch.ptrsize == 8 else "unsigned int"
+            self.size_t = GefUtil.cached_lookup_type(ptr_type)
+        return
+
+    @property
+    def addr(self):
+        return self.__addr
+
+    @abc.abstractproperty
+    def sizeof(self):
+        pass
+
+    # helper methods
+    def __getitem__(self, item):
+        return getattr(self, item)
+
+    def get_size_t(self, addr):
+        return AddressUtil.dereference(addr).cast(self.size_t)
+
+    def get_size_t_pointer(self, addr):
+        size_t_pointer = self.size_t.pointer()
+        return AddressUtil.dereference(addr).cast(size_t_pointer)
+
+    def get_size_t_array(self, addr, length):
+        size_t_array = self.size_t.array(length)
+        return AddressUtil.dereference(addr).cast(size_t_array)
+
+    def get_int_t(self, addr):
+        return AddressUtil.dereference(addr).cast(self.int_t)
+
+    def get_int_t_array(self, addr, length):
+        int_t_array = self.int_t.array(length)
+        return AddressUtil.dereference(addr).cast(int_t_array)
+
+    def get_char_t_pointer(self, addr):
+        char_t_pointer = self.char_t.pointer()
+        return AddressUtil.dereference(addr).cast(char_t_pointer)
+
+    def get_char_t_array(self, addr, length):
+        char_t_array = self.char_t.array(length)
+        return AddressUtil.dereference(addr).cast(char_t_array)
+
+    def get_long_t(self, addr):
+        return AddressUtil.dereference(addr).cast(self.long_t)
+
+
 class GlibcHeap:
     """Manages glibc heap-specific settings."""
 
