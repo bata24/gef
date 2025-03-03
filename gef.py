@@ -3038,11 +3038,11 @@ class GenericType:
 class GlibcHeap:
     """Manages glibc heap-specific settings."""
 
-    class HeapInfo:
+    class HeapInfo(GenericType):
         """GEF representation of heap_info."""
 
         def __init__(self, addr):
-            self.__addr = addr
+            super().__init__(addr)
 
             if is_64bit():
                 MALLOC_ALIGNMENT = 0x10
@@ -3051,78 +3051,68 @@ class GlibcHeap:
             else:
                 MALLOC_ALIGNMENT = 0x8
             self.MALLOC_ALIGN_MASK = MALLOC_ALIGNMENT - 1
-
-            self.char_t = GefUtil.cached_lookup_type("unsigned char")
-            self.size_t = GefUtil.cached_lookup_type("size_t")
-            if not self.size_t:
-                ptr_type = "unsigned long" if current_arch.ptrsize == 8 else "unsigned int"
-                self.size_t = GefUtil.cached_lookup_type(ptr_type)
             return
 
         # struct offsets
         @property
-        def addr(self):
-            return self.__addr
+        def addrof_ar_ptr(self):
+            return self.addr
 
         @property
-        def ar_ptr_addr(self):
-            return self.__addr
+        def addrof_prev(self):
+            return self.addrof_ar_ptr + self.char_t.pointer().sizeof
 
         @property
-        def prev_addr(self):
-            return self.ar_ptr_addr + self.char_t.pointer().sizeof
+        def addrof_size(self):
+            return self.addrof_prev + self.char_t.pointer().sizeof
 
         @property
-        def size_addr(self):
-            return self.prev_addr + self.char_t.pointer().sizeof
+        def addrof_mprotect_size(self):
+            return self.addrof_size + self.size_t.sizeof
 
         @property
-        def mprotect_size_addr(self):
-            return self.size_addr + self.size_t.sizeof
-
-        @property
-        def pagesize_addr(self):
+        def addrof_pagesize(self):
             if get_libc_version() >= (2, 35):
-                return self.mprotect_size_addr + self.size_t.sizeof
+                return self.addrof_mprotect_size + self.size_t.sizeof
             else:
                 return None
 
         @property
-        def pad_addr(self):
+        def addrof_pad(self):
             if get_libc_version() >= (2, 35):
-                return self.pagesize_addr + self.size_t.sizeof
+                return self.addrof_pagesize + self.size_t.sizeof
             else:
-                return self.mprotect_size_addr + self.size_t.sizeof
+                return self.addrof_mprotect_size + self.size_t.sizeof
 
         @property
         def sizeof(self):
             if get_libc_version() >= (2, 35):
-                end = self.pad_addr + (-3 * self.size_t.sizeof) & self.MALLOC_ALIGN_MASK
+                end = self.addrof_pad + (-3 * self.size_t.sizeof) & self.MALLOC_ALIGN_MASK
             else:
-                end = self.pad_addr + (-6 * self.size_t.sizeof) & self.MALLOC_ALIGN_MASK
-            return end - self.__addr
+                end = self.addrof_pad + (-6 * self.size_t.sizeof) & self.MALLOC_ALIGN_MASK
+            return end - self.addr
 
         # struct members
         @property
         def ar_ptr(self):
-            return self.get_char_t_pointer(self.ar_ptr_addr)
+            return self.get_char_t_pointer(self.addrof_ar_ptr)
 
         @property
         def prev(self):
-            return self.get_char_t_pointer(self.prev_addr)
+            return self.get_char_t_pointer(self.addrof_prev)
 
         @property
         def size(self):
-            return self.get_size_t(self.size_addr)
+            return self.get_size_t(self.addrof_size)
 
         @property
         def mprotect_size(self):
-            return self.get_size_t(self.mprotect_size_addr)
+            return self.get_size_t(self.addrof_mprotect_size)
 
         @property
         def pagesize(self):
             if get_libc_version() >= (2, 35):
-                return self.get_size_t(self.pagesize_addr)
+                return self.get_size_t(self.addrof_pagesize)
             else:
                 return None
 
@@ -3132,22 +3122,7 @@ class GlibcHeap:
                 length = (-3 * self.size_t.sizeof) & self.MALLOC_ALIGN_MASK
             else:
                 length = (-6 * self.size_t.sizeof) & self.MALLOC_ALIGN_MASK
-            return self.get_char_t_array(self.pad_addr, length)
-
-        # helper methods
-        def get_size_t(self, addr):
-            return AddressUtil.dereference(addr).cast(self.size_t)
-
-        def get_char_t_pointer(self, addr):
-            char_t_pointer = self.char_t.pointer()
-            return AddressUtil.dereference(addr).cast(char_t_pointer)
-
-        def get_char_t_array(self, addr, length):
-            char_t_array = self.char_t.array(length)
-            return AddressUtil.dereference(addr).cast(char_t_array)
-
-        def __getitem__(self, item):
-            return getattr(self, item)
+            return self.get_char_t_array(self.addrof_pad, length)
 
     class MallocPar:
         """GEF representation of malloc_par."""
