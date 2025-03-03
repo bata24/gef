@@ -3675,6 +3675,56 @@ class GlibcHeap:
         selected_thread.switch() # revert thread
         return None
 
+    @staticmethod
+    def search_for_main_arena():
+        if Cache.cached_main_arena:
+            return Cache.cached_main_arena
+
+        if is_arm64():
+            # For some reason, native gdb (at least v10.1) on ARM64 has a bug where evaluating main_arena
+            # destroys tcache symbols. See issues #95
+            # Once you evaluate it, it will work without any problems after that.
+            # This is a temporary workaround.
+            try:
+                gdb.execute("p (void*) &tcache", to_string=True)
+            except gdb.error:
+                pass
+
+        # plan 1 (directly)
+        try:
+            Cache.cached_main_arena = AddressUtil.parse_address("(void*) &main_arena")
+            return Cache.cached_main_arena
+        except gdb.error:
+            pass
+
+        # plan 2 (from __malloc_hook)
+        if get_libc_version() < (2, 34):
+            try:
+                malloc_hook_addr = AddressUtil.parse_address("(void*) &__malloc_hook")
+                if is_x86():
+                    Cache.cached_main_arena = AddressUtil.align_address_to_size(
+                        malloc_hook_addr + current_arch.ptrsize, 0x20,
+                    )
+                elif is_arm64():
+                    mstate_size = GlibcHeap.MallocStateStruct(0).sizeof
+                    Cache.cached_main_arena = malloc_hook_addr - current_arch.ptrsize * 2 - mstate_size
+                elif is_arm32():
+                    mstate_size = GlibcHeap.MallocStateStruct(0).sizeof
+                    Cache.cached_main_arena = malloc_hook_addr - current_arch.ptrsize - mstate_size
+                else:
+                    raise
+                return Cache.cached_main_arena
+            except gdb.error:
+                pass
+
+        # plan 3 (from TLS)
+        ptr = GlibcHeap.search_for_main_arena_from_tls()
+        if ptr:
+            Cache.cached_main_arena = read_int_from_memory(ptr)
+            return Cache.cached_main_arena
+
+        raise OSError("Cannot find main_arena for {}".format(current_arch.arch))
+
     class GlibcArena:
         """Glibc arena class."""
 
@@ -3683,11 +3733,11 @@ class GlibcHeap:
         def __init__(self, arena_addr=None):
             # get address
             if arena_addr is None:
-                self.__addr = self.search_for_main_arena()
+                self.__addr = GlibcHeap.search_for_main_arena()
                 self.__is_main_arena = True
             else:
                 self.__addr = arena_addr
-                self.__is_main_arena = arena_addr == self.search_for_main_arena()
+                self.__is_main_arena = bool(arena_addr == GlibcHeap.search_for_main_arena())
 
             # get type
             try:
@@ -3699,7 +3749,11 @@ class GlibcHeap:
                 self.__arena = GlibcHeap.MallocStateStruct(self.__addr)
                 self.__size = self.__arena.sizeof
 
-            # cache for frequent use (see __getattr__)
+            # This structure (GlibcArena) is created every time you run a heap-related command.
+            # Therefore, it is safe to cache the current value.
+            # The `visual-heap` command evaluates `top` and `last_remainder` many times.
+            # These are expensive because the value is actually retrieved via `__getattr__`.
+            # Caching will improve speed, so it'll cache it here.
             self.top = int(self.top)
             self.last_remainder = int(self.last_remainder)
             return
@@ -3715,55 +3769,6 @@ class GlibcHeap:
 
         def __int__(self):
             return self.__addr
-
-        def search_for_main_arena(self):
-            if Cache.cached_main_arena:
-                return Cache.cached_main_arena
-
-            if is_arm64():
-                # For some reason, native gdb (at least v10.1) on ARM64 has a bug where evaluating main_arena
-                # destroys tcache symbols. See issues #95
-                # Once you evaluate it, it will work without any problems after that.
-                # This is a temporary workaround.
-                try:
-                    gdb.execute("p (void*) &tcache", to_string=True)
-                except gdb.error:
-                    pass
-
-            # plan 1 (directly)
-            try:
-                Cache.cached_main_arena = AddressUtil.parse_address("(void*) &main_arena")
-                return Cache.cached_main_arena
-            except gdb.error:
-                pass
-
-            # plan 2 (from __malloc_hook)
-            if get_libc_version() < (2, 34):
-                try:
-                    malloc_hook_addr = AddressUtil.parse_address("(void*) &__malloc_hook")
-                    if is_x86():
-                        Cache.cached_main_arena = AddressUtil.align_address_to_size(
-                            malloc_hook_addr + current_arch.ptrsize, 0x20,
-                        )
-                    elif is_arm64():
-                        mstate_size = GlibcHeap.MallocStateStruct(0).sizeof
-                        Cache.cached_main_arena = malloc_hook_addr - current_arch.ptrsize * 2 - mstate_size
-                    elif is_arm32():
-                        mstate_size = GlibcHeap.MallocStateStruct(0).sizeof
-                        Cache.cached_main_arena = malloc_hook_addr - current_arch.ptrsize - mstate_size
-                    else:
-                        raise
-                    return Cache.cached_main_arena
-                except gdb.error:
-                    pass
-
-            # plan 3 (from TLS)
-            ptr = GlibcHeap.search_for_main_arena_from_tls()
-            if ptr:
-                Cache.cached_main_arena = read_int_from_memory(ptr)
-                return Cache.cached_main_arena
-
-            raise OSError("Cannot find main_arena for {}".format(current_arch.arch))
 
         @property
         def is_main_arena(self):
@@ -3781,7 +3786,7 @@ class GlibcHeap:
                 return "*{:#x}".format(self.__addr)
 
         @property
-        def size(self):
+        def sizeof(self):
             # arena aligned_size
             if current_arch.ptrsize == 4:
                 aligned_size = (self.__size + 7) & ~0b111
@@ -3794,10 +3799,10 @@ class GlibcHeap:
             if self.is_main_arena:
                 return HeapbaseCommand.heap_base()
             else:
-                return self.addr + self.size
+                return self.addr + self.sizeof
 
         @Cache.cache_until_next
-        def tcachebins_base_addr(self):
+        def addrof_tcachebins_base(self):
             if self.heap_base is None:
                 return None
 
@@ -3840,8 +3845,8 @@ class GlibcHeap:
                 arch_offset = 0x10
             return self.heap_base + arch_offset
 
-        def tcachebins_addr(self, i):
-            tcachebins_base = self.tcachebins_base_addr()
+        def addrof_tcachebins_i(self, i):
+            tcachebins_base = self.addrof_tcachebins_base()
             if tcachebins_base is None:
                 return None
 
@@ -3851,7 +3856,7 @@ class GlibcHeap:
                 offset = 2 * self.TCACHE_MAX_BINS + i * current_arch.ptrsize
             return tcachebins_base + offset
 
-        def fastbins_addr(self, i):
+        def addrof_fastbins_i(self, i):
             if hasattr(self.__arena, "addrof_fastbins"):
                 fastbins_addr = self.__arena.addrof_fastbins
             else:
@@ -3859,7 +3864,7 @@ class GlibcHeap:
                 fastbins_addr = self.__addr + fastbins_type.bitpos // 8
             return fastbins_addr + i * current_arch.ptrsize
 
-        def top_addr(self):
+        def addrof_top(self):
             if hasattr(self.__arena, "addrof_top"):
                 top_addr = self.__arena.addrof_top
             else:
@@ -3867,7 +3872,7 @@ class GlibcHeap:
                 top_addr = self.__addr + top_type.bitpos // 8
             return top_addr
 
-        def last_remainder_addr(self):
+        def addrof_last_remainder(self):
             if hasattr(self.__arena, "addrof_last_remainder"):
                 last_remainder_addr = self.__arena.addrof_last_remainder
             else:
@@ -3875,7 +3880,7 @@ class GlibcHeap:
                 last_remainder_addr = self.__addr + last_remainder_type.bitpos // 8
             return last_remainder_addr
 
-        def bins_addr(self, i):
+        def addrof_bins_i(self, i):
             if hasattr(self.__arena, "addrof_bins"):
                 bins_addr = self.__arena.addrof_bins
             else:
@@ -3883,7 +3888,7 @@ class GlibcHeap:
                 bins_addr = self.__addr + bins_type.bitpos // 8
             return bins_addr + i * current_arch.ptrsize * 2
 
-        def next_addr(self):
+        def addrof_next(self):
             if hasattr(self.__arena, "addrof_next"):
                 next_addr = self.__arena.addrof_next
             else:
@@ -3891,7 +3896,7 @@ class GlibcHeap:
                 next_addr = self.__addr + next_type.bitpos // 8
             return next_addr
 
-        def next_free_addr(self):
+        def addrof_next_free(self):
             if hasattr(self.__arena, "addrof_next_free"):
                 next_free_addr = self.__arena.addrof_next_free
             else:
@@ -3899,7 +3904,7 @@ class GlibcHeap:
                 next_free_addr = self.__addr + next_free_type.bitpos // 8
             return next_free_addr
 
-        def system_mem_addr(self):
+        def addrof_system_mem(self):
             if hasattr(self.__arena, "addrof_system_mem"):
                 system_mem_addr = self.__arena.addrof_system_mem
             else:
@@ -3907,9 +3912,9 @@ class GlibcHeap:
                 system_mem_addr = self.__addr + system_mem_type.bitpos // 8
             return system_mem_addr
 
-        def tcachebin(self, i):
+        def get_tcachebins_i(self, i):
             """Return head chunk in tcache[i]."""
-            tcache_i_head = self.tcachebins_addr(i)
+            tcache_i_head = self.addrof_tcachebins_i(i)
             if not tcache_i_head:
                 return None
             addr = AddressUtil.dereference(tcache_i_head)
@@ -3917,14 +3922,14 @@ class GlibcHeap:
                 return None
             return GlibcHeap.GlibcChunk(int(addr))
 
-        def fastbin(self, i):
+        def get_fastbins_i(self, i):
             """Return head chunk in fastbinsY[i]."""
             addr = int(self.fastbinsY[i])
             if addr == 0:
                 return None
             return GlibcHeap.GlibcChunk(addr + 2 * current_arch.ptrsize)
 
-        def bin(self, i):
+        def get_bins_i(self, i):
             idx = i * 2
             fd = int(self.bins[idx])
             bw = int(self.bins[idx + 1])
@@ -3971,7 +3976,7 @@ class GlibcHeap:
                 args = (arena, arena_addr, heap_base, top, last_remainder, next, system_mem)
             return fmt.format(*args)
 
-        def tcache_list(self):
+        def get_tcache_list(self):
             if get_libc_version() < (2, 26):
                 info("No tcache in this version of libc")
                 return {}
@@ -3982,7 +3987,7 @@ class GlibcHeap:
             chunks_all = {}
             for i in range(self.TCACHE_MAX_BINS):
                 try:
-                    chunk = self.tcachebin(i)
+                    chunk = self.get_tcachebins_i(i)
                 except gdb.MemoryError:
                     sz = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
                     err("tcache[idx={:d}, sz={:#x}] is corrupted".format(i, sz))
@@ -4007,7 +4012,7 @@ class GlibcHeap:
                 chunks_all[i] = chunks
             return chunks_all
 
-        def fastbins_list(self):
+        def get_fastbins_list(self):
             def fastbin_index(sz):
                 return (sz >> 4) - 2 if SIZE_SZ == 8 else (sz >> 3) - 2
 
@@ -4017,7 +4022,7 @@ class GlibcHeap:
             chunks_all = {}
             for i in range(NFASTBINS):
                 try:
-                    chunk = self.fastbin(i)
+                    chunk = self.get_fastbins_i(i)
                 except gdb.MemoryError:
                     sz = GlibcHeap.get_binsize_table()["fastbins"][i]["size"]
                     err("fastbins[idx={:d}, sz={:#x}] is corrupted".format(i, sz))
@@ -4042,14 +4047,14 @@ class GlibcHeap:
                 chunks_all[i] = chunks
             return chunks_all
 
-        def bins_list(self, index):
+        def get_bins_list(self, index):
             try:
-                fw, bk = self.bin(index)
+                fw, bk = self.get_bins_i(index)
             except gdb.MemoryError:
                 return [] # invalid
             if bk == 0x00 and fw == 0x00:
                 return [] # invalid
-            head = self.bins_addr(index) - current_arch.ptrsize * 2
+            head = self.addrof_bins_i(index) - current_arch.ptrsize * 2
             if fw == head:
                 return [] # no entry
 
@@ -4100,30 +4105,30 @@ class GlibcHeap:
                 chunks = chunks_fw + chunks
             return chunks
 
-        def unsortedbin_list(self):
+        def get_unsortedbin_list(self):
             chunks_all = {}
-            chunks_all[0] = self.bins_list(0)
+            chunks_all[0] = self.get_bins_list(0)
             return chunks_all
 
-        def smallbins_list(self):
+        def get_smallbins_list(self):
             chunks_all = {}
             for i in range(1, 63):
-                chunks_all[i] = self.bins_list(i)
+                chunks_all[i] = self.get_bins_list(i)
             return chunks_all
 
-        def largebins_list(self):
+        def get_largebins_list(self):
             chunks_all = {}
             for i in range(63, 126):
-                chunks_all[i] = self.bins_list(i)
+                chunks_all[i] = self.get_bins_list(i)
             return chunks_all
 
         def reset_bins_info(self):
             # cached_XXX_list = {bin_idx1: [chunk, chunk, ...], bin_idx2: [chunk, chunk, ...]}
-            self.cached_tcache_list = self.tcache_list()
-            self.cached_fastbins_list = self.fastbins_list()
-            self.cached_unsortedbin_list = self.unsortedbin_list()
-            self.cached_smallbins_list = self.smallbins_list()
-            self.cached_largebins_list = self.largebins_list()
+            self.cached_tcache_list = self.get_tcache_list()
+            self.cached_fastbins_list = self.get_fastbins_list()
+            self.cached_unsortedbin_list = self.get_unsortedbin_list()
+            self.cached_smallbins_list = self.get_smallbins_list()
+            self.cached_largebins_list = self.get_largebins_list()
 
             # cacheed_XXX_addr_list = {chunk, chunk, ...}
             self.cached_tcache_addr_list = set().union(*self.cached_tcache_list.values())
@@ -20603,7 +20608,7 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
         # doit
         for arena in arenas:
             gef_print(titlify("tcache"))
-            for i, chunks in arena.tcache_list().items():
+            for i, chunks in arena.get_tcache_list().items():
                 m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
                 if m or args.verbose:
                     size = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
@@ -20615,27 +20620,27 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
                     gef_print("{:#x} [{:d}]: ".format(size, count) + RIGHT_ARROW.join(m))
 
             gef_print(titlify("fastbins"))
-            for i, chunks in arena.fastbins_list().items():
+            for i, chunks in arena.get_fastbins_list().items():
                 m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
                 if m or args.verbose:
                     size = GlibcHeap.get_binsize_table()["fastbins"][i]["size"]
                     gef_print("{:#x}: ".format(size) + RIGHT_ARROW.join(m))
 
             gef_print(titlify("unsorted bin"))
-            for _, chunks in arena.unsortedbin_list().items():
+            for _, chunks in arena.get_unsortedbin_list().items():
                 m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
                 if m or args.verbose:
                     gef_print("any: " + RIGHT_ARROW.join(m))
 
             gef_print(titlify("small bins"))
-            for i, chunks in arena.smallbins_list().items():
+            for i, chunks in arena.get_smallbins_list().items():
                 m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
                 if m or args.verbose:
                     size = GlibcHeap.get_binsize_table()["small_bins"][i]["size"]
                     gef_print("{:#x}: ".format(size) + RIGHT_ARROW.join(m))
 
             gef_print(titlify("large bins"))
-            for i, chunks in arena.largebins_list().items():
+            for i, chunks in arena.get_largebins_list().items():
                 m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
                 if m or args.verbose:
                     size_min = GlibcHeap.get_binsize_table()["large_bins"][i]["size_min"]
@@ -20671,13 +20676,13 @@ class GlibcHeapBinsCommand(GenericCommand):
 
     @staticmethod
     def pprint_bin(arena, index, bin_name, verbose=False):
-        fw, bk = arena.bin(index)
+        fw, bk = arena.get_bins_i(index)
 
         if bk == 0 and fw == 0:
             warn("Invalid backward and forward bin pointers(fd==bk==NULL)")
             return -1
 
-        bins_addr = arena.bins_addr(index)
+        bins_addr = arena.addrof_bins_i(index)
         head = bins_addr - current_arch.ptrsize * 2
         if fw == head and not verbose:
             return 0
@@ -20854,13 +20859,13 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
         tcache_perthread_struct = arena.heap_base + 0x10
 
         gef_print(titlify("Tcache Bins for arena '{:s}' (&tcache_perthread_struct->entries[0]: {:#x})".format(
-            arena.name, arena.tcachebins_addr(0),
+            arena.name, arena.addrof_tcachebins_i(0),
         )))
 
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
         nb_chunk = 0
         for i in range(GlibcHeap.GlibcArena.TCACHE_MAX_BINS):
-            chunk = arena.tcachebin(i)
+            chunk = arena.get_tcachebins_i(i)
             chunks = []
             m = []
 
@@ -20898,7 +20903,7 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
                 else:
                     count = u16(read_memory(tcache_perthread_struct + 2 * i, 2))
                 size = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
-                bins_addr = ProcessMap.lookup_address(arena.tcachebins_addr(i))
+                bins_addr = ProcessMap.lookup_address(arena.addrof_tcachebins_i(i))
                 fd = ProcessMap.lookup_address(read_int_from_memory(bins_addr.value))
                 gef_print("tcachebins[idx={:d}, size={:#x}, @{!s}]: fd={!s} count={:d}".format(
                     i, size, bins_addr, fd, count,
@@ -20974,7 +20979,7 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
 
         nb_chunk = 0
         for i in range(NFASTBINS):
-            chunk = arena.fastbin(i)
+            chunk = arena.get_fastbins_i(i)
             chunks = []
             m = []
 
@@ -21013,7 +21018,7 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
                 bin_table = GlibcHeap.get_binsize_table()["fastbins"]
                 if i in bin_table:
                     size = bin_table[i]["size"]
-                    bins_addr = ProcessMap.lookup_address(arena.fastbins_addr(i))
+                    bins_addr = ProcessMap.lookup_address(arena.addrof_fastbins_i(i))
                     fd = ProcessMap.lookup_address(read_int_from_memory(bins_addr.value))
                     gef_print("fastbins[idx={:d}, size={:#x}, @{!s}]: fd={!s}".format(
                         i, size, bins_addr, fd,
@@ -21459,7 +21464,7 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
             count_addr = tcache_perthread_struct + index
         else:
             count_addr = tcache_perthread_struct + index * 2
-        entry_addr = arena.tcachebins_addr(index)
+        entry_addr = arena.addrof_tcachebins_i(index)
         info("&tcache.counts[{:d}] = {!s}".format(index, ProcessMap.lookup_address(count_addr)))
         info("&tcache.entries[{:d}] = {!s}".format(index, ProcessMap.lookup_address(entry_addr)))
         return
@@ -21502,7 +21507,7 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
             self.print_tcache_info(arena, index)
 
         if args.entry_addr is not None:
-            index = (args.entry_addr - arena.tcachebins_addr(0)) // current_arch.ptrsize
+            index = (args.entry_addr - arena.addrof_tcachebins_i(0)) // current_arch.ptrsize
             self.print_tcache_info(arena, index)
         return
 
