@@ -575,9 +575,9 @@ But this is a personal development, so I have the final decision. I appreciate y
 
 ## What information should I provide when reporting a issue?
 You will need a screenshot or a copy of the terminal output when the problem occurred.
-In addition, I am glad if there are the results of the `version` command and `arch-info` command.
+In addition, I am glad if there are the results of the `gef version` command and `gef status` command.
 
-Additionally, if the issue is related to kernel debugging, please provide a set of environments (`run.sh`, `bzImage`, `rootfs`, etc.) or where to get them.
+Additionally, if the issue is related to kernel debugging, please provide a set of environments (`run.sh`, `bzImage`, etc.) or where to get them.
 
 ## Is it okay to fork and modify?
 Yes. However, please follow the license.

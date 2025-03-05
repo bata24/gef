@@ -14092,248 +14092,6 @@ class GefThemeCommand(GenericCommand):
 
 
 @register_command
-class VersionCommand(GenericCommand):
-    """Display GEF version info."""
-
-    _cmdline_ = "version"
-    _category_ = "99. GEF Maintenance Command"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("--compact", action="store_true", help="show compact style.")
-    _syntax_ = parser.format_help()
-
-    def os_version(self):
-        try:
-            lsb_release_command = GefUtil.which("lsb_release")
-            res = GefUtil.gef_execute_external([lsb_release_command, "-d"], as_list=True)
-            for line in res:
-                if line.startswith("Description:"):
-                    return line.split(":")[1].strip("\\t")
-        except FileNotFoundError:
-            pass
-
-        if os.path.exists("/etc/issue.net"):
-            content = open("/etc/issue.net").read().strip()
-            if content:
-                return content
-
-        if os.path.exists("/etc/issue"):
-            content = open("/etc/issue").read().strip()
-            content = content.replace(" \\n \\l", "")
-            if content:
-                return content
-
-        if os.path.exists("/etc/os-release"):
-            content = open("/etc/os-release").read()
-            for line in content.splitlines():
-                r = re.search(r'PRETTY_NAME="(.+)"', line)
-                if r:
-                    return r.group(1)
-
-        return "Not found"
-
-    def kernel_version_from_uname(self):
-        try:
-            uname_command = GefUtil.which("uname")
-            res = GefUtil.gef_execute_external([uname_command, "-a"], as_list=True)
-            return res[0]
-        except FileNotFoundError:
-            return "Not found"
-
-    def kernel_version_from_proc(self):
-        try:
-            return open("/proc/version").read().strip()
-        except FileNotFoundError:
-            return "Not found"
-
-    def system_libc_version(self):
-        res = GefUtil.gef_execute_external(["cat", "/proc/self/maps"], as_list=True)
-        libc_targets = ("libc-2.", "libc.so.6", "libuClibc-")
-        for line in res:
-            if not any(kw in line for kw in libc_targets):
-                continue
-            path = line.split()[-1]
-            if not os.path.exists(path):
-                continue
-            data = open(path, "rb").read()
-            pos = re.search(b"(GNU C Library|uClibc-ng release) [\x20-\x7e]*", data)
-            if pos:
-                return String.bytes2str(pos.group(0))
-        return "Not found"
-
-    def qemu_system_version(self):
-        return gdb.execute("monitor info version", to_string=True).strip()
-
-    def qemu_user_version(self):
-        pid = Pid.get_pid()
-        try:
-            res = GefUtil.gef_execute_external(["/proc/{:d}/exe".format(pid), "--version"], as_list=True)
-            return res[0].strip()
-        except (IndexError, FileNotFoundError):
-            return "Not recognized"
-
-    def gef_version(self):
-        gef_hash = hashlib.sha1(open(GEF_FILEPATH, "rb").read()).hexdigest()
-        dt = datetime.datetime.fromtimestamp(os.stat(GEF_FILEPATH).st_mtime)
-        return "Last modified: {} SHA1: {}".format(dt.strftime("%Y-%m-%d %H:%M:%S"), gef_hash)
-
-    def gdb_version(self):
-        try:
-            return gdb.VERSION # GDB >= 8.1 (or earlier?)
-        except AttributeError:
-            return gdb.execute("show version", to_string=True).split("\n")[0]
-
-    def python_version(self):
-        return sys.version.replace("\n", " ")
-
-    def capstone_version(self):
-        @load_capstone
-        def _capstone_version():
-            capstone = sys.modules["capstone"]
-            return ".".join(map(str, capstone.cs_version()))
-        try:
-            return _capstone_version()
-        except (KeyError, ImportWarning):
-            return "Not found"
-
-    def keystone_version(self):
-        @load_keystone
-        def _keystone_version():
-            keystone = sys.modules["keystone"]
-            return ".".join(map(str, keystone.ks_version()))
-        try:
-            return _keystone_version()
-        except (KeyError, ImportWarning):
-            return "Not found"
-
-    def unicorn_version(self):
-        @load_unicorn
-        def _unicorn_version():
-            unicorn = sys.modules["unicorn"]
-            return unicorn.__version__
-        try:
-            return _unicorn_version()
-        except (KeyError, ImportWarning):
-            return "Not found"
-
-    def ropper_version(self):
-        @load_ropper
-        def _ropper_version():
-            ropper = sys.modules["ropper"]
-            return ".".join(map(str, ropper.VERSION))
-        try:
-            return _ropper_version()
-        except (KeyError, ImportWarning):
-            return "Not found"
-
-    def angr_version(self):
-        @load_angr
-        def _angr_version():
-            angr = sys.modules["angr"]
-            return angr.__version__
-        try:
-            return _angr_version()
-        except (KeyError, ImportWarning):
-            return "Not found"
-
-    def gcc_version(self):
-        try:
-            gcc_command = GefUtil.which("gcc")
-        except FileNotFoundError:
-            return "Not found"
-        res = GefUtil.gef_execute_external([gcc_command, "--version"], as_list=True)
-        return res[0]
-
-    def readelf_version(self):
-        try:
-            readelf_command = GefUtil.which("readelf")
-        except FileNotFoundError:
-            return "Not found"
-        res = GefUtil.gef_execute_external([readelf_command, "-v"], as_list=True)
-        return res[0]
-
-    def objdump_version(self):
-        try:
-            objdump_command = GefUtil.which("objdump")
-        except FileNotFoundError:
-            return "Not found"
-        res = GefUtil.gef_execute_external([objdump_command, "-v"], as_list=True)
-        return res[0]
-
-    def seccomp_tools_version(self):
-        try:
-            seccomp_tools_command = GefUtil.which("seccomp-tools")
-        except FileNotFoundError:
-            return "Not found"
-        res = GefUtil.gef_execute_external([seccomp_tools_command, "--version"], as_list=True)
-        return res[0]
-
-    def one_gadget_version(self):
-        try:
-            one_gadget_command = GefUtil.which("one_gadget")
-        except FileNotFoundError:
-            return "Not found"
-        res = GefUtil.gef_execute_external([one_gadget_command, "--version"], as_list=True)
-        return res[0]
-
-    def rp_version(self):
-        try:
-            rp_lin_command = GefUtil.which("rp-lin")
-        except FileNotFoundError:
-            return "Not found"
-        res = GefUtil.gef_execute_external([rp_lin_command, "--version", "--file", "a"], as_list=True)
-        if "You are currently using " in res[0]:
-            return res[0].replace("You are currently using ", "")
-        return "Not found"
-
-    def show_compact_info(self):
-        gef_print("gdb:     {:s}".format(self.gdb_version()))
-        gef_print("python:  {:s}".format(self.python_version()))
-        gef_print("OS:      {:s}".format(self.os_version()))
-        gef_print("kernel:  {:s}".format(self.kernel_version_from_uname()))
-        if is_qemu_system():
-            gef_print("qemu:    {:s}".format(self.qemu_system_version()))
-        return
-
-    def show_full_info(self):
-        gef_print(titlify("versions"))
-        gef_print("OS:                     {:s}".format(self.os_version()))
-        gef_print("kernel (uname -a):      {:s}".format(self.kernel_version_from_uname()))
-        gef_print("kernel (/proc/version): {:s}".format(self.kernel_version_from_proc()))
-        gef_print("System libc:            {:s}".format(self.system_libc_version()))
-        if is_qemu_system():
-            gef_print("qemu:                   {:s}".format(self.qemu_system_version()))
-        if is_qemu_user():
-            gef_print("qemu:                   {:s}".format(self.qemu_user_version()))
-        gef_print("GEF:                    {:s}".format(self.gef_version()))
-        gef_print("gdb:                    {:s}".format(self.gdb_version()))
-        gef_print("python:                 {:s}".format(self.python_version()))
-        gef_print("capstone:               {:s}".format(self.capstone_version()))
-        gef_print("keystone:               {:s}".format(self.keystone_version()))
-        gef_print("unicorn:                {:s}".format(self.unicorn_version()))
-        gef_print("ropper:                 {:s}".format(self.ropper_version()))
-        gef_print("angr:                   {:s}".format(self.angr_version()))
-        gef_print("gcc:                    {:s}".format(self.gcc_version()))
-        gef_print("readelf:                {:s}".format(self.readelf_version()))
-        gef_print("objdump:                {:s}".format(self.objdump_version()))
-        gef_print("seccomp-tools:          {:s}".format(self.seccomp_tools_version()))
-        gef_print("one_gadget:             {:s}".format(self.one_gadget_version()))
-        gef_print("rp:                     {:s}".format(self.rp_version()))
-
-        gef_print(titlify("gdb build config"))
-        gdb.execute("show configuration")
-        return
-
-    @parse_args
-    def do_invoke(self, args):
-        if args.compact:
-            self.show_compact_info()
-        else:
-            self.show_full_info()
-        return
-
-
-@register_command
 class HighlightCommand(GenericCommand):
     """The base command to highlight user defined text matches which modifies GEF output universally."""
 
@@ -22890,103 +22648,6 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
             self.out.append("\t".join(line))
 
         self.print_output(args)
-        return
-
-
-@register_command
-class ArchInfoCommand(GenericCommand):
-    """Display current architecture information."""
-
-    _cmdline_ = "arch-info"
-    _category_ = "02-a. Process Information - General"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    _syntax_ = parser.format_help()
-
-    @parse_args
-    def do_invoke(self, args):
-        if current_arch is None:
-            err("current_arch not set")
-            return
-
-        gef_print(titlify("GDB/ELF settings"))
-        show_arch = gdb.execute("show architecture", to_string=True).rstrip()
-        gef_print("{:30s} {:s} {:s}".format("show architecture", RIGHT_ARROW, show_arch))
-        if is_64bit():
-            bit_str = "64-bit"
-        else:
-            bit_str = "32-bit"
-        if Endian.is_big_endian():
-            endian_str = "big"
-        else:
-            endian_str = "little"
-        gef_print("{:30s} {:s} {:s}".format("bit", RIGHT_ARROW, bit_str))
-        gef_print("{:30s} {:s} {:s}".format("endian", RIGHT_ARROW, endian_str))
-
-        gef_print(titlify("GDB mode"))
-        gef_print("{:30s} {:s} {!s}".format("is_normal_run()", RIGHT_ARROW, is_normal_run()))
-        gef_print("{:30s} {:s} {!s}".format("is_attach()", RIGHT_ARROW, is_attach()))
-        gef_print("{:30s} {:s} {!s}".format("is_remote_debug()", RIGHT_ARROW, is_remote_debug()))
-        gef_print("{:30s} {:s} {!s}".format("is_container_attach()", RIGHT_ARROW, is_container_attach()))
-        gef_print("{:30s} {:s} {!s}".format("is_qemu_system()", RIGHT_ARROW, is_qemu_system()))
-        gef_print("{:30s} {:s} {!s}".format("is_qemu_user()", RIGHT_ARROW, is_qemu_user()))
-        gef_print("{:30s} {:s} {!s}".format("is_pin()", RIGHT_ARROW, is_pin()))
-        gef_print("{:30s} {:s} {!s}".format("is_kgdb()", RIGHT_ARROW, is_kgdb()))
-        gef_print("{:30s} {:s} {!s}".format("is_qiling()", RIGHT_ARROW, is_qiling()))
-        gef_print("{:30s} {:s} {!s}".format("is_vmware()", RIGHT_ARROW, is_vmware()))
-        gef_print("{:30s} {:s} {!s}".format("is_in_kernel()", RIGHT_ARROW, is_in_kernel()))
-        gef_print("{:30s} {:s} {!s}".format("is_rr()", RIGHT_ARROW, is_rr()))
-        gef_print("{:30s} {:s} {!s}".format("is_wine()", RIGHT_ARROW, is_wine()))
-
-        gef_print(titlify("Others"))
-        gef_print("{:30s} {:s} {!s}".format("is_alive()", RIGHT_ARROW, is_alive()))
-        gef_print("{:30s} {:s} {!s}".format("is_kvm_enabled()", RIGHT_ARROW, is_kvm_enabled()))
-        gef_print("{:30s} {:s} {!s}".format("is_supported_physmode()", RIGHT_ARROW, is_supported_physmode()))
-        if is_supported_physmode():
-            gef_print("{:30s} {:s} {!s}".format("get_current_mmu_mode()", RIGHT_ARROW, QemuMonitor.get_current_mmu_mode()))
-
-        gef_print(titlify("GEF architecture information"))
-        gef_print("{:30s} {:s} {!s}".format("current_arch.arch", RIGHT_ARROW, current_arch.arch))
-        gef_print("{:30s} {:s} {!s}".format("current_arch.mode", RIGHT_ARROW, current_arch.mode))
-        if is_arm32() or is_arm32_cortex_m():
-            gef_print("{:30s} {:s} {!s}".format("current_arch.__mode", RIGHT_ARROW, current_arch._ARM__mode))
-        gef_print("{:30s} {:s} {!s}".format("current_arch.ptrsize", RIGHT_ARROW, current_arch.ptrsize))
-
-        if current_arch.instruction_length is None:
-            inst_len = "variable length"
-        else:
-            inst_len = str(current_arch.instruction_length)
-        gef_print("{:30s} {:s} {!s}".format("instruction length", RIGHT_ARROW, inst_len))
-
-        if current_arch.return_register is None:
-            ret_regs = "different for each system call"
-        else:
-            ret_regs = str(current_arch.return_register)
-        gef_print("{:30s} {:s} {!s}".format("return register", RIGHT_ARROW, ret_regs))
-
-        fparams = ", ".join(current_arch.function_parameters)
-        if len(current_arch.function_parameters) == 1:
-            fparams += " (passing via stack)"
-        gef_print("{:30s} {:s} {!s}".format("function parameters", RIGHT_ARROW, fparams))
-
-        gef_print("{:30s} {:s} {!s}".format("syscall register", RIGHT_ARROW, current_arch.syscall_register))
-
-        if current_arch.syscall_parameters is None:
-            sparams = "different for each system call"
-        else:
-            sparams = ", ".join(current_arch.syscall_parameters)
-        gef_print("{:30s} {:s} {!s}".format("syscall parameters", RIGHT_ARROW, sparams))
-
-        if is_x86() or is_arm32() or is_arm64():
-            gef_print("{:30s} {:s} {!s}".format("32bit-emulated (compat mode)", RIGHT_ARROW, is_emulated32()))
-        gef_print("{:30s} {:s} {!s}".format("Has a call/jump delay slot", RIGHT_ARROW, current_arch.has_delay_slot))
-        gef_print("{:30s} {:s} {!s}".format("Has a syscall delay slot", RIGHT_ARROW, current_arch.has_syscall_delay_slot))
-        gef_print("{:30s} {:s} {!s}".format("Has a ret delay slot", RIGHT_ARROW, current_arch.has_ret_delay_slot))
-        gef_print("{:30s} {:s} {!s}".format("Stack grow down", RIGHT_ARROW, current_arch.stack_grow_down))
-        gef_print("{:30s} {:s} {!s}".format("Thread Local Storage support", RIGHT_ARROW, current_arch.tls_supported))
-        gef_print("{:30s} {:s} {!s}".format("keystone support", RIGHT_ARROW, current_arch.keystone_support))
-        gef_print("{:30s} {:s} {!s}".format("capstone support", RIGHT_ARROW, current_arch.capstone_support))
-        gef_print("{:30s} {:s} {!s}".format("unicorn support", RIGHT_ARROW, current_arch.unicorn_support))
         return
 
 
@@ -93729,6 +93390,8 @@ class GefCommand(GenericCommand):
     subparsers.add_parser("pyobj-list")
     subparsers.add_parser("avail-comm-list")
     subparsers.add_parser("set-arch")
+    subparsers.add_parser("status")
+    subparsers.add_parser("version")
     subparsers.add_parser("check-update")
     _syntax_ = parser.format_help()
 
@@ -94453,7 +94116,7 @@ class GefPyObjListCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
-    """Displays a list of commands available for the current architecture and gdb execution mode."""
+    """Display a list of commands available for the current architecture and gdb execution mode."""
 
     _cmdline_ = "gef avail-comm-list"
     _category_ = "99. GEF Maintenance Command"
@@ -94608,6 +94271,347 @@ class GefSetArchCommand(GenericCommand):
             Cache.reset_gef_caches(all=True)
         except OSError:
             err("set_arch({:s}) is failed".format(args.arch))
+        return
+
+
+@register_command
+class GefStatusCommand(GenericCommand):
+    """Display current gef status."""
+
+    _cmdline_ = "gef status"
+    _category_ = "99. GEF Maintenance Command"
+    _aliases_ = ["arch-info"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    _syntax_ = parser.format_help()
+
+    @parse_args
+    def do_invoke(self, args):
+        if current_arch is None:
+            err("current_arch not set")
+            return
+
+        gef_print(titlify("GDB/ELF settings"))
+        show_arch = gdb.execute("show architecture", to_string=True).rstrip()
+        gef_print("{:30s} {:s} {:s}".format("show architecture", RIGHT_ARROW, show_arch))
+        if is_64bit():
+            bit_str = "64-bit"
+        else:
+            bit_str = "32-bit"
+        if Endian.is_big_endian():
+            endian_str = "big"
+        else:
+            endian_str = "little"
+        gef_print("{:30s} {:s} {:s}".format("bit", RIGHT_ARROW, bit_str))
+        gef_print("{:30s} {:s} {:s}".format("endian", RIGHT_ARROW, endian_str))
+
+        gef_print(titlify("GDB mode"))
+        gef_print("{:30s} {:s} {!s}".format("is_normal_run()", RIGHT_ARROW, is_normal_run()))
+        gef_print("{:30s} {:s} {!s}".format("is_attach()", RIGHT_ARROW, is_attach()))
+        gef_print("{:30s} {:s} {!s}".format("is_remote_debug()", RIGHT_ARROW, is_remote_debug()))
+        gef_print("{:30s} {:s} {!s}".format("is_container_attach()", RIGHT_ARROW, is_container_attach()))
+        gef_print("{:30s} {:s} {!s}".format("is_qemu_system()", RIGHT_ARROW, is_qemu_system()))
+        gef_print("{:30s} {:s} {!s}".format("is_qemu_user()", RIGHT_ARROW, is_qemu_user()))
+        gef_print("{:30s} {:s} {!s}".format("is_pin()", RIGHT_ARROW, is_pin()))
+        gef_print("{:30s} {:s} {!s}".format("is_kgdb()", RIGHT_ARROW, is_kgdb()))
+        gef_print("{:30s} {:s} {!s}".format("is_qiling()", RIGHT_ARROW, is_qiling()))
+        gef_print("{:30s} {:s} {!s}".format("is_vmware()", RIGHT_ARROW, is_vmware()))
+        gef_print("{:30s} {:s} {!s}".format("is_in_kernel()", RIGHT_ARROW, is_in_kernel()))
+        gef_print("{:30s} {:s} {!s}".format("is_rr()", RIGHT_ARROW, is_rr()))
+        gef_print("{:30s} {:s} {!s}".format("is_wine()", RIGHT_ARROW, is_wine()))
+
+        gef_print(titlify("Others"))
+        gef_print("{:30s} {:s} {!s}".format("is_alive()", RIGHT_ARROW, is_alive()))
+        gef_print("{:30s} {:s} {!s}".format("is_kvm_enabled()", RIGHT_ARROW, is_kvm_enabled()))
+        gef_print("{:30s} {:s} {!s}".format("is_supported_physmode()", RIGHT_ARROW, is_supported_physmode()))
+        if is_supported_physmode():
+            gef_print("{:30s} {:s} {!s}".format("get_current_mmu_mode()", RIGHT_ARROW, QemuMonitor.get_current_mmu_mode()))
+
+        gef_print(titlify("GEF architecture information"))
+        gef_print("{:30s} {:s} {!s}".format("current_arch.arch", RIGHT_ARROW, current_arch.arch))
+        gef_print("{:30s} {:s} {!s}".format("current_arch.mode", RIGHT_ARROW, current_arch.mode))
+        if is_arm32() or is_arm32_cortex_m():
+            gef_print("{:30s} {:s} {!s}".format("current_arch.__mode", RIGHT_ARROW, current_arch._ARM__mode))
+        gef_print("{:30s} {:s} {!s}".format("current_arch.ptrsize", RIGHT_ARROW, current_arch.ptrsize))
+
+        if current_arch.instruction_length is None:
+            inst_len = "variable length"
+        else:
+            inst_len = str(current_arch.instruction_length)
+        gef_print("{:30s} {:s} {!s}".format("instruction length", RIGHT_ARROW, inst_len))
+
+        if current_arch.return_register is None:
+            ret_regs = "different for each system call"
+        else:
+            ret_regs = str(current_arch.return_register)
+        gef_print("{:30s} {:s} {!s}".format("return register", RIGHT_ARROW, ret_regs))
+
+        fparams = ", ".join(current_arch.function_parameters)
+        if len(current_arch.function_parameters) == 1:
+            fparams += " (passing via stack)"
+        gef_print("{:30s} {:s} {!s}".format("function parameters", RIGHT_ARROW, fparams))
+
+        gef_print("{:30s} {:s} {!s}".format("syscall register", RIGHT_ARROW, current_arch.syscall_register))
+
+        if current_arch.syscall_parameters is None:
+            sparams = "different for each system call"
+        else:
+            sparams = ", ".join(current_arch.syscall_parameters)
+        gef_print("{:30s} {:s} {!s}".format("syscall parameters", RIGHT_ARROW, sparams))
+
+        if is_x86() or is_arm32() or is_arm64():
+            gef_print("{:30s} {:s} {!s}".format("32bit-emulated (compat mode)", RIGHT_ARROW, is_emulated32()))
+        gef_print("{:30s} {:s} {!s}".format("Has a call/jump delay slot", RIGHT_ARROW, current_arch.has_delay_slot))
+        gef_print("{:30s} {:s} {!s}".format("Has a syscall delay slot", RIGHT_ARROW, current_arch.has_syscall_delay_slot))
+        gef_print("{:30s} {:s} {!s}".format("Has a ret delay slot", RIGHT_ARROW, current_arch.has_ret_delay_slot))
+        gef_print("{:30s} {:s} {!s}".format("Stack grow down", RIGHT_ARROW, current_arch.stack_grow_down))
+        gef_print("{:30s} {:s} {!s}".format("Thread Local Storage support", RIGHT_ARROW, current_arch.tls_supported))
+        gef_print("{:30s} {:s} {!s}".format("keystone support", RIGHT_ARROW, current_arch.keystone_support))
+        gef_print("{:30s} {:s} {!s}".format("capstone support", RIGHT_ARROW, current_arch.capstone_support))
+        gef_print("{:30s} {:s} {!s}".format("unicorn support", RIGHT_ARROW, current_arch.unicorn_support))
+        return
+
+
+@register_command
+class GefVersionCommand(GenericCommand):
+    """Display GEF version info."""
+
+    _cmdline_ = "gef version"
+    _category_ = "99. GEF Maintenance Command"
+    _aliases_ = ["version"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--compact", action="store_true", help="show compact style.")
+    _syntax_ = parser.format_help()
+
+    def os_version(self):
+        try:
+            lsb_release_command = GefUtil.which("lsb_release")
+            res = GefUtil.gef_execute_external([lsb_release_command, "-d"], as_list=True)
+            for line in res:
+                if line.startswith("Description:"):
+                    return line.split(":")[1].strip("\\t")
+        except FileNotFoundError:
+            pass
+
+        if os.path.exists("/etc/issue.net"):
+            content = open("/etc/issue.net").read().strip()
+            if content:
+                return content
+
+        if os.path.exists("/etc/issue"):
+            content = open("/etc/issue").read().strip()
+            content = content.replace(" \\n \\l", "")
+            if content:
+                return content
+
+        if os.path.exists("/etc/os-release"):
+            content = open("/etc/os-release").read()
+            for line in content.splitlines():
+                r = re.search(r'PRETTY_NAME="(.+)"', line)
+                if r:
+                    return r.group(1)
+
+        return "Not found"
+
+    def kernel_version_from_uname(self):
+        try:
+            uname_command = GefUtil.which("uname")
+            res = GefUtil.gef_execute_external([uname_command, "-a"], as_list=True)
+            return res[0]
+        except FileNotFoundError:
+            return "Not found"
+
+    def kernel_version_from_proc(self):
+        try:
+            return open("/proc/version").read().strip()
+        except FileNotFoundError:
+            return "Not found"
+
+    def system_libc_version(self):
+        res = GefUtil.gef_execute_external(["cat", "/proc/self/maps"], as_list=True)
+        libc_targets = ("libc-2.", "libc.so.6", "libuClibc-")
+        for line in res:
+            if not any(kw in line for kw in libc_targets):
+                continue
+            path = line.split()[-1]
+            if not os.path.exists(path):
+                continue
+            data = open(path, "rb").read()
+            pos = re.search(b"(GNU C Library|uClibc-ng release) [\x20-\x7e]*", data)
+            if pos:
+                return String.bytes2str(pos.group(0))
+        return "Not found"
+
+    def qemu_system_version(self):
+        return gdb.execute("monitor info version", to_string=True).strip()
+
+    def qemu_user_version(self):
+        pid = Pid.get_pid()
+        try:
+            res = GefUtil.gef_execute_external(["/proc/{:d}/exe".format(pid), "--version"], as_list=True)
+            return res[0].strip()
+        except (IndexError, FileNotFoundError):
+            return "Not recognized"
+
+    def gef_version(self):
+        gef_hash = hashlib.sha1(open(GEF_FILEPATH, "rb").read()).hexdigest()
+        dt = datetime.datetime.fromtimestamp(os.stat(GEF_FILEPATH).st_mtime)
+        return "Last modified: {} SHA1: {}".format(dt.strftime("%Y-%m-%d %H:%M:%S"), gef_hash)
+
+    def gdb_version(self):
+        try:
+            return gdb.VERSION # GDB >= 8.1 (or earlier?)
+        except AttributeError:
+            return gdb.execute("show version", to_string=True).split("\n")[0]
+
+    def python_version(self):
+        return sys.version.replace("\n", " ")
+
+    def capstone_version(self):
+        @load_capstone
+        def _capstone_version():
+            capstone = sys.modules["capstone"]
+            return ".".join(map(str, capstone.cs_version()))
+        try:
+            return _capstone_version()
+        except (KeyError, ImportWarning):
+            return "Not found"
+
+    def keystone_version(self):
+        @load_keystone
+        def _keystone_version():
+            keystone = sys.modules["keystone"]
+            return ".".join(map(str, keystone.ks_version()))
+        try:
+            return _keystone_version()
+        except (KeyError, ImportWarning):
+            return "Not found"
+
+    def unicorn_version(self):
+        @load_unicorn
+        def _unicorn_version():
+            unicorn = sys.modules["unicorn"]
+            return unicorn.__version__
+        try:
+            return _unicorn_version()
+        except (KeyError, ImportWarning):
+            return "Not found"
+
+    def ropper_version(self):
+        @load_ropper
+        def _ropper_version():
+            ropper = sys.modules["ropper"]
+            return ".".join(map(str, ropper.VERSION))
+        try:
+            return _ropper_version()
+        except (KeyError, ImportWarning):
+            return "Not found"
+
+    def angr_version(self):
+        @load_angr
+        def _angr_version():
+            angr = sys.modules["angr"]
+            return angr.__version__
+        try:
+            return _angr_version()
+        except (KeyError, ImportWarning):
+            return "Not found"
+
+    def gcc_version(self):
+        try:
+            gcc_command = GefUtil.which("gcc")
+        except FileNotFoundError:
+            return "Not found"
+        res = GefUtil.gef_execute_external([gcc_command, "--version"], as_list=True)
+        return res[0]
+
+    def readelf_version(self):
+        try:
+            readelf_command = GefUtil.which("readelf")
+        except FileNotFoundError:
+            return "Not found"
+        res = GefUtil.gef_execute_external([readelf_command, "-v"], as_list=True)
+        return res[0]
+
+    def objdump_version(self):
+        try:
+            objdump_command = GefUtil.which("objdump")
+        except FileNotFoundError:
+            return "Not found"
+        res = GefUtil.gef_execute_external([objdump_command, "-v"], as_list=True)
+        return res[0]
+
+    def seccomp_tools_version(self):
+        try:
+            seccomp_tools_command = GefUtil.which("seccomp-tools")
+        except FileNotFoundError:
+            return "Not found"
+        res = GefUtil.gef_execute_external([seccomp_tools_command, "--version"], as_list=True)
+        return res[0]
+
+    def one_gadget_version(self):
+        try:
+            one_gadget_command = GefUtil.which("one_gadget")
+        except FileNotFoundError:
+            return "Not found"
+        res = GefUtil.gef_execute_external([one_gadget_command, "--version"], as_list=True)
+        return res[0]
+
+    def rp_version(self):
+        try:
+            rp_lin_command = GefUtil.which("rp-lin")
+        except FileNotFoundError:
+            return "Not found"
+        res = GefUtil.gef_execute_external([rp_lin_command, "--version", "--file", "a"], as_list=True)
+        if "You are currently using " in res[0]:
+            return res[0].replace("You are currently using ", "")
+        return "Not found"
+
+    def show_compact_info(self):
+        gef_print("gdb:     {:s}".format(self.gdb_version()))
+        gef_print("python:  {:s}".format(self.python_version()))
+        gef_print("OS:      {:s}".format(self.os_version()))
+        gef_print("kernel:  {:s}".format(self.kernel_version_from_uname()))
+        if is_qemu_system():
+            gef_print("qemu:    {:s}".format(self.qemu_system_version()))
+        return
+
+    def show_full_info(self):
+        gef_print(titlify("versions"))
+        gef_print("OS:                     {:s}".format(self.os_version()))
+        gef_print("kernel (uname -a):      {:s}".format(self.kernel_version_from_uname()))
+        gef_print("kernel (/proc/version): {:s}".format(self.kernel_version_from_proc()))
+        gef_print("System libc:            {:s}".format(self.system_libc_version()))
+        if is_qemu_system():
+            gef_print("qemu:                   {:s}".format(self.qemu_system_version()))
+        if is_qemu_user():
+            gef_print("qemu:                   {:s}".format(self.qemu_user_version()))
+        gef_print("GEF:                    {:s}".format(self.gef_version()))
+        gef_print("gdb:                    {:s}".format(self.gdb_version()))
+        gef_print("python:                 {:s}".format(self.python_version()))
+        gef_print("capstone:               {:s}".format(self.capstone_version()))
+        gef_print("keystone:               {:s}".format(self.keystone_version()))
+        gef_print("unicorn:                {:s}".format(self.unicorn_version()))
+        gef_print("ropper:                 {:s}".format(self.ropper_version()))
+        gef_print("angr:                   {:s}".format(self.angr_version()))
+        gef_print("gcc:                    {:s}".format(self.gcc_version()))
+        gef_print("readelf:                {:s}".format(self.readelf_version()))
+        gef_print("objdump:                {:s}".format(self.objdump_version()))
+        gef_print("seccomp-tools:          {:s}".format(self.seccomp_tools_version()))
+        gef_print("one_gadget:             {:s}".format(self.one_gadget_version()))
+        gef_print("rp:                     {:s}".format(self.rp_version()))
+
+        gef_print(titlify("gdb build config"))
+        gdb.execute("show configuration")
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        if args.compact:
+            self.show_compact_info()
+        else:
+            self.show_full_info()
         return
 
 
@@ -94939,7 +94943,7 @@ class GefUtil:
         gef_print(" Last 10 GDB commands ".center(80, HORIZONTAL_LINE))
         gdb.execute("show commands")
         gef_print(" Runtime environment ".center(80, HORIZONTAL_LINE))
-        gdb.execute("version --compact")
+        gdb.execute("gef version --compact")
         gef_print(HORIZONTAL_LINE * 80)
         gef_print("")
         return
