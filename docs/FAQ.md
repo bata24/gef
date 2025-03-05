@@ -126,7 +126,7 @@ To use these commands fully, you need to manually install the necessary packages
 |`ropper`|`python3-pip`|`ropper`|-|
 |`vmlinux-to-elf-apply`|`python3-pip`, `git`|`vmlinux-to-elf`|-|
 
-# Why are there so many packages to install when `apt-get install` of `install.sh`?
+## Why are there so many packages to install when `apt-get install` of `install.sh`?
 Because the `binwalk` package has a huge number of dependencies.
 
 If you do not use `binwalk-memory` command, you do not need to install `binwalk` (Please modify `install.sh` manually).
