@@ -16621,7 +16621,7 @@ class SmartMemoryDumpCommand(GenericCommand):
     """Dump the memory of the entire process smartly."""
 
     _cmdline_ = "smart-memory-dump"
-    _category_ = "03-e. Memory - Dump"
+    _category_ = "03-f. Memory - Dump/Load"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-p", "--prefix", help="use this name for the dump destination file prefix. (default: None)")
@@ -16709,7 +16709,7 @@ class HijackFdCommand(GenericCommand):
     """Redirect the file descriptor during runtime."""
 
     _cmdline_ = "hijack-fd"
-    _category_ = "01-g. Debugging Support - Other"
+    _category_ = "01-h. Debugging Support - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("old_fd", metavar="OLD_FD", type=int, help="file descriptor number to redirect.")
@@ -19069,7 +19069,7 @@ class UnicornEmulateCommand(GenericCommand):
     """Use Unicorn-Engine to emulate the behavior of the binary."""
 
     _cmdline_ = "unicorn-emulate"
-    _category_ = "01-d. Debugging Support - Execution"
+    _category_ = "01-g. Debugging Support - Emulation"
     _aliases_ = ["emulate"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -19534,7 +19534,7 @@ class AngrCommand(GenericCommand):
     """Use angr to find simple constraints."""
 
     _cmdline_ = "angr"
-    _category_ = "01-d. Debugging Support - Execution"
+    _category_ = "01-g. Debugging Support - Emulation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-f", "--find", action="append", default=[],
@@ -19763,7 +19763,7 @@ class StubCommand(GenericCommand):
     """Stub out the specified function to skip it. (e.g., fork)"""
 
     _cmdline_ = "stub"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
     _aliases_ = ["deactivate"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -28945,7 +28945,7 @@ class LoadFileCommand(GenericCommand):
     """Load the file into memory."""
 
     _cmdline_ = "load-file"
-    _category_ = "03-g. Memory - Load"
+    _category_ = "03-f. Memory - Dump/Load"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("filepath", metavar="FILEPATH", help="the filepath to load.")
@@ -29013,7 +29013,7 @@ class PatchCommand(GenericCommand):
     """The base command to write specified values to the specified address."""
 
     _cmdline_ = "patch"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
@@ -29136,7 +29136,7 @@ class PatchQwordCommand(PatchCommand):
     """Write specified QWORD to the specified address."""
 
     _cmdline_ = "patch qword"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
     _aliases_ = ["patch q"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -29165,7 +29165,7 @@ class PatchDwordCommand(PatchCommand):
     """Write specified DWORD to the specified address."""
 
     _cmdline_ = "patch dword"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
     _aliases_ = ["patch d"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -29194,7 +29194,7 @@ class PatchWordCommand(PatchCommand):
     """Write specified WORD to the specified address."""
 
     _cmdline_ = "patch word"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
     _aliases_ = ["patch w"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -29223,7 +29223,7 @@ class PatchByteCommand(PatchCommand):
     """Write specified BYTE to the specified address."""
 
     _cmdline_ = "patch byte"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
     _aliases_ = ["patch b"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -29252,7 +29252,7 @@ class PatchStringCommand(PatchCommand):
     """Write specified string to the specified memory address."""
 
     _cmdline_ = "patch string"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--phys", action="store_true",
@@ -29307,7 +29307,7 @@ class PatchHexCommand(PatchCommand):
     """Write specified hex string to the specified address."""
 
     _cmdline_ = "patch hex"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--phys", action="store_true",
@@ -29361,7 +29361,7 @@ class PatchPatternCommand(PatchCommand):
     """Write a pattern string to the specified memory address."""
 
     _cmdline_ = "patch pattern"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--phys", action="store_true",
@@ -29414,7 +29414,7 @@ class PatchNopCommand(PatchCommand):
     """Patch the instruction(s) pointed by parameters with NOP."""
 
     _cmdline_ = "patch nop"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
     _aliases_ = ["nop"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -29521,7 +29521,7 @@ class PatchInfloopCommand(PatchCommand):
     """Patch the instruction(s) pointed by parameters with infinity loop."""
 
     _cmdline_ = "patch inf"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--phys", action="store_true",
@@ -29597,7 +29597,7 @@ class PatchTrapCommand(PatchCommand):
     """Patch the instruction(s) pointed by parameters with breakpoint or trap (if available)."""
 
     _cmdline_ = "patch trap"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--phys", action="store_true",
@@ -29669,7 +29669,7 @@ class PatchRetCommand(PatchCommand):
     """Patch the instruction(s) pointed by parameters with return."""
 
     _cmdline_ = "patch ret"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--phys", action="store_true",
@@ -29741,7 +29741,7 @@ class PatchSyscallCommand(PatchCommand):
     """Patch the instruction(s) pointed by parameters with syscall."""
 
     _cmdline_ = "patch syscall"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--phys", action="store_true",
@@ -29813,7 +29813,7 @@ class PatchHistoryCommand(PatchCommand):
     """Display the patch history."""
 
     _cmdline_ = "patch history"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
     _aliases_ = ["patch list"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -29850,7 +29850,7 @@ class PatchRevertCommand(PatchCommand):
     """Revert patch from the patch history."""
 
     _cmdline_ = "patch revert"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     group = parser.add_mutually_exclusive_group(required=True)
@@ -30308,7 +30308,7 @@ class FollowCommand(GenericCommand):
     """View / modify the follow-fork-mode setting of GDB."""
 
     _cmdline_ = "follow"
-    _category_ = "01-g. Debugging Support - Other"
+    _category_ = "01-h. Debugging Support - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     modes = [None, "child", "parent"]
@@ -30927,7 +30927,7 @@ class XorMemoryCommand(GenericCommand):
     """The base command to XOR a block of memory."""
 
     _cmdline_ = "xor-memory"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
@@ -30954,7 +30954,7 @@ class XorMemoryDisplayCommand(GenericCommand):
     """Display a block of memory by xor-ing each byte with specified key."""
 
     _cmdline_ = "xor-memory display"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
@@ -31000,7 +31000,7 @@ class XorMemoryPatchCommand(GenericCommand):
     """Patch a block of memory by xor-ing each byte with specified key."""
 
     _cmdline_ = "xor-memory patch"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
@@ -34001,7 +34001,7 @@ class FormatStringSearchCommand(GenericCommand):
     """The helper to search exploitable format-string."""
 
     _cmdline_ = "format-string-helper"
-    _category_ = "01-g. Debugging Support - Other"
+    _category_ = "01-h. Debugging Support - Other"
     _aliases_ = ["fmtstr-helper"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -34722,6 +34722,7 @@ class SyscallSearchCommand(GenericCommand):
 
     _cmdline_ = "syscall-search"
     _category_ = "05-b. Syscall - Search"
+    _aliases_ = ["ss"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-a", dest="arch", help="specify the architecture. (default: current_arch.arch)")
@@ -65860,7 +65861,7 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
     """Compare the memory contents of two locations."""
 
     _cmdline_ = "memcmp"
-    _category_ = "03-b. Memory - View"
+    _category_ = "03-c. Memory - Compare"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--phys1", action="store_true", help="treat LOCATION1 as a physical address.")
@@ -66045,7 +66046,7 @@ class MemorySetCommand(GenericCommand):
     """Set the value to the memory range."""
 
     _cmdline_ = "memset"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--phys", action="store_true", help="treat TO_ADDRESS as a physical address.")
@@ -66111,7 +66112,7 @@ class MemoryCopyCommand(GenericCommand):
     """Copy the contents of one memory to another."""
 
     _cmdline_ = "memcpy"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--phys1", action="store_true", help="treat TO_ADDRESS as a physical address.")
@@ -66195,7 +66196,7 @@ class MemorySwapCommand(GenericCommand):
     """Swap the contents of one memory to another."""
 
     _cmdline_ = "memswap"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--phys1", action="store_true", help="treat SWAP_ADDRESS1 as a physical address.")
@@ -66284,7 +66285,7 @@ class MemoryInsertCommand(GenericCommand):
     """Insert the contents of one memory to another."""
 
     _cmdline_ = "meminsert"
-    _category_ = "03-c. Memory - Patch"
+    _category_ = "03-d. Memory - Patch"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--phys1", action="store_true", help="treat TO_ADDRESS as a physical address.")
@@ -66367,7 +66368,7 @@ class HashCommand(GenericCommand):
     """The base command to calculate hash."""
 
     _cmdline_ = "hash"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
@@ -66541,7 +66542,7 @@ class HashMemoryCommand(HashCommand):
     """Calculate hash from memory values."""
 
     _cmdline_ = "hash memory"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
@@ -66606,7 +66607,7 @@ class HashValueCommand(HashCommand):
     """Calculate hash from specified values."""
 
     _cmdline_ = "hash value"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("value", metavar="VALUE", help="the string for hash calculation.")
@@ -66650,7 +66651,7 @@ class CrcCommand(GenericCommand, BufferingOutput):
     """The base command to calculate crc."""
 
     _cmdline_ = "crc"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
@@ -66694,7 +66695,7 @@ class CrcMemoryCommand(CrcCommand):
     """Calculate crc from memory values."""
 
     _cmdline_ = "crc memory"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
@@ -66763,7 +66764,7 @@ class CrcValueCommand(CrcCommand):
     """Calculate hash from specified values."""
 
     _cmdline_ = "crc value"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("value", metavar="VALUE", help="the string for crc calculation.")
@@ -66813,7 +66814,7 @@ class BaseNDecodeCommand(GenericCommand, BufferingOutput):
     """The base command to decode baseN."""
 
     _cmdline_ = "base-n-decode"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
@@ -66857,7 +66858,7 @@ class BaseNDecodeMemoryCommand(BaseNDecodeCommand):
     """Decode baseN from memory values."""
 
     _cmdline_ = "base-n-decode memory"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
@@ -66905,7 +66906,7 @@ class BaseNDecodeValueCommand(BaseNDecodeCommand):
     """Decode baseN from specified values."""
 
     _cmdline_ = "base-n-decode value"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("value", metavar="VALUE", help="the string for baseN decoding.")
@@ -66953,7 +66954,7 @@ class BaseNEncodeCommand(GenericCommand, BufferingOutput):
     """The base command to encode baseN."""
 
     _cmdline_ = "base-n-encode"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
@@ -66997,7 +66998,7 @@ class BaseNEncodeMemoryCommand(BaseNEncodeCommand):
     """Encode baseN from memory values."""
 
     _cmdline_ = "base-n-encode memory"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
@@ -67048,7 +67049,7 @@ class BaseNEncodeValueCommand(BaseNEncodeCommand):
     """Encode baseN from specified values."""
 
     _cmdline_ = "base-n-encode value"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("value", metavar="VALUE", help="the string for baseN encoding.")
@@ -67099,7 +67100,7 @@ class MorseDecodeCommand(GenericCommand):
     """The base command to decode morse code."""
 
     _cmdline_ = "morse-decode"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
@@ -67127,7 +67128,7 @@ class MorseDecodeMemoryCommand(MorseDecodeCommand):
     """Decode morse code from memory values."""
 
     _cmdline_ = "morse-decode memory"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
@@ -67167,7 +67168,7 @@ class MorseDecodeValueCommand(MorseDecodeCommand):
     """Decode morse code from specified values."""
 
     _cmdline_ = "morse-decode value"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("value", metavar="VALUE", help="the string for morse code decoding.")
@@ -67194,7 +67195,7 @@ class MorseEncodeCommand(GenericCommand):
     """The base command to Encode morse code."""
 
     _cmdline_ = "morse-encode"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
@@ -67222,7 +67223,7 @@ class MorseEncodeMemoryCommand(MorseEncodeCommand):
     """Encode morse code from memory values."""
 
     _cmdline_ = "morse-encode memory"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
@@ -67262,7 +67263,7 @@ class MorseEncodeValueCommand(MorseEncodeCommand):
     """Encode morse code from specified values."""
 
     _cmdline_ = "morse-encode value"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("value", metavar="VALUE", help="the string for morse code encoding.")
@@ -67289,7 +67290,7 @@ class IsMemoryZeroCommand(GenericCommand):
     """Check if all the memory in the specified range is 0x00, 0xff."""
 
     _cmdline_ = "is-mem-zero"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--phys", action="store_true", help="treat ADDRESS as a physical address.")
@@ -67358,7 +67359,7 @@ class StringLengthCommand(GenericCommand):
     """Detect the length of the string."""
 
     _cmdline_ = "strlen"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--phys", action="store_true", help="treat ADDRESS as a physical address.")
@@ -67414,7 +67415,7 @@ class SequenceLengthCommand(GenericCommand):
     """Detect consecutive length of the same sequence."""
 
     _cmdline_ = "seq-length"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--phys", action="store_true", help="treat ADDRESS as a physical address.")
@@ -88241,7 +88242,7 @@ class QemuDeviceInfoCommand(GenericCommand):
     """Dump device information for qemu-escape."""
 
     _cmdline_ = "qemu-device-info"
-    _category_ = "08-a. Qemu-system Cooperation - General"
+    _category_ = "08-h. Qemu-system Cooperation - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-d", "--device", help="device name.")
@@ -91252,7 +91253,7 @@ class KernelTraceCommand(GenericCommand):
     """Trace kernel functions and arguments."""
 
     _cmdline_ = "ktrace"
-    _category_ = "08-i. Qemu-system Cooperation - Other"
+    _category_ = "08-f. Qemu-system Cooperation - Linux Dynamic Inspection"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--task-name", action="append", default=[],
@@ -91346,7 +91347,7 @@ class UefiOvmfInfoCommand(GenericCommand):
     # https://github.com/tianocore/edk2/blob/master/MdeModulePkg/Universal/BdsDxe/BdsEntry.c
     # https://uefi.org/sites/default/files/resources/UEFI_Spec_2_8_final.pdf
     _cmdline_ = "uefi-ovmf-info"
-    _category_ = "08-h. Qemu-system Cooperation - Bootloader"
+    _category_ = "08-h. Qemu-system Cooperation - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
@@ -91834,7 +91835,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
     """Add symbol from command temporarily."""
 
     _cmdline_ = "add-symbol-temporary"
-    _category_ = "01-g. Debugging Support - Other"
+    _category_ = "01-h. Debugging Support - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("function_name", metavar="FUNCTION_NAME", help="new symbol name to add.")
@@ -92222,7 +92223,7 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
     """Read page frame data from a single address or an address range."""
 
     _cmdline_ = "peek-pageframe"
-    _category_ = "03-f. Memory - Investigation"
+    _category_ = "03-g. Memory - Investigation"
     _aliases_ = ["ppf"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -92406,7 +92407,7 @@ class PeekPageFlagsCommand(GenericCommand, BufferingOutput):
     """Read the page flags of a page frame (needs root)."""
 
     _cmdline_ = "peek-pageflags"
-    _category_ = "03-f. Memory - Investigation"
+    _category_ = "03-g. Memory - Investigation"
     _aliases_ = ["ppfl"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -92768,7 +92769,7 @@ class SixelMemoryCommand(GenericCommand):
     """Show image (png, jpg, bmp, etc.) to terminal by imagemagick."""
 
     _cmdline_ = "sixel-memory"
-    _category_ = "03-f. Memory - Investigation"
+    _category_ = "03-g. Memory - Investigation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
@@ -92898,7 +92899,7 @@ class FiletypeMemoryCommand(GenericCommand):
     """Scan memory by file and magika."""
 
     _cmdline_ = "filetype-memory"
-    _category_ = "03-f. Memory - Investigation"
+    _category_ = "03-g. Memory - Investigation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
@@ -92960,7 +92961,7 @@ class BinwalkMemoryCommand(GenericCommand):
     """Scan memory by binwalk."""
 
     _cmdline_ = "binwalk-memory"
-    _category_ = "03-f. Memory - Investigation"
+    _category_ = "03-g. Memory - Investigation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[],
@@ -93047,7 +93048,7 @@ class BincompareCommand(GenericCommand):
     """Compare an binary file with the memory position looking for badchars."""
 
     _cmdline_ = "bincompare"
-    _category_ = "03-d. Memory - Calculation"
+    _category_ = "03-c. Memory - Compare"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("filename", metavar="FILENAME", help="specifies the binary file to be compared.")
