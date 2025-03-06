@@ -21507,13 +21507,13 @@ class GlibcVisualHeapCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
-    color = [
+    normal_colors = [
         Color.redify,
         Color.greenify,
         Color.blueify,
         Color.yellowify
     ]
-    dark_color = [
+    dark_colors = [
         lambda x: Color.colorify(x, "bright_black"),
         lambda x: Color.colorify(x, "graphite"),
     ]
@@ -21522,15 +21522,16 @@ class GlibcVisualHeapCommand(GenericCommand):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
-    def generate_visual_chunk(self, arena, chunk, idx):
+    def generate_visual_chunk(self, chunk, idx):
         unpack = u32 if current_arch.ptrsize == 4 else u64
         data = slicer(chunk.data, current_arch.ptrsize * 2)
         group_line_threshold = 8
 
+        arena = chunk.arena
         addr = chunk.chunk_base_address
         width = current_arch.ptrsize * 2 + 2
         exceed_top = False
-        has_subinfo = False
+        has_bins_info = False
 
         out_tmp = []
         # Group rows to display rows with the same value together.
@@ -21542,21 +21543,21 @@ class GlibcVisualHeapCommand(GenericCommand):
             if self.full or repeat_count < group_line_threshold:
                 # non-collapsed line
                 for _ in range(repeat_count):
-                    sub_info = arena.make_bins_info(addr)
-                    if sub_info:
-                        sub_info = "{:s} {:s}".format(LEFT_ARROW, ", ".join(sub_info))
-                        has_subinfo = True
+                    bins_info = arena.get_bins_info(addr)
+                    if bins_info:
+                        bins_info = "{:s} {:s}".format(LEFT_ARROW, ", ".join(bins_info))
+                        has_bins_info = True
                     else:
-                        sub_info = ""
+                        bins_info = ""
 
                     if self.safe_linking_decode:
-                        if chunk.address == addr and ("tcache" in sub_info or "fastbins" in sub_info):
+                        if chunk.address == addr and ("tcache" in bins_info or "fastbins" in bins_info):
                             d1 = chunk.get_fwd_ptr(True)
 
                     offset1 = addr - chunk.chunk_base_address
                     offset2 = addr - arena.heap_base
                     out_tmp.append("{:#x}|{:+#08x}|{:+#08x}: {:#0{:d}x} {:#0{:d}x} | {:s} | {:s}".format(
-                        addr, offset1, offset2, d1, width, d2, width, dascii, sub_info,
+                        addr, offset1, offset2, d1, width, d2, width, dascii, bins_info,
                     ).rstrip())
                     addr += current_arch.ptrsize * 2
 
@@ -21565,17 +21566,17 @@ class GlibcVisualHeapCommand(GenericCommand):
                         break
             else:
                 # collapsed line
-                sub_info = arena.make_bins_info(addr)
-                if sub_info:
-                    sub_info = "{:s} {:s}".format(LEFT_ARROW, ", ".join(sub_info))
-                    has_subinfo = True
+                bins_info = arena.get_bins_info(addr)
+                if bins_info:
+                    bins_info = "{:s} {:s}".format(LEFT_ARROW, ", ".join(bins_info))
+                    has_bins_info = True
                 else:
-                    sub_info = ""
+                    bins_info = ""
 
                 offset1 = addr - chunk.chunk_base_address
                 offset2 = addr - arena.heap_base
                 out_tmp.append("{:#x}|{:+#08x}|{:+#08x}: {:#0{:d}x} {:#0{:d}x} | {:s} | {:s}".format(
-                    addr, offset1, offset2, d1, width, d2, width, dascii, sub_info,
+                    addr, offset1, offset2, d1, width, d2, width, dascii, bins_info,
                 ).rstrip())
                 addr += current_arch.ptrsize * 2 * repeat_count
                 out_tmp.append("* {:#d} lines, {:#x} bytes".format(
@@ -21586,10 +21587,10 @@ class GlibcVisualHeapCommand(GenericCommand):
                 break
 
         # coloring
-        if self.use_dark_color and not has_subinfo:
-            color_func = self.dark_color[idx % len(self.dark_color)]
+        if self.use_dark_color and not has_bins_info:
+            color_func = self.dark_colors[idx % len(self.dark_colors)]
         else:
-            color_func = self.color[idx % len(self.color)]
+            color_func = self.normal_colors[idx % len(self.normal_colors)]
         self.out.append("\n".join(map(color_func, out_tmp)))
 
         # corrupted case
@@ -21625,26 +21626,26 @@ class GlibcVisualHeapCommand(GenericCommand):
                 msg = "{} Corrupted (chunk.size == 0)".format(Color.colorify("[!]", "bold red"))
                 self.out.append(msg)
                 chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
-                self.generate_visual_chunk(arena, chunk, i)
+                self.generate_visual_chunk(chunk, i)
                 break
             elif addr != arena.top and addr + chunk.size > arena.top:
                 msg = "{} Corrupted (addr + chunk.size > arena.top)".format(Color.colorify("[!]", "bold red"))
                 self.out.append(msg)
                 chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
-                self.generate_visual_chunk(arena, chunk, i)
+                self.generate_visual_chunk(chunk, i)
                 break
             elif addr + chunk.size > end:
                 msg = "{} Corrupted (addr + chunk.size > sect.page_end)".format(Color.colorify("[!]", "bold red"))
                 self.out.append(msg)
                 chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
-                self.generate_visual_chunk(arena, chunk, i)
+                self.generate_visual_chunk(chunk, i)
                 break
             # maybe not corrupted
             try:
                 chunk.data = read_memory(addr, chunk.size)
             except gdb.MemoryError:
                 break
-            self.generate_visual_chunk(arena, chunk, i)
+            self.generate_visual_chunk(chunk, i)
             addr += chunk.size
             i += 1
 
@@ -21688,7 +21689,6 @@ class GlibcVisualHeapCommand(GenericCommand):
 
         self.out = []
         Cache.reset_gef_caches(all=True)
-        arena.reset_bins_info()
         self.generate_visual_heap(arena, dump_start, args.max_count)
         gef_print("\n".join(self.out), less=not args.no_pager)
         return
@@ -79448,13 +79448,13 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
-    color = [
+    normal_colors = [
         Color.redify,
         Color.greenify,
         Color.blueify,
         Color.yellowify
     ]
-    dark_color = [
+    dark_colors = [
         lambda x: Color.colorify(x, "bright_black"),
         lambda x: Color.colorify(x, "graphite"),
     ]
@@ -79542,7 +79542,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand):
                 self.bins_dict_for_address[address] = self.bins_dict_for_address.get(address, []) + [m]
         return
 
-    def make_bins_info(self, malloc_state, address):
+    def get_bins_info(self, malloc_state, address):
         info = self.bins_dict_for_address.get(address, [])
         if address == malloc_state.top:
             info.append("top")
@@ -79556,11 +79556,11 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand):
         addr = chunk.chunk_base_address
         width = current_arch.ptrsize * 2 + 2
         exceed_top = False
-        has_subinfo = False
+        has_bins_info = False
 
         out_tmp = []
         # Group rows to display rows with the same value together.
-        prev_sub_info = ""
+        prev_bins_info = ""
         for blk, blks in itertools.groupby(data):
             repeat_count = len(list(blks))
             d1, d2 = unpack(blk[:current_arch.ptrsize]), unpack(blk[current_arch.ptrsize:])
@@ -79569,57 +79569,57 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand):
             if self.full or repeat_count < group_line_threshold:
                 # non-collapsed line
                 for _ in range(repeat_count):
-                    sub_info = self.make_bins_info(malloc_state, addr)
-                    if sub_info:
-                        sub_info = "{:s} {:s}".format(LEFT_ARROW, ", ".join(sub_info))
-                        has_subinfo = True
+                    bins_info = self.get_bins_info(malloc_state, addr)
+                    if bins_info:
+                        bins_info = "{:s} {:s}".format(LEFT_ARROW, ", ".join(bins_info))
+                        has_bins_info = True
                     else:
-                        sub_info = ""
+                        bins_info = ""
 
                     if self.safe_linking_decode:
-                        if chunk.address == addr and "fastbins" in prev_sub_info:
+                        if chunk.address == addr and "fastbins" in prev_bins_info:
                             d1 = chunk.get_fwd_ptr(True)
 
                     offset1 = addr - chunk.chunk_base_address
                     offset2 = addr - malloc_state.heap_base
                     out_tmp.append("{:#x}|{:+#08x}|{:+#08x}: {:#0{:d}x} {:#0{:d}x} | {:s} | {:s}".format(
-                        addr, offset1, offset2, d1, width, d2, width, dascii, sub_info,
+                        addr, offset1, offset2, d1, width, d2, width, dascii, bins_info,
                     ).rstrip())
                     addr += current_arch.ptrsize * 2
-                    prev_sub_info = sub_info
+                    prev_bins_info = bins_info
 
                     if addr > malloc_state.top + current_arch.ptrsize * 4:
                         exceed_top = True
                         break
             else:
                 # collapsed line
-                sub_info = self.make_bins_info(malloc_state, addr)
-                if sub_info:
-                    sub_info = "{:s} {:s}".format(LEFT_ARROW, ", ".join(sub_info))
-                    has_subinfo = True
+                bins_info = self.get_bins_info(malloc_state, addr)
+                if bins_info:
+                    bins_info = "{:s} {:s}".format(LEFT_ARROW, ", ".join(bins_info))
+                    has_bins_info = True
                 else:
-                    sub_info = ""
+                    bins_info = ""
 
                 offset1 = addr - chunk.chunk_base_address
                 offset2 = addr - malloc_state.heap_base
                 out_tmp.append("{:#x}|{:+#08x}|{:+#08x}: {:#0{:d}x} {:#0{:d}x} | {:s} | {:s}".format(
-                    addr, offset1, offset2, d1, width, d2, width, dascii, sub_info,
+                    addr, offset1, offset2, d1, width, d2, width, dascii, bins_info,
                 ).rstrip())
                 addr += current_arch.ptrsize * 2 * repeat_count
                 out_tmp.append("* {:#d} lines, {:#x} bytes".format(
                     repeat_count - 1, (repeat_count - 1) * current_arch.ptrsize * 2,
                 ))
 
-            prev_sub_info = sub_info
+            prev_bins_info = bins_info
 
             if exceed_top:
                 break
 
         # coloring
-        if self.use_dark_color and not has_subinfo:
-            color_func = self.dark_color[idx % len(self.dark_color)]
+        if self.use_dark_color and not has_bins_info:
+            color_func = self.dark_colors[idx % len(self.dark_colors)]
         else:
-            color_func = self.color[idx % len(self.color)]
+            color_func = self.normal_colors[idx % len(self.normal_colors)]
         self.out.append("\n".join(map(color_func, out_tmp)))
 
         # corrupted case
@@ -79650,7 +79650,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand):
         i = 0
 
         while addr < end:
-            chunk = GlibcHeap.GlibcChunk(addr + current_arch.ptrsize * 2)
+            chunk = uClibcNgHeap.uClibcChunk(addr + current_arch.ptrsize * 2)
             # corrupt check
             if chunk.size == 0:
                 msg = "{} Corrupted (chunk.size == 0)".format(Color.colorify("[!]", "bold red"))
