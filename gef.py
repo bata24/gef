@@ -79836,7 +79836,7 @@ class XColoredCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet mode.")
     _syntax_ = parser.format_help()
 
-    color = [
+    colors = [
         Color.greenify,
         Color.redify,
         Color.blueify,
@@ -79847,7 +79847,7 @@ class XColoredCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        if args.color_num < 1 or len(self.color) < args.color_num:
+        if args.color_num < 1 or len(self.colors) < args.color_num:
             err("Invalid --color-num")
             return
 
@@ -79861,9 +79861,9 @@ class XColoredCommand(GenericCommand):
         out = []
         for i, line in enumerate(ret.splitlines()):
             if args.interval and args.interval > 0:
-                color_func = self.color[:args.color_num][(i // args.interval) % args.color_num]
+                color_func = self.colors[:args.color_num][(i // args.interval) % args.color_num]
             else:
-                color_func = self.color[:args.color_num][0]
+                color_func = self.colors[:args.color_num][0]
             out.append(color_func(line))
 
         if len(out) > GefUtil.get_terminal_size()[0]:
