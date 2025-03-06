@@ -3922,14 +3922,14 @@ class GlibcHeap:
             addr = AddressUtil.dereference(tcache_i_head)
             if not addr:
                 return None
-            return GlibcHeap.GlibcChunk(int(addr))
+            return GlibcHeap.GlibcChunk(self, int(addr))
 
         def get_fastbins_i(self, i):
             """Return head chunk in fastbinsY[i]."""
             addr = int(self.fastbinsY[i])
             if addr == 0:
                 return None
-            return GlibcHeap.GlibcChunk(addr + 2 * current_arch.ptrsize)
+            return GlibcHeap.GlibcChunk(self, addr + 2 * current_arch.ptrsize)
 
         def get_bins_i(self, i):
             idx = i * 2
@@ -4010,7 +4010,7 @@ class GlibcHeap:
                         sz = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
                         err("tcache[idx={:d}, sz={:#x}] is corrupted".format(i, sz))
                         break
-                    chunk = GlibcHeap.GlibcChunk(next_chunk)
+                    chunk = GlibcHeap.GlibcChunk(self, next_chunk)
                 chunks_all[i] = chunks
             return chunks_all
 
@@ -4045,7 +4045,7 @@ class GlibcHeap:
                         sz = GlibcHeap.get_binsize_table()["fastbins"][i]["size"]
                         err("fastbins[idx={:d}, sz={:#x}] is corrupted".format(i, sz))
                         break
-                    chunk = GlibcHeap.GlibcChunk(next_chunk, from_base=True)
+                    chunk = GlibcHeap.GlibcChunk(self, next_chunk, from_base=True)
                 chunks_all[i] = chunks
             return chunks_all
 
@@ -4063,7 +4063,7 @@ class GlibcHeap:
             corrupted = False
             chunks_bk = []
             while bk != head:
-                chunk = GlibcHeap.GlibcChunk(bk, from_base=True)
+                chunk = GlibcHeap.GlibcChunk(self, bk, from_base=True)
                 if chunk.chunk_base_address in chunks_bk:
                     if index == 0:
                         err("unsortedbin has a loop")
@@ -4095,7 +4095,7 @@ class GlibcHeap:
             if corrupted:
                 chunks_fw = []
                 while fw != head:
-                    chunk = GlibcHeap.GlibcChunk(fw, from_base=True)
+                    chunk = GlibcHeap.GlibcChunk(self, fw, from_base=True)
                     if chunk.chunk_base_address in chunks:
                         break
                     if chunk.chunk_base_address in chunks_fw:
@@ -4257,7 +4257,8 @@ class GlibcHeap:
     class GlibcChunk:
         """Glibc chunk class."""
 
-        def __init__(self, addr, from_base=False):
+        def __init__(self, arena, addr, from_base=False):
+            self.arena = arena
             self.ptrsize = current_arch.ptrsize
             if from_base:
                 self.chunk_base_address = addr
@@ -4291,7 +4292,7 @@ class GlibcHeap:
         def get_next_chunk(self):
             try:
                 addr = self.address + self.get_chunk_size()
-                return GlibcHeap.GlibcChunk(addr)
+                return GlibcHeap.GlibcChunk(self.arena, addr)
             except gdb.MemoryError:
                 return None
 
@@ -4439,10 +4440,7 @@ class GlibcHeap:
                 flags.append(Color.colorify("NON_MAIN_ARENA", Config.get_gef_setting("theme.heap_chunk_flag_non_main_arena")))
             return "|".join(flags)
 
-        def to_str(self, arena):
-            # The reason I define to_str instead of __str__ is:
-            # because arena information is required to dump correctly, but GlibcChunk itself does not have arena information.
-
+        def __str__(self):
             def get_sym(addr):
                 a = ProcessMap.lookup_address(addr)
                 b = Symbol.get_symbol_string(addr)
@@ -4471,7 +4469,7 @@ class GlibcHeap:
             flags = self.flags_as_string()
 
             # large bins
-            if arena.is_chunk_in_largebins(self):
+            if self.arena.is_chunk_in_largebins(self):
                 fd, fd_sym = get_sym(self.fd)
                 bk, bk_sym = get_sym(self.bk)
                 err = get_err([fd, bk])
@@ -4491,7 +4489,7 @@ class GlibcHeap:
                     )
 
             # small bins / unsorted bin
-            elif arena.is_chunk_in_smallbins(self) or arena.is_chunk_in_unsortedbin(self):
+            elif self.arena.is_chunk_in_smallbins(self) or self.arena.is_chunk_in_unsortedbin(self):
                 fd, fd_sym = get_sym(self.fd)
                 bk, bk_sym = get_sym(self.bk)
                 err = get_err([fd, bk])
@@ -4500,7 +4498,7 @@ class GlibcHeap:
                 )
 
             # tcache / fastbins
-            elif arena.is_chunk_in_fastbins(self) or arena.is_chunk_in_tcache(self):
+            elif self.arena.is_chunk_in_fastbins(self) or self.arena.is_chunk_in_tcache(self):
                 if get_libc_version() < (2, 32):
                     fd, fd_sym = get_sym(self.get_fwd_ptr(sll=False))
                     err = get_err([fd], sll=True)
@@ -4516,7 +4514,7 @@ class GlibcHeap:
                     )
 
             # top
-            elif arena.top == self.chunk_base_address:
+            elif self.arena.top == self.chunk_base_address:
                 msg = "{:s}(base={:s}{:s}, addr={:s}{:s}, size={:s}, flags={:s})".format(
                     chunk_c, base_c_f, base_sym, addr_c_f, addr_sym, size_c, flags,
                 )
@@ -4528,10 +4526,10 @@ class GlibcHeap:
                 )
             return msg
 
-        def psprint(self, arena):
+        def psprint(self):
             arena.reset_bins_info()
             msg = []
-            msg.append(self.to_str(arena))
+            msg.append(str(self))
             if self.is_used():
                 msg.append(self.str_as_alloced())
             else:
@@ -19947,7 +19945,7 @@ class GlibcHeapTopCommand(GenericCommand):
         top = int(m.group(1), 16)
         info("arena.top: {:#x}".format(top))
         top += current_arch.ptrsize * 2
-        gef_print(GlibcHeap.GlibcChunk(top).psprint(arena))
+        gef_print(GlibcHeap.GlibcChunk(arena, top).psprint())
         return
 
 
@@ -20175,13 +20173,13 @@ class GlibcHeapChunkCommand(GenericCommand):
 
         # get chunk
         if args.as_base:
-            chunk = GlibcHeap.GlibcChunk(args.location, from_base=True)
+            chunk = GlibcHeap.GlibcChunk(arena, args.location, from_base=True)
         else:
-            chunk = GlibcHeap.GlibcChunk(args.location)
+            chunk = GlibcHeap.GlibcChunk(arena, args.location)
 
         # dump
         try:
-            gef_print(chunk.psprint(arena))
+            gef_print(chunk.psprint())
         except gdb.MemoryError:
             err("Invalid address")
             return
@@ -20266,13 +20264,13 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
             self.warn("arena.last_remainder is corrupted")
 
         freelist_hint_color = Config.get_gef_setting("theme.heap_freelist_hint")
-        current_chunk = GlibcHeap.GlibcChunk(dump_start, from_base=True)
+        current_chunk = GlibcHeap.GlibcChunk(arena, dump_start, from_base=True)
 
         arena.reset_bins_info()
         while True:
             if current_chunk.chunk_base_address == arena.top:
                 top_str = Color.colorify("{:s} top".format(LEFT_ARROW), freelist_hint_color)
-                self.out.append("{:s} {:s}".format(current_chunk.to_str(arena), top_str))
+                self.out.append("{!s} {:s}".format(current_chunk, top_str))
                 break
             if current_chunk.chunk_base_address > arena.top:
                 self.err("Corrupted: chunk > top")
@@ -20281,7 +20279,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
                 # EOF
                 break
 
-            line = current_chunk.to_str(arena)
+            line = str(current_chunk)
 
             # in or not in free-list
             info = arena.make_bins_info(current_chunk)
@@ -20492,7 +20490,7 @@ class GlibcHeapBinsCommand(GenericCommand):
         seen_bk = []
         nb_chunk = 0
         while bk != head:
-            chunk = GlibcHeap.GlibcChunk(bk, from_base=True)
+            chunk = GlibcHeap.GlibcChunk(arena, bk, from_base=True)
             if chunk.address in seen_bk:
                 mb.append(Color.colorify(
                     "{:s}{:#x} [loop detected]".format(RIGHT_ARROW, chunk.chunk_base_address),
@@ -20502,7 +20500,7 @@ class GlibcHeapBinsCommand(GenericCommand):
                 break
             seen_bk.append(chunk.address)
             try:
-                mb.append("{:s}{:s}".format(RIGHT_ARROW, chunk.to_str(arena)))
+                mb.append("{:s}{!s}".format(RIGHT_ARROW, chunk))
             except gdb.MemoryError:
                 mb.append(Color.colorify(
                     "{:s}{:#x} [corrupted chunk]".format(RIGHT_ARROW, chunk.chunk_base_address),
@@ -20518,7 +20516,7 @@ class GlibcHeapBinsCommand(GenericCommand):
             mf = []
             seen_fw = []
             while fw != head:
-                chunk = GlibcHeap.GlibcChunk(fw, from_base=True)
+                chunk = GlibcHeap.GlibcChunk(arena, fw, from_base=True)
                 if chunk.address in seen_bk:
                     break
                 if chunk.address in seen_fw:
@@ -20529,7 +20527,7 @@ class GlibcHeapBinsCommand(GenericCommand):
                     break
                 seen_fw.append(chunk.address)
                 try:
-                    mf.append("{:s}{:s}".format(RIGHT_ARROW, chunk.to_str(arena)))
+                    mf.append("{:s}{!s}".format(RIGHT_ARROW, chunk))
                 except gdb.MemoryError:
                     mf.append(Color.colorify(
                         "{:s}{:#x} [corrupted chunk]".format(RIGHT_ARROW, chunk.chunk_base_address),
@@ -20659,7 +20657,7 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
                 if chunk is None:
                     break
                 try:
-                    m.append("{:s}{:s}".format(RIGHT_ARROW, chunk.to_str(arena)))
+                    m.append("{:s}{!s}".format(RIGHT_ARROW, chunk))
                     if chunk.address in chunks:
                         m.append(Color.colorify(
                             "{:s}{:#x} [loop detected]".format(RIGHT_ARROW, chunk.address),
@@ -20674,7 +20672,7 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
                     if next_chunk == 0 or next_chunk is None:
                         break
 
-                    chunk = GlibcHeap.GlibcChunk(next_chunk)
+                    chunk = GlibcHeap.GlibcChunk(arena, next_chunk)
                 except gdb.MemoryError:
                     m.append(Color.colorify(
                         "{:s}{:#x} [corrupted chunk]".format(RIGHT_ARROW, chunk.address),
@@ -20773,7 +20771,7 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
                     break
 
                 try:
-                    m.append("{:s}{:s}".format(RIGHT_ARROW, chunk.to_str(arena)))
+                    m.append("{:s}{!s}".format(RIGHT_ARROW, chunk))
                     if chunk.address in chunks:
                         m.append(Color.colorify(
                             "{:s}{:#x} [loop detected]".format(RIGHT_ARROW, chunk.chunk_base_address),
@@ -20791,7 +20789,7 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
                     if next_chunk == 0 or next_chunk is None:
                         break
 
-                    chunk = GlibcHeap.GlibcChunk(next_chunk, from_base=True)
+                    chunk = GlibcHeap.GlibcChunk(arena, next_chunk, from_base=True)
                 except gdb.MemoryError:
                     m.append(Color.colorify(
                         "{:s}{:#x} [corrupted chunk]".format(RIGHT_ARROW, chunk.chunk_base_address),
@@ -21597,7 +21595,7 @@ class GlibcVisualHeapCommand(GenericCommand):
             # This is fast, but does not return an accurate list in some cases.
             # For example, sparc64 may not include the heap area.
             # So it detects the end of the page from arena.top.
-            end = arena.top + GlibcHeap.GlibcChunk(arena.top, from_base=True).size
+            end = arena.top + GlibcHeap.GlibcChunk(arena, arena.top, from_base=True).size
 
         try:
             from tqdm import tqdm
@@ -21609,7 +21607,7 @@ class GlibcVisualHeapCommand(GenericCommand):
         addr = dump_start
         i = 0
         while addr < end:
-            chunk = GlibcHeap.GlibcChunk(addr + current_arch.ptrsize * 2)
+            chunk = GlibcHeap.GlibcChunk(arena, addr + current_arch.ptrsize * 2)
             # corrupt check
             if chunk.size == 0:
                 msg = "{} Corrupted (chunk.size == 0)".format(Color.colorify("[!]", "bold red"))
