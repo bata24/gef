@@ -20651,7 +20651,7 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
         return
 
     @staticmethod
-    def print_tcache(arena, verbose):
+    def print_tcache(arena, verbose=False):
         if get_libc_version() < (2, 26):
             return
 
@@ -20765,7 +20765,7 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
         return
 
     @staticmethod
-    def print_fastbin(arena, verbose):
+    def print_fastbin(arena, verbose=False):
         def fastbin_index(sz):
             return (sz >> 4) - 2 if SIZE_SZ == 8 else (sz >> 3) - 2
 
