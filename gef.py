@@ -4124,7 +4124,13 @@ class GlibcHeap:
                 chunks_all[i] = self.get_bins_list(i)
             return chunks_all
 
-        def reset_bins_info(self):
+        def reset_cache(self):
+            """make some caches.
+                - cached_XXX_list
+                - cached_XXX_addr_list
+                - bins_dict_for_address
+                - bins_dict_for_base_address
+            """
             # cached_XXX_list = {bin_idx1: [chunk, chunk, ...], bin_idx2: [chunk, chunk, ...]}
             self.cached_tcache_list = self.get_tcache_list()
             self.cached_fastbins_list = self.get_fastbins_list()
@@ -4184,21 +4190,31 @@ class GlibcHeap:
             return
 
         def is_chunk_in_tcache(self, chunk):
+            if not hasattr(self, "cached_tcache_addr_list"):
+                self.reset_cache()
             return chunk.address in self.cached_tcache_addr_list
 
         def is_chunk_in_fastbins(self, chunk):
+            if not hasattr(self, "cached_fastbins_addr_list"):
+                self.reset_cache()
             return chunk.address in self.cached_fastbins_addr_list
 
         def is_chunk_in_unsortedbin(self, chunk):
+            if not hasattr(self, "cached_unsortedbin_addr_list"):
+                self.reset_cache()
             return chunk.chunk_base_address in self.cached_unsortedbin_addr_list
 
         def is_chunk_in_smallbins(self, chunk):
+            if not hasattr(self, "cached_smallbins_addr_list"):
+                self.reset_cache()
             return chunk.chunk_base_address in self.cached_smallbins_addr_list
 
         def is_chunk_in_largebins(self, chunk):
+            if not hasattr(self, "cached_largebins_addr_list"):
+                self.reset_cache()
             return chunk.chunk_base_address in self.cached_largebins_addr_list
 
-        def make_bins_info(self, address_or_chunk, skip_top=False):
+        def get_bins_info(self, address_or_chunk, skip_top=False):
             if isinstance(address_or_chunk, GlibcHeap.GlibcChunk):
                 address = address_or_chunk.address
                 base_address = address_or_chunk.chunk_base_address
@@ -4207,8 +4223,14 @@ class GlibcHeap:
                 base_address = address_or_chunk
 
             info = []
+            if not hasattr(self, "bins_dict_for_address"):
+                self.reset_cache()
             info.extend(self.bins_dict_for_address.get(address, []))
+
+            if not hasattr(self, "bins_dict_for_base_address"):
+                self.reset_cache()
             info.extend(self.bins_dict_for_base_address.get(base_address, []))
+
             if not skip_top:
                 if base_address == self.top:
                     info.append("top")
@@ -4527,7 +4549,6 @@ class GlibcHeap:
             return msg
 
         def psprint(self):
-            arena.reset_bins_info()
             msg = []
             msg.append(str(self))
             if self.is_used():
@@ -20186,8 +20207,7 @@ class GlibcHeapChunkCommand(GenericCommand):
 
         # extra information
         info = []
-        arena.reset_bins_info()
-        info.extend(arena.make_bins_info(chunk, skip_top=True))
+        info.extend(arena.get_bins_info(chunk, skip_top=True))
         if chunk.chunk_base_address == arena.top:
             info.append("top")
 
@@ -20266,7 +20286,6 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
         freelist_hint_color = Config.get_gef_setting("theme.heap_freelist_hint")
         current_chunk = GlibcHeap.GlibcChunk(arena, dump_start, from_base=True)
 
-        arena.reset_bins_info()
         while True:
             if current_chunk.chunk_base_address == arena.top:
                 top_str = Color.colorify("{:s} top".format(LEFT_ARROW), freelist_hint_color)
@@ -20282,7 +20301,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
             line = str(current_chunk)
 
             # in or not in free-list
-            info = arena.make_bins_info(current_chunk)
+            info = arena.get_bins_info(current_chunk)
             if info:
                 freelist_hint = Color.colorify(" {:s} {:s}".format(LEFT_ARROW, ", ".join(info)), freelist_hint_color)
                 line += freelist_hint
@@ -20573,8 +20592,6 @@ class GlibcHeapBinsCommand(GenericCommand):
 
         # doit
         for arena in arenas:
-            arena.reset_bins_info()
-
             # tcache
             GlibcHeapTcachebinsCommand.print_tcache(arena, args.verbose)
 
@@ -20724,7 +20741,6 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
 
         # doit
         for arena in arenas:
-            arena.reset_bins_info()
             GlibcHeapTcachebinsCommand.print_tcache(arena, args.verbose)
         return
 
@@ -20834,7 +20850,6 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
 
         # doit
         for arena in arenas:
-            arena.reset_bins_info()
             GlibcHeapFastbinsYCommand.print_fastbin(arena, args.verbose)
         return
 
@@ -20880,7 +20895,6 @@ class GlibcHeapUnsortedBinsCommand(GenericCommand):
 
         # doit
         for arena in arenas:
-            arena.reset_bins_info()
             gef_print(titlify("Unsorted Bin for arena '{:s}'".format(arena.name)))
             nb_chunk = GlibcHeapBinsCommand.pprint_bin(arena, 0, "unsorted_bin", args.verbose)
             info("Found {:d} valid chunks in unsorted bin (when traced from `bk`)".format(nb_chunk))
@@ -20928,7 +20942,6 @@ class GlibcHeapSmallBinsCommand(GenericCommand):
 
         # doit
         for arena in arenas:
-            arena.reset_bins_info()
             gef_print(titlify("Small Bins for arena '{:s}'".format(arena.name)))
             bins = {}
             for i in range(1, 63):
@@ -20984,7 +20997,6 @@ class GlibcHeapLargeBinsCommand(GenericCommand):
 
         # doit
         for arena in arenas:
-            arena.reset_bins_info()
             gef_print(titlify("Large Bins for arena '{:s}'".format(arena.name)))
             bins = {}
             for i in range(63, 126):
