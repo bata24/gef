@@ -71379,7 +71379,7 @@ class SlabContainsCommand(GenericCommand):
 
 
 @register_command
-class BuddyDumpCommand(GenericCommand):
+class BuddyDumpCommand(GenericCommand, BufferingOutput):
     """Dump zone of page allocator (buddy allocator) free-list."""
 
     _cmdline_ = "buddy-dump"
@@ -71387,13 +71387,22 @@ class BuddyDumpCommand(GenericCommand):
     _aliases_ = ["zone-dump", "pcplist"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-z", "--zone", action="append", choices=["DMA", "DMA32", "Normal", "HighMem", "Movable", "Device"],
+    parser.add_argument("-z", "--zone", dest="zone_filter", action="append",
+                        choices=["DMA", "DMA32", "Normal", "HighMem", "Movable", "Device"],
                         help="filter by specified zone name.")
-    parser.add_argument("-o", "--order", action="append", type=int, help="filter by specified order.")
-    parser.add_argument("-m", "--mtype", action="append", type=int, help="filter by specified mtype.")
-    parser.add_argument("--sort", action="store_true",
-                        help="sort by page address instead of link list order of each size. filter options are ignored.")
-    parser.add_argument("--sort-verbose", action="store_true", help="enable --sort and add information of used area.")
+    parser.add_argument("-o", "--order", dest="order_filter", action="append", type=int,
+                        help="filter by specified order.")
+    parser.add_argument("-m", "--mtype", dest="mtype_filter", action="append", type=int,
+                        help="filter by specified mtype.")
+    parser.add_argument("-p", "--pcp-index", dest="pcp_index_filter", action="append", type=int,
+                        help="filter by specified pcp_index.")
+    parser.add_argument("-P", "--only-pcp", action="store_true", help="dump only per_cpu_pages.")
+    parser.add_argument("-F", "--skip-pcp", action="store_true", help="skip dumping per_cpu_pages.")
+    parser.add_argument("--cpu", action="append", type=int, help="filter by specific cpu for per_cpu_pages.")
+    parser.add_argument("-s", "--sort", action="store_true",
+                        help="sort by page address instead of link list order of each size.")
+    parser.add_argument("-S", "--sort-verbose", action="store_true",
+                        help="enable --sort and add used area. filtered areas are treated as used.")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
@@ -71401,7 +71410,9 @@ class BuddyDumpCommand(GenericCommand):
 
     _example_ = [
         "{0:s} -z DMA32",
-        "{0:s} -o 1 -o 2 -n",
+        "{0:s} -o 1 -o 2",
+        "{0:s} --only-pcp --pcp-index 0 --cpu 0",
+        "{0:s} --sort-verbose",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -71732,9 +71743,23 @@ class BuddyDumpCommand(GenericCommand):
         self.initialized = True
         return True
 
-    # for per_cpu_pageset
-    def dump_list(self, list_i, i, cpu_num, is_highmem):
+    def get_virt_phys_str(self, page, size):
         heap_page_color = Config.get_gef_setting("theme.heap_page_address")
+        align = AddressUtil.get_format_address_width()
+
+        virt = Kernel.page2virt(page)
+        phys = None
+        if virt:
+            phys = PageMap.v2p_from_map(virt, self.maps)
+        if virt is not None:
+            virt_str = "{:#0{:d}x}-{:#0{:d}x}".format(virt, align, virt + size, align)
+            virt_str = Color.colorify(virt_str, heap_page_color)
+        if phys is not None:
+            phys_str = "{:#0{:d}x}-{:#0{:d}x}".format(phys, align, phys + size, align)
+        return virt_str, phys_str
+
+    # for per_cpu_pageset
+    def dump_list(self, args, list_i, i, cpu_num, is_highmem):
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
         align = AddressUtil.get_format_address_width()
@@ -71743,6 +71768,13 @@ class BuddyDumpCommand(GenericCommand):
         order = i // MIGRATE_PCPTYPES
         mtype = i % MIGRATE_PCPTYPES
 
+        # filtering
+        if args.mtype_filter and mtype not in args.mtype_filter:
+            return
+        if args.order_filter and order not in args.order_filter:
+            return
+
+        # size info
         size = 0x1000 * (2 ** order)
         size_str = Color.colorify("{:#08x}".format(size), chunk_size_color)
 
@@ -71760,46 +71792,29 @@ class BuddyDumpCommand(GenericCommand):
             page = current - self.offset_lru
             page_str = Color.colorify("{:#0{:d}x}".format(page, align), freed_address_color)
 
-            # filtering
-            if self.mtype_filter and mtype not in self.mtype_filter:
-                current = read_int_from_memory(current)
-                continue
-            if self.order_filter and order not in self.order_filter:
-                current = read_int_from_memory(current)
-                continue
-
             # address info
             virt_str = "???"
             phys_str = "???"
 
             if not is_highmem:
-                virt = Kernel.page2virt(page)
-                phys = None
-                if virt:
-                    phys = PageMap.v2p_from_map(virt, self.maps)
-                if virt is not None:
-                    virt_str = "{:#0{:d}x}-{:#0{:d}x}".format(virt, align, virt + size, align)
-                    virt_str = Color.colorify(virt_str, heap_page_color)
-                if phys is not None:
-                    phys_str = "{:#0{:d}x}-{:#0{:d}x}".format(phys, align, phys + size, align)
+                virt_str, phys_str = self.get_virt_phys_str(page, size)
+
+            # create msg
+            msg = "    page:{:s}  size:{:s}  virt:{:s}  phys:{:s} (pcp, cpu={:d})".format(
+                page_str, size_str, virt_str, phys_str, cpu_num,
+            )
 
             # add msg
             if self.sort:
-                msg = "    page:{:s}  size:{:s}  virt:{:s}  phys:{:s} (pcp, cpu={:d})".format(
-                    page_str, size_str, virt_str, phys_str, cpu_num,
-                )
                 self.out.append([page, size, msg])
             else:
-                msg = "    page:{:s}  size:{:s}  virt:{:s}  phys:{:s} (pcp)".format(
-                    page_str, size_str, virt_str, phys_str,
-                )
                 self.out.append(msg)
 
             # get next
             current = read_int_from_memory(current)
         return
 
-    def dump_pcp(self, zone, is_highmem):
+    def dump_pcp(self, args, zone, is_highmem):
         per_cpu_pageset = read_int_from_memory(zone + self.offset_per_cpu_pageset)
         if self.cpu_offset is None:
             per_cpu_pageset = [per_cpu_pageset]
@@ -71808,14 +71823,17 @@ class BuddyDumpCommand(GenericCommand):
 
         sizeof_list_head = current_arch.ptrsize * 2
         for cpu_num, pcp in enumerate(per_cpu_pageset):
+            if args.cpu and cpu_num not in args.cpu:
+                continue
             self.add_msg("cpu: {:d}".format(cpu_num))
             for i in range(self.NR_PCP_LISTS):
+                if args.pcp_index_filter and i not in args.pcp_index_filter:
+                    continue
                 lists_i = pcp + self.offset_lists + sizeof_list_head * i
-                self.dump_list(lists_i, i, cpu_num, is_highmem)
+                self.dump_list(args, lists_i, i, cpu_num, is_highmem)
         return
 
-    def dump_free_list(self, free_list, mtype, size, is_highmem):
-        heap_page_color = Config.get_gef_setting("theme.heap_page_address")
+    def dump_free_list(self, args, free_list, mtype, size, is_highmem):
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
         align = AddressUtil.get_format_address_width()
@@ -71837,17 +71855,8 @@ class BuddyDumpCommand(GenericCommand):
             # address info
             virt_str = "???"
             phys_str = "???"
-
             if not is_highmem:
-                virt = Kernel.page2virt(page)
-                phys = None
-                if virt:
-                    phys = PageMap.v2p_from_map(virt, self.maps)
-                if virt is not None:
-                    virt_str = "{:#0{:d}x}-{:#0{:d}x}".format(virt, align, virt + size, align)
-                    virt_str = Color.colorify(virt_str, heap_page_color)
-                if phys is not None:
-                    phys_str = "{:#0{:d}x}-{:#0{:d}x}".format(phys, align, phys + size, align)
+                virt_str, phys_str = self.get_virt_phys_str(page, size)
 
             # create msg
             msg = "    page:{:s}  size:{:s}  virt:{:s}  phys:{:s}".format(page_str, size_str, virt_str, phys_str)
@@ -71862,7 +71871,7 @@ class BuddyDumpCommand(GenericCommand):
             current = read_int_from_memory(current)
         return
 
-    def dump_free_area(self, free_area, order, is_highmem):
+    def dump_free_area(self, args, free_area, order, is_highmem):
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
 
         size = 0x1000 * (2 ** order)
@@ -71871,36 +71880,40 @@ class BuddyDumpCommand(GenericCommand):
 
         sizeof_list_head = current_arch.ptrsize * 2
         for mtype in range(self.MIGRATE_TYPES):
-            if self.mtype_filter and mtype not in self.mtype_filter:
+            if args.mtype_filter and mtype not in args.mtype_filter:
                 continue
             free_list = free_area + sizeof_list_head * mtype
-            self.dump_free_list(free_list, mtype, size, is_highmem)
+            self.dump_free_list(args, free_list, mtype, size, is_highmem)
         return
 
-    def dump_zone(self, zone, is_highmem=False):
-        self.add_msg(titlify("per_cpu_pageset"))
-        self.dump_pcp(zone, is_highmem)
+    def dump_zone(self, args, zone, is_highmem=False):
+        # dump pcp
+        if not args.skip_pcp:
+            self.add_msg(titlify("per_cpu_pageset"))
+            self.dump_pcp(args, zone, is_highmem)
 
-        tqdm = GefUtil.get_tqdm(not self.quiet)
-        self.add_msg(titlify("free_area"))
-        free_area_array = zone + self.offset_free_area
-        for order in tqdm(range(self.MAX_ORDER), leave=False):
-            if self.order_filter and order not in self.order_filter:
-                continue
-            free_area_i = free_area_array + self.sizeof_free_area * order
-            self.dump_free_area(free_area_i, order, is_highmem)
+        # dump free_area
+        if not args.only_pcp:
+            tqdm = GefUtil.get_tqdm(not self.quiet)
+            self.add_msg(titlify("free_area"))
+            free_area_array = zone + self.offset_free_area
+            for order in tqdm(range(self.MAX_ORDER), leave=False):
+                if args.order_filter and order not in args.order_filter:
+                    continue
+                free_area_i = free_area_array + self.sizeof_free_area * order
+                self.dump_free_area(args, free_area_i, order, is_highmem)
         return
 
-    def dump_node(self, node):
+    def dump_node(self, args, node):
         for i in range(self.MAX_NR_ZONES):
             zone = node + self.sizeof_zone * i
             name_ptr = read_int_from_memory(zone + self.offset_name)
             name = read_cstring_from_memory(name_ptr)
-            if self.zone_filter and name not in self.zone_filter:
+            if args.zone_filter and name not in args.zone_filter:
                 continue
             self.add_msg(titlify("zone[{:d}] @ {:#x} ({:s})".format(i, zone, name)))
             is_highmem = name == "HighMem"
-            self.dump_zone(zone, is_highmem=is_highmem)
+            self.dump_zone(args, zone, is_highmem=is_highmem)
         return
 
     @parse_args
@@ -71914,17 +71927,7 @@ class BuddyDumpCommand(GenericCommand):
             self.initialized = False
 
         self.quiet = args.quiet
-        self.sort_verbose = args.sort_verbose
         self.sort = args.sort_verbose or args.sort
-
-        if self.sort:
-            self.zone_filter = False
-            self.order_filter = False
-            self.mtype_filter = False
-        else:
-            self.zone_filter = args.zone
-            self.order_filter = args.order
-            self.mtype_filter = args.mtype
 
         # initialize
         self.quiet_info("Wait for memory scan")
@@ -71941,7 +71944,9 @@ class BuddyDumpCommand(GenericCommand):
         self.out = []
         for i, node in enumerate(self.nodes):
             self.add_msg(titlify("node[{:d}] @ {:#x}".format(i, node)))
-            self.dump_node(node)
+            self.dump_node(args, node)
+            # When self.sort is False, self.out contains a list of messages.
+            # When self.sort is True, self.out contains a list of information for constructing messages.
 
         # sort
         if self.sort:
@@ -71951,7 +71956,7 @@ class BuddyDumpCommand(GenericCommand):
 
             out = []
             for page, size, msg in sorted(self.out, key=lambda x: x[0]):
-                if not self.sort_verbose:
+                if not args.sort_verbose:
                     out.append(msg)
                     continue
 
@@ -71977,9 +71982,7 @@ class BuddyDumpCommand(GenericCommand):
                 prev_size = size
             self.out = out
 
-        # print
-        if self.out:
-            gef_print("\n".join(self.out), less=not args.no_pager)
+        self.print_output(args)
         return
 
 
@@ -87367,7 +87370,7 @@ class PagewalkWithHintsCommand(GenericCommand):
             size = int(size_str[5:], 16)
             virt = int(virt_str[5:].split("-")[0], 16)
             if pcp:
-                description = "free page in buddy allocator (pcp)"
+                description = "free page in buddy allocator {:s}".format(" ".join(pcp))
             else:
                 description = "free page in buddy allocator"
             self.insert_region(virt, size, description, merge=False)
