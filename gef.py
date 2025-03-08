@@ -79722,7 +79722,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand):
 
 
 @register_command
-class XStringCommand(GenericCommand):
+class XStringCommand(GenericCommand, BufferingOutput):
     """Dump string like x/s command, but with hex-string style."""
 
     _cmdline_ = "xs"
@@ -79734,6 +79734,7 @@ class XStringCommand(GenericCommand):
     parser.add_argument("-l", "--max-length", type=AddressUtil.parse_address,
                         help="maximum number of characters to display. 0 means unlimited.")
     parser.add_argument("-H", "--hex", action="store_true", help="show in hex style.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet mode.")
     _syntax_ = parser.format_help()
 
@@ -79769,20 +79770,17 @@ class XStringCommand(GenericCommand):
             else:
                 cs = s
 
-            if quiet:
-                if tohex:
-                    gef_print("{:s}".format(cs.hex()))
-                else:
-                    gef_print("{:s}".format(repr(cs)))
+            if tohex:
+                cs = cs.hex()
             else:
-                if tohex:
-                    gef_print("{!s}: {:s} ({:#x} bytes)".format(
-                        ProcessMap.lookup_address(address), cs.hex(), len(s),
-                    ))
-                else:
-                    gef_print("{!s}: {:s} ({:#x} bytes)".format(
-                        ProcessMap.lookup_address(address), repr(cs), len(s),
-                    ))
+                cs = repr(cs)
+
+            if quiet:
+                self.out.append("{:s}".format(cs))
+            else:
+                self.out.append("{!s}: {:s} ({:#x} bytes)".format(
+                    ProcessMap.lookup_address(address), cs, len(s),
+                ))
 
             # go to next address
             if pos == -1:
@@ -79813,7 +79811,9 @@ class XStringCommand(GenericCommand):
         else:
             max_length = Config.get_gef_setting("context.nb_max_string_length")
 
+        self.out = []
         self.dump_string(args.address, count, max_length, args.hex, args.quiet)
+        self.print_output(args, term=True)
         return
 
 
