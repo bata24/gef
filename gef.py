@@ -77822,6 +77822,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 bool zapping_by_free_flags = false;
                 bool eventually_zero_freed_memory = false;
                 bool scheduler_loop_quarantine = false;
+                bool fewer_memory_regions = false;
                 bool memory_tagging_enabled_ = false;
                 bool use_random_memory_tagging_enabled_ = false;
                 TagViolationReportingMode memory_tagging_reporting_mode_ = TagViolationReportingMode::kUndefined;
@@ -77967,6 +77968,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         root = Root(*_root.values())
         return root, current
 
+    @Cache.cache_until_next
     def read_bucket(self, addr):
         ptrsize = current_arch.ptrsize
         _bucket = {}
@@ -78011,6 +78013,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         bucket = Bucket(*_bucket.values())
         return bucket, current
 
+    @Cache.cache_until_next
     def read_extent(self, addr):
         ptrsize = current_arch.ptrsize
         _extent = {}
@@ -78039,6 +78042,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         extent = Extent(*_extent.values())
         return extent, current
 
+    @Cache.cache_until_next
     def read_direct_map(self, addr):
         ptrsize = current_arch.ptrsize
         _direct_map = {}
@@ -78068,6 +78072,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         direct_map = DirectMap(*_direct_map.values())
         return direct_map, current
 
+    @Cache.cache_until_next
     def read_slot_span(self, addr):
         ptrsize = current_arch.ptrsize
         _slot_span = {}
@@ -78114,25 +78119,35 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         return slot_span, current
 
     def C(self, address):
+        # coloring function for heap address
         management_color = Config.get_gef_setting("theme.heap_management_address")
+
+        # in extent
         current = self.root.current_extent
         while current:
             extent, _ = self.read_extent(current)
             if extent.super_page_base <= address < extent.super_page_end:
                 return Color.colorify_hex(address, management_color)
             current = extent.next
+
+        # not in extent, but valid
         if is_valid_addr(address):
             return str(ProcessMap.lookup_address(address))
+
+        # not valid
         return "{:#x}".format(address)
 
     def P(self, address):
+        # coloring function for heap page address
         page_address_color = Config.get_gef_setting("theme.heap_page_address")
         return Color.colorify_hex(address, page_address_color)
 
     def dump_root(self, root):
         self.out.append(titlify("*{} @ {:#x}".format(root.name, root.addr)))
         self.out.append("uint8_t one_cacheline[64]:                             ...")
-        self.out.append("::partition_alloc::Lock lock_;                         {:#x}".format(root.lock_))
+        self.out.append("::partition_alloc::Lock lock_:                         {:#x}".format(
+            root.lock_,
+        ))
         self.out.append("Bucket buckets[{:3d}]:".format(len(root.buckets)))
         for idx, bucket in enumerate(root.buckets):
             self.dump_bucket(bucket, root, idx)
@@ -78141,15 +78156,33 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             self.dump_bucket(root.sentinel_bucket, root)
         else:
             self.out.append("Bucket sentinel_bucket:                                ...")
-        self.out.append("bool initialized:                                      {:#x}".format(root.initialized))
-        self.out.append("std::atomic<size_t> total_size_of_committed_pages:     {:#x}".format(root.total_size_of_committed_pages))
-        self.out.append("std::atomic<size_t> max_size_of_committed_pages:       {:#x}".format(root.max_size_of_committed_pages))
-        self.out.append("std::atomic<size_t> total_size_of_super_pages:         {:#x}".format(root.total_size_of_super_pages))
-        self.out.append("std::atomic<size_t> total_size_of_direct_mapped_pages: {:#x}".format(root.total_size_of_direct_mapped_pages))
-        self.out.append("size_t total_size_of_allocated_bytes:                  {:#x}".format(root.total_size_of_allocated_bytes))
-        self.out.append("size_t max_size_of_allocated_bytes:                    {:#x}".format(root.max_size_of_allocated_bytes))
-        self.out.append("std::atomic<uint64_t> syscall_count:                   {:#x}".format(root.syscall_count))
-        self.out.append("std::atomic<uint64_t> syscall_total_time_ns:           {:#x}".format(root.syscall_total_time_ns))
+        self.out.append("bool initialized:                                      {:#x}".format(
+            root.initialized,
+        ))
+        self.out.append("std::atomic<size_t> total_size_of_committed_pages:     {:#x}".format(
+            root.total_size_of_committed_pages,
+        ))
+        self.out.append("std::atomic<size_t> max_size_of_committed_pages:       {:#x}".format(
+            root.max_size_of_committed_pages,
+        ))
+        self.out.append("std::atomic<size_t> total_size_of_super_pages:         {:#x}".format(
+            root.total_size_of_super_pages,
+        ))
+        self.out.append("std::atomic<size_t> total_size_of_direct_mapped_pages: {:#x}".format(
+            root.total_size_of_direct_mapped_pages,
+        ))
+        self.out.append("size_t total_size_of_allocated_bytes:                  {:#x}".format(
+            root.total_size_of_allocated_bytes,
+        ))
+        self.out.append("size_t max_size_of_allocated_bytes:                    {:#x}".format(
+            root.max_size_of_allocated_bytes,
+        ))
+        self.out.append("std::atomic<uint64_t> syscall_count:                   {:#x}".format(
+            root.syscall_count,
+        ))
+        self.out.append("std::atomic<uint64_t> syscall_total_time_ns:           {:#x}".format(
+            root.syscall_total_time_ns,
+        ))
         self.out.append("std::atomic<size_t> total_size_of_brp_quarantined_bytes: {:#x}".format(
             root.total_size_of_brp_quarantined_bytes,
         ))
@@ -78162,41 +78195,78 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         self.out.append("std::atomic<size_t> cumulative_count_of_brp_quarantined_slots: {:#x}".format(
             root.cumulative_count_of_brp_quarantined_slots,
         ))
-        self.out.append("size_t empty_slot_spans_dirty_bytes:                   {:#x}".format(root.empty_slot_spans_dirty_bytes))
-        self.out.append("int max_empty_slot_spans_dirty_bytes_shift:            {:#x}".format(root.max_empty_slot_spans_dirty_bytes_shift))
-        self.out.append("uintptr_t next_super_page:                             {:s}".format(self.P(root.next_super_page)))
-        self.out.append("uintptr_t next_partition_page:                         {:s}".format(self.P(root.next_partition_page)))
-        self.out.append("uintptr_t next_partition_page_end:                     {:s}".format(self.P(root.next_partition_page_end)))
-        self.out.append("ReadOnlySuperPageExtentEntry* current_extent:          {:s}".format(self.C(root.current_extent)))
+        self.out.append("size_t empty_slot_spans_dirty_bytes:                   {:#x}".format(
+            root.empty_slot_spans_dirty_bytes,
+        ))
+        self.out.append("int max_empty_slot_spans_dirty_bytes_shift:            {:#x}".format(
+            root.max_empty_slot_spans_dirty_bytes_shift,
+        ))
+        self.out.append("uintptr_t next_super_page:                             {:s}".format(
+            self.P(root.next_super_page),
+        ))
+        self.out.append("uintptr_t next_partition_page:                         {:s}".format(
+            self.P(root.next_partition_page),
+        ))
+        self.out.append("uintptr_t next_partition_page_end:                     {:s}".format(
+            self.P(root.next_partition_page_end),
+        ))
+        self.out.append("ReadOnlySuperPageExtentEntry* current_extent:          {:s}".format(
+            self.C(root.current_extent),
+        ))
         self.dump_extent_list(root.current_extent)
-        self.out.append("ReadOnlySuperPageExtentEntry* first_extent:            {:s}".format(self.C(root.first_extent)))
+        self.out.append("ReadOnlySuperPageExtentEntry* first_extent:            {:s}".format(
+            self.C(root.first_extent),
+        ))
         self.dump_extent_list(root.first_extent)
-        self.out.append("ReadOnlyDirectMapExtent* direct_map_list:              {:s}".format(self.C(root.direct_map_list)))
+        self.out.append("ReadOnlyDirectMapExtent* direct_map_list:              {:s}".format(
+            self.C(root.direct_map_list),
+        ))
         self.dump_direct_map_list(root.direct_map_list, root)
         ring_len = len(root.global_empty_slot_span_ring)
         if self.verbose:
-            self.out.append("ReadOnlySlotSpanMetadata* global_empty_slot_span_ring[{:3d}]:".format(ring_len))
+            self.out.append("ReadOnlySlotSpanMetadata* global_empty_slot_span_ring[{:3d}]:".format(
+                ring_len,
+            ))
             for i in range(len(root.global_empty_slot_span_ring)):
                 colored_slot_span = self.C(root.global_empty_slot_span_ring[i])
-                self.out.append("    global_empty_slot_span_ring[{:3d}]:                       {:s}".format(i, colored_slot_span))
+                self.out.append("    global_empty_slot_span_ring[{:3d}]:                       {:s}".format(
+                    i, colored_slot_span,
+                ))
         else:
-            self.out.append("ReadOnlySlotSpanMetadata* global_empty_slot_span_ring[{:3d}]:             ...".format(ring_len))
-        self.out.append("int16_t global_empty_slot_span_ring_index:             {:#x}".format(root.global_empty_slot_span_ring_index))
-        self.out.append("int16_t global_empty_slot_span_ring_size:              {:#x}".format(root.global_empty_slot_span_ring_size))
-        self.out.append("uint16_t purge_generation:                             {:#x}".format(root.purge_generation))
-        self.out.append("uint16_t purge_next_bucket_index:                      {:#x}".format(root.purge_next_bucket_index))
+            self.out.append("ReadOnlySlotSpanMetadata* global_empty_slot_span_ring[{:3d}]:             ...".format(
+                ring_len,
+            ))
+        self.out.append("int16_t global_empty_slot_span_ring_index:             {:#x}".format(
+            root.global_empty_slot_span_ring_index,
+        ))
+        self.out.append("int16_t global_empty_slot_span_ring_size:              {:#x}".format(
+            root.global_empty_slot_span_ring_size,
+        ))
+        self.out.append("uint16_t purge_generation:                             {:#x}".format(
+            root.purge_generation,
+        ))
+        self.out.append("uint16_t purge_next_bucket_index:                      {:#x}".format(
+            root.purge_next_bucket_index,
+        ))
         inv_inv = root.inverted_self ^ ((1 << (current_arch.ptrsize * 8)) - 1)
-        inv_inv = ProcessMap.lookup_address(inv_inv)
-        self.out.append("uintptr_t inverted_self:                               {:#x} (=~{!s})".format(root.inverted_self, inv_inv))
-        self.out.append("std::atomic<int> thread_caches_being_constructed_:     {:#x}".format(root.thread_caches_being_constructed_))
-        self.out.append("bool quarantine_always_for_testing:                    {:#x}".format(root.quarantine_always_for_testing))
+        self.out.append("uintptr_t inverted_self:                               {:#x} (=~{!s})".format(
+            root.inverted_self, ProcessMap.lookup_address(inv_inv),
+        ))
+        self.out.append("std::atomic<int> thread_caches_being_constructed_:     {:#x}".format(
+            root.thread_caches_being_constructed_,
+        ))
+        self.out.append("bool quarantine_always_for_testing:                    {:#x}".format(
+            root.quarantine_always_for_testing,
+        ))
         self.out.append("size_t scheduler_loop_quarantine_branch_capacity_in_bytes: {:#x}".format(
             root.scheduler_loop_quarantine_branch_capacity_in_bytes,
         ))
         self.out.append("internal::LightweightQuarantineRoot scheduler_loop_quarantine_root: {:#x}".format(
             root.scheduler_loop_quarantine_root,
         ))
-        self.out.append("NoDestructor<...> scheduler_loop_quarantine:           {:#x}".format(root.scheduler_loop_quarantine))
+        self.out.append("NoDestructor<...> scheduler_loop_quarantine:           {:#x}".format(
+            root.scheduler_loop_quarantine,
+        ))
         return
 
     def dump_extent_list(self, head):
@@ -78204,13 +78274,27 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             current = head
             while current:
                 extent, _ = self.read_extent(current)
-                self.out.append("    -> extent @{:s}".format(self.C(extent.addr)))
-                self.out.append("           root:{!s} ".format(ProcessMap.lookup_address(extent.root)))
-                super_page_info = "{:s} - {:s}".format(self.P(extent.super_page_base), self.P(extent.super_page_end))
-                page_info = "(total 0x200000(2MB) * {:d} pages)".format(extent.number_of_consecutive_super_pages)
-                self.out.append("           super_page:{:s} {:s}".format(super_page_info, page_info))
-                self.out.append("           non_empty_slot_spans:{:d} ".format(extent.number_of_nonempty_slot_spans))
-                self.out.append("           next:{:s}".format(self.C(extent.next)))
+                self.out.append("    -> extent @{:s}".format(
+                    self.C(extent.addr),
+                ))
+                self.out.append("           root:{!s} ".format(
+                    ProcessMap.lookup_address(extent.root),
+                ))
+                super_page_info = "{:s} - {:s}".format(
+                    self.P(extent.super_page_base), self.P(extent.super_page_end),
+                )
+                page_info = "(total 0x200000(2MB) * {:d} pages)".format(
+                    extent.number_of_consecutive_super_pages,
+                )
+                self.out.append("           super_page:{:s} {:s}".format(
+                    super_page_info, page_info,
+                ))
+                self.out.append("           non_empty_slot_spans:{:d} ".format(
+                    extent.number_of_nonempty_slot_spans,
+                ))
+                self.out.append("           next:{:s}".format(
+                    self.C(extent.next),
+                ))
                 current = extent.next
         except Exception:
             self.err("Corrupted?")
@@ -78221,12 +78305,24 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             current = head
             while current:
                 direct_map, _ = self.read_direct_map(current)
-                self.out.append("    -> direct_map @{:s}: ".format(self.C(direct_map.addr)))
-                self.out.append("           next_extent:{:s} ".format(self.C(direct_map.next_extent)))
-                self.out.append("           prev_extent:{:s} ".format(self.C(direct_map.prev_extent)))
-                self.out.append("           bucket:{:s} ".format(self.C(direct_map.bucket)))
-                self.out.append("           reservation_size:{:#x}".format(direct_map.reservation_size))
-                self.out.append("           padding_for_alignment:{:#x}".format(direct_map.padding_for_alignment))
+                self.out.append("    -> direct_map @{:s}: ".format(
+                    self.C(direct_map.addr),
+                ))
+                self.out.append("           next_extent:{:s} ".format(
+                    self.C(direct_map.next_extent),
+                ))
+                self.out.append("           prev_extent:{:s} ".format(
+                    self.C(direct_map.prev_extent),
+                ))
+                self.out.append("           bucket:{:s} ".format(
+                    self.C(direct_map.bucket),
+                ))
+                self.out.append("           reservation_size:{:#x}".format(
+                    direct_map.reservation_size,
+                ))
+                self.out.append("           padding_for_alignment:{:#x}".format(
+                    direct_map.padding_for_alignment,
+                ))
                 bucket, _ = self.read_bucket(direct_map.bucket)
                 self.dump_bucket(bucket, root)
                 current = direct_map.next_extent
@@ -78249,10 +78345,16 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
         slot_size = Color.colorify("{:#7x}".format(bucket.slot_size), chunk_size_color)
         if idx is not None:
-            self.out.append("    buckets[{:3d}](slot_size:{:s}) @{!s}".format(idx, slot_size, ProcessMap.lookup_address(bucket.addr)))
+            self.out.append("    buckets[{:3d}](slot_size:{:s}) @{!s}".format(
+                idx, slot_size, ProcessMap.lookup_address(bucket.addr),
+            ))
         else:
-            self.out.append("    bucket(slot_size:{:s}) @{!s}".format(slot_size, ProcessMap.lookup_address(bucket.addr)))
-        self.out.append("        num_system_pages_per_slot_span:{:#x} ".format(bucket.num_system_pages_per_slot_span))
+            self.out.append("    bucket(slot_size:{:s}) @{!s}".format(
+                slot_size, ProcessMap.lookup_address(bucket.addr),
+            ))
+        self.out.append("        num_system_pages_per_slot_span:{:#x} ".format(
+            bucket.num_system_pages_per_slot_span,
+        ))
         self.out.append("        num_full_slot_spans:{:#x} ".format(bucket.num_full_slot_spans))
         self.out.append("        slot_size_reciprocal:{:#x}".format(bucket.slot_size_reciprocal))
         self.out.append("        can_store_raw_size:{:#x}".format(bucket.can_store_raw_size))
@@ -78286,13 +78388,19 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             except Exception:
                 self.err("Corrupted?")
                 break
-            fmt = "            -> slot_span @{:s} (#{:3d} of super_page @{:s})"
-            self.out.append(fmt.format(self.C(slot_span.addr), slot_span.partition_page_index, self.P(slot_span.super_page_addr)))
-            self.out.append("                   next_slot_span:{:s} ".format(self.C(slot_span.next_slot_span)))
-            colored_page_start = self.P(slot_span.partition_page_start)
-            colored_page_end = self.P(slot_span.partition_page_start + bucket.num_system_pages_per_slot_span * gef_getpagesize())
-            self.out.append("                   slot_span_area:{:s}-{:s} ".format(colored_page_start, colored_page_end))
-            self.out.append("                   num_allocated_slots:{:#x}".format(slot_span.num_allocated_slots))
+            self.out.append("            -> slot_span @{:s} (#{:3d} of super_page @{:s})".format(
+                self.C(slot_span.addr), slot_span.partition_page_index, self.P(slot_span.super_page_addr),
+            ))
+            self.out.append("                   next_slot_span:{:s} ".format(
+                self.C(slot_span.next_slot_span),
+            ))
+            self.out.append("                   slot_span_area:{:s}-{:s} ".format(
+                self.P(slot_span.partition_page_start),
+                self.P(slot_span.partition_page_start + bucket.num_system_pages_per_slot_span * gef_getpagesize()),
+            ))
+            self.out.append("                   num_allocated_slots:{:#x}".format(
+                slot_span.num_allocated_slots),
+            )
             self.dump_freelist(slot_span.freelist_head, bucket, slot_span)
             current = slot_span.next_slot_span
         return

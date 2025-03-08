@@ -26,17 +26,15 @@ def get_channel_info(channel):
 
 
 @functools.lru_cache
-def get_valid_positions():
-    url = "https://raw.githubusercontent.com/vikyd/chromium-history-version-position/master/json/position/position-Linux_x64.json"
-    r = requests.get(url)
-    j = json.loads(r.text)
-    return [int(x) for x in j]
-
-
-@functools.lru_cache
 def get_valid_pos(pos):
-    valid_positions = get_valid_positions()
-    pos = valid_positions[bisect.bisect(valid_positions, pos) - 1]
+    urlbase = "https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/Linux_x64"
+    while pos > 0:
+        print(f"[!] checking {pos}...")
+        url = urlbase + f"%2F{pos}%2FREVISIONS?&alt=media"
+        r = requests.get(url)
+        if "chromium_revision" in r.text:
+            return pos
+        pos -= 1
     return pos
 
 
@@ -62,7 +60,8 @@ def download_binary(channel):
 
     # download
     # https://commondatastorage.googleapis.com/chromium-browser-snapshots/index.html?prefix=Linux_x64/
-    url = f"https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/Linux_x64%2F{pos}%2Fchrome-linux.zip?&alt=media"
+    urlbase = "https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/Linux_x64"
+    url = urlbase + f"%2F{pos}%2Fchrome-linux.zip?&alt=media"
     cmd = f"wget -O {dirname}/chrome-linux-{pos}.zip '{url}'"
     print("  Execute: {:s}".format(cmd))
     subprocess.getoutput(cmd)
@@ -106,7 +105,7 @@ def memo():
     print("    rm -rf /tmp/u && sudo -u NON_ROOT_USER_NAME ./chrome --headless=new --disable-gpu "
           "--remote-debugging-port=1338 --user-data-dir=/tmp/u --enable-logging=stderr http://0:8080/inf-loop.html")
     print("  [term3 (for renderer process)]")
-    print("""    gdb -q -p $(ps -ef | grep -- "--[t]ype=renderer" | awk '{print $2}')""")
+    print("""    gdb -q -p $(ps -ef | grep -- "--[t]ype=renderer" | awk '{pid=$2; for(i=1;i<=NF;i++) if($i ~ /--renderer-client-id=/) {split($i,a,"="); print a[2], pid}}' | sort -n | head -n 1 | awk '{print $2}')""")
     print("  [term3 (for browser process)]")
     print("""    gdb -q -p $(ps -ef | grep "\\./[c]hrome" | grep -v type | grep -v sudo | awk '{print $2}')""")
     return
