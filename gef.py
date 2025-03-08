@@ -21092,7 +21092,6 @@ class GlibcTryFreeCommand(GenericCommand):
             old_regs[regname] = get_register(regname)
             gdb.execute("set {:s}={:#x}".format(regname, regvalue))
         gdb.execute("patch hex {:#x} {:s}".format(current_address, patch_code), to_string=True)
-        revert_num = len(PatchCommand.patch_history) - 1
 
         # doit
         res = ""
@@ -21111,7 +21110,7 @@ class GlibcTryFreeCommand(GenericCommand):
         # revert
         for regname, regvalue in old_regs.items():
             gdb.execute("set {:s}={:#x}".format(regname, regvalue))
-        gdb.execute("patch revert {:d}".format(revert_num), to_string=True)
+        gdb.execute("patch revert 0", to_string=True)
         return
 
 
@@ -21196,7 +21195,6 @@ class GlibcTryMallocCommand(GenericCommand):
             old_regs[regname] = get_register(regname)
             gdb.execute("set {:s}={:#x}".format(regname, regvalue))
         gdb.execute("patch hex {:#x} {:s}".format(current_address, patch_code), to_string=True)
-        revert_num = len(PatchCommand.patch_history) - 1
 
         # doit
         res = ""
@@ -21225,7 +21223,7 @@ class GlibcTryMallocCommand(GenericCommand):
         # revert
         for regname, regvalue in old_regs.items():
             gdb.execute("set {:s}={:#x}".format(regname, regvalue))
-        gdb.execute("patch revert {:d}".format(revert_num), to_string=True)
+        gdb.execute("patch revert 0", to_string=True)
         return
 
 
