@@ -87056,7 +87056,7 @@ class SwitchELCommand(GenericCommand):
 
 
 @register_command
-class PagewalkWithHintsCommand(GenericCommand):
+class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
     """Add hint to the result of pagewalk."""
 
     _cmdline_ = "pagewalk-with-hints"
@@ -87069,11 +87069,6 @@ class PagewalkWithHintsCommand(GenericCommand):
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use map cache.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
-
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self.prev_out = None
-        return
 
     class Region:
         def __init__(self, addr_start, addr_end, perm, description="", merge=True):
@@ -87249,9 +87244,10 @@ class PagewalkWithHintsCommand(GenericCommand):
             regions[addr_start] = self.Region(addr_start, addr_end, str(perm))
         return regions
 
-    def resolve_kbase(self):
-        if not self.quiet:
+    def resolve_kbase(self, args):
+        if not args.quiet:
             info("resolve kbase")
+
         kinfo = Kernel.get_kernel_base()
 
         # .text
@@ -87292,12 +87288,14 @@ class PagewalkWithHintsCommand(GenericCommand):
                     self.regions[kinfo.rw_base].add_description("maybe kernel .data")
         return
 
-    def resolve_direct_map(self):
-        if not self.quiet:
+    def resolve_direct_map(self, args):
+        if not args.quiet:
             info("resolve direct map")
+
         page_offset = KernelAddressHeuristicFinder.get_page_offset()
         if not page_offset:
             return
+
         vmalloc_start = KernelAddressHeuristicFinder.get_vmalloc_start()
         if not vmalloc_start:
             return
@@ -87308,9 +87306,10 @@ class PagewalkWithHintsCommand(GenericCommand):
         self.insert_region(phys_page_start, phys_mem_size, "physmem direct map")
         return
 
-    def resolve_vmalloc(self):
-        if not self.quiet:
+    def resolve_vmalloc(self, args):
+        if not args.quiet:
             info("resolve vmalloc")
+
         vmalloc_start = KernelAddressHeuristicFinder.get_vmalloc_start()
         if not vmalloc_start:
             return
@@ -87325,8 +87324,8 @@ class PagewalkWithHintsCommand(GenericCommand):
         self.insert_region(vmalloc_start, vmalloc_region_size, "vmalloc area")
         return
 
-    def resolve_page(self):
-        if not self.quiet:
+    def resolve_page(self, args):
+        if not args.quiet:
             info("resolve page")
 
         if is_x86_64():
@@ -87352,9 +87351,10 @@ class PagewalkWithHintsCommand(GenericCommand):
                     self.regions[key].add_description("struct page area")
         return
 
-    def resolve_buddy(self):
-        if not self.quiet:
+    def resolve_buddy(self, args):
+        if not args.quiet:
             info("resolve buddy")
+
         res = gdb.execute("buddy-dump --quiet --no-pager --sort", to_string=True)
 
         for line in res.splitlines():
@@ -87376,9 +87376,10 @@ class PagewalkWithHintsCommand(GenericCommand):
             self.insert_region(virt, size, description, merge=False)
         return
 
-    def resolve_kstack(self):
-        if not self.quiet:
+    def resolve_kstack(self, args):
+        if not args.quiet:
             info("resolve kstack")
+
         res = gdb.execute("ktask --quiet --no-pager --print-thread", to_string=True)
 
         # calc kstack address pattern
@@ -87408,8 +87409,11 @@ class PagewalkWithHintsCommand(GenericCommand):
             self.insert_region(kstack, kstack_size, description)
         return
 
-    def resolve_more_slub(self):
-        if not self.quiet:
+    def resolve_more_slub(self, args):
+        if args.skip_full_slab_cache:
+            return
+
+        if not args.quiet:
             info("resolve slub (search full slab cache; skip if target region size >= 0x200000)")
         old_regions = list(self.regions.items())[::]
 
@@ -87452,9 +87456,10 @@ class PagewalkWithHintsCommand(GenericCommand):
                 current += total_page_size
         return
 
-    def resolve_slub(self):
-        if not self.quiet:
+    def resolve_slub(self, args):
+        if not args.quiet:
             info("resolve slub")
+
         res = gdb.execute("slub-dump --quiet --no-pager -vv", to_string=True)
         name, address, size = None, None, None
         for line in res.splitlines():
@@ -87476,10 +87481,7 @@ class PagewalkWithHintsCommand(GenericCommand):
                 address, size = None, None # for detect logic error. name will be reused
                 continue
 
-        if self.skip_full_slab_cache:
-            return
-
-        self.resolve_more_slub()
+        self.resolve_more_slub(args)
         return
 
     def resolve_slab(self):
@@ -87507,9 +87509,10 @@ class PagewalkWithHintsCommand(GenericCommand):
                 continue
         return
 
-    def resolve_slob(self):
-        if not self.quiet:
+    def resolve_slob(self, args):
+        if not args.quiet:
             info("resolve slob")
+
         res = gdb.execute("slob-dump --quiet --no-pager", to_string=True)
         address, size = None, None, None
         for line in res.splitlines():
@@ -87528,9 +87531,10 @@ class PagewalkWithHintsCommand(GenericCommand):
                 continue
         return
 
-    def resolve_slub_tiny(self):
-        if not self.quiet:
+    def resolve_slub_tiny(self, args):
+        if not args.quiet:
             info("resolve slub-tiny")
+
         res = gdb.execute("slub-tiny-dump --quiet --no-pager", to_string=True)
         name, address, size = None, None, None
         for line in res.splitlines():
@@ -87553,21 +87557,22 @@ class PagewalkWithHintsCommand(GenericCommand):
                 continue
         return
 
-    def resolve_each_slab(self):
+    def resolve_each_slab(self, args):
         allocator = KernelChecksecCommand.get_slab_type()
         if allocator == "SLUB":
-            self.resolve_slub()
+            self.resolve_slub(args)
         elif allocator == "SLUB_TINY":
-            self.resolve_slub_tiny()
+            self.resolve_slub_tiny(args)
         elif allocator == "SLAB":
-            self.resolve_slab()
+            self.resolve_slab(args)
         elif allocator == "SLOB":
-            self.resolve_slob()
+            self.resolve_slob(args)
         return
 
-    def resolve_module(self):
-        if not self.quiet:
+    def resolve_module(self, args):
+        if not args.quiet:
             info("resolve module")
+
         res = gdb.execute("kmod --quiet --no-pager", to_string=True)
         for line in res.splitlines():
             if not line:
@@ -87580,8 +87585,8 @@ class PagewalkWithHintsCommand(GenericCommand):
             self.insert_region(module_base, module_size, description)
         return
 
-    def resolve_vdso(self):
-        if not self.quiet:
+    def resolve_vdso(self, args):
+        if not args.quiet:
             info("resolve vdso")
 
         if is_x86_64():
@@ -87618,8 +87623,8 @@ class PagewalkWithHintsCommand(GenericCommand):
                 self.insert_region(vdso32_start, vdso_size, "vdso32_start")
         return
 
-    def resolve_device_physmem(self):
-        if not self.quiet:
+    def resolve_device_physmem(self, args):
+        if not args.quiet:
             info("resolve device physmem")
 
         try:
@@ -87660,9 +87665,10 @@ class PagewalkWithHintsCommand(GenericCommand):
                 self.insert_region(vaddr, size, device_name)
         return
 
-    def detect_zero_page(self):
-        if not self.quiet:
+    def detect_zero_page(self, args):
+        if not args.quiet:
             info("detect zero page")
+
         page_size = gef_getpagesize()
         z10 = b"\0" * 0x10
         cc10 = b"\xcc" * 0x10
@@ -87697,8 +87703,8 @@ class PagewalkWithHintsCommand(GenericCommand):
                     self.insert_region(addr, page_size, "0xff-filled")
         return
 
-    def add_legend(self):
-        if not self.quiet:
+    def add_legend(self, args):
+        if not args.quiet:
             fmt = "{:37s} {:18s} {:5s} {:s}"
             legend = ["Virtual address start-end", "Total size", "Perm", "Hint"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
@@ -87709,37 +87715,51 @@ class PagewalkWithHintsCommand(GenericCommand):
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     def do_invoke(self, args):
-        if not args.rescan and self.prev_out:
-            gef_print("\n".join(self.prev_out), less=not args.no_pager)
-            return
+        if args.rescan or not hasattr(self, "out"):
+            self.out = []
+            self.add_legend(args)
 
-        self.quiet = args.quiet
-        self.skip_full_slab_cache = args.skip_full_slab_cache
-        self.out = []
+            # initial regions
+            self.regions = self.get_maps()
 
-        self.add_legend()
-        self.regions = self.get_maps()
-        self.resolve_kbase()
-        if is_x86_64():
-            self.resolve_direct_map()
-            self.resolve_vmalloc()
-        self.resolve_page()
-        self.resolve_device_physmem()
-        self.resolve_buddy()
-        self.resolve_kstack()
-        self.resolve_each_slab()
-        self.resolve_module()
-        self.resolve_vdso()
-        self.detect_zero_page()
+            # add info
+            self.resolve_kbase(args)
+            if is_x86_64():
+                self.resolve_direct_map(args)
+                self.resolve_vmalloc(args)
+            self.resolve_page(args)
+            self.resolve_device_physmem(args)
+            self.resolve_buddy(args)
+            self.resolve_kstack(args)
+            self.resolve_each_slab(args)
+            self.resolve_module(args)
+            self.resolve_vdso(args)
+            self.detect_zero_page(args)
 
-        self.merge_region()
-        for _, r in sorted(self.regions.items()):
-            self.out.append("{:#018x}-{:#018x} {:#018x} [{:s}] {:s}".format(
-                r.addr_start, r.addr_end, r.size, r.perm, r.description,
-            ))
-        self.prev_out = self.out.copy()
+            # make output
+            self.merge_region()
+            for _, r in sorted(self.regions.items()):
+                # make line
+                line = "{:#018x}-{:#018x} {:#018x} [{:s}] {:s}".format(
+                    r.addr_start, r.addr_end, r.size, r.perm, r.description,
+                )
 
-        gef_print("\n".join(self.out), less=not args.no_pager)
+                # coloring
+                if r.perm == "r--":
+                    line_color = Config.get_gef_setting("theme.address_readonly")
+                elif r.perm == "rw-":
+                    line_color = Config.get_gef_setting("theme.address_writable")
+                elif r.perm.endswith("x"):
+                    line_color = Config.get_gef_setting("theme.address_code")
+                else:
+                    line_color = ""
+
+                if r.perm == "rwx":
+                    line_color += " " + Config.get_gef_setting("theme.address_rwx")
+
+                self.out.append(Color.colorify(line, line_color))
+
+        self.print_output(args)
         return
 
 
