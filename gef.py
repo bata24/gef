@@ -79818,7 +79818,7 @@ class XStringCommand(GenericCommand):
 
 
 @register_command
-class XColoredCommand(GenericCommand):
+class XColoredCommand(GenericCommand, BufferingOutput):
     """Dump address like x/x command, but with coloring at some intervals."""
 
     _cmdline_ = "xc"
@@ -79858,18 +79858,15 @@ class XColoredCommand(GenericCommand):
             err(e)
             return
 
-        out = []
+        self.out = []
         for i, line in enumerate(ret.splitlines()):
             if args.interval and args.interval > 0:
                 color_func = self.colors[:args.color_num][(i // args.interval) % args.color_num]
             else:
                 color_func = self.colors[:args.color_num][0]
-            out.append(color_func(line))
+            self.out.append(color_func(line))
 
-        if len(out) > GefUtil.get_terminal_size()[0]:
-            gef_print("\n".join(out), less=not args.no_pager)
-        else:
-            gef_print("\n".join(out), less=False)
+        self.print_output(args, term=True)
         return
 
 
