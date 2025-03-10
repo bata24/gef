@@ -19116,8 +19116,10 @@ class UnicornEmulateCommand(GenericCommand):
                         help="do not run, just save the script.")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="displays the register values for each instruction is executed.")
-    parser.add_argument("--add-sse", action="store_true",
+    parser.add_argument("-S", "--add-sse", action="store_true",
                         help="initialization and display XMM registers (only x64/x86).")
+    parser.add_argument("-A", "--avoid-avx-neon-opt-func", action="store_true",
+                        help="patch GOT to replace (e.g., __XXX_avx2 with XXX), as Unicorn does not support them.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
@@ -19225,8 +19227,8 @@ class UnicornEmulateCommand(GenericCommand):
         if is_arm32():
             content += "    enable_thumb = emu.reg_read(registers['$cpsr']) & 0x20\n"
             content += "    cs = cs_thumb if enable_thumb else cs_arm\n"
-        content += "    for i in cs.disasm(code, addr):\n"
-        content += "        return i\n"
+        content += "    for insn in cs.disasm(code, addr):\n"
+        content += "        return insn\n"
         content += "\n"
 
         # hook functions
@@ -19275,14 +19277,21 @@ class UnicornEmulateCommand(GenericCommand):
         content += "        changed_mem[accessed_address]['type'] = 'modified'\n"
         content += "    return\n"
         content += "\n"
-        content += "def intr_hook(emu, intno, data):\n"
+        content += "def intr_hook(emu, intno, user_data):\n"
+        if is_x86() or is_arm32() or is_arm64():
+            if is_x86():
+                intno = 0x80
+            elif is_arm32() or is_arm64():
+                intno = 0x2
+            content += "    if intno == {:d}:\n".format(intno)
+            content += "        syscall_hook(emu, user_data)\n"
         content += "    print('  --> interrupt={:d}'.format(intno))\n"
         content += "    raise\n"
         content += "\n"
         content += "def syscall_hook(emu, user_data):\n"
         content += "    sysno = emu.reg_read(registers[syscall_register])\n"
         content += "    print('  --> syscall={:d} (not emulated)'.format(sysno))\n"
-        content += "    return\n"
+        content += "    raise\n"
         content += "\n"
         content += "def print_regs(emu, regs):\n"
         content += "    if only_insns:\n"
@@ -19318,22 +19327,28 @@ class UnicornEmulateCommand(GenericCommand):
         content += "    prev_address = None\n"
         content += "    for chunk in sliced:\n"
         content += "        address = chunk[0][0]\n"
-        content += "        prefix = '{:#018x}'.format(address)\n"
+        content += "        prefix = '{{:#0{:d}x}}'.format(address)\n".format(current_arch.ptrsize * 2 + 2)
         content += "        before = ''\n"
         content += "        after = ''\n"
-        content += "        for i in range(16):\n"
-        content += "            a = chunk[i][1]['after']\n"
-        content += "            b = chunk[i][1]['before']\n"
-        content += "            if a == b:\n"
-        content += "                if chunk[i][1]['type'] is None:\n"
-        content += "                    before += '{:02x} '.format(b)\n"
-        content += "                    after += '{:02x} '.format(a)\n"
+        content += "        for i in range({:d}):\n".format(16 // current_arch.ptrsize)
+        content += "            atmp = []\n"
+        content += "            btmp = []\n"
+        content += "            for j in range({:d}):\n".format(current_arch.ptrsize)
+        content += "                idx = i * {:d} + j\n".format(current_arch.ptrsize)
+        content += "                a = chunk[idx][1]['after']\n"
+        content += "                b = chunk[idx][1]['before']\n"
+        content += "                if a == b:\n"
+        content += "                    if chunk[idx][1]['type'] is None:\n"
+        content += "                        btmp.append('{:02x}'.format(b))\n"
+        content += "                        atmp.append('{:02x}'.format(a))\n"
+        content += "                    else:\n"
+        content += "                        btmp.append('\\033[2m{:02x}\\033[0m'.format(b))\n"
+        content += "                        atmp.append('\\033[2m{:02x}\\033[0m'.format(a))\n"
         content += "                else:\n"
-        content += "                    before += '\\033[2m{:02x}\\033[0m '.format(b)\n"
-        content += "                    after += '\\033[2m{:02x}\\033[0m '.format(a)\n"
-        content += "            else:\n"
-        content += "                before += '\\033[2m\\033[1m{:02x}\\033[0m '.format(b)\n"
-        content += "                after += '\\033[2m\\033[1m{:02x}\\033[0m '.format(a)\n"
+        content += "                    btmp.append('\\033[2m\\033[1m{:02x}\\033[0m'.format(b))\n"
+        content += "                    atmp.append('\\033[2m\\033[1m{:02x}\\033[0m'.format(a))\n"
+        content += "            before += '0x' + ''.join(btmp[::-1]) + ' '\n"
+        content += "            after += '0x' + ''.join(atmp[::-1]) + ' '\n"
         content += "        line = '{:s} | {:s}| {:s}|'.format(prefix, before, after)\n"
         content += "        if prev_address is not None and prev_address + 0x10 != address:\n"
         content += "            print('*')\n"
@@ -19418,6 +19433,8 @@ class UnicornEmulateCommand(GenericCommand):
         for sect in vmmap:
             if sect.path in ["[vvar]", "[vectors]", "[sigpage]"]:
                 continue
+            if sect.permission == Permission.NONE:
+                continue
             content += "    # Mapping {:s}: {:#x}-{:#x} [{!s}]\n".format(
                 sect.path, sect.page_start, sect.page_end, sect.permission,
             )
@@ -19429,6 +19446,44 @@ class UnicornEmulateCommand(GenericCommand):
                 loc = os.path.join(kwargs["dloc"], "{:s}-{:#x}.raw".format(filename, sect.page_start))
                 open(loc, "wb").write(bytes(code))
                 content += "    emu.mem_write({:#x}, open('{:s}', 'rb').read())\n".format(sect.page_start, loc)
+
+        # memory patch to avoid avx/neon optimized function
+        if kwargs["patch_got"] and (is_x86_64() or is_arm32()):
+            if is_x86_64():
+                RE_OPT = re.compile(r"^(?:\*ABS\*|__str|__mem|str|mem).* \| .+ \| (0x\S+) \| (0x\S+) <(__(\w+)_avx2?.*)>")
+            elif is_arm32():
+                RE_OPT = re.compile(r"^(?:\*ABS\*|__str|__mem|str|mem).* \| .+ \| (0x\S+) \| (0x\S+) <(__(\w+)_neon.*)>")
+
+            res = gdb.execute("got-all --no-pager", to_string=True)
+            content += "    # memory patch to avoid avx2/neon optimized function\n"
+            for line in res.splitlines():
+                # search avx2/neon optimized functions
+                line = Color.remove_color(line)
+                m = RE_OPT.search(line)
+                if not m:
+                    continue
+                try:
+                    got = int(m.group(1), 16)
+                    _current_func_addr = int(m.group(2), 16)
+                    _current_func_name = m.group(3)
+                    base_func_name = m.group(4)
+                except ValueError:
+                    continue
+
+                # get original function (e.g., __memmove_avx_unaligned_erms -> __memmove)
+                try:
+                    base_func_addr = int(gdb.parse_and_eval("&{:s}".format(base_func_name)))
+                except (gdb.error, ValueError):
+                    try:
+                        base_func_name = "__" + base_func_name # e.g., __memmove_chk
+                        base_func_addr = int(gdb.parse_and_eval("&{:s}".format(base_func_name)))
+                    except (gdb.error, ValueError):
+                        continue
+
+                content += "    emu.mem_write({:#x}, ({:#x}).to_bytes({:d}, byteorder='little'))\n".format(
+                    got, base_func_addr, current_arch.ptrsize,
+                )
+
         content += "    return\n"
         content += "\n"
 
@@ -19544,6 +19599,7 @@ class UnicornEmulateCommand(GenericCommand):
             "skip_emulation": args.skip_emulation,
             "dt": dt, # datetime
             "dloc": os.path.join(GEF_TEMP_DIR, "unicorn-emulate-" + dt), # memory dump directory
+            "patch_got": args.avoid_avx_neon_opt_func,
         }
         os.mkdir(kwargs["dloc"])
 
