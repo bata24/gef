@@ -3733,6 +3733,15 @@ class GlibcHeap:
         TCACHE_MAX_BINS = 0x40
 
         def __init__(self, arena_addr=None):
+            # When you manually call a command such as `call malloc(0x10)`, the internal structure of the heap changes.
+            # However, the call command does not notify the `memory_changed` event.
+            # Therefore, the GEF cache is not cleared to result wrong output.
+            #   gef> bs
+            #   gef> call malloc(0x10)
+            #   gef> bs <--- wrong result
+            # This is probably a bug in GDB. The solution is to clear the GEF cache.
+            Cache.reset_gef_caches()
+
             # get address
             if arena_addr is None:
                 self.__addr = GlibcHeap.search_for_main_arena()
@@ -21482,7 +21491,7 @@ class GlibcCalcProtectedFdCommand(GenericCommand):
 
 
 @register_command
-class GlibcVisualHeapCommand(GenericCommand):
+class GlibcVisualHeapCommand(GenericCommand, BufferingOutput):
     """Visualize chunks on a heap."""
 
     _cmdline_ = "heap visual-heap"
@@ -21686,9 +21695,8 @@ class GlibcVisualHeapCommand(GenericCommand):
             dump_start = args.location
 
         self.out = []
-        Cache.reset_gef_caches(all=True)
         self.generate_visual_heap(arena, dump_start, args.max_count)
-        gef_print("\n".join(self.out), less=not args.no_pager)
+        self.print_output(args)
         return
 
 
