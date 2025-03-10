@@ -21078,7 +21078,7 @@ class GlibcHeapLargeBinsCommand(GenericCommand):
 
 
 @register_command
-class GlibcTryFreeCommand(GenericCommand):
+class GlibcHeapTryFreeCommand(GenericCommand):
     """Emulate with unicorn to check whether any errors occur when freeing a chunk."""
 
     _cmdline_ = "heap try-free"
@@ -21088,6 +21088,8 @@ class GlibcTryFreeCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
                         help="the memory address to be freed.")
+    parser.add_argument("--free-addr", dest="caller_address", type=AddressUtil.parse_address,
+                        help="use specific address for `free`.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
 
@@ -21095,8 +21097,10 @@ class GlibcTryFreeCommand(GenericCommand):
         "It may work even if NOT Glibc (untested).",
         "It may be detected as a failure even though it actually succeeded.",
         "e.g.,",
-        "- Any system call was called.",
+        "- Any system call was called or any interrupt was raised.",
         "- An instruction that unicorn does not support was executed.",
+        "- Instructions such as casa and casl, which are used in ARM64 multithreading, cannot be avoided.",
+        "The failure message may not be detected because it is searched for heuristically.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -21104,84 +21108,236 @@ class GlibcTryFreeCommand(GenericCommand):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
+    def get_caller_address(self, name):
+        if self.args.caller_address is not None:
+            return self.args.caller_address
+
+        caller_address = None
+
+        # PLT pattern
+        try:
+            caller_address = int(gdb.parse_and_eval("&'{:s}@plt'".format(name)))
+        except gdb.error:
+            pass
+
+        # If you use PLT, only userland binary's PLT is valid (libc PLT is invalid)
+        if caller_address is not None:
+            x = ProcessMap.lookup_address(caller_address)
+            if x and x.section and x.section.path == Path.get_filepath(append_proc_root_prefix=False):
+                return caller_address
+
+        try:
+            caller_address = int(gdb.parse_and_eval("&{:s}".format(name)))
+        except gdb.error:
+            pass
+
+        return caller_address
+
+    def make_patch_info(self, caller_address, arg1, arg2):
+        # caller patch
+        patches = {}
+        if is_x86_64():
+            target_regs = {"$rdi": arg1, "$rsi": arg2, "$rax": caller_address}
+            patches[current_arch.pc] = "ffd0" # call rax
+            stop_address = current_arch.pc + 2
+
+        elif is_x86_32():
+            target_regs = {"$edi": arg1, "$esi": arg2, "$eax": caller_address}
+            patches[current_arch.pc] = "5657ffd0" # push esi; push edi; call eax
+            stop_address = current_arch.pc + 4
+
+        elif is_arm32():
+            # Check if caller_address is thumb2
+            # The reason for checking only 3 instructions is that xxx@plt is 3 instructions.
+            res = gdb.execute("x/3i {:#x}".format(caller_address), to_string=True)
+            # pattern 1 (thumb2)
+            #   0x4085fdb0 <realloc@plt>:                    @ <UNDEFINED> instruction: 0xe7fd4778
+            #   0x4085fdb4 <realloc@plt+4>:  add     r12, pc, #0, 12
+            #   0x4085fdb8 <realloc@plt+8>:  add     r12, r12, #240, 20      @ 0xf0000
+            # in fact:
+            #   0x4085fdb1 <realloc@plt>:    bx      pc
+            if "UNDEFINED" in res.splitlines()[0]:
+                caller_address += 1
+            else:
+                # pattern 2 (thumb2)
+                #   0x408abb60 <__GI___libc_malloc>:     push    {r3, r4, r5, r6, r7, lr}
+                #   0x408abb62 <__GI___libc_malloc+2>:   mov     r6, r0
+                #   0x408abb64 <__GI___libc_malloc+4>:   ldr     r3, [pc, #548]
+                addrs = [int(x.strip().split()[0], 16) for x in res.splitlines()]
+                if any(a % 4 == 2 for a in addrs):
+                    caller_address += 1
+                else:
+                    # pattern 3 (ARM)
+                    #   0x4085fdc0 <calloc@plt>:     add     r12, pc, #0, 12
+                    #   0x4085fdc4 <calloc@plt+4>:   add     r12, r12, #240, 20      @ 0xf0000
+                    #   0x4085fdc8 <calloc@plt+8>:   ldr     pc, [r12, #152]!        @ 0x98
+                    pass
+            # Check current $pc is thumb2
+            if current_arch.is_thumb():
+                target_regs = {"$r0": arg1, "$r1": arg2, "$r2": caller_address}
+                patches[current_arch.pc & ~1] = "9047" # blx r2
+                stop_address = (current_arch.pc & ~1) + 2
+            else:
+                target_regs = {"$r0": arg1, "$r1": arg2, "$r2": caller_address}
+                patches[current_arch.pc] = "32ff2fe1" # blx r2
+                stop_address = current_arch.pc + 4
+
+        elif is_arm64():
+            target_regs = {"$x0": arg1, "$x1": arg2, "$x2": caller_address}
+            patches[current_arch.pc] = "40003fd6" # blr x2
+            stop_address = current_arch.pc + 4
+
+        # create namedtuple
+        dic = {}
+        dic["target_regs"] = target_regs
+        dic["patches"] = patches
+        dic["stop_address"] = stop_address
+        Info = collections.namedtuple("Info", dic.keys())
+        return Info(*dic.values())
+
+    def get_reason(self, res):
+        if "UC_ERR_READ_UNMAPPED" in res:
+            return "Memory read error"
+
+        if "UC_ERR_WRITE_UNMAPPED" in res:
+            return "Memory write error"
+
+        # heuristic search
+        if "Modified memories (before | after)" in res:
+            # In cases where emulation fails, an interrupt or system call has occurred.
+            # When execution stops, any memory that has been modified up to this point
+            # will likely contain a pointer to the error message.
+            # e.g.,
+            # ========================= Modified memories (before | after) =========================
+            # 0x00007fffffffd6f0 | 0x00007fffffffd724 0x00007fff00000038 | 0x00007fffffffd724 0x00007ffff7c9094e |
+            # 0x00007fffffffd700 | 0x00007fff015c0adc 0x00007ffff7fc5860 | 0x00007fffffffd730 0x0000000000000000 |
+            # 0x00007fffffffd710 | 0x000000005702b738 0x00007ffff7fc5bac | 0x000000005702b738 0x00007fff00000010 |
+            # 0x00007fffffffd720 | 0x00000000f7fbd160 0x0000000000000000 | 0x00007fffffffd820 0x00007fffffffd7b0 |
+            modified_memories = res[res.find("Modified memories (before | after)"):]
+            modified_memories = Color.remove_color(modified_memories)
+            message_strings = set()
+            for line in modified_memories.splitlines():
+                # search pointer of `after`
+                if line.count("|") != 3:
+                    continue
+                after_memories = line.split("|")[-2]
+                for x in after_memories.strip().split():
+                    addr = int(x, 16)
+                    s = read_cstring_from_memory(addr)
+                    if not s:
+                        continue
+                    if len(s) <= current_arch.ptrsize: # too short
+                        continue
+                    if " " not in s or "(" not in s or ")" not in s: # wrong message
+                        continue
+                    message_strings.add(s)
+            if message_strings:
+                return ", ".join(message_strings)
+
+        if "UC_ERR_INSN_INVALID" in res:
+            return "Maybe try to execute unicorn unsupported instruction"
+
+        return "???"
+
+    def get_syscall(self, res):
+        # syscall=N is detected and displayed by unicorn-emulate.
+        m = re.search(r"syscall=(\d+)", res)
+        if not m:
+            return None
+
+        # match against syscall_table
+        syscall_num = int(m.group(1))
+        syscall_table = get_syscall_table()
+        syscall_entry = syscall_table.table.get(syscall_num, None)
+        if syscall_entry:
+            syscall_name = syscall_entry.name
+        else:
+            syscall_name = "???"
+        return syscall_num, syscall_name
+
+    def get_allocated_address(self, res):
+        final_registers = res[res.find("Final registers"):]
+        if is_x86_64():
+            m = re.search(r"\$rax\s+=\s+(0x\S+)", final_registers)
+        elif is_x86_32():
+            m = re.search(r"\$eax\s+=\s+(0x\S+)", final_registers)
+        elif is_arm32():
+            m = re.search(r"\$r0\s+=\s+(0x\S+)", final_registers)
+        elif is_arm64():
+            m = re.search(r"\$x0\s+=\s+(0x\S+)", final_registers)
+        allocated_address = int(m.group(1), 16)
+        return allocated_address
+
+    def print_result(self, name, res):
+        if "Emulation failed" in res:
+            # fail
+            syscall = self.get_syscall(res)
+            if syscall:
+                err("Trace failed: system call emulation error: {:d} (={:s})".format(syscall[0], syscall[1]))
+
+            # If write* system call was called, it is assumed that an abort was called.
+            # By investigating the changed memory address, the reason may be found.
+            if not syscall or "write" in syscall[1]:
+                reason = self.get_reason(res)
+                err("{:s} failed: {:s}".format(name, Color.boldify(reason)))
+        else:
+            # success
+            if name == "free":
+                ok("{:s} succeeded".format(name))
+            else:
+                allocated_address = self.get_allocated_address(res)
+                ok("{:s} succeeded: {:s}".format(name, Color.colorify_hex(allocated_address, "bold")))
+        return
+
+    def doit(self, name, arg1, arg2):
+        caller_address = self.get_caller_address(name)
+        if caller_address is None:
+            err("Not found `{:s}`".format(name))
+            return
+
+        # make patch info
+        # The arguments of free, malloc, realloc, and calloc are at most 2
+        info = self.make_patch_info(caller_address, arg1, arg2)
+
+        # backup & modify (registers, memories)
+        old_regs = {}
+        for regname, regvalue in info.target_regs.items():
+            if regvalue is None:
+                continue
+            old_regs[regname] = get_register(regname)
+            gdb.execute("set {:s}={:#x}".format(regname, regvalue))
+        for patch_addr, patch_code in info.patches.items():
+            gdb.execute("patch hex {:#x} {:s}".format(patch_addr, patch_code), to_string=True)
+
+        # execute
+        res = ""
+        try:
+            res = gdb.execute("unicorn-emulate -t {:#x} -A".format(info.stop_address), to_string=True)
+            if self.args.verbose:
+                gef_print(res)
+        except Exception:
+            pass
+
+        # print
+        self.print_result(name, res)
+
+        # revert
+        for regname, regvalue in old_regs.items():
+            gdb.execute("set {:s}={:#x}".format(regname, regvalue))
+        gdb.execute("patch revert {:d}".format(len(info.patches) - 1), to_string=True)
+        return
+
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
-        try:
-            free = int(gdb.parse_and_eval("&'free@plt'"))
-        except gdb.error:
-            try:
-                free = int(gdb.parse_and_eval("&free"))
-            except gdb.error:
-                err("Not found `free`")
-                return
-
-        if is_x86_64():
-            target_regs = {"$rdi": args.address, "$rax": free}
-            patch_code = "ffd0" # call rax
-            current_address = current_arch.pc
-            stop_address = current_address + 2
-        elif is_x86_32():
-            target_regs = {"$edi": args.address, "$eax": free}
-            patch_code = "57ffd0" # push edi; call eax
-            current_address = current_arch.pc
-            stop_address = current_address + 3
-        elif is_arm32():
-            # Check if malloc() is thumb2
-            # The reason for checking only 3 instructions is that xxx@plt is 3 instructions.
-            res = gdb.execute("x/3i {:#x}".format(free), to_string=True)
-            addrs = [int(x.strip().split()[0], 16) for x in res.splitlines()]
-            if any(a % 4 == 2 for a in addrs):
-                free += 1
-            # Check current $pc is thumb2
-            if current_arch.is_thumb():
-                target_regs = {"$r0": args.address, "$r1": free}
-                patch_code = "8847" # blx r1
-                current_address = current_arch.pc & ~1
-                stop_address = current_address + 2
-            else:
-                target_regs = {"$r0": args.address, "$r1": free}
-                patch_code = "31ff2fe1" # blx r1
-                current_address = current_arch.pc
-                stop_address = current_arch.pc + 4
-        elif is_arm64():
-            target_regs = {"$x0": args.address, "$x1": free}
-            patch_code = "20003fd6" # blr x1
-            current_address = current_arch.pc
-            stop_address = current_address + 4
-
-        # backup & modify
-        old_regs = {}
-        for regname, regvalue in target_regs.items():
-            old_regs[regname] = get_register(regname)
-            gdb.execute("set {:s}={:#x}".format(regname, regvalue))
-        gdb.execute("patch hex {:#x} {:s}".format(current_address, patch_code), to_string=True)
-
-        # doit
-        res = ""
-        try:
-            res = gdb.execute("unicorn-emulate -t {:#x}".format(stop_address), to_string=True)
-            if args.verbose:
-                gef_print(res)
-        except Exception:
-            pass
-
-        if "Emulation failed" in res:
-            err("The free function was failed")
-        else:
-            ok("The free function was successful")
-
-        # revert
-        for regname, regvalue in old_regs.items():
-            gdb.execute("set {:s}={:#x}".format(regname, regvalue))
-        gdb.execute("patch revert 0", to_string=True)
+        self.args = args
+        self.doit("free", args.address, None)
         return
 
-
 @register_command
-class GlibcTryMallocCommand(GenericCommand):
+class GlibcHeapTryMallocCommand(GlibcHeapTryFreeCommand):
     """Emulate with unicorn to check whether any errors occur when allocating a chunk."""
 
     _cmdline_ = "heap try-malloc"
@@ -21191,105 +21347,18 @@ class GlibcTryMallocCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address,
                         help="the size to be allocated.")
+    parser.add_argument("--malloc-addr", dest="caller_address", type=AddressUtil.parse_address,
+                        help="use specific address for `malloc`.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
-
-    _note_ = [
-        "It may work even if NOT Glibc (untested).",
-        "It may be detected as a failure even though it actually succeeded.",
-        "e.g.,",
-        "- Any system call was called.",
-        "- An instruction that unicorn does not support was executed.",
-    ]
-    _note_ = "\n".join(_note_)
-
-    def __init__(self):
-        super().__init__(complete=gdb.COMPLETE_LOCATION)
-        return
 
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
-        try:
-            malloc = int(gdb.parse_and_eval("&'malloc@plt'"))
-        except gdb.error:
-            try:
-                malloc = int(gdb.parse_and_eval("&malloc"))
-            except gdb.error:
-                err("Not found `malloc`")
-                return
-
-        if is_x86_64():
-            target_regs = {"$rdi": args.size, "$rax": malloc}
-            patch_code = "ffd0" # call rax
-            current_address = current_arch.pc
-            stop_address = current_address + 2
-        elif is_x86_32():
-            target_regs = {"$edi": args.size, "$eax": malloc}
-            patch_code = "57ffd0" # push edi; call eax
-            current_address = current_arch.pc
-            stop_address = current_address + 3
-        elif is_arm32():
-            # Check if malloc() is thumb2
-            # The reason for checking only 3 instructions is that xxx@plt is 3 instructions.
-            res = gdb.execute("x/3i {:#x}".format(malloc), to_string=True)
-            addrs = [int(x.strip().split()[0], 16) for x in res.splitlines()]
-            if any(a % 4 == 2 for a in addrs):
-                malloc += 1
-            # Check current $pc is thumb2
-            if current_arch.is_thumb():
-                target_regs = {"$r0": args.size, "$r1": malloc}
-                patch_code = "8847" # blx r1
-                current_address = current_arch.pc & ~1
-                stop_address = current_address + 2
-            else:
-                target_regs = {"$r0": args.size, "$r1": malloc}
-                patch_code = "31ff2fe1" # blx r1
-                current_address = current_arch.pc
-                stop_address = current_arch.pc + 4
-        elif is_arm64():
-            target_regs = {"$x0": args.size, "$x1": malloc}
-            patch_code = "20003fd6" # blr x1
-            current_address = current_arch.pc
-            stop_address = current_address + 4
-
-        # backup & modify
-        old_regs = {}
-        for regname, regvalue in target_regs.items():
-            old_regs[regname] = get_register(regname)
-            gdb.execute("set {:s}={:#x}".format(regname, regvalue))
-        gdb.execute("patch hex {:#x} {:s}".format(current_address, patch_code), to_string=True)
-
-        # doit
-        res = ""
-        try:
-            res = gdb.execute("unicorn-emulate -t {:#x}".format(stop_address), to_string=True)
-            if args.verbose:
-                gef_print(res)
-        except Exception:
-            pass
-
-        if "Emulation failed" in res:
-            err("The malloc function was failed")
-        else:
-            final_registers = res[res.find("Final registers"):]
-            if is_x86_64():
-                m = re.search(r"\$rax\s+=\s+(0x\S+)", final_registers)
-            elif is_x86_32():
-                m = re.search(r"\$eax\s+=\s+(0x\S+)", final_registers)
-            elif is_arm32():
-                m = re.search(r"\$r0\s+=\s+(0x\S+)", final_registers)
-            elif is_arm64():
-                m = re.search(r"\$x0\s+=\s+(0x\S+)", final_registers)
-            allocated_address = int(m.group(1), 16)
-            ok("The malloc function was successful: {:#x}".format(allocated_address))
-
-        # revert
-        for regname, regvalue in old_regs.items():
-            gdb.execute("set {:s}={:#x}".format(regname, regvalue))
-        gdb.execute("patch revert 0", to_string=True)
+        self.args = args
+        self.doit("malloc", args.size, None)
         return
 
 
