@@ -30874,15 +30874,21 @@ class XInfoCommand(GenericCommand):
 
         if addr.section:
             page_start = ProcessMap.lookup_address(addr.section.page_start)
-            gef_print("Offset (from mapped):  {!s} + {:#x}".format(page_start, addr.value - addr.section.page_start))
+            gef_print("Offset (from mapped):  {!s} + {:#x}".format(
+                page_start, addr.value - addr.section.page_start,
+            ))
 
             if addr.section.path and addr.section.path.startswith("/"):
                 base_start = ProcessMap.lookup_address(ProcessMap.get_section_base_address(addr.section.path))
-                gef_print("Offset (from base):    {!s} + {:#x}".format(base_start, addr.value - base_start.section.page_start))
+                gef_print("Offset (from base):    {!s} + {:#x}".format(
+                    base_start, addr.value - base_start.section.page_start,
+                ))
 
         if addr.info:
             zone_start = ProcessMap.lookup_address(addr.info.zone_start)
-            gef_print("Offset (from segment): {!s} ({:s}) + {:#x}".format(zone_start, addr.info.name, addr.value - addr.info.zone_start))
+            gef_print("Offset (from segment): {!s} ({:s}) + {:#x}".format(
+                zone_start, addr.info.name, addr.value - addr.info.zone_start,
+            ))
 
         sym = Symbol.get_symbol_string(address)
         if sym:
