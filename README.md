@@ -304,6 +304,7 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
             * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-calc-protected-fd.png)
         * `heap visual-heap`: is colorized heap viewer.
             * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-visual-heap.png)
+        * `heap tracer`: has been integrated from `heap-analysis-helper`.
 * uClibc heap commands are added.
     * `uclibc-ng-heap-dump`: dumps uClibc-ng heap chunks.
         * Supported on x64 and x86, based on uClibc-ng v1.0.42 malloc-standard.

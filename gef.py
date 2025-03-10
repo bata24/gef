@@ -19919,6 +19919,7 @@ class GlibcHeapCommand(GenericCommand):
     subparsers.add_parser("extract-heap-addr")
     subparsers.add_parser("calc-protected-fd")
     subparsers.add_parser("visual-heap")
+    subparsers.add_parser("tracer")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -34187,17 +34188,17 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
         self.size = size
         self.memptr = memptr
         self.alignment = alignment
-        HeapAnalysisCommand.clear_disabled_breakpoints()
+        GlibcHeapTracerCommand.clear_disabled_breakpoints()
         return
 
     def search_allocated_index(self, addr):
-        for idx, (_action_index, allocated, _size) in enumerate(HeapAnalysisCommand.heap_allocated_list):
+        for idx, (_action_index, allocated, _size) in enumerate(GlibcHeapTracerCommand.heap_allocated_list):
             if allocated.value == addr.value:
                 return idx
         return None
 
     def search_freed_index(self, addr):
-        for idx, (_action_index, freed, _size) in enumerate(HeapAnalysisCommand.heap_freed_list):
+        for idx, (_action_index, freed, _size) in enumerate(GlibcHeapTracerCommand.heap_freed_list):
             if freed.value == addr.value:
                 return idx
         return None
@@ -34206,25 +34207,25 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
         if self.name in ["malloc", "valloc"]:
             text = "{:s} - {:s} {:s}({:#x})".format(
                 Color.colorify("Heap-Analysis", "bold yellow"),
-                Color.colorify("#{:d}".format(HeapAnalysisCommand.heap_action_index), "bold cyan"),
+                Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
                 self.name, self.size,
             )
         elif self.name == "calloc":
             text = "{:s} - {:s} {:s}({:#x}, {:#x})".format(
                 Color.colorify("Heap-Analysis", "bold yellow"),
-                Color.colorify("#{:d}".format(HeapAnalysisCommand.heap_action_index), "bold cyan"),
+                Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
                 self.name, self.nmemb, self.size,
             )
         elif self.name in ["aligned_alloc", "memalign"]:
             text = "{:s} - {:s} {:s}({:#x}, {:#x})".format(
                 Color.colorify("Heap-Analysis", "bold yellow"),
-                Color.colorify("#{:d}".format(HeapAnalysisCommand.heap_action_index), "bold cyan"),
+                Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
                 self.name, self.alignment, self.size,
             )
         elif self.name == "posix_memalign":
             text = "{:s} - {:s} {:s}({:#x}, {:#x}, {:#x})".format(
                 Color.colorify("Heap-Analysis", "bold yellow"),
-                Color.colorify("#{:d}".format(HeapAnalysisCommand.heap_action_index), "bold cyan"),
+                Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
                 self.name, self.memptr, self.alignment, self.size,
             )
         pad = " " * (80 - len(Color.remove_color(text)))
@@ -34248,11 +34249,11 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
         # pop from freed list if it was in it
         idx = self.search_freed_index(allocated)
         if idx is not None:
-            HeapAnalysisCommand.heap_freed_list.pop(idx)
+            GlibcHeapTracerCommand.heap_freed_list.pop(idx)
 
         # add it to alloc-ed list
-        item = (HeapAnalysisCommand.heap_action_index, allocated, self.nmemb * self.size)
-        HeapAnalysisCommand.heap_allocated_list.append(item)
+        item = (GlibcHeapTracerCommand.heap_action_index, allocated, self.nmemb * self.size)
+        GlibcHeapTracerCommand.heap_allocated_list.append(item)
         return
 
     def stop(self):
@@ -34260,7 +34261,7 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
         Cache.reset_gef_caches()
 
         # count up action index
-        HeapAnalysisCommand.heap_action_index += 1
+        GlibcHeapTracerCommand.heap_action_index += 1
 
         # get returned address
         if self.name == "posix_memalign":
@@ -34339,17 +34340,17 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
         self.old_loc = old_loc
         self.nmemb = nmemb
         self.size = size
-        HeapAnalysisCommand.clear_disabled_breakpoints()
+        GlibcHeapTracerCommand.clear_disabled_breakpoints()
         return
 
     def search_allocated_index(self, addr):
-        for idx, (_action_index, allocated, _size) in enumerate(HeapAnalysisCommand.heap_allocated_list):
+        for idx, (_action_index, allocated, _size) in enumerate(GlibcHeapTracerCommand.heap_allocated_list):
             if allocated.value == addr.value:
                 return idx
         return None
 
     def search_freed_index(self, addr):
-        for idx, (_action_index, freed, _size) in enumerate(HeapAnalysisCommand.heap_freed_list):
+        for idx, (_action_index, freed, _size) in enumerate(GlibcHeapTracerCommand.heap_freed_list):
             if freed.value == addr.value:
                 return idx
         return None
@@ -34360,7 +34361,7 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
         if idx is None:
             action_index_s = ""
         else:
-            action_index = HeapAnalysisCommand.heap_allocated_list[idx][0]
+            action_index = GlibcHeapTracerCommand.heap_allocated_list[idx][0]
             action_index_s = " {:s}".format(Color.colorify("#{:d}".format(action_index), "bold cyan"))
 
         # check realloc result type
@@ -34375,7 +34376,7 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
         if self.name == "realloc":
             text = "{:s} - {:s} {:s}({!s}, {:#x}){:s}".format(
                 Color.colorify("Heap-Analysis", "bold yellow"),
-                Color.colorify("#{:d}".format(HeapAnalysisCommand.heap_action_index), "bold cyan"),
+                Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
                 self.name,
                 self.old_loc if self.old_loc.value != 0 else Color.boldify("NULL"),
                 self.size, action_index_s,
@@ -34383,7 +34384,7 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
         elif self.name == "reallocarray":
             text = "{:s} - {:s} {:s}({!s}, {:#x}, {:#x}){:s}".format(
                 Color.colorify("Heap-Analysis", "bold yellow"),
-                Color.colorify("#{:d}".format(HeapAnalysisCommand.heap_action_index), "bold cyan"),
+                Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
                 self.name,
                 self.old_loc if self.old_loc.value != 0 else Color.boldify("NULL"),
                 self.nmemb, self.size, action_index_s,
@@ -34430,25 +34431,25 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
             # pop from freed list if it was in it
             idx = self.search_freed_index(new_loc)
             if idx is not None:
-                HeapAnalysisCommand.heap_freed_list.pop(idx)
+                GlibcHeapTracerCommand.heap_freed_list.pop(idx)
         elif self.old_loc.value != new_loc.value:
             # pop from allocated list if it was in it
             idx = self.search_allocated_index(self.old_loc)
             if idx is not None:
-                HeapAnalysisCommand.heap_allocated_list.pop(idx)
+                GlibcHeapTracerCommand.heap_allocated_list.pop(idx)
             # pop from freed list if it was in it
             idx = self.search_freed_index(new_loc)
             if idx is not None:
-                HeapAnalysisCommand.heap_freed_list.pop(idx)
+                GlibcHeapTracerCommand.heap_freed_list.pop(idx)
         else:
             # pop from allocated list if it was in it
             idx = self.search_allocated_index(self.old_loc)
             if idx is not None:
-                HeapAnalysisCommand.heap_allocated_list.pop(idx)
+                GlibcHeapTracerCommand.heap_allocated_list.pop(idx)
 
         # add new item to alloc-ed list
-        item = (HeapAnalysisCommand.heap_action_index, new_loc, self.nmemb * self.size)
-        HeapAnalysisCommand.heap_allocated_list.append(item)
+        item = (GlibcHeapTracerCommand.heap_action_index, new_loc, self.nmemb * self.size)
+        GlibcHeapTracerCommand.heap_allocated_list.append(item)
         return
 
     def stop(self):
@@ -34456,7 +34457,7 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
         Cache.reset_gef_caches()
 
         # count up action index
-        HeapAnalysisCommand.heap_action_index += 1
+        GlibcHeapTracerCommand.heap_action_index += 1
 
         # get returned address
         new_loc = AddressUtil.parse_address(current_arch.return_register)
@@ -34499,13 +34500,13 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
         if addr.value == 0:
             return None
 
-        for idx, (_action_index, allocated, _size) in enumerate(HeapAnalysisCommand.heap_allocated_list):
+        for idx, (_action_index, allocated, _size) in enumerate(GlibcHeapTracerCommand.heap_allocated_list):
             if allocated.value == addr.value:
                 return idx
         return None
 
     def search_freed_index(self, addr):
-        for idx, (_action_index, freed, _size) in enumerate(HeapAnalysisCommand.heap_freed_list):
+        for idx, (_action_index, freed, _size) in enumerate(GlibcHeapTracerCommand.heap_freed_list):
             if freed.value == addr.value:
                 return idx
         return None
@@ -34516,13 +34517,13 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
         if idx is None:
             action_index_s = ""
         else:
-            action_index = HeapAnalysisCommand.heap_allocated_list[idx][0]
+            action_index = GlibcHeapTracerCommand.heap_allocated_list[idx][0]
             action_index_s = " {:s}".format(Color.colorify("#{:d}".format(action_index), "bold cyan"))
 
         # show information
         text = "{:s} - {:s} free({!s}){:s}".format(
             Color.colorify("Heap-Analysis", "bold yellow"),
-            Color.colorify("#{:d}".format(HeapAnalysisCommand.heap_action_index), "bold cyan"),
+            Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
             to_free if to_free.value != 0 else Color.boldify("NULL"),
             action_index_s,
         )
@@ -34561,16 +34562,16 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
     def update_list(self, to_free):
         # move from allocated list to freed list
         idx = self.search_allocated_index(to_free)
-        item = HeapAnalysisCommand.heap_allocated_list.pop(idx)
-        item = (HeapAnalysisCommand.heap_action_index, item[1], item[2])
-        HeapAnalysisCommand.heap_freed_list.append(item)
+        item = GlibcHeapTracerCommand.heap_allocated_list.pop(idx)
+        item = (GlibcHeapTracerCommand.heap_action_index, item[1], item[2])
+        GlibcHeapTracerCommand.heap_freed_list.append(item)
         return
 
     def stop(self):
         Cache.reset_gef_caches()
 
         # count up action index
-        HeapAnalysisCommand.heap_action_index += 1
+        GlibcHeapTracerCommand.heap_action_index += 1
 
         # get the address to free
         _, to_free = current_arch.get_ith_parameter(0)
@@ -34600,11 +34601,12 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
 
 
 @register_command
-class HeapAnalysisCommand(GenericCommand):
+class GlibcHeapTracerCommand(GenericCommand):
     """Trace malloc/free to check heap integrity for Use-After-Free and Double Free."""
 
-    _cmdline_ = "heap-analysis-helper"
+    _cmdline_ = "heap tracer"
     _category_ = "06-a. Heap - Glibc"
+    _aliases_ = ["heap-analysis-helper"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-d", "--dump-current-list", action="store_true", help="show the tracked allocations.")
@@ -34641,16 +34643,16 @@ class HeapAnalysisCommand(GenericCommand):
         return
 
     def dump_tracked_allocations(self):
-        if HeapAnalysisCommand.heap_allocated_list:
+        if GlibcHeapTracerCommand.heap_allocated_list:
             ok("Tracked as in-use chunks:")
-            for action_idx, addr, sz in HeapAnalysisCommand.heap_allocated_list:
+            for action_idx, addr, sz in GlibcHeapTracerCommand.heap_allocated_list:
                 gef_print("{:d}: {!s} = allocate({:#x})".format(action_idx, addr, sz))
         else:
             ok("No allocated chunk tracked")
 
-        if HeapAnalysisCommand.heap_freed_list:
+        if GlibcHeapTracerCommand.heap_freed_list:
             ok("Tracked as freed chunks:")
-            for action_idx, addr, _sz in HeapAnalysisCommand.heap_freed_list:
+            for action_idx, addr, _sz in GlibcHeapTracerCommand.heap_freed_list:
                 gef_print("{:#d}: free({!s})".format(action_idx, addr))
         else:
             ok("No freed chunk tracked")
@@ -34665,7 +34667,7 @@ class HeapAnalysisCommand(GenericCommand):
                 warn("breakpoint setup failed: {:#x}".format(name))
                 return
             bp = bp_class(name, address)
-            HeapAnalysisCommand.heap_breakpoints.append(bp)
+            GlibcHeapTracerCommand.heap_breakpoints.append(bp)
             return
 
         self.clean(None)
@@ -34698,17 +34700,17 @@ class HeapAnalysisCommand(GenericCommand):
 
     def clean(self, event):
         ok("{:s} - Cleaning up".format(Color.colorify("Heap-Analysis", "bold yellow")))
-        for bp in HeapAnalysisCommand.heap_breakpoints:
+        for bp in GlibcHeapTracerCommand.heap_breakpoints:
             try:
                 bp.delete()
             except Exception:
                 pass
 
-        HeapAnalysisCommand.clear_disabled_breakpoints(force=True)
-        HeapAnalysisCommand.heap_breakpoints = []
-        HeapAnalysisCommand.heap_allocated_list = []
-        HeapAnalysisCommand.heap_freed_list = []
-        HeapAnalysisCommand.heap_action_index = 0
+        GlibcHeapTracerCommand.clear_disabled_breakpoints(force=True)
+        GlibcHeapTracerCommand.heap_breakpoints = []
+        GlibcHeapTracerCommand.heap_allocated_list = []
+        GlibcHeapTracerCommand.heap_freed_list = []
+        GlibcHeapTracerCommand.heap_action_index = 0
 
         try:
             EventHooking.gef_on_exit_unhook(self.clean)
