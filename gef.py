@@ -18033,7 +18033,7 @@ class KillThreadsCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @exclude_specific_gdb_mode(mode=("qemu-system", "qemu-user", "kgdb", "vmware", "wine"))
     @exclude_specific_arch(arch=("CRIS",))
     def do_invoke(self, args):
         # print tid list and exit
