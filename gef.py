@@ -1184,6 +1184,18 @@ class AddressUtil:
 
     @staticmethod
     @Cache.cache_this_session
+    def get_codebase():
+        filepath = Path.get_filepath(append_proc_root_prefix=is_container_attach())
+        bin_base = ProcessMap.get_section_base_address(filepath)
+        if bin_base is not None:
+            return bin_base
+
+        filepath = Path.get_filepath_from_info_proc()
+        bin_base = ProcessMap.get_section_base_address(filepath)
+        return bin_base
+
+    @staticmethod
+    @Cache.cache_this_session
     def ptr_width():
         """Determines whether the environment is 32-bit or 64-bit and returns the result."""
         void = GefUtil.cached_lookup_type("void")
@@ -12948,9 +12960,7 @@ class EventHandler:
         # delayed breakpoint for brva
         if BreakRelativeVirtualAddressCommand.delayed_bp_set is False and is_alive():
             if not (is_qemu_system() or is_kgdb() or is_vmware()):
-                codebase = ProcessMap.get_section_base_address(Path.get_filepath(append_proc_root_prefix=False))
-                if codebase is None:
-                    codebase = ProcessMap.get_section_base_address(Path.get_filepath_from_info_proc())
+                codebase = AddressUtil.get_codebase()
                 if codebase:
                     for offset in BreakRelativeVirtualAddressCommand.delayed_breakpoints:
                         gdb.execute("b *{:#x}".format(codebase + offset))
@@ -14890,9 +14900,7 @@ class BreakRelativeVirtualAddressCommand(GenericCommand):
             return
 
         if is_alive():
-            codebase = ProcessMap.get_section_base_address(Path.get_filepath(append_proc_root_prefix=False))
-            if codebase is None:
-                codebase = ProcessMap.get_section_base_address(Path.get_filepath_from_info_proc())
+            codebase = AddressUtil.get_codebase()
             if codebase is None:
                 gef_print("Codebase is not found")
                 return
@@ -26835,9 +26843,7 @@ class MainBreakCommand(GenericCommand):
 
             entry = elf.e_entry
             if elf.is_pie():
-                codebase = ProcessMap.get_section_base_address(Path.get_filepath(append_proc_root_prefix=False))
-                if codebase is None:
-                    codebase = ProcessMap.get_section_base_address(Path.get_filepath_from_info_proc())
+                codebase = AddressUtil.get_codebase()
                 if codebase is None:
                     return None
                 entry += codebase
@@ -48399,9 +48405,7 @@ class CodebaseCommand(GenericCommand):
         self.quiet = args.quiet
 
         # The codebase may be heuristically determined from the memory map.
-        bin_base = ProcessMap.get_section_base_address(Path.get_filepath(append_proc_root_prefix=False))
-        if bin_base is None:
-            bin_base = ProcessMap.get_section_base_address(Path.get_filepath_from_info_proc())
+        bin_base = AddressUtil.get_codebase()
         if bin_base is None:
             if not self.quiet:
                 err("Binary base is not found")
@@ -48741,7 +48745,7 @@ class MagicCommand(GenericCommand):
         return
 
     def magic(self):
-        codebase = ProcessMap.get_section_base_address(Path.get_filepath(append_proc_root_prefix=False))
+        codebase = AddressUtil.get_codebase()
         libc = ProcessMap.get_section_base_address_by_list(("libc-2.", "libc.so.6"))
         ld = ProcessMap.get_section_base_address_by_list(("ld-2.", "ld-linux-", "ld-linux.so.2"))
         if libc is None or ld is None:
