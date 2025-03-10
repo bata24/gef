@@ -294,6 +294,8 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
             * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-try-free.png)
         * `heap try-malloc`
             * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-try-malloc.png)
+        * `heap try-realloc`
+        * `heap try-calloc`
         * `heap tcache-index-helper`
             * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/heap-index-helper.png)
         * `heap find-fake-fast`: searches for a memory with a size-like value that can be linked to the fastbin free-list.

@@ -19970,6 +19970,8 @@ class GlibcHeapCommand(GenericCommand):
     subparsers.add_parser("top")
     subparsers.add_parser("try-free")
     subparsers.add_parser("try-malloc")
+    subparsers.add_parser("try-realloc")
+    subparsers.add_parser("try-calloc")
     subparsers.add_parser("tcache-index-helper")
     subparsers.add_parser("find-fake-fast")
     subparsers.add_parser("extract-heap-addr")
@@ -21359,6 +21361,62 @@ class GlibcHeapTryMallocCommand(GlibcHeapTryFreeCommand):
     def do_invoke(self, args):
         self.args = args
         self.doit("malloc", args.size, None)
+        return
+
+
+@register_command
+class GlibcHeapTryReallocCommand(GlibcHeapTryFreeCommand):
+    """Emulate with unicorn to check whether any errors occur when re-allocating a chunk."""
+
+    _cmdline_ = "heap try-realloc"
+    _category_ = "06-a. Heap - Glibc"
+    _aliases_ = ["try-realloc"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
+                        help="the memory address to be re-allocated.")
+    parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address,
+                        help="the size to be re-allocated.")
+    parser.add_argument("--realloc-addr", dest="caller_address", type=AddressUtil.parse_address,
+                        help="use specific address for `realloc`.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
+    _syntax_ = parser.format_help()
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    def do_invoke(self, args):
+        self.args = args
+        self.doit("realloc", args.address, args.size)
+        return
+
+
+@register_command
+class GlibcHeapTryCallocCommand(GlibcHeapTryFreeCommand):
+    """Emulate with unicorn to check whether any errors occur when allocating a zero-initialized chunk."""
+
+    _cmdline_ = "heap try-calloc"
+    _category_ = "06-a. Heap - Glibc"
+    _aliases_ = ["try-calloc"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address,
+                        help="the size to be re-allocated.")
+    parser.add_argument("nmemb", metavar="NMEMB", type=AddressUtil.parse_address,
+                        help="the number of blocks.")
+    parser.add_argument("--calloc-addr", dest="caller_address", type=AddressUtil.parse_address,
+                        help="use specific address for `calloc`.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
+    _syntax_ = parser.format_help()
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    def do_invoke(self, args):
+        self.args = args
+        self.doit("calloc", args.size, args.nmemb)
         return
 
 
