@@ -448,6 +448,7 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
     * It supports a new mode to stop after executing N instructions (`-g`).
     * It shows changed memories.
         * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/unicorn-emulate.png)
+    * It supports to replace GOT of string functions using avx2 or NEON, which unicorn does not support, with slower original functions.
 * `ropper`: is improved.
     * It does not reset autocomplete settings after calling imported `ropper`.
 * `hexdump`: is improved.
@@ -606,10 +607,6 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
 * `ii`: is a shortcut for `x/50i $pc` with opcode bytes.
     * It prints the value if it is memory access operation.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/ii.png)
-* `version`: shows software versions that gef used.
-    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/version.png)
-* `arch-info`: shows architecture information used in gef.
-    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/arch-info.png)
 * `context-extra`: manages user specified command to execute when each step.
 * `comment`: manages user specified temporary comment.
 * `seccomp`: invokes `seccomp-tools`.
@@ -702,6 +699,10 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
     * This area is mapped to userland, but cannot be accessed from gdb.
     * Therefore, it executes the assembly code and retrieve the contents.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/iouring-dump.png)
+* `gef version`: shows software versions that gef used.
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/gef-version.png)
+* `gef status`: shows architecture information used in gef.
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/gef-status.png)
 * `gef reset-bp`: shows and resets all breakpoints.
 * `gef arch-list`: displays defined architecture information.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/gef-arch-list.png)
@@ -717,6 +718,7 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/filetype-memory.png)
 * `sixel-memory`: shows image to terminal by `imagemagick`.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/sixel-memory.png)
+    * If you have `pillow` and `pyzbar` installed, a barcode detection option is also available.
 * `stdio-dump`: dumps members of stdin/stdout/stderr.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/stdio-dump.png)
 * `peek-pageframe`: reads page frame data.
