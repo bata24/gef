@@ -93797,7 +93797,14 @@ class GefCommand(GenericCommand):
                     ))
 
                 if hasattr(cmd_class._aliases_, "__iter__"):
-                    for alias in cmd_class._aliases_:
+                    if isinstance(cmd_class._aliases_, str):
+                        cmd_class_aliases = [cmd_class._aliases_]
+                    elif isinstance(cmd_class._aliases_, list):
+                        cmd_class_aliases = cmd_class._aliases_
+                    else:
+                        cmd_class_aliases = []
+
+                    for alias in cmd_class_aliases:
                         if self.DEBUG_CHECK_COMMAND_CONFLICT and FIRST_TIME:
                             if alias in self.loaded_commands:
                                 warn("{:s} is already loaded".format(Color.boldify(alias)))
@@ -93851,7 +93858,7 @@ class GefCommand(GenericCommand):
 
 
 @register_command
-class GefHelpCommand(GenericCommand):
+class GefHelpCommand(GenericCommand, BufferingOutput):
     """Display GEF command list."""
 
     _cmdline_ = "gef help"
@@ -93861,44 +93868,72 @@ class GefHelpCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
-    def __init__(self):
-        super().__init__()
-        self.help_string = None
-        return
-
     def generate_help(self):
         """Generate builtin commands documentation."""
+        # get maxlen of cmdline
+        maxlen = max(len(x) for x in __gef_command_instances__.keys())
+
+        # docs of each command
         docs = []
         for cmdline, instance in __gef_command_instances__.items():
+            # category
+            category = getattr(instance, "_category_", "Uncategorized")
+
+            # document
             doc = getattr(instance.__class__, "__doc__", "").lstrip()
-            doc_lines = [Color.greenify(x) for x in doc.split("\n")]
-            doc = "\n                         ".join(doc_lines)
-            if hasattr(instance._aliases_, "__iter__") and instance._aliases_:
-                aliases = " (alias: {:s})".format(", ".join(instance._aliases_))
+            doc = [Color.greenify(x) for x in doc.splitlines()]
+            # Adjust the position assuming there are multiple lines
+            doc = ("\n{:<{:d}s}  ".format("", maxlen)).join(doc).rstrip()
+
+            # alias
+            if hasattr(instance._aliases_, "__iter__"):
+                if isinstance(instance._aliases_, str):
+                    aliases = " (alias: {:s})".format(instance._aliases_)
+                elif isinstance(instance._aliases_, list):
+                    aliases = " (alias: {:s})".format(", ".join(instance._aliases_))
+                else:
+                    aliases = ""
             else:
                 aliases = ""
-            msg = "  {:<23s} -- {:s}{:s}".format(cmdline, doc, aliases)
-            category = instance._category_ if hasattr(instance, "_category_") else "Uncategorized"
+
+            msg = "  {:<{:d}s} -- {:s}{:s}".format(cmdline, maxlen, doc, aliases)
             docs.append([category, msg])
 
-        newdoc = ""
+        docs = sorted(docs)
+
+        def get_major_category(x):
+            if x is None:
+                return None
+            return x.split(". ")[1].split(" - ")[0]
+
+        # merging
+        output = []
         old_category = None
-        for category, msg in sorted(docs):
-            if old_category is None or old_category.split("-")[0] != category.split("-")[0]:
-                newdoc += titlify(category.split(". ")[1].split(" - ")[0]) + "\n"
+        for category, msg in docs:
+            # separator
+            draw_separator = False
+            if get_major_category(old_category) != get_major_category(category):
+                draw_separator = True
+            if draw_separator:
+                separator = titlify(get_major_category(category))
+                output.append(separator)
+
+            # headings
             if old_category != category:
-                newdoc += "[{:s}]\n".format(Color.colorify(category, "bold yellow"))
+                category_headings = "[{:s}]".format(Color.colorify(category, "bold yellow"))
+                output.append(category_headings)
+
             old_category = category
-            newdoc += msg + "\n"
-        self.help_string = newdoc.rstrip()
-        return
+            output.append(msg)
+
+        return output
 
     @parse_args
     def do_invoke(self, args):
-        if self.help_string is None:
-            self.generate_help()
-        msg = titlify("GEF - GDB Enhanced Features") + "\n" + self.help_string
-        gef_print(msg, less=not args.no_pager)
+        self.out = []
+        self.out.append(titlify("GEF - GDB Enhanced Features"))
+        self.out.extend(self.generate_help())
+        self.print_output(args)
         return
 
 
