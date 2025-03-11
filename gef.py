@@ -322,13 +322,14 @@ class DisplayHook:
             return re.sub(r"(zone_start=|zone_end=)(\d+)", lambda x:x.group(1) + hex(int(x.group(2))), str(o))
 
         elif name == "Table":
-            f = "Table(arch={!r}, mode={!r}, table={{\n".format(o.arch, o.mode)
-            f += "\n".join(RD2(o.table.items(), idt))
+            f = "Table(arch={!r}, mode={!r}, name_table={{...}}, nr_table={{\n".format(o.arch, o.mode)
+            f += "\n".join(RD2(o.nr_table.items(), idt))
             f += "\n" + I1(idt) + "})"
             return f
 
         elif name == "Entry":
             f = "Entry(\n"
+            f += I2(idt) + "nr={:#x},\n".format(o.nr)
             f += I2(idt) + "name={!r},\n".format(o.name)
             f += I2(idt) + "ret_regs={!s},\n".format(o.ret_regs)
             f += I2(idt) + "arg_regs={!s},\n".format(o.arg_regs)
@@ -16118,7 +16119,7 @@ class FileDescriptorsCommand(GenericCommand):
         except Exception:
             err("syscall table does not exist")
             return
-        for nr, entry in syscall_table.table.items():
+        for nr, entry in syscall_table.nr_table.items():
             if is_x86_64() and nr >= 0x40000000:
                 continue
             if "fstat" == entry.name:
@@ -16239,8 +16240,8 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
                         if i == 0: # NR
                             nr = int(elem)
                             table = get_syscall_table()
-                            if nr >= 0 and table and nr in table.table:
-                                syscall_name = table.table[nr].name
+                            if nr >= 0 and table and nr in table.nr_table:
+                                syscall_name = table.nr_table[nr].name
                                 self.out.append("{:2d} {:s}: {:s} ({:s})".format(i + 1, elem_name, elem, syscall_name))
                             else:
                                 self.out.append("{:2d} {:s}: {:s}".format(i + 1, elem_name, elem))
@@ -18084,7 +18085,7 @@ class CallSyscallCommand(GenericCommand):
             return
 
         # get syscall entry
-        for nr, entry in syscall_table.table.items():
+        for nr, entry in syscall_table.nr_table.items():
             if is_x86_64() and nr >= 0x40000000:
                 continue
             if args.syscall_name == entry.name:
@@ -18156,7 +18157,7 @@ class MmapMemoryCommand(GenericCommand):
             return
 
         mmap_syscall_name = None
-        for entry in syscall_table.table.values():
+        for entry in syscall_table.nr_table.values():
             if "mmap" not in entry.name:
                 continue
             if len(entry.arg_regs) != 6:
@@ -21219,7 +21220,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         # match against syscall_table
         syscall_num = int(m.group(1))
         syscall_table = get_syscall_table()
-        syscall_entry = syscall_table.table.get(syscall_num, None)
+        syscall_entry = syscall_table.nr_table.get(syscall_num, None)
         if syscall_entry:
             syscall_name = syscall_entry.name
         else:
@@ -35013,16 +35014,15 @@ class SyscallSearchCommand(GenericCommand):
         legend = ["Syscall Num", "Syscall Name"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        for key, entry in syscall_table.table.items():
-            nr = key
+        for entry in syscall_table.nr_table.values():
             if not re.search(syscall_name_pattern, entry.name):
                 continue
-            if syscall_num is not None and nr != syscall_num:
+            if syscall_num is not None and entry.nr != syscall_num:
                 continue
             params = ""
             if self.verbose:
                 params = "(" + ", ".join(entry.args_full) + ");"
-            self.out.append("NR={:<#14x}{:s}{:s}".format(nr, Color.boldify(entry.name), params))
+            self.out.append("NR={:<#14x}{:s}{:s}".format(entry.nr, Color.boldify(entry.name), params))
         return
 
     @parse_args
@@ -48206,25 +48206,39 @@ class Syscall:
         else:
             raise
 
-        Table = collections.namedtuple("Table", "arch mode table")
-        Entry = collections.namedtuple("Entry", "name ret_regs arg_regs args_full args")
-        syscall_table = Table(arch=arch, mode=mode, table={})
+        Table = collections.namedtuple("Table", "arch mode nr_table name_table")
+        Entry = collections.namedtuple("Entry", "nr name ret_regs arg_regs args_full args")
+        syscall_table = Table(arch, mode, {}, {})
 
         # example:
         #   syscall_table.arch: 'X86'
         #   syscall_table.mode: '64'
-        #   syscall_table.table[0].name: 'read'
-        #   syscall_table.table[0].ret_regs: ['$rax']
-        #   syscall_table.table[0].arg_regs: ['$rdi', '$rsi', ...]
-        #   syscall_table.table[0].args_full: ['unsigned int fd', ...]
-        #   syscall_table.table[0].args: ['fd', ...]
+        #   syscall_table.nr_table[0].nr: 0
+        #   syscall_table.nr_table[0].name: 'read'
+        #   syscall_table.nr_table[0].ret_regs: ['$rax']
+        #   syscall_table.nr_table[0].arg_regs: ['$rdi', '$rsi', ...]
+        #   syscall_table.nr_table[0].args_full: ['unsigned int fd', ...]
+        #   syscall_table.nr_table[0].args: ['fd', ...]
+        #   syscall_table.nr_table[1] ...
+        #   syscall_table.name_table["read"].nr: 0
+        #   syscall_table.name_table["read"].name: 'read'
+        #   syscall_table.name_table["read"].ret_regs: ['$rax']
+        #   syscall_table.name_table["read"].arg_regs: ['$rdi', '$rsi', ...]
+        #   syscall_table.name_table["read"].args_full: ['unsigned int fd', ...]
+        #   syscall_table.name_table["read"].args: ['fd', ...]
+        #   syscall_table.name_table["write"] ...
         for nr, name, args_full in sorted(syscall_list, key=lambda x: x[0]):
+            # make entry
             args = [re.split(r" |\*", p)[-1] for p in args_full]
             if (arch, mode) == ("X86", "16"):
-                entry = Entry(name, return_register[nr], args_register[nr], args_full, args)
+                entry = Entry(nr, name, return_register[nr], args_register[nr], args_full, args)
             else:
-                entry = Entry(name, [return_register], args_register[:len(args)], args_full, args)
-            syscall_table.table[nr] = entry
+                entry = Entry(nr, name, [return_register], args_register[:len(args)], args_full, args)
+            # nr_table
+            syscall_table.nr_table[nr] = entry
+            # name_table
+            if name not in syscall_table.name_table:
+                syscall_table.name_table[name] = entry
         return syscall_table
 
 
@@ -48328,11 +48342,12 @@ class SyscallArgsCommand(GenericCommand):
 
     def print_syscall(self, syscall_table, syscall_register, nr):
         if syscall_table:
-            syscall_name = syscall_table.table[nr].name
-            ret_regs = syscall_table.table[nr].ret_regs
-            arg_regs = syscall_table.table[nr].arg_regs
-            args_full = syscall_table.table[nr].args_full
-            args = syscall_table.table[nr].args
+            entry = syscall_table.nr_table[nr]
+            syscall_name = entry.name
+            ret_regs = entry.ret_regs
+            arg_regs = entry.arg_regs
+            args_full = entry.args_full
+            args = entry.args
             arch = syscall_table.arch
             mode = syscall_table.mode
         else:
@@ -48379,7 +48394,7 @@ class SyscallArgsCommand(GenericCommand):
 
         try:
             syscall_table = get_syscall_table()
-            if nr not in syscall_table.table:
+            if nr not in syscall_table.nr_table:
                 warn("There is no system call for {:#x}".format(nr))
                 return
         except Exception:
@@ -58104,13 +58119,13 @@ class KernelTaskCommand(GenericCommand):
             if proctype == "U" and args.print_regs:
                 additional = True
                 regs = self.get_regs(kstack, self.offset_ptregs)
-                syscall_table = get_syscall_table().table
+                nr_table = get_syscall_table().nr_table
                 syscall_nr_regs = ["orig_rax", "orig_eax", "r7", "x8"]
                 if regs:
                     out.append(titlify("registers of `{:s}`".format(comm_string)))
                     for k, v in regs.items():
-                        if k in syscall_nr_regs and v in syscall_table:
-                            syscall_name = syscall_table[v].name
+                        if k in syscall_nr_regs and v in nr_table:
+                            syscall_name = nr_table[v].name
                             out.append("{:16s}: {:s} ({:s})".format(
                                 k, AddressUtil.format_address(v, long_fmt=True), syscall_name,
                             ))
@@ -64801,8 +64816,9 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
 
         # print
         for i, addr, syscall_function_addr, symbol, is_valid in self.cached_table[tag]:
-            if i + nr_base in syscall_list.table:
-                expected_name = syscall_list.table[i + nr_base].name
+            nr = nr_base + i
+            if nr in syscall_list.nr_table:
+                expected_name = syscall_list.nr_table[nr].name
             else:
                 expected_name = "<UNDEFINED_IN_THIS_ARCH>"
 
@@ -88820,13 +88836,13 @@ class ExecUntilCommand(GenericCommand):
                     return True
                 _reg, nr = SyscallArgsCommand.get_nr()
                 try:
-                    name = get_syscall_table().table[nr].name
+                    syscall_name = get_syscall_table().nr_table[nr].name
                 except KeyError:
                     return True # for debug
-                if self.ignore and name in self.ignore:
+                if self.ignore and syscall_name in self.ignore:
                     return False
                 if self.filter:
-                    return name in self.filter
+                    return syscall_name in self.filter
                 else:
                     return True
             return False
@@ -91443,7 +91459,7 @@ class KmallocAllocatedByCommand(GenericCommand):
                 info("offsetof(kmem_cache, size): {:#x}".format(self.extra_info.kmem_cache_offset_size))
 
         # get syscall table
-        self.syscall_table = {e.name: n for n, e in get_syscall_table().table.items() if n < 0x1000}
+        self.syscall_table = {e.name: n for n, e in get_syscall_table().nr_table.items() if n < 0x1000}
         self.syscall_table_view_ret = gdb.execute("syscall-table-view --no-pager --quiet", to_string=True)
 
         # get task
