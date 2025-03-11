@@ -19090,6 +19090,10 @@ class UnicornEmulateCommand(GenericCommand):
                         help="initialization and display XMM registers (only x64/x86).")
     parser.add_argument("-A", "--avoid-avx-neon-opt-func", action="store_true",
                         help="patch GOT to replace (e.g., __XXX_avx2 with XXX), as Unicorn does not support them.")
+    parser.add_argument("-E", "--emulate-mmap", action="store_true",
+                        help="[FOR DEVELOPER] used internally in gef, please don't use it.")
+    parser.add_argument("-I", "--emulate-insn", action="store_true",
+                        help="[FOR DEVELOPER] used internally in gef, please don't use it.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
@@ -19156,6 +19160,7 @@ class UnicornEmulateCommand(GenericCommand):
 
         # imports
         content += "import sys\n"
+        content += "import re\n"
         content += "import traceback\n"
         content += "import collections\n"
         content += "import capstone\n"
@@ -19248,21 +19253,212 @@ class UnicornEmulateCommand(GenericCommand):
         content += "    return\n"
         content += "\n"
         content += "def intr_hook(emu, intno, user_data):\n"
-        if is_x86() or is_arm32() or is_arm64():
-            if is_x86():
+        if is_x86_32() or is_arm32() or is_arm64():
+            if is_x86_32():
                 intno = 0x80
             elif is_arm32() or is_arm64():
                 intno = 0x2
             content += "    if intno == {:d}:\n".format(intno)
             content += "        syscall_hook(emu, user_data)\n"
+            content += "        return\n"
+        if kwargs["emulate_insn"] and is_arm64():
+            content += "    if emulate_swpa_swpl(emu):\n"
+            content += "        return\n"
+            content += "    if emulate_casa_casl(emu):\n"
+            content += "        return\n"
         content += "    print('  --> interrupt={:d}'.format(intno))\n"
         content += "    raise\n"
         content += "\n"
         content += "def syscall_hook(emu, user_data):\n"
         content += "    sysno = emu.reg_read(registers[syscall_register])\n"
+        if kwargs["emulate_mmap"]:
+            content += "    if emulate_mmap(emu, sysno):\n"
+            content += "        return\n"
+            content += "    if emulate_munmap(emu, sysno):\n"
+            content += "        return\n"
+            content += "    if emulate_brk(emu, sysno):\n"
+            content += "        return\n"
         content += "    print('  --> syscall={:d} (not emulated)'.format(sysno))\n"
         content += "    raise\n"
         content += "\n"
+
+        # syscall emulation
+        if kwargs["emulate_mmap"]:
+            name_table = get_syscall_table().name_table
+
+            if is_x86_32() or is_arm32():
+                mmap_entry = name_table["mmap2"]
+            else:
+                mmap_entry = name_table["mmap"]
+            content += "def emulate_mmap(emu, sysno):\n"
+            content += "    if sysno != {:d}:\n".format(mmap_entry.nr)
+            content += "        return False\n"
+            content += "    a1 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[0])
+            content += "    if a1 != 0:\n"
+            content += "        return False\n"
+            content += "    a2 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[1])
+            content += "    if a2 == 0 or (a2 & 0xfff) != 0:\n"
+            content += "        return False\n"
+            content += "    if a2 >= 0x100_0000: # heuristic value\n"
+            content += "        return False\n"
+            content += "    a3 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[2])
+            content += "    a3 &= 7\n"
+            content += "    a4 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[3])
+            content += "    if a4 != 0x22:\n"
+            content += "        return False\n"
+            content += "    a5 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[4])
+            content += "    if a5 != 0xffffffff:\n"
+            content += "        return False\n"
+            content += "    a6 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[5])
+            content += "    regions = [(None, 0, None)] + list(emu.mem_regions())\n"
+            content += "    regions = regions[::-1]\n"
+            content += "    for (mr1, mr2) in zip(regions[:-1], regions[1:]):\n"
+            content += "        if mr1[0] - mr2[1] >= a2:\n"
+            content += "            map_start = mr1[0] - a2\n"
+            content += "            break\n"
+            content += "    else:\n"
+            content += "        return False # not found space\n"
+            content += "    try:\n"
+            content += "        emu.mem_map(map_start, a2, a3)\n"
+            content += "        emu.reg_write(registers['{:s}'], map_start)\n".format(mmap_entry.ret_regs[0])
+            content += "    except Exception:\n"
+            content += "        return False\n"
+            content += "    print('  --> syscall={:d} (emulated)'.format(sysno))\n"
+            content += "    print(f'    --> {map_start:#x} = mmap({a1:#x}, {a2:#x}, {a3:#x}, {a4:#x}, {a5:#x}, {a6:#x})')\n"
+            content += "    return True\n"
+            content += "\n"
+
+            munmap_entry = name_table["munmap"]
+            content += "def emulate_munmap(emu, sysno):\n"
+            content += "    if sysno != {:d}:\n".format(munmap_entry.nr)
+            content += "        return False\n"
+            content += "    a1 = emu.reg_read(registers['{:s}'])\n".format(munmap_entry.arg_regs[0])
+            content += "    a2 = emu.reg_read(registers['{:s}'])\n".format(munmap_entry.arg_regs[1])
+            content += "    if a2 == 0 or (a2 & 0xfff) != 0:\n"
+            content += "        return False\n"
+            content += "    try:\n"
+            content += "        emu.mem_unmap(a1, a2)\n"
+            content += "        emu.reg_write(registers['{:s}'], 0)\n".format(munmap_entry.ret_regs[0])
+            content += "    except Exception:\n"
+            content += "        return False\n"
+            content += "    print('  --> syscall={:d} (emulated)'.format(sysno))\n"
+            content += "    print(f'    --> munmap({a1:#x}, {a2:#x})')\n"
+            content += "    return True\n"
+            content += "\n"
+
+            brk_entry = name_table["brk"]
+            content += "def emulate_brk(emu, sysno):\n"
+            content += "    if sysno != {:d}:\n".format(brk_entry.nr)
+            content += "        return False\n"
+            content += "    a1 = emu.reg_read(registers['{:s}'])\n".format(brk_entry.arg_regs[0])
+            content += "    before_a1 = [x for x in emu.mem_regions() if x[1] + 1 < a1]\n"
+            content += "    if len(before_a1) == 0:\n"
+            content += "        return False\n"
+            content += "    map_start = before_a1[-1][1] + 1\n"
+            content += "    map_size = a1 - map_start\n"
+            content += "    map_perm = before_a1[-1][2]\n"
+            content += "    try:\n"
+            content += "        emu.mem_map(map_start, map_size, map_perm)\n"
+            content += "        emu.reg_write(registers['{:s}'], a1)\n".format(brk_entry.ret_regs[0])
+            content += "    except Exception:\n"
+            content += "        return False\n"
+            content += "    print('  --> syscall={:d} (emulated)'.format(sysno))\n"
+            content += "    print(f'    --> {a1:#x} = brk({a1:#x})')\n"
+            content += "    return True\n"
+            content += "\n"
+
+        # insn emulation
+        if kwargs["emulate_insn"] and is_arm64():
+            content += "def i2b(x, width={:d}):\n".format(current_arch.ptrsize)
+            content += "    return x.to_bytes(width, byteorder='little')\n"
+            content += "\n"
+            content += "def b2i(x, width={:d}):\n".format(current_arch.ptrsize)
+            content += "    i = int.from_bytes(x, byteorder='little')\n"
+            content += "    if width == 4:\n"
+            content += "        return i & 0xffffffff\n"
+            content += "    return i\n"
+            content += "\n"
+            content += "def add_4_pc(emu):\n"
+            content += "    address = emu.reg_read(registers['$pc'])\n"
+            content += "    emu.reg_write(registers['$pc'], address + 4)\n"
+            content += "    return\n"
+            content += "\n"
+            content += "def get_insn(emu):\n"
+            content += "    address = emu.reg_read(registers['$pc'])\n"
+            content += "    code = emu.mem_read(address, 4)\n"
+            content += "    return disassemble(emu, code, address)\n"
+            content += "\n"
+            content += "def get_reg_and_width(m, i):\n"
+            content += "    reg = registers['$x' + m.group(i)[1:]]\n"
+            content += "    if m.group(i)[0] == 'x':\n"
+            content += "        width = 8\n"
+            content += "    elif m.group(i)[0] == 'w':\n"
+            content += "        width = 4\n"
+            content += "    return reg, width\n"
+            content += "\n"
+            content += "def reg_read(emu, reg, width):\n"
+            content += "    val = emu.reg_read(reg)\n"
+            content += "    val &= ((1 << (width * 8)) - 1)\n"
+            content += "    return val\n"
+            content += "\n"
+            content += "def reg_write(emu, reg, width, val):\n"
+            content += "    if isinstance(val, bytearray):\n"
+            content += "        val = b2i(val, width)\n"
+            content += "    else:\n"
+            content += "        val &= (1 << (width * 8)) - 1\n"
+            content += "    emu.reg_write(reg, val)\n"
+            content += "    return\n"
+            content += "\n"
+
+            content += "def emulate_swpa_swpl(emu):\n"
+            content += "    insn = get_insn(emu)\n"
+            content += "    if insn.mnemonic not in ['swpa', 'swpl']:\n"
+            content += "        return False\n"
+            content += "    m = re.search(r'([xw]\\d+), ([xw]\\d+), \\[(x\\d+)\\]', insn.op_str)\n"
+            content += "    if not m:\n"
+            content += "        return False\n"
+            content += ""
+            content += "    reg1, width1 = get_reg_and_width(m, 1)\n"
+            content += "    reg2, width2 = get_reg_and_width(m, 2)\n"
+            content += "    reg3, _ = get_reg_and_width(m, 3)\n"
+            content += ""
+            content += "    mem_addr = emu.reg_read(reg3)\n"
+            content += "    mem_val = emu.mem_read(mem_addr, 8)\n"
+            content += ""
+            content += "    reg_write(emu, reg1, width1, mem_val)\n"
+            content += "    reg2_val = reg_read(emu, reg2, width2)\n"
+            content += "    emu.mem_write(mem_addr, i2b(reg2_val, width2))\n"
+            content += ""
+            content += "    add_4_pc(emu)\n"
+            content += "    return True\n"
+            content += "\n"
+
+            content += "def emulate_casa_casl(emu):\n"
+            content += "    insn = get_insn(emu)\n"
+            content += "    if insn.mnemonic not in ['casa', 'casl']:\n"
+            content += "        return False\n"
+            content += "    m = re.search(r'([xw]\\d+), ([xw]\\d+), \\[(x\\d+)\\]', insn.op_str)\n"
+            content += "    if not m:\n"
+            content += "        return False\n"
+            content += ""
+            content += "    reg1, width1 = get_reg_and_width(m, 1)\n"
+            content += "    reg2, width2 = get_reg_and_width(m, 2)\n"
+            content += "    reg3, _ = get_reg_and_width(m, 3)\n"
+            content += ""
+            content += "    mem_addr = emu.reg_read(reg3)\n"
+            content += "    mem_val = emu.mem_read(mem_addr, 8)\n"
+            content += ""
+            content += "    reg1_val = reg_read(emu, reg1, width1)\n"
+            content += "    reg2_val = reg_read(emu, reg2, width2)\n"
+            content += "    if reg1_val == b2i(mem_val, width1):\n"
+            content += "        emu.mem_write(mem_addr, i2b(reg2_val, width2))\n"
+            content += "    reg_write(emu, reg1, width1, mem_val)\n"
+            content += ""
+            content += "    add_4_pc(emu)\n"
+            content += "    return True\n"
+            content += "\n"
+
+        # print function
         content += "def print_regs(emu, regs):\n"
         content += "    if only_insns:\n"
         content += "        return\n"
@@ -19435,7 +19631,7 @@ class UnicornEmulateCommand(GenericCommand):
                 try:
                     got = int(m.group(1), 16)
                     _current_func_addr = int(m.group(2), 16)
-                    _current_func_name = m.group(3)
+                    current_func_name = m.group(3)
                     base_func_name = m.group(4)
                 except ValueError:
                     continue
@@ -19450,8 +19646,8 @@ class UnicornEmulateCommand(GenericCommand):
                     except (gdb.error, ValueError):
                         continue
 
-                content += "    emu.mem_write({:#x}, ({:#x}).to_bytes({:d}, byteorder='little'))\n".format(
-                    got, base_func_addr, current_arch.ptrsize,
+                content += "    emu.mem_write({:#x}, ({:#x}).to_bytes({:d}, byteorder='little')) # {:s} -> {:s}\n".format(
+                    got, base_func_addr, current_arch.ptrsize, current_func_name, base_func_name
                 )
 
         content += "    return\n"
@@ -19570,6 +19766,8 @@ class UnicornEmulateCommand(GenericCommand):
             "dt": dt, # datetime
             "dloc": os.path.join(GEF_TEMP_DIR, "unicorn-emulate-" + dt), # memory dump directory
             "patch_got": args.avoid_avx_neon_opt_func,
+            "emulate_mmap": args.emulate_mmap,
+            "emulate_insn": args.emulate_insn,
         }
         os.mkdir(kwargs["dloc"])
 
@@ -21062,16 +21260,18 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                         help="the memory address to be freed.")
     parser.add_argument("--free-addr", dest="caller_address", type=AddressUtil.parse_address,
                         help="use specific address for `free`.")
+    parser.add_argument("-s", "--skip-emulation", "--save", action="store_true",
+                        help="do not run, just save the script.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
 
     _note_ = [
         "It may work even if NOT Glibc (untested).",
         "It may be detected as a failure even though it actually succeeded.",
-        "e.g.,",
-        "- Any system call was called or any interrupt was raised.",
-        "- An instruction that unicorn does not support was executed.",
-        "- Instructions such as casa and casl, which are used in ARM64 multithreading, cannot be avoided.",
+        "  - Any system call was called",
+        "  - Any interrupt was raised",
+        "  - An instruction that unicorn does not support was executed",
+        "I have emulated them as well as I can, but maybe it is not perfect.",
         "The failure message may not be detected because it is searched for heuristically.",
     ]
     _note_ = "\n".join(_note_)
@@ -21204,7 +21404,9 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                         continue
                     message_strings.add(s)
             if message_strings:
-                return ", ".join(message_strings)
+                if len(message_strings) == 1:
+                    return list(message_strings)[0]
+                return str(list(message_strings))
 
         if "UC_ERR_INSN_INVALID" in res:
             return "Maybe try to execute unicorn unsupported instruction"
@@ -21253,6 +21455,9 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                 reason = self.get_reason(res)
                 err("{:s} failed: {:s}".format(name, Color.boldify(reason)))
         else:
+            syscall = self.get_syscall(res)
+            if syscall:
+                info("system call emulated: {:d} (={:s})".format(syscall[0], syscall[1]))
             # success
             if name == "free":
                 ok("{:s} succeeded".format(name))
@@ -21282,16 +21487,20 @@ class GlibcHeapTryFreeCommand(GenericCommand):
             gdb.execute("patch hex {:#x} {:s}".format(patch_addr, patch_code), to_string=True)
 
         # execute
+        option = ["-t", hex(info.stop_address), "-A", "-E", "-I"]
+        if self.args.skip_emulation:
+            option.append("-s")
         res = ""
         try:
-            res = gdb.execute("unicorn-emulate -t {:#x} -A".format(info.stop_address), to_string=True)
-            if self.args.verbose:
-                gef_print(res)
+            res = gdb.execute("unicorn-emulate {:s}".format(" ".join(option)), to_string=True)
+            if self.args.verbose or self.args.skip_emulation:
+                gef_print(res.rstrip())
         except Exception:
             pass
 
-        # print
-        self.print_result(name, res)
+        if not self.args.skip_emulation:
+            # print
+            self.print_result(name, res)
 
         # revert
         for regname, regvalue in old_regs.items():
@@ -21308,6 +21517,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         self.doit("free", args.address, None)
         return
 
+
 @register_command
 class GlibcHeapTryMallocCommand(GlibcHeapTryFreeCommand):
     """Emulate with unicorn to check whether any errors occur when allocating a chunk."""
@@ -21321,6 +21531,8 @@ class GlibcHeapTryMallocCommand(GlibcHeapTryFreeCommand):
                         help="the size to be allocated.")
     parser.add_argument("--malloc-addr", dest="caller_address", type=AddressUtil.parse_address,
                         help="use specific address for `malloc`.")
+    parser.add_argument("-s", "--skip-emulation", "--save", action="store_true",
+                        help="do not run, just save the script.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
 
@@ -21349,6 +21561,8 @@ class GlibcHeapTryReallocCommand(GlibcHeapTryFreeCommand):
                         help="the size to be re-allocated.")
     parser.add_argument("--realloc-addr", dest="caller_address", type=AddressUtil.parse_address,
                         help="use specific address for `realloc`.")
+    parser.add_argument("-s", "--skip-emulation", "--save", action="store_true",
+                        help="do not run, just save the script.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
 
@@ -21377,6 +21591,8 @@ class GlibcHeapTryCallocCommand(GlibcHeapTryFreeCommand):
                         help="the number of blocks.")
     parser.add_argument("--calloc-addr", dest="caller_address", type=AddressUtil.parse_address,
                         help="use specific address for `calloc`.")
+    parser.add_argument("-s", "--skip-emulation", "--save", action="store_true",
+                        help="do not run, just save the script.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
 
