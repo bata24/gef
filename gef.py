@@ -28867,8 +28867,9 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
     _aliases_ = ["hd"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    modes = ["byte", "word", "dword", "qword"]
+    modes = ["byte", "word", "dword", "qword", "b", "w", "d", "q"]
     parser.add_argument("format", choices=modes, nargs="?", default="byte",
+                        metavar="{byte,word,dword,qword}",
                         help="dump mode. It also works if you specify the first character. (default: %(default)s)")
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the memory address to dump.")
@@ -28989,7 +28990,7 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
             err("cannot access memory")
             return
 
-        unit = {"byte": 1, "word": 2, "dword": 4, "qword": 8}[args.format]
+        unit = {"byte": 1, "word": 2, "dword": 4, "qword": 8, "b": 1, "w": 2, "d": 4, "q": 8}[args.format]
         lines = hexdump(mem, show_symbol=args.symbol, base=read_from, unit=unit).splitlines()
 
         if not args.full:
