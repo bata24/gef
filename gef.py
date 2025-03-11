@@ -28864,7 +28864,7 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
     _cmdline_ = "hexdump"
     _category_ = "03-b. Memory - View"
     _repeat_ = True
-    _aliases_ = ["xxd", "hd"]
+    _aliases_ = ["hd"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     modes = ["byte", "word", "dword", "qword"]
@@ -29000,6 +29000,48 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
 
         self.out = lines
         self.print_output(args, term=True)
+        return
+
+
+@register_command
+class XxdCommand(HexdumpCommand):
+    """Display the hexdump from the memory location specified (shortcut for `hexdump byte`)."""
+
+    _cmdline_ = "xxd"
+    _category_ = "03-b. Memory - View"
+    _repeat_ = True
+    _aliases_ = [] # re-overwrite
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
+                        help="the memory address to dump.")
+    parser.add_argument("count", metavar="COUNT", nargs="?", type=lambda x: int(x, 0), default=0x100,
+                        help="the count of displayed units. (default: %(default)s)")
+    parser.add_argument("--phys", action="store_true",
+                        help="treat LOCATION as a physical address (only qemu-system).")
+    parser.add_argument("-r", "--reverse", action="store_true", help="display in reverse order line by line.")
+    parser.add_argument("-f", "--full", action="store_true", help="display the same line without omitting.")
+    parser.add_argument("-s", "--symbol", action="store_true", help="display the symbol.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    _syntax_ = parser.format_help()
+
+    @parse_args
+    @only_if_gdb_running
+    def do_invoke(self, args):
+        flags = []
+        if args.phys:
+            flags.append("--phys")
+        if args.reverse:
+            flags.append("--reverse")
+        if args.full:
+            flags.append("--full")
+        if args.symbol:
+            flags.append("--symbol")
+        if args.symbol:
+            flags.append("--no-pager")
+
+        flags = " ".join(flags)
+        gdb.execute("hexdump byte {:#x} {:#x} {:s}".format(args.location, args.count, flags))
         return
 
 
