@@ -4980,7 +4980,7 @@ class String:
     def gef_pystring(x):
         """Returns a sanitized version as string of the bytes list given in input."""
         res = str(x, encoding="utf-8")
-        substs = [("\n", "\\n"), ("\r", "\\r"), ("\t", "\\t"), ("\v", "\\v"), ("\b", "\\b"), ]
+        substs = [("\n", "\\n"), ("\r", "\\r"), ("\t", "\\t"), ("\v", "\\v"), ("\b", "\\b")]
         for x, y in substs:
             res = res.replace(x, y)
         return res
@@ -5590,8 +5590,8 @@ class Disasm:
     @staticmethod
     @load_capstone
     def capstone_disassemble(location, nb_insn, **kwargs):
-        """Disassemble `nb_insn` instructions after `addr` and `nb_prev` before `addr` using the capstone disassembler.
-        Return an iterator of Instruction objects.
+        """Disassemble `nb_insn` instructions after `addr` and `nb_prev` before `addr`
+        using the capstone disassembler. Return an iterator of Instruction objects.
         This is the backend used by Disasm.gef_disassemble if specified in the config.
         It is also called directly from some commands such as Disasm.capstone_disassemble."""
         def cs_insn_to_gef_insn(cs_insn):
@@ -5602,7 +5602,9 @@ class Disasm:
         _arch = kwargs.get("arch", None)
         _mode = kwargs.get("mode", None)
         _endian = kwargs.get("endian", None)
-        arch, mode = UnicornKeystoneCapstone.get_capstone_arch(arch=_arch, mode=_mode, endian=_endian)
+        arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
+            arch=_arch, mode=_mode, endian=_endian,
+        )
         try:
             cs = capstone.Cs(arch, mode)
             cs.detail = True # noqa
@@ -5613,7 +5615,9 @@ class Disasm:
         # fix location by nb_prev
         nb_prev = kwargs.get("nb_prev", 0)
         if nb_prev > 0:
-            _location = Disasm.capstone_get_nth_previous_instruction_address(location, nb_prev, capstone.Cs(arch, mode))
+            _location = Disasm.capstone_get_nth_previous_instruction_address(
+                location, nb_prev, capstone.Cs(arch, mode),
+            )
             if _location is not None:
                 location = _location
                 nb_insn += nb_prev
@@ -12996,7 +13000,7 @@ class UnicornKeystoneCapstone:
         if isinstance(mode, tuple):
             modes = list(mode)
         else:
-            modes = [mode, ]
+            modes = [mode]
 
         if big_endian:
             modes.append("BIG_ENDIAN")
@@ -13055,7 +13059,9 @@ class UnicornKeystoneCapstone:
             mode = None
         elif arch == "M68K":
             mode = None
-        return UnicornKeystoneCapstone.get_generic_arch(sys.modules["unicorn"], "UC", arch, mode, endian, to_string)
+        return UnicornKeystoneCapstone.get_generic_arch(
+            sys.modules["unicorn"], "UC", arch, mode, endian, to_string,
+        )
 
     @staticmethod
     @load_capstone
@@ -13085,7 +13091,9 @@ class UnicornKeystoneCapstone:
             arch, mode = "SYSZ", None
         elif arch == "M68K":
             mode = "M68K_060"
-        return UnicornKeystoneCapstone.get_generic_arch(sys.modules["capstone"], "CS", arch, mode, endian, to_string)
+        return UnicornKeystoneCapstone.get_generic_arch(
+            sys.modules["capstone"], "CS", arch, mode, endian, to_string,
+        )
 
     @staticmethod
     @load_keystone
@@ -13115,7 +13123,9 @@ class UnicornKeystoneCapstone:
             mode = "MIPS64"
         elif arch == "S390X":
             arch, mode = "SYSTEMZ", None
-        return UnicornKeystoneCapstone.get_generic_arch(sys.modules["keystone"], "KS", arch, mode, endian, to_string)
+        return UnicornKeystoneCapstone.get_generic_arch(
+            sys.modules["keystone"], "KS", arch, mode, endian, to_string,
+        )
 
     @staticmethod
     @load_unicorn
@@ -22380,7 +22390,9 @@ class DisassembleCommand(GenericCommand):
                 endian_s = "big" if Endian.is_big_endian() else "little"
             else:
                 # if not alive, defaults to x86-64
-                arch, mode = UnicornKeystoneCapstone.get_capstone_arch(arch="X86", mode="64", endian=False)
+                arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
+                    arch="X86", mode="64", endian=False,
+                )
                 arch_mode_s = "X86:64"
                 endian_s = "little"
         elif not args.arch:
@@ -30038,7 +30050,9 @@ class PatchHistoryCommand(PatchCommand):
                     a += " ..."
                 sym = Symbol.get_symbol_string(hist["addr"])
                 i_str = Color.boldify("{:d}".format(i))
-                gef_print("[{:s}] {:#x}{:s}: {:s}{:s}{:s}".format(i_str, hist["addr"], sym, b, RIGHT_ARROW, a))
+                gef_print("[{:s}] {:#x}{:s}: {:s}{:s}{:s}".format(
+                    i_str, hist["addr"], sym, b, RIGHT_ARROW, a,
+                ))
             gef_print("[OLD]")
         else:
             info("Patch history is empty")
@@ -30131,22 +30145,36 @@ class DereferenceCommand(GenericCommand):
                         help="the memory address to dump. (default: current_arch.sp)")
     parser.add_argument("nb_lines", metavar="NB_LINES", nargs="?", type=lambda x: int(x, 0),
                         help="the count of lines.")
-    parser.add_argument("-a", "--is-addr", action="store_true", help="display only valid addresses.")
-    parser.add_argument("-A", "--is-not-addr", action="store_true", help="display only invalid addresses.")
-    parser.add_argument("-z", "--zero", action="store_true", help="display only zero values.")
-    parser.add_argument("-Z", "--non-zero", action="store_true", help="display only non-zero values.")
-    parser.add_argument("-t", "--tag", nargs=2, action="append", metavar=("IDX", "TAG"), help="display with tags.")
-    parser.add_argument("-T", "--tag-offset", default=0, type=int, help="the slide offset of all tag positions.")
-    parser.add_argument("-r", "--reverse", action="store_true", help="display in reverse order line by line.")
-    parser.add_argument("-u", "--uniq", action="store_true", help="display with uniq.")
-    parser.add_argument("-d", "--depth", default=1, type=int, help="depth of recursive. (default: %(default)s)")
-    parser.add_argument("-D", "--depth-nb-lines", default=4, type=int, help="NB_LINES when recursive. (default: %(default)s)")
-    parser.add_argument("-p", "--phys", action="store_true", help="treat LOCATION as a physical address. (only qemu-system)")
-    parser.add_argument("-l", "--list-head", action="store_true", help="display if LIST_HEAD or not.")
-    parser.add_argument("-s", "--slab-contains", action="store_true", help="display slab_cache name if available.")
+    parser.add_argument("-a", "--is-addr", action="store_true",
+                        help="display only valid addresses.")
+    parser.add_argument("-A", "--is-not-addr", action="store_true",
+                        help="display only invalid addresses.")
+    parser.add_argument("-z", "--zero", action="store_true",
+                        help="display only zero values.")
+    parser.add_argument("-Z", "--non-zero", action="store_true",
+                        help="display only non-zero values.")
+    parser.add_argument("-t", "--tag", nargs=2, action="append", metavar=("IDX", "TAG"),
+                        help="display with tags.")
+    parser.add_argument("-T", "--tag-offset", default=0, type=int,
+                        help="the slide offset of all tag positions.")
+    parser.add_argument("-r", "--reverse", action="store_true",
+                        help="display in reverse order line by line.")
+    parser.add_argument("-u", "--uniq", action="store_true",
+                        help="display with uniq.")
+    parser.add_argument("-d", "--depth", default=1, type=int,
+                        help="depth of recursive. (default: %(default)s)")
+    parser.add_argument("-D", "--depth-nb-lines", default=4, type=int,
+                        help="NB_LINES when recursive. (default: %(default)s)")
+    parser.add_argument("-p", "--phys", action="store_true",
+                        help="treat LOCATION as a physical address. (only qemu-system)")
+    parser.add_argument("-l", "--list-head", action="store_true",
+                        help="display if LIST_HEAD or not.")
+    parser.add_argument("-s", "--slab-contains", action="store_true",
+                        help="display slab_cache name if available.")
     parser.add_argument("-S", "--slab-contains-unaligned", action="store_true",
                         help="display slab_cache name (allow unaligned) if available.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="do not display other than addresses and values.")
+    parser.add_argument("-q", "--quiet", action="store_true",
+                        help="do not display other than addresses and values.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
@@ -30164,16 +30192,19 @@ class DereferenceCommand(GenericCommand):
 
     _note_ = [
         "Use blacklist feature if reading the address causes process crash.",
-        'e.g., `gef config dereference.blacklist "[ [0xffffffffc9000000, 0xffffffffc9001000], ]"`, then `gef save`',
+        'e.g., `gef config dereference.blacklist "[ [0xffffffffc9000000, 0xffffffffc9001000], ]"',
+        "then `gef save`.",
     ]
     _note_ = "\n".join(_note_)
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         self.add_setting("max_recursion", 4, "Maximum level of pointer recursion")
-        self.add_setting("blacklist", "[]", 'Dereference black list address ranges (e.g., "[[start1, end1], [start2, end2],]")')
+        self.add_setting("blacklist", "[]",
+                         'Dereference Blacklist address ranges (e.g., "[[from1, to1], [from2, to2]]")')
         self.add_setting("nb_lines", 64, "Number of lines to display")
-        self.add_setting("no_pager", False, "Always enable --no-pager option for this telescope command only")
+        self.add_setting("no_pager", False,
+                         "Always enable --no-pager option for this telescope command only")
         return
 
     @staticmethod
@@ -45892,7 +45923,7 @@ arm_OPTEE_syscall_list = [
     [0x06, "syscall_close_ta_session", ["unsigned long sess"]],
     [0x07, "syscall_invoke_ta_command", ["unsigned long sess", "unsigned long cancel_req_to", "unsigned long cmd_id", "struct utee_params *params", "uint32_t *ret_orig"]],
     [0x08, "syscall_check_access_rights", ["unsigned long flags", "const void *buf", "size_t len"]],
-    [0x09, "syscall_get_cancellation_flag", ["uint32_t *cancel", ]],
+    [0x09, "syscall_get_cancellation_flag", ["uint32_t *cancel"]],
     [0x0a, "syscall_unmask_cancellation", ["uint32_t *old_mask"]],
     [0x0b, "syscall_mask_cancellation", ["uint32_t *old_mask"]],
     [0x0c, "syscall_wait", ["unsigned long timeout"]],
@@ -46576,7 +46607,7 @@ class Syscall:
         sc_def = Syscall.parse_common_syscall_defs()
         tbl = Syscall.parse_syscall_table_defs(mips_o32_syscall_tbl)
         arch_specific_dic = {
-            "sys_syscall": ["...", ], #
+            "sys_syscall": ["..."], #
             "__sys_fork": [], #
             "sys_rt_sigreturn": [], # arch/mips/kernel/signal.c
             "sysm_pipe": [], # arch/mips/kernel/syscall.c
