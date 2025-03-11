@@ -13943,55 +13943,6 @@ class BufferingOutput:
 #         return
 
 
-@register_command
-class ResetCacheCommand(GenericCommand):
-    """Reset all caches (both Cache.cache_until_next and Cache.cache_this_session)."""
-
-    _cmdline_ = "reset-cache"
-    _category_ = "99. GEF Maintenance Command"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("--hard", action="store_true", help="also delete under {:s}.".format(GEF_TEMP_DIR))
-    _syntax_ = parser.format_help()
-
-    @parse_args
-    def do_invoke(self, args):
-        Cache.reset_gef_caches(all=True)
-
-        if args.hard:
-            GefUtil.rmdir(GEF_TEMP_DIR, verbose=True, keep_root=True)
-        return
-
-
-@register_command
-class ResetBreakpointsCommand(GenericCommand):
-    """Show and reset all breakpoints (include internal breakpoints)."""
-
-    _cmdline_ = "reset-bp"
-    _category_ = "99. GEF Maintenance Command"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-c", "--commit", action="store_true", help="actually perform delete.")
-    _syntax_ = parser.format_help()
-
-    @parse_args
-    def do_invoke(self, args):
-        breakpoints = gdb.breakpoints()
-        n = len(breakpoints)
-
-        for bp in breakpoints:
-            bp_str = repr(bp)
-            if args.commit:
-                bp.delete()
-                gef_print("Delete successfully: {:s}".format(bp_str))
-            else:
-                info("Breakpoint is found: {:s}".format(bp_str))
-
-        if not args.commit and n > 0:
-            warn('This dry run mode skips deleting breakpoint; add "--commit" to proceed')
-        return
-
-
 @register_priority_command
 class GefThemeCommand(GenericCommand):
     """Customize GEF appearance."""
@@ -93725,6 +93676,8 @@ class GefCommand(GenericCommand):
     subparsers.add_parser("save")
     subparsers.add_parser("restore")
     subparsers.add_parser("reload")
+    subparsers.add_parser("reset-bp")
+    subparsers.add_parser("reset-cache")
     subparsers.add_parser("arch-list")
     subparsers.add_parser("raise-exception")
     subparsers.add_parser("pyobj-list")
@@ -94225,6 +94178,57 @@ class GefReloadCommand(GenericCommand):
             gdb.execute("define c\ncontinue\nend")
 
         Cache.reset_gef_caches(all=True)
+        return
+
+
+@register_command
+class GefResetCacheCommand(GenericCommand):
+    """Reset all caches (both Cache.cache_until_next and Cache.cache_this_session)."""
+
+    _cmdline_ = "gef reset-cache"
+    _category_ = "99. GEF Maintenance Command"
+    _aliases_ = ["reset-cache"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--hard", action="store_true", help="also delete under {:s}.".format(GEF_TEMP_DIR))
+    _syntax_ = parser.format_help()
+
+    @parse_args
+    def do_invoke(self, args):
+        Cache.reset_gef_caches(all=True)
+
+        if args.hard:
+            GefUtil.rmdir(GEF_TEMP_DIR, verbose=True, keep_root=True)
+        return
+
+
+@register_command
+class GefResetBreakpointsCommand(GenericCommand):
+    """Show and reset all breakpoints (include internal breakpoints)."""
+
+    _cmdline_ = "gef reset-bp"
+    _category_ = "99. GEF Maintenance Command"
+    _aliases_ = ["reset-bp"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-c", "--commit", action="store_true", help="actually perform delete.")
+    _syntax_ = parser.format_help()
+
+    @parse_args
+    def do_invoke(self, args):
+        breakpoints = gdb.breakpoints()
+        n = len(breakpoints)
+
+        for bp in breakpoints:
+            bp_str = repr(bp)
+            if args.commit:
+                bp.delete()
+                gef_print("Delete successfully: {:s}".format(bp_str))
+            else:
+                info("Breakpoint is found: {:s}".format(bp_str))
+
+        if not args.commit and n > 0:
+            warn('This dry run mode skips deleting breakpoint; add "--commit" to proceed')
         return
 
 
