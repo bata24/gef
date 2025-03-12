@@ -116,6 +116,8 @@ To use these commands fully, you need to manually install the necessary packages
 |`unicorn-emulate`|`python3-pip`|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
 |`heap try-free`|`python3-pip`|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
 |`heap try-malloc`|`python3-pip`|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
+|`heap try-realloc`|`python3-pip`|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
+|`heap try-calloc`|`python3-pip`|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
 |`asm`|`python3-pip`|`keystone-engine`|-|
 |`base-n-decode`|`python3-pip`|`codext`|-|
 |`base-n-encode`|`python3-pip`|`codext`|-|

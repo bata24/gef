@@ -21361,7 +21361,8 @@ class GlibcHeapTryFreeCommand(GenericCommand):
 
         # create namedtuple
         dic = {}
-        dic["target_regs"] = target_regs
+        dic["target_regs"] = {r: v for r, v in target_regs.items() if v is not None}
+        dic["regs_value"] = {r: get_register(r) for r, v in target_regs.items() if v is not None}
         dic["patches"] = patches
         dic["stop_address"] = stop_address
         Info = collections.namedtuple("Info", dic.keys())
@@ -21476,15 +21477,15 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         # The arguments of free, malloc, realloc, and calloc are at most 2
         info = self.make_patch_info(caller_address, arg1, arg2)
 
-        # backup & modify (registers, memories)
-        old_regs = {}
+        # modify (registers, memories)
         for regname, regvalue in info.target_regs.items():
-            if regvalue is None:
-                continue
-            old_regs[regname] = get_register(regname)
             gdb.execute("set {:s}={:#x}".format(regname, regvalue))
         for patch_addr, patch_code in info.patches.items():
             gdb.execute("patch hex {:#x} {:s}".format(patch_addr, patch_code), to_string=True)
+
+        # thread locking
+        sched_lock = gdb.parameter("scheduler-locking")
+        gdb.execute("set scheduler-locking on", to_string=True)
 
         # execute
         option = ["-t", hex(info.stop_address), "-A", "-E", "-I"]
@@ -21498,14 +21499,15 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         except Exception:
             pass
 
+        # print
         if not self.args.skip_emulation:
-            # print
             self.print_result(name, res)
 
-        # revert
-        for regname, regvalue in old_regs.items():
+        # revert (registers, memories, thread locking)
+        for regname, regvalue in info.regs_value.items():
             gdb.execute("set {:s}={:#x}".format(regname, regvalue))
         gdb.execute("patch revert {:d}".format(len(info.patches) - 1), to_string=True)
+        gdb.execute("set scheduler-locking {:s}".format(sched_lock), to_string=True)
         return
 
     @parse_args
