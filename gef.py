@@ -24393,8 +24393,8 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_selinux(self):
         cfg = "SELinux"
-        # SELinux does not support building format as a kernel module.
-        # Therefore, only symbols in the kernel can be used to determine whether or not support.
+        # SELinux does not support being built as a kernel module.
+        # Therefore, only symbols in the kernel can be used to determine whether SELinux is supported or not.
         selinux_init = Symbol.get_ksymaddr("selinux_init")
         if selinux_init is None:
             additional = "selinux_init: Not found"
@@ -30418,7 +30418,7 @@ class DereferenceCommand(GenericCommand):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         self.add_setting("max_recursion", 4, "Maximum level of pointer recursion")
         self.add_setting("blacklist", "[]",
-                         'Dereference Blacklist address ranges (e.g., "[[from1, to1], [from2, to2]]")')
+                         'Dereference black list address ranges (e.g., "[[from1, to1], [from2, to2]]")')
         self.add_setting("nb_lines", 64, "Number of lines to display")
         self.add_setting("no_pager", False,
                          "Always enable --no-pager option for this telescope command only")
@@ -30488,7 +30488,9 @@ class DereferenceCommand(GenericCommand):
             raise
 
         # create address link list
-        link = AddressUtil.recursive_dereference_to_string(current_address, skip_idx=1, phys=phys, quiet=quiet)
+        link = AddressUtil.recursive_dereference_to_string(
+            current_address, skip_idx=1, phys=phys, quiet=quiet,
+        )
 
         # create line of one entry
         addr_formatted = AddressUtil.format_address(addrs[0], memalign_size=memalign_size)
@@ -30535,7 +30537,9 @@ class DereferenceCommand(GenericCommand):
                         extra.append("PTR_MANGLE cookie")
 
         # register info
-        if not phys: # for the physical address, 0x0 may be valid, which tends to clutter the result, so skip
+        if not phys:
+            # for the physical address, 0x0 may be valid,
+            # which tends to clutter the result, so skip
             if is_valid_addr(current_address_value):
                 for regname, regvalue in DereferenceCommand.get_target_registers_value():
                     if current_address_value == regvalue:
@@ -30619,7 +30623,9 @@ class DereferenceCommand(GenericCommand):
             # dump slab cache
             if args.slab_contains or args.slab_contains_unaligned:
                 v = read_int_from_memory(current_address)
-                ret = Kernel.get_slab_contains(v, allow_unaligned=args.slab_contains_unaligned, keep_color=True)
+                ret = Kernel.get_slab_contains(
+                    v, allow_unaligned=args.slab_contains_unaligned, keep_color=True,
+                )
                 if ret:
                     out.append("  {:#x}: {:s}".format(v, ret))
 
@@ -30637,7 +30643,9 @@ class DereferenceCommand(GenericCommand):
                 v = self.read_int_from_memory(current_address)
                 if v % current_arch.ptrsize == 0 and is_valid_addr(v):
                     nb_lines = args.depth_nb_lines
-                    cmd = "dereference --depth {:d} --no-pager {:#x} {:#x}".format(args.depth - 1, v, nb_lines)
+                    cmd = "dereference --depth {:d} --no-pager {:#x} {:#x}".format(
+                        args.depth - 1, v, nb_lines,
+                    )
                     ret = gdb.execute(cmd, to_string=True)
                     for line in ret.splitlines():
                         out.append("      " + line)
@@ -31121,11 +31129,21 @@ class VMMapCommand(GenericCommand, BufferingOutput):
         # if qemu-xxx(32bit arch) runs on x86-64 machine, memalign_size does not match
         # AddressUtil.get_memory_alignment()
         memalign_size = 8 if outer else None
-        lines.append(Color.colorify(AddressUtil.format_address(entry.page_start, memalign_size, long_fmt=True), line_color))
-        lines.append(Color.colorify(AddressUtil.format_address(entry.page_end, memalign_size, long_fmt=True), line_color))
-        lines.append(Color.colorify(AddressUtil.format_address(entry.size, memalign_size, long_fmt=True), line_color))
-        lines.append(Color.colorify(AddressUtil.format_address(entry.offset, memalign_size, long_fmt=True), line_color))
-        lines.append(Color.colorify(str(entry.permission), line_color))
+        lines.append(Color.colorify(
+            AddressUtil.format_address(entry.page_start, memalign_size, long_fmt=True), line_color,
+        ))
+        lines.append(Color.colorify(
+            AddressUtil.format_address(entry.page_end, memalign_size, long_fmt=True), line_color,
+        ))
+        lines.append(Color.colorify(
+            AddressUtil.format_address(entry.size, memalign_size, long_fmt=True), line_color,
+        ))
+        lines.append(Color.colorify(
+            AddressUtil.format_address(entry.offset, memalign_size, long_fmt=True), line_color,
+        ))
+        lines.append(Color.colorify(
+            str(entry.permission), line_color,
+        ))
         if entry.path:
             lines.append(Color.colorify(entry.path, line_color))
         line = " ".join(lines)
@@ -32308,13 +32326,17 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
                 val_addr = ProcessMap.lookup_address(current - current_arch.ptrsize)
                 val_addr_offset = val_addr.value - dynamic.value
                 if not silent:
-                    info("_DYNAMIC+{:#x}(=DT_DEBUG): {!s}{:s}{!s}".format(val_addr_offset, val_addr, RIGHT_ARROW, dt_debug))
+                    info("_DYNAMIC+{:#x}(=DT_DEBUG): {!s}{:s}{!s}".format(
+                        val_addr_offset, val_addr, RIGHT_ARROW, dt_debug,
+                    ))
                 link_map_ptr = ProcessMap.lookup_address(dt_debug.value + current_arch.ptrsize)
                 if not is_valid_addr(link_map_ptr.value):
                     return None
                 link_map = ProcessMap.lookup_address(read_int_from_memory(link_map_ptr.value))
                 if not silent:
-                    info("DT_DEBUG+{:#x}: {!s}{:s}{!s}".format(current_arch.ptrsize, link_map_ptr, RIGHT_ARROW, link_map))
+                    info("DT_DEBUG+{:#x}: {!s}{:s}{!s}".format(
+                        current_arch.ptrsize, link_map_ptr, RIGHT_ARROW, link_map,
+                    ))
                 break
         return link_map
 
@@ -32649,7 +32671,9 @@ class DynamicCommand(GenericCommand, BufferingOutput):
             val = ProcessMap.lookup_address(val)
             tag_description = DT_TABLE.get(tag, "Unknown")
             colored_addr = Color.colorify("{:#0{:d}x}".format(addr, width), base_address_color)
-            self.out.append("{:s}: {:#0{:d}x} {!s}  |  {:s}".format(colored_addr, tag, width, val, tag_description))
+            self.out.append("{:s}: {:#0{:d}x} {!s}  |  {:s}".format(
+                colored_addr, tag, width, val, tag_description,
+            ))
 
             if remain_size is not None and remain_size <= 0:
                 break
@@ -32784,7 +32808,9 @@ class DestructorDumpCommand(GenericCommand):
 
     def C(self, addr):
         base_address_color = Config.get_gef_setting("theme.dereference_base_address")
-        a = Color.colorify("{:#0{:d}x}".format(addr, AddressUtil.get_format_address_width()), base_address_color)
+        a = Color.colorify("{:#0{:d}x}".format(
+            addr, AddressUtil.get_format_address_width(),
+        ), base_address_color)
         try:
             b = "[{!s}]".format(ProcessMap.lookup_address(addr).section.permission)
             return a + b
