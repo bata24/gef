@@ -25168,7 +25168,7 @@ class KernelChecksecCommand(GenericCommand):
 
 
 @register_command
-class DwarfExceptionHandlerInfoCommand(GenericCommand):
+class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
     """Dump the DWARF exception handler information with the byte code itself."""
 
     _cmdline_ = "dwarf-exception-handler"
@@ -25252,26 +25252,95 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    # FDE data encoding
-    DW_EH_PE_ptr      = 0x00
-    DW_EH_PE_uleb128  = 0x01
-    DW_EH_PE_udata2   = 0x02
-    DW_EH_PE_udata4   = 0x03
-    DW_EH_PE_udata8   = 0x04
-    DW_EH_PE_signed   = 0x08 # noqa: F841
-    DW_EH_PE_sleb128  = 0x09
-    DW_EH_PE_sdata2   = 0x0a
-    DW_EH_PE_sdata4   = 0x0b
-    DW_EH_PE_sdata8   = 0x0c
-    # FDE flags
-    DW_EH_PE_absptr   = 0x00
-    DW_EH_PE_pcrel    = 0x10
-    DW_EH_PE_textrel  = 0x20
-    DW_EH_PE_datarel  = 0x30
-    DW_EH_PE_funcrel  = 0x40
-    DW_EH_PE_aligned  = 0x50
-    DW_EH_PE_indirect = 0x80
-    DW_EH_PE_omit     = 0xff
+    class ErrorEntry:
+        def __init__(self, *args):
+            self.tag = "error"
+            assert len(args) == 2
+            self.msg1 = args[0]
+            self.msg2 = args[1]
+            return
+
+        def __str__(self):
+            msg = "[!] {:s}\n{:s}".format(self.msg1, self.msg2)
+            return msg
+
+    class SeparatorEntry:
+        def __init__(self, *args):
+            self.tag = "separator"
+            assert 2 <= len(args) <= 3
+            self.pos = args[0]
+            self.name = args[1]
+            if len(args) == 3 and args[2] is not None:
+                self.extra = args[2]
+            else:
+                self.extra = ""
+            return
+
+        def __str__(self):
+            if self.extra:
+                extra_s = "  |  {:s}".format(self.extra)
+            else:
+                extra_s = ""
+            msg = "[{:#06x}] {:4s}{:s}".format(self.pos, self.name, extra_s)
+            msg = titlify(msg, color="red", msg_color="red")
+            return msg
+
+    class DataEntry:
+        def __init__(self, *args):
+            self.tag = "data"
+            assert 3 <= len(args) <= 5
+            self.pos = args[0]
+            self.raw_data = args[1]
+            self.name = args[2]
+            if len(args) >= 4 and args[3] is not None:
+                self.value = args[3]
+            else:
+                self.value = ""
+            if len(args) == 5 and args[4] is not None:
+                self.extra = args[4]
+            else:
+                self.extra = ""
+            return
+
+        def __str__(self):
+            pos_s = "[{:#08x}|+{:#06x}]".format(self.sec.offset + self.pos, self.pos)
+
+            if self.raw_data is None:
+                raw_data_s = ""
+            elif isinstance(self.raw_data, int):
+                raw_data_s = "{:02x}".format(self.raw_data)
+            elif isinstance(self.raw_data, bytes):
+                raw_data_s = " ".join(["{:02x}".format(x) for x in self.raw_data])
+            else:
+                raise
+
+            if isinstance(self.value, str):
+                value_s = self.value
+            elif isinstance(self.value, int):
+                value_s = "{:#018x}".format(self.value)
+            elif isinstance(self.value, list):
+                value_s = " ".join(["{:#018x}".format(x) for x in self.value])
+            else:
+                raise
+
+            if self.extra:
+                extra_s = "  |  {:s}".format(self.extra)
+            else:
+                extra_s = ""
+
+            if self.value is not None:
+                msg = "{:s} {:<23s} {:<30s}: {:<18s}{:s}".format(
+                    pos_s, raw_data_s, self.name, value_s, extra_s,
+                )
+            else:
+                msg = "{:s} {:<23s} {:<50s}{:s}".format(
+                    pos_s, raw_data_s, self.name, extra_s,
+                )
+            return msg
+
+        def add_sec(self, sec):
+            self.sec = sec
+            return
 
     def format_entry(self, sec, entries):
         out = []
@@ -25286,43 +25355,11 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
         legend = ["FileOff", "Offset", "Raw bytes", "Name", "Value", "Extra Information"]
         out.append(GefUtil.make_legend(fmt.format(*legend)))
 
+        # print each entries
         for entry in entries:
-            if len(entry) == 1:
-                out.append("[!] " + entry[0])
-
-            elif len(entry) == 3: # separation
-                pos, name, extra = entry
-                if extra:
-                    extra_s = "  |  {:s}".format(extra)
-                else:
-                    extra_s = ""
-                out.append(titlify("[{:#06x}] {:4s}{:s}".format(pos, name, extra_s), color="red", msg_color="red"))
-
-            elif len(entry) == 5: # data
-                pos, raw_data, name, value, extra = entry
-
-                pos_s = "[{:#08x}|+{:#06x}]".format(sec.offset + pos, pos)
-
-                if raw_data is None:
-                    raw_data_s = ""
-                elif isinstance(raw_data, int):
-                    raw_data_s = "{:02x}".format(raw_data)
-                elif isinstance(raw_data, bytes):
-                    raw_data_s = " ".join(["{:02x}".format(x) for x in raw_data])
-                else:
-                    raise
-
-                if isinstance(value, str):
-                    value_s = value
-                elif isinstance(value, int):
-                    value_s = "{:#018x}".format(value)
-                elif isinstance(value, list):
-                    value_s = " ".join(["{:#018x}".format(x) for x in value])
-
-                if value is not None:
-                    out.append("{:s} {:<23s} {:<30s}: {:<18s}  |  {:s}".format(pos_s, raw_data_s, name, value_s, extra))
-                else:
-                    out.append("{:s} {:<23s} {:<50s}  |  {:s}".format(pos_s, raw_data_s, name, extra))
+            if entry.tag == "data":
+                entry.add_sec(sec)
+            out.append(str(entry))
         return out
 
     def get_uleb128(self, data, pos):
@@ -25375,28 +25412,55 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
         return pos + 2, u2i(acc)
 
     def read_4ubyte(self, data, pos):
-        acc = (data[pos + 3] << 24) | (data[pos + 2] << 16) | (data[pos + 1] << 8) | data[pos]
+        acc = (data[pos + 3] << 24) | (data[pos + 2] << 16)
+        acc |= (data[pos + 1] << 8) | data[pos]
         return pos + 4, acc
 
     def read_4sbyte(self, data, pos):
         pI = lambda a: struct.pack("<I", a & 0xffffffff)
         ui = lambda a: struct.unpack("<i", a)[0]
         u2i = lambda a: ui(pI(a))
-        acc = (data[pos + 3] << 24) | (data[pos + 2] << 16) | (data[pos + 1] << 8) | data[pos]
+        acc = (data[pos + 3] << 24) | (data[pos + 2] << 16)
+        acc |= (data[pos + 1] << 8) | data[pos]
         return pos + 4, u2i(acc)
 
     def read_8ubyte(self, data, pos):
-        acc = (data[pos + 7] << 56) | (data[pos + 6] << 48) | (data[pos + 5] << 40) | (data[pos + 4] << 32)
-        acc |= (data[pos + 3] << 24) | (data[pos + 2] << 16) | (data[pos + 1] << 8) | data[pos]
+        acc = (data[pos + 7] << 56) | (data[pos + 6] << 48)
+        acc |= (data[pos + 5] << 40) | (data[pos + 4] << 32)
+        acc |= (data[pos + 3] << 24) | (data[pos + 2] << 16)
+        acc |= (data[pos + 1] << 8) | data[pos]
         return pos + 8, acc
 
     def read_8sbyte(self, data, pos):
         pQ = lambda a: struct.pack("<Q", a & 0xffffffffffffffff)
         uq = lambda a: struct.unpack("<q", a)[0]
         u2i = lambda a: uq(pQ(a))
-        acc = (data[pos + 7] << 56) | (data[pos + 6] << 48) | (data[pos + 5] << 40) | (data[pos + 4] << 32)
-        acc |= (data[pos + 3] << 24) | (data[pos + 2] << 16) | (data[pos + 1] << 8) | data[pos]
+        acc = (data[pos + 7] << 56) | (data[pos + 6] << 48)
+        acc |= (data[pos + 5] << 40) | (data[pos + 4] << 32)
+        acc |= (data[pos + 3] << 24) | (data[pos + 2] << 16)
+        acc |= (data[pos + 1] << 8) | data[pos]
         return pos + 8, u2i(acc)
+
+    # FDE data encoding
+    DW_EH_PE_ptr      = 0x00
+    DW_EH_PE_uleb128  = 0x01
+    DW_EH_PE_udata2   = 0x02
+    DW_EH_PE_udata4   = 0x03
+    DW_EH_PE_udata8   = 0x04
+    DW_EH_PE_signed   = 0x08 # noqa: F841
+    DW_EH_PE_sleb128  = 0x09
+    DW_EH_PE_sdata2   = 0x0a
+    DW_EH_PE_sdata4   = 0x0b
+    DW_EH_PE_sdata8   = 0x0c
+    # FDE flags
+    DW_EH_PE_absptr   = 0x00
+    DW_EH_PE_pcrel    = 0x10
+    DW_EH_PE_textrel  = 0x20
+    DW_EH_PE_datarel  = 0x30
+    DW_EH_PE_funcrel  = 0x40
+    DW_EH_PE_aligned  = 0x50
+    DW_EH_PE_indirect = 0x80
+    DW_EH_PE_omit     = 0xff
 
     def read_encoded(self, encoding, data, pos):
         if (encoding & 0xf) == self.DW_EH_PE_ptr:
@@ -25473,7 +25537,9 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
             return 8
         elif encoding == self.DW_EH_PE_omit:
             return 0
-        err("Unsupported pointer encoding: {:#x}, assuming pointer size of {:d}".format(encoding, ptr_size))
+        err("Unsupported pointer encoding: {:#x}, assuming pointer size of {:d}".format(
+            encoding, ptr_size,
+        ))
         return 0
 
     def parse_eh_frame_hdr(self, eh_frame_hdr):
@@ -25486,22 +25552,31 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
 
         try:
             new_pos, version = self.read_1ubyte(data, pos)
-            entries.append([pos, data[pos:new_pos], "version", version, ""])
+            entries.append(self.DataEntry(pos, data[pos:new_pos], "version", version))
             pos = new_pos
 
             new_pos, eh_frame_ptr_enc = self.read_1ubyte(data, pos)
             encoding_str = self.get_encoding_str(eh_frame_ptr_enc)
-            entries.append([pos, data[pos:new_pos], "eh_frame_ptr_enc", eh_frame_ptr_enc, "encoding: {:s}".format(encoding_str)])
+            entries.append(self.DataEntry(
+                pos, data[pos:new_pos], "eh_frame_ptr_enc", eh_frame_ptr_enc,
+                "encoding: {:s}".format(encoding_str),
+            ))
             pos = new_pos
 
             new_pos, fde_count_enc = self.read_1ubyte(data, pos)
             encoding_str = self.get_encoding_str(fde_count_enc)
-            entries.append([pos, data[pos:new_pos], "fde_count_enc", fde_count_enc, "encoding: {:s}".format(encoding_str)])
+            entries.append(self.DataEntry(
+                pos, data[pos:new_pos], "fde_count_enc", fde_count_enc,
+                "encoding: {:s}".format(encoding_str),
+            ))
             pos = new_pos
 
             new_pos, table_enc = self.read_1ubyte(data, pos)
             encoding_str = self.get_encoding_str(table_enc)
-            entries.append([pos, data[pos:new_pos], "table_enc", table_enc, "encoding: {:s}".format(encoding_str)])
+            entries.append(self.DataEntry(
+                pos, data[pos:new_pos], "table_enc", table_enc,
+                "encoding: {:s}".format(encoding_str),
+            ))
             pos = new_pos
 
             eh_frame_ptr = 0
@@ -25513,21 +25588,25 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                         extra_s = "vma: $codebase+{:#x}".format(load_base + elf_offset)
                     else:
                         extra_s = "vma: {:#x}".format(load_base + elf_offset)
-                    entries.append([pos, data[pos:new_pos], "eh_frame_ptr", elf_offset, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos], "eh_frame_ptr", elf_offset, extra_s,
+                    ))
                 else:
-                    entries.append([pos, data[pos:new_pos], "eh_frame_ptr", eh_frame_ptr, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos], "eh_frame_ptr", eh_frame_ptr,
+                    ))
                 pos = new_pos
 
             fde_count = 0
             if fde_count_enc != self.DW_EH_PE_omit:
                 new_pos, fde_count = self.read_encoded(fde_count_enc, data, pos)
-                entries.append([pos, data[pos:new_pos], "fde_count", fde_count, ""])
+                entries.append(self.DataEntry(pos, data[pos:new_pos], "fde_count", fde_count))
                 pos = new_pos
 
             table_cnt = 0
             if table_enc == (self.DW_EH_PE_datarel | self.DW_EH_PE_sdata4):
                 while fde_count and data[pos:]:
-                    entries.append([pos, "Table[{:4d}]".format(table_cnt), ""])
+                    entries.append(self.SeparatorEntry(pos, "Table[{:4d}]".format(table_cnt)))
 
                     new_pos, initial_loc = self.read_4sbyte(data, pos)
                     initial_offset = shdr.sh_offset + initial_loc
@@ -25535,7 +25614,9 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                         extra_s = "vma: $codebase+{:#x}".format(load_base + initial_offset)
                     else:
                         extra_s = "vma: {:#x}".format(load_base + initial_offset)
-                    entries.append([pos, data[pos:new_pos], "initial_loc", initial_offset, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos], "initial_loc", initial_offset, extra_s,
+                    ))
                     pos = new_pos
 
                     new_pos, fde_offset = self.read_4sbyte(data, pos)
@@ -25544,13 +25625,15 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                         extra_s = "vma: $codebase+{:#x}".format(load_base + shdr.sh_offset + fde_offset)
                     else:
                         extra_s = "vma: {:#x}".format(load_base + shdr.sh_offset + fde_offset)
-                    entries.append([pos, data[pos:new_pos], "fde", fde_offset_adjusted, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos], "fde", fde_offset_adjusted, extra_s,
+                    ))
                     pos = new_pos
 
                     table_cnt += 1
         except Exception:
-            exc_type, exc_value, exc_traceback = sys.exc_info()
-            entries.append(["Parse Error\n{}".format(exc_value)])
+            _exc_type, exc_value, _exc_traceback = sys.exc_info()
+            entries.append(self.ErrorEntry("Parse Error", exc_value))
         return entries
 
     def parse_eh_frame(self, eh_frame):
@@ -25570,15 +25653,19 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                 # parse length
                 new_pos, unit_length = self.read_4ubyte(data, pos)
                 length = 4 # default
-                tmp_entries.append([pos, data[pos:new_pos], "length", unit_length, ""])
+                tmp_entries.append(self.DataEntry(
+                    pos, data[pos:new_pos], "length", unit_length,
+                ))
                 pos = new_pos
                 if unit_length == 0xffffffff:
                     new_pos, unit_length = self.read_8ubyte(data, pos)
                     length = 8
-                    tmp_entries.append([pos, data[pos:new_pos], "extended_length", unit_length, ""])
+                    tmp_entries.append(self.DataEntry(
+                        pos, data[pos:new_pos], "extended_length", unit_length,
+                    ))
                     pos = new_pos
                 if unit_length == 0:
-                    entries.append([offset, "Zero terminator", ""])
+                    entries.append(self.SeparatorEntry(offset, "Zero terminator"))
                     entries += tmp_entries
                     tmp_entries = []
                     continue
@@ -25593,10 +25680,16 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                 else:
                     new_pos, cie_id = self.read_8ubyte(data, pos)
                 if cie_id == 0:
-                    tmp_entries.append([pos, data[pos:new_pos], "cie_id", cie_id, "type: CIE"])
+                    tmp_entries.append(self.DataEntry(
+                        pos, data[pos:new_pos], "cie_id", cie_id, "type: CIE",
+                    ))
                 else:
-                    extra_s = "type: FDE, Associated_CIE: {:#x}(={:#x}-{:#x})".format(start - cie_id, start, cie_id)
-                    tmp_entries.append([pos, data[pos:new_pos], "cie_pointer", cie_id, extra_s])
+                    extra_s = "type: FDE, Associated_CIE: {:#x}(={:#x}-{:#x})".format(
+                        start - cie_id, start, cie_id,
+                    )
+                    tmp_entries.append(
+                        self.DataEntry(pos, data[pos:new_pos], "cie_pointer", cie_id, extra_s,
+                    ))
                 pos = new_pos
 
                 version = 2
@@ -25606,13 +25699,13 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                 vma_base = 0
 
                 if cie_id == 0:  # CIE parsing
-                    entries.append([offset, "CIE", ""])
+                    entries.append(self.SeparatorEntry(offset, "CIE"))
                     entries += tmp_entries
                     tmp_entries = []
 
                     # parse version
                     new_pos, version = self.read_1ubyte(data, pos)
-                    entries.append([pos, data[pos:new_pos], "version", version, ""])
+                    entries.append(self.DataEntry(pos, data[pos:new_pos], "version", version))
                     pos = new_pos
 
                     # parse augmentation string
@@ -25622,24 +25715,31 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                         augmentation += chr(data[pos])
                         pos += 1
                     pos += 1 # skip NUL
-                    entries.append([orig_pos, data[orig_pos:pos], "augmentation_string", '"{:s}"'.format(augmentation), ""])
+                    entries.append(self.DataEntry(
+                        orig_pos, data[orig_pos:pos],
+                        "augmentation_string", '"{:s}"'.format(augmentation),
+                    ))
 
                     # parse ptr_size, segment_size
                     segment_size = 0
                     if version >= 4:
                         new_pos, ptr_size = self.read_1ubyte(data, pos)
-                        entries.append([pos, data[pos:new_pos], "ptr_size", ptr_size, ""])
+                        entries.append(self.DataEntry(pos, data[pos:new_pos], "ptr_size", ptr_size))
                         pos = new_pos
                         new_pos, segment_size = self.read_1ubyte(data, pos)
-                        entries.append([pos, data[pos:new_pos], "segment_size", segment_size, ""])
+                        entries.append(self.DataEntry(pos, data[pos:new_pos], "segment_size", segment_size))
                         pos = new_pos
 
                     # parse code/data alignment factor
                     new_pos, code_alignment_factor = self.get_uleb128(data, pos)
-                    entries.append([pos, data[pos:new_pos], "code_alignment_factor", code_alignment_factor, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos], "code_alignment_factor", code_alignment_factor,
+                    ))
                     pos = new_pos
                     new_pos, data_alignment_factor = self.get_sleb128(data, pos)
-                    entries.append([pos, data[pos:new_pos], "data_alignment_factor", data_alignment_factor, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos], "data_alignment_factor", data_alignment_factor,
+                    ))
                     pos = new_pos
 
                     # parse augmentation data
@@ -25648,25 +25748,33 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                             new_pos, adjust = self.read_4ubyte(data, pos)
                         else:
                             new_pos, adjust = self.read_8ubyte(data, pos)
-                        entries.append([pos, data[pos:new_pos], "eh_data", adjust, ""])
+                        entries.append(self.DataEntry(pos, data[pos:new_pos], "eh_data", adjust))
                         pos = new_pos
 
                     if version == 1:
                         new_pos, return_address_register = self.read_1ubyte(data, pos)
                         ra_reg_name = self.get_register_name(return_address_register)
                         extra_s = "Reg: {:s}".format(ra_reg_name)
-                        entries.append([pos, data[pos:new_pos], "return_address_register", return_address_register, extra_s])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            "return_address_register", return_address_register, extra_s,
+                        ))
                         pos = new_pos
                     else:
                         new_pos, return_address_register = self.get_uleb128(data, pos)
                         ra_reg_name = self.get_register_name(return_address_register)
                         extra_s = "Reg: {:s}".format(ra_reg_name)
-                        entries.append([pos, data[pos:new_pos], "return_address_register", return_address_register, extra_s])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            "return_address_register", return_address_register, extra_s,
+                        ))
                         pos = new_pos
 
                     if augmentation[0] == "z":
                         new_pos, augmentation_len = self.get_uleb128(data, pos)
-                        entries.append([pos, data[pos:new_pos], "augmentation_len", augmentation_len, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos], "augmentation_len", augmentation_len,
+                        ))
                         pos = new_pos
 
                         for cp in augmentation[1:]:
@@ -25674,35 +25782,50 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                                 new_pos, fde_encoding = self.read_1ubyte(data, pos)
                                 encoding_str = self.get_encoding_str(fde_encoding)
                                 extra_s = "FDE address encoding: {:s}".format(encoding_str)
-                                entries.append([pos, data[pos:new_pos], "augmentation_data(R)", fde_encoding, extra_s])
+                                entries.append(self.DataEntry(
+                                    pos, data[pos:new_pos], "augmentation_data(R)", fde_encoding, extra_s,
+                                ))
                                 pos = new_pos
                             elif cp == "L":
                                 new_pos, lsda_encoding = self.read_1ubyte(data, pos)
                                 encoding_str = self.get_encoding_str(lsda_encoding)
                                 extra_s = "LSDA pointer encoding: {:s}".format(encoding_str)
-                                entries.append([pos, data[pos:new_pos], "augmentation_data(L)", lsda_encoding, extra_s])
+                                entries.append(self.DataEntry(
+                                    pos, data[pos:new_pos], "augmentation_data(L)", lsda_encoding, extra_s,
+                                ))
                                 pos = new_pos
                             elif cp == "P":
                                 new_pos, p_encoding = self.read_1ubyte(data, pos)
                                 encoding_str = self.get_encoding_str(p_encoding)
                                 extra_s = "Personality pointer encoding: {:s}".format(encoding_str)
-                                entries.append([pos, data[pos:new_pos], "augmentation_data(P)", p_encoding, extra_s])
+                                entries.append(self.DataEntry(
+                                    pos, data[pos:new_pos], "augmentation_data(P)", p_encoding, extra_s,
+                                ))
                                 pos = new_pos
                                 new_pos, p_addr = self.read_encoded(p_encoding, data, pos)
                                 if (p_encoding & 0x70) == self.DW_EH_PE_pcrel:
                                     p_addr += shdr.sh_offset + pos
                                     if self.elf.is_pie():
-                                        extra_s = "Personality pointer address: $codebase+{:#x}".format(load_base + p_addr)
+                                        extra_s = "Personality pointer address: $codebase+{:#x}".format(
+                                            load_base + p_addr,
+                                        )
                                     else:
-                                        extra_s = "Personality pointer address: {:#x}".format(load_base + p_addr)
+                                        extra_s = "Personality pointer address: {:#x}".format(
+                                            load_base + p_addr,
+                                        )
                                 else:
                                     extra_s = "Personality pointer address"
-                                entries.append([pos, data[pos:new_pos], "augmentation_data(P)", p_addr, extra_s])
+                                entries.append(self.DataEntry(
+                                    pos, data[pos:new_pos], "augmentation_data(P)", p_addr, extra_s,
+                                ))
                                 pos = new_pos
                             else: # unknown
                                 new_pos, x = self.read_1ubyte(data, pos)
-                                entries.append([pos, data[pos:new_pos], "augmentation_data({:s})".format(cp), x, ""])
+                                entries.append(self.DataEntry(
+                                    pos, data[pos:new_pos], "augmentation_data({:s})".format(cp), x,
+                                ))
                                 pos = new_pos
+
                     if ptr_size == 4 or ptr_size == 8:
                         _cie = {}
                         _cie["cie_offset"] = offset
@@ -25719,7 +25842,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                 else: # FDE parsing
                     cie = [x for x in cies if start - cie_id == x.cie_offset][0]
 
-                    entries.append([offset, "FDE", ""])
+                    entries.append(self.SeparatorEntry(offset, "FDE"))
                     entries += tmp_entries # unit_length, cie_pointer
                     tmp_entries = []
 
@@ -25741,9 +25864,13 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                             extra_s = "pc_begin vma: $codebase+{:#x}".format(load_base + vma_base)
                         else:
                             extra_s = "pc_begin vma: {:#x}".format(load_base + vma_base)
-                        entries.append([pos, data[pos:new_pos], "pc_begin", vma_base, extra_s])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos], "pc_begin", vma_base, extra_s,
+                        ))
                     else:
-                        entries.append([pos, data[pos:new_pos], "pc_begin", initial_location, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos], "pc_begin", initial_location,
+                        ))
                     pos = new_pos
 
                     # parse pc_range
@@ -25763,13 +25890,17 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                         extra_s = "pc_end vma: $codebase+{:#x}".format(load_base + end_off)
                     else:
                         extra_s = "pc_end vma: {:#x}".format(load_base + end_off)
-                    entries.append([pos, data[pos:new_pos], "pc_range", pc_range, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos], "pc_range", pc_range, extra_s,
+                    ))
                     pos = new_pos
 
                     # parse augmentation
                     if cie.augmentation[0] == "z":
                         new_pos, augmentation_len = self.get_uleb128(data, pos)
-                        entries.append([pos, data[pos:new_pos], "augmentation_len", augmentation_len, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos], "augmentation_len", augmentation_len,
+                        ))
                         pos = new_pos
 
                         aug_end = pos + augmentation_len
@@ -25780,23 +25911,33 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                                     if (cie.lsda_encoding & 0x70) == self.DW_EH_PE_pcrel:
                                         lsda_pointer += shdr.sh_offset + pos
                                         if self.elf.is_pie():
-                                            extra_s = "LSDA pointer vma: $codebase+{:#x}".format(load_base + lsda_pointer)
+                                            extra_s = "LSDA pointer vma: $codebase+{:#x}".format(
+                                                load_base + lsda_pointer,
+                                            )
                                         else:
-                                            extra_s = "LSDA pointer vma: {:#x}".format(load_base + lsda_pointer)
-                                        entries.append([pos, data[pos:new_pos], "augmentation_data(L)", lsda_pointer, extra_s])
+                                            extra_s = "LSDA pointer vma: {:#x}".format(
+                                                load_base + lsda_pointer,
+                                            )
+                                        entries.append(self.DataEntry(
+                                            pos, data[pos:new_pos],
+                                            "augmentation_data(L)", lsda_pointer, extra_s,
+                                        ))
                                     else:
-                                        entries.append([pos, data[pos:new_pos], "augmentation_data(L)", lsda_pointer, "LSDA pointer"])
+                                        entries.append(self.DataEntry(
+                                            pos, data[pos:new_pos],
+                                            "augmentation_data(L)", lsda_pointer, "LSDA pointer",
+                                        ))
                                     pos = new_pos
                             if pos < aug_end:
-                                entries.append([pos, data[pos:aug_end], "?", "", ""])
+                                entries.append(self.DataEntry(pos, data[pos:aug_end], "?"))
                             pos = aug_end
 
                 # common
                 entries += self.parse_cfa_program(data, pos, cie_end, vma_base, version, cie)
                 pos = cie_end
         except Exception:
-            exc_type, exc_value, exc_traceback = sys.exc_info()
-            entries.append(["Parse Error\n{}".format(exc_value)])
+            _exc_type, exc_value, _exc_traceback = sys.exc_info()
+            entries.append(self.ErrorEntry("Parse Error", exc_value))
         return entries
 
     DW_CFA_advance_loc                  = 0x40
@@ -25907,93 +26048,123 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
         indent = " " * 4
 
         entries = []
-        entries.append([pos, b"", "program", None, ""])
+        entries.append(self.DataEntry(pos, b"", "program"))
         try:
             while pos < pos_end:
                 new_pos, opcode = self.read_1ubyte(data, pos)
 
                 if opcode < self.DW_CFA_advance_loc:
                     if opcode == self.DW_CFA_nop:
-                        entries.append([pos, data[pos:new_pos], indent + "nop", None, ""])
+                        entries.append(self.DataEntry(pos, data[pos:new_pos], indent + "nop"))
                     elif opcode == self.DW_CFA_set_loc:
                         new_pos, op1 = self.read_encoded(encoding, data, new_pos)
                         pc = vma_base + op1
-                        entries.append([pos, data[pos:new_pos], indent + "set_loc {:#x} to {:#x}".format(op1, pc), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "set_loc {:#x} to {:#x}".format(op1, pc),
+                        ))
                     elif opcode == self.DW_CFA_advance_loc1:
                         op1 = data[new_pos]
                         new_pos += 1
                         pc += op1 * code_align
-                        entries.append([pos, data[pos:new_pos], indent + "advance_loc1 {:#x} to {:#x}".format(op1, pc), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "advance_loc1 {:#x} to {:#x}".format(op1, pc),
+                        ))
                     elif opcode == self.DW_CFA_advance_loc2:
                         new_pos, op1 = self.read_2ubyte(data, new_pos)
                         pc += op1 * code_align
-                        entries.append([pos, data[pos:new_pos], indent + "advance_loc2 {:#x} to {:#x}".format(op1, pc), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "advance_loc2 {:#x} to {:#x}".format(op1, pc),
+                        ))
                     elif opcode == self.DW_CFA_advance_loc4:
                         new_pos, op1 = self.read_4ubyte(data, new_pos)
                         pc += op1 * code_align
-                        entries.append([pos, data[pos:new_pos], indent + "advance_loc4 {:#x} to {:#x}".format(op1, pc), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "advance_loc4 {:#x} to {:#x}".format(op1, pc),
+                        ))
                     elif opcode == self.DW_CFA_offset_extended:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
                         new_pos, op2 = self.get_uleb128(data, new_pos)
                         regname = self.get_register_name(op1)
                         off = op2 * data_align
-                        entries.append([
+                        entries.append(self.DataEntry(
                             pos, data[pos:new_pos],
                             indent + "offset_extended r{:d} ({:s}) at cfa{:+#x}".format(op1, regname, off),
-                            None, "",
-                        ])
+                        ))
                     elif opcode == self.DW_CFA_restore_extended:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
                         regname = self.get_register_name(op1)
-                        entries.append([pos, data[pos:new_pos], indent + "restore_extended r{:d} ({:s})".fomart(op1, regname), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "restore_extended r{:d} ({:s})".fomart(op1, regname),
+                        ))
                     elif opcode == self.DW_CFA_undefined:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
                         regname = self.get_register_name(op1)
-                        entries.append([pos, data[pos:new_pos], indent + "undefined r{:d} ({:s})".format(op1, regname), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "undefined r{:d} ({:s})".format(op1, regname),
+                        ))
                     elif opcode == self.DW_CFA_same_value:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
                         regname = self.get_register_name(op1)
-                        entries.append([pos, data[pos:new_pos], indent + "same_value r{:d} ({:s})".format(op1, regname), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "same_value r{:d} ({:s})".format(op1, regname),
+                        ))
                     elif opcode == self.DW_CFA_register:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
                         new_pos, op2 = self.get_uleb128(data, new_pos)
                         regname1 = self.get_register_name(op1)
                         regname2 = self.get_register_name(op2)
-                        entries.append([
+                        entries.append(self.DataEntry(
                             pos, data[pos:new_pos],
                             indent + "register r{:d} ({:s}) in r{:d} ({:s})".format(op1, regname1, op2, regname2),
-                            None, "",
-                        ])
+                        ))
                     elif opcode == self.DW_CFA_remember_state:
-                        entries.append([pos, data[pos:new_pos], indent + "remember_state", None, ""])
+                        entries.append(self.DataEntry(pos, data[pos:new_pos], indent + "remember_state"))
                     elif opcode == self.DW_CFA_restore_state:
-                        entries.append([pos, data[pos:new_pos], indent + "restore_state", None, ""])
+                        entries.append(self.DataEntry(pos, data[pos:new_pos], indent + "restore_state"))
                     elif opcode == self.DW_CFA_def_cfa:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
                         new_pos, op2 = self.get_uleb128(data, new_pos)
                         regname = self.get_register_name(op1)
-                        entries.append([
+                        entries.append(self.DataEntry(
                             pos, data[pos:new_pos],
                             indent + "def_cfa r{:d} ({:s}) at offset {:#x}".format(op1, regname, op2),
-                            None, "",
-                        ])
+                        ))
                     elif opcode == self.DW_CFA_def_cfa_register:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
                         regname = self.get_register_name(op1)
-                        entries.append([pos, data[pos:new_pos], indent + "def_cfa_register r{:d} ({:s})".format(op1, regname), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "def_cfa_register r{:d} ({:s})".format(op1, regname),
+                        ))
                     elif opcode == self.DW_CFA_def_cfa_offset:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
-                        entries.append([pos, data[pos:new_pos], indent + "def_cfa_offset {:#x}".format(op1), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "def_cfa_offset {:#x}".format(op1),
+                        ))
                     elif opcode == self.DW_CFA_def_cfa_expression:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
-                        entries.append([pos, data[pos:new_pos], indent + "def_cfa_expression {:#x}".format(op1), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "def_cfa_expression {:#x}".format(op1),
+                        ))
                         entries += self.parse_ops(version, ptr_size, op1, data, new_pos)
                         new_pos += op1
                     elif opcode == self.DW_CFA_expression:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
                         new_pos, op2 = self.get_uleb128(data, new_pos)
                         regname = self.get_register_name(op1)
-                        entries.append([pos, data[pos:new_pos], indent + "expression r{:d} ({:s})".format(op1, regname), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "expression r{:d} ({:s})".format(op1, regname),
+                        ))
                         entries += self.parse_ops(version, ptr_size, op2, data, new_pos)
                         new_pos += op2
                     elif opcode == self.DW_CFA_offset_extended_sf:
@@ -26001,73 +26172,107 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                         new_pos, op2 = self.get_uleb128(data, new_pos)
                         regname = self.get_register_name(op1)
                         off = op2 * data_align
-                        entries.append([
+                        entries.append(self.DataEntry(
                             pos, data[pos:new_pos],
                             indent + "offset_extended_sf r{:d} ({:s}) at cfa{:+#x}".format(op1, regname, off),
-                            None, "",
-                        ])
+                        ))
                     elif opcode == self.DW_CFA_def_cfa_sf:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
                         new_pos, op2 = self.get_uleb128(data, new_pos)
                         regname = self.get_register_name(op1)
                         off = op2 * data_align
-                        entries.append([
+                        entries.append(self.DataEntry(
                             pos, data[pos:new_pos],
                             indent + "def_cfa_sf r{:d} ({:s}) at offset {:#x}".format(op1, regname, off),
-                            None, "",
-                        ])
+                        ))
                     elif opcode == self.DW_CFA_def_cfa_offset_sf:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
-                        entries.append([pos, data[pos:new_pos], indent + "def_cfa_offset_sf {:#x}".format(op1 * data_align), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "def_cfa_offset_sf {:#x}".format(op1 * data_align),
+                        ))
                     elif opcode == self.DW_CFA_val_offset:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
                         new_pos, op2 = self.get_uleb128(data, new_pos)
                         off = op2 * data_align
-                        entries.append([pos, data[pos:new_pos], indent + "val_offset {:#x} at offset {:#x}".format(op1, off), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "val_offset {:#x} at offset {:#x}".format(op1, off),
+                        ))
                     elif opcode == self.DW_CFA_val_offset_sf:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
                         new_pos, op2 = self.get_uleb128(data, new_pos)
                         off = op2 * data_align
-                        entries.append([pos, data[pos:new_pos], indent + "val_offset_sf {:#x} at offset {:#x}".format(op1, off), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "val_offset_sf {:#x} at offset {:#x}".format(op1, off),
+                        ))
                     elif opcode == self.DW_CFA_val_expression:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
                         new_pos, op2 = self.get_uleb128(data, new_pos)
                         regname = self.get_register_name(op1)
-                        entries.append([pos, data[pos:new_pos], indent + "val_expression r{:d} ({:s})".format(op1, regname), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "val_expression r{:d} ({:s})".format(op1, regname),
+                        ))
                         entries += self.parse_ops(version, ptr_size, op2, data, new_pos)
                         new_pos += op2
                     elif opcode == self.DW_CFA_MIPS_advance_loc8:
                         new_pos, op1 = self.read_8ubyte(data, new_pos)
                         pc += op1 * code_align
-                        entries.append([pos, data[pos:new_pos], indent + "MIPS_advance_loc8 {:#x} to {:#x}".format(op1, pc), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "MIPS_advance_loc8 {:#x} to {:#x}".format(op1, pc),
+                        ))
                     elif opcode == self.DW_CFA_GNU_window_save:
                         if self.elf.e_machine == Elf.EM_AARCH64:
-                            entries.append([pos, data[pos:new_pos], indent + "AARCH64_negate_ra_state", None, ""])
+                            entries.append(self.DataEntry(
+                                pos, data[pos:new_pos],
+                                indent + "AARCH64_negate_ra_state",
+                            ))
                         else:
-                            entries.append([pos, data[pos:new_pos], indent + "GNU_window_save", None, ""])
+                            entries.append(self.DataEntry(
+                                pos, data[pos:new_pos],
+                                indent + "GNU_window_save",
+                            ))
                     elif opcode == self.DW_CFA_GNU_args_size:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
-                        entries.append([pos, data[pos:new_pos], indent + "args_size {:#x}".format(op1), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "args_size {:#x}".format(op1),
+                        ))
                     else:
-                        entries.append([pos, data[pos:new_pos], indent + "??? {:#x}".format(opcode), None, ""])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos],
+                            indent + "??? {:#x}".format(opcode),
+                        ))
                 elif opcode < self.DW_CFA_offset:
                     op1 = opcode & 0x3f
                     pc += op1 * code_align
-                    entries.append([pos, data[pos:new_pos], indent + "advance_loc {:d} to {:#x}".format(op1, pc), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "advance_loc {:d} to {:#x}".format(op1, pc),
+                    ))
                 elif opcode < self.DW_CFA_restore:
                     op1 = opcode & 0x3f
                     new_pos, op2 = self.get_uleb128(data, new_pos)
                     regname = self.get_register_name(op1)
                     off = op2 * data_align
-                    entries.append([pos, data[pos:new_pos], indent + "offset r{:d} ({:s}) at cfa{:+#x}".format(op1, regname, off), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "offset r{:d} ({:s}) at cfa{:+#x}".format(op1, regname, off),
+                    ))
                 else:
                     op1 = opcode & 0x3f
                     regname = self.get_register_name(op1)
-                    entries.append([pos, data[pos:new_pos], indent + "restore r{:d}".format(op1), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "restore r{:d}".format(op1),
+                    ))
                 pos = new_pos
         except Exception:
-            exc_type, exc_value, exc_traceback = sys.exc_info()
-            entries.append(["Parse Error\n{}".format(exc_value)])
+            _exc_type, exc_value, _exc_traceback = sys.exc_info()
+            entries.append(self.ErrorEntry("Parse Error", exc_value))
         return entries
 
     DW_OP_addr                 = 0x03  # Constant address
@@ -26449,7 +26654,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
         ref_size = addrsize if vers < 3 else 0
 
         if length == 0:
-            entries.append([pos, b"", indent + "(empty)", None, ""])
+            entries.append(self.DataEntry(pos, b"", indent + "(empty)"))
             return entries
 
         offset = 0
@@ -26464,155 +26669,278 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                     elif addrsize == 8:
                         new_pos, d = self.read_8ubyte(data, new_pos)
                     extra_s = "push {:#x}".format(d)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_call_ref, self.DW_OP_GNU_variable_value]:
                     if ref_size == 4:
                         new_pos, d = self.read_4ubyte(data, new_pos)
                     else:
                         new_pos, d = self.read_8ubyte(data, new_pos)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                    ))
                 elif op in [self.DW_OP_deref]:
                     typ = {4: "uint", 8: "ulong"}[addrsize]
                     extra_s = "pop; push *({:s}*)popped_value".format(typ)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s}".format(offset, op_name), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s}".format(offset, op_name),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_xderef]:
                     typ = {4: "uint", 8: "ulong"}[addrsize]
                     extra_s = "pop; pop; push *({:s}*)(popped_value2_as_segment:popped_value1)".format(typ)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s}".format(offset, op_name), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s}".format(offset, op_name),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_deref_size]:
                     new_pos, d = self.read_1ubyte(data, new_pos)
                     typ = {1: "uchar", 2: "ushort", 4: "uint", 8: "ulong"}[d]
                     extra_s = "pop; push *({:s}*)popped_value".format(typ)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_xderef_size]:
                     new_pos, d = self.read_1ubyte(data, new_pos)
                     typ = {1: "uchar", 2: "ushort", 4: "uint", 8: "ulong"}[d]
                     extra_s = "pop; pop; push *({:s}*)(popped_value2_as_segment:popped_value1)".forma(typ)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_pick]:
                     new_pos, d = self.read_1ubyte(data, new_pos)
                     extra_s = "push stack[{:d}]".format(d)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_const1u]:
                     new_pos, d = self.read_1ubyte(data, new_pos)
                     extra_s = "push {:#x}".format(d)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_const2u]:
                     new_pos, d = self.read_2ubyte(data, new_pos)
                     extra_s = "push {:#x}".format(d)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_const4u]:
                     new_pos, d = self.read_4ubyte(data, new_pos)
                     extra_s = "push {:#x}".format(d)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_const8u]:
                     new_pos, d = self.read_8ubyte(data, new_pos)
                     extra_s = "push {:#x}".format(d)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_const1s]:
                     new_pos, d = self.read_1sbyte(data, new_pos)
                     extra_s = "push {:#x}".format(d)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_const2u]:
                     new_pos, d = self.read_2sbyte(data, new_pos)
                     extra_s = "push {:#x}".format(d)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_const4s]:
                     new_pos, d = self.read_4sbyte(data, new_pos)
                     extra_s = "push {:#x}".format(d)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_const8s]:
                     new_pos, d = self.read_8sbyte(data, new_pos)
                     extra_s = "push {:#x}".format(d)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_piece, self.DW_OP_regx, self.DW_OP_plus_uconst]:
                     new_pos, d = self.get_uleb128(data, new_pos)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                    ))
                 elif op in [self.DW_OP_constu]:
                     new_pos, d = self.get_uleb128(data, new_pos)
                     extra_s = "push {:#x}".format(d)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_consts]:
                     new_pos, d = self.get_sleb128(data, new_pos)
                     extra_s = "push {:#x}".format(d)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, extra_s])
-                elif op in [self.DW_OP_addrx, self.DW_OP_GNU_addr_index, self.DW_OP_constx, self.DW_OP_GNU_const_index]:
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                        None, extra_s,
+                    ))
+                elif op in [self.DW_OP_addrx, self.DW_OP_GNU_addr_index,
+                            self.DW_OP_constx, self.DW_OP_GNU_const_index]:
                     new_pos, d = self.get_uleb128(data, new_pos)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} [{:#x}]".format(offset, op_name, d), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} [{:#x}]".format(offset, op_name, d),
+                        None, "",
+                    ))
                 elif op in [self.DW_OP_bit_piece]:
                     new_pos, d1 = self.get_uleb128(data, new_pos)
                     new_pos, d2 = self.get_uleb128(data, new_pos)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x},{:#x}".format(offset, op_name, d1, d2), None, ""])
-                elif op in [self.DW_OP_lit0, self.DW_OP_lit1, self.DW_OP_lit2, self.DW_OP_lit3, self.DW_OP_lit4,
-                            self.DW_OP_lit5, self.DW_OP_lit6, self.DW_OP_lit7, self.DW_OP_lit8, self.DW_OP_lit9,
-                            self.DW_OP_lit10, self.DW_OP_lit11, self.DW_OP_lit12, self.DW_OP_lit13, self.DW_OP_lit14,
-                            self.DW_OP_lit15, self.DW_OP_lit16, self.DW_OP_lit17, self.DW_OP_lit18, self.DW_OP_lit19,
-                            self.DW_OP_lit20, self.DW_OP_lit21, self.DW_OP_lit22, self.DW_OP_lit23, self.DW_OP_lit24,
-                            self.DW_OP_lit25, self.DW_OP_lit26, self.DW_OP_lit27, self.DW_OP_lit28, self.DW_OP_lit29,
-                            self.DW_OP_lit30, self.DW_OP_lit31]:
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x},{:#x}".format(offset, op_name, d1, d2),
+                    ))
+                elif op in [self.DW_OP_lit0, self.DW_OP_lit1, self.DW_OP_lit2, self.DW_OP_lit3,
+                            self.DW_OP_lit4, self.DW_OP_lit5, self.DW_OP_lit6, self.DW_OP_lit7,
+                            self.DW_OP_lit8, self.DW_OP_lit9, self.DW_OP_lit10, self.DW_OP_lit11,
+                            self.DW_OP_lit12, self.DW_OP_lit13, self.DW_OP_lit14, self.DW_OP_lit15,
+                            self.DW_OP_lit16, self.DW_OP_lit17, self.DW_OP_lit18, self.DW_OP_lit19,
+                            self.DW_OP_lit20, self.DW_OP_lit21, self.DW_OP_lit22, self.DW_OP_lit23,
+                            self.DW_OP_lit24, self.DW_OP_lit25, self.DW_OP_lit26, self.DW_OP_lit27,
+                            self.DW_OP_lit28, self.DW_OP_lit29, self.DW_OP_lit30, self.DW_OP_lit31]:
                     extra_s = "push {:#x}".format(op - 0x30)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s}".format(offset, op_name), None, extra_s])
-                elif op in [self.DW_OP_reg0, self.DW_OP_reg1, self.DW_OP_reg2, self.DW_OP_reg3, self.DW_OP_reg4,
-                            self.DW_OP_reg5, self.DW_OP_reg6, self.DW_OP_reg7, self.DW_OP_reg8, self.DW_OP_reg9,
-                            self.DW_OP_reg10, self.DW_OP_reg11, self.DW_OP_reg12, self.DW_OP_reg13, self.DW_OP_reg14,
-                            self.DW_OP_reg15, self.DW_OP_reg16, self.DW_OP_reg17, self.DW_OP_reg18, self.DW_OP_reg19,
-                            self.DW_OP_reg20, self.DW_OP_reg21, self.DW_OP_reg22, self.DW_OP_reg23, self.DW_OP_reg24,
-                            self.DW_OP_reg25, self.DW_OP_reg26, self.DW_OP_reg27, self.DW_OP_reg28, self.DW_OP_reg29,
-                            self.DW_OP_reg30, self.DW_OP_reg31]:
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s}".format(offset, op_name),
+                        None, extra_s,
+                    ))
+                elif op in [self.DW_OP_reg0, self.DW_OP_reg1, self.DW_OP_reg2, self.DW_OP_reg3,
+                            self.DW_OP_reg4, self.DW_OP_reg5, self.DW_OP_reg6, self.DW_OP_reg7,
+                            self.DW_OP_reg8, self.DW_OP_reg9, self.DW_OP_reg10, self.DW_OP_reg11,
+                            self.DW_OP_reg12, self.DW_OP_reg13, self.DW_OP_reg14, self.DW_OP_reg15,
+                            self.DW_OP_reg16, self.DW_OP_reg17, self.DW_OP_reg18, self.DW_OP_reg19,
+                            self.DW_OP_reg20, self.DW_OP_reg21, self.DW_OP_reg22, self.DW_OP_reg23,
+                            self.DW_OP_reg24, self.DW_OP_reg25, self.DW_OP_reg26, self.DW_OP_reg27,
+                            self.DW_OP_reg28, self.DW_OP_reg29, self.DW_OP_reg30, self.DW_OP_reg31]:
                     regname = self.get_register_name(op - 0x50)
                     extra_s = "push {:s}".format(regname)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s}".format(offset, op_name), None, extra_s])
-                elif op in [self.DW_OP_breg0, self.DW_OP_breg1, self.DW_OP_breg2, self.DW_OP_breg3, self.DW_OP_breg4,
-                            self.DW_OP_breg5, self.DW_OP_breg6, self.DW_OP_breg7, self.DW_OP_breg8, self.DW_OP_breg9,
-                            self.DW_OP_breg10, self.DW_OP_breg11, self.DW_OP_breg12, self.DW_OP_breg13, self.DW_OP_breg14,
-                            self.DW_OP_breg15, self.DW_OP_breg16, self.DW_OP_breg17, self.DW_OP_breg18, self.DW_OP_breg19,
-                            self.DW_OP_breg20, self.DW_OP_breg21, self.DW_OP_breg22, self.DW_OP_breg23, self.DW_OP_breg24,
-                            self.DW_OP_breg25, self.DW_OP_breg26, self.DW_OP_breg27, self.DW_OP_breg28, self.DW_OP_breg29,
-                            self.DW_OP_breg30, self.DW_OP_breg31]:
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s}".format(offset, op_name),
+                        None, extra_s,
+                    ))
+                elif op in [self.DW_OP_breg0, self.DW_OP_breg1, self.DW_OP_breg2, self.DW_OP_breg3,
+                            self.DW_OP_breg4, self.DW_OP_breg5, self.DW_OP_breg6, self.DW_OP_breg7,
+                            self.DW_OP_breg8, self.DW_OP_breg9, self.DW_OP_breg10, self.DW_OP_breg11,
+                            self.DW_OP_breg12, self.DW_OP_breg13, self.DW_OP_breg14, self.DW_OP_breg15,
+                            self.DW_OP_breg16, self.DW_OP_breg17, self.DW_OP_breg18, self.DW_OP_breg19,
+                            self.DW_OP_breg20, self.DW_OP_breg21, self.DW_OP_breg22, self.DW_OP_breg23,
+                            self.DW_OP_breg24, self.DW_OP_breg25, self.DW_OP_breg26, self.DW_OP_breg27,
+                            self.DW_OP_breg28, self.DW_OP_breg29, self.DW_OP_breg30, self.DW_OP_breg31]:
                     new_pos, d = self.get_sleb128(data, new_pos)
                     regname = self.get_register_name(op - 0x70)
                     extra_s = "push {:s}{:+#x}".format(regname, d)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_fbreg]:
                     new_pos, d = self.get_sleb128(data, new_pos)
                     regname = "push frame_base{:*#x}".format(d)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_bregx]:
                     new_pos, d1 = self.get_uleb128(data, new_pos)
                     new_pos, d2 = self.get_sleb128(data, new_pos)
                     regname = self.get_register_name(d1)
                     extra_s = "push {:s}{:+#x}".format(regname, d2)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x},{:#x}".format(offset, op_name, d1, d2), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x},{:#x}".format(offset, op_name, d1, d2),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_call2]:
                     new_pos, d = self.read_2ubyte(data, new_pos)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} [{:#x}]".format(offset, op_name, d), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} [{:#x}]".format(offset, op_name, d),
+                    ))
                 elif op in [self.DW_OP_call4]:
                     new_pos, d = self.read_4ubyte(data, new_pos)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} [{:#x}]".format(offset, op_name, d), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} [{:#x}]".format(offset, op_name, d),
+                    ))
                 elif op in [self.DW_OP_bra]:
                     new_pos, d = self.read_2sbyte(data, new_pos)
                     d += offset + 3
                     extra_s = "pop; jmp to [{:#x}] if popped_value != 0".format(d)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} [{:#x}]".format(offset, op_name, d), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} [{:#x}]".format(offset, op_name, d),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_skip]:
                     new_pos, d = self.read_2sbyte(data, new_pos)
                     d += offset + 3
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} [{:#x}]".format(offset, op_name, d), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} [{:#x}]".format(offset, op_name, d),
+                    ))
                 elif op in [self.DW_OP_implicit_value]:
                     new_pos, d = self.get_uleb128(data, new_pos)
                     block_s = " ".join(["{:02x}".format(x) for x in data[new_pos:new_pos + d]])
                     new_pos += d
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:s}".format(offset, op_name, block_s), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:s}".format(offset, op_name, block_s),
+                    ))
                 elif op in [self.DW_OP_implicit_pointer, self.DW_OP_GNU_implicit_pointer]:
                     if ref_size == 4:
                         new_pos, d1 = self.read_4ubyte(data, new_pos)
                     elif ref_size == 8:
                         new_pos, d1 = self.read_8ubyte(data, new_pos)
                     new_pos, d2 = self.get_sleb128(data, new_pos)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} [{:#x}] {:+#x}".format(offset, op_name, d1, d2), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} [{:#x}] {:+#x}".format(offset, op_name, d1, d2),
+                    ))
                 elif op in [self.DW_OP_entry_value, self.DW_OP_GNU_entry_value]:
                     new_pos, d = self.get_uleb128(data, new_pos)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s}".format(offset, op_name), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s}".format(offset, op_name),
+                    ))
                     entries += self.parse_ops(vers, addrsize, d, data, new_pos, indent=indent + 1)
                     new_pos += d
                 elif op in [self.DW_OP_const_type, self.DW_OP_GNU_const_type]:
@@ -26620,48 +26948,90 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                     new_pos, d2 = self.read_1ubyte(data, new_pos)
                     block_s = " ".join(["{:02x}".format(x) for x in data[new_pos:new_pos + d2]])
                     new_pos += d2
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} [{:#x}] {:s}".format(offset, op_name, d1, block_s), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} [{:#x}] {:s}".format(offset, op_name, d1, block_s),
+                    ))
                 elif op in [self.DW_OP_regval_type, self.DW_OP_GNU_regval_type]:
                     new_pos, d1 = self.get_uleb128(data, new_pos)
                     new_pos, d2 = self.get_uleb128(data, new_pos)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x} [{:#x}]".format(offset, op_name, d1, d2), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x} [{:#x}]".format(offset, op_name, d1, d2),
+                    ))
                 elif op in [self.DW_OP_deref_type, self.DW_OP_GNU_deref_type]:
                     new_pos, d1 = self.read_1ubyte(data, new_pos)
                     new_pos, d2 = self.get_uleb128(data, new_pos)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x} [{:#x}]".format(offset, op_name, d1, d2), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x} [{:#x}]".format(offset, op_name, d1, d2),
+                    ))
                 elif op in [self.DW_OP_xderef_type]:
                     new_pos, d1 = self.read_1ubyte(data, new_pos)
                     new_pos, d2 = self.get_uleb128(data, new_pos)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} {:#x} [{:#x}]".format(offset, op_name, d1, d2), None, ""])
-                elif op in [self.DW_OP_convert, self.DW_OP_GNU_convert, self.DW_OP_reinterpret, self.DW_OP_GNU_reinterpret]:
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} {:#x} [{:#x}]".format(offset, op_name, d1, d2),
+                    ))
+                elif op in [self.DW_OP_convert, self.DW_OP_GNU_convert,
+                            self.DW_OP_reinterpret, self.DW_OP_GNU_reinterpret]:
                     new_pos, d = self.get_uleb128(data, new_pos)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} [{:#x}]".format(offset, op_name, d), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} [{:#x}]".format(offset, op_name, d),
+                    ))
                 elif op in [self.DW_OP_GNU_parameter_ref]:
                     new_pos, d = self.read_4ubyte(data, new_pos)
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s} [{:#x}]".format(offset, op_name, d), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s} [{:#x}]".format(offset, op_name, d),
+                    ))
                 elif op in [self.DW_OP_drop]:
                     extra_s = "pop"
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s}".format(offset, op_name), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s}".format(offset, op_name),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_dup]:
                     extra_s = "push stack[0]"
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s}".format(offset, op_name), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s}".format(offset, op_name),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_over]:
                     extra_s = "push stack[1]"
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s}".format(offset, op_name), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s}".format(offset, op_name),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_swap]:
                     extra_s = "stack[0],stack[1] = stack[1],stack[0]"
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s}".format(offset, op_name), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s}".format(offset, op_name),
+                        None, extra_s,
+                    ))
                 elif op in [self.DW_OP_rot]:
                     extra_s = "stack[0],stack[1],stack[2] = stack[1],stack[2],stack[0]"
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s}".format(offset, op_name), None, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s}".format(offset, op_name),
+                        None, extra_s,
+                    ))
                 else:
-                    entries.append([pos, data[pos:new_pos], indent + "[{:#04x}] {:s}".format(offset, op_name), None, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        indent + "[{:#04x}] {:s}".format(offset, op_name),
+                    ))
                 length -= new_pos - pos
                 offset += new_pos - pos
                 pos = new_pos
         except Exception:
-            exc_type, exc_value, exc_traceback = sys.exc_info()
-            entries.append(["Parse Error\n{}".format(exc_value)])
+            _exc_type, exc_value, _exc_traceback = sys.exc_info()
+            entries.append(self.ErrorEntry("Parse Error", exc_value))
         return entries
 
     def parse_gcc_except_table(self, gcc_except_table, eh_frame_entries):
@@ -26669,22 +27039,21 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
             dic = {}
             is_fde = False
             for entry in eh_frame_entries:
-                if len(entry) != 5:
+                if entry.tag != "data":
                     continue
-                pos, raw_data, name, value, extra = entry
-                if name == "cie_pointer":
+                if entry.name == "cie_pointer":
                     is_fde = True
                     continue
-                if name == "cie_id":
+                if entry.name == "cie_id":
                     is_fde = False
                     continue
                 if is_fde:
-                    if name == "pc_begin":
-                        pc_begin = value
+                    if entry.name == "pc_begin":
+                        pc_begin = entry.value
                         continue
-                    if name != "augmentation_data(L)":
+                    if entry.name != "augmentation_data(L)":
                         continue
-                    dic[value - load_base] = pc_begin + load_base
+                    dic[entry.value - load_base] = pc_begin + load_base
             return dic
 
         section_base = gcc_except_table.offset
@@ -26709,35 +27078,42 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
 
                 # Found
                 if lsda_pos_padding:
-                    entries.append([pos - lsda_pos_padding, "Padding", ""])
-                    entries.append([pos - lsda_pos_padding, data[pos - lsda_pos_padding:pos], "padding", "", ""])
+                    entries.append(self.SeparatorEntry(pos - lsda_pos_padding, "Padding"))
+                    entries.append(self.DataEntry(
+                        pos - lsda_pos_padding, data[pos - lsda_pos_padding:pos], "padding",
+                    ))
                     lsda_pos_padding = 0
 
-                entries.append([pos, "LSDA Table[{:4d}]".format(lsda_table_cnt), ""])
+                entries.append(self.SeparatorEntry(pos, "LSDA Table[{:4d}]".format(lsda_table_cnt)))
                 lpstart = lsda_pos_info[section_base + pos]
 
                 # parse lpstart_encoding
                 new_pos, lpstart_encoding = self.read_1ubyte(data, pos)
                 encoding_str = self.get_encoding_str(lpstart_encoding)
-                entries.append([
+                entries.append(self.DataEntry(
                     pos, data[pos:new_pos],
-                    "landing_pad_start_encoding", lpstart_encoding, "encoding: {:s}".format(encoding_str),
-                ])
+                    "landing_pad_start_encoding", lpstart_encoding,
+                    "encoding: {:s}".format(encoding_str),
+                ))
                 pos = new_pos
 
                 # parse lpstart
                 if lpstart_encoding != self.DW_EH_PE_omit:
                     new_pos, lpstart = self.read_encoded(lpstart_encoding, data, pos) # overwrite lpstart
-                    entries.append([pos, data[pos:new_pos], "landing_pad_start", lpstart, ""])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos],
+                        "landing_pad_start", lpstart,
+                    ))
                     pos = new_pos
 
                 # parse ttype_encoding
                 new_pos, ttype_encoding = self.read_1ubyte(data, pos)
                 encoding_str = self.get_encoding_str(ttype_encoding)
-                entries.append([
+                entries.append(self.DataEntry(
                     pos, data[pos:new_pos],
-                    "ttype_encoding", ttype_encoding, "encoding: {:s}".format(encoding_str),
-                ])
+                    "ttype_encoding", ttype_encoding,
+                    "encoding: {:s}".format(encoding_str),
+                ))
                 pos = new_pos
 
                 # parse ttype_base_offset
@@ -26745,24 +27121,29 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                 if ttype_encoding != self.DW_EH_PE_omit:
                     new_pos, ttype_base_offset = self.get_uleb128(data, pos)
                     ttype_base = new_pos + ttype_base_offset
-                    entries.append([
+                    entries.append(self.DataEntry(
                         pos, data[pos:new_pos],
-                        "ttype_base_offset", ttype_base_offset, "ttype_base: {:#x}".format(ttype_base),
-                    ])
+                        "ttype_base_offset", ttype_base_offset,
+                        "ttype_base: {:#x}".format(ttype_base),
+                    ))
                     pos = new_pos
 
                 # parse call_site_encoding
                 new_pos, call_site_encoding = self.read_1ubyte(data, pos)
                 encoding_str = self.get_encoding_str(call_site_encoding)
-                entries.append([
+                entries.append(self.DataEntry(
                     pos, data[pos:new_pos],
-                    "call_site_encoding", call_site_encoding, "encoding: {:s}".format(encoding_str),
-                ])
+                    "call_site_encoding", call_site_encoding,
+                    "encoding: {:s}".format(encoding_str),
+                ))
                 pos = new_pos
 
                 # parse call_site_table_len
                 new_pos, call_site_table_len = self.get_uleb128(data, pos)
-                entries.append([pos, data[pos:new_pos], "call_site_table_len", call_site_table_len, ""])
+                entries.append(self.DataEntry(
+                    pos, data[pos:new_pos],
+                    "call_site_table_len", call_site_table_len,
+                ))
                 pos = new_pos
 
                 # parse call_site_table
@@ -26770,14 +27151,16 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                 table_cnt = 0
                 max_action = 0
                 while pos < action_table_pos:
-                    entries.append([pos, "Call site table[{:4d}]".format(table_cnt), ""])
+                    entries.append(self.SeparatorEntry(pos, "Call site table[{:4d}]".format(table_cnt)))
 
                     new_pos, call_site_start = self.read_encoded(call_site_encoding, data, pos)
                     if self.elf.is_pie():
                         extra_s = "try-start vma: $codebase+{:#x}".format(lpstart + call_site_start)
                     else:
                         extra_s = "try-start vma: {:#x}".format(lpstart + call_site_start)
-                    entries.append([pos, data[pos:new_pos], "call_site_start", call_site_start, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos], "call_site_start", call_site_start, extra_s,
+                    ))
                     pos = new_pos
 
                     new_pos, call_site_length = self.read_encoded(call_site_encoding, data, pos)
@@ -26785,7 +27168,9 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                         extra_s = "try-end vma: $codebase+{:#x}".format(lpstart + call_site_start + call_site_length)
                     else:
                         extra_s = "try-end vma: {:#x}".format(lpstart + call_site_start + call_site_length)
-                    entries.append([pos, data[pos:new_pos], "call_site_length", call_site_length, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos], "call_site_length", call_site_length, extra_s,
+                    ))
                     pos = new_pos
 
                     new_pos, call_site_lpad = self.read_encoded(call_site_encoding, data, pos)
@@ -26795,7 +27180,9 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                         extra_s = "catch vma: $codebase+{:#x}".format(lpstart + call_site_lpad)
                     else:
                         extra_s = "catch vma: {:#x}".format(lpstart + call_site_lpad)
-                    entries.append([pos, data[pos:new_pos], "landing_pad", call_site_lpad, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos], "landing_pad", call_site_lpad, extra_s,
+                    ))
                     pos = new_pos
 
                     new_pos, action = self.get_uleb128(data, pos)
@@ -26804,7 +27191,9 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                         extra_s = "no action"
                     else:
                         extra_s = "action: {:#x}".format(action_table_pos + action - 1)
-                    entries.append([pos, data[pos:new_pos], "action", action, extra_s])
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos], "action", action, extra_s,
+                    ))
                     pos = new_pos
 
                     table_cnt += 1
@@ -26815,7 +27204,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                 if max_action:
                     action_table_end_pos = action_table_pos + max_action + 1
                     while pos < action_table_end_pos:
-                        entries.append([pos, "Action table[{:4d}]".format(table_cnt), ""])
+                        entries.append(self.SeparatorEntry(pos, "Action table[{:4d}]".format(table_cnt)))
 
                         new_pos, ar_filter = self.get_sleb128(data, pos)
                         if ar_filter == 0:
@@ -26823,7 +27212,9 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                         else:
                             enc_size = self.encoded_ptr_size(ttype_encoding, ptr_size)
                             extra_s = "catch typeinfo: {:#x}".format(ttype_base - ar_filter * enc_size)
-                        entries.append([pos, data[pos:new_pos], "action_record_filter", ar_filter, extra_s])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos], "action_record_filter", ar_filter, extra_s,
+                        ))
                         max_ar_filter = max(ar_filter, max_ar_filter)
                         pos = new_pos
 
@@ -26834,7 +27225,9 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                             extra_s = "-> ???"
                         else:
                             extra_s = "list end"
-                        entries.append([pos, data[pos:new_pos], "action_record_next", ar_disp, extra_s])
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos], "action_record_next", ar_disp, extra_s,
+                        ))
                         pos = new_pos
 
                         table_cnt += 1
@@ -26844,12 +27237,12 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                     enc_size = self.encoded_ptr_size(ttype_encoding, ptr_size)
                     new_pos = ttype_base - max_ar_filter * enc_size
                     if pos != new_pos:
-                        entries.append([pos, "Padding", ""])
-                        entries.append([pos, data[pos:new_pos], "padding", "", ""])
+                        entries.append(self.SeparatorEntry(pos, "Padding"))
+                        entries.append(self.DataEntry(pos, data[pos:new_pos], "padding"))
                         pos = new_pos
                     current_ar_filter = max_ar_filter
                     while pos < ttype_base:
-                        entries.append([pos, "TType table[{:4d}]".format(current_ar_filter), ""])
+                        entries.append(self.SeparatorEntry(pos, "TType table[{:4d}]".format(current_ar_filter)))
                         new_pos, ttype = self.read_encoded(ttype_encoding, data, pos)
                         if (ttype_encoding & 0x70) == self.DW_EH_PE_pcrel:
                             ttype_pointer = shdr.sh_offset + pos + ttype
@@ -26860,13 +27253,13 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                                     extra_s = "TType pointer vma: {:#x}".format(load_base + ttype_pointer)
                             else:
                                 extra_s = ""
-                            entries.append([pos, data[pos:new_pos], "ttype", ttype, extra_s])
+                            entries.append(self.DataEntry(pos, data[pos:new_pos], "ttype", ttype, extra_s))
                         else:
-                            entries.append([pos, data[pos:new_pos], "ttype", ttype, "TType pointer"])
+                            entries.append(self.DataEntry(pos, data[pos:new_pos], "ttype", ttype, "TType pointer"))
                         pos = new_pos
                         current_ar_filter -= 1
                 if ttype_base is not None:
-                    entries.append([ttype_base, "TType table base (Stored upwards)", ""])
+                    entries.append(self.SeparatorEntry(ttype_base, "TType table base (Stored upwards)"))
 
                 # next LSDA
                 if ttype_base is None:
@@ -26875,8 +27268,8 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
                     pos = ttype_base
                 lsda_table_cnt += 1
         except Exception:
-            exc_type, exc_value, exc_traceback = sys.exc_info()
-            entries.append(["Parse Error\n{}".format(exc_value)])
+            _exc_type, exc_value, _exc_traceback = sys.exc_info()
+            entries.append(self.ErrorEntry("Parse Error", exc_value))
         return entries
 
     def read_section(self, section_name):
@@ -26968,16 +27361,18 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand):
             return
 
         # parse section
-        out = []
+        self.out = []
         eh_frame_hdr_entries = self.parse_eh_frame_hdr(eh_frame_hdr)
-        out += self.format_entry(eh_frame_hdr, eh_frame_hdr_entries)
+        self.out += self.format_entry(eh_frame_hdr, eh_frame_hdr_entries)
+
         eh_frame_entries = self.parse_eh_frame(eh_frame)
-        out += self.format_entry(eh_frame, eh_frame_entries)
+        self.out += self.format_entry(eh_frame, eh_frame_entries)
+
         gcc_except_table_entries = self.parse_gcc_except_table(gcc_except_table, eh_frame_entries)
-        out += self.format_entry(gcc_except_table, gcc_except_table_entries)
+        self.out += self.format_entry(gcc_except_table, gcc_except_table_entries)
 
         # print
-        gef_print("\n".join(out), less=not args.no_pager)
+        self.print_output(args)
 
         if tmp_filepath and os.path.exists(tmp_filepath):
             os.unlink(tmp_filepath)
