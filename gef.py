@@ -22109,6 +22109,7 @@ class RegistersCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("registers", metavar="REGISTERS", nargs="*",
                         help="An array of registers. (default: current_arch.all_registers)")
+    parser.add_argument("-s", "--simple", action="store_true", help="skip dereference.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -22135,30 +22136,42 @@ class RegistersCommand(GenericCommand):
                 self.regs_to_check_unavailable.append(regname)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    def do_invoke(self, args):
-        self.check_unavailable_regs()
-
+    def dump_seg_reg_x86_16(self):
         unchanged_color = Config.get_gef_setting("theme.registers_register_name")
         changed_color = Config.get_gef_setting("theme.registers_value_changed")
 
-        if args.registers:
-            regs = []
-            for creg in current_arch.all_registers:
-                for reg in args.registers:
-                    if not reg.startswith("$"):
-                        reg = "$" + reg
-                    if reg == creg:
-                        regs.append(reg)
-                        break
-        else:
-            regs = current_arch.all_registers
+        lines = []
+        for regname, (seg, reg) in current_arch.seg_extended_registers.items():
+            segval = get_register(seg) & 0xffff
+            regval = get_register(reg) & 0xffff
+            value = current_arch.real2phys(segval, regval)
+
+            # colorling
+            old_value = ContextCommand.old_registers.get(regname, 0)
+            if value == old_value:
+                color = unchanged_color
+            else:
+                color = changed_color
+
+            # reg name
+            line = "{}:".format(Color.colorify(regname, color))
+
+            # dereference values
+            value_s = AddressUtil.format_address(value, memalign_size=2.5)
+            line += " {:04x}:{:04x}: {:s} {:s} ".format(segval, regval, value_s, RIGHT_ARROW)
+            line += AddressUtil.recursive_dereference_to_string(value, skip_idx=1)
+
+            lines.append(line)
+        return lines
+
+    def dump_regs(self, regs):
+        unchanged_color = Config.get_gef_setting("theme.registers_register_name")
+        changed_color = Config.get_gef_setting("theme.registers_value_changed")
 
         widest = current_arch.get_aliased_registers_name_max()
+        lines = []
         special_line = ""
-
-        out = []
+        flag_line = ""
         for regname in regs:
             reg = gdb.parse_and_eval(regname)
             if reg.type.code == gdb.TYPE_CODE_VOID:
@@ -22173,7 +22186,7 @@ class RegistersCommand(GenericCommand):
                     padreg = current_arch.get_aliased_registers()[regname].ljust(widest, " ")
                     line = "{}: ".format(Color.colorify(padreg, unchanged_color))
                     line += Color.colorify("<unavailable>", "yellow underline")
-                    out.append(line)
+                    lines.append(line)
                     continue
 
             # colorling
@@ -22181,7 +22194,9 @@ class RegistersCommand(GenericCommand):
                 value = AddressUtil.align_address(int(reg), memalign_size=4)
             else:
                 value = AddressUtil.align_address(int(reg))
+
             old_value = ContextCommand.old_registers.get(regname, 0)
+
             if value == old_value:
                 color = unchanged_color
             else:
@@ -22190,56 +22205,72 @@ class RegistersCommand(GenericCommand):
             # Special (e.g., segment) registers go on their own line
             if current_arch.special_registers:
                 if regname in current_arch.special_registers:
-                    special_line += "{}: ".format(Color.colorify(regname, color))
-                    special_line += "{:#04x} ".format(get_register(regname))
+                    special_line += "{:s}: {:#06x} ".format(
+                        Color.colorify(regname, color), get_register(regname),
+                    )
                     continue
 
             # reg name
             padreg = current_arch.get_aliased_registers()[regname].ljust(widest, " ")
-            line = "{}: ".format(Color.colorify(padreg, color))
 
             # flag register
             if current_arch.flag_register and regname == current_arch.flag_register:
-                line += current_arch.flag_register_to_human()
-                out.append(line)
+                flag_line += "{:s}: {:s}".format(
+                    Color.colorify(padreg, color), current_arch.flag_register_to_human(),
+                )
                 continue
 
-            # dereference values
-            if is_x86_16():
-                line += AddressUtil.format_address(value, memalign_size=4)
-                derefs = AddressUtil.recursive_dereference_to_string(value, skip_idx=1)
-                if derefs:
-                    line += " {:s} {:s}".format(RIGHT_ARROW, derefs)
+            line = "{:s}: ".format(Color.colorify(padreg, color))
+            if self.simple:
+                # not dereference
+                line += "{:s} ".format(ProcessMap.lookup_address(value).long_fmt())
             else:
-                line += AddressUtil.recursive_dereference_to_string(value)
+                # dereference values
+                if is_x86_16():
+                    line += AddressUtil.format_address(value, memalign_size=4)
+                    derefs = AddressUtil.recursive_dereference_to_string(value, skip_idx=1)
+                    if derefs:
+                        line += " {:s} {:s}".format(RIGHT_ARROW, derefs)
+                else:
+                    line += AddressUtil.recursive_dereference_to_string(value)
 
-            out.append(line)
+            lines.append(line)
+
+        if self.simple:
+            one_width = widest + 5 + current_arch.ptrsize * 2
+            nb = GefUtil.get_terminal_size()[1] // one_width
+            lines = ["".join(r) for r in slicer(lines, nb)]
+
+        if flag_line:
+            lines.append(flag_line)
 
         if special_line:
-            out.append(special_line)
+            lines.append(special_line)
 
-        if is_x86_16():
-            for regname, (seg, reg) in current_arch.seg_extended_registers.items():
-                segval = get_register(seg) & 0xffff
-                regval = get_register(reg) & 0xffff
-                value = current_arch.real2phys(segval, regval)
+        if not self.simple:
+            if is_x86_16():
+                lines += self.dump_seg_reg_x86_16()
+        return lines
 
-                # colorling
-                old_value = ContextCommand.old_registers.get(regname, 0)
-                if value == old_value:
-                    color = unchanged_color
-                else:
-                    color = changed_color
+    @parse_args
+    @only_if_gdb_running
+    def do_invoke(self, args):
+        self.check_unavailable_regs()
 
-                # reg name
-                line = "{}:".format(Color.colorify(regname, color))
+        if args.registers:
+            regs = []
+            for creg in current_arch.all_registers:
+                for reg in args.registers:
+                    if not reg.startswith("$"):
+                        reg = "$" + reg
+                    if reg == creg:
+                        regs.append(reg)
+                        break
+        else:
+            regs = current_arch.all_registers
 
-                # dereference values
-                value_s = AddressUtil.format_address(value, memalign_size=2.5)
-                line += " {:04x}:{:04x}: {:s} {:s} ".format(segval, regval, value_s, RIGHT_ARROW)
-                line += AddressUtil.recursive_dereference_to_string(value, skip_idx=1)
-
-                out.append(line)
+        self.simple = args.simple
+        out = self.dump_regs(regs)
 
         gef_print("\n".join(out))
         return
@@ -28039,48 +28070,12 @@ class ContextCommand(GenericCommand):
             err("Missing info about architecture. Please set: `file /path/to/target_binary`")
             return
 
+        regs = set(current_arch.all_registers)
+        printable_registers = " ".join(list(regs - ignored_registers))
         if Config.get_gef_setting("context.show_registers_raw") is False:
-            regs = set(current_arch.all_registers)
-            printable_registers = " ".join(list(regs - ignored_registers))
             gdb.execute("registers {}".format(printable_registers))
-            self.context_extra_regs()
-            return
-
-        widest = x = current_arch.get_aliased_registers_name_max()
-        x += 5
-        x += current_arch.ptrsize * 2
-        nb = GefUtil.get_terminal_size()[1] // x
-        i = 1
-        line = ""
-        changed_color = Config.get_gef_setting("theme.registers_value_changed")
-        regname_color = Config.get_gef_setting("theme.registers_register_name")
-
-        for regname in current_arch.all_registers:
-            if regname in ignored_registers:
-                continue
-
-            padreg = current_arch.get_aliased_registers()[regname].ljust(widest, " ")
-
-            new_value = get_register(regname)
-            old_value = self.old_registers.get(regname, 0)
-
-            if new_value == old_value:
-                line += "{}: ".format(Color.colorify(padreg, regname_color))
-            else:
-                line += "{}: ".format(Color.colorify(padreg, changed_color))
-            line += "{:s} ".format(ProcessMap.lookup_address(new_value).long_fmt())
-
-            if i % nb == 0:
-                gef_print(line)
-                line = ""
-            i += 1
-
-        if line:
-            gef_print(line)
-
-        if current_arch.flag_register:
-            gef_print("Flags: {:s}".format(current_arch.flag_register_to_human()))
-
+        else:
+            gdb.execute("registers -s {}".format(printable_registers))
         self.context_extra_regs()
         return
 
