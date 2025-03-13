@@ -68251,8 +68251,14 @@ class IsMemoryZeroCommand(GenericCommand):
         elif is_ff:
             info("{:#x} - {:#x} is {:s}".format(start, end, Color.colorify("All 0xFF", "bold yellow")))
         else:
+            for i, d in enumerate(data):
+                if d != 0:
+                    found_addr = ProcessMap.lookup_address(current + i)
+                    break
+            else:
+                raise
             info("{:#x} - {:#x} is {:s}".format(start, end, Color.colorify("NON-ZERO", "bold red")))
-        info("If data is non-zero, it will be fast return")
+            info("Around {!s} is NON-ZERO".format(found_addr))
         return
 
     @parse_args
