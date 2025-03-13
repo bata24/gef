@@ -49684,19 +49684,31 @@ class KernelMagicCommand(GenericCommand):
         gef_print(titlify("Credential"))
         self.resolve_and_print_kernel("commit_creds", text_base, maps)
         self.resolve_and_print_kernel("prepare_kernel_cred", text_base, maps)
-        self.resolve_and_print_kernel("init_cred", text_base, maps, KernelAddressHeuristicFinder.get_init_cred)
+        self.resolve_and_print_kernel(
+            "init_cred", text_base, maps, KernelAddressHeuristicFinder.get_init_cred,
+        )
         self.resolve_and_print_kernel(["sys_setuid", "__sys_setuid"], text_base, maps)
-        self.resolve_and_print_kernel("init_task", text_base, maps, KernelAddressHeuristicFinder.get_init_task)
+        self.resolve_and_print_kernel(
+            "init_task", text_base, maps, KernelAddressHeuristicFinder.get_init_task,
+        )
         gef_print(titlify("Usermode helper"))
         self.resolve_and_print_kernel("call_usermodehelper", text_base, maps)
         self.resolve_and_print_kernel("run_cmd", text_base, maps)
-        self.resolve_and_print_kernel("modprobe_path", text_base, maps, KernelAddressHeuristicFinder.get_modprobe_path, to_string=True)
+        self.resolve_and_print_kernel(
+            "modprobe_path", text_base, maps, KernelAddressHeuristicFinder.get_modprobe_path, to_string=True,
+        )
         self.resolve_and_print_kernel("orderly_poweroff", text_base, maps)
-        self.resolve_and_print_kernel("poweroff_cmd", text_base, maps, KernelAddressHeuristicFinder.get_poweroff_cmd, to_string=True)
-        self.resolve_and_print_kernel("core_pattern", text_base, maps, KernelAddressHeuristicFinder.get_core_pattern, to_string=True)
+        self.resolve_and_print_kernel(
+            "poweroff_cmd", text_base, maps, KernelAddressHeuristicFinder.get_poweroff_cmd, to_string=True,
+        )
+        self.resolve_and_print_kernel(
+            "core_pattern", text_base, maps, KernelAddressHeuristicFinder.get_core_pattern, to_string=True,
+        )
         gef_print(titlify("ROP finalizer"))
         if is_x86_64():
-            self.resolve_and_print_kernel("swapgs_restore_regs_and_return_to_usermode", text_base, maps)
+            self.resolve_and_print_kernel(
+                "swapgs_restore_regs_and_return_to_usermode", text_base, maps,
+            )
         self.resolve_and_print_kernel("msleep", text_base, maps)
         gef_print(titlify("Memory protection modifier"))
         if is_x86():
@@ -49723,69 +49735,127 @@ class KernelMagicCommand(GenericCommand):
         if is_x86():
             gef_print(titlify("Automatically called function pointer"))
             self.resolve_and_print_kernel("kvm_clock", text_base, maps)
-            self.resolve_and_print_kernel("clocksource_tsc", text_base, maps, KernelAddressHeuristicFinder.get_clocksource_tsc)
+            self.resolve_and_print_kernel(
+                "clocksource_tsc", text_base, maps, KernelAddressHeuristicFinder.get_clocksource_tsc,
+            )
         gef_print(titlify("Function pointer table"))
-        self.resolve_and_print_kernel("capability_hooks", text_base, maps, KernelAddressHeuristicFinder.get_capability_hooks)
-        self.resolve_and_print_kernel("n_tty_ops", text_base, maps, KernelAddressHeuristicFinder.get_n_tty_ops)
+        self.resolve_and_print_kernel(
+                "capability_hooks", text_base, maps, KernelAddressHeuristicFinder.get_capability_hooks,
+            )
+        self.resolve_and_print_kernel(
+            "n_tty_ops", text_base, maps, KernelAddressHeuristicFinder.get_n_tty_ops,
+        )
         gef_print(titlify("Function pointer table array"))
-        self.resolve_and_print_kernel("tty_ldiscs", text_base, maps, KernelAddressHeuristicFinder.get_tty_ldiscs)
+        self.resolve_and_print_kernel(
+            "tty_ldiscs", text_base, maps, KernelAddressHeuristicFinder.get_tty_ldiscs,
+        )
         gef_print(titlify("Allocator"))
         self.resolve_and_print_kernel("__kmalloc", text_base, maps)
         self.resolve_and_print_kernel(["kzalloc", "kzalloc.constprop.0"], text_base, maps)
         self.resolve_and_print_kernel("kfree", text_base, maps)
         self.resolve_and_print_kernel(["kzfree", "kfree_sensitive"], text_base, maps)
-        self.resolve_and_print_kernel("slab_caches", text_base, maps, KernelAddressHeuristicFinder.get_slab_caches)
+        self.resolve_and_print_kernel(
+            "slab_caches", text_base, maps, KernelAddressHeuristicFinder.get_slab_caches,
+        )
         gef_print(titlify("Dynamic resolver"))
         self.resolve_and_print_kernel("kallsyms_lookup_name", text_base, maps)
         if is_x86_64():
             if kversion >= "3.16":
                 gef_print(titlify("vDSO"))
-                self.resolve_and_print_kernel("vdso_image_64", text_base, maps, KernelAddressHeuristicFinder.get_vdso_image_64)
-                self.resolve_and_print_kernel("vdso_image_32", text_base, maps, KernelAddressHeuristicFinder.get_vdso_image_32)
-                self.resolve_and_print_kernel("vdso_image_x32", text_base, maps, KernelAddressHeuristicFinder.get_vdso_image_x32)
+                self.resolve_and_print_kernel(
+                    "vdso_image_64", text_base, maps, KernelAddressHeuristicFinder.get_vdso_image_64,
+                )
+                self.resolve_and_print_kernel(
+                    "vdso_image_32", text_base, maps, KernelAddressHeuristicFinder.get_vdso_image_32,
+                )
+                self.resolve_and_print_kernel(
+                    "vdso_image_x32", text_base, maps, KernelAddressHeuristicFinder.get_vdso_image_x32,
+                )
         elif is_x86_32():
             if kversion >= "3.16":
                 gef_print(titlify("vDSO"))
-                self.resolve_and_print_kernel("vdso_image_32", text_base, maps, KernelAddressHeuristicFinder.get_vdso_image_32)
+                self.resolve_and_print_kernel(
+                    "vdso_image_32", text_base, maps, KernelAddressHeuristicFinder.get_vdso_image_32,
+                )
         elif is_arm64():
             if kversion >= "5.8":
                 gef_print(titlify("vDSO"))
-                self.resolve_and_print_kernel("vdso_info", text_base, maps, KernelAddressHeuristicFinder.get_vdso_info)
-                self.resolve_and_print_kernel("vdso_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso_start)
-                self.resolve_and_print_kernel("vdso32_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso32_start)
+                self.resolve_and_print_kernel(
+                    "vdso_info", text_base, maps, KernelAddressHeuristicFinder.get_vdso_info,
+                )
+                self.resolve_and_print_kernel(
+                    "vdso_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso_start,
+                )
+                self.resolve_and_print_kernel(
+                    "vdso32_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso32_start,
+                )
             elif kversion >= "5.3":
                 gef_print(titlify("vDSO"))
-                self.resolve_and_print_kernel("vdso_lookup", text_base, maps, KernelAddressHeuristicFinder.get_vdso_lookup)
-                self.resolve_and_print_kernel("vdso_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso_start)
-                self.resolve_and_print_kernel("vdso32_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso32_start)
+                self.resolve_and_print_kernel(
+                    "vdso_lookup", text_base, maps, KernelAddressHeuristicFinder.get_vdso_lookup,
+                )
+                self.resolve_and_print_kernel(
+                    "vdso_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso_start,
+                )
+                self.resolve_and_print_kernel(
+                    "vdso32_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso32_start,
+                )
             elif kversion >= "3.7":
                 gef_print(titlify("vDSO"))
-                self.resolve_and_print_kernel("vdso_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso_start)
+                self.resolve_and_print_kernel(
+                    "vdso_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso_start,
+                )
         elif is_arm32():
             if kversion >= "4.1":
                 gef_print(titlify("vDSO"))
-                self.resolve_and_print_kernel("vdso_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso_start)
+                self.resolve_and_print_kernel(
+                    "vdso_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso_start,
+                )
         gef_print(titlify("Others"))
         self.resolve_and_print_kernel(["do_fchmodat", "sys_fchmodat"], text_base, maps)
-        self.resolve_and_print_kernel("mmap_min_addr", text_base, maps, KernelAddressHeuristicFinder.get_mmap_min_addr)
-        self.resolve_and_print_kernel("__per_cpu_offset", text_base, maps, KernelAddressHeuristicFinder.get_per_cpu_offset)
+        self.resolve_and_print_kernel(
+            "mmap_min_addr", text_base, maps, KernelAddressHeuristicFinder.get_mmap_min_addr,
+        )
+        self.resolve_and_print_kernel(
+            "__per_cpu_offset", text_base, maps, KernelAddressHeuristicFinder.get_per_cpu_offset,
+        )
         if is_x86():
             gef_print(titlify("Descriptor Table"))
-            self.resolve_and_print_kernel("IDT base (fixed address?)", None, maps, KernelAddressHeuristicFinder.get_idt_base)
-            self.resolve_and_print_kernel("GDT base (fixed address?)", None, maps, KernelAddressHeuristicFinder.get_gdt_base)
-            self.resolve_and_print_kernel("LDT base (fixed address?)", None, maps, KernelAddressHeuristicFinder.get_ldt_base)
-            self.resolve_and_print_kernel("TSS base (fixed address?)", None, maps, KernelAddressHeuristicFinder.get_tss_base)
+            self.resolve_and_print_kernel(
+                "IDT base (fixed address?)", None, maps, KernelAddressHeuristicFinder.get_idt_base,
+            )
+            self.resolve_and_print_kernel(
+                "GDT base (fixed address?)", None, maps, KernelAddressHeuristicFinder.get_gdt_base,
+            )
+            self.resolve_and_print_kernel(
+                "LDT base (fixed address?)", None, maps, KernelAddressHeuristicFinder.get_ldt_base,
+            )
+            self.resolve_and_print_kernel(
+                "TSS base (fixed address?)", None, maps, KernelAddressHeuristicFinder.get_tss_base,
+            )
         if is_x86_64():
             gef_print(titlify("Memory base"))
-            self.resolve_and_print_kernel("PAGE_OFFSET (physmem direct map)", None, maps, KernelAddressHeuristicFinder.get_page_offset)
-            self.resolve_and_print_kernel("VMALLOC_START", None, maps, KernelAddressHeuristicFinder.get_vmalloc_start)
-            self.resolve_and_print_kernel("VMEMMAP_START (struct page[])", None, maps, KernelAddressHeuristicFinder.get_vmemmap)
-            self.resolve_and_print_kernel("phys_base (for page<->phys)", text_base, maps, KernelAddressHeuristicFinder.get_phys_base)
+            self.resolve_and_print_kernel(
+                "PAGE_OFFSET (physmem direct map)", None, maps, KernelAddressHeuristicFinder.get_page_offset,
+            )
+            self.resolve_and_print_kernel(
+                "VMALLOC_START", None, maps, KernelAddressHeuristicFinder.get_vmalloc_start,
+            )
+            self.resolve_and_print_kernel(
+                "VMEMMAP_START (struct page[])", None, maps, KernelAddressHeuristicFinder.get_vmemmap,
+            )
+            self.resolve_and_print_kernel(
+                "phys_base (for page<->phys)", text_base, maps, KernelAddressHeuristicFinder.get_phys_base,
+            )
         if is_x86_32() or is_arm32():
             gef_print(titlify("Memory base"))
-            self.resolve_and_print_kernel("mem_map (struct page[])", None, maps, KernelAddressHeuristicFinder.get_mem_map)
+            self.resolve_and_print_kernel(
+                "mem_map (struct page[])", None, maps, KernelAddressHeuristicFinder.get_mem_map,
+            )
         if is_x86_32():
-            self.resolve_and_print_kernel("mem_section", None, maps, KernelAddressHeuristicFinder.get_mem_section)
+            self.resolve_and_print_kernel(
+                "mem_section", None, maps, KernelAddressHeuristicFinder.get_mem_section,
+            )
         return
 
     @parse_args
@@ -50264,7 +50334,8 @@ class SseCommand(GenericCommand):
         gef_print(titlify("MXCSR (MXCSR Control and Status Register)"))
         bit_info = [
             [15, "FZ", "Flush To Zero"],
-            [[13, 14], "RC", "Rounding Control", "00: Round To Nearest, 01: Round Negative, 10: Round Positive, 11: Round To Zero"],
+            [[13, 14], "RC", "Rounding Control",
+             "00: Round To Nearest, 01: Round Negative, 10: Round Positive, 11: Round To Zero"],
             [12, "PM", "Precision Exception Mask"],
             [11, "UM", "Underflow Exception Mask"],
             [10, "OM", "Overflow Exception Mask"],
@@ -82930,7 +83001,8 @@ class BitInfo:
                 # e.g., [11, 12, 0, 1, 2, 10] -> [0, 1, 2, 10, 11, 12]
                 bits = sorted(bits)
                 # e.g., [0, 1, 2, 10, 11, 12] -> [[0, 1, 2], [10, 11, 12]]
-                gr_bits = [list(g) for _, g in itertools.groupby(bits, key=lambda n, c=itertools.count(): n - next(c))] # noqa: B008
+                gen = itertools.groupby(bits, key=lambda n, c=itertools.count(): n - next(c)) # noqa: B008
+                gr_bits = [list(g) for _, g in gen]
 
                 tmp = []
                 for gb in gr_bits:
@@ -83027,17 +83099,28 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify("CR0 (Control Register 0)"))
         desc = "It contains system control flags that control operating mode and states of the processor"
         bit_info = [
-            [31, "PG", "Paging", "If 1, enable paging and use CR3 register, else disable paging"],
-            [30, "CD", "Cache disable", "If 1, disable the memory cache globally"],
-            [29, "NW", "Not-write through", "If 1, disable write-through caching globally"],
-            [18, "AM", "Alignment mask", "If 1, alignment check enabled when EFLAGS.AC==1 and Ring-3"],
-            [16, "WP", "Write protect", "If 1, the CPU can't write to read-only pages when Ring-0"],
-            [5, "NE", "Numeric error", "If 1, enable internal x87 FPU error reporting, else enable PC style x87 error detection"],
-            [4, "ET", "Extension type", "x64: always 1. i386: if 1, x87 DX math coprosessor instructions is supported"],
-            [3, "TS", "Task switched", "If 1, allow the saving x87 task context upon a task switch only after x87 instruction used"],
-            [2, "EM", "Emulation", "If 1, no x87 FPU present, else x87 FPU present"],
-            [1, "MP", "Monitor co-processor", "If 1, WAIT/FWAIT instructions generate #NM exception when CR0.TS"],
-            [0, "PE", "Protected mode enable", "If 1, system is in protected mode, else system is in real mode"],
+            [31, "PG", "Paging",
+             "If 1, enable paging and use CR3 register, else disable paging"],
+            [30, "CD", "Cache disable",
+             "If 1, disable the memory cache globally"],
+            [29, "NW", "Not-write through",
+             "If 1, disable write-through caching globally"],
+            [18, "AM", "Alignment mask",
+             "If 1, alignment check enabled when EFLAGS.AC==1 and Ring-3"],
+            [16, "WP", "Write protect",
+             "If 1, the CPU can't write to read-only pages when Ring-0"],
+            [5, "NE", "Numeric error",
+             "If 1, enable internal x87 FPU error reporting, else enable PC style x87 error detection"],
+            [4, "ET", "Extension type",
+             "x64: always 1. i386: if 1, x87 DX math coprosessor instructions is supported"],
+            [3, "TS", "Task switched",
+             "If 1, allow the saving x87 task context upon a task switch only after x87 instruction used"],
+            [2, "EM", "Emulation",
+             "If 1, no x87 FPU present, else x87 FPU present"],
+            [1, "MP", "Monitor co-processor",
+             "If 1, WAIT/FWAIT instructions generate #NM exception when CR0.TS"],
+            [0, "PE", "Protected mode enable",
+             "If 1, system is in protected mode, else system is in real mode"],
         ]
         cr0 = get_register("cr0", use_monitor=True)
         self.out.extend(BitInfo("CR0", 32, bit_info, desc).make_out(cr0))
@@ -83056,10 +83139,14 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify("CR3 (Control Register 3)"))
         desc = "It contains the physical address of the base of the paging-structure hierarchy and two flags"
         bit_info = [
-            [range(12, 32), None, None, "Base of page directory base, typically it points to PML4T if 4-level paging"],
-            [range(0, 12), None, None, "Process context identifier when CR4.PCIDE=1"],
-            [4, "PCD", "Page-level Cache Disable", "If 1, disable Page-Directory itself caching when CR4.PCIDE=0"],
-            [3, "PWT", "Page-level Write-Through", "If 1, enable write through Page-Directory itself caching when CR4.PCIDE=0"],
+            [range(12, 32), None, None,
+             "Base of page directory base, typically it points to PML4T if 4-level paging"],
+            [range(0, 12), None, None,
+             "Process context identifier when CR4.PCIDE=1"],
+            [4, "PCD", "Page-level Cache Disable",
+             "If 1, disable Page-Directory itself caching when CR4.PCIDE=0"],
+            [3, "PWT", "Page-level Write-Through",
+             "If 1, enable write through Page-Directory itself caching when CR4.PCIDE=0"],
         ]
         cr3 = get_register("cr3", use_monitor=True)
         self.out.extend(BitInfo("CR3", bit_info=bit_info, desc=desc).make_out(cr3))
@@ -83068,31 +83155,56 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify("CR4 (Control Register 4)"))
         desc = "It contains flags that architectural extensions, indicate OS or executive support"
         bit_info = [
-            [25, "UINTR", "Enable user-mode inter-processor interrupts", "If 1, enable User-Interrupt Delivery"],
-            [24, "PKS", "Enable protection keys for supervisor-mode pages", "If 1, enable PKS"],
-            [23, "CET", "Control-flow Enforcement Technology", "If 1, enable CET"],
-            [22, "PKE", "Protection Key Enable", "If 1, enable PKE"],
-            [21, "SMAP", "Supervisor Mode Access Protection Enable", "If 1, access of data in a higher ring generates a fault"],
-            [20, "SMEP", "Supervisor Mode Execution Protection Enable", "If 1, execution of code in a higher ring generates a fault"],
-            [19, "KL", "Key-Locker Enable", "If 1, enable LOADIWKEY"],
-            [18, "OSXSAVE", "Enable XSAVE and Processor Extended States", "If 1, enable XSAVE/XSAVEC/XSAVEOPT/XSAVES/XRSTOR/XRSTORS/XSETBV/XGETBV"],
-            [17, "PCIDE", "PCID Enable", "If 1, enable process-context identifiers (PCIDs)"],
-            [15, "FSGSBASE", "FSGSBASE Enable", "If 1, enable RDFSBASE/RDGSBASE/WRFSBASE/WRGSBASE"],
-            [14, "SMXE", "Safer Mode Extensions Enable", "If 1, enable Trusted Execution Technology (TXT)"],
-            [13, "VMXE", "Virtual Machine Extensions Enable", "If 1, enable Intel VT-x x86 virtualization"],
-            [12, "LA57", "57bit linear addresses", "If 1, enable 5-Level Paging"],
-            [11, "UMIP", "User-Mode Instruction Prevention", "If 1, SGDT/SIDT/SLDT/SMSW/STR instructions can only be executed in ring0"],
-            [10, "OSXMMEXCPT", "OS support for Unmasked SIMD FP Exceptions", "If 1, enable unmasked SSE exceptions"],
-            [9, "OSFXSR", "OS support for FXSAVE/FXRSTOR", "If 1, enable SSE instructions and fast FPU save & restore"],
-            [8, "PCE", "Performance-Monitoring Counter enable", "If 1, RDPMC instruction can be executed at any privilege level"],
-            [7, "PGE", "Page Global Enabled", "If 1, address translations (PDE or PTE records) may be shared between address spaces"],
-            [6, "MCE", "Machine Check Exception", "If 1, enable machine check interrupts to occur"],
-            [5, "PAE", "Physical Address Extension", "If 1, changes page table layout to translate 32bit virtaddr into 36bit physaddr"],
-            [4, "PSE", "Page Size Extension", "If 1, page size is 4MB, else 4KB, this bit is ignored when PAE or x86-64 long mode"],
-            [3, "DE", "Debugging Extensions", "If 1, enable debug register based breaks on I/O space access"],
-            [2, "TSD", "Time Stamp Disable", "If 1, RDTSC instruction can only be executed in ring0"],
-            [1, "PVI", "Protected-mode Virtual Interrupts", "If 1, enable support for the virtual interrupt flag (VIF) in protected mode"],
-            [0, "VME", "Virtual 8086 Mode Extensions", "If 1, enable support for the virtual interrupt flag (VIF) in virtual-8086 mode"],
+            [25, "UINTR", "Enable user-mode inter-processor interrupts",
+             "If 1, enable User-Interrupt Delivery"],
+            [24, "PKS", "Enable protection keys for supervisor-mode pages",
+             "If 1, enable PKS"],
+            [23, "CET", "Control-flow Enforcement Technology",
+             "If 1, enable CET"],
+            [22, "PKE", "Protection Key Enable",
+             "If 1, enable PKE"],
+            [21, "SMAP", "Supervisor Mode Access Protection Enable",
+             "If 1, access of data in a higher ring generates a fault"],
+            [20, "SMEP", "Supervisor Mode Execution Protection Enable",
+             "If 1, execution of code in a higher ring generates a fault"],
+            [19, "KL", "Key-Locker Enable",
+             "If 1, enable LOADIWKEY"],
+            [18, "OSXSAVE", "Enable XSAVE and Processor Extended States",
+             "If 1, enable XSAVE/XSAVEC/XSAVEOPT/XSAVES/XRSTOR/XRSTORS/XSETBV/XGETBV"],
+            [17, "PCIDE", "PCID Enable",
+             "If 1, enable process-context identifiers (PCIDs)"],
+            [15, "FSGSBASE", "FSGSBASE Enable",
+             "If 1, enable RDFSBASE/RDGSBASE/WRFSBASE/WRGSBASE"],
+            [14, "SMXE", "Safer Mode Extensions Enable",
+             "If 1, enable Trusted Execution Technology (TXT)"],
+            [13, "VMXE", "Virtual Machine Extensions Enable",
+             "If 1, enable Intel VT-x x86 virtualization"],
+            [12, "LA57", "57bit linear addresses",
+             "If 1, enable 5-Level Paging"],
+            [11, "UMIP", "User-Mode Instruction Prevention",
+             "If 1, SGDT/SIDT/SLDT/SMSW/STR instructions can only be executed in ring0"],
+            [10, "OSXMMEXCPT", "OS support for Unmasked SIMD FP Exceptions",
+             "If 1, enable unmasked SSE exceptions"],
+            [9, "OSFXSR", "OS support for FXSAVE/FXRSTOR",
+             "If 1, enable SSE instructions and fast FPU save & restore"],
+            [8, "PCE", "Performance-Monitoring Counter enable",
+             "If 1, RDPMC instruction can be executed at any privilege level"],
+            [7, "PGE", "Page Global Enabled",
+             "If 1, address translations (PDE or PTE records) may be shared between address spaces"],
+            [6, "MCE", "Machine Check Exception",
+             "If 1, enable machine check interrupts to occur"],
+            [5, "PAE", "Physical Address Extension",
+             "If 1, changes page table layout to translate 32bit virtaddr into 36bit physaddr"],
+            [4, "PSE", "Page Size Extension",
+             "If 1, page size is 4MB, else 4KB, this bit is ignored when PAE or x86-64 long mode"],
+            [3, "DE", "Debugging Extensions",
+             "If 1, enable debug register based breaks on I/O space access"],
+            [2, "TSD", "Time Stamp Disable",
+             "If 1, RDTSC instruction can only be executed in ring0"],
+            [1, "PVI", "Protected-mode Virtual Interrupts",
+             "If 1, enable support for the virtual interrupt flag (VIF) in protected mode"],
+            [0, "VME", "Virtual 8086 Mode Extensions",
+             "If 1, enable support for the virtual interrupt flag (VIF) in virtual-8086 mode"],
         ]
         cr4 = get_register("cr4", use_monitor=True)
         self.out.extend(BitInfo("CR4", bit_info=bit_info, desc=desc).make_out(cr4))
@@ -83111,26 +83223,46 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify("XCR0 (Extended Control Register 0)"))
         desc = "Contain task priority level"
         bit_info = [
-            [19, "APX", "Extended GPRs (R16 through R31)"],
-            [18, "AMX_TILEDATA", "Advanced Matrix Extensions Tile Data"],
-            [17, "AMX_TILECFG", "Advanced Matrix Extensions Tile Config"],
-            [16, "HWP", "Hardware P-states"],
-            [15, "LBR", "Last branch record"],
-            [14, "UINTR", "User interrupts"],
-            [13, "HDC", "Hardware duty cycling"],
-            [12, "CET_S", "Control-flow Enforcement Technology (CET) Supervisor State"],
-            [11, "CET_U", "Control-flow Enforcement Technology (CET) User State"],
-            [10, "PASID", "Processor Address Space ID (PASID) state"],
-            [9, "PKRU", "XSAVE feature set can be used for PKRU register, which is part of the protection keys mechanism"],
-            [8, "PT", "Processor Trace"],
-            [7, "Hi16_ZMM", "AVX-512 enable, and XSAVE feature set can be used for the upper ZMM regs"],
-            [6, "ZMM_Hi256", "AVX-512 enable, and XSAVE feature set can be used for upper-halves of the lower ZMM regs"],
-            [5, "opmask", "AVX-512 enable, and XSAVE feature set can be used for AVX opmask, a.k.a. k0-k7 regs"],
-            [4, "BNDCSR", "MPX enable, and XSAVE feature set can be used for BNDCFGU and BNDSTATUS regs"],
-            [3, "BNDREG", "MPX enable, and XSAVE feature set can be used for BND0-3 regs"],
-            [2, "AVX", "AVX enable, and XSAVE feature set can be used to manage YMM regs"],
-            [1, "SSE", "XSAVE feature set enable for MXCSR and XMM regs"],
-            [0, "X87", "x87 FPU/MMX State", "always 1"],
+            [19, "APX",
+             "Extended GPRs (R16 through R31)"],
+            [18, "AMX_TILEDATA",
+             "Advanced Matrix Extensions Tile Data"],
+            [17, "AMX_TILECFG",
+             "Advanced Matrix Extensions Tile Config"],
+            [16, "HWP",
+             "Hardware P-states"],
+            [15, "LBR",
+             "Last branch record"],
+            [14, "UINTR",
+             "User interrupts"],
+            [13, "HDC",
+             "Hardware duty cycling"],
+            [12, "CET_S",
+             "Control-flow Enforcement Technology (CET) Supervisor State"],
+            [11, "CET_U",
+             "Control-flow Enforcement Technology (CET) User State"],
+            [10, "PASID",
+             "Processor Address Space ID (PASID) state"],
+            [9, "PKRU",
+             "XSAVE feature set can be used for PKRU register, which is part of the protection keys mechanism"],
+            [8, "PT",
+             "Processor Trace"],
+            [7, "Hi16_ZMM",
+             "AVX-512 enable, and XSAVE feature set can be used for the upper ZMM regs"],
+            [6, "ZMM_Hi256",
+             "AVX-512 enable, and XSAVE feature set can be used for upper-halves of the lower ZMM regs"],
+            [5, "opmask",
+             "AVX-512 enable, and XSAVE feature set can be used for AVX opmask, a.k.a. k0-k7 regs"],
+            [4, "BNDCSR",
+             "MPX enable, and XSAVE feature set can be used for BNDCFGU and BNDSTATUS regs"],
+            [3, "BNDREG",
+             "MPX enable, and XSAVE feature set can be used for BND0-3 regs"],
+            [2, "AVX",
+             "AVX enable, and XSAVE feature set can be used to manage YMM regs"],
+            [1, "SSE",
+             "XSAVE feature set enable for MXCSR and XMM regs"],
+            [0, "X87",
+             "x87 FPU/MMX State", "always 1"],
         ]
         xcr0 = get_register("xcr0", use_monitor=True)
         if xcr0 is not None:
@@ -83138,7 +83270,7 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
 
         # DR0-DR3
         self.out.append(titlify("DR0-DR3 (Debug Address Register 0-3)"))
-        desc = "Contain linear addresses of up to 4 hardware breakpoints. If paging is enabled, they are translated to physical addresses"
+        desc = "Contain linear addresses of up to 4 HW breakpoints. If paging is enabled, they are translated to physical addresses"
         dr0 = get_register("dr0", use_monitor=True)
         dr1 = get_register("dr1", use_monitor=True)
         dr2 = get_register("dr2", use_monitor=True)
@@ -83156,14 +83288,22 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify("DR6 (Debug Status Register 6)"))
         desc = "It permits the debugger to determine which debug conditions have occurred"
         bit_info = [
-            [16, "RTM", "restricted transactional memory", "If 0, the debug exception or breakpoint exception occurred inside an RTM region"],
-            [15, "BT", "task switch", "If 1, the debug instruction resulted from a task switch where TSS.T of target task was set"],
-            [14, "BS", "single step", "If 1, the debug exception was triggered by the single-step execution mode (enabled with EFLAGS.TF)"],
-            [13, "BD", "debug register access detected", "If 1, the next instruction accesses one of the debug registers"],
-            [3, "B3", "breakpoint condition detected", "If 1, breakpoint condition was met when a debug exception for DR3"],
-            [2, "B2", "breakpoint condition detected", "If 1, breakpoint condition was met when a debug exception for DR2"],
-            [1, "B1", "breakpoint condition detected", "If 1, breakpoint condition was met when a debug exception for DR1"],
-            [0, "B0", "breakpoint condition detected", "If 1, breakpoint condition was met when a debug exception for DR0"],
+            [16, "RTM", "restricted transactional memory",
+             "If 0, the debug exception or breakpoint exception occurred inside an RTM region"],
+            [15, "BT", "task switch",
+             "If 1, the debug instruction resulted from a task switch where TSS.T of target task was set"],
+            [14, "BS", "single step",
+             "If 1, the debug exception was triggered by the single-step execution mode (enabled with EFLAGS.TF)"],
+            [13, "BD", "debug register access detected",
+             "If 1, the next instruction accesses one of the debug registers"],
+            [3, "B3", "breakpoint condition detected",
+             "If 1, breakpoint condition was met when a debug exception for DR3"],
+            [2, "B2", "breakpoint condition detected",
+             "If 1, breakpoint condition was met when a debug exception for DR2"],
+            [1, "B1", "breakpoint condition detected",
+             "If 1, breakpoint condition was met when a debug exception for DR1"],
+            [0, "B0", "breakpoint condition detected",
+             "If 1, breakpoint condition was met when a debug exception for DR0"],
         ]
         dr6 = get_register("dr6", use_monitor=True)
         self.out.extend(BitInfo("DR6", 32, bit_info, desc).make_out(dr6))
@@ -83226,11 +83366,16 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         trseg, base, limit, attr = [int(tr.group(i), 16) for i in range(1, 5)]
         self.out.append("{:s} = {:s}".format(red("TR"), yellow("{:#x}".format(trseg))))
         self.out.append("seg: {:s}: segment selector for TSS (Task State Segment)".format(
-            Color.boldify("{:#x} (rpl:{:d},ti:{:d},index:{:d})".format(trseg, trseg & 0b11, (trseg >> 2) & 1, trseg >> 3)),
+            Color.boldify("{:#x} (rpl:{:d},ti:{:d},index:{:d})".format(
+                trseg, trseg & 0b11, (trseg >> 2) & 1, trseg >> 3),
+            ),
         ))
-        self.out.append("  base : {:s}: starting address of TSS".format(Color.colorify_hex(base, "bold")))
-        self.out.append("  limit: {:s}: segment limit or fixed value(=__KERNEL_TSS_LIMIT x64:0x206f/x86:0x206b)".format(
+        self.out.append("  base : {:s}: starting address of TSS".format(
+            Color.colorify_hex(base, "bold"),
+        ))
+        self.out.append("  limit: {:s}: segment limit or fixed value(={:s})".format(
             Color.colorify_hex(limit, "bold"),
+            "=__KERNEL_TSS_LIMIT x64:0x206f/x86:0x206b",
         ))
         self.out.append("  attr : {:s}: attribute".format(Color.colorify_hex(attr, "bold")))
 
@@ -83238,9 +83383,15 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify("GDTR (Global Descriptor Table Register)"))
         gdtr = re.search(r"GDT\s*=\s*(\S+) (\S+)", res)
         base, limit = [int(gdtr.group(i), 16) for i in range(1, 3)]
-        self.out.append("{:s} = {:s}:{:s}".format(red("GDTR"), yellow("{:#x}".format(base)), yellow("{:#x}".format(limit))))
-        self.out.append("base : {:s}: starting address of GDT (Global Descriptor Table)".format(Color.colorify_hex(base, "bold")))
-        self.out.append("limit: {:s}: (size of GDT) - 1".format(Color.colorify_hex(limit, "bold")))
+        self.out.append("{:s} = {:s}:{:s}".format(
+            red("GDTR"), yellow("{:#x}".format(base)), yellow("{:#x}".format(limit)),
+        ))
+        self.out.append("base : {:s}: starting address of GDT (Global Descriptor Table)".format(
+            Color.colorify_hex(base, "bold"),
+        ))
+        self.out.append("limit: {:s}: (size of GDT) - 1".format(
+            Color.colorify_hex(limit, "bold"),
+        ))
 
         ret = gdb.execute("gdtinfo -q -n --only-gdt", to_string=True)
         self.out.append(ret.rstrip())
@@ -83249,9 +83400,15 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify("IDTR (Interrupt Descriptor Table Register)"))
         idtr = re.search(r"IDT\s*=\s*(\S+) (\S+)", res)
         base, limit = [int(idtr.group(i), 16) for i in range(1, 3)]
-        self.out.append("{:s} = {:s}:{:s}".format(red("IDTR"), yellow("{:#x}".format(base)), yellow("{:#x}".format(limit))))
-        self.out.append("base : {:s}: starting address of IDT (Interrupt Descriptor Table)".format(Color.colorify_hex(base, "bold")))
-        self.out.append("limit: {:s}: (size of IDT) - 1".format(Color.colorify_hex(limit, "bold")))
+        self.out.append("{:s} = {:s}:{:s}".format(
+            red("IDTR"), yellow("{:#x}".format(base)), yellow("{:#x}".format(limit)),
+        ))
+        self.out.append("base : {:s}: starting address of IDT (Interrupt Descriptor Table)".format(
+            Color.colorify_hex(base, "bold"),
+        ))
+        self.out.append("limit: {:s}: (size of IDT) - 1".format(
+            Color.colorify_hex(limit, "bold"),
+        ))
 
         ret = gdb.execute("idtinfo -q -n", to_string=True)
         self.out.append(ret.rstrip())
@@ -83262,11 +83419,19 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         seg, base, limit, attr = [int(ldtr.group(i), 16) for i in range(1, 5)]
         self.out.append("{:s} = {:s}".format(red("LDTR"), yellow("{:#x}".format(seg))))
         self.out.append("seg: {:s}: segment selector for LDT (Local Descriptor Table)".format(
-            Color.boldify("{:#x} (rpl:{:d},ti:{:d},index:{:d})".format(seg, seg & 0b11, (seg >> 2) & 1, seg >> 3)),
+            Color.boldify("{:#x} (rpl:{:d},ti:{:d},index:{:d})".format(
+                seg, seg & 0b11, (seg >> 2) & 1, seg >> 3),
+            ),
         ))
-        self.out.append("  base : {:s}: starting address of LDT".format(Color.colorify_hex(base, "bold")))
-        self.out.append("  limit: {:s}: segment limit".format(Color.colorify_hex(limit, "bold")))
-        self.out.append("  attr : {:s}: attribute".format(Color.colorify_hex(attr, "bold")))
+        self.out.append("  base : {:s}: starting address of LDT".format(
+            Color.colorify_hex(base, "bold"),
+        ))
+        self.out.append("  limit: {:s}: segment limit".format(
+            Color.colorify_hex(limit, "bold"),
+        ))
+        self.out.append("  attr : {:s}: attribute".format(
+            Color.colorify_hex(attr, "bold"),
+        ))
 
         ret = gdb.execute("gdtinfo -q -n --only-ldt", to_string=True)
         self.out.append(ret.rstrip())
