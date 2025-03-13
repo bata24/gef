@@ -19293,23 +19293,25 @@ class UnicornEmulateCommand(GenericCommand):
             content += "def emulate_mmap(emu, sysno):\n"
             content += "    if sysno != {:d}:\n".format(mmap_entry.nr)
             content += "        return False\n"
+            content += "    \n"
             content += "    a1 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[0])
             content += "    if a1 != 0:\n"
             content += "        return False\n"
             content += "    a2 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[1])
             content += "    if a2 == 0 or (a2 & 0xfff) != 0:\n"
             content += "        return False\n"
-            content += "    if a2 >= 0x100_0000: # heuristic value\n"
+            content += "    if a2 > 0x10000000: # heuristic value (0x8000000 is used to create thread arena)\n"
             content += "        return False\n"
             content += "    a3 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[2])
             content += "    a3 &= 7\n"
             content += "    a4 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[3])
-            content += "    if a4 != 0x22:\n"
+            content += "    if a4 != 0x22: # MAP_ANONYMOUS|MAP_PRIVATE\n"
             content += "        return False\n"
             content += "    a5 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[4])
             content += "    if a5 != 0xffffffff:\n"
             content += "        return False\n"
             content += "    a6 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[5])
+            content += "    \n"
             content += "    regions = [(None, 0, None)] + list(emu.mem_regions())\n"
             content += "    regions = regions[::-1]\n"
             content += "    for (mr1, mr2) in zip(regions[:-1], regions[1:]):\n"
@@ -19332,10 +19334,12 @@ class UnicornEmulateCommand(GenericCommand):
             content += "def emulate_munmap(emu, sysno):\n"
             content += "    if sysno != {:d}:\n".format(munmap_entry.nr)
             content += "        return False\n"
+            content += "    \n"
             content += "    a1 = emu.reg_read(registers['{:s}'])\n".format(munmap_entry.arg_regs[0])
             content += "    a2 = emu.reg_read(registers['{:s}'])\n".format(munmap_entry.arg_regs[1])
             content += "    if a2 == 0 or (a2 & 0xfff) != 0:\n"
             content += "        return False\n"
+            content += "    \n"
             content += "    try:\n"
             content += "        emu.mem_unmap(a1, a2)\n"
             content += "        emu.reg_write(registers['{:s}'], 0)\n".format(munmap_entry.ret_regs[0])
@@ -19347,23 +19351,42 @@ class UnicornEmulateCommand(GenericCommand):
             content += "\n"
 
             brk_entry = name_table["brk"]
+            current_brk = ExecSyscall(brk_entry.nr, [0x0]).exec_code()["reg"][brk_entry.ret_regs[0]]
+            content += "current_brk = {:#x}\n".format(current_brk)
+            content += "\n"
+            content += "# for main_arena expansion\n"
             content += "def emulate_brk(emu, sysno):\n"
             content += "    if sysno != {:d}:\n".format(brk_entry.nr)
             content += "        return False\n"
+            content += "    \n"
+            content += "    global current_brk\n"
             content += "    a1 = emu.reg_read(registers['{:s}'])\n".format(brk_entry.arg_regs[0])
-            content += "    before_a1 = [x for x in emu.mem_regions() if x[1] + 1 < a1]\n"
-            content += "    if len(before_a1) == 0:\n"
-            content += "        return False\n"
-            content += "    map_start = before_a1[-1][1] + 1\n"
-            content += "    map_size = a1 - map_start\n"
-            content += "    map_perm = before_a1[-1][2]\n"
-            content += "    try:\n"
-            content += "        emu.mem_map(map_start, map_size, map_perm)\n"
-            content += "        emu.reg_write(registers['{:s}'], a1)\n".format(brk_entry.ret_regs[0])
-            content += "    except Exception:\n"
-            content += "        return False\n"
+            content += "    \n"
+            content += "    if a1 == 0 or a1 == current_brk:\n"
+            content += "        emu.reg_write(registers['{:s}'], current_brk)\n".format(brk_entry.ret_regs[0])
+            content += "        return True\n"
+            content += "    \n"
+            content += "    if a1 > current_brk:\n"
+            content += "        for r in emu.mem_regions(): # get the permission of current brk region\n"
+            content += "            if r[1] + 1 == current_brk:\n"
+            content += "                map_perm = r[2]\n"
+            content += "                break\n"
+            content += "        else:\n"
+            content += "            return False # something is wrong\n"
+            content += "        try:\n"
+            content += "            emu.mem_map(current_brk, a1 - current_brk, map_perm)\n"
+            content += "        except Exception:\n"
+            content += "            return False\n"
+            content += "    else:\n"
+            content += "        try:\n"
+            content += "            emu.mem_unmap(a1, current_brk - a1)\n"
+            content += "        except Exception:\n"
+            content += "            return False\n"
+            content += "    \n"
+            content += "    emu.reg_write(registers['{:s}'], a1)\n".format(brk_entry.ret_regs[0])
             content += "    print('  --> syscall={:d} (emulated)'.format(sysno))\n"
             content += "    print(f'    --> {a1:#x} = brk({a1:#x})')\n"
+            content += "    current_brk = a1\n"
             content += "    return True\n"
             content += "\n"
 
@@ -19621,9 +19644,9 @@ class UnicornEmulateCommand(GenericCommand):
                 RE_OPT = re.compile(r"^(?:\*ABS\*|__str|__mem|str|mem).* \| .+ \| (0x\S+) \| (0x\S+) <(__(\w+)_neon.*)>")
 
             res = gdb.execute("got-all --no-pager", to_string=True)
-            content += "    # memory patch to avoid avx2/neon optimized function\n"
+            content += "    # memory patch to avoid avx/neon optimized function\n"
             for line in res.splitlines():
-                # search avx2/neon optimized functions
+                # search avx/neon optimized functions
                 line = Color.remove_color(line)
                 m = RE_OPT.search(line)
                 if not m:
@@ -19771,8 +19794,15 @@ class UnicornEmulateCommand(GenericCommand):
         }
         os.mkdir(kwargs["dloc"])
 
-        # run
+        # thread locking
+        sched_lock = gdb.parameter("scheduler-locking")
+        gdb.execute("set scheduler-locking on", to_string=True)
+        # generate
         script = self.make_script(kwargs)
+        # revert
+        gdb.execute("set scheduler-locking {:s}".format(sched_lock), to_string=True)
+
+        # run
         self.run_unicorn(script, kwargs)
 
         # cleanup
@@ -21483,10 +21513,6 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         for patch_addr, patch_code in info.patches.items():
             gdb.execute("patch hex {:#x} {:s}".format(patch_addr, patch_code), to_string=True)
 
-        # thread locking
-        sched_lock = gdb.parameter("scheduler-locking")
-        gdb.execute("set scheduler-locking on", to_string=True)
-
         # execute
         option = ["-t", hex(info.stop_address), "-A", "-E", "-I"]
         if self.args.skip_emulation:
@@ -21507,7 +21533,6 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         for regname, regvalue in info.regs_value.items():
             gdb.execute("set {:s}={:#x}".format(regname, regvalue))
         gdb.execute("patch revert {:d}".format(len(info.patches) - 1), to_string=True)
-        gdb.execute("set scheduler-locking {:s}".format(sched_lock), to_string=True)
         return
 
     @parse_args
