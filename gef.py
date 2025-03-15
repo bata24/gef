@@ -11434,7 +11434,6 @@ def is_alive():
         return gdb.selected_inferior().pid > 0
     except gdb.error:
         return False
-    return False
 
 
 def parse_args(f):
