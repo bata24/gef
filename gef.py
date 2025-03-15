@@ -25690,7 +25690,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                     pos = new_pos
 
                     table_cnt += 1
-        except Exception:
+        except (IndexError, ValueError):
             _exc_type, exc_value, _exc_traceback = sys.exc_info()
             entries.append(self.ErrorEntry("Parse Error", exc_value))
         return entries
@@ -25994,7 +25994,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                 # common
                 entries += self.parse_cfa_program(data, pos, cie_end, vma_base, version, cie)
                 pos = cie_end
-        except Exception:
+        except (IndexError, ValueError):
             _exc_type, exc_value, _exc_traceback = sys.exc_info()
             entries.append(self.ErrorEntry("Parse Error", exc_value))
         return entries
@@ -26107,7 +26107,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         indent = " " * 4
 
         entries = []
-        entries.append(self.DataEntry(pos, b"", "program"))
+        entries.append(self.DataEntry(pos, None, "program"))
         try:
             while pos < pos_end:
                 new_pos, opcode = self.read_1ubyte(data, pos)
@@ -26329,7 +26329,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                         indent + "restore r{:d}".format(op1),
                     ))
                 pos = new_pos
-        except Exception:
+        except (IndexError, ValueError):
             _exc_type, exc_value, _exc_traceback = sys.exc_info()
             entries.append(self.ErrorEntry("Parse Error", exc_value))
         return entries
@@ -26713,7 +26713,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         ref_size = addrsize if vers < 3 else 0
 
         if length == 0:
-            entries.append(self.DataEntry(pos, b"", indent + "(empty)"))
+            entries.append(self.DataEntry(pos, None, indent + "(empty)"))
             return entries
 
         offset = 0
@@ -26876,7 +26876,6 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                     entries.append(self.DataEntry(
                         pos, data[pos:new_pos],
                         indent + "[{:#04x}] {:s} [{:#x}]".format(offset, op_name, d),
-                        None, "",
                     ))
                 elif op in [self.DW_OP_bit_piece]:
                     new_pos, d1 = self.get_uleb128(data, new_pos)
@@ -27088,7 +27087,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                 length -= new_pos - pos
                 offset += new_pos - pos
                 pos = new_pos
-        except Exception:
+        except (KeyError, IndexError, ValueError):
             _exc_type, exc_value, _exc_traceback = sys.exc_info()
             entries.append(self.ErrorEntry("Parse Error", exc_value))
         return entries
@@ -27326,7 +27325,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                 else:
                     pos = ttype_base
                 lsda_table_cnt += 1
-        except Exception:
+        except (KeyError, IndexError, ValueError):
             _exc_type, exc_value, _exc_traceback = sys.exc_info()
             entries.append(self.ErrorEntry("Parse Error", exc_value))
         return entries
@@ -27395,46 +27394,47 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
             err("File name could not be determined")
             return
 
+        def unlink_tmp_filepath(tmp_filepath):
+            if tmp_filepath and os.path.exists(tmp_filepath):
+                os.unlink(tmp_filepath)
+            return
+
         self.elf = Elf.get_elf(local_filepath)
         if self.elf is None or not self.elf.is_valid():
             err("Failed to parse elf")
-            if tmp_filepath and os.path.exists(tmp_filepath):
-                os.unlink(tmp_filepath)
+            unlink_tmp_filepath(tmp_filepath)
             return
 
         # read section
         eh_frame_hdr = self.read_section(".eh_frame_hdr")
         if eh_frame_hdr is None:
-            if tmp_filepath and os.path.exists(tmp_filepath):
-                os.unlink(tmp_filepath)
+            unlink_tmp_filepath(tmp_filepath)
             return
+
         eh_frame = self.read_section(".eh_frame")
         if eh_frame is None:
-            if tmp_filepath and os.path.exists(tmp_filepath):
-                os.unlink(tmp_filepath)
+            unlink_tmp_filepath(tmp_filepath)
             return
+
         gcc_except_table = self.read_section(".gcc_except_table")
         if gcc_except_table is None:
-            if tmp_filepath and os.path.exists(tmp_filepath):
-                os.unlink(tmp_filepath)
+            unlink_tmp_filepath(tmp_filepath)
             return
 
         # parse section
         self.out = []
-        eh_frame_hdr_entries = self.parse_eh_frame_hdr(eh_frame_hdr)
-        self.out += self.format_entry(eh_frame_hdr, eh_frame_hdr_entries)
+        entries1 = self.parse_eh_frame_hdr(eh_frame_hdr)
+        self.out += self.format_entry(eh_frame_hdr, entries1)
 
-        eh_frame_entries = self.parse_eh_frame(eh_frame)
-        self.out += self.format_entry(eh_frame, eh_frame_entries)
+        entries2 = self.parse_eh_frame(eh_frame)
+        self.out += self.format_entry(eh_frame, entries2)
 
-        gcc_except_table_entries = self.parse_gcc_except_table(gcc_except_table, eh_frame_entries)
-        self.out += self.format_entry(gcc_except_table, gcc_except_table_entries)
+        entries3 = self.parse_gcc_except_table(gcc_except_table, entries2)
+        self.out += self.format_entry(gcc_except_table, entries3)
 
         # print
         self.print_output(args)
-
-        if tmp_filepath and os.path.exists(tmp_filepath):
-            os.unlink(tmp_filepath)
+        unlink_tmp_filepath(tmp_filepath)
         return
 
 
