@@ -16998,7 +16998,7 @@ class SearchPatternCommand(GenericCommand):
 
     _cmdline_ = "search-pattern"
     _category_ = "03-a. Memory - Search"
-    _aliases_ = ["find"]
+    _aliases_ = ["xfind"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--hex", action="store_true",
@@ -94915,12 +94915,12 @@ class GefHelpCommand(GenericCommand, BufferingOutput):
 
             # alias
             if hasattr(instance._aliases_, "__iter__"):
-                if isinstance(instance._aliases_, str):
-                    aliases = " (alias: {:s})".format(instance._aliases_)
-                elif isinstance(instance._aliases_, list):
-                    aliases = " (alias: {:s})".format(", ".join(instance._aliases_))
-                else:
+                if not instance._aliases_:
                     aliases = ""
+                elif isinstance(instance._aliases_, str):
+                    aliases = " (alias: {:s})".format(instance._aliases_)
+                else:
+                    aliases = " (alias: {:s})".format(", ".join(instance._aliases_))
             else:
                 aliases = ""
 
