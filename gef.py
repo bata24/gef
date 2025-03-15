@@ -5331,7 +5331,12 @@ def load_capstone(f):
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
         try:
-            __import__("capstone")
+            capstone = __import__("capstone")
+            if capstone.cs_version()[0] == 6:
+                LOONGARCH64.capstone_support = True
+                ALPHA.capstone_support = True
+                HPPA.capstone_support = True
+                HPPA64.capstone_support = True
             return f(*args, **kwargs)
         except ImportError as err:
             msg = "Missing `capstone` package for Python, try install with `pip install capstone`"
@@ -13073,7 +13078,10 @@ class UnicornKeystoneCapstone:
         if arch is None:
             arch = current_arch.arch
         # hacky patch for applying to capstone's mode
-        if (arch, mode) == ("RISCV", "32"):
+        if arch == "ARM64":
+            if sys.modules["capstone"].cs_version()[0] == 6:
+                arch = "AARCH64"
+        elif (arch, mode) == ("RISCV", "32"):
             mode = ("RISCV32", "RISCVC")
         elif (arch, mode) == ("RISCV", "64"):
             mode = ("RISCV64", "RISCVC")
@@ -13088,9 +13096,22 @@ class UnicornKeystoneCapstone:
         elif (arch, mode) == ("MIPS", "64"):
             mode = "MIPS64"
         elif arch == "S390X":
-            arch, mode = "SYSZ", None
+            if sys.modules["capstone"].cs_version()[0] == 6:
+                arch, mode = "SYSTEMZ", None
+            else:
+                arch, mode = "SYSZ", None
         elif arch == "M68K":
             mode = "M68K_060"
+        elif (arch, mode) == ("LOONGARCH", "64"): # capstone v6.x~
+            mode = "LOONGARCH64"
+        elif (arch, mode) == ("LOONGARCH", "32"): # capstone v6.x~
+            mode = "LOONGARCH32"
+        elif arch == "ALPHA": # capstone v6.x~
+            mode = None
+        elif (arch, mode) == ("HPPA", "64"): # capstone v6.x~
+            mode = "HPPA_20"
+        elif (arch, mode) == ("HPPA", "32"): # capstone v6.x~
+            mode = "HPPA_11"
         return UnicornKeystoneCapstone.get_generic_arch(
             sys.modules["capstone"], "CS", arch, mode, endian, to_string,
         )
@@ -22650,6 +22671,12 @@ class DisassembleCommand(GenericCommand):
         '{0:s} -a RISCV -m 64 "97c10600"',
         '{0:s} -a S390X -m 64 -e "5a0f1fff"',
         '{0:s} -a M68K -m 32 -e "9dce"',
+        '{0:s} -a LOONGARCH -m 64 "89001500" # capstone v6.x~',
+        '{0:s} -a LOONGARCH -m 32 "89001500" # capstone v6.x~',
+        '{0:s} -a ALPHA -m 64    "0b00bd27" # capstone v6.x~',
+        '{0:s} -a ALPHA -m 64 -e "27bd000b" # capstone v6.x~',
+        '{0:s} -a HPPA -m 32 -e "0fc01299" # capstone v6.x~',
+        '{0:s} -a HPPA -m 64 -e "0fc01299" # capstone v6.x~',
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -22676,7 +22703,7 @@ class DisassembleCommand(GenericCommand):
         elif not args.mode:
             err("A mode (-m) must be provided")
             return
-        elif args.arch in ["SPARC", "S390X", "M68K"] and args.big_endian is False:
+        elif args.arch in ["SPARC", "S390X", "M68K", "HPPA"] and args.big_endian is False:
             # capstone gives no error so check here
             err("A big endian flag (-e) must be provided")
             return
@@ -95955,7 +95982,7 @@ class GefVersionCommand(GenericCommand):
             return ".".join(map(str, ropper.VERSION))
         try:
             return _ropper_version()
-        except (KeyError, ImportWarning):
+        except (KeyError, ImportWarning, AttributeError):
             return "Not found"
 
     def angr_version(self):
@@ -95965,7 +95992,7 @@ class GefVersionCommand(GenericCommand):
             return angr.__version__
         try:
             return _angr_version()
-        except (KeyError, ImportWarning):
+        except (KeyError, ImportWarning, AttributeError):
             return "Not found"
 
     def gcc_version(self):
@@ -96500,7 +96527,12 @@ class Gef:
         if PREFIX != sys.base_prefix:
             cmds = [pythonbin, "-c", "import os,sys;print(os.linesep.join(sys.path).strip())"]
             SITE_PACKAGES_DIRS = subprocess.check_output(cmds).decode("utf-8").split()
-            sys.path.extend(SITE_PACKAGES_DIRS)
+
+            to_add = []
+            for path in SITE_PACKAGES_DIRS:
+                if path not in sys.path:
+                    to_add.append(path)
+            sys.path = to_add + sys.path
         else:
             open(skip_config, "w").close()
         return
