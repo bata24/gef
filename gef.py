@@ -78243,7 +78243,7 @@ class HoardHeapDumpCommand(GenericCommand):
 
 
 @register_command
-class MimallocHeapDumpCommand(GenericCommand):
+class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
     """mimalloc heap free-list viewer (only x64)."""
 
     _cmdline_ = "mimalloc-heap-dump"
@@ -78251,148 +78251,290 @@ class MimallocHeapDumpCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-m", "--mi-heap-main", type=AddressUtil.parse_address,
-                        help="the address of _mi_heap_main.")
-    parser.add_argument("--v21x", action="store_true", help="for v2.1.x.")
+                        help="the address of _mi_heap_main (v2.x) / heap_main (v3.x).")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--v21x", action="store_true", help="for v2.1.x.")
+    group.add_argument("--v22x", action="store_true", help="for v2.2.x.")
+    group.add_argument("--v30x", action="store_true", help="for v3.0.x.")
+    parser.add_argument("-d", "--use-decode", action="store_true", help="use pointer decoding (for debug build).")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
     def initialize(self):
-        """
-        typedef struct mi_heap_s {
-            mi_tld_t* tld;
-            _Atomic(mi_block_t*) thread_delayed_free;
-            mi_threadid_t thread_id;
-            mi_arena_id_t arena_id;
-            uintptr_t cookie;
-            uintptr_t keys[2];
-            mi_random_ctx_t random; // 0x88 bytes
-            size_t page_count;
-            size_t page_retired_min;
-            size_t page_retired_max;
-            mi_heap_t* next;
-            bool no_reclaim;
-            mi_page_t* pages_free_direct[MI_PAGES_DIRECT]; // 0x81
-            mi_page_queue_t pages[MI_BIN_FULL + 1];
-        } mi_heap_t;
-        """
-        self.offset_next = 0xd8
-        self.offset_pages_free_direct = 0xe8
-        self.MI_PAGES_DIRECT = 0x81
-
-        """
-        typedef struct mi_page_s {
-            uint32_t slice_count; // v2.1.6
-            uint32_t slice_offset; // v2.1.6
-            uint8_t segment_idx; // latest
-            uint8_t segment_in_use:1; // latest
-            uint8_t is_committed:1;
-            uint8_t is_zero_init:1;
-            uint8_t is_huge:1;
-
-            uint16_t capacity;
-            uint16_t reserved;
-            mi_page_flags_t flags; // 8 or 16
-            uint8_t free_is_zero:1;
-            uint8_t retire_expire:7;
-
-            mi_block_t* free;
-            mi_block_t* local_free;
-            uint16_t used;
-            uint8_t block_size_shift;
-
-            size_t block_size;
-            uint8_t* page_start;
-
-        #if (MI_ENCODE_FREELIST || MI_PADDING)
-            uintptr_t keys[2];
-        #endif
-
-            _Atomic(mi_thread_free_t) xthread_free;
-            _Atomic(uintptr_t) xheap;
-
-            struct mi_page_s* next;
-            struct mi_page_s* prev;
-
-        #if MI_INTPTR_SIZE==4 // pad to 12 words on 32-bit
-            void* padding[1];
-        #endif
-        } mi_page_t;
-        """
         if self.v21x:
+            """
+            struct mi_heap_s { // v2.1.9
+                /* offset | size   */
+                /* 0x0000 | 0x0008 */    mi_tld_t * tld;
+                /* 0x0008 | 0x0008 */    mi_block_t * _Atomic thread_delayed_free;
+                /* 0x0010 | 0x0008 */    mi_threadid_t thread_id;
+                /* 0x0018 | 0x0004 */    mi_arena_id_t arena_id;
+                /* 0x0020 | 0x0008 */    uintptr_t cookie;
+                /* 0x0028 | 0x0010 */    uintptr_t [2] keys;
+                /* 0x0038 | 0x0088 */    mi_random_ctx_t random;
+                /* 0x00c0 | 0x0008 */    size_t page_count;
+                /* 0x00c8 | 0x0008 */    size_t page_retired_min;
+                /* 0x00d0 | 0x0008 */    size_t page_retired_max;
+                /* 0x00d8 | 0x0008 */    mi_heap_t * next;
+                /* 0x00e0 | 0x0001 */    _Bool no_reclaim;
+                /* 0x00e1 | 0x0001 */    uint8_t tag;
+                /* 0x00e8 | 0x0410 */    mi_page_t *[130] pages_free_direct;
+                /* 0x04f8 | 0x0708 */    mi_page_queue_t [75] pages;
+            } // total: 0xc00 bytes
+            """
+            self.offset_next = 0xd8
+            self.offset_pages_free_direct = 0xe8
+            self.MI_PAGES_DIRECT = 130
+            """
+            struct mi_page_s {
+                /* offset | size   */
+                /* 0x0000 | 0x0004 */    uint32_t slice_count;
+                /* 0x0004 | 0x0004 */    uint32_t slice_offset;
+                /* 0x0008 | 0x0001 */    uint8_t is_committed : 1;
+                /* 0x0008 | 0x0001 */    uint8_t is_zero_init : 1;
+                /* 0x0008 | 0x0001 */    uint8_t is_huge : 1;
+                /* 0x000a | 0x0002 */    uint16_t capacity;
+                /* 0x000c | 0x0002 */    uint16_t reserved;
+                /* 0x000e | 0x0001 */    mi_page_flags_t flags;
+                /* 0x000f | 0x0001 */    uint8_t free_is_zero : 1;
+                /* 0x000f | 0x0001 */    uint8_t retire_expire : 7;
+                /* 0x0010 | 0x0008 */    mi_block_t * free;
+                /* 0x0018 | 0x0008 */    mi_block_t * local_free;
+                /* 0x0020 | 0x0002 */    uint16_t used;
+                /* 0x0022 | 0x0001 */    uint8_t block_size_shift;
+                /* 0x0023 | 0x0001 */    uint8_t heap_tag;
+                /* 0x0028 | 0x0008 */    size_t block_size;
+                /* 0x0030 | 0x0008 */    uint8_t * page_start;
+                /* 0x0038 | 0x0010 */    uintptr_t [2] keys;
+                /* 0x0048 | 0x0008 */    _Atomic mi_thread_free_t xthread_free;
+                /* 0x0050 | 0x0008 */    _Atomic uintptr_t xheap;
+                /* 0x0058 | 0x0008 */    struct mi_page_s * next;
+                /* 0x0060 | 0x0008 */    struct mi_page_s * prev;
+                /* 0x0068 | 0x0008 */    void *[1] padding;
+            } // total: 0x70 bytes
+            """
             self.offset_capacity = 0x4 * 2 + 2 # with padding
             self.offset_free = 0x10
             self.offset_local_free = 0x18
             self.offset_used = 0x20
             self.offset_block_size = 0x28
-        else:
-            self.offset_capacity = 0x02
+            self.offset_keys0 = 0x38
+            self.offset_keys1 = 0x40
+
+        elif self.v22x:
+            """
+            struct mi_heap_s {
+                /* offset | size   */
+                /* 0x0000 | 0x0008 */    mi_tld_t * tld;
+                /* 0x0008 | 0x0008 */    mi_block_t * _Atomic thread_delayed_free;
+                /* 0x0010 | 0x0008 */    mi_threadid_t thread_id;
+                /* 0x0018 | 0x0004 */    mi_arena_id_t arena_id;
+                /* 0x0020 | 0x0008 */    uintptr_t cookie;
+                /* 0x0028 | 0x0010 */    uintptr_t [2] keys;
+                /* 0x0038 | 0x0088 */    mi_random_ctx_t random;
+                /* 0x00c0 | 0x0008 */    size_t page_count;
+                /* 0x00c8 | 0x0008 */    size_t page_retired_min;
+                /* 0x00d0 | 0x0008 */    size_t page_retired_max;
+                /* 0x00d8 | 0x0008 */    long generic_count;
+                /* 0x00e0 | 0x0008 */    long generic_collect_count;
+                /* 0x00e8 | 0x0008 */    mi_heap_t * next;
+                /* 0x00f0 | 0x0001 */    _Bool no_reclaim;
+                /* 0x00f1 | 0x0001 */    uint8_t tag;
+                /* 0x00f8 | 0x0410 */    mi_page_t *[130] pages_free_direct;
+                /* 0x0508 | 0x0708 */    mi_page_queue_t [75] pages;
+            } // total: 0xc10 bytes
+            """
+            self.offset_next = 0xe8
+            self.offset_pages_free_direct = 0xf8
+            self.MI_PAGES_DIRECT = 130
+            """
+            struct mi_page_s {
+                /* offset | size   */
+                /* 0x0000 | 0x0004 */    uint32_t slice_count;
+                /* 0x0004 | 0x0004 */    uint32_t slice_offset;
+                /* 0x0008 | 0x0001 */    uint8_t is_committed : 1;
+                /* 0x0008 | 0x0001 */    uint8_t is_zero_init : 1;
+                /* 0x0008 | 0x0001 */    uint8_t is_huge : 1;
+                /* 0x000a | 0x0002 */    uint16_t capacity;
+                /* 0x000c | 0x0002 */    uint16_t reserved;
+                /* 0x000e | 0x0001 */    mi_page_flags_t flags;
+                /* 0x000f | 0x0001 */    uint8_t free_is_zero : 1;
+                /* 0x000f | 0x0001 */    uint8_t retire_expire : 7;
+                /* 0x0010 | 0x0008 */    mi_block_t * free;
+                /* 0x0018 | 0x0008 */    mi_block_t * local_free;
+                /* 0x0020 | 0x0002 */    uint16_t used;
+                /* 0x0022 | 0x0001 */    uint8_t block_size_shift;
+                /* 0x0023 | 0x0001 */    uint8_t heap_tag;
+                /* 0x0028 | 0x0008 */    size_t block_size;
+                /* 0x0030 | 0x0008 */    uint8_t * page_start;
+                /* 0x0038 | 0x0010 */    uintptr_t [2] keys;
+                /* 0x0048 | 0x0008 */    _Atomic mi_thread_free_t xthread_free;
+                /* 0x0050 | 0x0008 */    _Atomic uintptr_t xheap;
+                /* 0x0058 | 0x0008 */    struct mi_page_s * next;
+                /* 0x0060 | 0x0008 */    struct mi_page_s * prev;
+                /* 0x0068 | 0x0008 */    void *[1] padding;
+            } // total: 0x70 bytes
+            """
+            self.offset_capacity = 0x4 * 2 + 2 # with padding
+            self.offset_free = 0x10
+            self.offset_local_free = 0x18
+            self.offset_used = 0x20
+            self.offset_block_size = 0x28
+            self.offset_keys0 = 0x38
+            self.offset_keys1 = 0x40
+
+        elif self.v30x:
+            """
+            struct mi_heap_s {
+                /* offset | size   */
+                /* 0x0000 | 0x0008 */    mi_tld_t * tld;
+                /* 0x0008 | 0x0008 */    mi_arena_t * exclusive_arena;
+                /* 0x0010 | 0x0008 */    uintptr_t cookie;
+                /* 0x0018 | 0x0088 */    mi_random_ctx_t random;
+                /* 0x00a0 | 0x0008 */    size_t page_count;
+                /* 0x00a8 | 0x0008 */    size_t page_retired_min;
+                /* 0x00b0 | 0x0008 */    size_t page_retired_max;
+                /* 0x00b8 | 0x0008 */    size_t generic_count;
+                /* 0x00c0 | 0x0008 */    mi_heap_t * next;
+                /* 0x00c8 | 0x0008 */    long full_page_retain;
+                /* 0x00d0 | 0x0001 */    _Bool allow_page_reclaim;
+                /* 0x00d1 | 0x0001 */    _Bool allow_page_abandon;
+                /* 0x00d2 | 0x0001 */    uint8_t tag;
+                /* 0x00d8 | 0x0410 */    mi_page_t *[130] pages_free_direct;
+                /* 0x04e8 | 0x0708 */    mi_page_queue_t [75] pages;
+                /* 0x0bf0 | 0x0018 */    mi_memid_t memid;
+            } // total: 0xc08 bytes
+            """
+            self.offset_next = 0xc0
+            self.offset_pages_free_direct = 0xd8
+            self.MI_PAGES_DIRECT = 130
+            """
+            struct mi_page_s {
+                /* offset | size   */
+                /* 0x0000 | 0x0008 */    _Atomic mi_threadid_t xthread_id;
+                /* 0x0008 | 0x0008 */    mi_block_t * free;
+                /* 0x0010 | 0x0002 */    uint16_t used;
+                /* 0x0012 | 0x0002 */    uint16_t capacity;
+                /* 0x0014 | 0x0002 */    uint16_t reserved;
+                /* 0x0016 | 0x0001 */    uint8_t block_size_shift;
+                /* 0x0017 | 0x0001 */    uint8_t retire_expire;
+                /* 0x0018 | 0x0008 */    mi_block_t * local_free;
+                /* 0x0020 | 0x0008 */    _Atomic mi_thread_free_t xthread_free;
+                /* 0x0028 | 0x0008 */    size_t block_size;
+                /* 0x0030 | 0x0008 */    uint8_t * page_start;
+                /* 0x0038 | 0x0001 */    mi_heaptag_t heap_tag;
+                /* 0x0039 | 0x0001 */    _Bool free_is_zero;
+                /* 0x0040 | 0x0010 */    uintptr_t [2] keys;
+                /* 0x0050 | 0x0008 */    mi_heap_t * heap;
+                /* 0x0058 | 0x0008 */    struct mi_page_s * next;
+                /* 0x0060 | 0x0008 */    struct mi_page_s * prev;
+                /* 0x0068 | 0x0008 */    size_t slice_committed;
+                /* 0x0070 | 0x0018 */    mi_memid_t memid;
+            } // total: 0x88 bytes
+            """
+            self.offset_capacity = 0x12
             self.offset_free = 0x08
-            self.offset_local_free = 0x10
-            self.offset_used = 0x18
-            self.offset_block_size = 0x20
+            self.offset_local_free = 0x18
+            self.offset_used = 0x10
+            self.offset_block_size = 0x28
+            self.offset_keys0 = 0x40
+            self.offset_keys1 = 0x48
         return
 
     def get_mi_heap_main(self):
         try:
-            return AddressUtil.parse_address("&_mi_heap_main")
+            if self.v30x:
+                return AddressUtil.parse_address("&heap_main")
+            else:
+                return AddressUtil.parse_address("&_mi_heap_main")
         except gdb.error:
-            return None
+            pass
 
         tls = current_arch.get_tls()
-        if is_valid_addr(tls - 0x10):
-            mi_heap_main = read_int_from_memory(tls - 0x10)
-            if is_valid_addr(mi_heap_main):
-                tld_main = read_int_from_memory(mi_heap_main)
-                if is_valid_addr(tld_main):
-                    return mi_heap_main
+        for i in range(1, 10):
+            offset = current_arch.ptrsize * i
+            if not is_valid_addr(tls - offset):
+                continue
+
+            mi_heap_main = read_int_from_memory(tls - offset)
+            if not is_valid_addr(mi_heap_main):
+                continue
+
+            tld_main = read_int_from_memory(mi_heap_main)
+            if not is_valid_addr(tld_main):
+                continue
+
+            thread_id = read_int_from_memory(tld_main)
+            if not is_valid_addr(thread_id):
+                continue
+            return mi_heap_main
         return None
+
+    def dump_list(self, head, current, key0, key1):
+        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+
+        def ptr_decode(addr, key0, key1):
+            addr = (addr - key0) & 0xffffffffffffffff
+            shift = key0 & 0x3f
+            return ror(addr, shift) ^ key1
+
+        seen = []
+        while True:
+            # loop check
+            if current in seen:
+                self.out.append(Color.colorify("-> {:#x} (loop) ".format(current), corrupted_msg_color))
+                break
+            seen.append(current)
+
+            # check wrong value
+            if current != 0 and not is_valid_addr(current):
+                self.out.append(Color.colorify("-> {:#x} (corrupted) ".format(current), corrupted_msg_color))
+                break
+
+            # ok
+            self.out.append(" -> {:s}".format(Color.colorify_hex(current, freed_address_color)))
+
+            # check the end of the list
+            if current == 0 or current == head:
+                break
+
+            # get next
+            current = read_int_from_memory(current)
+            if self.use_decode:
+                current = ptr_decode(current, key0, key1)
+        return
 
     def dump_page(self, mi_page):
         bs = read_int_from_memory(mi_page + self.offset_block_size)
         cap = u16(read_memory(mi_page + self.offset_capacity, 2))
         used = u16(read_memory(mi_page + self.offset_used, 2))
-        self.out.append(titlify("mi_page_t @{:#x} (block_size={:#x}, capacity={:#x}, used={:#x})".format(mi_page, bs, cap, used)))
-
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        key0 = u64(read_memory(mi_page + self.offset_keys0, 8))
+        key1 = u64(read_memory(mi_page + self.offset_keys1, 8))
+        if self.use_decode:
+            self.out.append(titlify(
+                "mi_page_t @{:#x} (block_size={:#x}, capacity={:#x}, used={:#x}, key0={:#x}, key1={:#x})".format(
+                    mi_page, bs, cap, used, key0, key1,
+                ),
+            ))
+        else:
+            self.out.append(titlify(
+                "mi_page_t @{:#x} (block_size={:#x}, capacity={:#x}, used={:#x})".format(
+                    mi_page, bs, cap, used,
+                ),
+            ))
 
         # freelist
         freelist_addr = mi_page + self.offset_free
         self.out.append("freelist @{:#x}:".format(freelist_addr))
-
         current = read_int_from_memory(freelist_addr)
-        seen = []
-        while True:
-            if current in seen:
-                self.out.append(Color.colorify("-> {:#x} (loop) ".format(current), corrupted_msg_color))
-                break
-            seen.append(current)
-            if current and not is_valid_addr(current):
-                self.out.append(Color.colorify("-> {:#x} (corrupted) ".format(current), corrupted_msg_color))
-                break
-            self.out.append(" -> {:s}".format(Color.colorify_hex(current, freed_address_color)))
-            if current == 0:
-                break
-            current = read_int_from_memory(current)
+        self.dump_list(mi_page, current, key0, key1)
 
         # local freelist
         local_freelist_addr = mi_page + self.offset_local_free
         self.out.append("local_freelist @{:#x}:".format(local_freelist_addr))
-
         current = read_int_from_memory(local_freelist_addr)
-        seen = []
-        while True:
-            if current in seen:
-                self.out.append(Color.colorify("-> {:#x} (loop) ".format(current), corrupted_msg_color))
-                break
-            seen.append(current)
-            if current and not is_valid_addr(current):
-                self.out.append(Color.colorify("-> {:#x} (corrupted) ".format(current), corrupted_msg_color))
-                break
-            self.out.append(" -> {:s}".format(Color.colorify_hex(current, freed_address_color)))
-            if current == 0:
-                break
-            current = read_int_from_memory(current)
+        self.dump_list(mi_page, current, key0, key1)
         return
 
     def dump_heap(self, mi_heap):
@@ -78422,7 +78564,14 @@ class MimallocHeapDumpCommand(GenericCommand):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
+        if int(args.v21x) + int(args.v22x) + int(args.v30x) > 1:
+            err("version error")
+            return
+
+        self.use_decode = args.use_decode
         self.v21x = args.v21x
+        self.v22x = args.v22x
+        self.v30x = args.v30x
         self.initialize()
 
         if args.mi_heap_main:
@@ -78434,13 +78583,14 @@ class MimallocHeapDumpCommand(GenericCommand):
                 return
 
         self.out = []
-        while mi_heap_main:
-            if not is_valid_addr(mi_heap_main):
-                continue
-            self.dump_heap(mi_heap_main)
-            mi_heap_main = read_int_from_memory(mi_heap_main + self.offset_next)
+        self.out.append("mi_heap_main: {:#x}".format(mi_heap_main))
 
-        gef_print("\n".join(self.out), less=not args.no_pager)
+        mi_heap = mi_heap_main
+        while is_valid_addr(mi_heap):
+            self.dump_heap(mi_heap)
+            mi_heap = read_int_from_memory(mi_heap + self.offset_next)
+
+        self.print_output(args)
         return
 
 

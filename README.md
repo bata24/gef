@@ -352,7 +352,7 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/mimalloc-heap-dump.png)
     * How to test (x64):
         * Get and extract the latest source from https://github.com/microsoft/mimalloc
-        * Build with `mkdir build && cd build && cmake .. && make`.
+        * Build with `mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Debug .. && make`.
         * Execute as `LD_PRELOAD=/path/to/libmimalloc.so ./a.out`.
 * `optee-bget-dump`: dumps bget allocator of OPTEE-Trusted-App.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/optee-bget-dump.png)
