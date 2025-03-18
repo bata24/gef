@@ -60408,7 +60408,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         elif major == 153:
             return common_pattern_num_p(16, 16, "emd/")
         elif 160 <= major < 162:
-            return common_pattern_num_p(32, 8, "carmel/", kind_offset=(major - 160) * 8)
+            return common_pattern_num_p(32, 8, "carmel/", kind_offset=(major - 160) * 8) # codespell:ignore
         elif major == 179:
             return common_pattern_num_p(8, None, "mmcblk")
         elif major == 180:
@@ -86752,7 +86752,7 @@ class PagewalkArm64Command(PagewalkCommand):
                     flags += ["EL0/R--", "EL1/R--"]
         elif TargetEL == 2:
             if EL2_M20:
-                # support 2VA ranges if HCR_EL2.{TGE,E2H} == {1,1}
+                # support 2VA ranges if HCR_EL2.{TGE,E2H} == {1,1} # codespell:ignore
                 if UXN is False and PXN is False:
                     if disable_write_access == 0 and enable_unpriv_access == 0:
                         if not EL2_WXN:
@@ -86802,7 +86802,7 @@ class PagewalkArm64Command(PagewalkCommand):
                     elif disable_write_access == 1 and enable_unpriv_access == 1:
                         flags += ["EL0/R--", "EL2/R--"]
             else:
-                # not support 2VA ranges if HCR_EL2.{TGE,E2H} != {1,1}
+                # not support 2VA ranges if HCR_EL2.{TGE,E2H} != {1,1} # codespell:ignore
                 if XN is False:
                     if disable_write_access == 0:
                         if not EL2_WXN:

@@ -210,7 +210,7 @@ I don't really understand the reason for this.
 # About the guest (debugged) environment
 
 ## What Linux kernel versions does GEF support as guests in qemu-system?
-I have confirmed that most commands work on versions 3.x ~ 6.13.x.
+I have confirmed that most commands work on versions 3.x ~ 6.14.x.
 
 However, I have not verified every kernel version.
 For example, certain symbols in some versions may not be supported by heuristic symbol detection.

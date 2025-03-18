@@ -22,7 +22,7 @@
 ## What is this?
 This is a fork of [GEF](https://github.com/hugsy/gef) with 3 major improvements.
 
-1. Added many heuristic commands for kernel debugging __WITHOUT a symbolized vmlinux__ (for qemu-system; linux kernel 3.x ~ 6.13.x).
+1. Added many heuristic commands for kernel debugging __WITHOUT a symbolized vmlinux__ (for qemu-system; linux kernel 3.x ~ 6.14.x).
 2. Added support for [many architectures](https://github.com/bata24/gef/blob/dev/docs/QEMU-USER-SUPPORTED-ARCH.md) (for qemu-user).
 3. Added some heap dump commands for various allocators.
 
@@ -129,7 +129,7 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
 * `kcurrent`: displays current task address.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/kbase-kversion-kcmdline-kcurrent.png)
 * `ksymaddr-remote`: displays kallsyms information from scanning kernel memory.
-    * Supported kernel versions: 3.x to 6.13.x.
+    * Supported kernel versions: 3.x to 6.14.x.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/ksymaddr-remote.png)
 * `ksymaddr-remote-apply`/`vmlinux-to-elf-apply`: applies kallsyms information obtained by `ksymaddr-remote` or `vmlinux-to-elf` to gdb.
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/ksymaddr-remote-apply.png)
@@ -735,7 +735,7 @@ See [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORT
     * `current-stack-frame`, `xref-telescope`, `bytearray`, and `bincompare`.
     * This is because a single file is more attractive than ease of maintenance.
 * The system-call table used by `syscall-args` is moved from gef-extras.
-    * It was updated up to linux kernel 6.13 for each architecture.
+    * It was updated up to linux kernel 6.14 for each architecture.
 * Removed some features I don't use.
     * `$`
     * `ida-interact`
