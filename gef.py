@@ -90649,24 +90649,36 @@ class ThunkTracerCommand(GenericCommand):
 class KmallocBreakpoint(gdb.Breakpoint):
     """Create a breakpoint to print information of kmalloc."""
 
-    def __init__(self, loc, sym, index_of_size_arg, task, option, extra):
+    def __init__(self, loc, sym, index_of_size_arg, option, extra):
         super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
         self.sym = sym
         self.index_of_size_arg = index_of_size_arg
-        self.task_addr = task
         self.option = option
         self.extra = extra
         self.enabled = False
         return
 
+    def check_nested(self, task_addr):
+        for bp in gdb.breakpoints():
+            try:
+                if bp.__class__.__name__ in ["KmallocRetBreakpoint"]:
+                    if bp.enabled and bp.task_addr == task_addr:
+                        return True
+            except Exception:
+                pass
+        return False
+
     def stop(self):
         Cache.reset_gef_caches()
 
+        # fast return if nested break
+        task_addr, _ = KmallocTracerCommand.get_task()
+        if self.check_nested(task_addr):
+            return False
+
         # filtering by task addr
-        if self.task_addr:
-            task_addr, _ = KmallocTracerCommand.get_task()
-            if task_addr != self.task_addr:
-                return False
+        if self.option.target_task and task_addr != self.option.target_task:
+            return False
 
         # get size from arguments
         if self.index_of_size_arg >= 0:
@@ -90683,18 +90695,19 @@ class KmallocBreakpoint(gdb.Breakpoint):
 
         # Use gdb.Breakpoint instead of gdb.FinishBreakpoint because gdb.FinishBreakpoint is buggy
         ret_addr = gdb.newest_frame().older().pc()
-        KmallocRetBreakpoint(ret_addr, self.sym, size, self.option, self.extra)
+        KmallocRetBreakpoint(ret_addr, self.sym, size, task_addr, self.option, self.extra)
         return False
 
 
 class KmallocRetBreakpoint(gdb.Breakpoint):
     """Create a breakpoint to print information of kmalloc."""
 
-    def __init__(self, loc, sym, size, option, extra):
+    def __init__(self, loc, sym, size, task_addr, option, extra):
         # Note that specifying temporary=True does not remove the breakpoint if stop() returns False.
         super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=True)
         self.size = size
         self.sym = sym
+        self.task_addr = task_addr
         self.option = option
         self.extra = extra
         KmallocTracerCommand.clear_disabled_breakpoints("KmallocRetBreakpoint")
@@ -90703,9 +90716,12 @@ class KmallocRetBreakpoint(gdb.Breakpoint):
     def stop(self):
         Cache.reset_gef_caches()
 
+        # check if another thread is detected
         task_addr, task_name = KmallocTracerCommand.get_task()
-        task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
+        if self.task_addr != task_addr:
+            return False
 
+        task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
         allocated = AddressUtil.parse_address(current_arch.return_register)
         allocated_s = Color.colorify_hex(allocated, Config.get_gef_setting("theme.heap_chunk_address_used"))
 
@@ -90722,7 +90738,7 @@ class KmallocRetBreakpoint(gdb.Breakpoint):
                     return False
                 name_s = Color.colorify(name, Config.get_gef_setting("theme.heap_chunk_label"))
                 chunk_size_s = Color.colorify("{:<#6x}".format(chunk_size), Config.get_gef_setting("theme.heap_chunk_size"))
-                gef_print("{:s} {:30s}: {:s} (size: {:s} name: {:s})".format(
+                gef_print("{:s} {:40s}: {:s} (size: {:s} name: {:s})".format(
                     task_prefix, self.sym, allocated_s, chunk_size_s, name_s,
                 ))
                 KmallocTracerCommand.print_backtrace(self.option.backtrace)
@@ -90732,7 +90748,7 @@ class KmallocRetBreakpoint(gdb.Breakpoint):
             # fall through
 
         # print less info
-        gef_print("{:s} {:30s}: {:s} (size: {:<#6x})".format(task_prefix, self.sym, allocated_s, self.size))
+        gef_print("{:s} {:40s}: {:s} (size: {:<#6x})".format(task_prefix, self.sym, allocated_s, self.size))
         KmallocTracerCommand.print_backtrace(self.option.backtrace)
         KmallocTracerCommand.dump_chunk(self.option.dump_chunk, allocated)
         self.enabled = False
@@ -90742,11 +90758,10 @@ class KmallocRetBreakpoint(gdb.Breakpoint):
 class KfreeBreakpoint(gdb.Breakpoint):
     """Create a breakpoint to print information of kfree."""
 
-    def __init__(self, loc, sym, index_of_addr_arg, task, option, extra):
+    def __init__(self, loc, sym, index_of_addr_arg, option, extra):
         super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
         self.sym = sym
         self.index_of_addr_arg = index_of_addr_arg
-        self.task_addr = task
         self.option = option
         self.extra = extra
         self.enabled = False
@@ -90755,16 +90770,17 @@ class KfreeBreakpoint(gdb.Breakpoint):
     def stop(self):
         Cache.reset_gef_caches()
 
+        # check if NULL
         _, to_free = current_arch.get_ith_parameter(self.index_of_addr_arg)
         if not self.option.print_null and to_free == 0:
             return False
 
         # filtering by task addr
         task_addr, task_name = KmallocTracerCommand.get_task()
-        if self.task_addr and task_addr != self.task_addr:
+        if self.option.target_task and task_addr != self.option.target_task:
             return False
-        task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
 
+        task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
         to_free_s = Color.colorify_hex(to_free, Config.get_gef_setting("theme.heap_chunk_address_freed"))
 
         if self.extra:
@@ -90778,7 +90794,7 @@ class KfreeBreakpoint(gdb.Breakpoint):
                     return False
                 name_s = Color.colorify(name, Config.get_gef_setting("theme.heap_chunk_label"))
                 chunk_size_s = Color.colorify("{:<#6x}".format(chunk_size), Config.get_gef_setting("theme.heap_chunk_size"))
-                gef_print("{:s} {:30s}: {:s} (size: {:s} name: {:s})".format(
+                gef_print("{:s} {:40s}: {:s} (size: {:s} name: {:s})".format(
                     task_prefix, self.sym, to_free_s, chunk_size_s, name_s,
                 ))
                 KmallocTracerCommand.print_backtrace(self.option.backtrace)
@@ -90787,7 +90803,7 @@ class KfreeBreakpoint(gdb.Breakpoint):
             # fall through
 
         # print less info
-        gef_print("{:s} {:30s}: {:s}".format(task_prefix, self.sym, to_free_s))
+        gef_print("{:s} {:40s}: {:s}".format(task_prefix, self.sym, to_free_s))
         KmallocTracerCommand.print_backtrace(self.option.backtrace)
         KmallocTracerCommand.dump_chunk(self.option.dump_chunk, to_free)
         return False
@@ -90827,12 +90843,13 @@ class KmallocTracerCommand(GenericCommand):
         return
 
     @staticmethod
-    def create_option_info(args):
+    def create_option_info(args, target_task=None):
         dic = {
             "print_null": args.print_null,
             "backtrace": args.backtrace,
             "filter": args.filter,
             "dump_chunk": args.dump_chunk,
+            "target_task": target_task,
         }
         OptionInfo = collections.namedtuple("OptionInfo", dic.keys())
         option_info = OptionInfo(*dic.values())
@@ -90941,158 +90958,228 @@ class KmallocTracerCommand(GenericCommand):
         return
 
     @staticmethod
-    def set_bp_to_kmalloc_kfree(option_info, extra_info, task_addr=None):
-        # Since `kmalloc` is always inlined and not exported, so the symbol cannot be determined.
-        # So put a breakpoint in each non-inlined function called from kmalloc.
+    def set_bp_to_kmalloc_kfree(option_info, extra_info):
+        # `kmalloc` is always inlined and not exported, so its symbol cannot be identified.
+        # Therefore, you must set a breakpoint in a function that is exported instead of kmalloc.
+        # This can be done by checking EXPORT_SYMBOL, and a tool to automate this is dev//update-kmalloc-tracer.
+        # The same symbol may be found multiple times from different *.c files, and they can be treated as the same.
         """
-        (1) kmalloc
-            - [~6.0]
-                - static __always_inline void *kmalloc(size_t size, gfp_t flags)
-                    - kmalloc_large
-                        - [CONFIG_TRACING=n]
-                            - static __always_inline void *kmalloc_order_trace(size_t size, gfp_t flags, unsigned int order)
-                                - void *kmalloc_order(size_t size, gfp_t flags, unsigned int order)
-                        - [CONFIG_TRACING=y]
-                            - void *kmalloc_order_trace(size_t size, gfp_t flags, unsigned int order)
-                                - void *kmalloc_order(size_t size, gfp_t flags, unsigned int order)
-                    - kmem_cache_alloc_trace
-                        - [CONFIG_TRACING=y]
-                            - void *kmem_cache_alloc_trace(struct kmem_cache *s, gfp_t flags, size_t size)
-                        - [CONFIG_TRACING=n]
-                            - static __always_inline void *kmem_cache_alloc_trace(struct kmem_cache *s, gfp_t flags, size_t size)
-                                - void *kmem_cache_alloc(struct kmem_cache *s, gfp_t flags)
-                    - __kmalloc
-                        - void *__kmalloc(size_t size, gfp_t flags)
-            - [6.1~6.9]
-                - static __always_inline void *kmalloc(size_t size, gfp_t flags)
-                    - void *kmalloc_large(size_t size, gfp_t flags)
-                    - void *kmalloc_trace(struct kmem_cache *s, gfp_t flags, size_t size)
-                    - void *__kmalloc(size_t size, gfp_t flags)
-            - [6.10~]
-                - static __always_inline void *kmalloc_noprof(size_t size, gfp_t flags)
-                    - void *kmalloc_large_noprof(size_t size, gfp_t flags)
-                    - void *kmalloc_trace_noprof(struct kmem_cache *s, gfp_t gfpflags, size_t size)
-                    - void *__kmalloc_noprof(size_t size, gfp_t flags)
-
-        (2) kmalloc_node
-            - [~6.0]
-                - static __always_inline void *kmalloc_node(size_t size, gfp_t flags, int node)
-                    - kmem_cache_alloc_node_trace
-                        - [CONFIG_TRACING=y && CONFIG_NUMA=y]
-                            - void *kmem_cache_alloc_node_trace(struct kmem_cache *s, gfp_t gfpflags, int node, size_t size)
-                        - [CONFIG_TRACING=y && CONFIG_NUMA=n]
-                            - void *kmem_cache_alloc_trace(struct kmem_cache *cachep, gfp_t flags, size_t size)
-                        - [CONFIG_TRACING=n && CONFIG_NUMA=y]
-                            - static __always_inline void *kmem_cache_alloc_trace(struct kmem_cache *s, gfp_t flags, size_t size)
-                                - void *kmem_cache_alloc_node(struct kmem_cache *cachep, gfp_t flags, int nodeid)
-                        - [CONFIG_TRACING=n && CONFIG_NUMA=n]
-                            - static __always_inline void *kmem_cache_alloc_trace(struct kmem_cache *s, gfp_t flags, size_t size)
-                                - static __always_inline void *kmem_cache_alloc_node(struct kmem_cache *s, gfp_t flags, int node)
-                                    - void *kmem_cache_alloc(struct kmem_cache *s, gfp_t flags)
-                    - __kmalloc_node
-                        - [CONFIG_NUMA=y]
-                            void *__kmalloc_node(size_t size, gfp_t flags, int node)
-                        - [CONFIG_NUMA=n]
-                            - void *__kmalloc(size_t size, gfp_t flags)
-            - [6.1~6.9]
-                - static __always_inline void *kmalloc_node(size_t size, gfp_t flags, int node)
-                    - void *kmalloc_large_node(size_t size, gfp_t flags, int node)
-                    - void *kmalloc_node_trace(struct kmem_cache *s, gfp_t gfpflags, int node, size_t size)
-                    - void *__kmalloc_node(size_t size, gfp_t flags, int node)
-            - [6.10~]
-                - static __always_inline void *kmalloc_node_noprof(size_t size, gfp_t flags, int node)
-                    - void *kmalloc_large_node_noprof(size_t size, gfp_t flags, int node)
-                    - void *kmalloc_node_trace_noprof(struct kmem_cache *s, gfp_t gfpflags, int node, size_t size)
-                    - void *__kmalloc_node_noprof(size_t size, gfp_t flags, int node)
-
-        (3) kmemdup, etc.
-            - void *kmemdup(const void *src, size_t len, gfp_t gfp)
-                - [~6.0]
-                    - void *__kmalloc_track_caller(size_t size, gfp_t flags, unsigned long caller)
-                - [6.1~6.9]
-                    - void *__kmalloc_node_track_caller(size_t size, gfp_t flags, int node, unsigned long caller)
-                - [6.10~]
-                    - void *kmalloc_node_track_caller_noprof(size_t size, gfp_t flags, int node, unsigned long caller)
-
-        (4) krealloc
-            - [~6.9]
-                - void *krealloc(const void *p, size_t new_size, gfp_t flags)
-            - [6.10~]
-                - void *krealloc_noprof(const void *p, size_t new_size, gfp_t flags)
-
-        (5) kfree
-            - void kfree(const void *object)
+        [3.0~3.15]
+        EXPORT_SYMBOL(__kmalloc);
+        EXPORT_SYMBOL(__kmalloc_node);
+        EXPORT_SYMBOL(__kmalloc_node_track_caller);
+        EXPORT_SYMBOL(__kmalloc_track_caller);
+        EXPORT_SYMBOL(__krealloc);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmalloc_order_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc);
+        EXPORT_SYMBOL(kmem_cache_alloc_node);
+        EXPORT_SYMBOL(kmem_cache_alloc_node_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc_trace);
+        EXPORT_SYMBOL(krealloc);
+        [3.16~5.5]
+        EXPORT_SYMBOL(__kmalloc);
+        EXPORT_SYMBOL(__kmalloc_node);
+        EXPORT_SYMBOL(__kmalloc_node_track_caller);
+        EXPORT_SYMBOL(__kmalloc_track_caller);
+        EXPORT_SYMBOL(__krealloc);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmalloc_order);
+        EXPORT_SYMBOL(kmalloc_order_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc);
+        EXPORT_SYMBOL(kmem_cache_alloc_node);
+        EXPORT_SYMBOL(kmem_cache_alloc_node_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc_trace);
+        EXPORT_SYMBOL(krealloc);
+        [5.6~5.17]
+        EXPORT_SYMBOL(__kmalloc);
+        EXPORT_SYMBOL(__kmalloc_node);
+        EXPORT_SYMBOL(__kmalloc_node_track_caller);
+        EXPORT_SYMBOL(__kmalloc_track_caller);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmalloc_order);
+        EXPORT_SYMBOL(kmalloc_order_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc);
+        EXPORT_SYMBOL(kmem_cache_alloc_node);
+        EXPORT_SYMBOL(kmem_cache_alloc_node_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc_trace);
+        EXPORT_SYMBOL(krealloc);
+        [5.18~6.0]
+        EXPORT_SYMBOL(__kmalloc);
+        EXPORT_SYMBOL(__kmalloc_node);
+        EXPORT_SYMBOL(__kmalloc_node_track_caller);
+        EXPORT_SYMBOL(__kmalloc_track_caller);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmalloc_order);
+        EXPORT_SYMBOL(kmalloc_order_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc);
+        EXPORT_SYMBOL(kmem_cache_alloc_lru);
+        EXPORT_SYMBOL(kmem_cache_alloc_node);
+        EXPORT_SYMBOL(kmem_cache_alloc_node_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc_trace);
+        EXPORT_SYMBOL(krealloc);
+        [6.1~6.9]
+        EXPORT_SYMBOL(__kmalloc);
+        EXPORT_SYMBOL(__kmalloc_node);
+        EXPORT_SYMBOL(__kmalloc_node_track_caller);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmalloc_large);
+        EXPORT_SYMBOL(kmalloc_large_node);
+        EXPORT_SYMBOL(kmalloc_node_trace);
+        EXPORT_SYMBOL(kmalloc_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc);
+        EXPORT_SYMBOL(kmem_cache_alloc_lru);
+        EXPORT_SYMBOL(kmem_cache_alloc_node);
+        EXPORT_SYMBOL(krealloc);
+        [6.10]
+        EXPORT_SYMBOL(__kmalloc_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_noprof);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmalloc_large_node_noprof);
+        EXPORT_SYMBOL(kmalloc_large_noprof);
+        EXPORT_SYMBOL(kmalloc_node_trace_noprof);
+        EXPORT_SYMBOL(kmalloc_node_track_caller_noprof);
+        EXPORT_SYMBOL(kmalloc_trace_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_lru_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_node_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_noprof);
+        EXPORT_SYMBOL(krealloc_noprof);
+        [6.11~6.14-rc7]
+        EXPORT_SYMBOL(__kmalloc_cache_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_cache_noprof);
+        EXPORT_SYMBOL(__kmalloc_large_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_large_noprof);
+        EXPORT_SYMBOL(__kmalloc_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_node_track_caller_noprof);
+        EXPORT_SYMBOL(__kmalloc_noprof);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmem_cache_alloc_lru_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_node_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_noprof);
+        EXPORT_SYMBOL(krealloc_noprof);
         """
-
-        kversion = Kernel.kernel_version()
 
         # This list may be incomplete.
         # If you know of any memory-allocating functions that may be freed with kfree, please let us know.
-        if kversion < "6.1":
-            # The number is the argument index of the size. -1 means index 0 is `struct kmem_cache*`.
+        # The number is the argument index of the size. -1 means index 0 is `struct kmem_cache*`.
+        kversion = Kernel.kernel_version()
+        if kversion < "3.16":
             kmalloc_syms = [
-                # for kmalloc
-                [0, "kmalloc_order"],
-                [2, "kmem_cache_alloc_trace"],
-                [-1, "kmem_cache_alloc"],
-                [0, "__kmalloc"],
-                # for kmalloc_node
-                [3, "kmem_cache_alloc_node_trace"],
-                [-1, "kmem_cache_alloc_node"],
-                [0, "__kmalloc_node"],
-                # for kmemdup, etc.
-                [0, "__kmalloc_track_caller"],
-                # for krealloc
-                [1, "krealloc"],
+                ["__kmalloc", 0],
+                ["__kmalloc_node", 0],
+                ["__kmalloc_node_track_caller", 0],
+                ["__kmalloc_track_caller", 0],
+                ["__krealloc", 1],
+                ["kmalloc_order_trace", 0],
+                ["kmem_cache_alloc", -1],
+                ["kmem_cache_alloc_node", -1],
+                ["kmem_cache_alloc_node_trace", 3],
+                ["kmem_cache_alloc_trace", 2],
+                ["krealloc", 1],
+            ]
+        elif kversion < "5.6":
+            kmalloc_syms = [
+                ["__kmalloc", 0],
+                ["__kmalloc_node", 0],
+                ["__kmalloc_node_track_caller", 0],
+                ["__kmalloc_track_caller", 0],
+                ["__krealloc", 1],
+                ["kmalloc_order", 0],
+                ["kmalloc_order_trace", 0],
+                ["kmem_cache_alloc", -1],
+                ["kmem_cache_alloc_node", -1],
+                ["kmem_cache_alloc_node_trace", 3],
+                ["kmem_cache_alloc_trace", 2],
+                ["krealloc", 1],
+            ]
+        elif kversion < "5.18":
+            kmalloc_syms = [
+                ["__kmalloc", 0],
+                ["__kmalloc_node", 0],
+                ["__kmalloc_node_track_caller", 0],
+                ["__kmalloc_track_caller", 0],
+                ["kmalloc_order", 0],
+                ["kmalloc_order_trace", 0],
+                ["kmem_cache_alloc", -1],
+                ["kmem_cache_alloc_node", -1],
+                ["kmem_cache_alloc_node_trace", 3],
+                ["kmem_cache_alloc_trace", 2],
+                ["krealloc", 1],
+            ]
+        elif kversion < "6.1":
+            kmalloc_syms = [
+                ["__kmalloc", 0],
+                ["__kmalloc_node", 0],
+                ["__kmalloc_node_track_caller", 0],
+                ["__kmalloc_track_caller", 0],
+                ["kmalloc_order", 0],
+                ["kmalloc_order_trace", 0],
+                ["kmem_cache_alloc", -1],
+                ["kmem_cache_alloc_lru", -1],
+                ["kmem_cache_alloc_node", -1],
+                ["kmem_cache_alloc_node_trace", 3],
+                ["kmem_cache_alloc_trace", 2],
+                ["krealloc", 1],
             ]
         elif kversion < "6.10":
             kmalloc_syms = [
-                # for kmalloc
-                [0, "kmalloc_large"],
-                [2, "kmalloc_trace"],
-                [0, "__kmalloc"],
-                # for kmalloc_node
-                [0, "kmalloc_large_node"],
-                [3, "kmalloc_node_trace"],
-                [0, "__kmalloc_node"],
-                # for kmemdup, etc.
-                [0, "__kmalloc_node_track_caller"],
-                # for krealloc
-                [1, "krealloc"],
+                ["__kmalloc", 0],
+                ["__kmalloc_node", 0],
+                ["__kmalloc_node_track_caller", 0],
+                ["kmalloc_large", 0],
+                ["kmalloc_large_node", 0],
+                ["kmalloc_node_trace", 3],
+                ["kmalloc_trace", 2],
+                ["kmem_cache_alloc", -1],
+                ["kmem_cache_alloc_lru", -1],
+                ["kmem_cache_alloc_node", -1],
+                ["krealloc", 1],
             ]
-        else: # >= 6.10
+        elif kversion < "6.11":
             kmalloc_syms = [
-                # for kmalloc
-                [0, "kmalloc_large_noprof"],
-                [2, "kmalloc_trace_noprof"],
-                [0, "__kmalloc_noprof"],
-                # for kmalloc_node
-                [0, "kmalloc_large_node_noprof"],
-                [3, "kmalloc_node_trace_noprof"],
-                [0, "__kmalloc_node_noprof"],
-                # for kmemdup, etc.
-                [0, "kmalloc_node_track_caller_noprof"],
-                # for krealloc
-                [1, "krealloc_noprof"],
+                ["__kmalloc_node_noprof", 0],
+                ["__kmalloc_noprof", 0],
+                ["kmalloc_large_node_noprof", 0],
+                ["kmalloc_large_noprof", 0],
+                ["kmalloc_node_trace_noprof", 3],
+                ["kmalloc_node_track_caller_noprof", 0],
+                ["kmalloc_trace_noprof", 2],
+                ["kmem_cache_alloc_lru_noprof", -1],
+                ["kmem_cache_alloc_node_noprof", -1],
+                ["kmem_cache_alloc_noprof", -1],
+                ["krealloc_noprof", 1],
+            ]
+        elif kversion >= "6.11": # 6.11 ~ 6.14-rc7
+            kmalloc_syms = [
+                ["__kmalloc_cache_node_noprof", 3],
+                ["__kmalloc_cache_noprof", 2],
+                ["__kmalloc_large_node_noprof", 0],
+                ["__kmalloc_large_noprof", 0],
+                ["__kmalloc_node_noprof", 0],
+                ["__kmalloc_node_track_caller_noprof", 0],
+                ["__kmalloc_noprof", 0],
+                ["kmem_cache_alloc_lru_noprof", -1],
+                ["kmem_cache_alloc_node_noprof", -1],
+                ["kmem_cache_alloc_noprof", -1],
+                ["krealloc_noprof", 1],
             ]
 
         kfree_syms = [
-            # number is the argument index of the address.
-            [0, "kfree"],
+            ["kfree", 0],
         ]
 
         breakpoints = []
-        for index_of_size_arg, sym in kmalloc_syms:
+        for sym, index_of_size_arg in kmalloc_syms:
             func_addr = Symbol.get_ksymaddr(sym)
             if func_addr:
                 gef_print(sym + ": ", end="")
-                bp = KmallocBreakpoint(func_addr, sym, index_of_size_arg, task_addr, option_info, extra_info)
+                bp = KmallocBreakpoint(func_addr, sym, index_of_size_arg, option_info, extra_info)
                 breakpoints.append(bp)
-        for index_of_addr_arg, sym in kfree_syms:
+        for sym, index_of_addr_arg in kfree_syms:
             func_addr = Symbol.get_ksymaddr(sym)
             if func_addr:
                 gef_print(sym + ": ", end="")
-                bp = KfreeBreakpoint(func_addr, sym, index_of_addr_arg, task_addr, option_info, extra_info)
+                bp = KfreeBreakpoint(func_addr, sym, index_of_addr_arg, option_info, extra_info)
                 breakpoints.append(bp)
         return breakpoints
 
@@ -91105,12 +91192,17 @@ class KmallocTracerCommand(GenericCommand):
     def do_invoke(self, args):
         info("Wait for memory scan")
 
-        # initialize
+        kversion = Kernel.kernel_version()
+        if kversion < "3.0":
+            err("Unsupported before 3.0")
+            return
+
         allocator = KernelChecksecCommand.get_slab_type()
         if allocator != "SLUB":
             warn("Unsupported viewing detailed information for SLAB, SLOB, SLUB_TINY")
             # fall through
 
+        # initialize
         if not self.initialized:
             ret = KmallocTracerCommand.initialize(allocator, args.verbose)
             if ret is False:
@@ -92443,16 +92535,19 @@ class KmallocAllocatedByCommand(GenericCommand):
     @only_if_kvm_disabled
     @only_if_smp_disabled
     def do_invoke(self, args):
-        # create option_info
-        option_info = KmallocTracerCommand.create_option_info(args)
-
-        # initialize
         info("Wait for memory scan")
+
+        kversion = Kernel.kernel_version()
+        if kversion < "3.0":
+            err("Unsupported before 3.0")
+            return
+
         allocator = KernelChecksecCommand.get_slab_type()
         if allocator != "SLUB":
             warn("Unsupported viewing detailed information for SLAB, SLOB, SLUB_TINY")
             # fall through
 
+        # initialize
         if not self.initialized:
             ret = KmallocTracerCommand.initialize(allocator, args.verbose)
             if ret is False:
@@ -92485,6 +92580,9 @@ class KmallocAllocatedByCommand(GenericCommand):
         target_task = int(r[0], 16)
         info("task of `sleep`: {:#x}".format(target_task))
 
+        # create option_info
+        option_info = KmallocTracerCommand.create_option_info(args, target_task)
+
         # get rip for breakpoint
         # get rsp for checking process
         r1 = re.search(r"rip\s*: (0x\S+)", res)
@@ -92502,7 +92600,7 @@ class KmallocAllocatedByCommand(GenericCommand):
         hwbp = KmallocAllocatedBy_UserlandHardwareBreakpoint(rip_of_sleep)
 
         # set kmalloc breakpoints (but disabled)
-        breakpoints = KmallocTracerCommand.set_bp_to_kmalloc_kfree(option_info, self.extra_info, target_task)
+        breakpoints = KmallocTracerCommand.set_bp_to_kmalloc_kfree(option_info, self.extra_info)
 
         # wait to stop at userland `sleep` process
         ContextCommand.hide_context()
@@ -92529,12 +92627,12 @@ class KmallocAllocatedByCommand(GenericCommand):
 class KtraceBreakpoint(gdb.Breakpoint):
     """Create a breakpoint to print information for kernel functions."""
 
-    def __init__(self, loc, sym, task_name, task_addr):
+    def __init__(self, loc, sym, task_name_filter, task_addr_filter):
         super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=True)
         self.loc = loc
         self.sym = sym
-        self.task_name = task_name
-        self.task_addr = task_addr
+        self.task_name_filter = task_name_filter
+        self.task_addr_filter = task_addr_filter
         return
 
     def stop(self):
@@ -92542,9 +92640,9 @@ class KtraceBreakpoint(gdb.Breakpoint):
 
         # check task
         task_addr, task_name = KmallocTracerCommand.get_task()
-        if self.task_name and task_name not in self.task_name:
+        if self.task_name_filter and task_name not in self.task_name_filter:
             return False
-        if self.task_addr and task_addr not in self.task_addr:
+        if self.task_addr_filter and task_addr not in self.task_addr_filter:
             return False
 
         # get args
@@ -92574,7 +92672,7 @@ class KtraceBreakpoint(gdb.Breakpoint):
 
         # set bp for return value
         try:
-            KtraceRetBreakpoint(self.loc, self.sym, self.task_name, self.task_addr, random_id)
+            KtraceRetBreakpoint(self.loc, self.sym, self.task_name_filter, self.task_addr_filter, random_id)
         except gdb.error:
             # The case is following (why?):
             #   Warning:
@@ -92587,12 +92685,12 @@ class KtraceBreakpoint(gdb.Breakpoint):
 class KtraceRetBreakpoint(gdb.FinishBreakpoint):
     """Create a breakpoint to print information for kernel functions."""
 
-    def __init__(self, loc, sym, task_name, task_addr, random_id):
+    def __init__(self, loc, sym, task_name_filter, task_addr_filter, random_id):
         super().__init__(gdb.newest_frame(), internal=True)
         self.loc = loc
         self.sym = sym
-        self.task_name = task_name
-        self.task_addr = task_addr
+        self.task_name_filter = task_name_filter
+        self.task_addr_filter = task_addr_filter
         self.random_id = random_id
         KernelTraceCommand.finish_breakpoints.append(self)
         return
@@ -92602,9 +92700,9 @@ class KtraceRetBreakpoint(gdb.FinishBreakpoint):
 
         # check task
         task_addr, task_name = KmallocTracerCommand.get_task()
-        if self.task_name and task_name not in self.task_name:
+        if self.task_name_filter and task_name not in self.task_name_filter:
             return False
-        if self.task_addr and task_addr not in self.task_addr:
+        if self.task_addr_filter and task_addr not in self.task_addr_filter:
             return False
 
         # get return value
