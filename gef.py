@@ -1376,8 +1376,14 @@ class AddressUtil:
     @staticmethod
     @Cache.cache_this_session
     def get_recursive_dereference_blacklist():
-        """Returns the blacklist of addresses. This is a function for caching purposes."""
-        return eval(Config.get_gef_setting("dereference.blacklist")) or []
+        """Returns the blacklist of addresses (for caching purposes after eval())."""
+        blacklist = eval(Config.get_gef_setting("dereference.blacklist"))
+        for range_list in blacklist:
+            assert isinstance(range_list, list)
+            assert len(range_list) == 2
+            assert isinstance(range_list[0], int)
+            assert isinstance(range_list[1], int)
+        return blacklist
 
     @staticmethod
     @Cache.cache_until_next
@@ -1386,7 +1392,7 @@ class AddressUtil:
         if not is_alive():
             return [addr], None
 
-        recursion = Config.get_gef_setting("dereference.max_recursion") or 4
+        recursion = Config.get_gef_setting("dereference.max_recursion")
         blacklist = AddressUtil.get_recursive_dereference_blacklist()
         addr_list = []
         error = None
@@ -1434,7 +1440,7 @@ class AddressUtil:
         """Create string from dereference array."""
         string_color = Config.get_gef_setting("theme.dereference_string")
         nb_max_string_length = Config.get_gef_setting("context.nb_max_string_length")
-        recursion = Config.get_gef_setting("dereference.max_recursion") or 4
+        recursion = Config.get_gef_setting("dereference.max_recursion")
 
         # dereference
         addrs, error = AddressUtil.recursive_dereference(value, phys=phys)
