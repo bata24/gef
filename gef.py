@@ -69060,7 +69060,7 @@ class ConstGrepCommand(GenericCommand):
 
 
 @register_command
-class SlubDumpCommand(GenericCommand):
+class SlubDumpCommand(GenericCommand, BufferingOutput):
     """Dump slub free-list."""
 
     _cmdline_ = "slub-dump"
@@ -69185,11 +69185,6 @@ class SlubDumpCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self.initialized = False
-        return
-
     def quiet_err(self, msg):
         if not self.args.quiet:
             err(msg)
@@ -69300,8 +69295,9 @@ class SlubDumpCommand(GenericCommand):
     """
 
     def initialize(self):
-        if not self.args.meta and self.initialized:
-            return True
+        if hasattr(self, "initialized") and self.initialized:
+            if not self.args.meta:
+                return True
 
         # resolve slab_caches
         self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
@@ -70129,13 +70125,15 @@ class SlubDumpCommand(GenericCommand):
         if not args.quiet:
             info("Wait for memory scan")
 
-        if (is_x86() or is_arm32()) and not self.initialized and not args.skip_page2virt:
-            # The slub-dump command is also called by page2virt and kmagic to determine vmemmap and sizeof(struct page).
-            # Therefore, slub-dump itself may be called recursively (up to once) from slub-dump.
-            # If a recursive call is made, various parameters held by self will be destroyed.
-            # It's very tricky, but if we make sure to call page2virt first, no further calls will be made and
-            # it will work without any problems.
-            gdb.execute("page2virt 0", to_string=True)
+        # The slub-dump command is also called by page2virt and kmagic to determine vmemmap and sizeof(struct page).
+        # Therefore, slub-dump itself may be called recursively (up to once) from slub-dump.
+        # If a recursive call is made, various parameters held by self will be destroyed.
+        # It's very tricky, but if we make sure to call page2virt first, no further calls will be made and
+        # it will work without any problems.
+        if not hasattr(self, "initialized"):
+            if is_x86() or is_arm32():
+                if not args.skip_page2virt:
+                    gdb.execute("page2virt 0", to_string=True)
 
         allocator = KernelChecksecCommand.get_slab_type()
         if allocator != "SLUB":
@@ -70158,13 +70156,12 @@ class SlubDumpCommand(GenericCommand):
         self.maps = None
         self.out = []
         self.slubwalk(args.cache_name, args.cpu)
-        if self.out:
-            gef_print("\n".join(self.out), less=not args.no_pager)
+        self.print_output(args)
         return
 
 
 @register_command
-class SlubTinyDumpCommand(GenericCommand):
+class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     """Dump slub-tiny free-list."""
 
     _cmdline_ = "slub-tiny-dump"
@@ -70239,11 +70236,6 @@ class SlubTinyDumpCommand(GenericCommand):
         "   ...",
     ]
     _note_ = "\n".join(_note_)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self.initialized = False
-        return
 
     def quiet_err(self, msg):
         if not self.args.quiet:
@@ -70325,8 +70317,9 @@ class SlubTinyDumpCommand(GenericCommand):
     """
 
     def initialize(self):
-        if not self.args.meta and self.initialized:
-            return True
+        if hasattr(self, "initialized") and self.initialized:
+            if not self.args.meta:
+                return True
 
         # resolve slab_caches
         self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
@@ -70847,13 +70840,15 @@ class SlubTinyDumpCommand(GenericCommand):
         if not args.quiet:
             info("Wait for memory scan")
 
-        if (is_x86() or is_arm32()) and not self.initialized and not args.skip_page2virt:
-            # The slub-tiny-dump command is also called by page2virt and kmagic to determine vmemmap and sizeof(struct page).
-            # Therefore, slub-tiny-dump itself may be called recursively (up to once) from slub-tiny-dump.
-            # If a recursive call is made, various parameters held by self will be destroyed.
-            # It's very tricky, but if we make sure to call page2virt first, no further calls will be made and
-            # it will work without any problems.
-            gdb.execute("page2virt 0", to_string=True)
+        # The slub-tiny-dump command is also called by page2virt and kmagic to determine vmemmap and sizeof(struct page).
+        # Therefore, slub-tiny-dump itself may be called recursively (up to once) from slub-tiny-dump.
+        # If a recursive call is made, various parameters held by self will be destroyed.
+        # It's very tricky, but if we make sure to call page2virt first, no further calls will be made and
+        # it will work without any problems.
+        if not hasattr(self, "initialized"):
+            if is_x86() or is_arm32():
+                if not args.skip_page2virt:
+                    gdb.execute("page2virt 0", to_string=True)
 
         allocator = KernelChecksecCommand.get_slab_type()
         if allocator != "SLUB_TINY":
@@ -70865,13 +70860,12 @@ class SlubTinyDumpCommand(GenericCommand):
         self.maps = None
         self.out = []
         self.slub_tiny_walk(args.cache_name)
-        if self.out:
-            gef_print("\n".join(self.out), less=not args.no_pager)
+        self.print_output(args)
         return
 
 
 @register_command
-class SlabDumpCommand(GenericCommand):
+class SlabDumpCommand(GenericCommand, BufferingOutput):
     """Dump slab free-list."""
 
     _cmdline_ = "slab-dump"
@@ -70944,11 +70938,6 @@ class SlabDumpCommand(GenericCommand):
         "* Chunks in array_cache are marked as in-use, even though they are actually reusable.",
     ]
     _note_ = "\n".join(_note_)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self.initialized = False
-        return
 
     def quiet_err(self, msg):
         if not self.args.quiet:
@@ -71071,8 +71060,9 @@ class SlabDumpCommand(GenericCommand):
     """
 
     def initialize(self):
-        if not self.args.meta and self.initialized:
-            return True
+        if hasattr(self, "initialized") and self.initialized:
+            if not self.args.meta:
+                return True
 
         # resolve slab_caches
         self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
@@ -71723,13 +71713,12 @@ class SlabDumpCommand(GenericCommand):
         self.maps = None
         self.out = []
         self.slabwalk(args.cache_name, args.cpu)
-        if self.out:
-            gef_print("\n".join(self.out), less=not args.no_pager)
+        self.print_output(args)
         return
 
 
 @register_command
-class SlobDumpCommand(GenericCommand):
+class SlobDumpCommand(GenericCommand, BufferingOutput):
     """Dump slob free-list."""
 
     _cmdline_ = "slob-dump"
@@ -71781,11 +71770,6 @@ class SlobDumpCommand(GenericCommand):
         "  so divided remainder is stay on                +-----------+   (when units=1, stored negative offset)",
     ]
     _note_ = "\n".join(_note_)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self.initialized = False
-        return
 
     def quiet_err(self, msg):
         if not self.args.quiet:
@@ -71842,8 +71826,9 @@ class SlobDumpCommand(GenericCommand):
     """
 
     def initialize(self):
-        if not self.args.meta and self.initialized:
-            return True
+        if hasattr(self, "initialized") and self.initialized:
+            if not self.args.meta:
+                return True
 
         # resolve slab_caches
         self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
@@ -72159,8 +72144,7 @@ class SlobDumpCommand(GenericCommand):
         self.maps = None
         self.out = []
         self.slobwalk(args.cache_name)
-        if self.out:
-            gef_print("\n".join(self.out), less=not args.no_pager)
+        self.print_output(args)
         return
 
 
