@@ -63774,7 +63774,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class KernelTimerCommand(GenericCommand):
+class KernelTimerCommand(GenericCommand, BufferingOutput):
     """Dump timer."""
 
     _cmdline_ = "ktimer"
@@ -63823,23 +63823,18 @@ class KernelTimerCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    def __init__(self):
-        super().__init__()
-        self.initialized = False
-        return
-
     def initialize(self):
-        if self.initialized:
+        if hasattr(self, "initialized") and self.initialized:
             return True
 
         # resolve __per_cpu_offset
         __per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
         if __per_cpu_offset is None:
-            if not self.quiet:
+            if not self.args.quiet:
                 info("__per_cpu_offset: Not found")
             self.cpu_offset = []
         else:
-            if not self.quiet:
+            if not self.args.quiet:
                 info("__per_cpu_offset: {:#x}".format(__per_cpu_offset))
             self.cpu_offset = KernelCurrentCommand.get_each_cpu_offset(__per_cpu_offset)
 
@@ -63848,10 +63843,10 @@ class KernelTimerCommand(GenericCommand):
         # timer_bases
         self.timer_bases = KernelAddressHeuristicFinder.get_timer_bases()
         if not self.timer_bases:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("timer_bases: Not found")
             return False
-        if not self.quiet:
+        if not self.args.quiet:
             info("timer_bases: {:#x}".format(self.timer_bases))
 
         # per_cpu_timer_bases
@@ -63865,7 +63860,7 @@ class KernelTimerCommand(GenericCommand):
             self.nr_bases = 2
         else:
             self.nr_bases = 1
-        if not self.quiet:
+        if not self.args.quiet:
             info("nr_bases: {:d}".format(self.nr_bases))
 
         # sizeof(struct timer_base)
@@ -63902,10 +63897,10 @@ class KernelTimerCommand(GenericCommand):
         # jiffies
         self.jiffies = KernelAddressHeuristicFinder.get_jiffies()
         if not self.jiffies:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("jiffies: Not found")
             return False
-        if not self.quiet:
+        if not self.args.quiet:
             info("jiffies: {:#x}".format(self.jiffies))
 
         ### High-resolution kernel timer (unit: nano seconds)
@@ -63913,10 +63908,10 @@ class KernelTimerCommand(GenericCommand):
         # hrtimer_bases
         self.hrtimer_bases = KernelAddressHeuristicFinder.get_hrtimer_bases()
         if not self.hrtimer_bases:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("hrtimer_bases: Not found")
             return False
-        if not self.quiet:
+        if not self.args.quiet:
             info("hrtimer_bases: {:#x}".format(self.hrtimer_bases))
 
         # per_cpu_hrtimer_bases
@@ -64113,7 +64108,7 @@ class KernelTimerCommand(GenericCommand):
                 self.out.append(titlify(fmt.format(cpu, base_n, htb, clockid_s, get_time, sym)))
 
                 # print legend
-                if not self.quiet:
+                if not self.args.quiet:
                     fmt = "{:18s}  {:18s}  {:23s}  {:18s} {:s}"
                     legend = ["hrtimer", "expires", "time_to_expired", "function", "symbol"]
                     self.out.append(GefUtil.make_legend(fmt.format(*legend)))
@@ -64152,7 +64147,7 @@ class KernelTimerCommand(GenericCommand):
                 self.out.append(titlify("cpu{:d} timer_base[{:d}]: {:#x}".format(cpu, base_n, tb)))
 
                 # print legend
-                if not self.quiet:
+                if not self.args.quiet:
                     fmt = "{:18s}  {:18s}  {:23s}  {:18s} {:s}"
                     legend = ["timer_list", "expires", "time_to_expired", "function", "symbol"]
                     self.out.append(GefUtil.make_legend(fmt.format(*legend)))
@@ -64199,10 +64194,9 @@ class KernelTimerCommand(GenericCommand):
             err("Unsupported before v4.8")
             return
 
+        self.args = args
         if not args.quiet:
             info("Wait for memory scan")
-
-        self.quiet = args.quiet
 
         if not self.initialize():
             return
@@ -64210,12 +64204,7 @@ class KernelTimerCommand(GenericCommand):
         self.out = []
         self.dump_timer()
         self.dump_hrtimer()
-
-        if self.out:
-            if len(self.out) > GefUtil.get_terminal_size()[0]:
-                gef_print("\n".join(self.out), less=not args.no_pager)
-            else:
-                gef_print("\n".join(self.out), less=False)
+        self.print_output(args, term=True)
         return
 
 
