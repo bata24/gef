@@ -89669,7 +89669,7 @@ class QemuDeviceInfoCommand(GenericCommand):
         res = gdb.execute("monitor info qdm", to_string=True)
         for line in res.splitlines():
             if device_name in line:
-                info("qdev device model: {:s}".format(line))
+                info("qdev device model: {:s}".format(Color.boldify(line)))
 
         # get physmem map / IO map
         res = gdb.execute("monitor info mtree", to_string=True)
@@ -89677,7 +89677,7 @@ class QemuDeviceInfoCommand(GenericCommand):
         maps = [line.strip() for line in res.splitlines() if device_name in line and line.strip().startswith("0")]
         maps = sorted(set(maps)) # uniq
         for m in maps:
-            info("  " + m)
+            gef_print("    " + m)
 
         # get qemu-system path
         qemu_path = os.readlink("/proc/{:d}/exe".format(Pid.get_pid()))
@@ -89701,9 +89701,9 @@ class QemuDeviceInfoCommand(GenericCommand):
                 continue
             if line.endswith(("read", "write")):
                 index = line.rfind(" ")
-                info("  {:s} {:s}".format(line[:index], Color.boldify(line[index + 1:])))
+                gef_print("    {:s} {:s}".format(line[:index], Color.boldify(line[index + 1:])))
             else:
-                info("  {:s}".format(line))
+                gef_print("    {:s}".format(line))
 
         if not args.device:
             info("use `-d` if less information")
