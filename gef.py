@@ -90790,11 +90790,6 @@ class KmallocTracerCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self.initialized = False
-        return
-
     @staticmethod
     def create_option_info(args, target_task=None):
         dic = {
@@ -91156,7 +91151,7 @@ class KmallocTracerCommand(GenericCommand):
             # fall through
 
         # initialize
-        if not self.initialized:
+        if not hasattr(self, "initialized"):
             ret = KmallocTracerCommand.initialize(allocator, args.verbose)
             if ret is False:
                 err("Failed to initialize")
