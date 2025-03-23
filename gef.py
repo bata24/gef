@@ -63664,7 +63664,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class KernelClockSourceCommand(GenericCommand):
+class KernelClockSourceCommand(GenericCommand, BufferingOutput):
     """Dump clock sources."""
 
     _cmdline_ = "kclock-source"
@@ -63769,11 +63769,7 @@ class KernelClockSourceCommand(GenericCommand):
             self.out.append("{:#0{:d}x} {:20s} {:#0{:d}x}{:s}".format(cs, width, name, read, width, read_sym))
             current = read_int_from_memory(current)
 
-        if self.out:
-            if len(self.out) > GefUtil.get_terminal_size()[0]:
-                gef_print("\n".join(self.out), less=not args.no_pager)
-            else:
-                gef_print("\n".join(self.out), less=False)
+        self.print_output(args, term=True)
         return
 
 
