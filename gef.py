@@ -72419,19 +72419,14 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self.initialized = False
-        return
-
     def quiet_info(self, msg):
-        if not self.quiet:
+        if not self.args.quiet:
             msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
             gef_print(msg)
         return
 
     def quiet_err(self, msg):
-        if not self.quiet:
+        if not self.args.quiet:
             msg = "{} {}".format(Color.colorify("[+]", "bold red"), msg)
             gef_print(msg)
         return
@@ -72442,7 +72437,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def initialize(self):
-        if self.initialized:
+        if hasattr(self, "initialized") and self.initialized:
             return True
 
         # search node_data
@@ -72718,7 +72713,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         return virt_str, phys_str
 
     # for per_cpu_pageset
-    def dump_list(self, args, list_i, i, cpu_num, is_highmem):
+    def dump_list(self, list_i, i, cpu_num, is_highmem):
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
         align = AddressUtil.get_format_address_width()
@@ -72728,9 +72723,9 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         mtype = i % MIGRATE_PCPTYPES
 
         # filtering
-        if args.mtype_filter and mtype not in args.mtype_filter:
+        if self.args.mtype_filter and mtype not in self.args.mtype_filter:
             return
-        if args.order_filter and order not in args.order_filter:
+        if self.args.order_filter and order not in self.args.order_filter:
             return
 
         # size info
@@ -72773,7 +72768,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             current = read_int_from_memory(current)
         return
 
-    def dump_pcp(self, args, zone, is_highmem):
+    def dump_pcp(self, zone, is_highmem):
         per_cpu_pageset = read_int_from_memory(zone + self.offset_per_cpu_pageset)
         if self.cpu_offset is None:
             per_cpu_pageset = [per_cpu_pageset]
@@ -72782,17 +72777,17 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
         sizeof_list_head = current_arch.ptrsize * 2
         for cpu_num, pcp in enumerate(per_cpu_pageset):
-            if args.cpu and cpu_num not in args.cpu:
+            if self.args.cpu and cpu_num not in self.args.cpu:
                 continue
             self.add_msg("cpu: {:d}".format(cpu_num))
             for i in range(self.NR_PCP_LISTS):
-                if args.pcp_index_filter and i not in args.pcp_index_filter:
+                if self.args.pcp_index_filter and i not in self.args.pcp_index_filter:
                     continue
                 lists_i = pcp + self.offset_lists + sizeof_list_head * i
-                self.dump_list(args, lists_i, i, cpu_num, is_highmem)
+                self.dump_list(lists_i, i, cpu_num, is_highmem)
         return
 
-    def dump_free_list(self, args, free_list, mtype, size, is_highmem):
+    def dump_free_list(self, free_list, mtype, size, is_highmem):
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
         align = AddressUtil.get_format_address_width()
@@ -72830,7 +72825,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             current = read_int_from_memory(current)
         return
 
-    def dump_free_area(self, args, free_area, order, is_highmem):
+    def dump_free_area(self, free_area, order, is_highmem):
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
 
         size = 0x1000 * (2 ** order)
@@ -72839,40 +72834,40 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
         sizeof_list_head = current_arch.ptrsize * 2
         for mtype in range(self.MIGRATE_TYPES):
-            if args.mtype_filter and mtype not in args.mtype_filter:
+            if self.args.mtype_filter and mtype not in self.args.mtype_filter:
                 continue
             free_list = free_area + sizeof_list_head * mtype
-            self.dump_free_list(args, free_list, mtype, size, is_highmem)
+            self.dump_free_list(free_list, mtype, size, is_highmem)
         return
 
-    def dump_zone(self, args, zone, is_highmem=False):
+    def dump_zone(self, zone, is_highmem=False):
         # dump pcp
-        if not args.skip_pcp:
+        if not self.args.skip_pcp:
             self.add_msg(titlify("per_cpu_pageset"))
-            self.dump_pcp(args, zone, is_highmem)
+            self.dump_pcp(zone, is_highmem)
 
         # dump free_area
-        if not args.only_pcp:
-            tqdm = GefUtil.get_tqdm(not self.quiet)
+        if not self.args.only_pcp:
+            tqdm = GefUtil.get_tqdm(not self.args.quiet)
             self.add_msg(titlify("free_area"))
             free_area_array = zone + self.offset_free_area
             for order in tqdm(range(self.MAX_ORDER), leave=False):
-                if args.order_filter and order not in args.order_filter:
+                if self.args.order_filter and order not in self.args.order_filter:
                     continue
                 free_area_i = free_area_array + self.sizeof_free_area * order
-                self.dump_free_area(args, free_area_i, order, is_highmem)
+                self.dump_free_area(free_area_i, order, is_highmem)
         return
 
-    def dump_node(self, args, node):
+    def dump_node(self, node):
         for i in range(self.MAX_NR_ZONES):
             zone = node + self.sizeof_zone * i
             name_ptr = read_int_from_memory(zone + self.offset_name)
             name = read_cstring_from_memory(name_ptr)
-            if args.zone_filter and name not in args.zone_filter:
+            if self.args.zone_filter and name not in self.args.zone_filter:
                 continue
             self.add_msg(titlify("zone[{:d}] @ {:#x} ({:s})".format(i, zone, name)))
             is_highmem = name == "HighMem"
-            self.dump_zone(args, zone, is_highmem=is_highmem)
+            self.dump_zone(zone, is_highmem=is_highmem)
         return
 
     @parse_args
@@ -72884,8 +72879,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         # parse args
         if args.rescan:
             self.initialized = False
-
-        self.quiet = args.quiet
+        self.args = args
         self.sort = args.sort_verbose or args.sort
 
         # initialize
@@ -72903,7 +72897,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         self.out = []
         for i, node in enumerate(self.nodes):
             self.add_msg(titlify("node[{:d}] @ {:#x}".format(i, node)))
-            self.dump_node(args, node)
+            self.dump_node(node)
             # When self.sort is False, self.out contains a list of messages.
             # When self.sort is True, self.out contains a list of information for constructing messages.
 
