@@ -17830,7 +17830,7 @@ class EditFlagsCommand(GenericCommand):
 
     def verbose_x86(self):
         eflags = get_register("$eflags")
-        gef_print("{:s}  {:s}".format(BitInfo.bits_split(eflags, 32), Color.colorify("MASK", "bold")))
+        gef_print("{:s}  {:s}".format(BitInfo.bits_split(eflags, 32), Color.boldify("MASK")))
 
         def c(msg):
             mask = int(msg.split()[0], 16)
@@ -17873,7 +17873,7 @@ class EditFlagsCommand(GenericCommand):
 
     def verbose_arm32(self):
         cpsr = get_register("$cpsr")
-        gef_print("{:s}  {:s}".format(BitInfo.bits_split(cpsr, 32), Color.colorify("MASK", "bold")))
+        gef_print("{:s}  {:s}".format(BitInfo.bits_split(cpsr, 32), Color.boldify("MASK")))
 
         def c(msg):
             mask = int(msg.split()[0], 16)
@@ -17914,7 +17914,7 @@ class EditFlagsCommand(GenericCommand):
 
     def verbose_arm64(self):
         cpsr = get_register("$cpsr")
-        gef_print("{:s}  {:s}".format(BitInfo.bits_split(cpsr, 32), Color.colorify("MASK", "bold")))
+        gef_print("{:s}  {:s}".format(BitInfo.bits_split(cpsr, 32), Color.boldify("MASK")))
 
         def c(msg):
             mask = int(msg.split()[0], 16)
@@ -83158,7 +83158,7 @@ class BitInfo:
 
     def print_description(self):
         if self.description:
-            self.out.append(Color.colorify(self.description, "bold"))
+            self.out.append(Color.boldify(self.description))
         return
 
     def print_bitinfo(self, regval):
@@ -83223,7 +83223,7 @@ class BitInfo:
             msg = "bit{:>{:d}s}: ".format(b, max_width_bits)
 
             if val:
-                msg += Color.colorify("{:>#{:d}x} ".format(val, max_width_val), "bold")
+                msg += Color.boldify("{:>#{:d}x} ".format(val, max_width_val))
             else:
                 msg += "{:>#{:d}x} ".format(val, max_width_val)
 
@@ -89659,11 +89659,11 @@ class QemuDeviceInfoCommand(GenericCommand):
                 for i in range(len(cmdline)):
                     if cmdline[i] == "-device":
                         devices.append(cmdline[i + 1])
-                devices_str = Color.colorify(", ".join(devices), "bold")
+                devices_str = Color.boldify(", ".join(devices))
                 err("Multiple `-device` options are found in qemu-system cmdline: {:s}".format(devices_str))
                 return
             device_name = cmdline[cmdline.index("-device") + 1]
-        info("device name: {:s}".format(Color.colorify(device_name, "bold")))
+        info("device name: {:s}".format(Color.boldify(device_name)))
 
         # get qdm
         res = gdb.execute("monitor info qdm", to_string=True)
