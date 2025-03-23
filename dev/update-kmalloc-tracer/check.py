@@ -61,10 +61,10 @@ def check_black_list(line):
         "kmalloc_caches", # variable
         "random_kmalloc_seed", # variable
         "kmalloc_dma_caches", # variable
-        "kfree_const", # always call kfree
-        "kfree_sensitive", # always call kfree
-        "mempool_kfree", # always call kfree
-        "mempool_kmalloc", # always call kmalloc
+        "kfree_const", # always calls kfree
+        "kfree_sensitive", # always calls kfree
+        "mempool_kfree", # always calls kfree
+        "mempool_kmalloc", # always calls kmalloc
         "kmem_cache_alloc_bulk_noprof", # does not return ptr
         "kmem_cache_alloc_bulk", # does not return ptr
         "kmalloc_size_roundup", # does not return ptr
@@ -101,8 +101,8 @@ def doit(args, version):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("version", metavar="VERSION", type=KernelVersion, help="rc edition is unsupported")
-    parser.add_argument("version2", metavar="VERSION2", nargs="?", type=KernelVersion, help="rc edition is unsupported")
+    parser.add_argument("version", metavar="VERSION", type=KernelVersion, help="target version")
+    parser.add_argument("version2", metavar="VERSION2", nargs="?", type=KernelVersion, help="target version for diff")
     parser.add_argument("-s", "--simple", action="store_true", help="omit source filename")
     args = parser.parse_args()
 
