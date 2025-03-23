@@ -73853,7 +73853,7 @@ class KernelBpfCommand(GenericCommand):
 
 
 @register_command
-class KernelIpcsCommand(GenericCommand):
+class KernelIpcsCommand(GenericCommand, BufferingOutput):
     """Dump IPCs information (System V semaphore, message queue and shared memory)."""
 
     _cmdline_ = "kipcs"
@@ -73891,17 +73891,6 @@ class KernelIpcsCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self.initialized = False
-        self.offset_xa_head = None
-        self.offset_sem_nsems = None
-        self.offset_q_cbytes = None
-        self.offset_q_qnum = None
-        self.offset_shm_nattch = None
-        self.offset_shm_segsz = None
-        return
-
     def get_all_ipc_ns(self):
         res = gdb.execute("ktask --print-namespace --user-process-only --no-pager --quiet", to_string=True)
         r = re.findall(r"nsproxy->ipc_ns\s+(0x\S+)", res)
@@ -73915,7 +73904,7 @@ class KernelIpcsCommand(GenericCommand):
         return ipc_ns_list
 
     def initialize(self, ipc_ns_list):
-        if self.initialized:
+        if hasattr(self, "initialized") and self.initialized:
             return True
 
         if ipc_ns_list == []:
@@ -73970,7 +73959,7 @@ class KernelIpcsCommand(GenericCommand):
             self.offset_ids = 0
         else:
             self.offset_ids = current_arch.ptrsize
-        if not self.quiet:
+        if not self.args.quiet:
             info("offsetof(ipc_namespace, ids): {:#x}".format(self.offset_ids))
 
         # offsetof(ipc_ids, ipcs_idr.idr_rt.xa_head): tagged valid pointer is `xa_head`.
@@ -74044,10 +74033,12 @@ class KernelIpcsCommand(GenericCommand):
                 if y and z == 0:
                     continue
 
-            # found
-            if self.offset_xa_head is None:
+            # first found
+            if not hasattr(self, "offset_xa_head"):
                 self.offset_xa_head = base - self.offset_ids
                 first_xa_flags = x
+
+            # found
             found.append(base - self.offset_ids)
 
             # exit loop?
@@ -74055,11 +74046,11 @@ class KernelIpcsCommand(GenericCommand):
                 self.sizeof_ipc_ids = found[1] - found[0]
                 break
         else:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found ipc_namespace->ids[0].ipcs_idr.idr_rt.xa_head")
                 err("Not recognized sizeof(struct ipc_ids)")
             return False
-        if not self.quiet:
+        if not self.args.quiet:
             info("offsetof(ipc_ids, ipcs_idr.idr_rt.xa_head): {:#x}".format(self.offset_xa_head))
             info("sizeof(struct ipc_ids): {:#x}".format(self.sizeof_ipc_ids))
 
@@ -74287,20 +74278,26 @@ class KernelIpcsCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.quiet = args.quiet
-        if not self.quiet:
+        if not args.quiet:
             info("Wait for memory scan")
 
         kversion = Kernel.kernel_version()
         if kversion < "4.20":
             # xarray is introduced from 4.20
-            if not self.quiet:
+            if not args.quiet:
                 err("Unsupported before v4.20")
             return
 
+        self.args = args
+
         ipc_ns_list = self.get_all_ipc_ns()
-        if self.initialize(ipc_ns_list) is False:
-            if not self.quiet:
+        if not ipc_ns_list:
+            self.quiet_info("Nothing to dump")
+            return
+
+        ret = self.initialize(ipc_ns_list)
+        if not ret:
+            if not args.quiet:
                 err("Failed to initialize")
             return
 
@@ -74314,11 +74311,7 @@ class KernelIpcsCommand(GenericCommand):
             self.dump_ipc_msg_ids(ipc_ns + self.offset_ids + self.sizeof_ipc_ids * 1)
             self.dump_ipc_shm_ids(ipc_ns + self.offset_ids + self.sizeof_ipc_ids * 2)
 
-        if self.out:
-            if len(self.out) > GefUtil.get_terminal_size()[0]:
-                gef_print("\n".join(self.out), less=not args.no_pager)
-            else:
-                gef_print("\n".join(self.out), less=False)
+        self.print_output(args, term=True)
         return
 
 
