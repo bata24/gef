@@ -75532,13 +75532,8 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self.initialized = False
-        return
-
     def initialize(self):
-        if self.initialized:
+        if hasattr(self, "initialized") and self.initialized:
             return True
 
         """
@@ -75584,10 +75579,10 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
         if kversion and kversion < "6.9":
             self.vmap_area_list = KernelAddressHeuristicFinder.get_vmap_area_list()
             if not self.vmap_area_list:
-                if not self.quiet:
+                if not self.args.quiet:
                     err("Not found vmap_area_list")
             else:
-                if not self.quiet:
+                if not self.args.quiet:
                     info("vmap_area_list: {:#x}".format(self.vmap_area_list))
         else:
             self.vmap_area_list = None
@@ -75595,10 +75590,10 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
         if kversion and kversion >= "5.2":
             self.free_vmap_area_list = KernelAddressHeuristicFinder.get_free_vmap_area_list()
             if not self.free_vmap_area_list:
-                if not self.quiet:
+                if not self.args.quiet:
                     err("Not found free_vmap_area_list")
             else:
-                if not self.quiet:
+                if not self.args.quiet:
                     info("free_vmap_area_list: {:#x}".format(self.free_vmap_area_list))
         else:
             self.free_vmap_area_list = None
@@ -75613,7 +75608,7 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             self.offset_list = current_arch.ptrsize * 7
         else:
             self.offset_list = current_arch.ptrsize * 6
-        if not self.quiet:
+        if not self.args.quiet:
             info("offsetof(vmap_area, list): {:#x}".format(self.offset_list))
 
         # vmap_area->vm
@@ -75623,12 +75618,12 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             self.offset_vm = self.offset_list + current_arch.ptrsize * 3
         else:
             self.offset_vm = self.offset_list + current_arch.ptrsize * 4
-        if not self.quiet:
+        if not self.args.quiet:
             info("offsetof(vmap_area, vm): {:#x}".format(self.offset_vm))
 
         # vm_struct->flags
         self.offset_flags = current_arch.ptrsize * 3
-        if not self.quiet:
+        if not self.args.quiet:
             info("offsetof(vm_struct, flags): {:#x}".format(self.offset_flags))
 
         self.initialized = True
@@ -75718,10 +75713,10 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.quiet = args.quiet
         if not args.quiet:
             info("Wait for memory scan")
 
+        self.args = args
         ret = self.initialize()
         if ret is False:
             return
