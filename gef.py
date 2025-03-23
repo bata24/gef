@@ -64209,7 +64209,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class KernelPciDeviceCommand(GenericCommand):
+class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
     """Dump PCI devices."""
 
     _cmdline_ = "kpcidev"
@@ -64221,23 +64221,17 @@ class KernelPciDeviceCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    def __init__(self):
-        super().__init__()
-        self.initialized = False
-        self.pci_ids = None
-        return
-
     def initialize(self):
-        if self.initialized:
+        if hasattr(self, "initialized") and self.initialized:
             return True
 
         # pci_root_buses
         self.pci_root_buses = KernelAddressHeuristicFinder.get_pci_root_buses()
         if not self.pci_root_buses:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found pci_root_buses (maybe, CONFIG_PCI is not set)")
             return False
-        if not self.quiet:
+        if not self.args.quiet:
             info("pci_root_buses: {:#x}".format(self.pci_root_buses))
 
         first_root_bus = read_int_from_memory(self.pci_root_buses)
@@ -64295,11 +64289,11 @@ class KernelPciDeviceCommand(GenericCommand):
             if is_valid_addr(v):
                 if read_cstring_from_memory(v) == "0000:00":
                     self.offset_pci_bus_dev = current_arch.ptrsize * i
-                    if not self.quiet:
+                    if not self.args.quiet:
                         info("offsetof(pci_bus, dev): {:#x}".format(self.offset_pci_bus_dev))
                     break
         else:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found pci_bus->dev")
             return False
 
@@ -64350,11 +64344,11 @@ class KernelPciDeviceCommand(GenericCommand):
             if is_valid_addr(v):
                 if read_cstring_from_memory(v) == "0000:00:00.0":
                     self.offset_pci_dev_dev = current_arch.ptrsize * i
-                    if not self.quiet:
+                    if not self.args.quiet:
                         info("offsetof(pci_dev, dev): {:#x}".format(self.offset_pci_dev_dev))
                     break
         else:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found pci_dev->dev")
             return False
 
@@ -64377,33 +64371,33 @@ class KernelPciDeviceCommand(GenericCommand):
                 if read_cstring_from_memory(v) == "0000:00:00.0":
                     self.offset_pci_dev_resource = ofs_base + current_arch.ptrsize * i - 0x10
                     self.sizeof_resource = 0x10 + current_arch.ptrsize * 6
-                    if not self.quiet:
+                    if not self.args.quiet:
                         info("offsetof(pci_dev, resource): {:#x}".format(self.offset_pci_dev_resource))
                     break
         else:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found pci_dev->resource")
             return False
 
         # pci.ids
         pci_ids_file_name = "/usr/share/misc/pci.ids"
         if os.path.exists(pci_ids_file_name):
-            if not self.quiet:
+            if not self.args.quiet:
                 info("use {:s}".format(pci_ids_file_name))
             content = open(pci_ids_file_name).read()
         else:
             pci_ids_file_name = os.path.join(GEF_TEMP_DIR, "pci.ids")
             if os.path.exists(pci_ids_file_name):
-                if not self.quiet:
+                if not self.args.quiet:
                     info("use {:s}".format(pci_ids_file_name))
                 content = open(pci_ids_file_name).read()
             else:
                 url = "https://raw.githubusercontent.com/pciutils/pciids/master/pci.ids"
-                if not self.quiet:
+                if not self.args.quiet:
                     info("use {:s}".format(url))
                 content = String.bytes2str(http_get(url) or "")
                 if not content:
-                    if not self.quiet:
+                    if not self.args.quiet:
                         info("Connection timed out: {:s}".format(url))
                 open(pci_ids_file_name, "w").write(content)
         self.pci_ids = self.parse_pci_ids(content)
@@ -64566,7 +64560,7 @@ class KernelPciDeviceCommand(GenericCommand):
         return label_list
 
     def walk_devices(self, dev):
-        if not self.quiet:
+        if not self.args.quiet:
             fmt = "{:18s} {:12s} {:7s} {:10s} {:10s} {:3s} {:s}"
             legend = ["pci_dev", "name", "class", "vendor:dev", "subsystem", "rev", "description"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
@@ -64596,7 +64590,7 @@ class KernelPciDeviceCommand(GenericCommand):
                 dev, dev_name, base_class, sub_class, prgif, vendor, device, sub_vendor, sub_device, revision, desc,
             ))
 
-            if self.verbose:
+            if self.args.verbose:
                 # parse resource
                 i = 0
                 while True:
@@ -64679,20 +64673,13 @@ class KernelPciDeviceCommand(GenericCommand):
         if not args.quiet:
             info("Wait for memory scan")
 
-        self.quiet = args.quiet
-        self.verbose = args.verbose
-
+        self.args = args
         if not self.initialize():
             return
 
         self.out = []
         self.dump_pci()
-
-        if self.out:
-            if len(self.out) > GefUtil.get_terminal_size()[0]:
-                gef_print("\n".join(self.out), less=not args.no_pager)
-            else:
-                gef_print("\n".join(self.out), less=False)
+        self.print_output(args, term=True)
         return
 
 
