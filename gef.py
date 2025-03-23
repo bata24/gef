@@ -64684,7 +64684,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class KernelConfigCommand(GenericCommand):
+class KernelConfigCommand(GenericCommand, BufferingOutput):
     """Dump kernel config if available."""
 
     _cmdline_ = "kconfig"
@@ -64698,10 +64698,30 @@ class KernelConfigCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    def __init__(self):
-        super().__init__()
-        self.configs = None
-        return
+    def get_config(self):
+        kinfo = Kernel.get_kernel_base()
+        if kinfo.ro_base is None:
+            err("Not recognized .rodata")
+            return False
+        ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
+
+        start_pos = ro_data.find(b"IKCFG_ST")
+        if start_pos == -1:
+            err("Not found IKCFG_ST, maybe this kernel is built as CONFIG_IKCONFIG_PROC=n")
+            return False
+        end_pos = ro_data.find(b"IKCFG_ED")
+
+        info("IKCFG_ST: {:#x}".format(kinfo.ro_base + start_pos))
+        info("IKCFG_ED: {:#x}".format(kinfo.ro_base + end_pos))
+        configz = ro_data[start_pos + len("IKCFG_ST"):end_pos]
+
+        import gzip
+        try:
+            self.configs = String.bytes2str(gzip.decompress(configz))
+        except gzip.BadGzipFile:
+            err("Gzip decompress error")
+            return False
+        return True
 
     @parse_args
     @only_if_gdb_running
@@ -64709,48 +64729,32 @@ class KernelConfigCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        if not args.quiet:
+            info("Wait for memory scan")
+
+        if not hasattr(self, "configs"):
+            self.configs = None
+
         if args.rescan:
             self.configs = None
 
         if self.configs is None:
-            if not args.quiet:
-                info("Wait for memory scan")
-
-            kinfo = Kernel.get_kernel_base()
-            if kinfo.ro_base is None:
-                err("Not recognized .rodata")
+            ret = self.get_config()
+            if not ret:
                 return
-            ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
 
-            start_pos = ro_data.find(b"IKCFG_ST")
-            if start_pos == -1:
-                err("Not found IKCFG_ST, maybe this kernel is built as CONFIG_IKCONFIG_PROC=n")
-                return
-            end_pos = ro_data.find(b"IKCFG_ED")
-
-            info("IKCFG_ST: {:#x}".format(kinfo.ro_base + start_pos))
-            info("IKCFG_ED: {:#x}".format(kinfo.ro_base + end_pos))
-            configz = ro_data[start_pos + len("IKCFG_ST"):end_pos]
-
-            import gzip
-            try:
-                self.configs = String.bytes2str(gzip.decompress(configz))
-            except gzip.BadGzipFile:
-                err("Gzip decompress error")
-                return
+        self.out = self.configs.splitlines()
 
         if args.filter:
             out = []
-            for line in self.configs.splitlines():
+            for line in self.out:
                 for filt in args.filter:
                     if filt.search(line):
                         out.append(line)
                         break
-            out = "\n".join(out)
-        else:
-            out = self.configs
+            self.out = out
 
-        gef_print(out, less=not args.no_pager)
+        self.print_output(args)
         return
 
 
