@@ -72163,14 +72163,8 @@ class SlabContainsCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self.initialized = False
-        self.allocator = None
-        return
-
     def initialize(self):
-        if self.initialized:
+        if hasattr(self, "initialized") and self.initialized:
             return True
 
         cmd = {"SLUB": "slub-dump", "SLAB": "slab-dump", "SLUB_TINY": "slub-tiny-dump"}[self.allocator]
@@ -72180,28 +72174,28 @@ class SlabContainsCommand(GenericCommand):
         if not r:
             return False
         self.page_offset_slab_cache = int(r.group(1), 16)
-        if self.verbose:
+        if self.args.verbose:
             info("offsetof(page, slab_cache): {:#x}".format(self.page_offset_slab_cache))
 
         r = re.search(r"offsetof\(page, next\): (0x\S+)", res)
         if not r:
             return False
         self.page_offset_next = int(r.group(1), 16)
-        if self.verbose:
+        if self.args.verbose:
             info("offsetof(page, next): {:#x}".format(self.page_offset_next))
 
         r = re.search(r"offsetof\(kmem_cache, name\): (0x\S+)", res)
         if not r:
             return False
         self.kmem_cache_offset_name = int(r.group(1), 16)
-        if self.verbose:
+        if self.args.verbose:
             info("offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name))
 
         r = re.search(r"offsetof\(kmem_cache, size\): (0x\S+)", res)
         if not r:
             return False
         self.kmem_cache_offset_size = int(r.group(1), 16)
-        if self.verbose:
+        if self.args.verbose:
             info("offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size))
 
         # for num of pages
@@ -72210,7 +72204,7 @@ class SlabContainsCommand(GenericCommand):
             if not r:
                 return False
             self.page_offset_inuse_objects_frozen = int(r.group(1), 16)
-            if self.verbose:
+            if self.args.verbose:
                 info("offsetof(page, inuse_objects_frozen): {:#x}".format(self.page_offset_inuse_objects_frozen))
 
         elif self.allocator == "SLAB":
@@ -72218,7 +72212,7 @@ class SlabContainsCommand(GenericCommand):
             if not r:
                 return False
             self.kmem_cache_offset_gfporder = int(r.group(1), 16)
-            if self.verbose:
+            if self.args.verbose:
                 info("offsetof(kmem_cache, gfporder): {:#x}".format(self.kmem_cache_offset_gfporder))
 
         self.initialized = True
@@ -72231,32 +72225,8 @@ class SlabContainsCommand(GenericCommand):
             return int(r.group(1), 16)
         return None
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
-    def do_invoke(self, args):
-        self.verbose = args.verbose
-        if args.rescan:
-            self.initialized = False
-
-        if self.allocator is None:
-            if not args.quiet:
-                info("Wait for memory scan")
-            self.allocator = KernelChecksecCommand.get_slab_type()
-        if self.allocator not in ["SLUB", "SLUB_TINY", "SLAB"]:
-            if not args.quiet:
-                err("Unsupported SLOB")
-            return
-
-        ret = self.initialize()
-        if not ret:
-            if not args.quiet:
-                err("Failed to initialize")
-            return
-
-        current = args.address & gef_getpagesize_mask_high()
+    def slab_contains(self):
+        current = self.args.address & gef_getpagesize_mask_high()
         chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
 
         kversion = Kernel.kernel_version()
@@ -72264,11 +72234,11 @@ class SlabContainsCommand(GenericCommand):
             while True:
                 page = self.virt2page_wrapper(current)
                 if page is None:
-                    if not args.quiet:
+                    if not self.args.quiet:
                         err("Invalid address")
                     return
 
-                if not args.quiet:
+                if not self.args.quiet:
                     if kversion >= "5.17":
                         gef_print("slab: {:#x}".format(page))
                     else:
@@ -72277,39 +72247,39 @@ class SlabContainsCommand(GenericCommand):
                 page_next = read_int_from_memory(page + self.page_offset_next)
                 if page_next & 1:
                     current -= gef_getpagesize()
-                    if not args.quiet:
+                    if not self.args.quiet:
                         warn("Detected invalid value, continue exploring...")
                     continue
 
                 kmem_cache = read_int_from_memory(page + self.page_offset_slab_cache)
                 if kmem_cache == 0:
-                    if not args.quiet:
+                    if not self.args.quiet:
                         err("This address is not managed by slab")
                     return
 
-                if not args.quiet:
+                if not self.args.quiet:
                     gef_print("kmem_cache: {:#x}".format(kmem_cache))
 
                 if (kmem_cache & gef_getpagesize_mask_high()) == 0xdead000000000000:
                     current -= gef_getpagesize()
-                    if not args.quiet:
+                    if not self.args.quiet:
                         warn("Detected invalid value, continue exploring...")
                     continue
 
                 if kmem_cache & 1:
                     current -= gef_getpagesize()
-                    if not args.quiet:
+                    if not self.args.quiet:
                         warn("Detected invalid value, continue exploring...")
                     continue
 
-                if not args.quiet:
+                if not self.args.quiet:
                     gef_print("base: {:#x}".format(current))
                 break
 
             slab_cache_name_ptr = read_int_from_memory(kmem_cache + self.kmem_cache_offset_name)
             slab_cache_name = read_cstring_from_memory(slab_cache_name_ptr)
             if slab_cache_name is None:
-                if not args.quiet:
+                if not self.args.quiet:
                     err("This address is not managed by slab")
                 return
             slab_cache_name_c = Color.colorify(slab_cache_name, chunk_label_color)
@@ -72324,13 +72294,46 @@ class SlabContainsCommand(GenericCommand):
                 num_pages = 1 << gfporder
 
             msg = ("name: {:s}  size: {:#x}  num_pages: {:#x}".format(slab_cache_name_c, slab_cache_size, num_pages))
-            if (args.address - current) % slab_cache_size != 0:
+            if (self.args.address - current) % slab_cache_size != 0:
                 msg += " " + Color.redify("(unaligned?)")
             gef_print(msg)
 
         except (gdb.MemoryError, ZeroDivisionError):
-            if not args.quiet:
+            if not self.args.quiet:
                 err("Memory error")
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        if not args.quiet:
+            info("Wait for memory scan")
+
+        if not hasattr(self, "initialized"):
+            self.initialized = False
+
+        if args.rescan:
+            self.initialized = False
+
+        if not hasattr(self, "allocator"):
+            self.allocator = KernelChecksecCommand.get_slab_type()
+
+        if self.allocator not in ["SLUB", "SLUB_TINY", "SLAB"]:
+            if not args.quiet:
+                err("Unsupported SLOB")
+            return
+
+        self.args = args
+        ret = self.initialize()
+        if not ret:
+            if not args.quiet:
+                err("Failed to initialize")
+            return
+
+        self.slab_contains()
         return
 
 
