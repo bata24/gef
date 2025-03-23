@@ -62766,12 +62766,6 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def __init__(self):
-        super().__init__()
-        self.initialized = False
-        self.cache = []
-        return
-
     def should_be_print(self, procname):
         if self.args.filter == []:
             return True
@@ -62943,7 +62937,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         return
 
     def initialize(self):
-        if self.initialized:
+        if hasattr(self, "initialized") and self.initialized:
             return True
 
         self.sysctl_table_root = KernelAddressHeuristicFinder.get_sysctl_table_root()
@@ -63147,6 +63141,9 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             if not args.quiet:
                 err("Filter string is needed")
             return
+
+        if not hasattr(self, "cache"):
+            self.cache = []
 
         if args.rescan:
             self.initialized = False
