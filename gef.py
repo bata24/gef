@@ -74311,7 +74311,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class KernelDeviceIOCommand(GenericCommand):
+class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
     """Dump I/O-port and I/O-memory information."""
 
     _cmdline_ = "kdevio"
@@ -74351,11 +74351,6 @@ class KernelDeviceIOCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self.sizeof_resource_size_t = None
-        return
-
     def dump_resource(self, addr):
         if not is_valid_addr(addr):
             return []
@@ -74363,19 +74358,23 @@ class KernelDeviceIOCommand(GenericCommand):
             return []
         self.seen.append(addr)
 
-        if not self.sizeof_resource_size_t:
+        if not hasattr(self, "sizeof_resource_size_t"):
             name_ptr = read_int_from_memory(addr + 0x8 * 2) # sizeof(resource_size_t) == 8
             if name_ptr and is_valid_addr(name_ptr):
                 name = read_cstring_from_memory(name_ptr)
                 if name in ["PCI IO", "PCI mem"]:
                     self.sizeof_resource_size_t = 0x8
 
-            if not self.sizeof_resource_size_t:
-                name_ptr = read_int_from_memory(addr + 0x4 * 2) # sizeof(resource_size_t) == 4
-                if name_ptr and is_valid_addr(name_ptr):
-                    name = read_cstring_from_memory(name_ptr)
-                    if name in ["PCI IO", "PCI mem"]:
-                        self.sizeof_resource_size_t = 0x4
+        if not hasattr(self, "sizeof_resource_size_t"):
+            name_ptr = read_int_from_memory(addr + 0x4 * 2) # sizeof(resource_size_t) == 4
+            if name_ptr and is_valid_addr(name_ptr):
+                name = read_cstring_from_memory(name_ptr)
+                if name in ["PCI IO", "PCI mem"]:
+                    self.sizeof_resource_size_t = 0x4
+
+        if not hasattr(self, "sizeof_resource_size_t"):
+            err("Not recognized sizeof(resource_size_t)")
+            return []
 
         """
         struct resource {
@@ -74387,11 +74386,7 @@ class KernelDeviceIOCommand(GenericCommand):
             struct resource *parent, *sibling, *child;
         };
         """
-
-        if self.sizeof_resource_size_t is None:
-            err("Not recognized sizeof(resource_size_t)")
-            return []
-        elif self.sizeof_resource_size_t == 8:
+        if self.sizeof_resource_size_t == 8:
             start = u64(read_memory(addr, 8))
             end = u64(read_memory(addr + 8, 8))
         elif self.sizeof_resource_size_t == 4:
@@ -74466,10 +74461,10 @@ class KernelDeviceIOCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.quiet = args.quiet
-        if not self.quiet:
+        if not args.quiet:
             info("Wait for memory scan")
 
+        self.args = args
         self.out = []
 
         # ioport
@@ -74520,12 +74515,7 @@ class KernelDeviceIOCommand(GenericCommand):
                     addr, start, end, name, name_width, flags, self.get_flags_str(flags),
                 ))
 
-        # print
-        if self.out:
-            if len(self.out) > GefUtil.get_terminal_size()[0]:
-                gef_print("\n".join(self.out), less=not args.no_pager)
-            else:
-                gef_print("\n".join(self.out), less=False)
+        self.print_output(args, term=True)
         return
 
 
