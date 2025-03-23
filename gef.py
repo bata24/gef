@@ -73356,7 +73356,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class KernelBpfCommand(GenericCommand):
+class KernelBpfCommand(GenericCommand, BufferingOutput):
     """Dump bpf information."""
 
     _cmdline_ = "kbpf"
@@ -73446,13 +73446,13 @@ class KernelBpfCommand(GenericCommand):
         prog_idr = KernelAddressHeuristicFinder.get_prog_idr()
         if not prog_idr:
             return False
-        if not self.quiet:
+        if not self.args.quiet:
             info("prog_idr: {:#x}".format(prog_idr))
 
         map_idr = KernelAddressHeuristicFinder.get_map_idr()
         if not map_idr:
             return False
-        if not self.quiet:
+        if not self.args.quiet:
             info("map_idr: {:#x}".format(map_idr))
 
         kversion = Kernel.kernel_version()
@@ -73483,7 +73483,7 @@ class KernelBpfCommand(GenericCommand):
             if is_valid_addr(z):
                 continue
             self.offset_xa_head = pos - prog_idr
-            if not self.quiet:
+            if not self.args.quiet:
                 info("offsetof(xarray, xa_head): {:#x}".format(self.offset_xa_head))
             break
         else:
@@ -73513,7 +73513,7 @@ class KernelBpfCommand(GenericCommand):
         self.offset_shift = 0
         self.offset_count = 2
         self.offset_slots = current_arch.ptrsize * 5
-        if not self.quiet:
+        if not self.args.quiet:
             info("offsetof(xa_node, shift): {:#x}".format(self.offset_shift))
             info("offsetof(xa_node, count): {:#x}".format(self.offset_count))
             info("offsetof(xa_node, slots): {:#x}".format(self.offset_slots))
@@ -73521,13 +73521,13 @@ class KernelBpfCommand(GenericCommand):
         # parse progs, maps
         try:
             progs = self.parse_xarray(prog_idr, root=True)
-            if not self.quiet:
+            if not self.args.quiet:
                 info("Num of progs: {:#x}".format(len(progs)))
             maps = self.parse_xarray(map_idr, root=True)
-            if not self.quiet:
+            if not self.args.quiet:
                 info("Num of maps: {:#x}".format(len(maps)))
         except gdb.MemoryError:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found")
             return False
 
@@ -73573,7 +73573,7 @@ class KernelBpfCommand(GenericCommand):
         else:
             self.offset_aux = AddressUtil.align_address_to_size(self.offset_tag + 8, current_arch.ptrsize)
             self.offset_bpf_func = self.offset_aux + current_arch.ptrsize * 2
-        if not self.quiet:
+        if not self.args.quiet:
             info("offsetof(bpf_prog, type): {:#x}".format(self.offset_prog_type))
             info("offsetof(bpf_prog, expected_attach_type): {:#x}".format(self.offset_expected_attach_type))
             info("offsetof(bpf_prog, len): {:#x}".format(self.offset_len))
@@ -73606,7 +73606,7 @@ class KernelBpfCommand(GenericCommand):
             self.offset_key_size = self.offset_map_type + 4
             self.offset_value_size = self.offset_key_size + 4
             self.offset_max_entries = self.offset_value_size + 4
-            if not self.quiet:
+            if not self.args.quiet:
                 info("offsetof(bpf_map, map_type): {:#x}".format(self.offset_map_type))
                 info("offsetof(bpf_map, key_size): {:#x}".format(self.offset_key_size))
                 info("offsetof(bpf_map, value_size): {:#x}".format(self.offset_value_size))
@@ -73642,7 +73642,7 @@ class KernelBpfCommand(GenericCommand):
                 y = u32(read_memory(pos + 4, 4))
                 if x == value_size_aligned_8 and y == index_mask:
                     self.offset_union_array = (pos - maps[0]) + 4 * 2 + current_arch.ptrsize
-                    if not self.quiet:
+                    if not self.args.quiet:
                         info("offsetof(bpf_array, union_array): {:#x}".format(self.offset_union_array))
                     break
             else:
@@ -73740,7 +73740,7 @@ class KernelBpfCommand(GenericCommand):
             aux = read_int_from_memory(prog + self.offset_aux)
             bpf_func = read_int_from_memory(prog + self.offset_bpf_func)
             self.out.append(fmt.format(i, prog, t1, t2, tag, aux, bpf_func))
-            if self.verbose:
+            if self.args.verbose:
                 ret = gdb.execute("capstone-disassemble {:#x}".format(bpf_func), to_string=True).rstrip()
                 self.out.append(ret)
                 self.out.append("      ...")
@@ -73806,32 +73806,32 @@ class KernelBpfCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.quiet = args.quiet
-        if not self.quiet:
+        if not args.quiet:
             info("Wait for memory scan")
-        self.verbose = args.verbose
 
         kversion = Kernel.kernel_version()
         if kversion < "4.20":
             # xarray is introduced from 4.20
-            if not self.quiet:
+            if not args.quiet:
                 err("Unsupported before v4.20")
             return
 
         stv_bpf_ret = gdb.execute("syscall-table-view -f bpf --quiet --no-pager", to_string=True)
         if "bpf" not in stv_bpf_ret:
-            if not self.quiet:
+            if not args.quiet:
                 err("bpf syscall is unimplemented")
             return
         elif "invalid bpf" in stv_bpf_ret:
-            if not self.quiet:
+            if not args.quiet:
                 err("bpf syscall is disabled")
             return
+
+        self.args = args
 
         # init
         ret = self.initialize()
         if ret is False:
-            if not self.quiet:
+            if not args.quiet:
                 err("Failed to initialize")
             return
         progs, maps = ret
@@ -73843,12 +73843,7 @@ class KernelBpfCommand(GenericCommand):
         if not args.only_progs:
             self.dump_bpf_maps(maps)
 
-        # print
-        if self.out:
-            if len(self.out) > GefUtil.get_terminal_size()[0]:
-                gef_print("\n".join(self.out), less=not args.no_pager)
-            else:
-                gef_print("\n".join(self.out), less=False)
+        self.print_output(args, term=True)
         return
 
 
