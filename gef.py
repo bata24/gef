@@ -75724,7 +75724,7 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class KsymaddrRemoteCommand(GenericCommand):
+class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
     """Resolve kernel symbols from kallsyms table."""
     # Thanks to https://github.com/marin-m/vmlinux-to-elf
 
@@ -75762,25 +75762,25 @@ class KsymaddrRemoteCommand(GenericCommand):
         return
 
     def verbose_info(self, msg):
-        if self.verbose:
+        if self.args.verbose:
             msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
             gef_print(msg)
         return
 
     def verbose_err(self, msg):
-        if self.verbose:
+        if self.args.verbose:
             msg = "{} {}".format(Color.colorify("[+]", "bold red"), msg)
             gef_print(msg)
         return
 
     def quiet_info(self, msg):
-        if not self.quiet:
+        if not self.args.quiet:
             msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
             gef_print(msg)
         return
 
     def quiet_err(self, msg):
-        if not self.quiet:
+        if not self.args.quiet:
             msg = "{} {}".format(Color.colorify("[+]", "bold red"), msg)
             gef_print(msg)
         return
@@ -75883,7 +75883,7 @@ class KsymaddrRemoteCommand(GenericCommand):
             for addr, symbol, typ in kallsyms:
                 self.out.append(fmt.format(addr, typ, symbol))
 
-        elif self.exact:
+        elif self.args.exact:
             for addr, symbol, typ in kallsyms:
                 if symbol in keywords:
                     self.out.append(fmt.format(addr, typ, symbol))
@@ -76972,16 +76972,13 @@ class KsymaddrRemoteCommand(GenericCommand):
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, args):
-        self.verbose = args.verbose
+        self.args = args
         self.rescan = args.rescan
-        self.quiet = args.quiet
-        self.exact = args.exact
-
         self.quiet_info("Wait for memory scan")
 
         # fast path
         ret = self.parse_kallsyms()
-        if not ret:
+        if not ret and not args.rescan:
             # slow path
             self.quiet_info("Try to rescan (ignore cached config)")
             self.rescan = True
@@ -76991,12 +76988,7 @@ class KsymaddrRemoteCommand(GenericCommand):
             return
 
         self.print_kallsyms(args.keyword, args.type, args.smart)
-
-        if self.out:
-            if len(self.out) > GefUtil.get_terminal_size()[0]:
-                gef_print("\n".join(self.out), less=not args.no_pager)
-            else:
-                gef_print("\n".join(self.out), less=False)
+        self.print_output(args, term=True)
         return
 
 
