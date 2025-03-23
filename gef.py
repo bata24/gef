@@ -72940,7 +72940,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class KernelPipeCommand(GenericCommand):
+class KernelPipeCommand(GenericCommand, BufferingOutput):
     """Dump pipe information."""
 
     _cmdline_ = "kpipe"
@@ -72990,31 +72990,21 @@ class KernelPipeCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    def initialize(self):
-        # kbase
-        self.kinfo = Kernel.get_kernel_base()
-        if self.kinfo.has_none:
-            if not self.quiet:
-                err("The kernel .text area could not be determined correctly")
-            return False
+    def quiet_info(self, msg):
+        if not self.args.quiet:
+            msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
+            gef_print(msg)
+        return
 
-        # struct file of pipe
-        ret = gdb.execute("ktask --quiet --no-pager --user-process-only --print-fd", to_string=True)
-        pipe_files = []
-        for line in ret.splitlines():
-            m = re.search(r"\d+\s+(0x\S+) 0x\S+ (0x\S+) pipe:\[\d+\]", line)
-            if not m:
-                continue
-            file = int(m.group(1), 16)
-            inode = int(m.group(2), 16)
-            pipe_files.append((file, inode))
-        if pipe_files == []:
-            if not self.quiet:
-                warn("Nothing to dump")
-            return False
-        else:
-            if not self.quiet:
-                info("Num of pipe: {:d}".format(len({x[1] for x in pipe_files})))
+    def quiet_err(self, msg):
+        if not self.args.quiet:
+            msg = "{} {}".format(Color.colorify("[+]", "bold red"), msg)
+            gef_print(msg)
+        return
+
+    def initialize(self, pipe_files):
+        if hasattr(self, "initialized") and self.initialized:
+            return True
 
         # inode->i_pipe
         """
@@ -73059,12 +73049,10 @@ class KernelPipeCommand(GenericCommand):
             # so these should be excluded.
             if re.search(r"kmalloc(-cg)?-(64|96|128|192|256|512)", ret):
                 self.offset_i_pipe = current_arch.ptrsize * i
-                if not self.quiet:
-                    info("offsetof(inode, i_pipe): {:#x}".format(self.offset_i_pipe))
+                self.quiet_info("offsetof(inode, i_pipe): {:#x}".format(self.offset_i_pipe))
                 break
         else:
-            if not self.quiet:
-                err("Not found inode->i_pipe")
+            self.quiet_err("Not found inode->i_pipe")
             return False
 
         # pipe_inode_info->bufs
@@ -73133,18 +73121,15 @@ class KernelPipeCommand(GenericCommand):
             # pipe_inode_info is allocated from kmalloc-1k (x64) or kmalloc-512 (x86)
             if re.search(r"kmalloc(-cg)?-(1k|1024|512)", ret):
                 self.offset_bufs = current_arch.ptrsize * i
-                if not self.quiet:
-                    info("offsetof(pipe_inode_info, bufs): {:#x}".format(self.offset_bufs))
+                self.quiet_info("offsetof(pipe_inode_info, bufs): {:#x}".format(self.offset_bufs))
                 break
             # before v5.5, pipe_buffer is allocated not from slub, but `user` is allocated from slub.
             if kversion < "5.5" and "uid_cache" in ret:
                 self.offset_bufs = current_arch.ptrsize * (i - 1)
-                if not self.quiet:
-                    info("offsetof(pipe_inode_info, bufs): {:#x}".format(self.offset_bufs))
+                self.quiet_info("offsetof(pipe_inode_info, bufs): {:#x}".format(self.offset_bufs))
                 break
         else:
-            if not self.quiet:
-                err("Not found pipe_inode_info->bufs")
+            self.quiet_err("Not found pipe_inode_info->bufs")
             return False
 
         if kversion >= "5.5":
@@ -73167,21 +73152,16 @@ class KernelPipeCommand(GenericCommand):
                 if v2_4 > 0x100 or v2_4 == 0:
                     continue
                 self.offset_head = current_arch.ptrsize * i
-                if not self.quiet:
-                    info("offsetof(pipe_inode_info, head): {:#x}".format(self.offset_head))
+                self.quiet_info("offsetof(pipe_inode_info, head): {:#x}".format(self.offset_head))
                 self.offset_tail = self.offset_head + 4
-                if not self.quiet:
-                    info("offsetof(pipe_inode_info, tail): {:#x}".format(self.offset_tail))
+                self.quiet_info("offsetof(pipe_inode_info, tail): {:#x}".format(self.offset_tail))
                 self.offset_max_usage = self.offset_tail + 4
-                if not self.quiet:
-                    info("offsetof(pipe_inode_info, max_usage): {:#x}".format(self.offset_max_usage))
+                self.quiet_info("offsetof(pipe_inode_info, max_usage): {:#x}".format(self.offset_max_usage))
                 self.offset_ring_size = self.offset_max_usage + 4
-                if not self.quiet:
-                    info("offsetof(pipe_inode_info, ring_size): {:#x}".format(self.offset_ring_size))
+                self.quiet_info("offsetof(pipe_inode_info, ring_size): {:#x}".format(self.offset_ring_size))
                 break
             else:
-                if not self.quiet:
-                    err("Not found pipe_inode_info->head")
+                self.quiet_err("Not found pipe_inode_info->head")
                 return False
         else:
             # pipe_inode_info->{nrbuf,curbuf,buffers}
@@ -73203,18 +73183,14 @@ class KernelPipeCommand(GenericCommand):
                 if v2_4 > 0x100 or v2_4 == 0:
                     continue
                 self.offset_nrbuf = current_arch.ptrsize * i
-                if not self.quiet:
-                    info("offsetof(pipe_inode_info, nrbuf): {:#x}".format(self.offset_nrbuf))
+                self.quiet_info("offsetof(pipe_inode_info, nrbuf): {:#x}".format(self.offset_nrbuf))
                 self.offset_curbuf = self.offset_nrbuf + 4
-                if not self.quiet:
-                    info("offsetof(pipe_inode_info, curbuf): {:#x}".format(self.offset_curbuf))
+                self.quiet_info("offsetof(pipe_inode_info, curbuf): {:#x}".format(self.offset_curbuf))
                 self.offset_buffers = self.offset_curbuf + 4
-                if not self.quiet:
-                    info("offsetof(pipe_inode_info, buffers): {:#x}".format(self.offset_buffers))
+                self.quiet_info("offsetof(pipe_inode_info, buffers): {:#x}".format(self.offset_buffers))
                 break
             else:
-                if not self.quiet:
-                    err("Not found pipe_inode_info->nrbuf")
+                self.quiet_err("Not found pipe_inode_info->nrbuf")
                 return False
 
         # pipe_buffer->{page, offset, len, flags}
@@ -73228,20 +73204,32 @@ class KernelPipeCommand(GenericCommand):
         };
         """
         self.offset_page = 0
-        if not self.quiet:
-            info("offsetof(pipe_buffer, page): {:#x}".format(self.offset_page))
+        self.quiet_info("offsetof(pipe_buffer, page): {:#x}".format(self.offset_page))
         self.offset_offset = current_arch.ptrsize
-        if not self.quiet:
-            info("offsetof(pipe_buffer, offset): {:#x}".format(self.offset_offset))
+        self.quiet_info("offsetof(pipe_buffer, offset): {:#x}".format(self.offset_offset))
         self.offset_len = self.offset_offset + 4
-        if not self.quiet:
-            info("offsetof(pipe_buffer, len): {:#x}".format(self.offset_len))
+        self.quiet_info("offsetof(pipe_buffer, len): {:#x}".format(self.offset_len))
         self.offset_flags = self.offset_len + 4 + current_arch.ptrsize
-        if not self.quiet:
-            info("offsetof(pipe_buffer, flags): {:#x}".format(self.offset_flags))
+        self.quiet_info("offsetof(pipe_buffer, flags): {:#x}".format(self.offset_flags))
         self.sizeof_pipe_buffer = AddressUtil.align_address_to_size(self.offset_flags + 4, current_arch.ptrsize) + current_arch.ptrsize
-        if not self.quiet:
-            info("sizeof(pipe_buffer): {:#x}".format(self.sizeof_pipe_buffer))
+        self.quiet_info("sizeof(pipe_buffer): {:#x}".format(self.sizeof_pipe_buffer))
+
+        self.initialized = True
+        return True
+
+    def get_pipe_files(self):
+        # struct file of pipe
+        ret = gdb.execute("ktask --quiet --no-pager --user-process-only --print-fd", to_string=True)
+        pipe_files = []
+        for line in ret.splitlines():
+            m = re.search(r"\d+\s+(0x\S+) 0x\S+ (0x\S+) pipe:\[\d+\]", line)
+            if not m:
+                continue
+            file = int(m.group(1), 16)
+            inode = int(m.group(2), 16)
+            pipe_files.append((file, inode))
+        if pipe_files:
+            self.quiet_info("Num of pipe: {:d}".format(len({x[1] for x in pipe_files})))
         return pipe_files
 
     def get_flags_str(self, flags_value):
@@ -73275,10 +73263,10 @@ class KernelPipeCommand(GenericCommand):
             inodes[inode] = inodes.get(inode, []) + [file]
 
         for inode, files in inodes.items():
-            if self.inode_filter and inode not in self.inode_filter:
+            if self.args.inode_filter and inode not in self.args.inode_filter:
                 continue
 
-            if self.file_filter and not (set(self.file_filter) & set(files)):
+            if self.args.file_filter and not (set(self.args.file_filter) & set(files)):
                 continue
 
             related_files = ", ".join(["{:#x}".format(x) for x in files])
@@ -73343,7 +73331,6 @@ class KernelPipeCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.quiet = args.quiet
         if not args.quiet:
             info("Wait for memory scan")
 
@@ -73352,25 +73339,27 @@ class KernelPipeCommand(GenericCommand):
             err("Unsupported SLOB")
             return
 
-        self.inode_filter = args.inode_filter
-        self.file_filter = args.file_filter
+        self.args = args
 
         # init
-        ret = self.initialize()
+        kinfo = Kernel.get_kernel_base()
+        if kinfo.has_none:
+            self.quiet_err("The kernel .text area could not be determined correctly")
+            return
+
+        pipe_files = self.get_pipe_files()
+        if not pipe_files:
+            self.quiet_info("Nothing to dump")
+            return
+
+        ret = self.initialize(pipe_files)
         if ret is False:
             return
-        pipe_files = ret
 
         # dump
         self.out = []
         self.dump_pipe(pipe_files)
-
-        # print
-        if self.out:
-            if len(self.out) > GefUtil.get_terminal_size()[0]:
-                gef_print("\n".join(self.out), less=not args.no_pager)
-            else:
-                gef_print("\n".join(self.out), less=False)
+        self.print_output(args, term=True)
         return
 
 
