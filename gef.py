@@ -74897,7 +74897,7 @@ class KernelDmaBufCommand(GenericCommand):
 
 
 @register_command
-class KernelIrqCommand(GenericCommand):
+class KernelIrqCommand(GenericCommand, BufferingOutput):
     """Dump IRQ (interrupt request) information."""
 
     _cmdline_ = "kirq"
@@ -74932,11 +74932,6 @@ class KernelIrqCommand(GenericCommand):
         "                           +-----------------+",
     ]
     _note_ = "\n".join(_note_)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self.initialized = False
-        return
 
     def parse_xarray(self, ptr, root=False):
         if ptr == 0:
@@ -75072,7 +75067,7 @@ class KernelIrqCommand(GenericCommand):
             return
 
     def initialize(self):
-        if self.initialized:
+        if hasattr(self, "initialized") and self.initialized:
             return True
 
         kversion = Kernel.kernel_version()
@@ -75080,7 +75075,7 @@ class KernelIrqCommand(GenericCommand):
         if kversion < "6.5":
             self.irq_desc_tree = KernelAddressHeuristicFinder.get_irq_desc_tree()
             if self.irq_desc_tree is None:
-                if not self.quiet:
+                if not self.args.quiet:
                     err("Not found irq_desc_tree")
                 return False
 
@@ -75094,11 +75089,11 @@ class KernelIrqCommand(GenericCommand):
                 if x & 0x2 != 0x2: # xa_head is NULL or tagged address
                     continue
                 self.offset_xa_head = current_arch.ptrsize * i
-                if not self.quiet:
+                if not self.args.quiet:
                     info("offsetof(xarray, xa_head): {:#x}".format(self.offset_xa_head))
                 break
             else:
-                if not self.quiet:
+                if not self.args.quiet:
                     err("Not found xa_head. (maybe uninitialized?)")
                 return False
 
@@ -75133,14 +75128,14 @@ class KernelIrqCommand(GenericCommand):
             # kversion >= 6.5
             self.sparse_irqs = KernelAddressHeuristicFinder.get_sparse_irqs()
             if self.sparse_irqs is None:
-                if not self.quiet:
+                if not self.args.quiet:
                     err("Not found sparse_irqs")
                 return False
 
             descs = list(self.MapleTree(self.sparse_irqs).iters)
 
         if not descs:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found any valid irq_desc")
             return False
 
@@ -75190,7 +75185,7 @@ class KernelIrqCommand(GenericCommand):
         else:
             # ARM may have invalid descs[irq=0]
             desc = descs[-1]
-        if not self.quiet:
+        if not self.args.quiet:
             info("desc: {:#x}".format(desc))
 
         for i in range(100):
@@ -75200,11 +75195,11 @@ class KernelIrqCommand(GenericCommand):
                     self.offset_irq = current_arch.ptrsize * i - 8
                 else:
                     self.offset_irq = current_arch.ptrsize * i - 12 # for padding
-                if not self.quiet:
+                if not self.args.quiet:
                     info("offsetof(irq_desc, irq_data.irq): {:#x}".format(self.offset_irq))
                 break
         else:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found irq_desc->irq_data.irq")
             return False
 
@@ -75217,11 +75212,11 @@ class KernelIrqCommand(GenericCommand):
                 action_candidate = read_int_from_memory(desc + ofs_action_candidate)
                 if is_valid_addr_addr(action_candidate):
                     self.offset_action = ofs_action_candidate
-                    if not self.quiet:
+                    if not self.args.quiet:
                         info("offsetof(irq_desc, action): {:#x}".format(self.offset_action))
                     break
         else:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found irq_desc->action")
             return False
 
@@ -75244,7 +75239,7 @@ class KernelIrqCommand(GenericCommand):
         } ____cacheline_internodealigned_in_smp;
         """
         self.offset_handler = 0
-        if not self.quiet:
+        if not self.args.quiet:
             info("offsetof(irqaction, handler): {:#x}".format(self.offset_handler))
 
         action = read_int_from_memory(desc + self.offset_action)
@@ -75255,17 +75250,17 @@ class KernelIrqCommand(GenericCommand):
             s = read_cstring_from_memory(x)
             if s and len(s) >= 4:
                 self.offset_name = current_arch.ptrsize * i
-                if not self.quiet:
+                if not self.args.quiet:
                     info("offsetof(irqaction, name): {:#x}".format(self.offset_name))
                 break
         else:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found irqaction->name")
             return False
 
         return True
 
-    def dump_irq(self, verbose):
+    def dump_irq(self):
         kversion = Kernel.kernel_version()
 
         if kversion < "6.5":
@@ -75298,7 +75293,7 @@ class KernelIrqCommand(GenericCommand):
                 else:
                     self.out.append("{:3d} {:#018x} {:18s} {:24s} {:18s}".format(i, desc, "unused", "-", "-"))
             else:
-                if verbose:
+                if self.args.verbose:
                     self.out.append("{:3d} {:18s} {:18s} {:24s} {:18s}".format(i, "unused", "unused", "-", "-"))
         return
 
@@ -75308,14 +75303,14 @@ class KernelIrqCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.quiet = args.quiet
-        if not self.quiet:
+        if not args.quiet:
             info("Wait for memory scan")
 
+        self.args = args
         kversion = Kernel.kernel_version()
         if kversion < "4.20":
             # xarray is introduced from 4.20
-            if not self.quiet:
+            if not args.quiet:
                 err("Unsupported before v4.20")
             return
 
@@ -75324,13 +75319,8 @@ class KernelIrqCommand(GenericCommand):
             return
 
         self.out = []
-        self.dump_irq(args.verbose)
-
-        if self.out:
-            if len(self.out) > GefUtil.get_terminal_size()[0]:
-                gef_print("\n".join(self.out), less=not args.no_pager)
-            else:
-                gef_print("\n".join(self.out), less=False)
+        self.dump_irq()
+        self.print_output(args, term=True)
         return
 
 
