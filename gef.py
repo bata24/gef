@@ -59912,11 +59912,11 @@ class KernelModuleLoadCommand(GenericCommand):
     def get_modules_list(self):
         modules = KernelAddressHeuristicFinder.get_modules()
         if modules is None:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found modules (maybe, CONFIG_MODULES is not set)")
             return None
 
-        if not self.quiet:
+        if not self.args.quiet:
             info("modules: {:#x}".format(modules))
 
         module_addrs = []
@@ -59945,11 +59945,11 @@ class KernelModuleLoadCommand(GenericCommand):
                     valid = False
                     break
             if valid:
-                if not self.quiet:
+                if not self.args.quiet:
                     info("offsetof(module, name): {:#x}".format(offset_name))
                 return offset_name
 
-        if not self.quiet:
+        if not self.args.quiet:
             err("Not found module->name[MODULE_NAME_LEN]")
         return None
 
@@ -60021,11 +60021,11 @@ class KernelModuleLoadCommand(GenericCommand):
                     valid = False
                     break
             if valid:
-                if not self.quiet:
+                if not self.args.quiet:
                     info("offsetof(module, sect_attrs): {:#x}".format(offset_sect_attrs))
                 return offset_sect_attrs
 
-        if not self.quiet:
+        if not self.args.quiet:
             err("Not found module->sect_attrs")
         return None
 
@@ -60077,14 +60077,14 @@ class KernelModuleLoadCommand(GenericCommand):
     def do_invoke(self, args):
         kversion = Kernel.kernel_version()
         if kversion < "3.0":
-            if not self.quiet:
+            if not args.quiet:
                 err("Unsupported before v3.0")
             return
 
-        self.quiet = args.quiet
-
-        if self.initialize() is False:
-            if not self.quiet:
+        self.args = args
+        ret = self.initialize()
+        if not ret:
+            if not args.quiet:
                 err("Failed to initialize")
             return
 
@@ -60096,7 +60096,7 @@ class KernelModuleLoadCommand(GenericCommand):
             # get nsections
             sect_attrs = read_int_from_memory(module + self.offset_sect_attrs)
             nsections = read_int_from_memory(sect_attrs + self.offset_nsections) & 0xffffffff
-            if not self.quiet:
+            if not args.quiet:
                 info("nsections = {}".format(nsections))
 
             # get each section name and address
@@ -60105,7 +60105,7 @@ class KernelModuleLoadCommand(GenericCommand):
                 name_ptr = read_int_from_memory(sect_attrs + self.offset_firstname + self.sizeof_module_sect_attr * i)
                 name = read_cstring_from_memory(name_ptr)
                 addr = read_int_from_memory(sect_attrs + self.offset_address + self.sizeof_module_sect_attr * i)
-                if not self.quiet:
+                if not args.quiet:
                     info("name={:s}, addr={:#x}".format(name, addr))
                 sections.append((name, addr))
 
@@ -60117,7 +60117,7 @@ class KernelModuleLoadCommand(GenericCommand):
             gdb.execute("add-symbol-file {!r} {:s}".format(args.path, command))
             break
         else:
-            if not self.quiet:
+            if not args.quiet:
                 err("Not found {:s}".format(args.name))
         return
 
