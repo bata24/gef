@@ -74520,7 +74520,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class KernelDmaBufCommand(GenericCommand):
+class KernelDmaBufCommand(GenericCommand, BufferingOutput):
     """Dump DMA-BUF information."""
 
     _cmdline_ = "kdmabuf"
@@ -74569,7 +74569,7 @@ class KernelDmaBufCommand(GenericCommand):
         if self.db_list is None:
             err("Not found db_list (maybe DMA_SHARED_BUFFER=n)")
             return False
-        if not self.quiet:
+        if not self.args.quiet:
             info("db_list: {:#x}".format(self.db_list))
 
         first_dma_buf = read_int_from_memory(self.db_list)
@@ -74651,7 +74651,7 @@ class KernelDmaBufCommand(GenericCommand):
                 continue
 
             self.offset_list_node = current_arch.ptrsize * (i + 4)
-            if not self.quiet:
+            if not self.args.quiet:
                 info("offsetof(dma_buf, list_node): {:#x}".format(self.offset_list_node))
             break
         else:
@@ -74662,7 +74662,7 @@ class KernelDmaBufCommand(GenericCommand):
         self.offset_size = 0
         self.offset_file = current_arch.ptrsize
         self.offset_priv = self.offset_list_node + current_arch.ptrsize * 2
-        if not self.quiet:
+        if not self.args.quiet:
             info("offsetof(dma_buf, size): {:#x}".format(self.offset_size))
             info("offsetof(dma_buf, file): {:#x}".format(self.offset_file))
             info("offsetof(dma_buf, priv): {:#x}".format(self.offset_priv))
@@ -74675,7 +74675,7 @@ class KernelDmaBufCommand(GenericCommand):
             if s and len(s) >= 3:
                 self.offset_exp_name = current_arch.ptrsize * i
                 self.offset_name = current_arch.ptrsize * (i + 1)
-                if not self.quiet:
+                if not self.args.quiet:
                     info("offsetof(dma_buf, exp_name): {:#x}".format(self.offset_exp_name))
                     info("offsetof(dma_buf, name): {:#x}".format(self.offset_name))
                 break
@@ -74709,7 +74709,7 @@ class KernelDmaBufCommand(GenericCommand):
         else:
             err("Not found system_heap_buffer->sg_table")
             return False
-        if not self.quiet:
+        if not self.args.quiet:
             info("offsetof(system_heap_buffer, sg_table): {:#x}".format(self.offset_sg_table))
         return True
 
@@ -74825,8 +74825,7 @@ class KernelDmaBufCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.quiet = args.quiet
-        if not self.quiet:
+        if not args.quiet:
             info("Wait for memory scan")
 
         kversion = Kernel.kernel_version()
@@ -74834,18 +74833,15 @@ class KernelDmaBufCommand(GenericCommand):
             err("Unsupported before v5.11")
             return
 
+        self.args = args
+
         ret = self.initialize()
         if ret is False:
             return
 
         self.out = []
         self.dump_db_list()
-
-        if self.out:
-            if len(self.out) > GefUtil.get_terminal_size()[0]:
-                gef_print("\n".join(self.out), less=not args.no_pager)
-            else:
-                gef_print("\n".join(self.out), less=False)
+        self.print_output(args, term=True)
         return
 
 
