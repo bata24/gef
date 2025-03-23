@@ -77602,7 +77602,7 @@ class TcmallocDumpCommand(GenericCommand):
 
 
 @register_command
-class GoHeapDumpCommand(GenericCommand):
+class GoHeapDumpCommand(GenericCommand, BufferingOutput):
     """go language v1.22.2 mheap dumper (only x64)."""
 
     _cmdline_ = "go-heap-dump"
@@ -77638,13 +77638,6 @@ class GoHeapDumpCommand(GenericCommand):
         0x6000, 0x6a80, 0x7000, 0x8000,
     ]
 
-    def __init__(self):
-        super().__init__()
-        self.PageShift = 13
-        self.PageSize = 1 << self.PageShift
-        self.initialized = False
-        return
-
     def get_struct_offset(self, type_name, member_name):
         tp = GefUtil.cached_lookup_type(type_name)
         if tp is None:
@@ -77663,8 +77656,11 @@ class GoHeapDumpCommand(GenericCommand):
         return tp.sizeof
 
     def initialize(self):
-        if self.initialized:
-            return
+        if hasattr(self, "initialized") and self.initialized:
+            return True
+
+        self.PageShift = 13
+        self.PageSize = 1 << self.PageShift
 
         # assume 1.22.2 (Ubuntu 24.04)
         """
@@ -77708,7 +77704,9 @@ class GoHeapDumpCommand(GenericCommand):
         self.offset_nelems = self.get_struct_offset("runtime.mspan", "nelems") or 0x32
         self.offset_allocBits = self.get_struct_offset("runtime.mspan", "allocBits") or 0x40
         self.offset_spanclass = self.get_struct_offset("runtime.mspan", "spanClass") or 0x62
-        return
+
+        self.initialized = True
+        return True
 
     def get_mheap_(self):
         # use symbol
@@ -77869,7 +77867,7 @@ class GoHeapDumpCommand(GenericCommand):
 
         mspans = [x for x in mspans if x is not None]
         self.dump_mspans(mspans, args.dump)
-        gef_print("\n".join(self.out), less=not args.no_pager)
+        self.print_output(args)
         return
 
 
