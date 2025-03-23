@@ -91225,12 +91225,6 @@ class KmallocAllocatedByCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self.initialized = False
-        self.allocator = None
-        return
-
     def setup_syscall(self, syscall_name, args):
         gdb.execute("set $pc-={:#x}".format(len(current_arch.syscall_insn)), to_string=True)
         nr = self.syscall_table[syscall_name]
@@ -92496,7 +92490,7 @@ class KmallocAllocatedByCommand(GenericCommand):
             # fall through
 
         # initialize
-        if not self.initialized:
+        if not hasattr(self, "initialized"):
             ret = KmallocTracerCommand.initialize(allocator, args.verbose)
             if ret is False:
                 err("Failed to initialize")
