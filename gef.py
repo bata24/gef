@@ -63189,7 +63189,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class KernelFileSystemsCommand(GenericCommand):
+class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
     """Dump filesystems."""
 
     _cmdline_ = "kfilesystems"
@@ -63229,24 +63229,17 @@ class KernelFileSystemsCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    def __init__(self):
-        super().__init__()
-        self.initialized = False
-        self.offset_d_iname = None
-        self.offset_d_parent = None
-        return
-
     def initialize(self):
-        if self.initialized:
+        if hasattr(self, "initialized") and self.initialized:
             return True
 
         # file_systems
         self.file_systems = KernelAddressHeuristicFinder.get_file_systems()
         if self.file_systems is None:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found file_systems")
             return
-        if not self.quiet:
+        if not self.args.quiet:
             info("file_systems: {:#x}".format(self.file_systems))
 
         """
@@ -63272,7 +63265,7 @@ class KernelFileSystemsCommand(GenericCommand):
         """
         # file_system_type->name
         self.offset_name = 0
-        if not self.quiet:
+        if not self.args.quiet:
             info("offsetof(file_system_type, name): {:#x}".format(self.offset_name))
 
         # file_system_type->next
@@ -63306,14 +63299,14 @@ class KernelFileSystemsCommand(GenericCommand):
                 self.offset_next = offset_next
                 break
         else:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found file_system_type->next")
             return False
-        if not self.quiet:
+        if not self.args.quiet:
             info("offsetof(file_system_type, next): {:#x}".format(self.offset_next))
 
         self.offset_fs_supers = self.offset_next + current_arch.ptrsize
-        if not self.quiet:
+        if not self.args.quiet:
             info("offsetof(file_system_type, fs_supers): {:#x}".format(self.offset_fs_supers))
 
         """
@@ -63363,7 +63356,7 @@ class KernelFileSystemsCommand(GenericCommand):
         current = read_int_from_memory(self.file_systems)
         while True:
             if current == 0:
-                if not self.quiet:
+                if not self.args.quiet:
                     err("Not found file_systems who has valid fs_supers")
                 return False
             fs_supers = read_int_from_memory(current + self.offset_fs_supers)
@@ -63397,16 +63390,16 @@ class KernelFileSystemsCommand(GenericCommand):
                 self.offset_s_mounts = self.offset_s_instances - current_arch.ptrsize * 5
                 break
         else:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found super_block->s_instances")
             return False
-        if not self.quiet:
+        if not self.args.quiet:
             info("offsetof(super_block, s_instances): {:#x}".format(self.offset_s_instances))
             info("offsetof(super_block, s_mounts): {:#x}".format(self.offset_s_mounts))
 
         # super_block->s_dev
         self.offset_s_dev = current_arch.ptrsize * 2
-        if not self.quiet:
+        if not self.args.quiet:
             info("offsetof(super_block, s_dev): {:#x}".format(self.offset_s_dev))
 
         """
@@ -63463,7 +63456,7 @@ class KernelFileSystemsCommand(GenericCommand):
         return major, minor, name
 
     def get_offset_d_iname(self, dentry):
-        if self.offset_d_iname:
+        if hasattr(self, "offset_d_iname") and self.offset_d_iname is not None:
             return self.offset_d_iname
 
         """
@@ -63498,7 +63491,7 @@ class KernelFileSystemsCommand(GenericCommand):
         return offset_d_iname
 
     def get_offset_d_parent(self, dentry, offset_d_iname):
-        if self.offset_d_parent:
+        if hasattr(self, "offset_d_parent") and self.offset_d_parent is not None:
             return self.offset_d_parent
 
         offset_dname_name = offset_d_iname - current_arch.ptrsize * 2
@@ -63588,7 +63581,7 @@ class KernelFileSystemsCommand(GenericCommand):
         return devname
 
     def parse_file_systems(self, skip_mount_path):
-        if not self.quiet:
+        if not self.args.quiet:
             fmt = "{:18s} {:12s} {:18s} {:20s} {:6s} {:6s} {:18s} {:18s} {:s}"
             legend = [
                 "file_system_type", "fsname", "super_block", "devname", "major", "minor",
@@ -63657,22 +63650,16 @@ class KernelFileSystemsCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
         if not args.quiet:
             info("Wait for memory scan")
-
-        self.quiet = args.quiet
 
         if not self.initialize():
             return
 
         self.out = []
         self.parse_file_systems(args.skip_mount_path)
-
-        if self.out:
-            if len(self.out) > GefUtil.get_terminal_size()[0]:
-                gef_print("\n".join(self.out), less=not args.no_pager)
-            else:
-                gef_print("\n".join(self.out), less=False)
+        self.print_output(args, term=True)
         return
 
 
