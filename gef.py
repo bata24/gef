@@ -88978,7 +88978,7 @@ class PageCommand(GenericCommand):
     parser.add_argument("mode", choices=modes, help="conversion mode.")
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
                         help="the address to convert.")
-    parser.add_argument("-r", "--rescan", action="store_true", help="do not use map cache.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     _syntax_ = parser.format_help()
 
     _note_ = [
@@ -89025,7 +89025,6 @@ class PageCommand(GenericCommand):
 
     def __init__(self, *args, **kwargs):
         super().__init__(complete="use_user_complete")
-        self.initialized = False
         return
 
     def complete(self, text, word): # noqa
@@ -89095,6 +89094,9 @@ class PageCommand(GenericCommand):
         return page, vaddr
 
     def initialize(self):
+        if hasattr(self, "initialized") and self.initialized:
+            return True
+
         self.PAGE_SHIFT = 12
 
         if is_x86_64():
@@ -89403,6 +89405,11 @@ class PageCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     @only_if_in_kernel
     def do_invoke(self, args):
+        info("Wait for memory scan")
+
+        if not hasattr(self, "initialized"):
+            self.initialized = False
+
         if args.rescan:
             self.initialized = False
 
@@ -89412,12 +89419,10 @@ class PageCommand(GenericCommand):
                 err("Unsupported before v4.7")
                 return
 
-        if not self.initialized:
-            info("Wait for memory scan")
-            ret = self.initialize()
-            if ret is False:
-                err("Failed to initialize")
-                return
+        ret = self.initialize()
+        if ret is False:
+            err("Failed to initialize")
+            return
 
         out = []
         # doit
