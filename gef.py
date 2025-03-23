@@ -75325,7 +75325,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class KernelNetDeviceCommand(GenericCommand):
+class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
     """Dump net device information."""
 
     _cmdline_ = "knetdev"
@@ -75349,22 +75349,17 @@ class KernelNetDeviceCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self.initialized = False
-        return
-
     def initialize(self):
-        if self.initialized:
+        if hasattr(self, "initialized") and self.initialized:
             return True
 
         # init_net
         self.init_net = KernelAddressHeuristicFinder.get_init_net()
         if self.init_net is None:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found init_net")
             return False
-        if not self.quiet:
+        if not self.args.quiet:
             info("init_net: {:#x}".format(self.init_net))
 
         """
@@ -75405,12 +75400,12 @@ class KernelNetDeviceCommand(GenericCommand):
                 continue
             break # found
         else:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found net->dev_base_head")
             return False
 
         self.offset_dev_base_head = candidate_offset
-        if not self.quiet:
+        if not self.args.quiet:
             info("offsetof(net, dev_base_head): {:#x}".format(self.offset_dev_base_head))
 
         # net_device->dev_list
@@ -75420,12 +75415,12 @@ class KernelNetDeviceCommand(GenericCommand):
             if read_cstring_from_memory(netdev_dev_list - candidate_offset) == "lo":
                 break
         else:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found net_device->dev_list")
             return False
 
         self.offset_dev_list = candidate_offset
-        if not self.quiet:
+        if not self.args.quiet:
             info("offsetof(net_device, dev_list): {:#x}".format(self.offset_dev_list))
 
         return True
@@ -75460,22 +75455,17 @@ class KernelNetDeviceCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.quiet = args.quiet
-        if not self.quiet:
+        if not args.quiet:
             info("Wait for memory scan")
 
+        self.args = args
         ret = self.initialize()
         if ret is False:
             return
 
         self.out = []
         self.dump_net()
-
-        if self.out:
-            if len(self.out) > GefUtil.get_terminal_size()[0]:
-                gef_print("\n".join(self.out), less=not args.no_pager)
-            else:
-                gef_print("\n".join(self.out), less=False)
+        self.print_output(args, term=True)
         return
 
 
