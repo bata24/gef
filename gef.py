@@ -93546,7 +93546,7 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
         exclusive = data["exclusive"]
         soft_dirty = data["soft_dirty"]
 
-        if self.ignore_non_present and not present:
+        if self.args.ignore_non_present and not present:
             self.out.append("Non-present page is ignored")
             return
 
@@ -93583,7 +93583,7 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
             if data is None:
                 continue
 
-            if self.ignore_non_present and not data["present"]:
+            if self.args.ignore_non_present and not data["present"]:
                 continue
 
             pfn = data["pfn"]
@@ -93613,12 +93613,12 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
+        self.args = args
+
         pid = Pid.get_pid()
         if pid is None:
             err("Failed to read pid")
             return
-
-        self.ignore_non_present = args.ignore_non_present
 
         self.out = []
         if args.address is not None:
