@@ -83778,19 +83778,15 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
         self.cache[key] = out
         return out
 
-    def add_out(self, msg):
-        self.out.append(msg)
-        return
-
     def quiet_info(self, msg):
         if not self.quiet:
             msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
-            self.add_out(msg)
+            self.out.append(msg)
         return
 
     def quiet_add_out(self, msg):
         if not self.quiet:
-            self.add_out(msg)
+            self.out.append(msg)
         return
 
     # merge pages that points same phys page
@@ -84223,7 +84219,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
                         continue
-                    self.add_out(line)
+                    self.out.append(line)
 
         self.quiet_info("Number of entries: {:d}".format(COUNT))
         self.quiet_info("L5 Entry (256TB): {:d}".format(len(L5E)))
@@ -84304,7 +84300,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
                         continue
-                    self.add_out(line)
+                    self.out.append(line)
 
         self.quiet_info("Number of entries: {:d}".format(COUNT))
         self.quiet_info("L4 Entry (512GB): {:d}".format(len(L4E)))
@@ -84384,7 +84380,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
                         continue
-                    self.add_out(line)
+                    self.out.append(line)
 
         self.quiet_info("Number of entries: {:d}".format(COUNT))
         self.quiet_info("L3 Entry (1GB): {:d}".format(len(L3E)))
@@ -84461,7 +84457,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
                         continue
-                    self.add_out(line)
+                    self.out.append(line)
 
         self.quiet_info("Number of entries: {:d}".format(COUNT))
         self.quiet_info("L2 Entry (2MB): {:d}".format(len(L2E)))
@@ -84528,7 +84524,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
                         continue
-                    self.add_out(line)
+                    self.out.append(line)
 
         self.quiet_info("Number of entries: {:d}".format(COUNT))
         self.quiet_info("L1 Entry (4KB): {:d}".format(len(PTE)))
@@ -84808,7 +84804,7 @@ class PagewalkX64Command(PagewalkCommand):
                     line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
                         continue
-                    self.add_out(line)
+                    self.out.append(line)
 
         self.quiet_info("Number of entries: {:d}".format(COUNT))
         self.quiet_info("PML5 Entry: {:d}".format(len(PML5E)))
@@ -84881,7 +84877,7 @@ class PagewalkX64Command(PagewalkCommand):
                     line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
                         continue
-                    self.add_out(line)
+                    self.out.append(line)
 
         self.quiet_info("Number of entries: {:d}".format(COUNT))
         self.quiet_info("PML4 Entry: {:d}".format(len(PML4E)))
@@ -84973,7 +84969,7 @@ class PagewalkX64Command(PagewalkCommand):
                     line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
                         continue
-                    self.add_out(line)
+                    self.out.append(line)
 
         self.quiet_info("Number of entries: {:d}".format(COUNT))
         self.quiet_info("PDPT Entry: {:d}".format(len(PDPTE)))
@@ -85076,7 +85072,7 @@ class PagewalkX64Command(PagewalkCommand):
                     line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
                         continue
-                    self.add_out(line)
+                    self.out.append(line)
 
         self.quiet_info("Number of entries: {:d}".format(COUNT))
         self.quiet_info("PD Entry: {:d}".format(len(PDE)))
@@ -85166,7 +85162,7 @@ class PagewalkX64Command(PagewalkCommand):
                     line = fmt.format(addr, entry, virt_addr, virt_addr_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
                         continue
-                    self.add_out(line)
+                    self.out.append(line)
 
         self.quiet_info("Number of entries: {:d}".format(COUNT))
         self.quiet_info("PT Entry (4KB): {:d}".format(len(PTE)))
@@ -85736,7 +85732,7 @@ class PagewalkArmCommand(PagewalkCommand):
                 line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                 if self.is_not_filter_target(line):
                     continue
-                self.add_out(line)
+                self.out.append(line)
 
         self.quiet_info("Number of entries: {:d}".format(COUNT))
         self.quiet_info("Level 1 Entry: {:d}".format(len(LEVEL1)))
@@ -85829,7 +85825,7 @@ class PagewalkArmCommand(PagewalkCommand):
                     line = fmt.format(addr, entry, virt_addr, virt_addr_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
                         continue
-                    self.add_out(line)
+                    self.out.append(line)
 
         self.quiet_info("Number of entries: {:d}".format(COUNT))
         self.quiet_info("PT Entry (large; 64KB): {:d}".format(len(LARGE)))
@@ -85926,7 +85922,7 @@ class PagewalkArmCommand(PagewalkCommand):
                     line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
                         continue
-                    self.add_out(line)
+                    self.out.append(line)
 
             self.quiet_info("Number of entries: {:d}".format(COUNT))
             self.quiet_info("Level 1 Entry: {:d}".format(len(LEVEL1)))
@@ -86010,7 +86006,7 @@ class PagewalkArmCommand(PagewalkCommand):
                     line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
                         continue
-                    self.add_out(line)
+                    self.out.append(line)
 
         self.quiet_info("Number of entries: {:d}".format(COUNT))
         self.quiet_info("Level 2 Entry: {:d}".format(len(LEVEL2)))
@@ -86073,7 +86069,7 @@ class PagewalkArmCommand(PagewalkCommand):
                     line = fmt.format(addr, entry, virt_addr, virt_addr_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
                         continue
-                    self.add_out(line)
+                    self.out.append(line)
 
         self.quiet_info("Number of entries: {:d}".format(COUNT))
         self.quiet_info("PT Entry (4KB): {:d}".format(len(KB)))
@@ -86086,7 +86082,7 @@ class PagewalkArmCommand(PagewalkCommand):
         return
 
     def pagewalk_short(self):
-        self.add_out(titlify("$TTBR0_EL1{}".format(self.suffix)))
+        self.out.append(titlify("$TTBR0_EL1{}".format(self.suffix)))
 
         TTBR0_EL1 = get_register("$TTBR0_EL1{}".format(self.suffix))
         if TTBR0_EL1 is None:
@@ -86118,7 +86114,7 @@ class PagewalkArmCommand(PagewalkCommand):
         self.make_out(self.ttbr0_mappings)
 
         # pagewalk TTBR1_EL1
-        self.add_out(titlify("$TTBR1_EL1{}".format(self.suffix)))
+        self.out.append(titlify("$TTBR1_EL1{}".format(self.suffix)))
 
         TTBR1_EL1 = get_register("$TTBR1_EL1{}".format(self.suffix))
         if TTBR1_EL1 is None:
@@ -86153,7 +86149,7 @@ class PagewalkArmCommand(PagewalkCommand):
         return
 
     def pagewalk_long(self):
-        self.add_out(titlify("$TTBR0_EL1{}".format(self.suffix)))
+        self.out.append(titlify("$TTBR0_EL1{}".format(self.suffix)))
 
         TTBR0_EL1 = get_register("$TTBR0_EL1{}".format(self.suffix))
         if TTBR0_EL1 is None:
@@ -86186,7 +86182,7 @@ class PagewalkArmCommand(PagewalkCommand):
         self.make_out(self.ttbr0_mappings)
 
         # pagewalk TTBR1_EL1
-        self.add_out(titlify("$TTBR1_EL1{}".format(self.suffix)))
+        self.out.append(titlify("$TTBR1_EL1{}".format(self.suffix)))
 
         TTBR1_EL1 = get_register("$TTBR1_EL1{}".format(self.suffix))
         if TTBR1_EL1 is None:
@@ -86875,7 +86871,7 @@ class PagewalkArm64Command(PagewalkCommand):
                         line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                         if self.is_not_filter_target(line):
                             continue
-                        self.add_out(line)
+                        self.out.append(line)
 
             if not self.silent:
                 self.quiet_info("Number of entries: {:d}".format(COUNT))
@@ -87026,7 +87022,7 @@ class PagewalkArm64Command(PagewalkCommand):
                         line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                         if self.is_not_filter_target(line):
                             continue
-                        self.add_out(line)
+                        self.out.append(line)
 
             if not self.silent:
                 self.quiet_info("Number of entries: {:d}".format(COUNT))
@@ -87191,7 +87187,7 @@ class PagewalkArm64Command(PagewalkCommand):
                         line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                         if self.is_not_filter_target(line):
                             continue
-                        self.add_out(line)
+                        self.out.append(line)
 
             if not self.silent:
                 self.quiet_info("Number of entries: {:d}".format(COUNT))
@@ -87358,7 +87354,7 @@ class PagewalkArm64Command(PagewalkCommand):
                         line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                         if self.is_not_filter_target(line):
                             continue
-                        self.add_out(line)
+                        self.out.append(line)
 
             if not self.silent:
                 self.quiet_info("Number of entries: {:d}".format(COUNT))
@@ -87515,7 +87511,7 @@ class PagewalkArm64Command(PagewalkCommand):
                         line = fmt.format(addr, entry, virt_addr, virt_addr_end, entry_type, " ".join(flags))
                         if self.is_not_filter_target(line):
                             continue
-                        self.add_out(line)
+                        self.out.append(line)
 
             if not self.silent:
                 self.quiet_info("Number of entries: {:d}".format(COUNT))
@@ -87570,7 +87566,7 @@ class PagewalkArm64Command(PagewalkCommand):
         return
 
     def pagewalk_TTBR0_EL1(self):
-        self.add_out(titlify("$TTBR0_EL1"))
+        self.out.append(titlify("$TTBR0_EL1"))
 
         TTBR0_EL1 = get_register("$TTBR0_EL1")
         TCR_EL1 = get_register("$TCR_EL1")
@@ -87618,7 +87614,7 @@ class PagewalkArm64Command(PagewalkCommand):
         return
 
     def pagewalk_TTBR1_EL1(self):
-        self.add_out(titlify("$TTBR1_EL1"))
+        self.out.append(titlify("$TTBR1_EL1"))
 
         TTBR1_EL1 = get_register("$TTBR1_EL1")
         TCR_EL1 = get_register("$TCR_EL1")
@@ -87667,7 +87663,7 @@ class PagewalkArm64Command(PagewalkCommand):
 
     def pagewalk_VTTBR_EL2(self):
         if not self.silent:
-            self.add_out(titlify("$VTTBR_EL2"))
+            self.out.append(titlify("$VTTBR_EL2"))
 
         VTTBR_EL2 = get_register("$VTTBR_EL2")
         VTCR_EL2 = get_register("$VTCR_EL2")
@@ -87785,7 +87781,7 @@ class PagewalkArm64Command(PagewalkCommand):
         return
 
     def pagewalk_TTBR0_EL2(self):
-        self.add_out(titlify("$TTBR0_EL2"))
+        self.out.append(titlify("$TTBR0_EL2"))
 
         TTBR0_EL2 = get_register("$TTBR0_EL2")
         TCR_EL2 = get_register("$TCR_EL2")
@@ -87852,7 +87848,7 @@ class PagewalkArm64Command(PagewalkCommand):
         return
 
     def pagewalk_TTBR1_EL2(self):
-        self.add_out(titlify("$TTBR1_EL2"))
+        self.out.append(titlify("$TTBR1_EL2"))
 
         TTBR1_EL2 = get_register("$TTBR1_EL2")
         TCR_EL2 = get_register("$TCR_EL2")
@@ -87900,7 +87896,7 @@ class PagewalkArm64Command(PagewalkCommand):
         return
 
     def pagewalk_TTBR0_EL3(self):
-        self.add_out(titlify("$TTBR0_EL3"))
+        self.out.append(titlify("$TTBR0_EL3"))
 
         TTBR0_EL3 = get_register("$TTBR0_EL3")
         TCR_EL3 = get_register("$TCR_EL3")
