@@ -81447,7 +81447,7 @@ class OpteeBreakTaAddrCommand(GenericCommand):
 
 
 @register_command
-class OpteeBgetDumpCommand(GenericCommand):
+class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
     """Dump bget allocator of OPTEE-Trusted-App."""
 
     _cmdline_ = "optee-bget-dump"
@@ -81771,6 +81771,7 @@ class OpteeBgetDumpCommand(GenericCommand):
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     @only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
+        self.args = args
         self.out = []
 
         ta_address_map = OpteeThreadEnterUserModeBreakpoint.get_ta_loaded_address()
@@ -81808,9 +81809,7 @@ class OpteeBgetDumpCommand(GenericCommand):
 
         self.dump_malloc_ctx(malloc_ctx)
         self.dump_chunk_list(malloc_ctx)
-
-        if self.out:
-            gef_print("\n".join(self.out), less=not args.no_pager)
+        self.print_output(args)
         return
 
 
