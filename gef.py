@@ -61423,10 +61423,10 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
         """
         chrdevs = KernelAddressHeuristicFinder.get_chrdevs()
         if chrdevs is None:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found chrdevs")
             return None
-        if not self.quiet:
+        if not self.args.quiet:
             info("chrdevs: {:#x}".format(chrdevs))
 
         chrdev_addrs = []
@@ -61482,18 +61482,18 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
         """
         cdev_map = KernelAddressHeuristicFinder.get_cdev_map()
         if cdev_map is None:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Not found cdev_map")
             return None
-        if not self.quiet:
+        if not self.args.quiet:
             info("cdev_map: {:#x}".format(cdev_map))
 
         try:
             cdev_map_ = read_int_from_memory(cdev_map)
-            if not self.quiet:
+            if not self.args.quiet:
                 info("*cdev_map: {:#x}".format(cdev_map_))
         except Exception:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("cdev_map is not initialized")
             return None
 
@@ -61546,11 +61546,11 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
                 # for loop is finished until last element
                 if valid:
                     offset_ops = offset_list - current_arch.ptrsize
-                    if not self.quiet:
+                    if not self.args.quiet:
                         info("offsetof(cdev, ops): {:#x}".format(offset_ops))
                     return offset_ops
 
-        if not self.quiet:
+        if not self.args.quiet:
             err("Not found offsetof(cdev, ops)")
         return None
 
@@ -61560,9 +61560,8 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.quiet = args.quiet
-
-        if not self.quiet:
+        self.args = args
+        if not args.quiet:
             info("Wait for memory scan")
 
         chrdev_addrs = self.get_chrdev_list()
@@ -61630,7 +61629,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
 
         # print
         self.out = []
-        if not self.quiet:
+        if not args.quiet:
             fmt = "{:<18s} {:<18s} {:<24s} {:<6s} {:<6s} {:<18s} {:<18s} {:18s} {:<s}"
             legend = [
                 "chrdev", "name", "name (guessed)", "major", "minor",
