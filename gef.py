@@ -22144,13 +22144,8 @@ class RegistersCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    def __init__(self):
-        super().__init__()
-        self.regs_to_check_unavailable = None
-        return
-
     def check_unavailable_regs(self):
-        if self.regs_to_check_unavailable is not None:
+        if hasattr(self, "regs_to_check_unavailable"):
             return
 
         self.regs_to_check_unavailable = []
