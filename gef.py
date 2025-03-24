@@ -13979,16 +13979,16 @@ class BufferingOutput:
             self.out.append(msg)
         return
 
-    def print_output(self, args, term=False):
+    def print_output(self, term=False):
         if not self.out:
             return
         if term:
             if len(self.out) > GefUtil.get_terminal_size()[0]:
-                gef_print("\n".join(self.out), less=not args.no_pager)
+                gef_print("\n".join(self.out), less=not self.args.no_pager)
             else:
                 gef_print("\n".join(self.out), less=False)
         else:
-            gef_print("\n".join(self.out), less=not args.no_pager)
+            gef_print("\n".join(self.out), less=not self.args.no_pager)
         return
 
 
@@ -14889,7 +14889,7 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
         else:
             self.apply_type(tp, args.address)
 
-        self.print_output(args)
+        self.print_output()
 
         # revert setting
         if args.smart:
@@ -15345,7 +15345,7 @@ class ArgvCommand(GenericCommand, BufferingOutput):
             if not (paddr1 or paddr2):
                 self.err("Not found argv")
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -15460,7 +15460,7 @@ class EnvpCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify("ENVP from /proc/{:d}/environ".format(Pid.get_pid())))
             self.print_from_proc("/proc/{:d}/environ".format(Pid.get_pid()), args.verbose, args.increase_limit)
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -15561,7 +15561,7 @@ class VdsoCommand(GenericCommand, BufferingOutput):
             else:
                 break
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -15621,7 +15621,7 @@ class VvarCommand(GenericCommand, BufferingOutput):
         self.out.extend(hex_data.splitlines())
 
         # print
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -15680,7 +15680,7 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
             self.out.extend(hex_data_merged)
 
         # print
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -16489,7 +16489,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
         self.args = args
         self.out = []
         self.proc_dump()
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -16684,7 +16684,7 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
         self.out = []
         self.print_capability_from_pid(args.verbose)
         self.print_capability_from_file(args.verbose)
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -17792,7 +17792,7 @@ class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
                 open(output_path, "w").write("\n".join(self.out).rstrip())
 
         # output
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -20489,7 +20489,7 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
             self.out[i] = re.sub("  ([a-zA-Z_]+) =", "  \033[36m\\1\033[0m =", self.out[i])
             self.out[i] = re.sub(" = (0x[0-9a-f]+)", " = \033[34m\\1\033[0m", self.out[i])
 
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -20699,7 +20699,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.print_heap_chunks(arena, dump_start, peek_nb, peek_offset)
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -21879,7 +21879,7 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.find_fake_fast(args.size)
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -22166,7 +22166,7 @@ class GlibcVisualHeapCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.generate_visual_heap(arena, dump_start, args.max_count)
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -23169,7 +23169,7 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
             line = [process[i] for i in ("pid", "user", "cpu", "mem", "tty", "command")]
             self.out.append("\t".join(line))
 
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -27510,7 +27510,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         self.out += self.format_entry(gcc_except_table, entries3)
 
         # print
-        self.print_output(args)
+        self.print_output()
         unlink_tmp_filepath(tmp_filepath)
         return
 
@@ -29726,7 +29726,7 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
             lines.reverse()
 
         self.out = lines
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -31740,7 +31740,7 @@ class VMMapCommand(GenericCommand, BufferingOutput):
                 self.info("Some areas may be undetectable due to heuristic search (auxv, registers, stack)")
                 self.info("Permissions use ELF header or default rw-; dynamic changes undetectable")
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -32867,7 +32867,7 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
             err("Failed to parse link_map")
             return
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -33281,7 +33281,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
             err("Failed to parse _DYNAMIC")
             return
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -34251,7 +34251,7 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.stdio_dump(struct_io_file_array)
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -34888,7 +34888,7 @@ class GotCommand(GenericCommand, BufferingOutput):
         # doit
         resolved_info = self.parse_plt_got(args)
         self.make_output(args, resolved_info)
-        self.print_output(args, term=True)
+        self.print_output(term=True)
 
         # clean up
         if tmp_filepath and os.path.exists(tmp_filepath):
@@ -51519,7 +51519,7 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
             self.out = []
             for val, (sym, desc) in sorted(ERRNO_DICT.items()):
                 self.out.append('{:3d} (={:#4x}): {:<15s}: "{:s}"'.format(val, val, sym, desc))
-            self.print_output(args, term=True)
+            self.print_output(term=True)
             return
 
         if args.errno is None:
@@ -52170,7 +52170,7 @@ class ConvertMemoryCommand(ConvertCommand):
         value = str(value)[2:-1]
         self.out = []
         self.convert(value, args)
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -52210,7 +52210,7 @@ class ConvertValueCommand(ConvertCommand):
             value = args.value
         self.out = []
         self.convert(value, args)
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -59087,7 +59087,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # parse
         self.out = []
         self.dump(task_addrs)
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -59906,7 +59906,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                 entries = self.parse_kallsyms(kallsyms)
                 self.apply_symbol(name_string, base, entries)
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -60525,7 +60525,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         for major, minor, name, bdev in sorted(bdevs_with_info):
             self.out.append("{:#018x} {:<18s} {:<6d} {:<6d}".format(bdev, name, major, minor))
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -61669,7 +61669,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
                 m["cdev"], m["parent"], m["parent_name"], m["ops"], m["ops_sym"],
             ))
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -62726,7 +62726,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             for idx, (type, name) in enumerate(members):
                 self.out.append("{:<5d} {:10s} {:s}".format(idx, type, name))
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -63205,7 +63205,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                     err("Memory error")
                 return
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -63680,7 +63680,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.parse_file_systems(args.skip_mount_path)
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -63791,7 +63791,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
             self.out.append("{:#0{:d}x} {:20s} {:#0{:d}x}{:s}".format(cs, width, name, read, width, read_sym))
             current = read_int_from_memory(current)
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -64227,7 +64227,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         self.out = []
         self.dump_timer()
         self.dump_hrtimer()
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -64702,7 +64702,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.dump_pci()
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -64778,7 +64778,7 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
                         break
             self.out = out
 
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -65245,7 +65245,7 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
             info("Wait for memory scan")
 
         if args.use_cache and hasattr(self, "out") and self.out:
-            self.print_output(args)
+            self.print_output()
             return
 
         self.out = []
@@ -65299,7 +65299,7 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
                 info("*log_buf_len: {:#x}".format(log_buf_len))
             self.dump_printk_log_buffer(log_first_idx, log_next_idx, log_buf_start, log_buf_end)
 
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -65410,7 +65410,7 @@ class StringsCommand(GenericCommand, BufferingOutput):
         queue = [(args.location, first_range, args.depth)]
         self.search_ascii(queue)
 
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -65644,7 +65644,7 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.dump_syscall_table()
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -65974,7 +65974,7 @@ class TlsCommand(GenericCommand, BufferingOutput):
         r = gdb.execute("dereference $tls {:d} --no-pager".format(n_entries), to_string=True)
         self.out.extend(r.rstrip().splitlines())
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -66603,7 +66603,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             if not args.quiet:
                 self.info("for flags description, use `-v`")
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -66858,7 +66858,7 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
             if not args.quiet:
                 self.info("for flags description, use `-v`")
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -67043,7 +67043,7 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
             self.memcmp_telescope_like(from1data, from2data)
         else:
             self.memcmp(from1data, from2data)
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -67762,7 +67762,7 @@ class CrcMemoryCommand(CrcCommand):
             if crc is None:
                 continue
             self.out.append("{:20s}: {:s} ({:d}-bit)".format(cname, crc, len(crc) * 4))
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -67814,7 +67814,7 @@ class CrcValueCommand(CrcCommand):
             except ValueError:
                 continue
             self.out.append("{:20s}: {:s} ({:d}-bit)".format(cname, crc, len(crc) * 4))
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -67907,7 +67907,7 @@ class BaseNDecodeMemoryCommand(BaseNDecodeCommand):
                 self.out.append("{:17s}: {!s}".format(bname, b))
             except ValueError:
                 self.out.append("{:17s}: ERROR".format(bname))
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -67957,7 +67957,7 @@ class BaseNDecodeValueCommand(BaseNDecodeCommand):
                 self.out.append("{:17s}: {!s}".format(bname, b))
             except ValueError:
                 self.out.append("{:17s}: ERROR".format(bname))
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -68053,7 +68053,7 @@ class BaseNEncodeMemoryCommand(BaseNEncodeCommand):
                 self.out.append("{:17s}: {!s}".format(bname, b))
             except ValueError:
                 self.out.append("{:17s}: ERROR".format(bname))
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -68106,7 +68106,7 @@ class BaseNEncodeValueCommand(BaseNEncodeCommand):
                 self.out.append("{:17s}: {!s}".format(bname, b))
             except ValueError:
                 self.out.append("{:17s}: ERROR".format(bname))
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -70185,7 +70185,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.maps = None
         self.out = []
         self.slubwalk(args.cache_name, args.cpu)
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -70879,7 +70879,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         self.maps = None
         self.out = []
         self.slub_tiny_walk(args.cache_name)
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -71722,7 +71722,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         self.maps = None
         self.out = []
         self.slabwalk(args.cache_name, args.cpu)
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -72143,7 +72143,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         self.maps = None
         self.out = []
         self.slobwalk(args.cache_name)
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -72923,7 +72923,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
                 prev_size = size
             self.out = out
 
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -73334,7 +73334,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         # dump
         self.out = []
         self.dump_pipe(pipe_files)
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -73825,7 +73825,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
         if not args.only_progs:
             self.dump_bpf_maps(maps)
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -74288,7 +74288,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             self.dump_ipc_msg_ids(ipc_ns + self.offset_ids + self.sizeof_ipc_ids * 1)
             self.dump_ipc_shm_ids(ipc_ns + self.offset_ids + self.sizeof_ipc_ids * 2)
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -74497,7 +74497,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
                     addr, start, end, name, name_width, flags, self.get_flags_str(flags),
                 ))
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -74823,7 +74823,7 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.dump_db_list()
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -75251,7 +75251,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.dump_irq()
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -75396,7 +75396,7 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.dump_net()
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -75650,7 +75650,7 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
         areas = sorted(areas, key=lambda x:x[1])
         self.dump_areas(areas)
 
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -76895,7 +76895,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             return
 
         self.print_kallsyms(args.keyword, args.type, args.smart)
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -77742,7 +77742,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
 
         mspans = [x for x in mspans if x is not None]
         self.dump_mspans(mspans, args.dump)
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -78441,7 +78441,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.dump_heap(mi_heap)
             mi_heap = read_int_from_memory(mi_heap + self.offset_next)
 
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -79466,7 +79466,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 self.root = root # for coloring
                 self.dump_root(root)
 
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -79963,7 +79963,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         elif args.command == "unused":
             self.dump_meta(ctx)
 
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -80507,7 +80507,7 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
             err("malloc_state is not found")
             return
         self.dump_malloc_state(malloc_state)
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -80801,7 +80801,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
         self.out = []
         Cache.reset_gef_caches(all=True)
         self.generate_visual_heap(malloc_state, dump_start, args.max_count)
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -80899,7 +80899,7 @@ class XStringCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.dump_string(args.address, count, max_length, args.hex, args.quiet)
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -80954,7 +80954,7 @@ class XColoredCommand(GenericCommand, BufferingOutput):
                 color_func = self.colors[:args.color_num][0]
             self.out.append(color_func(line))
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -81868,7 +81868,7 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
 
         self.dump_malloc_ctx(malloc_ctx)
         self.dump_chunk_list(malloc_ctx)
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -82713,7 +82713,7 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             eax, ebx, ecx, edx = self.execute_cpuid(id)
             self.make_out(id, None, eax, ebx, ecx, edx)
 
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -83452,7 +83452,7 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         self.args = args
         self.out = []
         self.qregisters()
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -84603,7 +84603,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
         self.cache = {}
         self.pagewalk()
         self.cache = {}
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -85274,7 +85274,7 @@ class PagewalkX64Command(PagewalkCommand):
         self.cache = {}
         self.pagewalk()
         self.cache = {}
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -86283,7 +86283,7 @@ class PagewalkArmCommand(PagewalkCommand):
         self.cache = {}
         self.pagewalk()
         self.cache = {}
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -88051,7 +88051,7 @@ class PagewalkArm64Command(PagewalkCommand):
         self.cache = {}
         self.pagewalk()
         self.cache = {}
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -88822,7 +88822,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
 
                 self.out.append(Color.colorify(line, line_color))
 
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -93504,7 +93504,7 @@ class WalkLinkListCommand(GenericCommand, BufferingOutput):
         self.info("head address: {:#x}".format(args.address))
         self.info("next pointer offset: {:#x}".format(args.next_offset))
         self.walk_link_list(args.address, args.next_offset)
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -93688,7 +93688,7 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
             err("You must provide either a single address or both --from-addr and --to-addr")
             return
 
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -93807,7 +93807,7 @@ class PeekPageFlagsCommand(GenericCommand, BufferingOutput):
         for flag in set_flags:
             self.out.append("  {:s}".format(flag))
 
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -93955,7 +93955,7 @@ class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
         ))
         self.xref_telescope(args.pattern, args.depth, [args.pattern])
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -94548,12 +94548,12 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
 
         if args.use_cache and hasattr(self, "cache") and self.cache:
             self.out = self.cache[::]
-            self.print_output(args)
+            self.print_output()
             return
 
         self.out = []
         self.get_symbols(args)
-        self.print_output(args)
+        self.print_output()
         self.cache = self.out[::]
         return
 
@@ -94658,12 +94658,12 @@ class TypesCommand(GenericCommand, BufferingOutput):
 
         if args.use_cache and hasattr(self, "cache") and self.cache:
             self.out = self.cache[::]
-            self.print_output(args)
+            self.print_output()
             return
 
         self.out = []
         self.get_types(args)
-        self.print_output(args)
+        self.print_output()
         self.cache = self.out[::]
         return
 
@@ -94897,7 +94897,7 @@ class GefHelpCommand(GenericCommand, BufferingOutput):
         self.out = []
         self.out.append(titlify("GEF - GDB Enhanced Features"))
         self.out.extend(self.generate_help())
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -95354,7 +95354,7 @@ class GefArchListCommand(GenericCommand, BufferingOutput):
         self.args = args
         self.out = []
         self.listup_arch_info()
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -95498,7 +95498,7 @@ class GefPyObjListCommand(GenericCommand, BufferingOutput):
         self.args = args
         self.out = []
         self.listup_pyobject()
-        self.print_output(args)
+        self.print_output()
         return
 
 
@@ -95616,7 +95616,7 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
         self.listup_avail_comms()
         if args.sort:
             self.out = sorted(self.out)
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
@@ -96202,7 +96202,7 @@ class AliasesListCommand(AliasesCommand, BufferingOutput):
             if not a._pre_defined_:
                 self.out.append("{:{:d}s} {:s} {:s}".format(a._alias_, width, RIGHT_ARROW, a._command_))
 
-        self.print_output(args, term=True)
+        self.print_output(term=True)
         return
 
 
