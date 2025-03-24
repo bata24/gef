@@ -49102,12 +49102,6 @@ class CodebaseCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
-    def quiet_print(self, msg):
-        if self.args.quiet:
-            return
-        gef_print(msg)
-        return
-
     def define_section_variable(self, elf, bin_base, section_name):
         sec = elf.get_shdr(section_name)
         if not sec:
@@ -49118,9 +49112,11 @@ class CodebaseCommand(GenericCommand):
         else:
             addr = sec.sh_addr
 
-        self.quiet_print(titlify(section_name))
+        if not self.args.quiet:
+            gef_print(titlify(section_name))
         var_name = section_name.lstrip(".")
-        self.quiet_print("${:s} = {:#x}".format(var_name, addr))
+        if not self.args.quiet:
+            gef_print("${:s} = {:#x}".format(var_name, addr))
         gdb.execute("set ${:s} = {:#x}".format(var_name, addr))
         return
 
@@ -49136,16 +49132,19 @@ class CodebaseCommand(GenericCommand):
             if not self.quiet:
                 err("Binary base is not found")
             return
-        self.quiet_print(titlify("code base"))
+        if not args.quiet:
+            gef_print(titlify("code base"))
         gdb.execute(f"set $codebase = {bin_base:#x}")
-        self.quiet_print(f"$codebase = {bin_base:#x}")
+        if not args.quiet:
+            gef_print(f"$codebase = {bin_base:#x}")
         gdb.execute(f"set $binbase = {bin_base:#x}")
-        self.quiet_print(f"$binbase = {bin_base:#x}")
+        if not args.quiet:
+            gef_print(f"$binbase = {bin_base:#x}")
 
         # Any other area should use a section header.
         elf = Elf.get_elf()
         if elf is None or not elf.is_valid():
-            if not self.quiet:
+            if not args.quiet:
                 err("Failed to load an elf")
             return
 
