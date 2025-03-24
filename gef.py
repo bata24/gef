@@ -56160,6 +56160,18 @@ class KernelCurrentCommand(GenericCommand):
         self.offset_comm = None
         return
 
+    def quiet_info(self, msg):
+        if not self.args.quiet:
+            msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
+            gef_print(msg)
+        return
+
+    def quiet_err(self, msg):
+        if not self.args.quiet:
+            msg = "{} {}".format(Color.colorify("[+]", "bold red"), msg)
+            gef_print(msg)
+        return
+
     @staticmethod
     def get_each_cpu_offset(__per_cpu_offset):
         """
@@ -56194,9 +56206,8 @@ class KernelCurrentCommand(GenericCommand):
     def get_cpu_offset(self):
         # use cache
         if self.cpu_offset:
-            if not self.quiet:
-                info("__per_cpu_offset: {:#x}".format(self.__per_cpu_offset))
-                info("num of cpu: {:d} (guessed)".format(len(self.cpu_offset)))
+            self.quiet_info("__per_cpu_offset: {:#x}".format(self.__per_cpu_offset))
+            self.quiet_info("num of cpu: {:d} (guessed)".format(len(self.cpu_offset)))
             return self.cpu_offset
 
         # resolve __per_cpu_offset
@@ -56204,18 +56215,15 @@ class KernelCurrentCommand(GenericCommand):
 
         # not found
         if __per_cpu_offset is None:
-            if not self.quiet:
-                warn("Failed to resolve `__per_cpu_offset`")
+            self.quiet_err("Failed to resolve `__per_cpu_offset`")
             return None
 
         # found
-        if not self.quiet:
-            info("__per_cpu_offset: {:#x}".format(__per_cpu_offset))
+        self.quiet_info("__per_cpu_offset: {:#x}".format(__per_cpu_offset))
         self.__per_cpu_offset = __per_cpu_offset
 
         self.cpu_offset = KernelCurrentCommand.get_each_cpu_offset(__per_cpu_offset)
-        if not self.quiet:
-            info("num of cpu: {:d} (guessed)".format(len(self.cpu_offset)))
+        self.quiet_info("num of cpu: {:d} (guessed)".format(len(self.cpu_offset)))
         return self.cpu_offset
 
     def get_comm_str(self, task_addr):
@@ -56225,7 +56233,7 @@ class KernelCurrentCommand(GenericCommand):
             if r is not None:
                 self.offset_comm = int(r.group(1), 16)
             else:
-                warn("ktask is failed")
+                self.quiet_err("ktask is failed")
                 self.offset_comm = False
 
         if self.offset_comm is False:
@@ -56254,16 +56262,14 @@ class KernelCurrentCommand(GenericCommand):
     def dump_current_x86(self):
         current_task = KernelAddressHeuristicFinder.get_current_task()
         if not current_task:
-            if not self.quiet:
-                warn("Failed to resolve `current_task`")
+            self.quiet_err("Failed to resolve `current_task`")
             return
 
         cpu_bases = self.get_cpu_offset()
 
         if cpu_bases:
             # pattern 1. Offset from __per_cpu_offset.
-            if not self.quiet:
-                info("current_task: {:#x}".format(current_task))
+            self.quiet_info("current_task: {:#x}".format(current_task))
             task_offset = current_task
             for i, cpu_base in enumerate(cpu_bases):
                 task = read_int_from_memory(cpu_base + task_offset)
@@ -56272,8 +56278,7 @@ class KernelCurrentCommand(GenericCommand):
                 gef_print("current (cpu{:d}): {:#x} {:s}".format(i, task, self.get_comm_str(task)))
         else:
             # pattern 2: current_task is the address that stores a pointer to the current task (not per_cpu).
-            if not self.quiet:
-                info("__per_cpu_offset is unused")
+            self.quiet_info("__per_cpu_offset is unused")
             task = read_int_from_memory(current_task)
             if is_valid_addr(task):
                 gef_print("current: {:#x} {:s}".format(task, self.get_comm_str(task)))
@@ -56285,10 +56290,8 @@ class KernelCurrentCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.quiet = args.quiet
-
-        if not self.quiet:
-            info("Wait for memory scan")
+        self.args = args
+        self.quiet_info("Wait for memory scan")
 
         if is_arm32() or is_arm64():
             self.dump_current_arm()
