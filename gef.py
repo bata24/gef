@@ -29663,7 +29663,7 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
             return None
 
         try:
-            if self.phys_mode:
+            if self.args.phys:
                 mem = read_physmem(read_from, read_len)
             else:
                 mem = read_memory(read_from, read_len)
@@ -29677,7 +29677,7 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
         read_end &= gef_getpagesize_mask_high()
         while read_end - read_from > 0:
             try:
-                if self.phys_mode:
+                if self.args.phys:
                     mem = read_physmem(read_from, read_end - read_from)
                 else:
                     mem = read_memory(read_from, read_end - read_from)
@@ -29696,15 +29696,14 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
             if not is_qemu_system() and not is_vmware() and not is_kgdb():
                 err("Unsupported. Check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
                 return
-        self.phys_mode = args.phys
 
         from_idx = args.count * self.repeat_count
         to_idx = args.count * (self.repeat_count + 1)
         if args.reverse:
             from_idx *= -1
-            from_idx += 0x10
+            from_idx += args.count
             to_idx *= -1
-            to_idx += 0x10
+            to_idx += args.count
 
         memalign_size = None
         if is_x86_16():
@@ -29767,8 +29766,12 @@ class XxdCommand(HexdumpCommand):
         if args.symbol:
             flags.append("--no-pager")
 
+        if args.reverse:
+            location = args.location - (args.count * self.repeat_count)
+        else:
+            location = args.location + (args.count * self.repeat_count)
         flags = " ".join(flags)
-        gdb.execute("hexdump byte {:#x} {:#x} {:s}".format(args.location, args.count, flags))
+        gdb.execute("hexdump byte {:#x} {:#x} {:s}".format(location, args.count, flags))
         return
 
 
