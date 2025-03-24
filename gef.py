@@ -20452,6 +20452,8 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
+        self.args = args
+
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
 
@@ -20646,6 +20648,8 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
+        self.args = args
+
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
 
@@ -21842,6 +21846,8 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
+        self.args = args
+
         if is_64bit():
             MIN_SIZE = 0x20
         else:
@@ -21996,7 +22002,7 @@ class GlibcVisualHeapCommand(GenericCommand, BufferingOutput):
             d1, d2 = unpack(blk[:current_arch.ptrsize]), unpack(blk[current_arch.ptrsize:])
             dascii = "".join([chr(x) if 0x20 <= x < 0x7f else "." for x in blk])
 
-            if self.full or repeat_count < group_line_threshold:
+            if self.args.full or repeat_count < group_line_threshold:
                 # non-collapsed line
                 for _ in range(repeat_count):
                     bins_info = arena.get_bins_info(addr)
@@ -22006,7 +22012,7 @@ class GlibcVisualHeapCommand(GenericCommand, BufferingOutput):
                     else:
                         bins_info = ""
 
-                    if self.safe_linking_decode:
+                    if self.args.safe_linking_decode:
                         if chunk.address == addr and ("tcache" in bins_info or "fastbins" in bins_info):
                             d1 = chunk.get_fwd_ptr(True)
 
@@ -22043,7 +22049,7 @@ class GlibcVisualHeapCommand(GenericCommand, BufferingOutput):
                 break
 
         # coloring
-        if self.use_dark_color and not has_bins_info:
+        if self.args.dark_color and not has_bins_info:
             color_func = self.dark_colors[idx % len(self.dark_colors)]
         else:
             color_func = self.normal_colors[idx % len(self.normal_colors)]
@@ -22119,9 +22125,7 @@ class GlibcVisualHeapCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        self.full = args.full
-        self.use_dark_color = args.dark_color
-        self.safe_linking_decode = args.safe_linking_decode
+        self.args = args
 
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
