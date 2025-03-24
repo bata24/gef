@@ -79074,7 +79074,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         self.out.append("Bucket buckets[{:3d}]:".format(len(root.buckets)))
         for idx, bucket in enumerate(root.buckets):
             self.dump_bucket(bucket, root, idx)
-        if self.verbose:
+        if self.args.verbose:
             self.out.append("Bucket sentinel_bucket:")
             self.dump_bucket(root.sentinel_bucket, root)
         else:
@@ -79146,7 +79146,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         ))
         self.dump_direct_map_list(root.direct_map_list, root)
         ring_len = len(root.global_empty_slot_span_ring)
-        if self.verbose:
+        if self.args.verbose:
             self.out.append("ReadOnlySlotSpanMetadata* global_empty_slot_span_ring[{:3d}]:".format(
                 ring_len,
             ))
@@ -79258,7 +79258,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         sentinel2 = [root.sentinel_bucket.active_slot_spans_head] # from heuristic search
         sentinel_or_0 = list(set(sentinel1 + sentinel2 + [0x0])) # uniq
 
-        if not self.verbose:
+        if not self.args.verbose:
             if bucket.active_slot_spans_head in sentinel_or_0:
                 return # skip printing
 
@@ -79282,7 +79282,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         self.out.append("        slot_size_reciprocal:{:#x}".format(bucket.slot_size_reciprocal))
         self.out.append("        can_store_raw_size:{:#x}".format(bucket.can_store_raw_size))
 
-        if self.verbose:
+        if self.args.verbose:
             target_list = ["active_slot_spans_head", "empty_slot_spans_head", "decommitted_slot_spans_head"]
         else:
             target_list = ["active_slot_spans_head"]
@@ -79290,7 +79290,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         for key in target_list:
             head = getattr(bucket, key)
             # sentinel can be ignored, so skip
-            if not self.verbose and head in sentinel_or_0:
+            if not self.args.verbose and head in sentinel_or_0:
                 continue
             if head in sentinel_or_0:
                 # print sentinel (verbose)
@@ -79381,9 +79381,10 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
+        self.args = args
+
         if is_32bit():
             self.align_pad = None
-        self.verbose = args.verbose
 
         self.out = []
         for r in self.get_roots(args.force_heuristic):
