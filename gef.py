@@ -14791,7 +14791,7 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def dump_type(self, args, tp):
+    def dump_type(self, tp, args_type):
         if tp.code == gdb.TYPE_CODE_STRUCT:
             type_prefix = "struct"
         elif tp.code == gdb.TYPE_CODE_UNION:
@@ -14799,11 +14799,11 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
         elif tp.code == gdb.TYPE_CODE_ENUM:
             type_prefix = "enum"
         else:
-            err("{:s} is not struct or union".format(tp.name or args.type))
+            err("{:s} is not struct or union".format(tp.name or args_type))
             return
 
         self.out = [
-            "{:s} {:s} {{".format(type_prefix, Instruction.smartify_text(tp.name or args.type)),
+            "{:s} {:s} {{".format(type_prefix, Instruction.smartify_text(tp.name or args_type)),
             "    /* offset | size   */",
         ]
         for name, field in tp.items():
@@ -14831,8 +14831,8 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
         self.out.append("}} // total: {:#x} bytes".format(tp.sizeof))
         return
 
-    def apply_type(self, args, tp):
-        if not is_valid_addr(args.address):
+    def apply_type(self, tp, args_address):
+        if not is_valid_addr(args_address):
             err("Memory access error")
             return
 
@@ -14840,7 +14840,7 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
         if tp.sizeof > 2200: # 2200 is default value of max-value-size
             gdb.execute("set max-value-size {:#x}".format(tp.sizeof))
 
-        v = gdb.Value(args.address)
+        v = gdb.Value(args_address)
         s = v.cast(tp.pointer()).dereference()
         self.out = s.format_string(styling=True).splitlines()
         return
@@ -14848,6 +14848,8 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
+        self.args = args
+
         # lookup type
         tp = GefUtil.cached_lookup_type(args.type)
         if not args.type.startswith(("struct", "union", "enum")):
@@ -14878,9 +14880,9 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
 
         # doit
         if args.address is None:
-            self.dump_type(args, tp)
+            self.dump_type(tp, args.type)
         else:
-            self.apply_type(args, tp)
+            self.apply_type(tp, args.address)
 
         self.print_output(args)
 
