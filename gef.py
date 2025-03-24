@@ -88115,22 +88115,23 @@ class SwitchELCommand(GenericCommand):
     _category_ = "08-a. Qemu-system Cooperation - General"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("target_el", metavar="TARGET_EL", nargs="?", type=int, help="Exception Level to change to.")
+    parser.add_argument("target_el", metavar="TARGET_EL", nargs="?", type=int,
+                        help="Exception Level to change to.")
     _syntax_ = parser.format_help()
 
-    def switch_el(self):
+    def switch_el(self, target_el):
         # current EL
         CPSR = get_register("$cpsr") & 0xffffffff
         CurrentEL = (CPSR >> 2) & 0b11
 
         # check argv
-        if self.target_el is None:
+        if target_el is None:
             info("$cpsr = {:#x} (EL{:d})".format(CPSR, CurrentEL))
             return
 
         # check target EL
         try:
-            if self.target_el < 0 or self.target_el > 3:
+            if target_el < 0 or target_el > 3:
                 err("Invalid argument (ELx>=0 && ELx<=3)")
                 return
         except ValueError:
@@ -88138,13 +88139,13 @@ class SwitchELCommand(GenericCommand):
             return
 
         # change CPSR
-        if self.target_el != CurrentEL:
+        if target_el != CurrentEL:
             CPSR = CPSR & ~(0b11 << 2) # clear EL
-            CPSR |= self.target_el << 2 # set desired EL
+            CPSR |= target_el << 2 # set desired EL
             gdb.parse_and_eval("$cpsr = {:#x}".format(CPSR))
-            info("Moving to EL{:d}".format(self.target_el))
+            info("Moving to EL{:d}".format(target_el))
         else:
-            info("Already at EL{:d}".format(self.target_el))
+            info("Already at EL{:d}".format(target_el))
 
         # reprint CPSR
         CPSR = int(gdb.parse_and_eval("$cpsr")) & 0xffffffff
@@ -88157,8 +88158,7 @@ class SwitchELCommand(GenericCommand):
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     @only_if_specific_arch(arch=("ARM64",))
     def do_invoke(self, args):
-        self.target_el = args.target_el
-        self.switch_el()
+        self.switch_el(args.target_el)
         return
 
 
