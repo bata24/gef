@@ -78054,7 +78054,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     def initialize(self):
-        if self.v21x:
+        if self.args.v21x:
             """
             struct mi_heap_s { // v2.1.9
                 /* offset | size   */
@@ -78114,7 +78114,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.offset_keys0 = 0x38
             self.offset_keys1 = 0x40
 
-        elif self.v22x:
+        elif self.args.v22x:
             """
             struct mi_heap_s {
                 /* offset | size   */
@@ -78176,7 +78176,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.offset_keys0 = 0x38
             self.offset_keys1 = 0x40
 
-        elif self.v30x:
+        elif self.args.v30x:
             """
             struct mi_heap_s {
                 /* offset | size   */
@@ -78236,7 +78236,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def get_mi_heap_main(self):
         try:
-            if self.v30x:
+            if self.args.v30x:
                 return AddressUtil.parse_address("&heap_main")
             else:
                 return AddressUtil.parse_address("&_mi_heap_main")
@@ -78294,7 +78294,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
             # get next
             current = read_int_from_memory(current)
-            if self.use_decode:
+            if self.args.use_decode:
                 current = ptr_decode(current, key0, key1)
         return
 
@@ -78304,7 +78304,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         used = u16(read_memory(mi_page + self.offset_used, 2))
         key0 = u64(read_memory(mi_page + self.offset_keys0, 8))
         key1 = u64(read_memory(mi_page + self.offset_keys1, 8))
-        if self.use_decode:
+        if self.args.use_decode:
             self.out.append(titlify(
                 "mi_page_t @{:#x} (block_size={:#x}, capacity={:#x}, used={:#x}, key0={:#x}, key1={:#x})".format(
                     mi_page, bs, cap, used, key0, key1,
@@ -78357,14 +78357,12 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
+        self.args = args
+
         if int(args.v21x) + int(args.v22x) + int(args.v30x) > 1:
             err("version error")
             return
 
-        self.use_decode = args.use_decode
-        self.v21x = args.v21x
-        self.v22x = args.v22x
-        self.v30x = args.v30x
         self.initialize()
 
         if args.mi_heap_main:
