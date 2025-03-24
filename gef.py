@@ -31591,7 +31591,7 @@ class VMMapCommand(GenericCommand, BufferingOutput):
             lines.append(Color.colorify(entry.path, line_color))
         line = " ".join(lines)
 
-        if not self.quiet:
+        if not self.args.quiet:
             # register info
             register_hints = []
             for regname in current_arch.all_registers:
@@ -31656,7 +31656,7 @@ class VMMapCommand(GenericCommand, BufferingOutput):
             err("No address mapping information found")
             return
 
-        self.quiet = args.quiet
+        self.args = args
 
         self.out = []
         if not Config.get_gef_setting("gef.disable_color"):
