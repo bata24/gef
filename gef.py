@@ -79422,7 +79422,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
     modes = ["ctx", "unused"]
     parser.add_argument("command", choices=modes, nargs="?", default="unused",
                         help="dump mode (default: %(default)s).")
-    parser.add_argument("--idx", type=int, help="the active index of dump target.")
+    parser.add_argument("-i", "--active-idx", type=int, help="the active index of dump target.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-v", "--verbose", action="store_true", help="also dump an empty active index.")
     _syntax_ = parser.format_help()
@@ -79846,7 +79846,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
 
         # iterate __malloc_context.active
         for idx in range(48):
-            if self.active_idx is not None and idx != self.active_idx:
+            if self.args.active_idx is not None and idx != self.args.active_idx:
                 continue
             current = ctx.active[idx]
             if current == 0:
@@ -79875,7 +79875,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                 self.out.append("  Unused chunks list: {}".format(repr(state)))
 
                 # dump chunks
-                if state != "F" or self.verbose:
+                if state != "F" or self.args.verbose:
                     dic = {"A": "Avail", "F": "Freed", "U": "Used"}
                     for i in range(meta.last_idx + 1):
                         offset = self.class_to_size(idx) * i
@@ -79892,8 +79892,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
-        self.verbose = args.verbose
-        self.active_idx = args.idx
+        self.args = args
         self.out = []
 
         ctx = self.read_ctx()
