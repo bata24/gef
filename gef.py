@@ -16752,7 +16752,7 @@ class HijackFdCommand(GenericCommand):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     def quiet_info(self, msg):
-        if not self.quiet:
+        if not self.args.quiet:
             msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
             gef_print(msg)
         return
@@ -16842,7 +16842,7 @@ class HijackFdCommand(GenericCommand):
             return None
 
         self.quiet_info("Trying to connect to {:s}".format(Color.boldify(args.new_output)))
-        connect_result = self.call_syscall("connect", [sock_fd - self.fd_adjust_connect, stack_addr, 16])
+        connect_result = self.call_syscall("connect", [sock_fd - self.args.fd_adjust_connect, stack_addr, 16])
         write_memory(stack_addr, original_contents) # revert
 
         if AddressUtil.is_msb_on(connect_result):
@@ -16862,8 +16862,8 @@ class HijackFdCommand(GenericCommand):
 
         # call dup3
         # dup2 does not exist in aarch64. So use dup3 instead of dup2.
-        dup3_result = self.call_syscall("dup3", [new_fd - self.fd_adjust_dup3, args.old_fd, 0])
-        if dup3_result - self.fd_adjust_dup3 != args.old_fd:
+        dup3_result = self.call_syscall("dup3", [new_fd - self.args.fd_adjust_dup3, args.old_fd, 0])
+        if dup3_result - self.args.fd_adjust_dup3 != args.old_fd:
             err("Failed to dup3 (result {:d} != fd #{:d})".format(dup3_result, args.old_fd))
             return
         self.quiet_info("Duplicated fd #{:d}{:s}#{:d}".format(new_fd, RIGHT_ARROW, args.old_fd))
@@ -16883,13 +16883,11 @@ class HijackFdCommand(GenericCommand):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
     @exclude_specific_arch(arch=("CRIS",))
     def do_invoke(self, args):
-        self.quiet = args.quiet
-
         # In one version of qemu, the fd was sometimes slightly off in case of i386
         # (fd returned by syscall == real opened fd + 80). I have been hard-coding it so far,
         # but it seems to be fixed, so please specify it with a command argument.
-        self.fd_adjust_connect = args.fd_adjust_connect
-        self.fd_adjust_dup3 = args.fd_adjust_dup3
+        # currently supported: dup3, connect
+        self.args = args
 
         self.AF_INET = 2
         self.SOCK_STREAM = 1
