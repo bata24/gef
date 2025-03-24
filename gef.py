@@ -13974,6 +13974,11 @@ class BufferingOutput:
             self.out.append(msg)
         return
 
+    def verbose_add_out(self, msg):
+        if self.args.verbose:
+            self.out.append(msg)
+        return
+
     def print_output(self, args, term=False):
         if not self.out:
             return
@@ -79995,7 +80000,7 @@ class uClibcNgHeap:
 
 
 @register_command
-class UclibcNgHeapDumpCommand(GenericCommand):
+class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
     """uclibc-ng v1.0.42 (libc/stdlib/malloc-standard) heap reusable chunks viewer (only x64/x86)."""
 
     _cmdline_ = "uclibc-ng-heap-dump"
@@ -80129,11 +80134,6 @@ class UclibcNgHeapDumpCommand(GenericCommand):
         [(0xc00000, 0xe00000), (0xc00000, 0xe00000)],
         [(0xe00000, 0x0),      (0xe00000, 0x0)],
     ]
-
-    def verbose_print(self, msg):
-        if self.verbose:
-            self.out.append(msg)
-        return
 
     def get_malloc_state(self):
         # fast path
@@ -80344,14 +80344,14 @@ class UclibcNgHeapDumpCommand(GenericCommand):
     def dump_malloc_state(self, malloc_state):
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
 
-        self.verbose_print("malloc_state: {!s}".format(ProcessMap.lookup_address(malloc_state.address)))
+        self.verbose_add_out("malloc_state: {!s}".format(ProcessMap.lookup_address(malloc_state.address)))
         max_fast_flags = "|".join(malloc_state.max_fast_flags)
-        self.verbose_print("max_fast:            {:#x} ({:s})".format(malloc_state.max_fast, max_fast_flags))
+        self.verbose_add_out("max_fast:            {:#x} ({:s})".format(malloc_state.max_fast, max_fast_flags))
 
         self.out.append(titlify("Fast Bins"))
         for i in range(self.NFASTBINS):
             addr, n, size = malloc_state.fastbins[i]
-            if n != 0 or self.verbose:
+            if n != 0 or self.args.verbose:
                 if isinstance(size, int):
                     colored_size = Color.colorify("{:#4x}".format(size), chunk_size_color)
                 else:
@@ -80370,13 +80370,13 @@ class UclibcNgHeapDumpCommand(GenericCommand):
                     self.out.append(" -> {}".format(chunk.to_str(is_fastbin=True)))
                     n = chunk.get_fwd_ptr(True)
 
-        self.verbose_print("top:                 {!s}".format(ProcessMap.lookup_address(malloc_state.top)))
-        self.verbose_print("last_remainder:      {!s}".format(ProcessMap.lookup_address(malloc_state.last_remainder)))
+        self.verbose_add_out("top:                 {!s}".format(ProcessMap.lookup_address(malloc_state.top)))
+        self.verbose_add_out("last_remainder:      {!s}".format(ProcessMap.lookup_address(malloc_state.last_remainder)))
 
         self.out.append(titlify("Unsorted Bin / Small Bins"))
         for i in range(len(malloc_state.smallbins)):
             addr, n, p, size = malloc_state.smallbins[i]
-            if (n and addr - current_arch.ptrsize * 2 != n) or self.verbose:
+            if (n and addr - current_arch.ptrsize * 2 != n) or self.args.verbose:
                 if isinstance(size, tuple):
                     colored_size = Color.colorify("{:#x}-{:#x}".format(*size), chunk_size_color)
                 else:
@@ -80400,7 +80400,7 @@ class UclibcNgHeapDumpCommand(GenericCommand):
         self.out.append(titlify("Large Bins"))
         for i in range(len(malloc_state.largebins)):
             addr, n, p, size = malloc_state.largebins[i]
-            if addr - current_arch.ptrsize * 2 != n or self.verbose:
+            if addr - current_arch.ptrsize * 2 != n or self.args.verbose:
                 if isinstance(size, tuple):
                     colored_size = Color.colorify("{:#x}-{:#x}".format(*size), chunk_size_color)
                 else:
@@ -80421,22 +80421,22 @@ class UclibcNgHeapDumpCommand(GenericCommand):
                     n = chunk.fwd
 
         for i in range(self.BINMAPSIZE + 1):
-            self.verbose_print("binmap[{:d}]:           {:#x}".format(i, malloc_state.binmap[i]))
-        self.verbose_print("trim_threshold:      {:#x}".format(malloc_state.trim_threshold))
-        self.verbose_print("top_pad:             {:#x}".format(malloc_state.top_pad))
-        self.verbose_print("mmap_threshold:      {:#x}".format(malloc_state.mmap_threshold))
-        self.verbose_print("n_mmaps:             {:#x}".format(malloc_state.n_mmaps))
-        self.verbose_print("n_mmaps_max:         {:#x}".format(malloc_state.n_mmaps_max))
-        self.verbose_print("max_n_mmaps:         {:#x}".format(malloc_state.max_n_mmaps))
-        self.verbose_print("pagesize:            {:#x}".format(malloc_state.pagesize))
+            self.verbose_add_out("binmap[{:d}]:           {:#x}".format(i, malloc_state.binmap[i]))
+        self.verbose_add_out("trim_threshold:      {:#x}".format(malloc_state.trim_threshold))
+        self.verbose_add_out("top_pad:             {:#x}".format(malloc_state.top_pad))
+        self.verbose_add_out("mmap_threshold:      {:#x}".format(malloc_state.mmap_threshold))
+        self.verbose_add_out("n_mmaps:             {:#x}".format(malloc_state.n_mmaps))
+        self.verbose_add_out("n_mmaps_max:         {:#x}".format(malloc_state.n_mmaps_max))
+        self.verbose_add_out("max_n_mmaps:         {:#x}".format(malloc_state.max_n_mmaps))
+        self.verbose_add_out("pagesize:            {:#x}".format(malloc_state.pagesize))
         mp_flags = "|".join(malloc_state.morecore_properties_flags)
-        self.verbose_print("morecore_properties: {:#x} ({:s})".format(malloc_state.morecore_properties, mp_flags))
-        self.verbose_print("mmaped_mem:          {:#x}".format(malloc_state.mmaped_mem))
-        self.verbose_print("sbrked_mem:          {:#x}".format(malloc_state.sbrked_mem))
-        self.verbose_print("max_sbrked_mem:      {:#x}".format(malloc_state.max_sbrked_mem))
-        self.verbose_print("max_mmaped_mem:      {:#x}".format(malloc_state.max_mmaped_mem))
-        self.verbose_print("max_total_mem:       {:#x}".format(malloc_state.max_total_mem))
-        self.verbose_print("(heap_base):         {:#x}".format(malloc_state.heap_base))
+        self.verbose_add_out("morecore_properties: {:#x} ({:s})".format(malloc_state.morecore_properties, mp_flags))
+        self.verbose_add_out("mmaped_mem:          {:#x}".format(malloc_state.mmaped_mem))
+        self.verbose_add_out("sbrked_mem:          {:#x}".format(malloc_state.sbrked_mem))
+        self.verbose_add_out("max_sbrked_mem:      {:#x}".format(malloc_state.max_sbrked_mem))
+        self.verbose_add_out("max_mmaped_mem:      {:#x}".format(malloc_state.max_mmaped_mem))
+        self.verbose_add_out("max_total_mem:       {:#x}".format(malloc_state.max_total_mem))
+        self.verbose_add_out("(heap_base):         {:#x}".format(malloc_state.heap_base))
         return
 
     @parse_args
@@ -80444,7 +80444,7 @@ class UclibcNgHeapDumpCommand(GenericCommand):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
-        self.verbose = args.verbose
+        self.args = args
         self.out = []
 
         malloc_state = self.read_malloc_state(args.malloc_state)
@@ -80452,12 +80452,12 @@ class UclibcNgHeapDumpCommand(GenericCommand):
             err("malloc_state is not found")
             return
         self.dump_malloc_state(malloc_state)
-        gef_print("\n".join(self.out), less=not args.no_pager)
+        self.print_output(args)
         return
 
 
 @register_command
-class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand):
+class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
     """Visualize chunks on a heap for uClibc-ng."""
 
     _cmdline_ = "uclibc-ng-visual-heap"
@@ -80597,7 +80597,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand):
             d1, d2 = unpack(blk[:current_arch.ptrsize]), unpack(blk[current_arch.ptrsize:])
             dascii = "".join([chr(x) if 0x20 <= x < 0x7f else "." for x in blk])
 
-            if self.full or repeat_count < group_line_threshold:
+            if self.args.full or repeat_count < group_line_threshold:
                 # non-collapsed line
                 for _ in range(repeat_count):
                     bins_info = self.get_bins_info(malloc_state, addr)
@@ -80607,7 +80607,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand):
                     else:
                         bins_info = ""
 
-                    if self.safe_linking_decode:
+                    if self.args.safe_linking_decode:
                         if chunk.address == addr and "fastbins" in prev_bins_info:
                             d1 = chunk.get_fwd_ptr(True)
 
@@ -80647,7 +80647,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand):
                 break
 
         # coloring
-        if self.use_dark_color and not has_bins_info:
+        if self.args.dark_color and not has_bins_info:
             color_func = self.dark_colors[idx % len(self.dark_colors)]
         else:
             color_func = self.normal_colors[idx % len(self.normal_colors)]
@@ -80725,9 +80725,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
-        self.full = args.full
-        self.use_dark_color = args.dark_color
-        self.safe_linking_decode = args.safe_linking_decode
+        self.args = args
 
         malloc_state = self.read_malloc_state(args.malloc_state)
         if malloc_state is None:
@@ -80748,7 +80746,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand):
         self.out = []
         Cache.reset_gef_caches(all=True)
         self.generate_visual_heap(malloc_state, dump_start, args.max_count)
-        gef_print("\n".join(self.out), less=not args.no_pager)
+        self.print_output(args)
         return
 
 
