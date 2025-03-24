@@ -49103,7 +49103,7 @@ class CodebaseCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     def quiet_print(self, msg):
-        if self.quiet:
+        if self.args.quiet:
             return
         gef_print(msg)
         return
@@ -49128,7 +49128,7 @@ class CodebaseCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
-        self.quiet = args.quiet
+        self.args = args
 
         # The codebase may be heuristically determined from the memory map.
         bin_base = AddressUtil.get_codebase()
