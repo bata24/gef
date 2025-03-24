@@ -59187,7 +59187,7 @@ class KernelLoadCommand(GenericCommand):
 
 
 @register_command
-class KernelModuleCommand(GenericCommand):
+class KernelModuleCommand(GenericCommand, BufferingOutput):
     """Display kernel module list."""
 
     _cmdline_ = "kmod"
@@ -59249,15 +59249,25 @@ class KernelModuleCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
+    def quiet_info(self, msg):
+        if not self.args.quiet:
+            msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
+            gef_print(msg)
+        return
+
+    def quiet_err(self, msg):
+        if not self.args.quiet:
+            msg = "{} {}".format(Color.colorify("[+]", "bold red"), msg)
+            gef_print(msg)
+        return
+
     def get_modules_list(self):
         modules = KernelAddressHeuristicFinder.get_modules()
         if modules is None:
-            if not self.quiet:
-                err("Not found modules (maybe, CONFIG_MODULES is not set)")
+            self.quiet_err("Not found modules (maybe, CONFIG_MODULES is not set)")
             return None
 
-        if not self.quiet:
-            info("modules: {:#x}".format(modules))
+        self.quiet_info("modules: {:#x}".format(modules))
 
         module_addrs = []
         current = modules
@@ -59285,12 +59295,10 @@ class KernelModuleCommand(GenericCommand):
                     valid = False
                     break
             if valid:
-                if not self.quiet:
-                    info("offsetof(module, name): {:#x}".format(offset_name))
+                self.quiet_info("offsetof(module, name): {:#x}".format(offset_name))
                 return offset_name
 
-        if not self.quiet:
-            err("Not found module->name[MODULE_NAME_LEN]")
+        self.quiet_err("Not found module->name[MODULE_NAME_LEN]")
         return None
 
     def get_offset_mem(self, module_addrs): # v6.4~
@@ -59394,12 +59402,10 @@ class KernelModuleCommand(GenericCommand):
                             valid = False
                             break
                 if valid:
-                    if not self.quiet:
-                        info("offsetof(module, mem): {:#x}".format(offset_mem))
-                        info("sizeof(module_memory): {:#x}".format(sizeof_module_memory))
+                    self.quiet_info("offsetof(module, mem): {:#x}".format(offset_mem))
+                    self.quiet_info("sizeof(module_memory): {:#x}".format(sizeof_module_memory))
                     return offset_mem
-        if not self.quiet:
-            err("Not found module->mem")
+        self.quiet_err("Not found module->mem")
         return None
 
     def get_offset_layout(self, module_addrs): # v4.5 ~ v6.4
@@ -59530,12 +59536,10 @@ class KernelModuleCommand(GenericCommand):
                     valid = False
                     break
             if valid:
-                if not self.quiet:
-                    info("offsetof(module, init_layout): {:#x}".format(offset_init_layout))
+                self.quiet_info("offsetof(module, init_layout): {:#x}".format(offset_init_layout))
                 return offset_init_layout
 
-        if not self.quiet:
-            err("Not found module->init_layout")
+        self.quiet_err("Not found module->init_layout")
         return None
 
     def get_offset_module_core(self, module_addrs): # ~ v4.5
@@ -59641,12 +59645,10 @@ class KernelModuleCommand(GenericCommand):
                     valid = False
                     break
             if valid:
-                if not self.quiet:
-                    info("offsetof(module, module_core): {:#x}".format(offset_module_core))
+                self.quiet_info("offsetof(module, module_core): {:#x}".format(offset_module_core))
                 return offset_module_core
 
-        if not self.quiet:
-            err("Not found module->module_core")
+        self.quiet_err("Not found module->module_core")
         return None
 
     def get_offset_kallsyms(self, module_addrs):
@@ -59692,12 +59694,10 @@ class KernelModuleCommand(GenericCommand):
                         valid = False
                         break
             if valid:
-                if not self.quiet:
-                    info("offsetof(module, kallsyms): {:#x}".format(offset_kallsyms))
+                self.quiet_info("offsetof(module, kallsyms): {:#x}".format(offset_kallsyms))
                 return offset_kallsyms
 
-        if not self.quiet:
-            err("Not found module->kallsyms")
+        self.quiet_err("Not found module->kallsyms")
         return None
 
     def parse_kallsyms(self, kallsyms):
@@ -59719,7 +59719,8 @@ class KernelModuleCommand(GenericCommand):
         #    gef_print("typetab: {:#x}".format(typetab))
 
         entries = []
-        for i in range(num_symtab):
+        tqdm = GefUtil.get_tqdm(not self.args.quiet and not self.args.apply_symbol)
+        for i in tqdm(range(num_symtab), leave=False):
             sym_addr = read_int_from_memory(symtab + sizeof_symtab_entry * i + current_arch.ptrsize)
             sym_name = read_cstring_from_memory(strtab + strtab_pos)
             strtab_pos += len(sym_name) + 1
@@ -59763,8 +59764,7 @@ class KernelModuleCommand(GenericCommand):
         text_end = entries[-1][0]
         blank_elf = AddSymbolTemporaryCommand.create_blank_elf(text_base, text_end)
         if blank_elf is None:
-            if not self.quiet:
-                err("Failed to create blank elf")
+            self.quiet_err("Failed to create blank elf")
             return
 
         # create command
@@ -59797,14 +59797,12 @@ class KernelModuleCommand(GenericCommand):
         for cmd_string_arr_sliced in slicer(cmd_string_arr, 10000 * 2):
             subprocess.check_output([objcopy] + cmd_string_arr_sliced + [blank_elf])
             processed_count += len(cmd_string_arr_sliced) // 2
-        if not self.quiet:
-            info("{:s}: {:d} entries were processed".format(module_name, processed_count))
+        self.quiet_info("{:s}: {:d} entries were processed".format(module_name, processed_count))
         os.rename(blank_elf, sym_elf_path)
 
         # apply
         cmd = "add-symbol-file {!r} {:#x}".format(sym_elf_path, text_base)
-        if not self.quiet:
-            warn("Execute `{:s}`".format(cmd))
+        self.quiet_info("Execute `{:s}`".format(cmd))
         gdb.execute(cmd, to_string=True)
         return
 
@@ -59814,10 +59812,8 @@ class KernelModuleCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.quiet = args.quiet
-
-        if not self.quiet:
-            info("Wait for memory scan")
+        self.args = args
+        self.quiet_info("Wait for memory scan")
 
         module_addrs = self.get_modules_list()
         if module_addrs is None:
@@ -59849,7 +59845,7 @@ class KernelModuleCommand(GenericCommand):
         self.out = []
 
         if not args.apply_symbol:
-            if not self.quiet:
+            if not args.quiet:
                 fmt = "{:<18s} {:<24s} {:<18s} {:<18s}"
                 legend = ["module", "module->name", "base", "size"]
                 self.out.append(GefUtil.make_legend(fmt.format(*legend)))
@@ -59884,11 +59880,7 @@ class KernelModuleCommand(GenericCommand):
                 entries = self.parse_kallsyms(kallsyms)
                 self.apply_symbol(name_string, base, entries)
 
-        if self.out:
-            if len(self.out) > GefUtil.get_terminal_size()[0]:
-                gef_print("\n".join(self.out), less=not args.no_pager)
-            else:
-                gef_print("\n".join(self.out), less=False)
+        self.print_output(args, term=True)
         return
 
 
