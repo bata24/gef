@@ -83379,7 +83379,7 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
             self.out.append(line)
 
         if is_x86():
-            if not self.add_info:
+            if not self.args.verbose:
                 self.info("use `-v` for print Additional info")
             else:
                 self.info("Additional info")
@@ -83390,7 +83390,7 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     def do_invoke(self, args):
-        self.add_info = args.verbose
+        self.args = args
         self.out = []
         self.qregisters()
         self.print_output(args)
