@@ -65319,7 +65319,7 @@ class StringsCommand(GenericCommand, BufferingOutput):
                 pass
 
             # search string
-            for offset, cstr in self.strings(data, self.minlen):
+            for offset, cstr in self.strings(data, self.args.minlen):
                 address = location + offset
 
                 seen = False
@@ -65330,8 +65330,8 @@ class StringsCommand(GenericCommand, BufferingOutput):
                 if seen:
                     continue
 
-                if not self.filter or any(filt.search(cstr) for filt in self.filter):
-                    if not self.exclude or not any(ex.search(cstr) for ex in self.exclude):
+                if not self.args.filter or any(filt.search(cstr) for filt in self.args.filter):
+                    if not self.args.exclude or not any(ex.search(cstr) for ex in self.args.exclude):
                         self.out.append("{!s}: {:s}".format(ProcessMap.lookup_address(address), cstr))
                 seen_cstr.append((address, address + len(cstr) + 1))
 
@@ -65346,17 +65346,14 @@ class StringsCommand(GenericCommand, BufferingOutput):
                 if addr in seen_addr:
                     continue
                 if is_valid_addr(addr):
-                    queue.append((addr, self.search_range, depth - 1))
+                    queue.append((addr, self.args.range, depth - 1))
                     seen_addr.append(addr)
         return
 
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        self.filter = args.filter
-        self.exclude = args.exclude
-        self.minlen = args.minlen
-        self.search_range = args.range
+        self.args = args
 
         if args.end_location:
             first_range = args.end_location - args.location
