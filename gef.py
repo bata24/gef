@@ -93424,7 +93424,7 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
             cmd_string_arr.append("--add-symbol")
             cmd_string_arr.append("{:s}=.text:{:#x},{:s},{:s}".format(func_name, relative_addr, global_flag, type_flag))
 
-        if not self.quiet:
+        if not self.args.quiet:
             info("{:d} entries will be added".format(len(cmd_string_arr) // 2))
 
         # embedding symbols
@@ -93435,10 +93435,10 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
             processed_count += len(cmd_string_arr_sliced) // 2
 
             # debug print
-            if not self.quiet and processed_count and processed_count % 10000 == 0:
+            if not self.args.quiet and processed_count and processed_count % 10000 == 0:
                 info("{:d} entries were processed".format(processed_count))
 
-        if not self.quiet:
+        if not self.args.quiet:
             info("{:d} entries were processed".format(processed_count))
         os.rename(blank_elf, sym_elf_path)
         return True
@@ -93455,9 +93455,9 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
             err("{}".format(e))
             return
 
+        self.args = args
         if not args.quiet:
             info("Wait for memory scan")
-        self.quiet = args.quiet
 
         # resolve kversion for saved file name
         kversion = Kernel.kernel_version()
