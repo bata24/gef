@@ -93409,19 +93409,19 @@ class WalkLinkListCommand(GenericCommand, BufferingOutput):
             except gdb.MemoryError:
                 self.err("memory corrupted")
                 return
-            if self.dump_bytes_before:
-                source = read_memory(current - self.dump_bytes_before, self.dump_bytes_before)
-                dump = hexdump(source, base=current - self.dump_bytes_before, unit=current_arch.ptrsize)
+            if self.args.dump_bytes_before:
+                source = read_memory(current - self.args.dump_bytes_before, self.args.dump_bytes_before)
+                dump = hexdump(source, base=current - self.args.dump_bytes_before, unit=current_arch.ptrsize)
                 for line in dump.splitlines():
                     self.out.append(indent + line)
-            if self.dump_bytes_after:
-                source = read_memory(current, self.dump_bytes_after)
+            if self.args.dump_bytes_after:
+                source = read_memory(current, self.args.dump_bytes_after)
                 dump = hexdump(source, base=current, unit=current_arch.ptrsize)
                 for line in dump.splitlines():
                     self.out.append(indent + line)
             la_flink = ProcessMap.lookup_address(flink)
-            if self.adjust_output:
-                la_flink_adjusted = ProcessMap.lookup_address(flink - self.adjust_output)
+            if self.args.adjust_output:
+                la_flink_adjusted = ProcessMap.lookup_address(flink - self.args.adjust_output)
                 self.out.append("[{:d}] -> {!s} (adjusted: {!s})".format(idx, la_flink, la_flink_adjusted))
             else:
                 self.out.append("[{:d}] -> {!s}".format(idx, la_flink))
@@ -93440,10 +93440,7 @@ class WalkLinkListCommand(GenericCommand, BufferingOutput):
 
     @parse_args
     def do_invoke(self, args):
-        self.dump_bytes_before = args.dump_bytes_before
-        self.dump_bytes_after = args.dump_bytes_after
-        self.adjust_output = args.adjust_output
-
+        self.args = args
         self.out = []
         self.info("head address: {:#x}".format(args.address))
         self.info("next pointer offset: {:#x}".format(args.next_offset))
