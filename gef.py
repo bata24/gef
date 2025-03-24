@@ -13919,6 +13919,26 @@ class GenericCommand(gdb.Command):
         self.__last_command = command
         return
 
+    def quiet_info(self, msg):
+        if not self.args.quiet:
+            info(msg)
+        return
+
+    def quiet_err(self, msg):
+        if not self.args.quiet:
+            err(msg)
+        return
+
+    def verbose_info(self, msg):
+        if self.args.verbose:
+            info(msg)
+        return
+
+    def verbose_err(self, msg):
+        if self.args.verbose:
+            err(msg)
+        return
+
 
 class BufferingOutput:
     """A collection of utility functions that append a messages to self.out."""
@@ -16761,12 +16781,6 @@ class HijackFdCommand(GenericCommand):
         "{0:s} 2 localhost:8000",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
-
-    def quiet_info(self, msg):
-        if not self.args.quiet:
-            msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
-            gef_print(msg)
-        return
 
     def call_syscall(self, syscall_name, args):
         args = " ".join([hex(x) if x >= 0 else str(x) for x in args])
@@ -56163,18 +56177,6 @@ class KernelCurrentCommand(GenericCommand):
         self.offset_comm = None
         return
 
-    def quiet_info(self, msg):
-        if not self.args.quiet:
-            msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
-            gef_print(msg)
-        return
-
-    def quiet_err(self, msg):
-        if not self.args.quiet:
-            msg = "{} {}".format(Color.colorify("[+]", "bold red"), msg)
-            gef_print(msg)
-        return
-
     @staticmethod
     def get_each_cpu_offset(__per_cpu_offset):
         """
@@ -56447,18 +56449,6 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # bpf_prog
         self.offset_bpf_func = None
         self.offset_orig_prog = None
-        return
-
-    def quiet_info(self, msg):
-        if not self.args.quiet:
-            msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
-            gef_print(msg)
-        return
-
-    def quiet_err(self, msg):
-        if not self.args.quiet:
-            msg = "{} {}".format(Color.colorify("[+]", "bold red"), msg)
-            gef_print(msg)
         return
 
     def get_offset_tasks(self, init_task):
@@ -59256,18 +59246,6 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         "  e.g., `p 'virtio_net.__this_module'`",
     ]
     _note_ = "\n".join(_note_)
-
-    def quiet_info(self, msg):
-        if not self.args.quiet:
-            msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
-            gef_print(msg)
-        return
-
-    def quiet_err(self, msg):
-        if not self.args.quiet:
-            msg = "{} {}".format(Color.colorify("[+]", "bold red"), msg)
-            gef_print(msg)
-        return
 
     def get_modules_list(self):
         modules = KernelAddressHeuristicFinder.get_modules()
@@ -69183,16 +69161,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def quiet_err(self, msg):
-        if not self.args.quiet:
-            err(msg)
-        return
-
-    def quiet_info(self, msg):
-        if not self.args.quiet:
-            info(msg)
-        return
-
     """
     struct kmem_cache {
         struct kmem_cache_cpu *cpu_slab;         // In fact, the offset value, not the pointer
@@ -70235,16 +70203,6 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def quiet_err(self, msg):
-        if not self.args.quiet:
-            err(msg)
-        return
-
-    def quiet_info(self, msg):
-        if not self.args.quiet:
-            info(msg)
-        return
-
     """
     struct kmem_cache {
         slab_flags_t flags;                      // unsigned int (+ padding 4 byte)
@@ -70936,16 +70894,6 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         "* Chunks in array_cache are marked as in-use, even though they are actually reusable.",
     ]
     _note_ = "\n".join(_note_)
-
-    def quiet_err(self, msg):
-        if not self.args.quiet:
-            err(msg)
-        return
-
-    def quiet_info(self, msg):
-        if not self.args.quiet:
-            info(msg)
-        return
 
     """
     struct kmem_cache {
@@ -71769,16 +71717,6 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def quiet_err(self, msg):
-        if not self.args.quiet:
-            err(msg)
-        return
-
-    def quiet_info(self, msg):
-        if not self.args.quiet:
-            info(msg)
-        return
-
     """
     struct kmem_cache {
         unsigned int object_size;
@@ -72417,18 +72355,6 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def quiet_info(self, msg):
-        if not self.args.quiet:
-            msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
-            gef_print(msg)
-        return
-
-    def quiet_err(self, msg):
-        if not self.args.quiet:
-            msg = "{} {}".format(Color.colorify("[+]", "bold red"), msg)
-            gef_print(msg)
-        return
-
     def add_out(self, msg):
         if not self.sort:
             self.out.append(msg)
@@ -72987,18 +72913,6 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         "                                                                     +-------------+",
     ]
     _note_ = "\n".join(_note_)
-
-    def quiet_info(self, msg):
-        if not self.args.quiet:
-            msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
-            gef_print(msg)
-        return
-
-    def quiet_err(self, msg):
-        if not self.args.quiet:
-            msg = "{} {}".format(Color.colorify("[+]", "bold red"), msg)
-            gef_print(msg)
-        return
 
     def initialize(self, pipe_files):
         if hasattr(self, "initialized") and self.initialized:
@@ -75714,30 +75628,6 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         #
         """
         self.kallsyms = []
-        return
-
-    def verbose_info(self, msg):
-        if self.args.verbose:
-            msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
-            gef_print(msg)
-        return
-
-    def verbose_err(self, msg):
-        if self.args.verbose:
-            msg = "{} {}".format(Color.colorify("[+]", "bold red"), msg)
-            gef_print(msg)
-        return
-
-    def quiet_info(self, msg):
-        if not self.args.quiet:
-            msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
-            gef_print(msg)
-        return
-
-    def quiet_err(self, msg):
-        if not self.args.quiet:
-            msg = "{} {}".format(Color.colorify("[+]", "bold red"), msg)
-            gef_print(msg)
         return
 
     def get_token_table(self):
