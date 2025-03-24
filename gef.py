@@ -81814,7 +81814,7 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class CpuidCommand(GenericCommand):
+class CpuidCommand(GenericCommand, BufferingOutput):
     """Get cpuid result."""
 
     _cmdline_ = "cpuid"
@@ -82599,6 +82599,7 @@ class CpuidCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     @only_if_kvm_disabled
     def do_invoke(self, args):
+        self.args = args
         self.out = []
 
         # Basic Information
@@ -82653,7 +82654,7 @@ class CpuidCommand(GenericCommand):
             eax, ebx, ecx, edx = self.execute_cpuid(id)
             self.make_out(id, None, eax, ebx, ecx, edx)
 
-        gef_print("\n".join(self.out), less=not args.no_pager)
+        self.print_output(args)
         return
 
 
