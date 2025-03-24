@@ -15321,6 +15321,7 @@ class ArgvCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
+        self.args = args
         self.out = []
 
         paddr1 = self.get_address_from_symbol("&_dl_argv")
@@ -15430,6 +15431,7 @@ class EnvpCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
+        self.args = args
         self.out = []
 
         self.out.append(titlify("ENVP from __environ"))
@@ -15517,6 +15519,8 @@ class VdsoCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
+        self.args = args
+
         # get map entry
         maps = ProcessMap.get_process_maps()
         if maps is None:
@@ -15592,6 +15596,8 @@ class VvarCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr"))
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
+        self.args = args
+
         # get map entry
         maps = ProcessMap.get_process_maps()
         if maps is None:
@@ -15646,6 +15652,8 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
     @only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
+        self.args = args
+
         # get map entry
         maps = ProcessMap.get_process_maps()
         if maps is None:
@@ -16478,6 +16486,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_target_local
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
+        self.args = args
         self.out = []
         self.proc_dump()
         self.print_output(args, term=True)
@@ -16671,6 +16680,7 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_target_local
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
+        self.args = args
         self.out = []
         self.print_capability_from_pid(args.verbose)
         self.print_capability_from_file(args.verbose)
@@ -17759,6 +17769,8 @@ class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
+        self.args = args
+
         # get saved filename (for caching)
         filepath = Path.get_filepath()
         if filepath is None:
@@ -23096,6 +23108,8 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
     @parse_args
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
+        self.args = args
+
         if args.pattern:
             pattern = re.compile(args.pattern)
         else:
@@ -27410,6 +27424,8 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
     @parse_args
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
+        self.args = args
+
         local_filepath = None
         remote_filepath = None
         tmp_filepath = None
@@ -29674,6 +29690,8 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
+        self.args = args
+
         if args.phys:
             if not is_qemu_system() and not is_vmware() and not is_kgdb():
                 err("Unsupported. Check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
@@ -31669,6 +31687,8 @@ class VMMapCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("kgdb",))
     @exclude_specific_arch(arch=("ARM32M",))
     def do_invoke(self, args):
+        self.args = args
+
         if is_qemu_system() or is_vmware():
             info("Redirect to pagewalk (args are ignored)")
             gdb.execute("pagewalk")
@@ -31691,8 +31711,6 @@ class VMMapCommand(GenericCommand, BufferingOutput):
                 err("Missing info about architecture. Please set: `file /path/to/target_binary`")
             err("No address mapping information found")
             return
-
-        self.args = args
 
         self.out = []
         if not Config.get_gef_setting("gef.disable_color"):
@@ -32823,6 +32841,8 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
+        self.args = args
+
         Cache.reset_gef_caches(all=True)
 
         self.verbose = False
@@ -33243,6 +33263,8 @@ class DynamicCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
+        self.args = args
+
         if args.dynamic_address:
             dynamic = ProcessMap.lookup_address(args.dynamic_address)
         else:
@@ -34196,6 +34218,8 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
+        self.args = args
+
         if args.address:
             struct_io_file_array = []
             for x in args.address:
@@ -34722,6 +34746,8 @@ class GotCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
+        self.args = args
+
         try:
             GefUtil.which("objdump")
             GefUtil.which("readelf")
@@ -51485,6 +51511,7 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
     @parse_args
     @exclude_specific_gdb_mode(mode=("wine",))
     def do_invoke(self, args):
+        self.args = args
 
         ERRNO_DICT = ErrnoCommand.get_errno_dict()
 
@@ -52134,6 +52161,7 @@ class ConvertMemoryCommand(ConvertCommand):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
+        self.args = args
         try:
             value = read_memory(args.location, args.size)
         except (gdb.MemoryError, MemoryError):
@@ -52173,6 +52201,7 @@ class ConvertValueCommand(ConvertCommand):
 
     @parse_args
     def do_invoke(self, args):
+        self.args = args
         if args.hex: # "41414141" -> "\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value, to_str=True)
             if not value:
@@ -60072,13 +60101,14 @@ class KernelModuleLoadCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
+
         kversion = Kernel.kernel_version()
         if kversion < "3.0":
             if not args.quiet:
                 err("Unsupported before v3.0")
             return
 
-        self.args = args
         ret = self.initialize()
         if not ret:
             if not args.quiet:
@@ -62633,6 +62663,8 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
+
         # parse version
         if args.version:
             r = re.search(r"(\d)\.(\d+)(?:\.(\d+))?", args.version)
@@ -63724,6 +63756,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
         if not args.quiet:
             info("Wait for memory scan")
 
@@ -64178,12 +64211,13 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
+
         kversion = Kernel.kernel_version()
         if kversion < "4.8":
             err("Unsupported before v4.8")
             return
 
-        self.args = args
         if not args.quiet:
             info("Wait for memory scan")
 
@@ -64659,10 +64693,10 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
         if not args.quiet:
             info("Wait for memory scan")
 
-        self.args = args
         if not self.initialize():
             return
 
@@ -64718,6 +64752,7 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
         if not args.quiet:
             info("Wait for memory scan")
 
@@ -64827,6 +64862,8 @@ class KernelSearchCodePtrCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
+
         if args.max_range and args.max_range % current_arch.ptrsize:
             err("range must be a multiple of the pointer size")
             return
@@ -65600,10 +65637,11 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
+
         if not hasattr(self, "cached_table"):
             self.cached_table = {}
 
-        self.args = args
         self.out = []
         self.dump_syscall_table()
         self.print_output(args, term=True)
@@ -65901,6 +65939,8 @@ class TlsCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
+        self.args = args
+
         if not current_arch.tls_supported:
             warn("This command cannot work under this architecture")
             return
@@ -65959,6 +65999,8 @@ class FsbaseCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     @exclude_specific_gdb_mode(mode=("qiling", "kgdb"))
     def do_invoke(self, args):
+        self.args = args
+
         fsbase = current_arch.get_fs()
         if fsbase is not None:
             gef_print("$fs_base: {:#x}".format(fsbase))
@@ -65981,6 +66023,8 @@ class GsbaseCommand(GenericCommand):
     @exclude_specific_gdb_mode(mode=("qiling", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
+        self.args = args
+
         gsbase = current_arch.get_gs()
         if gsbase is not None:
             gef_print("$gs_base: {:#x}".format(gsbase))
@@ -66539,6 +66583,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("wine",))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16"))
     def do_invoke(self, args):
+        self.args = args
         self.out = []
 
         if not args.quiet:
@@ -66799,6 +66844,7 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("wine",))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16"))
     def do_invoke(self, args):
+        self.args = args
         self.out = []
 
         if is_qemu_system() or is_vmware():
@@ -66974,6 +67020,8 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
+        self.args = args
+
         if args.phys1 or args.phys2:
             if not is_qemu_system():
                 err("Unsupported `--phys` option in this gdb mode")
@@ -66981,8 +67029,6 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
 
         if args.size == 0:
             self.info("The size is zero, maybe wrong")
-
-        self.args = args
 
         ret = self.read_data(args.location1, args.location2, args.size)
         if ret is None:
@@ -67704,6 +67750,7 @@ class CrcMemoryCommand(CrcCommand):
     @only_if_gdb_running
     @load_crccheck
     def do_invoke(self, args):
+        self.args = args
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
         self.out.append("Size: {:#x}".format(args.size))
@@ -67747,6 +67794,8 @@ class CrcValueCommand(CrcCommand):
     @parse_args
     @load_crccheck
     def do_invoke(self, args):
+        self.args = args
+
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
             if not value:
@@ -67841,6 +67890,7 @@ class BaseNDecodeMemoryCommand(BaseNDecodeCommand):
     @only_if_gdb_running
     @load_codext
     def do_invoke(self, args):
+        self.args = args
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
         self.out.append("Size: {:#x}".format(args.size))
@@ -67887,6 +67937,8 @@ class BaseNDecodeValueCommand(BaseNDecodeCommand):
     @parse_args
     @load_crccheck
     def do_invoke(self, args):
+        self.args = args
+
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
             if not value:
@@ -67981,6 +68033,7 @@ class BaseNEncodeMemoryCommand(BaseNEncodeCommand):
     @only_if_gdb_running
     @load_codext
     def do_invoke(self, args):
+        self.args = args
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
         self.out.append("Size: {:#x}".format(args.size))
@@ -68030,6 +68083,8 @@ class BaseNEncodeValueCommand(BaseNEncodeCommand):
     @parse_args
     @load_crccheck
     def do_invoke(self, args):
+        self.args = args
+
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
             if not value:
@@ -70096,6 +70151,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
         if not args.quiet:
             info("Wait for memory scan")
 
@@ -70126,7 +70182,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             args.verbose = True
             args.vverbose = True
 
-        self.args = args
         self.maps = None
         self.out = []
         self.slubwalk(args.cache_name, args.cpu)
@@ -70801,6 +70856,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
         if not args.quiet:
             info("Wait for memory scan")
 
@@ -70820,7 +70876,6 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
                 err("Unsupported SLUB, SLAB, SLOB")
             return
 
-        self.args = args
         self.maps = None
         self.out = []
         self.slub_tiny_walk(args.cache_name)
@@ -71654,6 +71709,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
         if not args.quiet:
             info("Wait for memory scan")
 
@@ -71663,7 +71719,6 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                 err("Unsupported SLUB, SLOB, SLUB_TINY")
             return
 
-        self.args = args
         self.maps = None
         self.out = []
         self.slabwalk(args.cache_name, args.cpu)
@@ -72066,6 +72121,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
         if not args.quiet:
             info("Wait for memory scan")
 
@@ -72084,7 +72140,6 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             self.medium = args.medium
             self.small = args.small
 
-        self.args = args
         self.maps = None
         self.out = []
         self.slobwalk(args.cache_name)
@@ -72253,6 +72308,7 @@ class SlabContainsCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
         if not args.quiet:
             info("Wait for memory scan")
 
@@ -72270,7 +72326,6 @@ class SlabContainsCommand(GenericCommand):
                 err("Unsupported SLOB")
             return
 
-        self.args = args
         ret = self.initialize()
         if not ret:
             if not args.quiet:
@@ -72808,10 +72863,11 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
+
         # parse args
         if args.rescan:
             self.initialized = False
-        self.args = args
         self.sort = args.sort_verbose or args.sort
 
         # initialize
@@ -73251,6 +73307,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
         if not args.quiet:
             info("Wait for memory scan")
 
@@ -73258,8 +73315,6 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         if allocator not in ["SLUB", "SLUB_TINY", "SLAB"]:
             err("Unsupported SLOB")
             return
-
-        self.args = args
 
         # init
         kinfo = Kernel.get_kernel_base()
@@ -73734,6 +73789,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
         if not args.quiet:
             info("Wait for memory scan")
 
@@ -73753,8 +73809,6 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             if not args.quiet:
                 err("bpf syscall is disabled")
             return
-
-        self.args = args
 
         # init
         ret = self.initialize()
@@ -77670,9 +77724,10 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
-        self.initialize()
-
+        self.args = args
         self.out = []
+
+        self.initialize()
 
         if args.mspan is not None:
             mspans = [self.parse_mspan(args.mspan, args.verbose)]
@@ -80821,6 +80876,8 @@ class XStringCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
+        self.args = args
+
         if args.count is None:
             count = 1
         else:
@@ -80876,6 +80933,8 @@ class XColoredCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
+        self.args = args
+
         if args.color_num < 1 or len(self.colors) < args.color_num:
             err("Invalid --color-num")
             return
@@ -93722,6 +93781,8 @@ class PeekPageFlagsCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
+        self.args = args
+
         if args.pfn is None:
             err("You must provide a PFN")
             return
@@ -93878,15 +93939,15 @@ class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
+        self.args = args
+        self.found_count = 0
+
         # Since it inherits SearchPatternCommand, set the values to be used there.
         args.aligned = False
         args.interval = False
         args.limit = False
         args.phys = False
         args.hex_regex = False
-
-        self.args = args
-        self.found_count = 0
 
         self.out = []
         self.out.append("Recursively searching '{:s}' in memory (depth: {:d})".format(
@@ -94483,6 +94544,8 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
+        self.args = args
+
         if args.use_cache and hasattr(self, "cache") and self.cache:
             self.out = self.cache[::]
             self.print_output(args)
@@ -94591,6 +94654,8 @@ class TypesCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
+        self.args = args
+
         if args.use_cache and hasattr(self, "cache") and self.cache:
             self.out = self.cache[::]
             self.print_output(args)
@@ -94828,6 +94893,7 @@ class GefHelpCommand(GenericCommand, BufferingOutput):
 
     @parse_args
     def do_invoke(self, args):
+        self.args = args
         self.out = []
         self.out.append(titlify("GEF - GDB Enhanced Features"))
         self.out.extend(self.generate_help())
@@ -95285,6 +95351,7 @@ class GefArchListCommand(GenericCommand, BufferingOutput):
 
     @parse_args
     def do_invoke(self, args):
+        self.args = args
         self.out = []
         self.listup_arch_info()
         self.print_output(args)
@@ -95428,6 +95495,7 @@ class GefPyObjListCommand(GenericCommand, BufferingOutput):
 
     @parse_args
     def do_invoke(self, args):
+        self.args = args
         self.out = []
         self.listup_pyobject()
         self.print_output(args)
@@ -95543,6 +95611,7 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
+        self.args = args
         self.out = []
         self.listup_avail_comms()
         if args.sort:
@@ -96118,6 +96187,8 @@ class AliasesListCommand(AliasesCommand, BufferingOutput):
 
     @parse_args
     def do_invoke(self, args):
+        self.args = args
+
         width = max(len(x) for x in __gef_alias_instances__.keys())
 
         self.out = []
