@@ -64870,7 +64870,7 @@ class KernelSearchCodePtrCommand(GenericCommand):
 
 
 @register_command
-class KernelDmesgCommand(GenericCommand):
+class KernelDmesgCommand(GenericCommand, BufferingOutput):
     """Dump the ring buffer of dmesg area."""
 
     _cmdline_ = "kdmesg"
@@ -65010,7 +65010,7 @@ class KernelDmesgCommand(GenericCommand):
         current += current_arch.ptrsize
         rb["fail"] = read_int_from_memory(current)
 
-        if not self.quiet:
+        if not self.args.quiet:
             info("name: {:s}".format(ring_buffer_name))
             info("address: {:#x}".format(ring_buffer_address))
             info("desc_ring.count_bits: {:#x}".format(rb["desc_ring"]["count_bits"]))
@@ -65211,14 +65211,14 @@ class KernelDmesgCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.args = args
         if not args.quiet:
             info("Wait for memory scan")
 
         if args.use_cache and hasattr(self, "out") and self.out:
-            gef_print("\n".join(self.out), less=not args.no_pager)
+            self.print_output(args)
             return
 
-        self.quiet = args.quiet
         self.out = []
         kversion = Kernel.kernel_version()
 
@@ -65236,42 +65236,41 @@ class KernelDmesgCommand(GenericCommand):
             if log_first_idx_ptr is None:
                 err("Not found log_first_idx")
                 return
-            if not self.quiet:
+            if not args.quiet:
                 info("log_first_idx: {:#x}".format(log_first_idx_ptr))
 
             log_next_idx_ptr = KernelAddressHeuristicFinder.get_log_next_idx()
             if log_next_idx_ptr is None:
                 err("Not found log_next_idx")
                 return
-            if not self.quiet:
+            if not args.quiet:
                 info("log_next_idx: {:#x}".format(log_next_idx_ptr))
 
             log_buf_start = KernelAddressHeuristicFinder.get___log_buf()
             if log_buf_start is None:
                 err("Not found __log_buf")
                 return
-            if not self.quiet:
+            if not args.quiet:
                 info("__log_buf: {:#x}".format(log_buf_start))
 
             log_buf_len_ptr = KernelAddressHeuristicFinder.get_log_buf_len()
             if log_buf_len_ptr is None:
                 err("Not found log_buf_len")
                 return
-            if not self.quiet:
+            if not args.quiet:
                 info("log_buf_len: {:#x}".format(log_buf_len_ptr))
 
             log_first_idx = u32(read_memory(log_first_idx_ptr, 4))
             log_next_idx = u32(read_memory(log_next_idx_ptr, 4))
             log_buf_len = u32(read_memory(log_buf_len_ptr, 4))
             log_buf_end = log_buf_start + log_buf_len
-            if not self.quiet:
+            if not args.quiet:
                 info("*log_first_idx: {:#x}".format(log_first_idx))
                 info("*log_next_idx: {:#x}".format(log_next_idx))
                 info("*log_buf_len: {:#x}".format(log_buf_len))
             self.dump_printk_log_buffer(log_first_idx, log_next_idx, log_buf_start, log_buf_end)
 
-        if self.out:
-            gef_print("\n".join(self.out), less=not args.no_pager)
+        self.print_output(args)
         return
 
 
