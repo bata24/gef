@@ -60164,7 +60164,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         elif allocator == "SLUB_TINY":
             ret = gdb.execute("slub-tiny-dump --quiet --no-pager bdev_cache", to_string=True)
         else:
-            if not self.quiet:
+            if not self.args.quiet:
                 err("Unsupported SLAB, SLOB")
             return None
 
@@ -60470,18 +60470,18 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.quiet = args.quiet
-
-        if not self.quiet:
+        self.args = args
+        if not args.quiet:
             info("Wait for memory scan")
 
         bdevs = self.get_bdev_list()
         if not bdevs:
-            err("Not found any bdev")
+            if not args.quiet:
+                err("Not found any bdev")
             return
 
         self.out = []
-        if not self.quiet:
+        if not args.quiet:
             fmt = "{:<18s} {:<18s} {:<6s} {:<6s}"
             legend = ["bdev", "name (guessed)", "major", "minor"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
@@ -60489,7 +60489,8 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         # ignore bdev if major is 0
         bdevs = [bdev for bdev in bdevs if self.get_dev_num(bdev)[0] != 0]
         if not bdevs:
-            err("Not found any bdev (after filtering major == 0)")
+            if not args.quiet:
+                err("Not found any bdev (after filtering major == 0)")
             return
 
         # parse major, minor and name
