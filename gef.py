@@ -65407,11 +65407,6 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    def __init__(self):
-        super().__init__()
-        self.cached_table = {}
-        return
-
     @switch_to_intel_syntax
     def parse_syscall_table(self, sys_call_table_addr):
         # scan
@@ -65508,7 +65503,7 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
 
     def syscall_table_view(self, orig_tag, sys_call_table_addr, syscall_list, nr_base=0):
         if sys_call_table_addr is None:
-            if not self.quiet:
+            if not self.args.quiet:
                 self.out.append("{} {}".format(Color.colorify("[+]", "bold red"), "Not found symbol"))
             return
 
@@ -65524,7 +65519,7 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
             self.cached_table[tag] = self.parse_syscall_table(sys_call_table_addr)
 
         # print legend
-        if not self.quiet:
+        if not self.args.quiet:
             fmt = "{:8s} {:5s} {:7s} {:30s} {:18s} {:18s} {:s}"
             legend = ["Tag", "Index", "IsValid", "Syscall Name", "Table Address", "Function Address", "Symbol"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
@@ -65549,12 +65544,65 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
                 msg = fmt.format(orig_tag, i, "invalid", expected_name, addr, syscall_function_addr, symbol)
                 msg = Color.grayify(msg)
 
-            if not self.filter:
+            if not self.args.filter:
                 self.out.append(msg)
             else:
-                for re_pattern in self.filter:
+                for re_pattern in self.args.filter:
                     if re_pattern.search(msg):
                         self.out.append(msg)
+        return
+
+    def dump_syscall_table(self):
+        if is_x86_32():
+            if not self.args.quiet:
+                self.out.append(titlify("sys_call_table (x86)"))
+            sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x86()
+            self.syscall_table_view("x86", sys_call_table_addr, get_syscall_table("X86", "N32"))
+
+        elif is_x86_64():
+            if not self.args.quiet:
+                self.out.append(titlify("sys_call_table (x64)"))
+            sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x64()
+            self.syscall_table_view("x86_64", sys_call_table_addr, get_syscall_table("X86", "64"))
+
+            kversion = Kernel.kernel_version()
+
+            if not self.args.quiet:
+                self.out.append(titlify("ia32_sys_call_table"))
+            if kversion < "6.6.26":
+                sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x86()
+                self.syscall_table_view("x86_32", sys_call_table_addr, get_syscall_table("X86", "32"))
+            else:
+                if not self.args.quiet:
+                    self.out.append("ia32_sys_call_table is removed from 6.6.26.")
+                    self.out.append("each entry is embedded in `ia32_sys_call()` as call instruction.")
+
+            if not self.args.quiet:
+                self.out.append(titlify("x32_sys_call_table"))
+            if kversion < "6.6.26":
+                sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x32()
+                self.syscall_table_view("x86_x32", sys_call_table_addr, get_syscall_table("X86", "64"), nr_base=0x40000000)
+            else:
+                if not self.args.quiet:
+                    self.out.append("x32_sys_call_table is removed from 6.6.26.")
+                    self.out.append("each entry is embedded in `x32_sys_call()` as call instruction.")
+
+        elif is_arm32():
+            if not self.args.quiet:
+                self.out.append(titlify("sys_call_table (arm32)"))
+            sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_arm32()
+            self.syscall_table_view("arm32", sys_call_table_addr, get_syscall_table("ARM", "N32"))
+
+        elif is_arm64():
+            if not self.args.quiet:
+                self.out.append(titlify("sys_call_table (arm64)"))
+            sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_arm64()
+            self.syscall_table_view("arm64", sys_call_table_addr, get_syscall_table("ARM64", "ARM"))
+
+            if not self.args.quiet:
+                self.out.append(titlify("compat_sys_call_table (arm32)"))
+            sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_arm64_compat()
+            self.syscall_table_view("arm64_32", sys_call_table_addr, get_syscall_table("ARM", "32"))
         return
 
     @parse_args
@@ -65563,61 +65611,12 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.quiet = args.quiet
-        self.filter = args.filter
+        if not hasattr(self, "cached_table"):
+            self.cached_table = {}
+
+        self.args = args
         self.out = []
-
-        if is_x86_32():
-            if not self.quiet:
-                self.out.append(titlify("sys_call_table (x86)"))
-            sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x86()
-            self.syscall_table_view("x86", sys_call_table_addr, get_syscall_table("X86", "N32"))
-
-        elif is_x86_64():
-            if not self.quiet:
-                self.out.append(titlify("sys_call_table (x64)"))
-            sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x64()
-            self.syscall_table_view("x86_64", sys_call_table_addr, get_syscall_table("X86", "64"))
-
-            kversion = Kernel.kernel_version()
-
-            if not self.quiet:
-                self.out.append(titlify("ia32_sys_call_table"))
-            if kversion < "6.6.26":
-                sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x86()
-                self.syscall_table_view("x86_32", sys_call_table_addr, get_syscall_table("X86", "32"))
-            else:
-                if not self.quiet:
-                    self.out.append("ia32_sys_call_table is removed from 6.6.26.")
-                    self.out.append("each entry is embedded in `ia32_sys_call()` as call instruction.")
-
-            if not self.quiet:
-                self.out.append(titlify("x32_sys_call_table"))
-            if kversion < "6.6.26":
-                sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x32()
-                self.syscall_table_view("x86_x32", sys_call_table_addr, get_syscall_table("X86", "64"), nr_base=0x40000000)
-            else:
-                if not self.quiet:
-                    self.out.append("x32_sys_call_table is removed from 6.6.26.")
-                    self.out.append("each entry is embedded in `x32_sys_call()` as call instruction.")
-
-        elif is_arm32():
-            if not self.quiet:
-                self.out.append(titlify("sys_call_table (arm32)"))
-            sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_arm32()
-            self.syscall_table_view("arm32", sys_call_table_addr, get_syscall_table("ARM", "N32"))
-
-        elif is_arm64():
-            if not self.quiet:
-                self.out.append(titlify("sys_call_table (arm64)"))
-            sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_arm64()
-            self.syscall_table_view("arm64", sys_call_table_addr, get_syscall_table("ARM64", "ARM"))
-
-            if not self.quiet:
-                self.out.append(titlify("compat_sys_call_table (arm32)"))
-            sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_arm64_compat()
-            self.syscall_table_view("arm64_32", sys_call_table_addr, get_syscall_table("ARM", "32"))
-
+        self.dump_syscall_table()
         self.print_output(args, term=True)
         return
 
