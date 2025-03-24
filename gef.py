@@ -56298,7 +56298,7 @@ class KernelCurrentCommand(GenericCommand):
 
 
 @register_command
-class KernelTaskCommand(GenericCommand):
+class KernelTaskCommand(GenericCommand, BufferingOutput):
     """Display process list."""
 
     _cmdline_ = "ktask"
@@ -56444,13 +56444,13 @@ class KernelTaskCommand(GenericCommand):
         return
 
     def quiet_info(self, msg):
-        if not self.quiet:
+        if not self.args.quiet:
             msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
             gef_print(msg)
         return
 
     def quiet_err(self, msg):
-        if not self.quiet:
+        if not self.args.quiet:
             msg = "{} {}".format(Color.colorify("[+]", "bold red"), msg)
             gef_print(msg)
         return
@@ -58401,7 +58401,7 @@ class KernelTaskCommand(GenericCommand):
                     return sizeof_action
         return None
 
-    def initialize(self, args):
+    def initialize(self):
         kversion = Kernel.kernel_version()
 
         # init_task
@@ -58477,7 +58477,7 @@ class KernelTaskCommand(GenericCommand):
         self.quiet_info("offsetof(cred, uid): {:#x}".format(self.offset_uid))
 
         # kstack_top->saved_ptregs
-        if args.print_regs:
+        if self.args.print_regs:
             if self.offset_ptregs is None:
                 self.kstack_size, self.offset_ptregs = self.get_offset_ptregs(task_addrs, self.offset_stack)
             if self.offset_ptregs is None:
@@ -58495,7 +58495,7 @@ class KernelTaskCommand(GenericCommand):
         # dentry->d_parent
         # dentry->d_inode
         # inode->i_ino
-        if args.print_maps or args.print_fd:
+        if self.args.print_maps or self.args.print_fd:
             if self.offset_vm_mm is None:
                 self.offset_vm_mm = self.get_offset_vm_mm(task_addrs, self.offset_mm)
             if self.offset_vm_mm is None:
@@ -58553,7 +58553,8 @@ class KernelTaskCommand(GenericCommand):
             self.quiet_info("offsetof(inode, i_ino): {:#x}".format(self.offset_i_ino))
 
         # task_struct->files
-        if args.print_fd or args.print_sighand or args.print_namespace or (kversion >= "6.7" and args.print_thread) or args.print_seccomp:
+        if self.args.print_fd or self.args.print_sighand or self.args.print_namespace or \
+            (kversion >= "6.7" and self.args.print_thread) or self.args.print_seccomp:
             if self.offset_files is None:
                 self.offset_files = self.get_offset_files(task_addrs, self.offset_comm)
             if self.offset_files is None:
@@ -58562,7 +58563,7 @@ class KernelTaskCommand(GenericCommand):
             self.quiet_info("offsetof(task_struct, files): {:#x}".format(self.offset_files))
 
         # files_struct->fdt
-        if args.print_fd:
+        if self.args.print_fd:
             if self.offset_fdt is None:
                 self.offset_fdt = self.get_offset_fdt(task_addrs, self.offset_files)
             if self.offset_fdt is None:
@@ -58572,7 +58573,7 @@ class KernelTaskCommand(GenericCommand):
 
         # cred->user_ns
         # task_struct->nsproxy
-        if args.print_namespace or (kversion >= "6.7" and args.print_thread) or args.print_seccomp:
+        if self.args.print_namespace or (kversion >= "6.7" and self.args.print_thread) or self.args.print_seccomp:
             if self.offset_user_ns is None:
                 init_cred = read_int_from_memory(task_addrs[0] + self.offset_cred)
                 self.offset_user_ns = self.get_offset_user_ns(init_cred, self.offset_uid)
@@ -58592,7 +58593,7 @@ class KernelTaskCommand(GenericCommand):
         # task_struct->thread_group
         # task_struct->signal (6.7~)
         # signal->thread_head (6.7~)
-        if args.print_thread:
+        if self.args.print_thread:
             if self.offset_group_leader is None:
                 self.offset_group_leader = self.get_offset_group_leader(self.offset_pid, self.offset_kcanary)
             self.quiet_info("offsetof(task_struct, group_leader): {:#x}".format(self.offset_group_leader))
@@ -58614,7 +58615,7 @@ class KernelTaskCommand(GenericCommand):
                 self.quiet_info("offsetof(signal, thread_head): {:#x}".format(self.offset_thread_head))
 
         # task_struct->sighand
-        if args.print_sighand:
+        if self.args.print_sighand:
             if self.offset_sighand is None:
                 self.offset_sighand = self.get_offset_sighand(task_addrs[0], self.offset_files)
             if self.offset_sighand is None:
@@ -58682,7 +58683,7 @@ class KernelTaskCommand(GenericCommand):
                 self.signame_list[i] = "SIGRTMAX-{:d}".format(64 - i)
 
         # task_struct->seccomp
-        if args.print_seccomp:
+        if self.args.print_seccomp:
             if self.offset_signal is None:
                 self.offset_signal = self.get_offset_signal(self.offset_nsproxy)
             self.quiet_info("offsetof(task_struct, signal): {:#x}".format(self.offset_signal))
@@ -58735,13 +58736,13 @@ class KernelTaskCommand(GenericCommand):
         return task_addrs
 
     def get_current_task_list(self):
-        quiet = self.quiet
+        args = self.args
         try:
             res = gdb.execute("kcurrent --quiet", to_string=True)
         except gdb.error:
             return {}
-        # kcurrent calls ktask itself, so quiet will be overwritten. this is workaround.
-        self.quiet = quiet
+        # kcurrent calls ktask itself, so self.args will be overwritten. this is workaround.
+        self.args = args
 
         tmp_current_tasks = {}
         for line in res.splitlines():
@@ -58769,21 +58770,20 @@ class KernelTaskCommand(GenericCommand):
                 current_tasks[k] = "cpu{:d}".format(v[0])
         return current_tasks
 
-    def dump(self, args, task_addrs):
+    def dump(self, task_addrs):
         # add current tasks (cpuN > 0)
         current_tasks = self.get_current_task_list()
         to_add_tasks = [task for task in current_tasks.keys() if task not in task_addrs]
         task_addrs = task_addrs[:1] + to_add_tasks + task_addrs[1:]
 
         # LWP
-        if args.print_thread:
+        if self.args.print_thread:
             task_addrs = self.add_lwp_task(task_addrs)
 
         # print legend
-        out = []
-        if not self.quiet:
+        if not self.args.quiet:
             fmt = "{:<18s} {:7s} {:3s} {:<7s} {:<16s} {:<18s} [{:s}] {:<8s} {:<18s} {:<18s}"
-            if args.print_all_id:
+            if self.args.print_all_id:
                 ids_str = ["uid", "gid", "suid", "sgid", "euid", "egid", "fsuid", "fsgid"]
                 uids_fmt = "{:>5s} {:>5s} {:>5s} {:>5s} {:>5s} {:>5s} {:>5s} {:>5s}"
             else:
@@ -58791,9 +58791,9 @@ class KernelTaskCommand(GenericCommand):
                 uids_fmt = "{:>5s} {:>5s}"
             uids_str = uids_fmt.format(*ids_str)
             legend = ["task", "current", "K/U", "lwpid", "task->comm", "task->cred", uids_str, "seccomp", "kstack", "kcanary"]
-            out.append(GefUtil.make_legend(fmt.format(*legend)))
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        if args.print_namespace:
+        if self.args.print_namespace:
             kversion = Kernel.kernel_version()
             nsproxy_members = ["count", "uts_ns", "ipc_ns", "mnt_ns", "pid_ns_for_children", "net_ns"]
             if kversion >= "5.6":
@@ -58806,11 +58806,11 @@ class KernelTaskCommand(GenericCommand):
                 init_nsproxy = read_int_from_memory(task_addrs[0] + self.offset_nsproxy)
 
         # task parse
-        tqdm = GefUtil.get_tqdm(not args.quiet)
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         for task in tqdm(task_addrs, leave=False):
             comm_string = read_cstring_from_memory(task + self.offset_comm)
-            if args.filter:
-                if not any(re_pattern.search(comm_string) for re_pattern in args.filter):
+            if self.args.filter:
+                if not any(re_pattern.search(comm_string) for re_pattern in self.args.filter):
                     continue
 
             kstack = read_int_from_memory(task + self.offset_stack)
@@ -58827,18 +58827,18 @@ class KernelTaskCommand(GenericCommand):
             else:
                 proctype = "U"
 
-            if args.user_process_only:
+            if self.args.user_process_only:
                 if proctype == "K":
                     continue
 
             # get process type (main process or not)
-            if args.print_thread:
+            if self.args.print_thread:
                 leader = read_int_from_memory(task + self.offset_group_leader)
                 if leader != task:
                     proctype += "T"
 
             # uid
-            if args.print_all_id:
+            if self.args.print_all_id:
                 uids = [u32(read_memory(cred + self.offset_uid + j * 4, 4)) for j in range(8)]
                 uids_fmt = "{:>5d},{:>5d},{:>5d},{:>5d},{:>5d},{:>5d},{:>5d},{:>5d}"
             else:
@@ -58860,7 +58860,7 @@ class KernelTaskCommand(GenericCommand):
                 seccomp = "Disabled"
 
             # make output
-            out.append("{:#018x} {:<7s} {:<3s} {:<7d} {:<16s} {:#018x} [{:s}] {:<8s} {:#018x} {:<18s}".format(
+            self.out.append("{:#018x} {:<7s} {:<3s} {:<7d} {:<16s} {:#018x} [{:s}] {:<8s} {:#018x} {:<18s}".format(
                 task, currentN, proctype, pid, comm_string, cred, uids_str, seccomp, kstack, kcanary,
             ))
 
@@ -58871,41 +58871,41 @@ class KernelTaskCommand(GenericCommand):
             additional = False
 
             # additional information (maps)
-            if args.print_maps:
+            if self.args.print_maps:
                 additional = True
                 mms = self.get_mm(task, self.offset_mm)
                 if mms:
-                    out.append(titlify("memory map of `{:s}`".format(comm_string)))
+                    self.out.append(titlify("memory map of `{:s}`".format(comm_string)))
                     for mm in mms:
-                        out.append("{:#018x}-{:#018x} {:s} {:s}".format(mm.start, mm.end, mm.flags, mm.file))
+                        self.out.append("{:#018x}-{:#018x} {:s} {:s}".format(mm.start, mm.end, mm.flags, mm.file))
 
             # additional information (regs)
-            if proctype == "U" and args.print_regs:
+            if proctype == "U" and self.args.print_regs:
                 additional = True
                 regs = self.get_regs(kstack, self.offset_ptregs)
                 nr_table = get_syscall_table().nr_table
                 syscall_nr_regs = ["orig_rax", "orig_eax", "r7", "x8"]
                 if regs:
-                    out.append(titlify("registers of `{:s}`".format(comm_string)))
+                    self.out.append(titlify("registers of `{:s}`".format(comm_string)))
                     for k, v in regs.items():
                         if k in syscall_nr_regs and v in nr_table:
                             syscall_name = nr_table[v].name
-                            out.append("{:16s}: {:s} ({:s})".format(
+                            self.out.append("{:16s}: {:s} ({:s})".format(
                                 k, AddressUtil.format_address(v, long_fmt=True), syscall_name,
                             ))
                         else:
-                            out.append("{:16s}: {:s}".format(
+                            self.out.append("{:16s}: {:s}".format(
                                 k, AddressUtil.format_address(v, long_fmt=True,
                             )))
 
             # additional information (files)
-            if proctype == "U" and args.print_fd:
+            if proctype == "U" and self.args.print_fd:
                 additional = True
-                out.append(titlify("file descriptors of `{:s}`".format(comm_string)))
+                self.out.append(titlify("file descriptors of `{:s}`".format(comm_string)))
 
                 fmt = "{:3s} {:18s} {:18s} {:18s} {:s}"
                 legend = ["fd", "struct file", "struct dentry", "struct inode", "path"]
-                out.append(GefUtil.make_legend(fmt.format(*legend)))
+                self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
                 files = read_int_from_memory(task + self.offset_files)
                 fdt = read_int_from_memory(files + self.offset_fdt)
@@ -58919,16 +58919,16 @@ class KernelTaskCommand(GenericCommand):
                         dentry = read_int_from_memory(file + self.offset_dentry)
                         inode = read_int_from_memory(dentry + self.offset_d_inode)
                         filepath = self.get_filepath(file)
-                        out.append("{:<3d} {:#018x} {:#018x} {:#018x} {:s}".format(i, file, dentry, inode, filepath))
+                        self.out.append("{:<3d} {:#018x} {:#018x} {:#018x} {:s}".format(i, file, dentry, inode, filepath))
 
             # additional information (sighands)
-            if proctype == "U" and args.print_sighand:
+            if proctype == "U" and self.args.print_sighand:
                 additional = True
-                out.append(titlify("sighandlers of `{:s}`".format(comm_string)))
+                self.out.append(titlify("sighandlers of `{:s}`".format(comm_string)))
 
                 fmt = "{:14s} {:18s} {:18s} {:18s}"
                 legend = ["sig", "sigaction", "handler", "flags"]
-                out.append(GefUtil.make_legend(fmt.format(*legend)))
+                self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
                 sighand = read_int_from_memory(task + self.offset_sighand)
                 for i in range(64):
@@ -58944,22 +58944,22 @@ class KernelTaskCommand(GenericCommand):
                     else:
                         handler = "{:#018x}".format(handler)
                     flags = read_int_from_memory(sigaction + current_arch.ptrsize * 1)
-                    out.append("{:<2d} {:11s} {:#018x} {:18s} {:#018x}".format(i + 1, signame, sigaction, handler, flags))
+                    self.out.append("{:<2d} {:11s} {:#018x} {:18s} {:#018x}".format(i + 1, signame, sigaction, handler, flags))
 
             # additional information (namespace)
-            if proctype == "U" and args.print_namespace:
+            if proctype == "U" and self.args.print_namespace:
                 additional = True
-                out.append(titlify("namespace of `{:s}`".format(comm_string)))
+                self.out.append(titlify("namespace of `{:s}`".format(comm_string)))
 
                 fmt = "{:30s} {:18s} {:8s}"
                 legend = ["name", "value", "init_ns?"]
-                out.append(GefUtil.make_legend(fmt.format(*legend)))
+                self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
                 # user_ns (via real_cred)
                 real_cred = read_int_from_memory(task + self.offset_cred - current_arch.ptrsize)
                 user_ns = read_int_from_memory(real_cred + self.offset_user_ns)
                 is_init_ns = str(user_ns == init_user_ns)
-                out.append("{:30s} {:#018x} {:8s}".format("real_cred->user_ns", user_ns, is_init_ns))
+                self.out.append("{:30s} {:#018x} {:8s}".format("real_cred->user_ns", user_ns, is_init_ns))
 
                 # other ns (via nsproxy)
                 nsproxy = read_int_from_memory(task + self.offset_nsproxy)
@@ -58970,17 +58970,17 @@ class KernelTaskCommand(GenericCommand):
                     else:
                         init_value = read_int_from_memory(init_nsproxy + current_arch.ptrsize * i)
                         is_init_ns = str(value == init_value)
-                    out.append("{:30s} {:#018x} {:8s}".format("nsproxy->" + name, value, is_init_ns))
+                    self.out.append("{:30s} {:#018x} {:8s}".format("nsproxy->" + name, value, is_init_ns))
 
             # additional information (seccomp)
-            if proctype == "U" and args.print_seccomp:
+            if proctype == "U" and self.args.print_seccomp:
                 if self.has_seccomp(task):
                     additional = True
-                    out.append(titlify("seccomp of `{:s}`".format(comm_string)))
+                    self.out.append(titlify("seccomp of `{:s}`".format(comm_string)))
 
                     fmt = "{:18s} {:25s} {:12s} {:18s}"
                     legend = ["&task.seccomp", "mode", "filter_count", "filter"]
-                    out.append(GefUtil.make_legend(fmt.format(*legend)))
+                    self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
                     seccomp = task + self.offset_seccomp
                     mode = u32(read_memory(seccomp, 4))
@@ -58992,18 +58992,19 @@ class KernelTaskCommand(GenericCommand):
                     mode_str = "{:d} ({:s})".format(mode, mode_define)
                     filter_count = u32(read_memory(seccomp + 4, 4))
                     filter_current = read_int_from_memory(seccomp + 4 * 2)
-                    out.append("{:#018x} {:25s} {:<12d} {:#018x}".format(seccomp, mode_str, filter_count, filter_current))
+                    self.out.append("{:#018x} {:25s} {:<12d} {:#018x}".format(seccomp, mode_str, filter_count, filter_current))
 
-                    i = 1
-                    while filter_current and i <= filter_count:
+                    for i in tqdm(range(filter_count), leave=False):
+                        if not filter_current:
+                            break
                         prog = read_int_from_memory(filter_current + self.offset_prog)
                         filter_prev = read_int_from_memory(filter_current + self.offset_prev)
                         bpf_func = read_int_from_memory(prog + self.offset_bpf_func)
                         orig_prog = read_int_from_memory(prog + self.offset_orig_prog)
 
-                        out.append("")
-                        out.append("[{:d}/{:d}] filter:{:#x} prev:{:#x} bpf_func:{:#x} orig_prog:{:#x}".format(
-                            i, filter_count, filter_current, filter_prev, bpf_func, orig_prog,
+                        self.out.append("")
+                        self.out.append("[{:d}/{:d}] filter:{:#x} prev:{:#x} bpf_func:{:#x} orig_prog:{:#x}".format(
+                            i + 1, filter_count, filter_current, filter_prev, bpf_func, orig_prog,
                         ))
 
                         if self.seccomp_tools_command:
@@ -59013,20 +59014,19 @@ class KernelTaskCommand(GenericCommand):
                             tmp_fd, tmp_path = GefUtil.mkstemp(prefix="ktask")
                             os.fdopen(tmp_fd, "wb").write(data)
                             ret = GefUtil.gef_execute_external([self.seccomp_tools_command, "disasm", tmp_path], as_list=True)
-                            out.extend(ret)
+                            self.out.extend(ret)
                             os.unlink(tmp_path)
                         else:
                             ret = gdb.execute("capstone-disassemble {:#x}".format(bpf_func), to_string=True).rstrip()
-                            out.append(ret)
-                            out.append("      ...")
+                            self.out.append(ret)
+                            self.out.append("      ...")
 
                         filter_current = filter_prev
-                        i += 1
 
             # print separator
             if additional:
-                out.append(titlify(""))
-        return out
+                self.out.append(titlify(""))
+        return
 
     @parse_args
     @only_if_gdb_running
@@ -59034,12 +59034,12 @@ class KernelTaskCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.quiet = args.quiet
+        self.args = args
         self.quiet_info("Wait for memory scan")
-        self.filepath_cache = {}
 
         # initialize
-        ret = self.initialize(args)
+        self.filepath_cache = {}
+        ret = self.initialize()
         if ret is False:
             return
         task_addrs = ret
@@ -59048,8 +59048,10 @@ class KernelTaskCommand(GenericCommand):
         if args.meta:
             return
 
-        out = self.dump(args, task_addrs)
-        gef_print("\n".join(out), less=not args.no_pager)
+        # parse
+        self.out = []
+        self.dump(task_addrs)
+        self.print_output(args)
         return
 
 
