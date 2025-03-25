@@ -30868,6 +30868,8 @@ class DereferenceCommand(GenericCommand):
                         help="display slab_cache name (allow unaligned) if available.")
     parser.add_argument("-q", "--quiet", action="store_true",
                         help="do not display other than addresses and values.")
+    parser.add_argument("-Q", "--quiet-offset", action="store_true",
+                        help="do not display offset and index values.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
@@ -30946,7 +30948,7 @@ class DereferenceCommand(GenericCommand):
         return regs
 
     @staticmethod
-    def pprint_dereferenced(addr, idx, tag=None, phys=False, quiet=False):
+    def pprint_dereferenced(addr, idx, tag=None, phys=False, quiet=False, quiet_offset=False):
         base_address_color = Config.get_gef_setting("theme.dereference_base_address")
         registers_color = Config.get_gef_setting("theme.dereference_register_value")
         memalign = current_arch.ptrsize
@@ -30971,7 +30973,10 @@ class DereferenceCommand(GenericCommand):
         # create line of one entry
         addr_formatted = AddressUtil.format_address(addrs[0], memalign_size=memalign_size)
         addr_colored = Color.colorify(addr_formatted, base_address_color)
-        line = "{:s}|{:+#07x}|{:+04d}: ".format(addr_colored, offset, idx)
+        if quiet_offset:
+            line = "{:s}: ".format(addr_colored)
+        else:
+            line = "{:s}|{:+#07x}|{:+04d}: ".format(addr_colored, offset, idx)
         if tag:
             line += "{:s}: ".format(tag)
         line += "{:{:d}s}".format(link, memalign * 2 + 2)
@@ -31074,7 +31079,8 @@ class DereferenceCommand(GenericCommand):
 
                 # create line
                 line = DereferenceCommand.pprint_dereferenced(
-                    start_address, idx, tag=tag, phys=args.phys, quiet=args.quiet,
+                    start_address, idx,
+                    tag=tag, phys=args.phys, quiet=args.quiet, quiet_offset=args.quiet_offset,
                 )
 
                 if not args.quiet:
