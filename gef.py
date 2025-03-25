@@ -18211,7 +18211,7 @@ class MmapMemoryCommand(GenericCommand):
         return
 
     # On the CRIS architecture, setting a value to a register using the gdb `set` command will cause strange behavior.
-    # So even if the assembly code is correct, it should not use this `mprotect` command.
+    # So even if the assembly code is correct, it should not use this command.
 
     @parse_args
     @only_if_gdb_running
@@ -18301,7 +18301,7 @@ class MprotectCommand(GenericCommand):
         return
 
     # On the CRIS architecture, setting a value to a register using the gdb `set` command will cause strange behavior.
-    # So even if the assembly code is correct, it should not use this `mprotect` command.
+    # So even if the assembly code is correct, it should not use this command.
 
     @parse_args
     @only_if_gdb_running
