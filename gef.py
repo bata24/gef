@@ -17584,7 +17584,7 @@ class SearchMangledPtrCommand(GenericCommand):
         gef_print("  {:s}{:s}: {:#x} (={!s}{:s}) [{:s}]".format(addr, addr_sym, value, decoded, decoded_sym, valid_msg))
         return
 
-    def search_mangled_ptr(self, start_address, end_address):
+    def search_mangled_ptr(self, start_address, end_address, cookie):
         """Search a mangled pointer within a range defined by arguments."""
         if is_qemu_system():
             step = gef_getpagesize()
@@ -17605,7 +17605,7 @@ class SearchMangledPtrCommand(GenericCommand):
                 break
 
             for i, value in enumerate(slice_unpack(mem, current_arch.ptrsize)):
-                decoded = current_arch.decode_cookie(value, self.cookie)
+                decoded = current_arch.decode_cookie(value, cookie)
                 if not is_valid_addr(decoded):
                     continue
                 addr = chunk_addr + i * current_arch.ptrsize
@@ -17619,10 +17619,10 @@ class SearchMangledPtrCommand(GenericCommand):
     @exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS"))
     def do_invoke(self, args):
         # init
-        self.cookie = PtrDemangleCommand.get_cookie()
-        if self.cookie is None:
+        cookie = PtrDemangleCommand.get_cookie()
+        if cookie is None:
             return
-        info("Cookie is {:s}".format(Color.colorify_hex(self.cookie, "bold")))
+        info("Cookie is {:s}".format(Color.colorify_hex(cookie, "bold")))
 
         # check
         if current_arch.decode_cookie(0, 1) == 0:
@@ -17641,7 +17641,7 @@ class SearchMangledPtrCommand(GenericCommand):
 
             start = section.page_start
             end = section.page_end
-            ret = self.search_mangled_ptr(start, end)
+            ret = self.search_mangled_ptr(start, end, cookie)
 
             if ret:
                 if not args.verbose:
