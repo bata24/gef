@@ -16697,10 +16697,14 @@ class SmartMemoryDumpCommand(GenericCommand):
     _category_ = "03-f. Memory - Dump/Load"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-p", "--prefix", help="use this name for the dump destination file prefix. (default: None)")
-    parser.add_argument("-s", "--suffix", help="use this name for the dump destination file suffix. (default: None)")
-    parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="REGEXP include filter.")
-    parser.add_argument("-e", "--exclude", action="append", type=re.compile, default=[], help="REGEXP exclude filter.")
+    parser.add_argument("-p", "--prefix", default="",
+                        help="use this name for the dump destination file prefix. (default: '()")
+    parser.add_argument("-s", "--suffix", default="",
+                        help="use this name for the dump destination file suffix. (default: '')")
+    parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[],
+                        help="REGEXP include filter.")
+    parser.add_argument("-e", "--exclude", action="append", type=re.compile, default=[],
+                        help="REGEXP exclude filter.")
     parser.add_argument("-c", "--commit", action="store_true", help="actually perform the dump.")
     _syntax_ = parser.format_help()
 
@@ -16709,6 +16713,14 @@ class SmartMemoryDumpCommand(GenericCommand):
         if maps is None:
             err("Failed to get maps")
             return
+
+        prefix = self.args.prefix
+        if prefix:
+            prefix = prefix + "_"
+
+        suffix = self.args.suffix
+        if suffix:
+            suffix = "_" + suffix
 
         addr_len = current_arch.ptrsize * 2
         for entry in maps:
@@ -16728,7 +16740,7 @@ class SmartMemoryDumpCommand(GenericCommand):
             path = path.replace(" ", "_") # consider deleted case. e.g., /path/to/file (deleted)
 
             dumpfile_name = "{:s}{:0{:d}x}-{:0{:d}x}_{:s}_{:s}{:s}.raw".format(
-                self.prefix, start, addr_len, end, addr_len, perm, path, self.suffix,
+                prefix, start, addr_len, end, addr_len, perm, path, suffix,
             )
 
             if self.args.filter and not any(filt.search(dumpfile_name) for filt in self.args.filter):
@@ -16751,27 +16763,17 @@ class SmartMemoryDumpCommand(GenericCommand):
                 info("Saved to {:s}".format(filepath))
             else:
                 info("It will be saved to {:s}".format(filepath))
+
+        if not self.args.commit:
+            info("The directory name is replaced with the latest timestamp")
+            warn('This dry run mode skips dumping; add "--commit" to proceed')
         return
 
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
-        if args.prefix is None:
-            self.prefix = ""
-        else:
-            self.prefix = "{:s}_".format(args.prefix)
-
-        if args.suffix is None:
-            self.suffix = ""
-        else:
-            self.suffix = "_{:s}".format(args.suffix)
-
         self.smart_memory_dump()
-
-        if not args.commit:
-            info("The directory name is replaced with the latest timestamp")
-            warn('This dry run mode skips dumping; add "--commit" to proceed')
         return
 
 
