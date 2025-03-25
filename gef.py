@@ -21358,8 +21358,8 @@ class GlibcHeapTryFreeCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
                         help="the memory address to be freed.")
-    parser.add_argument("--free-addr", dest="caller_address", type=AddressUtil.parse_address,
-                        help="use specific address for `free`.")
+    parser.add_argument("-F", "--free-addr", dest="caller_address", type=AddressUtil.parse_address,
+                        help="the memory address of free().")
     parser.add_argument("-s", "--skip-emulation", "--save", action="store_true",
                         help="do not run, just save the script.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
@@ -21625,8 +21625,8 @@ class GlibcHeapTryMallocCommand(GlibcHeapTryFreeCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address,
                         help="the size to be allocated.")
-    parser.add_argument("--malloc-addr", dest="caller_address", type=AddressUtil.parse_address,
-                        help="use specific address for `malloc`.")
+    parser.add_argument("-F", "--malloc-addr", dest="caller_address", type=AddressUtil.parse_address,
+                        help="the memory address of malloc().")
     parser.add_argument("-s", "--skip-emulation", "--save", action="store_true",
                         help="do not run, just save the script.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
@@ -21654,8 +21654,8 @@ class GlibcHeapTryReallocCommand(GlibcHeapTryFreeCommand):
                         help="the memory address to be re-allocated.")
     parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address,
                         help="the size to be re-allocated.")
-    parser.add_argument("--realloc-addr", dest="caller_address", type=AddressUtil.parse_address,
-                        help="use specific address for `realloc`.")
+    parser.add_argument("-F", "--realloc-addr", dest="caller_address", type=AddressUtil.parse_address,
+                        help="the memory address of realloc().")
     parser.add_argument("-s", "--skip-emulation", "--save", action="store_true",
                         help="do not run, just save the script.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
@@ -21683,8 +21683,8 @@ class GlibcHeapTryCallocCommand(GlibcHeapTryFreeCommand):
                         help="the size to be re-allocated.")
     parser.add_argument("nmemb", metavar="NMEMB", type=AddressUtil.parse_address,
                         help="the number of blocks.")
-    parser.add_argument("--calloc-addr", dest="caller_address", type=AddressUtil.parse_address,
-                        help="use specific address for `calloc`.")
+    parser.add_argument("-F", "--calloc-addr", dest="caller_address", type=AddressUtil.parse_address,
+                        help="the memory address of calloc().")
     parser.add_argument("-s", "--skip-emulation", "--save", action="store_true",
                         help="do not run, just save the script.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
