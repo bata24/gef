@@ -50293,7 +50293,7 @@ class XmmSetCommand(GenericCommand):
         # check register is valid or not
         try:
             gdb.execute(f"info registers {reg}", to_string=True)
-        except Exception:
+        except gdb.error:
             err("Invalid register name")
             return
 
@@ -50413,7 +50413,7 @@ class AvxCommand(GenericCommand):
         for i in range(16 if is_x86_64() else 8):
             try:
                 result = gdb.execute(f"info registers $ymm{i}", to_string=True)
-            except Exception:
+            except gdb.error:
                 continue
             result = result.replace("\n", "")
             r = re.findall(r"v2_int128 = \{"
@@ -50467,7 +50467,7 @@ class Avx512Command(GenericCommand):
         for i in range(32):
             try:
                 result = gdb.execute(f"info registers $zmm{i}", to_string=True)
-            except Exception:
+            except gdb.error:
                 continue
             result = result.replace("\n", "")
             r = re.findall(r"v4_int128 = \{"
@@ -65528,7 +65528,7 @@ class ExecAsm:
                 reg = reg + "b0" # since r0-r7 cannot be changed directly, use bank 0
             try:
                 gdb.execute("set {:s} = {:#x}".format(reg, v), to_string=True)
-            except Exception as e:
+            except gdb.error as e:
                 if str(e).startswith("Cannot access memory at address"):
                     pass
                 else:
@@ -65563,7 +65563,7 @@ class ExecAsm:
                 continue
             try:
                 gdb.execute("set {:s} = {:#x}".format(reg, v), to_string=True)
-            except Exception as e:
+            except gdb.error as e:
                 if str(e).startswith("Cannot access memory at address"):
                     pass
                 else:
