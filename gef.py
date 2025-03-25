@@ -14434,7 +14434,7 @@ class NiCommand(GenericCommand):
             exc_type, exc_value, exc_traceback = sys.exc_info()
             if str(exc_value).startswith("Cannot access memory at address"):
                 if is_valid_addr(current_arch.pc):
-                    gdb.execute("xuntil")
+                    gdb.execute("xuntil --from-wrapper")
                 else:
                     err(exc_value)
             else:
@@ -14523,7 +14523,7 @@ class SiCommand(GenericCommand):
             exc_type, exc_value, exc_traceback = sys.exc_info()
             if str(exc_value).startswith("Cannot access memory at address"):
                 if is_valid_addr(current_arch.pc):
-                    gdb.execute("xuntil")
+                    gdb.execute("xuntil --from-wrapper")
                 else:
                     err(exc_value)
             else:
@@ -89196,6 +89196,8 @@ class XUntilCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("address", metavar="ADDRESS", nargs="?", type=AddressUtil.parse_address,
                         help="the address to stop.")
+    parser.add_argument("--from-wrapper", action="store_true",
+                        help="[FOR DEVELOPER] used internally in gef, please don't use it.")
     _syntax_ = parser.format_help()
 
     @parse_args
@@ -89208,7 +89210,11 @@ class XUntilCommand(GenericCommand):
         # `until` command has a bug(?) because sometimes fail,
         # so we should use `tbreak` and `continue` instead of `until`.
         SimpleInternalTemporaryBreakpoint(loc=stop_addr)
-        gdb.execute("continue") # do not use c wrapper
+
+        if args.from_wrapper:
+            gdb.execute("continue") # do not use c wrapper because cycle reference
+        else:
+            gdb.execute("c")
         return
 
 
