@@ -49425,15 +49425,15 @@ class MagicCommand(GenericCommand):
     _category_ = "02-g. Process Information - Symbol"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("--fj", action="store_true", help="print _IO_xxx_jumps functions.")
+    parser.add_argument("-j", "--print-file-jumps", action="store_true", help="print _IO_xxx_jumps functions.")
     parser.add_argument("filter", metavar="FILTER", nargs="*", help="filter string.")
     _syntax_ = parser.format_help()
 
     def should_be_print(self, sym):
-        if not self.filter:
+        if not self.args.filter:
             return True
 
-        for filt in self.filter:
+        for filt in self.args.filter:
             if filt in sym:
                 return True
         return False
@@ -49470,7 +49470,7 @@ class MagicCommand(GenericCommand):
         if not self.should_be_print(sym):
             return
 
-        if not self.print_file_jumps:
+        if not self.args.print_file_jumps:
             return
 
         try:
@@ -49607,9 +49607,6 @@ class MagicCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("wine", "kgdb"))
     def do_invoke(self, args):
-        self.print_file_jumps = args.fj
-        self.filter = args.filter
-
         if is_qemu_system() or is_vmware():
             info("Redirect to kmagic")
             gdb.execute("kmagic {:s}".format(" ".join(args.filter)))
@@ -49631,10 +49628,10 @@ class KernelMagicCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     def should_be_print(self, sym):
-        if not self.filter:
+        if not self.args.filter:
             return True
 
-        for filt in self.filter:
+        for filt in self.args.filter:
             if filt in sym:
                 return True
         return False
@@ -49897,7 +49894,6 @@ class KernelMagicCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.filter = args.filter
         self.magic_kernel()
         return
 
