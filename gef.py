@@ -22277,7 +22277,7 @@ class RegistersCommand(GenericCommand):
                 continue
 
             line = "{:s}: ".format(Color.colorify(padreg, color))
-            if self.simple:
+            if self.args.simple:
                 # not dereference
                 line += "{:s} ".format(ProcessMap.lookup_address(value).long_fmt())
             else:
@@ -22292,7 +22292,7 @@ class RegistersCommand(GenericCommand):
 
             lines.append(line)
 
-        if self.simple:
+        if self.args.simple:
             one_width = widest + 5 + current_arch.ptrsize * 2
             nb = GefUtil.get_terminal_size()[1] // one_width
             lines = ["".join(r) for r in slicer(lines, nb)]
@@ -22303,7 +22303,7 @@ class RegistersCommand(GenericCommand):
         if special_line:
             lines.append(special_line)
 
-        if not self.simple:
+        if not self.args.simple:
             if is_x86_16():
                 lines += self.dump_seg_reg_x86_16()
         return lines
@@ -22325,9 +22325,7 @@ class RegistersCommand(GenericCommand):
         else:
             regs = current_arch.all_registers
 
-        self.simple = args.simple
         out = self.dump_regs(regs)
-
         gef_print("\n".join(out))
         return
 
