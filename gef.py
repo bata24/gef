@@ -13943,22 +13943,17 @@ class GenericCommand(gdb.Command):
 class BufferingOutput:
     """A collection of utility functions that append a messages to self.out."""
 
-    def ok(self, msg):
-        msg = "{} {}".format(Color.colorify("[+]", "bold green"), msg)
-        self.out.append(msg)
-        return
-
-    def info(self, msg):
+    def info_add_out(self, msg):
         msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
         self.out.append(msg)
         return
 
-    def warn(self, msg):
+    def warn_add_out(self, msg):
         msg = "{} {}".format(Color.colorify("[*]", "bold yellow"), msg)
         self.out.append(msg)
         return
 
-    def err(self, msg):
+    def err_add_out(self, msg):
         msg = "{} {}".format(Color.colorify("[!]", "bold red"), msg)
         self.out.append(msg)
         return
@@ -15328,14 +15323,14 @@ class ArgvCommand(GenericCommand, BufferingOutput):
         addr1 = self.get_address_from_symbol("_dl_argv")
         if paddr1 and addr1:
             self.out.append(titlify("ARGV from _dl_argv"))
-            self.info("_dl_argv @ {}".format(ProcessMap.lookup_address(paddr1)))
+            self.info_add_out("_dl_argv @ {}".format(ProcessMap.lookup_address(paddr1)))
             self.print_from_mem(addr1, args.verbose, args.increase_limit)
 
         paddr2 = self.get_address_from_symbol("&__libc_argv")
         addr2 = self.get_address_from_symbol("__libc_argv")
         if paddr2 and addr2:
             self.out.append(titlify("ARGV from __libc_argv"))
-            self.info("__libc_argv @ {}".format(ProcessMap.lookup_address(paddr2)))
+            self.info_add_out("__libc_argv @ {}".format(ProcessMap.lookup_address(paddr2)))
             self.print_from_mem(addr2, args.verbose, args.increase_limit)
 
         if not is_remote_debug():
@@ -15343,7 +15338,7 @@ class ArgvCommand(GenericCommand, BufferingOutput):
             self.print_from_proc("/proc/{:d}/cmdline".format(Pid.get_pid()), args.verbose, args.increase_limit)
         else:
             if not (paddr1 or paddr2):
-                self.err("Not found argv")
+                self.err_add_out("Not found argv")
 
         self.print_output(term=True)
         return
@@ -15438,23 +15433,23 @@ class EnvpCommand(GenericCommand, BufferingOutput):
         paddr = self.get_address_from_symbol("&__environ")
         addr = self.get_address_from_symbol("__environ")
         if paddr and addr:
-            self.info("__environ @ {}".format(ProcessMap.lookup_address(paddr)))
+            self.info_add_out("__environ @ {}".format(ProcessMap.lookup_address(paddr)))
             self.print_from_mem(addr, args.verbose, args.increase_limit)
         elif addr == 0:
-            self.err("___environ is 0x0")
+            self.err_add_out("___environ is 0x0")
         else:
-            self.err("Not found __environ")
+            self.err_add_out("Not found __environ")
 
         self.out.append(titlify("ENVP from last_environ (for putenv, etc.)"))
         paddr = self.get_address_from_symbol("&last_environ")
         addr = self.get_address_from_symbol("last_environ")
         if paddr and addr:
-            self.info("last_environ @ {}".format(ProcessMap.lookup_address(paddr)))
+            self.info_add_out("last_environ @ {}".format(ProcessMap.lookup_address(paddr)))
             self.print_from_mem(addr, args.verbose, args.increase_limit)
         elif addr == 0:
-            self.err("last_environ is 0x0")
+            self.err_add_out("last_environ is 0x0")
         else:
-            self.err("Not found last_environ")
+            self.err_add_out("Not found last_environ")
 
         if not is_remote_debug():
             self.out.append(titlify("ENVP from /proc/{:d}/environ".format(Pid.get_pid())))
@@ -16575,7 +16570,7 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
                 status_path = "/proc/{:d}/task/{:d}/status".format(pid, tid)
                 status = open(status_path, "r").read()
             except (FileNotFoundError, OSError):
-                self.err("Failed to get the information of capability from {:s}".format(status_path))
+                self.err_add_out("Failed to get the information of capability from {:s}".format(status_path))
                 continue
 
             caps = {}
@@ -16631,7 +16626,7 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
         try:
             raw_caps = os.getxattr(filepath, "security.capability")
         except OSError:
-            self.err("No data available")
+            self.err_add_out("No data available")
             return
 
         caps = {}
@@ -16650,7 +16645,7 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
             cap_inh = (cap_inh_high << 32) | cap_inh_low
             caps["rootid"] = rootid
         else:
-            self.err("Invalid magic values: {:#x}".format(magic))
+            self.err_add_out("Invalid magic values: {:#x}".format(magic))
             return
         caps["cap_prm"] = cap_prm
         caps["cap_inh"] = cap_inh
@@ -20607,17 +20602,17 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
     def print_heap_chunks(self, arena, dump_start, peek_nb, peek_offset):
         # Do not show if top is broken, as it affects exit conditions.
         if is_32bit() and arena.top % 0x08:
-            self.err("arena.top is corrupted")
+            self.err_add_out("arena.top is corrupted")
             return
         elif is_64bit() and arena.top % 0x10:
-            self.err("arena.top is corrupted")
+            self.err_add_out("arena.top is corrupted")
             return
 
         # It continues even if last_remainder is broken because it doesn't affect the exit condition.
         if is_32bit() and arena.last_remainder % 0x08:
-            self.warn("arena.last_remainder is corrupted")
+            self.warn_add_out("arena.last_remainder is corrupted")
         elif is_64bit() and arena.last_remainder % 0x10:
-            self.warn("arena.last_remainder is corrupted")
+            self.warn_add_out("arena.last_remainder is corrupted")
 
         freelist_hint_color = Config.get_gef_setting("theme.heap_freelist_hint")
         current_chunk = GlibcHeap.GlibcChunk(arena, dump_start, from_base=True)
@@ -20628,7 +20623,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
                 self.out.append("{!s} {:s}".format(current_chunk, top_str))
                 break
             if current_chunk.chunk_base_address > arena.top:
-                self.err("Corrupted: chunk > top")
+                self.err_add_out("Corrupted: chunk > top")
                 break
             if current_chunk.size == 0:
                 # EOF
@@ -20656,7 +20651,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
             if next_chunk is None:
                 break
             if not Address(value=next_chunk.address).valid:
-                self.err("Corrupted: next_chunk_address is invalid")
+                self.err_add_out("Corrupted: next_chunk_address is invalid")
                 break
             current_chunk = next_chunk
         return
@@ -21801,7 +21796,7 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
     def print_result(self, m, pos, size_candidate):
         path = "unknown" if m.path == "" else m.path
         address = ProcessMap.lookup_address(m.page_start + pos)
-        self.info("Found at {!s} in {!r} [{!s}]".format(address, path, m.permission))
+        self.info_add_out("Found at {!s} in {!r} [{!s}]".format(address, path, m.permission))
 
         if is_32bit():
             res = gdb.execute("x/6xw {:#x}".format(address.value), to_string=True)
@@ -31740,8 +31735,8 @@ class VMMapCommand(GenericCommand, BufferingOutput):
 
         if is_qemu_user() and not args.outer:
             if ProcessMap.__gef_use_info_proc_mappings__ is False:
-                self.info("Some areas may be undetectable due to heuristic search (auxv, registers, stack)")
-                self.info("Permissions use ELF header or default rw-; dynamic changes undetectable")
+                self.info_add_out("Some areas may be undetectable due to heuristic search (auxv, registers, stack)")
+                self.info_add_out("Permissions use ELF header or default rw-; dynamic changes undetectable")
 
         self.print_output(term=True)
         return
@@ -66364,7 +66359,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             segm_desc = self.SEGMENT_DESCRIPTION_32
 
         # print legend
-        self.info("*** This is an {:s} ***".format(Color.boldify("EXAMPLE")))
+        self.info_add_out("*** This is an {:s} ***".format(Color.boldify("EXAMPLE")))
 
         # print entry
         if is_x86_64() or is_emulated32():
@@ -66439,7 +66434,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             r = re.search(r"gdtr base=(\S+) limit=(\S+)", res)
 
         if not r:
-            self.err("Not found GDTR")
+            self.err_add_out("Not found GDTR")
             return
 
         base = int(r.group(1), 16)
@@ -66450,13 +66445,13 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
 
         # check initialized or not
         if (base == 0x0 and limit == 0xffff) or limit == 0x0:
-            self.err("GDT is uninitialized")
+            self.err_add_out("GDT is uninitialized")
             return
 
         try:
             gdt_data = read_memory(base, limit + 1)
         except gdb.MemoryError:
-            self.err("Memory read error")
+            self.err_add_out("Memory read error")
             return
         entries = slice_unpack(gdt_data, 8)
 
@@ -66477,7 +66472,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             r = re.search(r"ldtr base=(\S+) limit=(\S+)", res)
 
         if not r:
-            self.err("Not found LDTR")
+            self.err_add_out("Not found LDTR")
             return
 
         base = int(r.group(1), 16)
@@ -66488,13 +66483,13 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
 
         # check initialized or not
         if (base == 0x0 and limit == 0xffffffff) or limit == 0x0:
-            self.err("LDT is uninitialized")
+            self.err_add_out("LDT is uninitialized")
             return
 
         try:
             ldt_data = read_memory(base, limit + 1)
         except gdb.MemoryError:
-            self.err("Memory read error")
+            self.err_add_out("Memory read error")
             return
         entries = slice_unpack(ldt_data, 8)
 
@@ -66604,7 +66599,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             self.print_gdt_entry_legend()
         else:
             if not args.quiet:
-                self.info("for flags description, use `-v`")
+                self.info_add_out("for flags description, use `-v`")
 
         self.print_output(term=True)
         return
@@ -66710,7 +66705,7 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify("IDT Entry (x86 sample)"))
 
         # print legend
-        self.info("*** This is an {:s} ***".format(Color.boldify("EXAMPLE")))
+        self.info_add_out("*** This is an {:s} ***".format(Color.boldify("EXAMPLE")))
         self.out.append(GefUtil.make_legend(self.idtval2str_legend()))
 
         # print entry
@@ -66787,7 +66782,7 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
             r = re.search(r"idtr base=(\S+) limit=(\S+)", res)
 
         if not r:
-            self.err("Not found IDTR")
+            self.err_add_out("Not found IDTR")
             return
 
         base = int(r.group(1), 16)
@@ -66801,13 +66796,13 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
 
         # check initialized or not
         if (base == 0x0 and limit == 0xffff) or limit == 0x0:
-            self.err("IDT is uninitialized")
+            self.err_add_out("IDT is uninitialized")
             return
 
         try:
             idt_data = read_memory(base, min(limit + 1, current_arch.ptrsize * 2 * 256))
         except gdb.MemoryError:
-            self.err("Memory read error")
+            self.err_add_out("Memory read error")
             return
         entries = slice_unpack(idt_data, current_arch.ptrsize * 2)
 
@@ -66859,7 +66854,7 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
             self.print_idt_entry_legend()
         else:
             if not args.quiet:
-                self.info("for flags description, use `-v`")
+                self.info_add_out("for flags description, use `-v`")
 
         self.print_output(term=True)
         return
@@ -66940,7 +66935,7 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
             ))
 
         if diff_found is False:
-            self.info("Not found diff")
+            self.info_add_out("Not found diff")
         return
 
     def memcmp(self, from1data, from2data):
@@ -67017,7 +67012,7 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
             ))
 
         if diff_found is False:
-            self.info("Not found diff")
+            self.info_add_out("Not found diff")
         return
 
     @parse_args
@@ -67031,7 +67026,7 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
                 return
 
         if args.size == 0:
-            self.info("The size is zero, maybe wrong")
+            self.info_add_out("The size is zero, maybe wrong")
 
         ret = self.read_data(args.location1, args.location2, args.size)
         if ret is None:
@@ -79283,7 +79278,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 ))
                 current = extent.next
         except Exception:
-            self.err("Corrupted?")
+            self.err_add_out("Corrupted?")
         return
 
     def dump_direct_map_list(self, head, root):
@@ -79313,7 +79308,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 self.dump_bucket(bucket, root)
                 current = direct_map.next_extent
         except Exception:
-            self.err("Corrupted?")
+            self.err_add_out("Corrupted?")
         return
 
     def dump_bucket(self, bucket, root, idx=None):
@@ -79372,7 +79367,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             try:
                 slot_span, _ = self.read_slot_span(current)
             except Exception:
-                self.err("Corrupted?")
+                self.err_add_out("Corrupted?")
                 break
             self.out.append("            -> slot_span @{:s} (#{:3d} of super_page @{:s})".format(
                 self.C(slot_span.addr), slot_span.partition_page_index, self.P(slot_span.super_page_addr),
@@ -79510,7 +79505,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         try:
             # search malloc
             malloc = AddressUtil.parse_address("malloc")
-            self.info("malloc: {:#x}".format(malloc))
+            self.info_add_out("malloc: {:#x}".format(malloc))
 
             # search __libc_malloc_impl
             """
@@ -79531,7 +79526,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                     continue
                 __libc_malloc_impl = int(m.group(1), 16)
                 break
-            self.info("__libc_malloc_impl: {:#x}".format(__libc_malloc_impl))
+            self.info_add_out("__libc_malloc_impl: {:#x}".format(__libc_malloc_impl))
 
             # search __malloc_alloc_meta
             """
@@ -79595,7 +79590,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                0xf7f8b44b:  cmp    DWORD PTR [ebx+0x708],0x0
             """
             for cand in __malloc_alloc_meta_candidate:
-                self.info("alloc_meta (candidate): {:#x}".format(cand))
+                self.info_add_out("alloc_meta (candidate): {:#x}".format(cand))
                 res = gdb.execute("x/10i {:#x}".format(cand), to_string=True)
                 for line in res.splitlines():
                     if is_x86_64():
@@ -79618,12 +79613,12 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                     if value not in [0, 1]: # init_done is 1 or 0
                         continue
                     # found
-                    self.info("__malloc_context.init_done: {:#x}".format(__malloc_context_init_done))
+                    self.info_add_out("__malloc_context.init_done: {:#x}".format(__malloc_context_init_done))
                     __malloc_context = __malloc_context_init_done - current_arch.ptrsize
                     x = read_int_from_memory(__malloc_context)
                     if x == gef_getpagesize():
                         __malloc_context -= current_arch.ptrsize
-                    self.info("__malloc_context: {:#x}".format(__malloc_context))
+                    self.info_add_out("__malloc_context: {:#x}".format(__malloc_context))
                     return __malloc_context
             return None
         except Exception:
@@ -79634,7 +79629,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         try:
             return AddressUtil.parse_address("&__malloc_context")
         except gdb.error:
-            self.info("Symbol is not found, it will use heuristic search")
+            self.info_add_out("Symbol is not found, it will use heuristic search")
             return self.get_malloc_context_heuristic()
 
     def class_to_size(self, cl):
@@ -83442,9 +83437,9 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
 
         if is_x86():
             if not self.args.verbose:
-                self.info("use `-v` for print Additional info")
+                self.info_add_out("use `-v` for print Additional info")
             else:
-                self.info("Additional info")
+                self.info_add_out("Additional info")
                 self.qregisters_x86_x64()
         return
 
@@ -83944,7 +83939,7 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
 
     def make_out(self, mappings):
         if mappings is None or len(mappings) == 0:
-            self.warn("No virtual mappings found")
+            self.warn_add_out("No virtual mappings found")
             return
 
         filtered_mappings = mappings.copy()
@@ -83982,7 +83977,7 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
 
         # check how many result
         if lines == []:
-            self.warn("Nothing to display")
+            self.warn_add_out("Nothing to display")
             return
 
         # add legend
@@ -84489,13 +84484,13 @@ class PagewalkRiscvCommand(PagewalkCommand):
     def pagewalk(self):
         satp = get_register("satp")
         if satp is None:
-            self.err("Failed to read $satp")
+            self.err_add_out("Failed to read $satp")
             return
         self.quiet_info_add_out("satp: {:#018x}".format(satp))
 
         sstatus = get_register("sstatus")
         if sstatus is None:
-            self.err("Failed to read $sstatus")
+            self.err_add_out("Failed to read $sstatus")
             return
         self.quiet_info_add_out("sstatus: {:#018x}".format(sstatus))
 
@@ -84518,9 +84513,9 @@ class PagewalkRiscvCommand(PagewalkCommand):
 
         if is_riscv64():
             if mode == 0:
-                self.err("RV64 bare page table is unsupported")
+                self.err_add_out("RV64 bare page table is unsupported")
             elif mode == 11: # Sv64 is unsuppported
-                self.err("RV64 Sv64 page table is unsupported")
+                self.err_add_out("RV64 Sv64 page table is unsupported")
             elif mode == 10: # Sv57
                 self.quiet_info_add_out("RV64 Sv57 page table")
                 self.bits = {
@@ -84561,10 +84556,10 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     self.pagewalk_L1()
                     self.merging()
             else:
-                self.err("RV64 unknown mode")
+                self.err_add_out("RV64 unknown mode")
         else:
             if mode == 0:
-                self.err("RV32 bare page table is unsupported")
+                self.err_add_out("RV32 bare page table is unsupported")
             elif mode == 1: # Sv32
                 self.quiet_info_add_out("RV32 Sv32 page table")
                 self.bits = {
@@ -85228,7 +85223,7 @@ class PagewalkX64Command(PagewalkCommand):
                     self.pagewalk_PT()
                     self.merging()
         else:
-            self.err("Unsupported CPU")
+            self.err_add_out("Unsupported CPU")
             return
 
         self.flags_strings_cache = None
@@ -86038,14 +86033,14 @@ class PagewalkArmCommand(PagewalkCommand):
         if TTBR0_EL1 is None:
             TTBR0_EL1 = get_register("$TTBR0", use_mbed_exec=True)
         if TTBR0_EL1 is None:
-            self.err("$TTBR0_EL1{} is not found".format(self.suffix))
+            self.err_add_out("$TTBR0_EL1{} is not found".format(self.suffix))
             return
 
         TTBCR = get_register("$TTBCR{}".format(self.suffix))
         if TTBCR is None:
             TTBCR = get_register("$TTBCR", use_mbed_exec=True)
         if TTBCR is None:
-            self.err("$TTBCR{} is not found".format(self.suffix))
+            self.err_add_out("$TTBCR{} is not found".format(self.suffix))
             return
 
         # pagewalk TTBR0_EL1
@@ -86070,7 +86065,7 @@ class PagewalkArmCommand(PagewalkCommand):
         if TTBR1_EL1 is None:
             TTBR1_EL1 = get_register("$TTBR1", use_mbed_exec=True)
         if TTBR1_EL1 is None:
-            self.err("$TTBR1_EL1{} is not found".format(self.suffix))
+            self.err_add_out("$TTBR1_EL1{} is not found".format(self.suffix))
             return
 
         if self.suffix:
@@ -86105,14 +86100,14 @@ class PagewalkArmCommand(PagewalkCommand):
         if TTBR0_EL1 is None:
             TTBR0_EL1 = get_register("$TTBR0", use_mbed_exec=True)
         if TTBR0_EL1 is None:
-            self.err("$TTBR0_EL1{} is not found".format(self.suffix))
+            self.err_add_out("$TTBR0_EL1{} is not found".format(self.suffix))
             return
 
         TTBCR = get_register("$TTBCR{}".format(self.suffix))
         if TTBCR is None:
             TTBCR = get_register("$TTBCR", use_mbed_exec=True)
         if TTBCR is None:
-            self.err("$TTBCR{} is not found".format(self.suffix))
+            self.err_add_out("$TTBCR{} is not found".format(self.suffix))
             return
 
         # pagewalk TTBR0_EL1
@@ -86138,7 +86133,7 @@ class PagewalkArmCommand(PagewalkCommand):
         if TTBR1_EL1 is None:
             TTBR1_EL1 = get_register("$TTBR1", use_mbed_exec=True)
         if TTBR1_EL1 is None:
-            self.err("$TTBR1_EL1{} is not found".format(self.suffix))
+            self.err_add_out("$TTBR1_EL1{} is not found".format(self.suffix))
             return
 
         if T0SZ != 0 or T1SZ != 0:
@@ -86715,7 +86710,7 @@ class PagewalkArm64Command(PagewalkCommand):
             self.OFFSET_BIT_RANGE = [0, 16]
         else:
             if not self.silent:
-                self.err("Unsupported granule_bits")
+                self.err_add_out("Unsupported granule_bits")
             return
 
         if not self.silent:
@@ -87488,7 +87483,7 @@ class PagewalkArm64Command(PagewalkCommand):
         # change EL
         try:
             if self.TargetEL < 1 or self.TargetEL > 3:
-                self.err("Invalid argument (ELx>=1 && ELx<=3)")
+                self.err_add_out("Invalid argument (ELx>=1 && ELx<=3)")
                 return
             if self.TargetEL != CurrentEL:
                 self.SAVED_CPSR = CPSR
@@ -87497,10 +87492,10 @@ class PagewalkArm64Command(PagewalkCommand):
                 gdb.parse_and_eval("$cpsr = {:#x}".format(CPSR))
                 self.quiet_info_add_out("Moving to EL{:d}".format(self.TargetEL))
         except ValueError:
-            self.err("Invalid argument (ELx integer required)")
+            self.err_add_out("Invalid argument (ELx integer required)")
             return
         except gdb.error:
-            self.err("Maybe unsupported to change to EL{:d}".format(self.TargetEL))
+            self.err_add_out("Maybe unsupported to change to EL{:d}".format(self.TargetEL))
             return
         # reload CPSR
         CPSR = get_register("$cpsr") & 0xffffffff
@@ -87521,7 +87516,7 @@ class PagewalkArm64Command(PagewalkCommand):
         TTBR0_EL1 = get_register("$TTBR0_EL1")
         TCR_EL1 = get_register("$TCR_EL1")
         if TTBR0_EL1 == 0:
-            self.warn("Maybe unused TTBR0_EL1")
+            self.warn_add_out("Maybe unused TTBR0_EL1")
             return
 
         IPS = (TCR_EL1 >> 32) & 0b111
@@ -87530,7 +87525,7 @@ class PagewalkArm64Command(PagewalkCommand):
         try:
             granule_bits = {0b00: 12, 0b01: 16, 0b10: 14}[TG0]
         except KeyError:
-            self.err("Unsupported $TCR_EL1.TG0")
+            self.err_add_out("Unsupported $TCR_EL1.TG0")
             return
         region_start = 0
         region_end = region_start + (2 ** (64 - T0SZ))
@@ -87542,7 +87537,7 @@ class PagewalkArm64Command(PagewalkCommand):
             if self.FEAT_LPA:
                 translation_base_addr = (TTBR0_EL1 & 0xffffffffffc0) | (((TTBR0_EL1 >> 2) & 0b1111) << 48)
             else:
-                self.err("Unsupported FEAT_LPA and IPS pair")
+                self.err_add_out("Unsupported FEAT_LPA and IPS pair")
                 return
         else:
             translation_base_addr = TTBR0_EL1 & 0xfffffffffffe
@@ -87569,7 +87564,7 @@ class PagewalkArm64Command(PagewalkCommand):
         TTBR1_EL1 = get_register("$TTBR1_EL1")
         TCR_EL1 = get_register("$TCR_EL1")
         if TTBR1_EL1 == 0:
-            self.warn("Maybe unused TTBR1_EL1")
+            self.warn_add_out("Maybe unused TTBR1_EL1")
             return
 
         IPS = (TCR_EL1 >> 32) & 0b111
@@ -87578,7 +87573,7 @@ class PagewalkArm64Command(PagewalkCommand):
         try:
             granule_bits = {0b01: 14, 0b10: 12, 0b11: 16}[TG1]
         except KeyError:
-            self.err("Unsupported $TCR_EL1.TG1")
+            self.err_add_out("Unsupported $TCR_EL1.TG1")
             return
         region_end = 2 ** 64
         region_start = region_end - (2 ** (64 - T1SZ))
@@ -87590,7 +87585,7 @@ class PagewalkArm64Command(PagewalkCommand):
             if self.FEAT_LPA:
                 translation_base_addr = (TTBR1_EL1 & 0xffffffffffc0) | (((TTBR1_EL1 >> 2) & 0b1111) << 48)
             else:
-                self.err("Unsupported FEAT_LPA and IPS pair")
+                self.err_add_out("Unsupported FEAT_LPA and IPS pair")
                 return
         else:
             translation_base_addr = TTBR1_EL1 & 0xfffffffffffe
@@ -87619,7 +87614,7 @@ class PagewalkArm64Command(PagewalkCommand):
         VTCR_EL2 = get_register("$VTCR_EL2")
         if VTTBR_EL2 == 0:
             if not self.silent:
-                self.warn("Maybe unused VTTBR_EL2")
+                self.warn_add_out("Maybe unused VTTBR_EL2")
             return
 
         SL2 = (VTCR_EL2 >> 33) & 0b1
@@ -87631,7 +87626,7 @@ class PagewalkArm64Command(PagewalkCommand):
             granule_bits = {0b00: 12, 0b01: 16, 0b10: 14}[TG0]
         except KeyError:
             if not self.silent:
-                self.err("Unsupported $VTCR_EL2.TG0")
+                self.err_add_out("Unsupported $VTCR_EL2.TG0")
             return
         region_start = 0
         region_end = region_start + (2 ** (64 - T0SZ))
@@ -87652,7 +87647,7 @@ class PagewalkArm64Command(PagewalkCommand):
                 if TG0 == 0b00:
                     if self.FEAT_LPA2 and SL2 == 1:
                         if not self.silent:
-                            self.err("Unsupported stage2 start level")
+                            self.err_add_out("Unsupported stage2 start level")
                         return
                     else:
                         stage2_start_level = 1
@@ -87662,7 +87657,7 @@ class PagewalkArm64Command(PagewalkCommand):
                 if TG0 == 0b00:
                     if self.FEAT_LPA2 and SL2 == 1:
                         if not self.silent:
-                            self.err("Unsupported stage2 start level")
+                            self.err_add_out("Unsupported stage2 start level")
                         return
                     else:
                         stage2_start_level = 0
@@ -87672,7 +87667,7 @@ class PagewalkArm64Command(PagewalkCommand):
                 if TG0 == 0b00:
                     if self.FEAT_LPA2 and SL2 == 1:
                         if not self.silent:
-                            self.err("Unsupported stage2 start level")
+                            self.err_add_out("Unsupported stage2 start level")
                         return
                     else:
                         stage2_start_level = 3
@@ -87696,7 +87691,7 @@ class PagewalkArm64Command(PagewalkCommand):
                     stage2_start_level = 1
             else:
                 if not self.silent:
-                    self.err("Unsupported stage2 start level")
+                    self.err_add_out("Unsupported stage2 start level")
                 return
 
         if PS == 0b110:
@@ -87704,7 +87699,7 @@ class PagewalkArm64Command(PagewalkCommand):
                 translation_base_addr = (VTTBR_EL2 & 0xffffffffffc0) | (((VTTBR_EL2 >> 2) & 0b1111) << 48)
             else:
                 if not self.silent:
-                    self.err("Unsupported FEAT_LPA and PS pair")
+                    self.err_add_out("Unsupported FEAT_LPA and PS pair")
                 return
         else:
             translation_base_addr = VTTBR_EL2 & 0xfffffffffffe
@@ -87736,7 +87731,7 @@ class PagewalkArm64Command(PagewalkCommand):
         TTBR0_EL2 = get_register("$TTBR0_EL2")
         TCR_EL2 = get_register("$TCR_EL2")
         if TTBR0_EL2 == 0:
-            self.warn("Maybe unused TTBR0_EL2")
+            self.warn_add_out("Maybe unused TTBR0_EL2")
             return
 
         if self.EL2_E2H:
@@ -87748,7 +87743,7 @@ class PagewalkArm64Command(PagewalkCommand):
         try:
             granule_bits = {0b00: 12, 0b01: 16, 0b10: 14}[TG0]
         except KeyError:
-            self.err("Unsupported $TCR_EL2.TG0")
+            self.err_add_out("Unsupported $TCR_EL2.TG0")
             return
         region_start = 0
         region_end = region_start + (2 ** (64 - T0SZ))
@@ -87763,13 +87758,13 @@ class PagewalkArm64Command(PagewalkCommand):
             if self.FEAT_LPA:
                 translation_base_addr = (TTBR0_EL2 & 0xffffffffffc0) | (((TTBR0_EL2 >> 2) & 0b1111) << 48)
             else:
-                self.err("Unsupported FEAT_LPA and PS pair")
+                self.err_add_out("Unsupported FEAT_LPA and PS pair")
                 return
         elif self.EL2_E2H and IPS == 0b110:
             if self.FEAT_LPA:
                 translation_base_addr = (TTBR0_EL2 & 0xffffffffffc0) | (((TTBR0_EL2 >> 2) & 0b1111) << 48)
             else:
-                self.err("Unsupported FEAT_LPA and IPS pair")
+                self.err_add_out("Unsupported FEAT_LPA and IPS pair")
                 return
         else:
             translation_base_addr = TTBR0_EL2 & 0xfffffffffffe
@@ -87803,7 +87798,7 @@ class PagewalkArm64Command(PagewalkCommand):
         TTBR1_EL2 = get_register("$TTBR1_EL2")
         TCR_EL2 = get_register("$TCR_EL2")
         if TTBR1_EL2 == 0:
-            self.warn("Maybe unused TTBR1_EL2")
+            self.warn_add_out("Maybe unused TTBR1_EL2")
             return
 
         IPS = (TCR_EL2 >> 32) & 0b111
@@ -87812,7 +87807,7 @@ class PagewalkArm64Command(PagewalkCommand):
         try:
             granule_bits = {0b01: 14, 0b10: 12, 0b11: 16}[TG1]
         except KeyError:
-            self.err("Unsupported $TCR_EL2.TG1")
+            self.err_add_out("Unsupported $TCR_EL2.TG1")
             return
         region_end = 2 ** 64
         region_start = region_end - (2 ** (64 - T1SZ))
@@ -87824,7 +87819,7 @@ class PagewalkArm64Command(PagewalkCommand):
             if self.FEAT_LPA:
                 translation_base_addr = (TTBR1_EL2 & 0xffffffffffc0) | (((TTBR1_EL2 >> 2) & 0b1111) << 48)
             else:
-                self.err("Unsupported FEAT_LPA and IPS pair")
+                self.err_add_out("Unsupported FEAT_LPA and IPS pair")
                 return
         else:
             translation_base_addr = TTBR1_EL2 & 0xfffffffffffe
@@ -87851,7 +87846,7 @@ class PagewalkArm64Command(PagewalkCommand):
         TTBR0_EL3 = get_register("$TTBR0_EL3")
         TCR_EL3 = get_register("$TCR_EL3")
         if TTBR0_EL3 == 0:
-            self.warn("Maybe unused TTBR0_EL3")
+            self.warn_add_out("Maybe unused TTBR0_EL3")
             return
 
         PS = (TCR_EL3 >> 16) & 0b111
@@ -87860,7 +87855,7 @@ class PagewalkArm64Command(PagewalkCommand):
         try:
             granule_bits = {0b00: 12, 0b01: 16, 0b10: 14}[TG0]
         except KeyError:
-            self.err("Unsupported $TCR_EL3.TG0")
+            self.err_add_out("Unsupported $TCR_EL3.TG0")
             return
         region_start = 0
         region_end = region_start + (2 ** (64 - T0SZ))
@@ -87872,7 +87867,7 @@ class PagewalkArm64Command(PagewalkCommand):
             if self.FEAT_LPA:
                 translation_base_addr = (TTBR0_EL3 & 0xffffffffffc0) | (((TTBR0_EL3 >> 2) & 0b1111) << 48)
             else:
-                self.err("Unsupported FEAT_LPA and PS pair")
+                self.err_add_out("Unsupported FEAT_LPA and PS pair")
                 return
         else:
             translation_base_addr = TTBR0_EL3 & 0xfffffffffffe
@@ -87896,7 +87891,7 @@ class PagewalkArm64Command(PagewalkCommand):
     def pagewalk_init(self):
         res = gdb.execute("info registers", to_string=True)
         if "TTBR" not in res:
-            self.err("Not found system registers, try check qemu version (at least: 3.x~, recommend: 5.x~)")
+            self.err_add_out("Not found system registers, try check qemu version (at least: 3.x~, recommend: 5.x~)")
             return
 
         SCTLR_EL1 = get_register("$SCTLR_EL1")
@@ -87981,7 +87976,7 @@ class PagewalkArm64Command(PagewalkCommand):
 
         # do pagewalk
         if self.TargetEL < 1 or 3 < self.TargetEL:
-            self.warn("No paging in EL{:d}".format(self.TargetEL))
+            self.warn_add_out("No paging in EL{:d}".format(self.TargetEL))
             return
         if self.TargetEL == 1 and self.EL1_M:
             if self.EL2_VM:
@@ -93469,7 +93464,7 @@ class WalkLinkListCommand(GenericCommand, BufferingOutput):
             try:
                 flink = read_int_from_memory(AddressUtil.align_address(current + offset))
             except gdb.MemoryError:
-                self.err("memory corrupted")
+                self.err_add_out("memory corrupted")
                 return
             if self.args.dump_bytes_before:
                 source = read_memory(current - self.args.dump_bytes_before, self.args.dump_bytes_before)
@@ -93493,7 +93488,7 @@ class WalkLinkListCommand(GenericCommand, BufferingOutput):
                 self.out[-1] += " (head)"
                 break
             if flink in seen[1:]:
-                self.err("loop detected")
+                self.err_add_out("loop detected")
                 break
             seen.append(current)
             current = flink
@@ -93504,8 +93499,8 @@ class WalkLinkListCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.args = args
         self.out = []
-        self.info("head address: {:#x}".format(args.address))
-        self.info("next pointer offset: {:#x}".format(args.next_offset))
+        self.info_add_out("head address: {:#x}".format(args.address))
+        self.info_add_out("next pointer offset: {:#x}".format(args.next_offset))
         self.walk_link_list(args.address, args.next_offset)
         self.print_output()
         return
