@@ -50104,12 +50104,12 @@ class SysregCommand(GenericCommand):
             if not m:
                 continue
             regname, regvalue = m.group(1), m.group(2)
-            if self.filter:
-                if self.exact:
-                    if not any(f.lower() == regname.lower() for f in self.filter):
+            if self.args.filter:
+                if self.args.exact:
+                    if not any(f.lower() == regname.lower() for f in self.args.filter):
                         continue
                 else:
-                    if not any(f.lower() in regname.lower() for f in self.filter):
+                    if not any(f.lower() in regname.lower() for f in self.args.filter):
                         continue
             regs[regname] = int(regvalue, 16)
         regs = list(filter(lambda x: "$" + x[0] not in current_arch.all_registers, sorted(regs.items())))
@@ -50142,8 +50142,6 @@ class SysregCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("kgdb",))
     def do_invoke(self, args):
-        self.filter = args.filter
-        self.exact = args.exact
         self.print_sysreg_compact()
         return
 
