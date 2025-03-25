@@ -49274,28 +49274,7 @@ class LibcCommand(GenericCommand):
             ab_path = os.path.normpath(os.path.join(os.path.dirname(ab_path), os.readlink(ab_path)))
         return os.path.basename(a) == os.path.basename(ab_path)
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    def do_invoke(self, args):
-        Cache.reset_gef_caches(all=True) # get_process_maps may be caching old information
-
-        libc_targets = (
-            "libc-2.", "libc.so.6", # glibc
-            "libuClibc-", "/libc.so.0", # uClibc
-        )
-
-        libc = ProcessMap.get_section_base_address_by_list(libc_targets)
-        if libc is None:
-            err("libc is not found")
-            return
-
-        self.quiet_print(titlify("libc info"))
-        gdb.execute(f"set $libc = {libc:#x}")
-        if args.quiet:
-            return
-        gef_print(f"$libc = {libc:#x}")
-
+    def libc_calc_hash(self, libc_targets):
         libc = ProcessMap.process_lookup_path(libc_targets)
         real_libc_path = None
 
@@ -49336,6 +49315,30 @@ class LibcCommand(GenericCommand):
             gef_print("ver:\t{:s}".format(String.bytes2str(pos.group(0))))
         return
 
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    def do_invoke(self, args):
+        Cache.reset_gef_caches(all=True) # get_process_maps may be caching old information
+
+        libc_targets = (
+            "libc-2.", "libc.so.6", # glibc
+            "libuClibc-", "/libc.so.0", # uClibc
+        )
+
+        libc = ProcessMap.get_section_base_address_by_list(libc_targets)
+        if libc is None:
+            err("libc is not found")
+            return
+
+        self.quiet_print(titlify("libc info"))
+        gdb.execute(f"set $libc = {libc:#x}")
+        self.quiet_print(f"$libc = {libc:#x}")
+
+        if not args.quiet:
+            self.libc_calc_hash(libc_targets)
+        return
+
 
 @register_command
 class LdCommand(GenericCommand):
@@ -49348,28 +49351,7 @@ class LdCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    def do_invoke(self, args):
-        Cache.reset_gef_caches(all=True) # get_process_maps may be caching old information
-
-        ld_targets = (
-            "ld-2.", "ld-linux-", "ld-linux.", # glibc
-            "ld64-uClibc-", "ld-uClibc-", "ld64-uClibc.", "ld-uClibc.", # uClibc
-        )
-
-        ld = ProcessMap.get_section_base_address_by_list(ld_targets)
-        if ld is None:
-            err("ld is not found")
-            return
-
-        self.quiet_print(titlify("ld info"))
-        gdb.execute(f"set $ld = {ld:#x}")
-        if args.quiet:
-            return
-        gef_print(f"$ld = {ld:#x}")
-
+    def ld_calc_hash(self, ld_targets):
         ld = ProcessMap.process_lookup_path(ld_targets)
         real_ld_path = None
 
@@ -49408,6 +49390,30 @@ class LdCommand(GenericCommand):
         pos = re.search(b"ld.so [\x20-\x7e]+ version [\x20-\x7e]*", data)
         if pos:
             gef_print("ver:\t{:s}".format(String.bytes2str(pos.group(0))))
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    def do_invoke(self, args):
+        Cache.reset_gef_caches(all=True) # get_process_maps may be caching old information
+
+        ld_targets = (
+            "ld-2.", "ld-linux-", "ld-linux.", # glibc
+            "ld64-uClibc-", "ld-uClibc-", "ld64-uClibc.", "ld-uClibc.", # uClibc
+        )
+
+        ld = ProcessMap.get_section_base_address_by_list(ld_targets)
+        if ld is None:
+            err("ld is not found")
+            return
+
+        self.quiet_print(titlify("ld info"))
+        gdb.execute(f"set $ld = {ld:#x}")
+        self.quiet_print(f"$ld = {ld:#x}")
+
+        if not args.quiet:
+            self.ld_calc_hash(ld_targets)
         return
 
 
