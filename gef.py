@@ -58717,7 +58717,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         except gdb.error:
             return {}
         # kcurrent calls ktask itself, so self.args will be overwritten. this is workaround.
-        self.args = args
+        self.args = args # revert
 
         tmp_current_tasks = {}
         for line in res.splitlines():
@@ -69968,7 +69968,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         if not hasattr(self, "initialized"):
             if is_x86() or is_arm32():
                 if not args.skip_page2virt:
+                    args = self.args # backup
                     gdb.execute("page2virt 0", to_string=True)
+                    # self.args will be overwritten. this is workaround.
+                    self.args = args # revert
 
         allocator = KernelChecksecCommand.get_slab_type()
         if allocator != "SLUB":
@@ -70670,7 +70673,10 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         if not hasattr(self, "initialized"):
             if is_x86() or is_arm32():
                 if not args.skip_page2virt:
+                    args = self.args # backup
                     gdb.execute("page2virt 0", to_string=True)
+                    # self.args will be overwritten. this is workaround.
+                    self.args = args # revert
 
         allocator = KernelChecksecCommand.get_slab_type()
         if allocator != "SLUB_TINY":
