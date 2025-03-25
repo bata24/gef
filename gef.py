@@ -11465,6 +11465,7 @@ def parse_args(f):
         except Exception as e:
             err("Invalid argument: {}".format(e))
             return
+        self.args = args
         return f(self, args, **kwargs)
 
     return wrapper
@@ -13919,23 +13920,38 @@ class GenericCommand(gdb.Command):
         self.__last_command = command
         return
 
+    def quiet_print(self, msg):
+        if not hasattr(self.args, "quiet") or not self.args.quiet:
+            gef_print(msg)
+        return
+
+    def quiet_ok(self, msg):
+        if not hasattr(self.args, "quiet") or not self.args.quiet:
+            ok(msg)
+        return
+
     def quiet_info(self, msg):
-        if not self.args.quiet:
+        if not hasattr(self.args, "quiet") or not self.args.quiet:
             info(msg)
         return
 
+    def quiet_warn(self, msg):
+        if not hasattr(self.args, "quiet") or not self.args.quiet:
+            warn(msg)
+        return
+
     def quiet_err(self, msg):
-        if not self.args.quiet:
+        if not hasattr(self.args, "quiet") or not self.args.quiet:
             err(msg)
         return
 
     def verbose_info(self, msg):
-        if self.args.verbose:
+        if hasattr(self.args, "verbose") and self.args.verbose:
             info(msg)
         return
 
     def verbose_err(self, msg):
-        if self.args.verbose:
+        if hasattr(self.args, "verbose") and self.args.verbose:
             err(msg)
         return
 
@@ -13959,22 +13975,24 @@ class BufferingOutput:
         return
 
     def quiet_info_add_out(self, msg):
-        if not self.args.quiet:
+        if not hasattr(self.args, "quiet") or not self.args.quiet:
             msg = "{} {}".format(Color.colorify("[+]", "bold blue"), msg)
             self.out.append(msg)
         return
 
     def quiet_add_out(self, msg):
-        if not self.args.quiet:
+        if not hasattr(self.args, "quiet") or not self.args.quiet:
             self.out.append(msg)
         return
 
     def verbose_add_out(self, msg):
-        if self.args.verbose:
+        if hasattr(self.args, "verbose") and self.args.verbose:
             self.out.append(msg)
         return
 
     def print_output(self, term=False):
+        if not hasattr(self, "out"):
+            return
         if not self.out:
             return
         if term:
@@ -14848,8 +14866,6 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        self.args = args
-
         # lookup type
         tp = GefUtil.cached_lookup_type(args.type)
         if not args.type.startswith(("struct", "union", "enum")):
@@ -15316,7 +15332,6 @@ class ArgvCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        self.args = args
         self.out = []
 
         paddr1 = self.get_address_from_symbol("&_dl_argv")
@@ -15426,7 +15441,6 @@ class EnvpCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        self.args = args
         self.out = []
 
         self.out.append(titlify("ENVP from __environ"))
@@ -15514,8 +15528,6 @@ class VdsoCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
-        self.args = args
-
         # get map entry
         maps = ProcessMap.get_process_maps()
         if maps is None:
@@ -15591,8 +15603,6 @@ class VvarCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr"))
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
-        self.args = args
-
         # get map entry
         maps = ProcessMap.get_process_maps()
         if maps is None:
@@ -15647,8 +15657,6 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
     @only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
-        self.args = args
-
         # get map entry
         maps = ProcessMap.get_process_maps()
         if maps is None:
@@ -16481,7 +16489,6 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_target_local
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
-        self.args = args
         self.out = []
         self.proc_dump()
         self.print_output(term=True)
@@ -16675,7 +16682,6 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_target_local
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        self.args = args
         self.out = []
         self.print_capability_from_pid(args.verbose)
         self.print_capability_from_file(args.verbose)
@@ -16751,8 +16757,6 @@ class SmartMemoryDumpCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
-        self.args = args
-
         if args.prefix is None:
             self.prefix = ""
         else:
@@ -16924,7 +16928,6 @@ class HijackFdCommand(GenericCommand):
         # (fd returned by syscall == real opened fd + 80). I have been hard-coding it so far,
         # but it seems to be fixed, so please specify it with a command argument.
         # currently supported: dup3, connect
-        self.args = args
 
         self.AF_INET = 2
         self.SOCK_STREAM = 1
@@ -17240,11 +17243,10 @@ class SearchPatternCommand(GenericCommand):
             # too big
             if self.args.max_region_size != 0:
                 if section.size >= self.args.max_region_size:
-                    if not self.args.quiet:
-                        info("{:#x}-{:#x} is skipped due to size ({:#x}) >= MAX_REGION_SIZE ({:#x})".format(
-                            section.page_start, section.page_end,
-                            section.size, self.args.max_region_size,
-                        ))
+                    self.quiet_info("{:#x}-{:#x} is skipped due to size ({:#x}) >= MAX_REGION_SIZE ({:#x})".format(
+                        section.page_start, section.page_end,
+                        section.size, self.args.max_region_size,
+                    ))
                     continue
 
             # permission filter
@@ -17360,7 +17362,6 @@ class SearchPatternCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        self.args = args
         self.found_count = 0
 
         # permission check
@@ -17764,8 +17765,6 @@ class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
-        self.args = args
-
         # get saved filename (for caching)
         filepath = Path.get_filepath()
         if filepath is None:
@@ -20464,8 +20463,6 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        self.args = args
-
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
 
@@ -20660,8 +20657,6 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        self.args = args
-
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
 
@@ -21608,7 +21603,6 @@ class GlibcHeapTryFreeCommand(GenericCommand):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
-        self.args = args
         self.doit("free", args.address, None)
         return
 
@@ -21636,7 +21630,6 @@ class GlibcHeapTryMallocCommand(GlibcHeapTryFreeCommand):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
-        self.args = args
         self.doit("malloc", args.size, None)
         return
 
@@ -21666,7 +21659,6 @@ class GlibcHeapTryReallocCommand(GlibcHeapTryFreeCommand):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
-        self.args = args
         self.doit("realloc", args.address, args.size)
         return
 
@@ -21696,7 +21688,6 @@ class GlibcHeapTryCallocCommand(GlibcHeapTryFreeCommand):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
-        self.args = args
         self.doit("calloc", args.size, args.nmemb)
         return
 
@@ -21858,8 +21849,6 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        self.args = args
-
         if is_64bit():
             MIN_SIZE = 0x20
         else:
@@ -22137,8 +22126,6 @@ class GlibcVisualHeapCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        self.args = args
-
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
 
@@ -23103,8 +23090,6 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
     @parse_args
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
-        self.args = args
-
         if args.pattern:
             pattern = re.compile(args.pattern)
         else:
@@ -27419,8 +27404,6 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
     @parse_args
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        self.args = args
-
         local_filepath = None
         remote_filepath = None
         tmp_filepath = None
@@ -29685,8 +29668,6 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        self.args = args
-
         if args.phys:
             if not is_qemu_system() and not is_vmware() and not is_kgdb():
                 err("Unsupported. Check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
@@ -31685,8 +31666,6 @@ class VMMapCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("kgdb",))
     @exclude_specific_arch(arch=("ARM32M",))
     def do_invoke(self, args):
-        self.args = args
-
         if is_qemu_system() or is_vmware():
             info("Redirect to pagewalk (args are ignored)")
             gdb.execute("pagewalk")
@@ -32839,8 +32818,6 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        self.args = args
-
         Cache.reset_gef_caches(all=True)
 
         self.verbose = False
@@ -33261,8 +33238,6 @@ class DynamicCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        self.args = args
-
         if args.dynamic_address:
             dynamic = ProcessMap.lookup_address(args.dynamic_address)
         else:
@@ -34216,8 +34191,6 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        self.args = args
-
         if args.address:
             struct_io_file_array = []
             for x in args.address:
@@ -34568,8 +34541,7 @@ class GotCommand(GenericCommand, BufferingOutput):
             try:
                 got_value = read_int_from_memory(got_address)
             except gdb.error:
-                if not args.quiet:
-                    err("Memory access error")
+                self.quiet_err("Memory access error")
                 return
 
             # resolve got value's symbol
@@ -34726,8 +34698,7 @@ class GotCommand(GenericCommand, BufferingOutput):
         for _, info, line in sorted(entries):
             # print section name
             if prev_section != info.section_name:
-                if not args.quiet:
-                    self.out.append(titlify(info.section_name))
+                self.quiet_add_out(titlify(info.section_name))
             prev_section = info.section_name
             # if we have a filter let's skip the entries that are not requested
             if args.filter:
@@ -34744,16 +34715,13 @@ class GotCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        self.args = args
-
         try:
             GefUtil.which("objdump")
             GefUtil.which("readelf")
             if args.cppfilt:
                 GefUtil.which("c++filt")
         except FileNotFoundError as e:
-            if not args.quiet:
-                err("{}".format(e))
+            self.quiet_err("{}".format(e))
             return
 
         # A valid path even if the mount namespace is different.
@@ -34773,8 +34741,7 @@ class GotCommand(GenericCommand, BufferingOutput):
         # get local_filepath
         if args.remote:
             if not is_remote_debug():
-                if not args.quiet:
-                    err("-r option is allowed only remote debug")
+                self.quiet_err("-r option is allowed only remote debug")
                 return
 
             if args.file:
@@ -34789,14 +34756,12 @@ class GotCommand(GenericCommand, BufferingOutput):
             elif Pid.get_pid(remote=True):
                 remote_filepath = "/proc/{:d}/exe".format(Pid.get_pid(remote=True))
             else:
-                if not args.quiet:
-                    err("File name could not be determined")
+                self.quiet_err("File name could not be determined")
                 return
 
             data = Path.read_remote_file(remote_filepath, as_byte=True) # qemu-user is failed here, it is ok
             if not data:
-                if not args.quiet:
-                    err("Failed to read remote filepath")
+                self.quiet_err("Failed to read remote filepath")
                 return
             tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix="got", suffix=".elf")
             os.fdopen(tmp_fd, "wb").write(data)
@@ -34812,19 +34777,16 @@ class GotCommand(GenericCommand, BufferingOutput):
 
         # check local filepath
         if local_filepath is None:
-            if not args.quiet:
-                err("File name could not be determined")
+            self.quiet_err("File name could not be determined")
             return
 
         if not os.path.exists(local_filepath):
-            if not args.quiet:
-                err("{:s} does not exist".format(local_filepath))
+            self.quiet_err("{:s} does not exist".format(local_filepath))
             return
 
         elf = Elf.get_elf(local_filepath)
         if elf is None or not elf.is_valid():
-            if not args.quiet:
-                err("Invalid elf")
+            self.quiet_err("Invalid elf")
             return
 
         # title
@@ -34847,8 +34809,7 @@ class GotCommand(GenericCommand, BufferingOutput):
         # get base address
         if args.elf_address:
             if not args.file:
-                if not args.quiet:
-                    err("-e option needs -f option: in-memory ELF lacks Shdr, preventing full information resolution")
+                self.quiet_err("-e option needs -f option: in-memory ELF lacks Shdr, preventing full information resolution")
                 return
             base_address = args.elf_address
         else:
@@ -34875,8 +34836,7 @@ class GotCommand(GenericCommand, BufferingOutput):
                 if path_match_end:
                     base_address = min(path_match_end)
                 else:
-                    if not args.quiet:
-                        err("Not found {:s} in memory (specify the address with the -e option)".format(target_filepath))
+                    self.quiet_err("Not found {:s} in memory (specify the address with the -e option)".format(target_filepath))
                     return
 
         # get the filtering parameter
@@ -49172,11 +49132,9 @@ class CodebaseCommand(GenericCommand):
         else:
             addr = sec.sh_addr
 
-        if not self.args.quiet:
-            gef_print(titlify(section_name))
+        self.quiet_print(titlify(section_name))
         var_name = section_name.lstrip(".")
-        if not self.args.quiet:
-            gef_print("${:s} = {:#x}".format(var_name, addr))
+        self.quiet_print("${:s} = {:#x}".format(var_name, addr))
         gdb.execute("set ${:s} = {:#x}".format(var_name, addr))
         return
 
@@ -49184,28 +49142,21 @@ class CodebaseCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
-        self.args = args
-
         # The codebase may be heuristically determined from the memory map.
         bin_base = AddressUtil.get_codebase()
         if bin_base is None:
-            if not self.quiet:
-                err("Binary base is not found")
+            self.quiet_err("Binary base is not found")
             return
-        if not args.quiet:
-            gef_print(titlify("code base"))
+        self.quiet_print(titlify("code base"))
         gdb.execute(f"set $codebase = {bin_base:#x}")
-        if not args.quiet:
-            gef_print(f"$codebase = {bin_base:#x}")
+        self.quiet_print(f"$codebase = {bin_base:#x}")
         gdb.execute(f"set $binbase = {bin_base:#x}")
-        if not args.quiet:
-            gef_print(f"$binbase = {bin_base:#x}")
+        self.quiet_print(f"$binbase = {bin_base:#x}")
 
         # Any other area should use a section header.
         elf = Elf.get_elf()
         if elf is None or not elf.is_valid():
-            if not args.quiet:
-                err("Failed to load an elf")
+            self.quiet_err("Failed to load an elf")
             return
 
         self.define_section_variable(elf, bin_base, ".text")
@@ -49287,12 +49238,9 @@ class HeapbaseCommand(GenericCommand):
             err("Heap is not found")
             return
 
-        if not args.quiet:
-            gef_print(titlify("Heap base"))
+        self.quiet_print(titlify("Heap base"))
         gdb.execute(f"set $heapbase = {heap:#x}")
-        if args.quiet:
-            return
-        gef_print(f"$heapbase = {heap:#x}")
+        self.quiet_print(f"$heapbase = {heap:#x}")
         return
 
 
@@ -49342,8 +49290,7 @@ class LibcCommand(GenericCommand):
             err("libc is not found")
             return
 
-        if not args.quiet:
-            gef_print(titlify("libc info"))
+        self.quiet_print(titlify("libc info"))
         gdb.execute(f"set $libc = {libc:#x}")
         if args.quiet:
             return
@@ -49417,8 +49364,7 @@ class LdCommand(GenericCommand):
             err("ld is not found")
             return
 
-        if not args.quiet:
-            gef_print(titlify("ld info"))
+        self.quiet_print(titlify("ld info"))
         gdb.execute(f"set $ld = {ld:#x}")
         if args.quiet:
             return
@@ -51509,8 +51455,6 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
     @parse_args
     @exclude_specific_gdb_mode(mode=("wine",))
     def do_invoke(self, args):
-        self.args = args
-
         ERRNO_DICT = ErrnoCommand.get_errno_dict()
 
         if args.all:
@@ -52159,7 +52103,6 @@ class ConvertMemoryCommand(ConvertCommand):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        self.args = args
         try:
             value = read_memory(args.location, args.size)
         except (gdb.MemoryError, MemoryError):
@@ -52199,7 +52142,6 @@ class ConvertValueCommand(ConvertCommand):
 
     @parse_args
     def do_invoke(self, args):
-        self.args = args
         if args.hex: # "41414141" -> "\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value, to_str=True)
             if not value:
@@ -56100,8 +56042,7 @@ class KernelbaseCommand(GenericCommand):
             Cache.reset_gef_caches(all=True)
 
         # resolve text_base, ro_base
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
         kinfo = Kernel.get_kernel_base()
 
         self.out = []
@@ -56146,12 +56087,10 @@ class KernelVersionCommand(GenericCommand):
         if args.rescan:
             Cache.reset_gef_caches(all=True)
 
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
         kversion = Kernel.kernel_version()
         if kversion is None:
-            if not args.quiet:
-                err("Failed to resolve")
+            self.quiet_err("Failed to resolve")
             return
 
         self.out = []
@@ -56182,12 +56121,10 @@ class KernelCmdlineCommand(GenericCommand):
         if args.rescan:
             Cache.reset_gef_caches(all=True)
 
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
         kcmdline = Kernel.kernel_cmdline()
         if kcmdline is None:
-            if not args.quiet:
-                err("Failed to resolve")
+            self.quiet_err("Failed to resolve")
             return
 
         self.out = []
@@ -56333,7 +56270,6 @@ class KernelCurrentCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
         self.quiet_info("Wait for memory scan")
 
         if is_arm32() or is_arm64():
@@ -58761,8 +58697,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 self.seccomp_tools_command = GefUtil.which("seccomp-tools")
                 self.quiet_info("seccomp-tools is found")
                 if is_arm32():
-                    if not self.quiet:
-                        warn("seccomp-tools is unsupported on arm32")
+                    self.quiet_warn("seccomp-tools is unsupported on arm32")
             except FileNotFoundError:
                 self.quiet_info("seccomp-tools is not found, use `capstone-disable bpf_func`")
                 self.seccomp_tools_command = None
@@ -58770,7 +58705,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return task_addrs
 
     def get_current_task_list(self):
-        args = self.args
+        args = self.args # backup
         try:
             res = gdb.execute("kcurrent --quiet", to_string=True)
         except gdb.error:
@@ -59068,7 +59003,6 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
         self.quiet_info("Wait for memory scan")
 
         # initialize
@@ -59836,7 +59770,6 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
         self.quiet_info("Wait for memory scan")
 
         module_addrs = self.get_modules_list()
@@ -59936,12 +59869,10 @@ class KernelModuleLoadCommand(GenericCommand):
     def get_modules_list(self):
         modules = KernelAddressHeuristicFinder.get_modules()
         if modules is None:
-            if not self.args.quiet:
-                err("Not found modules (maybe, CONFIG_MODULES is not set)")
+            self.quiet_err("Not found modules (maybe, CONFIG_MODULES is not set)")
             return None
 
-        if not self.args.quiet:
-            info("modules: {:#x}".format(modules))
+        self.quiet_info("modules: {:#x}".format(modules))
 
         module_addrs = []
         current = modules
@@ -59969,12 +59900,10 @@ class KernelModuleLoadCommand(GenericCommand):
                     valid = False
                     break
             if valid:
-                if not self.args.quiet:
-                    info("offsetof(module, name): {:#x}".format(offset_name))
+                self.quiet_info("offsetof(module, name): {:#x}".format(offset_name))
                 return offset_name
 
-        if not self.args.quiet:
-            err("Not found module->name[MODULE_NAME_LEN]")
+        self.quiet_err("Not found module->name[MODULE_NAME_LEN]")
         return None
 
     def get_offset_sect_attrs(self, module_addrs):
@@ -60045,12 +59974,10 @@ class KernelModuleLoadCommand(GenericCommand):
                     valid = False
                     break
             if valid:
-                if not self.args.quiet:
-                    info("offsetof(module, sect_attrs): {:#x}".format(offset_sect_attrs))
+                self.quiet_info("offsetof(module, sect_attrs): {:#x}".format(offset_sect_attrs))
                 return offset_sect_attrs
 
-        if not self.args.quiet:
-            err("Not found module->sect_attrs")
+        self.quiet_err("Not found module->sect_attrs")
         return None
 
     def initialize(self):
@@ -60099,18 +60026,14 @@ class KernelModuleLoadCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-
         kversion = Kernel.kernel_version()
         if kversion < "3.0":
-            if not args.quiet:
-                err("Unsupported before v3.0")
+            self.quiet_err("Unsupported before v3.0")
             return
 
         ret = self.initialize()
         if not ret:
-            if not args.quiet:
-                err("Failed to initialize")
+            self.quiet_err("Failed to initialize")
             return
 
         for module in self.module_addrs:
@@ -60121,8 +60044,7 @@ class KernelModuleLoadCommand(GenericCommand):
             # get nsections
             sect_attrs = read_int_from_memory(module + self.offset_sect_attrs)
             nsections = read_int_from_memory(sect_attrs + self.offset_nsections) & 0xffffffff
-            if not args.quiet:
-                info("nsections = {}".format(nsections))
+            self.quiet_info("nsections = {}".format(nsections))
 
             # get each section name and address
             sections = []
@@ -60130,8 +60052,7 @@ class KernelModuleLoadCommand(GenericCommand):
                 name_ptr = read_int_from_memory(sect_attrs + self.offset_firstname + self.sizeof_module_sect_attr * i)
                 name = read_cstring_from_memory(name_ptr)
                 addr = read_int_from_memory(sect_attrs + self.offset_address + self.sizeof_module_sect_attr * i)
-                if not args.quiet:
-                    info("name={:s}, addr={:#x}".format(name, addr))
+                self.quiet_info("name={:s}, addr={:#x}".format(name, addr))
                 sections.append((name, addr))
 
                 # unneeded, but for convenience
@@ -60142,8 +60063,7 @@ class KernelModuleLoadCommand(GenericCommand):
             gdb.execute("add-symbol-file {!r} {:s}".format(args.path, command))
             break
         else:
-            if not args.quiet:
-                err("Not found {:s}".format(args.name))
+            self.quiet_err("Not found {:s}".format(args.name))
         return
 
 
@@ -60184,8 +60104,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         elif allocator == "SLUB_TINY":
             ret = gdb.execute("slub-tiny-dump --quiet --no-pager bdev_cache", to_string=True)
         else:
-            if not self.args.quiet:
-                err("Unsupported SLAB, SLOB")
+            self.quiet_err("Unsupported SLAB, SLOB")
             return None
 
         bdevs = []
@@ -60490,14 +60409,11 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         bdevs = self.get_bdev_list()
         if not bdevs:
-            if not args.quiet:
-                err("Not found any bdev")
+            self.quiet_err("Not found any bdev")
             return
 
         self.out = []
@@ -60509,8 +60425,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         # ignore bdev if major is 0
         bdevs = [bdev for bdev in bdevs if self.get_dev_num(bdev)[0] != 0]
         if not bdevs:
-            if not args.quiet:
-                err("Not found any bdev (after filtering major == 0)")
+            self.quiet_err("Not found any bdev (after filtering major == 0)")
             return
 
         # parse major, minor and name
@@ -61443,11 +61358,9 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
         """
         chrdevs = KernelAddressHeuristicFinder.get_chrdevs()
         if chrdevs is None:
-            if not self.args.quiet:
-                err("Not found chrdevs")
+            self.quiet_err("Not found chrdevs")
             return None
-        if not self.args.quiet:
-            info("chrdevs: {:#x}".format(chrdevs))
+        self.quiet_info("chrdevs: {:#x}".format(chrdevs))
 
         chrdev_addrs = []
         for i in range(255):
@@ -61502,19 +61415,15 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
         """
         cdev_map = KernelAddressHeuristicFinder.get_cdev_map()
         if cdev_map is None:
-            if not self.args.quiet:
-                err("Not found cdev_map")
+            self.quiet_err("Not found cdev_map")
             return None
-        if not self.args.quiet:
-            info("cdev_map: {:#x}".format(cdev_map))
+        self.quiet_info("cdev_map: {:#x}".format(cdev_map))
 
         try:
             cdev_map_ = read_int_from_memory(cdev_map)
-            if not self.args.quiet:
-                info("*cdev_map: {:#x}".format(cdev_map_))
+            self.quiet_info("*cdev_map: {:#x}".format(cdev_map_))
         except Exception:
-            if not self.args.quiet:
-                err("cdev_map is not initialized")
+            self.quiet_err("cdev_map is not initialized")
             return None
 
         cdev_addrs = []
@@ -61566,12 +61475,10 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
                 # for loop is finished until last element
                 if valid:
                     offset_ops = offset_list - current_arch.ptrsize
-                    if not self.args.quiet:
-                        info("offsetof(cdev, ops): {:#x}".format(offset_ops))
+                    self.quiet_info("offsetof(cdev, ops): {:#x}".format(offset_ops))
                     return offset_ops
 
-        if not self.args.quiet:
-            err("Not found offsetof(cdev, ops)")
+        self.quiet_err("Not found offsetof(cdev, ops)")
         return None
 
     @parse_args
@@ -61580,9 +61487,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         chrdev_addrs = self.get_chrdev_list()
         if chrdev_addrs is None:
@@ -62661,8 +62566,6 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-
         # parse version
         if args.version:
             r = re.search(r"(\d)\.(\d+)(?:\.(\d+))?", args.version)
@@ -62673,11 +62576,9 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
                 return
             kversion = Kernel.KernelVersion(None, args.version, major, minor, patch)
         else:
-            if not args.quiet:
-                info("Wait for memory scan")
+            self.quiet_info("Wait for memory scan")
             kversion = Kernel.kernel_version()
-        if not args.quiet:
-            info("Kernel version: {:d}.{:d}.{:d}".format(kversion.major, kversion.minor, kversion.patch))
+        self.quiet_info("Kernel version: {:d}.{:d}.{:d}".format(kversion.major, kversion.minor, kversion.patch))
 
         # initialize
         if self.initialize(kversion) is False:
@@ -62696,8 +62597,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             try:
                 addrs = [read_int_from_memory(args.address + current_arch.ptrsize * i) for i in range(len(members))]
             except gdb.MemoryError:
-                if not args.quiet:
-                    err("Memory read error")
+                self.quiet_err("Memory read error")
                 return
 
             if not args.quiet:
@@ -62961,11 +62861,9 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
 
         self.sysctl_table_root = KernelAddressHeuristicFinder.get_sysctl_table_root()
         if self.sysctl_table_root is None:
-            if not self.args.quiet:
-                err("Not found sysctl_table_root")
+            self.quiet_err("Not found sysctl_table_root")
             return False
-        if not self.args.quiet:
-            info("sysctl_table_root: {:#x}".format(self.sysctl_table_root))
+        self.quiet_info("sysctl_table_root: {:#x}".format(self.sysctl_table_root))
 
         """
         struct ctl_table_root {
@@ -63140,9 +63038,8 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
 
         self.root_ctl_dir = self.sysctl_table_root + current_arch.ptrsize
         self.root_rb_node = read_int_from_memory(self.root_ctl_dir + self.offset_rb_node)
-        if not self.args.quiet:
-            info("root_ctl_dir: {:#x}".format(self.root_ctl_dir))
-            info("root_rb_node: {:#x}".format(self.root_rb_node))
+        self.quiet_info("root_ctl_dir: {:#x}".format(self.root_ctl_dir))
+        self.quiet_info("root_rb_node: {:#x}".format(self.root_rb_node))
 
         self.initialized = True
         return True
@@ -63153,12 +63050,10 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
         self.exact_found = False
 
         if args.exact and not args.filter:
-            if not args.quiet:
-                err("Filter string is needed")
+            self.quiet_err("Filter string is needed")
             return
 
         if not hasattr(self, "cache"):
@@ -63168,8 +63063,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             self.initialized = False
             self.cache = []
 
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         if not self.initialize():
             return
@@ -63199,8 +63093,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                 self.sysctl_dump(self.root_rb_node)
             except gdb.MemoryError:
                 self.cache = []
-                if not args.quiet:
-                    err("Memory error")
+                self.quiet_err("Memory error")
                 return
 
         self.print_output(term=True)
@@ -63255,11 +63148,9 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         # file_systems
         self.file_systems = KernelAddressHeuristicFinder.get_file_systems()
         if self.file_systems is None:
-            if not self.args.quiet:
-                err("Not found file_systems")
+            self.quiet_err("Not found file_systems")
             return
-        if not self.args.quiet:
-            info("file_systems: {:#x}".format(self.file_systems))
+        self.quiet_info("file_systems: {:#x}".format(self.file_systems))
 
         """
         struct file_system_type {
@@ -63284,8 +63175,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         """
         # file_system_type->name
         self.offset_name = 0
-        if not self.args.quiet:
-            info("offsetof(file_system_type, name): {:#x}".format(self.offset_name))
+        self.quiet_info("offsetof(file_system_type, name): {:#x}".format(self.offset_name))
 
         # file_system_type->next
         for i in range(10):
@@ -63318,15 +63208,12 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
                 self.offset_next = offset_next
                 break
         else:
-            if not self.args.quiet:
-                err("Not found file_system_type->next")
+            self.quiet_err("Not found file_system_type->next")
             return False
-        if not self.args.quiet:
-            info("offsetof(file_system_type, next): {:#x}".format(self.offset_next))
+        self.quiet_info("offsetof(file_system_type, next): {:#x}".format(self.offset_next))
 
         self.offset_fs_supers = self.offset_next + current_arch.ptrsize
-        if not self.args.quiet:
-            info("offsetof(file_system_type, fs_supers): {:#x}".format(self.offset_fs_supers))
+        self.quiet_info("offsetof(file_system_type, fs_supers): {:#x}".format(self.offset_fs_supers))
 
         """
         struct super_block {
@@ -63375,8 +63262,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         current = read_int_from_memory(self.file_systems)
         while True:
             if current == 0:
-                if not self.args.quiet:
-                    err("Not found file_systems who has valid fs_supers")
+                self.quiet_err("Not found file_systems who has valid fs_supers")
                 return False
             fs_supers = read_int_from_memory(current + self.offset_fs_supers)
             if is_valid_addr(fs_supers):
@@ -63409,17 +63295,14 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
                 self.offset_s_mounts = self.offset_s_instances - current_arch.ptrsize * 5
                 break
         else:
-            if not self.args.quiet:
-                err("Not found super_block->s_instances")
+            self.quiet_err("Not found super_block->s_instances")
             return False
-        if not self.args.quiet:
-            info("offsetof(super_block, s_instances): {:#x}".format(self.offset_s_instances))
-            info("offsetof(super_block, s_mounts): {:#x}".format(self.offset_s_mounts))
+        self.quiet_info("offsetof(super_block, s_instances): {:#x}".format(self.offset_s_instances))
+        self.quiet_info("offsetof(super_block, s_mounts): {:#x}".format(self.offset_s_mounts))
 
         # super_block->s_dev
         self.offset_s_dev = current_arch.ptrsize * 2
-        if not self.args.quiet:
-            info("offsetof(super_block, s_dev): {:#x}".format(self.offset_s_dev))
+        self.quiet_info("offsetof(super_block, s_dev): {:#x}".format(self.offset_s_dev))
 
         """
         struct mount {
@@ -63669,9 +63552,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         if not self.initialize():
             return
@@ -63754,23 +63635,18 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         clocksource_list = KernelAddressHeuristicFinder.get_clocksource_list()
         if clocksource_list is None:
-            if not args.quiet:
-                err("Not found clocksource_list")
+            self.quiet_err("Not found clocksource_list")
             return
-        if not args.quiet:
-            info("clocksource_list: {:#x}".format(clocksource_list))
+        self.quiet_info("clocksource_list: {:#x}".format(clocksource_list))
 
         offset_list = self.get_offset_list(clocksource_list)
         if offset_list is None:
             return
-        if not args.quiet:
-            info("offsetof(clocksource, list): {:#x}".format(offset_list))
+        self.quiet_info("offsetof(clocksource, list): {:#x}".format(offset_list))
 
         self.out = []
         width = AddressUtil.get_format_address_width()
@@ -63850,12 +63726,10 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         # resolve __per_cpu_offset
         __per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
         if __per_cpu_offset is None:
-            if not self.args.quiet:
-                info("__per_cpu_offset: Not found")
+            self.quiet_info("__per_cpu_offset: Not found")
             self.cpu_offset = []
         else:
-            if not self.args.quiet:
-                info("__per_cpu_offset: {:#x}".format(__per_cpu_offset))
+            self.quiet_info("__per_cpu_offset: {:#x}".format(__per_cpu_offset))
             self.cpu_offset = KernelCurrentCommand.get_each_cpu_offset(__per_cpu_offset)
 
         ### classic timer (unit: tick)
@@ -63863,11 +63737,9 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         # timer_bases
         self.timer_bases = KernelAddressHeuristicFinder.get_timer_bases()
         if not self.timer_bases:
-            if not self.args.quiet:
-                err("timer_bases: Not found")
+            self.quiet_err("timer_bases: Not found")
             return False
-        if not self.args.quiet:
-            info("timer_bases: {:#x}".format(self.timer_bases))
+        self.quiet_info("timer_bases: {:#x}".format(self.timer_bases))
 
         # per_cpu_timer_bases
         if self.cpu_offset == []:
@@ -63880,8 +63752,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
             self.nr_bases = 2
         else:
             self.nr_bases = 1
-        if not self.args.quiet:
-            info("nr_bases: {:d}".format(self.nr_bases))
+        self.quiet_info("nr_bases: {:d}".format(self.nr_bases))
 
         # sizeof(struct timer_base)
         """
@@ -63917,22 +63788,18 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         # jiffies
         self.jiffies = KernelAddressHeuristicFinder.get_jiffies()
         if not self.jiffies:
-            if not self.args.quiet:
-                err("jiffies: Not found")
+            self.quiet_err("jiffies: Not found")
             return False
-        if not self.args.quiet:
-            info("jiffies: {:#x}".format(self.jiffies))
+        self.quiet_info("jiffies: {:#x}".format(self.jiffies))
 
         ### High-resolution kernel timer (unit: nano seconds)
 
         # hrtimer_bases
         self.hrtimer_bases = KernelAddressHeuristicFinder.get_hrtimer_bases()
         if not self.hrtimer_bases:
-            if not self.args.quiet:
-                err("hrtimer_bases: Not found")
+            self.quiet_err("hrtimer_bases: Not found")
             return False
-        if not self.args.quiet:
-            info("hrtimer_bases: {:#x}".format(self.hrtimer_bases))
+        self.quiet_info("hrtimer_bases: {:#x}".format(self.hrtimer_bases))
 
         # per_cpu_hrtimer_bases
         if self.cpu_offset == []:
@@ -64209,15 +64076,12 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-
         kversion = Kernel.kernel_version()
         if kversion < "4.8":
             err("Unsupported before v4.8")
             return
 
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         if not self.initialize():
             return
@@ -64249,11 +64113,9 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
         # pci_root_buses
         self.pci_root_buses = KernelAddressHeuristicFinder.get_pci_root_buses()
         if not self.pci_root_buses:
-            if not self.args.quiet:
-                err("Not found pci_root_buses (maybe, CONFIG_PCI is not set)")
+            self.quiet_err("Not found pci_root_buses (maybe, CONFIG_PCI is not set)")
             return False
-        if not self.args.quiet:
-            info("pci_root_buses: {:#x}".format(self.pci_root_buses))
+        self.quiet_info("pci_root_buses: {:#x}".format(self.pci_root_buses))
 
         first_root_bus = read_int_from_memory(self.pci_root_buses)
         if self.pci_root_buses == first_root_bus:
@@ -64310,12 +64172,10 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             if is_valid_addr(v):
                 if read_cstring_from_memory(v) == "0000:00":
                     self.offset_pci_bus_dev = current_arch.ptrsize * i
-                    if not self.args.quiet:
-                        info("offsetof(pci_bus, dev): {:#x}".format(self.offset_pci_bus_dev))
+                    self.quiet_info("offsetof(pci_bus, dev): {:#x}".format(self.offset_pci_bus_dev))
                     break
         else:
-            if not self.args.quiet:
-                err("Not found pci_bus->dev")
+            self.quiet_err("Not found pci_bus->dev")
             return False
 
         # pci_dev->{bus_list,vendor,device,subsystem_vendor,subsystem_device,class,revision}
@@ -64365,12 +64225,10 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             if is_valid_addr(v):
                 if read_cstring_from_memory(v) == "0000:00:00.0":
                     self.offset_pci_dev_dev = current_arch.ptrsize * i
-                    if not self.args.quiet:
-                        info("offsetof(pci_dev, dev): {:#x}".format(self.offset_pci_dev_dev))
+                    self.quiet_info("offsetof(pci_dev, dev): {:#x}".format(self.offset_pci_dev_dev))
                     break
         else:
-            if not self.args.quiet:
-                err("Not found pci_dev->dev")
+            self.quiet_err("Not found pci_dev->dev")
             return False
 
         # pci_dev->resource
@@ -64392,34 +64250,28 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
                 if read_cstring_from_memory(v) == "0000:00:00.0":
                     self.offset_pci_dev_resource = ofs_base + current_arch.ptrsize * i - 0x10
                     self.sizeof_resource = 0x10 + current_arch.ptrsize * 6
-                    if not self.args.quiet:
-                        info("offsetof(pci_dev, resource): {:#x}".format(self.offset_pci_dev_resource))
+                    self.quiet_info("offsetof(pci_dev, resource): {:#x}".format(self.offset_pci_dev_resource))
                     break
         else:
-            if not self.args.quiet:
-                err("Not found pci_dev->resource")
+            self.quiet_err("Not found pci_dev->resource")
             return False
 
         # pci.ids
         pci_ids_file_name = "/usr/share/misc/pci.ids"
         if os.path.exists(pci_ids_file_name):
-            if not self.args.quiet:
-                info("use {:s}".format(pci_ids_file_name))
+            self.quiet_info("use {:s}".format(pci_ids_file_name))
             content = open(pci_ids_file_name).read()
         else:
             pci_ids_file_name = os.path.join(GEF_TEMP_DIR, "pci.ids")
             if os.path.exists(pci_ids_file_name):
-                if not self.args.quiet:
-                    info("use {:s}".format(pci_ids_file_name))
+                self.quiet_info("use {:s}".format(pci_ids_file_name))
                 content = open(pci_ids_file_name).read()
             else:
                 url = "https://raw.githubusercontent.com/pciutils/pciids/master/pci.ids"
-                if not self.args.quiet:
-                    info("use {:s}".format(url))
+                self.quiet_info("use {:s}".format(url))
                 content = String.bytes2str(http_get(url) or "")
                 if not content:
-                    if not self.args.quiet:
-                        info("Connection timed out: {:s}".format(url))
+                    self.quiet_info("Connection timed out: {:s}".format(url))
                 open(pci_ids_file_name, "w").write(content)
         self.pci_ids = self.parse_pci_ids(content)
 
@@ -64691,9 +64543,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         if not self.initialize():
             return
@@ -64750,9 +64600,7 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         if not hasattr(self, "configs"):
             self.configs = None
@@ -64860,8 +64708,6 @@ class KernelSearchCodePtrCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-
         if args.max_range and args.max_range % current_arch.ptrsize:
             err("range must be a multiple of the pointer size")
             return
@@ -65037,19 +64883,18 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
         current += current_arch.ptrsize
         rb["fail"] = read_int_from_memory(current)
 
-        if not self.args.quiet:
-            info("name: {:s}".format(ring_buffer_name))
-            info("address: {:#x}".format(ring_buffer_address))
-            info("desc_ring.count_bits: {:#x}".format(rb["desc_ring"]["count_bits"]))
-            info("desc_ring.descs: {:#x}".format(rb["desc_ring"]["descs"]))
-            info("desc_ring.infos: {:#x}".format(rb["desc_ring"]["infos"]))
-            info("desc_ring.head_id: {:#x}".format(rb["desc_ring"]["head_id"]))
-            info("desc_ring.tail_id: {:#x}".format(rb["desc_ring"]["tail_id"]))
-            info("text_data_ring.size_bits: {:#x}".format(rb["text_data_ring"]["size_bits"]))
-            info("text_data_ring.data: {:#x}".format(rb["text_data_ring"]["data"]))
-            info("text_data_ring.head_lpos: {:#x}".format(rb["text_data_ring"]["head_lpos"]))
-            info("text_data_ring.tail_lpos: {:#x}".format(rb["text_data_ring"]["tail_lpos"]))
-            info("fail: {:#x}".format(rb["fail"]))
+        self.quiet_info("name: {:s}".format(ring_buffer_name))
+        self.quiet_info("address: {:#x}".format(ring_buffer_address))
+        self.quiet_info("desc_ring.count_bits: {:#x}".format(rb["desc_ring"]["count_bits"]))
+        self.quiet_info("desc_ring.descs: {:#x}".format(rb["desc_ring"]["descs"]))
+        self.quiet_info("desc_ring.infos: {:#x}".format(rb["desc_ring"]["infos"]))
+        self.quiet_info("desc_ring.head_id: {:#x}".format(rb["desc_ring"]["head_id"]))
+        self.quiet_info("desc_ring.tail_id: {:#x}".format(rb["desc_ring"]["tail_id"]))
+        self.quiet_info("text_data_ring.size_bits: {:#x}".format(rb["text_data_ring"]["size_bits"]))
+        self.quiet_info("text_data_ring.data: {:#x}".format(rb["text_data_ring"]["data"]))
+        self.quiet_info("text_data_ring.head_lpos: {:#x}".format(rb["text_data_ring"]["head_lpos"]))
+        self.quiet_info("text_data_ring.tail_lpos: {:#x}".format(rb["text_data_ring"]["tail_lpos"]))
+        self.quiet_info("fail: {:#x}".format(rb["fail"]))
 
         def read_desc_i(descs_addr, seq):
             """
@@ -65238,9 +65083,7 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         if args.use_cache and hasattr(self, "out") and self.out:
             self.print_output()
@@ -65263,38 +65106,33 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
             if log_first_idx_ptr is None:
                 err("Not found log_first_idx")
                 return
-            if not args.quiet:
-                info("log_first_idx: {:#x}".format(log_first_idx_ptr))
+            self.quiet_info("log_first_idx: {:#x}".format(log_first_idx_ptr))
 
             log_next_idx_ptr = KernelAddressHeuristicFinder.get_log_next_idx()
             if log_next_idx_ptr is None:
                 err("Not found log_next_idx")
                 return
-            if not args.quiet:
-                info("log_next_idx: {:#x}".format(log_next_idx_ptr))
+            self.quiet_info("log_next_idx: {:#x}".format(log_next_idx_ptr))
 
             log_buf_start = KernelAddressHeuristicFinder.get___log_buf()
             if log_buf_start is None:
                 err("Not found __log_buf")
                 return
-            if not args.quiet:
-                info("__log_buf: {:#x}".format(log_buf_start))
+            self.quiet_info("__log_buf: {:#x}".format(log_buf_start))
 
             log_buf_len_ptr = KernelAddressHeuristicFinder.get_log_buf_len()
             if log_buf_len_ptr is None:
                 err("Not found log_buf_len")
                 return
-            if not args.quiet:
-                info("log_buf_len: {:#x}".format(log_buf_len_ptr))
+            self.quiet_info("log_buf_len: {:#x}".format(log_buf_len_ptr))
 
             log_first_idx = u32(read_memory(log_first_idx_ptr, 4))
             log_next_idx = u32(read_memory(log_next_idx_ptr, 4))
             log_buf_len = u32(read_memory(log_buf_len_ptr, 4))
             log_buf_end = log_buf_start + log_buf_len
-            if not args.quiet:
-                info("*log_first_idx: {:#x}".format(log_first_idx))
-                info("*log_next_idx: {:#x}".format(log_next_idx))
-                info("*log_buf_len: {:#x}".format(log_buf_len))
+            self.quiet_info("*log_first_idx: {:#x}".format(log_first_idx))
+            self.quiet_info("*log_next_idx: {:#x}".format(log_next_idx))
+            self.quiet_info("*log_buf_len: {:#x}".format(log_buf_len))
             self.dump_printk_log_buffer(log_first_idx, log_next_idx, log_buf_start, log_buf_end)
 
         self.print_output()
@@ -65393,8 +65231,6 @@ class StringsCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        self.args = args
-
         if args.end_location:
             first_range = args.end_location - args.location
         else:
@@ -65527,8 +65363,7 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
 
     def syscall_table_view(self, orig_tag, sys_call_table_addr, syscall_list, nr_base=0):
         if sys_call_table_addr is None:
-            if not self.args.quiet:
-                self.out.append("{} {}".format(Color.colorify("[+]", "bold red"), "Not found symbol"))
+            self.quiet_add_out("{} {}".format(Color.colorify("[+]", "bold red"), "Not found symbol"))
             return
 
         # It maintains the cache both when running with and without symbols.
@@ -65578,53 +65413,44 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
 
     def dump_syscall_table(self):
         if is_x86_32():
-            if not self.args.quiet:
-                self.out.append(titlify("sys_call_table (x86)"))
+            self.quiet_add_out(titlify("sys_call_table (x86)"))
             sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x86()
             self.syscall_table_view("x86", sys_call_table_addr, get_syscall_table("X86", "N32"))
 
         elif is_x86_64():
-            if not self.args.quiet:
-                self.out.append(titlify("sys_call_table (x64)"))
+            self.quiet_add_out(titlify("sys_call_table (x64)"))
             sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x64()
             self.syscall_table_view("x86_64", sys_call_table_addr, get_syscall_table("X86", "64"))
 
             kversion = Kernel.kernel_version()
 
-            if not self.args.quiet:
-                self.out.append(titlify("ia32_sys_call_table"))
+            self.quiet_add_out(titlify("ia32_sys_call_table"))
             if kversion < "6.6.26":
                 sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x86()
                 self.syscall_table_view("x86_32", sys_call_table_addr, get_syscall_table("X86", "32"))
             else:
-                if not self.args.quiet:
-                    self.out.append("ia32_sys_call_table is removed from 6.6.26.")
-                    self.out.append("each entry is embedded in `ia32_sys_call()` as call instruction.")
+                self.quiet_add_out("ia32_sys_call_table is removed from 6.6.26.")
+                self.quiet_add_out("each entry is embedded in `ia32_sys_call()` as call instruction.")
 
-            if not self.args.quiet:
-                self.out.append(titlify("x32_sys_call_table"))
+            self.quiet_add_out(titlify("x32_sys_call_table"))
             if kversion < "6.6.26":
                 sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x32()
                 self.syscall_table_view("x86_x32", sys_call_table_addr, get_syscall_table("X86", "64"), nr_base=0x40000000)
             else:
-                if not self.args.quiet:
-                    self.out.append("x32_sys_call_table is removed from 6.6.26.")
-                    self.out.append("each entry is embedded in `x32_sys_call()` as call instruction.")
+                self.quiet_add_out("x32_sys_call_table is removed from 6.6.26.")
+                self.quiet_add_out("each entry is embedded in `x32_sys_call()` as call instruction.")
 
         elif is_arm32():
-            if not self.args.quiet:
-                self.out.append(titlify("sys_call_table (arm32)"))
+            self.quiet_add_out(titlify("sys_call_table (arm32)"))
             sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_arm32()
             self.syscall_table_view("arm32", sys_call_table_addr, get_syscall_table("ARM", "N32"))
 
         elif is_arm64():
-            if not self.args.quiet:
-                self.out.append(titlify("sys_call_table (arm64)"))
+            self.quiet_add_out(titlify("sys_call_table (arm64)"))
             sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_arm64()
             self.syscall_table_view("arm64", sys_call_table_addr, get_syscall_table("ARM64", "ARM"))
 
-            if not self.args.quiet:
-                self.out.append(titlify("compat_sys_call_table (arm32)"))
+            self.quiet_add_out(titlify("compat_sys_call_table (arm32)"))
             sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_arm64_compat()
             self.syscall_table_view("arm64_32", sys_call_table_addr, get_syscall_table("ARM", "32"))
         return
@@ -65635,8 +65461,6 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-
         if not hasattr(self, "cached_table"):
             self.cached_table = {}
 
@@ -65937,8 +65761,6 @@ class TlsCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
-        self.args = args
-
         if not current_arch.tls_supported:
             warn("This command cannot work under this architecture")
             return
@@ -65997,8 +65819,6 @@ class FsbaseCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     @exclude_specific_gdb_mode(mode=("qiling", "kgdb"))
     def do_invoke(self, args):
-        self.args = args
-
         fsbase = current_arch.get_fs()
         if fsbase is not None:
             gef_print("$fs_base: {:#x}".format(fsbase))
@@ -66021,8 +65841,6 @@ class GsbaseCommand(GenericCommand):
     @exclude_specific_gdb_mode(mode=("qiling", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
-        self.args = args
-
         gsbase = current_arch.get_gs()
         if gsbase is not None:
             gef_print("$gs_base: {:#x}".format(gsbase))
@@ -66581,7 +66399,6 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("wine",))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16"))
     def do_invoke(self, args):
-        self.args = args
         self.out = []
 
         if not args.quiet:
@@ -66598,8 +66415,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
         if args.verbose:
             self.print_gdt_entry_legend()
         else:
-            if not args.quiet:
-                self.info_add_out("for flags description, use `-v`")
+            self.quiet_info_add_out("for flags description, use `-v`")
 
         self.print_output(term=True)
         return
@@ -66842,7 +66658,6 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("wine",))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16"))
     def do_invoke(self, args):
-        self.args = args
         self.out = []
 
         if is_qemu_system() or is_vmware():
@@ -66853,8 +66668,7 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
         if args.verbose:
             self.print_idt_entry_legend()
         else:
-            if not args.quiet:
-                self.info_add_out("for flags description, use `-v`")
+            self.quiet_info_add_out("for flags description, use `-v`")
 
         self.print_output(term=True)
         return
@@ -67018,8 +66832,6 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        self.args = args
-
         if args.phys1 or args.phys2:
             if not is_qemu_system():
                 err("Unsupported `--phys` option in this gdb mode")
@@ -67748,7 +67560,6 @@ class CrcMemoryCommand(CrcCommand):
     @only_if_gdb_running
     @load_crccheck
     def do_invoke(self, args):
-        self.args = args
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
         self.out.append("Size: {:#x}".format(args.size))
@@ -67792,8 +67603,6 @@ class CrcValueCommand(CrcCommand):
     @parse_args
     @load_crccheck
     def do_invoke(self, args):
-        self.args = args
-
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
             if not value:
@@ -67888,7 +67697,6 @@ class BaseNDecodeMemoryCommand(BaseNDecodeCommand):
     @only_if_gdb_running
     @load_codext
     def do_invoke(self, args):
-        self.args = args
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
         self.out.append("Size: {:#x}".format(args.size))
@@ -67935,8 +67743,6 @@ class BaseNDecodeValueCommand(BaseNDecodeCommand):
     @parse_args
     @load_crccheck
     def do_invoke(self, args):
-        self.args = args
-
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
             if not value:
@@ -68031,7 +67837,6 @@ class BaseNEncodeMemoryCommand(BaseNEncodeCommand):
     @only_if_gdb_running
     @load_codext
     def do_invoke(self, args):
-        self.args = args
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
         self.out.append("Size: {:#x}".format(args.size))
@@ -68081,8 +67886,6 @@ class BaseNEncodeValueCommand(BaseNEncodeCommand):
     @parse_args
     @load_crccheck
     def do_invoke(self, args):
-        self.args = args
-
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
             if not value:
@@ -70149,9 +69952,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         # The slub-dump command is also called by page2virt and kmagic to determine vmemmap and sizeof(struct page).
         # Therefore, slub-dump itself may be called recursively (up to once) from slub-dump.
@@ -70165,8 +69966,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         allocator = KernelChecksecCommand.get_slab_type()
         if allocator != "SLUB":
-            if not args.quiet:
-                err("Unsupported SLAB, SLOB, SLUB_TINY")
+            self.quiet_err("Unsupported SLAB, SLOB, SLUB_TINY")
             return
 
         if args.no_byte_swap is None:
@@ -70854,9 +70654,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         # The slub-tiny-dump command is also called by page2virt and kmagic to determine vmemmap and sizeof(struct page).
         # Therefore, slub-tiny-dump itself may be called recursively (up to once) from slub-tiny-dump.
@@ -70870,8 +70668,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
         allocator = KernelChecksecCommand.get_slab_type()
         if allocator != "SLUB_TINY":
-            if not args.quiet:
-                err("Unsupported SLUB, SLAB, SLOB")
+            self.quiet_err("Unsupported SLUB, SLAB, SLOB")
             return
 
         self.maps = None
@@ -71707,14 +71504,11 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         allocator = KernelChecksecCommand.get_slab_type()
         if allocator != "SLAB":
-            if not args.quiet:
-                err("Unsupported SLUB, SLOB, SLUB_TINY")
+            self.quiet_err("Unsupported SLUB, SLOB, SLUB_TINY")
             return
 
         self.maps = None
@@ -72119,14 +71913,11 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         allocator = KernelChecksecCommand.get_slab_type()
         if allocator != "SLOB":
-            if not args.quiet:
-                err("Unsupported SLUB, SLAB, SLUB_TINY")
+            self.quiet_err("Unsupported SLUB, SLAB, SLUB_TINY")
             return
 
         if (args.large, args.medium, args.small) == (False, False, False):
@@ -72231,53 +72022,44 @@ class SlabContainsCommand(GenericCommand):
             while True:
                 page = self.virt2page_wrapper(current)
                 if page is None:
-                    if not self.args.quiet:
-                        err("Invalid address")
+                    self.quiet_err("Invalid address")
                     return
 
-                if not self.args.quiet:
-                    if kversion >= "5.17":
-                        gef_print("slab: {:#x}".format(page))
-                    else:
-                        gef_print("page: {:#x}".format(page))
+                if kversion >= "5.17":
+                    self.quiet_print("slab: {:#x}".format(page))
+                else:
+                    self.quiet_print("page: {:#x}".format(page))
 
                 page_next = read_int_from_memory(page + self.page_offset_next)
                 if page_next & 1:
                     current -= gef_getpagesize()
-                    if not self.args.quiet:
-                        warn("Detected invalid value, continue exploring...")
+                    self.quiet_warn("Detected invalid value, continue exploring...")
                     continue
 
                 kmem_cache = read_int_from_memory(page + self.page_offset_slab_cache)
                 if kmem_cache == 0:
-                    if not self.args.quiet:
-                        err("This address is not managed by slab")
+                    self.quiet_err("This address is not managed by slab")
                     return
 
-                if not self.args.quiet:
-                    gef_print("kmem_cache: {:#x}".format(kmem_cache))
+                self.quiet_print("kmem_cache: {:#x}".format(kmem_cache))
 
                 if (kmem_cache & gef_getpagesize_mask_high()) == 0xdead000000000000:
                     current -= gef_getpagesize()
-                    if not self.args.quiet:
-                        warn("Detected invalid value, continue exploring...")
+                    self.quiet_warn("Detected invalid value, continue exploring...")
                     continue
 
                 if kmem_cache & 1:
                     current -= gef_getpagesize()
-                    if not self.args.quiet:
-                        warn("Detected invalid value, continue exploring...")
+                    self.quiet_warn("Detected invalid value, continue exploring...")
                     continue
 
-                if not self.args.quiet:
-                    gef_print("base: {:#x}".format(current))
+                self.quiet_print("base: {:#x}".format(current))
                 break
 
             slab_cache_name_ptr = read_int_from_memory(kmem_cache + self.kmem_cache_offset_name)
             slab_cache_name = read_cstring_from_memory(slab_cache_name_ptr)
             if slab_cache_name is None:
-                if not self.args.quiet:
-                    err("This address is not managed by slab")
+                self.quiet_err("This address is not managed by slab")
                 return
             slab_cache_name_c = Color.colorify(slab_cache_name, chunk_label_color)
             slab_cache_size = u32(read_memory(kmem_cache + self.kmem_cache_offset_size, 4))
@@ -72296,8 +72078,7 @@ class SlabContainsCommand(GenericCommand):
             gef_print(msg)
 
         except (gdb.MemoryError, ZeroDivisionError):
-            if not self.args.quiet:
-                err("Memory error")
+            self.quiet_err("Memory error")
         return
 
     @parse_args
@@ -72306,9 +72087,7 @@ class SlabContainsCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         if not hasattr(self, "initialized"):
             self.initialized = False
@@ -72320,14 +72099,12 @@ class SlabContainsCommand(GenericCommand):
             self.allocator = KernelChecksecCommand.get_slab_type()
 
         if self.allocator not in ["SLUB", "SLUB_TINY", "SLAB"]:
-            if not args.quiet:
-                err("Unsupported SLOB")
+            self.quiet_err("Unsupported SLOB")
             return
 
         ret = self.initialize()
         if not ret:
-            if not args.quiet:
-                err("Failed to initialize")
+            self.quiet_err("Failed to initialize")
             return
 
         self.slab_contains()
@@ -72861,8 +72638,6 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-
         # parse args
         if args.rescan:
             self.initialized = False
@@ -73305,9 +73080,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         allocator = KernelChecksecCommand.get_slab_type()
         if allocator not in ["SLUB", "SLUB_TINY", "SLAB"]:
@@ -73427,14 +73200,12 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
         prog_idr = KernelAddressHeuristicFinder.get_prog_idr()
         if not prog_idr:
             return False
-        if not self.args.quiet:
-            info("prog_idr: {:#x}".format(prog_idr))
+        self.quiet_info("prog_idr: {:#x}".format(prog_idr))
 
         map_idr = KernelAddressHeuristicFinder.get_map_idr()
         if not map_idr:
             return False
-        if not self.args.quiet:
-            info("map_idr: {:#x}".format(map_idr))
+        self.quiet_info("map_idr: {:#x}".format(map_idr))
 
         kversion = Kernel.kernel_version()
 
@@ -73464,8 +73235,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             if is_valid_addr(z):
                 continue
             self.offset_xa_head = pos - prog_idr
-            if not self.args.quiet:
-                info("offsetof(xarray, xa_head): {:#x}".format(self.offset_xa_head))
+            self.quiet_info("offsetof(xarray, xa_head): {:#x}".format(self.offset_xa_head))
             break
         else:
             err("Not found xa_head. (maybe uninitialized?)")
@@ -73494,22 +73264,18 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
         self.offset_shift = 0
         self.offset_count = 2
         self.offset_slots = current_arch.ptrsize * 5
-        if not self.args.quiet:
-            info("offsetof(xa_node, shift): {:#x}".format(self.offset_shift))
-            info("offsetof(xa_node, count): {:#x}".format(self.offset_count))
-            info("offsetof(xa_node, slots): {:#x}".format(self.offset_slots))
+        self.quiet_info("offsetof(xa_node, shift): {:#x}".format(self.offset_shift))
+        self.quiet_info("offsetof(xa_node, count): {:#x}".format(self.offset_count))
+        self.quiet_info("offsetof(xa_node, slots): {:#x}".format(self.offset_slots))
 
         # parse progs, maps
         try:
             progs = self.parse_xarray(prog_idr, root=True)
-            if not self.args.quiet:
-                info("Num of progs: {:#x}".format(len(progs)))
+            self.quiet_info("Num of progs: {:#x}".format(len(progs)))
             maps = self.parse_xarray(map_idr, root=True)
-            if not self.args.quiet:
-                info("Num of maps: {:#x}".format(len(maps)))
+            self.quiet_info("Num of maps: {:#x}".format(len(maps)))
         except gdb.MemoryError:
-            if not self.args.quiet:
-                err("Not found")
+            self.quiet_err("Not found")
             return False
 
         """
@@ -73554,14 +73320,13 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
         else:
             self.offset_aux = AddressUtil.align_address_to_size(self.offset_tag + 8, current_arch.ptrsize)
             self.offset_bpf_func = self.offset_aux + current_arch.ptrsize * 2
-        if not self.args.quiet:
-            info("offsetof(bpf_prog, type): {:#x}".format(self.offset_prog_type))
-            info("offsetof(bpf_prog, expected_attach_type): {:#x}".format(self.offset_expected_attach_type))
-            info("offsetof(bpf_prog, len): {:#x}".format(self.offset_len))
-            info("offsetof(bpf_prog, jited_len): {:#x}".format(self.offset_jited_len))
-            info("offsetof(bpf_prog, tag): {:#x}".format(self.offset_tag))
-            info("offsetof(bpf_prog, aux): {:#x}".format(self.offset_aux))
-            info("offsetof(bpf_prog, bpf_func): {:#x}".format(self.offset_bpf_func))
+        self.quiet_info("offsetof(bpf_prog, type): {:#x}".format(self.offset_prog_type))
+        self.quiet_info("offsetof(bpf_prog, expected_attach_type): {:#x}".format(self.offset_expected_attach_type))
+        self.quiet_info("offsetof(bpf_prog, len): {:#x}".format(self.offset_len))
+        self.quiet_info("offsetof(bpf_prog, jited_len): {:#x}".format(self.offset_jited_len))
+        self.quiet_info("offsetof(bpf_prog, tag): {:#x}".format(self.offset_tag))
+        self.quiet_info("offsetof(bpf_prog, aux): {:#x}".format(self.offset_aux))
+        self.quiet_info("offsetof(bpf_prog, bpf_func): {:#x}".format(self.offset_bpf_func))
 
         if maps:
             """
@@ -73587,11 +73352,10 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             self.offset_key_size = self.offset_map_type + 4
             self.offset_value_size = self.offset_key_size + 4
             self.offset_max_entries = self.offset_value_size + 4
-            if not self.args.quiet:
-                info("offsetof(bpf_map, map_type): {:#x}".format(self.offset_map_type))
-                info("offsetof(bpf_map, key_size): {:#x}".format(self.offset_key_size))
-                info("offsetof(bpf_map, value_size): {:#x}".format(self.offset_value_size))
-                info("offsetof(bpf_map, max_entries): {:#x}".format(self.offset_max_entries))
+            self.quiet_info("offsetof(bpf_map, map_type): {:#x}".format(self.offset_map_type))
+            self.quiet_info("offsetof(bpf_map, key_size): {:#x}".format(self.offset_key_size))
+            self.quiet_info("offsetof(bpf_map, value_size): {:#x}".format(self.offset_value_size))
+            self.quiet_info("offsetof(bpf_map, max_entries): {:#x}".format(self.offset_max_entries))
 
             """
             struct bpf_array {
@@ -73623,8 +73387,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
                 y = u32(read_memory(pos + 4, 4))
                 if x == value_size_aligned_8 and y == index_mask:
                     self.offset_union_array = (pos - maps[0]) + 4 * 2 + current_arch.ptrsize
-                    if not self.args.quiet:
-                        info("offsetof(bpf_array, union_array): {:#x}".format(self.offset_union_array))
+                    self.quiet_info("offsetof(bpf_array, union_array): {:#x}".format(self.offset_union_array))
                     break
             else:
                 return False
@@ -73787,32 +73550,26 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         kversion = Kernel.kernel_version()
         if kversion < "4.20":
             # xarray is introduced from 4.20
-            if not args.quiet:
-                err("Unsupported before v4.20")
+            self.quiet_err("Unsupported before v4.20")
             return
 
         stv_bpf_ret = gdb.execute("syscall-table-view -f bpf --quiet --no-pager", to_string=True)
         if "bpf" not in stv_bpf_ret:
-            if not args.quiet:
-                err("bpf syscall is unimplemented")
+            self.quiet_err("bpf syscall is unimplemented")
             return
         elif "invalid bpf" in stv_bpf_ret:
-            if not args.quiet:
-                err("bpf syscall is disabled")
+            self.quiet_err("bpf syscall is disabled")
             return
 
         # init
         ret = self.initialize()
         if ret is False:
-            if not args.quiet:
-                err("Failed to initialize")
+            self.quiet_err("Failed to initialize")
             return
         progs, maps = ret
 
@@ -73934,8 +73691,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             self.offset_ids = 0
         else:
             self.offset_ids = current_arch.ptrsize
-        if not self.args.quiet:
-            info("offsetof(ipc_namespace, ids): {:#x}".format(self.offset_ids))
+        self.quiet_info("offsetof(ipc_namespace, ids): {:#x}".format(self.offset_ids))
 
         # offsetof(ipc_ids, ipcs_idr.idr_rt.xa_head): tagged valid pointer is `xa_head`.
         # sizeof(ids[0]): find two `xa_head` and calculate the distance.
@@ -74021,13 +73777,11 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
                 self.sizeof_ipc_ids = found[1] - found[0]
                 break
         else:
-            if not self.args.quiet:
-                err("Not found ipc_namespace->ids[0].ipcs_idr.idr_rt.xa_head")
-                err("Not recognized sizeof(struct ipc_ids)")
+            self.quiet_err("Not found ipc_namespace->ids[0].ipcs_idr.idr_rt.xa_head")
+            self.quiet_err("Not recognized sizeof(struct ipc_ids)")
             return False
-        if not self.args.quiet:
-            info("offsetof(ipc_ids, ipcs_idr.idr_rt.xa_head): {:#x}".format(self.offset_xa_head))
-            info("sizeof(struct ipc_ids): {:#x}".format(self.sizeof_ipc_ids))
+        self.quiet_info("offsetof(ipc_ids, ipcs_idr.idr_rt.xa_head): {:#x}".format(self.offset_xa_head))
+        self.quiet_info("sizeof(struct ipc_ids): {:#x}".format(self.sizeof_ipc_ids))
 
         # xa_node
         """
@@ -74253,17 +74007,13 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         kversion = Kernel.kernel_version()
         if kversion < "4.20":
             # xarray is introduced from 4.20
-            if not args.quiet:
-                err("Unsupported before v4.20")
+            self.quiet_err("Unsupported before v4.20")
             return
-
-        self.args = args
 
         ipc_ns_list = self.get_all_ipc_ns()
         if not ipc_ns_list:
@@ -74272,8 +74022,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
 
         ret = self.initialize(ipc_ns_list)
         if not ret:
-            if not args.quiet:
-                err("Failed to initialize")
+            self.quiet_err("Failed to initialize")
             return
 
         self.out = []
@@ -74441,10 +74190,8 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
-        self.args = args
         self.out = []
 
         # ioport
@@ -74549,8 +74296,7 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
         if self.db_list is None:
             err("Not found db_list (maybe DMA_SHARED_BUFFER=n)")
             return False
-        if not self.args.quiet:
-            info("db_list: {:#x}".format(self.db_list))
+        self.quiet_info("db_list: {:#x}".format(self.db_list))
 
         first_dma_buf = read_int_from_memory(self.db_list)
         if first_dma_buf == self.db_list:
@@ -74631,8 +74377,7 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
                 continue
 
             self.offset_list_node = current_arch.ptrsize * (i + 4)
-            if not self.args.quiet:
-                info("offsetof(dma_buf, list_node): {:#x}".format(self.offset_list_node))
+            self.quiet_info("offsetof(dma_buf, list_node): {:#x}".format(self.offset_list_node))
             break
         else:
             err("Not found dma_buf->list_node")
@@ -74642,10 +74387,9 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
         self.offset_size = 0
         self.offset_file = current_arch.ptrsize
         self.offset_priv = self.offset_list_node + current_arch.ptrsize * 2
-        if not self.args.quiet:
-            info("offsetof(dma_buf, size): {:#x}".format(self.offset_size))
-            info("offsetof(dma_buf, file): {:#x}".format(self.offset_file))
-            info("offsetof(dma_buf, priv): {:#x}".format(self.offset_priv))
+        self.quiet_info("offsetof(dma_buf, size): {:#x}".format(self.offset_size))
+        self.quiet_info("offsetof(dma_buf, file): {:#x}".format(self.offset_file))
+        self.quiet_info("offsetof(dma_buf, priv): {:#x}".format(self.offset_priv))
 
         # dma_buf->{exp_name,name}
         for i in range(1, 50):
@@ -74655,9 +74399,8 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
             if s and len(s) >= 3:
                 self.offset_exp_name = current_arch.ptrsize * i
                 self.offset_name = current_arch.ptrsize * (i + 1)
-                if not self.args.quiet:
-                    info("offsetof(dma_buf, exp_name): {:#x}".format(self.offset_exp_name))
-                    info("offsetof(dma_buf, name): {:#x}".format(self.offset_name))
+                self.quiet_info("offsetof(dma_buf, exp_name): {:#x}".format(self.offset_exp_name))
+                self.quiet_info("offsetof(dma_buf, name): {:#x}".format(self.offset_name))
                 break
         else:
             err("Not found dma_buf->{exp_name,name}")
@@ -74689,8 +74432,7 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
         else:
             err("Not found system_heap_buffer->sg_table")
             return False
-        if not self.args.quiet:
-            info("offsetof(system_heap_buffer, sg_table): {:#x}".format(self.offset_sg_table))
+        self.quiet_info("offsetof(system_heap_buffer, sg_table): {:#x}".format(self.offset_sg_table))
         return True
 
     def dump_sgl(self, sg):
@@ -74805,15 +74547,12 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         kversion = Kernel.kernel_version()
         if kversion < "5.11":
             err("Unsupported before v5.11")
             return
-
-        self.args = args
 
         ret = self.initialize()
         if ret is False:
@@ -75004,8 +74743,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         if kversion < "6.5":
             self.irq_desc_tree = KernelAddressHeuristicFinder.get_irq_desc_tree()
             if self.irq_desc_tree is None:
-                if not self.args.quiet:
-                    err("Not found irq_desc_tree")
+                self.quiet_err("Not found irq_desc_tree")
                 return False
 
             for i in range(0, 10):
@@ -75018,12 +74756,10 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                 if x & 0x2 != 0x2: # xa_head is NULL or tagged address
                     continue
                 self.offset_xa_head = current_arch.ptrsize * i
-                if not self.args.quiet:
-                    info("offsetof(xarray, xa_head): {:#x}".format(self.offset_xa_head))
+                self.quiet_info("offsetof(xarray, xa_head): {:#x}".format(self.offset_xa_head))
                 break
             else:
-                if not self.args.quiet:
-                    err("Not found xa_head. (maybe uninitialized?)")
+                self.quiet_err("Not found xa_head. (maybe uninitialized?)")
                 return False
 
             # xa_node
@@ -75057,15 +74793,13 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
             # kversion >= 6.5
             self.sparse_irqs = KernelAddressHeuristicFinder.get_sparse_irqs()
             if self.sparse_irqs is None:
-                if not self.args.quiet:
-                    err("Not found sparse_irqs")
+                self.quiet_err("Not found sparse_irqs")
                 return False
 
             descs = list(self.MapleTree(self.sparse_irqs).iters)
 
         if not descs:
-            if not self.args.quiet:
-                err("Not found any valid irq_desc")
+            self.quiet_err("Not found any valid irq_desc")
             return False
 
         # irq_desc->{irq,action}
@@ -75114,8 +74848,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         else:
             # ARM may have invalid descs[irq=0]
             desc = descs[-1]
-        if not self.args.quiet:
-            info("desc: {:#x}".format(desc))
+        self.quiet_info("desc: {:#x}".format(desc))
 
         for i in range(100):
             x = read_int_from_memory(desc + current_arch.ptrsize * i)
@@ -75124,12 +74857,10 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                     self.offset_irq = current_arch.ptrsize * i - 8
                 else:
                     self.offset_irq = current_arch.ptrsize * i - 12 # for padding
-                if not self.args.quiet:
-                    info("offsetof(irq_desc, irq_data.irq): {:#x}".format(self.offset_irq))
+                self.quiet_info("offsetof(irq_desc, irq_data.irq): {:#x}".format(self.offset_irq))
                 break
         else:
-            if not self.args.quiet:
-                err("Not found irq_desc->irq_data.irq")
+            self.quiet_err("Not found irq_desc->irq_data.irq")
             return False
 
         ofs_irq = AddressUtil.align_address_to_size(self.offset_irq + 4 * 2, current_arch.ptrsize)
@@ -75141,12 +74872,10 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                 action_candidate = read_int_from_memory(desc + ofs_action_candidate)
                 if is_valid_addr_addr(action_candidate):
                     self.offset_action = ofs_action_candidate
-                    if not self.args.quiet:
-                        info("offsetof(irq_desc, action): {:#x}".format(self.offset_action))
+                    self.quiet_info("offsetof(irq_desc, action): {:#x}".format(self.offset_action))
                     break
         else:
-            if not self.args.quiet:
-                err("Not found irq_desc->action")
+            self.quiet_err("Not found irq_desc->action")
             return False
 
         # irqaction->{handler,name}
@@ -75168,8 +74897,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         } ____cacheline_internodealigned_in_smp;
         """
         self.offset_handler = 0
-        if not self.args.quiet:
-            info("offsetof(irqaction, handler): {:#x}".format(self.offset_handler))
+        self.quiet_info("offsetof(irqaction, handler): {:#x}".format(self.offset_handler))
 
         action = read_int_from_memory(desc + self.offset_action)
         for i in range(100):
@@ -75179,12 +74907,10 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
             s = read_cstring_from_memory(x)
             if s and len(s) >= 4:
                 self.offset_name = current_arch.ptrsize * i
-                if not self.args.quiet:
-                    info("offsetof(irqaction, name): {:#x}".format(self.offset_name))
+                self.quiet_info("offsetof(irqaction, name): {:#x}".format(self.offset_name))
                 break
         else:
-            if not self.args.quiet:
-                err("Not found irqaction->name")
+            self.quiet_err("Not found irqaction->name")
             return False
 
         return True
@@ -75232,15 +74958,12 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
-        self.args = args
         kversion = Kernel.kernel_version()
         if kversion < "4.20":
             # xarray is introduced from 4.20
-            if not args.quiet:
-                err("Unsupported before v4.20")
+            self.quiet_err("Unsupported before v4.20")
             return
 
         ret = self.initialize()
@@ -75285,11 +75008,9 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
         # init_net
         self.init_net = KernelAddressHeuristicFinder.get_init_net()
         if self.init_net is None:
-            if not self.args.quiet:
-                err("Not found init_net")
+            self.quiet_err("Not found init_net")
             return False
-        if not self.args.quiet:
-            info("init_net: {:#x}".format(self.init_net))
+        self.quiet_info("init_net: {:#x}".format(self.init_net))
 
         """
         struct net {
@@ -75329,13 +75050,11 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
                 continue
             break # found
         else:
-            if not self.args.quiet:
-                err("Not found net->dev_base_head")
+            self.quiet_err("Not found net->dev_base_head")
             return False
 
         self.offset_dev_base_head = candidate_offset
-        if not self.args.quiet:
-            info("offsetof(net, dev_base_head): {:#x}".format(self.offset_dev_base_head))
+        self.quiet_info("offsetof(net, dev_base_head): {:#x}".format(self.offset_dev_base_head))
 
         # net_device->dev_list
         netdev_dev_list = read_int_from_memory(self.init_net + self.offset_dev_base_head)
@@ -75344,13 +75063,11 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
             if read_cstring_from_memory(netdev_dev_list - candidate_offset) == "lo":
                 break
         else:
-            if not self.args.quiet:
-                err("Not found net_device->dev_list")
+            self.quiet_err("Not found net_device->dev_list")
             return False
 
         self.offset_dev_list = candidate_offset
-        if not self.args.quiet:
-            info("offsetof(net_device, dev_list): {:#x}".format(self.offset_dev_list))
+        self.quiet_info("offsetof(net_device, dev_list): {:#x}".format(self.offset_dev_list))
 
         return True
 
@@ -75384,10 +75101,8 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
-        self.args = args
         ret = self.initialize()
         if ret is False:
             return
@@ -75488,22 +75203,18 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
         if kversion and kversion < "6.9":
             self.vmap_area_list = KernelAddressHeuristicFinder.get_vmap_area_list()
             if not self.vmap_area_list:
-                if not self.args.quiet:
-                    err("Not found vmap_area_list")
+                self.quiet_err("Not found vmap_area_list")
             else:
-                if not self.args.quiet:
-                    info("vmap_area_list: {:#x}".format(self.vmap_area_list))
+                self.quiet_info("vmap_area_list: {:#x}".format(self.vmap_area_list))
         else:
             self.vmap_area_list = None
 
         if kversion and kversion >= "5.2":
             self.free_vmap_area_list = KernelAddressHeuristicFinder.get_free_vmap_area_list()
             if not self.free_vmap_area_list:
-                if not self.args.quiet:
-                    err("Not found free_vmap_area_list")
+                self.quiet_err("Not found free_vmap_area_list")
             else:
-                if not self.args.quiet:
-                    info("free_vmap_area_list: {:#x}".format(self.free_vmap_area_list))
+                self.quiet_info("free_vmap_area_list: {:#x}".format(self.free_vmap_area_list))
         else:
             self.free_vmap_area_list = None
 
@@ -75517,8 +75228,7 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             self.offset_list = current_arch.ptrsize * 7
         else:
             self.offset_list = current_arch.ptrsize * 6
-        if not self.args.quiet:
-            info("offsetof(vmap_area, list): {:#x}".format(self.offset_list))
+        self.quiet_info("offsetof(vmap_area, list): {:#x}".format(self.offset_list))
 
         # vmap_area->vm
         if kversion and kversion >= "5.4":
@@ -75527,13 +75237,11 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             self.offset_vm = self.offset_list + current_arch.ptrsize * 3
         else:
             self.offset_vm = self.offset_list + current_arch.ptrsize * 4
-        if not self.args.quiet:
-            info("offsetof(vmap_area, vm): {:#x}".format(self.offset_vm))
+        self.quiet_info("offsetof(vmap_area, vm): {:#x}".format(self.offset_vm))
 
         # vm_struct->flags
         self.offset_flags = current_arch.ptrsize * 3
-        if not self.args.quiet:
-            info("offsetof(vm_struct, flags): {:#x}".format(self.offset_flags))
+        self.quiet_info("offsetof(vm_struct, flags): {:#x}".format(self.offset_flags))
 
         self.initialized = True
         return True
@@ -75622,10 +75330,8 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
-        self.args = args
         ret = self.initialize()
         if ret is False:
             return
@@ -76877,7 +76583,6 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, args):
-        self.args = args
         self.rescan = args.rescan
         self.quiet_info("Wait for memory scan")
 
@@ -77722,7 +77427,6 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
-        self.args = args
         self.out = []
 
         self.initialize()
@@ -78415,8 +78119,6 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
-        self.args = args
-
         if int(args.v21x) + int(args.v22x) + int(args.v30x) > 1:
             err("version error")
             return
@@ -79439,8 +79141,6 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
-        self.args = args
-
         if is_32bit():
             self.align_pad = None
 
@@ -79950,7 +79650,6 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
-        self.args = args
         self.out = []
 
         ctx = self.read_ctx()
@@ -80497,7 +80196,6 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
-        self.args = args
         self.out = []
 
         malloc_state = self.read_malloc_state(args.malloc_state)
@@ -80778,8 +80476,6 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
-        self.args = args
-
         malloc_state = self.read_malloc_state(args.malloc_state)
         if malloc_state is None:
            err("malloc_state is not found")
@@ -80874,8 +80570,6 @@ class XStringCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        self.args = args
-
         if args.count is None:
             count = 1
         else:
@@ -80931,8 +80625,6 @@ class XColoredCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        self.args = args
-
         if args.color_num < 1 or len(self.colors) < args.color_num:
             err("Invalid --color-num")
             return
@@ -81828,7 +81520,6 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     @only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
-        self.args = args
         self.out = []
 
         ta_address_map = OpteeThreadEnterUserModeBreakpoint.get_ta_loaded_address()
@@ -81837,27 +81528,23 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
             return
 
         ta_address = ta_address_map[0]
-        if args.verbose:
-            info("TA loaded address (RX): {:#x} - {:#x}".format(ta_address_map[0], ta_address_map[1]))
+        self.verbose_info("TA loaded address (RX): {:#x} - {:#x}".format(ta_address_map[0], ta_address_map[1]))
 
         if args.malloc_ctx is None:
             ta_rw_address_map = self.get_ta_rw_address(ta_address_map[1])
             if ta_rw_address_map is None:
                 err("TA rw address is not found")
                 return
-            if args.verbose:
-                info("TA loaded address (RW): {:#x} - {:#x}".format(ta_rw_address_map[0], ta_rw_address_map[1]))
+            self.verbose_info("TA loaded address (RW): {:#x} - {:#x}".format(ta_rw_address_map[0], ta_rw_address_map[1]))
             malloc_ctx_addr = self.get_malloc_ctx(ta_rw_address_map)
             if malloc_ctx_addr is None:
                 err("malloc_ctx is not found")
                 return
         else:
-            if args.verbose:
-                info("offset of malloc_ctx: {:#x}".format(args.malloc_ctx))
+            self.verbose_info("offset of malloc_ctx: {:#x}".format(args.malloc_ctx))
             malloc_ctx_addr = ta_address + args.malloc_ctx
 
-        if args.verbose:
-            info("malloc_ctx: {:#x}".format(malloc_ctx_addr))
+        self.verbose_info("malloc_ctx: {:#x}".format(malloc_ctx_addr))
 
         malloc_ctx = self.parse_malloc_ctx(malloc_ctx_addr)
         if malloc_ctx is None:
@@ -82656,7 +82343,6 @@ class CpuidCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     @only_if_kvm_disabled
     def do_invoke(self, args):
-        self.args = args
         self.out = []
 
         # Basic Information
@@ -83447,7 +83133,6 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     def do_invoke(self, args):
-        self.args = args
         self.out = []
         self.qregisters()
         self.print_output()
@@ -84581,7 +84266,6 @@ class PagewalkRiscvCommand(PagewalkCommand):
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
     @only_if_specific_arch(arch=("RISCV32", "RISCV64"))
     def do_invoke(self, args):
-        self.args = args
         self.print_each_level = args.print_each_level
         self.no_merge = args.no_merge
         self.sort_by_phys = args.sort_by_phys
@@ -85235,7 +84919,6 @@ class PagewalkX64Command(PagewalkCommand):
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16"))
     def do_invoke(self, args):
-        self.args = args
         self.print_each_level = args.print_each_level
         self.no_merge = args.no_merge
         self.sort_by_phys = args.sort_by_phys
@@ -86262,7 +85945,6 @@ class PagewalkArmCommand(PagewalkCommand):
         elif args.force_normal:
             self.FORCE_PREFIX_S = False
 
-        self.args = args
         self.print_each_level = args.print_each_level
         self.no_merge = args.no_merge
         self.sort_by_phys = args.sort_by_phys
@@ -88030,7 +87712,6 @@ class PagewalkArm64Command(PagewalkCommand):
         else:
             self.TargetEL = args.target_el
 
-        self.args = args
         self.print_each_level = args.print_each_level
         self.no_merge = args.no_merge
         self.sort_by_phys = args.sort_by_phys
@@ -88298,8 +87979,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return regions
 
     def resolve_kbase(self):
-        if not self.args.quiet:
-            info("resolve kbase")
+        self.quiet_info("resolve kbase")
 
         kinfo = Kernel.get_kernel_base()
 
@@ -88342,8 +88022,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_direct_map(self):
-        if not self.args.quiet:
-            info("resolve direct map")
+        self.quiet_info("resolve direct map")
 
         page_offset = KernelAddressHeuristicFinder.get_page_offset()
         if not page_offset:
@@ -88360,8 +88039,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_vmalloc(self):
-        if not self.args.quiet:
-            info("resolve vmalloc")
+        self.quiet_info("resolve vmalloc")
 
         vmalloc_start = KernelAddressHeuristicFinder.get_vmalloc_start()
         if not vmalloc_start:
@@ -88378,8 +88056,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_page(self):
-        if not self.args.quiet:
-            info("resolve page")
+        self.quiet_info("resolve page")
 
         if is_x86_64():
             vmemmap = KernelAddressHeuristicFinder.get_vmemmap()
@@ -88405,8 +88082,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_buddy(self):
-        if not self.args.quiet:
-            info("resolve buddy")
+        self.quiet_info("resolve buddy")
 
         res = gdb.execute("buddy-dump --quiet --no-pager --sort", to_string=True)
 
@@ -88430,8 +88106,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_kstack(self):
-        if not self.args.quiet:
-            info("resolve kstack")
+        self.quiet_info("resolve kstack")
 
         res = gdb.execute("ktask --quiet --no-pager --print-thread", to_string=True)
 
@@ -88466,8 +88141,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         if self.args.skip_full_slab_cache:
             return
 
-        if not self.args.quiet:
-            info("resolve slub (search full slab cache; skip if target region size >= 0x200000)")
+        self.quiet_info("resolve slub (search full slab cache; skip if target region size >= 0x200000)")
         old_regions = list(self.regions.items())[::]
 
         tqdm = GefUtil.get_tqdm()
@@ -88510,8 +88184,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_slub(self):
-        if not self.args.quiet:
-            info("resolve slub")
+        self.quiet_info("resolve slub")
 
         res = gdb.execute("slub-dump --quiet --no-pager -vv", to_string=True)
         name, address, size = None, None, None
@@ -88538,8 +88211,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_slab(self):
-        if not self.args.quiet:
-            info("resolve slab")
+        self.quiet_info("resolve slab")
 
         res = gdb.execute("slab-dump --quiet --no-pager", to_string=True)
         name, address, size = None, None, None
@@ -88564,8 +88236,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_slob(self):
-        if not self.args.quiet:
-            info("resolve slob")
+        self.quiet_info("resolve slob")
 
         res = gdb.execute("slob-dump --quiet --no-pager", to_string=True)
         address, size = None, None, None
@@ -88586,8 +88257,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_slub_tiny(self):
-        if not self.args.quiet:
-            info("resolve slub-tiny")
+        self.quiet_info("resolve slub-tiny")
 
         res = gdb.execute("slub-tiny-dump --quiet --no-pager", to_string=True)
         name, address, size = None, None, None
@@ -88624,8 +88294,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_module(self):
-        if not self.args.quiet:
-            info("resolve module")
+        self.quiet_info("resolve module")
 
         res = gdb.execute("kmod --quiet --no-pager", to_string=True)
         for line in res.splitlines():
@@ -88640,8 +88309,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_vdso(self):
-        if not self.args.quiet:
-            info("resolve vdso")
+        self.quiet_info("resolve vdso")
 
         if is_x86_64():
             vdso_image_64 = KernelAddressHeuristicFinder.get_vdso_image_64()
@@ -88678,8 +88346,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_device_physmem(self):
-        if not self.args.quiet:
-            info("resolve device physmem")
+        self.quiet_info("resolve device physmem")
 
         try:
             res = gdb.execute("monitor info mtree -f", to_string=True)
@@ -88720,8 +88387,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def detect_zero_page(self):
-        if not self.args.quiet:
-            info("detect zero page")
+        self.quiet_info("detect zero page")
 
         page_size = gef_getpagesize()
         z10 = b"\0" * 0x10
@@ -88769,8 +88435,6 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     def do_invoke(self, args):
-        self.args = args
-
         if not hasattr(self, "out"):
             self.out = []
 
@@ -93274,17 +92938,14 @@ class AddSymbolTemporaryCommand(GenericCommand):
         max_address = (1 << bits) - 1
 
         if args.function_start > max_address:
-            if not args.quiet:
-                err("function start address must be {:#x} or less".format(max_address))
+            self.quiet_err("function start address must be {:#x} or less".format(max_address))
             return
         if args.function_end is not None:
             if args.function_end > max_address:
-                if not args.quiet:
-                    err("function end address must be {:#x} or less".format(max_address))
+                self.quiet_err("function end address must be {:#x} or less".format(max_address))
                 return
             if args.function_start > args.function_end:
-                if not args.quiet:
-                    err("function_start must be equal or less than function_end")
+                self.quiet_err("function_start must be equal or less than function_end")
                 return
 
         # make blank elf
@@ -93294,8 +92955,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
             err("Failed to create blank elf")
             return
 
-        if not args.quiet:
-            info("1 entries will be added")
+        self.quiet_info("1 entries will be added")
 
         # embedding symbols
         relative_addr = args.function_start - text_base
@@ -93303,8 +92963,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
             objcopy, args.function_name, relative_addr, sym_elf,
         ))
 
-        if not args.quiet:
-            info("1 entries were processed")
+        self.quiet_info("1 entries were processed")
 
         # add symbol to gdb
         gdb.execute("add-symbol-file {!r} {:#x}".format(sym_elf, text_base), to_string=True)
@@ -93365,8 +93024,7 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
             cmd_string_arr.append("--add-symbol")
             cmd_string_arr.append("{:s}=.text:{:#x},{:s},{:s}".format(func_name, relative_addr, global_flag, type_flag))
 
-        if not self.args.quiet:
-            info("{:d} entries will be added".format(len(cmd_string_arr) // 2))
+        self.quiet_info("{:d} entries will be added".format(len(cmd_string_arr) // 2))
 
         # embedding symbols
         objcopy = GefUtil.which("objcopy")
@@ -93376,11 +93034,10 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
             processed_count += len(cmd_string_arr_sliced) // 2
 
             # debug print
-            if not self.args.quiet and processed_count and processed_count % 10000 == 0:
-                info("{:d} entries were processed".format(processed_count))
+            if processed_count and processed_count % 10000 == 0:
+                self.quiet_info("{:d} entries were processed".format(processed_count))
 
-        if not self.args.quiet:
-            info("{:d} entries were processed".format(processed_count))
+        self.quiet_info("{:d} entries were processed".format(processed_count))
         os.rename(blank_elf, sym_elf_path)
         return True
 
@@ -93396,17 +93053,14 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
             err("{}".format(e))
             return
 
-        self.args = args
-        if not args.quiet:
-            info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         # resolve kversion for saved file name
         kversion = Kernel.kernel_version()
         h = hashlib.sha256(String.str2bytes(kversion.version_string)).hexdigest()[-16:]
         sym_elf_path = os.path.join(GEF_TEMP_DIR, "ks-apply-{:s}.elf".format(h))
         if (not args.rescan) and os.path.exists(sym_elf_path) and os.path.getsize(sym_elf_path) > 0:
-            if not args.quiet:
-                info("A previously used file found, will be reused")
+            self.quiet_info("A previously used file found, will be reused")
         else:
             if os.path.exists(sym_elf_path):
                 os.unlink(sym_elf_path)
@@ -93417,8 +93071,7 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
         # add symbol to gdb
         text_base = Symbol.get_ksymaddr("_stext") & gef_getpagesize_mask_high()
         cmd = "add-symbol-file {:s} {:#x}".format(sym_elf_path, text_base)
-        if not args.quiet:
-            warn("Execute `{:s}`".format(cmd))
+        self.quiet_warn("Execute `{:s}`".format(cmd))
         gdb.execute(cmd)
         return
 
@@ -93497,7 +93150,6 @@ class WalkLinkListCommand(GenericCommand, BufferingOutput):
 
     @parse_args
     def do_invoke(self, args):
-        self.args = args
         self.out = []
         self.info_add_out("head address: {:#x}".format(args.address))
         self.info_add_out("next pointer offset: {:#x}".format(args.next_offset))
@@ -93670,8 +93322,6 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        self.args = args
-
         pid = Pid.get_pid()
         if pid is None:
             err("Failed to read pid")
@@ -93779,8 +93429,6 @@ class PeekPageFlagsCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        self.args = args
-
         if args.pfn is None:
             err("You must provide a PFN")
             return
@@ -93937,7 +93585,6 @@ class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
-        self.args = args
         self.found_count = 0
 
         # Since it inherits SearchPatternCommand, set the values to be used there.
@@ -94542,8 +94189,6 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        self.args = args
-
         if args.use_cache and hasattr(self, "cache") and self.cache:
             self.out = self.cache[::]
             self.print_output()
@@ -94652,8 +94297,6 @@ class TypesCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        self.args = args
-
         if args.use_cache and hasattr(self, "cache") and self.cache:
             self.out = self.cache[::]
             self.print_output()
@@ -94891,7 +94534,6 @@ class GefHelpCommand(GenericCommand, BufferingOutput):
 
     @parse_args
     def do_invoke(self, args):
-        self.args = args
         self.out = []
         self.out.append(titlify("GEF - GDB Enhanced Features"))
         self.out.extend(self.generate_help())
@@ -95070,8 +94712,7 @@ class GefSaveCommand(GenericCommand):
         with open(GEF_RC, "w") as fd:
             cfg.write(fd)
 
-        if not args.quiet:
-            ok("Configuration saved to '{:s}'".format(GEF_RC))
+        self.quiet_ok("Configuration saved to '{:s}'".format(GEF_RC))
         return
 
 
@@ -95089,8 +94730,7 @@ class GefRestoreCommand(GenericCommand):
     @parse_args
     def do_invoke(self, args):
         if not os.access(GEF_RC, os.R_OK):
-            if not args.quiet:
-                info("Not found {:s}, GEF uses default settings".format(GEF_RC))
+            self.quiet_info("Not found {:s}, GEF uses default settings".format(GEF_RC))
             return
 
         cfg = configparser.ConfigParser()
@@ -95141,8 +94781,7 @@ class GefRestoreCommand(GenericCommand):
         if not os.path.isdir(abspath):
             os.makedirs(abspath, mode=0o755, exist_ok=True)
 
-        if not args.quiet:
-            ok("Configuration from '{:s}' restored".format(Color.colorify(GEF_RC, "bold blue")))
+        self.quiet_ok("Configuration from '{:s}' restored".format(Color.colorify(GEF_RC, "bold blue")))
         return
 
 
@@ -95349,7 +94988,6 @@ class GefArchListCommand(GenericCommand, BufferingOutput):
 
     @parse_args
     def do_invoke(self, args):
-        self.args = args
         self.out = []
         self.listup_arch_info()
         self.print_output()
@@ -95493,7 +95131,6 @@ class GefPyObjListCommand(GenericCommand, BufferingOutput):
 
     @parse_args
     def do_invoke(self, args):
-        self.args = args
         self.out = []
         self.listup_pyobject()
         self.print_output()
@@ -95609,7 +95246,6 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        self.args = args
         self.out = []
         self.listup_avail_comms()
         if args.sort:
@@ -96185,8 +95821,6 @@ class AliasesListCommand(AliasesCommand, BufferingOutput):
 
     @parse_args
     def do_invoke(self, args):
-        self.args = args
-
         width = max(len(x) for x in __gef_alias_instances__.keys())
 
         self.out = []
