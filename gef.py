@@ -35672,7 +35672,7 @@ class GlibcHeapTracerCommand(GenericCommand):
 
 
 @register_command
-class SyscallSearchCommand(GenericCommand):
+class SyscallSearchCommand(GenericCommand, BufferingOutput):
     """Search the syscall number for specified architecture."""
 
     _cmdline_ = "syscall-search"
@@ -35736,15 +35736,13 @@ class SyscallSearchCommand(GenericCommand):
             if syscall_num is not None and entry.nr != syscall_num:
                 continue
             params = ""
-            if self.verbose:
+            if self.args.verbose:
                 params = "(" + ", ".join(entry.args_full) + ");"
             self.out.append("NR={:<#14x}{:s}{:s}".format(entry.nr, Color.boldify(entry.name), params))
         return
 
     @parse_args
     def do_invoke(self, args):
-        self.verbose = args.verbose
-
         syscall_num = None
         syscall_name_pattern = ".*"
 
@@ -35818,11 +35816,7 @@ class SyscallSearchCommand(GenericCommand):
 
         self.out = []
         self.make_output(syscall_table, syscall_num, syscall_name_pattern)
-
-        if len(self.out) > GefUtil.get_terminal_size()[0]:
-            gef_print("\n".join(self.out), less=not args.no_pager)
-        else:
-            gef_print("\n".join(self.out), less=False)
+        self.print_output(term=True)
         return
 
 
