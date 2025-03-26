@@ -93364,7 +93364,7 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
             err("You must provide either a single address or both --from-addr and --to-addr")
             return
 
-        self.print_output()
+        self.print_output(term=True)
         return
 
 
@@ -93461,13 +93461,11 @@ class PeekPageFlagsCommand(GenericCommand, BufferingOutput):
             err("You must provide a PFN")
             return
 
-        pfn = args.pfn
-
-        count = self.read_kpagecount(pfn)
+        count = self.read_kpagecount(args.pfn)
         if count is None:
             return
 
-        flags_value = self.read_kpageflags(pfn)
+        flags_value = self.read_kpageflags(args.pfn)
         if flags_value is None:
             return
 
@@ -93481,7 +93479,7 @@ class PeekPageFlagsCommand(GenericCommand, BufferingOutput):
         for flag in set_flags:
             self.out.append("  {:s}".format(flag))
 
-        self.print_output()
+        self.print_output(term=True)
         return
 
 
