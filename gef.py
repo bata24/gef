@@ -72211,7 +72211,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     _note_ = "\n".join(_note_)
 
     def add_out(self, msg):
-        if not self.sort:
+        if not self.args.sort:
             self.out.append(msg)
         return
 
@@ -72538,7 +72538,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             )
 
             # add msg
-            if self.sort:
+            if self.args.sort:
                 self.out.append([page, size, msg])
             else:
                 self.out.append(msg)
@@ -72567,20 +72567,27 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_free_list(self, free_list, mtype, size, is_highmem):
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
-        align = AddressUtil.get_format_address_width()
-
-        self.add_out("  mtype: {:d} (={:s})".format(mtype, self.migrate_types[mtype]))
         seen = [free_list]
         current = read_int_from_memory(free_list)
         if not is_valid_addr(current):
             return
 
-        # size info
-        size_str = Color.colorify("{:#08x}".format(size), chunk_size_color)
-
+        # parse free list
         while current not in seen:
+            seen.append(current)
+            # get next
+            current = read_int_from_memory(current)
+
+        # dump free list
+        self.add_out("  mtype: {:d} (={:s})".format(mtype, self.migrate_types[mtype]))
+
+        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
+        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        align = AddressUtil.get_format_address_width()
+        size_str = Color.colorify("{:#08x}".format(size), chunk_size_color)
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
+
+        for current in tqdm(seen[1:], leave=False):
             # page info
             page = current - self.offset_lru
             page_str = Color.colorify("{:#0{:d}x}".format(page, align), freed_address_color)
@@ -72595,13 +72602,10 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             msg = "    page:{:s}  size:{:s}  virt:{:s}  phys:{:s}".format(page_str, size_str, virt_str, phys_str)
 
             # add msg
-            if self.sort:
+            if self.args.sort:
                 self.out.append([page, size, msg])
             else:
                 self.out.append(msg)
-
-            # get next
-            current = read_int_from_memory(current)
         return
 
     def dump_free_area(self, free_area, order, is_highmem):
@@ -72649,6 +72653,37 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             self.dump_zone(zone, is_highmem=is_highmem)
         return
 
+    def do_sort(self, output):
+        prev_virt = None
+        prev_size = None
+        align = AddressUtil.get_format_address_width()
+
+        out = []
+        for page, size, msg in sorted(output, key=lambda x: x[0]):
+            if not self.args.sort_verbose:
+                out.append(msg)
+                continue
+
+            # sort_verbose (filling the gap)
+            virt = Kernel.page2virt(page)
+
+            if prev_virt is None:
+                # first entry
+                if virt is not None:
+                    phys = PageMap.v2p_from_map(virt, self.maps)
+                    if phys is not None:
+                        out.append("    used:{:{:d}s}  size:{:#08x}".format("", align, phys))
+            else:
+                # second or after entries
+                if prev_virt + prev_size != virt:
+                    diff = virt - (prev_virt + prev_size)
+                    out.append("    used:{:{:d}s}  size:{:#08x}".format("", align, diff))
+
+            out.append(msg)
+            prev_virt = virt
+            prev_size = size
+        return out
+
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
@@ -72658,7 +72693,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         # parse args
         if args.rescan:
             self.initialized = False
-        self.sort = args.sort_verbose or args.sort
+        self.args.sort = args.sort_verbose or args.sort
 
         # initialize
         self.quiet_info("Wait for memory scan")
@@ -72676,42 +72711,12 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         for i, node in enumerate(self.nodes):
             self.add_out(titlify("node[{:d}] @ {:#x}".format(i, node)))
             self.dump_node(node)
-            # When self.sort is False, self.out contains a list of messages.
-            # When self.sort is True, self.out contains a list of information for constructing messages.
+            # When self.args.sort is False, self.out contains a list of messages.
+            # When self.args.sort is True, self.out contains a list of information for constructing messages.
 
         # sort
-        if self.sort:
-            prev_virt = None
-            prev_size = None
-            align = AddressUtil.get_format_address_width()
-
-            out = []
-            for page, size, msg in sorted(self.out, key=lambda x: x[0]):
-                if not args.sort_verbose:
-                    out.append(msg)
-                    continue
-
-                # sort_verbose
-                if prev_virt is None:
-                    # first entry
-                    virt = Kernel.page2virt(page)
-                    if virt is not None:
-                        phys = PageMap.v2p_from_map(virt, self.maps)
-                        if phys is not None:
-                            out.append("    used:{:{:d}s}  size:{:#08x}".format("", align, phys))
-                    out.append(msg)
-                    prev_virt = virt
-                    prev_size = size
-                    continue
-                # second or after entries
-                virt = Kernel.page2virt(page)
-                if prev_virt + prev_size != virt:
-                    diff = virt - (prev_virt + prev_size)
-                    out.append("    used:{:{:d}s}  size:{:#08x}".format("", align, diff))
-                out.append(msg)
-                prev_virt = virt
-                prev_size = size
-            self.out = out
+        if args.sort:
+            self.out = self.do_sort(self.out)
 
         self.print_output()
         return
@@ -93868,26 +93873,7 @@ class FiletypeMemoryCommand(GenericCommand):
                         help="target end address. (default: the end of section of ADDRESS)")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    def do_invoke(self, args):
-        if not is_valid_addr(args.address):
-            err("Memory read error")
-            return
-
-        try:
-            start_address = args.address
-            if args.end_address is not None:
-                size = args.end_address - args.address
-            else:
-                section = ProcessMap.lookup_address(args.address).section
-                size = section.page_end - args.address
-            end_address = start_address + size
-        except (AttributeError, ValueError):
-            self.usage()
-            return
-
+    def filetype_memory(self, start_address, end_address, size):
         try:
             data = read_memory(start_address, size)
         except gdb.MemoryError:
@@ -93913,6 +93899,29 @@ class FiletypeMemoryCommand(GenericCommand):
             warn("{}".format(e))
 
         os.unlink(filepath)
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    def do_invoke(self, args):
+        if not is_valid_addr(args.address):
+            err("Memory read error")
+            return
+
+        try:
+            start_address = args.address
+            if args.end_address is not None:
+                size = args.end_address - args.address
+            else:
+                section = ProcessMap.lookup_address(args.address).section
+                size = section.page_end - args.address
+            end_address = start_address + size
+        except (AttributeError, ValueError):
+            self.usage()
+            return
+
+        self.filetype_memory(start_address, end_address, size)
         return
 
 
@@ -93947,7 +93956,7 @@ class BinwalkMemoryCommand(GenericCommand):
             end = entry.page_end
             perm = str(entry.permission)
 
-            if entry.size > self.maxsize:
+            if entry.size > self.args.maxsize:
                 continue
 
             if entry.path in ["[vvar]", "[vsyscall]", "[vectors]", "[sigpage]"]:
@@ -93964,15 +93973,15 @@ class BinwalkMemoryCommand(GenericCommand):
             fmt = "binwalk-{:0{}x}-{:0{}x}_{:s}_{:s}.raw"
             dumpfile_name = fmt.format(start, addr_len, end, addr_len, perm, path)
 
-            if self.filter and not any(filt.search(dumpfile_name) for filt in self.filter):
+            if self.args.filter and not any(filt.search(dumpfile_name) for filt in self.args.filter):
                 continue
 
-            if self.exclude and any(ex.search(dumpfile_name) for ex in self.exclude):
+            if self.args.exclude and any(ex.search(dumpfile_name) for ex in self.args.exclude):
                 continue
 
             filepath = os.path.join(GEF_TEMP_DIR, dumpfile_name)
 
-            if self.commit:
+            if self.args.commit:
                 gef_print(titlify("{:#x}-{:#x} [{}] {:s}".format(
                     entry.page_start, entry.page_end, entry.permission, entry.path,
                 )))
@@ -93986,7 +93995,7 @@ class BinwalkMemoryCommand(GenericCommand):
             else:
                 gef_print(dumpfile_name)
 
-        if not self.commit:
+        if not self.args.commit:
             warn('This dry run mode skips executing binwalk; add "--commit" to proceed')
         return
 
@@ -93995,10 +94004,6 @@ class BinwalkMemoryCommand(GenericCommand):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     @load_binwalk
     def do_invoke(self, args):
-        self.filter = args.filter
-        self.exclude = args.exclude
-        self.maxsize = args.maxsize
-        self.commit = args.commit
         self.memory_binwalk()
         return
 
