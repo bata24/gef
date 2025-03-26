@@ -11118,6 +11118,9 @@ def write_physmem(paddr, data):
 
 @Cache.cache_until_next
 def is_valid_addr(addr):
+    if not isinstance(addr, int):
+        return False
+
     if addr < 0:
         return False
 
@@ -33872,8 +33875,6 @@ class DestructorDumpCommand(GenericCommand):
         Cache.reset_gef_caches(all=True)
 
         # init
-        self.remote = args.remote
-
         local_filepath = None
         remote_filepath = None
         tmp_filepath = None
