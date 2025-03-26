@@ -68913,10 +68913,15 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("cache_name", metavar="SLUB_CACHE_NAME", nargs="*",
                         help="filter by specific slub cache name.")
-    parser.add_argument("--cpu", type=int, help="filter by specific cpu.")
     parser.add_argument("--list", action="store_true", help="list up all slub cache names.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("--cpu", type=int, help="filter by specific cpu.")
     parser.add_argument("-s", "--simple", action="store_true", help="skip displaying layout and freelist.")
+    parser.add_argument("-v", "--verbose", "--partial", action="store_true", help="dump with partial pages.")
+    parser.add_argument("-vv", "--vverbose", "--node", action="store_true", help="dump with partial pages and node pages.")
+    group = parser.add_mutually_exclusive_group(required=False)
+    group.add_argument("--only-partial", action="store_true", help="dump only partial pages.")
+    group.add_argument("--only-node", action="store_true", help="dump only node pages.")
     parser.add_argument("--hexdump-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
                         help="hexdump `used chunks` if layout is resolved.")
     parser.add_argument("--hexdump-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
@@ -68925,21 +68930,16 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         help="telescope `used chunks` if layout is resolved.")
     parser.add_argument("--telescope-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
                         help="telescope `unused (freed) chunks` if layout is resolved.")
-    parser.add_argument("-v", "--verbose", "--partial", action="store_true", help="dump with partial pages.")
-    parser.add_argument("-vv", "--vverbose", "--node", action="store_true",
-                        help="dump with partial pages and node pages.")
-    parser.add_argument("--only-partial", action="store_true", help="dump only partial pages.")
-    parser.add_argument("--only-node", action="store_true", help="dump only node pages.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     parser.add_argument("--skip-page2virt", action="store_true",
                         help="[FOR DEVELOPER] used internally in gef, please don't use it.")
     parser.add_argument("--no-xor", action="store_true",
                         help="[FOR DEVELOPER] skip xor to chunk->next when `kmem_cache.random` is falsely detected.")
-    parser.add_argument("--offset-random", type=lambda x: int(x, 16),
-                        help="[FOR DEVELOPER] specified offsetof(kmem_cache, random) when `kmem_cache.random` is falsely detected.")
     parser.add_argument("--no-byte-swap", action="store_true", default=None,
                         help="[FOR DEVELOPER] skip byteswap to chunk->next when `kmem_cache.random` is falsely detected.")
+    parser.add_argument("--offset-random", type=lambda x: int(x, 16),
+                        help="[FOR DEVELOPER] specified offsetof(kmem_cache, random) when `kmem_cache.random` is falsely detected.")
     parser.add_argument("--offset-node", type=lambda x: int(x, 16),
                         help="[FOR DEVELOPER] specified offsetof(kmem_cache, node) when `kmem_cache.node` is falsely detected.")
     _syntax_ = parser.format_help()
@@ -69618,27 +69618,38 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             for cpu in cpus:
                 kmem_cache["kmem_cache_cpu"][cpu] = {}
                 kmem_cache["kmem_cache_cpu"][cpu]["address"] = self.get_kmem_cache_cpu(kmem_cache["address"], cpu)
-                active_chunk_fast = read_int_from_memory(kmem_cache["kmem_cache_cpu"][cpu]["address"] + self.kmem_cache_cpu_offset_freelist)
+                active_chunk_fast = read_int_from_memory(
+                    kmem_cache["kmem_cache_cpu"][cpu]["address"] + self.kmem_cache_cpu_offset_freelist,
+                )
                 kmem_cache["kmem_cache_cpu"][cpu]["freelist"] = self.walk_freelist(active_chunk_fast, kmem_cache)
 
                 # parse active
-                active_page = {}
-                active_page["address"] = page = read_int_from_memory(kmem_cache["kmem_cache_cpu"][cpu]["address"] + self.kmem_cache_cpu_offset_page)
-                if is_valid_addr(page):
-                    x = read_int_from_memory(page + self.page_offset_inuse_objects_frozen)
-                    active_page["inuse"] = x & 0xffff
-                    active_page["objects"] = (x >> 16) & 0x7fff
-                    active_page["frozen"] = (x >> 31) & 1
-                    active_chunk = read_int_from_memory(page + self.page_offset_freelist)
-                    active_page["freelist"] = self.walk_freelist(active_chunk, kmem_cache)
-                    active_page["num_pages"] = (kmem_cache["size"] * active_page["objects"] + gef_getpagesize_mask_low()) // gef_getpagesize()
-                    active_page["virt_addr"] = self.page2virt(active_page, kmem_cache, kmem_cache["kmem_cache_cpu"][cpu]["freelist"])
-                kmem_cache["kmem_cache_cpu"][cpu]["active_page"] = active_page
+                if self.dump_target_active:
+                    active_page = {}
+                    active_page["address"] = page = read_int_from_memory(
+                        kmem_cache["kmem_cache_cpu"][cpu]["address"] + self.kmem_cache_cpu_offset_page,
+                    )
+                    if is_valid_addr(page):
+                        x = read_int_from_memory(page + self.page_offset_inuse_objects_frozen)
+                        active_page["inuse"] = x & 0xffff
+                        active_page["objects"] = (x >> 16) & 0x7fff
+                        active_page["frozen"] = (x >> 31) & 1
+                        active_chunk = read_int_from_memory(page + self.page_offset_freelist)
+                        active_page["freelist"] = self.walk_freelist(active_chunk, kmem_cache)
+                        active_page["num_pages"] = (
+                            kmem_cache["size"] * active_page["objects"] + gef_getpagesize_mask_low()
+                        ) // gef_getpagesize()
+                        active_page["virt_addr"] = self.page2virt(
+                            active_page, kmem_cache, kmem_cache["kmem_cache_cpu"][cpu]["freelist"],
+                        )
+                    kmem_cache["kmem_cache_cpu"][cpu]["active_page"] = active_page
 
                 # parse partial
-                if self.args.verbose or self.args.vverbose:
+                if self.dump_target_partial:
                     kmem_cache["kmem_cache_cpu"][cpu]["partial_pages"] = []
-                    current_partial_page = read_int_from_memory(kmem_cache["kmem_cache_cpu"][cpu]["address"] + self.kmem_cache_cpu_offset_partial)
+                    current_partial_page = read_int_from_memory(
+                        kmem_cache["kmem_cache_cpu"][cpu]["address"] + self.kmem_cache_cpu_offset_partial,
+                    )
                     while True:
                         partial_page = {}
                         partial_page["address"] = current_partial_page
@@ -69653,7 +69664,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         partial_page["frozen"] = (x >> 31) & 1
                         partial_chunk = read_int_from_memory(current_partial_page + self.page_offset_freelist)
                         partial_page["freelist"] = self.walk_freelist(partial_chunk, kmem_cache)
-                        partial_page["num_pages"] = (kmem_cache["size"] * partial_page["objects"] + gef_getpagesize_mask_low()) // gef_getpagesize()
+                        partial_page["num_pages"] = (
+                            kmem_cache["size"] * partial_page["objects"] + gef_getpagesize_mask_low()
+                        ) // gef_getpagesize()
                         partial_page["virt_addr"] = self.page2virt(partial_page, kmem_cache)
                         kmem_cache["kmem_cache_cpu"][cpu]["partial_pages"].append(partial_page)
                         next_partial_page = read_int_from_memory(current_partial_page + self.page_offset_next)
@@ -69662,43 +69675,46 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         current_partial_page = next_partial_page
 
             # parse node
-            if self.args.vverbose and self.kmem_cache_offset_node and self.kmem_cache_node_offset_partial:
-                kmem_cache["nodes"] = []
-                kmem_cache_node_array = kmem_cache["address"] + self.kmem_cache_offset_node
-                current_kmem_cache_node_ptr = kmem_cache_node_array
-                while True:
-                    current_kmem_cache_node = read_int_from_memory(current_kmem_cache_node_ptr)
-                    if current_kmem_cache_node == 0:
-                        break
-                    if current_kmem_cache_node == current_kmem_cache_node_ptr:
-                        break
-                    if current_kmem_cache_node & 0b111:
-                        break
-                    node_page_list = []
-                    node_page_head = current_kmem_cache_node + self.kmem_cache_node_offset_partial
-                    if not is_valid_addr(node_page_head):
-                        break
-                    current_node_page = read_int_from_memory(node_page_head)
-                    while current_node_page != node_page_head:
-                        node_page = {}
-                        node_page["address"] = current_node_page - self.page_offset_next
-                        if not is_valid_addr(node_page["address"]):
+            if self.dump_target_node:
+                if self.kmem_cache_offset_node and self.kmem_cache_node_offset_partial:
+                    kmem_cache["nodes"] = []
+                    kmem_cache_node_array = kmem_cache["address"] + self.kmem_cache_offset_node
+                    current_kmem_cache_node_ptr = kmem_cache_node_array
+                    while True:
+                        current_kmem_cache_node = read_int_from_memory(current_kmem_cache_node_ptr)
+                        if current_kmem_cache_node == 0:
+                            break
+                        if current_kmem_cache_node == current_kmem_cache_node_ptr:
+                            break
+                        if current_kmem_cache_node & 0b111:
+                            break
+                        node_page_list = []
+                        node_page_head = current_kmem_cache_node + self.kmem_cache_node_offset_partial
+                        if not is_valid_addr(node_page_head):
+                            break
+                        current_node_page = read_int_from_memory(node_page_head)
+                        while current_node_page != node_page_head:
+                            node_page = {}
+                            node_page["address"] = current_node_page - self.page_offset_next
+                            if not is_valid_addr(node_page["address"]):
+                                node_page_list.append(node_page)
+                                break
+                            x = read_int_from_memory(node_page["address"] + self.page_offset_inuse_objects_frozen)
+                            node_page["inuse"] = x & 0xffff
+                            node_page["objects"] = (x >> 16) & 0x7fff
+                            if node_page["objects"] == 0 or node_page["inuse"] > node_page["objects"]: # something is wrong
+                                break
+                            node_page["frozen"] = (x >> 31) & 1
+                            node_chunk = read_int_from_memory(node_page["address"] + self.page_offset_freelist)
+                            node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache)
+                            node_page["num_pages"] = (
+                                kmem_cache["size"] * node_page["objects"] + gef_getpagesize_mask_low()
+                            ) // gef_getpagesize()
+                            node_page["virt_addr"] = self.page2virt(node_page, kmem_cache)
                             node_page_list.append(node_page)
-                            break
-                        x = read_int_from_memory(node_page["address"] + self.page_offset_inuse_objects_frozen)
-                        node_page["inuse"] = x & 0xffff
-                        node_page["objects"] = (x >> 16) & 0x7fff
-                        if node_page["objects"] == 0 or node_page["inuse"] > node_page["objects"]: # something is wrong
-                            break
-                        node_page["frozen"] = (x >> 31) & 1
-                        node_chunk = read_int_from_memory(node_page["address"] + self.page_offset_freelist)
-                        node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache)
-                        node_page["num_pages"] = (kmem_cache["size"] * node_page["objects"] + gef_getpagesize_mask_low()) // gef_getpagesize()
-                        node_page["virt_addr"] = self.page2virt(node_page, kmem_cache)
-                        node_page_list.append(node_page)
-                        current_node_page = read_int_from_memory(node_page["address"] + self.page_offset_next)
-                    kmem_cache["nodes"].append(node_page_list)
-                    current_kmem_cache_node_ptr += current_arch.ptrsize
+                            current_node_page = read_int_from_memory(node_page["address"] + self.page_offset_next)
+                        kmem_cache["nodes"].append(node_page_list)
+                        current_kmem_cache_node_ptr += current_arch.ptrsize
         return parsed_caches
 
     def dump_page(self, page, kmem_cache, tag, freelist_fastpath=()):
@@ -69881,13 +69897,13 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.out.append("    kmem_cache_cpu (cpu{:d}): {:#x}".format(cpu, kmem_cache["kmem_cache_cpu"][cpu]["address"]))
 
                 # dump active
-                if not self.args.only_partial and not self.args.only_node:
+                if self.dump_target_active:
                     active_page = kmem_cache["kmem_cache_cpu"][cpu]["active_page"]
                     freelist_fastpath = kmem_cache["kmem_cache_cpu"][cpu]["freelist"]
                     self.dump_page(active_page, kmem_cache, "active", freelist_fastpath)
 
                 # dump partial
-                if (self.args.verbose or self.args.vverbose) and not self.args.only_node:
+                if self.dump_target_partial:
                     printed_count = 0
                     for partial_page in kmem_cache["kmem_cache_cpu"][cpu]["partial_pages"]:
                         self.dump_page(partial_page, kmem_cache, "partial")
@@ -69896,17 +69912,20 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         self.out.append("        (end of the list)")
 
             # dump nodes
-            if (self.args.vverbose and not self.args.only_partial) and "nodes" in kmem_cache:
-                for node_index, node_page_list in enumerate(kmem_cache["nodes"]):
-                    node_addr = read_int_from_memory(kmem_cache["address"] + self.kmem_cache_offset_node + current_arch.ptrsize * node_index)
-                    self.out.append("    kmem_cache_node[{:d}]: {:#x}".format(node_index, node_addr))
-                    printed_count = 0
-                    for node_page in node_page_list:
-                        self.dump_page(node_page, kmem_cache, "node")
-                        printed_count += 1
-                    if printed_count == 0:
-                        tag = Color.colorify("node pages", label_inactive_color)
-                        self.out.append("      {:s}: (none)".format(tag))
+            if self.dump_target_node:
+                if "nodes" in kmem_cache:
+                    for node_index, node_page_list in enumerate(kmem_cache["nodes"]):
+                        node_addr = read_int_from_memory(
+                            kmem_cache["address"] + self.kmem_cache_offset_node + current_arch.ptrsize * node_index,
+                        )
+                        self.out.append("    kmem_cache_node[{:d}]: {:#x}".format(node_index, node_addr))
+                        printed_count = 0
+                        for node_page in node_page_list:
+                            self.dump_page(node_page, kmem_cache, "node")
+                            printed_count += 1
+                        if printed_count == 0:
+                            tag = Color.colorify("node pages", label_inactive_color)
+                            self.out.append("      {:s}: (none)".format(tag))
 
             self.out.append("    next: {:#x}".format(kmem_cache["next"]))
         return
@@ -69981,11 +70000,18 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         else:
             self.swap = not args.no_byte_swap
 
+        # dump target
+        self.dump_target_active = True
+        self.dump_target_partial = args.verbose or args.vverbose
+        self.dump_target_node = args.vverbose
         if args.only_partial:
-            args.verbose = True
-        if args.only_node:
-            args.verbose = True
-            args.vverbose = True
+            self.dump_target_active = False
+            self.dump_target_partial = True
+            self.dump_target_node = False
+        elif args.only_node:
+            self.dump_target_active = False
+            self.dump_target_partial = False
+            self.dump_target_node = True
 
         self.maps = None
         self.out = []
@@ -70697,9 +70723,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("cache_name", metavar="SLAB_CACHE_NAME", nargs="*", help="filter by specific slab cache name.")
-    parser.add_argument("--cpu", type=int, help="filter by specific cpu.")
     parser.add_argument("--list", action="store_true", help="list up all slab cache names.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("--cpu", type=int, help="filter by specific cpu.")
     parser.add_argument("-s", "--simple", action="store_true", help="skip displaying layout and freelist.")
     parser.add_argument("--skip-partial", action="store_true", help="skip displaying slabs_partial.")
     parser.add_argument("--skip-full", action="store_true", help="skip displaying slabs_full.")
