@@ -75650,7 +75650,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         return
 
     def get_saved_config(self, param_names):
-        if self.rescan:
+        if self.args.rescan:
             return False
 
         cfg_file_name = self.get_cfg_name()
@@ -76568,6 +76568,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
                 candidate_rodata = read_memory(current, gef_getpagesize())
             except gdb.MemoryError:
                 # reached to the end of ro_base
+                self.quiet_info("Use slow path")
                 return False
 
             # '\n\0' is needed to avoid false positives in the dmesg buffer.
@@ -76607,7 +76608,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         return True
 
     def parse_kallsyms(self):
-        if self.rescan:
+        if self.args.rescan:
             self.kallsyms = [] # clear cache
 
         if self.kallsyms:
@@ -76672,16 +76673,17 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             self.print_output(term=True)
             return
 
-        self.rescan = args.rescan
         self.quiet_info("Wait for memory scan")
 
         # fast path
         ret = self.parse_kallsyms()
-        if not ret and not args.rescan:
-            # slow path
-            self.quiet_info("Try to rescan (ignore cached config)")
-            self.rescan = True
-            ret = self.parse_kallsyms()
+        if not ret:
+            # failed, but if args.rescan was not specified originally
+            if not args.rescan:
+                # slow path
+                self.quiet_info("Try to rescan (ignore cached config)")
+                self.args.rescan = True
+                ret = self.parse_kallsyms()
         if not ret:
             self.quiet_err("Failed to parse")
             return
