@@ -25465,7 +25465,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         out.append(titlify(sec.name))
 
         # hexdump
-        if self.hexdump:
+        if self.args.hexdump:
             out.append(hexdump(sec.data, show_symbol=False, base=sec.offset))
 
         # print details
@@ -27411,7 +27411,6 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         local_filepath = None
         remote_filepath = None
         tmp_filepath = None
-        self.hexdump = args.hexdump
 
         if args.remote:
             if not is_remote_debug():
