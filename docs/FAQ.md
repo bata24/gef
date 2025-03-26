@@ -97,6 +97,7 @@ To use these commands fully, you need to manually install the necessary packages
 |`got`|`binutils` (`objdump`, `readelf`)|-|-|
 |`add-symbol-temporary`|`binutils` (`objcopy`)|-|-|
 |`ksymaddr-remote-apply`|`binutils` (`objcopy`)|-|-|
+|`ksymaddr-remote --vmlinux-file`|`binutils` (`nm`)|-|-|
 |`qemu-device-info`|`binutils` (`nm`)|-|-|
 |`rp`|`binutils` (`nm`)|-|`rp++`|
 |`binwalk-memory`|`binwalk`|-|-|
@@ -227,10 +228,15 @@ No filesystem image is provided. Please use the one created with `buildroot` or 
 Download `linux-modules-*_amd64.deb` for `System.map` and `config`.
 
 ## Will each GEF command be more accurate if I have `vmlinux` with debug symbols?
-No, the presence or absence of debug information in `vmlinux` does not impact GEF's functionality or behavior.
+Let's consider debug information and debug symbols separately.
 
-GEF always uses its own resolved address with `ksymaddr-remote`.
-It also performs its own heuristic structure member detection in each command.
+* Debug information
+    * No, the presence or absence of debug information in `vmlinux` does not impact GEF's functionality or behavior.
+        * GEF performs its own heuristic structure member detection in each command.
+* Debug symbols
+    * Yes, you can use `ksymaddr-remote --vmlinux-file <vmlinux file path>`.
+        * GEF internally uses the address resolved with `ksymaddr-remote`, and this result is cached.
+        * Therefore, by specifying the `vmlinux` file, the results of `ksymaddr-remote` can be replaced with accurate values and cached.
 
 ## Does GEF support i386 16-bit mode (real mode)?
 Yes, GEF supports real mode experimentally.

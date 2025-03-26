@@ -75384,6 +75384,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-e", "--exact", action="store_true", help="use exact match.")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-s", "--smart", action="store_true", help="filter __pfx_*, __ksymtab_*, etc.")
+    parser.add_argument("--vmlinux-file", help="force use your vmlinux file which includes symbols.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
@@ -75405,6 +75406,51 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         #
         """
         self.kallsyms = []
+        return
+
+    def parse_vmlinux(self):
+        # first, clear
+        self.kallsyms = []
+
+        # check files and `nm`
+        if not os.path.exists(self.args.vmlinux_file):
+            self.quiet_err("Not found vmlinux file")
+            return
+
+        try:
+            nm = GefUtil.which("nm")
+        except FileNotFoundError as e:
+            self.quiet_err("{}".format(e))
+            return
+
+        # parse symbols
+        result = GefUtil.gef_execute_external([nm, self.args.vmlinux_file], as_list=True)
+        kallsyms = []
+        for line in result:
+            addr, typ, name = line.split()
+            addr = int(addr, 16)
+            typ = typ.strip()
+            name = name.strip()
+            kallsyms.append([addr, name, typ])
+
+        # rebase
+        kinfo = Kernel.get_kernel_base()
+
+        stext = None
+        for addr, name, _ in kallsyms:
+            if name == "_stext":
+                stext = addr
+                break
+
+        if kinfo.text_base and stext:
+            diff = kinfo.text_base - stext
+            self.kallsyms = []
+            for addr, name, typ in kallsyms:
+                if addr > stext:
+                    addr += diff
+                self.kallsyms.append([addr, name, typ])
+        else:
+            self.kallsyms = kallsyms
         return
 
     def get_token_table(self):
@@ -76594,6 +76640,12 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, args):
+        if args.vmlinux_file:
+            self.parse_vmlinux()
+            self.print_kallsyms(args.keyword, args.type, args.smart)
+            self.print_output(term=True)
+            return
+
         self.rescan = args.rescan
         self.quiet_info("Wait for memory scan")
 
