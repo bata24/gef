@@ -21910,10 +21910,9 @@ class GlibcExtractHeapAddrCommand(GenericCommand):
             gef_print(s)
             return
 
-        ptr = args.value
-        extracted_ptr = self.reveal(ptr)
+        extracted_ptr = self.reveal(args.value)
         extracted_ptr = ProcessMap.lookup_address(extracted_ptr)
-        gef_print("Protected fd pointer: {:#x}".format(ptr))
+        gef_print("Protected fd pointer: {:#x}".format(args.value))
         gef_print("{:s}Extracted heap address: {!s} (=fd & ~0xfff)".format(RIGHT_ARROW, extracted_ptr))
         return
 
