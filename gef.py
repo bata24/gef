@@ -23669,7 +23669,7 @@ class ElfInfoCommand(GenericCommand):
             ]
             self.out.append(fmt.format(*args))
 
-            if self.verbose:
+            if self.args.verbose:
                 if s.sh_size > 0x1000:
                     self.out.append("Skip because too large ({:#x} > 0x1000)".format(s.sh_size))
                 else:
@@ -23684,7 +23684,6 @@ class ElfInfoCommand(GenericCommand):
         local_filepath = None
         remote_filepath = None
         tmp_filepath = None
-        self.verbose = args.verbose
         self.out = []
 
         # memory parse pattern
