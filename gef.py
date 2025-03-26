@@ -22408,7 +22408,7 @@ class RopperCommand(GenericCommand):
 
 
 @register_command
-class RpCommand(GenericCommand):
+class RpCommand(GenericCommand, BufferingOutput):
     """Invoke rp++ (v2) command to search rop gadgets (only x64/x86)."""
 
     _cmdline_ = "rp"
@@ -22424,6 +22424,7 @@ class RpCommand(GenericCommand):
     parser.add_argument("-r", "--rop", dest="rop_N", default=3, type=int,
                         help="the max length of rop gadget. (default: %(default)s)")
     parser.add_argument("-a", "--allow-branches", action="store_true", help="enable --allow-branches.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("--no-print", action="store_true",
                         help="run rp, create a temporary file, but don't display it.")
     _syntax_ = parser.format_help()
@@ -22451,18 +22452,17 @@ class RpCommand(GenericCommand):
             os.system(cmd)
         return output_path
 
-    def apply_filter(self, rp_output_path, filter_patterns, base_address):
+    def apply_filter(self, rp_output_path, base_address):
         if not os.path.exists(rp_output_path):
             err("{!r} is not found".format(rp_output_path))
             return
         lines = open(rp_output_path, "r").read()
 
-        out = []
         for line in lines.splitlines():
             line = Color.remove_color(line)
 
             match = True
-            for re_pattern in filter_patterns:
+            for re_pattern in self.args.filter:
                 if not re_pattern.search(line):
                     match = False
                     break
@@ -22475,8 +22475,8 @@ class RpCommand(GenericCommand):
                     x = Color.redify("{:#08x}".format(addr)) + ":" + gadget # repaint color
                 else:
                     x = line
-                out.append(x)
-        return "\n".join(out)
+                self.out.append(x)
+        return
 
     @parse_args
     @only_if_gdb_running
@@ -22539,12 +22539,15 @@ class RpCommand(GenericCommand):
         # invoke rp++
         rp_output_path = self.exec_rp(rp, args.rop_N, args.allow_branches, path)
 
+        if args.no_print:
+           return
+
         # filtering
-        out = self.apply_filter(rp_output_path, args.filter, base_address)
+        self.out = []
+        self.apply_filter(rp_output_path, base_address)
 
         # print
-        if not args.no_print:
-            gef_print(out, less=True)
+        self.print_output(term=True)
         return
 
 
