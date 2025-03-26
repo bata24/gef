@@ -71829,11 +71829,11 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             return parsed_caches, None
 
         parsed_freelist = {}
-        if self.large:
+        if self.args.large:
             parsed_freelist["large"] = self.walk_page_freelist(self.free_slob_large)
-        if self.medium:
+        if self.args.medium:
             parsed_freelist["medium"] = self.walk_page_freelist(self.free_slob_medium)
-        if self.small:
+        if self.args.small:
             parsed_freelist["small"] = self.walk_page_freelist(self.free_slob_small)
 
         return parsed_caches, parsed_freelist
@@ -71878,11 +71878,11 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
                 self.out.append("    next: {:#x}".format(kmem_cache["next"]))
                 self.out.append("")
 
-        if self.large:
+        if self.args.large:
             self.dump_freelist("free_slob_large", parsed_freelist["large"])
-        if self.medium:
+        if self.args.medium:
             self.dump_freelist("free_slob_medium", parsed_freelist["medium"])
-        if self.small:
+        if self.args.small:
             self.dump_freelist("free_slob_small", parsed_freelist["small"])
         return
 
@@ -71931,13 +71931,9 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             return
 
         if (args.large, args.medium, args.small) == (False, False, False):
-            self.large = True
-            self.medium = True
-            self.small = True
-        else:
-            self.large = args.large
-            self.medium = args.medium
-            self.small = args.small
+            self.args.large = True
+            self.args.medium = True
+            self.args.small = True
 
         self.maps = None
         self.out = []
