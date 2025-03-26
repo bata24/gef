@@ -20322,6 +20322,7 @@ class GlibcHeapArenasCommand(GenericCommand):
     def do_invoke(self, args):
         # main_arena
         arena = GlibcHeap.get_main_arena()
+
         if arena is None:
             err("Could not find Glibc main arena")
             return
@@ -21832,7 +21833,7 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
                 continue
             if m.path in ["[vvar]", "[vsyscall]", "[vectors]", "[sigpage]"]:
                 continue
-            if not self.include_heap and m.path.startswith("[heap]"):
+            if not self.args.include_heap and m.path.startswith("[heap]"):
                 continue
             data = read_memory(m.page_start, m.size)
             # Scanning page-by-page
@@ -21841,7 +21842,7 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
                 if b"\0" * gef_getpagesize() == data[pos:pos + gef_getpagesize()]:
                     continue
                 # this page has some data
-                unit = 0x10 if self.aligned else 1
+                unit = 0x10 if self.args.aligned else 1
                 for posb in range(pos, pos + gef_getpagesize(), unit):
                     size_candidate = data[posb + current_arch.ptrsize:posb + current_arch.ptrsize * 2]
                     if len(size_candidate) != current_arch.ptrsize:
@@ -21864,9 +21865,6 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
         if args.size < MIN_SIZE:
             err("Wrong size")
             return
-
-        self.include_heap = args.include_heap
-        self.aligned = args.aligned
 
         self.out = []
         self.find_fake_fast(args.size)
