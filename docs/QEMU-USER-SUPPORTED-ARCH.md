@@ -86,15 +86,15 @@ I also list the tools I used in my Ubuntu 24.04 environment.
 * or1k (OpenRISC 1000)
     * toolchain: `openrisc--glibc--bleeding-edge-2024.05-1` from https://toolchains.bootlin.com/
     * qemu: `qemu-or1k` via apt.
-    * gdb: build from latest. See [docs/FAQ](https://github.com/bata24/gef/blob/dev/docs/FAQ.md#gdb-will-not-load-gef).
+    * gdb: build from latest. See [docs/FAQ](FAQ.md#gdb-will-not-load-gef).
 * nios2
     * toolchain: `nios2--glibc--bleeding-edge-2024.05-1` from https://toolchains.bootlin.com/
     * qemu: `qemu-nios2` via apt.
-    * gdb: build from latest. See [docs/FAQ](https://github.com/bata24/gef/blob/dev/docs/FAQ.md#gdb-will-not-load-gef).
+    * gdb: build from latest. See [docs/FAQ](FAQ.md#gdb-will-not-load-gef).
 * microblaze
     * toolchain: `microblazebe--glibc--bleeding-edge-2024.05-1` from https://toolchains.bootlin.com/
     * qemu: `qemu-microblaze` via apt.
-    * gdb: build from latest. See [docs/FAQ](https://github.com/bata24/gef/blob/dev/docs/FAQ.md#gdb-will-not-load-gef).
+    * gdb: build from latest. See [docs/FAQ](FAQ.md#gdb-will-not-load-gef).
 * xtensa (lx60)
     * toolchain: `xtensa-lx60--uclibc--bleeding-edge-2024.05-1` from https://toolchains.bootlin.com/
         * Because the toolchain obtained with apt seems to be broken since the C header is unavailable.
@@ -114,19 +114,19 @@ I also list the tools I used in my Ubuntu 24.04 environment.
     * qemu: `qemu-cris` via apt.
         * It needs `-cpu` option like `qemu-cris -cpu crisv17 -g 1234 ./a.out`.
         * Could not use `-cpu crisv32` because gdb does not support it.
-    * gdb: build from latest. See [docs/FAQ](https://github.com/bata24/gef/blob/dev/docs/FAQ.md#gdb-will-not-load-gef).
+    * gdb: build from latest. See [docs/FAQ](FAQ.md#gdb-will-not-load-gef).
 * loongarch64
     * toolchain: [CLFS-loongarch64-8.1-x86_64-cross-tools-gcc-glibc.tar.xz](https://github.com/loongson/build-tools/releases/download/2023.08.08/CLFS-loongarch64-8.1-x86_64-cross-tools-gcc-glibc.tar.xz)
     * qemu: `qemu-loongarch64` via apt.
     * qemu (Ubuntu 23.04 or before): build from [latest](https://download.qemu.org/).
         * `./configure --target-list=loongarch64-linux-user && make && cp build/qemu-loongarch64 /usr/local/bin`
-    * gdb: build from latest. See [docs/FAQ](https://github.com/bata24/gef/blob/dev/docs/FAQ.md#gdb-will-not-load-gef).
+    * gdb: build from latest. See [docs/FAQ](FAQ.md#gdb-will-not-load-gef).
 * arc32 (HS38; ARCv2)
     * toolchain: `gcc-arc-linux-gnu` via apt.
     * toolchain (Ubuntu 23.04 or before): `arcle-hs38--glibc--bleeding-edge-2024.05-1` from https://toolchains.bootlin.com/
     * qemu: https://github.com/foss-for-synopsys-dwc-arc-processors/qemu
         * `./configure --target-list=arc-linux-user --disable-werror && make && cp build/qemu-arc /usr/local/bin`
-    * gdb: build from latest. See [docs/FAQ](https://github.com/bata24/gef/blob/dev/docs/FAQ.md#gdb-will-not-load-gef).
+    * gdb: build from latest. See [docs/FAQ](FAQ.md#gdb-will-not-load-gef).
 * arc32 (HS58; ARCv3)
     * toolchain: [arc_gnu_2023.09_prebuilt_arc32_uclibc_linux_install.tar.bz2](https://github.com/foss-for-synopsys-dwc-arc-processors/toolchain/releases/download/arc-2023.09-release/arc_gnu_2023.09_prebuilt_arc32_uclibc_linux_install.tar.bz2)
     * qemu: https://github.com/foss-for-synopsys-dwc-arc-processors/qemu
@@ -153,7 +153,7 @@ I also list the tools I used in my Ubuntu 24.04 environment.
             * Or, you can revert to a slightly older version: `git switch xuantie-qemu-6.1.0`
         * `./configure --target-list=cskyv1-linux-user,cskyv1eb-linux-user,cskyv2-linux-user,cskyv2eb-linux-user --disable-{bpf,werror} && make && cp build/qemu-cskyv{1,2}{,eb} /usr/local/bin`
         * It needs `-cpu` option like `qemu-cskyv2 -cpu ck810 -g 1234 ./a.out`.
-    * gdb: build from latest. See [docs/FAQ](https://github.com/bata24/gef/blob/dev/docs/FAQ.md#gdb-will-not-load-gef).
+    * gdb: build from latest. See [docs/FAQ](FAQ.md#gdb-will-not-load-gef).
 
 
 # Qemu-user UNSUPPORTED architectures
@@ -164,7 +164,7 @@ If you find it, please let me know in the issue page.
     * [x] toolchain: `bfin--uclibc--bleeding-edge-2018.02-1` from https://toolchains.bootlin.com/
     * [ ] qemu: https://github.com/vapier/qemu
         * gdb stub is broken.
-    * [x] gdb: build from latest. See [docs/FAQ](https://github.com/bata24/gef/blob/dev/docs/FAQ.md#gdb-will-not-load-gef).
+    * [x] gdb: build from latest. See [docs/FAQ](FAQ.md#gdb-will-not-load-gef).
 * hexagon:
     * [x] toolchain: https://github.com/quic/toolchain_for_hexagon
     * [x] qemu: `qemu-hexagon` via apt.
@@ -174,12 +174,12 @@ If you find it, please let me know in the issue page.
     * [x] lib: http://www.voidrouter.net/archives/211
     * [ ] qemu: https://github.com/qemu/qemu/releases/tag/v5.2.0
         * the breakpoint is broken.
-    * [x] gdb: build from latest. See [docs/FAQ](https://github.com/bata24/gef/blob/dev/docs/FAQ.md#gdb-will-not-load-gef).
+    * [x] gdb: build from latest. See [docs/FAQ](FAQ.md#gdb-will-not-load-gef).
 * s390
     * [x] toolchain: `gcc-multilib-s390x-linux-gnu` via apt with `-m31` option.
     * [ ] toolchain (Ubuntu 23.04 or before): not found.
     * [ ] qemu: not found.
-    * [x] gdb: build from latest. See [docs/FAQ](https://github.com/bata24/gef/blob/dev/docs/FAQ.md#gdb-will-not-load-gef).
+    * [x] gdb: build from latest. See [docs/FAQ](FAQ.md#gdb-will-not-load-gef).
 * hppa64
     * [x] toolchain: `gcc-hppa64-linux` via apt.
     * [ ] lib: not found.
@@ -190,7 +190,7 @@ If you find it, please let me know in the issue page.
     * [ ] qemu: https://gitee.com/loongson-edu/la32r-QEMU
         * `./configure --target-list=loongarch32-linux-user --disable-werror && make && cp build/qemu-loongarch32 /usr/local/bin`
         * It says `Architecture rejected` when connecting from gdb.
-    * [x] gdb: build from latest. See [docs/FAQ](https://github.com/bata24/gef/blob/dev/docs/FAQ.md#gdb-will-not-load-gef).
+    * [x] gdb: build from latest. See [docs/FAQ](FAQ.md#gdb-will-not-load-gef).
 * e2k
     * [ ] toolchain: not found.
     * [x] qemu: https://github.com/OpenE2K/qemu-e2k

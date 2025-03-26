@@ -29,7 +29,7 @@
     * It works with any version of `qemu-system`, but the latest version is recommended.
     * It is preferable to run `qemu-system` on `localhost`.
         * If you run `qemu-system` remotely (another host), you can not handle SecureWorld's memory.
-    * For more information, see [docs/FAQ.md](https://github.com/bata24/gef/blob/dev/docs/FAQ.md).
+    * For more information, see [docs/FAQ.md](FAQ.md).
 
 ## With qemu-user
 * Usage
@@ -40,7 +40,7 @@
     * Host
         * x64
     * Guest (ELF)
-        * See [docs/QEMU-USER-SUPPORTED-ARCH.md](https://github.com/bata24/gef/blob/dev/docs/QEMU-USER-SUPPORTED-ARCH.md) for details.
+        * See [docs/QEMU-USER-SUPPORTED-ARCH.md](QEMU-USER-SUPPORTED-ARCH.md) for details.
 * Note
     * It works with any version of `qemu-user`, but the latest version is recommended.
         * From QEMU 8.1 onwards, the `info proc mappings` command is supported in `qemu-user`, which significantly speeds up memory map generation.
@@ -181,7 +181,7 @@
         * Possibly x86, ARM and ARM64
 * Note
     * This method sometimes fails.
-        * For more information, see [docs/FAQ.md](https://github.com/bata24/gef/blob/dev/docs/FAQ.md).
+        * For more information, see [docs/FAQ.md](FAQ.md).
         * If an issue occurs, try closing `gdb` and reconnecting.
     * To connect from another machine, specify the IP address.
         * `gdb-multiarch -ex 'set architecture i386:x86-64' -ex 'target remote <Android Studio host machine's IP address>:1234'`.

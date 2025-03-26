@@ -74,13 +74,13 @@ If you want to use GEF as a user other than root, add `source /path/to/.gdbinit-
 
 ## I don't want to specify the `--break-system-packages` option during installation.
 You have some options:
-* Use [`install-minimal.sh`](https://github.com/bata24/gef/blob/dev/install-minimal.sh) to skip installing with `pip`.
-* Use [`install-venv.sh`](https://github.com/bata24/gef/blob/dev/install-venv.sh) to avoid affecting the global environment.
+* Use [`install-minimal.sh`](../install-minimal.sh) to skip installing with `pip`.
+* Use [`install-venv.sh`](../install-venv.sh) to avoid affecting the global environment.
 * Install inside docker to prevent impact on the host environment.
 * Install inside another virtual machine.
 
 ## How can I install GEF offline?
-Please refer to [`install.sh`](https://github.com/bata24/gef/blob/dev/install.sh), [`install-minimal.sh`](https://github.com/bata24/gef/blob/dev/install-minimal.sh) or [`install-venv.sh`](https://github.com/bata24/gef/blob/dev/install-venv.sh) and set it up manually.
+Please refer to [`install.sh`](../install.sh), [`install-minimal.sh`](../install-minimal.sh) or [`install-venv.sh`](../install-venv.sh) and set it up manually.
 
 Note: GEF is designed to have as few dependencies as possible.
 Many commands should work with just `gef.py` without any additional external tools.
@@ -272,7 +272,7 @@ Yes, it is supported, but not fully.
 
 When I tried using `Android Studio`, most commands seemed to work.
 * I used `Android Studio` on Windows and connected from Linux.
-* Refer to [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORTED-MODE.md) for the commands I used.
+* Refer to [docs/SUPPORTED-MODE.md](SUPPORTED-MODE.md) for the commands I used.
 
 However, the QEMU in `Android Studio` is based on an older version, 2.12.0, and seems to have compatibility issues with recent GDB versions (16.x~).
 Specifically, repeated memory reads may cause QEMU's GDB stub to return incorrect results.
@@ -283,7 +283,7 @@ Yes, it is supported, but not fully.
 
 When I tried using `Android Studio`, most commands seemed to work.
 * I used `Android Studio` on Windows and connected from Linux.
-* Refer to [docs/SUPPORTED-MODE.md](https://github.com/bata24/gef/blob/dev/docs/SUPPORTED-MODE.md) for the commands I used.
+* Refer to [docs/SUPPORTED-MODE.md](SUPPORTED-MODE.md) for the commands I used.
 
 However, Android does not use glibc (it uses the bionic C library).
 So be aware that all glibc-specific commands cannot be used, such as the `heap` command.
