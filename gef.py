@@ -89408,15 +89408,15 @@ class ExecUntilCommand(GenericCommand):
         if not current_arch.is_jump(insn):
             return False
 
-        if (self.only_taken, self.only_not_taken) == (False, False):
+        if (self.args.only_taken, self.args.only_not_taken) == (False, False):
             return True
-        elif (self.only_taken, self.only_not_taken) == (True, False):
+        elif (self.args.only_taken, self.args.only_not_taken) == (True, False):
             if current_arch.is_conditional_branch(insn):
                 taken, _reason = current_arch.is_branch_taken(insn)
                 return taken
             else:
                 return True # non-conditional, so always jump
-        elif (self.only_taken, self.only_not_taken) == (False, True):
+        elif (self.args.only_taken, self.args.only_not_taken) == (False, True):
             if current_arch.is_conditional_branch(insn):
                 taken, _reason = current_arch.is_branch_taken(insn)
                 return not taken
@@ -89439,17 +89439,17 @@ class ExecUntilCommand(GenericCommand):
             return False
         elif self.mode == "syscall":
             if current_arch.is_syscall(insn):
-                if not self.filter and not self.ignore:
+                if not self.args.filter and not self.args.ignore:
                     return True
                 _reg, nr = SyscallArgsCommand.get_nr()
                 try:
                     syscall_name = get_syscall_table().nr_table[nr].name
                 except KeyError:
                     return True # for debug
-                if self.ignore and syscall_name in self.ignore:
+                if self.args.ignore and syscall_name in self.args.ignore:
                     return False
-                if self.filter:
-                    return syscall_name in self.filter
+                if self.args.filter:
+                    return syscall_name in self.args.filter
                 else:
                     return True
             return False
@@ -89460,7 +89460,7 @@ class ExecUntilCommand(GenericCommand):
         elif self.mode == "memaccess":
             return "[" in str(insn)
         elif self.mode == "keyword":
-            for re_pattern in self.keyword:
+            for re_pattern in self.args.keyword:
                 if re_pattern.search(str(insn)):
                     return True
             return False
@@ -89528,7 +89528,7 @@ class ExecUntilCommand(GenericCommand):
             count = 0
             while True:
                 # progress
-                if not self.print_insn and count % 100 == 0:
+                if not self.args.print_insn and count % 100 == 0:
                     self.force_write_stdout([b"\r|", b"\r/", b"\r-", b"\r\\"][count // 100 % 4])
 
                 # backup
@@ -89537,7 +89537,7 @@ class ExecUntilCommand(GenericCommand):
 
                 # execute 1 instruction
                 insn = get_insn()
-                if self.use_ni or (self.skip_lib and "@plt>" in str(insn)):
+                if self.args.use_ni or (self.args.skip_lib and "@plt>" in str(insn)):
                     gdb.execute("ni") # use ni wrapper
                 else:
                     gdb.execute("si") # use si wrapper
@@ -89561,12 +89561,12 @@ class ExecUntilCommand(GenericCommand):
                         break
                     insn = get_insn()
 
-                if self.print_insn:
+                if self.args.print_insn:
                     self.force_write_stdout((str(insn) + "\n").encode())
 
                 # found and break
-                if self.is_target_insn(insn) and current_arch.pc not in self.exclude:
-                    if not self.print_insn:
+                if self.is_target_insn(insn) and current_arch.pc not in self.args.exclude:
+                    if not self.args.print_insn:
                         self.force_write_stdout(b"\r \r")
                     break
 
@@ -89598,10 +89598,6 @@ class ExecUntilCommand(GenericCommand):
         if self.mode is None:
             self.usage()
             return
-        self.print_insn = args.print_insn
-        self.use_ni = args.use_ni
-        self.skip_lib = args.skip_lib
-        self.exclude = args.exclude
         self.exec_next()
         return
 
@@ -89661,12 +89657,6 @@ class ExecUntilJumpCommand(ExecUntilCommand):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        self.print_insn = args.print_insn
-        self.use_ni = args.use_ni
-        self.skip_lib = args.skip_lib
-        self.exclude = args.exclude
-        self.only_taken = args.only_taken
-        self.only_not_taken = args.only_not_taken
         self.exec_next()
         return
 
@@ -89702,12 +89692,6 @@ class ExecUntilIndirectBranchCommand(ExecUntilCommand):
     @only_if_gdb_running
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
-        self.print_insn = args.print_insn
-        self.use_ni = args.use_ni
-        self.skip_lib = args.skip_lib
-        self.exclude = args.exclude
-        self.only_taken = args.only_taken
-        self.only_not_taken = args.only_not_taken
         self.exec_next()
         return
 
@@ -89742,12 +89726,6 @@ class ExecUntilAllBranchCommand(ExecUntilCommand):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        self.print_insn = args.print_insn
-        self.use_ni = args.use_ni
-        self.skip_lib = args.skip_lib
-        self.exclude = args.exclude
-        self.only_taken = args.only_taken
-        self.only_not_taken = args.only_not_taken
         self.exec_next()
         return
 
@@ -89782,12 +89760,6 @@ class ExecUntilSyscallCommand(ExecUntilCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("wine",))
     def do_invoke(self, args):
-        self.print_insn = args.print_insn
-        self.use_ni = args.use_ni
-        self.skip_lib = args.skip_lib
-        self.filter = args.filter
-        self.ignore = args.ignore
-        self.exclude = args.exclude
         self.exec_next()
         return
 
@@ -89877,11 +89849,6 @@ class ExecUntilKeywordReCommand(ExecUntilCommand):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        self.print_insn = args.print_insn
-        self.use_ni = args.use_ni
-        self.skip_lib = args.skip_lib
-        self.keyword = args.keyword
-        self.exclude = args.exclude
         self.exec_next()
         return
 
@@ -89920,11 +89887,6 @@ class ExecUntilCondCommand(ExecUntilCommand):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        self.print_insn = args.print_insn
-        self.use_ni = args.use_ni
-        self.skip_lib = args.skip_lib
-        self.exclude = args.exclude
-
         condition = args.condition
         if re.search(r"[^><!=]=[^=]", condition):
             err("Should not use `=` since it will be replace register/memory value, try use `==`")
@@ -89983,10 +89945,6 @@ class ExecUntilUserCodeCommand(ExecUntilCommand):
         if self.mode is None:
             self.usage()
             return
-        self.print_insn = args.print_insn
-        self.use_ni = args.use_ni
-        self.skip_lib = args.skip_lib
-        self.exclude = args.exclude
 
         filepath = Path.get_filepath(append_proc_root_prefix=False)
         if not filepath and is_remote_debug():
@@ -90034,10 +89992,6 @@ class ExecUntilLibcCodeCommand(ExecUntilCommand):
         if self.mode is None:
             self.usage()
             return
-        self.print_insn = args.print_insn
-        self.use_ni = args.use_ni
-        self.skip_lib = args.skip_lib
-        self.exclude = args.exclude
 
         libc_targets = ("libc-2.", "libc.so.6", "libuClibc-")
         libc = ProcessMap.process_lookup_path(libc_targets)
@@ -90080,10 +90034,7 @@ class ExecUntilSecureWorldCommand(ExecUntilCommand):
         if self.mode is None:
             self.usage()
             return
-        self.print_insn = args.print_insn
-        self.use_ni = args.use_ni
-        self.skip_lib = False
-        self.exclude = args.exclude
+        self.args.skip_lib = False
 
         scr = get_register("$SCR" if is_arm32() else "$SCR_EL3")
         if scr is None:
