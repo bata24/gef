@@ -57727,7 +57727,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 };
             };
             """
-            get_next_vma_area_struct = self.MapleTree(mm, self.quiet).get_next
+            get_next_vma_area_struct = self.MapleTree(mm, self.args.quiet).get_next
             vm_area_struct = get_next_vma_area_struct()
 
             """
