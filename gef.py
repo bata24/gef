@@ -11011,7 +11011,7 @@ def read_physmem(paddr, size):
         return None
 
     def qemu_system_use_xp(paddr, size):
-        # for older than qemu 4.1.0-rc0
+        # for older than qemu 4.1.0
         try:
             res = gdb.execute("monitor xp/{:d}xb {:#x}".format(size, paddr), to_string=True)
             """
@@ -24545,7 +24545,7 @@ class KernelChecksecCommand(GenericCommand):
                 else:
                     gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enforcing", "bold green"), additional))
 
-        else: # kernel >= 4.17-rc1
+        else: # kernel >= 4.17
             """
             struct selinux_state {
             #ifdef CONFIG_SECURITY_SELINUX_DISABLE
@@ -29676,7 +29676,7 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system() and not is_vmware() and not is_kgdb():
-                err("Unsupported. Check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
+                err("Unsupported. Check qemu version (at least: 4.1.0~, recommend: 5.x~)")
                 return
 
         from_idx = args.count * self.repeat_count
@@ -29802,7 +29802,7 @@ class HexdumpFlexibleCommand(GenericCommand):
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system() and not is_vmware() and not is_kgdb():
-                err("Unsupported. Check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
+                err("Unsupported. Check qemu version (at least: 4.1.0~, recommend: 5.x~)")
                 return
 
         fmt = args.format
@@ -30011,7 +30011,7 @@ class PatchCommand(GenericCommand):
 
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported. Check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
+                err("Unsupported. Check qemu version (at least: 4.1.0~, recommend: 5.x~)")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -30192,7 +30192,7 @@ class PatchStringCommand(PatchCommand):
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported. Check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
+                err("Unsupported. Check qemu version (at least: 4.1.0~, recommend: 5.x~)")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -30246,7 +30246,7 @@ class PatchHexCommand(PatchCommand):
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported. Check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
+                err("Unsupported. Check qemu version (at least: 4.1.0~, recommend: 5.x~)")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -30300,7 +30300,7 @@ class PatchPatternCommand(PatchCommand):
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported. Check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
+                err("Unsupported. Check qemu version (at least: 4.1.0~, recommend: 5.x~)")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -30392,7 +30392,7 @@ class PatchNopCommand(PatchCommand):
 
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported, try check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
+                err("Unsupported, try check qemu version (at least: 4.1.0~, recommend: 5.x~)")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -30480,7 +30480,7 @@ class PatchInfloopCommand(PatchCommand):
 
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported, try check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
+                err("Unsupported, try check qemu version (at least: 4.1.0~, recommend: 5.x~)")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -30552,7 +30552,7 @@ class PatchTrapCommand(PatchCommand):
 
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported, try check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
+                err("Unsupported, try check qemu version (at least: 4.1.0~, recommend: 5.x~)")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -30624,7 +30624,7 @@ class PatchRetCommand(PatchCommand):
 
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported, try check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
+                err("Unsupported, try check qemu version (at least: 4.1.0~, recommend: 5.x~)")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -30696,7 +30696,7 @@ class PatchSyscallCommand(PatchCommand):
 
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported, try check qemu version (at least: 4.1.0-rc0~, recommend: 5.x~)")
+                err("Unsupported, try check qemu version (at least: 4.1.0~, recommend: 5.x~)")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -59372,7 +59372,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
 
     def get_offset_layout(self, module_addrs): # v4.5 ~ v6.4
         """
-        struct module { // kernel v4.5-rc1~
+        struct module { // kernel v4.5~
             enum module_state state;
             struct list_head list;
             char name[MODULE_NAME_LEN]; // 64 - sizeof(unsigned long) bytes
@@ -59506,7 +59506,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
 
     def get_offset_module_core(self, module_addrs): # ~ v4.5
         """
-        struct module { // ~v4.5-rc1
+        struct module { // ~v4.5
             enum module_state state;
             struct list_head list;
             char name[MODULE_NAME_LEN];
@@ -61641,7 +61641,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
     _note_ = [
         "This command needs CONFIG_RANDSTRUCT=n.",
         "",
-        "Currently it supports from 3.0 to 6.12-rc2.",
+        "Currently it supports from 3.0 to 6.12.",
         "",
         "Supported structure:",
     ]
@@ -69039,12 +69039,12 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         struct reciprocal_value {                //
             u32 m;                               //
             u8 sh1, sh2;                         // (+ padding 2 byte)
-        } reciprocal_size;                       // if kernel >= 5.9-rc1
+        } reciprocal_size;                       // if kernel >= 5.9
         unsigned int offset;
         unsigned int cpu_partial;                // if CONFIG_SLUB_CPU_PARTIAL=y
-        unsigned int cpu_partial_slabs;          // if CONFIG_SLUB_CPU_PARTIAL=y && kernel >= 5.16-rc1
+        unsigned int cpu_partial_slabs;          // if CONFIG_SLUB_CPU_PARTIAL=y && kernel >= 5.16
         struct kmem_cache_order_objects oo;
-        struct kmem_cache_order_objects max;     // if kernel < 5.19-rc1
+        struct kmem_cache_order_objects max;     // if kernel < 5.19
         struct kmem_cache_order_objects min;
         gfp_t allocflags;                        // unsigned int
         int refcount;
@@ -69055,10 +69055,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         const char *name;
         struct list_head list; <-----> struct list_head <-----> struct list_head <-----> ...
         struct kobject kobj;                     // if CONFIG_SYSFS=y
-        struct work_struct kobj_remove_work;     // if CONFIG_SYSFS=y && kernel < 5.9-rc1
-        struct memcg_cache_params memcg_params;  // if CONFIG_MEMCG=y && kernel < 5.9-rc1
-        unsigned int max_attr_size;              // if CONFIG_MEMCG=y && kernel < 5.9-rc1
-        struct kset *memcg_kset;                 // if CONFIG_MEMCG=y && CONFIG_SYSFS=y && kernel < 5.9-rc1
+        struct work_struct kobj_remove_work;     // if CONFIG_SYSFS=y && kernel < 5.9
+        struct memcg_cache_params memcg_params;  // if CONFIG_MEMCG=y && kernel < 5.9
+        unsigned int max_attr_size;              // if CONFIG_MEMCG=y && kernel < 5.9
+        struct kset *memcg_kset;                 // if CONFIG_MEMCG=y && CONFIG_SYSFS=y && kernel < 5.9
         unsigned long random;                    // if CONFIG_SLAB_FREELIST_HARDENED=y
         unsigned int remote_node_defrag_ratio;   // if CONFIG_NUMA=y
         unsigned int *random_seq;                // if CONFIG_SLAB_FREELIST_RANDOM=y
@@ -69075,20 +69075,20 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     struct kmem_cache_cpu {
         void **freelist;
         unsigned long tid;
-        struct slab *slab;                       // if kernel >= 5.17-rc1
-        struct page *page;                       // if kernel < 5.17-rc1
-        struct slab *partial;                    // if kernel >= 5.17-rc1 && CONFIG_SLUB_CPU_PARTIAL=y
-        struct page *partial;                    // if kernel < 5.17-rc1 && CONFIG_SLUB_CPU_PARTIAL=y
-        local_lock_t lock;                       // if kernel >= 5.15-rc1
+        struct slab *slab;                       // if kernel >= 5.17
+        struct page *page;                       // if kernel < 5.17
+        struct slab *partial;                    // if kernel >= 5.17 && CONFIG_SLUB_CPU_PARTIAL=y
+        struct page *partial;                    // if kernel < 5.17 && CONFIG_SLUB_CPU_PARTIAL=y
+        local_lock_t lock;                       // if kernel >= 5.15
         unsigned stat[NR_SLUB_STAT_ITEMS];       // if CONFIG_SLUB_STATS=y
     };
 
-    struct page {                                // if kernel < 4.18-rc1
+    struct page {                                // if kernel < 4.18
         unsigned long flags;
         union { };                               // long
         void *freelist;
         unsigned inuse:16, objects:15, frozen:1;
-        atomic_t refcount;                       // if kernel < 4.16-rc1
+        atomic_t refcount;                       // if kernel < 4.16
         struct page *next;
         int pages;                               // if 64bit else `short pages`
         int pobjects;                            // if 64bit else `short pobjects`
@@ -69096,7 +69096,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         ...
     };
 
-    struct page {                                // if 4.18-rc1 <= kernel < 5.17-rc1
+    struct page {                                // if 4.18 <= kernel < 5.17
         unsigned long flags;
         struct page *next;
         int pages;                               // if 64bit else `short pages`
@@ -69107,12 +69107,12 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         ...
     };
 
-    struct slab {                                // if kernel >= 5.17-rc1
+    struct slab {                                // if kernel >= 5.17
         unsigned long __page_flags;
-        struct kmem_cache *slab_cache;           // if kernel >= 6.2-rc1
+        struct kmem_cache *slab_cache;           // if kernel >= 6.2
         struct slab *next;
         int slabs;
-        struct kmem_cache *slab_cache;           // if kernel < 6.2-rc1
+        struct kmem_cache *slab_cache;           // if kernel < 6.2
         void *freelist;
         unsigned inuse:16, objects:15, frozen:1;
         ...
@@ -70791,7 +70791,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
 
     """
     struct kmem_cache {
-        struct array_cache __percpu *cpu_cache;  // In fact, the offset value, not the pointer. if 3.18-rc1 <= kernel
+        struct array_cache __percpu *cpu_cache;  // In fact, the offset value, not the pointer. if 3.18 <= kernel
         unsigned int batchcount;
         unsigned int limit;
         unsigned int shared;
@@ -70806,7 +70806,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         gfp_t allocflags;                        // unsigned int
         size_t colour;
         unsigned int colour_off;
-        struct kmem_cache *freelist_cache;       // if kernel < 6.1-rc1
+        struct kmem_cache *freelist_cache;       // if kernel < 6.1
         unsigned int freelist_size;
         void (*ctor)(void *obj);
         const char *name;
@@ -70828,16 +70828,16 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         atomic_t allocmiss;                      // if CONFIG_DEBUG_SLAB=y
         atomic_t freehit;                        // if CONFIG_DEBUG_SLAB=y
         atomic_t freemiss;                       // if CONFIG_DEBUG_SLAB=y
-        atomic_t store_user_clean;               // if CONFIG_DEBUG_SLAB=y && CONFIG_DEBUG_SLAB_LEAK=y && 4.6-rc1 <= kernel < 5.2-rc1
+        atomic_t store_user_clean;               // if CONFIG_DEBUG_SLAB=y && CONFIG_DEBUG_SLAB_LEAK=y && 4.6 <= kernel < 5.2
         int obj_offset;                          // if CONFIG_DEBUG_SLAB=y
-        struct memcg_cache_params memcg_params;  // if CONFIG_MEMCG=y && kernel < 5.9-rc1
-        struct kasan_cache kasan_info;           // if CONFIG_KASAN=y && 4.6-rc1 <= kernel
-        unsigned int *random_seq;                // if CONFIG_SLAB_FREELIST_RANDOM=y && 4.7-rc1 <= kernel
-        unsigned int useroffset;                 // if 4.16-rc1 <= kernel
-        unsigned int usersize;                   // if 4.16-rc1 <= kernel
-        struct kmem_cache_node *node[MAX_NUMNODES]; // if 3.18-rc1 <= kernel
-        struct kmem_cache_node **node;           // if kernel < 3.18-rc1
-        struct array_cache *array[NR_CPUS + MAX_NUMNODES];  // if kernel < 3.18-rc1
+        struct memcg_cache_params memcg_params;  // if CONFIG_MEMCG=y && kernel < 5.9
+        struct kasan_cache kasan_info;           // if CONFIG_KASAN=y && 4.6 <= kernel
+        unsigned int *random_seq;                // if CONFIG_SLAB_FREELIST_RANDOM=y && 4.7 <= kernel
+        unsigned int useroffset;                 // if 4.16 <= kernel
+        unsigned int usersize;                   // if 4.16 <= kernel
+        struct kmem_cache_node *node[MAX_NUMNODES]; // if 3.18 <= kernel
+        struct kmem_cache_node **node;           // if kernel < 3.18
+        struct array_cache *array[NR_CPUS + MAX_NUMNODES];  // if kernel < 3.18
     };
 
     struct array_cache {
@@ -70845,7 +70845,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         unsigned int limit;
         unsigned int batchcount;
         unsigned int touched;
-        spinlock_t lock;                         // if kernel < 3.17-rc1
+        spinlock_t lock;                         // if kernel < 3.17
         void *entry[];
     };
 
@@ -70854,9 +70854,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         struct list_head slabs_partial;
         struct list_head slabs_full;
         struct list_head slabs_free;
-        unsigned long total_slabs;               // if 4.10-rc1 <= kernel
-        unsigned long free_slabs;                // if 4.10-rc1 <= kernel
-        unsigned long num_slabs;                 // if 4.9-rc1 <= kernel < 4.10-rc1
+        unsigned long total_slabs;               // if 4.10 <= kernel
+        unsigned long free_slabs;                // if 4.10 <= kernel
+        unsigned long num_slabs;                 // if 4.9 <= kernel < 4.10
         unsigned long free_objects;
         unsigned int free_limit;
         unsigned int colour_next;
@@ -70866,18 +70866,18 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         int free_touched;
     };
 
-    struct page {                                // if kernel < 4.18-rc1
+    struct page {                                // if kernel < 4.18
         unsigned long flags;
         void *s_mem;
         void *freelist;
         unsigned int active;
-        atomic_t refcount;                       // if kernel < 4.16-rc1
+        atomic_t refcount;                       // if kernel < 4.16
         struct rcu_head rcu_head;
         struct kmem_cache *slab_cache;
         ...
     };
 
-    struct page {                                // if 4.18-rc1 <= kernel < 5.17-rc1
+    struct page {                                // if 4.18 <= kernel < 5.17
         unsigned long flags;
         struct list_head slab_list;
         struct kmem_cache *slab_cache;
@@ -70887,11 +70887,11 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         ...
     };
 
-    struct slab {                                // if kernel >= 5.17-rc1
+    struct slab {                                // if kernel >= 5.17
         unsigned long __page_flags;
-        struct kmem_cache *slab_cache;           // if kernel >= 6.2-rc1
+        struct kmem_cache *slab_cache;           // if kernel >= 6.2
         struct list_head slab_list;
-        struct kmem_cache *slab_cache;           // if kernel < 6.2-rc1
+        struct kmem_cache *slab_cache;           // if kernel < 6.2
         void *freelist;
         void *s_mem;
         unsigned int active;
@@ -71614,25 +71614,25 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         unsigned int size;
         unsigned int align;
         slab_flags_t flags;                      // unsigned int
-        unsigned int useroffset;                 // if 4.16-rc1 <= kernel
-        unsigned int usersize;                   // if 4.16-rc1 <= kernel
+        unsigned int useroffset;                 // if 4.16 <= kernel
+        unsigned int usersize;                   // if 4.16 <= kernel
         const char *name;
         int refcount;
         void (*ctor)(void *);
         struct list_head list;
     };
 
-    struct page {                                // if kernel < 4.18-rc1
+    struct page {                                // if kernel < 4.18
         unsigned long flags;
         void *__unused_1;
         void *freelist;
         int units;
-        atomic_t refcount;                       // if kernel < 4.16-rc1
+        atomic_t refcount;                       // if kernel < 4.16
         struct list_head lru;
         ...
     };
 
-    struct page {                                // if 4.18-rc1 <= kernel < 5.17-rc1
+    struct page {                                // if 4.18 <= kernel < 5.17
         unsigned long flags;
         struct list_head lru;
         struct kmem_cache *__unused_1;
@@ -71642,7 +71642,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         ...
     };
 
-    struct slab {                                // if kernel >= 5.17-rc1
+    struct slab {                                // if kernel >= 5.17
         unsigned long __page_flags;
         struct list_head slab_list;
         void *__unused_1;
@@ -90589,7 +90589,7 @@ class KmallocTracerCommand(GenericCommand):
         EXPORT_SYMBOL(kmem_cache_alloc_node_noprof);
         EXPORT_SYMBOL(kmem_cache_alloc_noprof);
         EXPORT_SYMBOL(krealloc_noprof);
-        [6.11~6.14-rc7]
+        [6.11~6.14]
         EXPORT_SYMBOL(__kmalloc_cache_node_noprof);
         EXPORT_SYMBOL(__kmalloc_cache_noprof);
         EXPORT_SYMBOL(__kmalloc_large_node_noprof);
@@ -90694,7 +90694,7 @@ class KmallocTracerCommand(GenericCommand):
                 ["kmem_cache_alloc_noprof", -1],
                 ["krealloc_noprof", 1],
             ]
-        elif kversion >= "6.11": # 6.11 ~ 6.14-rc7
+        elif kversion >= "6.11": # 6.11 ~ 6.14
             kmalloc_syms = [
                 ["__kmalloc_cache_node_noprof", 3],
                 ["__kmalloc_cache_noprof", 2],
