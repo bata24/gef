@@ -94629,33 +94629,41 @@ class GefConfigCommand(GenericCommand):
     def print_setting(self, config_name, with_description=False, show_only_changes=False):
         res = Config.__gef_config__.get(config_name)
         res_orig = Config.__gef_config_orig__.get(config_name)
+
+        # something is worng
         if not res or not res_orig:
             return
 
         string_color = Config.get_gef_setting("theme.dereference_string")
         misc_color = Config.get_gef_setting("theme.dereference_base_address")
 
-        _value, _type, _desc = res
-        _value_orig, _, _ = res_orig
+        value, type_, desc = res
+        value_orig, _, _ = res_orig
 
-        _setting = Color.colorify(config_name, "green")
-        _type = _type.__name__
-        if _type == "str":
-            _value = '"{:s}"'.format(Color.colorify(_value, string_color))
-            _value_orig = '"{:s}"'.format(Color.colorify(_value_orig, string_color))
+        setting = Color.colorify(config_name, "green")
+        type_name = type_.__name__
+        if type_name == "str":
+            value = '"{:s}"'.format(Color.colorify(value, string_color))
+            value_orig = '"{:s}"'.format(Color.colorify(value_orig, string_color))
         else:
-            _value = Color.colorify(_value, misc_color)
-            _value_orig = Color.colorify(_value_orig, misc_color)
+            value = Color.colorify(value, misc_color)
+            value_orig = Color.colorify(value_orig, misc_color)
 
         if show_only_changes:
-            if _value != _value_orig:
-                gef_print("{:s} ({:s}) = {:s}   (orig: {:s})".format(_setting, _type, _value, _value_orig))
-        else:
-            gef_print("{:s} ({:s}) = {:s}".format(_setting, _type, _value))
+            if value != value_orig:
+                gef_print("{:s} ({:s}) = {:s}   (orig: {:s})".format(setting, type_name, value, value_orig))
+            # do not print the description
+            return
 
+        gef_print("{:s} ({:s}) = {:s}".format(setting, type_name, value))
         if with_description:
-            gef_print(Color.colorify("\nDescription:", "bold underline"))
-            gef_print("\t{:s}".format(_desc))
+            if value != value_orig:
+                gef_print("")
+                gef_print(Color.colorify("Original value:", "bold underline"))
+                gef_print("{:s} ({:s}) = {:s}".format(setting, type_name, value_orig))
+            gef_print("")
+            gef_print(Color.colorify("Description:", "bold underline"))
+            gef_print("{:s}".format(desc))
         return
 
     def set_setting(self, config_name, config_value):
@@ -94669,24 +94677,24 @@ class GefConfigCommand(GenericCommand):
             err("Unknown command '{:s}'".format(command_name))
             return
 
-        _type = Config.__gef_config__.get(config_name, [None, None, None])[1]
-        if _type is None:
+        type_ = Config.__gef_config__.get(config_name, [None, None, None])[1]
+        if type_ is None:
             err("Failed to get '{:s}' config setting".format(config_name))
             return
 
         try:
-            if _type is bool:
+            if type_ is bool:
                 if config_value.upper() in ("TRUE", "T", "1"):
-                    _newval = True
+                    newval = True
                 else:
-                    _newval = False
+                    newval = False
             else:
-                _newval = _type(config_value)
+                newval = type_(config_value)
         except Exception:
-            err("{} expects type '{}'".format(config_name, _type.__name__))
+            err("{} expects type '{}'".format(config_name, type_.__name__))
             return
 
-        Config.__gef_config__[config_name][0] = _newval
+        Config.__gef_config__[config_name][0] = newval
         Cache.reset_gef_caches(all=True)
         return
 
