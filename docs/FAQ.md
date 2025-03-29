@@ -95,6 +95,7 @@ To use these commands fully, you need to manually install the necessary packages
 |:---|:---|:---|:---|
 |(`gef`)|`gdb` or `gdb-multiarch`|-|-|
 |`got`|`binutils` (`objdump`, `readelf`)|-|-|
+|`got --cppfilt`|`binutils` (`c++filt`)|-|-|
 |`add-symbol-temporary`|`binutils` (`objcopy`)|-|-|
 |`ksymaddr-remote-apply`|`binutils` (`objcopy`)|-|-|
 |`ksymaddr-remote --vmlinux-file`|`binutils` (`nm`)|-|-|

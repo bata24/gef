@@ -34576,9 +34576,10 @@ class GotCommand(GenericCommand, BufferingOutput):
 
             # c++filt
             if args.cppfilt:
-                res = GefUtil.gef_execute_external([GefUtil.which("c++filt"), name], as_list=True)
-                if len(res) == 1:
-                    name = res[0]
+                if name.startswith("_Z"):
+                    res = GefUtil.gef_execute_external([GefUtil.which("c++filt"), name], as_list=True)
+                    if len(res) == 1:
+                        name = res[0]
 
             # aggregate
             dic = {
@@ -34865,7 +34866,7 @@ class GotCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class GotAllCommand(GenericCommand):
+class GotAllCommand(GenericCommand, BufferingOutput):
     """Show got entries for all libraries."""
 
     _cmdline_ = "got-all"
@@ -34877,6 +34878,8 @@ class GotAllCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output.")
     parser.add_argument("filter", metavar="FILTER", nargs="*", help="filter string.")
+    parser.add_argument("--exact", action="store_true", help="use exact match for function name.")
+    parser.add_argument("--cppfilt", action="store_true", help="use c++filt to demangle.")
     _syntax_ = parser.format_help()
 
     @parse_args
@@ -34885,7 +34888,9 @@ class GotAllCommand(GenericCommand):
     def do_invoke(self, args):
         verbose = ["", "-v"][args.verbose]
         remote = ["", "-r"][args.remote]
-        extra_args = "{:s} {:s} {:s}".format(verbose, remote, " ".join(args.filter))
+        exact = ["", "--exact"][args.exact]
+        cppfilt = ["", "--cppfilt"][args.cppfilt]
+        extra_args = "{:s} {:s} {:s} {:s} {:s}".format(verbose, remote, cppfilt, exact, " ".join(args.filter))
 
         self.out = []
         processed = []
@@ -34908,10 +34913,7 @@ class GotAllCommand(GenericCommand):
             self.out.append("")
             processed.append(m.path)
 
-        if len(self.out) > GefUtil.get_terminal_size()[0]:
-            gef_print("\n".join(self.out), less=not args.no_pager)
-        else:
-            gef_print("\n".join(self.out), less=False)
+        self.print_output(term=True)
         return
 
 
