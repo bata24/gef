@@ -354,6 +354,14 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
         * Get and extract the latest source from https://github.com/microsoft/mimalloc
         * Build with `mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Debug .. && make`.
         * Execute as `LD_PRELOAD=/path/to/libmimalloc.so ./a.out`.
+* `scalloc-heap-dump`: dumps scalloc free-list (only x64).
+    * ![](images/scalloc-heap-dump.png)
+    * How to test (x64):
+        * Get and extract the latest source from https://github.com/cksystemsgroup/scalloc
+        * Fix the bug with `sed -i -e 's/\(strncat(.*\), 1);/\1, 2);/' src/log.h`.
+        * Build with `gyp --depth . scalloc.gyp && make`.
+        * Enable overcommit with `echo 1 > /proc/sys/vm/overcommit_memory`.
+        * Execute as `LD_PRELOAD=/path/to/libscalloc.so ./a.out`.
 * `optee-bget-dump`: dumps bget allocator of OPTEE-Trusted-App.
     * ![](images/optee-bget-dump.png)
 

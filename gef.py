@@ -79261,6 +79261,231 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
+    """scalloc heap free-list viewer (only x64)."""
+
+    _cmdline_ = "scalloc-heap-dump"
+    _category_ = "06-b. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--object_space", type=AddressUtil.parse_address,
+                        help="use specific address for object_space.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    _syntax_ = parser.format_help()
+
+    def class_to_objects(self, cl):
+        # number of objects in each span
+        class_to_objects_list = [
+            0x0, 0x7f8, 0x3fc, 0x2a8, 0x1fe, 0x198, 0x154, 0x123,
+            0xff, 0xe2, 0xcc, 0xb9, 0xaa, 0x9c, 0x91, 0x88,
+            0x7f, 0x40, 0x40, 0x40, 0x20, 0x20, 0x10, 0x10,
+            0x10, 0x8, 0x4, 0x2, 0x1,
+        ]
+        assert cl < len(class_to_objects_list)
+        return class_to_objects_list[cl]
+
+    def class_to_size(self, cl):
+        class_to_size_list = [
+            0x0, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70,
+            0x80, 0x90, 0xa0, 0xb0, 0xc0, 0xd0, 0xe0, 0xf0,
+            0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000, 0x4000, 0x8000,
+            0x10000, 0x20000, 0x40000, 0x80000, 0x100000,
+        ]
+        assert cl < len(class_to_size_list)
+        return class_to_size_list[cl]
+
+    def read_arena(self, addr, arena_name):
+        if addr is None:
+            return None
+        """
+        class Arena {
+            const char* name_;
+            uintptr_t start_;
+            uintptr_t end_;
+            uintptr_t len_;
+            UNUSED uint8_t pad[64 - ((sizeof(name_) + sizeof(start_) + sizeof(end_) + sizeof(len_)) % 64)];
+            std::atomic<uintptr_t> current_;
+            UNUSED uint8_t pad2_[64  - ((sizeof(current_)) % 64)];
+        }
+        """
+        dic = {}
+        dic["addr"] = addr
+        dic["name"] = arena_name
+        dic["name_"] = read_cstring_from_memory(read_int_from_memory(addr))
+        dic["start"] = read_int_from_memory(addr + current_arch.ptrsize * 1)
+        dic["end"] = read_int_from_memory(addr + current_arch.ptrsize * 2)
+        dic["len"] = read_int_from_memory(addr + current_arch.ptrsize * 3)
+        dic["current"] = read_int_from_memory(addr + 0x40)
+        Arena = collections.namedtuple("Arena", dic.keys())
+        arena = Arena(*dic.values())
+        return arena
+
+    def get_object_space_heuristic(self):
+        maps = ProcessMap.get_process_maps()
+        for m in maps:
+            if m.path != "":
+                continue
+            if m.size > 0x1000000: # heuristic
+                continue
+            data = read_memory(m.page_start, m.size)
+
+            for addr in range(m.page_start, m.page_end, current_arch.ptrsize):
+                v = read_int_from_memory(addr)
+                if v == 0 or not is_valid_addr(v):
+                    continue
+                if read_cstring_from_memory(v) != "object":
+                    continue
+                start = read_int_from_memory(addr + current_arch.ptrsize)
+                if not is_valid_addr(start):
+                    continue
+                end = read_int_from_memory(addr + current_arch.ptrsize * 2)
+                if not is_valid_addr(end - 1):
+                    continue
+                len_ = read_int_from_memory(addr + current_arch.ptrsize * 3)
+                if end - start != len_:
+                    continue
+                pad1 = read_int_from_memory(addr + current_arch.ptrsize * 4)
+                if pad1 != 0:
+                    continue
+                pad2 = read_int_from_memory(addr + current_arch.ptrsize * 5)
+                if pad2 != 0:
+                    continue
+                pad3 = read_int_from_memory(addr + current_arch.ptrsize * 6)
+                if pad3 != 0:
+                    continue
+                pad4 = read_int_from_memory(addr + current_arch.ptrsize * 7)
+                if pad4 != 0:
+                    continue
+                current = read_int_from_memory(addr + current_arch.ptrsize * 8)
+                if not is_valid_addr(current):
+                    continue
+                return addr
+        return None
+
+    def get_object_space(self):
+        object_space = None
+
+        # use specific address
+        if self.args.object_space:
+            object_space = self.args.object_space
+
+        ## use symbol
+        if object_space is None:
+            try:
+                object_space = AddressUtil.parse_address("&_ZN7scalloc12object_spaceE")
+            except gdb.error:
+                object_space = None
+
+        # heuristic search
+        if object_space is None:
+            object_space = self.get_object_space_heuristic()
+
+        object_space = self.read_arena(object_space, "object_space")
+        return object_space
+
+    def decode_top(self, raw):
+        kValueBits = 48
+        kValueMask= (1 << kValueBits) - 1
+        kExtendMask = 0xffffffffffffffff
+        return (raw & kValueMask) | (((raw >> (kValueBits - 1)) & 0x1) * kExtendMask)
+
+    def read_span(self, addr):
+        """
+        class Span {
+            DoubleListNode {
+                DoubleListNode* next_;
+                DoubleListNode* prev_;
+            } span_link_;
+            AtomicCoreID owner_;
+            std::atomic<int32_t> epoch_;
+            int32_t size_class_;
+            UNUSED char padding_[8];
+            IncrementalFreeList {
+                void* list_;         // Incremental free list.
+                intptr_t bump_pointer_;
+                int32_t len_;        // Number of free objects.
+                int32_t increment_;  // Size of an object.
+            } local_free_list_;
+            RemoteFreeList {
+                AtomicTaggedValue<void*> top_;
+                int8_t pad_[64 - (sizeof(top_) % 64)];
+            } remote_free_list_;
+        }
+        """
+        dic = {}
+        dic["addr"] = addr
+        dic["next"] = read_int_from_memory(addr + current_arch.ptrsize * 0)
+        dic["prev"] = read_int_from_memory(addr + current_arch.ptrsize * 1)
+        dic["owner"] = read_int_from_memory(addr + current_arch.ptrsize * 2)
+        dic["epoch"] = u32(read_memory(addr + current_arch.ptrsize * 3, 4))
+        dic["size_class"] = u32(read_memory(addr + current_arch.ptrsize * 3 + 4, 4))
+        dic["object_num"] = self.class_to_objects(dic["size_class"]) # number of objects in each span
+        dic["object_size"] = self.class_to_size(dic["size_class"])
+        dic["freelist"] = read_int_from_memory(addr + current_arch.ptrsize * 5)
+        dic["freelist_addr"] = addr + current_arch.ptrsize * 5
+        dic["bump_pointer"] = read_int_from_memory(addr + current_arch.ptrsize * 6) # top pointer in glibc
+        dic["freelist_len"] = u32(read_memory(addr + current_arch.ptrsize * 7, 4))
+        dic["freelist_increment"] = u32(read_memory(addr + current_arch.ptrsize * 7 + 4, 4)) # = object_size
+        dic["top"] = read_int_from_memory(addr + current_arch.ptrsize * 8) # encoded remote freelist
+        dic["top_addr"] = addr + current_arch.ptrsize * 8
+        dic["top_decoded"] = self.decode_top(dic["top"])
+        Span = collections.namedtuple("Span", dic.keys())
+        span = Span(*dic.values())
+        return span
+
+    def dump_freelist(self, head):
+        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+
+        cur = head
+        cnt = 0
+        while True:
+            if cur == 0 and cnt > 0:
+                self.out.append(" -> {:s} (num: {:#x})".format(Color.colorify_hex(cur, freed_address_color), cnt))
+            else:
+                self.out.append(" -> {:s}".format(Color.colorify_hex(cur, freed_address_color)))
+            if cur == 0:
+                break
+            cur = read_int_from_memory(cur)
+            cnt += 1
+        return cnt
+
+    def dump_spans(self, arena):
+        self.out.append(titlify("Arena ({:s}) @{:#x}".format(arena.name, arena.addr)))
+        current = arena.start
+        while current < arena.current:
+            span = self.read_span(current)
+            if span.object_size != 0:
+                self.out.append(titlify("Span @{:#x} (size: {:#x}, capacity: {:#x}, available: {:#x})".format(
+                    span.addr, span.object_size, span.object_num, span.freelist_len,
+                )))
+                self.out.append("freelist @ {!s}:".format(ProcessMap.lookup_address(span.freelist_addr)))
+                cnt = self.dump_freelist(span.freelist)
+                self.out.append("bump_pointer: {!s} (num: {:#x})".format(
+                    ProcessMap.lookup_address(span.bump_pointer),
+                    span.freelist_len - cnt,
+                ))
+                self.out.append("remote freelist @ {!s}:".format(ProcessMap.lookup_address(span.top_addr)))
+                self.dump_freelist(span.top_decoded)
+            current += 0x200000 # kVirtualSpanSize
+        return span
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @only_if_specific_arch(arch=("x86_64",))
+    def do_invoke(self, args):
+        object_space = self.get_object_space()
+        if object_space is None:
+            err("Not found object_space")
+            return
+
+        self.out = []
+        self.dump_spans(object_space)
+        self.print_output()
+        return
+
+
+@register_command
 class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
     """musl v1.2.5 (src/malloc/mallocng) heap reusable chunks viewer (only x64/x86)."""
 
