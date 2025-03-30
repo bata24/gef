@@ -69164,7 +69164,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.ncpus = len(self.cpu_offset)
 
         # offsetof(kmem_cache, list)
-        for candidate_offset in range(current_arch.ptrsize * 2, 0x70, current_arch.ptrsize):
+        # This value should be at most 0x70.
+        # However, I found a kernel where offset 0x98 is used (codegate 2025; pew).
+        # I don't know the cause, but I will expand this search range.
+        max_offset = 0x100
+        for candidate_offset in range(current_arch.ptrsize * 2, max_offset, current_arch.ptrsize):
             # backward search for the start of `struct kmem_cache`
             found = True
             seen = []
