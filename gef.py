@@ -76837,7 +76837,7 @@ class VmlinuxToElfApplyCommand(GenericCommand):
 
 
 @register_command
-class TcmallocDumpCommand(GenericCommand):
+class TcmallocDumpCommand(GenericCommand, BufferingOutput):
     """tcmalloc (google-perftools-2.9.1) free-list viewer (only x64)."""
 
     _cmdline_ = "tcmalloc-dump"
@@ -77010,7 +77010,6 @@ class TcmallocDumpCommand(GenericCommand):
         # finally, look for possible values for given prefix
         return [s for s in self.modes if s and s.startswith(text.strip())]
 
-    @parse_args
     def get_heap_key(self):
         # for future use
         return 0
@@ -77267,7 +77266,7 @@ class TcmallocDumpCommand(GenericCommand):
         else:
             self.FreeList_print_target_thread = args.name
             self.dump_thread_heaps()
-        gef_print("\n".join(self.out), less=not args.no_pager)
+        self.print_output()
         return
 
 
@@ -77542,7 +77541,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class TlsfHeapDumpCommand(GenericCommand):
+class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
     """TLSF (Two-Level Segregated Fit) v2.4.6 free-list viewer (only x64)."""
 
     _cmdline_ = "tlsf-heap-dump"
@@ -77661,7 +77660,7 @@ class TlsfHeapDumpCommand(GenericCommand):
         Pool = collections.namedtuple("Pool", ["addr", "sig", "area_head", "fl_bitmap", "sl_bitmap", "matrix", "matrix_addr"])
         return Pool(pool, sig, area_head, fl_bitmap, sl_bitmap, matrix, matrix_addr)
 
-    def dump_pool(self, pool, verbose):
+    def dump_pool(self, pool):
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
@@ -77669,7 +77668,7 @@ class TlsfHeapDumpCommand(GenericCommand):
         self.out.append("pool: {:#x}".format(pool.addr))
         self.out.append("pool->area_head: {:#x}".format(pool.area_head))
         for i, j in itertools.product(range(self.REAL_FLI), range(self.MAX_SLI)):
-            if verbose or pool.matrix[i][j]:
+            if self.args.verbose or pool.matrix[i][j]:
                 matrix_addr = pool.matrix_addr[i][j]
                 min_size, max_size = self.size_dic.get((i, j), (0, 0))
                 if min_size == max_size == 0:
@@ -77733,13 +77732,13 @@ class TlsfHeapDumpCommand(GenericCommand):
             return
 
         self.out = []
-        self.dump_pool(pool, args.verbose)
-        gef_print("\n".join(self.out), less=not args.no_pager)
+        self.dump_pool(pool)
+        self.print_output()
         return
 
 
 @register_command
-class HoardHeapDumpCommand(GenericCommand):
+class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
     """Hoard v3.13 heap free-list viewer (only x64)."""
 
     _cmdline_ = "hoard-heap-dump"
@@ -77886,7 +77885,7 @@ class HoardHeapDumpCommand(GenericCommand):
         self.out = []
         for super_block in super_blocks:
             self.dump_super_block(super_block)
-        gef_print("\n".join(self.out), less=not args.no_pager)
+        self.print_output()
         return
 
 
