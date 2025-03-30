@@ -11002,12 +11002,12 @@ def read_physmem(paddr, size):
         if not r:
             return None
         virt_addr = int(r.group(1), 16)
-        with open("/proc/{:d}/mem".format(qemu_system_pid), "rb") as fd:
-            fd.seek(virt_addr)
-            try:
+        try:
+            with open("/proc/{:d}/mem".format(qemu_system_pid), "rb") as fd:
+                fd.seek(virt_addr)
                 return fd.read(size)
-            except Exception:
-                pass
+        except Exception:
+            pass
         return None
 
     def qemu_system_use_xp(paddr, size):
@@ -96394,6 +96394,11 @@ class Gef:
         # create tmp dir
         if not os.path.exists(GEF_TEMP_DIR):
             os.mkdir(GEF_TEMP_DIR)
+
+        # check tmp dir access permission
+        if not os.access(GEF_TEMP_DIR, os.W_OK|os.R_OK|os.X_OK):
+            err("Permission denied to {:s}. Please delete it first.".format(GEF_TEMP_DIR))
+            return
 
         # When using a python virtual environment (pyenv, venv, etc.), GDB still loads
         # the system-installed python, so GEF doesn't load site-packages dir from environment.
