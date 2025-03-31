@@ -165,8 +165,6 @@ except ImportError:
 
 
 # Very important global variables.
-# Note that some values can be obtained using the gdb module.
-__gef__                     = None # keep GefCommand instance
 __gef_commands__            = [] # gef command classes for registering
 __gef_command_instances__   = {} # gef command instances
 GCI                         = __gef_command_instances__ # short cut for debug # noqa: F841
@@ -94614,6 +94612,7 @@ class GefCommand(GenericCommand):
 
     DEBUG_PERF_TIME = False
     DEBUG_CHECK_COMMAND_CONFLICT = False
+    missing_commands = {}
 
     def __init__(self):
         if GefCommand.DEBUG_CHECK_COMMAND_CONFLICT:
@@ -94626,7 +94625,6 @@ class GefCommand(GenericCommand):
         self.add_setting("pager_min_lines", 11, "Show pager only if output is longer than this value")
         self.add_setting("keep_pager_result", False, "Leaves temporary files in gef_print()")
         self.add_setting("less_option", "-Rf -j.5", "LESS command option used in gef_print()")
-        self.missing_commands = {}
         return
 
     def list_current_commands(self):
@@ -94692,7 +94690,7 @@ class GefCommand(GenericCommand):
                         GefAlias(alias, cmd_class._cmdline_, pre_defined=True)
 
             except Exception as reason:
-                self.missing_commands[cmd_class._cmdline_] = reason
+                GefCommand.missing_commands[cmd_class._cmdline_] = reason
                 nb_missing += 1
 
         if self.DEBUG_PERF_TIME:
@@ -95080,14 +95078,21 @@ class GefMissingCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
+    _note_ = [
+        "This command only detects commands that could not be loaded when GEF started.",
+        "To speed up startup, some commands lazy load required modules and dependencies.",
+        "These command cannot be detected.",
+    ]
+    _note_ = "\n".join(_note_)
+
     @parse_args
     def do_invoke(self, args):
-        missing_commands = __gef__.missing_commands.keys()
+        missing_commands = GefCommand.missing_commands.keys()
         if not missing_commands:
             ok("No missing command")
             return
         for missing_command in missing_commands:
-            reason = __gef__.missing_commands[missing_command]
+            reason = GefCommand.missing_commands[missing_command]
             warn("Command `{}` is missing, reason  ->  {}".format(missing_command, reason))
         return
 
@@ -96439,9 +96444,7 @@ class Gef:
         gdb.execute("set print frame-arguments all")
 
         # load GEF
-        global __gef__
-        __gef__ = GefCommand()
-        __gef__.setup()
+        GefCommand().setup()
 
         # follow mode
         if Config.get_gef_setting("gef.follow_child"):
