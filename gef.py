@@ -23072,15 +23072,8 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    def __init__(self):
-        super().__init__()
-        ps = GefUtil.which("ps")
-        self.add_setting("ps_command", "{:s} auxww".format(ps), "`ps` command to get process information")
-        return
-
     def get_processes(self):
-        ps_command = Config.get_gef_setting("ps.ps_command").split()
-        output = GefUtil.gef_execute_external(ps_command, True)
+        output = GefUtil.gef_execute_external([GefUtil.which("ps"), "auxww"], True)
         names = [x.lower().replace("%", "") for x in output[0].split()]
 
         for line in output[1:]:
