@@ -95436,6 +95436,8 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-s", "--sort", action="store_true", help="sort by command name.")
+    parser.add_argument("-a", "--only-available", action="store_true", help="show only available commands.")
+    parser.add_argument("-u", "--only-unavailable", action="store_true", help="show only unavailable commands.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
@@ -95505,32 +95507,73 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
                 return arch_name in line
         return False
 
+    def check_load_package(self, decorators, dec_name, import_name):
+        for line in decorators:
+            if dec_name in line:
+                try:
+                    __import__(import_name)
+                except ImportError:
+                    return False
+                return True
+        return True
+
+    def add_out(self, cmdline, avail, msg=""):
+        if self.args.only_available and not avail:
+            return
+        if self.args.only_unavailable and avail:
+            return
+        if avail:
+            self.out.append("{:<30s}: {:s}".format(
+                cmdline, Color.colorify("Available", "green bold"),
+            ))
+        else:
+            self.out.append("{:<30s}: {:s} ({:s})".format(
+                cmdline, Color.colorify("Unavailable", "red bold"), msg,
+            ))
+        return
+
     def listup_avail_comms(self):
         arch_name = self.get_arch_name()
         for cmdline, instance in __gef_command_instances__.items():
             s = GefUtil.get_source(instance.do_invoke)
             decorators = [line for line in s.splitlines() if line.lstrip().startswith("@")]
             if not self.check_include_mode(decorators):
-                self.out.append("{:<30s}: {:s} ({:s})".format(
-                    cmdline, Color.colorify("Unavailable", "red bold"), "Unsupported gdb mode"),
-                )
+                self.add_out(cmdline, False, "Unsupported gdb mode")
                 continue
             if self.check_exclude_mode(decorators):
-                self.out.append("{:<30s}: {:s} ({:s})".format(
-                    cmdline, Color.colorify("Unavailable", "red bold"), "Unsupported gdb mode"),
-                )
+                self.add_out(cmdline, False, "Unsupported gdb mode")
                 continue
             if not self.check_include_arch(decorators, arch_name):
-                self.out.append("{:<30s}: {:s} ({:s})".format(
-                    cmdline, Color.colorify("Unavailable", "red bold"), "Unsupported arch"),
-                )
+                self.add_out(cmdline, False, "Unsupported arch")
                 continue
             if self.check_exclude_arch(decorators, arch_name):
-                self.out.append("{:<30s}: {:s} ({:s})".format(
-                    cmdline, Color.colorify("Unavailable", "red bold"), "Unsupported arch"),
-                )
+                self.add_out(cmdline, False, "Unsupported arch")
                 continue
-            self.out.append("{:<30s}: {:s}".format(cmdline, Color.colorify("Available", "green bold")))
+            if not self.check_load_package(decorators, "@load_capstone", "capstone"):
+                self.add_out(cmdline, False, "capstone package is unavailable")
+                continue
+            if not self.check_load_package(decorators, "@load_unicorn", "unicorn"):
+                self.add_out(cmdline, False, "unicorn package is unavailable")
+                continue
+            if not self.check_load_package(decorators, "@load_keystone", "keystone"):
+                self.add_out(cmdline, False, "keystone-engine package is unavailable")
+                continue
+            if not self.check_load_package(decorators, "@load_ropper", "ropper"):
+                self.add_out(cmdline, False, "ropper package is unavailable")
+                continue
+            if not self.check_load_package(decorators, "@load_binwalk", "binwalk"):
+                self.add_out(cmdline, False, "binwalk package is unavailable")
+                continue
+            if not self.check_load_package(decorators, "@load_crccheck", "crccheck"):
+                self.add_out(cmdline, False, "crccheck package is unavailable")
+                continue
+            if not self.check_load_package(decorators, "@load_codext", "codext"):
+                self.add_out(cmdline, False, "codext package is unavailable")
+                continue
+            if not self.check_load_package(decorators, "@load_angr", "angr"):
+                self.add_out(cmdline, False, "angr package is unavailable")
+                continue
+            self.add_out(cmdline, True)
         return
 
     @parse_args
