@@ -14,6 +14,13 @@ if [ "$(id -u)" != "0" ]; then
     exit 1
 fi
 
+echo "[+] Check if another gef is installed"
+if [ -e "${GEF_PATH}" ]; then
+    echo "[-] ${GEF_PATH} already exists. Please delete or rename."
+    echo "[-] INSTALLATION FAILED"
+    exit 1
+fi
+
 echo "[+] apt"
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata
@@ -39,11 +46,8 @@ fi
 echo "[+] Install rp++"
 if [ "$(uname -m)" = "x86_64" ]; then
     if [ -z "$(command -v rp-lin)" ] && [ ! -e /usr/local/bin/rp-lin ]; then
-        # v2.1.3 will cause an error on Ubuntu 22.10 or earlier.
-        # The only difference between 2.1.2 and 2.1.3 is for OpenBSD compatibility and can be ignored.
-        wget -q https://github.com/0vercl0k/rp/releases/download/v2.1.2/rp-lin-clang.zip -P /tmp
+        wget -q https://github.com/0vercl0k/rp/releases/download/v2.1.4/rp-lin-clang.zip -P /tmp
         unzip /tmp/rp-lin-clang.zip -d /usr/local/bin/
-        chmod +x /usr/local/bin/rp-lin
         rm /tmp/rp-lin-clang.zip
     fi
 fi
@@ -55,18 +59,12 @@ if [ -z "$(command -v vmlinux-to-elf)" ] && [ ! -e /usr/local/bin/vmlinux-to-elf
 fi
 
 echo "[+] Download gef"
-if [ -e "${GEF_PATH}" ]; then
-    echo "[-] ${GEF_PATH} already exists. Please delete or rename."
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/gef.py -O "${GEF_PATH}"
+if [ ! -s "${GEF_PATH}" ]; then
+    echo "[-] Downloading ${GEF_PATH} failed."
+    rm -f "${GEF_PATH}"
     echo "[-] INSTALLATION FAILED"
     exit 1
-else
-    wget -q https://raw.githubusercontent.com/bata24/gef/dev/gef.py -O "${GEF_PATH}"
-    if [ ! -s "${GEF_PATH}" ]; then
-        echo "[-] Downloading ${GEF_PATH} failed."
-        rm -f "${GEF_PATH}"
-        echo "[-] INSTALLATION FAILED"
-        exit 1
-    fi
 fi
 
 echo "[+] Setup gef"

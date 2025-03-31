@@ -13,23 +13,25 @@ if [ "$(id -u)" != "0" ]; then
     exit 1
 fi
 
-echo "[+] apt"
-apt-get update
-apt-get install -y gdb-multiarch wget
-
-echo "[+] Download gef"
+echo "[+] Check if another gef is installed"
 if [ -e "${GEF_PATH}" ]; then
     echo "[-] ${GEF_PATH} already exists. Please delete or rename."
     echo "[-] INSTALLATION FAILED"
     exit 1
-else
-    wget -q https://raw.githubusercontent.com/bata24/gef/dev/gef.py -O "${GEF_PATH}"
-    if [ ! -s "${GEF_PATH}" ]; then
-        echo "[-] Downloading ${GEF_PATH} failed."
-        rm -f "${GEF_PATH}"
-        echo "[-] INSTALLATION FAILED"
-        exit 1
-    fi
+fi
+
+echo "[+] apt"
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata
+apt-get install -y gdb-multiarch wget
+
+echo "[+] Download gef"
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/gef.py -O "${GEF_PATH}"
+if [ ! -s "${GEF_PATH}" ]; then
+    echo "[-] Downloading ${GEF_PATH} failed."
+    rm -f "${GEF_PATH}"
+    echo "[-] INSTALLATION FAILED"
+    exit 1
 fi
 
 echo "[+] Setup gef"
