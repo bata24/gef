@@ -179,9 +179,6 @@ GEF_TEMP_DIR                = os.path.join(tempfile.gettempdir(), "gef")
 GEF_FILEPATH                = os.path.expanduser(http_get.__code__.co_filename) # the full path of GEF
                             # note: __file__ will no longer be available from gdb 15
 
-GDB_MIN_VERSION             = (9, 2) # ubuntu 20.04
-GDB_VERSION                 = tuple(map(int, re.search(r"(\d+)[^\d]+(\d+)", gdb.VERSION).groups()))
-
 DEFAULT_PAGE_SIZE           = 1 << 12
 DEFAULT_PAGE_SIZE_MASK_LOW  = DEFAULT_PAGE_SIZE - 1
 DEFAULT_PAGE_SIZE_MASK_HIGH = ~DEFAULT_PAGE_SIZE_MASK_LOW
@@ -96379,8 +96376,13 @@ class Gef:
 
     @staticmethod
     def main():
+        # check gdb version
+        GDB_VERSION = tuple(map(int, re.search(r"(\d+)[^\d]+(\d+)", gdb.VERSION).groups()))
+        GDB_MIN_VERSION = (9, 2) # ubuntu 20.04
         if GDB_VERSION < GDB_MIN_VERSION:
-            err("GDB is too old. Try upgrading it")
+            err("GDB version ({:s}) is too old (<{:d}.{:d}). Try upgrading it.".format(
+                gdb.VERSION, GDB_MIN_VERSION[0], GDB_MIN_VERSION[1],
+            ))
             return
 
         # create tmp dir
