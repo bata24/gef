@@ -183,10 +183,6 @@ DEFAULT_PAGE_SIZE           = 1 << 12
 DEFAULT_PAGE_SIZE_MASK_LOW  = DEFAULT_PAGE_SIZE - 1
 DEFAULT_PAGE_SIZE_MASK_HIGH = ~DEFAULT_PAGE_SIZE_MASK_LOW
 
-# Each is assumed to be 4 bytes wide
-LEFT_ARROW                  = " <- "
-RIGHT_ARROW                 = " -> "
-
 
 def perf(f): # noqa
     """Decorator wrapper to perf."""
@@ -1502,7 +1498,7 @@ class AddressUtil:
         elif last_elem:
             msg.append(last_elem)
 
-        return " {:s} ".format(RIGHT_ARROW).join(msg)
+        return "  ->  ".join(msg)
 
 
 class Permission:
@@ -15220,24 +15216,24 @@ class AuxvCommand(GenericCommand):
                 if s is None:
                     s = "Cannot access memory"
                 s = Color.yellowify(repr(s))
-                additional_message = "{:s}{:s}".format(RIGHT_ARROW, s)
+                additional_message = " -> {:s}".format(s)
             elif k in ["AT_RANDOM"]:
                 try:
                     if is_64bit():
                         s1 = read_int_from_memory(v + current_arch.ptrsize * 0)
                         s2 = read_int_from_memory(v + current_arch.ptrsize * 1)
-                        additional_message = "{:s}{:#018x}, {:#018x}".format(RIGHT_ARROW, s1, s2)
+                        additional_message = " -> {:#018x}, {:#018x}".format(s1, s2)
                     else:
                         s1 = read_int_from_memory(v + current_arch.ptrsize * 0)
                         s2 = read_int_from_memory(v + current_arch.ptrsize * 1)
                         s3 = read_int_from_memory(v + current_arch.ptrsize * 2)
                         s4 = read_int_from_memory(v + current_arch.ptrsize * 3)
-                        additional_message = "{:s}{:#010x}, {:#010x}, {:#010x}, {:#010x}".format(
-                            RIGHT_ARROW, s1, s2, s3, s4,
+                        additional_message = " -> {:#010x}, {:#010x}, {:#010x}, {:#010x}".format(
+                            s1, s2, s3, s4,
                         )
                 except gdb.MemoryError:
                     s = Color.yellowify(repr("Cannot access memory"))
-                    additional_message = "{:s}{:s}".format(RIGHT_ARROW, s)
+                    additional_message = " -> {:s}".format(s)
 
             if is_valid_addr(v):
                 v = str(ProcessMap.lookup_address(v))
@@ -15269,12 +15265,12 @@ class ArgvCommand(GenericCommand, BufferingOutput):
             return None
 
     def print_from_mem(self, array, verbose, increase_limit):
-        fmt = "{:3s} {:{:d}s}  {:{:d}s}{:s}{:s}"
+        fmt = "{:3s} {:{:d}s}  {:{:d}s} -> {:s}"
         legend = [
             "#",
             "ArrAddr", AddressUtil.get_format_address_width(),
             "StrAddr", AddressUtil.get_format_address_width(),
-            RIGHT_ARROW, "String",
+            "String",
         ]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
@@ -15295,11 +15291,11 @@ class ArgvCommand(GenericCommand, BufferingOutput):
             if len(s) > max_size:
                 s = s[:max_size] + "[...]"
 
-            self.out.append("{:03d} {!s}: {!s}{:s}{:s}".format(
+            self.out.append("{:03d} {!s}: {!s} -> {:s}".format(
                 i,
                 ProcessMap.lookup_address(pos),
                 ProcessMap.lookup_address(addr),
-                RIGHT_ARROW, s,
+                s,
             ))
             i += 1
         return
@@ -15378,12 +15374,12 @@ class EnvpCommand(GenericCommand, BufferingOutput):
             return None
 
     def print_from_mem(self, array, verbose, increase_limit):
-        fmt = "{:3s} {:{:d}s}  {:{:d}s}{:s}{:s}"
+        fmt = "{:3s} {:{:d}s}  {:{:d}s} -> {:s}"
         legend = [
             "#",
             "ArrAddr", AddressUtil.get_format_address_width(),
             "StrAddr", AddressUtil.get_format_address_width(),
-            RIGHT_ARROW, "String",
+            "String",
         ]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
@@ -15404,11 +15400,11 @@ class EnvpCommand(GenericCommand, BufferingOutput):
             if len(s) > max_size:
                 s = s[:max_size] + "[...]"
 
-            self.out.append("{:03d} {!s}: {!s}{:s}{:s}".format(
+            self.out.append("{:03d} {!s}: {!s} -> {:s}".format(
                 i,
                 ProcessMap.lookup_address(pos),
                 ProcessMap.lookup_address(addr),
-                RIGHT_ARROW, s,
+                s,
             ))
             i += 1
         return
@@ -15901,18 +15897,18 @@ class ProcInfoCommand(GenericCommand):
         cmdline = self.get_cmdline_of(pid)
         cwd = self.get_process_cwd(pid)
         root = self.get_process_root(pid)
-        gef_print("{:32s} {:s} {:d}".format("PID", RIGHT_ARROW, pid))
-        gef_print("{:32s} {:s} {!r}".format("  Executable", RIGHT_ARROW, executable))
-        gef_print("{:32s} {:s} {!r}".format("  Command Line", RIGHT_ARROW, cmdline))
-        gef_print("{:32s} {:s} {!r}".format("  Current Working Directory", RIGHT_ARROW, cwd))
-        gef_print("{:32s} {:s} {!r}".format("  Root Directory", RIGHT_ARROW, root))
+        gef_print("{:32s}  ->  {:d}".format("PID", pid))
+        gef_print("{:32s}  ->  {!r}".format("  Executable", executable))
+        gef_print("{:32s}  ->  {!r}".format("  Command Line", cmdline))
+        gef_print("{:32s}  ->  {!r}".format("  Current Working Directory", cwd))
+        gef_print("{:32s}  ->  {!r}".format("  Root Directory", root))
         uids = re.sub(r"\s+", " : ", self.get_state_of(pid)["Uid"])
         gids = re.sub(r"\s+", " : ", self.get_state_of(pid)["Gid"])
-        gef_print("{:32s} {:s} {:s}".format("  RUID:EUID:SavedUID:FSUID", RIGHT_ARROW, uids))
-        gef_print("{:32s} {:s} {:s}".format("  RGID:EGID:SavedGID:FSGID", RIGHT_ARROW, gids))
+        gef_print("{:32s}  ->  {:s}".format("  RUID:EUID:SavedUID:FSUID", uids))
+        gef_print("{:32s}  ->  {:s}".format("  RGID:EGID:SavedGID:FSGID", gids))
         seccomp_n = self.get_state_of(pid)["Seccomp"]
         seccomp_s = {"0": "Disabled", "1": "Strict", "2": "CustomFilter"}[seccomp_n]
-        gef_print("{:32s} {:s} {:s} ({:s})".format("  Seccomp Mode", RIGHT_ARROW, seccomp_n, seccomp_s))
+        gef_print("{:32s}  ->  {:s} ({:s})".format("  Seccomp Mode", seccomp_n, seccomp_s))
         return
 
     def show_info_proc_extra(self):
@@ -15922,25 +15918,25 @@ class ProcInfoCommand(GenericCommand):
         pgid = self.get_stat_of(pid)[4]
         pgid_exec = self.get_process_path_of(pgid)
         pgid_cmdline = self.get_cmdline_of(pgid)
-        gef_print("{:32s} {:s} {:d}".format("Process Group ID", RIGHT_ARROW, pgid))
-        gef_print("{:32s} {:s} {!r}".format("  Executable", RIGHT_ARROW, pgid_exec))
-        gef_print("{:32s} {:s} {!r}".format("  Command Line", RIGHT_ARROW, pgid_cmdline))
+        gef_print("{:32s}  ->  {:d}".format("Process Group ID", pgid))
+        gef_print("{:32s}  ->  {!r}".format("  Executable", pgid_exec))
+        gef_print("{:32s}  ->  {!r}".format("  Command Line", pgid_cmdline))
         sid = self.get_stat_of(pid)[5]
         sid_exec = self.get_process_path_of(sid)
         sid_cmdline = self.get_cmdline_of(sid)
-        gef_print("{:32s} {:s} {:d}".format("Session ID", RIGHT_ARROW, sid))
-        gef_print("{:32s} {:s} {!r}".format("  Executable", RIGHT_ARROW, sid_exec))
-        gef_print("{:32s} {:s} {!r}".format("  Command Line", RIGHT_ARROW, sid_cmdline))
+        gef_print("{:32s}  ->  {:d}".format("Session ID", sid))
+        gef_print("{:32s}  ->  {!r}".format("  Executable", sid_exec))
+        gef_print("{:32s}  ->  {!r}".format("  Command Line", sid_cmdline))
         tpgid = self.get_stat_of(pid)[7]
         tpgid_exec = self.get_process_path_of(tpgid)
         tpgid_cmdline = self.get_cmdline_of(tpgid)
-        gef_print("{:32s} {:s} {:d}".format("TTY Process Group ID", RIGHT_ARROW, tpgid))
-        gef_print("{:32s} {:s} {!r}".format("  Executable", RIGHT_ARROW, tpgid_exec))
-        gef_print("{:32s} {:s} {!r}".format("  Command Line", RIGHT_ARROW, tpgid_cmdline))
+        gef_print("{:32s}  ->  {:d}".format("TTY Process Group ID", tpgid))
+        gef_print("{:32s}  ->  {!r}".format("  Executable", tpgid_exec))
+        gef_print("{:32s}  ->  {!r}".format("  Command Line", tpgid_cmdline))
         ttynr = self.get_stat_of(pid)[6]
         major, minor = (ttynr >> 8) & 0xff, ((ttynr >> 20) << 8) | (ttynr & 0xff)
         ttystr = self.get_tty_str(major, minor)
-        gef_print("{:32s} {:s} {:d} ({!r})".format("  TTY Device Number", RIGHT_ARROW, ttynr, ttystr))
+        gef_print("{:32s}  ->  {:d} ({!r})".format("  TTY Device Number", ttynr, ttystr))
         return
 
     def show_parent(self):
@@ -15948,9 +15944,9 @@ class ProcInfoCommand(GenericCommand):
         ppid = int(self.get_state_of(Pid.get_pid())["PPid"])
         ppid_exec = self.get_process_path_of(ppid)
         ppid_cmdline = self.get_cmdline_of(ppid)
-        gef_print("{:32s} {:s} {:d}".format("Parent PID", RIGHT_ARROW, ppid))
-        gef_print("{:32s} {:s} {!r}".format("  Executable", RIGHT_ARROW, ppid_exec))
-        gef_print("{:32s} {:s} {!r}".format("  Command Line", RIGHT_ARROW, ppid_cmdline))
+        gef_print("{:32s}  ->  {:d}".format("Parent PID", ppid))
+        gef_print("{:32s}  ->  {!r}".format("  Executable", ppid_exec))
+        gef_print("{:32s}  ->  {!r}".format("  Command Line", ppid_cmdline))
         return
 
     def show_childs(self):
@@ -15964,9 +15960,9 @@ class ProcInfoCommand(GenericCommand):
         for i, cpid in enumerate(children, start=1):
             cpid_exec = self.get_process_path_of(cpid)
             cpid_cmdline = self.get_cmdline_of(cpid)
-            gef_print("{:32s} {:s} {:d}".format("Child {:d} PID".format(i), RIGHT_ARROW, cpid))
-            gef_print("{:32s} {:s} {!r}".format("  Executable", RIGHT_ARROW, cpid_exec))
-            gef_print("{:32s} {:s} {!r}".format("  Command Line", RIGHT_ARROW, cpid_cmdline))
+            gef_print("{:32s}  ->  {:d}".format("Child {:d} PID".format(i), cpid))
+            gef_print("{:32s}  ->  {!r}".format("  Executable", cpid_exec))
+            gef_print("{:32s}  ->  {!r}".format("  Command Line", cpid_cmdline))
         return
 
     def show_info_thread(self):
@@ -15975,13 +15971,13 @@ class ProcInfoCommand(GenericCommand):
         pid = Pid.get_pid()
         nthreads = self.get_state_of(pid)["Threads"]
         tgid = self.get_state_of(pid)["Tgid"]
-        gef_print("{:32s} {:s} {:s}".format("Num of Threads", RIGHT_ARROW, nthreads))
-        gef_print("{:32s} {:s} {:s}".format("Thread Group ID", RIGHT_ARROW, tgid))
+        gef_print("{:32s}  ->  {:s}".format("Num of Threads", nthreads))
+        gef_print("{:32s}  ->  {:s}".format("Thread Group ID", tgid))
         tids = self.get_thread_ids(pid)
         split = 8
-        gef_print("{:32s} {:s} {!r}".format("Thread ID List", RIGHT_ARROW, tids[:split]))
+        gef_print("{:32s}  ->  {!r}".format("Thread ID List", tids[:split]))
         for i in range(split, len(tids), split):
-            gef_print("{:32s} {:s} {!r}".format("", RIGHT_ARROW, tids[i:i + split]))
+            gef_print("{:32s}  ->  {!r}".format("", tids[i:i + split]))
         return
 
     def show_info_proc_ns(self):
@@ -15998,34 +15994,34 @@ class ProcInfoCommand(GenericCommand):
             sym1 = os.readlink("/proc/{:d}/ns/{:s}".format(pid, ns))
             sym2 = os.readlink("/proc/{:d}/ns/{:s}".format(gdb_pid, ns))
             m = "{:s} namespace separation".format(ns.upper())
-            gef_print("{:32s} {:s} {!s}".format(m, RIGHT_ARROW, sym1 != sym2))
+            gef_print("{:32s}  ->  {!s}".format(m, sym1 != sym2))
 
         gef_print(titlify("Pid Namespace Information"))
         state = self.get_state_of(pid)
         if len(state["NSpid"].split()) > 1:
-            gef_print("{:32s} {:s} {:s}".format(
-                "Host PID  : Namespace PID", RIGHT_ARROW, re.sub(r"\s+", " : ", state["NSpid"]),
+            gef_print("{:32s}  ->  {:s}".format(
+                "Host PID  : Namespace PID", re.sub(r"\s+", " : ", state["NSpid"]),
             ))
-            gef_print("{:32s} {:s} {:s}".format(
-                "Host PGID : Namespace PGID", RIGHT_ARROW, re.sub(r"\s+", " : ", state["NSpgid"]),
+            gef_print("{:32s}  ->  {:s}".format(
+                "Host PGID : Namespace PGID", re.sub(r"\s+", " : ", state["NSpgid"]),
             ))
-            gef_print("{:32s} {:s} {:s}".format(
-                "Host SID  : Namespace SID", RIGHT_ARROW, re.sub(r"\s+", " : ", state["NSsid"]),
+            gef_print("{:32s}  ->  {:s}".format(
+                "Host SID  : Namespace SID", re.sub(r"\s+", " : ", state["NSsid"]),
             ))
-            gef_print("{:32s} {:s} {:s}".format(
-                "Host TGID : Namespace TGID", RIGHT_ARROW, re.sub(r"\s+", " : ", state["NStgid"]),
+            gef_print("{:32s}  ->  {:s}".format(
+                "Host TGID : Namespace TGID", re.sub(r"\s+", " : ", state["NStgid"]),
             ))
         else:
             gef_print("{:32s}".format("No pid namespace"))
 
         gef_print(titlify("User Namespace Information"))
         for u in self.get_uid_map(pid):
-            gef_print("{:32s} {:s} [{:#x} : {:#x} : {:#x}]".format(
-                "UID_MAP [NameSpace:Host:Range]", RIGHT_ARROW, u[0], u[1], u[2],
+            gef_print("{:32s}  ->  [{:#x} : {:#x} : {:#x}]".format(
+                "UID_MAP [NameSpace:Host:Range]", u[0], u[1], u[2],
             ))
         for g in self.get_gid_map(pid):
-            gef_print("{:32s} {:s} [{:#x} : {:#x} : {:#x}]".format(
-                "GID_MAP [NameSpace:Host:Range]", RIGHT_ARROW, g[0], g[1], g[2],
+            gef_print("{:32s}  ->  [{:#x} : {:#x} : {:#x}]".format(
+                "GID_MAP [NameSpace:Host:Range]", g[0], g[1], g[2],
             ))
         return
 
@@ -16035,7 +16031,7 @@ class ProcInfoCommand(GenericCommand):
         pid = Pid.get_pid()
         path = "/proc/{:d}/fd".format(pid)
 
-        gef_print("{:32s} {:s} {:s}".format("Num of FD slots", RIGHT_ARROW, self.get_state_of(pid)["FDSize"]))
+        gef_print("{:32s}  ->  {:s}".format("Num of FD slots", self.get_state_of(pid)["FDSize"]))
         items = os.listdir(path)
         if not items:
             gef_print("No FD opened")
@@ -16044,7 +16040,7 @@ class ProcInfoCommand(GenericCommand):
         for fname in items:
             fullpath = os.path.join(path, fname)
             if os.path.islink(fullpath):
-                gef_print("{:32s} {:s} {:s}".format(fullpath, RIGHT_ARROW, os.readlink(fullpath)))
+                gef_print("{:32s}  ->  {:s}".format(fullpath, os.readlink(fullpath)))
         return
 
     def list_sockets(self, pid):
@@ -16108,7 +16104,7 @@ class ProcInfoCommand(GenericCommand):
 
                     conn_local = "{:s}:{:d}".format(local[0], local[1])
                     conn_remote = "{:s}:{:d}".format(remote[0], remote[1])
-                    gef_print("{:32s} {:s} {:s} ({:s})".format(conn_local, RIGHT_ARROW, conn_remote, state_str))
+                    gef_print("{:32s}  ->  {:s} ({:s})".format(conn_local, conn_remote, state_str))
         return
 
     @parse_args
@@ -16152,7 +16148,7 @@ class FileDescriptorsCommand(GenericCommand):
         for fname in items:
             fullpath = os.path.join(path, fname)
             if os.path.islink(fullpath):
-                gef_print("{:32s} {:s} {:s}".format(fullpath, RIGHT_ARROW, os.readlink(fullpath)))
+                gef_print("{:32s}  ->  {:s}".format(fullpath, os.readlink(fullpath)))
         return
 
     # I also created a heuristic version, but it seems unnecessary.
@@ -16223,9 +16219,9 @@ class FileDescriptorsCommand(GenericCommand):
         for fd, ino in inner_fds:
             fullpath = os.path.join("/proc/self/fd/", str(fd))
             if ino not in outer_fds:
-                gef_print("{:32s} {:s} {:s}".format(fullpath, RIGHT_ARROW, "???"))
+                gef_print("{:32s}  ->  {:s}".format(fullpath, "???"))
             else:
-                gef_print("{:32s} {:s} {:s}".format(fullpath, RIGHT_ARROW, outer_fds[ino]))
+                gef_print("{:32s}  ->  {:s}".format(fullpath, outer_fds[ino]))
         return
 
     @parse_args
@@ -16261,7 +16257,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
                 self.out.append(titlify(path))
 
                 if os.path.islink(path):
-                    self.out.append(Color.colorify("{:s}{:s}{:s}".format(path, RIGHT_ARROW, os.readlink(path)), "blue"))
+                    self.out.append(Color.colorify("{:s} -> {:s}".format(path, os.readlink(path)), "blue"))
                     continue
 
                 if f in ["pagemap", "mem"]:
@@ -16906,7 +16902,7 @@ class HijackFdCommand(GenericCommand):
         if dup3_result - self.args.fd_adjust_dup3 != args.old_fd:
             err("Failed to dup3 (result {:d} != fd #{:d})".format(dup3_result, args.old_fd))
             return
-        self.quiet_info("Duplicated fd #{:d}{:s}#{:d}".format(new_fd, RIGHT_ARROW, args.old_fd))
+        self.quiet_info("Duplicated fd #{:d} -> #{:d}".format(new_fd, args.old_fd))
 
         # call close
         close_result = self.call_syscall("close", [new_fd])
@@ -19793,12 +19789,12 @@ class UnicornEmulateCommand(GenericCommand):
             return
 
         if kwargs["nb_gadget"] is None:
-            ok("Starting emulation: {:#x} {:s} {:#x}".format(
-                kwargs["start_insn"], RIGHT_ARROW, kwargs["end_insn"],
+            ok("Starting emulation: {:#x}  ->  {:#x}".format(
+                kwargs["start_insn"], kwargs["end_insn"],
             ))
         else:
-            ok("Starting emulation: {:#x} {:s} after {:d} instructions are executed".format(
-                kwargs["start_insn"], RIGHT_ARROW, kwargs["nb_gadget"],
+            ok("Starting emulation: {:#x}  ->  after {:d} instructions are executed".format(
+                kwargs["start_insn"], kwargs["nb_gadget"],
             ))
 
         try:
@@ -20202,7 +20198,7 @@ class CapstoneDisassembleCommand(GenericCommand):
             skip = length * self.repeat_count
             for insn in Disasm.capstone_disassemble(location, length, skip=skip, **kwargs):
                 if insn.address == current_arch.pc:
-                    msg = "{:s}{:s}".format(RIGHT_ARROW, insn.colored_text(10, highlight=True))
+                    msg = " -> {:s}".format(insn.colored_text(10, highlight=True))
                 else:
                     msg = "    {:s}".format(insn.colored_text(10, highlight=False))
                 gef_print(msg)
@@ -20621,7 +20617,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
 
         while True:
             if current_chunk.chunk_base_address == arena.top:
-                top_str = Color.colorify("{:s} top".format(LEFT_ARROW), freelist_hint_color)
+                top_str = Color.colorify(" <-  top", freelist_hint_color)
                 self.out.append("{!s} {:s}".format(current_chunk, top_str))
                 break
             if current_chunk.chunk_base_address > arena.top:
@@ -20636,7 +20632,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
             # in or not in free-list
             info = arena.get_bins_info(current_chunk)
             if info:
-                freelist_hint = Color.colorify(" {:s} {:s}".format(LEFT_ARROW, ", ".join(info)), freelist_hint_color)
+                freelist_hint = Color.colorify("  <-  {:s}".format(", ".join(info)), freelist_hint_color)
                 line += freelist_hint
 
             self.out.append(line)
@@ -20752,27 +20748,27 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
                         count = ord(read_memory(tcache_perthread_struct + i, 1))
                     else:
                         count = u16(read_memory(tcache_perthread_struct + 2 * i, 2))
-                    gef_print("{:#x} [{:d}]: ".format(size, count) + RIGHT_ARROW.join(m))
+                    gef_print("{:#x} [{:d}]: ".format(size, count) + " -> ".join(m))
 
             gef_print(titlify("fastbins"))
             for i, chunks in arena.get_fastbins_list().items():
                 m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
                 if m or args.verbose:
                     size = GlibcHeap.get_binsize_table()["fastbins"][i]["size"]
-                    gef_print("{:#x}: ".format(size) + RIGHT_ARROW.join(m))
+                    gef_print("{:#x}: ".format(size) + " -> ".join(m))
 
             gef_print(titlify("unsorted bin"))
             for _, chunks in arena.get_unsortedbin_list().items():
                 m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
                 if m or args.verbose:
-                    gef_print("any: " + RIGHT_ARROW.join(m))
+                    gef_print("any: " + " -> ".join(m))
 
             gef_print(titlify("small bins"))
             for i, chunks in arena.get_smallbins_list().items():
                 m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
                 if m or args.verbose:
                     size = GlibcHeap.get_binsize_table()["small_bins"][i]["size"]
-                    gef_print("{:#x}: ".format(size) + RIGHT_ARROW.join(m))
+                    gef_print("{:#x}: ".format(size) + " -> ".join(m))
 
             gef_print(titlify("large bins"))
             for i, chunks in arena.get_largebins_list().items():
@@ -20780,7 +20776,7 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
                 if m or args.verbose:
                     size_min = GlibcHeap.get_binsize_table()["large_bins"][i]["size_min"]
                     size_max = GlibcHeap.get_binsize_table()["large_bins"][i]["size_max"]
-                    gef_print("{:#x}-{:#x}: ".format(size_min, size_max) + RIGHT_ARROW.join(m))
+                    gef_print("{:#x}-{:#x}: ".format(size_min, size_max) + " -> ".join(m))
         return
 
 
@@ -20846,17 +20842,17 @@ class GlibcHeapBinsCommand(GenericCommand):
             chunk = GlibcHeap.GlibcChunk(arena, bk, from_base=True)
             if chunk.address in seen_bk:
                 mb.append(Color.colorify(
-                    "{:s}{:#x} [loop detected]".format(RIGHT_ARROW, chunk.chunk_base_address),
+                    " -> {:#x} [loop detected]".format(chunk.chunk_base_address),
                     corrupted_msg_color,
                 ))
                 corrupted = True
                 break
             seen_bk.append(chunk.address)
             try:
-                mb.append("{:s}{!s}".format(RIGHT_ARROW, chunk))
+                mb.append(" -> {!s}".format(chunk))
             except gdb.MemoryError:
                 mb.append(Color.colorify(
-                    "{:s}{:#x} [corrupted chunk]".format(RIGHT_ARROW, chunk.chunk_base_address),
+                    " -> {:#x} [corrupted chunk]".format(chunk.chunk_base_address),
                     corrupted_msg_color,
                 ))
                 corrupted = True
@@ -20874,16 +20870,16 @@ class GlibcHeapBinsCommand(GenericCommand):
                     break
                 if chunk.address in seen_fw:
                     mf.append(Color.colorify(
-                        "{:s}{:#x} [loop detected]".format(RIGHT_ARROW, chunk.chunk_base_address),
+                        " -> {:#x} [loop detected]".format(chunk.chunk_base_address),
                         corrupted_msg_color,
                     ))
                     break
                 seen_fw.append(chunk.address)
                 try:
-                    mf.append("{:s}{!s}".format(RIGHT_ARROW, chunk))
+                    mf.append(" -> {!s}".format(chunk))
                 except gdb.MemoryError:
                     mf.append(Color.colorify(
-                        "{:s}{:#x} [corrupted chunk]".format(RIGHT_ARROW, chunk.chunk_base_address),
+                        " -> {:#x} [corrupted chunk]".format(chunk.chunk_base_address),
                         corrupted_msg_color,
                     ))
                     break
@@ -21008,10 +21004,10 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
                 if chunk is None:
                     break
                 try:
-                    m.append("{:s}{!s}".format(RIGHT_ARROW, chunk))
+                    m.append(" -> {!s}".format(chunk))
                     if chunk.address in chunks:
                         m.append(Color.colorify(
-                            "{:s}{:#x} [loop detected]".format(RIGHT_ARROW, chunk.address),
+                            " -> {:#x} [loop detected]".format(chunk.address),
                             corrupted_msg_color,
                         ))
                         break
@@ -21026,7 +21022,7 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
                     chunk = GlibcHeap.GlibcChunk(arena, next_chunk)
                 except gdb.MemoryError:
                     m.append(Color.colorify(
-                        "{:s}{:#x} [corrupted chunk]".format(RIGHT_ARROW, chunk.address),
+                        " -> {:#x} [corrupted chunk]".format(chunk.address),
                         corrupted_msg_color,
                     ))
                     break
@@ -21121,10 +21117,10 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
                     break
 
                 try:
-                    m.append("{:s}{!s}".format(RIGHT_ARROW, chunk))
+                    m.append(" -> {!s}".format(chunk))
                     if chunk.address in chunks:
                         m.append(Color.colorify(
-                            "{:s}{:#x} [loop detected]".format(RIGHT_ARROW, chunk.chunk_base_address),
+                            " -> {:#x} [loop detected]".format(chunk.chunk_base_address),
                             corrupted_msg_color,
                         ))
                         break
@@ -21142,7 +21138,7 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
                     chunk = GlibcHeap.GlibcChunk(arena, next_chunk, from_base=True)
                 except gdb.MemoryError:
                     m.append(Color.colorify(
-                        "{:s}{:#x} [corrupted chunk]".format(RIGHT_ARROW, chunk.chunk_base_address),
+                        " -> {:#x} [corrupted chunk]".format(chunk.chunk_base_address),
                         corrupted_msg_color,
                     ))
                     break
@@ -21910,7 +21906,7 @@ class GlibcExtractHeapAddrCommand(GenericCommand):
         extracted_ptr = self.reveal(args.value)
         extracted_ptr = ProcessMap.lookup_address(extracted_ptr)
         gef_print("Protected fd pointer: {:#x}".format(args.value))
-        gef_print("{:s}Extracted heap address: {!s} (=fd & ~0xfff)".format(RIGHT_ARROW, extracted_ptr))
+        gef_print(" -> Extracted heap address: {!s} (=fd & ~0xfff)".format(extracted_ptr))
         return
 
 
@@ -22009,7 +22005,7 @@ class GlibcVisualHeapCommand(GenericCommand, BufferingOutput):
                 for _ in range(repeat_count):
                     bins_info = arena.get_bins_info(addr)
                     if bins_info:
-                        bins_info = "{:s} {:s}".format(LEFT_ARROW, ", ".join(bins_info))
+                        bins_info = " <-  {:s}".format(", ".join(bins_info))
                         has_bins_info = True
                     else:
                         bins_info = ""
@@ -22032,7 +22028,7 @@ class GlibcVisualHeapCommand(GenericCommand, BufferingOutput):
                 # collapsed line
                 bins_info = arena.get_bins_info(addr)
                 if bins_info:
-                    bins_info = "{:s} {:s}".format(LEFT_ARROW, ", ".join(bins_info))
+                    bins_info = " <-  {:s}".format(", ".join(bins_info))
                     has_bins_info = True
                 else:
                     bins_info = ""
@@ -22208,7 +22204,7 @@ class RegistersCommand(GenericCommand):
 
             # dereference values
             value_s = AddressUtil.format_address(value, memalign_size=2.5)
-            line += " {:04x}:{:04x}: {:s} {:s} ".format(segval, regval, value_s, RIGHT_ARROW)
+            line += " {:04x}:{:04x}: {:s}  ->  ".format(segval, regval, value_s)
             line += AddressUtil.recursive_dereference_to_string(value, skip_idx=1)
 
             lines.append(line)
@@ -22280,7 +22276,7 @@ class RegistersCommand(GenericCommand):
                     line += AddressUtil.format_address(value, memalign_size=4)
                     derefs = AddressUtil.recursive_dereference_to_string(value, skip_idx=1)
                     if derefs:
-                        line += " {:s} {:s}".format(RIGHT_ARROW, derefs)
+                        line += "  ->  {:s}".format(derefs)
                 else:
                     line += AddressUtil.recursive_dereference_to_string(value)
 
@@ -28281,7 +28277,6 @@ class ContextCommand(GenericCommand):
         past_lines_color = Config.get_gef_setting("theme.context_code_past")
         future_lines_color = Config.get_gef_setting("theme.context_code_future")
         use_capstone = Config.get_gef_setting("context.use_capstone")
-        padding = " " * len(RIGHT_ARROW[1:])
 
         if current_arch is None and is_remote_debug():
             self.context_title("code")
@@ -28341,10 +28336,10 @@ class ContextCommand(GenericCommand):
 
             # bp prefix and branch info
             if insn.address != pc:
-                line += "{:s}{:s}{:s}".format(bp_prefix, padding, text)
+                line += "{:s}   {:s}".format(bp_prefix, text)
 
             elif insn.address == pc:
-                line += "{:s}{:s}{:s}".format(bp_prefix, RIGHT_ARROW[1:], text)
+                line += "{:s}-> {:s}".format(bp_prefix, text)
 
                 # branch info
                 if current_arch.is_conditional_branch(insn):
@@ -28386,8 +28381,8 @@ class ContextCommand(GenericCommand):
                 try:
                     if delay_slot:
                         next_insn = list(Disasm.gef_disassemble(insn.address, 2))[-1]
-                        text = "{:s}{:s}{:s}\t{:s}".format(
-                            bp_prefix, padding,
+                        text = "{:s}   {:s}\t{:s}".format(
+                            bp_prefix,
                             next_insn.colored_text(show_opcodes_size, highlight=False),
                             Color.colorify("Maybe delay-slot", "bold yellow"),
                         )
@@ -28401,9 +28396,9 @@ class ContextCommand(GenericCommand):
                         text = tinsn.colored_text(show_opcodes_size, highlight=False)
                         if i == 0:
                             gef_print("") # need blank line
-                            text = "   {} {}".format(RIGHT_ARROW[1:-1], text)
+                            text = "   -> {}".format(text)
                         else:
-                            text = "   {} {}".format("  ", text)
+                            text = "      {}".format(text)
                         gef_print(text)
                     gef_print("") # need blank line
                 except Exception:
@@ -29020,7 +29015,7 @@ class ContextCommand(GenericCommand):
                 gef_print("{:1s}{:2s}{:s}".format(bp_prefix, "", past_line))
 
             elif i == line_num:
-                prefix = "{:1s}{:2s}{:4d}   ".format(bp_prefix, RIGHT_ARROW[1:-1], i + 1)
+                prefix = "{:1s}->{:4d}   ".format(bp_prefix, i + 1)
                 leading = len(lines[i]) - len(lines[i].lstrip())
                 if show_extra_info:
                     extra_info = self.get_pc_context_info(pc, lines[i])
@@ -30736,8 +30731,8 @@ class PatchHistoryCommand(PatchCommand):
                     a += " ..."
                 sym = Symbol.get_symbol_string(hist["addr"])
                 i_str = Color.boldify("{:d}".format(i))
-                gef_print("[{:s}] {:#x}{:s}: {:s}{:s}{:s}".format(
-                    i_str, hist["addr"], sym, b, RIGHT_ARROW, a,
+                gef_print("[{:s}] {:#x}{:s}: {:s} -> {:s}".format(
+                    i_str, hist["addr"], sym, b, a,
                 ))
             gef_print("[OLD]")
         else:
@@ -30796,7 +30791,7 @@ class PatchRevertCommand(PatchCommand):
             if len(hist["after_data"]) > 0x10:
                 a += " ..."
             sym = Symbol.get_symbol_string(hist["addr"])
-            info("revert {:#x}{:s}: {:s}{:s}{:s}".format(hist["addr"], sym, a, RIGHT_ARROW, b))
+            info("revert {:#x}{:s}: {:s} -> {:s}".format(hist["addr"], sym, a, b))
 
             if is_supported_physmode():
                 orig_mode = QemuMonitor.get_current_mmu_mode()
@@ -31021,7 +31016,7 @@ class DereferenceCommand(GenericCommand):
 
         # add extra to end of line
         if extra:
-            extra_str = " {:s} {:s}".format(LEFT_ARROW, ", ".join(extra))
+            extra_str = "  <-  {:s}".format(", ".join(extra))
             line += Color.colorify(extra_str, registers_color)
         return line
 
@@ -31631,7 +31626,7 @@ class VMMapCommand(GenericCommand, BufferingOutput):
                 if entry.page_start <= regvalue < entry.page_end:
                     register_hints.append(regname)
             if register_hints:
-                m = " {:s} {:s}".format(LEFT_ARROW, ", ".join(list(register_hints)))
+                m = "  <-  {:s}".format(", ".join(list(register_hints)))
                 registers_color = Config.get_gef_setting("theme.dereference_register_value")
                 line += Color.colorify(m, registers_color)
 
@@ -32799,16 +32794,16 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
                 val_addr = ProcessMap.lookup_address(current - current_arch.ptrsize)
                 val_addr_offset = val_addr.value - dynamic.value
                 if not silent:
-                    info("_DYNAMIC+{:#x}(=DT_DEBUG): {!s}{:s}{!s}".format(
-                        val_addr_offset, val_addr, RIGHT_ARROW, dt_debug,
+                    info("_DYNAMIC+{:#x}(=DT_DEBUG): {!s} -> {!s}".format(
+                        val_addr_offset, val_addr, dt_debug,
                     ))
                 link_map_ptr = ProcessMap.lookup_address(dt_debug.value + current_arch.ptrsize)
                 if not is_valid_addr(link_map_ptr.value):
                     return None
                 link_map = ProcessMap.lookup_address(read_int_from_memory(link_map_ptr.value))
                 if not silent:
-                    info("DT_DEBUG+{:#x}: {!s}{:s}{!s}".format(
-                        current_arch.ptrsize, link_map_ptr, RIGHT_ARROW, link_map,
+                    info("DT_DEBUG+{:#x}: {!s} -> {!s}".format(
+                        current_arch.ptrsize, link_map_ptr, link_map,
                     ))
                 break
         return link_map
@@ -33625,8 +33620,8 @@ class DestructorDumpCommand(GenericCommand):
             else:
                 valid_msg = Color.colorify("invalid", "bold red")
 
-            gef_print("   {:s}func:     {:s}: {!s} (={!s}{:s}) [{:s}]".format(
-                RIGHT_ARROW, self.C(current), func, decoded_fn, sym, valid_msg,
+            gef_print("    -> func:     {:s}: {!s} (={!s}{:s}) [{:s}]".format(
+                self.C(current), func, decoded_fn, sym, valid_msg,
             ))
             gef_print("       obj:      {:s}: {!s}".format(
                 self.C(current + ptrsize * 1), obj,
@@ -33665,7 +33660,7 @@ class DestructorDumpCommand(GenericCommand):
             err("Memory access error at {:#x}".format(current))
             return
         current += ptrsize * 2
-        gef_print("   {:s}next:     {:s}: {!s}".format(RIGHT_ARROW, self.C(head.value + ptrsize * 0), next))
+        gef_print("    -> next:     {:s}: {!s}".format(self.C(head.value + ptrsize * 0), next))
         gef_print("       idx:      {:s}: {!s}".format(self.C(head.value + ptrsize * 1), idx))
 
         def read_fns(addr):
@@ -33758,7 +33753,7 @@ class DestructorDumpCommand(GenericCommand):
                 gef_print(link_map.name)
                 fini = ProcessMap.lookup_address(fini)
                 sym = Symbol.get_symbol_string(fini.value)
-                gef_print("   {:s}{!s}{:s}".format(RIGHT_ARROW, fini, sym))
+                gef_print("    -> {!s}{:s}".format(fini, sym))
         else:
             # Static binary has no _DYNAMIC, but we can resolve the target address
             # from section name due to local file path.
@@ -33773,7 +33768,7 @@ class DestructorDumpCommand(GenericCommand):
             gef_print(self.local_filepath)
             fini = ProcessMap.lookup_address(fini)
             sym = Symbol.get_symbol_string(fini.value)
-            gef_print("   {:s}{!s}{:s}".format(RIGHT_ARROW, fini, sym))
+            gef_print("    -> {!s}{:s}".format(fini, sym))
         return
 
     def dump_fini_array(self):
@@ -33827,7 +33822,7 @@ class DestructorDumpCommand(GenericCommand):
                 for addr, func in entries:
                     func = ProcessMap.lookup_address(func)
                     sym = Symbol.get_symbol_string(func.value)
-                    gef_print("   {:s}{:s}: {!s}{:s}".format(RIGHT_ARROW, self.C(addr), func, sym))
+                    gef_print("    -> {:s}: {!s}{:s}".format(self.C(addr), func, sym))
         else:
             # Static binary has no _DYNAMIC, but we can resolve the target address
             # from section name due to local file path.
@@ -33851,7 +33846,7 @@ class DestructorDumpCommand(GenericCommand):
             for addr, func in entries:
                 func = ProcessMap.lookup_address(func)
                 sym = Symbol.get_symbol_string(func.value)
-                gef_print("   {:s}{:s}: {!s}{:s}".format(RIGHT_ARROW, self.C(addr), func, sym))
+                gef_print("    -> {:s}: {!s}{:s}".format(self.C(addr), func, sym))
         return
 
     @parse_args
@@ -34928,8 +34923,8 @@ class FormatStringBreakpoint(gdb.Breakpoint):
             content = String.gef_pystring(String.str2bytes(content))
             name = addr.info.name if addr.info else addr.section.path
             msg.append(Color.colorify("Format string helper", "bold yellow"))
-            msg.append("Possible insecure format string: {:s}('{:s}' {:s} {:#x}: '{:s}')".format(
-                self.func_name, ptr, RIGHT_ARROW, addr.value, content,
+            msg.append("Possible insecure format string: {:s}('{:s}'  ->  {:#x}: '{:s}')".format(
+                self.func_name, ptr, addr.value, content,
             ))
             msg.append("Reason: '{:s}()' with format-string arg #{:d} is in writable page {:s} ({:s})".format(
                 self.func_name, self.num_args, str(addr), name,
@@ -49446,14 +49441,14 @@ class MagicCommand(GenericCommand):
         perm = addr.section.permission
         if is_ascii_string(addr.value):
             val = read_cstring_from_memory(addr.value)
-            gef_print("{:45s} {!s} [{!s}] (+{:#010x}){:s}{:s}".format(
-                sym, addr, perm, addr.value - base, RIGHT_ARROW, val,
+            gef_print("{:45s} {!s} [{!s}] (+{:#010x}) -> {:s}".format(
+                sym, addr, perm, addr.value - base, val,
             ))
         else:
             val = ProcessMap.lookup_address(read_int_from_memory(addr.value))
             val_sym = Symbol.get_symbol_string(val.value)
-            gef_print("{:45s} {!s} [{!s}] (+{:#010x}){:s}{:s}{:s}".format(
-                sym, addr, perm, addr.value - base, RIGHT_ARROW, val.long_fmt(), val_sym,
+            gef_print("{:45s} {!s} [{!s}] (+{:#010x}) -> {:s}{:s}".format(
+                sym, addr, perm, addr.value - base, val.long_fmt(), val_sym,
             ))
         return
 
@@ -49483,9 +49478,9 @@ class MagicCommand(GenericCommand):
             return
 
         gef_print(titlify("Legend"))
-        fmt = "{:45s} {:{:d}s} {:5s} (+{:10s}){:s}{:{:d}s}"
+        fmt = "{:45s} {:{:d}s} {:5s} (+{:10s}) -> {:{:d}s}"
         width = AddressUtil.get_format_address_width()
-        legend = ["Symbol", "Addr", width, "Perm", "Offset", RIGHT_ARROW, "Value", width]
+        legend = ["Symbol", "Addr", width, "Perm", "Offset", "Value", width]
         gef_print(GefUtil.make_legend(fmt.format(*legend)))
 
         gef_print(titlify("Heap"))
@@ -49663,26 +49658,26 @@ class KernelMagicCommand(GenericCommand):
                     return
 
         if not is_valid_addr(addr):
-            gef_print("{:42s} {:#0{:d}x} [---]              {:s}Inaccessible".format(
-                sym, addr, width, RIGHT_ARROW,
+            gef_print("{:42s} {:#0{:d}x} [---]               -> Inaccessible".format(
+                sym, addr, width,
             ))
             return
 
         perm = get_permission(addr, maps)
         if base is None:
             val = read_int_from_memory(addr)
-            gef_print("{:42s} {:#0{:d}x} [{:3s}]              {:s}{:#0{:d}x}".format(
-                sym, addr, width, perm, RIGHT_ARROW, val, width,
+            gef_print("{:42s} {:#0{:d}x} [{:3s}]               -> {:#0{:d}x}".format(
+                sym, addr, width, perm, val, width,
             ))
         elif to_string:
             val = read_cstring_from_memory(addr) or "???"
-            gef_print("{:42s} {:#0{:d}x} [{:3s}] (+{:#010x}){:s}{:s}".format(
-                sym, addr, width, perm, addr - base, RIGHT_ARROW, val,
+            gef_print("{:42s} {:#0{:d}x} [{:3s}] (+{:#010x}) -> {:s}".format(
+                sym, addr, width, perm, addr - base, val,
             ))
         else:
             val = read_int_from_memory(addr)
-            gef_print("{:42s} {:#0{:d}x} [{:3s}] (+{:#010x}){:s}{:#0{:d}x}".format(
-                sym, addr, width, perm, addr - base, RIGHT_ARROW, val, width,
+            gef_print("{:42s} {:#0{:d}x} [{:3s}] (+{:#010x}) -> {:#0{:d}x}".format(
+                sym, addr, width, perm, addr - base, val, width,
             ))
         return
 
@@ -49699,9 +49694,9 @@ class KernelMagicCommand(GenericCommand):
         gef_print("{:42s} {:#x} ({:#x} bytes)".format("kernel_base", text_base, text_size))
 
         gef_print(titlify("Legend"))
-        fmt = "{:42s} {:{:d}s} {:5s} (+{:10s}){:s}{:{:d}s}"
+        fmt = "{:42s} {:{:d}s} {:5s} (+{:10s}) -> {:{:d}s}"
         width = AddressUtil.get_format_address_width()
-        legend = ["Symbol", "Addr", width, "Perm", "Offset", RIGHT_ARROW, "Value", width]
+        legend = ["Symbol", "Addr", width, "Perm", "Offset", "Value", width]
         gef_print(GefUtil.make_legend(fmt.format(*legend)))
 
         gef_print(titlify("Credential"))
@@ -66148,7 +66143,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             reglist = regs.get(i, [])
             if reglist:
                 regstr = Color.colorify(
-                    "{:s}{:s}".format(LEFT_ARROW, " ,".join(reglist)),
+                    " <- {:s}".format(" ,".join(reglist)),
                     Config.get_gef_setting("theme.dereference_register_value"),
                 )
             else:
@@ -80659,7 +80654,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
                 for _ in range(repeat_count):
                     bins_info = self.get_bins_info(malloc_state, addr)
                     if bins_info:
-                        bins_info = "{:s} {:s}".format(LEFT_ARROW, ", ".join(bins_info))
+                        bins_info = " <-  {:s}".format(", ".join(bins_info))
                         has_bins_info = True
                     else:
                         bins_info = ""
@@ -80683,7 +80678,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
                 # collapsed line
                 bins_info = self.get_bins_info(malloc_state, addr)
                 if bins_info:
-                    bins_info = "{:s} {:s}".format(LEFT_ARROW, ", ".join(bins_info))
+                    bins_info = " <-  {:s}".format(", ".join(bins_info))
                     has_bins_info = True
                 else:
                     bins_info = ""
@@ -93832,7 +93827,7 @@ class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
                 if i == 0:
                     prefix = ""
                 else:
-                    prefix = "  " * i + RIGHT_ARROW
+                    prefix = "  " * i + " -> "
                 if isinstance(h, int):
                     addr = ProcessMap.lookup_address(h)
                     path = addr.section.path
@@ -95094,7 +95089,7 @@ class GefMissingCommand(GenericCommand):
             return
         for missing_command in missing_commands:
             reason = __gef__.missing_commands[missing_command]
-            warn("Command `{}` is missing, reason {} {}".format(missing_command, RIGHT_ARROW, reason))
+            warn("Command `{}` is missing, reason  ->  {}".format(missing_command, reason))
         return
 
 
@@ -95229,8 +95224,8 @@ class GefArchListCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify(arch_name))
 
         # settings
-        self.out.append("{:30s} {:s} {!s}".format("bit length", RIGHT_ARROW, arch.bit_length))
-        self.out.append("{:30s} {:s} {!s}".format("endianness", RIGHT_ARROW, arch.endianness))
+        self.out.append("{:30s}  ->  {!s}".format("bit length", arch.bit_length))
+        self.out.append("{:30s}  ->  {!s}".format("endianness", arch.endianness))
 
         if arch.arch == "ARM":
             inst_len = "ARM:4 / THUMB:2or4"
@@ -95238,35 +95233,35 @@ class GefArchListCommand(GenericCommand, BufferingOutput):
             inst_len = "variable length"
         else:
             inst_len = str(arch.instruction_length)
-        self.out.append("{:30s} {:s} {!s}".format("instruction length", RIGHT_ARROW, inst_len))
+        self.out.append("{:30s}  ->  {!s}".format("instruction length", inst_len))
 
         if arch.return_register is None:
             ret_regs = "different for each system call"
         else:
             ret_regs = str(arch.return_register)
-        self.out.append("{:30s} {:s} {!s}".format("return register", RIGHT_ARROW, ret_regs))
+        self.out.append("{:30s}  ->  {!s}".format("return register", ret_regs))
 
         fparams = ", ".join(arch.function_parameters)
         if len(arch.function_parameters) == 1:
             fparams += " (passing via stack)"
-        self.out.append("{:30s} {:s} {!s}".format("function parameters", RIGHT_ARROW, fparams))
+        self.out.append("{:30s}  ->  {!s}".format("function parameters", fparams))
 
-        self.out.append("{:30s} {:s} {!s}".format("syscall register", RIGHT_ARROW, arch.syscall_register))
+        self.out.append("{:30s}  ->  {!s}".format("syscall register", arch.syscall_register))
 
         if arch.syscall_parameters is None:
             sparams = "different for each system call"
         else:
             sparams = ", ".join(arch.syscall_parameters)
-        self.out.append("{:30s} {:s} {!s}".format("syscall parameters", RIGHT_ARROW, sparams))
+        self.out.append("{:30s}  ->  {!s}".format("syscall parameters", sparams))
 
-        self.out.append("{:30s} {:s} {!s}".format("Has a call/jump delay slot", RIGHT_ARROW, arch.has_delay_slot))
-        self.out.append("{:30s} {:s} {!s}".format("Has a syscall delay slot", RIGHT_ARROW, arch.has_syscall_delay_slot))
-        self.out.append("{:30s} {:s} {!s}".format("Has a ret delay slot", RIGHT_ARROW, arch.has_ret_delay_slot))
-        self.out.append("{:30s} {:s} {!s}".format("Stack grow down", RIGHT_ARROW, arch.stack_grow_down))
-        self.out.append("{:30s} {:s} {!s}".format("Thread Local Storage support", RIGHT_ARROW, arch.tls_supported))
-        self.out.append("{:30s} {:s} {!s}".format("keystone support", RIGHT_ARROW, arch.keystone_support))
-        self.out.append("{:30s} {:s} {!s}".format("capstone support", RIGHT_ARROW, arch.capstone_support))
-        self.out.append("{:30s} {:s} {!s}".format("unicorn support", RIGHT_ARROW, arch.unicorn_support))
+        self.out.append("{:30s}  ->  {!s}".format("Has a call/jump delay slot", arch.has_delay_slot))
+        self.out.append("{:30s}  ->  {!s}".format("Has a syscall delay slot", arch.has_syscall_delay_slot))
+        self.out.append("{:30s}  ->  {!s}".format("Has a ret delay slot", arch.has_ret_delay_slot))
+        self.out.append("{:30s}  ->  {!s}".format("Stack grow down", arch.stack_grow_down))
+        self.out.append("{:30s}  ->  {!s}".format("Thread Local Storage support", arch.tls_supported))
+        self.out.append("{:30s}  ->  {!s}".format("keystone support", arch.keystone_support))
+        self.out.append("{:30s}  ->  {!s}".format("capstone support", arch.capstone_support))
+        self.out.append("{:30s}  ->  {!s}".format("unicorn support", arch.unicorn_support))
         return
 
     def listup_arch_info(self):
@@ -95607,7 +95602,7 @@ class GefStatusCommand(GenericCommand):
 
         gef_print(titlify("GDB/ELF settings"))
         show_arch = gdb.execute("show architecture", to_string=True).rstrip()
-        gef_print("{:30s} {:s} {:s}".format("show architecture", RIGHT_ARROW, show_arch))
+        gef_print("{:30s}  ->  {:s}".format("show architecture", show_arch))
         if is_64bit():
             bit_str = "64-bit"
         else:
@@ -95616,73 +95611,73 @@ class GefStatusCommand(GenericCommand):
             endian_str = "big"
         else:
             endian_str = "little"
-        gef_print("{:30s} {:s} {:s}".format("bit", RIGHT_ARROW, bit_str))
-        gef_print("{:30s} {:s} {:s}".format("endian", RIGHT_ARROW, endian_str))
+        gef_print("{:30s}  ->  {:s}".format("bit", bit_str))
+        gef_print("{:30s}  ->  {:s}".format("endian", endian_str))
 
         gef_print(titlify("GDB mode"))
-        gef_print("{:30s} {:s} {!s}".format("is_normal_run()", RIGHT_ARROW, is_normal_run()))
-        gef_print("{:30s} {:s} {!s}".format("is_attach()", RIGHT_ARROW, is_attach()))
-        gef_print("{:30s} {:s} {!s}".format("is_remote_debug()", RIGHT_ARROW, is_remote_debug()))
-        gef_print("{:30s} {:s} {!s}".format("is_container_attach()", RIGHT_ARROW, is_container_attach()))
-        gef_print("{:30s} {:s} {!s}".format("is_qemu_system()", RIGHT_ARROW, is_qemu_system()))
-        gef_print("{:30s} {:s} {!s}".format("is_qemu_user()", RIGHT_ARROW, is_qemu_user()))
-        gef_print("{:30s} {:s} {!s}".format("is_pin()", RIGHT_ARROW, is_pin()))
-        gef_print("{:30s} {:s} {!s}".format("is_kgdb()", RIGHT_ARROW, is_kgdb()))
-        gef_print("{:30s} {:s} {!s}".format("is_qiling()", RIGHT_ARROW, is_qiling()))
-        gef_print("{:30s} {:s} {!s}".format("is_vmware()", RIGHT_ARROW, is_vmware()))
-        gef_print("{:30s} {:s} {!s}".format("is_in_kernel()", RIGHT_ARROW, is_in_kernel()))
-        gef_print("{:30s} {:s} {!s}".format("is_rr()", RIGHT_ARROW, is_rr()))
-        gef_print("{:30s} {:s} {!s}".format("is_wine()", RIGHT_ARROW, is_wine()))
+        gef_print("{:30s}  ->  {!s}".format("is_normal_run()", is_normal_run()))
+        gef_print("{:30s}  ->  {!s}".format("is_attach()", is_attach()))
+        gef_print("{:30s}  ->  {!s}".format("is_remote_debug()", is_remote_debug()))
+        gef_print("{:30s}  ->  {!s}".format("is_container_attach()", is_container_attach()))
+        gef_print("{:30s}  ->  {!s}".format("is_qemu_system()", is_qemu_system()))
+        gef_print("{:30s}  ->  {!s}".format("is_qemu_user()", is_qemu_user()))
+        gef_print("{:30s}  ->  {!s}".format("is_pin()", is_pin()))
+        gef_print("{:30s}  ->  {!s}".format("is_kgdb()", is_kgdb()))
+        gef_print("{:30s}  ->  {!s}".format("is_qiling()", is_qiling()))
+        gef_print("{:30s}  ->  {!s}".format("is_vmware()", is_vmware()))
+        gef_print("{:30s}  ->  {!s}".format("is_in_kernel()", is_in_kernel()))
+        gef_print("{:30s}  ->  {!s}".format("is_rr()", is_rr()))
+        gef_print("{:30s}  ->  {!s}".format("is_wine()", is_wine()))
 
         gef_print(titlify("Others"))
-        gef_print("{:30s} {:s} {!s}".format("is_alive()", RIGHT_ARROW, is_alive()))
-        gef_print("{:30s} {:s} {!s}".format("is_kvm_enabled()", RIGHT_ARROW, is_kvm_enabled()))
-        gef_print("{:30s} {:s} {!s}".format("is_supported_physmode()", RIGHT_ARROW, is_supported_physmode()))
+        gef_print("{:30s}  ->  {!s}".format("is_alive()", is_alive()))
+        gef_print("{:30s}  ->  {!s}".format("is_kvm_enabled()", is_kvm_enabled()))
+        gef_print("{:30s}  ->  {!s}".format("is_supported_physmode()", is_supported_physmode()))
         if is_supported_physmode():
-            gef_print("{:30s} {:s} {!s}".format("get_current_mmu_mode()", RIGHT_ARROW, QemuMonitor.get_current_mmu_mode()))
+            gef_print("{:30s}  ->  {!s}".format("get_current_mmu_mode()", QemuMonitor.get_current_mmu_mode()))
 
         gef_print(titlify("GEF architecture information"))
-        gef_print("{:30s} {:s} {!s}".format("current_arch.arch", RIGHT_ARROW, current_arch.arch))
-        gef_print("{:30s} {:s} {!s}".format("current_arch.mode", RIGHT_ARROW, current_arch.mode))
+        gef_print("{:30s}  ->  {!s}".format("current_arch.arch", current_arch.arch))
+        gef_print("{:30s}  ->  {!s}".format("current_arch.mode", current_arch.mode))
         if is_arm32() or is_arm32_cortex_m():
-            gef_print("{:30s} {:s} {!s}".format("current_arch.__mode", RIGHT_ARROW, current_arch._ARM__mode))
-        gef_print("{:30s} {:s} {!s}".format("current_arch.ptrsize", RIGHT_ARROW, current_arch.ptrsize))
+            gef_print("{:30s}  ->  {!s}".format("current_arch.__mode", current_arch._ARM__mode))
+        gef_print("{:30s}  ->  {!s}".format("current_arch.ptrsize", current_arch.ptrsize))
 
         if current_arch.instruction_length is None:
             inst_len = "variable length"
         else:
             inst_len = str(current_arch.instruction_length)
-        gef_print("{:30s} {:s} {!s}".format("instruction length", RIGHT_ARROW, inst_len))
+        gef_print("{:30s}  ->  {!s}".format("instruction length", inst_len))
 
         if current_arch.return_register is None:
             ret_regs = "different for each system call"
         else:
             ret_regs = str(current_arch.return_register)
-        gef_print("{:30s} {:s} {!s}".format("return register", RIGHT_ARROW, ret_regs))
+        gef_print("{:30s}  ->  {!s}".format("return register", ret_regs))
 
         fparams = ", ".join(current_arch.function_parameters)
         if len(current_arch.function_parameters) == 1:
             fparams += " (passing via stack)"
-        gef_print("{:30s} {:s} {!s}".format("function parameters", RIGHT_ARROW, fparams))
+        gef_print("{:30s}  ->  {!s}".format("function parameters", fparams))
 
-        gef_print("{:30s} {:s} {!s}".format("syscall register", RIGHT_ARROW, current_arch.syscall_register))
+        gef_print("{:30s}  ->  {!s}".format("syscall register", current_arch.syscall_register))
 
         if current_arch.syscall_parameters is None:
             sparams = "different for each system call"
         else:
             sparams = ", ".join(current_arch.syscall_parameters)
-        gef_print("{:30s} {:s} {!s}".format("syscall parameters", RIGHT_ARROW, sparams))
+        gef_print("{:30s}  ->  {!s}".format("syscall parameters", sparams))
 
         if is_x86() or is_arm32() or is_arm64():
-            gef_print("{:30s} {:s} {!s}".format("32bit-emulated (compat mode)", RIGHT_ARROW, is_emulated32()))
-        gef_print("{:30s} {:s} {!s}".format("Has a call/jump delay slot", RIGHT_ARROW, current_arch.has_delay_slot))
-        gef_print("{:30s} {:s} {!s}".format("Has a syscall delay slot", RIGHT_ARROW, current_arch.has_syscall_delay_slot))
-        gef_print("{:30s} {:s} {!s}".format("Has a ret delay slot", RIGHT_ARROW, current_arch.has_ret_delay_slot))
-        gef_print("{:30s} {:s} {!s}".format("Stack grow down", RIGHT_ARROW, current_arch.stack_grow_down))
-        gef_print("{:30s} {:s} {!s}".format("Thread Local Storage support", RIGHT_ARROW, current_arch.tls_supported))
-        gef_print("{:30s} {:s} {!s}".format("keystone support", RIGHT_ARROW, current_arch.keystone_support))
-        gef_print("{:30s} {:s} {!s}".format("capstone support", RIGHT_ARROW, current_arch.capstone_support))
-        gef_print("{:30s} {:s} {!s}".format("unicorn support", RIGHT_ARROW, current_arch.unicorn_support))
+            gef_print("{:30s}  ->  {!s}".format("32bit-emulated (compat mode)", is_emulated32()))
+        gef_print("{:30s}  ->  {!s}".format("Has a call/jump delay slot", current_arch.has_delay_slot))
+        gef_print("{:30s}  ->  {!s}".format("Has a syscall delay slot", current_arch.has_syscall_delay_slot))
+        gef_print("{:30s}  ->  {!s}".format("Has a ret delay slot", current_arch.has_ret_delay_slot))
+        gef_print("{:30s}  ->  {!s}".format("Stack grow down", current_arch.stack_grow_down))
+        gef_print("{:30s}  ->  {!s}".format("Thread Local Storage support", current_arch.tls_supported))
+        gef_print("{:30s}  ->  {!s}".format("keystone support", current_arch.keystone_support))
+        gef_print("{:30s}  ->  {!s}".format("capstone support", current_arch.capstone_support))
+        gef_print("{:30s}  ->  {!s}".format("unicorn support", current_arch.unicorn_support))
         return
 
 
@@ -96118,12 +96113,12 @@ class AliasesListCommand(AliasesCommand, BufferingOutput):
         self.out.append(titlify("Pre-defined aliases"))
         for _, a in sorted(__gef_alias_instances__.items(), key=lambda x:x[0]):
             if a._pre_defined_:
-                self.out.append("{:{:d}s} {:s} {:s}".format(a._alias_, width, RIGHT_ARROW, a._command_))
+                self.out.append("{:{:d}s}  ->  {:s}".format(a._alias_, width, a._command_))
 
         self.out.append(titlify("User defined aliases"))
         for _, a in sorted(__gef_alias_instances__.items(), key=lambda x:x[0]):
             if not a._pre_defined_:
-                self.out.append("{:{:d}s} {:s} {:s}".format(a._alias_, width, RIGHT_ARROW, a._command_))
+                self.out.append("{:{:d}s}  ->  {:s}".format(a._alias_, width, a._command_))
 
         self.print_output(term=True)
         return
@@ -96252,7 +96247,7 @@ class GefUtil:
             filename_c = Color.yellowify(filename)
             method_c = Color.greenify(method)
             gef_print('File "{}", line {:d}, in {}()'.format(filename_c, lineno, method_c))
-            gef_print("   {}    {}".format(RIGHT_ARROW, code))
+            gef_print("    ->     {}".format(code))
 
         gef_print(" Last 10 GDB commands ".center(80, HORIZONTAL_LINE))
         gdb.execute("show commands")
