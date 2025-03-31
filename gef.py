@@ -178,9 +178,6 @@ GEF_RC                      = os.getenv("GEF_RC") or os.path.join(os.getenv("HOM
 GEF_TEMP_DIR                = os.path.join(tempfile.gettempdir(), "gef")
 GEF_FILEPATH                = os.path.expanduser(http_get.__code__.co_filename) # the full path of GEF
                             # note: __file__ will no longer be available from gdb 15
-GEF_PROMPT                  = "gef> "
-GEF_PROMPT_ON               = "\001\033[1;32m\002{:s}\001\033[0m\002".format(GEF_PROMPT)
-GEF_PROMPT_OFF              = "\001\033[1;31m\002{:s}\001\033[0m\002".format(GEF_PROMPT)
 
 GDB_MIN_VERSION             = (9, 2) # ubuntu 20.04
 GDB_VERSION                 = tuple(map(int, re.search(r"(\d+)[^\d]+(\d+)", gdb.VERSION).groups()))
@@ -96345,12 +96342,12 @@ class Gef:
     def gef_prompt(_current_prompt):
         """GEF custom prompt function."""
         if Config.get_gef_setting("gef.readline_compat") is True:
-            return GEF_PROMPT
+            return "gef> "
         if Config.get_gef_setting("gef.disable_color") is True:
-            return GEF_PROMPT
+            return "gef> "
         if is_alive():
-            return GEF_PROMPT_ON
-        return GEF_PROMPT_OFF
+            return "\001\033[1;32m\002gef> \001\033[0m\002"
+        return "\001\033[1;31m\002gef> \001\033[0m\002"
 
     @staticmethod
     def fix_venv():
