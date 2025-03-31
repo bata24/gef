@@ -179,10 +179,6 @@ GEF_TEMP_DIR                = os.path.join(tempfile.gettempdir(), "gef")
 GEF_FILEPATH                = os.path.expanduser(http_get.__code__.co_filename) # the full path of GEF
                             # note: __file__ will no longer be available from gdb 15
 
-DEFAULT_PAGE_SIZE           = 1 << 12
-DEFAULT_PAGE_SIZE_MASK_LOW  = DEFAULT_PAGE_SIZE - 1
-DEFAULT_PAGE_SIZE_MASK_HIGH = ~DEFAULT_PAGE_SIZE_MASK_LOW
-
 
 def perf(f): # noqa
     """Decorator wrapper to perf."""
@@ -13516,11 +13512,13 @@ class Auxv:
     def get_auxiliary_walk(offset=0):
         """Find AUXV by walking stack."""
 
-        # do not use gef_getpagesize(), gef_getpagesize_mask_high(), etc.
-        # because gef_getpagesize() -> Auxv.get_auxiliary_values() -> Auxv.get_auxiliary_walk()
         if current_arch.sp is None:
             return None
-        addr = current_arch.sp & DEFAULT_PAGE_SIZE_MASK_HIGH
+
+        # do not use gef_getpagesize(), gef_getpagesize_mask_high(), etc.
+        # because gef_getpagesize() -> Auxv.get_auxiliary_values() -> Auxv.get_auxiliary_walk()
+        page_size = 0x1000
+        addr = current_arch.sp & ~(page_size - 1)
 
         # check readable or not
         if not is_valid_addr(addr):
@@ -13531,7 +13529,7 @@ class Auxv:
             while True:
                 if b"\x7fELF" == read_memory(addr, 4):
                     break
-                addr += DEFAULT_PAGE_SIZE
+                addr += page_size
         except gdb.MemoryError: # if read error, that is stack bottom
             pass
         current = addr - current_arch.ptrsize * 2 - offset
@@ -13559,7 +13557,8 @@ class Auxv:
             return None
 
         # find auxv start
-        while read_int_from_memory(current) <= 37: # AT_L3_CACHESHAPE
+        auxv_keys = AuxvCommand.AT_CONSTANTS.keys()
+        while read_int_from_memory(current) in auxv_keys:
             current -= current_arch.ptrsize * 2
         current += current_arch.ptrsize * 2
 
@@ -13642,7 +13641,7 @@ def gef_getpagesize():
     """Get the page size from auxiliary values."""
     auxval = Auxv.get_auxiliary_values()
     if not auxval or "AT_PAGESZ" not in auxval:
-        return DEFAULT_PAGE_SIZE
+        return 0x1000
     return auxval["AT_PAGESZ"]
 
 
@@ -13651,7 +13650,7 @@ def gef_getpagesize_mask_low():
     """Get the page size mask from auxiliary values."""
     auxval = Auxv.get_auxiliary_values()
     if not auxval or "AT_PAGESZ" not in auxval:
-        return DEFAULT_PAGE_SIZE_MASK_LOW
+        return 0xfff
     return auxval["AT_PAGESZ"] - 1
 
 
@@ -13660,7 +13659,7 @@ def gef_getpagesize_mask_high():
     """Get the page size mask from auxiliary values."""
     auxval = Auxv.get_auxiliary_values()
     if not auxval or "AT_PAGESZ" not in auxval:
-        return DEFAULT_PAGE_SIZE_MASK_HIGH
+        return ~0xfff
     return ~(auxval["AT_PAGESZ"] - 1)
 
 
