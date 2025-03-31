@@ -23653,7 +23653,7 @@ class ElfInfoCommand(GenericCommand):
             self.out.append(fmt.format(*args))
 
             if self.args.verbose:
-                if s.sh_size > 0x1000:
+                if s.sh_size > 0x1000: # heuristic value
                     self.out.append("Skip because too large ({:#x} > 0x1000)".format(s.sh_size))
                 else:
                     fd = open(elf.filename, "rb")
@@ -68104,13 +68104,14 @@ class IsMemoryZeroCommand(GenericCommand):
         return
 
     def memcheck(self, phys_mode, addr, size):
+        page_size = gef_getpagesize()
         start = addr
         end = addr + size
         is_zero = True
         is_ff = True
         current = addr
         while current < end:
-            read_size = min(end - current, 0x1000)
+            read_size = min(end - current, page_size)
             try:
                 if phys_mode:
                     data = read_physmem(current, read_size)
@@ -68129,7 +68130,7 @@ class IsMemoryZeroCommand(GenericCommand):
             if is_zero is False and is_ff is False:
                 end = current + read_size
                 break
-            current += 0x1000
+            current += page_size
 
         if is_zero:
             info("{:#x} - {:#x} is {:s}".format(start, end, Color.colorify("All 0x00", "bold yellow")))
