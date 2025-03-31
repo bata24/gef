@@ -79331,8 +79331,6 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 continue
             if m.size > 0x1000000: # heuristic
                 continue
-            data = read_memory(m.page_start, m.size)
-
             for addr in range(m.page_start, m.page_end, current_arch.ptrsize):
                 v = read_int_from_memory(addr)
                 if v == 0 or not is_valid_addr(v):
