@@ -18297,7 +18297,6 @@ class MprotectCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
     @exclude_specific_arch(arch=("CRIS",))
-    @load_keystone
     def do_invoke(self, args):
         # location
         sect = ProcessMap.process_lookup_address(args.location)
