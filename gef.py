@@ -14977,16 +14977,16 @@ class PrintFormatCommand(GenericCommand):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
-    def extract_memory(self, args):
-        unit_size = args.bitlen // 8
-        if args.to_addr is not None:
-            end_addr = args.to_addr
+    def extract_memory(self):
+        unit_size = self.args.bitlen // 8
+        if self.args.to_addr is not None:
+            end_addr = self.args.to_addr
         else:
-            end_addr = args.location + args.length * unit_size
+            end_addr = self.args.location + self.args.length * unit_size
 
-        bit_format = {8: "<B", 16: "<H", 32: "<I", 64: "<Q"}[args.bitlen]
+        bit_format = {8: "<B", 16: "<H", 32: "<I", 64: "<Q"}[self.args.bitlen]
         data = []
-        for address in range(args.location, end_addr, unit_size):
+        for address in range(self.args.location, end_addr, unit_size):
             try:
                 mem = read_memory(address, unit_size)
             except gdb.MemoryError:
@@ -14996,43 +14996,43 @@ class PrintFormatCommand(GenericCommand):
             data.append(value)
         return data
 
-    def parse_data(self, args, data):
-        if args.format in ["hexs", "hexsn"]:
+    def parse_data(self, data):
+        if self.args.format in ["hexs", "hexsn"]:
             separator = " "
         else:
             separator = ""
 
         sdata = ""
-        if args.format in ["hexn", "hexsn"]:
+        if self.args.format in ["hexn", "hexsn"]:
             for i, x in enumerate(data):
                 sdata += "{:02x}{:s}".format(x, separator)
                 if (i % 16) == 15:
                     sdata += "\n"
-        elif args.format in ["hex", "hexs"]:
+        elif self.args.format in ["hex", "hexs"]:
             for x in data:
                 sdata += "{:02x}{:s}".format(x, separator)
         else:
             for i, x in enumerate(data):
                 if (i % 8) == 0:
                     sdata += "    "
-                sdata += "{:#0{}x}, ".format(x, args.bitlen // 4 + 2)
+                sdata += "{:#0{}x}, ".format(x, self.args.bitlen // 4 + 2)
                 if (i % 8) == 7:
                     sdata += "\n"
         sdata = sdata.rstrip()
         return sdata
 
-    def make_format(self, args, sdata):
-        if args.format == "py":
+    def make_format(self, sdata):
+        if self.args.format == "py":
             out = "buf = [\n{:s}\n]".format(sdata)
-        elif args.format == "c":
+        elif self.args.format == "c":
             c_type = {8: "char", 16: "short", 32: "int", 64: "long long"}
-            out = "unsigned {:s} buf[] = {{\n{:s}\n}};".format(c_type[args.bitlen], sdata)
-        elif args.format == "js":
+            out = "unsigned {:s} buf[] = {{\n{:s}\n}};".format(c_type[self.args.bitlen], sdata)
+        elif self.args.format == "js":
             out = "var buf = [\n{:s}\n];".format(sdata)
-        elif args.format == "asm":
+        elif self.args.format == "asm":
             asm_type = {8: "db", 16: "dw", 32: "dd", 64: "dq"}
-            out = "buf {:s}\n{:s}".format(asm_type[args.bitlen], sdata)
-        elif args.format in ["hex", "hexn", "hexs", "hexsn"]:
+            out = "buf {:s}\n{:s}".format(asm_type[self.args.bitlen], sdata)
+        elif self.args.format in ["hex", "hexn", "hexs", "hexsn"]:
             out = sdata
         return out
 
@@ -15043,11 +15043,11 @@ class PrintFormatCommand(GenericCommand):
             err("{:s} must be bit == 8".format(args.format))
             return
 
-        data = self.extract_memory(args)
+        data = self.extract_memory()
         if data is None:
             return
-        sdata = self.parse_data(args, data)
-        out = self.make_format(args, sdata)
+        sdata = self.parse_data(data)
+        out = self.make_format(sdata)
         gef_print(out)
         return
 
