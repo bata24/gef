@@ -67468,10 +67468,10 @@ class CrcCommand(GenericCommand, BufferingOutput):
         super().__init__(prefix=prefix, complete=complete)
         return
 
-    def get_valid_crc_funcs(self, args):
+    def get_valid_crc_funcs(self):
         import crccheck
         for cname in crccheck.crc.__dict__:
-            if args.filter and not any(filt.search(cname) for filt in args.filter):
+            if self.args.filter and not any(filt.search(cname) for filt in self.args.filter):
                 continue
             if not cname.startswith("Crc"):
                 continue
@@ -67548,7 +67548,7 @@ class CrcMemoryCommand(CrcCommand):
         self.out.append("Address: {:#x}".format(args.location))
         self.out.append("Size: {:#x}".format(args.size))
 
-        for cname, cfunc in self.get_valid_crc_funcs(args):
+        for cname, cfunc in self.get_valid_crc_funcs():
             crc = self.calc_crc(cfunc, args.location, args.location + args.size)
             if crc is False:
                 return
@@ -67599,7 +67599,7 @@ class CrcValueCommand(CrcCommand):
                 return
 
         self.out = []
-        for cname, cfunc in self.get_valid_crc_funcs(args):
+        for cname, cfunc in self.get_valid_crc_funcs():
             try:
                 crc = cfunc.calchex(value)
             except ValueError:
