@@ -34477,7 +34477,7 @@ class GotCommand(GenericCommand, BufferingOutput):
                 return " <{:s}+{:#x}>".format(name, addr - start)
         return ""
 
-    def parse_plt_got(self, args):
+    def parse_plt_got(self):
         # retrieve jump slots using readelf
         jmpslots = self.get_jmp_slots()
         if jmpslots == []:
@@ -34553,7 +34553,7 @@ class GotCommand(GenericCommand, BufferingOutput):
                 got_value_color = Config.get_gef_setting("got.function_resolved")
 
             # c++filt
-            if args.cppfilt:
+            if self.args.cppfilt:
                 if name.startswith("_Z"):
                     res = GefUtil.gef_execute_external([GefUtil.which("c++filt"), name], as_list=True)
                     if len(res) == 1:
@@ -34580,19 +34580,19 @@ class GotCommand(GenericCommand, BufferingOutput):
             resolved_info.append(plt_got_info)
         return resolved_info
 
-    def make_output(self, args, resolved_info):
+    def make_output(self, resolved_info):
         # calc each width
         width = AddressUtil.get_format_address_width()
         name_width = min(max([len(info.name) for info in resolved_info] + [len("Name")]), 50)
-        if args.verbose:
+        if self.args.verbose:
             got_section_width = max([len(info.got_section) for info in resolved_info] + [len("Section")])
             plt_section_width = max([len(info.plt_section) for info in resolved_info] + [len("Section")])
             got_offset_width = max([len(hex(info.got_offset)) for info in resolved_info] + [len("Offset")])
             plt_offset_width = max([len(hex(info.plt_offset)) for info in resolved_info] + [len("Offset")])
 
         # print legend
-        if not args.quiet:
-            if args.verbose:
+        if not self.args.quiet:
+            if self.args.verbose:
                 name_s = "{:<{:d}}".format("Name", name_width)
                 type_s = "{:9s}".format("Type")
                 plt_s = "{:{:d}s} @{:{:d}s} {:>{:d}s} {:>9s}".format(
@@ -34631,7 +34631,7 @@ class GotCommand(GenericCommand, BufferingOutput):
                 name_info = "{:{:d}s}".format(info.name[:name_width - 3] + "...", name_width)
 
             # make plt format
-            if args.verbose:
+            if self.args.verbose:
                 if info.plt_address:
                     plt_info = "{!s} @{:{:d}s} {:#{:d}x} {:9s}".format(
                         ProcessMap.lookup_address(info.plt_address),
@@ -34653,7 +34653,7 @@ class GotCommand(GenericCommand, BufferingOutput):
                     plt_info = "{:{:d}s}".format("Not found", width)
 
             # make got format
-            if args.verbose:
+            if self.args.verbose:
                 got_info = "{!s} @{:{:d}s} {:#{:d}x}".format(
                     ProcessMap.lookup_address(info.got_address),
                     info.got_section, got_section_width,
@@ -34669,7 +34669,7 @@ class GotCommand(GenericCommand, BufferingOutput):
             )
 
             # make line
-            if args.verbose:
+            if self.args.verbose:
                 type_info = "{:9s}".format(info.type)
                 line_element = [name_info, type_info, plt_info, got_info, got_value_info]
             else:
@@ -34690,12 +34690,12 @@ class GotCommand(GenericCommand, BufferingOutput):
                 self.quiet_add_out(titlify(info.section_name))
             prev_section = info.section_name
             # if we have a filter let's skip the entries that are not requested
-            if args.filter:
-                if args.exact:
-                    if not any(pattern == info.name for pattern in args.filter):
+            if self.args.filter:
+                if self.args.exact:
+                    if not any(pattern == info.name for pattern in self.args.filter):
                         continue
                 else:
-                    if not any(pattern in line for pattern in args.filter):
+                    if not any(pattern in line for pattern in self.args.filter):
                         continue
             self.out.append(line)
         return
@@ -34833,8 +34833,8 @@ class GotCommand(GenericCommand, BufferingOutput):
         self.base_address = base_address
 
         # doit
-        resolved_info = self.parse_plt_got(args)
-        self.make_output(args, resolved_info)
+        resolved_info = self.parse_plt_got()
+        self.make_output(resolved_info)
         self.print_output(term=True)
 
         # clean up
