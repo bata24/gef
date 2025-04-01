@@ -16834,13 +16834,13 @@ class HijackFdCommand(GenericCommand):
 
         return stack_addr, original_contents
 
-    def get_fd_from_file_open(self, args):
+    def get_fd_from_file_open(self):
         # call open
-        stack_addr, original_contents = self.write_stack(args.new_output + "\0")
+        stack_addr, original_contents = self.write_stack(self.args.new_output + "\0")
         if stack_addr is None:
             return None
 
-        self.quiet_info("Trying to open {:s}".format(Color.boldify(args.new_output)))
+        self.quiet_info("Trying to open {:s}".format(Color.boldify(self.args.new_output)))
 
         AT_FDCWD = -100
         flags = self.O_APPEND | self.O_CREAT | self.O_RDWR
@@ -16850,16 +16850,16 @@ class HijackFdCommand(GenericCommand):
         write_memory(stack_addr, original_contents) # revert
 
         if AddressUtil.is_msb_on(open_fd):
-            err("Failed to open {:s}".format(args.new_output))
+            err("Failed to open {:s}".format(self.args.new_output))
             return None
 
-        self.quiet_info("Opened {:s} with 0o666 as fd #{:d}".format(Color.boldify(args.new_output), open_fd))
+        self.quiet_info("Opened {:s} with 0o666 as fd #{:d}".format(Color.boldify(self.args.new_output), open_fd))
         return open_fd
 
-    def get_fd_from_connect_server(self, args):
+    def get_fd_from_connect_server(self):
         import socket
-        address = socket.gethostbyname(args.new_output.split(":")[0])
-        port = int(args.new_output.split(":")[1])
+        address = socket.gethostbyname(self.args.new_output.split(":")[0])
+        port = int(self.args.new_output.split(":")[1])
 
         # call socket
         sock_fd = self.call_syscall("socket", [self.AF_INET, self.SOCK_STREAM, 0])
@@ -16874,7 +16874,7 @@ class HijackFdCommand(GenericCommand):
         if stack_addr is None:
             return None
 
-        self.quiet_info("Trying to connect to {:s}".format(Color.boldify(args.new_output)))
+        self.quiet_info("Trying to connect to {:s}".format(Color.boldify(self.args.new_output)))
         connect_result = self.call_syscall("connect", [sock_fd - self.args.fd_adjust_connect, stack_addr, 16])
         write_memory(stack_addr, original_contents) # revert
 
@@ -16882,24 +16882,24 @@ class HijackFdCommand(GenericCommand):
             err("Failed to connect to {:s}:{:d}".format(address, port))
             return
 
-        self.quiet_info("Connected to {:s} as fd #{:d}".format(Color.boldify(args.new_output), sock_fd))
+        self.quiet_info("Connected to {:s} as fd #{:d}".format(Color.boldify(self.args.new_output), sock_fd))
         return sock_fd
 
-    def hijack_fd(self, args):
-        if ":" in args.new_output:
-            new_fd = self.get_fd_from_connect_server(args)
+    def hijack_fd(self):
+        if ":" in self.args.new_output:
+            new_fd = self.get_fd_from_connect_server()
         else:
-            new_fd = self.get_fd_from_file_open(args)
+            new_fd = self.get_fd_from_file_open()
         if new_fd is None:
             return
 
         # call dup3
         # dup2 does not exist in aarch64. So use dup3 instead of dup2.
-        dup3_result = self.call_syscall("dup3", [new_fd - self.args.fd_adjust_dup3, args.old_fd, 0])
-        if dup3_result - self.args.fd_adjust_dup3 != args.old_fd:
-            err("Failed to dup3 (result {:d} != fd #{:d})".format(dup3_result, args.old_fd))
+        dup3_result = self.call_syscall("dup3", [new_fd - self.args.fd_adjust_dup3, self.args.old_fd, 0])
+        if dup3_result - self.args.fd_adjust_dup3 != self.args.old_fd:
+            err("Failed to dup3 (result {:d} != fd #{:d})".format(dup3_result, self.args.old_fd))
             return
-        self.quiet_info("Duplicated fd #{:d} -> #{:d}".format(new_fd, args.old_fd))
+        self.quiet_info("Duplicated fd #{:d} -> #{:d}".format(new_fd, self.args.old_fd))
 
         # call close
         close_result = self.call_syscall("close", [new_fd])
@@ -16949,7 +16949,7 @@ class HijackFdCommand(GenericCommand):
             self.O_APPEND = 0o0010
             self.O_CREAT = 0o0400
 
-        self.hijack_fd(args)
+        self.hijack_fd()
         return
 
 
