@@ -94837,7 +94837,7 @@ class GefConfigCommand(GenericCommand):
         res = Config.__gef_config__.get(config_name)
         res_orig = Config.__gef_config_orig__.get(config_name)
 
-        # something is worng
+        # something is wrong
         if not res or not res_orig:
             return
 
