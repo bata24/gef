@@ -94406,7 +94406,7 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
             build_id_dict[build_id] = filename
         return build_id_dict
 
-    def get_symbols(self, args):
+    def get_symbols(self):
         ret = gdb.execute("maintenance print msymbols", to_string=True).strip()
         SYMBOL_INFO_LINE_PATTERN = re.compile(r"^(\[ ?\d+\]) (.) (0x[0-9a-f]+) (.*)")
         SYMBOL_FILE_PATTERN = re.compile(r"^Object file (/.*):$")
@@ -94440,8 +94440,8 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
             if r:
                 # type filtering
                 typ = r.group(2)
-                if args.type:
-                    if typ.lower() not in args.type:
+                if self.args.type:
+                    if typ.lower() not in self.args.type:
                         continue
 
                 # invalid address filtering
@@ -94470,7 +94470,7 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
             return
 
         self.out = []
-        self.get_symbols(args)
+        self.get_symbols()
         self.print_output()
         self.cache = self.out[::]
         return
@@ -94499,7 +94499,7 @@ class TypesCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-v", "--verbose", action="store_true", help="with the output of `dt` command.")
     _syntax_ = parser.format_help()
 
-    def get_type_names(self, args):
+    def get_type_names(self):
         basic_types = [
             "char", "unsigned char", "signed char",
             "int", "unsigned int", "signed int",
@@ -94526,35 +94526,35 @@ class TypesCommand(GenericCommand, BufferingOutput):
             line = re.sub(r"^\d+:|;$", "", line).strip()
             if line in basic_types:
                 continue
-            if args.filter and not any(filt.search(line) for filt in args.filter):
+            if self.args.filter and not any(filt.search(line) for filt in self.args.filter):
                 continue
-            if args.exclude and any(filt.search(line) for filt in args.exclude):
+            if self.args.exclude and any(filt.search(line) for filt in self.args.exclude):
                 continue
-            if args.no_enum and line.startswith("enum "):
+            if self.args.no_enum and line.startswith("enum "):
                 continue
-            if args.no_struct and line.startswith("struct "):
+            if self.args.no_struct and line.startswith("struct "):
                 continue
-            if args.no_typedef and line.startswith("typedef "):
+            if self.args.no_typedef and line.startswith("typedef "):
                 continue
-            if args.no_union and line.startswith("union "):
+            if self.args.no_union and line.startswith("union "):
                 continue
             type_names.append(line)
 
         type_names = sorted(set(type_names))
         return type_names
 
-    def get_types(self, args):
-        type_names = self.get_type_names(args)
+    def get_types(self):
+        type_names = self.get_type_names()
 
         # temporarily changed
-        if args.smart:
+        if self.args.smart:
             old_smart_setting = Config.get_gef_setting("context.smart_cpp_function_name")
             Config.set_gef_setting("context.smart_cpp_function_name", True)
 
         # formatting typenames
         tqdm = GefUtil.get_tqdm()
         for type_name in tqdm(type_names, leave=False):
-            if args.verbose:
+            if self.args.verbose:
                 ret = gdb.execute("dt -n {!r}".format(type_name), to_string=True)
                 if not ret or (" is not struct or union" in ret) or ("Not found " in ret):
                     self.out.append(Instruction.smartify_text(type_name))
@@ -94565,7 +94565,7 @@ class TypesCommand(GenericCommand, BufferingOutput):
                 self.out.append(Instruction.smartify_text(type_name))
 
         # revert
-        if args.smart:
+        if self.args.smart:
             Config.set_gef_setting("context.smart_cpp_function_name", old_smart_setting)
         return
 
@@ -94578,7 +94578,7 @@ class TypesCommand(GenericCommand, BufferingOutput):
             return
 
         self.out = []
-        self.get_types(args)
+        self.get_types()
         self.print_output()
         self.cache = self.out[::]
         return
