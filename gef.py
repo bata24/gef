@@ -31016,14 +31016,14 @@ class DereferenceCommand(GenericCommand):
             line += Color.colorify(extra_str, registers_color)
         return line
 
-    def dereference_line_by_line(self, args, start_address, from_idx, to_idx, step):
+    def dereference_line_by_line(self, start_address, from_idx, to_idx, step):
         out = []
         seen = []
         for idx in range(from_idx, to_idx, step):
             current_address = start_address + idx * current_arch.ptrsize
             try:
                 # uniq filtering
-                if args.uniq:
+                if self.args.uniq:
                     v = self.read_int_from_memory(current_address)
                     if v in seen:
                         if out == [] or out[-1] != "*":
@@ -31032,31 +31032,31 @@ class DereferenceCommand(GenericCommand):
                     seen.append(v)
 
                 # valid address filtering
-                if args.is_addr:
+                if self.args.is_addr:
                     v = self.read_int_from_memory(current_address)
                     if not is_valid_addr(v):
                         continue
 
                 # invalid address filtering
-                if args.is_not_addr:
+                if self.args.is_not_addr:
                     v = self.read_int_from_memory(current_address)
                     if is_valid_addr(v):
                         continue
 
                 # zero filtering
-                if args.zero:
+                if self.args.zero:
                     v = self.read_int_from_memory(current_address)
                     if v != 0:
                         continue
 
                 # non-zero filtering
-                if args.non_zero:
+                if self.args.non_zero:
                     v = self.read_int_from_memory(current_address)
                     if v == 0:
                         continue
 
                 # tags
-                if args.tag:
+                if self.args.tag:
                     tag = self.tags_dict.get(idx, "").ljust(self.max_tag_width)
                 else:
                     tag = None
@@ -31064,10 +31064,10 @@ class DereferenceCommand(GenericCommand):
                 # create line
                 line = DereferenceCommand.pprint_dereferenced(
                     start_address, idx,
-                    tag=tag, phys=args.phys, quiet=args.quiet, quiet_offset=args.quiet_offset,
+                    tag=tag, phys=self.args.phys, quiet=self.args.quiet, quiet_offset=self.args.quiet_offset,
                 )
 
-                if not args.quiet:
+                if not self.args.quiet:
                     # register info
                     regs_info = []
                     for regname, regvalue in DereferenceCommand.get_target_registers_value():
@@ -31087,16 +31087,16 @@ class DereferenceCommand(GenericCommand):
                 break
 
             # dump slab cache
-            if args.slab_contains or args.slab_contains_unaligned:
+            if self.args.slab_contains or self.args.slab_contains_unaligned:
                 v = read_int_from_memory(current_address)
                 ret = Kernel.get_slab_contains(
-                    v, allow_unaligned=args.slab_contains_unaligned, keep_color=True,
+                    v, allow_unaligned=self.args.slab_contains_unaligned, keep_color=True,
                 )
                 if ret:
                     out.append("  {:#x}: {:s}".format(v, ret))
 
             # link list
-            if args.list_head:
+            if self.args.list_head:
                 # next
                 if is_double_link_list(current_address):
                     out.append(Color.colorify("  list_head.next", "bold magenta"))
@@ -31105,18 +31105,19 @@ class DereferenceCommand(GenericCommand):
                     out.append(Color.colorify("  list_head.prev", "bold magenta"))
 
             # multiple level dump
-            if args.depth - 1 > 0:
+            if self.args.depth - 1 > 0:
                 v = self.read_int_from_memory(current_address)
                 if v % current_arch.ptrsize == 0 and is_valid_addr(v):
-                    nb_lines = args.depth_nb_lines
+                    args = self.args # backup
                     cmd = "dereference --depth {:d} --no-pager {:#x} {:#x}".format(
-                        args.depth - 1, v, nb_lines,
+                        self.args.depth - 1, v, self.args.depth_nb_lines,
                     )
                     ret = gdb.execute(cmd, to_string=True)
+                    self.args = args # revert
                     for line in ret.splitlines():
                         out.append("      " + line)
 
-        if args.reverse:
+        if self.args.reverse:
             out.reverse()
         return out
 
@@ -31167,7 +31168,7 @@ class DereferenceCommand(GenericCommand):
                 err("Unsupported using together -NB_LINES and -d DEPTH")
                 return
 
-        out = self.dereference_line_by_line(args, start_address, from_idx, to_idx, step)
+        out = self.dereference_line_by_line(start_address, from_idx, to_idx, step)
         no_pager = args.no_pager | Config.get_gef_setting("dereference.no_pager")
         gef_print("\n".join(out), less=not no_pager)
         return
