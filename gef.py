@@ -67190,7 +67190,7 @@ class HashCommand(GenericCommand):
         super().__init__(prefix=prefix, complete=complete)
         return
 
-    def get_valid_hash_funcs(self, args):
+    def get_valid_hash_funcs(self):
         # from hashlib
         hashlib_hashes = [
             "md5", "sha1",
@@ -67199,7 +67199,7 @@ class HashCommand(GenericCommand):
             "blake2s", "blake2b",
         ]
         for hname in hashlib_hashes:
-            if args.filter and not any(filt.search(hname) for filt in args.filter):
+            if self.args.filter and not any(filt.search(hname) for filt in self.args.filter):
                 continue
             try:
                 hfunc = hashlib.new(hname)
@@ -67210,7 +67210,7 @@ class HashCommand(GenericCommand):
         # from pycryptodome
         try:
             hname = "sha512/224"
-            if not args.filter or any(filt.search(hname) for filt in args.filter):
+            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
                 import Crypto.Hash.SHA512
                 hfunc = Crypto.Hash.SHA512.new(truncate="224")
                 yield (hname, hfunc)
@@ -67219,7 +67219,7 @@ class HashCommand(GenericCommand):
 
         try:
             hname = "sha512/256"
-            if not args.filter or any(filt.search(hname) for filt in args.filter):
+            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
                 import Crypto.Hash.SHA512
                 hfunc = Crypto.Hash.SHA512.new(truncate="256")
                 yield (hname, hfunc)
@@ -67228,7 +67228,7 @@ class HashCommand(GenericCommand):
 
         try:
             hname = "shake-128"
-            if not args.filter or any(filt.search(hname) for filt in args.filter):
+            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
                 import Crypto.Hash.cSHAKE128
                 hfunc = Crypto.Hash.cSHAKE128.new(custom=b"") # SHAKE128 is empty `custom`
                 hfunc.hexdigest = lambda: hfunc.read(32).hex()
@@ -67238,7 +67238,7 @@ class HashCommand(GenericCommand):
 
         try:
             hname = "shake-256"
-            if not args.filter or any(filt.search(hname) for filt in args.filter):
+            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
                 import Crypto.Hash.cSHAKE256
                 hfunc = Crypto.Hash.cSHAKE256.new(custom=b"") # SHAKE256 is empty `custom`
                 hfunc.hexdigest = lambda: hfunc.read(64).hex()
@@ -67248,7 +67248,7 @@ class HashCommand(GenericCommand):
 
         try:
             hname = "keccak-224"
-            if not args.filter or any(filt.search(hname) for filt in args.filter):
+            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
                 import Crypto.Hash.keccak
                 hfunc = Crypto.Hash.keccak.new(digest_bits=224)
                 yield (hname, hfunc)
@@ -67257,7 +67257,7 @@ class HashCommand(GenericCommand):
 
         try:
             hname = "keccak-256"
-            if not args.filter or any(filt.search(hname) for filt in args.filter):
+            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
                 import Crypto.Hash.keccak
                 hfunc = Crypto.Hash.keccak.new(digest_bits=256)
                 yield (hname, hfunc)
@@ -67266,7 +67266,7 @@ class HashCommand(GenericCommand):
 
         try:
             hname = "keccak-384"
-            if not args.filter or any(filt.search(hname) for filt in args.filter):
+            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
                 import Crypto.Hash.keccak
                 hfunc = Crypto.Hash.keccak.new(digest_bits=384)
                 yield (hname, hfunc)
@@ -67275,7 +67275,7 @@ class HashCommand(GenericCommand):
 
         try:
             hname = "keccak-512"
-            if not args.filter or any(filt.search(hname) for filt in args.filter):
+            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
                 import Crypto.Hash.keccak
                 hfunc = Crypto.Hash.keccak.new(digest_bits=512)
                 yield (hname, hfunc)
@@ -67284,7 +67284,7 @@ class HashCommand(GenericCommand):
 
         try:
             hname = "k12-256"
-            if not args.filter or any(filt.search(hname) for filt in args.filter):
+            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
                 import Crypto.Hash.KangarooTwelve
                 hfunc = Crypto.Hash.KangarooTwelve.new(custom=b"") # use empty `custom`
                 hfunc.hexdigest = lambda: hfunc.read(32).hex()
@@ -67294,7 +67294,7 @@ class HashCommand(GenericCommand):
 
         try:
             hname = "k12-512"
-            if not args.filter or any(filt.search(hname) for filt in args.filter):
+            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
                 import Crypto.Hash.KangarooTwelve
                 hfunc = Crypto.Hash.KangarooTwelve.new(custom=b"") # use empty `custom`
                 hfunc.hexdigest = lambda: hfunc.read(64).hex()
@@ -67304,7 +67304,7 @@ class HashCommand(GenericCommand):
 
         try:
             hname = "md2"
-            if not args.filter or any(filt.search(hname) for filt in args.filter):
+            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
                 import Crypto.Hash.MD2
                 hfunc = Crypto.Hash.MD2.new()
                 yield (hname, hfunc)
@@ -67313,7 +67313,7 @@ class HashCommand(GenericCommand):
 
         try:
             hname = "md4"
-            if not args.filter or any(filt.search(hname) for filt in args.filter):
+            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
                 import Crypto.Hash.MD4
                 hfunc = Crypto.Hash.MD4.new()
                 yield (hname, hfunc)
@@ -67322,7 +67322,7 @@ class HashCommand(GenericCommand):
 
         try:
             hname = "ripemd-160"
-            if not args.filter or any(filt.search(hname) for filt in args.filter):
+            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
                 import Crypto.Hash.RIPEMD160
                 hfunc = Crypto.Hash.RIPEMD160.new()
                 yield (hname, hfunc)
@@ -67392,7 +67392,7 @@ class HashMemoryCommand(HashCommand):
         gef_print("Address: {:#x}".format(args.location))
         gef_print("Size: {:#x}".format(args.size))
 
-        for hname, hfunc in self.get_valid_hash_funcs(args):
+        for hname, hfunc in self.get_valid_hash_funcs():
             h = self.calc_hash(hfunc, args.location, args.location + args.size)
             if h is False:
                 return
@@ -67439,7 +67439,7 @@ class HashValueCommand(HashCommand):
                 err('Could not decode "\\xXX" encoded string')
                 return
 
-        for hname, hfunc in self.get_valid_hash_funcs(args):
+        for hname, hfunc in self.get_valid_hash_funcs():
             hfunc.update(value)
             h = hfunc.hexdigest()
             gef_print("{:12s}: {:s} ({:d}-bit)".format(hname, h, len(h) * 4))
