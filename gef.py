@@ -11102,9 +11102,10 @@ def write_physmem(paddr, data):
 
 @Cache.cache_until_next
 def is_valid_addr(addr):
-    if not isinstance(addr, int):
+    if not hasattr(addr, "__int__"):
         return False
 
+    addr = int(addr)
     if addr < 0:
         return False
 
