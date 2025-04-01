@@ -19921,7 +19921,7 @@ class AngrCommand(GenericCommand):
                 yield sect.page_start, loc
         return None
 
-    def make_angr_script(self, args, dt):
+    def make_angr_script(self, dt):
         # initialize
         content = "#!{:s}\n".format(GefUtil.which("python3"))
         content += "import angr\n"
@@ -19978,10 +19978,10 @@ class AngrCommand(GenericCommand):
 
         # symboled memory
         content += "# symboled memories\n"
-        for i, (sym, sym_sz) in enumerate(args.sym):
+        for i, (sym, sym_sz) in enumerate(self.args.sym):
             content += "sym_mem{:d} = claripy.BVS('sym_mem{:d}', {:d} * 8)\n".format(i, i, sym_sz)
-            if args.type:
-                args_type_i = sorted(set(args.type[i]))
+            if self.args.type:
+                args_type_i = sorted(set(self.args.type[i]))
                 if "?" in args_type_i:
                     continue
                 content += "for i in range({:d}):\n".format(sym_sz)
@@ -20003,14 +20003,14 @@ class AngrCommand(GenericCommand):
 
         # search
         content += "# search\n"
-        content += "FIND_ADDR = [{:s}]\n".format(",".join([hex(x) for x in args.find]))
-        content += "AVOID_ADDR = [{:s}]\n".format(",".join([hex(x) for x in args.avoid]))
+        content += "FIND_ADDR = [{:s}]\n".format(",".join([hex(x) for x in self.args.find]))
+        content += "AVOID_ADDR = [{:s}]\n".format(",".join([hex(x) for x in self.args.avoid]))
         content += "simgr = project.factory.simulation_manager(state)\n"
         content += "simgr.explore(find=FIND_ADDR, avoid=AVOID_ADDR)\n"
         content += "\n"
         content += "if simgr.found:\n"
         content += "    found_state = simgr.found[0]\n"
-        for i in range(len(args.sym)):
+        for i in range(len(self.args.sym)):
             content += "    solution = found_state.solver.eval(sym_mem{:d}, cast_to=bytes)\n".format(i)
             content += '    print("\\033[1msym{:d}\\033[0m:")\n'.format(i)
             content += '    print("  raw:", repr(solution))\n'
@@ -20031,17 +20031,17 @@ class AngrCommand(GenericCommand):
 
         return content
 
-    def run_angr(self, args):
+    def run_angr(self):
         # make script
         dt = GefUtil.now_str()
-        content = self.make_angr_script(args, dt)
+        content = self.make_angr_script(dt)
 
         # write it
         tmp_fd, tmp_filename = GefUtil.mkstemp(prefix="angr", suffix=".py", dt=dt)
         os.fdopen(tmp_fd, "w").write(content)
         info(tmp_filename)
 
-        if args.skip_execution:
+        if self.args.skip_execution:
             return
 
         # run it
@@ -20072,7 +20072,7 @@ class AngrCommand(GenericCommand):
                         err("Invalid symbolic type: {:s}".format(tc))
                         return
 
-        self.run_angr(args)
+        self.run_angr()
         return
 
 
