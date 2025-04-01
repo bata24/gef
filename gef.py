@@ -17283,26 +17283,26 @@ class SearchPatternCommand(GenericCommand):
                 break
         return
 
-    def create_patterns(self, args):
-        if args.hex_regex:
-            pattern = args.pattern.lower()
+    def create_patterns(self):
+        if self.args.hex_regex:
+            pattern = self.args.pattern.lower()
             pattern_utf16 = None
             return pattern, pattern_utf16
 
         # create normal pattern
-        if args.hex: # "41414141" -> "\x41\x41\x41\x41"
-            pattern = re.sub(r"[^0-9a-fA-F]", "", args.pattern)
+        if self.args.hex: # "41414141" -> "\x41\x41\x41\x41"
+            pattern = re.sub(r"[^0-9a-fA-F]", "", self.args.pattern)
             if len(pattern) % 2 != 0:
                 err("hex pattern length is odd")
                 return None
             pattern = "".join(["\\x" + x for x in slicer(pattern, 2)])
-        elif String.is_hex(args.pattern): # "0x41414141" -> "\x41\x41\x41\x41"
-            if args.big or Endian.is_big_endian():
-                pattern = "".join(["\\x" + x for x in slicer(args.pattern[2:], 2)])
+        elif String.is_hex(self.args.pattern): # "0x41414141" -> "\x41\x41\x41\x41"
+            if self.args.big or Endian.is_big_endian():
+                pattern = "".join(["\\x" + x for x in slicer(self.args.pattern[2:], 2)])
             else:
-                pattern = "".join(["\\x" + x for x in slicer(args.pattern[2:], 2)[::-1]])
+                pattern = "".join(["\\x" + x for x in slicer(self.args.pattern[2:], 2)[::-1]])
         else:
-            pattern = args.pattern
+            pattern = self.args.pattern
 
         def isascii(string):
             val = codecs.escape_decode(string)[0]
@@ -17310,7 +17310,7 @@ class SearchPatternCommand(GenericCommand):
 
         # create utf16 pattern
         pattern_utf16 = None
-        if not args.disable_utf16:
+        if not self.args.disable_utf16:
             if isascii(pattern) and "\\" not in pattern:
                 pattern_utf16 = "".join([x + "\\x00" for x in pattern])
         return pattern, pattern_utf16
@@ -17370,7 +17370,7 @@ class SearchPatternCommand(GenericCommand):
             info("Permission is ignored")
             # fall through
 
-        patterns = self.create_patterns(args) # (pattern, pattern_utf16)
+        patterns = self.create_patterns() # (pattern, pattern_utf16)
         if patterns is None:
             return
 
