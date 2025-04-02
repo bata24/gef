@@ -59909,8 +59909,13 @@ class KernelModuleLoadCommand(GenericCommand):
                 const char *name;
                 umode_t (*is_visible)(struct kobject *, struct attribute *, int);
                 umode_t (*is_bin_visible)(struct kobject *, struct bin_attribute *, int); // v4.4~
+                size_t (*bin_size)(struct kobject *, const struct bin_attribute *, int); // v6.13~
                 struct attribute **attrs;
-                struct bin_attribute **bin_attrs; // v3.11~
+                struct bin_attribute **bin_attrs; // v3.11~v6.12
+                union {
+                    struct bin_attribute **bin_attrs;
+                    const struct bin_attribute *const *bin_attrs_new;
+                }; // v6.13~
             } grp;
             unsigned int nsections;
             struct module_sect_attr {
@@ -59921,7 +59926,9 @@ class KernelModuleLoadCommand(GenericCommand):
                     struct address_space *(*f_mapping)(void); // v5.15~
                     struct address_space *mapping; // v5.12~5.14
                     ssize_t (*read)(struct file *, struct kobject *, struct bin_attribute *, char *, loff_t, size_t);
+                    ssize_t (*read_new)(struct file *, struct kobject *, const struct bin_attribute *, char *, loff_t, size_t); // v6.13~
                     ssize_t (*write)(struct file *, struct kobject *, struct bin_attribute *, char *, loff_t, size_t);
+                    ssize_t (*write_new)(struct file *, struct kobject *, const struct bin_attribute *, char *, loff_t, size_t); // v6.13~
                     loff_t (*llseek)(struct file *, struct kobject *, struct bin_attribute *, loff_t, int); // v6.7~
                     int (*mmap)(struct file *, struct kobject *, struct bin_attribute *attr, struct vm_area_struct *vma);
                 } battr;
@@ -59955,8 +59962,13 @@ class KernelModuleLoadCommand(GenericCommand):
                     valid = False
                     break
                 sectname = read_cstring_from_memory(firstname)
-                # not really a requirement but oh well
-                if sectname is None or not sectname.startswith("."):
+                # well formed kernel module sections *should* only start with these prefixes
+                # might be better to do a length based heuristic?
+                if sectname is None or not sectname.startswith((".", "__")):
+                    if sectname and len(sectname) >= 4:
+                        self.quiet_info(
+                            "possible section name (rejected for not starting with . or __): {:s}".format(sectname),
+                        )
                     valid = False
                     break
             if valid:
@@ -59983,9 +59995,12 @@ class KernelModuleLoadCommand(GenericCommand):
         elif kversion < "4.4":
             self.offset_nsections = current_arch.ptrsize * 4
             self.offset_firstname = current_arch.ptrsize * 5
-        else:
+        elif kversion < "6.13":
             self.offset_nsections = current_arch.ptrsize * 5
             self.offset_firstname = current_arch.ptrsize * 6
+        else:
+            self.offset_nsections = current_arch.ptrsize * 6
+            self.offset_firstname = current_arch.ptrsize * 7
 
         if kversion < "5.7":
             self.offset_address = self.offset_firstname + current_arch.ptrsize * 8
@@ -59996,9 +60011,12 @@ class KernelModuleLoadCommand(GenericCommand):
         elif kversion < "6.7":
             self.offset_address = self.offset_firstname + current_arch.ptrsize * 8
             self.sizeof_module_sect_attr = current_arch.ptrsize * 9
-        else:
+        elif kversion < "6.13":
             self.offset_address = self.offset_firstname + current_arch.ptrsize * 9
             self.sizeof_module_sect_attr = current_arch.ptrsize * 10
+        else:
+            self.offset_address = self.offset_firstname + current_arch.ptrsize * 11
+            self.sizeof_module_sect_attr = current_arch.ptrsize * 12
 
         self.offset_sect_attrs = self.get_offset_sect_attrs(self.module_addrs)
         if self.offset_sect_attrs is None:
@@ -60012,6 +60030,10 @@ class KernelModuleLoadCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        if not os.path.exists(args.path):
+            self.quiet_err("Not found {:s}".format(args.path))
+            return
+
         kversion = Kernel.kernel_version()
         if kversion < "3.0":
             self.quiet_err("Unsupported before v3.0")
