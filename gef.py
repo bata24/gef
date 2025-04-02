@@ -16241,14 +16241,247 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
+    def dump_environ(self, path):
+        data = open(path, "rb").read()
+        for line in sorted(data.split(b"\0")):
+            if line:
+                line = String.bytes2str(line)
+                key, val = line.split("=", 1)
+                self.out.append("{:s}={:s}".format(Color.boldify(key), val))
+        return
+
+    def dump_cmdline(self, path):
+        data = open(path, "rb").read()
+        for line in data.split(b"\0"):
+            if line:
+                self.out.append(String.bytes2str(line))
+        return
+
+    def dump_auxv(self, path):
+        data = open(path, "rb").read()
+        data = slice_unpack(data, current_arch.ptrsize)
+        for i in range(0, len(data), 2):
+            typ = data[i]
+            val = data[i+1]
+            self.out.append("{:#8x}: {:#x}".format(typ, val))
+        return
+
+    def dump_syscall(self, path):
+        data = String.bytes2str(open(path, "rb").read())
+        self.out.append(data.strip())
+
+        self.out.append("----- parsed -----")
+
+        if int(data.split()[0]) < 0:
+            tag = ["NR", "sp", "pc"]
+        else:
+            tag = ["NR", "arg1", "arg2", "arg3", "arg4", "arg5", "arg6", "sp", "pc"]
+
+        for i, elem in enumerate(data.split()):
+            if i < len(tag):
+                elem_name = tag[i]
+            else:
+                elem_name = "???"
+            elem_name = Color.boldify("{:4s}".format(elem_name))
+
+            if i == 0: # NR
+                nr = int(elem)
+                table = get_syscall_table()
+                if nr >= 0 and table and nr in table.nr_table:
+                    syscall_name = table.nr_table[nr].name
+                    self.out.append("{:2d} {:s}: {:s} ({:s})".format(i + 1, elem_name, elem, syscall_name))
+                else:
+                    self.out.append("{:2d} {:s}: {:s}".format(i + 1, elem_name, elem))
+            else: # argN, sp, pc
+                address = int(elem, 0)
+                sym = Symbol.get_symbol_string(address)
+                elem = "{!s}{:s}".format(ProcessMap.lookup_address(address), sym)
+                self.out.append("{:2d} {:s}: {:s}".format(i + 1, elem_name, elem))
+        return
+
+    def dump_stat(self, path):
+        data = String.bytes2str(open(path, "rb").read())
+        self.out.append(data.strip())
+
+        self.out.append("----- parsed -----")
+
+        tag = [
+            "pid", "comm", "state", "ppid", "pgrp", "session", "tty_nr", "tpgid", "flags",
+            "minflt", "cminflt", "majflt", "cmajflt", "utime", "stime", "cutime", "cstime",
+            "priority", "nice", "num_threads", "itrealvalue", "starttime", "vsize",
+            "rss", "rsslim", "startcode", "endcode", "startstack", "kstkesp", "kstkeip",
+            "signal", "blocked", "sigignore", "sigcatch", "wchan", "nswap", "cnswap",
+            "exit_signal", "processor", "rt_priority", "policy", "delayacct_blkio_ticks",
+            "guest_time", "cguest_time", "start_data", "end_data", "start_brk",
+            "arg_start", "arg_end", "env_startr", "env_end", "exit_code",
+        ]
+
+        max_width = max(len(x) for x in tag)
+        lpos = data.find("(")
+        rpos = data.rfind(")") + 1
+        data = [data[:lpos].strip(), data[lpos:rpos]] + data[rpos:].split()
+
+        for i, elem in enumerate(data):
+            if i < len(tag):
+                elem_name = tag[i]
+            else:
+                elem_name = "???"
+            elem_name = Color.boldify("{:{:d}s}".format(elem_name, max_width))
+
+            if i + 1 in [25, 26, 27, 28, 29, 30, 45, 46, 47, 48, 49, 50, 51]:
+                address = int(elem)
+                sym = Symbol.get_symbol_string(address)
+                elem = "{!s}{:s}".format(ProcessMap.lookup_address(address), sym)
+            elif i + 1 in [23, 33, 34]:
+                elem = hex(int(elem))
+            self.out.append("{:2d} {:s}: {:s}".format(i + 1, elem_name, elem))
+        return
+
+    def dump_statm(self, path):
+        data = String.bytes2str(open(path, "rb").read())
+        self.out.append(data.strip())
+
+        self.out.append("----- parsed -----")
+
+        tag = ["size", "resident", "shared", "text", "lib", "data", "dt"]
+        max_width = max(len(x) for x in tag)
+
+        for i, elem in enumerate(data.split()):
+            if i < len(tag):
+                elem_name = tag[i]
+            else:
+                elem_name = "???"
+            elem_name = Color.boldify("{:{:d}s}".format(elem_name, max_width))
+            self.out.append("{:2d} {:s}: {:s}".format(i + 1, elem_name, elem))
+        return
+
+    def dump_status(self, path):
+        try:
+            column_command = GefUtil.which("column")
+        except FileNotFoundError as e:
+            self.out.append("{}".format(e))
+            return
+
+        ret = GefUtil.gef_execute_external([column_command, "-s:", "-t", path], as_list=True)
+        for line in ret:
+            k, v = line.split(maxsplit=1)
+            k = k.strip() + ":"
+            v = v.replace("\\t", "").strip()
+            self.out.append("{:30s} {:s}".format(k, v))
+        return
+
+    def dump_rt_acct(self, path):
+        try:
+            hexdump_command = GefUtil.which("hexdump")
+        except FileNotFoundError as e:
+            self.out.append("{}".format(e))
+            return
+
+        ret = GefUtil.gef_execute_external([hexdump_command, "-C", path], as_list=True)
+        self.out.extend(ret)
+        return
+
+    def dump_mounts(self, path):
+        try:
+            column_command = GefUtil.which("column")
+        except FileNotFoundError as e:
+            self.out.append("{}".format(e))
+            return
+
+        ret = GefUtil.gef_execute_external([column_command, "-t", path], as_list=True)
+        self.out.extend(ret)
+        return
+
+    def dump_raw(self, path):
+        try:
+            column_command = GefUtil.which("column")
+        except FileNotFoundError as e:
+            self.out.append("{}".format(e))
+            return
+
+        data = open(path, "rb").read()
+        data = data.replace(b"tx_queue ", b"tx_queue:")
+        data = data.replace(b" tr ", b" tr:")
+        tmp_fd, tmp_filename = GefUtil.mkstemp(prefix="proc-dump")
+        os.fdopen(tmp_fd, "wb").write(data)
+        ret = GefUtil.gef_execute_external([column_command, "-t", tmp_filename], as_list=True)
+        os.unlink(tmp_filename)
+        self.out.extend(ret)
+        return
+
+    def dump_dev(self, path):
+        try:
+            column_command = GefUtil.which("column")
+        except FileNotFoundError as e:
+            self.out.append("{}".format(e))
+            return
+
+        data = open(path, "rb").read()
+        data = data.replace(b"|", b" |")
+        data = re.sub(rb"\|\s*Receive", b"|Receive", data)
+        data = re.sub(rb"\|\s*Transmit", b"|Transmit", data)
+
+        tmp_fd, tmp_filename = GefUtil.mkstemp(prefix="proc-dump")
+        os.fdopen(tmp_fd, "wb").write(data)
+        ret = GefUtil.gef_execute_external([column_command, "-t", tmp_filename], as_list=True)
+        os.unlink(tmp_filename)
+
+        wrong = ret[0].rfind("|")
+        rright = ret[1].rfind("|")
+        lright = ret[1].find("|")
+        ret[0] = (ret[0][:wrong] + " " * (rright - wrong) + ret[0][wrong:]).rstrip()
+
+        ret[0] = re.sub(r"\|(\S+)", "| \\1 ", ret[0])
+        ret[1] = re.sub(r"\|(\S+)", "| \\1 ", ret[1])
+        for i in range(2, len(ret)):
+            ret[i] = ret[i][:lright] + "  " + ret[i][lright:]
+            ret[i] = ret[i][:rright] + "  " + ret[i][rright:]
+
+        self.out.extend(ret)
+        return
+
+    def dump_igmp(self, path):
+        fd = open(path, "rb")
+        for line in fd.readlines():
+            self.out.append(String.bytes2str(line.rstrip())) # no-lstrip
+        return
+
+    def dump_netstat(self, path):
+        data = String.bytes2str(open(path, "rb").read())
+        table = [line.split() for line in data.splitlines()]
+        for idx in range(0, len(table), 2):
+            for i, (k, v) in enumerate(zip(*table[idx:idx + 2])):
+                if i == 0:
+                    self.out.append("{:s}".format(k))
+                else:
+                    self.out.append("  {:30s} {:s}".format(k + ":", v))
+        return
+
+    def dump_default(self, path):
+        if not os.access(path, os.R_OK):
+            self.out.append("{:s} No permission to read".format(Color.colorify("[!]", "bold red")))
+            return
+
+        try:
+            fd = open(path, "rb")
+        except OSError:
+            self.out.append("{:s} Failed to open".format(Color.colorify("[!]", "bold red")))
+            return
+
+        try:
+            for line in fd.readlines():
+                self.out.append(String.bytes2str(line).strip())
+        except OSError:
+            self.out.append("{:s} Parse failed".format(Color.colorify("[!]", "bold red")))
+        return
+
     def proc_dump(self):
         pid = Pid.get_pid()
         for root, dirs, files in os.walk("/proc/{:d}/".format(pid)):
-            dirs = sorted(dirs)
             files = sorted(files)
 
             if "task" in dirs:
-                dirs.remove("task")
+                dirs.remove("task") # in-place change to skip /proc/<pid>/task/
 
             for f in files:
                 path = os.path.join(root, f)
@@ -16263,216 +16496,58 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
                     continue
 
                 if f == "environ":
-                    data = open(path, "rb").read()
-                    for line in sorted(data.split(b"\0")):
-                        if line:
-                            line = String.bytes2str(line)
-                            key, val = line.split("=", 1)
-                            self.out.append("{:s}={:s}".format(Color.boldify(key), val))
+                    self.dump_environ(path)
                     continue
 
                 if f in ["cmdline", "context"]:
-                    data = open(path, "rb").read()
-                    for line in data.split(b"\0"):
-                        if line:
-                            self.out.append(String.bytes2str(line))
+                    self.dump_cmdline(path)
                     continue
 
                 if f == "auxv":
-                    data = open(path, "rb").read()
-                    data = slice_unpack(data, current_arch.ptrsize)
-                    for i in range(0, len(data), 2):
-                        typ = data[i]
-                        val = data[i+1]
-                        self.out.append("{:#8x}: {:#x}".format(typ, val))
+                    self.dump_auxv(path)
                     continue
 
                 if f == "syscall":
-                    try:
-                        data = String.bytes2str(open(path, "rb").read())
-                        self.out.append(data.strip())
-                    except OSError:
-                        continue
-                    if int(data.split()[0]) < 0:
-                        tag = ["NR", "sp", "pc"]
-                    else:
-                        tag = ["NR", "arg1", "arg2", "arg3", "arg4", "arg5", "arg6", "sp", "pc"]
-                    for i, elem in enumerate(data.split()):
-                        if i < len(tag):
-                            elem_name = tag[i]
-                        else:
-                            elem_name = "???"
-                        elem_name = Color.boldify("{:4s}".format(elem_name))
-                        if i == 0: # NR
-                            nr = int(elem)
-                            table = get_syscall_table()
-                            if nr >= 0 and table and nr in table.nr_table:
-                                syscall_name = table.nr_table[nr].name
-                                self.out.append("{:2d} {:s}: {:s} ({:s})".format(i + 1, elem_name, elem, syscall_name))
-                            else:
-                                self.out.append("{:2d} {:s}: {:s}".format(i + 1, elem_name, elem))
-                        else: # argN, sp, pc
-                            address = int(elem, 0)
-                            sym = Symbol.get_symbol_string(address)
-                            elem = "{!s}{:s}".format(ProcessMap.lookup_address(address), sym)
-                            self.out.append("{:2d} {:s}: {:s}".format(i + 1, elem_name, elem))
+                    self.dump_syscall(path)
                     continue
 
                 if f == "stat":
-                    try:
-                        data = String.bytes2str(open(path, "rb").read())
-                        self.out.append(data.strip())
-                    except OSError:
-                        continue
-                    tag = [
-                        "pid", "comm", "state", "ppid", "pgrp", "session", "tty_nr", "tpgid", "flags",
-                        "minflt", "cminflt", "majflt", "cmajflt", "utime", "stime", "cutime", "cstime",
-                        "priority", "nice", "num_threads", "itrealvalue", "starttime", "vsize",
-                        "rss", "rsslim", "startcode", "endcode", "startstack", "kstkesp", "kstkeip",
-                        "signal", "blocked", "sigignore", "sigcatch", "wchan", "nswap", "cnswap",
-                        "exit_signal", "processor", "rt_priority", "policy", "delayacct_blkio_ticks",
-                        "guest_time", "cguest_time", "start_data", "end_data", "start_brk",
-                        "arg_start", "arg_end", "env_startr", "env_end", "exit_code",
-                    ]
-                    max_width = max(len(x) for x in tag)
-                    lpos = data.find("(")
-                    rpos = data.rfind(")") + 1
-                    data = [data[:lpos].strip(), data[lpos:rpos]] + data[rpos:].split()
-                    for i, elem in enumerate(data):
-                        if i < len(tag):
-                            elem_name = tag[i]
-                        else:
-                            elem_name = "???"
-                        elem_name = Color.boldify("{:{:d}s}".format(elem_name, max_width))
-                        if i + 1 in [25, 26, 27, 28, 29, 30, 45, 46, 47, 48, 49, 50, 51]:
-                            address = int(elem)
-                            sym = Symbol.get_symbol_string(address)
-                            elem = "{!s}{:s}".format(ProcessMap.lookup_address(address), sym)
-                        elif i + 1 in [23, 33, 34]:
-                            elem = hex(int(elem))
-                        self.out.append("{:2d} {:s}: {:s}".format(i + 1, elem_name, elem))
+                    self.dump_stat(path)
                     continue
 
                 if f == "statm":
-                    try:
-                        data = String.bytes2str(open(path, "rb").read())
-                        self.out.append(data.strip())
-                    except OSError:
-                        continue
-                    tag = ["size", "resident", "shared", "text", "lib", "data", "dt"]
-                    max_width = max(len(x) for x in tag)
-                    for i, elem in enumerate(data.split()):
-                        if i < len(tag):
-                            elem_name = tag[i]
-                        else:
-                            elem_name = "???"
-                        elem_name = Color.boldify("{:{:d}s}".format(elem_name, max_width))
-                        self.out.append("{:2d} {:s}: {:s}".format(i + 1, elem_name, elem))
+                    self.dump_statm(path)
                     continue
 
                 if f == "rt_acct":
-                    try:
-                        hexdump_command = GefUtil.which("hexdump")
-                    except FileNotFoundError as e:
-                        self.out.append("{}".format(e))
-                        continue
-                    ret = GefUtil.gef_execute_external([hexdump_command, "-C", path], as_list=True)
-                    self.out.extend(ret)
+                    self.dump_rt_acct(path)
                     continue
 
                 if f == "status":
-                    try:
-                        column_command = GefUtil.which("column")
-                    except FileNotFoundError as e:
-                        self.out.append("{}".format(e))
-                        continue
-                    ret = GefUtil.gef_execute_external([column_command, "-s:", "-t", path], as_list=True)
-                    for line in ret:
-                        k, v = line.split(maxsplit=1)
-                        k = k.strip() + ":"
-                        v = v.replace("\\t", "").strip()
-                        self.out.append("{:30s} {:s}".format(k, v))
+                    self.dump_status(path)
                     continue
 
                 if f in ["mounts", "mountinfo", "mountstats", "unix", "protocols"]:
-                    try:
-                        column_command = GefUtil.which("column")
-                    except FileNotFoundError as e:
-                        self.out.append("{}".format(e))
-                        continue
-                    ret = GefUtil.gef_execute_external([column_command, "-t", path], as_list=True)
-                    self.out.extend(ret)
+                    self.dump_mounts(path)
                     continue
 
                 if f in ["raw", "tcp", "udp", "icmp", "raw6", "tcp6", "udp6", "icmp6", "udplite", "udplite6"]:
-                    try:
-                        column_command = GefUtil.which("column")
-                    except FileNotFoundError as e:
-                        self.out.append("{}".format(e))
-                        continue
-                    data = open(path, "rb").read()
-                    data = data.replace(b"tx_queue ", b"tx_queue:")
-                    data = data.replace(b" tr ", b" tr:")
-                    tmp_fd, tmp_filename = GefUtil.mkstemp(prefix="proc-dump")
-                    os.fdopen(tmp_fd, "wb").write(data)
-                    ret = GefUtil.gef_execute_external([column_command, "-t", tmp_filename], as_list=True)
-                    os.unlink(tmp_filename)
-                    self.out.extend(ret)
+                    self.dump_raw(path)
                     continue
 
                 if f == "dev":
-                    try:
-                        column_command = GefUtil.which("column")
-                    except FileNotFoundError as e:
-                        self.out.append("{}".format(e))
-                        continue
-                    data = open(path, "rb").read()
-                    data = data.replace(b"|", b" |")
-                    data = re.sub(rb"\|\s*Receive", b"|Receive", data)
-                    data = re.sub(rb"\|\s*Transmit", b"|Transmit", data)
-                    tmp_fd, tmp_filename = GefUtil.mkstemp(prefix="proc-dump")
-                    os.fdopen(tmp_fd, "wb").write(data)
-                    ret = GefUtil.gef_execute_external([column_command, "-t", tmp_filename], as_list=True)
-                    os.unlink(tmp_filename)
-                    wrong = ret[0].rfind("|")
-                    rright = ret[1].rfind("|")
-                    lright = ret[1].find("|")
-                    ret[0] = (ret[0][:wrong] + " " * (rright - wrong) + ret[0][wrong:]).rstrip()
-                    ret[0] = re.sub(r"\|(\S+)", "| \\1 ", ret[0])
-                    ret[1] = re.sub(r"\|(\S+)", "| \\1 ", ret[1])
-                    for i in range(2, len(ret)):
-                        ret[i] = ret[i][:lright] + "  " + ret[i][lright:]
-                        ret[i] = ret[i][:rright] + "  " + ret[i][rright:]
-                    self.out.extend(ret)
+                    self.dump_dev(path)
                     continue
 
                 if f in ["igmp", "fib_trie", "wireless"]:
-                    fd = open(path, "rb")
-                    for line in fd.readlines():
-                        self.out.append(String.bytes2str(line.rstrip())) # no-lstrip
+                    self.dump_igmp(path)
                     continue
 
                 if f in ["netstat", "snmp"]:
-                    try:
-                        fd = open(path, "rb")
-                        lines = String.bytes2str(fd.read()).splitlines()
-                        table = [line.split() for line in lines]
-                        for idx in range(0, len(table), 2):
-                            for i, (k, v) in enumerate(zip(*table[idx:idx + 2])):
-                                if i == 0:
-                                    self.out.append("{:s}".format(k))
-                                else:
-                                    self.out.append("  {:30s} {:s}".format(k + ":", v))
-                    except Exception:
-                        pass
+                    self.dump_netstat(path)
                     continue
 
-                try:
-                    fd = open(path, "rb")
-                    for line in fd.readlines():
-                        self.out.append(String.bytes2str(line).strip())
-                except OSError:
-                    continue
+                self.dump_default(path)
         return
 
     @parse_args
