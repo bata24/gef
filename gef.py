@@ -65809,6 +65809,7 @@ class TlsCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-a", "--all", action="store_true", help="show all TLS address.")
+    parser.add_argument("-s", "--symbol-hint", action="store_true", help="show hints if symbol is available (only x64/x86).")
     parser.add_argument("-v", "--verbose", action="count", default=1, help="show more entries (+16).")
     parser.add_argument("-V", "--more-verbose", action="count", default=0, help="show more entries (+256).")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
@@ -65842,6 +65843,43 @@ class TlsCommand(GenericCommand, BufferingOutput):
         selected_thread.switch() # revert
         return
 
+    def get_varnames(self):
+        tp = GefUtil.cached_lookup_type("tcbhead_t")
+        if tp is None:
+            return ""
+
+        aligned_members = []
+        for name, field in tp.items():
+            if field.bitpos % 8:
+                continue
+            if (field.bitpos // 8) % current_arch.ptrsize:
+                continue
+            aligned_members.append([(field.bitpos // 8) // current_arch.ptrsize, name])
+
+        args_string = " ".join(["-t {:d} {:s}".format(i, n) for i, n in aligned_members])
+        return args_string
+
+    def dump_tls(self, tls):
+        self.out.append("$tls = {:#x}".format(tls))
+        gdb.execute("p $tls = {:#x}".format(tls), to_string=True)
+
+        n_entries = (16 * self.args.verbose) + (256 * self.args.more_verbose)
+
+        self.out.append(titlify("TLS-{:#x}".format(current_arch.ptrsize * n_entries)))
+        r = gdb.execute("dereference $tls-{:#x} {:d} --no-pager".format(
+            current_arch.ptrsize * n_entries, n_entries,
+        ), to_string=True)
+        self.out.extend(r.rstrip().splitlines())
+
+        self.out.append(titlify("TLS"))
+        if self.args.symbol_hint and is_x86():
+            args_string = self.get_varnames()
+            r = gdb.execute("dereference $tls {:d} --no-pager {}".format(n_entries, args_string), to_string=True)
+        else:
+            r = gdb.execute("dereference $tls {:d} --no-pager".format(n_entries), to_string=True)
+        self.out.extend(r.rstrip().splitlines())
+        return
+
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
@@ -65864,21 +65902,7 @@ class TlsCommand(GenericCommand, BufferingOutput):
             return
 
         self.out = []
-        self.out.append("$tls = {:#x}".format(tls))
-        gdb.execute("p $tls = {:#x}".format(tls), to_string=True)
-
-        n_entries = (16 * args.verbose) + (256 * args.more_verbose)
-
-        self.out.append(titlify("TLS-{:#x}".format(current_arch.ptrsize * n_entries)))
-        r = gdb.execute("dereference $tls-{:#x} {:d} --no-pager".format(
-            current_arch.ptrsize * n_entries, n_entries,
-        ), to_string=True)
-        self.out.extend(r.rstrip().splitlines())
-
-        self.out.append(titlify("TLS"))
-        r = gdb.execute("dereference $tls {:d} --no-pager".format(n_entries), to_string=True)
-        self.out.extend(r.rstrip().splitlines())
-
+        self.dump_tls(tls)
         self.print_output(term=True)
         return
 
