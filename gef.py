@@ -65168,7 +65168,8 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
-        if args.use_cache and hasattr(self, "out") and self.out:
+        if args.use_cache and hasattr(self, "cache") and self.cache:
+            self.out = self.cache[::]
             self.print_output()
             return
 
@@ -65219,6 +65220,7 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
             self.dump_printk_log_buffer(log_first_idx, log_next_idx, log_buf_start, log_buf_end)
 
         self.print_output()
+        self.cache = self.out[::]
         return
 
 
