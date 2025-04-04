@@ -14671,18 +14671,9 @@ class UpCommand(GenericCommand):
                         help="Number of frames to move. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    def do_invoke(self, args):
-        try:
-            current_frame = gdb.selected_frame()
-        except gdb.error:
-            # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
-            err("Failed to get frame information")
-            return
-
+    def do_up(self, current_frame):
         # check if target frame is available
-        n = args.n
+        n = self.args.n
         while current_frame and n:
             if not current_frame.is_valid():
                 break
@@ -14709,6 +14700,19 @@ class UpCommand(GenericCommand):
         Config.set_gef_setting("context.nb_lines_backtrace", nb_lines_backtrace)
         return
 
+    @parse_args
+    @only_if_gdb_running
+    def do_invoke(self, args):
+        try:
+            current_frame = gdb.selected_frame()
+        except gdb.error:
+            # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
+            err("Failed to get frame information")
+            return
+
+        self.do_up(current_frame)
+        return
+
 
 @register_command
 class DownCommand(GenericCommand):
@@ -14723,18 +14727,9 @@ class DownCommand(GenericCommand):
                         help="Number of frames to move. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    def do_invoke(self, args):
-        try:
-            current_frame = gdb.selected_frame()
-        except gdb.error:
-            # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
-            err("Failed to get frame information")
-            return
-
+    def do_down(self, current_frame):
         # check if target frame is available
-        n = args.n
+        n = self.args.n
         while current_frame and n:
             if not current_frame.is_valid():
                 break
@@ -14759,6 +14754,19 @@ class DownCommand(GenericCommand):
         # restore
         Config.set_gef_setting("context.nb_lines_backtrace_before", nb_lines_backtrace_before)
         Config.set_gef_setting("context.nb_lines_backtrace", nb_lines_backtrace)
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    def do_invoke(self, args):
+        try:
+            current_frame = gdb.selected_frame()
+        except gdb.error:
+            # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
+            err("Failed to get frame information")
+            return
+
+        self.do_down(current_frame)
         return
 
 
