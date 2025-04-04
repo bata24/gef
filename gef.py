@@ -77535,7 +77535,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
             return mheap
         return None
 
-    def parse_mheap(self, mheap, verbose):
+    def parse_mheap(self, mheap):
         self.out.append(titlify("runtime.mheap_ @ {:#x}".format(mheap)))
 
         current = read_int_from_memory(mheap + self.offset_allspans)
@@ -77548,7 +77548,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
                 return []
             if not mspan_addr:
                 break
-            mspan = self.parse_mspan(mspan_addr, verbose)
+            mspan = self.parse_mspan(mspan_addr)
             if mspan:
                 mspans.append(mspan)
             current += current_arch.ptrsize
@@ -77556,20 +77556,22 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         mspans = sorted(mspans, key=lambda m: (m.chunk_size, m.address))
         return mspans
 
-    def parse_mspan(self, mspan, verbose):
+    def parse_mspan(self, mspan):
         # read member
         try:
             start_addr = read_int_from_memory(mspan + self.offset_startAddr)
         except gdb.MemoryError:
             self.out.append("read memory error")
             return None
-        if not verbose and start_addr == 0:
+        if not self.args.verbose and start_addr == 0:
             return None
+
         # spanclass = (sizeclass << 1) | (noscan bit)
         spanclass = u8(read_memory(mspan + self.offset_spanclass, 1)) >> 1
         chunk_size = self.class_to_size_dic[spanclass]
-        if not verbose and chunk_size == 0:
+        if not self.args.verbose and chunk_size == 0:
             return None
+
         next_ = read_int_from_memory(mspan + self.offset_next)
         prev_ = read_int_from_memory(mspan + self.offset_prev)
         npages = read_int_from_memory(mspan + self.offset_npages)
@@ -77632,7 +77634,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         self.out.extend(lines)
         return
 
-    def dump_mspans(self, mspans, do_dump):
+    def dump_mspans(self, mspans):
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
         page_address_color = Config.get_gef_setting("theme.heap_page_address")
 
@@ -77650,7 +77652,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
                 ProcessMap.lookup_address(mspan.prev),
             )
             self.out.append(msg)
-            if do_dump:
+            if self.args.dump:
                 self.dump_mspan_data(mspan)
         return
 
@@ -77660,22 +77662,21 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         self.out = []
-
         self.initialize()
 
         if args.mspan is not None:
-            mspans = [self.parse_mspan(args.mspan, args.verbose)]
+            mspans = [self.parse_mspan(args.mspan)]
         elif args.mheap:
-            mspans = self.parse_mheap(args.mheap, args.verbose)
+            mspans = self.parse_mheap(args.mheap)
         else:
             mheap = self.get_mheap_()
             if mheap is None:
                 err("Not found runtime.mheap_")
                 return
-            mspans = self.parse_mheap(mheap, args.verbose)
+            mspans = self.parse_mheap(mheap)
 
         mspans = [x for x in mspans if x is not None]
-        self.dump_mspans(mspans, args.dump)
+        self.dump_mspans(mspans)
         self.print_output()
         return
 
