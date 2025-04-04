@@ -15270,7 +15270,7 @@ class ArgvCommand(GenericCommand, BufferingOutput):
         except Exception:
             return None
 
-    def print_from_mem(self, array, verbose, increase_limit):
+    def print_from_mem(self, array):
         fmt = "{:3s} {:{:d}s}  {:{:d}s} -> {:s}"
         legend = [
             "#",
@@ -15280,7 +15280,7 @@ class ArgvCommand(GenericCommand, BufferingOutput):
         ]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        max_size = gef_getpagesize() if increase_limit else 128
+        max_size = gef_getpagesize() if self.args.increase_limit else 128
 
         i = 0
         while True:
@@ -15288,7 +15288,7 @@ class ArgvCommand(GenericCommand, BufferingOutput):
             addr = read_int_from_memory(pos)
             if addr == 0:
                 break
-            if not verbose and i >= 100:
+            if not self.args.verbose and i >= 100:
                 self.out.append("...")
                 break
 
@@ -15306,19 +15306,19 @@ class ArgvCommand(GenericCommand, BufferingOutput):
             i += 1
         return
 
-    def print_from_proc(self, filename, verbose, increase_limit):
+    def print_from_proc(self, filename):
         fmt = "{:3s} {:s}"
         legend = ["#", "String"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        max_size = gef_getpagesize() if increase_limit else 128
+        max_size = gef_getpagesize() if self.args.increase_limit else 128
 
         lines = open(filename, "rb").read()
         lines = String.bytes2str(lines)
         for i, elem in enumerate(lines.split("\0")):
             if not elem:
                 break
-            if not verbose and i >= 100:
+            if not self.args.verbose and i >= 100:
                 self.out.append("...")
                 break
 
@@ -15327,33 +15327,48 @@ class ArgvCommand(GenericCommand, BufferingOutput):
             self.out.append("{:03d} {!s}".format(i, elem))
         return
 
+    def dump_dl_argv(self):
+        paddr = self.get_address_from_symbol("&_dl_argv")
+        addr = self.get_address_from_symbol("_dl_argv")
+        if paddr and addr:
+            self.out.append(titlify("ARGV from _dl_argv"))
+            self.info_add_out("_dl_argv @ {}".format(ProcessMap.lookup_address(paddr)))
+            self.print_from_mem(addr)
+            return
+        elif addr == 0:
+            self.err_add_out("_dl_argv is 0x0")
+        else:
+            self.err_add_out("Not found _dl_argv")
+        return
+
+    def dump_libc_argv(self):
+        paddr = self.get_address_from_symbol("&__libc_argv")
+        addr = self.get_address_from_symbol("__libc_argv")
+        if paddr and addr:
+            self.out.append(titlify("ARGV from __libc_argv"))
+            self.info_add_out("__libc_argv @ {}".format(ProcessMap.lookup_address(paddr)))
+            self.print_from_mem(addr)
+        elif addr == 0:
+            self.err_add_out("__libc_argv is 0x0")
+        else:
+            self.err_add_out("Not found __libc_argv")
+        return
+
+    def dump_proc_cmdline(self):
+        if is_remote_debug():
+            return
+        self.out.append(titlify("ARGV from /proc/{:d}/cmdline".format(Pid.get_pid())))
+        self.print_from_proc("/proc/{:d}/cmdline".format(Pid.get_pid()))
+        return
+
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         self.out = []
-
-        paddr1 = self.get_address_from_symbol("&_dl_argv")
-        addr1 = self.get_address_from_symbol("_dl_argv")
-        if paddr1 and addr1:
-            self.out.append(titlify("ARGV from _dl_argv"))
-            self.info_add_out("_dl_argv @ {}".format(ProcessMap.lookup_address(paddr1)))
-            self.print_from_mem(addr1, args.verbose, args.increase_limit)
-
-        paddr2 = self.get_address_from_symbol("&__libc_argv")
-        addr2 = self.get_address_from_symbol("__libc_argv")
-        if paddr2 and addr2:
-            self.out.append(titlify("ARGV from __libc_argv"))
-            self.info_add_out("__libc_argv @ {}".format(ProcessMap.lookup_address(paddr2)))
-            self.print_from_mem(addr2, args.verbose, args.increase_limit)
-
-        if not is_remote_debug():
-            self.out.append(titlify("ARGV from /proc/{:d}/cmdline".format(Pid.get_pid())))
-            self.print_from_proc("/proc/{:d}/cmdline".format(Pid.get_pid()), args.verbose, args.increase_limit)
-        else:
-            if not (paddr1 or paddr2):
-                self.err_add_out("Not found argv")
-
+        self.dump_dl_argv()
+        self.dump_libc_argv()
+        self.dump_proc_cmdline()
         self.print_output(term=True)
         return
 
@@ -15379,7 +15394,7 @@ class EnvpCommand(GenericCommand, BufferingOutput):
         except Exception:
             return None
 
-    def print_from_mem(self, array, verbose, increase_limit):
+    def print_from_mem(self, array):
         fmt = "{:3s} {:{:d}s}  {:{:d}s} -> {:s}"
         legend = [
             "#",
@@ -15389,7 +15404,7 @@ class EnvpCommand(GenericCommand, BufferingOutput):
         ]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        max_size = gef_getpagesize() if increase_limit else 128
+        max_size = gef_getpagesize() if self.args.increase_limit else 128
 
         i = 0
         while True:
@@ -15397,7 +15412,7 @@ class EnvpCommand(GenericCommand, BufferingOutput):
             addr = read_int_from_memory(pos)
             if addr == 0:
                 break
-            if not verbose and i >= 100:
+            if not self.args.verbose and i >= 100:
                 self.out.append("...")
                 break
 
@@ -15415,19 +15430,19 @@ class EnvpCommand(GenericCommand, BufferingOutput):
             i += 1
         return
 
-    def print_from_proc(self, filename, verbose, increase_limit):
+    def print_from_proc(self, filename):
         fmt = "{:3s} {:s}"
         legend = ["#", "Name=Value"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        max_size = gef_getpagesize() if increase_limit else 128
+        max_size = gef_getpagesize() if self.args.increase_limit else 128
 
         lines = open(filename, "rb").read()
         lines = String.bytes2str(lines)
         for i, elem in enumerate(lines.split("\0")):
             if not elem:
                 break
-            if not verbose and i >= 100:
+            if not self.args.verbose and i >= 100:
                 self.out.append("...")
                 break
             elem = re.sub(r"^(.*?=)", Color.boldify("\\1"), elem)
@@ -15436,38 +15451,47 @@ class EnvpCommand(GenericCommand, BufferingOutput):
             self.out.append("{:03d} {:s}".format(i, elem))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    def do_invoke(self, args):
-        self.out = []
-
+    def dump_environ(self):
         self.out.append(titlify("ENVP from __environ"))
         paddr = self.get_address_from_symbol("&__environ")
         addr = self.get_address_from_symbol("__environ")
         if paddr and addr:
             self.info_add_out("__environ @ {}".format(ProcessMap.lookup_address(paddr)))
-            self.print_from_mem(addr, args.verbose, args.increase_limit)
+            self.print_from_mem(addr)
         elif addr == 0:
             self.err_add_out("___environ is 0x0")
         else:
             self.err_add_out("Not found __environ")
+        return
 
+    def dump_last_environ(self):
         self.out.append(titlify("ENVP from last_environ (for putenv, etc.)"))
         paddr = self.get_address_from_symbol("&last_environ")
         addr = self.get_address_from_symbol("last_environ")
         if paddr and addr:
             self.info_add_out("last_environ @ {}".format(ProcessMap.lookup_address(paddr)))
-            self.print_from_mem(addr, args.verbose, args.increase_limit)
+            self.print_from_mem(addr)
         elif addr == 0:
             self.err_add_out("last_environ is 0x0")
         else:
             self.err_add_out("Not found last_environ")
+        return
 
-        if not is_remote_debug():
-            self.out.append(titlify("ENVP from /proc/{:d}/environ".format(Pid.get_pid())))
-            self.print_from_proc("/proc/{:d}/environ".format(Pid.get_pid()), args.verbose, args.increase_limit)
+    def dump_proc_environ(self):
+        if is_remote_debug():
+            return
+        self.out.append(titlify("ENVP from /proc/{:d}/environ".format(Pid.get_pid())))
+        self.print_from_proc("/proc/{:d}/environ".format(Pid.get_pid()))
+        return
 
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        self.out = []
+        self.dump_environ()
+        self.dump_last_environ()
+        self.dump_proc_environ()
         self.print_output(term=True)
         return
 
