@@ -89399,6 +89399,66 @@ class PageCommand(GenericCommand):
             return None
         return page
 
+    def page_translation(self):
+        out = []
+        if self.args.mode == "to_virt":
+            # A page may be associated with multiple virtual addresses.
+            vaddr = self.page2virt(self.args.address)
+            if vaddr is None:
+                err("Failed to resolve")
+                return None
+            out.append("Page: {:#x} -> Virt: {:#x}".format(self.args.address, vaddr))
+
+        elif self.args.mode == "to_phys":
+            # A page may be associated with multiple virtual addresses.
+            vaddr = self.page2virt(self.args.address)
+            if vaddr is None:
+                err("Failed to resolve")
+                return None
+
+            # Get the physical addresses pointed to by those virtual addresses.
+            paddr = Kernel.v2p(vaddr)
+            if not paddr:
+                err("Failed to resolve")
+                return None
+            out.append("Page: {:#x} -> Phys: {:#x}".format(self.args.address, paddr))
+
+        elif self.args.mode == "from_virt":
+            vaddr = self.args.address
+            if self.args.address & 0xfff:
+                warn("The address must be 0x1000 aligned, round down and then calculate")
+                vaddr = self.args.address & gef_getpagesize_mask_high()
+
+            # A virtual address is always associated with one physical address.
+            page = self.virt2page(vaddr)
+            if page is None:
+                err("Failed to resolve")
+                return None
+            out.append("Virt: {:#x} -> Page: {:#x}".format(vaddr, page))
+
+        elif self.args.mode == "from_phys":
+            paddr = self.args.address
+            if self.args.address & 0xfff:
+                warn("The address must be 0x1000 aligned, round down and then calculate")
+                paddr = self.args.address & gef_getpagesize_mask_high()
+
+            r = Kernel.p2v(paddr)
+            if not r:
+                err("Failed to resolve")
+                return None
+
+            for vaddr in r:
+                # A virtual address is always associated with one page.
+                page = self.virt2page(vaddr)
+                if page is None:
+                    err("Failed to resolve")
+                    return None
+                # The assumption is that there should be one, but just to be sure, all different values will be displayed.
+                msg = "Phys: {:#x} -> Page: {:#x}".format(paddr, page)
+                if msg not in out:
+                    out.append(msg)
+        return out
+
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
@@ -89424,65 +89484,9 @@ class PageCommand(GenericCommand):
             err("Failed to initialize")
             return
 
-        out = []
-        # doit
-        if args.mode == "to_virt":
-            # A page may be associated with multiple virtual addresses.
-            vaddr = self.page2virt(args.address)
-            if vaddr is None:
-                err("Failed to resolve")
-                return
-            out.append("Page: {:#x} -> Virt: {:#x}".format(args.address, vaddr))
-
-        elif args.mode == "to_phys":
-            # A page may be associated with multiple virtual addresses.
-            vaddr = self.page2virt(args.address)
-            if vaddr is None:
-                err("Failed to resolve")
-                return
-
-            # Get the physical addresses pointed to by those virtual addresses.
-            paddr = Kernel.v2p(vaddr)
-            if not paddr:
-                err("Failed to resolve")
-                return
-            out.append("Page: {:#x} -> Phys: {:#x}".format(args.address, paddr))
-
-        elif args.mode == "from_virt":
-            vaddr = args.address
-            if args.address & 0xfff:
-                warn("The address must be 0x1000 aligned, round down and then calculate")
-                vaddr = args.address & gef_getpagesize_mask_high()
-
-            # A virtual address is always associated with one physical address.
-            page = self.virt2page(vaddr)
-            if page is None:
-                err("Failed to resolve")
-                return
-            out.append("Virt: {:#x} -> Page: {:#x}".format(vaddr, page))
-
-        elif args.mode == "from_phys":
-            paddr = args.address
-            if args.address & 0xfff:
-                warn("The address must be 0x1000 aligned, round down and then calculate")
-                paddr = args.address & gef_getpagesize_mask_high()
-
-            r = Kernel.p2v(paddr)
-            if not r:
-                err("Failed to resolve")
-                return
-
-            for vaddr in r:
-                # A virtual address is always associated with one page.
-                page = self.virt2page(vaddr)
-                if page is None:
-                    err("Failed to resolve")
-                    return
-                # The assumption is that there should be one, but just to be sure, all different values will be displayed.
-                msg = "Phys: {:#x} -> Page: {:#x}".format(paddr, page)
-                if msg not in out:
-                    out.append(msg)
-
+        out = self.page_translation()
+        if out is None:
+            return
         gef_print("\n".join(out))
         return
 
