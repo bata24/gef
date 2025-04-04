@@ -16663,7 +16663,7 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify(""))
         return
 
-    def print_capability_from_pid(self, verbose):
+    def print_capability_from_pid(self):
         pid = Pid.get_pid()
         if pid is None:
             return
@@ -16698,31 +16698,31 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
             if "cap_prm" in caps:
                 msg = "Capability set that Effective and Inheritable are allowed to have"
                 self.out.append("Permitted  : {:#018x} - {:s}".format(caps["cap_prm"], msg))
-                if verbose:
+                if self.args.verbose:
                     self.print_cap_details("cap_prm", caps["cap_prm"])
             if "cap_inh" in caps:
                 msg = "Capability set that can be inherited when execve(2)"
                 self.out.append("Inheritable: {:#018x} - {:s}".format(caps["cap_inh"], msg))
-                if verbose:
+                if self.args.verbose:
                     self.print_cap_details("cap_inh", caps["cap_inh"])
             if "cap_amb" in caps:
                 msg = "Capability set that inherited when execve(2) not suid/sgid program"
                 self.out.append("Ambient    : {:#018x} - {:s}".format(caps["cap_amb"], msg))
-                if verbose:
+                if self.args.verbose:
                     self.print_cap_details("cap_amb", caps["cap_amb"])
             if "cap_eff" in caps:
                 msg = "Capability set that kernel actually uses to determine privileges"
                 self.out.append("Effective  : {:#018x} - {:s}".format(caps["cap_eff"], msg))
-                if verbose:
+                if self.args.verbose:
                     self.print_cap_details("cap_eff", caps["cap_eff"])
             if "cap_bnd" in caps:
                 msg = "Capability set that limits the capabilities set that can be acquired"
                 self.out.append("Bounding   : {:#018x} - {:s}".format(caps["cap_bnd"], msg))
-                if verbose:
+                if self.args.verbose:
                     self.print_cap_details("cap_bnd", caps["cap_bnd"])
         return
 
-    def print_capability_from_file(self, verbose):
+    def print_capability_from_file(self):
         filepath = Path.get_filepath()
         if filepath is None:
             return
@@ -16764,12 +16764,12 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
         if "cap_prm" in caps:
             msg = "Capability set that permitted to the thread, regardless of the thread's cap_inh"
             self.out.append("Permitted  : {:#018x} - {:s}".format(caps["cap_prm"], msg))
-            if verbose:
+            if self.args.verbose:
                 self.print_cap_details("cap_prm", caps["cap_prm"])
         if "cap_inh" in caps:
             msg = "Capability set that is ANDed with thread cap_inh to determine cap_inh after execve(2)"
             self.out.append("Inheritable: {:#018x} - {:s}".format(caps["cap_inh"], msg))
-            if verbose:
+            if self.args.verbose:
                 self.print_cap_details("cap_inh", caps["cap_inh"])
         if "rootid" in caps:
             msg = "UID of root in user namespace"
@@ -16781,8 +16781,8 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         self.out = []
-        self.print_capability_from_pid(args.verbose)
-        self.print_capability_from_file(args.verbose)
+        self.print_capability_from_pid()
+        self.print_capability_from_file()
         self.print_output(term=True)
         return
 
