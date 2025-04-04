@@ -89588,7 +89588,7 @@ class Phys2PageCommand(GenericCommand):
 
 
 @register_command
-class QemuDeviceInfoCommand(GenericCommand):
+class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
     """Dump device information for qemu-escape."""
 
     _cmdline_ = "qemu-device-info"
@@ -89596,60 +89596,72 @@ class QemuDeviceInfoCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-d", "--device", help="device name.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    def do_invoke(self, args):
-        # get device name
-        if args.device:
-            device_name = args.device
-        else:
-            cmdline = String.bytes2str(open("/proc/{:d}/cmdline".format(Pid.get_pid()), "rb").read()).split("\0")
-            if cmdline.count("-device") == 0:
-                err("Not found `-device` option in qemu-system cmdline")
-                return
-            if cmdline.count("-device") >= 2:
-                devices = []
-                for i in range(len(cmdline)):
-                    if cmdline[i] == "-device":
-                        devices.append(cmdline[i + 1])
-                devices_str = Color.boldify(", ".join(devices))
-                err("Multiple `-device` options are found in qemu-system cmdline: {:s}".format(devices_str))
-                return
-            device_name = cmdline[cmdline.index("-device") + 1]
-        info("device name: {:s}".format(Color.boldify(device_name)))
+    _example_ = [
+        "{0:s} -d cydf-vga  # Specify a device name",
+        "{0:s} -d cydf      # Specify a characteristic part of the device name",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
 
-        # get qdm
+    def get_device_name(self):
+        if self.args.device:
+            self.info_add_out("device name: {:s}".format(Color.boldify(self.args.device)))
+            return self.args.device
+
+        cmdline = String.bytes2str(open("/proc/{:d}/cmdline".format(Pid.get_pid()), "rb").read()).split("\0")
+        if cmdline.count("-device") == 0:
+            err("Not found `-device` option in qemu-system cmdline")
+            return None
+
+        if cmdline.count("-device") >= 2:
+            devices = []
+            for i in range(len(cmdline)):
+                if cmdline[i] == "-device":
+                    devices.append(cmdline[i + 1])
+            devices_str = Color.boldify(", ".join(devices))
+            err("Multiple `-device` options are found in qemu-system cmdline: {:s}".format(devices_str))
+            return None
+
+        device_name = cmdline[cmdline.index("-device") + 1]
+        self.info_add_out("device name: {:s}".format(Color.boldify(device_name)))
+        return device_name
+
+    def dump_qdm(self, device_name):
         res = gdb.execute("monitor info qdm", to_string=True)
         for line in res.splitlines():
             if device_name in line:
-                info("qdev device model: {:s}".format(Color.boldify(line)))
+                self.info_add_out("qdev device model: {:s}".format(Color.boldify(line)))
+        return
 
+    def dump_memmap(self, device_name):
         # get physmem map / IO map
         res = gdb.execute("monitor info mtree", to_string=True)
-        info("Related memory address:")
+        self.info_add_out("Related memory address:")
         maps = [line.strip() for line in res.splitlines() if device_name in line and line.strip().startswith("0")]
         maps = sorted(set(maps)) # uniq
         for m in maps:
-            gef_print("    " + m)
+            self.out.append("    " + m)
+        return
 
-        # get qemu-system path
-        qemu_path = os.readlink("/proc/{:d}/exe".format(Pid.get_pid()))
-        info("qemu path: {:s}".format(qemu_path))
-
-        # get symbol related device
+    def dump_symbol_related_device(self, device_name):
+        # get nm
         try:
             nm = GefUtil.which("nm")
         except FileNotFoundError as e:
-            err("{}".format(e))
+            self.err_add_out("{}".format(e))
             return
 
+        # get qemu-system path
+        qemu_path = os.readlink("/proc/{:d}/exe".format(Pid.get_pid()))
+        self.info_add_out("qemu path: {:s}".format(qemu_path))
+
+        # get symbol related device
         try:
             result = GefUtil.gef_execute_external([nm, qemu_path], as_list=True)
         except subprocess.CalledProcessError:
-            err("Executing `nm` error")
+            self.err_add_out("Executing `nm` error")
             return
 
         for line in result:
@@ -89657,12 +89669,28 @@ class QemuDeviceInfoCommand(GenericCommand):
                 continue
             if line.endswith(("read", "write")):
                 index = line.rfind(" ")
-                gef_print("    {:s} {:s}".format(line[:index], Color.boldify(line[index + 1:])))
+                self.out.append("    {:s} {:s}".format(line[:index], Color.boldify(line[index + 1:])))
             else:
-                gef_print("    {:s}".format(line))
+                self.out.append("    {:s}".format(line))
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system",))
+    def do_invoke(self, args):
+        self.out = []
+        device_name = self.get_device_name()
+        if device_name is None:
+            return
+
+        self.dump_qdm(device_name)
+        self.dump_memmap(device_name)
+        self.dump_symbol_related_device(device_name)
 
         if not args.device:
-            info("use `-d` if less information")
+            self.info_add_out("use `-d` if less information")
+
+        self.print_output(term=True)
         return
 
 
