@@ -90903,7 +90903,7 @@ class KmallocTracerCommand(GenericCommand):
     def set_bp_to_kmalloc_kfree(option_info, extra_info):
         # `kmalloc` is always inlined and not exported, so its symbol cannot be identified.
         # Therefore, you must set a breakpoint in a function that is exported instead of kmalloc.
-        # This can be done by checking EXPORT_SYMBOL, and a tool to automate this is dev//update-kmalloc-tracer.
+        # This can be done by checking EXPORT_SYMBOL, and a tool to automate this is dev/update-kmalloc-tracer.
         # The same symbol may be found multiple times from different *.c files, and they can be treated as the same.
         """
         [3.0~3.15]
@@ -91192,7 +91192,7 @@ class KmallocAllocatedBy_UserlandHardwareBreakpoint(gdb.Breakpoint):
 
 @register_command
 class KmallocAllocatedByCommand(GenericCommand):
-    """Call a predefined set of system calls and print structures allocated by kmalloc or freed by kfree (only x64)."""
+    """Call predefined system-calls and prints kmalloc-N chunks allocated and freed (only x64)."""
 
     _cmdline_ = "kmalloc-allocated-by"
     _category_ = "08-f. Qemu-system Cooperation - Linux Dynamic Inspection"
@@ -91285,7 +91285,8 @@ class KmallocAllocatedByCommand(GenericCommand):
             return struct.unpack("<q", x)[0]
 
         def gen_testcase():
-            # It is implemented with a generator because it requires delayed execution in order to use the previous result.
+            # It is implemented with a generator because
+            # it requires delayed execution in order to use the previous result.
 
             nonlocal ret_history
 
@@ -91326,7 +91327,10 @@ class KmallocAllocatedByCommand(GenericCommand):
             attr += p64(0x100) # mq_msgsize
             attr += p64(0)     # mq_curmsgs
             attr += p64(0) * 4 # __reserved[4]
-            yield ('fd = mq_open("mq_test", O_RDWR|O_CREAT, 0700, &attr)', "mq_open", [MQ_NAME, 0o2 | 0o100, 0o700, attr])
+            yield (
+                'fd = mq_open("mq_test", O_RDWR|O_CREAT, 0700, &attr)',
+                "mq_open", [MQ_NAME, 0o2 | 0o100, 0o700, attr],
+            )
             if u2i(ret_history[-1]) >= 0:
                 fd = ret_history[-1]
                 msg = "A" * 0x100
@@ -91335,7 +91339,10 @@ class KmallocAllocatedByCommand(GenericCommand):
                 prio = p32(0)
                 timeout = p64(0)  # tv_sec
                 timeout += p64(0) # tv_nsec
-                yield ("mq_timedreceive(fd, &buf, sizeof(buf), &prio, &timeout)", "mq_timedreceive", [fd, buf, len(buf), prio, timeout])
+                yield (
+                    "mq_timedreceive(fd, &buf, sizeof(buf), &prio, &timeout)",
+                    "mq_timedreceive", [fd, buf, len(buf), prio, timeout],
+                )
                 sigevent = p32(0)   # sigev_notify: SIGEV_SIGNAL
                 sigevent += p32(10) # sigev_signo: SIGUSR1
                 sigevent += p64(0)  # sigev_value
@@ -91388,7 +91395,10 @@ class KmallocAllocatedByCommand(GenericCommand):
                 old_value += p64(0) # it_interval.tv_nsec
                 old_value += p64(0) # it_value.tv_sec
                 old_value += p64(0) # it_value.tv_nsec
-                yield ("timerfd_settime(fd, 0, &new_value, &old_value)", "timerfd_settime", [fd, 0, new_value, old_value])
+                yield (
+                    "timerfd_settime(fd, 0, &new_value, &old_value)",
+                    "timerfd_settime", [fd, 0, new_value, old_value],
+                )
                 curr_value = p64(0)  # it_interval.tv_sec
                 curr_value += p64(0) # it_interval.tv_nsec
                 curr_value += p64(0) # it_value.tv_sec
@@ -91409,7 +91419,10 @@ class KmallocAllocatedByCommand(GenericCommand):
                 old_value += p64(0) # it_interval.tv_nsec
                 old_value += p64(0) # it_value.tv_sec
                 old_value += p64(0) # it_value.tv_nsec
-                yield ("timer_settime(timerid, 0, &new_value, &old_value)", "timer_settime", [timerid, 0, new_value, old_value])
+                yield (
+                    "timer_settime(timerid, 0, &new_value, &old_value)",
+                    "timer_settime", [timerid, 0, new_value, old_value],
+                )
                 curr_value = p64(0)  # it_interval.tv_sec
                 curr_value += p64(0) # it_interval.tv_nsec
                 curr_value += p64(0) # it_value.tv_sec
@@ -91483,7 +91496,10 @@ class KmallocAllocatedByCommand(GenericCommand):
 
             yield "mmap -> mprotect -> mremap -> msync -> madvise -> munmap"
             size = gef_getpagesize()
-            yield ("addr = mmap(NULL, 0x1000, RWX, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0)", "mmap", [0, size, 7, 0x20 | 0x2, -1, 0])
+            yield (
+                "addr = mmap(NULL, 0x1000, RWX, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0)",
+                "mmap", [0, size, 7, 0x20 | 0x2, -1, 0],
+            )
             if u2i(ret_history[-1]) >= 0:
                 addr = ret_history[-1]
                 yield ("mprotect(addr, 0x1000, R--)", "mprotect", [addr, size, 1])
@@ -91498,7 +91514,10 @@ class KmallocAllocatedByCommand(GenericCommand):
 
             yield "mmap -> mincore -> mbind -> move_pages -> migrate_pages -> munmap"
             size = gef_getpagesize()
-            yield ("addr = mmap(NULL, 0x1000, RWX, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0)", "mmap", [0, size, 7, 0x20 | 0x2, -1, 0])
+            yield (
+                "addr = mmap(NULL, 0x1000, RWX, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0)",
+                "mmap", [0, size, 7, 0x20 | 0x2, -1, 0],
+            )
             if u2i(ret_history[-1]) >= 0:
                 addr = ret_history[-1]
                 vec = "\0" * 0x100
@@ -91510,7 +91529,10 @@ class KmallocAllocatedByCommand(GenericCommand):
                 maxnode = 8
                 old_nodes = "\x02"
                 new_nodes = "\x01"
-                yield ("migrate_pages(0, 8, old_nodes, new_nodes)", "migrate_pages", [0, maxnode, old_nodes, new_nodes])
+                yield (
+                    "migrate_pages(0, 8, old_nodes, new_nodes)",
+                    "migrate_pages", [0, maxnode, old_nodes, new_nodes],
+                )
                 yield ("munmap(addr, 0x1000)", "munmap", [addr, size])
 
             yield "brk -> userfaultfd -> ioctl -> close"
@@ -91842,7 +91864,10 @@ class KmallocAllocatedByCommand(GenericCommand):
             timeout = p64(0)  # tv_sec
             timeout += p64(0) # tv_nsec
             sigsetsize = 8
-            yield ("rt_sigtimedwait(&set, &info, &timeout, sigsetsize)", "rt_sigtimedwait", [set_, info, timeout, sigsetsize])
+            yield (
+                "rt_sigtimedwait(&set, &info, &timeout, sigsetsize)",
+                "rt_sigtimedwait", [set_, info, timeout, sigsetsize],
+            )
 
             yield "pidfd_open -> pidfd_getfd -> pidfd_send_signal -> close"
             yield ("pfdfd = pidfd_open(pid, 0)", "pidfd_open", [pid, 0])
@@ -91921,7 +91946,10 @@ class KmallocAllocatedByCommand(GenericCommand):
             if u2i(ret_history[-1]) >= 0:
                 fd = ret_history[-1]
                 size = gef_getpagesize()
-                yield ("addr = mmap(NULL, 0x1000, R--, MAP_ANONYMOUS|MAP_SHARED, -1, 0)", "mmap", [0, size, 1, 0x20 | 0x1, fd, 0])
+                yield (
+                    "addr = mmap(NULL, 0x1000, R--, MAP_ANONYMOUS|MAP_SHARED, -1, 0)",
+                    "mmap", [0, size, 1, 0x20 | 0x1, fd, 0],
+                )
                 if u2i(ret_history[-1]) >= 0:
                     addr = ret_history[-1]
                     yield ("remap_file_pages(addr, 0x1000, 0, 0, 0)", "remap_file_pages", [addr, size, 0, 0, 0])
@@ -91990,8 +92018,14 @@ class KmallocAllocatedByCommand(GenericCommand):
                 yield ('fd_out = open("/tmp/xxx2", 0_WRONLY|O_CREAT, 0666)', "open", [TMP_XXX2, 0o1 | 0o100, 0o666])
                 if u2i(ret_history[-1]) >= 0:
                     fd_out = ret_history[-1]
-                    yield ("sync_file_range(fd_out, 0, 4, SYNC_FILE_RANGE_WAIT_AFTER)", "sync_file_range", [fd_out, 0, 4, 4])
-                    yield ("copy_file_range(fd_in, 0, fd_out, 0, 4, 0)", "copy_file_range", [fd_in, 0, fd_out, 0, 4, 0])
+                    yield (
+                        "sync_file_range(fd_out, 0, 4, SYNC_FILE_RANGE_WAIT_AFTER)",
+                        "sync_file_range", [fd_out, 0, 4, 4],
+                    )
+                    yield (
+                        "copy_file_range(fd_in, 0, fd_out, 0, 4, 0)",
+                        "copy_file_range", [fd_in, 0, fd_out, 0, 4, 0],
+                    )
                     yield ("close(fd_out)", "close", [fd_out])
                     yield ('unlink("/tmp/xxx2")', "unlink", [TMP_XXX2])
                 yield ("close(fd_in)", "close", [fd_in])
@@ -92067,12 +92101,18 @@ class KmallocAllocatedByCommand(GenericCommand):
             if u2i(ret_history[-1]) >= 0:
                 buf = "A" * 0xff + "\0"
                 userx = "user.x\0"
-                yield ('setxattr("/tmp/xxx", "user.x", &buf, sizeof(buf), 0)', "setxattr", [TMP_XXX, userx, buf, len(buf), 0])
+                yield (
+                    'setxattr("/tmp/xxx", "user.x", &buf, sizeof(buf), 0)',
+                    "setxattr", [TMP_XXX, userx, buf, len(buf), 0],
+                )
                 self.skipped_syscall.add("lsetxattr")
                 self.skipped_syscall.add("fsetxattr")
                 if u2i(ret_history[-1]) >= 0:
                     buf= "\0" * 0x100
-                    yield ('getxattr("/tmp/xxx", "user.x", &buf, sizeof(buf))', "getxattr", [TMP_XXX, userx, buf, len(buf)])
+                    yield (
+                        'getxattr("/tmp/xxx", "user.x", &buf, sizeof(buf))',
+                        "getxattr", [TMP_XXX, userx, buf, len(buf)],
+                    )
                     self.skipped_syscall.add("lgetxattr")
                     self.skipped_syscall.add("fgetxattr")
                     buf = "\0" * 0x100
@@ -92112,7 +92152,10 @@ class KmallocAllocatedByCommand(GenericCommand):
             self.skipped_syscall.add("inotify_init")
             if u2i(ret_history[-1]) >= 0:
                 fd = ret_history[-1]
-                yield ('wd = inotify_add_watch(fd, "/tmp/xxx", IN_MOVE_SELF)', "inotify_add_watch", [fd, TMP_XXX, 0x800])
+                yield (
+                    'wd = inotify_add_watch(fd, "/tmp/xxx", IN_MOVE_SELF)',
+                    "inotify_add_watch", [fd, TMP_XXX, 0x800],
+                )
                 if u2i(ret_history[-1]) >= 0:
                     wd = ret_history[-1]
                     yield ("inotify_rm_watch(fd, wd)", "inotify_rm_watch", [fd, wd])
@@ -92148,7 +92191,10 @@ class KmallocAllocatedByCommand(GenericCommand):
                 events += p64(0) # res2
                 timeout = p64(0)  # tv_sec
                 timeout += p64(0) # tv_nsec
-                yield ("io_getevents(ctx_id, 1, 1, &events, &timeout)", "io_getevents", [ctx_id, 1, 1, events, timeout])
+                yield (
+                    "io_getevents(ctx_id, 1, 1, &events, &timeout)",
+                    "io_getevents", [ctx_id, 1, 1, events, timeout],
+                )
                 self.tested_syscall.add("io_pgetevents")
                 yield ("clode(fd)", "close", [fd])
                 yield ("io_destroy(ctx_id)", "io_destroy", [ctx_id])
@@ -92191,10 +92237,19 @@ class KmallocAllocatedByCommand(GenericCommand):
                 )
                 if u2i(ret_history[-1]) >= 0:
                     sq_ptr = ret_history[-1]
-                    yield ("io_uring_enter(ring_fd, 0, 0, 0, NULL, 8)", "io_uring_enter", [ring_fd, 0, 0, 0, 0, 8])
+                    yield (
+                        "io_uring_enter(ring_fd, 0, 0, 0, NULL, 8)",
+                        "io_uring_enter", [ring_fd, 0, 0, 0, 0, 8],
+                    )
                     arg = p32(0)
-                    yield ("io_uring_register(ring_fd, IORING_REGISTER_FILES, &arg, 1)", "io_uring_register", [ring_fd, 2, arg, 1])
-                    yield ("io_uring_register(ring_fd, IORING_UNREGISTER_FILES, NULL, 0)", "io_uring_register", [ring_fd, 3, 0, 0])
+                    yield (
+                        "io_uring_register(ring_fd, IORING_REGISTER_FILES, &arg, 1)",
+                        "io_uring_register", [ring_fd, 2, arg, 1],
+                    )
+                    yield (
+                        "io_uring_register(ring_fd, IORING_UNREGISTER_FILES, NULL, 0)",
+                        "io_uring_register", [ring_fd, 3, 0, 0],
+                    )
                     yield ("munmap(sq_ptr, sring_sz)", "munmap", [sq_ptr, sring_sz])
                 yield ("close(ring_fd)", "close", [ring_fd])
 
@@ -92206,7 +92261,10 @@ class KmallocAllocatedByCommand(GenericCommand):
             handle += p32(0)       # handle_type
             handle += b"\0" * 0x80 # f_handle
             mntid = p32(0)
-            yield ('name_to_handle_at(0, "/tmp/xxx", &handle, &mntid, 0)', "name_to_handle_at", [0, TMP_XXX, handle, mntid, 0])
+            yield (
+                'name_to_handle_at(0, "/tmp/xxx", &handle, &mntid, 0)',
+                "name_to_handle_at", [0, TMP_XXX, handle, mntid, 0],
+            )
             yield ('unlink("/tmp/xxx")', "unlink", [TMP_XXX])
 
             yield "mkdir -> open_tree -> close -> chdir -> rmdir"
@@ -92269,7 +92327,10 @@ class KmallocAllocatedByCommand(GenericCommand):
                 yield ("bind(fd, &sockaddr, sizeof(sockaddr))", "bind", [fd, sockaddr, len(sockaddr)])
                 yield ("listen(fd, 16)", "listen", [fd, 16])
                 opt = p32(0)
-                yield ("setsockopt(fd, SOL_SOCKET, SO_DEBUG, &opt, sizeof(opt))", "setsockopt", [fd, 1, 1, opt, len(opt)])
+                yield (
+                    "setsockopt(fd, SOL_SOCKET, SO_DEBUG, &opt, sizeof(opt))",
+                    "setsockopt", [fd, 1, 1, opt, len(opt)],
+                )
                 optlen = p32(len(opt))
                 yield ("getsockopt(fd, SOL_SOCKET, SO_DEBUG, &opt, &optlen)", "getsockopt", [fd, 1, 1, opt, optlen])
                 yield ("close(fd)", "close", [fd])
