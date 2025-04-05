@@ -82932,12 +82932,19 @@ class MsrCommand(GenericCommand):
 
         for name, const, desc in self.msr_table:
             value = self.read_msr(const)
+            if value is None:
+                gef_print("{:30s}  {:#010x}  {:30s}  {!s}".format(
+                    name, const, desc, None,
+                ))
+                continue
+
             sym = ""
             if is_valid_addr(value):
                 sym = Symbol.get_symbol_string(value)
+
             gef_print("{:30s}  {:#010x}  {:30s}  {:s}{:s}".format(
-                name, const, desc, AddressUtil.format_address(value), sym),
-            )
+                name, const, desc, AddressUtil.format_address(value), sym,
+            ))
 
         info("See more info: https://elixir.bootlin.com/linux/latest/source/arch/x86/include/asm/msr-index.h")
         return
