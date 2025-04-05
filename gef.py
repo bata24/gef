@@ -83885,15 +83885,15 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
     # merge pages that points same phys page
     def merge1(self, mappings):
         # for example, there are 16 pages,
-        #    virt: 0xffffffff11107000  -> phys:0xabcd000
-        #    virt: 0xffffffff11117000  -> phys;0xabcd000
-        #    virt: 0xffffffff11127000  -> phys;0xabcd000
+        #    virt: 0xffffffff11107000 -> phys: 0xabcd000
+        #    virt: 0xffffffff11117000 -> phys: 0xabcd000
+        #    virt: 0xffffffff11127000 -> phys: 0xabcd000
         #    ...
-        #    virt: 0xffffffff111d7000  -> phys;0xabcd000
-        #    virt: 0xffffffff111e7000  -> phys;0xabcd000
-        #    virt: 0xffffffff111f7000  -> phys;0xabcd000
+        #    virt: 0xffffffff111d7000 -> phys: 0xabcd000
+        #    virt: 0xffffffff111e7000 -> phys: 0xabcd000
+        #    virt: 0xffffffff111f7000 -> phys: 0xabcd000
         # they will be merged by "*". type is changed from int to string.
-        #    virt:"0xffffffff111*7000" -> phys:0xabcd000
+        #    virt: "0xffffffff111*7000" -> phys: 0xabcd000
 
         # group entries that refer to the same phys page
         tmp = {}
