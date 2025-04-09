@@ -6610,33 +6610,33 @@ class ARM(Architecture):
                     taken, reason = True, "{}&1<<{}==0".format(reg, i)
                 else:
                     taken, reason = False, "{}&1<<{}!=0".format(reg, i)
-        elif mnemo.endswith("eq"):
+        elif mnemo.endswith(("eq", "eq.n", "eq.w")):
             taken, reason = zero, "Z"
-        elif mnemo.endswith("ne"):
+        elif mnemo.endswith(("ne", "ne.n", "ne.w")):
             taken, reason = not zero, "!Z"
-        elif mnemo.endswith("lt"):
+        elif mnemo.endswith(("lt", "lt.n", "lt.w")):
             taken, reason = negative != overflow, "N!=V"
-        elif mnemo.endswith("le"):
+        elif mnemo.endswith(("le", "lt.n", "le.w")):
             taken, reason = zero or negative != overflow, "Z || N!=V"
-        elif mnemo.endswith("gt"):
+        elif mnemo.endswith(("gt", "gt.n", "gt.w")):
             taken, reason = not zero and negative == overflow, "!Z && N==V"
-        elif mnemo.endswith("ge"):
+        elif mnemo.endswith(("ge", "ge.n", "ge.w")):
             taken, reason = negative == overflow, "N==V"
-        elif mnemo.endswith("vs"):
+        elif mnemo.endswith(("vs", "vs.n", "vs.w")):
             taken, reason = overflow, "V"
-        elif mnemo.endswith("vc"):
+        elif mnemo.endswith(("vc", "vc.n", "vc.w")):
             taken, reason = not overflow, "!V"
-        elif mnemo.endswith("mi"):
+        elif mnemo.endswith(("mi", "mi.n", "mi.w")):
             taken, reason = negative, "N"
-        elif mnemo.endswith("pl"):
+        elif mnemo.endswith(("pl", "pl.n", "pl.w")):
             taken, reason = not negative, "N==0"
-        elif mnemo.endswith("hi"):
+        elif mnemo.endswith(("hi", "hi.n", "hi.w")):
             taken, reason = carry and not zero, "C && !Z"
-        elif mnemo.endswith("ls"):
+        elif mnemo.endswith(("ls", "ls.n", "ls.w")):
             taken, reason = not carry or zero, "!C || Z"
-        elif mnemo.endswith("cs") or mnemo.endswith("hs"):
+        elif mnemo.endswith(("cs", "cs.n", "cs.w")) or mnemo.endswith(("hs", "hs.n", "hs.w")):
             taken, reason = carry, "C"
-        elif mnemo.endswith("cc") or mnemo.endswith("lo"):
+        elif mnemo.endswith(("cc", "cc.n", "cc.w")) or mnemo.endswith(("lo", "lo.n", "lo.w")):
             taken, reason = not carry, "!C"
         return taken, reason
 
