@@ -31682,7 +31682,8 @@ class VMMapCommand(GenericCommand, BufferingOutput):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    def dump_entry(self, entry, outer):
+    def dump_entry(self, entry):
+        # get color
         line_color = ""
         if entry.path.startswith("[stack]"):
             line_color = Config.get_gef_setting("theme.address_stack")
@@ -31696,14 +31697,15 @@ class VMMapCommand(GenericCommand, BufferingOutput):
             line_color = Config.get_gef_setting("theme.address_readonly")
         elif entry.permission.value == Permission.NONE:
             line_color = Config.get_gef_setting("theme.address_valid_but_none")
-
         if entry.permission.value == (Permission.READ | Permission.WRITE | Permission.EXECUTE):
             line_color += " " + Config.get_gef_setting("theme.address_rwx")
 
-        lines = []
         # if qemu-xxx(32bit arch) runs on x86-64 machine, memalign_size does not match
         # AddressUtil.get_memory_alignment()
-        memalign_size = 8 if outer else None
+        memalign_size = 8 if self.args.outer else None
+
+        # make line
+        lines = []
         lines.append(Color.colorify(
             AddressUtil.format_address(entry.page_start, memalign_size, long_fmt=True), line_color,
         ))
@@ -31723,6 +31725,7 @@ class VMMapCommand(GenericCommand, BufferingOutput):
             lines.append(Color.colorify(entry.path, line_color))
         line = " ".join(lines)
 
+        # extra info
         if not self.args.quiet:
             # register info
             register_hints = []
@@ -31800,16 +31803,16 @@ class VMMapCommand(GenericCommand, BufferingOutput):
 
         for entry in vmmap:
             if not args.filter:
-                self.dump_entry(entry, args.outer)
+                self.dump_entry(entry)
                 continue
             if args.filter == "binary" and Path.get_filepath(append_proc_root_prefix=False) == entry.path:
-                self.dump_entry(entry, args.outer)
+                self.dump_entry(entry)
             elif args.filter in entry.path:
-                self.dump_entry(entry, args.outer)
+                self.dump_entry(entry)
             elif self.is_integer(args.filter):
                 addr = int(args.filter, 0)
                 if addr >= entry.page_start and addr < entry.page_end:
-                    self.dump_entry(entry, args.outer)
+                    self.dump_entry(entry)
 
         if is_qemu_user() and not args.outer:
             if ProcessMap.__gef_use_info_proc_mappings__ is False:
