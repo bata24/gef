@@ -11995,8 +11995,11 @@ def is_in_kernel():
     """GDB mode determination function for kernel mode."""
     if not is_alive():
         return False
+    if is_arm32_cortex_m():
+        return False
     if is_qiling():
         return False
+
     # If it fails to obtain the flag register required for the judgment,
     # it will be considered as userland.
     if is_x86():
@@ -12257,6 +12260,9 @@ class ProcessMap:
     def get_process_maps_linux(pid, remote=False):
         """Parse the Linux process `/proc/pid/maps` file."""
 
+        if Config.get_gef_setting("context.disable_vmmap"):
+            return []
+
         # open & read maps
         proc_map_file = "/proc/{:d}/maps".format(pid)
         if remote:
@@ -12330,6 +12336,9 @@ class ProcessMap:
     @Cache.cache_this_session
     def get_explored_regions():
         """Return sections from auxv exploring."""
+
+        if Config.get_gef_setting("context.disable_vmmap"):
+            return []
 
         if current_arch is None:
             return []
@@ -12654,6 +12663,9 @@ class ProcessMap:
 
     @staticmethod
     def get_process_maps_from_info_proc():
+        if Config.get_gef_setting("context.disable_vmmap"):
+            return []
+
         res = gdb.execute("info proc mappings", to_string=True)
 
         """
@@ -12693,6 +12705,9 @@ class ProcessMap:
 
     @staticmethod
     def get_process_maps_heuristic():
+        if Config.get_gef_setting("context.disable_vmmap"):
+            return []
+
         if ProcessMap.__gef_use_info_proc_mappings__ is None:
             try:
                 res = gdb.execute("info proc mappings", to_string=True)
@@ -12720,6 +12735,9 @@ class ProcessMap:
     @Cache.cache_until_next
     def get_process_maps(outer=False):
         """Return the mapped memory sections."""
+        if Config.get_gef_setting("context.disable_vmmap"):
+            return []
+
         if is_qemu_user():
             if outer:
                 pid = Pid.get_pid()
@@ -12923,6 +12941,10 @@ class EventHandler:
                     raise
                 Cache.reset_gef_caches()
 
+        # GEF will resolve the architecture if it is unknown.
+        if current_arch is None:
+            set_arch(get_arch())
+
         # set `c`, `ni` and `si` command hooks for qemu-user and pin
         if EventHandler.__gef_check_once__:
             if is_qemu_user() or is_pin():
@@ -12931,9 +12953,11 @@ class EventHandler:
                     gdb.execute("define si\nstepi-for-qemu-user\nend")
                     gdb.execute("define ni\nnexti-for-qemu-user\nend")
 
-        # GEF will resolve the architecture if it is unknown.
-        if current_arch is None:
-            set_arch(get_arch())
+        # disble for cortex-m
+        if EventHandler.__gef_check_once__:
+            if is_arm32_cortex_m():
+                gdb.execute("gef config context.disable_vmmap True")
+                gdb.execute("gef config context.disable_auxv True")
 
         # If the silent command is specified for a breakpoint, skip `context` command.
         context_flag = True
@@ -13511,6 +13535,9 @@ class Auxv:
     def get_auxiliary_walk(offset=0):
         """Find AUXV by walking stack."""
 
+        if Config.get_gef_setting("context.disable_auxv"):
+            return None
+
         if current_arch.sp is None:
             return None
 
@@ -13597,8 +13624,13 @@ class Auxv:
     def get_auxiliary_values(force_heuristic=False):
         """Retrieves the auxiliary values of the current execution.
         Returns None if not running, or a dict() of values."""
+
+        if Config.get_gef_setting("context.disable_auxv"):
+            return None
+
         if not is_alive():
             return None
+
         if is_qemu_system() or is_kgdb() or is_vmware() or is_wine():
             return None
 
@@ -17540,6 +17572,8 @@ class PtrDemangleCommand(GenericCommand):
     @staticmethod
     @Cache.cache_until_next
     def get_cookie():
+        if is_arm32_cortex_m():
+            return None
         if is_qiling():
             return None
 
@@ -28125,7 +28159,9 @@ class ContextCommand(GenericCommand):
         self.add_setting("smart_cpp_function_name", False, "Print cpp function name without args if demangled")
         self.add_setting("use_native_x_command", False, "Use x/16i instead of Disasm.gef_disassemble")
         self.add_setting("use_capstone", False, "Use capstone as disassembler in the code pane (instead of GDB)")
-        self.add_setting("enable_auto_switch_for_i8086", True, "Enable auto architecture switching for i8086 <-> x86-32.")
+        self.add_setting("enable_auto_switch_for_i8086", True, "Enable auto architecture switching for i8086 <-> x86-32")
+        self.add_setting("disable_vmmap", False, "Disable memory map generation to speed up (e.g., for firmware debugging)")
+        self.add_setting("disable_auxv", False, "Disable scanning auxv from memory to speed up (e.g., for firmware debugging)")
 
         self.layout_mapping = {
             "legend" : self.show_legend,
