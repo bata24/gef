@@ -28154,8 +28154,8 @@ class ContextCommand(GenericCommand):
         self.add_setting("nb_max_string_length", 0x40, "Number of bytes of strings to show")
         self.add_setting("ignore_registers", "", "Space-separated list of registers not to display (e.g., '$cs $ds $gs')")
         self.add_setting("clear_screen", True, "Clear the screen before printing the context")
-        default_legend = "legend regs stack code args source memory threads trace extra"
-        self.add_setting("layout", default_legend, "Change the order/presence of the context sections")
+        default_legend = "legend regs stack code mem_access args source mem_watch threads trace extra"
+        self.add_setting("layout", default_legend, "Order of sections (invalid is ignored; e.g., trace -> -trace)")
         self.add_setting("smart_cpp_function_name", False, "Print cpp function name without args if demangled")
         self.add_setting("use_native_x_command", False, "Use x/16i instead of Disasm.gef_disassemble")
         self.add_setting("use_capstone", False, "Use capstone as disassembler in the code pane (instead of GDB)")
@@ -28164,16 +28164,17 @@ class ContextCommand(GenericCommand):
         self.add_setting("disable_auxv", False, "Disable scanning auxv from memory to speed up (e.g., for firmware debugging)")
 
         self.layout_mapping = {
-            "legend" : self.show_legend,
-            "regs"   : self.context_regs,
-            "stack"  : self.context_stack,
-            "code"   : self.context_code,
-            "args"   : self.context_args,
-            "memory" : self.context_memory,
-            "source" : self.context_source,
-            "trace"  : self.context_trace,
-            "threads": self.context_threads,
-            "extra"  : self.context_additional_information,
+            "legend"     : self.show_legend,
+            "regs"       : self.context_regs,
+            "stack"      : self.context_stack,
+            "code"       : self.context_code,
+            "mem_access" : self.context_memory_access,
+            "args"       : self.context_args,
+            "mem_watch"  : self.context_memory,
+            "source"     : self.context_source,
+            "trace"      : self.context_trace,
+            "threads"    : self.context_threads,
+            "extra"      : self.context_additional_information,
         }
         return
 
@@ -28543,8 +28544,10 @@ class ContextCommand(GenericCommand):
                     gef_print("") # need blank line
                 except Exception:
                     pass
+        return
 
-        self.context_memory_access()
+    def context_memory_access(self):
+        self.context_memory_access1()
         self.context_memory_access2() # for x86/x64 - fs/gs
         self.context_memory_access3() # for x86/x64 - cs/ss/ds/es
         return
@@ -28555,7 +28558,7 @@ class ContextCommand(GenericCommand):
     RE_MATCH_REG2 = re.compile(r"r\d+")
     RE_MATCH_REG3 = re.compile(r"[xw]\d+")
 
-    def context_memory_access(self):
+    def context_memory_access1(self):
         if not (is_x86() or is_arm32() or is_arm32_cortex_m() or is_arm64()):
             return
 
