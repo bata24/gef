@@ -12953,7 +12953,7 @@ class EventHandler:
                     gdb.execute("define si\nstepi-for-qemu-user\nend")
                     gdb.execute("define ni\nnexti-for-qemu-user\nend")
 
-        # disble for cortex-m
+        # disable for cortex-m
         if EventHandler.__gef_check_once__:
             if is_arm32_cortex_m():
                 gdb.execute("gef config context.disable_vmmap True")
@@ -95944,7 +95944,7 @@ class GefStatusCommand(GenericCommand):
     @parse_args
     def do_invoke(self, args):
         if current_arch is None:
-            err("current_arch not set")
+            err("current_arch is not set")
             return
 
         gef_print(titlify("GDB/ELF settings"))
