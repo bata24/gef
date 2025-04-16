@@ -4866,7 +4866,7 @@ def get_libc_version(verbose=False):
     return libc_version
 
 
-def titlify(text, color=None, msg_color=None):
+def titlify(text, color=None, msg_color=None, horizontal_line="-"):
     """Print a centered title."""
     cols = GefUtil.get_terminal_size()[1]
     if color is None:
@@ -4874,15 +4874,14 @@ def titlify(text, color=None, msg_color=None):
     if msg_color is None:
         msg_color = Config.get_gef_setting("theme.default_title_message")
 
-    HORIZONTAL_LINE = "-"
     msg = []
     if text:
         nb = (cols - len(text) - 2) // 2
-        msg.append(Color.colorify("{} ".format(HORIZONTAL_LINE * nb), color))
+        msg.append(Color.colorify("{} ".format(horizontal_line * nb), color))
         msg.append(Color.colorify(text, msg_color))
-        msg.append(Color.colorify(" {}".format(HORIZONTAL_LINE * nb), color))
+        msg.append(Color.colorify(" {}".format(horizontal_line * nb), color))
     else:
-        msg.append(Color.colorify("{}".format(HORIZONTAL_LINE * cols), color))
+        msg.append(Color.colorify("{}".format(horizontal_line * cols), color))
     return "".join(msg)
 
 
@@ -68534,6 +68533,17 @@ class MultiLineCommand(GenericCommand):
     parser.add_argument("cmd", metavar="GDB_CMD;", nargs="+", help="semicolon-separated gdb command.")
     _syntax_ = parser.format_help()
 
+    _example_ = [
+        "{0:s} x/4xg $rax; x/4xg $rbx",
+        "{0:s} x/4xg $rax; -; x/4xg $rbx         # `-`:   newline separator",
+        "{0:s} x/4xg $rax; --; x/4xg $rbx        # `--`:  bold white line (`-`) separator",
+        "{0:s} x/4xg $rax; ---; x/4xg $rbx       # `---`: bold white line (`=`) separator",
+        "{0:s} x/4xg $rax; -t TAG; x/4xg $rbx    # `-t TAG`:   newline separator with TAG",
+        "{0:s} x/4xg $rax; --t TAG; x/4xg $rbx   # `--t TAG`:  bold white line (`-`) separator with TAG",
+        "{0:s} x/4xg $rax; ---t TAG; x/4xg $rbx  # `---t TAG`: bold white line (`=`) separator with TAG",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_COMMAND)
         return
@@ -68553,6 +68563,30 @@ class MultiLineCommand(GenericCommand):
 
         # blank command, so skip
         if cmd.replace(" ", "") == "":
+            return True
+
+        # separator 1
+        if cmd == "-":
+            gef_print("")
+            return True
+        if cmd.startswith("-t"):
+            gef_print(Color.boldify(cmd[2:].strip()))
+            return True
+
+        # separator 2
+        if cmd == "--":
+            gef_print(titlify("", color="bold"))
+            return True
+        if cmd.startswith("--t"):
+            gef_print(titlify(cmd[3:].strip(), color="bold", msg_color="bold"))
+            return True
+
+        # separator 3
+        if cmd == "---":
+            gef_print(titlify("", color="bold", horizontal_line="="))
+            return True
+        if cmd.startswith("---t"):
+            gef_print(titlify(cmd[4:].strip(), color="bold", msg_color="bold", horizontal_line="="))
             return True
 
         gef_print(titlify(cmd))
