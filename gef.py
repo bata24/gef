@@ -20060,7 +20060,7 @@ class AngrCommand(GenericCommand):
                 code = read_memory(sect.page_start, sect.size)
                 loc = os.path.join(dloc, "{:s}-{:#x}.raw".format(filename, sect.page_start))
                 open(loc, "wb").write(bytes(code))
-                yield sect.page_start, loc
+                yield sect, loc
         return None
 
     def make_angr_script(self, dt):
@@ -20075,7 +20075,14 @@ class AngrCommand(GenericCommand):
         content += "\n"
         content += "# initialize\n"
         content += "project = angr.Project({!r}, auto_load_libs=False)\n".format(Path.get_filepath())
-        content += "state = project.factory.blank_state()\n"
+        content += "state = project.factory.blank_state(\n"
+        content += "    add_options={\n"
+        content += "        angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,\n"
+        content += "        angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,\n"
+        content += "        #angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS,\n"
+        content += "        #angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,\n"
+        content += "    }\n"
+        content += ")\n"
         content += "\n"
 
         # hook plt
@@ -20093,8 +20100,9 @@ class AngrCommand(GenericCommand):
         # load memories
         content += "# load memories\n"
         mems = self.save_memories(dt)
-        for mem in mems:
-            content += "state.memory.store({:#x}, open('{:s}', 'rb').read())\n".format(*mem)
+        for sect, loc in mems:
+            content += "# {!r} {!s}\n".format(sect.path or "", sect.permission)
+            content += "state.memory.store({:#x}, open('{:s}', 'rb').read())\n".format(sect.page_start, loc)
         content += "\n"
 
         # set registers
