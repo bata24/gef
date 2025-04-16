@@ -24946,30 +24946,32 @@ class KernelChecksecCommand(GenericCommand):
     def check_unprivileged_userfaultfd(self):
         cfg = "vm.unprivileged_userfaultfd"
         kversion = Kernel.kernel_version()
-        if kversion < "5.2":
-            additional = "{:s}: implemented from linux 5.2".format(cfg)
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unimplemented", "bold red"), additional))
-            return
-
-        stv_uff_ret = gdb.execute("syscall-table-view -f userfaultfd --quiet --no-pager", to_string=True)
-        if "userfaultfd" not in stv_uff_ret:
-            additional = "userfaultfd syscall: Unimplemented"
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall unsupported", "bold green"), additional))
-        elif "invalid userfaultfd" in stv_uff_ret:
-            additional = "userfaultfd syscall: Disabled"
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall unsupported", "bold green"), additional))
-        else:
-            sysctl_unprivileged_userfaultfd = KernelAddressHeuristicFinder.get_sysctl_unprivileged_userfaultfd()
-            if sysctl_unprivileged_userfaultfd is None:
-                additional = "{:s}: Not found".format(cfg)
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+        if kversion >= "4.3":
+            stv_uff_ret = gdb.execute("syscall-table-view -f userfaultfd --quiet --no-pager", to_string=True)
+            if "userfaultfd" not in stv_uff_ret:
+                additional = "userfaultfd syscall: Unimplemented"
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall unsupported", "bold green"), additional))
+            elif "invalid userfaultfd" in stv_uff_ret:
+                additional = "userfaultfd syscall: Disabled"
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall unsupported", "bold green"), additional))
+            elif kversion < "5.2":
+                additional = "userfaultfd syscall: Enabled, but without vm.unprivileged_userfaultfd restriction! (implemented from linux 5.2)"
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall supported", "bold green"), additional))
             else:
-                v = u32(read_memory(sysctl_unprivileged_userfaultfd, 4))
-                additional = "{:s}: {:d}".format(cfg, v)
-                if v == 0:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
+                sysctl_unprivileged_userfaultfd = KernelAddressHeuristicFinder.get_sysctl_unprivileged_userfaultfd()
+                if sysctl_unprivileged_userfaultfd is None:
+                    additional = "{:s}: Not found".format(cfg)
+                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
                 else:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
+                    v = u32(read_memory(sysctl_unprivileged_userfaultfd, 4))
+                    additional = "{:s}: {:d}".format(cfg, v)
+                    if v == 0:
+                        gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
+                    else:
+                        gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
+        else:
+            additional = "userfaultfd syscall: implemented from linux 4.3".format(cfg)
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
         return
 
     def check_unprivileged_bpf_disabled(self):
