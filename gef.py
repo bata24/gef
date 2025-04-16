@@ -24956,7 +24956,7 @@ class KernelChecksecCommand(GenericCommand):
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall unsupported", "bold green"), additional))
             elif kversion < "5.2":
                 additional = "userfaultfd syscall: Enabled, but without vm.unprivileged_userfaultfd restriction! (implemented from linux 5.2)"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall supported", "bold green"), additional))
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall supported", "bold red"), additional))
             else:
                 sysctl_unprivileged_userfaultfd = KernelAddressHeuristicFinder.get_sysctl_unprivileged_userfaultfd()
                 if sysctl_unprivileged_userfaultfd is None:
