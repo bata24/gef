@@ -24357,9 +24357,11 @@ class KernelChecksecCommand(GenericCommand):
                     return "SLUB"
                 else:
                     return "SLUB_TINY"
-        elif gdb.execute("ksymaddr-remote --quiet --no-pager cache_reap", to_string=True):
+
+        if gdb.execute("ksymaddr-remote --quiet --no-pager cache_reap", to_string=True):
             return "SLAB"
-        elif gdb.execute("ksymaddr-remote --quiet --no-pager slob_", to_string=True):
+
+        if gdb.execute("ksymaddr-remote --quiet --no-pager slob_", to_string=True):
             return "SLOB"
         return "Unknown"
 
@@ -24532,11 +24534,12 @@ class KernelChecksecCommand(GenericCommand):
             # It's included in the patch that introduces FGKASLR, so I'm assuming it's always enabled.
             cfg = "CONFIG_MODULE_FG_KASLR (FGKASLR)"
             gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Enabled (maybe)", "bold green")))
-        else:
-            additional = "swapgs_restore_regs_and_return_to_usermode > commit_creds"
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
-            cfg = "CONFIG_MODULE_FG_KASLR (FGKASLR)"
-            gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Unsupported", "bold red")))
+            return
+
+        additional = "swapgs_restore_regs_and_return_to_usermode > commit_creds"
+        gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
+        cfg = "CONFIG_MODULE_FG_KASLR (FGKASLR)"
+        gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Unsupported", "bold red")))
         return
 
     def check_kpti(self):
@@ -24610,6 +24613,7 @@ class KernelChecksecCommand(GenericCommand):
             if m[2] == "RWX":
                 gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Found", "bold red")))
                 return
+
         gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Not found", "bold green")))
         return
 
@@ -24630,14 +24634,15 @@ class KernelChecksecCommand(GenericCommand):
         slub_dump_ret = gdb.execute("slub-dump --quiet --no-pager {:s}".format(slab_cache_names), to_string=True)
         if slub_dump_ret.count("Corrupted") >= 2: # Destruction of up to one SLUB freelist is allowed.
             gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
+            return
+
+        slub_dump_ret = gdb.execute("slub-dump --meta", to_string=True)
+        r = re.search(r"offsetof\(kmem_cache, random\): (0x\S+)", slub_dump_ret)
+        if r:
+            additional = "offsetof(kmem_cache, random): {:s}".format(r.group(1))
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         else:
-            slub_dump_ret = gdb.execute("slub-dump --meta", to_string=True)
-            r = re.search(r"offsetof\(kmem_cache, random\): (0x\S+)", slub_dump_ret)
-            if r:
-                additional = "offsetof(kmem_cache, random): {:s}".format(r.group(1))
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
-            else:
-                gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Disabled", "bold red")))
+            gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Disabled", "bold red")))
         return
 
     def check_selinux(self):
@@ -24657,91 +24662,96 @@ class KernelChecksecCommand(GenericCommand):
             if selinux_enabled_addr is None:
                 additional = "selinux_init: Found, seliux_enabled: Not detected"
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
-            elif selinux_enforcing_addr is None:
+                return
+
+            if selinux_enforcing_addr is None:
                 additional = "selinux_init: Found, seliux_enforcing: Not detected"
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
-            else:
-                selinux_enabled = u32(read_memory(selinux_enabled_addr, 4))
-                selinux_enforcing = u32(read_memory(selinux_enforcing_addr, 4))
-                additional = "selinux_init: Found, selinux_enabled: {:d}, selinux_enforcing: {:d}".format(
-                    selinux_enabled, selinux_enforcing,
-                )
-                if selinux_enabled == 0:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
-                elif selinux_enforcing == 0:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Permissive", "bold red"), additional))
-                else:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enforcing", "bold green"), additional))
+                return
 
-        else: # kernel >= 4.17
-            """
-            struct selinux_state {
-            #ifdef CONFIG_SECURITY_SELINUX_DISABLE
-                abool disabled;
-            #endif
-            #ifdef CONFIG_SECURITY_SELINUX_DEVELOP
-                abool enforcing;
-            #endif
-                abool checkreqprot;
-                abool initialized;
-                abool policycap[__POLICYDB_CAP_MAX]; # __POLICYDB_CAP_MAX:6 ~ 8 bytes
-                astruct page *status_page;
-                astruct mutex status_lock;
-                astruct selinux_avc *avc;
-                astruct selinux_policy __rcu *policy;
-                astruct mutex policy_mutex;
-            } __randomize_layout;
-
-            x64 sample
-            gef> x/16xg 0xffffffff8ba20740
-            0xffffffff8ba20740:     0x0100010101010001      0x0000000000000001
-            0xffffffff8ba20750:     0xffffe3bc00215140      0x0000000000000000
-            0xffffffff8ba20760:     0x0000000000000000      0xffffffff8ba20768
-            0xffffffff8ba20770:     0xffffffff8ba20768      0xffffffff8ba1ef20
-            0xffffffff8ba20780:     0xffff8ecc7fe62800      0x0000000000000000
-            """
-
-            selinux_state = KernelAddressHeuristicFinder.get_selinux_state()
-
-            if selinux_state is None:
-                additional = "selinux_init: Found, selinux_state: Not detected"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
-
-            elif u64(read_memory(selinux_state, 8)) == 0:
-                additional = "selinux_init: Found, selinux_state: Not initialized"
+            selinux_enabled = u32(read_memory(selinux_enabled_addr, 4))
+            selinux_enforcing = u32(read_memory(selinux_enforcing_addr, 4))
+            additional = "selinux_init: Found, selinux_enabled: {:d}, selinux_enforcing: {:d}".format(
+                selinux_enabled, selinux_enforcing,
+            )
+            if selinux_enabled == 0:
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
-
+            elif selinux_enforcing == 0:
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Permissive", "bold red"), additional))
             else:
-                selinux_disable = Symbol.get_ksymaddr("selinux_disable")
-                CONFIG_SECURITY_SELINUX_DISABLE = selinux_disable is not None
-                enforcing_setup = Symbol.get_ksymaddr("enforcing_setup")
-                CONFIG_SECURITY_SELINUX_DEVELOP = enforcing_setup is not None
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enforcing", "bold green"), additional))
+            return
 
-                # selinux_state.disabled
-                if CONFIG_SECURITY_SELINUX_DISABLE:
-                    selinux_disabled = u8(read_memory(selinux_state, 1))
-                    additional = "selinux_init: Found, selinux_state.disable: {:d}".format(selinux_disabled)
-                else:
-                    selinux_disabled = None
-                    additional = "selinux_init: Found, selinux_state.disable: Not found"
+        # kernel >= 4.17
+        """
+        struct selinux_state {
+        #ifdef CONFIG_SECURITY_SELINUX_DISABLE
+            abool disabled;
+        #endif
+        #ifdef CONFIG_SECURITY_SELINUX_DEVELOP
+            abool enforcing;
+        #endif
+            abool checkreqprot;
+            abool initialized;
+            abool policycap[__POLICYDB_CAP_MAX]; # __POLICYDB_CAP_MAX:6 ~ 8 bytes
+            astruct page *status_page;
+            astruct mutex status_lock;
+            astruct selinux_avc *avc;
+            astruct selinux_policy __rcu *policy;
+            astruct mutex policy_mutex;
+        } __randomize_layout;
 
-                # selinux_state.enforcing
-                if CONFIG_SECURITY_SELINUX_DEVELOP and CONFIG_SECURITY_SELINUX_DISABLE:
-                    selinux_enforcing = u8(read_memory(selinux_state + 1, 1))
-                    additional += ", selinux_state.enforcing: {:d}".format(selinux_enforcing)
-                elif CONFIG_SECURITY_SELINUX_DEVELOP and not CONFIG_SECURITY_SELINUX_DISABLE:
-                    selinux_enforcing = u8(read_memory(selinux_state, 1)) != 0
-                    additional += ", selinux_state.enforcing: {:d}".format(selinux_enforcing)
-                else:
-                    selinux_enforcing = True
-                    additional += ", selinux_state.enforcing: Not found"
+        x64 sample
+        gef> x/16xg 0xffffffff8ba20740
+        0xffffffff8ba20740:     0x0100010101010001      0x0000000000000001
+        0xffffffff8ba20750:     0xffffe3bc00215140      0x0000000000000000
+        0xffffffff8ba20760:     0x0000000000000000      0xffffffff8ba20768
+        0xffffffff8ba20770:     0xffffffff8ba20768      0xffffffff8ba1ef20
+        0xffffffff8ba20780:     0xffff8ecc7fe62800      0x0000000000000000
+        """
 
-                if selinux_disabled:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
-                elif not selinux_enforcing:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Permissive", "bold red"), additional))
-                elif selinux_enforcing:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enforcing", "bold green"), additional))
+        selinux_state = KernelAddressHeuristicFinder.get_selinux_state()
+
+        if selinux_state is None:
+            additional = "selinux_init: Found, selinux_state: Not detected"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
+            return
+
+        if u64(read_memory(selinux_state, 8)) == 0:
+            additional = "selinux_init: Found, selinux_state: Not initialized"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+            return
+
+        selinux_disable = Symbol.get_ksymaddr("selinux_disable")
+        CONFIG_SECURITY_SELINUX_DISABLE = selinux_disable is not None
+        enforcing_setup = Symbol.get_ksymaddr("enforcing_setup")
+        CONFIG_SECURITY_SELINUX_DEVELOP = enforcing_setup is not None
+
+        # selinux_state.disabled
+        if CONFIG_SECURITY_SELINUX_DISABLE:
+            selinux_disabled = u8(read_memory(selinux_state, 1))
+            additional = "selinux_init: Found, selinux_state.disable: {:d}".format(selinux_disabled)
+        else:
+            selinux_disabled = None
+            additional = "selinux_init: Found, selinux_state.disable: Not found"
+
+        # selinux_state.enforcing
+        if CONFIG_SECURITY_SELINUX_DEVELOP and CONFIG_SECURITY_SELINUX_DISABLE:
+            selinux_enforcing = u8(read_memory(selinux_state + 1, 1))
+            additional += ", selinux_state.enforcing: {:d}".format(selinux_enforcing)
+        elif CONFIG_SECURITY_SELINUX_DEVELOP and not CONFIG_SECURITY_SELINUX_DISABLE:
+            selinux_enforcing = u8(read_memory(selinux_state, 1)) != 0
+            additional += ", selinux_state.enforcing: {:d}".format(selinux_enforcing)
+        else:
+            selinux_enforcing = True
+            additional += ", selinux_state.enforcing: Not found"
+
+        if selinux_disabled:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+        elif not selinux_enforcing:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Permissive", "bold red"), additional))
+        elif selinux_enforcing:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enforcing", "bold green"), additional))
         return
 
     def check_smack(self):
@@ -24779,33 +24789,39 @@ class KernelChecksecCommand(GenericCommand):
         if apparmor_enabled_addr is None:
             additional = "apparmor_init: Found, apparmor_enabled: Not detected"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
-        elif apparmor_initialized_addr is None:
+            return
+
+        if apparmor_initialized_addr is None:
             additional = "apparmor_init: Found, apparmor_initialized: Not detected"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
-        else:
-            kversion = Kernel.kernel_version()
-            if kversion < "5.1":
-                apparmor_enabled = u8(read_memory(apparmor_enabled_addr, 1)) # bool
-            else:
-                apparmor_enabled = u32(read_memory(apparmor_enabled_addr, 4)) # int
-            apparmor_initialized = u32(read_memory(apparmor_initialized_addr, 4))
+            return
 
-            if apparmor_enabled not in [0, 1]:
-                additional = "apparmor_init: Found, apparmor_enabled: {:#x}".format(apparmor_enabled)
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
-            elif apparmor_initialized not in [0, 1]:
-                additional = "apparmor_init: Found, apparmor_initialized: {:#x}".format(apparmor_initialized)
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
-            else:
-                additional = "apparmor_init: Found"
-                additional += ", apparmor_initialized: {:d}".format(apparmor_initialized)
-                additional += ", apparmor_enabled: {:d}".format(apparmor_enabled)
-                if apparmor_enabled == 0:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
-                elif apparmor_initialized == 0:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
-                else:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+        kversion = Kernel.kernel_version()
+        if kversion < "5.1":
+            apparmor_enabled = u8(read_memory(apparmor_enabled_addr, 1)) # bool
+        else:
+            apparmor_enabled = u32(read_memory(apparmor_enabled_addr, 4)) # int
+        apparmor_initialized = u32(read_memory(apparmor_initialized_addr, 4))
+
+        if apparmor_enabled not in [0, 1]:
+            additional = "apparmor_init: Found, apparmor_enabled: {:#x}".format(apparmor_enabled)
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
+            return
+
+        if apparmor_initialized not in [0, 1]:
+            additional = "apparmor_init: Found, apparmor_initialized: {:#x}".format(apparmor_initialized)
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
+            return
+
+        additional = "apparmor_init: Found"
+        additional += ", apparmor_initialized: {:d}".format(apparmor_initialized)
+        additional += ", apparmor_enabled: {:d}".format(apparmor_enabled)
+        if apparmor_enabled == 0:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+        elif apparmor_initialized == 0:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+        else:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         return
 
     def check_tomoyo(self):
@@ -24820,13 +24836,14 @@ class KernelChecksecCommand(GenericCommand):
         if tomoyo_enabled_addr is None:
             additional = "tomoyo_init: Found, tomoyo_enabled: Not detected"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
+            return
+
+        tomoyo_enabled = u32(read_memory(tomoyo_enabled_addr, 4))
+        additional = "tomoyo_init: Found, tomoyo_enabled: {:d}".format(tomoyo_enabled)
+        if tomoyo_enabled == 0:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         else:
-            tomoyo_enabled = u32(read_memory(tomoyo_enabled_addr, 4))
-            additional = "tomoyo_init: Found, tomoyo_enabled: {:d}".format(tomoyo_enabled)
-            if tomoyo_enabled == 0:
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
-            else:
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         return
 
     def check_yama(self):
@@ -24841,13 +24858,14 @@ class KernelChecksecCommand(GenericCommand):
         if ptrace_scope_addr is None:
             additional = "yama_init: Found, kernel.yama.ptrace_scope: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
+            return
+
+        ptrace_scope = u32(read_memory(ptrace_scope_addr, 4))
+        additional = "yama_init: Found, kernel.yama.ptrace_scope: {:d}".format(ptrace_scope)
+        if ptrace_scope == 0:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         else:
-            ptrace_scope = u32(read_memory(ptrace_scope_addr, 4))
-            additional = "yama_init: Found, kernel.yama.ptrace_scope: {:d}".format(ptrace_scope)
-            if ptrace_scope == 0:
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
-            else:
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         return
 
     def check_integrity(self):
@@ -24874,13 +24892,14 @@ class KernelChecksecCommand(GenericCommand):
         if loadpin_enabled_addr is None:
             additional = "loadpin_init: Found, kernel.loadpin.enabled: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
+            return
+
+        loadpin_enabled = u32(read_memory(loadpin_enabled_addr, 4))
+        additional = "loadpin_init: Found, kernel.loadpin.enabled: {:d}".format(loadpin_enabled)
+        if loadpin_enabled == 0:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         else:
-            loadpin_enabled = u32(read_memory(loadpin_enabled_addr, 4))
-            additional = "loadpin_init: Found, kernel.loadpin.enabled: {:d}".format(loadpin_enabled)
-            if loadpin_enabled == 0:
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
-            else:
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         return
 
     def check_safe_setid(self):
@@ -24937,7 +24956,9 @@ class KernelChecksecCommand(GenericCommand):
         if "Not found" in kmod_ret:
             additional = "kmod is failed"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
-        elif ": lkrg " in kmod_ret:
+            return
+
+        if ": lkrg " in kmod_ret:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), "Loaded"))
         else:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), "Not loaded"))
@@ -24945,62 +24966,70 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_unprivileged_userfaultfd(self):
         cfg = "vm.unprivileged_userfaultfd"
+
+        stv_uff_ret = gdb.execute("syscall-table-view -f userfaultfd --quiet --no-pager", to_string=True)
+        if "userfaultfd" not in stv_uff_ret:
+            additional = "userfaultfd syscall: Unimplemented"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall unsupported", "bold green"), additional))
+            return
+
+        if "invalid userfaultfd" in stv_uff_ret:
+            additional = "userfaultfd syscall: Disabled"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall unsupported", "bold green"), additional))
+            return
+
         kversion = Kernel.kernel_version()
-        if kversion >= "4.3":
-            stv_uff_ret = gdb.execute("syscall-table-view -f userfaultfd --quiet --no-pager", to_string=True)
-            if "userfaultfd" not in stv_uff_ret:
-                additional = "userfaultfd syscall: Unimplemented"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall unsupported", "bold green"), additional))
-            elif "invalid userfaultfd" in stv_uff_ret:
-                additional = "userfaultfd syscall: Disabled"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall unsupported", "bold green"), additional))
-            elif kversion < "5.2":
-                additional = "userfaultfd syscall: Enabled, but without vm.unprivileged_userfaultfd restriction! (implemented from linux 5.2)"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall supported", "bold red"), additional))
-            else:
-                sysctl_unprivileged_userfaultfd = KernelAddressHeuristicFinder.get_sysctl_unprivileged_userfaultfd()
-                if sysctl_unprivileged_userfaultfd is None:
-                    additional = "{:s}: Not found".format(cfg)
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
-                else:
-                    v = u32(read_memory(sysctl_unprivileged_userfaultfd, 4))
-                    additional = "{:s}: {:d}".format(cfg, v)
-                    if v == 0:
-                        gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
-                    else:
-                        gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
+        if kversion < "5.2":
+            additional = "userfaultfd syscall: Enabled, but without {:s} restriction! (implemented from linux 5.2)".format(cfg)
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unimplemented", "bold red"), additional))
+            return
+
+        sysctl_unprivileged_userfaultfd = KernelAddressHeuristicFinder.get_sysctl_unprivileged_userfaultfd()
+        if sysctl_unprivileged_userfaultfd is None:
+            additional = "{:s}: Not found".format(cfg)
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+            return
+
+        v = u32(read_memory(sysctl_unprivileged_userfaultfd, 4))
+        additional = "{:s}: {:d}".format(cfg, v)
+        if v == 0:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
         else:
-            additional = "userfaultfd syscall: implemented from linux 4.3".format(cfg)
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
         return
 
     def check_unprivileged_bpf_disabled(self):
         cfg = "kernel.unprivileged_bpf_disabled"
-        kversion = Kernel.kernel_version()
-        if kversion < "4.4":
-            additional = "{:s}: implemented from linux 4.4".format(cfg)
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unimplemented", "bold red"), additional))
-            return
 
         stv_bpf_ret = gdb.execute("syscall-table-view -f bpf --quiet --no-pager", to_string=True)
         if "bpf" not in stv_bpf_ret:
             additional = "bpf syscall: Unimplemented"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall unsupported", "bold green"), additional))
-        elif "invalid bpf" in stv_bpf_ret:
+            return
+
+        if "invalid bpf" in stv_bpf_ret:
             additional = "bpf syscall: Disabled"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall unsupported", "bold green"), additional))
+            return
+
+        kversion = Kernel.kernel_version()
+        if kversion < "4.4":
+            additional = "bpf syscall: Enabled, without {:s}, but it needs CAP_SYS_ADMIN (implemented from linux 4.4)".format(cfg)
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unimplemented", "bold green"), additional))
+            return
+
+        sysctl_unprivileged_bpf_disabled = KernelAddressHeuristicFinder.get_sysctl_unprivileged_bpf_disabled()
+        if sysctl_unprivileged_bpf_disabled is None:
+            additional = "{:s}: Not found".format(cfg)
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+            return
+
+        v = u32(read_memory(sysctl_unprivileged_bpf_disabled, 4))
+        additional = "{:s}: {:d}".format(cfg, v)
+        if v == 0:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         else:
-            sysctl_unprivileged_bpf_disabled = KernelAddressHeuristicFinder.get_sysctl_unprivileged_bpf_disabled()
-            if sysctl_unprivileged_bpf_disabled is None:
-                additional = "{:s}: Not found".format(cfg)
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
-            else:
-                v = u32(read_memory(sysctl_unprivileged_bpf_disabled, 4))
-                additional = "{:s}: {:d}".format(cfg, v)
-                if v == 0:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
-                else:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         return
 
     def check_kexec_load_disabled(self):
@@ -25024,18 +25053,20 @@ class KernelChecksecCommand(GenericCommand):
             elif "invalid kexec_file_load" in r2:
                 additional += ", " + "kexec_file_load syscall: Disabled"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall unsupported", "bold green"), additional))
+            return
+
+        kexec_load_disabled = KernelAddressHeuristicFinder.get_kexec_load_disabled()
+        if kexec_load_disabled is None:
+            additional = "{:s}: Not found".format(cfg)
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+            return
+
+        v1 = u32(read_memory(kexec_load_disabled, 4))
+        additional = "{:s}: {:d}".format(cfg, v1)
+        if v1 == 0:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         else:
-            kexec_load_disabled = KernelAddressHeuristicFinder.get_kexec_load_disabled()
-            if kexec_load_disabled is None:
-                additional = "{:s}: Not found".format(cfg)
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
-            else:
-                v1 = u32(read_memory(kexec_load_disabled, 4))
-                additional = "{:s}: {:d}".format(cfg, v1)
-                if v1 == 0:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
-                else:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         return
 
     def check_namespaces(self):
@@ -25057,20 +25088,24 @@ class KernelChecksecCommand(GenericCommand):
                 additional = "{:s}: implemented from linux {:s}".format(cfg, kv)
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unimplemented", "bold red"), additional))
                 continue
+
             if not ksysctl_ret: # maybe CONFIG_RANDSTRUCT=y
                 additional = "{:s}: Not found".format(cfg)
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
                 continue
+
             if prev_fail: # Kernel.get_ksysctl is very slow, so skip if previous Kernel.get_ksysctl() was failed
                 additional = "{:s}: Not found".format(cfg)
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
                 continue
+
             addr = Kernel.get_ksysctl(cfg) # very slow
             if addr is None:
                 additional = "{:s}: Not found".format(cfg)
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
                 prev_fail = True
                 continue
+
             val = u32(read_memory(addr, 4))
             if val:
                 gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("{:d}".format(val), "bold red")))
@@ -25169,39 +25204,40 @@ class KernelChecksecCommand(GenericCommand):
         if call_usermodehelper_setup is None:
             additional = "call_usermodehelper_setup: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
-        else:
-            res = gdb.execute("x/50i {:#x}".format(call_usermodehelper_setup), to_string=True)
-            use_static = False
-            if is_x86_64():
-                g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
-            elif is_x86_32():
-                g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
-            elif is_arm64():
-                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
-            elif is_arm32():
-                g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-            for x in g:
-                if not is_valid_addr(x):
-                    continue
-                # default value of CONFIG_STATIC_USERMODEHELPER_PATH is "/sbin/usermode-helper".
-                if read_memory(x, 5) == b"/sbin":
+            return
+
+        res = gdb.execute("x/50i {:#x}".format(call_usermodehelper_setup), to_string=True)
+        use_static = False
+        if is_x86_64():
+            g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
+        elif is_x86_32():
+            g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
+        elif is_arm64():
+            g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
+        elif is_arm32():
+            g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+        for x in g:
+            if not is_valid_addr(x):
+                continue
+            # default value of CONFIG_STATIC_USERMODEHELPER_PATH is "/sbin/usermode-helper".
+            if read_memory(x, 5) == b"/sbin":
+                use_static = True
+                break
+            # sometimes CONFIG_STATIC_USERMODEHELPER_PATH is set to "".
+            # If CONFIG_STATIC_USERMODEHELPER_PATH is "", one NUL should be stored.
+            # In many cases, another string seems to start being stored at the next address of NUL.
+            # It is rare for two consecutive NULs to occur, and we use this in the detection logic.
+            if read_memory(x, 1) == b"\x00" and read_memory(x + 1, 1) != b"\x00":
+                # check if the address is read-only or not
+                if get_permission(x) == "R--":
                     use_static = True
                     break
-                # sometimes CONFIG_STATIC_USERMODEHELPER_PATH is set to "".
-                # If CONFIG_STATIC_USERMODEHELPER_PATH is "", one NUL should be stored.
-                # In many cases, another string seems to start being stored at the next address of NUL.
-                # It is rare for two consecutive NULs to occur, and we use this in the detection logic.
-                if read_memory(x, 1) == b"\x00" and read_memory(x + 1, 1) != b"\x00":
-                    # check if the address is read-only or not
-                    if get_permission(x) == "R--":
-                        use_static = True
-                        break
-            if use_static:
-                additional = "call_usermodehelper_setup uses static path"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
-            else:
-                additional = "call_usermodehelper_setup uses dynamic path"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+        if use_static:
+            additional = "call_usermodehelper_setup uses static path"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+        else:
+            additional = "call_usermodehelper_setup uses dynamic path"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         return
 
     def check_CONFIG_STACKPROTECTOR(self):
@@ -25211,12 +25247,13 @@ class KernelChecksecCommand(GenericCommand):
         if r:
             additional = "offsetof(task_struct, stack_canary): {:s}".format(r.group(1))
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+            return
+
+        if "stack_canary" in ktask_ret:
+            gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Disabled", "bold red")))
         else:
-            if "stack_canary" in ktask_ret:
-                gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Disabled", "bold red")))
-            else:
-                additional = "ktask was failed"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+            additional = "ktask was failed"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
         return
 
     def check_CONFIG_SHADOW_CALL_STACK(self):
@@ -25252,30 +25289,35 @@ class KernelChecksecCommand(GenericCommand):
             if kptr_restrict is None:
                 additional = "kernel.kptr_restrict: Not found"
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+                return
+
+            v1 = u32(read_memory(kptr_restrict, 4))
+            additional = "kernel.kptr_restrict: {:d}".format(v1)
+            if v1 == 0:
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
             else:
-                v1 = u32(read_memory(kptr_restrict, 4))
-                additional = "kernel.kptr_restrict: {:d}".format(v1)
-                if v1 == 0:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
-                else:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+            return
+
+        kptr_restrict = KernelAddressHeuristicFinder.get_kptr_restrict()
+        sysctl_perf_event_paranoid = KernelAddressHeuristicFinder.get_sysctl_perf_event_paranoid()
+        if kptr_restrict is None:
+            additional = "kernel.kptr_restrict: Not found"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+            return
+
+        if sysctl_perf_event_paranoid is None:
+            additional = "kernel.perf_event_paranoid: Not found"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+            return
+
+        v1 = u32(read_memory(kptr_restrict, 4))
+        v2 = u32(read_memory(sysctl_perf_event_paranoid, 4), s=True)
+        additional = "kernel.kptr_restrict: {:d}, kernel.perf_event_paranoid: {:d}".format(v1, v2)
+        if v1 == 0 and v2 <= 1:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         else:
-            kptr_restrict = KernelAddressHeuristicFinder.get_kptr_restrict()
-            sysctl_perf_event_paranoid = KernelAddressHeuristicFinder.get_sysctl_perf_event_paranoid()
-            if kptr_restrict is None:
-                additional = "kernel.kptr_restrict: Not found"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
-            elif sysctl_perf_event_paranoid is None:
-                additional = "kernel.perf_event_paranoid: Not found"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
-            else:
-                v1 = u32(read_memory(kptr_restrict, 4))
-                v2 = u32(read_memory(sysctl_perf_event_paranoid, 4), s=True)
-                additional = "kernel.kptr_restrict: {:d}, kernel.perf_event_paranoid: {:d}".format(v1, v2)
-                if v1 == 0 and v2 <= 1:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
-                else:
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         return
 
     def check_kadr_dmesg(self):
@@ -25284,13 +25326,14 @@ class KernelChecksecCommand(GenericCommand):
         if dmesg_restrict is None:
             additional = "kernel.dmesg_restrict: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+            return
+
+        v1 = u32(read_memory(dmesg_restrict, 4))
+        additional = "kernel.dmesg_restrict: {:d}".format(v1)
+        if v1 == 0:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         else:
-            v1 = u32(read_memory(dmesg_restrict, 4))
-            additional = "kernel.dmesg_restrict: {:d}".format(v1)
-            if v1 == 0:
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
-            else:
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         return
 
     def check_mmap_min_addr(self):
@@ -25333,6 +25376,7 @@ class KernelChecksecCommand(GenericCommand):
                 supported_syscall.append("arm64")
             if KernelAddressHeuristicFinder.get_sys_call_table_arm64_compat():
                 supported_syscall.append("arm32(compat)")
+
         if supported_syscall:
             gef_print("{:<40s}: {:s}".format(cfg, ", ".join(supported_syscall)))
         else:
