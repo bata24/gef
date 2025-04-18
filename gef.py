@@ -72719,7 +72719,13 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         self.initialized = True
         return True
 
-    def get_virt_phys_str(self, page, size):
+    def get_virt_phys_str(self, page, size, is_highmem):
+        virt_str = "???"
+        phys_str = "???"
+
+        if is_highmem:
+            return virt_str, phys_str
+
         heap_page_color = Config.get_gef_setting("theme.heap_page_address")
         align = AddressUtil.get_format_address_width()
 
@@ -72769,11 +72775,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             page_str = Color.colorify("{:#0{:d}x}".format(page, align), freed_address_color)
 
             # address info
-            virt_str = "???"
-            phys_str = "???"
-
-            if not is_highmem:
-                virt_str, phys_str = self.get_virt_phys_str(page, size)
+            virt_str, phys_str = self.get_virt_phys_str(page, size, is_highmem)
 
             # create msg
             msg = "    page:{:s}  size:{:s}  virt:{:s}  phys:{:s} (pcp, cpu={:d})".format(
@@ -72836,13 +72838,12 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             page_str = Color.colorify("{:#0{:d}x}".format(page, align), freed_address_color)
 
             # address info
-            virt_str = "???"
-            phys_str = "???"
-            if not is_highmem:
-                virt_str, phys_str = self.get_virt_phys_str(page, size)
+            virt_str, phys_str = self.get_virt_phys_str(page, size, is_highmem)
 
             # create msg
-            msg = "    page:{:s}  size:{:s}  virt:{:s}  phys:{:s}".format(page_str, size_str, virt_str, phys_str)
+            msg = "    page:{:s}  size:{:s}  virt:{:s}  phys:{:s}".format(
+                page_str, size_str, virt_str, phys_str,
+            )
 
             # add msg
             if self.args.sort:
