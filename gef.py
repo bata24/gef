@@ -72637,7 +72637,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
         current = AddressUtil.align_address_to_size(per_cpu_pageset + 4 * 3, current_arch.ptrsize) # count, high, batch
         while not is_double_link_list(current): # search list_head
-            current += current_arch.ptrsize * 2
+            current += current_arch.ptrsize
         self.offset_lists = current - per_cpu_pageset
         self.quiet_info("offsetof(per_cpu_pageset, lists): {:#x}".format(self.offset_lists))
 
