@@ -1293,6 +1293,11 @@ class AddressUtil:
         return addr + ((align - (addr % align)) % align)
 
     @staticmethod
+    def align_address_to_ptrsize(addr):
+        """Align the address to the ptrsize."""
+        return AddressUtil.align_address_to_size(addr, current_arch.ptrsize)
+
+    @staticmethod
     def parse_address(addr):
         """Parse an address and return it as an Integer."""
         if String.is_hex(addr):
@@ -3203,13 +3208,9 @@ class GlibcHeap:
         @property
         def addrof_mmapped_mem(self):
             if get_libc_version() >= (2, 15):
-                return AddressUtil.align_address_to_size(
-                    self.addrof_no_dyn_threshold + self.int_t.sizeof, current_arch.ptrsize,
-                )
+                return AddressUtil.align_address_to_ptrsize(self.addrof_no_dyn_threshold + self.int_t.sizeof)
             else:
-                return AddressUtil.align_address_to_size(
-                    self.addrof_pagesize + self.int_t.sizeof, current_arch.ptrsize,
-                )
+                return AddressUtil.align_address_to_ptrsize(self.addrof_pagesize + self.int_t.sizeof)
 
         @property
         def addrof_max_mmapped_mem(self):
@@ -57057,7 +57058,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         };
         """
         kversion = Kernel.kernel_version()
-        offset_stack_canary = AddressUtil.align_address_to_size(offset_pid + 4 + 4, current_arch.ptrsize)
+        offset_stack_canary = AddressUtil.align_address_to_ptrsize(offset_pid + 4 + 4)
         found = True
         for task in task_addrs:
             v1 = read_int_from_memory(task + offset_stack_canary)
@@ -57095,7 +57096,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         };
         """
         if offset_kcanary is None:
-            offset_real_parent = AddressUtil.align_address_to_size(offset_pid + 4 + 4, current_arch.ptrsize)
+            offset_real_parent = AddressUtil.align_address_to_ptrsize(offset_pid + 4 + 4)
         else:
             offset_real_parent = offset_kcanary + current_arch.ptrsize
         offset_group_leader = offset_real_parent + current_arch.ptrsize * (1 + 1 + 2 + 2)
@@ -57666,7 +57667,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         for i in range(10):
             offset_user_ns = offset_uid + uid_gid_size + sizeof_securebits
-            offset_user_ns = AddressUtil.align_address_to_size(offset_user_ns, current_arch.ptrsize)
+            offset_user_ns = AddressUtil.align_address_to_ptrsize(offset_user_ns)
             offset_user_ns += cap_size + current_arch.ptrsize * i
             v = read_int_from_memory(init_task_cred_ptr + offset_user_ns)
             if not is_valid_addr(v):
@@ -71263,14 +71264,14 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                         found = False
                         break
                     node_addr_ptr = kmem_cache - self.kmem_cache_offset_list + candidate_offset + 4 + 4
-                    node_addr_ptr = AddressUtil.align_address_to_size(node_addr_ptr, current_arch.ptrsize)
+                    node_addr_ptr = AddressUtil.align_address_to_ptrsize(node_addr_ptr)
                     node_addr = read_int_from_memory(node_addr_ptr)
                     if not is_valid_addr(node_addr):
                         found = False
                         break
 
                 if found:
-                    self.kmem_cache_offset_node = AddressUtil.align_address_to_size(candidate_offset + 4 * 2, current_arch.ptrsize)
+                    self.kmem_cache_offset_node = AddressUtil.align_address_to_ptrsize(candidate_offset + 4 * 2)
                     self.quiet_info("offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node))
                     break
             else:
@@ -72635,7 +72636,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             per_cpu_pageset = read_int_from_memory(self.nodes[0] + self.offset_per_cpu_pageset) + self.cpu_offset[0]
             per_cpu_pageset = AddressUtil.align_address(per_cpu_pageset)
 
-        current = AddressUtil.align_address_to_size(per_cpu_pageset + 4 * 3, current_arch.ptrsize) # count, high, batch
+        current = AddressUtil.align_address_to_ptrsize(per_cpu_pageset + 4 * 3) # count, high, batch
         while not is_double_link_list(current): # search list_head
             current += current_arch.ptrsize
         self.offset_lists = current - per_cpu_pageset
@@ -73270,7 +73271,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(pipe_buffer, len): {:#x}".format(self.offset_len))
         self.offset_flags = self.offset_len + 4 + current_arch.ptrsize
         self.quiet_info("offsetof(pipe_buffer, flags): {:#x}".format(self.offset_flags))
-        self.sizeof_pipe_buffer = AddressUtil.align_address_to_size(self.offset_flags + 4, current_arch.ptrsize) + current_arch.ptrsize
+        self.sizeof_pipe_buffer = AddressUtil.align_address_to_ptrsize(self.offset_flags + 4) + current_arch.ptrsize
         self.quiet_info("sizeof(pipe_buffer): {:#x}".format(self.sizeof_pipe_buffer))
 
         self.initialized = True
@@ -73625,10 +73626,10 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
         self.offset_jited_len = self.offset_len + 4
         self.offset_tag = self.offset_jited_len + 4
         if kversion >= "5.12":
-            self.offset_aux = AddressUtil.align_address_to_size(self.offset_tag + 8, current_arch.ptrsize) + current_arch.ptrsize * 3
+            self.offset_aux = AddressUtil.align_address_to_ptrsize(self.offset_tag + 8) + current_arch.ptrsize * 3
             self.offset_bpf_func = self.offset_aux - current_arch.ptrsize
         else:
-            self.offset_aux = AddressUtil.align_address_to_size(self.offset_tag + 8, current_arch.ptrsize)
+            self.offset_aux = AddressUtil.align_address_to_ptrsize(self.offset_tag + 8)
             self.offset_bpf_func = self.offset_aux + current_arch.ptrsize * 2
         self.quiet_info("offsetof(bpf_prog, type): {:#x}".format(self.offset_prog_type))
         self.quiet_info("offsetof(bpf_prog, expected_attach_type): {:#x}".format(self.offset_expected_attach_type))
@@ -75173,7 +75174,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
             self.quiet_err("Not found irq_desc->irq_data.irq")
             return False
 
-        ofs_irq = AddressUtil.align_address_to_size(self.offset_irq + 4 * 2, current_arch.ptrsize)
+        ofs_irq = AddressUtil.align_address_to_ptrsize(self.offset_irq + 4 * 2)
         for i in range(100):
             x = read_int_from_memory(desc + ofs_irq + current_arch.ptrsize * i)
             y = read_int_from_memory(desc + ofs_irq + current_arch.ptrsize * (i + 1))
@@ -77921,7 +77922,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
         sl_bitmap = read_memory(pool + offset_sl_bitmap, 4 * self.REAL_FLI)
         sl_bitmap = slice_unpack(sl_bitmap, 4)
 
-        offset_matrix = AddressUtil.align_address_to_size(offset_sl_bitmap + 4 * self.REAL_FLI, current_arch.ptrsize)
+        offset_matrix = AddressUtil.align_address_to_ptrsize(offset_sl_bitmap + 4 * self.REAL_FLI)
         matrix = read_memory(pool + offset_matrix, current_arch.ptrsize * self.REAL_FLI * self.MAX_SLI)
         matrix = slice_unpack(matrix, current_arch.ptrsize)
         matrix = slicer(matrix, self.MAX_SLI)
