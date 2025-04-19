@@ -476,6 +476,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
         * `patch syscall`
         * `patch history`
         * `patch revert`
+        * `patch range-replace`
     * `nop` command has been integrated into `patch` as subcommand.
     * ![](images/patch.png)
 * `search-pattern`: is improved.

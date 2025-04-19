@@ -30122,6 +30122,7 @@ class PatchCommand(GenericCommand):
     subparsers.add_parser("trap")
     subparsers.add_parser("ret")
     subparsers.add_parser("syscall")
+    subparsers.add_parser("range-replace")
     subparsers.add_parser("history")
     subparsers.add_parser("revert")
     _syntax_ = parser.format_help()
@@ -30900,7 +30901,7 @@ class PatchSyscallCommand(PatchCommand):
 
 @register_command
 class PatchHistoryCommand(PatchCommand):
-    """Display the patch history."""
+    """Display the patch history stack."""
 
     _cmdline_ = "patch history"
     _category_ = "03-d. Memory - Patch"
@@ -30933,13 +30934,13 @@ class PatchHistoryCommand(PatchCommand):
                 ))
             gef_print("[OLD]")
         else:
-            info("Patch history is empty")
+            info("Patch history stack is empty")
         return
 
 
 @register_command
 class PatchRevertCommand(PatchCommand):
-    """Revert patch from the patch history."""
+    """Revert patch from the patch history stack."""
 
     _cmdline_ = "patch revert"
     _category_ = "03-d. Memory - Patch"
@@ -30966,7 +30967,7 @@ class PatchRevertCommand(PatchCommand):
     @exclude_specific_gdb_mode(mode=("rr",))
     def do_invoke(self, args):
         if len(PatchCommand.patch_history) == 0:
-            info("Patch history is empty")
+            info("Patch history stack is empty")
             return
 
         if args.all:
@@ -30974,7 +30975,7 @@ class PatchRevertCommand(PatchCommand):
         else:
             if not (0 <= args.revert_target < len(PatchCommand.patch_history)):
                 err("Invalid target index")
-                gef_print(titlify("Patch history"))
+                gef_print(titlify("Patch history stack"))
                 gdb.execute("patch history")
                 return
             revert_count = args.revert_target + 1
@@ -31006,6 +31007,75 @@ class PatchRevertCommand(PatchCommand):
                     enable_phys()
 
             revert_count -= 1
+        return
+
+
+@register_command
+class PatchRangeReplaceCommand(PatchCommand):
+    """Replace all specific byte sequence within the specified range with another byte sequence."""
+
+    _cmdline_ = "patch range-replace"
+    _category_ = "03-d. Memory - Patch"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--phys", action="store_true",
+                        help="treat LOCATION as a physical address (only qemu-system).")
+    parser.add_argument("range_start", metavar="START_ADDR", type=AddressUtil.parse_address,
+                        help="start address to search.")
+    parser.add_argument("range_end", metavar="END_ADDR", type=AddressUtil.parse_address,
+                        help="end address to search.")
+    parser.add_argument("hstr_from", metavar="HEX_STR_FROM", type=lambda x: bytes.fromhex(x),
+                        help="the hex string replace from.")
+    parser.add_argument("hstr_to", metavar="HEX_STR_TO", type=lambda x: bytes.fromhex(x),
+                        help="the hex string replace to.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        '{0:s} 0x400000 0x401000 "ebfe" "9090"',
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    def __init__(self):
+        super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
+        return
+
+    def patch_range_replace(self):
+        try:
+            data = read_memory(self.args.range_start, self.args.range_end - self.args.range_start)
+        except gdb.MemoryError:
+            err("Read memory error")
+            return
+
+        pos = 0
+        while True:
+            found_pos = data.find(self.args.hstr_from, pos)
+            if found_pos == -1:
+                break
+            self.patch(self.args.range_start + found_pos, self.args.hstr_to, len(self.args.hstr_to))
+            pos = found_pos + len(self.args.hstr_from)
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("rr",))
+    def do_invoke(self, args):
+        if args.phys:
+            if not is_qemu_system():
+                err("Unsupported, try check qemu version (at least: 4.1.0~, recommend: 5.x~)")
+                return
+            orig_mode = QemuMonitor.get_current_mmu_mode()
+
+            if orig_mode == "virt":
+                enable_phys()
+
+        try:
+            self.patch_range_replace()
+        except Exception:
+            err("Failed to patch")
+
+        if args.phys:
+            if orig_mode == "virt":
+                disable_phys()
         return
 
 
