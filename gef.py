@@ -20028,6 +20028,8 @@ class AngrCommand(GenericCommand):
     parser.add_argument("-t", "--type", action="append", default=[],
                         help="symbolizing type. (A:A-Z, a:a-z, 0:0-9, s:0x20-0x7e, ?:0x00-0xff, z:0x00)")
     parser.add_argument("-S", "--skip-execution", action="store_true", help="do not execution.")
+    parser.add_argument("-H", "--hook-stack-chk-fail-by-direct-return", action="store_true",
+                        help="hook `__stack_chk_fail@plt` by just `return`.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -20036,6 +20038,18 @@ class AngrCommand(GenericCommand):
         "{0:s} -f 0x400607 -a 0x400613 -s $rdi 30 -t ? -s $rdx 20 -t Az  # sym0:[0x00-0xff]+, sym1:[A-Z\\0]+",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "If there is a stack canary check, angr may fail to find the solution.",
+        "This occurs when execution begins inside a function but terminates outside of it.",
+        "To avoid it, you need to replace these instructions (e.g., `sub rdx, fs:28h; jnz loc_XXX`) with `nop`s.",
+        "Please patch memory or make other appropriate modifications before running the `angr` command.",
+        "",
+        "The -H option is designed to handle this issue automatically.",
+        "But it assumes that there is a `ret` after `call __stack_chk_fail@plt`.",
+        "Note that it will fail if there is a `ret` before `call __stack_chk_fail@plt`.",
+    ]
+    _note_ = "\n".join(_note_)
 
     def get_valid_plt(self):
         res = gdb.execute("got --quiet --no-pager", to_string=True)
@@ -20074,27 +20088,20 @@ class AngrCommand(GenericCommand):
         content += "start_time_proc = time.process_time()\n"
         content += "\n"
         content += "# initialize\n"
-        content += "project = angr.Project({!r}, auto_load_libs=False)\n".format(Path.get_filepath())
-        content += "state = project.factory.blank_state(\n"
+        content += "proj = angr.Project(\n"
+        content += "    {!r},\n".format(Path.get_filepath())
+        content += "    auto_load_libs=False,\n"
+        content += ")\n"
+        content += "\n"
+        content += "state = proj.factory.blank_state(\n"
         content += "    add_options={\n"
         content += "        angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,\n"
         content += "        angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,\n"
         content += "        #angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS,\n"
         content += "        #angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,\n"
+        content += "        angr.options.CONSTRAINT_TRACKING_IN_SOLVER,\n"
         content += "    }\n"
         content += ")\n"
-        content += "\n"
-
-        # hook plt
-        content += "# hook plt\n"
-        content += "valid_plt = {\n"
-        valid_plt = self.get_valid_plt()
-        for func_name, plt in valid_plt.items():
-            content += '    "{:s}": {:#x},\n'.format(func_name, plt)
-        content += "}\n"
-        content += "for f, a in valid_plt.items():\n"
-        content += '    if f in angr.SIM_PROCEDURES["libc"]:\n'
-        content += '        project.hook(a, angr.SIM_PROCEDURES["libc"][f]())\n'
         content += "\n"
 
         # load memories
@@ -20126,6 +20133,28 @@ class AngrCommand(GenericCommand):
             content += "set_register({!r}, {:#x})\n".format(reg.replace("$", ""), reg_value)
         content += "\n"
 
+        # hook plt
+        content += "# hook plt\n"
+        content += "valid_plt = {\n"
+        valid_plt = self.get_valid_plt()
+        for func_name, plt in valid_plt.items():
+            content += '    "{:s}": {:#x},\n'.format(func_name, plt)
+        content += "}\n"
+        content += "\n"
+        if self.args.hook_stack_chk_fail_by_direct_return:
+            content += "class StackChkFail(angr.SimProcedure):\n"
+            content += "    def run(self):\n"
+            content += "        pass # do nothing\n"
+            content += "\n"
+        content += "for func_name, addr in valid_plt.items():\n"
+        if self.args.hook_stack_chk_fail_by_direct_return:
+            content += '    if func_name == "__stack_chk_fail":\n'
+            content += "        proj.hook(addr, StackChkFail())\n"
+            content += "        continue\n"
+        content += '    if func_name in angr.SIM_PROCEDURES["libc"]:\n'
+        content += '        proj.hook(addr, angr.SIM_PROCEDURES["libc"][func_name]())\n'
+        content += "\n"
+
         # symboled memory
         content += "# symboled memories\n"
         for i, (sym, sym_sz) in enumerate(self.args.sym):
@@ -20155,7 +20184,7 @@ class AngrCommand(GenericCommand):
         content += "# search\n"
         content += "FIND_ADDR = [{:s}]\n".format(",".join([hex(x) for x in self.args.find]))
         content += "AVOID_ADDR = [{:s}]\n".format(",".join([hex(x) for x in self.args.avoid]))
-        content += "simgr = project.factory.simulation_manager(state)\n"
+        content += "simgr = proj.factory.simulation_manager(state)\n"
         content += "simgr.explore(find=FIND_ADDR, avoid=AVOID_ADDR)\n"
         content += "\n"
         content += "if simgr.found:\n"
