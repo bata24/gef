@@ -27704,6 +27704,31 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class MultiBreakCommand(GenericCommand):
+    """Set multiple breakpoints easily."""
+
+    _cmdline_ = "multi-break"
+    _category_ = "01-b. Debugging Support - Breakpoint"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_, add_help=False)
+    parser.add_argument("location", metavar="LOCATION", nargs="+", type=AddressUtil.parse_address,
+                        help="the address(es) to set breakpoint.")
+    _syntax_ = parser.format_help()
+
+    _note_ = [
+        "This command is intended to improve the readability of history",
+        "by allowing you to set multiple breakpoints on a single line.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    @parse_args
+    def do_invoke(self, args):
+        for bp in args.location:
+            gdb.execute("b *{:#x}".format(bp))
+        return
+
+
+@register_command
 class MainBreakCommand(GenericCommand):
     """Set a breakpoint at the beginning of main with or without symbols, then continue."""
 

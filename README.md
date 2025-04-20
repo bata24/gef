@@ -542,6 +542,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     * This is useful when you just want to run to `main` under using qemu-user or pin, or debugging no-symbol ELF.
 * `load-break`: breaks if something is loaded.
 * `regdump-break`: sets a breakpoint which dumps specified registers if hit.
+* `multi-break`: sets multiple breakpoints easily.
 * `break-if-taken`/`break-if-not-taken`: sets a breakpoint which breaks if branch is taken (or not taken).
 * `distance`: calculates the offset from its base address.
     * ![](images/distance.png)
