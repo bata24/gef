@@ -30406,8 +30406,8 @@ class PatchStringCommand(PatchCommand):
                         help="the memory address to patch.")
     parser.add_argument("vstr", metavar='"double backslash-escaped string"', type=lambda x: codecs.escape_decode(x)[0],
                         help="the string to patch.")
-    parser.add_argument("length", metavar="LENGTH", nargs="?",
-                        type=lambda x: int(x, 0), help="the length of repeat. (default: %(default)s)")
+    parser.add_argument("length", metavar="LENGTH", nargs="?", type=lambda x: int(x, 0),
+                        help="the length of repeat. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -30461,8 +30461,8 @@ class PatchHexCommand(PatchCommand):
                         help="the memory address to patch.")
     parser.add_argument("hstr", metavar='"hex-string"', type=lambda x: bytes.fromhex(x),
                         help="the string to patch.")
-    parser.add_argument("length", metavar="LENGTH", nargs="?",
-                        type=lambda x: int(x, 0), help="the length of repeat. (default: %(default)s)")
+    parser.add_argument("length", metavar="LENGTH", nargs="?", type=lambda x: int(x, 0),
+                        help="the length of repeat. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
     _example_ = [
