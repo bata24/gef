@@ -14803,6 +14803,41 @@ class DownCommand(GenericCommand):
 
 
 @register_command
+class HistoryCommand(GenericCommand, BufferingOutput):
+    """Show gdb command history easily."""
+
+    _cmdline_ = "history"
+    _category_ = "99. GEF Maintenance Command"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    _syntax_ = parser.format_help()
+
+    @parse_args
+    def do_invoke(self, args):
+        self.out = []
+
+        idx = 0
+        prev_ret = None
+        while True:
+            ret = gdb.execute("show commands {:d}".format(idx), to_string=True)
+            for line in ret.splitlines():
+                line_idx = int(line.split()[0])
+                if len(self.out) >= line_idx:
+                    continue
+                self.out.append(line)
+
+            if prev_ret == ret:
+                break
+
+            prev_ret = ret
+            idx += 10
+
+        self.print_output()
+        return
+
+
+@register_command
 class DisplayTypeCommand(GenericCommand, BufferingOutput):
     """Makes it easier to use `ptype /ox TYPE` and `p ((TYPE*) ADDRESS)[0]`."""
 
@@ -97006,6 +97041,7 @@ class Gef:
 
         # gdb history
         gdb.execute("set history save on")
+        gdb.execute("set history size 1000")
         gdb.execute("set history filename ~/.gdb_history")
 
         # print

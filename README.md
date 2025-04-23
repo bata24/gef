@@ -737,6 +737,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     * ![](images/peek-pageflags.png)
 * `angr`: finds simple constraints by `angr`.
     * ![](images/angr.png)
+* `history`: shows gdb command history easily.
 
 ### Other
 * The category is introduced in `gef help`.
