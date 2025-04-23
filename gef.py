@@ -78924,16 +78924,16 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             partition_alloc::PartitionRoot* Partitions::array_buffer_root_ = nullptr;
             partition_alloc::PartitionRoot* Partitions::buffer_root_ = nullptr;
 
-            0x61d34e37f360 <WTF::Partitions::fast_malloc_root_>:    0x0000000000000000
-            0x61d34e37f368 <WTF::Partitions::array_buffer_root_>:   0x000061d34e383000
-            0x61d34e37f370 <WTF::Partitions::buffer_root_>: 0x000061d34e37f380
-            0x61d34e37f378 <guard variable for WTF::Partitions::Initialize()::initialized>: 0x0000000100000101
+            0x5a849775d5a8 <WTF::Partitions::fast_malloc_root_>:    0x0000000000000000
+            0x5a849775d5b0 <WTF::Partitions::array_buffer_root_>:   0x00005a8497761040
+            0x5a849775d5b8 <WTF::Partitions::buffer_root_>: 0x00005a849775d600
+            0x5a849775d5c0 <guard variable for WTF::Partitions::Initialize()::initialized>: 0x0000000100000101
             ...
-            0x61d34e3811c0 <WTF::Partitions::InitializeOnce()::fast_malloc_allocator>:      0x0000000000000000
+            0x5a8497759bc0 <WTF::Partitions::InitializeOnce()::fast_malloc_allocator>:      0x0000000000000000
             ...
-            0x61d34e383000 <WTF::Partitions::InitializeOnce()::buffer_allocator>:   0x0000000000000001
+            0x5a849775d600 <WTF::Partitions::InitializeOnce()::buffer_allocator>:   0x0000000000010000
             ...
-            0x61d34e37f380 <WTF::Partitions::InitializeArrayBufferPartition()::array_buffer_allocator>:     0x0000000000000001
+            0x5a8497761040 <WTF::Partitions::InitializeArrayBufferPartition()::array_buffer_allocator>:     0x0000000000000000
             """
             # check consecutive quadruples
             for addr, data in zip(n_gram(addr_list, 4), n_gram(data_list, 4)):
@@ -78969,20 +78969,20 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 This is same both at 64-bit and 32bit arch.
 
                 [WTF::Partitions::InitializeOnce()::buffer_allocator]
-                0x61d34e383000: 0x0000000000000001      0x0000000000000000     <--- here may be used
-                0x61d34e383010: 0xffffffff00000001      0x0000000000000000     <--- here may be used
-                0x61d34e383020: 0x0000000000000000      0x0000000000000000     <--- hare may be not used
-                0x61d34e383030: 0x0000000000000000      0x0000000000000000     <--- here may be not used
+                0x5a849775d600: 0x0000000000010000      0x0000000000000004     <--- here may be used
+                0x5a849775d610: 0x0000000000000000      0x00000000ffffffff     <--- here may be used
+                0x5a849775d620: 0x0000000400000001      0xfffffe7fec785000     <--- hare may be used
+                0x5a849775d630: 0x0000000000000000      0x0000000000000000     <--- here may be not used
 
                 [WTF::Partitions::InitializeArrayBufferPartition()::array_buffer_allocator]
-                0x61d34e37f380: 0x0000000100000001      0x0000000000000004     <--- here may be used
-                0x61d34e37f390: 0xffffffff00000000      0x0000000100000000     <--- here may be used
-                0x61d34e37f3a0: 0x0000000000000004      0x0000000000000000     <--- here may be used
-                0x61d34e37f3b0: 0x0000000000000000      0x0000000000000000     <--- here may be not used
+                0x5a8497761040: 0x0000000000000000      0x0000000000000000     <--- here may be used
+                0x5a8497761050: 0x0000000000000001      0x00000000ffffffff     <--- here may be used
+                0x5a8497761060: 0x0000000000000000      0xffffcefbec787000     <--- here may be used
+                0x5a8497761070: 0x0000000000000000      0x0000000000000000     <--- here may be not used
                 """
-                if read_memory(data[1], 64)[33:] != b"\0" * 31:
+                if read_memory(data[1], 64)[-16:] != b"\0" * 16:
                     continue
-                if read_memory(data[2], 64)[33:] != b"\0" * 31:
+                if read_memory(data[2], 64)[-16:] != b"\0" * 16:
                     continue
                 # add candidate
                 Root = collections.namedtuple("Root", ["name", "address"])
@@ -79034,9 +79034,21 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             info("Symbol is not found")
         return roots
 
+    @Cache.cache_until_next
     def get_sentinel_slot_spans(self):
         """sentinel_slot_span is default slot_span, so search it."""
         sentinel = []
+
+        # new version
+        try:
+            ns = "partition_alloc::internal::SlotSpanMetadata<(partition_alloc::internal::MetadataKind)1>"
+            t = AddressUtil.parse_address("&'{:s}::sentinel_slot_span_'".format(ns))
+            sentinel.append(t)
+            return sentinel
+        except gdb.error:
+            pass
+
+        # old version
         try:
             t = AddressUtil.parse_address("&'base::internal::SlotSpanMetadata<true>::sentinel_slot_span_'")
             sentinel.append(t)
@@ -79106,8 +79118,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             uint16_t purge_generation PA_GUARDED_BY(internal::PartitionRootLock(this)) = 0;
             uint16_t purge_next_bucket_index PA_GUARDED_BY(internal::PartitionRootLock(this)) = 0;
             uintptr_t inverted_self = 0;
-            std::atomic<int> thread_caches_being_constructed_{0};
-            bool quarantine_always_for_testing = false;
+            internal::Lock thread_cache_construction_lock; // 8 bytes
             size_t scheduler_loop_quarantine_branch_capacity_in_bytes = 0;
             internal::LightweightQuarantineRoot scheduler_loop_quarantine_root;
             std::optional<internal::base::NoDestructor<internal::LightweightQuarantineBranch>> scheduler_loop_quarantine;
@@ -79199,10 +79210,8 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         current += ptrsize - 6 # with pad
         _root["inverted_self"] = read_int_from_memory(current)
         current += ptrsize
-        _root["thread_caches_being_constructed_"] = u32(read_memory(current, 4))
-        current += 4
-        _root["quarantine_always_for_testing"] = u32(read_memory(current, 4)) & 0xff
-        current += 4
+        _root["thread_cache_construction_lock"] = u64(read_memory(current, 8))
+        current += 8
         _root["scheduler_loop_quarantine_branch_capacity_in_bytes"] = u32(read_memory(current, 4))
         current += ptrsize # with pad
         _root["scheduler_loop_quarantine_root"] = read_int_from_memory(current)
@@ -79498,11 +79507,8 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         self.out.append("uintptr_t inverted_self:                               {:#x} (=~{!s})".format(
             root.inverted_self, ProcessMap.lookup_address(inv_inv),
         ))
-        self.out.append("std::atomic<int> thread_caches_being_constructed_:     {:#x}".format(
-            root.thread_caches_being_constructed_,
-        ))
-        self.out.append("bool quarantine_always_for_testing:                    {:#x}".format(
-            root.quarantine_always_for_testing,
+        self.out.append("internal::Lock thread_cache_construction_lock:         {:#x}".format(
+            root.thread_cache_construction_lock,
         ))
         self.out.append("size_t scheduler_loop_quarantine_branch_capacity_in_bytes: {:#x}".format(
             root.scheduler_loop_quarantine_branch_capacity_in_bytes,
@@ -79618,7 +79624,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             if head in sentinel_or_0:
                 # print sentinel (verbose)
                 colored_key = Color.colorify(key, label_inactive_color)
-                self.out.append("        {:s}:sentinel_pages".format(colored_key))
+                self.out.append("        {:s}:{:s} (=sentinel_pages)".format(colored_key, self.C(head)))
             else:
                 # default
                 colored_key = Color.colorify(key, label_active_color)
