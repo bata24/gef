@@ -1,17 +1,17 @@
 # FAQ
 
 ## Table of Contents
-* [About GEF's file or directory](#about-gefs-file-or-directory)
-* [About the install](#about-the-install)
-* [About the host environment](#about-the-host-environment)
-* [About the guest (debugged) environment](#about-the-guest-debugged-environment)
-* [About GEF settings](#about-gef-settings)
-* [About commands](#about-commands)
-* [About internal mechanism](#about-internal-mechanism)
-* [About python interface](#about-python-interface)
-* [About development schedule](#about-development-schedule)
-* [About reporting, etc.](#about-reporting-etc)
-* [Other memo (Japanese)](#other-memo-japanese)
+- [About GEF's file or directory](#about-gefs-file-or-directory)
+- [About the install](#about-the-install)
+- [About the host environment](#about-the-host-environment)
+- [About the guest (debugged) environment](#about-the-guest-debugged-environment)
+- [About GEF settings](#about-gef-settings)
+- [About commands](#about-commands)
+- [About internal mechanism](#about-internal-mechanism)
+- [About python interface](#about-python-interface)
+- [About development schedule](#about-development-schedule)
+- [About reporting, etc.](#about-reporting-etc)
+- [Other memo (Japanese)](#other-memo-japanese)
 
 
 # About GEF's file or directory
@@ -32,6 +32,8 @@ This is the directory where GEF temporarily stores files.
 As it is used for caching, deleting it does not cause any issues.
 It will be created automatically the next time GEF starts.
 
+The variable `GEF_TEMP_DIR` is declared in `gef.py`, and can be changed if necessary.
+
 ## What is `install-minimal.sh`?
 This is an installer for running GEF in restricted environments where required packages cannot be installed due to various limitations.
 
@@ -43,6 +45,7 @@ wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-minimal.sh -O- 
 
 Use this if you don't require all features (suitable for restricted environments).
 It should work for most functionalities, though some commands may not be available.
+
 The process is straightforward: download `gef.py`, place it in the appropriate location, and add its path to `.gdbinit`.
 You could also do the same thing manually.
 
@@ -74,10 +77,10 @@ If you want to use GEF as a user other than root, add `source /path/to/.gdbinit-
 
 ## I don't want to specify the `--break-system-packages` option during installation.
 You have some options:
-* Use [`install-minimal.sh`](../install-minimal.sh) to skip installing with `pip`.
-* Use [`install-venv.sh`](../install-venv.sh) to avoid affecting the global environment.
-* Install inside docker to prevent impact on the host environment.
-* Install inside another virtual machine.
+- Use [`install-minimal.sh`](../install-minimal.sh) to skip installing with `pip`.
+- Use [`install-venv.sh`](../install-venv.sh) to avoid affecting the global environment.
+- Install inside docker to prevent impact on the host environment.
+- Install inside another virtual machine.
 
 ## How can I install GEF offline?
 Please refer to [`install.sh`](../install.sh), [`install-minimal.sh`](../install-minimal.sh) or [`install-venv.sh`](../install-venv.sh) and set it up manually.
@@ -159,14 +162,14 @@ This is probably because gdb does not support cooperation with python3.
 
 Consider building GDB from the latest tarball or Git repository.
 
-* from latest tarball
-    * Download latest tarball from https://ftp.gnu.org/gnu/gdb/
+- from latest tarball
+    - Download latest tarball from https://ftp.gnu.org/gnu/gdb/
     ```
     tar xf gdb-15.2.tar.xz && cd gdb-15.2
     ./configure --enable-targets=all --with-python=/usr/bin/python3
     make && make install
     ```
-* from git
+- from git
     ```
     apt install -y libdebuginfod-dev libreadline-dev
     git clone --depth 1 https://github.com/bminor/binutils-gdb && cd binutils-gdb
@@ -177,13 +180,13 @@ Consider building GDB from the latest tarball or Git repository.
 ## When debugging with gdb, how can I display the source code of preinstalled libraries and commands?
 For Ubuntu 22.10 and later versions, it is recommended to use `debuginfod`.
 
-* Enable `debuginfod` (ubuntu 22.10~)
+- Enable `debuginfod` (ubuntu 22.10~)
     ```
     export DEBUGINFOD_URLS="https://debuginfod.ubuntu.com"
     echo "set debuginfod enabled on" >> ~/.gdbinit
     ```
 
-* If you are not able to use `debuginfod`, please set the symbols manually.
+- If you are not able to use `debuginfod`, please set the symbols manually.
     ```
     # Not necessary if debuginfod is enabled
     apt install libc6-dbg
@@ -194,7 +197,7 @@ However, for some reason `debuginfod` does not display the `glibc` source code.
 So you need to obtain and place the source code separately.
 I don't really understand the reason for this.
 
-* Get `glibc` source
+- Get `glibc` source
     ```
     # Ubuntu 24.04 or later
     sed -i -e 's/^Types: deb$/Types: deb deb-src/g' /etc/apt/sources.list.d/ubuntu.sources
@@ -231,13 +234,13 @@ Download `linux-modules-*_amd64.deb` for `System.map` and `config`.
 ## Will each GEF command be more accurate if I have `vmlinux` with debug symbols?
 Let's consider debug information and debug symbols separately.
 
-* Debug information
-    * No, the presence or absence of debug information in `vmlinux` does not impact GEF's functionality or behavior.
-        * GEF performs its own heuristic structure member detection in each command.
-* Debug symbols
-    * Yes, you can use `ksymaddr-remote --vmlinux-file <vmlinux file path>`.
-        * GEF internally uses the address resolved with `ksymaddr-remote`, and this result is cached.
-        * Therefore, by specifying the `vmlinux` file, the results of `ksymaddr-remote` can be replaced with accurate values and cached.
+- Debug information
+    - No, the presence or absence of debug information in `vmlinux` does not impact GEF's functionality or behavior.
+        - GEF performs its own heuristic structure member detection in each command.
+- Debug symbols
+    - Yes, you can use `ksymaddr-remote --vmlinux-file <vmlinux file path>`.
+        - GEF internally uses the address resolved with `ksymaddr-remote`, and this result is cached.
+        - Therefore, by specifying the `vmlinux` file, the results of `ksymaddr-remote` can be replaced with accurate values and cached.
 
 ## Does GEF support i386 16-bit mode (real mode)?
 Yes, GEF supports real mode experimentally.
@@ -246,6 +249,11 @@ Use `qemu-system-i386`, and do NOT use `qemu-system-x86_64`.
 Explicitly specify the i8086 architecture before connecting: `gdb -ex 'set architecture i8086' -ex 'target remote localhost:1234'`.
 
 GEF automatically handles the transition between 16-bit real mode and 32-bit protected mode.
+
+## Does GEF support ARM Cortex-M?
+Yes, GEF supports ARM Cortex-M.
+
+It can be used to debug microcontrollers, but please note that you cannot see the memory map.
 
 ## Is it possible to debug userland with GEF when using qemu-system?
 Partially yes.
@@ -272,8 +280,8 @@ However, hardware breakpoints can be used without any problems.
 Yes, it is supported, but not fully.
 
 When I tried using `Android Studio`, most commands seemed to work.
-* I used `Android Studio` on Windows and connected from Linux.
-* Refer to [docs/SUPPORTED-MODE.md](SUPPORTED-MODE.md) for the commands I used.
+- I used `Android Studio` on Windows and connected from Linux.
+- Refer to [docs/SUPPORTED-MODE.md](SUPPORTED-MODE.md) for the commands I used.
 
 However, the QEMU in `Android Studio` is based on an older version, 2.12.0, and seems to have compatibility issues with recent GDB versions (16.x~).
 Specifically, repeated memory reads may cause QEMU's GDB stub to return incorrect results.
@@ -283,8 +291,8 @@ This is especially noticeable for commands that do repeated memory access, such 
 Yes, it is supported, but not fully.
 
 When I tried using `Android Studio`, most commands seemed to work.
-* I used `Android Studio` on Windows and connected from Linux.
-* Refer to [docs/SUPPORTED-MODE.md](SUPPORTED-MODE.md) for the commands I used.
+- I used `Android Studio` on Windows and connected from Linux.
+- Refer to [docs/SUPPORTED-MODE.md](SUPPORTED-MODE.md) for the commands I used.
 
 However, Android does not use glibc (it uses the bionic C library).
 So be aware that all glibc-specific commands cannot be used, such as the `heap` command.
@@ -337,22 +345,22 @@ The kernel you are debugging may have been built with `CONFIG_RANDSTRUCT=y`.
 
 In this case, except for a few commands, they will not work correctly.
 Currently, at least following commands do not work.
-* `ktask`
-* `kmod`
-* `kbdev`
-* `kcdev`
-* `kops`
-* `kpipe`
-* `ksysctl`
-* `kmalloc-tracer`
-* `kmalloc-allocated-by`
-* `kfiles`
-* `kregs`
-* `ksighands`
-* `kpcidev`
-* `knamespaces`
-* `kipcs`
-* `kfilesystems`
+- `ktask`
+- `kmod`
+- `kbdev`
+- `kcdev`
+- `kops`
+- `kpipe`
+- `ksysctl`
+- `kmalloc-tracer`
+- `kmalloc-allocated-by`
+- `kfiles`
+- `kregs`
+- `ksighands`
+- `kpcidev`
+- `knamespaces`
+- `kipcs`
+- `kfilesystems`
 
 If it does not work properly even though `CONFIG_RANDSTRUCT=n`, GEF may be failing to parse due to a change in `struct task_struct`, etc.
 If you think there is a problem with GEF, please report it on the issues page.
@@ -383,7 +391,7 @@ The `got` command uses `objdump` internally to obtain the PLT address.
 However, with certain combinations of `binutils` and `glibc` versions, `objdump` does not display the PLT address.
 
 The currently known combinations are as follows.
-* `binutils 2.38` (Ubuntu 22.04 default) + `glibc 2.37 or later`
+- `binutils 2.38` (Ubuntu 22.04 default) + `glibc 2.37 or later`
 
 This problem occurs when you try to use newer `glibc` in an Ubuntu 22.04 environment using `patchelf` etc.
 The workaround is to build and install new `binutils` from source code.
@@ -444,12 +452,12 @@ Internally, it consists of several steps.
 3. Scan `.rodata` to identify the kernel version.
 4. Parse the structure of `kallsyms` in `.rodata` and get all "symbol and address" pairs.
 5. If global variable symbols are available at this point, use it. (= `CONFIG_KALLSYMS_ALL=y`).
-    * If not, GEF disassembles the function which uses specified global variable.
-    * By parsing the result, GEF obtains the address of the required global variable.
-    * This is implemented at `KernelAddressHeuristicFinder` class and `KernelAddressHeuristicFinderUtil` class.
+    - If not, GEF disassembles the function which uses specified global variable.
+    - By parsing the result, GEF obtains the address of the required global variable.
+    - This is implemented at `KernelAddressHeuristicFinder` class and `KernelAddressHeuristicFinderUtil` class.
 6. Detect the offset of the member of the structure, if necessary.
-    * To identify it heuristically, GEF uses the fact such as whether a value in memory is an address or whether a structure in memory has a specific structure.
-    * At this time, GEF takes into account the presence or absence of members and changes in their order due to differences in kernel versions.
+    - To identify it heuristically, GEF uses the fact such as whether a value in memory is an address or whether a structure in memory has a specific structure.
+    - At this time, GEF takes into account the presence or absence of members and changes in their order due to differences in kernel versions.
 7. Parse and display the value in memory using all the information detected so far.
 
 As you can see, it doesn't work well if structure members are arranged randomly (`CONFIG_RANDSTRUCT=y`).
@@ -497,24 +505,24 @@ Yes, you can get it back by executing `pi hexoff()`.
 You can get instruction object by `pi get_insn(addr=None)`.
 
 There are also similar functions. Here are the list.
-* `get_insn(addr=None)`
-* `get_insn_next(addr=None)`
-* `get_insn_prev(addr=None)`
+- `get_insn(addr=None)`
+- `get_insn_next(addr=None)`
+- `get_insn_prev(addr=None)`
 
 ## Are there any other globally accessible functions that are useful?
-* Memory access
-    * `write_memory(addr, data)`, `read_memory(addr, length)`
-    * `is_valid_addr(addr)`
-    * `read_int_from_memory(addr)`
-    * `read_cstring_from_memory(addr, max_length=None)`
-    * `read_physmem(paddr, size)`, `write_physmem(paddr, data)`
-* Register access
-    * `get_register(regname, use_mbed_exec=False, use_monitor=False)`
-* Other
-    * `String.str2bytes(x)`, `String.bytes2str(x)`
-    * `slicer(data, n)`, `slice_unpack(data, n)`
-    * `p8`, `p16`, `p32`, `p64`
-    * `u8`, `u16`, `u32`, `u64`, `u128`
+- Memory access
+    - `write_memory(addr, data)`, `read_memory(addr, length)`
+    - `is_valid_addr(addr)`
+    - `read_int_from_memory(addr)`
+    - `read_cstring_from_memory(addr, max_length=None)`
+    - `read_physmem(paddr, size)`, `write_physmem(paddr, data)`
+- Register access
+    - `get_register(regname, use_mbed_exec=False, use_monitor=False)`
+- Other
+    - `String.str2bytes(x)`, `String.bytes2str(x)`
+    - `slicer(data, n)`, `slice_unpack(data, n)`
+    - `p8`, `p16`, `p32`, `p64`
+    - `u8`, `u16`, `u32`, `u64`, `u128`
 
 If you want the complete list, run `gef pyobj-list`.
 
@@ -522,33 +530,33 @@ If you want the complete list, run `gef pyobj-list`.
 Copy and paste the `TemplateCommand` class and edit it as you like.
 
 Following are some notes.
-* Class name
-    * Rename the newly added command class to any name you like.
-    * Make sure to end it with `...Command`.
-* Inheritance
-    * Make sure you inherit the `GenericCommand` class.
-    * This is the condition for registering the command.
-* Important attributes
-    * `_cmdline_`: to use to invoke the command.
-    * `_aliases_`: to make command alias.
-    * `_category_`, `_syntax_`, `_example_` and `_note_`: used by `gef help`.
-    * `_repeat_`: to enable command repetition.
-* `__init__()`
-    * This method is executed only once, when GEF starts.
-    * There is usually no need to override this method.
-    * Delete it if you don't need to do anything special.
-* `do_invoke()`
-    * It is important to override this method.
-    * When a command is executed, it starts from this method.
-* Arguments to command
-    * They should be controlled with the `argparse` module.
-    * They are handled by the `parse_args` decorator of the `do_invoke()` method.
-* Command execution conditions
-    * Add decorators to the `do_invoke()` method as needed.
-    * You can check the list of decorators that can be added with `gef pyobj-list`.
-* Other
-    * Use the `gef_print()` function instead of the `print()` function whenever possible.
-    * The function named `complete()` is reserved.
+- Class name
+    - Rename the newly added command class to any name you like.
+    - Make sure to end it with `...Command`.
+- Inheritance
+    - Make sure you inherit the `GenericCommand` class.
+    - This is the condition for registering the command.
+- Important attributes
+    - `_cmdline_`: to use to invoke the command.
+    - `_aliases_`: to make command alias.
+    - `_category_`, `_syntax_`, `_example_` and `_note_`: used by `gef help`.
+    - `_repeat_`: to enable command repetition.
+- `__init__()`
+    - This method is executed only once, when GEF starts.
+    - There is usually no need to override this method.
+    - Delete it if you don't need to do anything special.
+- `do_invoke()`
+    - It is important to override this method.
+    - When a command is executed, it starts from this method.
+- Arguments to command
+    - They should be controlled with the `argparse` module.
+    - They are handled by the `parse_args` decorator of the `do_invoke()` method.
+- Command execution conditions
+    - Add decorators to the `do_invoke()` method as needed.
+    - You can check the list of decorators that can be added with `gef pyobj-list`.
+- Other
+    - Use the `gef_print()` function instead of the `print()` function whenever possible.
+    - The function named `complete()` is reserved.
 
 
 # About development schedule
@@ -561,12 +569,12 @@ Yes. However, it is becoming difficult to find new support targets.
 
 This is because three things are required:
 1. toolchain
-    * `linux-headers`, `binutils`, `gcc`, `glibc` (or `uClibc`) are needed.
-    * Prebuilt tarball is prefer.
+    - `linux-headers`, `binutils`, `gcc`, `glibc` (or `uClibc`) are needed.
+    - Prebuilt tarball is prefer.
 2. qemu-user
-    * It needs implementation of gdb-stub.
+    - It needs implementation of gdb-stub.
 3. gdb
-    * It needs python3-support.
+    - It needs python3-support.
 
 
 # About reporting, etc.
@@ -593,9 +601,9 @@ Yes. However, please follow the license.
 
 
 # Other memo (Japanese)
-* Why I decided to make this
-    * [gefを改造した話](https://hackmd.io/@bata24/rJVtBJsrP)
-* The story behind each command, etc.
-    * [bata24/gefの機能紹介とか](https://hackmd.io/@bata24/SycIO4qPi)
-* The story behind each command, etc. 2024 Edition
-    * [bata24/gefの機能紹介とか 2024](https://hackmd.io/@bata24/SJOzjzqQ1e)
+- Why I decided to make this
+    - [gefを改造した話](https://hackmd.io/@bata24/rJVtBJsrP)
+- The story behind each command, etc.
+    - [bata24/gefの機能紹介とか](https://hackmd.io/@bata24/SycIO4qPi)
+- The story behind each command, etc. 2024 Edition
+    - [bata24/gefの機能紹介とか 2024](https://hackmd.io/@bata24/SJOzjzqQ1e)
