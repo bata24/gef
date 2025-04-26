@@ -738,6 +738,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
 - `angr`: finds simple constraints by `angr`.
     - ![](images/angr.png)
 - `history`: shows gdb command history easily.
+- `crc32rev`: performs CRC32 reverse calculation limited to ASCII character range.
 
 ### Other
 - The category is introduced in `gef help`.

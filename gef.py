@@ -68061,6 +68061,160 @@ class CrcValueCommand(CrcCommand):
 
 
 @register_command
+class Crc32revCommand(GenericCommand):
+    """Perform CRC32 reverse calculation limited to ASCII character range."""
+
+    _cmdline_ = "crc32rev"
+    _category_ = "09-f. Misc - Calculation"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-p", "--poly", type=lambda x: int(x, 16), default=0x04c11db7,
+                        help="polynomial. (default: %(default)#x)")
+    parser.add_argument("-i", "--init-value", type=lambda x: int(x, 16), default=0x0,
+                        help="initial value. (default: %(default)#x)")
+    parser.add_argument("wanted_crc", metavar="WANTED_CRC", type=lambda x: int(x, 16),
+                        help="crc target value.")
+    parser.add_argument("--prefix", default="", help="prefix string. (default: '')")
+    parser.add_argument("--suffix", default="", help="suffix string. (default: '')")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} 0x41414141 --prefix AAAA --suffix BBBB",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "The commonly polynomials (and work correctly) are as follows (after / is the reflected one):",
+        "- 0x04c11db7 / 0xedb88320 : CRC-32-IEEE 802.3",
+        "- 0x1edc6f41 / 0x82f63b78 : CRC-32C Castagnoli",
+        "- 0x741b8cd7 / 0xeb31d82e : CRC-32K Koopman",
+        "- 0x814141ab / 0xd5828281 : CRC-32Q",
+        "- 0xf4acfb13 / 0xc8df352f : CRC-Autosar",
+        "- 0xa833982b / 0xd419cc15 : CRC-32D",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def init_poly(self):
+        self.reflected_poly = 0
+        for i in range(32):
+            self.reflected_poly |= ((self.args.poly >> i) & 1) << (31 - i)
+        return
+
+    def build_crc_tables(self):
+        self.normal_table = []
+        self.reverse_table = []
+        for i in range(256):
+            fwd = i
+            rev = i << 24
+            for _ in range(8):
+                # build normal table
+                if (fwd & 1) == 1:
+                    fwd = (fwd >> 1) ^ self.reflected_poly
+                else:
+                    fwd >>= 1
+                fwd &= 0xffffffff
+
+                # build reverse table
+                if (rev & 0x80000000) == 0x80000000:
+                    rev = ((rev ^ self.reflected_poly) << 1) | 1
+                else:
+                    rev <<= 1
+                rev &= 0xffffffff
+
+            self.normal_table.append(fwd)
+            self.reverse_table.append(rev)
+        return
+
+    def v2b(self, x):
+        b = [
+            (x >> 0) & 0xff,
+            (x >> 8) & 0xff,
+            (x >> 16) & 0xff,
+            (x >> 24) & 0xff,
+        ]
+        return b
+
+    def calc_crc32(self, msg):
+        crc = self.args.init_value ^ 0xffffffff
+        for c in msg:
+            if isinstance(c, str):
+                c = ord(c)
+            crc = (crc >> 8) ^ self.normal_table[(crc ^ c) & 0xff]
+        return crc ^ 0xffffffff
+
+    def calc_forward(self, accum, string):
+        fwd_crc = accum
+        for c in string:
+            fwd_crc = (fwd_crc >> 8) ^ self.normal_table[(fwd_crc ^ c) & 0xff]
+        return fwd_crc
+
+    def calc_backward(self, wanted, string):
+        bkd_crc = wanted
+        for c in string[::-1]:
+            bkd_crc = ((bkd_crc << 8) & 0xffffffff) ^ self.reverse_table[bkd_crc >> 24] ^ c
+        return bkd_crc
+
+    def find_bridge(self, init_value, wanted_crc, prefix, suffix):
+        # forward calculation of CRC, sets current forward CRC state
+        fwd_crc = self.calc_forward(init_value, prefix)
+
+        # backward calculation of CRC, sets wanted backward CRC state
+        bkd_crc = self.calc_backward(wanted_crc ^ 0xffffffff, suffix)
+
+        # deduce the 4 bytes we need to insert
+        bridge = self.calc_backward(bkd_crc, self.v2b(fwd_crc))
+        bridge = self.v2b(bridge)
+
+        # check
+        res = prefix + bridge + suffix
+        assert self.calc_crc32(res) == wanted_crc
+        return bridge
+
+    def find_reverse(self, prefix, suffix):
+        self.init_poly()
+        self.build_crc_tables()
+
+        init_value = self.args.init_value ^ 0xffffffff
+        wanted_crc = self.args.wanted_crc
+
+        ascii_range = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_"
+        solutions = []
+
+        # check 4 bytes
+        bridge = self.find_bridge(init_value, wanted_crc, prefix, suffix)
+        if all(c in ascii_range for c in bridge):
+            solutions.append(bridge)
+
+        # check 5 bytes
+        for b in ascii_range:
+            new_prefix = prefix + [b]
+            bridge = self.find_bridge(init_value, wanted_crc, new_prefix, suffix)
+            if all(c in ascii_range for c in bridge):
+                solutions.append([b] + bridge)
+
+        # check 6 bytes
+        for b1 in ascii_range:
+            for b2 in ascii_range:
+                new_prefix = prefix + [b1, b2]
+                bridge = self.find_bridge(init_value, wanted_crc, new_prefix, suffix)
+                if all(c in ascii_range for c in bridge):
+                    solutions.append([b1, b2] + bridge)
+        return solutions
+
+    @parse_args
+    def do_invoke(self, args):
+        prefix = [ord(c) for c in self.args.prefix]
+        suffix = [ord(c) for c in self.args.suffix]
+
+        solutions = self.find_reverse(prefix, suffix)
+        for sol in solutions:
+            msg = prefix + sol + suffix
+            crc = self.calc_crc32(msg)
+            gef_print("{}: CRC32({}) = {:#x}".format(bytes(sol), bytes(msg), crc))
+        return
+
+
+@register_command
 class BaseNDecodeCommand(GenericCommand, BufferingOutput):
     """The base command to decode baseN."""
 
