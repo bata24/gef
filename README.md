@@ -741,6 +741,8 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - ![](images/history.png)
 - `crc32rev`: performs CRC32 reverse calculation limited to ASCII character range.
     - ![](images/crc32rev.png)
+- `vdump`: visualizes memory data like an image.
+    - ![](images/vdump.png)
 
 ### Other
 - The category is introduced in `gef help`.

@@ -94855,6 +94855,125 @@ class SixelMemoryCommand(GenericCommand):
 
 
 @register_command
+class VisualdumpCommand(GenericCommand):
+    """Visualize memory data like an image."""
+
+    _cmdline_ = "vdump"
+    _category_ = "03-g. Memory - Investigation"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
+                        help="start address to dump.")
+    parser.add_argument("size", metavar="SIZE", nargs="?", type=AddressUtil.parse_address,
+                        help="the size to dump.")
+    parser.add_argument("-d", "--disable-autoscale", action="store_true",
+                        help="disable autoscaling to fit the terminal.")
+    parser.add_argument("-w", "--width", type=AddressUtil.parse_address,
+                        help="the number of wrap bytes. (default: sqrt(len))")
+    parser.add_argument("-c", "--color", choices=("r", "g", "b"),
+                        help="convert the grayscale tone to either r,g,b.")
+    parser.add_argument("-n", "--negate", action="store_true",
+                        help="negate the grayscale tone.")
+    parser.add_argument("-A", "--auto-width-inclement", action="store_true",
+                        help="repeat the display while shifting the interpretation of the width.")
+    _syntax_ = parser.format_help()
+
+    def make_command_line(self, img_width, img_height, tmp_path):
+        command_options = [
+            "-size {:d}x{:d}".format(img_width, img_height),
+            "-depth 8",
+        ]
+
+        if not self.args.disable_autoscale:
+            # terminal size (number of characters)
+            term_height, term_width = GefUtil.get_terminal_size()
+            # it's too tight, so make it slightly smaller.
+            term_width = int(term_width * 0.95)
+            term_height = int(term_height * 0.95)
+            # number of pixels per character
+            font_width_px = 6
+            font_height_px = 12
+            # pixel dimensions of the terminal
+            term_width_px = term_width * font_width_px
+            term_height_px = term_height * font_height_px
+            # scaling factor to fit the terminal
+            scale_width = term_width_px * 100 / img_width
+            scale_height = term_height_px * 100 / img_height
+            resize_scale = min(scale_height, scale_width)
+            # convert option
+            command_options.extend([
+                "-filter Box",
+                "-resize {:d}%".format(int(resize_scale)),
+            ])
+
+        if self.args.color == "r":
+            command_options.append("-colorspace Gray -colorize 0,100,100")
+        elif self.args.color == "g":
+            command_options.append("-colorspace Gray -colorize 100,0,100")
+        elif self.args.color == "b":
+            command_options.append("-colorspace Gray -colorize 100,100,0")
+
+        if self.args.negate:
+            command_options.append("-negate")
+
+        cmd = "{!r} {:s} GRAY:{!r} sixel:-".format(
+            GefUtil.which("convert"),
+            " ".join(command_options),
+            tmp_path,
+        )
+        return cmd
+
+    @parse_args
+    @only_if_gdb_running
+    def do_invoke(self, args):
+        try:
+            GefUtil.which("convert") # imagemagick
+        except FileNotFoundError as e:
+            err("{}".format(e))
+            return
+
+        try:
+            data = read_memory(args.location, args.size)
+        except (gdb.MemoryError, MemoryError, TypeError):
+            err("Memory read error")
+            return
+
+        if args.width and args.width > 0:
+            img_width = args.width
+        else:
+            import math
+            img_width = int(math.sqrt(len(data)))
+        while len(data) % img_width:
+            data += b"\0"
+        img_height = len(data) // img_width
+
+        tmp_fd, tmp_path = GefUtil.mkstemp(prefix="vhexdump", suffix=".raw")
+        os.fdopen(tmp_fd, "wb").write(data)
+
+        if args.auto_width_inclement:
+            # if the width is too large, processing will be slow
+            min_width = 0x10
+            max_width = min(len(data) // 0x10, 513)
+            # processing while changing the width
+            for img_width in range(min_width, max_width, 2):
+                img_height = len(data) // img_width
+                cmd = self.make_command_line(img_width, img_height, tmp_path)
+                info(cmd)
+                # Ctrl+C is consumed by os.system, so it cannot escape from the python loop.
+                # Therefore, it is judged by the execution result.
+                e = os.system(cmd)
+                if e != 0:
+                    break
+        else:
+            cmd = self.make_command_line(img_width, img_height, tmp_path)
+            info(cmd)
+            os.system(cmd)
+
+        os.unlink(tmp_path)
+        return
+
+
+@register_command
 class FiletypeMemoryCommand(GenericCommand):
     """Scan memory by file and magika."""
 
