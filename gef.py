@@ -358,7 +358,7 @@ class Cache:
     """Manages the gef cache. The cache has 2 types: "until_next" and "this_session".
     "until_next": Cached for a very short period of time. Cleared every time an instruction is stepped, etc.
     "this_session": Cached until gdb exits.
-    Note: each command may have its own cache without using this mechanism. Not all caches are centralized here."""
+    Note: each command may have its own cache outside this mechanism. Not all caches are centralized here."""
 
     __gef_caches__ = {
         "until_next": {},
@@ -3743,12 +3743,12 @@ class GlibcHeap:
         TCACHE_MAX_BINS = 0x40
 
         def __init__(self, arena_addr=None):
-            # When you manually call a command such as `call malloc(0x10)`, the internal structure of the heap changes.
+            # Manually calling a command like `call malloc(0x10)` alters the heap's internal structure.
             # However, the call command does not notify the `memory_changed` event.
             # Therefore, the GEF cache is not cleared to result wrong output.
             #   gef> bs
             #   gef> call malloc(0x10)
-            #   gef> bs <--- wrong result
+            #   gef> bs <-- wrong result
             # This is probably a bug in GDB. The solution is to clear the GEF cache.
             Cache.reset_gef_caches()
 
@@ -3828,8 +3828,8 @@ class GlibcHeap:
                 return None
 
             def tcache_from_symbol():
-                # The tcache is per-thread, so the address got by a symbol is depending on the currently running thread.
-                # So we get all tcaches from all threads and take the address closest to self.heap_base.
+                # tcache is per-thread, so the address obtained by a symbol is depending on the current thread.
+                # so we get all tcaches from all threads and take the address closest to self.heap_base.
                 orig_thread = gdb.selected_thread()
                 orig_frame = gdb.selected_frame()
                 if not orig_thread: # orig_thread may be None if under winedbg
@@ -5481,7 +5481,7 @@ class Disasm:
             arch = gdb.selected_frame().architecture()
             Disasm.__gef_prev_arch__ = arch
         except gdb.error:
-            # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
+            # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
             # At this time arch cannot be resolved, but if it was successful before, it will be used.
             if Disasm.__gef_prev_arch__ is None:
                 raise
@@ -13459,7 +13459,7 @@ def get_arch():
             if name != "i386":
                 return name
         except gdb.error:
-            # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
+            # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
             # Resolve by moving to the slow path.
             pass
 
@@ -14411,7 +14411,7 @@ class NiCommand(GenericCommand):
         try:
             frame = gdb.selected_frame()
         except gdb.error:
-            # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
+            # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
             frame = None
 
         insn = get_insn()
@@ -14500,7 +14500,7 @@ class SiCommand(GenericCommand):
         try:
             frame = gdb.selected_frame()
         except gdb.error:
-            # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
+            # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
             frame = None
 
         insn = get_insn()
@@ -14744,7 +14744,7 @@ class UpCommand(GenericCommand):
         try:
             current_frame = gdb.selected_frame()
         except gdb.error:
-            # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
+            # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
             err("Failed to get frame information")
             return
 
@@ -14800,7 +14800,7 @@ class DownCommand(GenericCommand):
         try:
             current_frame = gdb.selected_frame()
         except gdb.error:
-            # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
+            # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
             err("Failed to get frame information")
             return
 
@@ -28580,7 +28580,7 @@ class ContextCommand(GenericCommand):
             frame = gdb.selected_frame()
             arch_name = "{:s}:{:s}".format(current_arch.arch.lower(), current_arch.mode)
         except gdb.error:
-            # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
+            # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
             frame = None
             arch_name = "{:s}:{:s}".format(current_arch.arch.lower(), "???")
 
@@ -29372,7 +29372,7 @@ class ContextCommand(GenericCommand):
             orig_frame = gdb.selected_frame()
             current_frame = gdb.newest_frame()
         except gdb.error:
-            # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
+            # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
             err("Failed to get frame information")
             return
 
@@ -29516,7 +29516,7 @@ class ContextCommand(GenericCommand):
         try:
             selected_frame = gdb.selected_frame()
         except gdb.error:
-            # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
+            # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
             selected_frame = None
 
         lines = []
@@ -29546,7 +29546,7 @@ class ContextCommand(GenericCommand):
                     frame = gdb.selected_frame()
                     pc = frame.pc()
                 except gdb.error:
-                    # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
+                    # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
                     # if failed, print thread information without frame (but with $pc).
                     pc = get_register("$pc")
                 sym = Symbol.get_symbol_string(pc, nosymbol_string=" <NO_SYMBOL>")
@@ -32978,7 +32978,7 @@ class Ret2dlHintCommand(GenericCommand):
         s += "\n"
         s += "  +-_DYNAMIC @ itself--------+     +---->+-r_debug----------+\n"
         s += "  | QWORD tag                |     |     | QWORD r_version  |\n"
-        s += "  | QWORD value              |     |     | QWORD link_map   |<--- HERE\n"
+        s += "  | QWORD value              |     |     | QWORD link_map   |<-- HERE\n"
         s += "  +--------------------------+     |     | QWORD r_brk      |\n"
         s += "  | ...                      |     |     | QWORD r_ldbase   |\n"
         s += "  +--------------------------+     |     +------------------+\n"
@@ -33000,7 +33000,7 @@ class Ret2dlHintCommand(GenericCommand):
         s += "   +-->+-_DYNAMIC @ libc----------+   +-->+-.got/.got.plt @ libc-----------+\n"
         s += "       | QWORD tag                |   |   | GOT[0]: _DYNAMIC               |\n"
         s += "       | QWORD value              |   |   | GOT[1]: link_map               |\n"
-        s += "       +--------------------------+   |   | GOT[2]: _dl_runtime_resolve@ld |<--- HERE\n"
+        s += "       +--------------------------+   |   | GOT[2]: _dl_runtime_resolve@ld |<-- HERE\n"
         s += "       | ...                      |   |   | GOT[3]: func1                  |\n"
         s += "       +--------------------------+   |   | GOT[4]: func2                  |\n"
         s += "       | QWORD tag(0x3:DT_PLTGOT) |   |   | GOT[5]: func3                  |\n"
@@ -55613,17 +55613,17 @@ class KernelAddressHeuristicFinder:
                     g2 = []
                 # pattern1: per_cpu
                 #    pattern1-a:
-                #        0xffffffff8cf25b05 <run_timer_softirq+5>:    mov    rdi,0x24b40 <-- timer_bases
+                #        0xffffffff8cf25b05 <run_timer_softirq+5>:  mov rdi,0x24b40 <-- timer_bases
                 #    pattern1-b:
-                #        0xffffffffa440831e <run_timer_softirq+46>:   lea    rbx,[rax+0x22400]
+                #        0xffffffffa440831e <run_timer_softirq+46>: lea rbx,[rax+0x22400]
                 for x in g:
                     if not is_valid_addr(x) and (x & 0x7) == 0:
                         return x
                 # pattern2: not per_cpu
-                #    0xffffffff8aa6e450 <run_timer_softirq>:      mov    rax,QWORD PTR [rip+0x7cfba9] # 0xffffffff8b23e000 <jiffies_64>
-                #    0xffffffff8aa6e457 <run_timer_softirq+7>:    cmp    rax,QWORD PTR [rip+0x7ce92a] # 0xffffffff8b23cd88 <timer_bases+8>
-                #    0xffffffff8aa6e474 <run_timer_softirq+36>:   mov    rdx,QWORD PTR [rip+0x7cfb85] # 0xffffffff8b23e000 <jiffies_64>
-                #    0xffffffff8aa6e47b <run_timer_softirq+43>:   mov    rax,QWORD PTR [rip+0x7ce906] # 0xffffffff8b23cd88 <timer_bases+8>
+                #    0xffffffff8aa6e450 <run_timer_softirq>:    mov rax,QWORD PTR [rip+0x7cfba9] # 0xffffffff8b23e000 <jiffies_64>
+                #    0xffffffff8aa6e457 <run_timer_softirq+7>:  cmp rax,QWORD PTR [rip+0x7ce92a] # 0xffffffff8b23cd88 <timer_bases+8>
+                #    0xffffffff8aa6e474 <run_timer_softirq+36>: mov rdx,QWORD PTR [rip+0x7cfb85] # 0xffffffff8b23e000 <jiffies_64>
+                #    0xffffffff8aa6e47b <run_timer_softirq+43>: mov rax,QWORD PTR [rip+0x7ce906] # 0xffffffff8b23cd88 <timer_bases+8>
                 jiffies = KernelAddressHeuristicFinder.get_jiffies()
                 addrs = [x for x in g2 if (is_valid_addr(x) and (not jiffies or jiffies != x))]
                 if addrs:
@@ -55664,20 +55664,20 @@ class KernelAddressHeuristicFinder:
                     g2 = []
                 # pattern1: per_cpu
                 #    pattern1-a:
-                #        0xffffffff9b127acb:  mov    rbx,0x27040 <-- hrtimer_bases
+                #        0xffffffff9b127acb: mov rbx,0x27040 <-- hrtimer_bases
                 #    pattern1-b:
-                #        0xffffffffa440b87d <hrtimer_run_queues+13>:  test   BYTE PTR [rax+0x25b90],0x1
+                #        0xffffffffa440b87d <hrtimer_run_queues+13>: test BYTE PTR [rax+0x25b90],0x1
                 #        The exact value is 0x25b80, but don't worry about a slight deviation.
                 #    pattern1-c:
-                #        0xffffffff818f57b5 <hrtimer_run_queues+21>:  lea    rbx,[rax+0x1df00]
+                #        0xffffffff818f57b5 <hrtimer_run_queues+21>: lea rbx,[rax+0x1df00]
                 for x in g:
                     if not is_valid_addr(x) and (x & 0x7) == 0:
                         return x
                 # pattern2: not per_cpu
-                #    0xffffffffbb8668bc <hrtimer_run_queues+12>:  mov    rdx,0xffffffffbc046138
-                #    0xffffffffbb8668c3 <hrtimer_run_queues+19>:  mov    rcx,0xffffffffbc046178
-                #    0xffffffffbb8668ca <hrtimer_run_queues+26>:  mov    rsi,0xffffffffbc0460f8
-                #    0xffffffffbb8668d1 <hrtimer_run_queues+33>:  mov    rdi,0xffffffffbc046048 <-- hrtimer_bases+8
+                #    0xffffffffbb8668bc <hrtimer_run_queues+12>: mov rdx,0xffffffffbc046138
+                #    0xffffffffbb8668c3 <hrtimer_run_queues+19>: mov rcx,0xffffffffbc046178
+                #    0xffffffffbb8668ca <hrtimer_run_queues+26>: mov rsi,0xffffffffbc0460f8
+                #    0xffffffffbb8668d1 <hrtimer_run_queues+33>: mov rdi,0xffffffffbc046048 <-- hrtimer_bases+8
                 addrs = [x for x in g2 if is_valid_addr(x)]
                 if addrs:
                     return min(addrs)
@@ -56149,7 +56149,8 @@ class Kernel:
                     return Kinfo(*dic.values())
 
         # 2a. search kernel RO base
-        # If -enable-kvm option of qemu-system is not set, there may be multiple `r-- non-.rodata` between .text and .rodata.
+        # If the -enable-kvm option for qemu-system is not enabled,
+        # there might be multiple 'r-- but non-.rodata' regions between .text and .rodata.
         #   [  .text    ]
         #   [  .text    ]
         #   [ ??? (r--) ]
@@ -56157,7 +56158,8 @@ class Kernel:
         #   [ ??? (r--) ]
         #   [ .rodata   ] <- near the top of this area has "Linux version"
         #   [ .rodata   ]
-        # In other words, .rodata may not exist immediately after .text. I have seen this on qemu with debian11 x86_64 installed.
+        # In other words, .rodata may not exist immediately after .text.
+        # I have seen this on qemu with debian11 x86_64 installed.
         # Therefore, detecting by location will not return correct results.
         # So I decided to also detect by the existence "Linux version" near the top of the .rodata page.
         for i, (vaddr, size, perm) in enumerate(dic["maps"][text_base_map_index + 1:]):
@@ -56171,7 +56173,7 @@ class Kernel:
                         ro_base_map_index = text_base_map_index + i
                 elif dic["ro_end"] == vaddr:
                     # merge contiguous region.
-                    # This is important because .rodata may be split into areas for GLOBAL and non-GLOBAL attributes
+                    # This is important because .rodata may be split into GLOBAL and non-GLOBAL areas.
                     dic["ro_size"] += size
                     dic["ro_end"] += size
                     ro_base_map_index = text_base_map_index + i
@@ -56200,7 +56202,7 @@ class Kernel:
                             ro_base_map_index = text_base_map_index + i
                     elif dic["ro_end"] == vaddr:
                         # merge contiguous region.
-                        # This is important because .rodata may be split into areas for GLOBAL and non-GLOBAL attributes
+                        # This is important because .rodata may be split into GLOBAL and non-GLOBAL areas.
                         dic["ro_size"] += size
                         dic["ro_end"] += size
                         ro_base_map_index = text_base_map_index + i
@@ -57611,7 +57613,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         #endif
             struct thread_struct thread; // ~v4.2
             struct fs_struct *fs;
-            struct files_struct *files; <-------- here
+            struct files_struct *files; <-- here
             ...
         };
         """
@@ -57647,7 +57649,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             atomic_t count;
             bool resize_in_progress;
             wait_queue_head_t resize_wait;
-            struct fdtable __rcu *fdt; <------- here
+            struct fdtable __rcu *fdt; <-- here
             struct fdtable {
                 unsigned int max_fds;
                 struct file __rcu **fd;
@@ -57923,13 +57925,13 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 x = read_int_from_memory(mm + current_arch.ptrsize * i)
                 """
                 [x64 v6.4.2]
-                0xffff8bedc104db00|+0x0000|+000: 0x0000000000000000   // union  <--- mm_mt
+                0xffff8bedc104db00|+0x0000|+000: 0x0000000000000000   // union  <-- mm_mt
                 0xffff8bedc104db08|+0x0008|+001: 0xffff8bedc1a6601e   // ma_root
                 0xffff8bedc104db10|+0x0010|+002: 0x000000000000030b   // ma_flags
 
                 [x64 v6.6.1]
                 0xffff972801b78a38|+0x0040|+008: 0x0000000000000000   // (the end of cacheline?)
-                0xffff972801b78a40|+0x0040|+008: 0x0000030b00000000   // ma_flags || union  <--- mm_mt
+                0xffff972801b78a40|+0x0040|+008: 0x0000030b00000000   // ma_flags || union  <-- mm_mt
                 0xffff972801b78a48|+0x0048|+009: 0xffff972801b0cc1e   // ma_root
                 """
                 if is_valid_addr(x) and (x & 0xff) in [0x1e, 0x0e]:
@@ -58462,7 +58464,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 struct dentry *mnt_root;
                 struct super_block *mnt_sb;
                 int mnt_flags;
-            } mnt; <--- f_path.mnt points here
+            } mnt; <-- f_path.mnt points here
             ...
         };
         """
@@ -63669,7 +63671,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             struct block_device *s_bdev;
             struct backing_dev_info *s_bdi;
             struct mtd_info *s_mtd;
-            struct hlist_node s_instances;  <--- fs_supers points here
+            struct hlist_node s_instances;  <-- fs_supers points here
             ...
         } __randomize_layout;
         """
@@ -64566,7 +64568,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             struct device *bridge;
             struct device {
                 struct kobject {
-                    const char *name; <--- search this
+                    const char *name; <-- search this
                     ...
                 } kobj;
                 ...
@@ -64613,7 +64615,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             ...
             struct device {
                 struct kobject {
-                    const char *name; <--- search this
+                    const char *name; <-- search this
                     ...
                 } kobj;
                 ...
@@ -66063,8 +66065,8 @@ class ExecSyscall(ExecAsm):
             syscall_insn = syscall_insn[:-1] + bytes([nr])
 
         codes += [syscall_insn]
-        # When stepping through a system call instruction, execution may continue to the next instruction.
-        # Depending on the version of gdb, this can occur even on architectures without delay slots, so a nop is required.
+        # Stepping through a syscall instruction may continue execution to the next instruction.
+        # Depending on gdb version, this occurs even on architectures without delay slots, requiring a nop.
         codes += [current_arch.nop_insn]
 
         # list to bytes
@@ -70608,11 +70610,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
-        # The slub-dump command is also called by page2virt and kmagic to determine vmemmap and sizeof(struct page).
+        # The slub-dump command is used by page2virt and kmagic to find vmemmap and sizeof(struct page).
         # Therefore, slub-dump itself may be called recursively (up to once) from slub-dump.
         # If a recursive call is made, various parameters held by self will be destroyed.
-        # It's very tricky, but if we make sure to call page2virt first, no further calls will be made and
-        # it will work without any problems.
+        # It's very tricky, but if we make sure to call page2virt first,
+        # no further calls will be made and it will work without any problems.
         if not hasattr(self, "initialized"):
             if is_x86() or is_arm32():
                 if not args.skip_page2virt:
@@ -71320,11 +71322,11 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
-        # The slub-tiny-dump command is also called by page2virt and kmagic to determine vmemmap and sizeof(struct page).
+        # The slub-tiny-dump command is used by page2virt and kmagic to find vmemmap and sizeof(struct page).
         # Therefore, slub-tiny-dump itself may be called recursively (up to once) from slub-tiny-dump.
         # If a recursive call is made, various parameters held by self will be destroyed.
-        # It's very tricky, but if we make sure to call page2virt first, no further calls will be made and
-        # it will work without any problems.
+        # It's very tricky, but if we make sure to call page2virt first,
+        # no further calls will be made and it will work without any problems.
         if not hasattr(self, "initialized"):
             if is_x86() or is_arm32():
                 if not args.skip_page2virt:
@@ -73442,7 +73444,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         #endif                                // ~3.18
             struct list_head i_devices;
             union {
-                struct pipe_inode_info *i_pipe;  <--- here
+                struct pipe_inode_info *i_pipe;  <-- here
                 struct block_device *i_bdev;
                 struct cdev *i_cdev;
                 char *i_link;
@@ -73497,7 +73499,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             struct page *tmp_page;
             struct fasync_struct *fasync_readers;
             struct fasync_struct *fasync_writers;
-            struct pipe_buffer *bufs;  <--- here
+            struct pipe_buffer *bufs;  <-- here
             struct user_struct *user;
         #ifdef CONFIG_WATCH_QUEUE            // v5.8~
             struct watch_queue *watch_queue; // v5.8~
@@ -73518,7 +73520,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             struct page *tmp_page;
             struct fasync_struct *fasync_readers;
             struct fasync_struct *fasync_writers;
-            struct pipe_buffer *bufs; <--- here
+            struct pipe_buffer *bufs; <-- here
             struct user_struct *user;
         };
         """
@@ -77187,8 +77189,8 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
 
         # This path is more faster because it does not use pagewalk.
         # Instead of finding ro_base from pagewalk results, it finds ro_base by scanning the kernel version.
-        # It is especially beneficial for ARM64, because it tends to have a lot of pagetables and pagewalk take a long time.
-        # It may work on other architectures, but it's limited to ARM64 because other architectures don't benefit much.
+        # It is especially beneficial for ARM64, due to extensive pagetables and pagewalk take a long time.
+        # It may work on other architectures but limited to ARM64 as others gain little.
 
         # First, search the kernel version string from $pc.
         # It is located at around top of ro_base, and ro_base is aligned by 0x10000.
@@ -77196,7 +77198,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         step_size = 0x10000
         while True:
             try:
-                # As kernel version string is located at around top of ro_base it is enough to check the first page.
+                # As kernel version string is near the top of ro_base, it is enough to check the first page.
                 candidate_rodata = read_memory(current, gef_getpagesize())
             except gdb.MemoryError:
                 # reached to the end of ro_base
@@ -77655,7 +77657,7 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
         #
         #   google-perftools-2.9.1/src/static_vars.cc
         #     ...
-        #     SizeMap Static::sizemap_; <----- here
+        #     SizeMap Static::sizemap_; <-- here
         #     CentralFreeListPadded Static::central_cache_[kClassSizesMax];
         #     ...
         #
@@ -77665,17 +77667,17 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
         #   google-perftools-2.9.1/src/static_vars.cc
         #   ...
         #   void Static::InitStaticVars() {
-        #     sizemap_.Init(); <----- here
+        #     sizemap_.Init(); <-- here
         #     span_allocator_.Init();
         #   ...
         #
         # This is a sample.
-        #   0x7ffff7c26110 <tcmalloc::Static::InitStaticVars()>:      endbr64
-        #   0x7ffff7c26114 <tcmalloc::Static::InitStaticVars()+4>:    push   rbp
-        #   0x7ffff7c26115 <tcmalloc::Static::InitStaticVars()+5>:    lea    rdi,[rip+0x1d1dc4]   # 0x7ffff7df7ee0 <----- here
-        #   0x7ffff7c2611c <tcmalloc::Static::InitStaticVars()+12>:   push   rbx
-        #   0x7ffff7c2611d <tcmalloc::Static::InitStaticVars()+13>:   sub    rsp,0x8
-        #   0x7ffff7c26121 <tcmalloc::Static::InitStaticVars()+17>:   call   0x7ffff7c20d80 <tcmalloc::SizeMap::Init()>
+        #   0x7ffff7c26110 <tcmalloc::Static::InitStaticVars()>:    endbr64
+        #   0x7ffff7c26114 <tcmalloc::Static::InitStaticVars()+4>:  push rbp
+        #   0x7ffff7c26115 <tcmalloc::Static::InitStaticVars()+5>:  lea rdi,[rip+0x1d1dc4] # 0x7ffff7df7ee0 <-- here
+        #   0x7ffff7c2611c <tcmalloc::Static::InitStaticVars()+12>: push rbx
+        #   0x7ffff7c2611d <tcmalloc::Static::InitStaticVars()+13>: sub rsp,0x8
+        #   0x7ffff7c26121 <tcmalloc::Static::InitStaticVars()+17>: call 0x7ffff7c20d80 <tcmalloc::SizeMap::Init()>
         #   ...
         #
         # The size of central_cache_ is 0x26000, so 0x7ffff7df7ee0 - 0x26000 is central_cache_.
@@ -79129,16 +79131,16 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 This is same both at 64-bit and 32bit arch.
 
                 [WTF::Partitions::InitializeOnce()::buffer_allocator]
-                0x5a849775d600: 0x0000000000010000      0x0000000000000004     <--- here may be used
-                0x5a849775d610: 0x0000000000000000      0x00000000ffffffff     <--- here may be used
-                0x5a849775d620: 0x0000000400000001      0xfffffe7fec785000     <--- hare may be used
-                0x5a849775d630: 0x0000000000000000      0x0000000000000000     <--- here may be not used
+                0x5a849775d600: 0x0000000000010000      0x0000000000000004     <-- here may be used
+                0x5a849775d610: 0x0000000000000000      0x00000000ffffffff     <-- here may be used
+                0x5a849775d620: 0x0000000400000001      0xfffffe7fec785000     <-- hare may be used
+                0x5a849775d630: 0x0000000000000000      0x0000000000000000     <-- here may be not used
 
                 [WTF::Partitions::InitializeArrayBufferPartition()::array_buffer_allocator]
-                0x5a8497761040: 0x0000000000000000      0x0000000000000000     <--- here may be used
-                0x5a8497761050: 0x0000000000000001      0x00000000ffffffff     <--- here may be used
-                0x5a8497761060: 0x0000000000000000      0xffffcefbec787000     <--- here may be used
-                0x5a8497761070: 0x0000000000000000      0x0000000000000000     <--- here may be not used
+                0x5a8497761040: 0x0000000000000000      0x0000000000000000     <-- here may be used
+                0x5a8497761050: 0x0000000000000001      0x00000000ffffffff     <-- here may be used
+                0x5a8497761060: 0x0000000000000000      0xffffcefbec787000     <-- here may be used
+                0x5a8497761070: 0x0000000000000000      0x0000000000000000     <-- here may be not used
                 """
                 if read_memory(data[1], 64)[-16:] != b"\0" * 16:
                     continue
@@ -81952,7 +81954,7 @@ class WSecureMemAddrCommand(GenericCommand):
         TemporaryDummyBreakpoint()
 
         # By default, "context code" uses Disasm.gdb_disassemble.
-        # However, due to gdb's internal cache, changes to secure memory may not be reflected in the disassembled results.
+        # However, due to gdb's cache, secure memory changes may not appear in disassembly.
         # Therefore, if capstone is available, change it to disassemble by capstone.
         if Config.get_gef_setting("context.use_capstone") is False:
             Config.set_gef_setting("context.use_capstone", True)
@@ -87387,8 +87389,8 @@ class PagewalkArm64Command(PagewalkCommand):
         # granule_bits: One of [12, 14, 16]; It specifies how to separate the bits used for address translation.
         # region_start: The base address of translated address.
         # start_level: Only used at stage2. In stage2, the starting level will fluctuate.
-        # is_stage2: Whether VTTBR0_EL2 or not. Affects how the bitfield of each entry is interpreted.
-        # is_2VAranges: Whether the target EL has TTBR0 and TTBR1. Affects how the bitfield of each entry is interpreted.
+        # is_stage2: Whether VTTBR0_EL2 or not. Affects entry bitfield interpretation.
+        # is_2VAranges: TTBR0/TTBR1 presence at target EL. Affects entry bitfield interpretation.
         self.mappings = []
 
         is_4k_granule = granule_bits == 12
@@ -89956,7 +89958,7 @@ class PageCommand(GenericCommand):
                 if page is None:
                     err("Failed to resolve")
                     return None
-                # The assumption is that there should be one, but just to be sure, all different values will be displayed.
+                # Assuming there should be one, all different values will be displayed for certainty.
                 msg = "Phys: {:#x} -> Page: {:#x}".format(paddr, page)
                 if msg not in out:
                     out.append(msg)
@@ -94503,7 +94505,7 @@ class StackFrameCommand(GenericCommand):
         try:
             frame = gdb.selected_frame()
         except gdb.error:
-            # For unknown reasons, gdb.selected_frame() may cause an error (often occurs during kernel startup).
+            # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
             err("Failed to get frame information")
             return
 
