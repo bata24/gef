@@ -89179,7 +89179,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
                 description = "slab cache ({:s})".format(name)
                 if address:
                     self.insert_region(address, size, description, merge=False)
-                address, size = None, None # for detect logic error. name will be reused
+                address, size = None, None # for detect logic error. name will be reused until next parsing
                 continue
 
         self.resolve_more_slub()
@@ -89206,7 +89206,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
                 description = "slab cache ({:s})".format(name)
                 if address:
                     self.insert_region(address, size, description, merge=False)
-                address, size = None, None # for detect logic error. name will be reused
+                address, size = None, None # for detect logic error. name will be reused until next parsing
                 continue
         return
 
@@ -89214,7 +89214,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         self.quiet_info("resolve slob")
 
         res = gdb.execute("slob-dump --quiet --no-pager", to_string=True)
-        address, size = None, None, None
+        address, size = None, None
         for line in res.splitlines():
             r = re.search(r"virtual address: (.+0x.+)", line)
             if r:
