@@ -237,13 +237,16 @@ class DisplayHook:
             """Makes an indent for next level."""
             return "  " * (idt + 1)
 
+        def R(o, idt):
+            return [DisplayHook.pp(x, idt + 1) for x in o]
+
         def R1(o, idt):
             """Returns a string of the elements concatenated with comma (for list, tuple, set, ...)."""
-            return ", ".join([DisplayHook.pp(x, idt + 1) for x in o])
+            return ", ".join(R(o, idt))
 
         def R2(o, idt):
             """Returns a list of the elements with indent and comma (for list, tuple, set, ...)."""
-            return [I2(idt) + DisplayHook.pp(x, idt + 1) + "," for x in o]
+            return [I2(idt) + x + "," for x in R(o, idt)]
 
         def Z(s, e, o, idt):
             """Returns a string of the elements concatenated with commas (for list, tuple, set, ...),
@@ -256,13 +259,16 @@ class DisplayHook:
             f = [s] + R2(o, idt) + [I1(idt) + e]
             return "\n".join(f)
 
+        def RD(o, idt):
+            return [DisplayHook.pp(k, idt + 1) + ": " + DisplayHook.pp(v, idt + 1) for k, v in o]
+
         def RD1(o, idt):
             """Returns a string of the elements concatenated with comma (for dict, ...)."""
-            return ", ".join([DisplayHook.pp(k, idt + 1) + ": " + DisplayHook.pp(v, idt + 1) for k, v in o])
+            return ", ".join(RD(o, idt))
 
         def RD2(o, idt):
             """Returns a list of the elements with indent and comma (for dict, ...)."""
-            return [I2(idt) + DisplayHook.pp(k, idt + 1) + ": " + DisplayHook.pp(v, idt + 1) + "," for k, v in o]
+            return [I2(idt) + x + "," for x in RD(o, idt)]
 
         def ZD(s, e, o, idt):
             """Returns a string of the elements concatenated with comma (for dict, ...),
@@ -276,7 +282,7 @@ class DisplayHook:
             return "\n".join(f)
 
         name = type(o).__name__
-        width = GefUtil.get_terminal_size()[0] + len(I1(idt))
+        width = GefUtil.get_terminal_size()[1] + len(I1(idt))
 
         if name in ("int", "long"):
             return hex(o)
