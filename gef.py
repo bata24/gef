@@ -27948,7 +27948,12 @@ class EntryBreakCommand(GenericCommand):
         fpath = Path.get_filepath()
         executable_section = ProcessMap.process_lookup_path(fpath, perm_mask=Permission.EXECUTE)
 
-        if executable_section.page_start <= current_arch.pc < executable_section.page_end:
+        if executable_section is None:
+            # for context.disable_vmmap
+            next_insn = get_insn_next(current_arch.pc)
+            info("Breaking at: {:#x}".format(next_insn.address))
+            EntryBreakBreakpoint("*{:#x}".format(next_insn.address))
+        elif executable_section.page_start <= current_arch.pc < executable_section.page_end:
             # already stopped around entry point.
             # However, it automatically resumes execution, so we need a breakpoint.
             next_insn = get_insn_next(current_arch.pc)
