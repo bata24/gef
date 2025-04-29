@@ -94863,7 +94863,7 @@ class SixelMemoryCommand(GenericCommand):
 
 
 @register_command
-class VisualdumpCommand(GenericCommand):
+class VisualDumpCommand(GenericCommand):
     """Visualize memory data like an image."""
 
     _cmdline_ = "vdump"
@@ -94884,6 +94884,12 @@ class VisualdumpCommand(GenericCommand):
                         help="negate the grayscale tone.")
     parser.add_argument("-A", "--auto-width-inclement", action="store_true",
                         help="repeat the display while shifting the interpretation of the width.")
+    parser.add_argument("-Ab", "--auto-inclement-begin-width", type=lambda x: int(x, 0), default=16,
+                        help="auto inclement begin width. (default: %(default)s)")
+    parser.add_argument("-Ae", "--auto-inclement-end-width", type=lambda x: int(x, 0),
+                        help="auto inclement end width. (default: min(len(data) // begin_width, 512)")
+    parser.add_argument("-As", "--auto-inclement-step-width", type=lambda x: int(x, 0), default=2,
+                        help="auto inclement step width. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
     def make_command_line(self, img_width, img_height, tmp_path):
@@ -94960,10 +94966,14 @@ class VisualdumpCommand(GenericCommand):
 
         if args.auto_width_inclement:
             # if the width is too large, processing will be slow
-            min_width = 0x10
-            max_width = min(len(data) // 0x10, 513)
+            min_width = args.auto_inclement_begin_width
+            if args.auto_inclement_end_width is not None:
+                max_width = args.auto_inclement_end_width
+            else:
+                max_width = min(len(data) // min_width, 512)
+            step = args.auto_inclement_step_width
             # processing while changing the width
-            for img_width in range(min_width, max_width, 2):
+            for img_width in range(min_width, max_width + 1, step):
                 img_height = len(data) // img_width
                 cmd = self.make_command_line(img_width, img_height, tmp_path)
                 info(cmd)
