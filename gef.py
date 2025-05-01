@@ -93257,36 +93257,55 @@ class KernelTraceCommand(GenericCommand):
                         help="function include filter (REGEXP).")
     parser.add_argument("-e", "--exclude", action="append", type=re.compile, default=[],
                         help="function exclude filter (REGEXP).")
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="display the function name where breakpoint is set.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="skip tqdm.")
+    parser.add_argument("-c", "--commit", action="store_true", help="actually perform ktrace.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="skip tqdm and displaying function name.")
     _syntax_ = parser.format_help()
 
     _note_ = [
         "If you set breakpoints in some commonly called functions, it became too slow to be useful.",
         "Use filtering options to reduce the number of functions targeted by breakpoints as much as possible.",
-        "This command is not stable and may crash the kernel (under --enable-kvm ?).",
     ]
     _note_ = "\n".join(_note_)
 
     finish_breakpoints = []
+
+    def is_valid_addr(self, addr):
+        page_start = addr & gef_getpagesize_mask_low()
+
+        if page_start in self.addr_range_ok_cache:
+            return True
+        if page_start in self.addr_range_ng_cache:
+            return False
+
+        if is_valid_addr(addr):
+            self.addr_range_ok_cache.append(page_start)
+            return True
+        else:
+            self.addr_range_ng_cache.append(page_start)
+            return False
 
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel
+    @only_if_kvm_disabled
     def do_invoke(self, args):
+        info("Wait for memory scan")
+
+        # check if text base is available
         text_base = Symbol.get_ksymaddr("_stext")
         if text_base is None:
             err("Failed to get kernel base (_stext)")
-            return False
+            return
 
-        # set break points
-        info("Set breakpoints in all functions that match the specified criteria")
-        tqdm = GefUtil.get_tqdm(not args.quiet)
+        self.addr_range_ok_cache = []
+        self.addr_range_ng_cache = []
+
+        # list up target functions
         res = gdb.execute("ksymaddr-remote --quiet --no-pager --type t", to_string=True)
-        breakpoints = []
+        target_functions = []
+        tqdm = GefUtil.get_tqdm(not args.quiet)
         for line in tqdm(res.splitlines(), leave=False):
             func_addr, _, func_name = line.split()
             func_addr = int(func_addr, 16)
@@ -93297,19 +93316,41 @@ class KernelTraceCommand(GenericCommand):
             if args.exclude and any(filt.search(func_name) for filt in args.exclude):
                 continue
 
-            if func_addr < text_base: # lower address is percpu-relative.
-                continue
-            if not is_valid_addr(func_addr): # The function with `init` attribute may no longer exist.
+            # lower address is percpu-relative.
+            if func_addr < text_base:
                 continue
 
+            # The function with `init` attribute may no longer exist.
+            if not self.is_valid_addr(func_addr):
+                continue
+
+            target_functions.append([func_addr, func_name])
+
+        # check num of breakpoints
+        info("num of breakpoint targets: {:d}".format(len(target_functions)))
+        if len(target_functions) > 1000:
+            err("Too many breakpoints cause this to not work properly (>1000)")
+            return
+
+        if len(target_functions) > 100:
+            warn("Too many breakpoints may cause this to not work properly (>100)")
+
+        # debug print
+        if not args.quiet:
+            for func_addr, func_name in target_functions:
+                info("{:#x} {:s}".format(func_addr, func_name))
+
+        # not commit
+        if not args.commit:
+            warn('This dry run mode skips executing; add "--commit" to proceed')
+            return
+
+        # set break points
+        info("Set breakpoints in all functions that match the specified criteria")
+        breakpoints = []
+        for func_addr, func_name in target_functions:
             bp = KtraceBreakpoint(func_addr, func_name, args.task_name, args.task_addr)
             breakpoints.append(bp)
-
-        if args.verbose:
-            gef_print(titlify("breakpoint target"))
-            for bp in breakpoints:
-                info("{:#x} {:s}".format(bp.loc, bp.sym))
-            gef_print(titlify(""))
 
         # Locking a thread can have disadvantages: such as making it impossible to enter commands
         # from the guest's terminal. Therefore, we decided not to disable it.
