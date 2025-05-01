@@ -505,6 +505,8 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - ![](images/theme-colors-sample.png)
 - `reset-cache` is improved and integrated into `gef` as subcommand.
     - The cache structure within GEF has changed significantly. This command corresponds to them.
+- `tmux-setup`: is integerated into `gef` as subcommand.
+    - `screen` is no longer supported.
 
 ### Added features
 - `pid`/`tid`: prints pid and tid.
@@ -760,8 +762,6 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - `pcustom`
     - `ksymaddr`
     - `trace-run`
-    - bufferize
-    - output redirect
     - `shellcode`
 - Many bug fixes / formatting improvements / usability enhancements (made it easy for me to use).
 

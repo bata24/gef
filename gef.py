@@ -475,9 +475,14 @@ class Config:
         return
 
 
-def gef_print(x="", less=False, *args, **kwargs):
+def gef_print(x="", less=False, redirect=None, *args, **kwargs):
     """Wrapper around print(), using string buffering feature."""
     x = HighlightCommand.highlight_text(x)
+
+    if redirect:
+        with open(redirect, "w") as f:
+            print(x, *args, **kwargs, file=f)
+        return
 
     if less:
         try:
@@ -28250,6 +28255,7 @@ class ContextCommand(GenericCommand):
                         metavar="{legend,regs,stack,code,args,memory,source,trace,threads,extra}|{on,off}",
                         help="specifies which context to display. "
                              "The on/off are syntax sugars of `gef config context.enable True/False`.")
+    parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
     _syntax_ = parser.format_help()
 
     old_registers = {}
@@ -28316,6 +28322,7 @@ class ContextCommand(GenericCommand):
         self.add_setting("enable_auto_switch_for_i8086", True, "Enable auto architecture switching for i8086 <-> x86-32")
         self.add_setting("disable_vmmap", False, "Disable memory map generation to speed up (e.g., for firmware debugging)")
         self.add_setting("disable_auxv", False, "Disable scanning auxv from memory to speed up (e.g., for firmware debugging)")
+        self.add_setting("redirect", "", "Redirect the context information to another tty")
 
         self.layout_mapping = {
             "legend"     : self.show_legend,
@@ -29655,6 +29662,14 @@ class ContextCommand(GenericCommand):
         # check config
         if ContextCommand.is_hide():
             return
+
+        # check redirect
+        if not args.ignore_redirect:
+            pty = Config.get_gef_setting("context.redirect")
+            if pty:
+                res = gdb.execute("context --ignore-redirect", to_string=True)
+                gef_print(res.rstrip(), redirect=pty)
+                return
 
         # check layout
         if len(args.commands) > 0:
@@ -95539,6 +95554,7 @@ class GefCommand(GenericCommand):
     subparsers.add_parser("status")
     subparsers.add_parser("version")
     subparsers.add_parser("check-update")
+    subparsers.add_parser("tmux-setup")
     _syntax_ = parser.format_help()
 
     DEBUG_PERF_TIME = False
@@ -96931,6 +96947,47 @@ class GefCheckUpdateCommand(GenericCommand):
         return
 
 
+@register_command
+class GefTmuxSetupCommand(GenericCommand):
+    """Setup a comfortable tmux environment."""
+
+    _cmdline_ = "gef tmux-setup"
+    _category_ = "99. GEF Maintenance Command"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    _syntax_ = parser.format_help()
+
+    def tmux_setup(self):
+        """Prepare the tmux environment by vertically splitting and redirect context output."""
+        ok("tmux session found, splitting window...")
+
+        tmux = GefUtil.which("tmux")
+        pane, pty = subprocess.check_output([
+            tmux, "splitw", "-h",
+            '-F#{session_name}:#{window_index}.#{pane_index}-#{pane_tty}', "-P",
+        ]).decode().strip().split("-")
+
+        import atexit
+        atexit.register(lambda : subprocess.run([tmux, "kill-pane", "-t", pane]))
+
+        # clear the screen and let it wait for input forever
+        gdb.execute(f"!'{tmux}' send-keys -t {pane} 'clear ; cat' C-m")
+        gdb.execute(f"!'{tmux}' select-pane -L")
+
+        ok(f"Setting `context.redirect` to '{pty}'...")
+        gdb.execute(f"gef config context.redirect {pty}")
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        if os.getenv("TMUX"):
+            self.tmux_setup()
+            return
+
+        warn("Not in a tmux session")
+        return
+
+
 class GefAlias(gdb.Command):
     """Simple aliasing wrapper because GDB doesn't do what it should."""
 
@@ -97140,6 +97197,18 @@ class GefUtil:
     @staticmethod
     def get_terminal_size():
         """Return the current terminal size."""
+        if os.getenv("TMUX"):
+            pty = Config.get_gef_setting("context.redirect")
+            if pty:
+                res = subprocess.check_output([
+                    GefUtil.which("tmux"), "list-panes",
+                    '-F #{pane_tty} #{pane_height} #{pane_width}',
+                ]).decode()
+                for line in res.strip().splitlines():
+                    tty, height, width = line.split()
+                    if tty == pty:
+                        return int(height), int(width)
+
         TIOCGWINSZ = 0x5413
         try:
             tty_rows, tty_columns = struct.unpack("hh", fcntl.ioctl(1, TIOCGWINSZ, "1234"))
