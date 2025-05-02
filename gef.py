@@ -96953,6 +96953,7 @@ class GefTmuxSetupCommand(GenericCommand):
 
     _cmdline_ = "gef tmux-setup"
     _category_ = "99. GEF Maintenance Command"
+    _aliases_ = ["tmux-setup"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
