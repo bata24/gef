@@ -22,7 +22,7 @@
 ## What is this?
 This is a fork of [GEF](https://github.com/hugsy/gef) with 3 major improvements.
 
-1. Added many heuristic commands for kernel debugging __WITHOUT a symbolized vmlinux__ (for qemu-system; linux kernel 3.x ~ 6.14.x).
+1. Added many heuristic commands for kernel debugging __WITHOUT a symbolized vmlinux__ (for qemu-system; Linux kernel 3.x ~ 6.14.x).
 2. Added support for [many architectures](docs/QEMU-USER-SUPPORTED-ARCH.md) (for qemu-user).
 3. Added some heap dump commands for various allocators.
 
@@ -36,7 +36,7 @@ Many other commands have been added and improved. Enjoy!
 - It might work on Ubuntu 20.04 - 21.10, but it is not recommended.
 
 ### Install
-- Run following commands as root user.
+- Run the following commands as root user.
     ```bash
     # Ubuntu 23.04 or later restrict global installation of python packages with pip3.
     # So you need --break-system-packages option.
@@ -48,7 +48,7 @@ Many other commands have been added and improved. Enjoy!
 - Note
     - To simplify the installation script, GEF (`gef.py`) is installed to a fixed path (`/root/.gdbinit-gef.py`).
     - Also, it registers the GEF path to `/root/.gdbinit`.
-    - If you want to change the location or user, please modify both yourself.
+    - If you want to change the location or user, please modify both of them yourself.
     - See [docs/FAQ.md](docs/FAQ.md) for more information and other install options.
         - There is a way to install it using `venv`.
         - There is a minimum installation that reduces installation as much as possible.
@@ -100,7 +100,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
         - ![](images/pagewalk-arm64-el123.png)
         - Secure memory scanning is also supported, but you have to break in the secure world.
         - ![](images/pagewalk-arm64-secure.png)
-        - Pseudo memory map without detailed flags and permission can be output even in the normal world (when OP-TEE).
+        - Pseudo memory map without detailed flags and permissions can be output even in the normal world (when OP-TEE).
         - ![](images/pagewalk-arm64-secure-pseudo.png)
     - ARM (Supported: only Cortex-A, LPAE/Non-LPAE, PL0/PL1)
         - ARM v7 base. PL2 is NOT supported.
@@ -113,9 +113,9 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - ![](images/v2p-p2v.png)
 - `xp`: is a shortcut for physical memory dump.
     - ![](images/xp.png)
-- `qreg`: displays the register values from qemu-monitor (allows to get like `$cs` even under qemu 2.x).
+- `qreg`: displays the register values from qemu-monitor (allows getting values like `$cs` even under qemu 2.x).
     - It is a shortcut for `monitor info registers`.
-    - It also prints the details of the each bit of the system register when x64/x86.
+    - It also prints the details of each bit of the system register when x64/x86.
     - ![](images/qreg.png)
 - `sysreg`: pretty prints system registers.
     - It shows `info registers` results, excluding general registers.
@@ -134,14 +134,14 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
 - `ksymaddr-remote-apply`/`vmlinux-to-elf-apply`: applies kallsyms information obtained by `ksymaddr-remote` or `vmlinux-to-elf` to gdb.
     - ![](images/ksymaddr-remote-apply.png)
     - ![](images/vmlinux-to-elf-apply.png)
-    - Once you get symboled pseudo ELF file, you can reuse and apply it automatically even after rebooting qemu-system.
+    - Once you get a symboled pseudo ELF file, you can reuse and apply it automatically even after rebooting qemu-system.
     - `vmlinux-to-elf-apply` and `ksymaddr-remote-apply` provide almost the same functionality.
         - `vmlinux-to-elf-apply`: Requires installation of external tools. Create `vmlinux` with symbols.
-        - `ksymaddr-remote-apply`: Requires no external tools. Create an blank ELF with only embedded symbols.
+        - `ksymaddr-remote-apply`: Requires no external tools. Create a blank ELF with only embedded symbols.
 - `slub-dump`: dumps slub free-list.
     - Supported on x64/x86/ARM64/ARM + `SLUB` + no-symbol + kASLR.
-    - Supported on both `CONFIG_SLAB_FREELIST_HARDENED` is `y` or `n`.
-    - It supports to dump partial pages (`-v`) and NUMA node pages (`-vv`).
+    - Supported regardless of whether `CONFIG_SLAB_FREELIST_HARDENED` is `y` or `n`.
+    - It supports dumping partial pages (`-v`) and NUMA node pages (`-vv`).
     - Since `page_to_virt` is difficult to implement, it will heuristically determine the virtual address from the free-list.
     - ![](images/slub-dump.png)
 - `slab-dump`: dumps slab free-list.
@@ -192,17 +192,17 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - ![](images/ktask-seccomp.png)
 - `kmod`: displays each module address.
     - ![](images/kmod.png)
-    - It also displays each module symbols.
+    - It also displays the symbols of each module.
     - ![](images/kmod-syms.png)
-- `kload`: loads vmlinux without loaded address.
-    - It is useful if you have a vmlinux with debuginfo at hand.
+- `kload`: loads `vmlinux` without loaded address.
+    - It is useful if you have a `vmlinux` with debuginfo at hand.
 - `kmod-load`: loads the kernel module without loaded address.
     - It is useful if you have a kernel module with debuginfo at hand.
-- `kops`: displays each operations member.
+- `kops`: displays each operation's member.
     - ![](images/kops.png)
-- `kcdev`: displays each character device information.
+- `kcdev`: displays information for each character device.
     - ![](images/kcdev.png)
-- `kbdev`: displays each block device information.
+- `kbdev`: displays information for each block device.
     - If there are too many block devices, detection will not be successful.
     - This is because block devices are not managed in one place, so I use the list of `bdev_cache` obtained from the slub-dump results.
     - ![](images/kbdev.png)
@@ -212,7 +212,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - ![](images/kclock-source.png)
 - `kdmesg`: dumps the ring buffer of dmesg area.
     - ![](images/kdmesg.png)
-- `kpipe`: displays each pipe information.
+- `kpipe`: displays information for each pipe.
     - ![](images/kpipe.png)
 - `kbpf`: dumps bpf information.
     - ![](images/kbpf.png)
@@ -230,7 +230,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - ![](images/kirq.png)
 - `knetdev`: displays net devices.
     - ![](images/knetdev.png)
-- `ksearch-code-ptr`: searches the code pointer in kernel data area.
+- `ksearch-code-ptr`: searches for the code pointer in kernel data area.
     - ![](images/ksearch-code-ptr.png)
 - `thunk-tracer`: collects and displays the thunk function addresses that are called automatically (only x64/x86).
     - If this address comes from RW area, this is useful for getting RIP.
@@ -264,7 +264,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
 - `qemu-device-info`: dumps device information for qemu-escape (WIP).
 
 ### Qemu-user cooperation
-- `si`/`ni`: are the wrapper for native `si`/`ni` if OpenRISC 1000 or CRIS.
+- `si`/`ni`: are wrappers for native `si`/`ni` if OpenRISC 1000 or CRIS.
     - On OpenRISC 1000 architecture, branch operations don't work well, so GEF uses breakpoints to simulate.
     - On CRIS architecture, `stepi`/`nexti` commands don't work well, so GEF uses breakpoints to simulate.
     - If you want to use native `si`/`ni`, use the full form `stepi`/`nexti`.
@@ -272,12 +272,12 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - When connecting to gdb stub of qemu-user or Intel Pin, gdb does not trap `SIGINT` during `continue`.
     - If you want to trap, you need to issue `SIGTRAP` on the qemu-user or pin side, but switching screens is troublesome.
     - This command realizes a pseudo `SIGTRAP` trap by trapping `SIGINT` on the python side and throwing `SIGTRAP` back to qemu-user or Intel Pin.
-    - It works only local qemu-user or Intel Pin.
+    - It works only for local qemu-user or Intel Pin.
     - If you want to use native `c`, use the full form `continue`.
 
 ### Heap dump features
 - Glibc heap commands are improved.
-    - It changes the color and print symbol if exists.
+    - It changes the color and prints a symbol if it exists.
         - ![](images/heap-bins.png)
     - They print bins information if the chunk is in free-list.
         - ![](images/heap-if-in-freelist.png)
@@ -319,10 +319,10 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
         - ![](images/uclibc-ng-visual-heap.png)
 - `partition-alloc-dump`: dumps partition-alloc free-list for chromium.
     - ![](images/partition-alloc-dump.png)
-    - This command is reserved for the implementation of latest version of chromium.
+    - This command is reserved for the implementation of the latest version of Chromium.
         - Currently tested: v137.x / [1447487](https://commondatastorage.googleapis.com/chromium-browser-snapshots/index.html?prefix=Linux_x64/1447487/) / 44f30b00006a373aab5998b26730f9c35b3846e0
     - Supported on x64 and ARM64 (maybe it works on x86/ARM too, but not tested).
-    - It will try heuristic search if binary has no symbol.
+    - It will try heuristic search if the binary has no symbol.
     - How to test:
         - See [dev/partition-alloc-dump/downloader.py](dev/partition-alloc-dump/downloader.py).
 - `tcmalloc-dump`: dumps tcmalloc (`gperftools-2.9.1` or named `libgoogle-perftools{4,-dev}`) free-list (only x64).
@@ -367,7 +367,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
 
 ### Improved features
 - `vmmap`: is improved.
-    - It displays the memory map information even when connecting to gdb stub like qemu-user.
+    - It displays the memory map information even when connecting to gdb stub of qemu-user.
         - ![](images/vmmap-qemu-user.png)
     - Intel Pin is supported.
         - ![](images/vmmap-pin.png)
@@ -377,7 +377,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - It supports detection and coloring of `Writable`, `ReadOnly`, `None` and `RWX` regions.
     - It shows the area each register points to.
 - `registers`: is improved.
-    - It also shows raw values of flag register, current ring, exception level, secure state, etc.
+    - It also shows raw values of the flag register, the current ring, the exception level, the secure state, etc.
         - ![](images/registers-x64.png)
         - ![](images/registers-arm64.png)
         - ![](images/registers-arm.png)
@@ -395,7 +395,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
         - command: `gef config context.smart_cpp_function_name true` or `smart-cpp-function-name` (later is used to toggle).
 - `telescope`: is improved.
     - It displays ordinal numbers as well as offsets.
-    - It displays if there are canary and return address on the target area.
+    - It displays if there are canaries and return addresses in the target area.
         - ![](images/telescope.png)
     - It supports blacklist address features (to avoid dying when touching the address mapped to the serial device).
     - It also shows the symbol if available.
@@ -456,12 +456,12 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - It supports a new mode to stop after executing N instructions (`-g`).
     - It shows changed memories.
         - ![](images/unicorn-emulate.png)
-    - It supports to replace GOT of string functions using avx2 or NEON, which unicorn does not support, with slower original functions.
+    - It supports replacing the GOT of string functions using avx2 or NEON, which unicorn does not support, with slower original functions.
 - `ropper`: is improved.
     - It does not reset autocomplete settings after calling imported `ropper`.
 - `hexdump`: is improved.
     - It supports physical memory if under qemu-system.
-    - It will retry with adjusting read size when failed reading memory.
+    - It will retry with adjusting read size if reading memory fails.
     - By default, the same line is omitted.
     - ![](images/hexdump.png)
 - `patch`: is improved.
@@ -480,7 +480,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - `nop` command has been integrated into `patch` as subcommand.
     - ![](images/patch.png)
 - `search-pattern`: is improved.
-    - It supports when under qemu-system (in short, it works without `/proc/self/maps`)
+    - It is supported under qemu-system (in short, it works without `/proc/self/maps`)
     - It supports some new options:
         - `--hex`
         - `--hex-regex`
@@ -490,7 +490,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
         - `--limit`
         - `--max-region-size`
         - `--phys`
-    - It also searches UTF-16 string if target string is ASCII.
+    - It also searches for UTF-16 string if target string is ASCII.
     - ![](images/search-pattern.png)
 - `mprotect`: is improved.
     - Rewritten to use `call-syscall`.
@@ -523,7 +523,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - ![](images/vdso.png)
 - `vvar`: dumps the area of vvar.
     - This area is mapped to userland, but cannot be accessed from gdb.
-    - Therefore, it executes the assembly code and retrieve the contents.
+    - Therefore, it executes the assembly code and retrieves the contents.
     - ![](images/vvar.png)
 - `gdtinfo`: pretty prints GDT entries. If userland, show sample entries.
     - ![](images/gdtinfo.png)
@@ -541,7 +541,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
 - `command-break`: sets a breakpoint which executes user defined command if hit.
     - ![](images/command-break.png)
 - `main-break`: sets a breakpoint at `main` with or without symbols, then continue.
-    - This is useful when you just want to run to `main` under using qemu-user or pin, or debugging no-symbol ELF.
+    - This is useful when you just want to run to `main` using qemu-user or pin, or debugging no-symbol ELF.
 - `load-break`: breaks if something is loaded.
 - `regdump-break`: sets a breakpoint which dumps specified registers if hit.
 - `multi-break`: sets multiple breakpoints easily.
@@ -555,7 +555,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
 - `mmxset`: sets the value to mm register simply.
     - ![](images/mmxset.png)
 - `exec-until`: executes until specified operation.
-    - Supported following patterns of detection.
+    - Supports the following patterns:
         - call
         - jmp
         - syscall
@@ -606,11 +606,11 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - ![](images/meminsert.png)
 - `strlen`: detects the length of the string.
     - ![](images/strlen.png)
-- `is-mem-zero`: checks the contents of address range is all 0x00 or 0xff or not.
+- `is-mem-zero`: checks the contents of address range are all 0x00 or 0xff.
     - ![](images/is-mem-zero.png)
 - `seq-length`: detects consecutive length of the same sequence.
     - ![](images/seq-length.png)
-- `strings`: searches ASCII string from specific location.
+- `strings`: searches for ASCII string from specific location.
     - ![](images/strings.png)
 - `xs`: dumps string like `x/s` command, but with hex-string style.
     - ![](images/xs.png)
@@ -628,12 +628,12 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
 - `call-syscall`: calls system call with specified values.
     - ![](images/call-syscall.png)
 - `mmap`: allocates a new memory by `call-syscall`.
-- `killthreads`: kills specific or all pthread.
+- `killthreads`: kills specific or all threads (for `pthread`).
 - `constgrep`: invokes `grep` under `/usr/include/`.
     - ![](images/constgrep.png)
 - `proc-dump`: dumps each file under `/proc/PID/`.
     - ![](images/proc-dump.png)
-- `up`/`down`: are the wrapper for native `up`/`down`.
+- `up`/`down`: are wrappers for native `up`/`down`.
     - It shows also backtrace.
 - `time`: measures the time of the GDB command.
     - ![](images/time.png)
@@ -648,10 +648,10 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - ![](images/capability.png)
 - `dasm`: disassembles the code by capstone.
     - ![](images/dasm.png)
-- `asm-list`: lists up instructions. (only x64/x86)
+- `asm-list`: lists instructions. (only x64/x86)
     - ![](images/asm-list.png)
     - This command uses x86data.js from https://github.com/asmjit/asmdb
-- `syscall-search`: searches system call by regex.
+- `syscall-search`: searches for system call by regex.
     - ![](images/syscall-search.png)
 - `dwarf-exception-handler`: dumps the DWARF exception handler information.
     - ![](images/dwarf-exception-handler.png)
@@ -663,10 +663,10 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - ![](images/link-map.png)
 - `dtor-dump`: dumps some destructor functions list.
     - ![](images/dtor-dump.png)
-- `ptr-mangle`: shows the mangled value will be mangled by `PTR_MANGLE`.
+- `ptr-mangle`: shows the mangled value that will be mangled by `PTR_MANGLE`.
 - `ptr-demangle`: shows the demangled value of the value mangled by `PTR_MANGLE`.
     - ![](images/ptr-mangle-demangle.png)
-- `search-mangled-ptr`: searches the mangled value from RW memory.
+- `search-mangled-ptr`: searches for the mangled value from RW memory.
     - ![](images/search-mangled-ptr.png)
 - `follow`: changes `follow-fork-mode` setting.
     - ![](images/follow.png)
@@ -680,11 +680,11 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
 - `smart-memory-dump`: dumps all regions of the memory to each file.
     - ![](images/smart-memory-dump.png)
 - `load-file`: loads the file into memory.
-- `search-cfi-gadgets`: searches CFI-valid (for CET IBT) and controllable generally gadgets from executable area.
+- `search-cfi-gadgets`: searches for CFI-valid (for CET IBT) and controllable generally gadgets in the executable area.
     - ![](images/search-cfi-gadgets.png)
-- `symbols`: lists up all symbols with coloring.
+- `symbols`: lists all symbols with coloring.
     - ![](images/symbols.png)
-- `types`: lists up all types with compaction.
+- `types`: lists all types with compaction.
     - ![](images/types.png)
 - `dt`: makes it easier to use `ptype /ox TYPE` and `p ((TYPE*) ADDRESS)[0]`.
     - ![](images/dt.png)
@@ -695,10 +695,10 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
            This command keeps result compact by displaying only top-level members.
         3. When `p ((TYPE*) ADDRESS)[0]` for large struct, the setting of `max-value-size` is too small to display.
            This command adjusts it automatically.
-        4. When debugging a binary written in the golang, the offset information of the type is not displayed.
+        4. When debugging a binary written in the Golang, the offset information of the type is not displayed.
            This command also displays the offset.
-        5. When debugging a binary written in the golang, the `p ((TYPE*) ADDRESS)[0]` command will be broken.
-           Because the golang helper script is automatically loaded and overwrites the behavior of `p` command.
+        5. When debugging a binary written in the Golang, the `p ((TYPE*) ADDRESS)[0]` command will be broken.
+           This is because the Golang helper script is automatically loaded and overwrites the behavior of `p` command.
            This command creates the display results on the python side, so we can display it without any problems.
 - `v8`: displays v8 tagged object.
     - ![](images/v8.png)
@@ -709,21 +709,21 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - ![](images/mte-tags.png)
 - `iouring-dump`: dumps the area of iouring (only x64).
     - This area is mapped to userland, but cannot be accessed from gdb.
-    - Therefore, it executes the assembly code and retrieve the contents.
+    - Therefore, it executes the assembly code and retrieves the contents.
     - ![](images/iouring-dump.png)
-- `gef version`: shows software versions that gef used.
+- `gef version`: shows software versions that GEF uses.
     - ![](images/gef-version.png)
-- `gef status`: shows architecture information used in gef.
+- `gef status`: shows architecture information used in GEF.
     - ![](images/gef-status.png)
 - `gef reset-bp`: shows and resets all breakpoints.
 - `gef arch-list`: displays defined architecture information.
     - ![](images/gef-arch-list.png)
-- `gef pyobj-list`: displays defined global python object.
+- `gef pyobj-list`: displays defined global python objects.
     - ![](images/gef-pyobj-list.png)
 - `gef avail-comm-list`: displays a list of commands which are available or not for the current architecture and gdb execution mode.
     - ![](images/gef-avail-comm-list.png)
-- `gef set-arch`: sets a specific architecture to gef.
-- `gef check-update`: checks for gef updates.
+- `gef set-arch`: sets a specific architecture to GEF.
+- `gef check-update`: checks for GEF updates.
 - `binwalk-memory`: scans memory by `binwalk`.
     - ![](images/binwalk-memory.png)
 - `filetype-memory`: scans memory by `file` and `magika`.
@@ -749,12 +749,12 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
 ### Other
 - The category is introduced in `gef help`.
     - ![](images/gef-help.png)
-- Combined into one file (from gef-extra). The following are moved from gef-extras.
+- Combined into one file (from `gef-extra`). The following are moved from `gef-extra`s.
     - `current-stack-frame`, `xref-telescope`, `bytearray`, and `bincompare`.
     - This is because a single file is more attractive than ease of maintenance.
-- The system-call table used by `syscall-args` is moved from gef-extras.
-    - It was updated up to linux kernel 6.14 for each architecture.
-- Removed some features I don't use.
+- The system-call table used by `syscall-args` is moved from `gef-extras`.
+    - It was updated up to Linux kernel 6.14 for each architecture.
+- Removed some features that I don't use.
     - `$`
     - `ida-interact`
     - `gef-remote`

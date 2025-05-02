@@ -3392,7 +3392,7 @@ class GlibcHeap:
     @staticmethod
     @Cache.cache_until_next
     def search_for_mp_():
-        """search mp_ from main_arena, then return addr."""
+        """search for mp_ from main_arena, then return addr."""
         main_arena_ptr = GlibcHeap.search_for_main_arena_from_tls()
         if main_arena_ptr is None:
             return None
@@ -3574,7 +3574,7 @@ class GlibcHeap:
     @staticmethod
     @Cache.cache_until_next
     def search_for_main_arena_from_tls():
-        """search main arena from TLS, then return &addr."""
+        """search for main arena from TLS, then return &addr."""
 
         """
         [x64]
@@ -11178,7 +11178,7 @@ def is_double_link_list(addr, min_len=0):
     # | tail |  +---| prev |  +---       +---| prev |  +---| tail |
     # +------+      +------+                 +------+      +------+
 
-    # list up next pointer
+    # list next pointer
     seen = []
     while True:
         if not is_valid_addr(addr):
@@ -14878,10 +14878,10 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
         "   This command keeps result compact by displaying only top-level members.",
         "3. When `p ((TYPE*) ADDRESS)[0]` for large struct, the gdb setting of `max-value-size` is too small to display.",
         "   This command adjusts it automatically.",
-        "4. When debugging a binary written in the golang, the offset information of the type is not displayed.",
+        "4. When debugging a binary written in the Golang, the offset information of the type is not displayed.",
         "   This command also displays the offset.",
-        "5. When debugging a binary written in the golang, the `p ((TYPE*) ADDRESS)[0]` command will be broken.",
-        "   Because the golang helper script is automatically loaded and overwrites the behavior of `p` command.",
+        "5. When debugging a binary written in the Golang, the `p ((TYPE*) ADDRESS)[0]` command will be broken.",
+        "   This is because the Golang helper script is automatically loaded and overwrites the behavior of `p` command.",
         "   This command creates the display results on the python side, so we can display it without any problems.",
     ]
     _note_ = "\n".join(_note_)
@@ -17237,7 +17237,7 @@ class ScanSectionCommand(GenericCommand):
 
 @register_command
 class SearchPatternCommand(GenericCommand):
-    """Search a pattern in memory."""
+    """Search for a pattern in memory."""
 
     _cmdline_ = "search-pattern"
     _category_ = "03-a. Memory - Search"
@@ -17276,18 +17276,18 @@ class SearchPatternCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     _example_ = [
-        "{0:s} ABCD                        # search 'ABCD' from whole memory",
+        "{0:s} ABCD                        # search for 'ABCD' from whole memory",
         '{0:s} "\\\\x41\\\\x42\\\\x43\\\\x44"      # double-escaped string is also valid',
         '{0:s} --hex "41 42 43 44"         # another valid format',
         '{0:s} --hex-regex "4[0-9]424344"  # hex regex search',
-        "{0:s} 0x41424344                  # search 0x41424344 (='DCBA') from whole memory",
-        "{0:s} 0x555555554000 stack        # search 0x555555554000 (6byte) from stack",
-        "{0:s} 0x0000555555554000 stack    # search 0x0000555555554000 (8byte) from stack",
+        "{0:s} 0x41424344                  # search for 0x41424344 (='DCBA') from whole memory",
+        "{0:s} 0x555555554000 stack        # search for 0x555555554000 (6byte) from stack",
+        "{0:s} 0x0000555555554000 stack    # search for 0x0000555555554000 (8byte) from stack",
         "{0:s} AAAA binary                 # 'binary' means the area executable itself (only usermode)",
-        "{0:s} AAAA 0x400000-0x404000      # search 'AAAA' from specific range",
+        "{0:s} AAAA 0x400000-0x404000      # search for 'AAAA' from specific range",
         "{0:s} AAAA 0x400000 0x4000        # another valid format",
-        "{0:s} AAAA heap --aligned 16      # search with aligned",
-        "{0:s} AAAA -p r?-                 # search from r-- or rw-, but not from r-x or rwx",
+        "{0:s} AAAA heap --aligned 16      # search for 'AAAA' with 16-byte alignment",
+        "{0:s} AAAA -p r?-                 # search for 'AAAA' from r-- or rw-, but not from r-x or rwx",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -17323,7 +17323,7 @@ class SearchPatternCommand(GenericCommand):
         return
 
     def search_pattern_by_address(self, pattern, start_address, end_address):
-        """Search a pattern within a range defined by arguments."""
+        """Search for a pattern within a range defined by arguments."""
         if not self.args.hex_regex:
             pattern = String.str2bytes(pattern)
 
@@ -17411,7 +17411,7 @@ class SearchPatternCommand(GenericCommand):
             yield Section(page_start=addr_start, page_end=addr_end, permission=perm)
 
     def search_pattern_by_section(self, pattern, section_name=""):
-        """Search a pattern within the whole userland memory."""
+        """Search for a pattern within the whole userland memory."""
         if is_qemu_system():
             maps_generator = self.get_process_maps_qemu_system()
         else:
@@ -17505,14 +17505,14 @@ class SearchPatternCommand(GenericCommand):
         extra = " (phys)" if self.args.phys else ""
 
         # normal search and print
-        info("Searching '{:s}' in {:#x}-{:#x}{:s}".format(Color.yellowify(patterns[0]), start, end, extra))
+        info("Searching for '{:s}' in {:#x}-{:#x}{:s}".format(Color.yellowify(patterns[0]), start, end, extra))
         ret = self.search_pattern_by_address(patterns[0], start, end)
         for found_loc in ret:
             self.print_loc(found_loc)
 
         # utf16 search and print
         if patterns[1] is not None:
-            info("Searching '{:s}' in {:#x}-{:#x}{:s}".format(Color.yellowify(patterns[1]), start, end, extra))
+            info("Searching for '{:s}' in {:#x}-{:#x}{:s}".format(Color.yellowify(patterns[1]), start, end, extra))
             ret = self.search_pattern_by_address(patterns[1], start, end)
             for found_loc in ret:
                 self.print_loc(found_loc)
@@ -17523,17 +17523,17 @@ class SearchPatternCommand(GenericCommand):
 
         # normal search and print
         if section_name == "":
-            info("Searching '{:s}' in {:s}{:s}".format(Color.yellowify(patterns[0]), "whole memory", extra))
+            info("Searching for '{:s}' in {:s}{:s}".format(Color.yellowify(patterns[0]), "whole memory", extra))
         else:
-            info("Searching '{:s}' in {:s}{:s}".format(Color.yellowify(patterns[0]), section_name, extra))
+            info("Searching for '{:s}' in {:s}{:s}".format(Color.yellowify(patterns[0]), section_name, extra))
         self.search_pattern_by_section(patterns[0], section_name)
 
         # utf16 search and print
         if patterns[1] is not None:
             if section_name == "":
-                info("Searching '{:s}' in {:s}{:s}".format(Color.yellowify(patterns[1]), "whole memory", extra))
+                info("Searching for '{:s}' in {:s}{:s}".format(Color.yellowify(patterns[1]), "whole memory", extra))
             else:
-                info("Searching '{:s}' in {:s}{:s}".format(Color.yellowify(patterns[1]), section_name, extra))
+                info("Searching for '{:s}' in {:s}{:s}".format(Color.yellowify(patterns[1]), section_name, extra))
             self.search_pattern_by_section(patterns[1], section_name)
         return
 
@@ -17719,7 +17719,7 @@ class PtrMangleCommand(GenericCommand):
 
 @register_command
 class SearchMangledPtrCommand(GenericCommand):
-    """Search mangled values from RW memory."""
+    """Search for mangled values from RW memory."""
 
     _cmdline_ = "search-mangled-ptr"
     _category_ = "02-f. Process Information - Security"
@@ -17763,7 +17763,7 @@ class SearchMangledPtrCommand(GenericCommand):
         return
 
     def search_mangled_ptr(self, start_address, end_address, cookie):
-        """Search a mangled pointer within a range defined by arguments."""
+        """Search for a mangled pointer within a range defined by arguments."""
         if is_qemu_system():
             step = gef_getpagesize()
         else:
@@ -17836,7 +17836,7 @@ class SearchMangledPtrCommand(GenericCommand):
 
 @register_command
 class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
-    """Search CFI-valid and controllable generally gadgets from executable area."""
+    """Search for CFI-valid and controllable generally gadgets in the executable area."""
 
     _cmdline_ = "search-cfi-gadgets"
     _category_ = "03-a. Memory - Search"
@@ -18266,7 +18266,7 @@ class KillThreadsCommand(GenericCommand):
             Config.set_gef_setting("context.nb_lines_threads", nb_lines_threads)
             return
 
-        # list up target thread id
+        # list target thread id
         orig_thread = gdb.selected_thread()
         target_threads = []
         for th in gdb.selected_inferior().threads():
@@ -20521,7 +20521,7 @@ class GlibcHeapTopCommand(GenericCommand):
 
 @register_command
 class GlibcHeapArenasCommand(GenericCommand):
-    """List up heap arenas."""
+    """List heap arenas."""
 
     _cmdline_ = "heap arenas"
     _category_ = "06-a. Heap - Glibc"
@@ -22994,7 +22994,7 @@ class DisassembleCommand(GenericCommand):
 
 @register_command
 class AsmListCommand(GenericCommand):
-    """List up general instructions by capstone (only x64/x86)."""
+    """List general instructions by capstone (only x64/x86)."""
 
     _cmdline_ = "asm-list"
     _category_ = "01-e. Debugging Support - Assemble"
@@ -23222,7 +23222,7 @@ class AsmListCommand(GenericCommand):
                 self.usage()
                 return
 
-        # list up bytecode pattern
+        # list bytecode pattern
         if arch_mode_s.startswith("X86:"):
             if endian_s == "big":
                 err("X86 is not big endian")
@@ -27936,7 +27936,7 @@ class EntryBreakCommand(GenericCommand):
                 "__uClibc_main", # uClibc
                 "_start", # glibc
                 "__start", # used by MIPS
-                "'main.main'", # golang
+                "'main.main'", # Golang
                 "'start._start'", # zig
             ]),
             "Possible symbols for entry points",
@@ -31413,7 +31413,7 @@ class DereferenceCommand(GenericCommand):
             res = CanaryCommand.gef_read_canary()
             if res:
                 canary, location = res
-                if canary != 0: # when golang binary, canary is 0
+                if canary != 0: # when Golang binary, canary is 0
                     if current_address_value == canary:
                         extra.append("canary")
 
@@ -32403,7 +32403,7 @@ class XorMemoryPatchCommand(GenericCommand):
 
 @register_command
 class PatternCommand(GenericCommand):
-    """The base command to create or search a De Bruijn cyclic pattern (used pwntools)."""
+    """The base command to create or search for a De Bruijn cyclic pattern (used pwntools)."""
 
     _cmdline_ = "pattern"
     _category_ = "09-c. Misc - Generation"
@@ -32516,7 +32516,7 @@ class PatternSearchCommand(GenericCommand):
         gef_print(titlify(tag))
 
         def search_pattern(pattern):
-            info("Searching {}".format(pattern))
+            info("Searching for {}".format(pattern))
             found = 0
             off = 0
             while found < 10:
@@ -34157,7 +34157,7 @@ class DestructorDumpCommand(GenericCommand):
                 if dynamic is None:
                     continue
 
-                # search .fini
+                # search for .fini
                 fini = None
                 current = dynamic.value
                 while True:
@@ -34210,7 +34210,7 @@ class DestructorDumpCommand(GenericCommand):
                 if dynamic is None:
                     continue
 
-                # search .fini_array, fini_array_sz
+                # search for .fini_array, fini_array_sz
                 fini_array = None
                 fini_array_sz = None
                 current = dynamic.value
@@ -35361,7 +35361,7 @@ class FormatStringBreakpoint(gdb.Breakpoint):
 
 @register_command
 class FormatStringSearchCommand(GenericCommand):
-    """The helper to search exploitable format-string."""
+    """The helper to search for exploitable format strings."""
 
     _cmdline_ = "format-string-helper"
     _category_ = "01-h. Debugging Support - Other"
@@ -36082,7 +36082,7 @@ class GlibcHeapTracerCommand(GenericCommand):
 
 @register_command
 class SyscallSearchCommand(GenericCommand, BufferingOutput):
-    """Search the syscall number for specified architecture."""
+    """Search for the syscall number for specified architecture."""
 
     _cmdline_ = "syscall-search"
     _category_ = "05-b. Syscall - Search"
@@ -53134,7 +53134,7 @@ class KernelAddressHeuristicFinder:
         # This method can also be applied to x86/x64 as long as the `current_task` is got.
 
         def get_offset_tasks(current_task):
-            # search init_task->tasks
+            # search for init_task->tasks
             for i in range(0x200):
                 offset_tasks = current_arch.ptrsize * i
                 if is_double_link_list(current_task + offset_tasks, min_len=5):
@@ -53439,7 +53439,7 @@ class KernelAddressHeuristicFinder:
                 for x in g:
                     return x
 
-        # plan 5 (search memory)
+        # plan 5 (search for the memory)
         sys_read = Symbol.get_ksymaddr("__x64_sys_read")
         sys_write = Symbol.get_ksymaddr("__x64_sys_write")
         sys_open = Symbol.get_ksymaddr("__x64_sys_open")
@@ -53540,7 +53540,7 @@ class KernelAddressHeuristicFinder:
             for x in g:
                 return x
 
-        # plan 3 (search memory)
+        # plan 3 (search for the memory)
         sys_restart_syscall = Symbol.get_ksymaddr("sys_restart_syscall")
         sys_exit = Symbol.get_ksymaddr("sys_exit")
         sys_fork = Symbol.get_ksymaddr("sys_fork")
@@ -53566,7 +53566,7 @@ class KernelAddressHeuristicFinder:
             if x:
                 return x
 
-        # plan 2 (search memory)
+        # plan 2 (search for the memory)
         sys_restart_syscall = Symbol.get_ksymaddr("sys_restart_syscall")
         sys_exit = Symbol.get_ksymaddr("sys_exit")
         sys_fork = Symbol.get_ksymaddr("sys_fork")
@@ -53610,7 +53610,7 @@ class KernelAddressHeuristicFinder:
             for x in g:
                 return x
 
-        # plan 3 (search memory)
+        # plan 3 (search for the memory)
         sys_io_setup = Symbol.get_ksymaddr("__arm64_sys_io_setup")
         sys_io_destroy = Symbol.get_ksymaddr("__arm64_sys_io_destroy")
         sys_io_submit = Symbol.get_ksymaddr("__arm64_sys_io_submit")
@@ -53653,7 +53653,7 @@ class KernelAddressHeuristicFinder:
             for x in g:
                 return x
 
-        # plan 3 (search memory)
+        # plan 3 (search for the memory)
         sys_restart_syscall = Symbol.get_ksymaddr("__arm64_sys_restart_syscall")
         sys_exit = Symbol.get_ksymaddr("__arm64_sys_exit")
         sys_fork = Symbol.get_ksymaddr("__arm64_sys_fork")
@@ -54854,7 +54854,7 @@ class KernelAddressHeuristicFinder:
             ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
             pos = -1
             while True:
-                # search aligned ELF header from .rodata
+                # search for aligned ELF header from .rodata
                 pos = ro_data.find(b"\x7fELF", pos + 1)
                 if pos == -1:
                     break
@@ -54867,7 +54867,7 @@ class KernelAddressHeuristicFinder:
                 else:
                     vdso_addr_byteseq = p64(kinfo.ro_base + pos)
 
-                # search it from .rodata again
+                # search for it from .rodata again
                 pos2 = -1
                 while True:
                     pos2 = ro_data.find(vdso_addr_byteseq, pos2 + 1)
@@ -54924,7 +54924,7 @@ class KernelAddressHeuristicFinder:
             ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
             pos = -1
             while True:
-                # search aligned ELF header from .rodata
+                # search for aligned ELF header from .rodata
                 pos = ro_data.find(b"\x7fELF", pos + 1)
                 if pos == -1:
                     break
@@ -54937,7 +54937,7 @@ class KernelAddressHeuristicFinder:
                 else:
                     vdso_addr_byteseq = p64(kinfo.ro_base + pos)
 
-                # search it from .rodata again
+                # search for it from .rodata again
                 pos2 = -1
                 while True:
                     pos2 = ro_data.find(vdso_addr_byteseq, pos2 + 1)
@@ -54986,7 +54986,7 @@ class KernelAddressHeuristicFinder:
             ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
             pos = -1
             while True:
-                # search aligned ELF header from .rodata
+                # search for aligned ELF header from .rodata
                 pos = ro_data.find(b"\x7fELF", pos + 1)
                 if pos == -1:
                     break
@@ -55805,7 +55805,7 @@ class KernelAddressHeuristicFinder:
                 rw_data = ro_data
             pos = -1
             while True:
-                # search aligned string from .rodata
+                # search for aligned string from .rodata
                 pos = ro_data.find(b"PCI IO\x00", pos + 1)
                 if pos == -1:
                     break
@@ -55816,7 +55816,7 @@ class KernelAddressHeuristicFinder:
                 else:
                     addr_byteseq = p64(kinfo.ro_base + pos)
 
-                # search it from .data
+                # search for it from .data
                 pos2 = -1
                 while True:
                     pos2 = rw_data.find(addr_byteseq, pos2 + 1)
@@ -56076,7 +56076,7 @@ class Kernel:
             dic["has_none"] = None in dic.values()
             return Kinfo(*dic.values())
 
-        # 1a. search kernel base exact way
+        # 1a. search for the kernel base exact way
         if is_x86():
             div0_handler = None
 
@@ -56141,7 +56141,7 @@ class Kernel:
                         text_base_map_index = i
                         break
 
-        # 1b. search kernel base heuristic way
+        # 1b. search for the kernel base heuristic way
         if dic["text_base"] is None:
             # .text is usually noticeably larger than other areas.
             # It just determines this size heuristically and detects it, but it works well in most cases.
@@ -56168,7 +56168,7 @@ class Kernel:
                     dic["has_none"] = None in dic.values()
                     return Kinfo(*dic.values())
 
-        # 2a. search kernel RO base
+        # 2a. search for the kernel RO base
         # If the -enable-kvm option for qemu-system is not enabled,
         # there might be multiple 'r-- but non-.rodata' regions between .text and .rodata.
         #   [  .text    ]
@@ -56200,7 +56200,7 @@ class Kernel:
                 else:
                     break
 
-        # 2b. search kernel RO base by region size
+        # 2b. search for the kernel RO base by region size
         # Some kernels do not have the string "Linux version" at the beginning of the .rodata.
         #   [  .text    ]
         #   [  .text    ]
@@ -56229,7 +56229,7 @@ class Kernel:
                     else:
                         break
 
-        # 2c. search kernel RO base for old kernel
+        # 2c. search for the kernel RO base for old kernel
         # If it can not detect .rodata, maybe it is an old kernel (32-bit?).
         # Old kernel is no-NX, so .rodata is RWX.
         # Detected .text range includes .rodata, so use heuristic search and split.
@@ -56267,7 +56267,7 @@ class Kernel:
                 return Kinfo(*dic.values())
 
         else:
-            # 3. search kernel RW base
+            # 3. search for the kernel RW base
             # If ro_base can be detected, detect the RW area from after ro_base.
             # TODO: I used specified the size, but there may be more good algorithms.
             RW_REGION_MIN_SIZE = 0x20000
@@ -56841,7 +56841,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return
 
     def get_offset_tasks(self, init_task):
-        # search init_task->tasks
+        # search for init_task->tasks
         for i in range(0x200):
             offset_tasks = current_arch.ptrsize * i
             if is_double_link_list(init_task + offset_tasks, min_len=5):
@@ -57393,7 +57393,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         }
         """
 
-        # search seccomped process
+        # search for seccomped process
         for task in task_addrs:
             if self.has_seccomp(task):
                 seccomped_task = task
@@ -57421,7 +57421,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         0xffff99353fe72250|+0x0078|+015: 0x0000000000000003
         0xffff99353fe72258|+0x0080|+016: 0x0000000000000004
         """
-        # search sigpending
+        # search for sigpending
         base = offset_signal + current_arch.ptrsize
         for i in range(0x100):
             if is_double_link_list(seccomped_task + base + current_arch.ptrsize * i):
@@ -57431,7 +57431,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             # Not found sigpending
             return None
 
-        # search seccomp
+        # search for seccomp
         for i in range(0x100):
             offset_filter = base + current_arch.ptrsize * i
 
@@ -57940,7 +57940,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             """
 
             # ____cacheline_aligned_in_smp attribute, spinlock_t and lockdep_map_p can be different size
-            # in each environment or situation, so search heuristically.
+            # in each environment or situation, so search for it heuristically.
             for i in range(0x20):
                 x = read_int_from_memory(mm + current_arch.ptrsize * i)
                 """
@@ -58230,7 +58230,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     current += current_arch.ptrsize
                     continue
 
-                if (x & mask) == (y & mask) == mask and x == y: # search anon_vma_chain
+                if (x & mask) == (y & mask) == mask and x == y: # search for anon_vma_chain
                     break
                 current += current_arch.ptrsize
 
@@ -58652,7 +58652,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         kversion = Kernel.kernel_version()
 
         if kversion >= "5.3":
-            # search signalfd_wqh.list_head
+            # search for signalfd_wqh.list_head
             found = False
             for i in range(1, 30):
                 offset_list_head = current_arch.ptrsize * i
@@ -58807,7 +58807,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # task addresses
         task_addrs = self.get_task_list(init_task, self.offset_tasks)
         if task_addrs is None:
-            self.quiet_err("Failed to list up each tasks")
+            self.quiet_err("Failed to list each tasks")
             return False
         self.quiet_info("Number of tasks: {:d}".format(len(task_addrs)))
 
@@ -60264,7 +60264,7 @@ class KernelModuleLoadCommand(GenericCommand):
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("name", type=str, help="name of the loaded module to search by `kmod`.")
+    parser.add_argument("name", type=str, help="name of the loaded module to search for by `kmod`.")
     parser.add_argument("path", type=str, help="path to compiled kernel module.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
@@ -64588,7 +64588,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             struct device *bridge;
             struct device {
                 struct kobject {
-                    const char *name; <-- search this
+                    const char *name; <-- search for this
                     ...
                 } kobj;
                 ...
@@ -64635,7 +64635,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             ...
             struct device {
                 struct kobject {
-                    const char *name; <-- search this
+                    const char *name; <-- search for this
                     ...
                 } kobj;
                 ...
@@ -65588,9 +65588,9 @@ class StringsCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
-                        help="the location to search from.")
+                        help="the start location to search for.")
     parser.add_argument("end_location", metavar="END_LOCATION", type=AddressUtil.parse_address, nargs="?",
-                        help="the end location to search from. (default: end of region or LOCATION+0x1000)")
+                        help="the end location to search for. (default: end of region or LOCATION+0x1000)")
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="REGEXP include filter.")
     parser.add_argument("-e", "--exclude", action="append", type=re.compile, default=[], help="REGEXP exclude filter.")
     parser.add_argument("-d", "--depth", default=0, type=int, help="recursive depth. (default: %(default)s)")
@@ -65635,7 +65635,7 @@ class StringsCommand(GenericCommand, BufferingOutput):
             except gdb.MemoryError:
                 pass
 
-            # search string
+            # search for string
             for offset, cstr in self.strings(data, self.args.minlen):
                 address = location + offset
 
@@ -65655,7 +65655,7 @@ class StringsCommand(GenericCommand, BufferingOutput):
             if depth == 0:
                 continue
 
-            # search pointer for recursive search
+            # search for the pointer for recursive
             aligned_data = data[current_arch.ptrsize - location % current_arch.ptrsize:]
             if len(aligned_data) % 8:
                 aligned_data = aligned_data[:-(len(aligned_data) % current_arch.ptrsize)]
@@ -69347,7 +69347,7 @@ class DiffOutputGitDiffCommand(DiffOutputCommand):
 
 @register_command
 class DiffOutputListCommand(DiffOutputCommand):
-    """List up saved outputs."""
+    """List saved outputs."""
 
     _cmdline_ = "diffo list"
     _category_ = "09-g. Misc - Diff"
@@ -69562,7 +69562,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("cache_name", metavar="SLUB_CACHE_NAME", nargs="*",
                         help="filter by specific slub cache name.")
-    parser.add_argument("--list", action="store_true", help="list up all slub cache names.")
+    parser.add_argument("--list", action="store_true", help="list all slub cache names.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("--cpu", type=int, help="filter by specific cpu.")
     parser.add_argument("-s", "--simple", action="store_true", help="skip displaying layout and freelist.")
@@ -69598,7 +69598,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         "{0:s} kmalloc-256 --cpu 1    # dump kmalloc-256 from cpu 1",
         "{0:s} kmalloc-256 --partial  # show active pages and partial pages",
         "{0:s} kmalloc-256 --node     # show active pages, partial pages and node pages",
-        "{0:s} --list                 # list up slub cache names",
+        "{0:s} --list                 # list slub cache names",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -69929,7 +69929,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         found = False
 
                 if found:
-                    # search `struct kmem_cache_node *node` or `unsigned int *random_seq`
+                    # search for `struct kmem_cache_node *node` or `unsigned int *random_seq`
                     for i in range(1, 9):
                         maybe_ptrs = []
                         for kmem_cache in kmem_caches:
@@ -70131,7 +70131,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             if r is not None:
                 return r
 
-        # setup for heuristic search from freelist
+        # set up for heuristic search from freelist
         freelist = list(freelist_fastpath) + page["freelist"]
         freelist = [x for x in freelist if isinstance(x, int) and x != 0] # ignore str and last 0
         if not freelist:
@@ -70682,7 +70682,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("cache_name", metavar="SLUB_CACHE_NAME", nargs="*", help="filter by specific slub cache name.")
-    parser.add_argument("--list", action="store_true", help="list up all slub cache names.")
+    parser.add_argument("--list", action="store_true", help="list all slub cache names.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-s", "--simple", action="store_true", help="skip displaying layout and freelist.")
     parser.add_argument("--hexdump-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
@@ -70701,7 +70701,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
     _example_ = [
         "{0:s} kmalloc-256  # dump kmalloc-256 from all cpus",
-        "{0:s} --list       # list up slub cache names",
+        "{0:s} --list       # list slub cache names",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -71004,7 +71004,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             if r:
                 return int(r.group(1), 16)
 
-        # setup for heuristic search from freelist
+        # set up for heuristic search from freelist
         freelist = page["freelist"]
         freelist = [x for x in freelist if isinstance(x, int) and x != 0] # ignore str and last 0
         if not freelist:
@@ -71376,7 +71376,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("cache_name", metavar="SLAB_CACHE_NAME", nargs="*", help="filter by specific slab cache name.")
-    parser.add_argument("--list", action="store_true", help="list up all slab cache names.")
+    parser.add_argument("--list", action="store_true", help="list all slab cache names.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("--cpu", type=int, help="filter by specific cpu.")
     parser.add_argument("-s", "--simple", action="store_true", help="skip displaying layout and freelist.")
@@ -71398,7 +71398,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     _example_ = [
         "{0:s} kmalloc-256          # dump kmalloc-256 from all cpus",
         "{0:s} kmalloc-256 --cpu 1  # dump kmalloc-256 from cpu 1",
-        "{0:s} --list               # list up slab cache names",
+        "{0:s} --list               # list slab cache names",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -72217,7 +72217,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("cache_name", metavar="SLOB_CACHE_NAME", nargs="*",
                         help="filter by specific slob cache name (need -v option).")
-    parser.add_argument("--list", action="store_true", help="list up all slob cache names.")
+    parser.add_argument("--list", action="store_true", help="list all slob cache names.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-s", "--simple", action="store_true", help="skip showing freelist.")
     parser.add_argument("--large", action="store_true", help="display only free_slob_large.")
@@ -72230,7 +72230,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
 
     _example_ = [
         "{0:s} kmalloc-256  # dump kmalloc-256 kmem_cache and all freelists",
-        "{0:s} --list       # list up slob cache names",
+        "{0:s} --list       # list slob cache names",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -72887,7 +72887,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         if hasattr(self, "initialized") and self.initialized:
             return True
 
-        # search node_data
+        # search for node_data
         node_data = KernelAddressHeuristicFinder.get_node_data()
         if node_data:
             self.quiet_info("node_data: {:#x}".format(node_data))
@@ -73017,14 +73017,14 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             per_cpu_pageset = AddressUtil.align_address(per_cpu_pageset)
 
         current = AddressUtil.align_address_to_ptrsize(per_cpu_pageset + 4 * 3) # count, high, batch
-        while not is_double_link_list(current): # search list_head
+        while not is_double_link_list(current): # search for list_head
             current += current_arch.ptrsize
         self.offset_lists = current - per_cpu_pageset
         self.quiet_info("offsetof(per_cpu_pageset, lists): {:#x}".format(self.offset_lists))
 
         # NR_PCP_LISTS
         current = per_cpu_pageset + self.offset_lists
-        while is_double_link_list(current): # search not list_head
+        while is_double_link_list(current): # search for not list_head
             current += current_arch.ptrsize * 2
         self.NR_PCP_LISTS = ((current - per_cpu_pageset) - self.offset_lists) // (current_arch.ptrsize * 2)
         self.quiet_info("NR_PCP_LISTS: {:d}".format(self.NR_PCP_LISTS))
@@ -73047,7 +73047,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         # zone->free_area
         current = self.nodes[0] + self.offset_name + current_arch.ptrsize
         while True:
-            # search list_head
+            # search for list_head
             val1 = read_int_from_memory(current)
             val2 = read_int_from_memory(current + current_arch.ptrsize)
             if is_valid_addr(val1) and is_valid_addr(val2):
@@ -76331,7 +76331,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         """
         [Search policy]
         - kallsyms_token_table has unique sequences like "30 00 31 00 32 00 33 00 34 00 35 00 36 00 37 00 38 00 39 00".
-        - We search it from .rodata area, then search backwards for invalid characters to get the top.
+        - We search for it from .rodata area, then search backwards for invalid characters to get the top.
 
         [Positional relationship]
         - ...
@@ -76377,7 +76377,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         0xc6e58fec:    5f 63 6f 6e 00 65 78 74 34 00 61 6d 00 41 00 42    |  _con.ext4.am.A.B  |
         """
 
-        # first, search unique bytes
+        # first, search for unique bytes
         seq_to_find = b"0\x001\x002\x003\x004\x005\x006\x007\x008\x009\x00"
         seq_to_avoid = [b":\0", b"\0\0", b"\0\1", b"\0\2", b"ASCII\0"]
         target_pattern = seq_to_find + b"(?!" + b"|".join(seq_to_avoid) + b")"
@@ -76402,7 +76402,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         position = unique_bytes_offset[0][0]
         self.verbose_info("unique_bytes: {:#x}".format(self.ro_base + position))
 
-        # second, backward search the top
+        # second, backward search for the top
         prev_x = None
         while True:
             position -= 1
@@ -76476,7 +76476,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             token_offsets.append(p16(pos + 1))
         seq_to_find = b"".join(token_offsets)
 
-        # search from memory
+        # search for it from memory
         position = self.kernel_img.find(seq_to_find, self.offset_kallsyms_token_table)
         if position == -1:
             self.verbose_err("Could not find kallsyms_token_index (0 candidate)")
@@ -76576,7 +76576,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         while position > 0 and self.kernel_img[position] == 0:
             position -= 1
 
-        # aligned search from memory
+        # aligned search for it from memory
         while position > 0:
             needle = self.kernel_img.rfind(seq_to_find, 0, position)
             if needle == -1:
@@ -76592,7 +76592,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
                 # not aligned, so retry
 
         if self.kernel_version >= (6, 1, 42) and self.kernel_version < (6, 9, 0):
-            # kallsyms_seqs_of_names is introduced from kernel 6.1.42
+            # kallsyms_seqs_of_names was introduced in kernel 6.1.42
             # In this case, we may find kallsyms_seqs_of_names instead of kallsyms_markers,
             # so we should search back through memory again.
             #
@@ -77212,7 +77212,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         # It is especially beneficial for ARM64, due to extensive pagetables and pagewalk take a long time.
         # It may work on other architectures but limited to ARM64 as others gain little.
 
-        # First, search the kernel version string from $pc.
+        # First, search for the kernel version string from $pc.
         # It is located at around top of ro_base, and ro_base is aligned by 0x10000.
         current = (current_arch.pc & ~0xffff) + 0x10000 # Starting address to brute force ro_base
         step_size = 0x10000
@@ -79074,7 +79074,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
     def get_roots_heuristic():
         """searches for fast_malloc_root, array_buffer_root_ and buffer_root_"""
         # the pointers to each root are in the RW area.
-        # first, we list up the RW area.
+        # first, we list the RW area.
         filepath = Path.get_filepath(append_proc_root_prefix=False)
         maps = ProcessMap.get_process_maps()
         if is_64bit():
@@ -79218,7 +79218,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
     @Cache.cache_until_next
     def get_sentinel_slot_spans(self):
-        """sentinel_slot_span is default slot_span, so search it."""
+        """sentinel_slot_span is default slot_span, so search for it."""
         sentinel = []
 
         # new version
@@ -79324,7 +79324,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
         _root["buckets"] = []
         while True:
-            if read_int_from_memory(current) == 1: # search `bool initialized`
+            if read_int_from_memory(current) == 1: # search for `bool initialized`
                 break
             bucket, current = self.read_bucket(current)
             _root["buckets"].append(bucket)
@@ -79376,7 +79376,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         _root["global_empty_slot_span_ring"] = []
         inv = _root["addr"] ^ ((1 << (current_arch.ptrsize * 8)) - 1)
         while True:
-            if read_int_from_memory(current + ptrsize) == inv: # search `inverted_self`
+            if read_int_from_memory(current + ptrsize) == inv: # search for `inverted_self`
                 break
             x = read_int_from_memory(current)
             current += ptrsize
@@ -80177,11 +80177,11 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def get_malloc_context_heuristic(self):
         try:
-            # search malloc
+            # search for malloc
             malloc = AddressUtil.parse_address("malloc")
             self.info_add_out("malloc: {:#x}".format(malloc))
 
-            # search __libc_malloc_impl
+            # search for __libc_malloc_impl
             """
             [pattern 1]
                0x7ffff7d7dde0 <malloc>:     jmp    0x7ffff7d8ece2 <__libc_malloc_impl>
@@ -80202,7 +80202,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                 break
             self.info_add_out("__libc_malloc_impl: {:#x}".format(__libc_malloc_impl))
 
-            # search __malloc_alloc_meta
+            # search for __malloc_alloc_meta
             """
             [pattern 1]
                0x7ffff7d8ed0a <__libc_malloc_impl+40>:      call   0x7ffff7d88dc1 <__errno_location>
@@ -80232,7 +80232,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                 addr = int(m.group(1), 16)
                 __malloc_alloc_meta_candidate.append(addr)
 
-            # search __malloc_context
+            # search for __malloc_context
             """
             [pattern 1]
                0x7ffff7d8e45a <__malloc_alloc_meta>:        push   r12
@@ -82377,7 +82377,7 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
         _malloc_ctx["blink_list"] = self.parse_blink(_malloc_ctx["blink"])
         current += current_arch.ptrsize
 
-        # search pool
+        # search for pool
         for _ in range(14):
             pool_candidate = read_int_from_memory(current)
             current += current_arch.ptrsize
@@ -83502,12 +83502,12 @@ class MsrCommand(GenericCommand):
     @only_if_in_kernel
     @only_if_kvm_disabled
     def do_invoke(self, args):
-        # list up
+        # list
         if args.msr_target is None and args.msr_value is None:
             self.print_const_table()
             return
 
-        # search const table
+        # search for const table
         const = self.lookup_name2const(args.msr_target)
         if const is None:
             self.usage()
@@ -83652,7 +83652,7 @@ class BitInfo:
             if isinstance(bits, range):
                 bits = list(bits)
 
-            # search max width for bit_ragne_string
+            # search for max width for bit_ragne_string
             if isinstance(bits, int):
                 b = "{:d}".format(bits)
                 bit_range_strs.append(b)
@@ -83673,11 +83673,11 @@ class BitInfo:
                 bit_range_strs.append(bit_str)
                 max_width_bits = max(max_width_bits, len(bit_str))
 
-            # search max width for sym
+            # search for max width for sym
             if sym:
                 max_width_sym = max(max_width_sym, len(sym))
 
-            # search max width for val
+            # search for max width for val
             if isinstance(bits, int):
                 val = (regval & (1 << bits)) >> bits
                 bit_values.append(val)
@@ -89144,7 +89144,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         if self.args.skip_full_slab_cache:
             return
 
-        self.quiet_info("resolve slub (search full slab cache; skip if target region size >= 0x200000)")
+        self.quiet_info("resolve slub (search for full slab cache; skip if target region size >= 0x200000)")
         old_regions = list(self.regions.items())[::]
 
         tqdm = GefUtil.get_tqdm()
@@ -93317,7 +93317,7 @@ class KernelTraceCommand(GenericCommand):
         self.addr_range_ok_cache = []
         self.addr_range_ng_cache = []
 
-        # list up target functions
+        # list target functions
         res = gdb.execute("ksymaddr-remote --quiet --no-pager --type t", to_string=True)
         target_functions = []
         tqdm = GefUtil.get_tqdm(not args.quiet)
@@ -93425,7 +93425,7 @@ class UefiOvmfInfoCommand(GenericCommand):
         return d
 
     def search_mem_backward_iter(self, keyword):
-        # search from higher address (0x800_0000), it is more likely
+        # search backward for keyword from higher address (0x800_0000), it is more likely
         START_ADDR = 0x800_0000
         END_ADDR = 0x700_0000
         current = START_ADDR - gef_getpagesize()
@@ -94634,7 +94634,7 @@ class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     def xref_telescope(self, pattern, depth, history):
-        """Recursively search a pattern within the whole userland memory."""
+        """Recursively search for a pattern within the whole userland memory."""
         if depth <= 0:
             # print history
             for i, h in enumerate(history):
@@ -94687,7 +94687,7 @@ class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
         args.hex_regex = False
 
         self.out = []
-        self.out.append("Recursively searching '{:s}' in memory (depth: {:d})".format(
+        self.out.append("Recursively searching for '{:s}' in memory (depth: {:d})".format(
             Color.yellowify(args.pattern), args.depth,
         ))
         self.xref_telescope(args.pattern, args.depth, [args.pattern])
@@ -95322,7 +95322,7 @@ class BincompareCommand(GenericCommand):
 
 @register_command
 class SymbolsCommand(GenericCommand, BufferingOutput):
-    """List up all symbols (shortcut for `maintenance print msymbols`) with coloring."""
+    """List all symbols (shortcut for `maintenance print msymbols`) with coloring."""
 
     _cmdline_ = "symbols"
     _category_ = "02-g. Process Information - Symbol"
@@ -95424,7 +95424,7 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class TypesCommand(GenericCommand, BufferingOutput):
-    """List up all types (shortcut for `info types`) with compaction."""
+    """List all types (shortcut for `info types`) with compaction."""
 
     _cmdline_ = "types"
     _category_ = "02-h. Process Information - Type"
@@ -95872,7 +95872,7 @@ class GefConfigCommand(GenericCommand):
 
     @parse_args
     def do_invoke(self, args):
-        # list up all configs
+        # list all configs
         if (args.setting_name, args.setting_value) == (None, None):
             gef_print(titlify("GEF configuration settings"))
             for name in sorted(Config.__gef_config__):
