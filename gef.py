@@ -2935,7 +2935,7 @@ class Instruction:
         if is_branch:
             if "<" not in operands and "<" not in additional_1:
                 if self.operands and self.operands[-1]:
-                    addr = ContextCommand.get_branch_addr(self)
+                    addr = ContextCodeCommand.get_branch_addr(self)
                     sym = Symbol.get_symbol_string(addr).lstrip()
                     additional_1 = sym
 
@@ -4897,27 +4897,27 @@ def titlify(text, color=None, msg_color=None, horizontal_line="-"):
     return "".join(msg)
 
 
-def err(msg):
+def err(msg, redirect=""):
     """The wrapper of gef_print for error level message."""
-    gef_print("{} {}".format(Color.colorify("[!]", "bold red"), msg))
+    gef_print("{} {}".format(Color.colorify("[!]", "bold red"), msg), redirect=redirect)
     return
 
 
-def warn(msg):
+def warn(msg, redirect=""):
     """The wrapper of gef_print for warning level message."""
-    gef_print("{} {}".format(Color.colorify("[*]", "bold yellow"), msg))
+    gef_print("{} {}".format(Color.colorify("[*]", "bold yellow"), msg), redirect=redirect)
     return
 
 
-def ok(msg):
+def ok(msg, redirect=""):
     """The wrapper of gef_print for ok level message."""
-    gef_print("{} {}".format(Color.colorify("[+]", "bold green"), msg))
+    gef_print("{} {}".format(Color.colorify("[+]", "bold green"), msg), redirect=redirect)
     return
 
 
-def info(msg):
+def info(msg, redirect=""):
     """The wrapper of gef_print for information level message."""
-    gef_print("{} {}".format(Color.colorify("[+]", "bold blue"), msg))
+    gef_print("{} {}".format(Color.colorify("[+]", "bold blue"), msg), redirect=redirect)
     return
 
 
@@ -5695,7 +5695,7 @@ class Disasm:
         """Disassemble `nb_insn` instructions after `addr` and `nb_prev` before `addr`.
         Return an iterator of Instruction objects.
         Use Disasm.gdb_disassemble or Disasm.capstone_disassemble according to the settings."""
-        if Config.get_gef_setting("context.use_capstone"):
+        if Config.get_gef_setting("context_code.use_capstone"):
             get_nth_prev_address = Disasm.capstone_get_nth_previous_instruction_address
             get_insns = Disasm.capstone_disassemble
         else:
@@ -6127,7 +6127,7 @@ class Architecture:
     def get_aliased_registers_name_max(self):
         if self.__aliased_registers_max_len is not None:
             return self.__aliased_registers_max_len
-        maxlen = max([len(v) for v in self.get_aliased_registers().values()])
+        maxlen = max([len(v) for v in self.get_aliased_registers().values() if v != self.flag_register])
         self.__aliased_registers_max_len = maxlen
         return self.__aliased_registers_max_len
 
@@ -7306,7 +7306,7 @@ class X86_16(X86):
     bit_length = 16
 
     def __init__(self):
-        gdb.execute("gef config context.use_capstone True")
+        gdb.execute("gef config context_code.use_capstone True")
         return
 
     def is_syscall(self, insn):
@@ -13835,15 +13835,7 @@ class GenericCommand(gdb.Command):
     def do_invoke(self, argv):
         pass
 
-    def pre_load(self):
-        pass
-
-    def post_load(self):
-        pass
-
     def __init__(self, *args, **kwargs):
-        self.pre_load()
-
         def tab(lines):
             return "\n".join(["  " + line for line in lines.splitlines()])
 
@@ -13889,7 +13881,6 @@ class GenericCommand(gdb.Command):
             super().__init__(self._cmdline_, command_type, prefix=prefix)
         else:
             super().__init__(self._cmdline_, command_type, complete_type, prefix)
-        self.post_load()
         return
 
     def invoke(self, args, from_tty): # noqa
@@ -14423,7 +14414,7 @@ class NiCommand(GenericCommand):
         insn_next = get_insn_next()
 
         if insn and current_arch.is_jump(insn):
-            target = ContextCommand.get_branch_addr(insn)
+            target = ContextCodeCommand.get_branch_addr(insn)
             delay_slot = current_arch.has_delay_slot
         elif insn and current_arch.is_ret(insn):
             target = current_arch.get_ra(insn, frame)
@@ -14512,7 +14503,7 @@ class SiCommand(GenericCommand):
         insn_next = get_insn_next()
 
         if insn and current_arch.is_jump(insn) or current_arch.is_call(insn): # si also stops at `call` target
-            target = ContextCommand.get_branch_addr(insn)
+            target = ContextCodeCommand.get_branch_addr(insn)
             delay_slot = current_arch.has_delay_slot
         elif insn and current_arch.is_ret(insn):
             target = current_arch.get_ra(insn, frame)
@@ -14728,19 +14719,19 @@ class UpCommand(GenericCommand):
             current_frame.select()
 
         # back up
-        nb_lines_backtrace_before = Config.get_gef_setting("context.nb_lines_backtrace_before")
-        nb_lines_backtrace = Config.get_gef_setting("context.nb_lines_backtrace")
+        nb_lines_before = Config.get_gef_setting("context_trace.nb_lines_before")
+        nb_lines = Config.get_gef_setting("context_trace.nb_lines")
 
         # change temporarily
-        Config.set_gef_setting("context.nb_lines_backtrace_before", 0x100)
-        Config.set_gef_setting("context.nb_lines_backtrace", 0x100)
+        Config.set_gef_setting("context_trace.nb_lines_before", 0x100)
+        Config.set_gef_setting("context_trace.nb_lines", 0x100)
 
         # print
-        gdb.execute("context trace")
+        gdb.execute("context trace -i")
 
         # restore
-        Config.set_gef_setting("context.nb_lines_backtrace_before", nb_lines_backtrace_before)
-        Config.set_gef_setting("context.nb_lines_backtrace", nb_lines_backtrace)
+        Config.set_gef_setting("context_trace.nb_lines_before", nb_lines_before)
+        Config.set_gef_setting("context_trace.nb_lines", nb_lines)
         return
 
     @parse_args
@@ -14784,19 +14775,19 @@ class DownCommand(GenericCommand):
             current_frame.select()
 
         # back up
-        nb_lines_backtrace_before = Config.get_gef_setting("context.nb_lines_backtrace_before")
-        nb_lines_backtrace = Config.get_gef_setting("context.nb_lines_backtrace")
+        nb_lines_before = Config.get_gef_setting("context_trace.nb_lines_before")
+        nb_lines = Config.get_gef_setting("context_trace.nb_lines")
 
         # change temporarily
-        Config.set_gef_setting("context.nb_lines_backtrace_before", 0x100)
-        Config.set_gef_setting("context.nb_lines_backtrace", 0x100)
+        Config.set_gef_setting("context_trace.nb_lines_before", 0x100)
+        Config.set_gef_setting("context_trace.nb_lines", 0x100)
 
         # print
-        gdb.execute("context trace")
+        gdb.execute("context trace -i")
 
         # restore
-        Config.set_gef_setting("context.nb_lines_backtrace_before", nb_lines_backtrace_before)
-        Config.set_gef_setting("context.nb_lines_backtrace", nb_lines_backtrace)
+        Config.set_gef_setting("context_trace.nb_lines_before", nb_lines_before)
+        Config.set_gef_setting("context_trace.nb_lines", nb_lines)
         return
 
     @parse_args
@@ -18257,13 +18248,13 @@ class KillThreadsCommand(GenericCommand):
         if not args.all and not args.thread_id:
             info("Non-current `Thread Id`(s) from the list are available")
             # back up
-            nb_lines_threads = Config.get_gef_setting("context.nb_lines_threads")
+            nb_lines = Config.get_gef_setting("context_threads.nb_lines")
             # change temporarily
-            Config.set_gef_setting("context.nb_lines_threads", -1)
+            Config.set_gef_setting("context_threads.nb_lines", -1)
             # print
-            gdb.execute("context threads")
+            gdb.execute("context threads -i")
             # restore
-            Config.set_gef_setting("context.nb_lines_threads", nb_lines_threads)
+            Config.set_gef_setting("context_threads.nb_lines", nb_lines)
             return
 
         # list target thread id
@@ -22414,7 +22405,7 @@ class RegistersCommand(GenericCommand):
             value = current_arch.real2phys(segval, regval)
 
             # colorling
-            old_value = ContextCommand.old_registers.get(regname, 0)
+            old_value = ContextRegistersCommand.old_registers.get(regname, 0)
             if value == old_value:
                 color = unchanged_color
             else:
@@ -22462,7 +22453,7 @@ class RegistersCommand(GenericCommand):
             else:
                 value = AddressUtil.align_address(int(reg))
 
-            old_value = ContextCommand.old_registers.get(regname, 0)
+            old_value = ContextRegistersCommand.old_registers.get(regname, 0)
 
             if value == old_value:
                 color = unchanged_color
@@ -28044,7 +28035,7 @@ class NamedBreakBreakpoint(gdb.Breakpoint):
     def stop(self):
         Cache.reset_gef_caches()
         msg = "Hit breakpoint *{:#x} ({})".format(self.loc, Color.colorify(self.name, "bold red"))
-        ContextCommand.push_context_message("info", msg)
+        ContextExtraCommand.push_context_message("info", msg)
         return True
 
 
@@ -28250,19 +28241,29 @@ class ContextCommand(GenericCommand):
     _aliases_ = ["ctx"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    commands = [[], "legend", "regs", "stack", "code", "args", "memory", "source", "trace", "threads", "extra", "on", "off"]
+    commands = [
+        [],
+        "legend",
+        "regs",
+        "stack",
+        "code",
+        "mem_access",
+        "args",
+        "source",
+        "mem_watch",
+        "trace",
+        "threads",
+        "extra",
+        "on",
+        "off",
+    ]
     parser.add_argument("commands", nargs="*", choices=commands, default=[],
-                        metavar="{legend,regs,stack,code,args,memory,source,trace,threads,extra}|{on,off}",
-                        help="specifies which context to display. "
-                             "The on/off are syntax sugars of `gef config context.enable True/False`.")
+                        metavar="{legend,regs,stack,code,mem_access,args,source,mem_watch,trace,threads,extra}|{on,off}",
+                        help="specifies which context to display.")
     parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
     _syntax_ = parser.format_help()
 
-    old_registers = {}
     context_hidden = False
-    context_comments = {}
-    context_messages = []
-    context_extra_commands = []
 
     @staticmethod
     def hide_context():
@@ -28283,60 +28284,20 @@ class ContextCommand(GenericCommand):
             return True
         return False
 
-    @staticmethod
-    def push_context_message(level, message):
-        """Push the message to be displayed the next time the context is invoked."""
-        if level not in ("error", "warn", "ok", "info"):
-            err("Invalid level '{}', discarding message".format(level))
-            return
-        ContextCommand.context_messages.append((level, message))
-        return
-
     def __init__(self):
         super().__init__(complete="use_user_complete")
         self.add_setting("enable", True, "Enable/disable printing the context when breaking")
-        self.add_setting("show_source_code_variable_values", True, "Show extra PC context info in the source code")
-        self.add_setting("show_stack_raw", False, "Show the stack pane as raw hexdump (no dereference)")
-        self.add_setting("show_registers_raw", False, "Show the registers pane with raw values (no dereference)")
-        self.add_setting("show_opcodes_size", 8, "Number of bytes of opcodes to display next to the disassembly")
-        self.add_setting("show_opcodes_size_x64_x86", 10, "Number of bytes of opcodes to display next to the disassembly")
-        self.add_setting("peek_call", True, "Peek into call opcode")
-        self.add_setting("peek_conditional_branch", True, "Emulates a conditional branch and peeks if it is taken")
-        self.add_setting("peek_jump", True, "Peek into jump opcode")
-        self.add_setting("peek_ret", True, "Peek into ret opcode")
-        self.add_setting("nb_lines_stack", 8, "Number of line in the stack pane")
-        self.add_setting("nb_guessed_arguments", 6, "Number to display when guessing functions arguments")
-        self.add_setting("nb_lines_backtrace", 10, "Number of line in the backtrace pane")
-        self.add_setting("nb_lines_backtrace_before", 2, "Number of line in the backtrace pane before selected frame")
-        self.add_setting("nb_lines_threads", -1, "Number of line in the threads pane")
-        self.add_setting("nb_lines_code", 6, "Number of instruction after $pc")
-        self.add_setting("nb_lines_code_prev", 3, "Number of instruction before $pc")
         self.add_setting("nb_max_string_length", 0x40, "Number of bytes of strings to show")
-        self.add_setting("ignore_registers", "", "Space-separated list of registers not to display (e.g., '$cs $ds $gs')")
         self.add_setting("clear_screen", True, "Clear the screen before printing the context")
         default_legend = "legend regs stack code mem_access args source mem_watch threads trace extra"
-        self.add_setting("layout", default_legend, "Order of sections (invalid is ignored; e.g., trace -> -trace)")
+        self.add_setting("layout", default_legend, "Order of sections (add '-' to skip: trace -> -trace)")
         self.add_setting("smart_cpp_function_name", False, "Print cpp function name without args if demangled")
-        self.add_setting("use_native_x_command", False, "Use x/16i instead of Disasm.gef_disassemble")
-        self.add_setting("use_capstone", False, "Use capstone as disassembler in the code pane (instead of GDB)")
         self.add_setting("enable_auto_switch_for_i8086", True, "Enable auto architecture switching for i8086 <-> x86-32")
         self.add_setting("disable_vmmap", False, "Disable memory map generation to speed up (e.g., for firmware debugging)")
         self.add_setting("disable_auxv", False, "Disable scanning auxv from memory to speed up (e.g., for firmware debugging)")
-        self.add_setting("redirect", "", "Redirect the context information to another tty")
-
-        self.layout_mapping = {
-            "legend"     : self.show_legend,
-            "regs"       : self.context_regs,
-            "stack"      : self.context_stack,
-            "code"       : self.context_code,
-            "mem_access" : self.context_memory_access,
-            "args"       : self.context_args,
-            "mem_watch"  : self.context_memory,
-            "source"     : self.context_source,
-            "trace"      : self.context_trace,
-            "threads"    : self.context_threads,
-            "extra"      : self.context_additional_information,
-        }
+        self.add_setting("redirect", "", "Default target tty name to redirect `context` to")
+        EventHooking.gef_on_continue_hook(ContextRegistersCommand.update_registers)
+        EventHooking.gef_on_continue_hook(ContextExtraCommand.empty_extra_messages)
         return
 
     def complete(self, text, word): # noqa
@@ -28351,17 +28312,196 @@ class ContextCommand(GenericCommand):
         # finally, look for possible values for given prefix
         return [s for s in self.commands if s and s.startswith(text.strip().split()[-1])]
 
-    def post_load(self):
-        EventHooking.gef_on_continue_hook(self.update_registers)
-        EventHooking.gef_on_continue_hook(self.empty_extra_messages)
-        self.previous_extra_regs = {}
+    @staticmethod
+    @Cache.cache_this_session
+    def get_redirect(section, ignore_redirect):
+        if ignore_redirect:
+            return None
+        redirect = Config.get_gef_setting("context_{:s}.redirect".format(section))
+        if redirect:
+            return redirect
+        redirect = Config.get_gef_setting("context.redirect")
+        if redirect:
+            return redirect
+        return None
+
+    @staticmethod
+    def context_title(m, redirect=None):
+        line_color = Config.get_gef_setting("theme.context_title_line")
+        msg_color = Config.get_gef_setting("theme.context_title_message")
+        HORIZONTAL_LINE = "-"
+
+        _, tty_columns = GefUtil.get_terminal_size(redirect=redirect)
+
+        if not m:
+            title = Color.colorify(HORIZONTAL_LINE * tty_columns, line_color)
+        else:
+            trail_len = len(m) + 6
+            width = max(tty_columns - trail_len, 0)
+            title = ""
+            title += Color.colorify(HORIZONTAL_LINE * width + " ", line_color)
+            title += Color.colorify(m, msg_color)
+            title += Color.colorify(" " + HORIZONTAL_LINE * 4, line_color)
+
+        gef_print(title, redirect=redirect)
         return
 
-    def show_legend(self):
-        # use cache
+    @staticmethod
+    def execute_command(cmd, redirect=None):
+        if redirect:
+            res = gdb.execute(cmd, to_string=True)
+            gef_print(res.rstrip(), redirect=redirect)
+        else:
+            gdb.execute(cmd)
+        return
+
+    def i386_auto_switch(self):
+        if not Config.get_gef_setting("context.enable_auto_switch_for_i8086"):
+            return
+
+        # check whether protected mode or not.
+        # even if `CR0.PE=1`, it will not switch until `ljmp`.
+        # so it is better to judge whether `$cs=0x8` or not.
+        # https://wiki.osdev.org/Protected_Mode
+        cs = get_register("$cs")
+        if cs is None or cs == 8:
+            set_arch("x86")
+        else:
+            set_arch("i8086")
+        return
+
+    @Cache.cache_this_session
+    def get_order_in_each_pane(self, current_layout, ignore_redirect):
+        order_in_pane = {}
+        for section in current_layout:
+            # target layout is disabled
+            if section[0] == "-":
+                continue
+
+            redirect = ContextCommand.get_redirect(section, ignore_redirect)
+            order_in_pane[redirect] = order_in_pane.get(redirect, []) + [section]
+
+        order_info = {}
+        for redirect, order in order_in_pane.items():
+            for i, section in enumerate(order):
+                is_head = i == 0
+                is_tail = i == len(order) - 1
+                order_info[section] = [is_head, is_tail, redirect]
+        return order_info
+
+    def clear_screen(self, redirect):
+        if not Config.get_gef_setting("context.clear_screen"):
+            return
+
+        if redirect:
+            gef_print("\x1b[H\x1b[2J", end="", redirect=redirect)
+            return
+
+        if len(self.args.commands) == 0:
+            # this is more faster than executing "shell clear -x"
+            print("\x1b[H\x1b[2J", end="")
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        # check on/off
+        if "off" in args.commands:
+            ContextCommand.hide_context()
+            return
+        if "on" in args.commands:
+            ContextCommand.unhide_context()
+            return
+
+        # check config
+        if ContextCommand.is_hide():
+            return
+
+        # check running or not
+        if not is_alive():
+            warn("No debugging session active")
+            return
+
+        if gdb.selected_thread().is_running():
+            # If the thread is running, do nothing (just to be safe)
+            return
+
+        # check layout
+        if len(args.commands) > 0:
+            current_layout = args.commands
+        else:
+            current_layout = Config.get_gef_setting("context.layout").strip().split()
+        if not current_layout:
+            return
+
+        # get info for clear_screen and last line
+        order_info = self.get_order_in_each_pane(tuple(current_layout), args.ignore_redirect)
+
+        # for create command
+        if args.ignore_redirect:
+            opts = "-i"
+        else:
+            opts = ""
+
+        # i386 auto switch
+        if is_qemu_system() and get_arch() == "i8086":
+            self.i386_auto_switch()
+
+        # do each layout
+        for section in current_layout:
+            # If a process is terminated while the context command is executing,
+            # the output will be distorted, so it is a good idea to check by every loop.
+            if not is_alive():
+                break
+
+            # target layout is disabled
+            if section[0] == "-":
+                continue
+
+            is_head, is_tail, redirect = order_info[section]
+
+            # clear screen
+            if is_head:
+                self.clear_screen(redirect)
+
+            # call each context sub command
+            gdb.execute("context-{:s} {:s}".format(section, opts))
+
+            # for time measurement
+            #from cProfile import Profile
+            #import pstats
+            #pr = Profile()
+            #pr.runcall(lambda: gdb.execute("context-{:s} {:s}".format(section, opts)))
+            #stats = pstats.Stats(pr)
+            #stats.sort_stats("tottime")
+            #stats.print_stats(10)
+
+            # last line
+            if is_tail:
+                ContextCommand.context_title("", redirect)
+        return
+
+
+@register_command
+class ContextLegendCommand(GenericCommand):
+    """Context internal command to display the legend."""
+
+    _cmdline_ = "context-legend"
+    _category_ = "01-a. Debugging Support - Context"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
+    _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__()
+        self.add_setting("redirect", "", "The target tty name to redirect `context legend` to")
+        return
+
+    def context_legend(self, redirect):
+        # fast path (use cache)
         if Cache.cached_context_legend is not None:
             if Cache.cached_context_legend:
-                gef_print(Cache.cached_context_legend)
+                gef_print(Cache.cached_context_legend, redirect=redirect)
             return
 
         # slow path
@@ -28386,43 +28526,49 @@ class ContextCommand(GenericCommand):
                 Color.colorify("String", Config.get_gef_setting("theme.dereference_string")),
             ]),
         )
-        gef_print(legend)
+        gef_print(legend, redirect=redirect)
+
         Cache.cached_context_legend = legend
         return
 
-    def context_title(self, m):
-        line_color = Config.get_gef_setting("theme.context_title_line")
-        msg_color = Config.get_gef_setting("theme.context_title_message")
-        HORIZONTAL_LINE = "-"
-
-        if not m:
-            gef_print(Color.colorify(HORIZONTAL_LINE * self.tty_columns, line_color))
-            return
-
-        trail_len = len(m) + 6
-        width = max(self.tty_columns - trail_len, 0)
-        title = ""
-        title += Color.colorify(HORIZONTAL_LINE * width + " ", line_color)
-        title += Color.colorify(m, msg_color)
-        title += Color.colorify(" " + HORIZONTAL_LINE * 4, line_color)
-        gef_print(title)
+    @parse_args
+    def do_invoke(self, args):
+        redirect = ContextCommand.get_redirect("legend", args.ignore_redirect)
+        try:
+            self.context_legend(redirect)
+        except Exception as e:
+            err(str(e), redirect=redirect)
         return
 
-    def context_regs(self):
-        self.context_title("registers")
-        ignored_registers = set(Config.get_gef_setting("context.ignore_registers").split())
 
-        if current_arch is None and is_remote_debug():
-            err("Missing info about architecture. Please set: `file /path/to/target_binary`")
-            return
+@register_command
+class ContextRegistersCommand(GenericCommand):
+    """Context internal command to display registers."""
 
-        regs = set(current_arch.all_registers)
-        printable_registers = " ".join(list(regs - ignored_registers))
-        if Config.get_gef_setting("context.show_registers_raw") is False:
-            gdb.execute("registers {}".format(printable_registers))
-        else:
-            gdb.execute("registers -s {}".format(printable_registers))
-        self.context_extra_regs()
+    _cmdline_ = "context-regs"
+    _category_ = "01-a. Debugging Support - Context"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
+    _syntax_ = parser.format_help()
+
+    old_registers = {}
+    previous_extra_regs = {}
+
+    def __init__(self):
+        super().__init__()
+        self.add_setting("redirect", "", "The target tty name to redirect `context regs` to")
+        self.add_setting("show_registers_raw", False, "Show the registers pane with raw values (no dereference)")
+        self.add_setting("ignore_registers", "", "Space-separated list of registers not to display (e.g., '$cs $ds $gs')")
+        return
+
+    @staticmethod
+    def update_registers(_event):
+        for reg in current_arch.all_registers:
+            try:
+                ContextRegistersCommand.old_registers[reg] = get_register(reg)
+            except Exception:
+                ContextRegistersCommand.old_registers[reg] = 0
         return
 
     RE_SUB_OPERAND1 = re.compile(r"<.*?>")
@@ -28432,7 +28578,7 @@ class ContextCommand(GenericCommand):
     RE_FINDALL_MMX = re.compile(r"([^xy]mm\d+)")
     RE_FINDALL_FPU = re.compile(r"(st\(\d\))")
 
-    def context_extra_regs(self):
+    def context_regs_extra(self, redirect):
         if not is_x86():
             return
 
@@ -28468,7 +28614,7 @@ class ContextCommand(GenericCommand):
             for reg in to_print_regs:
                 for line in lines:
                     if ("$" + reg) in line.split(":")[0]:
-                        gef_print(line)
+                        gef_print(line, redirect=redirect)
                         if reg in to_save_regs:
                             printed_extra_regs["xmm"] = printed_extra_regs.get("xmm", []) + [reg]
                         break
@@ -28482,7 +28628,7 @@ class ContextCommand(GenericCommand):
             for reg in to_print_regs:
                 for line in lines:
                     if ("$" + reg) in line.split(":")[0]:
-                        gef_print(line)
+                        gef_print(line, redirect=redirect)
                         if reg in to_save_regs:
                             printed_extra_regs["ymm"] = printed_extra_regs.get("ymm", []) + [reg]
                         break
@@ -28496,7 +28642,7 @@ class ContextCommand(GenericCommand):
             for reg in to_print_regs:
                 for line in lines:
                     if ("$" + reg) in line.split(":")[0]:
-                        gef_print(line)
+                        gef_print(line, redirect=redirect)
                         if reg in to_save_regs:
                             printed_extra_regs["mmx"] = printed_extra_regs.get("mmx", []) + [reg]
                         break
@@ -28511,7 +28657,7 @@ class ContextCommand(GenericCommand):
                 for reg in to_print_regs:
                     for line in lines:
                         if ("$" + re.sub(r"[()]", reg, "")) in line.split(":")[0]:
-                            gef_print(line)
+                            gef_print(line, redirect=redirect)
                             if reg in to_save_regs:
                                 printed_extra_regs["fpu"] = printed_extra_regs.get("fpu", []) + [reg]
                             break
@@ -28519,34 +28665,282 @@ class ContextCommand(GenericCommand):
         self.previous_extra_regs = printed_extra_regs
         return
 
-    def context_stack(self):
-        self.context_title("stack")
-
-        show_raw = Config.get_gef_setting("context.show_stack_raw")
-        nb_lines = Config.get_gef_setting("context.nb_lines_stack")
+    def context_registers(self, redirect):
+        ContextCommand.context_title("registers", redirect)
 
         if current_arch is None and is_remote_debug():
-            err("Missing info about architecture. Please set: `file /path/to/target_binary`")
+            err("Missing info about architecture. Please set: `file /path/to/target_binary`", redirect=redirect)
             return
 
-        sp = current_arch.sp
+        # exec registers
+        ignored_registers = set(Config.get_gef_setting("context_regs.ignore_registers").split())
+        regs = set(current_arch.all_registers)
+        printable_registers = " ".join(list(regs - ignored_registers))
+        if Config.get_gef_setting("context_regs.show_registers_raw"):
+            opt = "-s"
+        else:
+            opt = ""
+        ContextCommand.execute_command("registers {:s} {}".format(opt, printable_registers), redirect)
 
-        if sp is None:
-            err("Failed to get value of $SP")
+        # for extra regs
+        self.context_regs_extra(redirect)
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        redirect = ContextCommand.get_redirect("regs", args.ignore_redirect)
+        try:
+            self.context_registers(redirect)
+        except Exception as e:
+            err(str(e), redirect=redirect)
+        return
+
+
+@register_command
+class ContextStackCommand(GenericCommand):
+    """Context internal command to display stack."""
+
+    _cmdline_ = "context-stack"
+    _category_ = "01-a. Debugging Support - Context"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
+    _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__()
+        self.add_setting("redirect", "", "The target tty name to redirect `context stack` to")
+        self.add_setting("show_stack_raw", False, "Show the stack pane as raw hexdump (no dereference)")
+        self.add_setting("nb_lines", 8, "Number of line in the stack pane")
+        return
+
+    def context_stack(self, redirect):
+        ContextCommand.context_title("stack", redirect)
+
+        if current_arch is None and is_remote_debug():
+            err("Missing info about architecture. Please set: `file /path/to/target_binary`", redirect=redirect)
             return
+
+        if current_arch.sp is None:
+            err("Failed to get value of $SP", redirect=redirect)
+            return
+
+        show_raw = Config.get_gef_setting("context_stack.show_stack_raw")
+        nb_lines = Config.get_gef_setting("context_stack.nb_lines")
 
         if show_raw is True:
             try:
-                mem = read_memory(sp, 0x10 * nb_lines)
-                gef_print(hexdump(mem, base=sp))
+                mem = read_memory(current_arch.sp, 0x10 * nb_lines)
+                gef_print(hexdump(mem, base=current_arch.sp), redirect=redirect)
             except gdb.MemoryError:
-                err("Cannot read memory from $SP (corrupted stack pointer?)")
-        else:
-            if not current_arch.stack_grow_down:
-                gdb.execute("dereference {:#x} {:d} --no-pager".format(sp, nb_lines))
-            else:
-                gdb.execute("dereference {:#x} -{:d} --no-pager".format(sp, nb_lines))
+                err("Cannot read memory from $SP (corrupted stack pointer?)", redirect=redirect)
+            return
+
+        if current_arch.stack_grow_down:
+            nb_lines *= -1
+
+        ContextCommand.execute_command(
+            "dereference {:#x} {:d} --no-pager".format(current_arch.sp, nb_lines), redirect,
+        )
         return
+
+    @parse_args
+    def do_invoke(self, args):
+        redirect = ContextCommand.get_redirect("stack", args.ignore_redirect)
+        try:
+            self.context_stack(redirect)
+        except Exception as e:
+            err(str(e), redirect=redirect)
+        return
+
+
+@register_command
+class ContextCodeCommand(GenericCommand):
+    """Context internal command to display code."""
+
+    _cmdline_ = "context-code"
+    _category_ = "01-a. Debugging Support - Context"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
+    _syntax_ = parser.format_help()
+
+    context_comments = {}
+
+    def __init__(self):
+        super().__init__()
+        self.add_setting("redirect", "", "The target tty name to redirect `context code` to")
+        self.add_setting("show_opcodes_size", 8, "Number of bytes of opcodes to display next to the disassembly")
+        self.add_setting("show_opcodes_size_x64_x86", 10, "Number of bytes of opcodes to display next to the disassembly")
+        self.add_setting("peek_call", True, "Peek into call opcode")
+        self.add_setting("peek_conditional_branch", True, "Emulates a conditional branch and peeks if it is taken")
+        self.add_setting("peek_jump", True, "Peek into jump opcode")
+        self.add_setting("peek_ret", True, "Peek into ret opcode")
+        self.add_setting("use_native_x_command", False, "Use x/16i instead of Disasm.gef_disassemble")
+        self.add_setting("use_capstone", False, "Use capstone as disassembler in the code pane (instead of GDB)")
+        self.add_setting("nb_lines", 6, "Number of instruction after $pc")
+        self.add_setting("nb_lines_prev", 3, "Number of instruction before $pc")
+        return
+
+    RE_SUB_BRANCH_ADDR1 = re.compile(r".*# (0x[a-fA-F0-9]+).*")
+    RE_SUB_BRANCH_ADDR2 = re.compile(r".*# (0x[a-fA-F0-9]+).*")
+    RE_SUB_BRANCH_ADDR3 = re.compile(r".* (PTR|ptr) \[(.+?)\].*")
+    RE_SUB_BRANCH_ADDR4 = re.compile(r".* (PTR|ptr) fs:\[?(0x[a-fA-F0-9]+)\]?.*")
+    RE_SUB_BRANCH_ADDR5 = re.compile(r".* (PTR|ptr) gs:\[?(0x[a-fA-F0-9]+)\]?.*")
+    RE_SUB_BRANCH_ADDR6 = re.compile(r"^.*\s+([-0-9]+)$")
+    RE_SUB_BRANCH_ADDR7 = re.compile(r".*(0x[a-fA-F0-9]+).*")
+
+    @staticmethod
+    def get_branch_addr(insn, to_str=False):
+        ops = " ".join(insn.operands)
+        ops = re.sub(r"<.*?>", "", ops)
+
+        # is there an evaluated immediate value?
+        #   x86/x64 (default): call ... [rip+0x1111] # 0xAABBCCDD
+        if " # 0x" in ops and not is_loongarch64():
+            addr = ContextCodeCommand.RE_SUB_BRANCH_ADDR1.sub(r"\1", ops)
+            ptr = to_unsigned_long(gdb.parse_and_eval(addr))
+            try:
+                if to_str:
+                    return "{:#x}".format(read_int_from_memory(ptr))
+                else:
+                    return read_int_from_memory(ptr)
+            except gdb.MemoryError:
+                if to_str:
+                    return "*{:#x}".format(ptr)
+                else:
+                    return None
+
+        # is there an evaluated immediate value?
+        #   loongarch64: bnez $t1, -8 (0x7ffff8) # 0x120000868
+        if " # 0x" in ops and is_loongarch64():
+            addr = ContextCodeCommand.RE_SUB_BRANCH_ADDR2.sub(r"\1", ops)
+            ptr = to_unsigned_long(gdb.parse_and_eval(addr))
+            if to_str:
+                return "{:#x}".format(ptr)
+            else:
+                return ptr
+
+        # is there a memory reference by register?
+        #   x86/x64 (default): call ... PTR [rbx]
+        #   x86/x64 (capstone): call ... ptr [rbx]
+        #   x64 (capstone): call ... ptr [rip + 0x1111]
+        if is_x86():
+            if " PTR [" in ops or " ptr [" in ops:
+                addr = ContextCodeCommand.RE_SUB_BRANCH_ADDR3.sub(r"\2", ops)
+                for gr in current_arch.gpr_registers:
+                    addr = addr.replace(gr.replace("$", ""), gr)
+                if is_x86_64():
+                    addr = addr.replace("$rip", "$rip+{:#x}".format(len(insn.opcodes)))
+                try:
+                    ptr = to_unsigned_long(gdb.parse_and_eval(addr))
+                except gdb.error:
+                    return None
+                try:
+                    if to_str:
+                        return "{:#x}".format(read_int_from_memory(ptr))
+                    else:
+                        return read_int_from_memory(ptr)
+                except gdb.MemoryError:
+                    if to_str:
+                        return "*{:#x}".format(ptr)
+                    else:
+                        return None
+
+        # is there a segment relative?
+        #   x64 (default): call ... PTR fs:0x10
+        #   x64 (capstone): call ... ptr fs:[0x10]
+        if is_x86_64():
+            if " PTR fs:" in ops or " ptr fs:" in ops:
+                ofs = ContextCodeCommand.RE_SUB_BRANCH_ADDR4.sub(r"\2", ops)
+                ofs = to_unsigned_long(gdb.parse_and_eval(ofs))
+                fs = current_arch.get_fs()
+                try:
+                    if to_str:
+                        return "{:#x}".format(read_int_from_memory(fs + ofs))
+                    else:
+                        return read_int_from_memory(fs + ofs)
+                except gdb.MemoryError:
+                    if to_str:
+                        return "*{:#x}".format(fs + ofs)
+                    else:
+                        return None
+
+        # is there a segment relative?
+        #   x86 (default): call ... PTR gs:0x10
+        #   x86 (capstone): call ... ptr gs:[0x10]
+        if is_x86_32():
+            if " PTR gs:" in ops or " ptr gs:" in ops:
+                ofs = ContextCodeCommand.RE_SUB_BRANCH_ADDR5.sub(r"\2", ops)
+                ofs = to_unsigned_long(gdb.parse_and_eval(ofs))
+                gs = current_arch.get_gs()
+                try:
+                    if to_str:
+                        return "{:#x}".format(read_int_from_memory(gs + ofs))
+                    else:
+                        return read_int_from_memory(gs + ofs)
+                except gdb.MemoryError:
+                    if to_str:
+                        return "*{:#x}".format(gs + ofs)
+                    else:
+                        return None
+
+        # is there a relative immediate?
+        #   microblaze:  brlid  r15, -136
+        #   microblaze:  bneid  r4, -8    // 3ffe9848
+        if is_microblaze():
+            addr = ContextCodeCommand.RE_SUB_BRANCH_ADDR6.sub(r"\1", ops.split("//")[0].strip())
+            try:
+                addr = int(addr) + insn.address
+                if to_str:
+                    return "{:#x}".format(addr)
+                else:
+                    return addr
+            except Exception:
+                pass
+
+        # is there a absolute immediate value (with segment)?
+        #   x86_16:  ljmp   0xf000:0xe05b
+        if is_x86_16() and ":0x" in ops:
+            seg, val = [int(x, 16) for x in ops.split(":")]
+            if ops.startswith("0x"):
+                addr = current_arch.real2phys(seg, val)
+            else:
+                addr = val
+            if to_str:
+                return "{:#x}".format(addr)
+            else:
+                return addr
+
+        # is there a absolute immediate value?
+        #   s390x:   bra    0x3ffdfc60
+        #   s390x:   brasl  %r14, 0x1020b50
+        #   RISCV:   jal    ra, 0x13894
+        #   RISCV:   bgeu   t1, a2, 0x10350
+        if "0x" in ops:
+            addr = ContextCodeCommand.RE_SUB_BRANCH_ADDR7.sub(r"\1", ops)
+            if to_str:
+                return "{:#x}".format(to_unsigned_long(gdb.parse_and_eval(addr)))
+            else:
+                return to_unsigned_long(gdb.parse_and_eval(addr))
+
+        # is there register(s)?
+        #   x86/x64: call   rax
+        #   s390x:   basr   %lr, %r1
+        #   sh4:     jsr    @r1
+        #   alpha:   jmp    (t0)
+        if insn.operands[-1].split():
+            maybe_reg = insn.operands[-1].split()[0]
+            if len(maybe_reg) <= 5 and maybe_reg[0] == "(" and maybe_reg[-1] == ")":
+                maybe_reg = maybe_reg[1:-1]
+            ptr = get_register(maybe_reg)
+            if ptr is not None:
+                if to_str:
+                    return "{:#x}".format(ptr)
+                else:
+                    return ptr
+
+        return None
 
     def get_breakpoints(self):
         breakpoints = gdb.breakpoints()
@@ -28568,21 +28962,21 @@ class ContextCommand(GenericCommand):
                         pass
         return bp_locations
 
-    def context_code(self):
-        use_native_x_command = Config.get_gef_setting("context.use_native_x_command")
-        nb_insn = Config.get_gef_setting("context.nb_lines_code")
-        nb_insn_prev = Config.get_gef_setting("context.nb_lines_code_prev")
+    def context_code(self, redirect):
+        use_native_x_command = Config.get_gef_setting("context_code.use_native_x_command")
+        nb_insn = Config.get_gef_setting("context_code.nb_lines")
+        nb_insn_prev = Config.get_gef_setting("context_code.nb_lines_prev")
         if is_x86():
-            show_opcodes_size = Config.get_gef_setting("context.show_opcodes_size_x64_x86")
+            show_opcodes_size = Config.get_gef_setting("context_code.show_opcodes_size_x64_x86")
         else:
-            show_opcodes_size = Config.get_gef_setting("context.show_opcodes_size")
+            show_opcodes_size = Config.get_gef_setting("context_code.show_opcodes_size")
         past_lines_color = Config.get_gef_setting("theme.context_code_past")
         future_lines_color = Config.get_gef_setting("theme.context_code_future")
-        use_capstone = Config.get_gef_setting("context.use_capstone")
+        use_capstone = Config.get_gef_setting("context_code.use_capstone")
 
         if current_arch is None and is_remote_debug():
-            self.context_title("code")
-            err("Missing info about architecture. Please set: `file /path/to/target_binary`")
+            ContextCommand.context_title("code", redirect)
+            err("Missing info about architecture. Please set: `file /path/to/target_binary`", redirect=redirect)
             return
 
         pc = current_arch.pc
@@ -28603,9 +28997,9 @@ class ContextCommand(GenericCommand):
         else:
             arch_name += " (gdb-native)"
 
-        self.context_title("code: {:s}".format(arch_name))
+        ContextCommand.context_title("code: {:s}".format(arch_name), redirect)
         if use_native_x_command:
-            gdb.execute("x/16i {:#x}".format(current_arch.pc))
+            ContextCommand.execute_command("x/16i {:#x}".format(current_arch.pc), redirect)
             return
 
         for insn in Disasm.gef_disassemble(pc, nb_insn, nb_prev=nb_insn_prev):
@@ -28645,10 +29039,10 @@ class ContextCommand(GenericCommand):
 
                 # branch info
                 if current_arch.is_conditional_branch(insn):
-                    if Config.get_gef_setting("context.peek_conditional_branch") is True:
+                    if Config.get_gef_setting("context_code.peek_conditional_branch") is True:
                         is_taken, reason = current_arch.is_branch_taken(insn)
                         if is_taken:
-                            target = ContextCommand.get_branch_addr(insn)
+                            target = ContextCodeCommand.get_branch_addr(insn)
                             reason = "[Reason: {:s}]".format(reason) if reason else ""
                             line += "\t" + Color.colorify("TAKEN {:s}".format(reason), "bold green")
                             delay_slot = current_arch.has_delay_slot
@@ -28656,15 +29050,15 @@ class ContextCommand(GenericCommand):
                             reason = "[Reason: !({:s})]".format(reason) if reason else ""
                             line += "\t" + Color.colorify("NOT taken {:s}".format(reason), "bold red")
                 elif current_arch.is_jump(insn):
-                    if Config.get_gef_setting("context.peek_jump") is True:
-                        target = ContextCommand.get_branch_addr(insn)
+                    if Config.get_gef_setting("context_code.peek_jump") is True:
+                        target = ContextCodeCommand.get_branch_addr(insn)
                         delay_slot = current_arch.has_delay_slot
                 elif current_arch.is_call(insn):
-                    if Config.get_gef_setting("context.peek_call") is True:
-                        target = ContextCommand.get_branch_addr(insn)
+                    if Config.get_gef_setting("context_code.peek_call") is True:
+                        target = ContextCodeCommand.get_branch_addr(insn)
                         delay_slot = current_arch.has_delay_slot
                 elif current_arch.is_ret(insn):
-                    if Config.get_gef_setting("context.peek_ret") is True:
+                    if Config.get_gef_setting("context_code.peek_ret") is True:
                         target = current_arch.get_ra(insn, frame)
                         delay_slot = current_arch.has_ret_delay_slot
 
@@ -28672,10 +29066,10 @@ class ContextCommand(GenericCommand):
                     delay_slot = insn.mnemonic.endswith(".d") or insn.mnemonic.endswith(".d.nt")
 
             # comment
-            if insn.address in ContextCommand.context_comments:
-                line += "\t\t" + Color.grayify("// " + "; ".join(ContextCommand.context_comments[insn.address]))
+            if insn.address in self.context_comments:
+                line += "\t\t" + Color.grayify("// " + "; ".join(self.context_comments[insn.address]))
 
-            gef_print(line)
+            gef_print(line, redirect=redirect)
 
             # add extra branch info
             if target:
@@ -28688,7 +29082,7 @@ class ContextCommand(GenericCommand):
                             next_insn.colored_text(show_opcodes_size, highlight=False),
                             Color.colorify("Maybe delay-slot", "bold yellow"),
                         )
-                        gef_print(text)
+                        gef_print(text, redirect=redirect)
                 except Exception:
                     pass
 
@@ -28697,20 +29091,41 @@ class ContextCommand(GenericCommand):
                     for i, tinsn in enumerate(Disasm.gef_disassemble(target, nb_insn)):
                         text = tinsn.colored_text(show_opcodes_size, highlight=False)
                         if i == 0:
-                            gef_print("") # need blank line
+                            gef_print("", redirect=redirect) # need blank line
                             text = "   -> {}".format(text)
                         else:
                             text = "      {}".format(text)
-                        gef_print(text)
-                    gef_print("") # need blank line
+                        gef_print(text, redirect=redirect)
+                    gef_print("", redirect=redirect) # need blank line
                 except Exception:
                     pass
         return
 
-    def context_memory_access(self):
-        self.context_memory_access1()
-        self.context_memory_access2() # for x86/x64 - fs/gs
-        self.context_memory_access3() # for x86/x64 - cs/ss/ds/es
+    @parse_args
+    def do_invoke(self, args):
+        redirect = ContextCommand.get_redirect("code", args.ignore_redirect)
+        try:
+            self.context_code(redirect)
+        except Exception as e:
+            err(str(e), redirect=redirect)
+        return
+
+
+@register_command
+class ContextMemoryAccessCommand(GenericCommand):
+    """Context internal command to display accessing memory."""
+
+    _cmdline_ = "context-mem-access"
+    _category_ = "01-a. Debugging Support - Context"
+    _aliases_ = ["context-mem_access"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
+    _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__()
+        self.add_setting("redirect", "", "The target tty name to redirect `context mem_access` to")
         return
 
     RE_SUB_OPERAND3 = re.compile(r"<.*?>")
@@ -28719,7 +29134,7 @@ class ContextCommand(GenericCommand):
     RE_MATCH_REG2 = re.compile(r"r\d+")
     RE_MATCH_REG3 = re.compile(r"[xw]\d+")
 
-    def context_memory_access1(self):
+    def context_memory_access1(self, redirect):
         if not (is_x86() or is_arm32() or is_arm32_cortex_m() or is_arm64()):
             return
 
@@ -28799,14 +29214,15 @@ class ContextCommand(GenericCommand):
                     addr = AddressUtil.parse_address(code_orig)
                 except gdb.error:
                     return
-            self.context_title("memory access: {:s} = {:#x}".format(code_orig, addr))
-            gdb.execute("dereference {:#x} 4 --no-pager".format(addr))
+            ContextCommand.context_title("memory access: {:s} = {:#x}".format(code_orig, addr), redirect)
+            self.is_context_title_written = True
+            ContextCommand.execute_command("dereference {:#x} 4 --no-pager".format(addr), redirect)
         return
 
     RE_FINDALL_SEG2 = re.compile(r"((fs|gs):\[?([^,\]]+)\]?)")
     RE_MATCH_REG4 = re.compile(r"r\d+d?")
 
-    def context_memory_access2(self):
+    def context_memory_access2(self, redirect):
         if not is_x86():
             return
 
@@ -28848,14 +29264,15 @@ class ContextCommand(GenericCommand):
             offset = offset.replace("$rip", "$rip+{:#x}".format(codesize))
             offset = AddressUtil.parse_address(offset)
             addr = AddressUtil.align_address(fsgs_val + offset)
-            self.context_title("memory access: {:s} = {:#x}".format(code, addr))
-            gdb.execute("dereference {:#x} 4 --no-pager".format(addr))
+            ContextCommand.context_title("memory access: {:s} = {:#x}".format(code, addr), redirect)
+            self.is_context_title_written = True
+            ContextCommand.execute_command("dereference {:#x} 4 --no-pager".format(addr), redirect)
         return
 
     RE_FINDALL_SEG3 = re.compile(r"((es|ds|ss|cs):\[?([^,\]]+)\]?)")
     RE_MATCH_REG5 = re.compile(r"r\d+d?")
 
-    def context_memory_access3(self):
+    def context_memory_access3(self, redirect):
         if not is_x86():
             return
 
@@ -28881,172 +29298,48 @@ class ContextCommand(GenericCommand):
             addr = addr.split()
             addr = ["$" + x if x.isalpha() or self.RE_MATCH_REG5.match(x) else x for x in addr]
             addr = AddressUtil.parse_address("".join(addr))
-            self.context_title("memory access: {:s} = {:#x}".format(code, addr))
-            gdb.execute("dereference {:#x} 4 --no-pager".format(addr))
+            ContextCommand.context_title("memory access: {:s} = {:#x}".format(code, addr), redirect)
+            self.is_context_title_written = True
+            ContextCommand.execute_command("dereference {:#x} 4 --no-pager".format(addr), redirect)
         return
 
-    RE_SUB_BRANCH_ADDR1 = re.compile(r".*# (0x[a-fA-F0-9]+).*")
-    RE_SUB_BRANCH_ADDR2 = re.compile(r".*# (0x[a-fA-F0-9]+).*")
-    RE_SUB_BRANCH_ADDR3 = re.compile(r".* (PTR|ptr) \[(.+?)\].*")
-    RE_SUB_BRANCH_ADDR4 = re.compile(r".* (PTR|ptr) fs:\[?(0x[a-fA-F0-9]+)\]?.*")
-    RE_SUB_BRANCH_ADDR5 = re.compile(r".* (PTR|ptr) gs:\[?(0x[a-fA-F0-9]+)\]?.*")
-    RE_SUB_BRANCH_ADDR6 = re.compile(r"^.*\s+([-0-9]+)$")
-    RE_SUB_BRANCH_ADDR7 = re.compile(r".*(0x[a-fA-F0-9]+).*")
+    def context_memory_access(self, redirect):
+        self.context_memory_access1(redirect)
+        self.context_memory_access2(redirect) # for x86/x64 - fs/gs
+        self.context_memory_access3(redirect) # for x86/x64 - cs/ss/ds/es
+        return
 
-    @staticmethod
-    def get_branch_addr(insn, to_str=False):
-        ops = " ".join(insn.operands)
-        ops = re.sub(r"<.*?>", "", ops)
+    @parse_args
+    def do_invoke(self, args):
+        redirect = ContextCommand.get_redirect("mem_access", args.ignore_redirect)
+        self.is_context_title_written = False
+        try:
+            self.context_memory_access(redirect)
+        except Exception as e:
+            if not self.is_context_title_written:
+                ContextCommand.context_title("memory access", redirect)
+            err(str(e), redirect=redirect)
+        return
 
-        # is there an evaluated immediate value?
-        #   x86/x64 (default): call ... [rip+0x1111] # 0xAABBCCDD
-        if " # 0x" in ops and not is_loongarch64():
-            addr = ContextCommand.RE_SUB_BRANCH_ADDR1.sub(r"\1", ops)
-            ptr = to_unsigned_long(gdb.parse_and_eval(addr))
-            try:
-                if to_str:
-                    return "{:#x}".format(read_int_from_memory(ptr))
-                else:
-                    return read_int_from_memory(ptr)
-            except gdb.MemoryError:
-                if to_str:
-                    return "*{:#x}".format(ptr)
-                else:
-                    return None
 
-        # is there an evaluated immediate value?
-        #   loongarch64: bnez $t1, -8 (0x7ffff8) # 0x120000868
-        if " # 0x" in ops and is_loongarch64():
-            addr = ContextCommand.RE_SUB_BRANCH_ADDR2.sub(r"\1", ops)
-            ptr = to_unsigned_long(gdb.parse_and_eval(addr))
-            if to_str:
-                return "{:#x}".format(ptr)
-            else:
-                return ptr
+@register_command
+class ContextArgumentsCommand(GenericCommand):
+    """Context internal command to display arguments."""
 
-        # is there a memory reference by register?
-        #   x86/x64 (default): call ... PTR [rbx]
-        #   x86/x64 (capstone): call ... ptr [rbx]
-        #   x64 (capstone): call ... ptr [rip + 0x1111]
-        if is_x86():
-            if " PTR [" in ops or " ptr [" in ops:
-                addr = ContextCommand.RE_SUB_BRANCH_ADDR3.sub(r"\2", ops)
-                for gr in current_arch.gpr_registers:
-                    addr = addr.replace(gr.replace("$", ""), gr)
-                if is_x86_64():
-                    addr = addr.replace("$rip", "$rip+{:#x}".format(len(insn.opcodes)))
-                try:
-                    ptr = to_unsigned_long(gdb.parse_and_eval(addr))
-                except gdb.error:
-                    return None
-                try:
-                    if to_str:
-                        return "{:#x}".format(read_int_from_memory(ptr))
-                    else:
-                        return read_int_from_memory(ptr)
-                except gdb.MemoryError:
-                    if to_str:
-                        return "*{:#x}".format(ptr)
-                    else:
-                        return None
+    _cmdline_ = "context-args"
+    _category_ = "01-a. Debugging Support - Context"
 
-        # is there a segment relative?
-        #   x64 (default): call ... PTR fs:0x10
-        #   x64 (capstone): call ... ptr fs:[0x10]
-        if is_x86_64():
-            if " PTR fs:" in ops or " ptr fs:" in ops:
-                ofs = ContextCommand.RE_SUB_BRANCH_ADDR4.sub(r"\2", ops)
-                ofs = to_unsigned_long(gdb.parse_and_eval(ofs))
-                fs = current_arch.get_fs()
-                try:
-                    if to_str:
-                        return "{:#x}".format(read_int_from_memory(fs + ofs))
-                    else:
-                        return read_int_from_memory(fs + ofs)
-                except gdb.MemoryError:
-                    if to_str:
-                        return "*{:#x}".format(fs + ofs)
-                    else:
-                        return None
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
+    _syntax_ = parser.format_help()
 
-        # is there a segment relative?
-        #   x86 (default): call ... PTR gs:0x10
-        #   x86 (capstone): call ... ptr gs:[0x10]
-        if is_x86_32():
-            if " PTR gs:" in ops or " ptr gs:" in ops:
-                ofs = ContextCommand.RE_SUB_BRANCH_ADDR5.sub(r"\2", ops)
-                ofs = to_unsigned_long(gdb.parse_and_eval(ofs))
-                gs = current_arch.get_gs()
-                try:
-                    if to_str:
-                        return "{:#x}".format(read_int_from_memory(gs + ofs))
-                    else:
-                        return read_int_from_memory(gs + ofs)
-                except gdb.MemoryError:
-                    if to_str:
-                        return "*{:#x}".format(gs + ofs)
-                    else:
-                        return None
+    def __init__(self):
+        super().__init__()
+        self.add_setting("redirect", "", "The target tty name to redirect `context args` to")
+        self.add_setting("nb_guessed_arguments", 6, "Number to display when guessing functions arguments")
+        return
 
-        # is there a relative immediate?
-        #   microblaze:  brlid  r15, -136
-        #   microblaze:  bneid  r4, -8    // 3ffe9848
-        if is_microblaze():
-            addr = ContextCommand.RE_SUB_BRANCH_ADDR6.sub(r"\1", ops.split("//")[0].strip())
-            try:
-                addr = int(addr) + insn.address
-                if to_str:
-                    return "{:#x}".format(addr)
-                else:
-                    return addr
-            except Exception:
-                pass
-
-        # is there a absolute immediate value (with segment)?
-        #   x86_16:  ljmp   0xf000:0xe05b
-        if is_x86_16() and ":0x" in ops:
-            seg, val = [int(x, 16) for x in ops.split(":")]
-            if ops.startswith("0x"):
-                addr = current_arch.real2phys(seg, val)
-            else:
-                addr = val
-            if to_str:
-                return "{:#x}".format(addr)
-            else:
-                return addr
-
-        # is there a absolute immediate value?
-        #   s390x:   bra    0x3ffdfc60
-        #   s390x:   brasl  %r14, 0x1020b50
-        #   RISCV:   jal    ra, 0x13894
-        #   RISCV:   bgeu   t1, a2, 0x10350
-        if "0x" in ops:
-            addr = ContextCommand.RE_SUB_BRANCH_ADDR7.sub(r"\1", ops)
-            if to_str:
-                return "{:#x}".format(to_unsigned_long(gdb.parse_and_eval(addr)))
-            else:
-                return to_unsigned_long(gdb.parse_and_eval(addr))
-
-        # is there register(s)?
-        #   x86/x64: call   rax
-        #   s390x:   basr   %lr, %r1
-        #   sh4:     jsr    @r1
-        #   alpha:   jmp    (t0)
-        if insn.operands[-1].split():
-            maybe_reg = insn.operands[-1].split()[0]
-            if len(maybe_reg) <= 5 and maybe_reg[0] == "(" and maybe_reg[-1] == ")":
-                maybe_reg = maybe_reg[1:-1]
-            ptr = get_register(maybe_reg)
-            if ptr is not None:
-                if to_str:
-                    return "{:#x}".format(ptr)
-                else:
-                    return ptr
-
-        return None
-
-    @staticmethod
-    def get_got_value(addr):
+    def get_got_value(self, addr):
         # GOT cannot be detected in kernel mode
         if is_qemu_system() or is_vmware() or is_kgdb():
             return None
@@ -29087,15 +29380,14 @@ class ContextCommand(GenericCommand):
 
         return got_value
 
-    @staticmethod
-    def get_call_destination_function_block(insn):
+    def get_call_destination_function_block(self, insn):
         # call insn -> destination addr
-        addr = ContextCommand.get_branch_addr(insn)
+        addr = ContextCodeCommand.get_branch_addr(insn)
         if addr is None:
             return None
 
         # check if addr is PLT or not
-        ret = ContextCommand.get_got_value(addr)
+        ret = self.get_got_value(addr)
         if ret:
             # use got value
             addr = ret
@@ -29108,50 +29400,7 @@ class ContextCommand(GenericCommand):
             return None
         return block
 
-    def context_args(self):
-        if current_arch is None and is_remote_debug():
-            err("Missing info about architecture. Please set: `file /path/to/target_binary`")
-            return
-
-        # get insn
-        try:
-            insn = get_insn()
-        except gdb.MemoryError:
-            return
-        if insn is None:
-            return
-
-        # syscall case
-        if current_arch.is_syscall(insn):
-            self.context_title("arguments")
-            gdb.execute("syscall-args")
-            return
-
-        # non-call case
-        if not current_arch.is_call(insn):
-            return
-
-        # call case (from symbol)
-        block = ContextCommand.get_call_destination_function_block(insn)
-        if block:
-            # okay, it has symbols and not in blacklist
-            self.print_arguments_from_symbol(block)
-            return
-
-        # call case (guessing)
-        # no symbols, try extract target address
-        addr = ContextCommand.get_branch_addr(insn)
-        if addr is not None:
-            function_name = "{:#x}{:s}".format(
-                addr, Symbol.get_symbol_string(addr, nosymbol_string=" <NO_SYMBOL>"),
-            )
-        else:
-            # failed, use raw operands
-            function_name = " ".join(insn.operands)
-        self.print_guessed_arguments(function_name)
-        return
-
-    def print_arguments_from_symbol_x86(self, block):
+    def print_arguments_from_symbol_x86(self, block, redirect):
         suffix_words = ("_avx2", "_avx", "_avx512", "_sse", "_sse2", "_ssse3", "_sse4_1", "_sse42")
         inner_words = ("_avx2_", "_avx_", "_avx512_", "_sse2_")
 
@@ -29164,12 +29413,12 @@ class ContextCommand(GenericCommand):
 
         if match:
             function_name = "{:#x} <{:s}>".format(block.start, block.function.name)
-            self.print_guessed_arguments(function_name)
+            self.print_guessed_arguments(function_name, redirect)
             return True
 
         return False
 
-    def print_arguments_from_symbol(self, block):
+    def print_arguments_from_symbol(self, block, redirect):
         """If symbols were found, parse them and print the argument adequately."""
 
         # setup iterator
@@ -29185,9 +29434,9 @@ class ContextCommand(GenericCommand):
                 # Some string processing functions are implemented in assembly for speed.
                 # Since there is no type information for these arguments, the number of arguments is always 0.
                 # Here, if a function name matches the blacklist, type information is not used and
-                # print_guessed_arguments is forcibly called to display context.nb_guessed_arguments arguments.
+                # print_guessed_arguments is forcibly called to display context_args.nb_guessed_arguments arguments.
                 if is_x86():
-                    if self.print_arguments_from_symbol_x86(block):
+                    if self.print_arguments_from_symbol_x86(block, redirect):
                         return
         else:
             # old implementation.
@@ -29229,17 +29478,17 @@ class ContextCommand(GenericCommand):
             args.append("{:s} {:s} = {:s}".format(typ, name, value))
 
         # output
-        self.context_title(title)
-        gef_print("{:#x} <{:s}> (".format(block.start, block.function.name))
+        ContextCommand.context_title(title, redirect)
+        gef_print("{:#x} <{:s}> (".format(block.start, block.function.name), redirect=redirect)
         for a in args:
-            gef_print("   {:s},".format(a))
-        gef_print(")")
+            gef_print("   {:s},".format(a), redirect=redirect)
+        gef_print(")", redirect=redirect)
         return
 
-    def print_guessed_arguments(self, function_name):
+    def print_guessed_arguments(self, function_name, redirect):
         """When no symbol, print six arguments."""
         arg_key_color = Config.get_gef_setting("theme.registers_register_name")
-        nb_argument = Config.get_gef_setting("context.nb_guessed_arguments")
+        nb_argument = Config.get_gef_setting("context_args.nb_guessed_arguments")
 
         # get each values
         args = []
@@ -29252,11 +29501,82 @@ class ContextCommand(GenericCommand):
             args.append("{:s} = {:s}".format(Color.colorify(key, arg_key_color), value))
 
         # output
-        self.context_title("arguments (guessed)")
-        gef_print("{:s} (".format(function_name))
+        ContextCommand.context_title("arguments (guessed)", redirect)
+        gef_print("{:s} (".format(function_name), redirect=redirect)
         for a in args:
-            gef_print("   {:s},".format(a))
-        gef_print(")")
+            gef_print("   {:s},".format(a), redirect=redirect)
+        gef_print(")", redirect=redirect)
+        return
+
+    def context_args(self, redirect):
+        if current_arch is None and is_remote_debug():
+            err("Missing info about architecture. Please set: `file /path/to/target_binary`", redirect=redirect)
+            return
+
+        # get insn
+        try:
+            insn = get_insn()
+        except gdb.MemoryError:
+            return
+        if insn is None:
+            return
+
+        # syscall case
+        if current_arch.is_syscall(insn):
+            ContextCommand.context_title("arguments", redirect)
+            ContextCommand.execute_command("syscall-args", redirect)
+            return
+
+        # non-call case
+        if not current_arch.is_call(insn):
+            return
+
+        # call case (from symbol)
+        block = self.get_call_destination_function_block(insn)
+        if block:
+            # okay, it has symbols and not in blacklist
+            self.print_arguments_from_symbol(block, redirect)
+            return
+
+        # call case (guessing)
+        # no symbols, try extract target address
+        addr = ContextCodeCommand.get_branch_addr(insn)
+        if addr is not None:
+            function_name = "{:#x}{:s}".format(
+                addr, Symbol.get_symbol_string(addr, nosymbol_string=" <NO_SYMBOL>"),
+            )
+        else:
+            # failed, use raw operands
+            function_name = " ".join(insn.operands)
+        self.print_guessed_arguments(function_name, redirect)
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        redirect = ContextCommand.get_redirect("args", args.ignore_redirect)
+        try:
+            self.context_args(redirect)
+        except Exception as e:
+            err(str(e), redirect=redirect)
+        return
+
+
+@register_command
+class ContextSourceCommand(GenericCommand):
+    """Context internal command to display source."""
+
+    _cmdline_ = "context-source"
+    _category_ = "01-a. Debugging Support - Context"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
+    _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__()
+        self.add_setting("redirect", "", "The target tty name to redirect `context source` to")
+        self.add_setting("show_source_code_variable_values", True, "Show extra PC context info in the source code")
+        self.add_setting("nb_lines", 6, "Number of source code after $pc")
         return
 
     def get_source_breakpoints(self, file_base_name):
@@ -29276,62 +29596,6 @@ class ContextCommand(GenericCommand):
     def line_has_breakpoint(self, file_name, line_number, bp_locations):
         filename_line = "{}:{}".format(file_name, line_number)
         return any(filename_line in loc for loc in bp_locations)
-
-    def context_source(self):
-        try:
-            pc = current_arch.pc
-            symtabline = gdb.find_pc_line(pc)
-            symtab = symtabline.symtab
-            line_num = symtabline.line - 1 # we subtract one because line number returned by gdb start at 1
-            if not symtab.is_valid():
-                return
-            fpath = symtab.fullname()
-            with open(fpath, "r") as f:
-                lines = [x.rstrip() for x in f.readlines()]
-        except Exception:
-            return
-
-        file_base_name = os.path.basename(symtab.filename)
-        bp_locations = self.get_source_breakpoints(file_base_name)
-        past_lines_color = Config.get_gef_setting("theme.context_code_past")
-        future_lines_color = Config.get_gef_setting("theme.context_code_future")
-
-        nb_line = Config.get_gef_setting("context.nb_lines_code")
-        cur_line_color = Config.get_gef_setting("theme.source_current_line")
-        self.context_title("source: {}+{}".format(os.path.normpath(symtab.filename), line_num + 1))
-        show_extra_info = Config.get_gef_setting("context.show_source_code_variable_values")
-
-        for i in range(line_num - nb_line + 1, line_num + nb_line):
-            if i < 0:
-                continue
-
-            if len(lines) <= i:
-                break
-
-            if self.line_has_breakpoint(file_base_name, i + 1, bp_locations):
-                bp_prefix = Color.redify("*")
-            else:
-                bp_prefix = " "
-
-            if i < line_num:
-                past_line = "{:4d}   {:s}".format(i + 1, lines[i])
-                past_line = Color.colorify(past_line, past_lines_color)
-                gef_print("{:1s}{:2s}{:s}".format(bp_prefix, "", past_line))
-
-            elif i == line_num:
-                prefix = "{:1s}->{:4d}   ".format(bp_prefix, i + 1)
-                leading = len(lines[i]) - len(lines[i].lstrip())
-                if show_extra_info:
-                    extra_info = self.get_pc_context_info(pc, lines[i])
-                    for ext in extra_info:
-                        gef_print("{}// {}".format(" " * (len(prefix) + leading), ext))
-                gef_print(Color.colorify("{}{:s}".format(prefix, lines[i]), cur_line_color))
-
-            elif i > line_num:
-                future_line = "{:4d}   {:s}".format(i + 1, lines[i])
-                future_line = Color.colorify(future_line, future_lines_color)
-                gef_print("{:1s}{:2s}{:s}".format(bp_prefix, "", future_line))
-        return
 
     def get_pc_context_info(self, pc, line):
         try:
@@ -29373,11 +29637,136 @@ class ContextCommand(GenericCommand):
             current_block = current_block.superblock
         return m
 
-    def context_trace(self):
-        self.context_title("trace")
+    def context_source(self, redirect):
+        try:
+            pc = current_arch.pc
+            symtabline = gdb.find_pc_line(pc)
+            symtab = symtabline.symtab
+            line_num = symtabline.line - 1 # we subtract one because line number returned by gdb start at 1
+            if not symtab.is_valid():
+                return
+            fpath = symtab.fullname()
+            with open(fpath, "r") as f:
+                lines = [x.rstrip() for x in f.readlines()]
+        except Exception:
+            return
 
-        nb_backtrace = Config.get_gef_setting("context.nb_lines_backtrace")
-        if nb_backtrace <= 0:
+        ContextCommand.context_title(
+            "source: {}+{}".format(os.path.normpath(symtab.filename), line_num + 1), redirect,
+        )
+
+        nb_lines = Config.get_gef_setting("context_source.nb_lines")
+        past_lines_color = Config.get_gef_setting("theme.context_code_past")
+        cur_line_color = Config.get_gef_setting("theme.source_current_line")
+        future_lines_color = Config.get_gef_setting("theme.context_code_future")
+        show_extra_info = Config.get_gef_setting("context_source.show_source_code_variable_values")
+
+        file_base_name = os.path.basename(symtab.filename)
+        bp_locations = self.get_source_breakpoints(file_base_name)
+
+        for i in range(line_num - nb_lines + 1, line_num + nb_lines):
+            if i < 0:
+                continue
+
+            if len(lines) <= i:
+                break
+
+            if self.line_has_breakpoint(file_base_name, i + 1, bp_locations):
+                bp_prefix = Color.redify("*")
+            else:
+                bp_prefix = " "
+
+            if i < line_num:
+                past_line = "{:4d}   {:s}".format(i + 1, lines[i])
+                past_line = Color.colorify(past_line, past_lines_color)
+                gef_print("{:1s}{:2s}{:s}".format(bp_prefix, "", past_line), redirect=redirect)
+
+            elif i == line_num:
+                prefix = "{:1s}->{:4d}   ".format(bp_prefix, i + 1)
+                leading = len(lines[i]) - len(lines[i].lstrip())
+                if show_extra_info:
+                    extra_info = self.get_pc_context_info(pc, lines[i])
+                    for ext in extra_info:
+                        gef_print("{}// {}".format(" " * (len(prefix) + leading), ext), redirect=redirect)
+                gef_print(Color.colorify("{}{:s}".format(prefix, lines[i]), cur_line_color), redirect=redirect)
+
+            elif i > line_num:
+                future_line = "{:4d}   {:s}".format(i + 1, lines[i])
+                future_line = Color.colorify(future_line, future_lines_color)
+                gef_print("{:1s}{:2s}{:s}".format(bp_prefix, "", future_line), redirect=redirect)
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        redirect = ContextCommand.get_redirect("source", args.ignore_redirect)
+        try:
+            self.context_source(redirect)
+        except Exception as e:
+            err(str(e), redirect=redirect)
+        return
+
+
+@register_command
+class ContextMemoryWatchCommand(GenericCommand):
+    """Context internal command to display watching memory."""
+
+    _cmdline_ = "context-mem-watch"
+    _category_ = "01-a. Debugging Support - Context"
+    _aliases_ = ["context-mem_watch"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
+    _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__()
+        self.add_setting("redirect", "", "The target tty name to redirect `context mem_watch` to")
+        return
+
+    def context_memory_watch(self, redirect):
+        for address, opt in sorted(MemoryWatchCommand.mem_watches.items()):
+            count, fmt = opt[0:2]
+            ContextCommand.context_title("memory:{:#x}".format(address), redirect)
+            if fmt == "pointers":
+                cmd = "dereference {:#x} {:d} --no-pager".format(address, count)
+            else:
+                cmd = "hexdump {:s} {:#x} {:d} --no-pager".format(fmt, address, count)
+            ContextCommand.execute_command(cmd, redirect)
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        redirect = ContextCommand.get_redirect("mem_watch", args.ignore_redirect)
+        try:
+            self.context_memory_watch(redirect)
+        except Exception as e:
+            err(str(e), redirect=redirect)
+        return
+
+
+@register_command
+class ContextTraceCommand(GenericCommand):
+    """Context internal command to display backtrace."""
+
+    _cmdline_ = "context-trace"
+    _category_ = "01-a. Debugging Support - Context"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
+    _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__()
+        self.add_setting("redirect", "", "The target tty name to redirect `context trace` to")
+        self.add_setting("nb_lines", 10, "Number of line in the backtrace pane")
+        self.add_setting("nb_lines_before", 2, "Number of line in the backtrace pane before selected frame")
+        return
+
+    def context_trace(self, redirect):
+        ContextCommand.context_title("trace", redirect)
+
+        nb_lines = Config.get_gef_setting("context_trace.nb_lines")
+        if nb_lines <= 0:
             return
 
         try:
@@ -29385,7 +29774,7 @@ class ContextCommand(GenericCommand):
             current_frame = gdb.newest_frame()
         except gdb.error:
             # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
-            err("Failed to get frame information")
+            err("Failed to get frame information", redirect=redirect)
             return
 
         frames = [current_frame]
@@ -29393,11 +29782,11 @@ class ContextCommand(GenericCommand):
             current_frame = current_frame.older()
             frames.append(current_frame)
 
-        nb_backtrace_before = Config.get_gef_setting("context.nb_lines_backtrace_before")
-        level = max(len(frames) - nb_backtrace_before - 1, 0)
+        nb_lines_before = Config.get_gef_setting("context_trace.nb_lines_before")
+        level = max(len(frames) - nb_lines_before - 1, 0)
         current_frame = frames[level]
 
-        while current_frame and nb_backtrace:
+        while current_frame and nb_lines:
             current_frame.select()
             if not current_frame.is_valid():
                 break
@@ -29454,11 +29843,11 @@ class ContextCommand(GenericCommand):
                 frame_name = Color.colorify(frame_name, "bold yellow")
                 gef_print("[{:s}{:s}] {!s}{:s} (frame name: {:s})".format(
                     current_frame_symbol, idx, ProcessMap.lookup_address(pc), sym, frame_name,
-                ))
+                ), redirect=redirect)
             else:
                 gef_print("[{:s}{:s}] {!s}{:s}".format(
                     current_frame_symbol, idx, ProcessMap.lookup_address(pc), sym,
-                ))
+                ), redirect=redirect)
 
             # go next frame
             try:
@@ -29466,62 +29855,91 @@ class ContextCommand(GenericCommand):
             except gdb.error:
                 break
             level += 1
-            nb_backtrace -= 1
+            nb_lines -= 1
 
-        if nb_backtrace == 0:
+        if nb_lines == 0:
             if current_frame:
-                gef_print("[...]")
+                gef_print("[...]", redirect=redirect)
 
         orig_frame.select()
         return
 
-    def context_threads(self):
-        def reason():
-            try:
-                res = gdb.execute("info program", to_string=True).splitlines()
-            except gdb.error:
-                return "STOPPED"
+    @parse_args
+    def do_invoke(self, args):
+        redirect = ContextCommand.get_redirect("trace", args.ignore_redirect)
+        try:
+            self.context_trace(redirect)
+        except Exception as e:
+            err(str(e), redirect=redirect)
+        return
 
-            if not res:
-                return "NOT RUNNING"
 
-            for line in res:
-                line = line.strip()
-                if line.startswith("It stopped with signal "):
-                    return line.replace("It stopped with signal ", "").split(",", 1)[0]
-                if line == "The program being debugged is not being run.":
-                    return "NOT RUNNING"
-                if line == "It stopped at a breakpoint that has since been deleted.":
-                    return "TEMPORARY BREAKPOINT"
-                if line.startswith("It stopped at breakpoint "):
-                    return "BREAKPOINT"
-                if line == "It stopped after being stepped.":
-                    return "SINGLE STEP"
+@register_command
+class ContextThreadsCommand(GenericCommand):
+    """Context internal command to display threads."""
 
+    _cmdline_ = "context-threads"
+    _category_ = "01-a. Debugging Support - Context"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
+    _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__()
+        self.add_setting("redirect", "", "The target tty name to redirect `context threads` to")
+        self.add_setting("nb_lines", -1, "Number of line in the threads pane")
+        return
+
+    def reason(self):
+        try:
+            res = gdb.execute("info program", to_string=True).splitlines()
+        except gdb.error:
             return "STOPPED"
 
+        if not res:
+            return "NOT RUNNING"
+
+        for line in res:
+            line = line.strip()
+            if line.startswith("It stopped with signal "):
+                return line.replace("It stopped with signal ", "").split(",", 1)[0]
+            if line == "The program being debugged is not being run.":
+                return "NOT RUNNING"
+            if line == "It stopped at a breakpoint that has since been deleted.":
+                return "TEMPORARY BREAKPOINT"
+            if line.startswith("It stopped at breakpoint "):
+                return "BREAKPOINT"
+            if line == "It stopped after being stepped.":
+                return "SINGLE STEP"
+
+        return "STOPPED"
+
+    def context_threads(self, redirect):
         if is_kgdb():
             return
 
-        nb_lines_threads = Config.get_gef_setting("context.nb_lines_threads")
+        nb_lines = Config.get_gef_setting("context_threads.nb_lines")
         threads = gdb.selected_inferior().threads()[::-1]
 
-        if nb_lines_threads < 0:
+        if nb_lines < 0:
             shown_threads = len(threads)
         else:
-            shown_threads = nb_lines_threads
+            shown_threads = nb_lines
         if shown_threads != len(threads):
-            self.context_title("threads (shown:{:d} / all:{:d})".format(shown_threads, len(threads)))
+            ContextCommand.context_title(
+                "threads (shown:{:d} / all:{:d})".format(shown_threads, len(threads)), redirect,
+            )
         else:
-            self.context_title("threads")
+            ContextCommand.context_title("threads", redirect)
 
-        if nb_lines_threads > 0:
-            threads = threads[:nb_lines_threads]
-        elif nb_lines_threads == 0:
+        if nb_lines > 0:
+            threads = threads[:nb_lines]
+        elif nb_lines == 0:
             return
 
         if not threads:
-            err("No thread selected")
+            err("No thread selected", redirect)
             return
 
         selected_thread = gdb.selected_thread()
@@ -29535,9 +29953,13 @@ class ContextCommand(GenericCommand):
         for thread in threads:
             tid = str(thread.ptid[1]) or str(thread.ptid[2]) or "???"
             if thread == selected_thread:
-                line = "[*{:s}] ".format(Color.colorify("Thread Id:{:d}, tid:{:s}".format(thread.num, tid), "bold green"))
+                line = "[*{:s}] ".format(
+                    Color.colorify("Thread Id:{:d}, tid:{:s}".format(thread.num, tid), "bold green"),
+                )
             else:
-                line = "[ {:s}] ".format(Color.colorify("Thread Id:{:d}, tid:{:s}".format(thread.num, tid), "bold magenta"))
+                line = "[ {:s}] ".format(
+                    Color.colorify("Thread Id:{:d}, tid:{:s}".format(thread.num, tid), "bold magenta"),
+                )
 
             if thread.name:
                 line += 'Name: "{:s}", '.format(thread.name)
@@ -29552,7 +29974,7 @@ class ContextCommand(GenericCommand):
                     thread.switch()
                 except Exception:
                     line += " - Failed to switch to this thread"
-                    gef_print(line)
+                    gef_print(line, redirect=redirect)
                     continue
                 try:
                     frame = gdb.selected_frame()
@@ -29563,11 +29985,11 @@ class ContextCommand(GenericCommand):
                     pc = get_register("$pc")
                 sym = Symbol.get_symbol_string(pc, nosymbol_string=" <NO_SYMBOL>")
                 line += " at {!s}{:s}".format(ProcessMap.lookup_address(pc), sym)
-                line += ", reason: {:s}".format(Color.colorify(reason(), "bold magenta"))
+                line += ", reason: {:s}".format(Color.colorify(self.reason(), "bold magenta"))
             lines.append([thread.num, line])
 
         for _, line in sorted(lines):
-            gef_print(line)
+            gef_print(line, redirect=redirect)
 
         selected_thread.switch()
         if selected_frame is not None:
@@ -29578,144 +30000,77 @@ class ContextCommand(GenericCommand):
                 pass
         return
 
-    def context_additional_information(self):
-        if not ContextCommand.context_messages and not ContextCommand.context_extra_commands:
-            return
-
-        self.context_title("extra")
-
-        for level, text in ContextCommand.context_messages:
-            if level == "error":
-                err(text)
-            elif level == "warn":
-                warn(text)
-            elif level == "success":
-                ok(text)
-            else:
-                info(text)
-
-        for command in ContextCommand.context_extra_commands:
-            gef_print(titlify(command))
-            gdb.execute(command)
-        return
-
-    def context_memory(self):
-        for address, opt in sorted(MemoryWatchCommand.mem_watches.items()):
-            count, fmt = opt[0:2]
-            self.context_title("memory:{:#x}".format(address))
-            if fmt == "pointers":
-                gdb.execute("dereference {:#x} {:d} --no-pager".format(address, count))
-            else:
-                gdb.execute("hexdump {:s} {:#x} {:d} --no-pager".format(fmt, address, count))
-        return
-
-    @classmethod
-    def update_registers(cls, _event):
+    @parse_args
+    def do_invoke(self, args):
+        redirect = ContextCommand.get_redirect("threads", args.ignore_redirect)
         try:
-            for reg in current_arch.all_registers:
-                try:
-                    cls.old_registers[reg] = get_register(reg)
-                except Exception:
-                    cls.old_registers[reg] = 0
-            return
-        except Exception:
-            return
-
-    def empty_extra_messages(self, _event):
-        ContextCommand.context_messages = []
+            self.context_threads(redirect)
+        except Exception as e:
+            err(str(e), redirect=redirect)
         return
 
-    def i386_auto_switch(self):
-        if not Config.get_gef_setting("context.enable_auto_switch_for_i8086"):
+
+@register_command
+class ContextExtraCommand(GenericCommand):
+    """Context internal command to display extra information or execute command."""
+
+    _cmdline_ = "context-extra"
+    _category_ = "01-a. Debugging Support - Context"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
+    _syntax_ = parser.format_help()
+
+    context_messages = []
+    context_extra_commands = []
+
+    def __init__(self):
+        super().__init__()
+        self.add_setting("redirect", "", "The target tty name to redirect `context extra` to")
+        return
+
+    @staticmethod
+    def push_context_message(level, message):
+        """Push the message to be displayed the next time the context is invoked."""
+        if level not in ("error", "warn", "ok", "info"):
+            err("Invalid level '{}', discarding message".format(level))
+            return
+        ContextExtraCommand.context_messages.append((level, message))
+        return
+
+    @staticmethod
+    def empty_extra_messages(_event):
+        ContextExtraCommand.context_messages = []
+        return
+
+    def context_extra(self, redirect):
+        if not self.context_messages and not self.context_extra_commands:
             return
 
-        # check whether protected mode or not.
-        # even if `CR0.PE=1`, it will not switch until `ljmp`.
-        # so it is better to judge whether `$cs=0x8` or not.
-        # https://wiki.osdev.org/Protected_Mode
-        cs = get_register("$cs")
-        if cs is None or cs == 8:
-            set_arch("x86")
-        else:
-            set_arch("i8086")
+        ContextCommand.context_title("extra", redirect)
+
+        for level, text in self.context_messages:
+            if level == "error":
+                err(text, redirect=redirect)
+            elif level == "warn":
+                warn(text, redirect=redirect)
+            elif level == "success":
+                ok(text, redirect=redirect)
+            else:
+                info(text, redirect=redirect)
+
+        for command in self.context_extra_commands:
+            gef_print(titlify(command), redirect)
+            ContextCommand.execute_command(command, redirect)
         return
 
     @parse_args
     def do_invoke(self, args):
-        # check on/off
-        if "off" in args.commands:
-            ContextCommand.hide_context()
-            return
-        if "on" in args.commands:
-            ContextCommand.unhide_context()
-            return
-
-        # check running or not
-        if not is_alive():
-            warn("No debugging session active")
-            return
-
-        if gdb.selected_thread().is_running():
-            # If the thread is running, do nothing (just to be safe)
-            return
-
-        # check config
-        if ContextCommand.is_hide():
-            return
-
-        # check redirect
-        if not args.ignore_redirect:
-            pty = Config.get_gef_setting("context.redirect")
-            if pty:
-                res = gdb.execute("context --ignore-redirect", to_string=True)
-                gef_print(res.rstrip(), redirect=pty)
-                return
-
-        # check layout
-        if len(args.commands) > 0:
-            current_layout = args.commands
-        else:
-            current_layout = Config.get_gef_setting("context.layout").strip().split()
-        if not current_layout:
-            return
-
-        # i386 auto switch
-        if is_qemu_system() and get_arch() == "i8086":
-            self.i386_auto_switch()
-
-        # clear screen
-        if Config.get_gef_setting("context.clear_screen") and len(args.commands) == 0:
-            # this is more faster than executing "shell clear -x"
-            print("\x1b[H\x1b[2J", end="")
-
-        # get terminal size
-        self.tty_rows, self.tty_columns = GefUtil.get_terminal_size()
-
-        # do each layout
-        for section in current_layout:
-            # If a process is terminated while the context command is executing,
-            # the output will be distorted, so it is a good idea to check.
-            if not is_alive():
-                break
-
-            # target layout is disabled
-            if section[0] == "-":
-                continue
-
-            try:
-                self.layout_mapping[section]()
-                ## debug code for profiling of context command
-                #from cProfile import Profile
-                #import pstats
-                #pr = Profile()
-                #pr.runcall(self.layout_mapping[section])
-                #stats = pstats.Stats(pr)
-                #stats.sort_stats("tottime")
-                #stats.print_stats(10)
-            except gdb.MemoryError as e:
-                # a MemoryError will happen when $pc is corrupted (invalid address)
-                err(str(e))
-        self.context_title("")
+        redirect = ContextCommand.get_redirect("extra", args.ignore_redirect)
+        try:
+            self.context_extra(redirect)
+        except Exception as e:
+            err(str(e), redirect=redirect)
         return
 
 
@@ -31720,10 +32075,10 @@ class SmartCppFunctionNameCommand(GenericCommand):
 
 
 @register_command
-class ContextExtraCommand(GenericCommand):
-    """The base command to add, remove, list or clear user specified command to context-extra."""
+class ExtraCommand(GenericCommand):
+    """The base command to add, remove, list or clear user specified command to `context extra`."""
 
-    _cmdline_ = "context-extra"
+    _cmdline_ = "extra"
     _category_ = "01-f. Debugging Support - Context Extension"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -31749,10 +32104,10 @@ class ContextExtraCommand(GenericCommand):
 
 
 @register_command
-class ContextExtraAddCommand(ContextExtraCommand):
+class ExtraAddCommand(ExtraCommand):
     """Add user specified command to execute when each step."""
 
-    _cmdline_ = "context-extra add"
+    _cmdline_ = "extra add"
     _category_ = "01-f. Debugging Support - Context Extension"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -31765,15 +32120,15 @@ class ContextExtraAddCommand(ContextExtraCommand):
 
     @parse_args
     def do_invoke(self, args):
-        ContextCommand.context_extra_commands.append(" ".join(args.cmd))
+        ContextExtraCommand.context_extra_commands.append(" ".join(args.cmd))
         return
 
 
 @register_command
-class ContextExtraListCommand(ContextExtraCommand):
+class ExtraListCommand(ExtraCommand):
     """List user specified command to execute when each step."""
 
-    _cmdline_ = "context-extra list"
+    _cmdline_ = "extra list"
     _category_ = "01-f. Debugging Support - Context Extension"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -31785,19 +32140,19 @@ class ContextExtraListCommand(ContextExtraCommand):
 
     @parse_args
     def do_invoke(self, args):
-        if not ContextCommand.context_extra_commands:
+        if not ContextExtraCommand.context_extra_commands:
             warn("Nothing to display")
             return
-        for i, command in enumerate(ContextCommand.context_extra_commands):
+        for i, command in enumerate(ContextExtraCommand.context_extra_commands):
             gef_print("[{:3d}] {:s}".format(i, command))
         return
 
 
 @register_command
-class ContextExtraRemoveCommand(ContextExtraCommand):
+class ExtraRemoveCommand(ExtraCommand):
     """Remove user specified command to execute when each step."""
 
-    _cmdline_ = "context-extra remove"
+    _cmdline_ = "extra remove"
     _category_ = "01-f. Debugging Support - Context Extension"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -31811,18 +32166,18 @@ class ContextExtraRemoveCommand(ContextExtraCommand):
 
     @parse_args
     def do_invoke(self, args):
-        if args.index < len(ContextCommand.context_extra_commands):
-            ContextCommand.context_extra_commands.pop(args.index)
+        if args.index < len(ContextExtraCommand.context_extra_commands):
+            ContextExtraCommand.context_extra_commands.pop(args.index)
         else:
             err("Out of index")
         return
 
 
 @register_command
-class ContextExtraClearCommand(ContextExtraCommand):
+class ExtraClearCommand(ExtraCommand):
     """Clear all user specified commands to execute when each step."""
 
-    _cmdline_ = "context-extra clear"
+    _cmdline_ = "extra clear"
     _category_ = "01-f. Debugging Support - Context Extension"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -31834,7 +32189,7 @@ class ContextExtraClearCommand(ContextExtraCommand):
 
     @parse_args
     def do_invoke(self, args):
-        ContextCommand.context_extra_commands = []
+        ContextExtraCommand.context_extra_commands = []
         return
 
 
@@ -31891,8 +32246,8 @@ class CommentAddCommand(CommentCommand):
 
     @parse_args
     def do_invoke(self, args):
-        comms = ContextCommand.context_comments.get(args.location, [])
-        ContextCommand.context_comments[args.location] = comms + [args.comment]
+        comms = ContextCodeCommand.context_comments.get(args.location, [])
+        ContextCodeCommand.context_comments[args.location] = comms + [args.comment]
         return
 
 
@@ -31912,10 +32267,10 @@ class CommentLsCommand(CommentCommand):
 
     @parse_args
     def do_invoke(self, args):
-        if not ContextCommand.context_comments:
+        if not ContextCodeCommand.context_comments:
             warn("Nothing to display")
             return
-        for loc, comms in sorted(ContextCommand.context_comments.items()):
+        for loc, comms in sorted(ContextCodeCommand.context_comments.items()):
             for i, comm in enumerate(comms):
                 gef_print("{:#x}: [{:3d}] {:s}".format(loc, i, comm))
         return
@@ -31941,18 +32296,18 @@ class CommentRemoveCommand(CommentCommand):
 
     @parse_args
     def do_invoke(self, args):
-        if args.location not in ContextCommand.context_comments:
+        if args.location not in ContextCodeCommand.context_comments:
             err("Invalid location")
             return
         if args.index is None:
-            del ContextCommand.context_comments[args.location]
+            del ContextCodeCommand.context_comments[args.location]
         else:
-            if args.index >= len(ContextCommand.context_comments[args.location]):
+            if args.index >= len(ContextCodeCommand.context_comments[args.location]):
                 err("Out of index")
                 return
-            ContextCommand.context_comments[args.location].pop(args.index)
-            if len(ContextCommand.context_comments[args.location]) == 0:
-                del ContextCommand.context_comments[args.location]
+            ContextCodeCommand.context_comments[args.location].pop(args.index)
+            if len(ContextCodeCommand.context_comments[args.location]) == 0:
+                del ContextCodeCommand.context_comments[args.location]
         return
 
 
@@ -31972,7 +32327,7 @@ class CommentClearCommand(CommentCommand):
 
     @parse_args
     def do_invoke(self, args):
-        ContextCommand.context_comments = {}
+        ContextCodeCommand.context_comments = {}
         return
 
 
@@ -35354,7 +35709,7 @@ class FormatStringBreakpoint(gdb.Breakpoint):
             msg.append("Reason: '{:s}()' with format-string arg #{:d} is in writable page {:s} ({:s})".format(
                 self.func_name, self.num_args, str(addr), name,
             ))
-            ContextCommand.push_context_message("warn", "\n".join(msg))
+            ContextExtraCommand.push_context_message("warn", "\n".join(msg))
             return True
         return False
 
@@ -35588,7 +35943,7 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
         msg.append(Color.colorify("Heap-Analysis", "bold yellow"))
         msg.append("Heap inconsistency detected:")
         msg.append("Attempting to allocate used address: {!s}".format(allocated))
-        ContextCommand.push_context_message("warn", "\n".join(msg))
+        ContextExtraCommand.push_context_message("warn", "\n".join(msg))
         return True
 
     def update_list(self, allocated):
@@ -35754,7 +36109,7 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
         msg.append("{!s} is freed but it is already in the freed list".format(
             to_free,
         ))
-        ContextCommand.push_context_message("warn", "\n".join(msg))
+        ContextExtraCommand.push_context_message("warn", "\n".join(msg))
         return True
 
     def check_inconsistency(self, new_loc):
@@ -35769,7 +36124,7 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
         msg.append(Color.colorify("Heap-Analysis", "bold yellow"))
         msg.append("Heap inconsistency detected:")
         msg.append("Attempting to allocate used address: {!s}".format(new_loc))
-        ContextCommand.push_context_message("warn", "\n".join(msg))
+        ContextExtraCommand.push_context_message("warn", "\n".join(msg))
         return True
 
     def update_list(self, new_loc):
@@ -35890,7 +36245,7 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
         msg.append("{!s} is freed but it is already in the freed list".format(
             to_free,
         ))
-        ContextCommand.push_context_message("warn", "\n".join(msg))
+        ContextExtraCommand.push_context_message("warn", "\n".join(msg))
         return True
 
     def check_inconsistency(self, to_free):
@@ -35902,7 +36257,7 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
         msg.append(Color.colorify("Heap-Analysis", "bold yellow"))
         msg.append("Heap inconsistency detected:")
         msg.append("Attempting to free an unknown value: {!s}".format(to_free))
-        ContextCommand.push_context_message("warn", "\n".join(msg))
+        ContextExtraCommand.push_context_message("warn", "\n".join(msg))
         return True
 
     def update_list(self, to_free):
@@ -81976,8 +82331,8 @@ class WSecureMemAddrCommand(GenericCommand):
         # By default, "context code" uses Disasm.gdb_disassemble.
         # However, due to gdb's cache, secure memory changes may not appear in disassembly.
         # Therefore, if capstone is available, change it to disassemble by capstone.
-        if Config.get_gef_setting("context.use_capstone") is False:
-            Config.set_gef_setting("context.use_capstone", True)
+        if Config.get_gef_setting("context_code.use_capstone") is False:
+            Config.set_gef_setting("context_code.use_capstone", True)
         return ret
 
     @parse_args
@@ -96956,31 +97311,100 @@ class GefTmuxSetupCommand(GenericCommand):
     _aliases_ = ["tmux-setup"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-r", "--reset", action="store_true", help="reset all panes.")
     _syntax_ = parser.format_help()
+
+    @staticmethod
+    def get_redirect_configs():
+        configs = [
+            "context.redirect",
+            "context_args.redirect",
+            "context_code.redirect",
+            "context_extra.redirect",
+            "context_legend.redirect",
+            "context_mem_access.redirect",
+            "context_mem_watch.redirect",
+            "context_regs.redirect",
+            "context_source.redirect",
+            "context_stack.redirect",
+            "context_threads.redirect",
+            "context_trace.redirect",
+        ]
+        return configs
+
+    @staticmethod
+    def get_tty_gef_used():
+        tty_gef_used = [Config.get_gef_setting(c) for c in GefTmuxSetupCommand.get_redirect_configs()]
+        tty_gef_used = [x for x in tty_gef_used if x] # filter ""
+        return set(tty_gef_used)
+
+    @staticmethod
+    def reset_panes():
+        # list panes
+        tmux = GefUtil.which("tmux")
+        res = subprocess.check_output([
+            tmux, "list-panes", "-F#{pane_active}:#{pane_id}:#{pane_tty}"
+        ]).decode("utf-8").strip()
+
+        # kill panes
+        tty_gef_used = GefTmuxSetupCommand.get_tty_gef_used()
+        for line in res.splitlines():
+            pane_active, pane_id, pane_tty = line.split(":")
+            if pane_active == "1":
+                continue
+            if pane_tty not in tty_gef_used:
+                continue
+            subprocess.run([tmux, "kill-pane", "-t", pane_id])
+
+        # reset config
+        for config in GefTmuxSetupCommand.get_redirect_configs():
+            gdb.execute('gef config {:s} ""'.format(config))
+
+        # remove destructor
+        import atexit
+        atexit.unregister(GefTmuxSetupCommand.reset_panes)
+        return
 
     def tmux_setup(self):
         """Prepare the tmux environment by vertically splitting and redirect context output."""
-        ok("tmux session found, splitting window...")
-
+        # reset previous settings
         tmux = GefUtil.which("tmux")
-        pane, pty = subprocess.check_output([
-            tmux, "splitw", "-h",
-            '-F#{session_name}:#{window_index}.#{pane_index}-#{pane_tty}', "-P",
-        ]).decode().strip().split("-")
+        if self.get_tty_gef_used():
+            warn("Since it is already split, discard previous screen")
+            GefTmuxSetupCommand.reset_panes()
 
+        # split
+        ok("tmux session found, splitting window...")
+        pane_id, pane_tty = subprocess.check_output([
+            tmux, "splitw", "-h", "-F#{pane_id}:#{pane_tty}", "-P",
+        ]).decode("utf-8").strip().split(":")
+
+        # add destructor
         import atexit
-        atexit.register(lambda : subprocess.run([tmux, "kill-pane", "-t", pane]))
+        atexit.register(GefTmuxSetupCommand.reset_panes)
 
         # clear the screen and let it wait for input forever
-        gdb.execute(f"!'{tmux}' send-keys -t {pane} 'clear ; cat' C-m")
+        gdb.execute(f"!'{tmux}' send-keys -t {pane_id} 'clear ; cat' C-m")
         gdb.execute(f"!'{tmux}' select-pane -L")
 
-        ok(f"Setting `context.redirect` to '{pty}'...")
-        gdb.execute(f"gef config context.redirect {pty}")
+        ok(f"Setting `context.redirect` to '{pane_tty}'...")
+        gdb.execute(f"gef config context.redirect {pane_tty}")
+
+        Cache.reset_gef_caches(all=True)
         return
 
     @parse_args
     def do_invoke(self, args):
+        try:
+            GefUtil.which("tmux")
+        except FileNotFoundError as e:
+            err("{}".format(e))
+            return
+
+        if args.reset:
+            GefTmuxSetupCommand.reset_panes()
+            return
+
         if os.getenv("TMUX"):
             self.tmux_setup()
             return
@@ -97196,19 +97620,17 @@ class GefUtil:
         pass
 
     @staticmethod
-    def get_terminal_size():
+    def get_terminal_size(redirect=""):
         """Return the current terminal size."""
-        if os.getenv("TMUX"):
-            pty = Config.get_gef_setting("context.redirect")
-            if pty:
-                res = subprocess.check_output([
-                    GefUtil.which("tmux"), "list-panes",
-                    '-F #{pane_tty} #{pane_height} #{pane_width}',
-                ]).decode()
-                for line in res.strip().splitlines():
-                    tty, height, width = line.split()
-                    if tty == pty:
-                        return int(height), int(width)
+        if redirect and os.getenv("TMUX"):
+            res = subprocess.check_output([
+                GefUtil.which("tmux"), "list-panes", "-F#{pane_tty}:#{pane_height}:#{pane_width}",
+            ]).decode("utf-8").strip()
+
+            for line in res.splitlines():
+                tty, height, width = line.split(":")
+                if tty == redirect:
+                    return int(height), int(width)
 
         TIOCGWINSZ = 0x5413
         try:

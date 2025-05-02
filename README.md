@@ -507,6 +507,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - The cache structure within GEF has changed significantly. This command corresponds to them.
 - `tmux-setup`: is integerated into `gef` as subcommand.
     - `screen` is no longer supported.
+    - If you want to customize it, you can refer to [dev/tmux/tmux_setup.py](dev/tmux/tmux_setup.py).
 
 ### Added features
 - `pid`/`tid`: prints pid and tid.
@@ -619,7 +620,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
 - `ii`: is a shortcut for `x/50i $pc` with opcode bytes.
     - It prints the value if it is memory access operation.
     - ![](images/ii.png)
-- `context-extra`: manages user specified command to execute when each step.
+- `extra`: manages user specified command to execute when each step.
 - `comment`: manages user specified temporary comment.
 - `seccomp`: invokes `seccomp-tools`.
 - `onegadget`: invokes `one_gadget`.
