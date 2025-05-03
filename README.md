@@ -507,7 +507,8 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - The cache structure within GEF has changed significantly. This command corresponds to them.
 - `tmux-setup`: is integerated into `gef` as subcommand.
     - `screen` is no longer supported.
-    - If you want to customize it, you can refer to [dev/tmux/tmux_setup.py](dev/tmux/tmux_setup.py).
+    - `tmux` settings are predefined and cannot be customized.
+    - If you want to customize it, edit [dev/tmux/tmux_setup.py](dev/tmux/tmux_setup.py) and run `source /path/to/tmux_setup.py`.
 
 ### Added features
 - `pid`/`tid`: prints pid and tid.
