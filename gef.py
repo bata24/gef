@@ -59899,7 +59899,7 @@ class KernelNamespacesCommand(GenericCommand):
 
 @register_command
 class KernelLoadCommand(GenericCommand):
-    """Load vmlinux without loaded address."""
+    """Load the vmlinux without a load address."""
 
     _cmdline_ = "kload"
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
@@ -60613,7 +60613,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class KernelModuleLoadCommand(GenericCommand):
-    """Load kernel module without loaded address."""
+    """Load the kernel module without a load address."""
 
     _cmdline_ = "kmod-load"
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
@@ -63422,7 +63422,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class KernelSysctlCommand(GenericCommand, BufferingOutput):
-    """Dump sysctl parameters."""
+    """Dump the sysctl parameters."""
 
     _cmdline_ = "ksysctl"
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
@@ -64357,7 +64357,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class KernelClockSourceCommand(GenericCommand, BufferingOutput):
-    """Dump clock sources."""
+    """Dump the clocksource list."""
 
     _cmdline_ = "kclock-source"
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
@@ -64463,7 +64463,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class KernelTimerCommand(GenericCommand, BufferingOutput):
-    """Dump timer."""
+    """Dump the timer."""
 
     _cmdline_ = "ktimer"
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
@@ -64887,7 +64887,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
-    """Dump PCI devices."""
+    """Dump the PCI devices."""
 
     _cmdline_ = "kpcidev"
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
@@ -65348,7 +65348,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class KernelConfigCommand(GenericCommand, BufferingOutput):
-    """Dump kernel config if available."""
+    """Dump the kernel config if available."""
 
     _cmdline_ = "kconfig"
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
@@ -65536,7 +65536,7 @@ class KernelSearchCodePtrCommand(GenericCommand):
 
 @register_command
 class KernelDmesgCommand(GenericCommand, BufferingOutput):
-    """Dump the ring buffer of dmesg area."""
+    """Dump the ring buffer of the dmesg area."""
 
     _cmdline_ = "kdmesg"
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
@@ -72978,7 +72978,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class SlabContainsCommand(GenericCommand):
-    """Resolve the slab cache (kmem_cache) an object belongs to."""
+    """Resolve the slab cache (kmem_cache) that an object belongs to."""
 
     _cmdline_ = "slab-contains"
     _category_ = "08-e. Qemu-system Cooperation - Linux Allocator"
@@ -73153,7 +73153,7 @@ class SlabContainsCommand(GenericCommand):
 
 @register_command
 class BuddyDumpCommand(GenericCommand, BufferingOutput):
-    """Dump zone of page allocator (buddy allocator) free-list."""
+    """Dump the zone of the page allocator (buddy allocator) free-list."""
 
     _cmdline_ = "buddy-dump"
     _category_ = "08-e. Qemu-system Cooperation - Linux Allocator"
@@ -74157,7 +74157,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class KernelBpfCommand(GenericCommand, BufferingOutput):
-    """Dump bpf information."""
+    """Dump the BPF information."""
 
     _cmdline_ = "kbpf"
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"

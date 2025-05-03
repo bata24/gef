@@ -2,61 +2,64 @@
 ![](images/context.png)
 
 ## Table of Contents
-- [What is this?](#what-is-this)
+- [What Is This?](#what-is-this)
 - [Setup](#setup)
-    - [Supported environment](#supported-environment)
+    - [Supported Environment](#supported-environment)
     - [Install](#install)
     - [Upgrade](#upgrade)
     - [Uninstall](#uninstall)
-    - [Dependency](#dependency)
-- [Added / improved features](#added--improved-features)
-    - [Supported mode](#supported-mode)
-    - [Qemu-system cooperation](#qemu-system-cooperation)
-    - [Qemu-user cooperation](#qemu-user-cooperation)
-    - [Heap dump features](#heap-dump-features)
-    - [Improved features](#improved-features)
-    - [Added features](#added-features)
+    - [Dependencies](#dependencies)
+- [Added / Improved Features](#added--improved-features)
+    - [Supported Modes](#supported-modes)
+    - [Qemu-system Cooperation](#qemu-system-cooperation)
+    - [Qemu-user Cooperation](#qemu-user-cooperation)
+    - [Heap Dump Features](#heap-dump-features)
+    - [Improved Features](#improved-features)
+    - [Added Features](#added-features)
     - [Other](#other)
 - [FAQ](#faq)
 
-## What is this?
-This is a fork of [GEF](https://github.com/hugsy/gef) with 3 major improvements.
+## What Is This?
+This is a fork of [GEF](https://github.com/hugsy/gef) that includes three major improvements:
+1. Adds heuristic commands for kernel debugging __without requiring a symbolized `vmlinux`__ (for `qemu-system`, supports Linux kernel 3.x-6.14.x).
+2. Expands support to [many architectures](docs/QEMU-USER-SUPPORTED-ARCH.md) (for `qemu-user`).
+3. Provides heap dump commands for multiple memory allocators.
 
-1. Added many heuristic commands for kernel debugging __WITHOUT a symbolized vmlinux__ (for qemu-system; Linux kernel 3.x ~ 6.14.x).
-2. Added support for [many architectures](docs/QEMU-USER-SUPPORTED-ARCH.md) (for qemu-user).
-3. Added some heap dump commands for various allocators.
-
-Many other commands have been added and improved. Enjoy!
+Numerous other commands have been added and enhanced. Enjoy!
 
 ## Setup
 
-### Supported environment
-- Tested on Ubuntu 24.04.
-- It may work on Ubuntu 22.04 - 23.10.
-- It might work on Ubuntu 20.04 - 21.10, but it is not recommended.
+### Supported Environment
+- Verified on Ubuntu 24.04.
+- Expected to work on Ubuntu 22.04-23.10.
+- Might work on Ubuntu 20.04-21.10, though not recommended.
 
-### Install
-- Run the following commands as root user.
+### Installation
+- Run the following commands as `root`.
     ```bash
-    # Ubuntu 23.04 or later restrict global installation of python packages with pip3.
-    # So you need --break-system-packages option.
-    wget -q https://raw.githubusercontent.com/bata24/gef/dev/install.sh -O- | sed -e 's/pip3 install/pip3 install --break-system-packages/g' | sh
+    # Ubuntu 23.04 or later restrict global Python package installation via pip3.
+    # Use the --break-system-packages option.
+    wget -q https://raw.githubusercontent.com/bata24/gef/dev/install.sh -O- \
+    | sed -e 's/pip3 install/pip3 install --break-system-packages/g' | sh
 
-    # Ubuntu 22.10 or before
+    # For Ubuntu 22.10 and earlier
     wget -q https://raw.githubusercontent.com/bata24/gef/dev/install.sh -O- | sh
     ```
 - Note
-    - To simplify the installation script, GEF (`gef.py`) is installed to a fixed path (`/root/.gdbinit-gef.py`).
-    - Also, it registers the GEF path to `/root/.gdbinit`.
-    - If you want to change the location or user, please modify both of them yourself.
-    - See [docs/FAQ.md](docs/FAQ.md) for more information and other install options.
-        - There is a way to install it using `venv`.
-        - There is a minimum installation that reduces installation as much as possible.
+    - To simplify installation, `gef.py` is always installed to `/root/.gdbinit-gef.py`.
+    - This path is also registered in `/root/.gdbinit`.
+    - If you want to use a different user or location, move or edit both files manually.
+    - For more installation option, see [docs/FAQ.md](docs/FAQ.md).
+        - Options include using `venv`.
+        - A minimum installation script is also available.
 
 ### Upgrade
 ```bash
 python3 /root/.gdbinit-gef.py --upgrade
 ```
+
+- Note
+    - If you get errors after upgrading, it may be due to old config. Try renaming `/root/.gef.rc`.
 
 ### Uninstall
 ```bash
@@ -64,30 +67,29 @@ rm -f /root/.gdbinit-gef.py /root/.gef.rc
 sed -i -e '/source \/root\/.gdbinit-gef.py/d' /root/.gdbinit
 ```
 
-### Dependency
-See [install.sh](install.sh) or
-[install-minimal.sh](install-minimal.sh).
+### Dependencies
+Please refer to [install.sh](install.sh) or [install-minimal.sh](install-minimal.sh) for installation requirements.
 
-## Added / improved features
+## Added / Improved Features
 
-### Supported mode
-- Normal debugging
-- Attach to the process
-- Attach to the process in another namespace (e.g., attaching from outside of `docker`)
-- Connect to `gdbserver`
-- Connect to the gdb stub of `qemu-system`
-- Connect to the gdb stub of `qemu-user`
-- Connect to the gdb stub of `Intel Pin`
-- Connect to the gdb stub of `Intel SDE`
-- Connect to the gdb stub of `qiling framework`
-- Connect to the gdb stub of `KGDB` (need gdb 12~)
-- Connect to the gdb stub of `VMWare`
-- Connect to the gdb stub of `wine`
-- Record and replay debugging (`rr replay`)
+### Supported Modes
+- Standard debugging
+- Attaching to a running process
+- Attaching to a process in an isolated namespace (e.g., from outside a Docker container)
+- Connecting to `gdbserver`
+- Connecting to the GDB stub of `qemu-system`
+- Connecting to the GDB stub of `qemu-user`
+- Connecting to the GDB stub of `Intel Pin`
+- Connecting to the GDB stub of `Intel SDE`
+- Connecting to the GDB stub of `qiling framework`
+- Connecting to the GDB stub of `KGDB` (requires GDB version 12 or later)
+- Connecting to the GDB stub of `VMWare`
+- Connecting to the GDB stub of `wine`
+- Debugging with Record and replay using `rr replay`
 
-See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
+For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md).
 
-### Qemu-system cooperation
+### Qemu-system Cooperation
 - `pagewalk`: scans physical memory, parses page tables, and displays memory maps.
     - x64 (Supported: 4-Level/5-Level Paging)
         - ![](images/pagewalk-x64.png)
@@ -109,7 +111,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
         - ![](images/pagewalk-arm-secure.png)
 - `pagewalk-with-hints`: prints pagetables with description.
     - ![](images/pagewalk-with-hints.png)
-- `v2p`/`p2v`: displays transformation virtual address <-> physical address.
+- `v2p`/`p2v`: displays the transformation between virtual addresses and physical addresses.
     - ![](images/v2p-p2v.png)
 - `xp`: is a shortcut for physical memory dump.
     - ![](images/xp.png)
@@ -153,34 +155,34 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
 - `slub-tiny-dump`: dumps slub-tiny free-list.
     - Supported on x64/x86/ARM64/ARM + `SLUB-TINY` + no-symbol + kASLR.
     - ![](images/slub-tiny-dump.png)
-- `slab-contains`: resolves which `kmem_cache` certain address (object) belongs to (for `SLUB`/`SLUB-TINY`/`SLAB`).
+- `slab-contains`: resolves the slab cache (`kmem_cache`) that a certain address (object) belongs to (for `SLUB`/`SLUB-TINY`/`SLAB`).
     - ![](images/slab-contains.png)
     - For `SLUB`/`SLUB-TINY`, if all chunks belonging to a certain `page` are in use, they will not be displayed by `slub-dump`/`slub-tiny-dump` command.
     - Even with such an address (object), this command may be able to resolve `kmem_cache`.
-- `buddy-dump`: dumps zone of page allocator (buddy allocator) free-list.
+- `buddy-dump`: dumps the zone of the page allocator (buddy allocator) free-list.
     - ![](images/buddy-dump.png)
 - `vmalloc-dump`: dumps `vmalloc` used-list and freed-list.
     - ![](images/vmalloc-dump.png)
-- `page`: displays transformation `struct page` <-> virtual/physical address.
+- `page`: displays the transformation between a `struct page` and its virtual/physical address.
     - ![](images/page.png)
     - There are shortcuts: `virt2page`, `page2virt`, `phys2page` and `page2phys`.
 - `kchecksec`: checks kernel security.
     - ![](images/kchecksec.png)
-- `kmagic`: displays useful addresses in kernel.
+- `kmagic`: displays useful addresses in the kernel.
     - ![](images/kmagic.png)
-- `kconfig`: dumps kernel config if available.
+- `kconfig`: dumps the kernel config if available.
     - ![](images/kconfig.png)
-- `syscall-table-view`: displays system call table.
+- `syscall-table-view`: displays the system call table.
     - ![](images/syscall-table-view.png)
-    - It also dumps ia32/x32 syscall table under x64.
-    - It also dumps compat syscall table under ARM64.
-- `ksysctl`: dumps sysctl parameters.
+    - It also dumps the ia32/x32 syscall table under x64.
+    - It also dumps the compat syscall table under ARM64.
+- `ksysctl`: dumps the sysctl parameters.
     - ![](images/ksysctl.png)
-- `ktask`: displays each task address.
+- `ktask`: displays each task's address.
     - ![](images/ktask.png)
     - It also displays the memory map of the userland process.
     - ![](images/ktask-maps.png)
-    - It also displays the register values saved on kstack of the userland process.
+    - It also displays the register values saved on the kstack of the userland process.
     - ![](images/ktask-regs.png)
     - It also displays the file descriptors of the userland process.
     - ![](images/ktask-fd.png)
@@ -190,14 +192,14 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - ![](images/ktask-namespaces.png)
     - It also displays the seccomp-filter.
     - ![](images/ktask-seccomp.png)
-- `kmod`: displays each module address.
+- `kmod`: displays each module's address.
     - ![](images/kmod.png)
     - It also displays the symbols of each module.
     - ![](images/kmod-syms.png)
-- `kload`: loads `vmlinux` without loaded address.
-    - It is useful if you have a `vmlinux` with debuginfo at hand.
-- `kmod-load`: loads the kernel module without loaded address.
-    - It is useful if you have a kernel module with debuginfo at hand.
+- `kload`: loads `vmlinux` without a load address.
+    - It is useful if you have a `vmlinux` with `debuginfo` at hand.
+- `kmod-load`: loads the kernel module without a load address.
+    - It is useful if you have a kernel module with `debuginfo` at hand.
 - `kops`: displays each operation's member.
     - ![](images/kops.png)
 - `kcdev`: displays information for each character device.
@@ -208,17 +210,17 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - ![](images/kbdev.png)
 - `kfilesystems`: dumps supported file systems.
     - ![](images/kfilesystems.png)
-- `kclock-source`: dumps clocksource list.
+- `kclock-source`: dumps the clocksource list.
     - ![](images/kclock-source.png)
-- `kdmesg`: dumps the ring buffer of dmesg area.
+- `kdmesg`: dumps the ring buffer of the dmesg area.
     - ![](images/kdmesg.png)
 - `kpipe`: displays information for each pipe.
     - ![](images/kpipe.png)
-- `kbpf`: dumps bpf information.
+- `kbpf`: dumps the BPF information.
     - ![](images/kbpf.png)
-- `ktimer`: dumps timer.
+- `ktimer`: dumps the timer.
     - ![](images/ktimer.png)
-- `kpcidev`: dumps PCI devices.
+- `kpcidev`: dumps the PCI devices.
     - ![](images/kpcidev.png)
 - `kipcs`: dumps IPCs information (System V semaphore, message queue and shared memory).
     - ![](images/kipcs.png)
@@ -263,20 +265,20 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - ![](images/uefi-ovmf-info.png)
 - `qemu-device-info`: dumps device information for qemu-escape (WIP).
 
-### Qemu-user cooperation
+### Qemu-user Cooperation
 - `si`/`ni`: are wrappers for native `si`/`ni` if OpenRISC 1000 or CRIS.
     - On OpenRISC 1000 architecture, branch operations don't work well, so GEF uses breakpoints to simulate.
     - On CRIS architecture, `stepi`/`nexti` commands don't work well, so GEF uses breakpoints to simulate.
     - If you want to use native `si`/`ni`, use the full form `stepi`/`nexti`.
-- `c`: is the wrapper for native `c` if gdb is connected to qemu-user or Intel Pin.
-    - When connecting to gdb stub of qemu-user or Intel Pin, gdb does not trap `SIGINT` during `continue`.
-    - If you want to trap, you need to issue `SIGTRAP` on the qemu-user or pin side, but switching screens is troublesome.
-    - This command realizes a pseudo `SIGTRAP` trap by trapping `SIGINT` on the python side and throwing `SIGTRAP` back to qemu-user or Intel Pin.
-    - It works only for local qemu-user or Intel Pin.
+- `c`: is the wrapper for native `c` if gdb is connected to `qemu-user` or `Intel Pin`.
+    - When connecting to gdb stub of `qemu-user` or `Intel Pin`, gdb does not trap `SIGINT` during `continue`.
+    - If you want to trap, you need to issue `SIGTRAP` on the `qemu-user` or `pin` side, but switching screens is annoying.
+    - This command realizes a pseudo `SIGTRAP` trap by trapping `SIGINT` on the python side and throwing `SIGTRAP` back to `qemu-user` or `Intel Pin`.
+    - It works only for local `qemu-user` or `Intel Pin`.
     - If you want to use native `c`, use the full form `continue`.
 
-### Heap dump features
-- Glibc heap commands are improved.
+### Heap Dump Features
+- Glibc heap commands has been improved.
     - It changes the color and prints a symbol if it exists.
         - ![](images/heap-bins.png)
     - They print bins information if the chunk is in free-list.
@@ -317,7 +319,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
             - Fix interpreter by `patchelf --set-interpreter /PATH/TO/x86_64-buildroot-linux-uclibc/sysroot/lib/ld64-uClibc.so.0 a.out`.
     - `uclibc-ng-visual-heap`: is colorized heap viewer for uClibc-ng.
         - ![](images/uclibc-ng-visual-heap.png)
-- `partition-alloc-dump`: dumps partition-alloc free-list for chromium.
+- `partition-alloc-dump`: dumps Partition-Alloc free-list for chromium.
     - ![](images/partition-alloc-dump.png)
     - This command is reserved for the implementation of the latest version of Chromium.
         - Currently tested: v137.x / [1447487](https://commondatastorage.googleapis.com/chromium-browser-snapshots/index.html?prefix=Linux_x64/1447487/) / 44f30b00006a373aab5998b26730f9c35b3846e0
@@ -325,17 +327,17 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - It will try heuristic search if the binary has no symbol.
     - How to test:
         - See [dev/partition-alloc-dump/downloader.py](dev/partition-alloc-dump/downloader.py).
-- `tcmalloc-dump`: dumps tcmalloc (`gperftools-2.9.1` or named `libgoogle-perftools{4,-dev}`) free-list (only x64).
+- `tcmalloc-dump`: dumps TCMalloc (`gperftools-2.9.1` or named `libgoogle-perftools{4,-dev}`) free-list (only x64).
     - ![](images/tcmalloc-dump.png)
     - How to test:
         - Execute as `LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc.so ./a.out`.
-- `musl-heap-dump`: dumps musl-libc v1.2.5 heap chunks (only x64/x86).
+- `musl-heap-dump`: dumps Musl-Libc v1.2.5 heap chunks (only x64/x86).
     - ![](images/musl-heap-dump.png)
     - How to test:
         - Get and extract the latest source from https://musl.libc.org/
         - Build with `./configure && make install`.
         - Build as `/usr/local/musl/bin/musl-gcc test.c`.
-- `go-heap-dump`: dumps go language v1.22.2 mheap (only x64).
+- `go-heap-dump`: dumps Go Language v1.22.2 mheap (only x64).
     - ![](images/go-heap-dump.png)
 - `tlsf-heap-dump`: dumps TLSF (Two-Level Segregated Fit) v2.4.6 free-list (only x64).
     - ![](images/tlsf-heap-dump.png)
@@ -365,23 +367,23 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
 - `optee-bget-dump`: dumps bget allocator of OPTEE-Trusted-App.
     - ![](images/optee-bget-dump.png)
 
-### Improved features
-- `vmmap`: is improved.
-    - It displays the memory map information even when connecting to gdb stub of qemu-user.
+### Improved Features
+- `vmmap`
+    - It displays the memory map information even when connecting to gdb stub of `qemu-user`.
         - ![](images/vmmap-qemu-user.png)
-    - Intel Pin is supported.
+    - It also supports `Intel Pin`.
         - ![](images/vmmap-pin.png)
-    - Intel SDE is supported.
+    - It also supports `Intel SDE`.
         - ![](images/vmmap-sde.png)
-    - It is redirected to `pagewalk` when connecting to gdb stub of qemu-system.
+    - It is redirected to `pagewalk` when connecting to gdb stub of `qemu-system`.
     - It supports detection and coloring of `Writable`, `ReadOnly`, `None` and `RWX` regions.
     - It shows the area each register points to.
-- `registers`: is improved.
+- `registers`
     - It also shows raw values of the flag register, the current ring, the exception level, the secure state, etc.
         - ![](images/registers-x64.png)
         - ![](images/registers-arm64.png)
         - ![](images/registers-arm.png)
-- `context`: is improved.
+- `context`
     - It supports automatic display of system call arguments when calling a system call.
         - ![](images/context-syscall-args.png)
     - It supports new modes:
@@ -393,7 +395,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
         - ex: `std::map<int, std::map<int, int>>` will be replaced by `std::map<...>`.
         - ![](images/smart-cpp-function-name.png)
         - command: `gef config context.smart_cpp_function_name true` or `smart-cpp-function-name` (later is used to toggle).
-- `telescope`: is improved.
+- `telescope`
     - It displays ordinal numbers as well as offsets.
     - It displays if there are canaries and return addresses in the target area.
         - ![](images/telescope.png)
@@ -411,19 +413,19 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
         - `--list-head`
         - `--slab-contains`
         - `--slab-contains-unaligned`
-- `proc-info`: is improved.
+- `proc-info`
     - It displays some additional information.
         - ![](images/proc-info.png)
-- `elf-info`: is improved.
+- `elf-info`
     - It displays Program Header and Section Header.
     - It supports parsing from memory.
     - It supports parsing remote binary (if download feature is available).
         - ![](images/elf-info.png)
-- `xinfo`: is improved.
+- `xinfo`
     - It shows more information.
     - It also supports kernel debugging.
         - ![](images/xinfo.png)
-- `checksec`: is improved.
+- `checksec`
     - It shows additional information.
         - Static or Dynamic or Static-PIE
         - Stripped or not
@@ -435,7 +437,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
         - System-ASLR, GDB ASLR setting
     - It supports parsing remote binary (if download feature is available).
     - ![](images/checksec.png)
-- `got`: is improved.
+- `got`
     - It displays not only GOT address but also PLT address.
         - ![](images/got.png)
     - It scans `.plt.sec` section if Intel CET is enabled.
@@ -443,28 +445,28 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
         - ![](images/got-libc.png)
     - It can also display `type`, `offset`, `reloc_arg`, `section` and `permission`.
         - ![](images/got-v.png)
-- `canary`: is improved.
+- `canary`
     - It displays all canary positions in memory.
         - ![](images/canary.png)
-- `edit-flags`: is improved.
+- `edit-flags`
     - It displays the meaning of each bit if `-v` option is provided.
         - ![](images/edit-flags-x64.png)
         - ![](images/edit-flags-arm.png)
         - ![](images/edit-flags-arm64.png)
-- `unicorn-emulate`: is improved.
+- `unicorn-emulate`
     - It reads and writes correctly to the address pointed to by `$fs`/`$gs`.
     - It supports a new mode to stop after executing N instructions (`-g`).
     - It shows changed memories.
         - ![](images/unicorn-emulate.png)
     - It supports replacing the GOT of string functions using avx2 or NEON, which unicorn does not support, with slower original functions.
-- `ropper`: is improved.
+- `ropper`
     - It does not reset autocomplete settings after calling imported `ropper`.
-- `hexdump`: is improved.
+- `hexdump`
     - It supports physical memory if under qemu-system.
     - It will retry with adjusting read size if reading memory fails.
     - By default, the same line is omitted.
     - ![](images/hexdump.png)
-- `patch`: is improved.
+- `patch`
     - It supports physical memory if under qemu-system.
     - Added some new modes:
         - `patch hex`
@@ -477,9 +479,9 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
         - `patch history`
         - `patch revert`
         - `patch range-replace`
-    - `nop` command has been integrated into `patch` as subcommand.
+    - `nop` command has been integrated into `patch` as sub-command.
     - ![](images/patch.png)
-- `search-pattern`: is improved.
+- `search-pattern`
     - It is supported under qemu-system (in short, it works without `/proc/self/maps`)
     - It supports some new options:
         - `--hex`
@@ -492,30 +494,32 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
         - `--phys`
     - It also searches for UTF-16 string if target string is ASCII.
     - ![](images/search-pattern.png)
-- `mprotect`: is improved.
+- `mprotect`
     - Rewritten to use `call-syscall`.
-- `hijack-fd`: is improved.
+- `hijack-fd`
     - It supports more architectures.
     - ![](images/hijack-fd.png)
-- `format-string-helper` is improved.
-    - It supports more printf-like functions.
-- `theme` is improved.
+- `format-string-helper`
+    - It supports more `printf`-like functions.
+- `theme`
     - Supports many colors.
     - ![](images/theme.png)
     - ![](images/theme-colors-sample.png)
-- `reset-cache` is improved and integrated into `gef` as subcommand.
+- `reset-cache`
+    - It has been integrated into `gef` as sub-command.
     - The cache structure within GEF has changed significantly. This command corresponds to them.
-- `tmux-setup`: is integerated into `gef` as subcommand.
+- `tmux-setup`
+    - It has been integrated into `gef` as sub-command.
     - `screen` is no longer supported.
     - `tmux` settings are predefined and cannot be customized.
     - If you want to customize it, edit [dev/tmux/tmux_setup.py](dev/tmux/tmux_setup.py) and run `source /path/to/tmux_setup.py`.
 
-### Added features
+### Added Features
 - `pid`/`tid`: prints pid and tid.
 - `filename`: prints filename.
 - `fds`: shows opened file descriptors.
 - `auxv`: pretty prints ELF auxiliary vector.
-    - Supported also under qemu-user.
+    - Supported also under `qemu-user`.
     - ![](images/auxv.png)
 - `argv`/`envp`: pretty prints argv and envp.
     - ![](images/argv-envp.png)
@@ -543,7 +547,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
 - `command-break`: sets a breakpoint which executes user defined command if hit.
     - ![](images/command-break.png)
 - `main-break`: sets a breakpoint at `main` with or without symbols, then continue.
-    - This is useful when you just want to run to `main` using qemu-user or pin, or debugging no-symbol ELF.
+    - This is useful when you just want to run to `main` using `qemu-user` or `pin`, or debugging no-symbol ELF.
 - `load-break`: breaks if something is loaded.
 - `regdump-break`: sets a breakpoint which dumps specified registers if hit.
 - `multi-break`: sets multiple breakpoints easily.
@@ -753,7 +757,7 @@ See [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md) for detail.
     - ![](images/gef-help.png)
 - Combined into one file (from `gef-extra`). The following are moved from `gef-extra`s.
     - `current-stack-frame`, `xref-telescope`, `bytearray`, and `bincompare`.
-    - This is because a single file is more attractive than ease of maintenance.
+    - This is because a single file is more attractive for me than ease of maintenance.
 - The system-call table used by `syscall-args` is moved from `gef-extras`.
     - It was updated up to Linux kernel 6.14 for each architecture.
 - Removed some features that I don't use.
