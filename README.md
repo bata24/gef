@@ -721,7 +721,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/gef-version.png)
 - `gef status`: shows architecture information used in GEF.
     - ![](images/gef-status.png)
-- `gef reset-bp`: shows and resets all breakpoints.
+- `gef reset-breakpoint`: shows and resets all breakpoints.
 - `gef arch-list`: displays defined architecture information.
     - ![](images/gef-arch-list.png)
 - `gef pyobj-list`: displays defined global python objects.

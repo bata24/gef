@@ -95899,7 +95899,7 @@ class GefCommand(GenericCommand):
     subparsers.add_parser("save")
     subparsers.add_parser("restore")
     subparsers.add_parser("reload")
-    subparsers.add_parser("reset-bp")
+    subparsers.add_parser("reset-breakpoint")
     subparsers.add_parser("reset-cache")
     subparsers.add_parser("arch-list")
     subparsers.add_parser("raise-exception")
@@ -96477,9 +96477,9 @@ class GefResetCacheCommand(GenericCommand):
 class GefResetBreakpointsCommand(GenericCommand):
     """Show and reset all breakpoints (include internal breakpoints)."""
 
-    _cmdline_ = "gef reset-bp"
+    _cmdline_ = "gef reset-breakpoint"
     _category_ = "99. GEF Maintenance Command"
-    _aliases_ = ["reset-bp"]
+    _aliases_ = ["reset-breakpoint"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-c", "--commit", action="store_true", help="actually perform delete.")
