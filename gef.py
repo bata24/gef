@@ -6106,39 +6106,40 @@ class Architecture:
             key = "[sp + {:#x}]".format(i * sz)
             return key, val
 
-    __aliased_registers = None
-
-    # {"$zero":"$zero/$x0", ...}
     def get_aliased_registers(self):
-        if self.__aliased_registers is not None:
-            return self.__aliased_registers
-        self.__aliased_registers = {}
+        # use cache
+        if hasattr(self, "aliased_registers"):
+            return self.aliased_registers
+
+        # {"$zero":"$zero/$x0", ...}
+        self.aliased_registers = {}
         for reg in self.all_registers:
             if self.alias_registers and reg in self.alias_registers:
                 reg_str = "{:s}/{:s}".format(reg, self.alias_registers[reg])
             else:
                 reg_str = reg
-            self.__aliased_registers[reg] = reg_str
-        return self.__aliased_registers
+            self.aliased_registers[reg] = reg_str
+        return self.aliased_registers
 
-    __aliased_registers_max_len = None
-
-    # max(len("$zero/$x0"), ...)
     def get_aliased_registers_name_max(self):
-        if self.__aliased_registers_max_len is not None:
-            return self.__aliased_registers_max_len
-        maxlen = max([len(v) for v in self.get_aliased_registers().values() if v != self.flag_register])
-        self.__aliased_registers_max_len = maxlen
-        return self.__aliased_registers_max_len
+        # use cache
+        if hasattr(self, "aliased_registers_max_len"):
+            return self.aliased_registers_max_len
 
-    __registers_max_len = None
+        # max(len("$zero/$x0"), ...)
+        maxlen = max([len(v) for v in self.get_aliased_registers().values() if v != self.flag_register])
+        self.aliased_registers_max_len = maxlen
+        return self.aliased_registers_max_len
 
     def get_registers_name_max(self):
-        if self.__registers_max_len is not None:
-            return self.__registers_max_len
+        # use cache
+        if hasattr(self, "registers_max_len"):
+            return self.registers_max_len
+
+        # max(len("$x0"), ...)
         maxlen = max([len(v) for v in self.all_registers if v != self.flag_register])
-        self.__registers_max_len = maxlen
-        return self.__registers_max_len
+        self.registers_max_len = maxlen
+        return self.registers_max_len
 
     @staticmethod
     def flags_to_human(reg_value, value_table):
@@ -6860,10 +6861,10 @@ class X86(Architecture):
         "I386:INTEL",
     ]
 
-    gpr_registers = ["$eax", "$ebx", "$ecx", "$edx", "$esp", "$ebp", "$esi", "$edi", "$eip", "$eflags"]
+    general_registers = ["$eax", "$ebx", "$ecx", "$edx", "$esp", "$ebp", "$esi", "$edi", "$eip", "$eflags"]
     special_registers = ["$cs", "$ss", "$ds", "$es", "$fs", "$gs"]
     flag_register = "$eflags"
-    all_registers = gpr_registers + special_registers
+    all_registers = general_registers + special_registers
     alias_registers = {}
     flags_table = {
         21: "ident",
@@ -7128,11 +7129,11 @@ class X86_64(X86):
         "I386:X86-64:INTEL",
     ]
 
-    gpr_registers = [
+    general_registers = [
         "$rax", "$rbx", "$rcx", "$rdx", "$rsp", "$rbp", "$rsi", "$rdi", "$rip",
         "$r8", "$r9", "$r10", "$r11", "$r12", "$r13", "$r14", "$r15", "$eflags",
     ]
-    all_registers = gpr_registers + X86.special_registers
+    all_registers = general_registers + X86.special_registers
     alias_registers = {}
 
     return_register = "$rax"
@@ -20157,8 +20158,8 @@ class AngrCommand(GenericCommand):
         content += "    except:\n"
         content += "        pass\n" # e.g., ARM32 cpsr
         content += "\n"
-        if hasattr(current_arch, "gpr_registers"):
-            target_registers = current_arch.gpr_registers
+        if hasattr(current_arch, "general_registers"):
+            target_registers = current_arch.general_registers
         else:
             target_registers = current_arch.all_registers
         for reg in target_registers:
@@ -28828,7 +28829,7 @@ class ContextCodeCommand(GenericCommand):
         if is_x86():
             if " PTR [" in ops or " ptr [" in ops:
                 addr = ContextCodeCommand.RE_SUB_BRANCH_ADDR3.sub(r"\2", ops)
-                for gr in current_arch.gpr_registers:
+                for gr in current_arch.general_registers:
                     addr = addr.replace(gr.replace("$", ""), gr)
                 if is_x86_64():
                     addr = addr.replace("$rip", "$rip+{:#x}".format(len(insn.opcodes)))
@@ -50692,7 +50693,7 @@ class OneGadgetCommand(GenericCommand):
         exp = exp.replace("(s64)", "(signed long long)")
 
         # fix register name
-        for regname in current_arch.gpr_registers:
+        for regname in current_arch.general_registers:
             exp = exp.replace(regname[1:], "((unsigned long)" + regname + ")")
 
         # enclose both sides in parentheses
@@ -90710,7 +90711,7 @@ class ExecUntilCommand(GenericCommand):
             if current_arch.is_call(insn) or self.check_jump_taken(insn):
                 if "[" in str(insn):
                     return True
-                for reg in current_arch.gpr_registers:
+                for reg in current_arch.general_registers:
                     if reg.replace("$", "") in str(insn):
                         return True
             return False
@@ -91173,8 +91174,8 @@ class ExecUntilCondCommand(ExecUntilCommand):
         if match:
             value = match.groups()[0]
             replace_cond = []
-            if hasattr(current_arch, "gpr_registers"):
-                regs = current_arch.gpr_registers
+            if hasattr(current_arch, "general_registers"):
+                regs = current_arch.general_registers
             else:
                 regs = current_arch.all_registers
                 if hasattr(current_arch, "flag_register"):
@@ -91422,7 +91423,7 @@ class ThunkBreakpoint(gdb.Breakpoint):
 
         # print preferred register condition
         pattern = [0] + [(x + 1) * y for x, y in itertools.product(range(0x100), [1, -1])] # [0, 1, -1, 2, -2, ...]
-        for reg in current_arch.gpr_registers:
+        for reg in current_arch.general_registers:
             reg_value = get_register(reg)
             for i in pattern:
                 slide = current_arch.ptrsize * i
@@ -91460,7 +91461,7 @@ class ThunkTracerCommand(GenericCommand):
         info("Wait for memory scan")
         maps = Kernel.get_maps() # [vaddr, size, perm]
         info("Resolving thunk function addresses")
-        for reg in current_arch.gpr_registers:
+        for reg in current_arch.general_registers:
             if reg in ["$esp", "$rsp", "$eip", "$rip"]:
                 continue
             sym = "__x86_indirect_thunk_{}".format(reg.replace("$", ""))
