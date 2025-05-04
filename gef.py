@@ -6863,6 +6863,7 @@ class X86(Architecture):
 
     general_registers = ["$eax", "$ebx", "$ecx", "$edx", "$esp", "$ebp", "$esi", "$edi", "$eip", "$eflags"]
     special_registers = ["$cs", "$ss", "$ds", "$es", "$fs", "$gs"]
+    virtual_registers = ["$fs_base", "$gs_base"]
     flag_register = "$eflags"
     all_registers = general_registers + special_registers
     alias_registers = {}
@@ -22372,6 +22373,7 @@ class RegistersCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("registers", metavar="REGISTERS", nargs="*",
+                        type=lambda x: x if x.startswith("$") else "$" + x,
                         help="An array of registers. (default: current_arch.all_registers)")
     parser.add_argument("-s", "--simple", action="store_true", help="skip dereference.")
     _syntax_ = parser.format_help()
@@ -22382,12 +22384,19 @@ class RegistersCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
+    def get_all_registers(self):
+        if is_x86():
+            all_registers = current_arch.all_registers + current_arch.virtual_registers
+        else:
+            all_registers = current_arch.all_registers
+        return all_registers
+
     def check_unavailable_regs(self):
         if hasattr(self, "regs_to_check_unavailable"):
             return
 
         self.regs_to_check_unavailable = []
-        for regname in current_arch.all_registers:
+        for regname in self.get_all_registers():
             reg = gdb.parse_and_eval(regname)
             if reg.type.code == gdb.TYPE_CODE_VOID:
                 continue
@@ -22395,10 +22404,19 @@ class RegistersCommand(GenericCommand):
                 self.regs_to_check_unavailable.append(regname)
         return
 
-    def dump_seg_reg_x86_16(self):
+    def get_regname_color(self, regname, regvalue):
         unchanged_color = Config.get_gef_setting("theme.registers_register_name")
         changed_color = Config.get_gef_setting("theme.registers_value_changed")
 
+        old_value = ContextRegistersCommand.old_registers.get(regname, 0)
+
+        if regvalue == old_value:
+            color = unchanged_color
+        else:
+            color = changed_color
+        return color
+
+    def dump_seg_reg_x86_16(self):
         lines = []
         for regname, (seg, reg) in current_arch.seg_extended_registers.items():
             segval = get_register(seg) & 0xffff
@@ -22406,11 +22424,7 @@ class RegistersCommand(GenericCommand):
             value = current_arch.real2phys(segval, regval)
 
             # colorling
-            old_value = ContextRegistersCommand.old_registers.get(regname, 0)
-            if value == old_value:
-                color = unchanged_color
-            else:
-                color = changed_color
+            color = self.get_regname_color(regname, value)
 
             # reg name
             line = "{}:".format(Color.colorify(regname, color))
@@ -22423,54 +22437,58 @@ class RegistersCommand(GenericCommand):
             lines.append(line)
         return lines
 
-    def dump_regs(self, regs):
-        unchanged_color = Config.get_gef_setting("theme.registers_register_name")
-        changed_color = Config.get_gef_setting("theme.registers_value_changed")
-
+    def dump_regs(self, target_regs):
+        aliased_registers = current_arch.get_aliased_registers()
         widest = current_arch.get_aliased_registers_name_max()
-        lines = []
         special_line = ""
         flag_line = ""
-        for regname in regs:
-            reg = gdb.parse_and_eval(regname)
+
+        lines = []
+        for regname in target_regs:
+            try:
+                reg = gdb.parse_and_eval(regname)
+            except gdb.error:
+                # invalid register
+                continue
+
             if reg.type.code == gdb.TYPE_CODE_VOID:
                 continue
 
             # str(reg) is slow, so skip if unneeded
             if regname in self.regs_to_check_unavailable:
-                # https://arvid.io/2016/08/21/test-if-a-variable-is-unavailable-in-gdb/
-                # It seems unnecessary because Mac OS is not supported,
-                # but when executing aarch64 under qiling framework, cpsr/fpsr/fpcr is unavailable.
+                # for qiling framework, fs_base/gs_base (x86), cpsr/fpsr/fpcr (Aarch64) are unavailable
                 if str(reg) == "<unavailable>":
-                    padreg = current_arch.get_aliased_registers()[regname].ljust(widest, " ")
-                    line = "{}: ".format(Color.colorify(padreg, unchanged_color))
-                    line += Color.colorify("<unavailable>", "yellow underline")
+                    padreg = aliased_registers.get(regname, regname).ljust(widest, " ")
+                    line = "{:s}: {:s}".format(
+                        Color.colorify(padreg, Config.get_gef_setting("theme.registers_register_name")),
+                        Color.colorify("<unavailable>", "yellow underline"),
+                    )
                     lines.append(line)
                     continue
 
+            # value
+            try:
+                if hasattr(reg, "bytes"):
+                    reg_len = len(reg.bytes)
+                else:
+                    reg_len = current_arch.ptrsize
+            except gdb.error:
+                # In the qilling framework, it may fail just by doing hasattr (e.g., bndstatus)
+                continue
+            value = AddressUtil.align_address(int(reg), memalign_size=reg_len)
+
             # colorling
-            if is_x86_16():
-                value = AddressUtil.align_address(int(reg), memalign_size=4)
-            else:
-                value = AddressUtil.align_address(int(reg))
+            color = self.get_regname_color(regname, value)
 
-            old_value = ContextRegistersCommand.old_registers.get(regname, 0)
-
-            if value == old_value:
-                color = unchanged_color
-            else:
-                color = changed_color
-
-            # Special (e.g., segment) registers go on their own line
-            if current_arch.special_registers:
-                if regname in current_arch.special_registers:
-                    special_line += "{:s}: {:#06x} ".format(
-                        Color.colorify(regname, color), get_register(regname),
-                    )
-                    continue
+            # special (e.g., segment) registers go on their own line
+            if current_arch.special_registers and regname in current_arch.special_registers:
+                special_line += "{:s}: {:#06x} ".format(
+                    Color.colorify(regname, color), get_register(regname),
+                )
+                continue
 
             # reg name
-            padreg = current_arch.get_aliased_registers()[regname].ljust(widest, " ")
+            padreg = aliased_registers.get(regname, regname).ljust(widest, " ")
 
             # flag register
             if current_arch.flag_register and regname == current_arch.flag_register:
@@ -22479,6 +22497,7 @@ class RegistersCommand(GenericCommand):
                 )
                 continue
 
+            # make one line
             line = "{:s}: ".format(Color.colorify(padreg, color))
             if self.args.simple:
                 # not dereference
@@ -22517,19 +22536,13 @@ class RegistersCommand(GenericCommand):
         self.check_unavailable_regs()
 
         if args.registers:
-            regs = []
-            for creg in current_arch.all_registers:
-                for reg in args.registers:
-                    if not reg.startswith("$"):
-                        reg = "$" + reg
-                    if reg == creg:
-                        regs.append(reg)
-                        break
+            target_regs = args.registers
         else:
-            regs = current_arch.all_registers
+            target_regs = self.get_all_registers()
 
-        out = self.dump_regs(regs)
-        gef_print("\n".join(out))
+        out = self.dump_regs(target_regs)
+        if out:
+            gef_print("\n".join(out))
         return
 
 
@@ -28565,11 +28578,28 @@ class ContextRegistersCommand(GenericCommand):
 
     @staticmethod
     def update_registers(_event):
+        if current_arch is None:
+            return
+
         for reg in current_arch.all_registers:
             try:
                 ContextRegistersCommand.old_registers[reg] = get_register(reg)
             except Exception:
                 ContextRegistersCommand.old_registers[reg] = 0
+
+        if is_x86():
+            for reg in current_arch.virtual_registers:
+                try:
+                    ContextRegistersCommand.old_registers[reg] = gdb.parse_and_eval(reg)
+                except gdb.error:
+                    ContextRegistersCommand.old_registers[reg] = 0
+
+        if is_x86_16():
+            for regname, (seg, reg) in current_arch.seg_extended_registers.items():
+                segval = get_register(seg) & 0xffff
+                regval = get_register(reg) & 0xffff
+                value = current_arch.real2phys(segval, regval)
+                ContextRegistersCommand.old_registers[regname] = value
         return
 
     RE_SUB_OPERAND1 = re.compile(r"<.*?>")
@@ -28666,6 +28696,27 @@ class ContextRegistersCommand(GenericCommand):
         self.previous_extra_regs = printed_extra_regs
         return
 
+    @Cache.cache_this_session
+    def get_target_registers(self):
+        if is_x86():
+            all_registers = current_arch.all_registers + current_arch.virtual_registers
+        else:
+            all_registers = current_arch.all_registers
+
+        ignored_registers = Config.get_gef_setting("context_regs.ignore_registers").split()
+
+        # fast path
+        if not ignored_registers:
+            return " ".join(all_registers)
+
+        # slow path
+        target_registers = []
+        for regs in all_registers:
+            if regs in ignored_registers:
+                continue
+            target_registers.append(regs)
+        return " ".join(target_registers)
+
     def context_registers(self, redirect):
         ContextCommand.context_title("registers", redirect)
 
@@ -28673,15 +28724,14 @@ class ContextRegistersCommand(GenericCommand):
             err("Missing info about architecture. Please set: `file /path/to/target_binary`", redirect=redirect)
             return
 
+        target_registers = self.get_target_registers()
+
         # exec registers
-        ignored_registers = set(Config.get_gef_setting("context_regs.ignore_registers").split())
-        regs = set(current_arch.all_registers)
-        printable_registers = " ".join(list(regs - ignored_registers))
         if Config.get_gef_setting("context_regs.show_registers_raw"):
             opt = "-s"
         else:
             opt = ""
-        ContextCommand.execute_command("registers {:s} {}".format(opt, printable_registers), redirect)
+        ContextCommand.execute_command("registers {:s} {:s}".format(opt, target_registers), redirect)
 
         # for extra regs
         self.context_regs_extra(redirect)
