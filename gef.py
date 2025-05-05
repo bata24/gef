@@ -15998,18 +15998,18 @@ class ProcInfoCommand(GenericCommand):
         cmdline = self.get_cmdline_of(pid)
         cwd = self.get_process_cwd(pid)
         root = self.get_process_root(pid)
-        gef_print("{:32s}  ->  {:d}".format("PID", pid))
-        gef_print("{:32s}  ->  {!r}".format("  Executable", executable))
-        gef_print("{:32s}  ->  {!r}".format("  Command Line", cmdline))
-        gef_print("{:32s}  ->  {!r}".format("  Current Working Directory", cwd))
-        gef_print("{:32s}  ->  {!r}".format("  Root Directory", root))
+        gef_print("{:30s}  ->  {:d}".format("PID", pid))
+        gef_print("{:30s}  ->  {!r}".format("  Executable", executable))
+        gef_print("{:30s}  ->  {!r}".format("  Command Line", cmdline))
+        gef_print("{:30s}  ->  {!r}".format("  Current Working Directory", cwd))
+        gef_print("{:30s}  ->  {!r}".format("  Root Directory", root))
         uids = re.sub(r"\s+", " : ", self.get_state_of(pid)["Uid"])
         gids = re.sub(r"\s+", " : ", self.get_state_of(pid)["Gid"])
-        gef_print("{:32s}  ->  {:s}".format("  RUID:EUID:SavedUID:FSUID", uids))
-        gef_print("{:32s}  ->  {:s}".format("  RGID:EGID:SavedGID:FSGID", gids))
+        gef_print("{:30s}  ->  {:s}".format("  RUID:EUID:SavedUID:FSUID", uids))
+        gef_print("{:30s}  ->  {:s}".format("  RGID:EGID:SavedGID:FSGID", gids))
         seccomp_n = self.get_state_of(pid)["Seccomp"]
         seccomp_s = {"0": "Disabled", "1": "Strict", "2": "CustomFilter"}[seccomp_n]
-        gef_print("{:32s}  ->  {:s} ({:s})".format("  Seccomp Mode", seccomp_n, seccomp_s))
+        gef_print("{:30s}  ->  {:s} ({:s})".format("  Seccomp Mode", seccomp_n, seccomp_s))
         return
 
     def show_info_proc_extra(self):
@@ -16019,25 +16019,25 @@ class ProcInfoCommand(GenericCommand):
         pgid = self.get_stat_of(pid)[4]
         pgid_exec = self.get_process_path_of(pgid)
         pgid_cmdline = self.get_cmdline_of(pgid)
-        gef_print("{:32s}  ->  {:d}".format("Process Group ID", pgid))
-        gef_print("{:32s}  ->  {!r}".format("  Executable", pgid_exec))
-        gef_print("{:32s}  ->  {!r}".format("  Command Line", pgid_cmdline))
+        gef_print("{:30s}  ->  {:d}".format("Process Group ID", pgid))
+        gef_print("{:30s}  ->  {!r}".format("  Executable", pgid_exec))
+        gef_print("{:30s}  ->  {!r}".format("  Command Line", pgid_cmdline))
         sid = self.get_stat_of(pid)[5]
         sid_exec = self.get_process_path_of(sid)
         sid_cmdline = self.get_cmdline_of(sid)
-        gef_print("{:32s}  ->  {:d}".format("Session ID", sid))
-        gef_print("{:32s}  ->  {!r}".format("  Executable", sid_exec))
-        gef_print("{:32s}  ->  {!r}".format("  Command Line", sid_cmdline))
+        gef_print("{:30s}  ->  {:d}".format("Session ID", sid))
+        gef_print("{:30s}  ->  {!r}".format("  Executable", sid_exec))
+        gef_print("{:30s}  ->  {!r}".format("  Command Line", sid_cmdline))
         tpgid = self.get_stat_of(pid)[7]
         tpgid_exec = self.get_process_path_of(tpgid)
         tpgid_cmdline = self.get_cmdline_of(tpgid)
-        gef_print("{:32s}  ->  {:d}".format("TTY Process Group ID", tpgid))
-        gef_print("{:32s}  ->  {!r}".format("  Executable", tpgid_exec))
-        gef_print("{:32s}  ->  {!r}".format("  Command Line", tpgid_cmdline))
+        gef_print("{:30s}  ->  {:d}".format("TTY Process Group ID", tpgid))
+        gef_print("{:30s}  ->  {!r}".format("  Executable", tpgid_exec))
+        gef_print("{:30s}  ->  {!r}".format("  Command Line", tpgid_cmdline))
         ttynr = self.get_stat_of(pid)[6]
         major, minor = (ttynr >> 8) & 0xff, ((ttynr >> 20) << 8) | (ttynr & 0xff)
         ttystr = self.get_tty_str(major, minor)
-        gef_print("{:32s}  ->  {:d} ({!r})".format("  TTY Device Number", ttynr, ttystr))
+        gef_print("{:30s}  ->  {:d} ({!r})".format("  TTY Device Number", ttynr, ttystr))
         return
 
     def show_parent(self):
@@ -16045,9 +16045,9 @@ class ProcInfoCommand(GenericCommand):
         ppid = int(self.get_state_of(Pid.get_pid())["PPid"])
         ppid_exec = self.get_process_path_of(ppid)
         ppid_cmdline = self.get_cmdline_of(ppid)
-        gef_print("{:32s}  ->  {:d}".format("Parent PID", ppid))
-        gef_print("{:32s}  ->  {!r}".format("  Executable", ppid_exec))
-        gef_print("{:32s}  ->  {!r}".format("  Command Line", ppid_cmdline))
+        gef_print("{:30s}  ->  {:d}".format("Parent PID", ppid))
+        gef_print("{:30s}  ->  {!r}".format("  Executable", ppid_exec))
+        gef_print("{:30s}  ->  {!r}".format("  Command Line", ppid_cmdline))
         return
 
     def show_childs(self):
@@ -16061,9 +16061,9 @@ class ProcInfoCommand(GenericCommand):
         for i, cpid in enumerate(children, start=1):
             cpid_exec = self.get_process_path_of(cpid)
             cpid_cmdline = self.get_cmdline_of(cpid)
-            gef_print("{:32s}  ->  {:d}".format("Child {:d} PID".format(i), cpid))
-            gef_print("{:32s}  ->  {!r}".format("  Executable", cpid_exec))
-            gef_print("{:32s}  ->  {!r}".format("  Command Line", cpid_cmdline))
+            gef_print("{:30s}  ->  {:d}".format("Child {:d} PID".format(i), cpid))
+            gef_print("{:30s}  ->  {!r}".format("  Executable", cpid_exec))
+            gef_print("{:30s}  ->  {!r}".format("  Command Line", cpid_cmdline))
         return
 
     def show_info_thread(self):
@@ -16072,13 +16072,10 @@ class ProcInfoCommand(GenericCommand):
         pid = Pid.get_pid()
         nthreads = self.get_state_of(pid)["Threads"]
         tgid = self.get_state_of(pid)["Tgid"]
-        gef_print("{:32s}  ->  {:s}".format("Num of Threads", nthreads))
-        gef_print("{:32s}  ->  {:s}".format("Thread Group ID", tgid))
+        gef_print("{:30s}  ->  {:s}".format("Num of Threads", nthreads))
+        gef_print("{:30s}  ->  {:s}".format("Thread Group ID", tgid))
         tids = self.get_thread_ids(pid)
-        split = 8
-        gef_print("{:32s}  ->  {!r}".format("Thread ID List", tids[:split]))
-        for i in range(split, len(tids), split):
-            gef_print("{:32s}  ->  {!r}".format("", tids[i:i + split]))
+        gef_print("{:30s}  ->  {!r}".format("Thread ID List", tids))
         return
 
     def show_info_proc_ns(self):
@@ -16095,36 +16092,205 @@ class ProcInfoCommand(GenericCommand):
             sym1 = os.readlink("/proc/{:d}/ns/{:s}".format(pid, ns))
             sym2 = os.readlink("/proc/{:d}/ns/{:s}".format(gdb_pid, ns))
             m = "{:s} namespace separation".format(ns.upper())
-            gef_print("{:32s}  ->  {!s}".format(m, sym1 != sym2))
+            gef_print("{:30s}  ->  {!s}".format(m, sym1 != sym2))
 
         gef_print(titlify("Pid Namespace Information"))
         state = self.get_state_of(pid)
         if len(state["NSpid"].split()) > 1:
-            gef_print("{:32s}  ->  {:s}".format(
+            gef_print("{:30s}  ->  {:s}".format(
                 "Host PID  : Namespace PID", re.sub(r"\s+", " : ", state["NSpid"]),
             ))
-            gef_print("{:32s}  ->  {:s}".format(
+            gef_print("{:30s}  ->  {:s}".format(
                 "Host PGID : Namespace PGID", re.sub(r"\s+", " : ", state["NSpgid"]),
             ))
-            gef_print("{:32s}  ->  {:s}".format(
+            gef_print("{:30s}  ->  {:s}".format(
                 "Host SID  : Namespace SID", re.sub(r"\s+", " : ", state["NSsid"]),
             ))
-            gef_print("{:32s}  ->  {:s}".format(
+            gef_print("{:30s}  ->  {:s}".format(
                 "Host TGID : Namespace TGID", re.sub(r"\s+", " : ", state["NStgid"]),
             ))
         else:
-            gef_print("{:32s}".format("No pid namespace"))
+            gef_print("{:30s}".format("No pid namespace"))
 
         gef_print(titlify("User Namespace Information"))
         for u in self.get_uid_map(pid):
-            gef_print("{:32s}  ->  [{:#x} : {:#x} : {:#x}]".format(
+            gef_print("{:30s}  ->  [{:#x} : {:#x} : {:#x}]".format(
                 "UID_MAP [NameSpace:Host:Range]", u[0], u[1], u[2],
             ))
         for g in self.get_gid_map(pid):
-            gef_print("{:32s}  ->  [{:#x} : {:#x} : {:#x}]".format(
+            gef_print("{:30s}  ->  [{:#x} : {:#x} : {:#x}]".format(
                 "GID_MAP [NameSpace:Host:Range]", g[0], g[1], g[2],
             ))
         return
+
+    def get_state_string(self, proto, state):
+        if proto in ["tcp", "tcp6"]:
+            dic = {
+                0x01: "ESTABLISHED",
+                0x02: "SYN_SENT",
+                0x03: "SYN_RECV",
+                0x04: "FIN_WAIT1",
+                0x05: "FIN_WAIT2",
+                0x06: "TIME_WAIT",
+                0x07: "CLOSE",
+                0x08: "CLOSE_WAIT",
+                0x09: "LAST_ACK",
+                0x0a: "LISTEN",
+                0x0b: "CLOSING",
+                0x0c: "NEW_SYN_RECV",
+                0x0d: "BOUND_INACTIVE",
+            }
+        elif proto in ["udp", "udp6"]:
+            dic = {
+                0x07: "LISTEN",
+            }
+        elif proto in ["unix"]:
+            dic = {
+                0x00: "FREE",
+                0x01: "LISTEN", # "UNCONNECTED"
+                0x02: "CONNECTING",
+                0x03: "CONNECTED",
+                0x04: "DISCONNECTING",
+            }
+        else:
+            return str(int(state, 16))
+        return dic.get(int(state, 16), "???")
+
+    def get_proto_string(self, proto):
+        # proto string (for raw/raw6)
+        dic = {
+            0x00: "IP",
+            0x01: "ICMP",
+            0x02: "IGMP",
+            0x04: "IPIP",
+            0x06: "TCP",
+            0x08: "EGP",
+            0x0c: "PUP",
+            0x11: "UDP",
+            0x16: "IDP",
+            0x1d: "TP",
+            0x21: "DCCP",
+            0x29: "IPV6",
+            0x2b: "ROUTING",
+            0x2c: "FRAGMENT",
+            0x2e: "RSVP",
+            0x2f: "GRE",
+            0x32: "ESP",
+            0x33: "AH",
+            0x3a: "ICMPV6",
+            0x3b: "NONE",
+            0x3c: "DSTOPTS",
+            0x5c: "MTP",
+            0x5e: "BEETPH",
+            0x62: "ENCAP",
+            0x67: "PIM",
+            0x6c: "COMP",
+            0x73: "L2TP",
+            0x84: "SCTP",
+            0x87: "MH",
+            0x88: "UDPLITE",
+            0x89: "MPLS",
+            0x8f: "ETHERNET",
+            0x90: "AGGFRAG",
+            0xff: "RAW",
+            0x100: "SMC",
+            0x106: "MPTCP",
+        }
+        return dic.get(proto, str(proto))
+
+    def parse_ip_port(self, addr, proto):
+        # tcp/udp: return (ip, port)
+        # other: return (ip, proto)
+
+        ip, port = addr.split(":")
+
+        import socket
+        if len(ip) == 8: # ipv4
+            # 0100007F -> 127.0.0.1
+            ip = bytes.fromhex(ip)[::-1]
+            ip = socket.inet_ntop(socket.AF_INET, ip)
+        else: # ipv6
+            # 00000000000000000000000001000000 -> ::1
+            ip = bytes.fromhex(ip)
+            ip = b"".join([x[::-1] for x in slicer(ip, 4)])
+            ip = socket.inet_ntop(socket.AF_INET6, ip)
+            ip = "[{:s}]".format(ip)
+
+        if proto in ["tcp", "tcp6", "udp", "udp6"]:
+            port = int(port, 16)
+            return ip, port # str, int
+
+        # other protocol
+        real_proto = self.get_proto_string(int(port, 16))
+        return ip, real_proto # str, str
+
+    def get_extra_info(self):
+        # e.g., inode -> "[tcp]           127.0.0.1:34588 -> 127.0.0.1:5001 (ESTABLISHED)"
+
+        # get all sockets
+        pid = Pid.get_pid()
+        sockets = {}
+        path = "/proc/{:d}/fd".format(pid)
+        for fname in os.listdir(path):
+            fullpath = os.path.join(path, fname)
+            if os.path.islink(fullpath) and os.readlink(fullpath).startswith("socket:"):
+                inode = os.readlink(fullpath).replace("socket:", "")[1:-1]
+                sockets[int(inode)] = fname
+        if not sockets:
+            return sockets
+
+        # get entries
+        protocols = ["tcp", "udp", "tcp6", "udp6", "unix", "raw", "raw6"]
+        entries = {}
+        for prot in protocols:
+            lines = open(f"/proc/{pid}/net/{prot}", "r").readlines()
+            entries[prot] = [x.split() for x in lines[1:]]
+
+        extra_info = {}
+        for proto, proto_entries in entries.items():
+            for proto_entry in proto_entries:
+                # parse
+                if proto in ["tcp", "tcp6", "udp", "udp6", "raw", "raw6"]:
+                    _, local, remote, state, _, _, _, _, _, inode, *_ = proto_entry
+                elif proto == "unix":
+                    _, _, _, _, _, state, inode, *path = proto_entry
+                    path = path[0] if path else ""
+
+                # check if socket
+                inode = int(inode)
+                if inode not in sockets:
+                    continue
+
+                # get state
+                state = self.get_state_string(proto, state)
+
+                # make extra info
+                if proto in ["tcp", "tcp6", "udp", "udp6"]:
+                    local = self.parse_ip_port(local, proto)
+                    if state == "LISTEN":
+                        extra_info[inode] = "{:14s}  {:s}:{:d} ({:s})".format(
+                            "[{:s}]".format(proto),
+                            *local, state,
+                        )
+                    else:
+                        remote = self.parse_ip_port(remote, proto)
+                        extra_info[inode] = "{:14s}  {:s}:{:d} -> {:s}:{:d} ({:s})".format(
+                            "[{:s}]".format(proto),
+                            *local, *remote, state,
+                        )
+                elif proto in ["raw", "raw6"]:
+                    local = self.parse_ip_port(local, proto)
+                    remote = self.parse_ip_port(remote, proto)
+                    extra_info[inode] = "{:14s}  {:s} -> {:s} (st={:s})".format(
+                        "[{:s}/{:s}]".format(proto, local[1]),
+                        local[0], remote[0], state,
+                    )
+                elif proto == "unix":
+                    extra_info[inode] = "{:14s}  {!r} ({:s})".format(
+                        "[{:s}]".format(proto),
+                        path, state,
+                    )
+        return extra_info
 
     def show_fds(self):
         gef_print(titlify("File Descriptors"))
@@ -16132,80 +16298,24 @@ class ProcInfoCommand(GenericCommand):
         pid = Pid.get_pid()
         path = "/proc/{:d}/fd".format(pid)
 
-        gef_print("{:32s}  ->  {:s}".format("Num of FD slots", self.get_state_of(pid)["FDSize"]))
+        gef_print("{:30s}  ->  {:s}".format("Num of FD slots", self.get_state_of(pid)["FDSize"]))
         items = os.listdir(path)
         if not items:
             gef_print("No FD opened")
             return
 
+        extra_info = self.get_extra_info()
+
         for fname in items:
             fullpath = os.path.join(path, fname)
             if os.path.islink(fullpath):
-                gef_print("{:32s}  ->  {:s}".format(fullpath, os.readlink(fullpath)))
-        return
-
-    def list_sockets(self, pid):
-        sockets = []
-        path = "/proc/{:d}/fd".format(pid)
-        items = os.listdir(path)
-        for fname in items:
-            fullpath = os.path.join(path, fname)
-            if os.path.islink(fullpath) and os.readlink(fullpath).startswith("socket:"):
-                p = os.readlink(fullpath).replace("socket:", "")[1:-1]
-                sockets.append(int(p))
-        return sockets
-
-    def parse_ip_port(self, addr):
-        ip, port = addr.split(":")
-        import socket
-        return socket.inet_ntoa(struct.pack("<I", int(ip, 16))), int(port, 16)
-
-    def show_connections(self):
-        gef_print(titlify("Network Connections"))
-
-        # https://github.com/torvalds/linux/blob/v4.7/include/net/tcp_states.h#L16
-        tcp_states_str = {
-            0x01: "TCP_ESTABLISHED",
-            0x02: "TCP_SYN_SENT",
-            0x03: "TCP_SYN_RECV",
-            0x04: "TCP_FIN_WAIT1",
-            0x05: "TCP_FIN_WAIT2",
-            0x06: "TCP_TIME_WAIT",
-            0x07: "TCP_CLOSE",
-            0x08: "TCP_CLOSE_WAIT",
-            0x09: "TCP_LAST_ACK",
-            0x0A: "TCP_LISTEN",
-            0x0B: "TCP_CLOSING",
-            0x0C: "TCP_NEW_SYN_RECV",
-        }
-
-        udp_states_str = {
-            0x07: "UDP_LISTEN",
-        }
-
-        pid = Pid.get_pid()
-        sockets = self.list_sockets(pid)
-        if not sockets:
-            gef_print("No open connections")
-            return
-
-        entries = {}
-        entries["TCP"] = [x.split() for x in open("/proc/{:d}/net/tcp".format(pid), "r").readlines()[1:]]
-        entries["UDP"] = [x.split() for x in open("/proc/{:d}/net/udp".format(pid), "r").readlines()[1:]]
-
-        for proto in entries:
-            for entry in entries[proto]:
-                local, remote, state = entry[1:4]
-                inode = int(entry[9])
-                if inode in sockets:
-                    local = self.parse_ip_port(local)
-                    remote = self.parse_ip_port(remote)
-                    state = int(state, 16)
-                    state_str = tcp_states_str[state] if proto == "TCP" else udp_states_str[state]
-
-                    conn_local = "{:s}:{:d}".format(local[0], local[1])
-                    conn_remote = "{:s}:{:d}".format(remote[0], remote[1])
-                    gef_print("{:32s}  ->  {:s} ({:s})".format(conn_local, conn_remote, state_str))
+                content = os.readlink(fullpath)
+                if content.startswith("socket:["):
+                    inode = int(content.replace("socket:", "")[1:-1])
+                    extra = extra_info.get(inode, "")
+                    gef_print("{:30s}  ->  {:s}  {:s}".format(fullpath, content, extra))
+                else:
+                    gef_print("{:30s}  ->  {:s}".format(fullpath, content))
         return
 
     @parse_args
@@ -16220,7 +16330,6 @@ class ProcInfoCommand(GenericCommand):
         self.show_info_thread()
         self.show_info_proc_ns()
         self.show_fds()
-        self.show_connections()
         return
 
 
