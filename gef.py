@@ -22582,7 +22582,7 @@ class RegistersCommand(GenericCommand):
                 else:
                     reg_len = current_arch.ptrsize
             except gdb.error:
-                # In the qilling framework, it may fail just by doing hasattr (e.g., bndstatus)
+                # In the qiling framework, it may fail just by doing hasattr (e.g., bndstatus)
                 continue
             value = AddressUtil.align_address(int(reg), memalign_size=reg_len)
 
