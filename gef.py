@@ -79484,8 +79484,11 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                         help="the target buffer_root. The last three are abbreviated forms.")
     parser.add_argument("-f", "--force-heuristic", action="store_true",
                         help="use heuristic roots detection.")
+    parser.add_argument("-r", "--root", type=AddressUtil.parse_address,
+                        help="the memory address of target {buffer,array_buffer,fast_malloc}_root_.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-v", "--verbose", action="store_true", help="display also empty slots.")
+    parser.add_argument("--debug", action="store_true", help="[FOR DEVELOPER] enable debug print.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -79584,10 +79587,10 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         # finally, look for possible values for given prefix
         return [s for s in self.modes if s and s.startswith(text.strip())]
 
-    @staticmethod
     @Cache.cache_this_session
-    def get_roots_heuristic():
+    def get_roots_heuristic(self):
         """searches for fast_malloc_root, array_buffer_root_ and buffer_root_"""
+
         # the pointers to each root are in the RW area.
         # first, we list the RW area.
         filepath = Path.get_filepath(append_proc_root_prefix=False)
@@ -79616,21 +79619,23 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             addr_list = list(range(maps.page_start, maps.page_end, current_arch.ptrsize))
 
             """
-            https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/platform/wtf/allocator/partitions.cc
+            https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/  \
+            platform/wtf/allocator/partitions.cc
+
             partition_alloc::PartitionRoot* Partitions::fast_malloc_root_ = nullptr;
             partition_alloc::PartitionRoot* Partitions::array_buffer_root_ = nullptr;
             partition_alloc::PartitionRoot* Partitions::buffer_root_ = nullptr;
 
-            0x5a849775d5a8 <WTF::Partitions::fast_malloc_root_>:    0x0000000000000000
-            0x5a849775d5b0 <WTF::Partitions::array_buffer_root_>:   0x00005a8497761040
-            0x5a849775d5b8 <WTF::Partitions::buffer_root_>: 0x00005a849775d600
-            0x5a849775d5c0 <guard variable for WTF::Partitions::Initialize()::initialized>: 0x0000000100000101
+            0x5a849775d5a8 <WTF::Partitions::fast_malloc_root_>:                                         0x0000000000000000
+            0x5a849775d5b0 <WTF::Partitions::array_buffer_root_>:                                        0x00005a8497761040
+            0x5a849775d5b8 <WTF::Partitions::buffer_root_>:                                              0x00005a849775d600
+            0x5a849775d5c0 <guard variable for WTF::Partitions::Initialize()::initialized>:              0x0000000100000101
             ...
-            0x5a8497759bc0 <WTF::Partitions::InitializeOnce()::fast_malloc_allocator>:      0x0000000000000000
+            0x5a8497759bc0 <WTF::Partitions::InitializeOnce()::fast_malloc_allocator>:                   0x0000000000000000
             ...
-            0x5a849775d600 <WTF::Partitions::InitializeOnce()::buffer_allocator>:   0x0000000000010000
+            0x5a849775d600 <WTF::Partitions::InitializeOnce()::buffer_allocator>:                        0x0000000000010000
             ...
-            0x5a8497761040 <WTF::Partitions::InitializeArrayBufferPartition()::array_buffer_allocator>:     0x0000000000000000
+            0x5a8497761040 <WTF::Partitions::InitializeArrayBufferPartition()::array_buffer_allocator>:  0x0000000000000000
             """
             # check consecutive quadruples
             for addr, data in zip(n_gram(addr_list, 4), n_gram(data_list, 4)):
@@ -79666,21 +79671,24 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 This is same both at 64-bit and 32bit arch.
 
                 [WTF::Partitions::InitializeOnce()::buffer_allocator]
-                0x5a849775d600: 0x0000000000010000      0x0000000000000004     <-- here may be used
-                0x5a849775d610: 0x0000000000000000      0x00000000ffffffff     <-- here may be used
-                0x5a849775d620: 0x0000000400000001      0xfffffe7fec785000     <-- hare may be used
-                0x5a849775d630: 0x0000000000000000      0x0000000000000000     <-- here may be not used
+                0x5a849775d600: 0x0000000000010000      0x0000000000000004
+                0x5a849775d610: 0x0000000000000000      0x00000000ffffffff
+                0x5a849775d620: 0x0000000400000001      0xfffffe7fec785000
+                0x5a849775d630: 0x0000000000000000      0x0000000000000000
 
                 [WTF::Partitions::InitializeArrayBufferPartition()::array_buffer_allocator]
-                0x5a8497761040: 0x0000000000000000      0x0000000000000000     <-- here may be used
-                0x5a8497761050: 0x0000000000000001      0x00000000ffffffff     <-- here may be used
-                0x5a8497761060: 0x0000000000000000      0xffffcefbec787000     <-- here may be used
-                0x5a8497761070: 0x0000000000000000      0x0000000000000000     <-- here may be not used
+                0x5a8497761040: 0x0000000000000000      0x0000000000000000
+                0x5a8497761050: 0x0000000000000001      0x00000000ffffffff
+                0x5a8497761060: 0x0000000000000000      0xffffcefbec787000
+                0x5a8497761070: 0x0000000000000000      0x0000000000000000
                 """
-                if read_memory(data[1], 64)[-16:] != b"\0" * 16:
+                if b"\0" * 8 not in read_memory(data[1], 64):
                     continue
-                if read_memory(data[2], 64)[-16:] != b"\0" * 16:
+                if b"\0" * 8 not in read_memory(data[2], 64):
                     continue
+                if self.args.debug:
+                    info(f"buffer_root_size: {buffer_root_size:#x}")
+                    gdb.execute(f"ml x/8xg {data[1]:#x}; x/8xg {data[2]:#x}")
                 # add candidate
                 Root = collections.namedtuple("Root", ["name", "address"])
                 root_candidate = [
@@ -79695,18 +79703,17 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             err("roots were not found, try check code")
             return []
 
-        elif len(roots) == 1:
+        if len(roots) == 1:
             for r in roots[0]:
                 info("found: {:s}: {:#x}".format(r.name, r.address))
             return roots[0]
 
-        else:
-            err("candidates for root are found in multiple places, try check code")
-            for root in roots:
-                for r in root:
-                    gef_print("  candidate: {:20s} {:#x}".format(r.name, r.address))
-                gef_print()
-            return []
+        err("candidates for root are found in multiple places, try check code")
+        for root in roots:
+            for r in root:
+                gef_print("  candidate: {:20s} {:#x}".format(r.name, r.address))
+            gef_print()
+        return []
 
     def get_roots(self, force_heuristic):
         def get_root(root_string):
@@ -79718,6 +79725,11 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 return []
 
         roots = []
+        # user specific
+        if self.args.root:
+            Root = collections.namedtuple("Root", ["name", "address"])
+            roots += [Root(self.args.target_buffer_root + "_root_", self.args.root)]
+            return roots
         # try from symbols
         if not force_heuristic:
             for root_string in ["fast_malloc_root_", "array_buffer_root_", "buffer_root_"]:
@@ -79725,7 +79737,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         # maybe no symbols, try heuristic
         if len(roots) == 0:
             info("Use heuristic search")
-            roots = PartitionAllocDumpCommand.get_roots_heuristic()
+            roots = self.get_roots_heuristic()
         # retry checking
         if len(roots) == 0:
             info("Symbol is not found")
@@ -79764,7 +79776,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         _root["name"] = name
         _root["addr"] = current = read_int_from_memory(addr)
         """
-        https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/src/partition_alloc/partition_root.h
+        https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/  \
+        src/partition_alloc/partition_root.h
+
         struct base::PartitionRoot {
             struct alignas(internal::kPartitionCachelineSize) Settings {
                 BucketDistribution bucket_distribution = BucketDistribution::kNeutral; // uint8_t
@@ -79774,9 +79788,8 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 bool mac11_malloc_size_hack_enabled_ = false;
                 size_t mac11_malloc_size_hack_usable_size_ = 0;
                 bool use_configurable_pool = false;
-                bool zapping_by_free_flags = false;
                 bool eventually_zero_freed_memory = false;
-                bool scheduler_loop_quarantine = false;
+                internal::SchedulerLoopQuarantineConfig scheduler_loop_quarantine;
                 bool fewer_memory_regions = false;
                 bool memory_tagging_enabled_ = false;
                 bool use_random_memory_tagging_enabled_ = false;
@@ -79784,7 +79797,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 ThreadIsolationOption thread_isolation;
                 bool use_pool_offset_freelists = false;
                 uint32_t extras_size = 0;
-            } settings; // 64 bytes
+            } settings; // 64 bytes or 128 bytes
             internal::Lock lock_;  // 8 bytes
             Bucket buckets[internal::kNumBuckets] = {};
             Bucket sentinel_bucket{};
@@ -79809,19 +79822,25 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             ReadOnlySuperPageExtentEntry* current_extent = nullptr;
             ReadOnlySuperPageExtentEntry* first_extent = nullptr;
             ReadOnlyDirectMapExtent* direct_map_list PA_GUARDED_BY(internal::PartitionRootLock(this)) = nullptr;
-            ReadOnlySlotSpanMetadata* global_empty_slot_span_ring[internal::kMaxEmptySlotSpanRingSize] PA_GUARDED_BY(internal::PartitionRootLock(this)) = {};
+            ReadOnlySlotSpanMetadata* global_empty_slot_span_ring[internal::kMaxEmptySlotSpanRingSize] \
+                PA_GUARDED_BY(internal::PartitionRootLock(this)) = {};
             int16_t global_empty_slot_span_ring_index PA_GUARDED_BY(internal::PartitionRootLock(this)) = 0;
-            int16_t global_empty_slot_span_ring_size PA_GUARDED_BY(internal::PartitionRootLock(this)) = internal::kDefaultEmptySlotSpanRingSize;
+            int16_t global_empty_slot_span_ring_size PA_GUARDED_BY(internal::PartitionRootLock(this)) = \
+                internal::kDefaultEmptySlotSpanRingSize;
             uint16_t purge_generation PA_GUARDED_BY(internal::PartitionRootLock(this)) = 0;
             uint16_t purge_next_bucket_index PA_GUARDED_BY(internal::PartitionRootLock(this)) = 0;
             uintptr_t inverted_self = 0;
             internal::Lock thread_cache_construction_lock; // 8 bytes
             size_t scheduler_loop_quarantine_branch_capacity_in_bytes = 0;
             internal::LightweightQuarantineRoot scheduler_loop_quarantine_root;
-            std::optional<internal::base::NoDestructor<internal::LightweightQuarantineBranch>> scheduler_loop_quarantine;
+            internal::SchedulerLoopQuarantineBranch scheduler_loop_quarantine;
         };
         """
-        current += 64 # sizeof(struct Settings)
+        x = read_int_from_memory(current + 0x40 + 8) # sizeof(struct Settings) + sizeof(lock_)
+        if is_valid_addr(x): # buckets[0]->active_slot_spans_head
+            current += 0x40 # sizeof(struct Settings) is 1 cache line
+        else:
+            current += 0x80 # sizeof(struct Settings) is 2 cache lines
 
         _root["lock_"] = u64(read_memory(current, 8))
         current += 8
@@ -79843,6 +79862,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 break
             bucket, current = self.read_bucket(current)
             _root["buckets"].append(bucket)
+
         _root["sentinel_bucket"] = _root["buckets"].pop()
 
         _root["initialized"] = read_int_from_memory(current) & 0xff
@@ -79896,7 +79916,6 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             x = read_int_from_memory(current)
             current += ptrsize
             _root["global_empty_slot_span_ring"].append(x)
-
         _root["global_empty_slot_span_ring_index"] = u16(read_memory(current, 2))
         current += 2
         _root["global_empty_slot_span_ring_size"] = u16(read_memory(current, 2))
@@ -79926,7 +79945,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         _bucket = {}
         _bucket["addr"] = current = addr
         """
-        https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/src/partition_alloc/partition_bucket.h
+        https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/  \
+        src/partition_alloc/partition_bucket.h
+
         struct base::internal::PartitionBucket {
             SlotSpanMetadata<MetadataKind::kReadOnly>* active_slot_spans_head;
             SlotSpanMetadata<MetadataKind::kReadOnly>* empty_slot_spans_head;
@@ -79972,7 +79993,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         _extent["addr"] = current = addr
         _extent["super_page_base"] = current - 0x1000
         """
-        https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/src/partition_alloc/partition_superpage_extent_entry.h
+        https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/  \
+        src/partition_alloc/partition_superpage_extent_entry.h
+
         struct PartitionSuperPageExtentEntry {
           PartitionRootBase* root;
           PartitionSuperPageExtentEntry<MetadataKind::kReadOnly>* next;
@@ -80000,7 +80023,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         _direct_map = {}
         _direct_map["addr"] = current = addr
         """
-        https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/src/partition_alloc/partition_direct_map_extent.h
+        https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/  \
+        src/partition_alloc/partition_direct_map_extent.h
+
         struct PartitionDirectMapExtent {
           PartitionDirectMapExtent<MetadataKind::kReadOnly>* next_extent;
           PartitionDirectMapExtent<MetadataKind::kReadOnly>* prev_extent;
@@ -80033,7 +80058,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         _slot_span["partition_page_index"] = (_slot_span["addr"] & gef_getpagesize_mask_low()) // 0x20
         _slot_span["partition_page_start"] = _slot_span["super_page_addr"] + _slot_span["partition_page_index"] * gef_getpagesize() * 4
         """
-        https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/src/partition_alloc/partition_page.h
+        https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/  \
+        src/partition_alloc/partition_page.h
+
         struct SlotSpanMetadata {
           PartitionFreelistEntry* freelist_head = nullptr;
           SlotSpanMetadata<MetadataKind::kReadOnly>* next_slot_span = nullptr;
@@ -80213,7 +80240,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         self.out.append("internal::LightweightQuarantineRoot scheduler_loop_quarantine_root: {:#x}".format(
             root.scheduler_loop_quarantine_root,
         ))
-        self.out.append("NoDestructor<...> scheduler_loop_quarantine:           {:#x}".format(
+        self.out.append("internal::SchedulerLoopQuarantineBranch scheduler_loop_quarantine: {:#x}".format(
             root.scheduler_loop_quarantine,
         ))
         return
@@ -80410,25 +80437,41 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         if is_32bit():
             self.align_pad = None
 
+        if self.args.target_buffer_root == "fm":
+            self.args.target_buffer_root = "fast_malloc"
+        elif self.args.target_buffer_root == "b":
+            self.args.target_buffer_root = "buffer"
+        elif self.args.target_buffer_root == "ab":
+            self.args.target_buffer_root = "array_buffer"
+
         self.out = []
         for r in self.get_roots(args.force_heuristic):
-            ok = False
-            if args.target_buffer_root in ["fast_malloc", "fm"] and r.name == "fast_malloc_root_":
-                ok = True
-            elif args.target_buffer_root in ["array_buffer", "ab"] and r.name == "array_buffer_root_":
-                ok = True
-            elif args.target_buffer_root in ["buffer", "b"] and r.name == "buffer_root_":
-                ok = True
 
-            if ok:
-                try:
-                    root, _ = self.read_root(r.address, r.name)
-                except Exception:
-                    mem_value = read_int_from_memory(r.address)
-                    err("Parse error {:s}: @ {:#x} -> {:#x}".format(r.name, r.address, mem_value))
-                    continue
-                self.root = root # for coloring
-                self.dump_root(root)
+            ok = False
+            if args.target_buffer_root == "fast_malloc":
+                if r.name == "fast_malloc_root_":
+                    ok = True
+            if args.target_buffer_root == "array_buffer":
+                if r.name == "array_buffer_root_":
+                    ok = True
+            if args.target_buffer_root == "buffer":
+                if r.name == "buffer_root_":
+                    ok = True
+
+            if not ok:
+                continue
+
+            try:
+                root, _ = self.read_root(r.address, r.name)
+            except Exception:
+                mem_value = read_int_from_memory(r.address)
+                err("Parse error {:s}: @ {:#x} -> {:#x}".format(r.name, r.address, mem_value))
+                exc_type, exc_value, exc_traceback = sys.exc_info()
+                gef_print(exc_value)
+                continue
+
+            self.root = root # for coloring
+            self.dump_root(root)
 
         self.print_output()
         return

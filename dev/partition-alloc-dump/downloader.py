@@ -101,11 +101,12 @@ def memo():
     print("  [term1]")
     print("    cd www && python3 -m http.server 8080")
     print("  [term2]")
-    print("    cd chrome_stable/chrome-linux/")
+    print("    unzip -d /tmp chrome_dev/chrome-linux-*.zip && cd /tmp/chrome-linux")
     print("    rm -rf /tmp/u && sudo -u NON_ROOT_USER_NAME ./chrome --headless=new --disable-gpu "
-          "--remote-debugging-port=1338 --user-data-dir=/tmp/u --enable-logging=stderr http://0:8080/inf-loop.html")
+          "--remote-debugging-port=1338 --user-data-dir=/tmp/u --enable-logging=stderr http://localhost:8080/inf-loop.html")
     print("  [term3 (for renderer process)]")
-    print("""    gdb -q -p $(ps -ef | grep -- "--[t]ype=renderer" | awk '{pid=$2; for(i=1;i<=NF;i++) if($i ~ /--renderer-client-id=/) {split($i,a,"="); print a[2], pid}}' | sort -n | head -n 1 | awk '{print $2}')""")
+    print("""    gdb -q -p $(ps -ef | grep -- "--[t]ype=renderer" | awk '{pid=$2; for(i=1;i<=NF;i++) """
+          """if($i ~ /--renderer-client-id=/) {split($i,a,"="); print a[2], pid}}' | sort -n | head -n 1 | awk '{print $2}')""")
     print("  [term3 (for browser process)]")
     print("""    gdb -q -p $(ps -ef | grep "\\./[c]hrome" | grep -v type | grep -v sudo | awk '{print $2}')""")
     return
