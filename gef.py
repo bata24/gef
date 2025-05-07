@@ -5434,7 +5434,7 @@ def load_crccheck(f):
             __import__("crccheck")
             return f(*args, **kwargs)
         except ImportError as err:
-            msg = "Missing `crcheck` package for Python, try install with `pip install crccheck`"
+            msg = "Missing `crccheck` package for Python, try install with `pip install crccheck`"
             raise ImportWarning(msg) from err
 
     return wrapper
