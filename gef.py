@@ -12787,6 +12787,34 @@ class ProcessMap:
 
     @staticmethod
     @Cache.cache_until_next
+    def get_process_maps_exclude_special_regions(outer=False, allow_vdso=False, allow_vsyscall=False):
+        """Return the mapped memory sections,
+        exclude [vvar], [vvar_vclock], [vdso], [vsyscall], [sigpage], etc."""
+        vmmap = ProcessMap.get_process_maps(outer)
+        if vmmap == []:
+            return vmmap
+
+        valid_maps = []
+        for m in vmmap:
+            if "[vvar]" in m.path:
+                continue
+            if "[vvar_vclock]" in m.path:
+                continue
+            if "[vdso]" in m.path:
+                if not allow_vdso:
+                    continue
+            if "[vsyscall]" in m.path:
+                if not allow_vsyscall:
+                    continue
+            if "[sigpage]" in m.path: # ARM
+                continue
+            if "[vectors]" in m.path: # ARM
+                continue
+            valid_maps.append(m)
+        return valid_maps
+
+    @staticmethod
+    @Cache.cache_until_next
     def get_loaded_files():
         files = set()
         for m in ProcessMap.get_process_maps():
@@ -15162,13 +15190,11 @@ class CanaryCommand(GenericCommand):
         info("The canary is {:s}".format(Color.colorify_hex(canary, "bold")))
 
         gef_print(titlify("found canary"))
-        vmmap = ProcessMap.get_process_maps()
+        vmmap = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
         unpack = u32 if current_arch.ptrsize == 4 else u64
         sp = current_arch.sp
         for m in vmmap:
             if not (m.permission & Permission.READ) or not (m.permission & Permission.WRITE):
-                continue
-            if m.path in ["[vvar]", "[vsyscall]", "[vectors]", "[sigpage]"]:
                 continue
             try:
                 data = read_memory(m.page_start, m.page_end - m.page_start)
@@ -16979,7 +17005,7 @@ class SmartMemoryDumpCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     def smart_memory_dump(self):
-        maps = ProcessMap.get_process_maps()
+        maps = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
         if maps is None:
             err("Failed to get maps")
             return
@@ -16997,9 +17023,6 @@ class SmartMemoryDumpCommand(GenericCommand):
             start = entry.page_start
             end = entry.page_end
             perm = str(entry.permission)
-
-            if entry.path in ["[vvar]", "[vsyscall]", "[vectors]", "[sigpage]"]:
-                continue
 
             if not entry.path.startswith(("[", "<")):
                 path = os.path.basename(entry.path)
@@ -17509,7 +17532,7 @@ class SearchPatternCommand(GenericCommand):
         if is_qemu_system():
             maps_generator = self.get_process_maps_qemu_system()
         else:
-            maps_generator = ProcessMap.get_process_maps()
+            maps_generator = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
 
         for section in maps_generator:
             # too big
@@ -17534,8 +17557,6 @@ class SearchPatternCommand(GenericCommand):
                 continue
 
             # specific section name filter
-            if section.path in ["[vvar]", "[vsyscall]", "[vectors]", "[sigpage]"]:
-                continue
             if section_name not in section.path:
                 continue
 
@@ -19478,7 +19499,7 @@ class UnicornEmulateCommand(GenericCommand):
         filename = self.get_filename()
 
         Cache.reset_gef_caches(all=True)
-        vmmap = ProcessMap.get_process_maps()
+        vmmap = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True, allow_vsyscall=True)
         if not vmmap:
             warn("An error occurred when reading memory map")
             return
@@ -19960,8 +19981,6 @@ class UnicornEmulateCommand(GenericCommand):
         # memory dump
         content += "def reset_memories(emu):\n"
         for sect in vmmap:
-            if sect.path in ["[vvar]", "[vectors]", "[sigpage]"]:
-                continue
             if sect.permission == Permission.NONE:
                 continue
             content += "    # Mapping {:s}: {:#x}-{:#x} [{!s}]\n".format(
@@ -20204,12 +20223,10 @@ class AngrCommand(GenericCommand):
 
     def save_memories(self, dt):
         filename = Path.get_filename()
-        vmmap = ProcessMap.get_process_maps()
+        vmmap = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True, allow_vsyscall=True)
         dloc = os.path.join(GEF_TEMP_DIR, "angr-" + dt)
         os.mkdir(dloc)
         for sect in vmmap:
-            if sect.path in ["[vvar]", "[vectors]", "[sigpage]"]:
-                continue
             if sect.permission & Permission.READ:
                 code = read_memory(sect.page_start, sect.size)
                 loc = os.path.join(dloc, "{:s}-{:#x}.raw".format(filename, sect.page_start))
@@ -22168,7 +22185,7 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
 
         ZERO_PAGE = b"\0" * gef_getpagesize()
         target_size &= mask
-        vmmap = ProcessMap.get_process_maps()
+        vmmap = ProcessMap.get_process_maps_exclude_special_regions()
 
         for m in vmmap:
             # RW permission required
@@ -22176,13 +22193,6 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
                 continue
             if not (m.permission & Permission.WRITE):
                 continue
-
-            # ignore "[vvar]", "[vdso]", "[vsyscall]", "[sigpage]", ...
-            # there is nothing interesting or it is inaccessible
-            # also, consider the case where two are connected: "[heap]<tls-th1>"
-            if m.path.startswith("[") and "]" in m.path:
-                if not m.path.startswith(("[stack]", "[heap]")):
-                    continue
 
             # ignore "[heap]" or not
             if m.path.startswith("[heap]"):
@@ -95273,10 +95283,8 @@ class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
                 pattern = "".join(["\\x" + pattern[i:i + 2] for i in range(len(pattern) - 2, 0, -2)])
 
         locs = []
-        for section in ProcessMap.get_process_maps():
+        for section in ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True):
             if not section.permission & Permission.READ:
-                continue
-            if section.path in ["[vvar]", "[vsyscall]", "[vectors]", "[sigpage]"]:
                 continue
 
             start = section.page_start
@@ -95753,7 +95761,7 @@ class BinwalkMemoryCommand(GenericCommand):
     def memory_binwalk(self):
         import binwalk
 
-        maps = ProcessMap.get_process_maps()
+        maps = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
         if maps is None:
             err("Failed to get maps")
             return
@@ -95765,9 +95773,6 @@ class BinwalkMemoryCommand(GenericCommand):
             perm = str(entry.permission)
 
             if entry.size > self.args.maxsize:
-                continue
-
-            if entry.path in ["[vvar]", "[vsyscall]", "[vectors]", "[sigpage]"]:
                 continue
 
             if not entry.path.startswith(("[", "<")):
