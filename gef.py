@@ -22097,68 +22097,133 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
     parser.add_argument("--include-heap", action="store_true", help="heap is also included in the search target.")
     parser.add_argument("--aligned", action="store_true", help="search only aligned chunks.")
     parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address, help="search target size.")
+    parser.add_argument("--region-size-threashold", type=AddressUtil.parse_address, default=0x2000000,
+                        help="threshold for region size to skip search. (default: %(default)#x)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
+
+    _note_ = [
+        "It is not possible to find candidates that straddle the two regions.",
+    ]
+    _note_ = "\n".join(_note_)
 
     def print_result(self, m, pos, size_candidate):
         path = "unknown" if m.path == "" else m.path
         address = ProcessMap.lookup_address(m.page_start + pos)
         self.info_add_out("Found at {!s} in {!r} [{!s}]".format(address, path, m.permission))
 
-        if is_32bit():
-            res = gdb.execute("x/6xw {:#x}".format(address.value), to_string=True)
-        else:
-            res = gdb.execute("x/6xg {:#x}".format(address.value), to_string=True)
-
+        # flag with coloring
         flag = []
+
+        color = ""
         if size_candidate & 0b100:
-            flag += [Color.colorify("NON_MAIN_ARENA", Config.get_gef_setting("theme.heap_chunk_flag_non_main_arena"))]
-        else:
-            flag += ["NON_MAIN_ARENA"]
+            color = Config.get_gef_setting("theme.heap_chunk_flag_non_main_arena")
+        flag += [Color.colorify("NON_MAIN_ARENA", color)]
 
+        color = ""
         if size_candidate & 0b10:
-            flag += [Color.colorify("IS_MMAPED", Config.get_gef_setting("theme.heap_chunk_flag_is_mmapped"))]
-        else:
-            flag += ["IS_MMAPED"]
+            color = Config.get_gef_setting("theme.heap_chunk_flag_is_mmapped")
+        flag += [Color.colorify("IS_MMAPED", color)]
 
+        color = ""
         if size_candidate & 0b1:
-            flag += [Color.colorify("PREV_INUSE", Config.get_gef_setting("theme.heap_chunk_flag_prev_inuse"))]
-        else:
-            flag += ["PREV_INUSED"]
+            color = Config.get_gef_setting("theme.heap_chunk_flag_prev_inuse")
+        flag += [Color.colorify("PREV_INUSE", color)]
 
         self.out.append("    [{:s}]".format(" ".join(flag)))
+
+        # dump
+        try:
+            if is_64bit():
+                res = gdb.execute("x/6xg {:#x}".format(address.value), to_string=True)
+            else:
+                res = gdb.execute("x/6xw {:#x}".format(address.value), to_string=True)
+            truncated_flag = False
+        except Exception:
+            if is_64bit():
+                res = gdb.execute("x/2xg {:#x}".format(address.value), to_string=True)
+            else:
+                res = gdb.execute("x/2xw {:#x}".format(address.value), to_string=True)
+            truncated_flag = True
+
         for line in res.splitlines():
             self.out.append("    {:s}".format(line))
+
+        if truncated_flag:
+            self.warn_add_out("Areas from {!s} are inaccessible and display truncated.".format(address))
         return
 
     def find_fake_fast(self, target_size):
-        mask = ~0x7 if current_arch.ptrsize == 4 else ~0xf
+        if is_64bit():
+            mask = ~0xf
+            unpack = u64
+        else:
+            mask = ~0x7
+            unpack = u32
+
+        if self.args.aligned:
+            unit = 0x10
+        else:
+            unit = 0x1
+
+        ZERO_PAGE = b"\0" * gef_getpagesize()
         target_size &= mask
         vmmap = ProcessMap.get_process_maps()
-        unpack = u32 if current_arch.ptrsize == 4 else u64
+
         for m in vmmap:
-            if not (m.permission & Permission.READ) or not (m.permission & Permission.WRITE):
+            # RW permission required
+            if not (m.permission & Permission.READ):
                 continue
-            if m.path in ["[vvar]", "[vsyscall]", "[vectors]", "[sigpage]"]:
+            if not (m.permission & Permission.WRITE):
                 continue
-            if not self.args.include_heap and m.path.startswith("[heap]"):
+
+            # ignore "[vvar]", "[vdso]", "[vsyscall]", "[sigpage]", ...
+            # there is nothing interesting or it is inaccessible
+            # also, consider the case where two are connected: "[heap]<tls-th1>"
+            if m.path.startswith("[") and "]" in m.path:
+                if not m.path.startswith(("[stack]", "[heap]")):
+                    continue
+
+            # ignore "[heap]" or not
+            if m.path.startswith("[heap]"):
+                if not self.args.include_heap:
+                    continue
+
+            # skip if too large region
+            if m.size >= self.args.region_size_threashold:
+                path = "unknown" if m.path == "" else m.path
+                self.info_add_out("{!r} is skipped since too large ({:#x} >= {:#x})".format(
+                    path, m.size, self.args.region_size_threashold,
+                ))
                 continue
+
             data = read_memory(m.page_start, m.size)
             # Scanning page-by-page
-            for pos in range(0, m.size, gef_getpagesize()):
-                # fast check for all zero, because there may be huge mmap-ed memory
-                if b"\0" * gef_getpagesize() == data[pos:pos + gef_getpagesize()]:
-                    continue
-                # this page has some data
-                unit = 0x10 if self.args.aligned else 1
-                for posb in range(pos, pos + gef_getpagesize(), unit):
-                    size_candidate = data[posb + current_arch.ptrsize:posb + current_arch.ptrsize * 2]
-                    if len(size_candidate) != current_arch.ptrsize:
-                        break
-                    size_candidate = unpack(size_candidate)
-                    if (size_candidate & mask) != target_size:
+            pos = 0
+            while pos < m.size:
+                if (pos & gef_getpagesize_mask_low()) == 0:
+                    # fast check for all zero, because there may be huge mmap-ed memory
+                    if data[pos:pos + gef_getpagesize()] == ZERO_PAGE:
+                        pos += gef_getpagesize()
                         continue
-                    self.print_result(m, posb, size_candidate)
+
+                pos_of_size_start = pos + current_arch.ptrsize
+                pos_of_size_end = pos + current_arch.ptrsize * 2
+                size_candidate = data[pos_of_size_start:pos_of_size_end]
+
+                # even if it is found near the end of region, it cannot be used.
+                if len(size_candidate) != current_arch.ptrsize:
+                    break
+
+                # check if it's the size you want
+                size_candidate = unpack(size_candidate)
+                if (size_candidate & mask) != target_size:
+                    pos += unit
+                    continue
+
+                # found
+                self.print_result(m, pos, size_candidate)
+                pos += unit
         return
 
     @parse_args
