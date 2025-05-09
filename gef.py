@@ -15186,7 +15186,9 @@ class CanaryCommand(GenericCommand):
 
         canary, location = res
         gef_print(titlify("canary value"))
-        info("Found AT_RANDOM at {!s}, reading {} bytes".format(ProcessMap.lookup_address(location), current_arch.ptrsize))
+        info("Found AT_RANDOM at {!s}, reading {:d} bytes".format(
+            ProcessMap.lookup_address(location), current_arch.ptrsize,
+        ))
         info("The canary is {:s}".format(Color.colorify_hex(canary, "bold")))
 
         gef_print(titlify("found canary"))
@@ -15194,7 +15196,9 @@ class CanaryCommand(GenericCommand):
         unpack = u32 if current_arch.ptrsize == 4 else u64
         sp = current_arch.sp
         for m in vmmap:
-            if not (m.permission & Permission.READ) or not (m.permission & Permission.WRITE):
+            if not (m.permission & Permission.READ):
+                continue
+            if not (m.permission & Permission.WRITE):
                 continue
             try:
                 data = read_memory(m.page_start, m.page_end - m.page_start)
@@ -15213,7 +15217,9 @@ class CanaryCommand(GenericCommand):
                 if prev_addr <= sp <= addr:
                     info("(Stack pointer is at {!s})".format(ProcessMap.lookup_address(sp)))
                 if path == "[stack]":
-                    info("Found at {!s} in {!r} (sp{:+#x})".format(ProcessMap.lookup_address(addr), path, addr - sp))
+                    info("Found at {!s} in {!r} (sp{:+#x})".format(
+                        ProcessMap.lookup_address(addr), path, addr - sp,
+                    ))
                 else:
                     info("Found at {!s} in {!r}".format(ProcessMap.lookup_address(addr), path))
                 prev_addr = addr
@@ -17620,14 +17626,18 @@ class SearchPatternCommand(GenericCommand):
         extra = " (phys)" if self.args.phys else ""
 
         # normal search and print
-        info("Searching for '{:s}' in {:#x}-{:#x}{:s}".format(Color.yellowify(patterns[0]), start, end, extra))
+        info("Searching for '{:s}' in {:#x}-{:#x}{:s}".format(
+            Color.yellowify(patterns[0]), start, end, extra,
+        ))
         ret = self.search_pattern_by_address(patterns[0], start, end)
         for found_loc in ret:
             self.print_loc(found_loc)
 
         # utf16 search and print
         if patterns[1] is not None:
-            info("Searching for '{:s}' in {:#x}-{:#x}{:s}".format(Color.yellowify(patterns[1]), start, end, extra))
+            info("Searching for '{:s}' in {:#x}-{:#x}{:s}".format(
+                Color.yellowify(patterns[1]), start, end, extra,
+            ))
             ret = self.search_pattern_by_address(patterns[1], start, end)
             for found_loc in ret:
                 self.print_loc(found_loc)
@@ -17638,9 +17648,13 @@ class SearchPatternCommand(GenericCommand):
 
         # normal search and print
         if section_name == "":
-            info("Searching for '{:s}' in {:s}{:s}".format(Color.yellowify(patterns[0]), "whole memory", extra))
+            info("Searching for '{:s}' in {:s}{:s}".format(
+                Color.yellowify(patterns[0]), "whole memory", extra,
+            ))
         else:
-            info("Searching for '{:s}' in {:s}{:s}".format(Color.yellowify(patterns[0]), section_name, extra))
+            info("Searching for '{:s}' in {:s}{:s}".format(
+                Color.yellowify(patterns[0]), section_name, extra,
+            ))
         self.search_pattern_by_section(patterns[0], section_name)
 
         # utf16 search and print
@@ -95286,11 +95300,7 @@ class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
         for section in ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True):
             if not section.permission & Permission.READ:
                 continue
-
-            start = section.page_start
-            end = section.page_end
-
-            locs += self.search_pattern_by_address(pattern, start, end)
+            locs += self.search_pattern_by_address(pattern, section.page_start, section.page_end)
 
         for loc, _ustr in locs:
             self.xref_telescope(AddressUtil.format_address(loc), depth - 1, [loc] + history)
