@@ -1036,20 +1036,12 @@ class Color:
             return text
 
         colors = Color.colors
-        msg = [colors[attr] for attr in attrs.split() if attr in colors]
-        msg.append(str(text))
-        if colors["bold"] in msg:
-            msg.append(colors["bold_off"])
-        if colors["highlight"] in msg:
-            msg.append(colors["highlight_off"])
-        if colors["italic"] in msg:
-            msg.append(colors["italic_off"])
-        if colors["underline"] in msg:
-            msg.append(colors["underline_off"])
-        if colors["blink"] in msg:
-            msg.append(colors["blink_off"])
-        msg.append(colors["normal"])
-        return "".join(msg)
+        escapes = [colors[attr] for attr in attrs.split() if attr in colors]
+        if len(escapes) == 0:
+            return text
+
+        out = "".join(escapes) + str(text) + colors["normal"]
+        return out
 
     @staticmethod
     def colorify_hex(value, attrs):
