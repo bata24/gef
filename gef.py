@@ -17364,7 +17364,7 @@ class SearchPatternCommand(GenericCommand):
 
     _cmdline_ = "search-pattern"
     _category_ = "03-a. Memory - Search"
-    _aliases_ = ["xfind"]
+    _aliases_ = ["xfind", "xf"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--hex", action="store_true",
