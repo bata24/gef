@@ -97950,21 +97950,23 @@ class GefUtil:
         def is_exe(fpath):
             return os.path.isfile(fpath) and os.access(fpath, os.X_OK)
 
-        fpath = os.path.split(program)[0]
-        if fpath:
+        if os.path.split(program)[0]: # check dirname
             if is_exe(program):
                 return program
         else:
-            env_path = os.getenv("PATH")
-            if not env_path:
-                env_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-            env_path_list = env_path.split(os.pathsep)
-            env_path_list += ["/usr/local/bin"] # for rp-lin, vmlinux-to-elf
-            for path in env_path_list:
-                path = path.strip('"')
-                exe_file = os.path.join(path, program)
+            # search from PATH
+            env_path_default = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            env_path = os.getenv("PATH", env_path_default)
+            env_path = env_path.split(os.pathsep)
+
+            if "/usr/local/bin" not in env_path:
+                env_path += ["/usr/local/bin"] # for rp-lin, vmlinux-to-elf
+
+            for path in env_path:
+                exe_file = os.path.join(path.strip('"'), program)
                 if is_exe(exe_file):
                     return exe_file
+
         raise FileNotFoundError("Missing file `{:s}`".format(program))
 
     @staticmethod
@@ -98088,30 +98090,44 @@ class Gef:
 
     @staticmethod
     def fix_venv():
+        def create_skip_config():
+            # If .venv-gef is in the default location, it is likely that user simply forgot to activate venv.
+            # Therefore, for convenience, I will not create skip-venv-check.
+            default_venv = os.path.join(os.path.dirname(GEF_FILEPATH), ".venv-gef")
+            if os.path.exists(default_venv):
+                return
+
+            skip_config = os.path.join(GEF_TEMP_DIR, "skip-venv-check")
+            open(skip_config, "w").close()
+            return
+
         # venv check is very slow, so skip if unneeded
         skip_config = os.path.join(GEF_TEMP_DIR, "skip-venv-check")
         if os.path.exists(skip_config):
             return
 
+        # check python3 command to get prefix
         try:
             pythonbin = GefUtil.which("python3")
         except FileNotFoundError:
-            open(skip_config, "w").close()
+            create_skip_config()
             return
 
+        # check prefix
         cmds = [pythonbin, "-c", "import os,sys;print(sys.prefix)"]
         PREFIX = String.gef_pystring(subprocess.check_output(cmds)).strip("\\n")
-        if PREFIX != sys.base_prefix:
-            cmds = [pythonbin, "-c", "import os,sys;print(os.linesep.join(sys.path).strip())"]
-            SITE_PACKAGES_DIRS = subprocess.check_output(cmds).decode("utf-8").split()
+        if PREFIX == sys.base_prefix:
+            create_skip_config()
+            return
 
-            to_add = []
-            for path in SITE_PACKAGES_DIRS:
-                if path not in sys.path:
-                    to_add.append(path)
-            sys.path = to_add + sys.path
-        else:
-            open(skip_config, "w").close()
+        # add path
+        cmds = [pythonbin, "-c", "import os,sys;print(os.linesep.join(sys.path).strip())"]
+        SITE_PACKAGES_DIRS = subprocess.check_output(cmds).decode("utf-8").split()
+        to_add = []
+        for path in SITE_PACKAGES_DIRS:
+            if path not in sys.path:
+                to_add.append(path)
+        sys.path = to_add + sys.path
         return
 
     @staticmethod
