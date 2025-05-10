@@ -597,10 +597,10 @@ I will consider it, so please report it on the issue page.
 But this is a personal development, so I have the final decision. I appreciate your understanding.
 
 ## What information should I provide when reporting a issue?
-You will need a screenshot or a copy of the terminal output when the problem occurred.
-In addition, I am glad if there are the results of the `gef version` command and `gef status` command.
+Please provide a screenshot or a copy of the terminal output when the issue occurred.
 
-Additionally, if the issue is related to kernel debugging, please provide a set of environments (`run.sh`, `bzImage`, etc.) or where to get them.
+- Additionally, include the results of the `gef version` and `gef status` commands.
+- If the issue is related to kernel debugging, please also provide your environment files (such as `run.sh`, `bzImage`, etc.) or information on where they can be obtained.
 
 ## Is it okay to fork and modify?
 Yes. However, please follow the license.

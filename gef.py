@@ -73301,7 +73301,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class SlabContainsCommand(GenericCommand):
-    """Resolve the slab cache (kmem_cache) that an object belongs to."""
+    """Resolve the slab cache (kmem_cache) that an object belongs to (for slab/slub/slub-tiny)."""
 
     _cmdline_ = "slab-contains"
     _category_ = "08-e. Qemu-system Cooperation - Linux Allocator"
@@ -97670,6 +97670,14 @@ class GefTmuxSetupCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-r", "--reset", action="store_true", help="reset all panes.")
     _syntax_ = parser.format_help()
+
+    _note_ = [
+        "`screen` is no longer supported.",
+        "`tmux` settings are predefined and cannot be customized in this command.",
+        "If you want to customize it, edit tmux_setup.py and run `source /path/to/tmux_setup.py`.",
+        "It can be found in https://github.com/bata24/gef/blob/dev/dev/tmux/tmux_setup.py."
+    ]
+    _note_ = "\n".join(_note_)
 
     @staticmethod
     def get_redirect_configs():
