@@ -21698,12 +21698,21 @@ class GlibcHeapTryFreeCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
                         help="the memory address to be freed.")
-    parser.add_argument("-F", "--free-addr", dest="caller_address", type=AddressUtil.parse_address,
+    parser.add_argument("-a", "--free-addr", dest="caller_address", type=AddressUtil.parse_address,
                         help="the memory address of free().")
     parser.add_argument("-s", "--skip-emulation", "--save", action="store_true",
                         help="do not run, just save the script.")
+    parser.add_argument("-c", "--command", action="append", default=[],
+                        help="command to be executed after emulation succeeded, with the memory state temporarily reflected.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} 0x555555579930",
+        "{0:s} -a 0x7ffff7cadd30 0x555555579930    # need free address when no symbol",
+        '{0:s} -c "visual-heap" 0x555555579930     # execute visual-heap',
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
         "It may work even if NOT Glibc (untested).",
@@ -21721,40 +21730,41 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         return
 
     def get_caller_address(self, name):
+        # user specified address
         if self.args.caller_address is not None:
             return self.args.caller_address
 
+        # searching through symbols
         caller_address = None
 
-        # PLT pattern
+        # PLT pattern (e.g., &'malloc@plt')
         try:
             caller_address = int(gdb.parse_and_eval("&'{:s}@plt'".format(name)))
         except gdb.error:
             pass
-
-        # If you use PLT, only userland binary's PLT is valid (libc PLT is invalid)
         if caller_address is not None:
+            # If you use PLT, only userland binary's PLT is valid (libc PLT is invalid)
             x = ProcessMap.lookup_address(caller_address)
             if x and x.section and x.section.path == Path.get_filepath(append_proc_root_prefix=False):
                 return caller_address
 
+        # real address (not PLT)
         try:
             caller_address = int(gdb.parse_and_eval("&{:s}".format(name)))
         except gdb.error:
             pass
-
         return caller_address
 
     def make_patch_info(self, caller_address, arg1, arg2):
-        # caller patch
+        """Prior to running unicorn-emulate, generate a patch to be applied."""
         patches = {}
         if is_x86_64():
-            target_regs = {"$rdi": arg1, "$rsi": arg2, "$rax": caller_address}
+            regs_new = {"$rdi": arg1, "$rsi": arg2, "$rax": caller_address}
             patches[current_arch.pc] = "ffd0" # call rax
             stop_address = current_arch.pc + 2
 
         elif is_x86_32():
-            target_regs = {"$edi": arg1, "$esi": arg2, "$eax": caller_address}
+            regs_new = {"$edi": arg1, "$esi": arg2, "$eax": caller_address}
             patches[current_arch.pc] = "5657ffd0" # push esi; push edi; call eax
             stop_address = current_arch.pc + 4
 
@@ -21786,29 +21796,30 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                     pass
             # Check current $pc is thumb2
             if current_arch.is_thumb():
-                target_regs = {"$r0": arg1, "$r1": arg2, "$r2": caller_address}
+                regs_new = {"$r0": arg1, "$r1": arg2, "$r2": caller_address}
                 patches[current_arch.pc & ~1] = "9047" # blx r2
                 stop_address = (current_arch.pc & ~1) + 2
             else:
-                target_regs = {"$r0": arg1, "$r1": arg2, "$r2": caller_address}
+                regs_new = {"$r0": arg1, "$r1": arg2, "$r2": caller_address}
                 patches[current_arch.pc] = "32ff2fe1" # blx r2
                 stop_address = current_arch.pc + 4
 
         elif is_arm64():
-            target_regs = {"$x0": arg1, "$x1": arg2, "$x2": caller_address}
+            regs_new = {"$x0": arg1, "$x1": arg2, "$x2": caller_address}
             patches[current_arch.pc] = "40003fd6" # blr x2
             stop_address = current_arch.pc + 4
 
         # create namedtuple
         dic = {}
-        dic["target_regs"] = {r: v for r, v in target_regs.items() if v is not None}
-        dic["regs_value"] = {r: get_register(r) for r, v in target_regs.items() if v is not None}
+        dic["regs_new"] = {r: v for r, v in regs_new.items() if v is not None}
+        dic["regs_old"] = {r: get_register(r) for r, v in regs_new.items() if v is not None}
         dic["patches"] = patches
         dic["stop_address"] = stop_address
         Info = collections.namedtuple("Info", dic.keys())
         return Info(*dic.values())
 
     def get_reason(self, res):
+        """From the results of unicorn-emulate, get the reason why the run failed."""
         if "UC_ERR_READ_UNMAPPED" in res:
             return "Memory read error"
 
@@ -21851,10 +21862,10 @@ class GlibcHeapTryFreeCommand(GenericCommand):
 
         if "UC_ERR_INSN_INVALID" in res:
             return "Maybe try to execute unicorn unsupported instruction"
-
         return "???"
 
     def get_syscall(self, res):
+        """From the results of unicorn-emulate, get information about the system calls that were called."""
         # syscall=N is detected and displayed by unicorn-emulate.
         m = re.search(r"syscall=(\d+)", res)
         if not m:
@@ -21871,6 +21882,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         return syscall_num, syscall_name
 
     def get_allocated_address(self, res):
+        """From the results of unicorn-emulate, get the allocated address."""
         final_registers = res[res.find("Final registers"):]
         if is_x86_64():
             m = re.search(r"\$rax\s+=\s+(0x\S+)", final_registers)
@@ -21886,6 +21898,9 @@ class GlibcHeapTryFreeCommand(GenericCommand):
     def print_result(self, name, res):
         if "Emulation failed" in res:
             # fail
+            success = False
+
+            # The system call that could not be emulated
             syscall = self.get_syscall(res)
             if syscall:
                 err("Trace failed: system call emulation error: {:d} (={:s})".format(syscall[0], syscall[1]))
@@ -21896,18 +21911,40 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                 reason = self.get_reason(res)
                 err("{:s} failed: {:s}".format(name, Color.boldify(reason)))
         else:
+            # success
+            success = True
+
+            # The system call that could be emulated
             syscall = self.get_syscall(res)
             if syscall:
                 info("system call emulated: {:d} (={:s})".format(syscall[0], syscall[1]))
-            # success
+
             if name == "free":
                 ok("{:s} succeeded".format(name))
             else:
                 allocated_address = self.get_allocated_address(res)
                 ok("{:s} succeeded: {:s}".format(name, Color.colorify_hex(allocated_address, "bold")))
-        return
+        return success
+
+    def make_patch_info_from_emulation_result(self, res):
+        patches = {}
+        if "Modified memories (before | after)" in res:
+            modified_memories = res[res.find("Modified memories (before | after)"):]
+            modified_memories = Color.remove_color(modified_memories)
+            for line in modified_memories.splitlines():
+                # search pointer of `after`
+                if line.count("|") != 3:
+                    continue
+                addr = int(line.split("|")[0], 16)
+                after_memories = line.split("|")[-2]
+                values = [int(x, 16) for x in after_memories.strip().split()]
+                values = [x.to_bytes(current_arch.ptrsize, "little").hex() for x in values]
+                patches[addr] = "".join(values)
+        return patches
 
     def doit(self, name, arg1, arg2):
+        """For each of free, malloc, realloc, and calloc, generate a patch to memory,
+        emulate the execution, collect and interpret the output, and then undoe the patch."""
         caller_address = self.get_caller_address(name)
         if caller_address is None:
             err("Not found `{:s}`".format(name))
@@ -21918,7 +21955,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         info = self.make_patch_info(caller_address, arg1, arg2)
 
         # modify (registers, memories)
-        for regname, regvalue in info.target_regs.items():
+        for regname, regvalue in info.regs_new.items():
             gdb.execute("set {:s}={:#x}".format(regname, regvalue))
         for patch_addr, patch_code in info.patches.items():
             gdb.execute("patch hex {:#x} {:s}".format(patch_addr, patch_code), to_string=True)
@@ -21936,13 +21973,31 @@ class GlibcHeapTryFreeCommand(GenericCommand):
             pass
 
         # print
-        if not self.args.skip_emulation:
-            self.print_result(name, res)
+        if res and not self.args.skip_emulation:
+            success = self.print_result(name, res)
+
+            # temporarily execute command
+            if success and self.args.command:
+                # temporarily reflects changes in memory
+                patches = self.make_patch_info_from_emulation_result(res)
+                if patches:
+                    for addr, value in patches.items():
+                        gdb.execute("patch hex {:#x} {:s}".format(addr, value), to_string=not self.args.verbose)
+                # do command
+                for cmd in self.args.command:
+                    try:
+                        gdb.execute(cmd)
+                    except Exception:
+                        exc_type, exc_value, exc_traceback = sys.exc_info()
+                        gef_print(exc_value)
+                # revert (temporarily reflected memory)
+                if patches:
+                    gdb.execute("patch revert {:d}".format(len(patches) - 1), to_string=not self.args.verbose)
 
         # revert (registers, memories, thread locking)
-        for regname, regvalue in info.regs_value.items():
+        for regname, regvalue in info.regs_old.items():
             gdb.execute("set {:s}={:#x}".format(regname, regvalue))
-        gdb.execute("patch revert {:d}".format(len(info.patches) - 1), to_string=True)
+        gdb.execute("patch revert {:d}".format(len(info.patches) - 1), to_string=not self.args.verbose)
         return
 
     @parse_args
@@ -21965,12 +22020,21 @@ class GlibcHeapTryMallocCommand(GlibcHeapTryFreeCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address,
                         help="the size to be allocated.")
-    parser.add_argument("-F", "--malloc-addr", dest="caller_address", type=AddressUtil.parse_address,
+    parser.add_argument("-a", "--malloc-addr", dest="caller_address", type=AddressUtil.parse_address,
                         help="the memory address of malloc().")
     parser.add_argument("-s", "--skip-emulation", "--save", action="store_true",
                         help="do not run, just save the script.")
+    parser.add_argument("-c", "--command", action="append", default=[],
+                        help="command to be executed after emulation succeeded, with the memory state temporarily reflected.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} 0x120",
+        "{0:s} -a 0x7ffff7cad650 0x120    # need malloc address when no symbol",
+        '{0:s} -c "visual-heap" 0x120     # execute visual-heap',
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
 
     @parse_args
     @only_if_gdb_running
@@ -21994,12 +22058,21 @@ class GlibcHeapTryReallocCommand(GlibcHeapTryFreeCommand):
                         help="the memory address to be re-allocated.")
     parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address,
                         help="the size to be re-allocated.")
-    parser.add_argument("-F", "--realloc-addr", dest="caller_address", type=AddressUtil.parse_address,
+    parser.add_argument("-a", "--realloc-addr", dest="caller_address", type=AddressUtil.parse_address,
                         help="the memory address of realloc().")
     parser.add_argument("-s", "--skip-emulation", "--save", action="store_true",
                         help="do not run, just save the script.")
+    parser.add_argument("-c", "--command", action="append", default=[],
+                        help="command to be executed after emulation succeeded, with the memory state temporarily reflected.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} 0x555555579930 0x120",
+        "{0:s} -a 0x7ffff7cae0a0 0x555555579930 0x120    # need realloc address when no symbol",
+        '{0:s} -c "visual-heap" 0x555555579930 0x120     # execute visual-heap',
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
 
     @parse_args
     @only_if_gdb_running
@@ -22023,12 +22096,21 @@ class GlibcHeapTryCallocCommand(GlibcHeapTryFreeCommand):
                         help="the size to be re-allocated.")
     parser.add_argument("nmemb", metavar="NMEMB", type=AddressUtil.parse_address,
                         help="the number of blocks.")
-    parser.add_argument("-F", "--calloc-addr", dest="caller_address", type=AddressUtil.parse_address,
+    parser.add_argument("-a", "--calloc-addr", dest="caller_address", type=AddressUtil.parse_address,
                         help="the memory address of calloc().")
     parser.add_argument("-s", "--skip-emulation", "--save", action="store_true",
                         help="do not run, just save the script.")
+    parser.add_argument("-c", "--command", action="append", default=[],
+                        help="command to be executed after emulation succeeded, with the memory state temporarily reflected.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} 0x10 1",
+        "{0:s} -a 0x7ffff7cae7a0 0x10 1    # need calloc address when no symbol",
+        '{0:s} -c "visual-heap" 0x10 1     # execute visual-heap',
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
 
     @parse_args
     @only_if_gdb_running
