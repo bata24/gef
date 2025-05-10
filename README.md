@@ -50,7 +50,7 @@ Numerous other commands have been added and enhanced. Enjoy!
     - This path is also registered in `/root/.gdbinit`.
     - If you want to use a different user or location, move or edit both files manually.
     - For more installation option, see [docs/FAQ.md](docs/FAQ.md).
-        - Options include using `venv`.
+        - Options include using `venv` or `uv`.
         - A minimum installation script is also available.
 
 ### Upgrade

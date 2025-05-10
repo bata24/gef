@@ -49,17 +49,22 @@ It should work for most functionalities, though some commands may not be availab
 The process is straightforward: download `gef.py`, place it in the appropriate location, and add its path to `.gdbinit`.
 You could also do the same thing manually.
 
-## What is `install-venv.sh`?
-This is the virtual environment (`venv`) version of `install.sh`.
+## What is `install-venv.sh` or `install-uv.sh`?
+They are the virtual environment (`venv`) version of `install.sh`.
 
-This will install the same packages as `install.sh`.
+They will install the same packages as `install.sh`.
 The only difference is that the Python package will be installed into the `venv` environment.
-By default, it will be installed into `/root/.venv-gef`.
+By default, they will be installed into `/root/.venv-gef`.
 
 Usage:
 ```
 # For any Ubuntu version
+
+# If you want to install using python3-venv
 wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-venv.sh -O- | sh
+
+# If you want to install using uv
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sh
 ```
 
 Before starting `gdb`, you need to execute the following command to activate the `venv` environment:
@@ -78,12 +83,12 @@ If you want to use GEF as a user other than root, add `source /path/to/.gdbinit-
 ## I don't want to specify the `--break-system-packages` option during installation.
 You have some options:
 - Use [`install-minimal.sh`](../install-minimal.sh) to skip installing with `pip`.
-- Use [`install-venv.sh`](../install-venv.sh) to avoid affecting the global environment.
+- Use [`install-venv.sh`](../install-venv.sh) or [`install-uv.sh`](../install-uv.sh) to avoid affecting the global environment.
 - Install inside docker to prevent impact on the host environment.
 - Install inside another virtual machine.
 
 ## How can I install GEF offline?
-Please refer to [`install.sh`](../install.sh), [`install-minimal.sh`](../install-minimal.sh) or [`install-venv.sh`](../install-venv.sh) and set it up manually.
+Please refer to [`install.sh`](../install.sh) or [`install-minimal.sh`](../install-minimal.sh) and set it up manually.
 
 Note: GEF is designed to have as few dependencies as possible.
 Many commands should work with just `gef.py` without any additional external tools.
@@ -108,31 +113,31 @@ To use these commands fully, you need to manually install the necessary packages
 |`diffo colordiff`|`colordiff`|-|-|
 |`diffo git-diff`|`git`|-|-|
 |`sixel-memory`|`imagemagick`|-|-|
-|`sixel-memory -b`|`python3-pip`|`pillow`, `pyzbar`|-|
+|`sixel-memory -b`|-|`pillow`, `pyzbar`|-|
 |`vdump`|`imagemagick`|-|-|
-|`ktask -S`|`ruby-dev`|-|`seccomp-tools`|
-|`seccomp-tools`|`ruby-dev`|-|`seccomp-tools`|
-|`onegadget`|`ruby-dev`|-|`one_gadget`|
-|Progress Indicator|`python3-pip`|`tqdm`|-|
-|`angr`|`python3-pip`|`angr`|-|
-|`asm-list`|`python3-pip`|`capstone`|-|
-|`capstone-disassemble`|`python3-pip`|`capstone`|-|
-|`dasm`|`python3-pip`|`capstone`|-|
-|`i8086` mode|`python3-pip`|`capstone`|-|
-|`unicorn-emulate`|`python3-pip`|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
-|`heap try-free`|`python3-pip`|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
-|`heap try-malloc`|`python3-pip`|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
-|`heap try-realloc`|`python3-pip`|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
-|`heap try-calloc`|`python3-pip`|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
-|`asm`|`python3-pip`|`keystone-engine`|-|
-|`base-n-decode`|`python3-pip`|`codext`|-|
-|`base-n-encode`|`python3-pip`|`codext`|-|
-|`crc`|`python3-pip`|`crccheck`|-|
-|`hash`|`python3-pip`|`pycryptodome`|-|
-|`uefi-ovmf-info`|`python3-pip`|`crccheck`|-|
-|`filetype-memory`|`python3-pip`, `file`|`magika`|-|
-|`ropper`|`python3-pip`|`ropper`|-|
-|`vmlinux-to-elf-apply`|`python3-pip`, `git`|`vmlinux-to-elf`|-|
+|`ktask -S`|-|-|`seccomp-tools`|
+|`seccomp-tools`|-|-|`seccomp-tools`|
+|`onegadget`|-|-|`one_gadget`|
+|Progress Indicator|-|`tqdm`|-|
+|`angr`|-|`angr`|-|
+|`asm-list`|-|`capstone`|-|
+|`capstone-disassemble`|-|`capstone`|-|
+|`dasm`|-|`capstone`|-|
+|`i8086` mode|-|`capstone`|-|
+|`unicorn-emulate`|-|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
+|`heap try-free`|-|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
+|`heap try-malloc`|-|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
+|`heap try-realloc`|-|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
+|`heap try-calloc`|-|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
+|`asm`|-|`keystone-engine`|-|
+|`base-n-decode`|-|`codext`|-|
+|`base-n-encode`|-|`codext`|-|
+|`crc`|-|`crccheck`|-|
+|`hash`|-|`pycryptodome`|-|
+|`uefi-ovmf-info`|-|`crccheck`|-|
+|`filetype-memory`|`file`|`magika`|-|
+|`ropper`|-|`ropper`|-|
+|`vmlinux-to-elf-apply`|-|`vmlinux-to-elf`|-|
 
 ## Why are there so many packages to install when `apt-get install` of `install.sh`?
 Because the `binwalk` package has a huge number of dependencies.

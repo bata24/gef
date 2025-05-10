@@ -25,17 +25,23 @@ echo "[+] apt"
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata
 apt-get install -y gdb-multiarch wget
-apt-get install -y binutils python3-pip python3-venv ruby-dev git file colordiff imagemagick
+apt-get install -y binutils python3-dev gcc ruby-dev git file colordiff imagemagick
 apt-get install -y binwalk
+
+echo "[+] Install uv"
+if [ -z "$(command -v uv)" ]; then
+    wget -qO- https://astral.sh/uv/install.sh | sh
+    . $HOME/.local/bin/env
+fi
 
 echo "[+] Setup venv"
 if [ ! -e "${GEF_VENV_PATH}" ]; then
-    python3 -m venv -- "${GEF_VENV_PATH}"
+    uv venv "${GEF_VENV_PATH}"
 fi
 . "${GEF_VENV_PATH}/bin/activate"
 
 echo "[+] pip3"
-pip3 install setuptools crccheck unicorn capstone ropper keystone-engine tqdm magika codext angr pycryptodome pillow pyzbar
+uv pip install setuptools crccheck unicorn capstone ropper keystone-engine tqdm magika codext angr pycryptodome pillow pyzbar
 
 echo "[+] Install seccomp-tools"
 if [ -z "$(command -v seccomp-tools)" ]; then
@@ -58,8 +64,8 @@ fi
 
 echo "[+] Install vmlinux-to-elf"
 if [ -z "$(command -v vmlinux-to-elf)" ]; then
-    pip3 install --upgrade lz4 zstandard git+https://github.com/clubby789/python-lzo@b4e39df
-    pip3 install --upgrade git+https://github.com/marin-m/vmlinux-to-elf
+    uv pip install --upgrade lz4 zstandard git+https://github.com/clubby789/python-lzo@b4e39df
+    uv pip install --upgrade git+https://github.com/marin-m/vmlinux-to-elf
 fi
 
 echo "[+] Download gef"
