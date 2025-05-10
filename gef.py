@@ -21986,6 +21986,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                 # do command
                 for cmd in self.args.command:
                     try:
+                        gef_print(titlify(cmd, color="bold", msg_color="bold"))
                         gdb.execute(cmd)
                     except Exception:
                         exc_type, exc_value, exc_traceback = sys.exc_info()
