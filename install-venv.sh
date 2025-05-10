@@ -27,7 +27,9 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata
 apt-get install -y gdb-multiarch wget binutils python3-pip python3-venv ruby-dev git file colordiff binwalk imagemagick
 
 echo "[+] Setup venv"
-python3 -m venv -- "${GEF_VENV_PATH}"
+if [ ! -e "${GEF_VENV_PATH}" ]; then
+    python3 -m venv -- "${GEF_VENV_PATH}"
+fi
 . "${GEF_VENV_PATH}/bin/activate"
 
 echo "[+] pip3"
@@ -35,25 +37,25 @@ pip3 install setuptools crccheck unicorn capstone ropper keystone-engine tqdm ma
 
 echo "[+] Install seccomp-tools"
 if [ -z "$(command -v seccomp-tools)" ]; then
-    gem install seccomp-tools
+    gem install -i "${GEF_VENV_PATH}" seccomp-tools
 fi
 
 echo "[+] Install one_gadget"
 if [ -z "$(command -v one_gadget)" ]; then
-    gem install one_gadget
+    gem install -i "${GEF_VENV_PATH}" one_gadget
 fi
 
 echo "[+] Install rp++"
 if [ "$(uname -m)" = "x86_64" ]; then
-    if [ -z "$(command -v rp-lin)" ] && [ ! -e /usr/local/bin/rp-lin ]; then
+    if [ -z "$(command -v rp-lin)" ]; then
         wget -q https://github.com/0vercl0k/rp/releases/download/v2.1.4/rp-lin-clang.zip -P /tmp
-        unzip /tmp/rp-lin-clang.zip -d /usr/local/bin/
+        unzip /tmp/rp-lin-clang.zip -d "${GEF_VENV_PATH}/bin"
         rm /tmp/rp-lin-clang.zip
     fi
 fi
 
 echo "[+] Install vmlinux-to-elf"
-if [ -z "$(command -v vmlinux-to-elf)" ] && [ ! -e /usr/local/bin/vmlinux-to-elf ]; then
+if [ -z "$(command -v vmlinux-to-elf)" ]; then
     pip3 install --upgrade lz4 zstandard git+https://github.com/clubby789/python-lzo@b4e39df
     pip3 install --upgrade git+https://github.com/marin-m/vmlinux-to-elf
 fi
