@@ -98050,8 +98050,12 @@ class GefUtil:
             env_path = os.getenv("PATH", env_path_default)
             env_path = env_path.split(os.pathsep)
 
+            venv_bin_path = os.getenv("GEF_VENV_BIN_PATH")
+            if venv_bin_path:
+                env_path.insert(0, venv_bin_path)
+
             if "/usr/local/bin" not in env_path:
-                env_path += ["/usr/local/bin"] # for rp-lin, vmlinux-to-elf
+                env_path.insert(0, "/usr/local/bin") # for rp-lin, vmlinux-to-elf
 
             for path in env_path:
                 exe_file = os.path.join(path.strip('"'), program)
@@ -98181,6 +98185,17 @@ class Gef:
 
     @staticmethod
     def fix_venv():
+        def fast_path():
+            gef_venv_sys_path = os.getenv("GEF_VENV_SYS_PATH")
+            if gef_venv_sys_path:
+                to_add = []
+                for path in gef_venv_sys_path.split(":"):
+                    if path and path not in sys.path:
+                        to_add.append(path)
+                sys.path = to_add + sys.path
+                return True
+            return False
+
         def create_skip_config():
             # If .venv-gef is in the default location, it is likely that user simply forgot to activate venv.
             # Therefore, for convenience, I will not create skip-venv-check.
@@ -98192,33 +98207,41 @@ class Gef:
             open(skip_config, "w").close()
             return
 
-        # venv check is very slow, so skip if unneeded
-        skip_config = os.path.join(GEF_TEMP_DIR, "skip-venv-check")
-        if os.path.exists(skip_config):
+        def slow_path():
+            # venv check is very slow, so skip if unneeded
+            skip_config = os.path.join(GEF_TEMP_DIR, "skip-venv-check")
+            if os.path.exists(skip_config):
+                return
+
+            # GEF supports pyenv, venv, uv, etc.
+            # To achieve this, you need to run python outside of gdb.
+            # Modify sys.path based on the results of the execution.
+
+            # check python3 command to get prefix
+            try:
+                pythonbin = GefUtil.which("python3")
+            except FileNotFoundError:
+                create_skip_config()
+                return
+
+            # check prefix
+            cmds = [pythonbin, "-c", "import os,sys;print(sys.prefix)"]
+            PREFIX = String.gef_pystring(subprocess.check_output(cmds)).strip("\\n")
+            if PREFIX == sys.base_prefix:
+                create_skip_config()
+                return
+
+            # add path
+            cmds = [pythonbin, "-c", "import os,sys;print(os.linesep.join(sys.path).strip())"]
+            SITE_PACKAGES_DIRS = subprocess.check_output(cmds).decode("utf-8").split()
+            to_add = []
+            for path in SITE_PACKAGES_DIRS:
+                if path not in sys.path:
+                    to_add.append(path)
+            sys.path = to_add + sys.path
             return
 
-        # check python3 command to get prefix
-        try:
-            pythonbin = GefUtil.which("python3")
-        except FileNotFoundError:
-            create_skip_config()
-            return
-
-        # check prefix
-        cmds = [pythonbin, "-c", "import os,sys;print(sys.prefix)"]
-        PREFIX = String.gef_pystring(subprocess.check_output(cmds)).strip("\\n")
-        if PREFIX == sys.base_prefix:
-            create_skip_config()
-            return
-
-        # add path
-        cmds = [pythonbin, "-c", "import os,sys;print(os.linesep.join(sys.path).strip())"]
-        SITE_PACKAGES_DIRS = subprocess.check_output(cmds).decode("utf-8").split()
-        to_add = []
-        for path in SITE_PACKAGES_DIRS:
-            if path not in sys.path:
-                to_add.append(path)
-        sys.path = to_add + sys.path
+        fast_path() or slow_path()
         return
 
     @staticmethod

@@ -1,9 +1,7 @@
 #!/bin/sh -ex
 
 echo "[+] Initialize"
-if [ -z "${GDBINIT_PATH}" ]; then
-    GDBINIT_PATH="/root/.gdbinit"
-fi
+GDBINIT_PATH="/root/.gdbinit"
 GEF_PATH="${GDBINIT_PATH}-gef.py"
 
 echo "[+] User check"

@@ -1,9 +1,7 @@
 #!/bin/sh -ex
 
 echo "[+] Initialize"
-if [ -z "${GDBINIT_PATH}" ]; then
-    GDBINIT_PATH="/root/.gdbinit"
-fi
+GDBINIT_PATH="/root/.gdbinit"
 GEF_PATH="${GDBINIT_PATH}-gef.py"
 GEF_VENV_PATH="$(dirname ${GDBINIT_PATH})/.venv-gef"
 
@@ -79,4 +77,8 @@ fi
 
 echo "[+] INSTALLATION SUCCESSFUL"
 echo "[+] Run 'source ${GEF_VENV_PATH}/bin/activate' before starting gdb."
+
+GEF_VENV_SYS_PATH=$(python3 -c 'import sys,subprocess;a=subprocess.getoutput("gdb-multiarch -q -nx -ex \"pi sys.path\" -ex q");print(":".join(set(sys.path)-set(eval(a))-set([""])))')
+echo "[+] Or 'export GEF_VENV_SYS_PATH=${GEF_VENV_SYS_PATH}'"
+echo "       'export GEF_VENV_BIN_PATH=${GEF_VENV_PATH}/bin'"
 exit 0
