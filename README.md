@@ -42,7 +42,7 @@ Numerous other commands have been added and enhanced. Enjoy!
     wget -q https://raw.githubusercontent.com/bata24/gef/dev/install.sh -O- \
     | sed -e 's/pip3 install/pip3 install --break-system-packages/g' | sh
 
-    # For Ubuntu 22.10 and earlier
+    # For Ubuntu 22.10 or earlier
     wget -q https://raw.githubusercontent.com/bata24/gef/dev/install.sh -O- | sh
     ```
 - Note
