@@ -34,7 +34,7 @@ Numerous other commands have been added and enhanced. Enjoy!
 - Expected to work on Ubuntu 22.04-23.10.
 - Might work on Ubuntu 20.04-21.10, though not recommended.
 
-### Installation
+### Install
 - Run the following commands as `root`.
     ```bash
     # Ubuntu 23.04 or later restrict global Python package installation via pip3.
