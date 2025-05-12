@@ -2,8 +2,9 @@
 
 echo "[+] Initialize"
 GDBINIT_PATH="/root/.gdbinit"
-GEF_PATH="${GDBINIT_PATH}-gef.py"
-GEF_VENV_PATH="$(dirname ${GDBINIT_PATH})/.venv-gef"
+GEF_DIR="/root/.gef"
+GEF_PATH="${GEF_DIR}/gef.py"
+GEF_VENV_PATH="${GEF_DIR}/.venv-gef"
 
 echo "[+] User check"
 if [ "$(id -u)" != "0" ]; then
@@ -17,6 +18,11 @@ if [ -e "${GEF_PATH}" ]; then
     echo "[-] ${GEF_PATH} already exists. Please delete or rename."
     echo "[-] INSTALLATION FAILED"
     exit 1
+fi
+
+echo "[+] Create .gef direcotry"
+if [ ! -e "${GEF_DIR}" ]; then
+    mkdir -p "${GEF_DIR}"
 fi
 
 echo "[+] apt"
@@ -70,7 +76,7 @@ if [ ! -s "${GEF_PATH}" ]; then
 fi
 
 echo "[+] Setup gef"
-STARTUP_COMMAND="source ${GEF_PATH}"
+STARTUP_COMMAND="python sys.path.insert(0, \"${GEF_DIR}\"); from gef import *; Gef.main()"
 if [ ! -e "${GDBINIT_PATH}" ] || [ -z "$(grep "${STARTUP_COMMAND}" "${GDBINIT_PATH}")" ]; then
     echo "${STARTUP_COMMAND}" >> "${GDBINIT_PATH}"
 fi

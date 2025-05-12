@@ -17,7 +17,7 @@
 # About GEF's file or directory
 
 ## Where is `gef.py`?
-GEF (`gef.py`) is placed in `/root/.gdbinit-gef.py` by default. GEF is one file.
+GEF (`gef.py`) is placed in `/root/.gef/gef.py` by default. GEF is one file.
 
 ## What is `~/.gef.rc`?
 This is the GEF config file. Not present by default.
@@ -46,7 +46,7 @@ wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-minimal.sh -O- 
 Use this if you don't require all features (suitable for restricted environments).
 It should work for most functionalities, though some commands may not be available.
 
-The process is straightforward: download `gef.py`, place it in the appropriate location, and add its path to `.gdbinit`.
+The process is straightforward: download `gef.py`, place it in the appropriate location, and just add a line to `.gdbinit` to load it.
 You could also do the same thing manually.
 
 ## What is `install-venv.sh` or `install-uv.sh`?
@@ -54,7 +54,7 @@ They are the virtual environment (`venv`) version of `install.sh`.
 
 They will install the same packages as `install.sh`.
 The only difference is that the Python package will be installed into the `venv` environment.
-By default, they will be installed into `/root/.venv-gef`.
+By default, they will be installed into `/root/.gef/.venv-gef`.
 
 Usage:
 ```
@@ -67,18 +67,13 @@ wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-venv.sh -O- | s
 wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sh
 ```
 
-Before starting `gdb`, you need to execute the following command to activate the `venv` environment:
-```
-source /root/.venv-gef/bin/activate
-```
-
 
 # About the install
 
 ## How to change the location of GEF?
-Move `/root/.gdbinit-gef.py` and edit `/root/.gdbinit`.
+Move `/root/.gef/gef.py` and edit `/root/.gdbinit`.
 
-If you want to use GEF as a user other than root, add `source /path/to/.gdbinit-gef.py` to that user's `$HOME/.gdbinit`.
+If you want to use GEF as a user other than root, add `python sys.path.insert(0, "/path/to/.gef"); from gef import *; Gef.main()` to that user's `$HOME/.gdbinit`.
 
 ## I don't want to specify the `--break-system-packages` option during installation.
 You have some options:
@@ -419,12 +414,10 @@ If you're referring to system-wide `glibc`, you can resolve it with these steps:
 2. Add `set debug-file-directory /usr/lib/debug` in `~/.gdbinit`.
 
 ## The command to get the source (e.g. `ptr-mangle --source`) doesn't work.
-Please do not use tilde (`~`) in the path to specify `.gdbinit-gef.py` in `.gdbinit`.
+Please do not use tilde (`~`) in the path to specify the directory of `gef.py` in `.gdbinit`.
 
 Depending on the environment, python `inspect` module may not interpret tildes.
 I encountered this behavior in python 3.9.2 on debian 11.
-This is because `source ~/.gdbinit-gef.py` was written in `/root/.gdbinit`.
-I modified it to `source /root/.gdbinit-gef.py`, then it worked.
 
 ## When using qemu-user, an error occurs when continuing execution.
 Is the error something like this?

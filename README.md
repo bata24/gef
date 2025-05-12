@@ -46,8 +46,8 @@ Numerous other commands have been added and enhanced. Enjoy!
     wget -q https://raw.githubusercontent.com/bata24/gef/dev/install.sh -O- | sh
     ```
 - Note
-    - To simplify installation, `gef.py` is always installed to `/root/.gdbinit-gef.py`.
-    - This path is also registered in `/root/.gdbinit`.
+    - To simplify installation, `gef.py` is always installed to `/root/.gef/gef.py`.
+    - This path (directory) is also registered in `/root/.gdbinit`.
     - If you want to use a different user or location, move or edit both files manually.
     - For more installation option, see [docs/FAQ.md](docs/FAQ.md).
         - Options include using `venv` or `uv`.
@@ -55,7 +55,7 @@ Numerous other commands have been added and enhanced. Enjoy!
 
 ### Upgrade
 ```bash
-python3 /root/.gdbinit-gef.py --upgrade
+python3 /root/.gef/gef.py --upgrade
 ```
 
 - Note
@@ -63,8 +63,10 @@ python3 /root/.gdbinit-gef.py --upgrade
 
 ### Uninstall
 ```bash
-rm -f /root/.gdbinit-gef.py /root/.gef.rc
-sed -i -e '/source \/root\/.gdbinit-gef.py/d' /root/.gdbinit
+rm -rf /root/.gef
+rm -f /root/.gef.rc
+rm -rf /tmp/gef
+sed -i -e '/from gef import/d' /root/.gdbinit
 ```
 
 ### Dependencies
