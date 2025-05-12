@@ -95,6 +95,7 @@ print("Loading GEF...")
 
 import abc
 import argparse
+import builtins
 import binascii
 import codecs
 import collections
@@ -332,7 +333,7 @@ class DisplayHook:
     @staticmethod
     def displayhook(o): # noqa
         """An alternative to the default display function."""
-        __builtins__._ = o # noqa
+        builtins._ = o # noqa
 
         if o is None:
             return
