@@ -32679,7 +32679,7 @@ class VMMapCommand(GenericCommand, BufferingOutput):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    def dump_entry(self, entry):
+    def dump_entry(self, entry, print_offset=False):
         # get color
         line_color = ""
         if entry.path.startswith("[stack]"):
@@ -32722,9 +32722,13 @@ class VMMapCommand(GenericCommand, BufferingOutput):
             lines.append(Color.colorify(entry.path, line_color))
         line = " ".join(lines)
 
-        # extra info
+        # offset info
         if not self.args.quiet:
-            # register info
+            if print_offset is not False:
+                line += Color.colorify(" {:+#x}".format(print_offset), line_color)
+
+        # register info
+        if not self.args.quiet:
             register_hints = []
             for regname in current_arch.all_registers:
                 regvalue = get_register(regname)
@@ -32753,13 +32757,6 @@ class VMMapCommand(GenericCommand, BufferingOutput):
         self.out.append(legend)
         return
 
-    def is_integer(self, n):
-        try:
-            int(n, 0)
-        except ValueError:
-            return False
-        return True
-
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("kgdb",))
@@ -32778,6 +32775,7 @@ class VMMapCommand(GenericCommand, BufferingOutput):
             # the memory map may be changed, so retry memory exploring in get_process_maps()
             Cache.reset_gef_caches(all=True)
 
+        # get maps
         vmmap = ProcessMap.get_process_maps(args.outer)
         if not vmmap:
             for line in gdb.execute("info files", to_string=True).splitlines():
@@ -32788,34 +32786,67 @@ class VMMapCommand(GenericCommand, BufferingOutput):
             err("No address mapping information found")
             return
 
+        # color legend
         self.out = []
         if not Config.get_gef_setting("gef.disable_color"):
             self.show_legend()
 
+        # legend
         fmt = "{:{:d}s} {:{:d}s} {:{:d}s} {:{:d}s} {:4s} {:s}"
         memalign_size = 8 if args.outer else AddressUtil.get_memory_alignment()
         width =  memalign_size * 2 + 2
         legend = ["Start", width, "End", width, "Size", width, "Offset", width, "Perm", "Path"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
+        # for filter
+        try:
+            filter_addr1 = AddressUtil.parse_address(args.filter)
+        except gdb.error:
+            filter_addr1 = None
+        try:
+            filter_addr2 = int(args.filter, 0)
+        except ValueError:
+            filter_addr2 = None
+
+        # show each entry
         for entry in vmmap:
+            # no filter
             if not args.filter:
                 self.dump_entry(entry)
                 continue
-            if args.filter == "binary" and Path.get_filepath(append_proc_root_prefix=False) == entry.path:
-                self.dump_entry(entry)
-            elif args.filter in entry.path:
-                self.dump_entry(entry)
-            elif self.is_integer(args.filter):
-                addr = int(args.filter, 0)
-                if addr >= entry.page_start and addr < entry.page_end:
-                    self.dump_entry(entry)
 
+            # includes address
+            if filter_addr1 is not None:
+                if entry.page_start <= filter_addr1 < entry.page_end:
+                    self.dump_entry(entry, print_offset=filter_addr1 - entry.page_start)
+                    filter_addr1 = None # It never matches a different region
+                    continue
+
+            # range match
+            if filter_addr2 is not None:
+                if entry.page_start <= filter_addr2 < entry.page_end:
+                    self.dump_entry(entry, print_offset=filter_addr2 - entry.page_start)
+                    filter_addr2 = None # It never matches a different region
+                    continue
+
+            # `binary` case
+            if args.filter == "binary":
+                if Path.get_filepath(append_proc_root_prefix=False) == entry.path:
+                    self.dump_entry(entry)
+                    continue
+
+            # A simple match to the filter string
+            if args.filter in entry.path:
+                self.dump_entry(entry)
+                continue
+
+        # warning message
         if is_qemu_user() and not args.outer:
             if ProcessMap.__gef_use_info_proc_mappings__ is False:
                 self.info_add_out("Some areas may be undetectable due to heuristic search (auxv, registers, stack)")
                 self.info_add_out("Permissions use ELF header or default rw-; dynamic changes undetectable")
 
+        # print
         self.print_output(term=True)
         return
 
