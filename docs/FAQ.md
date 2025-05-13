@@ -26,6 +26,26 @@ Executing the `gef save` command saves the current settings to disk (`~/.gef.rc`
 The next time GEF starts, it will be automatically loaded and the settings will be reflected.
 This includes the current values of items configurable with `gef config` and user alias settings for commands.
 
+## What is `~/.gdbinit`?
+This is the command file that gdb will execute when it starts up.
+
+By including the following command to load `gef.py`, GEF will be loaded automatically.
+There are two styles for writing `.gdbinit`. Either way works.
+```
+# New style
+python sys.path.insert(0, "/root/.gef"); from gef import *; Gef.main()
+
+# Old style
+source /root/.gdbinit-gef.py
+```
+
+The former is a method to import GEF from Python.
+Since `*.pyc` is generated and cached, subsequent startups will be faster.
+This is the default setting for recent GEF versions.
+
+The latter is a method that has been used for a long time, where GEF is loaded directly.
+It takes time to load every time, but has the advantage that the command is easy.
+
 ## What is `/tmp/gef`?
 This is the directory where GEF temporarily stores files.
 
@@ -34,11 +54,29 @@ It will be created automatically the next time GEF starts.
 
 The variable `GEF_TEMP_DIR` is declared in `gef.py`, and can be changed if necessary.
 
+## What is `install.sh`?
+This is the installer that was used before I provided `venv`/`uv`-based installation. This installer is now DEPRECATED.
+
+Usage:
+```
+# Run the following commands as `root`
+
+# Ubuntu 23.04 or later restrict global Python package installation via pip3.
+# Use the --break-system-packages option.
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install.sh -O- \
+| sed -e 's/pip3 install/pip3 install --break-system-packages/g' | sh
+
+# For Ubuntu 22.10 or earlier
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install.sh -O- | sh
+```
+
 ## What is `install-minimal.sh`?
 This is an installer for running GEF in restricted environments where required packages cannot be installed due to various limitations.
 
 Usage:
 ```
+# Run the following commands as `root`
+
 # For any Ubuntu version
 wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-minimal.sh -O- | sh
 ```
@@ -49,15 +87,20 @@ It should work for most functionalities, though some commands may not be availab
 The process is straightforward: download `gef.py`, place it in the appropriate location, and just add a line to `.gdbinit` to load it.
 You could also do the same thing manually.
 
-## What is `install-venv.sh` or `install-uv.sh`?
+Since it will not install any Python packages, it will not create a `venv`.
+
+## What are `install-venv.sh` and `install-uv.sh`?
 They are the virtual environment (`venv`) version of `install.sh`.
 
 They will install the same packages as `install.sh`.
 The only difference is that the Python package will be installed into the `venv` environment.
 By default, they will be installed into `/root/.gef/.venv-gef`.
+External tools such as `rp-lin`, `seccomp-tools`, etc. are also installed under this directory.
 
 Usage:
 ```
+# Run the following commands as `root`
+
 # For any Ubuntu version
 
 # If you want to install using python3-venv
@@ -67,23 +110,31 @@ wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-venv.sh -O- | s
 wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sh
 ```
 
+## What is `gef.venv.conf`?
+This is a path information file that is required for GEF if you installed GEF using `install-venv.sh` or `install-uv.sh`.
+It is not generated if you use `install.sh` or `install-minimal.sh`.
+
+It contains three pieces of path information.
+- `GEF_VENV_GEM_HOME`
+    - By default, tools installed via `gem` will not work.
+    - GEF will set this specified paths to the `GEM_HOME` environment variable.
+- `GEF_VENV_SYS_PATH`
+    - By default, GEF searches for globally installed Python packages.
+    - GEF will prepend this specified paths to the package search directories.
+- `GEF_VENV_BIN_PATH`
+    - By default, GEF searches for executables using the `$PATH` environment variable (It is actually  bit more complicated).
+    - GEF will prepend the specified path to the search directories before searching.
+
 
 # About the install
 
 ## How to change the location of GEF?
-Move `/root/.gef/gef.py` and edit `/root/.gdbinit`.
+Move `/root/.gef` and edit `/root/.gdbinit`.
 
-If you want to use GEF as a user other than root, add `python sys.path.insert(0, "/path/to/.gef"); from gef import *; Gef.main()` to that user's `$HOME/.gdbinit`.
-
-## I don't want to specify the `--break-system-packages` option during installation.
-You have some options:
-- Use [`install-minimal.sh`](../install-minimal.sh) to skip installing with `pip`.
-- Use [`install-venv.sh`](../install-venv.sh) or [`install-uv.sh`](../install-uv.sh) to avoid affecting the global environment.
-- Install inside docker to prevent impact on the host environment.
-- Install inside another virtual machine.
+If necessary, please also modify `/root/.gef/gef.venv.conf`.
 
 ## How can I install GEF offline?
-Please refer to [`install.sh`](../install.sh) or [`install-minimal.sh`](../install-minimal.sh) and set it up manually.
+Please refer to [`install.sh`](../install.sh) or [`install-minimal.sh`](../install-minimal.sh) for dependencies and other requirements, and set them up manually.
 
 Note: GEF is designed to have as few dependencies as possible.
 Many commands should work with just `gef.py` without any additional external tools.
@@ -134,10 +185,10 @@ To use these commands fully, you need to manually install the necessary packages
 |`ropper`|-|`ropper`|-|
 |`vmlinux-to-elf-apply`|-|`vmlinux-to-elf`|-|
 
-## Why are there so many packages to install when `apt-get install` of `install.sh`?
+## Why are there so many packages to install when `apt-get install` in installer?
 Because the `binwalk` package has a huge number of dependencies.
 
-If you do not use `binwalk-memory` command, you do not need to install `binwalk` (Please modify `install.sh` manually).
+If you do not use `binwalk-memory` command, you do not need to install `binwalk` (Please modify installer manually).
 
 
 # About the host environment
@@ -145,8 +196,8 @@ If you do not use `binwalk-memory` command, you do not need to install `binwalk`
 ## Does GEF work properly on OS other than Ubuntu?
 Yes, it likely works well on most standard Linux distributions.
 
-I have used it on debian. Some users are running it on Arch Linux.
-Also it seems to be working fine on WSL2 (ubuntu) so far.
+I have used it on Debian. Some users are running it on Arch Linux.
+Also it seems to be working fine on WSL2 (Ubuntu) so far.
 However, I have not confirmed that all commands work correctly.
 
 ## Will this GEF work as a plugin for `hugsy/gef`?
@@ -159,7 +210,7 @@ Similarly, this GEF cannot be used at the same time as `peda` or `pwndbg`.
 Make sure you only load one of them.
 
 ## GDB will not load GEF.
-This is probably because gdb does not support cooperation with python3.
+This is probably because gdb does not support cooperation with `python3`.
 
 Consider building GDB from the latest tarball or Git repository.
 
@@ -170,7 +221,7 @@ Consider building GDB from the latest tarball or Git repository.
     ./configure --enable-targets=all --with-python=/usr/bin/python3
     make && make install
     ```
-- from git
+- from Git
     ```
     apt install -y libdebuginfod-dev libreadline-dev
     git clone --depth 1 https://github.com/bminor/binutils-gdb && cd binutils-gdb
@@ -181,7 +232,7 @@ Consider building GDB from the latest tarball or Git repository.
 ## When debugging with gdb, how can I display the source code of preinstalled libraries and commands?
 For Ubuntu 22.10 and later versions, it is recommended to use `debuginfod`.
 
-- Enable `debuginfod` (ubuntu 22.10~)
+- Enable `debuginfod` (Ubuntu 22.10~)
     ```
     export DEBUGINFOD_URLS="https://debuginfod.ubuntu.com"
     echo "set debuginfod enabled on" >> ~/.gdbinit
@@ -416,8 +467,8 @@ If you're referring to system-wide `glibc`, you can resolve it with these steps:
 ## The command to get the source (e.g. `ptr-mangle --source`) doesn't work.
 Please do not use tilde (`~`) in the path to specify the directory of `gef.py` in `.gdbinit`.
 
-Depending on the environment, python `inspect` module may not interpret tildes.
-I encountered this behavior in python 3.9.2 on debian 11.
+Depending on the environment, Python `inspect` module may not interpret tildes.
+I encountered this behavior in Python 3.9.2 on Debian 11.
 
 ## When using qemu-user, an error occurs when continuing execution.
 Is the error something like this?
@@ -483,7 +534,7 @@ Note: `slub-dump` command itself uses the `page` to `virt` conversion function t
 I avoid this problem by adding an option to skip this (`--skip-page2virt`).
 
 
-# About python interface
+# About Python interface
 
 ## Can I access each GEF command or alias instance from `python-interactive`?
 Yes, you can access it from `GCI` or `GAI`.
@@ -573,7 +624,7 @@ This is because three things are required:
 2. qemu-user
     - It needs implementation of gdb-stub.
 3. gdb
-    - It needs python3-support.
+    - It needs `python3` support.
 
 
 # About reporting, etc.

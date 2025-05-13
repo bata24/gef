@@ -70,7 +70,7 @@ fi
 
 echo "[+] Setup gef"
 STARTUP_COMMAND="python sys.path.insert(0, \"${GEF_DIR}\"); from gef import *; Gef.main()"
-if [ ! -e "${GDBINIT_PATH}" ] || [ -z "$(grep "${STARTUP_COMMAND}" "${GDBINIT_PATH}")" ]; then
+if [ ! -e "${GDBINIT_PATH}" ] || [ -z "$(grep "from gef import" "${GDBINIT_PATH}")" ]; then
     echo "${STARTUP_COMMAND}" >> "${GDBINIT_PATH}"
 fi
 

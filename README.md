@@ -35,23 +35,16 @@ Numerous other commands have been added and enhanced. Enjoy!
 - Might work on Ubuntu 20.04-21.10, though not recommended.
 
 ### Install
-- Run the following commands as `root`.
+- Run the following command.
     ```bash
-    # Ubuntu 23.04 or later restrict global Python package installation via pip3.
-    # Use the --break-system-packages option.
-    wget -q https://raw.githubusercontent.com/bata24/gef/dev/install.sh -O- \
-    | sed -e 's/pip3 install/pip3 install --break-system-packages/g' | sh
-
-    # For Ubuntu 22.10 or earlier
-    wget -q https://raw.githubusercontent.com/bata24/gef/dev/install.sh -O- | sh
+    wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sudo sh
     ```
 - Note
-    - To simplify installation, `gef.py` is always installed to `/root/.gef/gef.py`.
-    - This path (directory) is also registered in `/root/.gdbinit`.
-    - If you want to use a different user or location, move or edit both files manually.
-    - For more installation option, see [docs/FAQ.md](docs/FAQ.md).
-        - Options include using `venv` or `uv`.
-        - A minimum installation script is also available.
+    - To simplify installation, `gef.py` is always installed to `/root/.gef/gef.py`
+    - The required packages are in `/root/.gef/.venv-gef`.
+    - GEF's directory (`/root/.gef`) is also registered in `/root/.gdbinit`.
+    - If you want to use a different user or location, move or edit them manually.
+    - For more installation option (install grobally, minimal install, and use `venv`), see [docs/FAQ.md](docs/FAQ.md).
 
 ### Upgrade
 ```bash

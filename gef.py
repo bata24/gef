@@ -98054,9 +98054,8 @@ class GefUtil:
             env_path = os.getenv("PATH", env_path_default)
             env_path = env_path.split(os.pathsep)
 
-            venv_bin_path = os.getenv("GEF_VENV_BIN_PATH")
-            if venv_bin_path:
-                env_path.insert(0, venv_bin_path)
+            if hasattr(Gef, "GEF_VENV_BIN_PATH"):
+                env_path.insert(0, Gef.GEF_VENV_BIN_PATH)
 
             if "/usr/local/bin" not in env_path:
                 env_path.insert(0, "/usr/local/bin") # for rp-lin, vmlinux-to-elf
@@ -98190,13 +98189,31 @@ class Gef:
     @staticmethod
     def fix_venv():
         def fast_path():
-            gef_venv_sys_path = os.getenv("GEF_VENV_SYS_PATH")
-            if gef_venv_sys_path:
-                to_add = []
-                for path in gef_venv_sys_path.split(":"):
-                    if path and path not in sys.path:
-                        to_add.append(path)
-                sys.path = to_add + sys.path
+            gef_venv_conf = os.path.join(os.path.dirname(GEF_FILEPATH), "gef.venv.conf")
+            if not os.path.exists(gef_venv_conf):
+                return False
+
+            content = open(gef_venv_conf, "rb").read().decode()
+            for line in content.splitlines():
+                if line.startswith("GEF_VENV_SYS_PATH="):
+                    Gef.GEF_VENV_SYS_PATH = line[len("GEF_VENV_SYS_PATH="):]
+                    to_add = []
+                    for path in Gef.GEF_VENV_SYS_PATH.split(":"):
+                        if path and path not in sys.path:
+                            to_add.append(path)
+                    sys.path = to_add + sys.path
+                    continue
+
+                if line.startswith("GEF_VENV_BIN_PATH="):
+                    Gef.GEF_VENV_BIN_PATH = line[len("GEF_VENV_BIN_PATH="):] # used by GefUtil.which()
+                    continue
+
+                if line.startswith("GEF_VENV_GEM_HOME="):
+                    Gef.GEF_VENV_GEM_HOME = line[len("GEF_VENV_GEM_HOME="):]
+                    os.environ["GEM_HOME"] = Gef.GEF_VENV_GEM_HOME
+                    continue
+
+            if hasattr(Gef, "GEF_VENV_SYS_PATH"):
                 return True
             return False
 

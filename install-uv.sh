@@ -4,7 +4,9 @@ echo "[+] Initialize"
 GDBINIT_PATH="/root/.gdbinit"
 GEF_DIR="/root/.gef"
 GEF_PATH="${GEF_DIR}/gef.py"
+GEF_VENV_CONF_PATH="${GEF_DIR}/gef.venv.conf"
 GEF_VENV_PATH="${GEF_DIR}/.venv-gef"
+GEF_VENV_BIN_PATH="${GEF_VENV_PATH}/bin"
 
 echo "[+] User check"
 if [ "$(id -u)" != "0" ]; then
@@ -61,7 +63,7 @@ echo "[+] Install rp++"
 if [ "$(uname -m)" = "x86_64" ]; then
     if [ -z "$(command -v rp-lin)" ]; then
         wget -q https://github.com/0vercl0k/rp/releases/download/v2.1.4/rp-lin-clang.zip -P /tmp
-        unzip /tmp/rp-lin-clang.zip -d "${GEF_VENV_PATH}/bin"
+        unzip /tmp/rp-lin-clang.zip -d "${GEF_VENV_BIN_PATH}"
         rm /tmp/rp-lin-clang.zip
     fi
 fi
@@ -83,14 +85,15 @@ fi
 
 echo "[+] Setup gef"
 STARTUP_COMMAND="python sys.path.insert(0, \"${GEF_DIR}\"); from gef import *; Gef.main()"
-if [ ! -e "${GDBINIT_PATH}" ] || [ -z "$(grep "${STARTUP_COMMAND}" "${GDBINIT_PATH}")" ]; then
+if [ ! -e "${GDBINIT_PATH}" ] || [ -z "$(grep "from gef import" "${GDBINIT_PATH}")" ]; then
     echo "${STARTUP_COMMAND}" >> "${GDBINIT_PATH}"
 fi
 
-echo "[+] INSTALLATION SUCCESSFUL"
-echo "[+] Run 'source ${GEF_VENV_PATH}/bin/activate' before starting gdb."
-
+echo "[+] Setup venv path hint file"
 GEF_VENV_SYS_PATH=$(python3 -c 'import sys,subprocess;a=subprocess.getoutput("gdb-multiarch -q -nx -ex \"pi sys.path\" -ex q");print(":".join(set(sys.path)-set(eval(a))-set([""])))')
-echo "[+] Or 'export GEF_VENV_SYS_PATH=${GEF_VENV_SYS_PATH}'"
-echo "       'export GEF_VENV_BIN_PATH=${GEF_VENV_PATH}/bin'"
+echo "GEF_VENV_GEM_HOME=${GEF_VENV_PATH}" >> ${GEF_VENV_CONF_PATH}
+echo "GEF_VENV_SYS_PATH=${GEF_VENV_SYS_PATH}" >> ${GEF_VENV_CONF_PATH}
+echo "GEF_VENV_BIN_PATH=${GEF_VENV_BIN_PATH}" >> ${GEF_VENV_CONF_PATH}
+
+echo "[+] INSTALLATION SUCCESSFUL"
 exit 0
