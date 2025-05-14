@@ -55,7 +55,9 @@ It will be created automatically the next time GEF starts.
 The variable `GEF_TEMP_DIR` is declared in `gef.py`, and can be changed if necessary.
 
 ## What is `install.sh`?
-This is the installer that was used before I provided `venv`/`uv`-based installation. This installer is now DEPRECATED.
+This is the installer that was used before I provided `venv`/`uv`-based installation.
+
+This installer is not recommended now, but it still works.
 
 Usage:
 ```
@@ -128,10 +130,34 @@ It contains three pieces of path information.
 
 # About the install
 
+## How many ways are there to install GEF?
+- `uv`-based install
+    - This is the installation method provided by `install-uv.sh`.
+    - Use `uv` to install into an isolated environment.
+    - Install the full version so that you can use all the features that gef expects.
+    - This is the currently recommended installer for GEF.
+- `venv`-based install
+    - This is the installation method provided by `install-venv.sh`.
+    - Use `python3-venv` to install into an isolated environment.
+    - Install the full version so that you can use all the features that gef expects.
+- Minimal install
+    - This is the installation method provided by `install-minimal.sh`.
+    - Just download `gef.py` and put it in place.
+    - Since the content is very simple, it can also be done manually.
+- Normal install
+    - This is the installation method provided by `install.sh`.
+    - This was used before I provided `venv`/`uv`-based installation.
+    - The `pip` package is installed globally.
+    - This installer is not recommended now, but it still works.
+
+For an explanation of each installer, see [About GEF's file or directory](#about-gefs-file-or-directory).
+
 ## How to change the location of GEF?
 Move `/root/.gef` and edit `/root/.gdbinit`.
-
 If necessary, please also modify `/root/.gef/gef.venv.conf`.
+
+With appropriate modifications, it will probably work for normal user (non-`root` user) as well, but it is not recommended.
+Because the development has been conducted with `root` user, and operation with non-`root` user has not been verified.
 
 ## How can I install GEF offline?
 Please refer to [`install.sh`](../install.sh) or [`install-minimal.sh`](../install-minimal.sh) for dependencies and other requirements, and set them up manually.

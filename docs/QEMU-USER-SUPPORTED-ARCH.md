@@ -178,6 +178,7 @@ If you find it, please let me know in the issue page.
 - s390
     - [x] toolchain: `gcc-multilib-s390x-linux-gnu` via apt with `-m31` option.
     - [ ] toolchain (Ubuntu 23.04 or before): not found.
+    - [ ] toolchain (Ubuntu 25.04): not found.
     - [ ] qemu: not found.
     - [x] gdb: build from latest. See [docs/FAQ](FAQ.md#gdb-will-not-load-gef).
 - hppa64

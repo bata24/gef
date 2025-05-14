@@ -30,7 +30,7 @@ Numerous other commands have been added and enhanced. Enjoy!
 ## Setup
 
 ### Supported Environment
-- Verified on Ubuntu 24.04.
+- Verified on Ubuntu 24.04 and 25.04.
 - Expected to work on Ubuntu 22.04-23.10.
 - Might work on Ubuntu 20.04-21.10, though not recommended.
 
@@ -44,7 +44,7 @@ Numerous other commands have been added and enhanced. Enjoy!
     - The required packages are in `/root/.gef/.venv-gef`.
     - GEF's directory (`/root/.gef`) is also registered in `/root/.gdbinit`.
     - If you want to use a different user or location, move or edit them manually.
-    - For more installation option (install grobally, minimal install, and use `venv`), see [docs/FAQ.md](docs/FAQ.md).
+    - For more installation option (no `venv`, minimal install, and use `venv`), see [docs/FAQ.md](docs/FAQ.md).
 
 ### Upgrade
 ```bash
