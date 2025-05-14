@@ -31321,7 +31321,7 @@ class PatchPatternCommand(PatchCommand):
             if orig_mode == "virt":
                 enable_phys()
 
-        pats = bytes(PatternCreateCommand.generate_cyclic_pattern(args.length, args.charset))
+        pats = PatternCreateCommand.generate_cyclic_pattern(args.length, args.charset)
         if args.dry_run:
             info("Generated pattern: {}".format(pats))
             return
@@ -33188,7 +33188,7 @@ class PatternCreateCommand(GenericCommand):
             charset = String.str2bytes(charset)
 
         cycle = AddressUtil.get_memory_alignment()
-        return bytearray(itertools.islice(PatternCreateCommand.de_bruijn(charset, cycle), length))
+        return bytes(itertools.islice(PatternCreateCommand.de_bruijn(charset, cycle), length))
 
     @parse_args
     def do_invoke(self, args):
@@ -33198,9 +33198,11 @@ class PatternCreateCommand(GenericCommand):
             size = args.size
 
         info("Generating a pattern of {:d} bytes".format(size))
-        pattern_str = String.gef_pystring(PatternCreateCommand.generate_cyclic_pattern(size, args.charset))
+        pattern_str = PatternCreateCommand.generate_cyclic_pattern(size, args.charset)
         gef_print(pattern_str)
-        ok("Saved as '{:s}'".format(GefUtil.gef_convenience(pattern_str)))
+
+        conv_var = GefUtil.gef_convenience(String.bytes2str(pattern_str))
+        ok("Saved as '{:s}'".format(conv_var))
         return
 
 
