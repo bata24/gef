@@ -32799,14 +32799,17 @@ class VMMapCommand(GenericCommand, BufferingOutput):
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         # for filter
-        try:
-            filter_addr1 = AddressUtil.parse_address(args.filter)
-        except gdb.error:
-            filter_addr1 = None
-        try:
-            filter_addr2 = int(args.filter, 0)
-        except ValueError:
-            filter_addr2 = None
+        filter_addr1 = None
+        filter_addr2 = None
+        if args.filter is not None:
+            try:
+                filter_addr1 = AddressUtil.parse_address(args.filter)
+            except gdb.error:
+                pass
+            try:
+                filter_addr2 = int(args.filter, 0)
+            except ValueError:
+                pass
 
         # show each entry
         for entry in vmmap:
