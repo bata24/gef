@@ -1,6 +1,27 @@
 # Supported mode
 
-## With docker
+## Standard debugging
+- Usage
+    - Run `gdb-multiarch` or `gdb` as `root` user.
+        - e.g., `gdb-multiarch /PATH/TO/BINARY`, then `run [ARGS]`.
+    - Alternatively, `sudo gdb-multiarch /PATH/TO/BINARY`, then `run [ARGS]`.
+- Supported architectures
+    - Host
+        - x86 and x64
+        - Possibly ARM and ARM64
+- Notes
+    - The following instructions assume that you are the `root` user. Add `sudo` commands as needed.
+    - The instructions also assume that you use `gdb-multiarch`. Of course, you can use `gdb`.
+
+## Attaching to a running process
+- Usage
+    - Run `gdb-multiarch /PATH/TO/BINARY -p PID`.
+- Supported architectures
+    - Host
+        - x86 and x64
+        - Possibly ARM and ARM64
+
+## With Docker
 - Usage
     - Attach from outside of Docker using `gdb-multiarch /PATH/TO/BINARY -p PID`.
         - The `PID` refers to the process ID visible to the host.
@@ -8,11 +29,20 @@
     - Host
         - x86 and x64
         - Possibly ARM and ARM64
-- Note
+- Notes
     - You can also install and use GEF inside Docker.
     - However, the `--privileged` option is required when running `docker run` or `docker exec`.
 
-## With qemu-system
+## With Gdbserver
+- Usage
+    - Start `gdbserver localhost:1234 /PATH/TO/BINARY [ARGS]` to listen on port `0.0.0.0:1234`.
+    - Attach using `gdb-multiarch -ex 'target remote <IP address>:1234'`.
+- Supported architectures
+    - Host
+        - x86 and x64
+        - Possibly ARM and ARM64
+
+## With Qemu-system
 - Usage
     - Start `qemu-system` with the `-s` option to listen on `localhost:1234`.
         - If you want to change the listening port, use the `-gdb tcp::9876` option.
@@ -24,14 +54,14 @@
     - Guest
         - x86, x64, ARM and ARM64
         - i8086 (16-bit) is supported experimentally.
-- Note
+- Notes
     - Most commands should work fine unless `CONFIG_RANDSTRUCT=y`.
     - It works with any version of `qemu-system`, but the latest version is recommended.
     - It is preferable to run `qemu-system` on `localhost`.
         - If you run `qemu-system` remotely (another host), you can not handle SecureWorld's memory.
     - For more information, see [docs/FAQ.md](FAQ.md).
 
-## With qemu-user
+## With Qemu-user
 - Usage
     - Start `qemu-user` with the `-g 1234` option to listen on `localhost:1234`.
     - Attach using `gdb-multiarch /PATH/TO/BINARY -ex 'target remote localhost:1234'`.
@@ -41,7 +71,7 @@
         - x64
     - Guest (ELF)
         - See [docs/QEMU-USER-SUPPORTED-ARCH.md](QEMU-USER-SUPPORTED-ARCH.md) for details.
-- Note
+- Notes
     - It works with any version of `qemu-user`, but the latest version is recommended.
         - From QEMU 8.1 onwards, the `info proc mappings` command is supported in `qemu-user`, which significantly speeds up memory map generation.
         - However, in some architectures (e.g., `x86_64`), this may not be possible, and it will fall back to heuristic detection.
@@ -83,7 +113,7 @@
         - x64
     - Guest (ELF)
         - x86, x64, ARM and ARM64
-- Note
+- Notes
     - When debugging ARM64 binaries, the flag register is not available, so branch taken/not taken detection may be incorrect.
     - This is experimental support, so some commands may not work.
 
@@ -115,7 +145,7 @@
         - x64
     - Debuggee
         - x64
-- Note
+- Notes
     - You need `gdb` version 12.x or later.
     - This runs very slowly and is not recommended.
     - The `Ctrl+C` interrupt does not work; instead, use `echo g > /proc/sysrq-trigger` in the console.
@@ -138,7 +168,7 @@
         - x64
     - Debuggee
         - x64
-- Note
+- Notes
     - It runs faster than KGDB mode, and `Ctrl+C` interrupt works, but it is still slow.
     - Access to physical memory and control registers is possible thanks to the `monitor` command.
 
@@ -154,7 +184,7 @@
 - Note
     - This is experimental support, so some commands may not work.
 
-## With wine
+## With Wine
 - Usage
     - Run `winedbg --gdb --no-start /PATH/TO/BINARY` and attach using `gdb -ex 'target remote localhost:<port>'`.
         - It is recommended to use the `--no-start` option because pressing `Ctrl+C` without `--no-start` will terminate `gdb`.
@@ -163,11 +193,11 @@
        - x64
     - Guest (PE)
        - x86 and x64
-- Note
+- Notes
     - You must run `winedbg` on `localhost`.
     - This is experimental support, so some commands may not work.
 
-## With qemu-system for android kernel (when using Android Studio)
+## With Qemu-system for Android kernel (when using Android Studio)
 - Usage
     - Start as `emulator -avd <AVD_NAME> -no-audio -no-snapshot -qemu -s` to listen on `localhost:1234`.
         - If `-no-audio -no-snapshot` are not necessary, you can remove them.
@@ -179,7 +209,7 @@
     - Guest
         - x64
         - Possibly x86, ARM and ARM64
-- Note
+- Notes
     - This method sometimes fails.
         - For more information, see [docs/FAQ.md](FAQ.md).
         - If an issue occurs, try closing `gdb` and reconnecting.
@@ -203,7 +233,7 @@
     - Guest
         - x64
         - Possibly x86, ARM and ARM64
-- Note
+- Notes
     - To connect from another machine, you can forward the port further.
         - Run `socat TCP-LISTEN:9998,fork,reuseaddr TCP-CONNECT:localhost:9999` on the `Android Studio` host machine.
         - Attach using `gdb-multiarch 'target remote <Android Studio host machine's IP address>:9998'` from another machine.

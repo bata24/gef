@@ -35,16 +35,16 @@ Numerous other commands have been added and enhanced. Enjoy!
 - Might work on Ubuntu 20.04-21.10, though not recommended.
 
 ### Install
-- Run the following command.
+- Run the following command (**NEW**: this is the `venv + uv`-based installer).
     ```bash
     wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sudo sh
     ```
-- Note
+- Notes
     - To simplify installation, `gef.py` is always installed to `/root/.gef/gef.py`
-    - The required packages are in `/root/.gef/.venv-gef`.
+    - The required Python packages are in `/root/.gef/.venv-gef`.
     - GEF's directory (`/root/.gef`) is also registered in `/root/.gdbinit`.
-    - If you want to use a different user or location, move or edit them manually.
-    - For more installation option (no `venv`, minimal install, and use `venv`), see [docs/FAQ.md](docs/FAQ.md).
+    - If you want to use a different user or location, move or edit these files manually.
+    - For more installation options (no `venv`, minimal install, and using `venv + pip`), see [docs/FAQ.md](docs/FAQ.md).
 
 ### Upgrade
 ```bash
@@ -70,17 +70,17 @@ Please refer to [install.sh](install.sh) or [install-minimal.sh](install-minimal
 ### Supported Modes
 - Standard debugging
 - Attaching to a running process
-- Attaching to a process in an isolated namespace (e.g., from outside a Docker container)
-- Connecting to `gdbserver`
-- Connecting to the GDB stub of `qemu-system`
-- Connecting to the GDB stub of `qemu-user`
-- Connecting to the GDB stub of `Intel Pin`
-- Connecting to the GDB stub of `Intel SDE`
-- Connecting to the GDB stub of `qiling framework`
-- Connecting to the GDB stub of `KGDB` (requires GDB version 12 or later)
-- Connecting to the GDB stub of `VMWare`
-- Connecting to the GDB stub of `wine`
-- Debugging with Record and replay using `rr replay`
+- Attaching to a process in an isolated namespace (e.g., attaching from outside a **Docker** container)
+- Connecting to **Gdbserver**
+- Connecting to the GDB stub of **Qemu-system**
+- Connecting to the GDB stub of **Qemu-user**
+- Connecting to the GDB stub of **Intel Pin**
+- Connecting to the GDB stub of **Intel SDE**
+- Connecting to the GDB stub of **Qiling framework**
+- Connecting to the GDB stub of **KGDB** (requires GDB version 12 or later)
+- Connecting to the GDB stub of **VMWare**
+- Connecting to the GDB stub of **Wine**
+- Debugging with **Record and replay** (`rr replay`)
 
 For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md).
 
@@ -268,7 +268,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `c`: is the wrapper for native `c` if gdb is connected to `qemu-user` or `Intel Pin`.
     - When connecting to gdb stub of `qemu-user` or `Intel Pin`, gdb does not trap `SIGINT` during `continue`.
     - If you want to trap, you need to issue `SIGTRAP` on the `qemu-user` or `pin` side, but switching screens is annoying.
-    - This command realizes a pseudo `SIGTRAP` trap by trapping `SIGINT` on the python side and throwing `SIGTRAP` back to `qemu-user` or `Intel Pin`.
+    - This command realizes a pseudo `SIGTRAP` trap by trapping `SIGINT` on the Python side and throwing `SIGTRAP` back to `qemu-user` or `Intel Pin`.
     - It works only for local `qemu-user` or `Intel Pin`.
     - If you want to use native `c`, use the full form `continue`.
 
@@ -700,7 +700,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
            This command also displays the offset.
         5. When debugging a binary written in the Golang, the `p ((TYPE*) ADDRESS)[0]` command will be broken.
            This is because the Golang helper script is automatically loaded and overwrites the behavior of `p` command.
-           This command creates the display results on the python side, so we can display it without any problems.
+           This command creates the display results on the Python side, so we can display it without any problems.
 - `v8`: displays v8 tagged object.
     - ![](images/v8.png)
     - It also loads more commands from latest gdbinit for v8.
@@ -719,7 +719,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `gef reset-breakpoint`: shows and resets all breakpoints.
 - `gef arch-list`: displays defined architecture information.
     - ![](images/gef-arch-list.png)
-- `gef pyobj-list`: displays defined global python objects.
+- `gef pyobj-list`: displays defined global Python objects.
     - ![](images/gef-pyobj-list.png)
 - `gef avail-comm-list`: displays a list of commands which are available or not for the current architecture and gdb execution mode.
     - ![](images/gef-avail-comm-list.png)

@@ -35,7 +35,7 @@ qemu-system-x86_64 \
     -s
 ```
 
-- Note
+- Notes
     - Various default build configs for buildroot are in `configs/`.
         - When you run `make qemu_x86_64_defconfig`, it will be copied to `.config` in the top directory and used.
     - The build configuration for the Linux kernel is in `board/qemu/*/linux.config`.
@@ -125,7 +125,7 @@ qemu-system-arm \
     -s
 ```
 
-- Note
+- Notes
     - In the case of ARM (vexpress), there is no configuration in `board/qemu/arm-vexpress/linux.config`.
     - The following steps are necessary (I think), but I'm not sure what the correct way is.
         - Build once with buildroot
