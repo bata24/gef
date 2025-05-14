@@ -22846,10 +22846,11 @@ class RopperCommand(GenericCommand):
     def print_help(self):
         self.usage()
 
+        ropper_bin = GefUtil.which("ropper")
         if self._help_ is None:
-            self._help_ = subprocess.check_output("ropper --help", shell=True).decode("utf-8")
+            self._help_ = subprocess.check_output([ropper_bin, "--help"]).decode("utf-8")
         if self._help_examples_ is None:
-            self._help_examples_ = subprocess.check_output("ropper --help-examples", shell=True).decode("utf-8")
+            self._help_examples_ = subprocess.check_output([ropper_bin, "--help-examples"]).decode("utf-8")
 
         help_text = titlify("gef --help")
         help_text += self._help_
