@@ -36043,8 +36043,8 @@ class GotAllCommand(GenericCommand, BufferingOutput):
 class FormatStringBreakpoint(gdb.Breakpoint):
     """Inspect stack for format string."""
 
-    def __init__(self, func_address, func_name, num_args):
-        super().__init__("*{:#x}".format(func_address), type=gdb.BP_BREAKPOINT, internal=False)
+    def __init__(self, func_address, func_name, num_args, verbose=False):
+        super().__init__("*{:#x}".format(func_address), type=gdb.BP_BREAKPOINT, internal=not verbose)
         self.func_name = func_name
         self.num_args = num_args
         self.enabled = True
@@ -36060,16 +36060,18 @@ class FormatStringBreakpoint(gdb.Breakpoint):
             return False
 
         if addr.section.permission.value & Permission.WRITE:
-            content = read_cstring_from_memory(addr.value)
-            content = String.gef_pystring(String.str2bytes(content))
-            name = addr.info.name if addr.info else addr.section.path
             msg.append(Color.colorify("Format string helper", "bold yellow"))
+
+            content = read_cstring_from_memory(addr.value) or ""
             msg.append("Possible insecure format string: {:s}('{:s}'  ->  {:#x}: '{:s}')".format(
                 self.func_name, ptr, addr.value, content,
             ))
+
+            name = addr.info.name if addr.info else addr.section.path
             msg.append("Reason: '{:s}()' with format-string arg #{:d} is in writable page {:s} ({:s})".format(
                 self.func_name, self.num_args, str(addr), name,
             ))
+
             ContextExtraCommand.push_context_message("warn", "\n".join(msg))
             return True
         return False
@@ -36084,101 +36086,125 @@ class FormatStringSearchCommand(GenericCommand):
     _aliases_ = ["fmtstr-helper"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-r", "--remove-breakpoint", action="store_true",
+                        help="remove the format-string-helper related breakpoints.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display target functions of breakpoint.")
     _syntax_ = parser.format_help()
 
     dangerous_functions = {
-        "printf": 0,                # int printf(const char *fmt, ...);
-        "fprintf": 1,               # int fprintf(FILE *stream, const char *fmt, ...);
-        "dprintf": 1,               # int dprintf(int fd, const char *fmt, ...);
-        "sprintf": 1,               # int sprintf(char *str, const char *fmt, ...);
-        "asprintf": 1,              # int asprintf(char **strp, const char *fmt, ...);
-        "snprintf": 2,              # int snprintf(char *str, size_t size, const char *fmt, ...);
-        "wprintf": 0,               # int wprintf(const wchar_t *fmt, ...);
-        "fwprintf": 1,              # int fwprintf(FILE *stream, const wchar_t *fmt, ...);
-        "swprintf": 2,              # int swprintf(wchar_t *str, size_t n, const wchar_t *fmt, ...);
-        "obstack_printf": 1,        # int obstack_printf(struct obstack *obstack, const char *fmt, ...);
-        "__printf_chk": 1,          # int __printf_chk(int flag, const char *fmt);
-        "__fprintf_chk": 2,         # int __fprintf_chk(FILE *stream, int flag, const char *fmt, ...);
-        "__dprintf_chk": 2,         # int __dprintf_chk(int d, int flags, const char *fmt, ...)
-        "__sprintf_chk": 3,         # int __sprintf_chk(char *str, int flag, size_t strlen, const char *fmt, ...);
-        "__asprintf_chk": 2,        # int __asprintf_chk(char **strp, int flag, const char *fmt, ...)
-        "__snprintf_chk": 4,        # int __snprintf_chk(char *str, size_t maxlen, int flag, size_t strlen, const char *fmt, ...);
-        "__wprintf_chk": 1,         # int __wprintf_chk(int flag, const wchar_t *format, ...);
-        "__fwprintf_chk": 2,        # int __fwprintf_chk(FILE *stream, int flag, const wchar_t *format, ...);
-        "__swprintf_chk": 4,        # int __swprintf_chk(wchar_t *str, size_t maxlen, int flag, size_t slen, const wchar_t *fmt, ...);
-        "__obstack_printf_chk": 2,  # int __obstack_printf_chk(struct obstack *obstack, int flag, const char *fmt, ...);
+        "printf": 0,          # int printf(const char *fmt, ...);
+        "fprintf": 1,         # int fprintf(FILE *stream, const char *fmt, ...);
+        "dprintf": 1,         # int dprintf(int fd, const char *fmt, ...);
+        "sprintf": 1,         # int sprintf(char *str, const char *fmt, ...);
+        "asprintf": 1,        # int asprintf(char **strp, const char *fmt, ...);
+        "snprintf": 2,        # int snprintf(char *str, size_t size, const char *fmt, ...);
+        "wprintf": 0,         # int wprintf(const wchar_t *fmt, ...);
+        "fwprintf": 1,        # int fwprintf(FILE *stream, const wchar_t *fmt, ...);
+        "swprintf": 2,        # int swprintf(wchar_t *str, size_t n, const wchar_t *fmt, ...);
+        "obstack_printf": 1,  # int obstack_printf(struct obstack *obstack, const char *fmt, ...);
+        "__printf_chk": 1,    # int __printf_chk(int flag, const char *fmt);
+        "__fprintf_chk": 2,   # int __fprintf_chk(FILE *stream, int flag, const char *fmt, ...);
+        "__dprintf_chk": 2,   # int __dprintf_chk(int d, int flags, const char *fmt, ...)
+        "__sprintf_chk": 3,   # int __sprintf_chk(char *str, int flag, size_t strlen, const char *fmt, ...);
+        "__asprintf_chk": 2,  # int __asprintf_chk(char **strp, int flag, const char *fmt, ...)
+        "__snprintf_chk": 4,  # int __snprintf_chk(char *str, size_t maxlen, int flag, size_t strlen, const char *fmt, ...);
+        "__wprintf_chk": 1,   # int __wprintf_chk(int flag, const wchar_t *format, ...);
+        "__fwprintf_chk": 2,  # int __fwprintf_chk(FILE *stream, int flag, const wchar_t *format, ...);
+        "__swprintf_chk": 4,  # int __swprintf_chk(wchar_t *str, size_t maxlen, int flag, size_t slen, const wchar_t *fmt, ...);
+        "__obstack_printf_chk": 2, # int __obstack_printf_chk(struct obstack *obstack, int flag, const char *fmt, ...);
 
-        "vprintf": 0,               # int vprintf(const char *fmt, va_list ap);
-        "vfprintf": 1,              # int vfprintf(FILE *stream, const char *fmt, va_list ap);
-        "vdprintf": 1,              # int vdprintf(int fd, const char *fmt, va_list ap);
-        "vsprintf": 1,              # int vsprintf(char *str, const char *fmt, va_list ap);
-        "vasprintf": 1,             # int vasprintf(char **strp, const char *fmt, va_list ap);
-        "vsnprintf": 2,             # int vsnprintf(char *str, size_t size, const char *fmt, va_list ap);
-        "vwprintf": 0,              # int vwprintf(const wchar_t *fmt, va_list ap);
-        "vfwprintf": 1,             # int vfwprintf(FILE *stream, const wchar_t *fmt, va_list ap);
-        "vswprintf": 2,             # int vswprintf(wchar_t *str, size_t maxlen, const wchar_t *fmt, va_list ap);
-        "obstack_vprintf": 1,       # int obstack_vprintf(struct obstack *obstack, const char *fmt, va_list ap);
-        "__vprintf_chk": 1,         # int __vprintf_chk(int flag, const char *fmt, va_list ap);
-        "__vfprintf_chk": 2,        # int __vfprintf_chk(FILE *stream, int flag, const char *fmt, va_list ap);
-        "__vdprintf_chk": 2,        # int __vdprintf_chk(int d, int flag, const char *fmt, va_list ap);
-        "__vsprintf_chk": 3,        # int __vsprintf_chk(char *str, int flag, size_t slen, const char *fmt, va_list ap);
-        "__vasprintf_chk": 2,       # int __vasprintf_chk(char **strp, int flag, const char *fmt, va_list ap);
-        "__vsnprintf_chk": 4,       # int __vsnprintf_chk(char *str, size_t maxlen, int flag, size_t slen, const char *fmt, va_list ap);
-        "__vwprintf_chk": 1,        # int __vwprintf_chk(int flag, const wchar_t *fmt, va_list ap);
-        "__vfwprintf_chk": 2,       # int __vfwprintf_chk(FILE *stream, int flag, const wchar_t *fmt, va_list ap);
-        "__vswprintf_chk": 4,       # int __vswprintf_chk(wchar_t *str, size_t maxlen, int flag, size_t slen, const wchar_t *fmt, va_list ap);
+        "vprintf": 0,         # int vprintf(const char *fmt, va_list ap);
+        "vfprintf": 1,        # int vfprintf(FILE *stream, const char *fmt, va_list ap);
+        "vdprintf": 1,        # int vdprintf(int fd, const char *fmt, va_list ap);
+        "vsprintf": 1,        # int vsprintf(char *str, const char *fmt, va_list ap);
+        "vasprintf": 1,       # int vasprintf(char **strp, const char *fmt, va_list ap);
+        "vsnprintf": 2,       # int vsnprintf(char *str, size_t size, const char *fmt, va_list ap);
+        "vwprintf": 0,        # int vwprintf(const wchar_t *fmt, va_list ap);
+        "vfwprintf": 1,       # int vfwprintf(FILE *stream, const wchar_t *fmt, va_list ap);
+        "vswprintf": 2,       # int vswprintf(wchar_t *str, size_t maxlen, const wchar_t *fmt, va_list ap);
+        "obstack_vprintf": 1, # int obstack_vprintf(struct obstack *obstack, const char *fmt, va_list ap);
+        "__vprintf_chk": 1,   # int __vprintf_chk(int flag, const char *fmt, va_list ap);
+        "__vfprintf_chk": 2,  # int __vfprintf_chk(FILE *stream, int flag, const char *fmt, va_list ap);
+        "__vdprintf_chk": 2,  # int __vdprintf_chk(int d, int flag, const char *fmt, va_list ap);
+        "__vsprintf_chk": 3,  # int __vsprintf_chk(char *str, int flag, size_t slen, const char *fmt, va_list ap);
+        "__vasprintf_chk": 2, # int __vasprintf_chk(char **strp, int flag, const char *fmt, va_list ap);
+        "__vsnprintf_chk": 4, # int __vsnprintf_chk(char *str, size_t maxlen, int flag, size_t slen, const char *fmt, va_list ap);
+        "__vwprintf_chk": 1,  # int __vwprintf_chk(int flag, const wchar_t *fmt, va_list ap);
+        "__vfwprintf_chk": 2, # int __vfwprintf_chk(FILE *stream, int flag, const wchar_t *fmt, va_list ap);
+        "__vswprintf_chk": 4, # int __vswprintf_chk(wchar_t *str, size_t maxlen, int flag, size_t slen, const wchar_t *fmt, va_list ap);
         "__obstack_vprintf_chk": 2, # int __obstack_vprintf_chk(struct obstack *obstack, int flag, const char *fmt, va_list ap);
 
-        "syslog": 1,                # void syslog(int priority, const char *fmt, ...);
-        "vsyslog": 1,               # void vsyslog(int priority, const char *fmt, va_list ap);
-        "__syslog_chk": 2,          # void __syslog_chk(int priority, int flag, const char *fmt, ...);
-        "__vsyslog_chk": 2,         # void __vsyslog_chk(int priority, int flag, const char *fmt, va_list ap);
+        "syslog": 1,          # void syslog(int priority, const char *fmt, ...);
+        "vsyslog": 1,         # void vsyslog(int priority, const char *fmt, va_list ap);
+        "__syslog_chk": 2,    # void __syslog_chk(int priority, int flag, const char *fmt, ...);
+        "__vsyslog_chk": 2,   # void __vsyslog_chk(int priority, int flag, const char *fmt, va_list ap);
 
-        "scanf": 0,                 # int scanf(const char *fmt, ...);
-        "fscanf": 1,                # int fscanf(FILE *stream, const char *fmt, ...);
-        "sscanf": 1,                # int sscanf(const char *str, const char *fmt, ...);
-        "wscanf": 0,                # int wscanf(const wchar_t *fmt, ...);
-        "fwscanf": 1,               # int fwscanf(FILE *stream, const wchar_t *fmt, ...);
-        "swscanf": 1,               # int swscanf(const wchar_t *ws, const wchar_t *fmt, ...);
+        "scanf": 0,           # int scanf(const char *fmt, ...);
+        "fscanf": 1,          # int fscanf(FILE *stream, const char *fmt, ...);
+        "sscanf": 1,          # int sscanf(const char *str, const char *fmt, ...);
+        "wscanf": 0,          # int wscanf(const wchar_t *fmt, ...);
+        "fwscanf": 1,         # int fwscanf(FILE *stream, const wchar_t *fmt, ...);
+        "swscanf": 1,         # int swscanf(const wchar_t *ws, const wchar_t *fmt, ...);
 
-        "vscanf": 0,                # int vscanf(const char *fmt, va_list ap);
-        "vfscanf": 1,               # int vfscanf(FILE *stream, const char *fmt, va_list ap);
-        "vsscanf": 1,               # int vsscanf(const char *str, const char *fmt, va_list ap);
-        "vwscanf": 0,               # int vwscanf(const wchar_t *fmt, va_list ap);
-        "vfwscanf": 1,              # int vfwscanf(FILE *stream, const wchar_t *fmt, va_list ap);
-        "vswscanf": 1,              # int vswscanf(const wchar_t *s, const wchar_t *fmt, va_list ap);
+        "vscanf": 0,          # int vscanf(const char *fmt, va_list ap);
+        "vfscanf": 1,         # int vfscanf(FILE *stream, const char *fmt, va_list ap);
+        "vsscanf": 1,         # int vsscanf(const char *str, const char *fmt, va_list ap);
+        "vwscanf": 0,         # int vwscanf(const wchar_t *fmt, va_list ap);
+        "vfwscanf": 1,        # int vfwscanf(FILE *stream, const wchar_t *fmt, va_list ap);
+        "vswscanf": 1,        # int vswscanf(const wchar_t *s, const wchar_t *fmt, va_list ap);
 
-        "warn": 0,                  # void warn(const char *fmt, ...);
-        "warnx": 0,                 # void warnx(const char *fmt, ...);
-        "err": 1,                   # void err(int status, const char *fmt, ...);
-        "errx": 1,                  # void errx(int status, const char *fmt, ...);
+        "warn": 0,            # void warn(const char *fmt, ...);
+        "warnx": 0,           # void warnx(const char *fmt, ...);
+        "err": 1,             # void err(int status, const char *fmt, ...);
+        "errx": 1,            # void errx(int status, const char *fmt, ...);
 
-        "vwarn": 0,                 # void vwarn(const char *fmt, va_list ap);
-        "vwarnx": 0,                # void vwarnx(const char *fmt, va_list ap);
-        "verr": 1,                  # void verr(int status, const char *fmt, va_list ap);
-        "verrx": 1,                 # void verrx(int status, const char *fmt, va_list ap);
+        "vwarn": 0,           # void vwarn(const char *fmt, va_list ap);
+        "vwarnx": 0,          # void vwarnx(const char *fmt, va_list ap);
+        "verr": 1,            # void verr(int status, const char *fmt, va_list ap);
+        "verrx": 1,           # void verrx(int status, const char *fmt, va_list ap);
 
-        "error": 2,                 # void error(int status, int errnum, const char *fmt, ...);
-        "error_at_line": 4,         # void error_at_line(int status, int errnum, const char *filename, uint linenum, const char *fmt, ...);
+        "error": 2,           # void error(int status, int errnum, const char *fmt, ...);
+        "error_at_line": 4,   # void error_at_line(int status, int errnum, const char *filename, uint linenum, const char *fmt, ...);
 
-        "argp_error": 1,            # void argp_error(const struct argp_state *state, const char *fmt, ...);
-        "argp_failure": 3,          # void argp_failure(const struct argp_state *state, int status, int errnum, const char *fmt, ...);
+        "argp_error": 1,      # void argp_error(const struct argp_state *state, const char *fmt, ...);
+        "argp_failure": 3,    # void argp_failure(const struct argp_state *state, int status, int errnum, const char *fmt, ...);
 
-        "xasprintf": 0,             # char* xasprintf(const char *fmt, ...);
-        "xvasprintf": 0,            # char* xvasprintf(const char *fmt, va_list ap);
+        "xasprintf": 0,       # char* xasprintf(const char *fmt, ...);
+        "xvasprintf": 0,      # char* xvasprintf(const char *fmt, va_list ap);
     }
+
+    breakpoints = []
+
+    def remove_breakpoints(self):
+        bp_count = 0
+        while FormatStringSearchCommand.breakpoints:
+            bp = FormatStringSearchCommand.breakpoints.pop()
+            bp.delete()
+            bp_count += 1
+        ok("Removed {:d} FormatStringBreakpoint".format(bp_count))
+        return
 
     @parse_args
     @exclude_specific_gdb_mode(mode=("wine",))
     def do_invoke(self, args):
+        if args.remove_breakpoint:
+            self.remove_breakpoints()
+            return
+
+        if FormatStringSearchCommand.breakpoints:
+            err("Breakpoints have been set already")
+            return
+
         bp_count = 0
         for func_name, num_arg in self.dangerous_functions.items():
             try:
                 func_address = AddressUtil.parse_address(func_name)
             except gdb.error:
                 continue
-            gef_print(func_name + ": ", end="")
-            FormatStringBreakpoint(func_address, func_name, num_arg)
+            if args.verbose:
+                gef_print(func_name + ": ", end="")
+            bp = FormatStringBreakpoint(func_address, func_name, num_arg, verbose=args.verbose)
+            FormatStringSearchCommand.breakpoints.append(bp)
             bp_count += 1
 
         ok("Enabled {:d}/{:d} FormatStringBreakpoint".format(bp_count, len(self.dangerous_functions)))
