@@ -4972,15 +4972,6 @@ class String:
     }
 
     @staticmethod
-    def gef_pystring(x):
-        """Returns a sanitized version as string of the bytes list given in input."""
-        res = str(x, encoding="utf-8")
-        substs = [("\n", "\\n"), ("\r", "\\r"), ("\t", "\\t"), ("\v", "\\v"), ("\b", "\\b")]
-        for x, y in substs:
-            res = res.replace(x, y)
-        return res
-
-    @staticmethod
     def str2bytes(x):
         """Helper function for str -> bytes."""
         if isinstance(x, bytes):
@@ -15957,6 +15948,8 @@ class ProcInfoCommand(GenericCommand):
             err("{}".format(e))
             return []
 
+        # Trick: If there are no child processes, `ps` exit code will be non-zero,
+        # causing a subprocess.CalledProcessError exception to be raised.
         cmd = [ps, "-o", "pid", "--ppid", str(pid), "--noheaders"]
         try:
             return [int(x) for x in GefUtil.gef_execute_external(cmd, as_list=True)]
@@ -16601,9 +16594,13 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
 
         ret = GefUtil.gef_execute_external([column_command, "-s:", "-t", path], as_list=True)
         for line in ret:
-            k, v = line.split(maxsplit=1)
+            r = line.split(maxsplit=1)
+            if len(r) == 2:
+                k, v = r[0], r[1]
+            else:
+                k, v = r[0], ""
             k = k.strip() + ":"
-            v = v.replace("\\t", "").strip()
+            v = v.replace("\t", "").strip()
             self.out.append("{:30s} {:s}".format(k, v))
         return
 
@@ -23564,7 +23561,7 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     def get_processes(self):
-        output = GefUtil.gef_execute_external([GefUtil.which("ps"), "auxww"], True)
+        output = GefUtil.gef_execute_external([GefUtil.which("ps"), "auxww"], as_list=True)
         names = [x.lower().replace("%", "") for x in output[0].split()]
 
         for line in output[1:]:
@@ -97473,7 +97470,7 @@ class GefVersionCommand(GenericCommand):
             res = GefUtil.gef_execute_external([lsb_release_command, "-d"], as_list=True)
             for line in res:
                 if line.startswith("Description:"):
-                    return line.split(":")[1].strip("\\t")
+                    return line.split(":")[1].strip()
         except FileNotFoundError:
             pass
 
@@ -98176,8 +98173,8 @@ class GefUtil:
             shell=kwargs.get("shell", False),
         )
         if as_list:
-            return [String.gef_pystring(x) for x in res.splitlines()]
-        return String.gef_pystring(res)
+            return [String.bytes2str(x) for x in res.splitlines()]
+        return String.bytes2str(res)
 
     @staticmethod
     def walk(directory):
@@ -98310,7 +98307,7 @@ class Gef:
 
             # check prefix
             cmds = [pythonbin, "-c", "import os,sys;print(sys.prefix)"]
-            PREFIX = String.gef_pystring(subprocess.check_output(cmds)).strip("\\n")
+            PREFIX = subprocess.check_output(cmds).decode("utf-8").strip()
             if PREFIX == sys.base_prefix:
                 create_skip_config()
                 return
