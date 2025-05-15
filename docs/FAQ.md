@@ -100,7 +100,7 @@ The only difference is that Python packages will be installed into the `venv` en
 By default, they will be installed into `/root/.gef/.venv-gef`.
 External tools such as `rp-lin`, `seccomp-tools`, etc. are also installed under this directory (`/root/.gef/.venv-gef/bin`).
 
-`install-uv.sh` uses `uv` instead of `python3-pip` to install, so it is faster.
+`install-uv.sh` uses `uv` instead of `python3-{venv,pip}` to install, so it is faster.
 
 Usage:
 ```
@@ -111,7 +111,7 @@ Usage:
 # If you want to install using python3-venv + python3-pip
 wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-venv.sh -O- | sh
 
-# If you want to install using python3-venv + uv
+# If you want to install using uv
 wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sh
 ```
 
@@ -137,9 +137,9 @@ It contains three pieces of path information:
 ## How many ways are there to install GEF?
 There are four types of installers.
 
-- `venv + uv`-based install
+- `uv`-based install
     - This is the installation method provided by `install-uv.sh`.
-    - This uses `python3-venv` and `uv` to install Python packages into an isolated environment.
+    - This uses `uv` to install Python packages into an isolated environment.
     - This is a full installation, so you can use all the features that GEF provides.
     - This is the currently recommended installer for GEF, because it is faster than the other methods.
 - `venv + pip`-based install
@@ -155,9 +155,9 @@ There are four types of installers.
     - This is a full installation, so you can use all the features that GEF provides.
     - This uses `python3-pip` to install Python packages globally.
     - This installer is not currently recommended, but it still works.
-    - This method was used before the `venv + uv`-based installation became available.
+    - This method was used before the `uv`-based installation became available.
 
-For an explanation of each installer, see [About GEF's file or directory](#about-gefs-file-or-directory).
+For an explanation of each installer, see [About GEF's Files or Directories](#about-gefs-files-or-directories).
 
 ## How to change the location of GEF?
 Move `/root/.gef`, then edit `/root/.gdbinit` and `/root/.gef/gef.venv.conf`.

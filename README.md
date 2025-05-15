@@ -35,7 +35,7 @@ Numerous other commands have been added and enhanced. Enjoy!
 - Might work on Ubuntu 20.04-21.10, though not recommended.
 
 ### Install
-- Run the following command (**NEW**: this is the `venv + uv`-based installer).
+- Run the following command (**NEW**: this is the `uv`-based installer).
     ```bash
     wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sudo sh
     ```
