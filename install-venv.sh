@@ -22,7 +22,7 @@ if [ -e "${GEF_PATH}" ]; then
     exit 1
 fi
 
-echo "[+] Create .gef direcotry"
+echo "[+] Create .gef directory"
 if [ ! -e "${GEF_DIR}" ]; then
     mkdir -p "${GEF_DIR}"
 fi
