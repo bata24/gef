@@ -16492,7 +16492,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
         data = slice_unpack(data, current_arch.ptrsize)
         for i in range(0, len(data), 2):
             typ = data[i]
-            val = data[i+1]
+            val = data[i + 1]
             self.out.append("{:#8x}: {:#x}".format(typ, val))
         return
 
@@ -70184,7 +70184,7 @@ class IiCommand(GenericCommand):
 
         # get instruction size
         try:
-            res = gdb.execute("x/{:d}i {:#x}".format(N+1, addr), to_string=True)
+            res = gdb.execute("x/{:d}i {:#x}".format(N + 1, addr), to_string=True)
         except gdb.MemoryError:
             err("Memory read error")
             return
