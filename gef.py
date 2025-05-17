@@ -62618,7 +62618,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
 
         """
         struct mount {
-            struct hlist_node mnt_hash;
+            struct hlist_node mnt_hash; // ptrsize
             struct mount *mnt_parent;
             struct dentry *mnt_mountpoint;
             struct vfsmount {
@@ -62628,10 +62628,11 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
                 struct user_namespace *mnt_userns; // v5.12~v6.2
                 struct mnt_idmap *mnt_idmap; // v6.2~
             } mnt;
-        union {
-            struct rcu_head mnt_rcu;
-            struct llist_node mnt_llist;
-        };
+            union {
+                struct rb_node mnt_node; // v6.12~ // ptrsize * 3
+                struct rcu_head mnt_rcu; // ptrsize * 2
+                struct llist_node mnt_llist; // ptrsize
+            };
         #ifdef CONFIG_SMP
             struct mnt_pcp __percpu *mnt_pcp;
         #else
@@ -62647,10 +62648,18 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         """
         # mount->mnt_instance
         kversion = Kernel.kernel_version()
+        common1 = current_arch.ptrsize * 3 # mnt_hash ~ mnt_mount_point
         if kversion < "5.12":
-            self.offset_mount_mnt_instance = current_arch.ptrsize * 14
+            sizeof_vfsmount = current_arch.ptrsize * 4
         else:
-            self.offset_mount_mnt_instance = current_arch.ptrsize * 15
+            sizeof_vfsmount = current_arch.ptrsize * 5
+        if kversion < "6.12":
+            sizeof_union = current_arch.ptrsize * 2
+        else:
+            sizeof_union = current_arch.ptrsize * 3
+        sizeof_ifdef = current_arch.ptrsize # for x86/x64/ARM/ARM64, CONFIG_SMP is 'y' in almost all cases
+        common2 = current_arch.ptrsize * 4 # mnt_mounts ~ mnt_child
+        self.offset_mount_mnt_instance = common1 + sizeof_vfsmount + sizeof_union + sizeof_ifdef + common2
 
         # mount->{mnt_parent,mnt_mountpoint,mnt}
         self.offset_mount_mnt_parent = current_arch.ptrsize * 2
