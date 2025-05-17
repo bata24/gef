@@ -343,7 +343,7 @@ Let's consider debug information and debug symbols separately.
     - No, the presence or absence of debug information in `vmlinux` does not impact GEF's functionality or behavior.
         - GEF performs its own heuristic structure member detection in each command.
 - Debug symbols
-    - Yes, you can use `ksymaddr-remote --vmlinux-file <vmlinux file path>`.
+    - Yes, you can use `ksymaddr-remote --vmlinux-file <vmlinux_path>`.
         - GEF internally uses the addresses resolved with `ksymaddr-remote`, and these results are cached.
         - Therefore, by specifying the `vmlinux` file, the results of `ksymaddr-remote` can be replaced with accurate values and cached.
 
@@ -485,7 +485,7 @@ The logic is slightly different, so it might work.
 If it still does not work, please report it on the issue page.
 
 ## If I have a `vmlinux` with debuginfo, how can I use `ks-apply`?
-The `ks-apply` is unnecessary. Run `kload <vmlinux_path>`.
+The `ks-apply` command is unnecessary. Run `kload <vmlinux_path>`.
 
 Optionally, also run `ksymaddr-remote --vmlinux-file <vmlinux_path>`.
 
