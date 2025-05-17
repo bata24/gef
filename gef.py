@@ -73158,6 +73158,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-v", "--verbose", action="store_true", help="dump the beginning of msg_msg.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
@@ -73455,13 +73456,16 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             gid = u32(read_memory(e + self.offset_gid, 4))
             mode = u16(read_memory(e + self.offset_mode, 2))
 
-            if self.offset_sem_nsems is None:
+            if not hasattr(self, "offset_sem_nsems"):
                 for i in range(1, 64):
+                    # search pending_alter, pending_const, list_id
                     base = self.offset_mode + current_arch.ptrsize * i
-                    if all(is_valid_addr(read_int_from_memory(e + base + current_arch.ptrsize * j)) for j in range(6)):
+                    addrs = [read_int_from_memory(e + base + current_arch.ptrsize * j) for j in range(6)]
+                    if all(is_valid_addr(x) for x in addrs):
+                        # found
                         self.offset_sem_nsems = base + current_arch.ptrsize * 6
                         break
-            if self.offset_sem_nsems:
+            if hasattr(self, "offset_sem_nsems"):
                 nsems = read_int_from_memory(e + self.offset_sem_nsems)
                 self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:d}".format(
                     e, semid, key, uid, gid, mode, nsems,
@@ -73485,10 +73489,18 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             unsigned long q_qbytes;
             struct pid *q_lspid;
             struct pid *q_lrpid;
-            struct list_head q_messages;
+            struct list_head q_messages; <--> msg_msg.m_list
             struct list_head q_receivers;
             struct list_head q_senders;
         } __randomize_layout;
+
+        struct msg_msg {
+            struct list_head m_list;
+            long m_type;
+            size_t m_ts; /* message text size */
+            struct msg_msgseg *next;
+            void *security;
+        };
         """
         self.out.append(titlify("Message Queues"))
         fmt = "{:18s} {:5s} {:10s} {:4s} {:4s} {:5s} {:10s} {:8s}"
@@ -73503,15 +73515,20 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             gid = u32(read_memory(e + self.offset_gid, 4))
             mode = u16(read_memory(e + self.offset_mode, 2))
 
-            if self.offset_q_cbytes is None:
+            if not hasattr(self, "offset_q_cbytes"):
                 for i in range(1, 64):
+                    # search q_messages, q_receivers, q_senders
                     base = self.offset_mode + current_arch.ptrsize * i
-                    if all(is_valid_addr(read_int_from_memory(e + base + current_arch.ptrsize * j)) for j in range(6)):
-                        if not is_valid_addr(read_int_from_memory(e + base + current_arch.ptrsize * 6)):
+                    addrs = [read_int_from_memory(e + base + current_arch.ptrsize * j) for j in range(6)]
+                    if all(is_valid_addr(x) for x in addrs):
+                        x = read_int_from_memory(e + base + current_arch.ptrsize * 6)
+                        if not is_valid_addr(x):
+                            # found
                             self.offset_q_cbytes = base - current_arch.ptrsize * 5
                             self.offset_q_qnum = base - current_arch.ptrsize * 4
+                            self.offset_q_messages = base
                             break
-            if self.offset_q_cbytes:
+            if hasattr(self, "offset_q_cbytes"):
                 q_cbytes = read_int_from_memory(e + self.offset_q_cbytes)
                 q_qnum = read_int_from_memory(e + self.offset_q_qnum)
                 self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:<#10x} {:<8d}".format(
@@ -73521,6 +73538,19 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
                 self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:10s} {:8s}".format(
                     e, msqid, key, uid, gid, mode, "?", "?",
                 ))
+
+            if self.args.verbose:
+                if hasattr(self, "offset_q_messages"):
+                    current = e + self.offset_q_messages
+                    seen = [current]
+                    while is_valid_addr(current):
+                        current = read_int_from_memory(current)
+                        if current in seen:
+                            break
+                        seen.append(current)
+                        self.out.append("msg_msg: {:#x}".format(current))
+                        res = gdb.execute("dereference -n {:#x} 8".format(current), to_string=True)
+                        self.out.append(res.rstrip())
         return
 
     def dump_ipc_shm_ids(self, ipc_ids_ptr):
@@ -73546,16 +73576,18 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             gid = u32(read_memory(e + self.offset_gid, 4))
             mode = u16(read_memory(e + self.offset_mode, 2))
 
-            if self.offset_shm_nattch is None:
+            if not hasattr(self, "offset_shm_nattch"):
                 for i in range(1, 64):
+                    # search shm_file and shm_segsz
                     base = self.offset_mode + current_arch.ptrsize * i
                     x = read_int_from_memory(e + base)
                     y = read_int_from_memory(e + base + current_arch.ptrsize * 2)
                     if is_valid_addr(x) and y != 0 and y % 0x1000 == 0:
+                        # found
                         self.offset_shm_nattch = base + current_arch.ptrsize
                         self.offset_shm_segsz = base + current_arch.ptrsize * 2
                         break
-            if self.offset_shm_nattch:
+            if hasattr(self, "offset_shm_nattch"):
                 nattch = read_int_from_memory(e + self.offset_shm_nattch)
                 segsz = read_int_from_memory(e + self.offset_shm_segsz)
                 self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:<#10x} {:<6d}".format(
