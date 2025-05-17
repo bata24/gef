@@ -754,7 +754,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - `current-stack-frame`, `xref-telescope`, `bytearray`, and `bincompare`.
     - This is because a single file is more attractive for me than ease of maintenance.
 - The system-call table used by `syscall-args` is moved from `gef-extras`.
-    - It was updated up to Linux kernel 6.14 for each architecture.
+    - It was updated up to Linux kernel 6.15 for each architecture.
 - Removed some features that I don't use.
     - `$`
     - `ida-interact`

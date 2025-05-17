@@ -319,17 +319,7 @@ def i386_syscall_tbl_update():
 
 def arm64_syscall_tbl_update():
     print(titlify(sys._getframe().f_code.co_name[:-7]))
-    print("\033[1m" + "[!] skip {:s}. need fix manually.".format(sys._getframe().f_code.co_name[:-19]) + "\033[0m")
-    return
-
-    new_tbl = get_new_tbl_by_cmds(
-        r"""
-        cd {:s}
-        gcc -I `pwd`/include/uapi/ -E -D__SYSCALL=SYSCALL arch/arm64/include/uapi/asm/unistd.h | grep ^SYSCALL | sed -e 's/SYSCALL(//;s/[,)]//g' > /tmp/a
-        grep -oP "__NR\S+\s+\d+$" include/uapi/asm-generic/unistd.h | grep -v __NR_sync_file_range2 > /tmp/b
-        join -2 2 -o 1.1,1.10,2.1,1.2 -e arm64 /tmp/a /tmp/b 2>/dev/null | sed -e 's/\(__NR_\|__NR3264_\)//g' | column -t
-        """.format(K_DIR)
-    )
+    new_tbl = get_new_tbl("arch/arm64/tools/syscall_64.tbl")
     old_tbl, s, e = get_gef_defs('arm64_syscall_tbl = """', '"""')
     print_diff(old_tbl, new_tbl)
     write_back(new_tbl, s, e)
@@ -393,38 +383,12 @@ def sparc_syscall_tbl_update():
 
 def riscv64_syscall_tbl_update():
     print(titlify(sys._getframe().f_code.co_name[:-7]))
-    print("\033[1m" + "[!] skip {:s}. need fix manually.".format(sys._getframe().f_code.co_name[:-19]) + "\033[0m")
-    return
-
-    new_tbl = get_new_tbl_by_cmds(
-        r"""
-        cd {:s}
-        gcc -I `pwd`/include/uapi/ -E -D__SYSCALL=SYSCALL arch/riscv/include/uapi/asm/unistd.h | grep ^SYSCALL | sed -e 's/SYSCALL(//;s/[,)]//g;/+/d' > /tmp/a
-        grep -oP "__NR\S+\s+\d+$" include/uapi/asm-generic/unistd.h | grep -v __NR_sync_file_range2 > /tmp/b
-        join -2 2 -o 1.1,1.10,2.1,1.2 -e riscv64 /tmp/a /tmp/b 2>/dev/null | sed -e 's/\(__NR_\|__NR3264_\)//g' | column -t
-        """.format(K_DIR)
-    )
-    old_tbl, s, e = get_gef_defs('riscv64_syscall_tbl = """', '"""')
-    print_diff(old_tbl, new_tbl)
-    write_back(new_tbl, s, e)
+    print("\033[1m" + "[!] same with arm64 \033[0m")
     return
 
 def riscv32_syscall_tbl_update():
     print(titlify(sys._getframe().f_code.co_name[:-7]))
-    print("\033[1m" + "[!] skip {:s}. need fix manually.".format(sys._getframe().f_code.co_name[:-19]) + "\033[0m")
-    return
-
-    new_tbl = get_new_tbl_by_cmds(
-        r"""
-        cd {:s}
-        gcc -I `pwd`/include/uapi/ -E -D__SYSCALL=SYSCALL -D__BITS_PER_LONG=32 -D__ILP32__=1 arch/riscv/include/uapi/asm/unistd.h | grep ^SYSCALL | sed -e 's/SYSCALL(//;s/[,)]//g;/+/d' > /tmp/a
-        grep -oP "__NR\S+\s+\d+$" include/uapi/asm-generic/unistd.h | grep -v __NR_sync_file_range2 > /tmp/b
-        join -2 2 -o 1.1,1.10,2.1,1.2 -e riscv32 /tmp/a /tmp/b 2>/dev/null | sed -e 's/\(__NR_\|__NR3264_\)//g' | column -t
-        """.format(K_DIR)
-    )
-    old_tbl, s, e = get_gef_defs('riscv32_syscall_tbl = """', '"""')
-    print_diff(old_tbl, new_tbl)
-    write_back(new_tbl, s, e)
+    print("\033[1m" + "[!] same with arm64 \033[0m")
     return
 
 def s390x_syscall_tbl_update():
@@ -469,38 +433,12 @@ def hppa_syscall_tbl_update():
 
 def or1k_syscall_tbl_update():
     print(titlify(sys._getframe().f_code.co_name[:-7]))
-    print("\033[1m" + "[!] skip {:s}. need fix manually.".format(sys._getframe().f_code.co_name[:-19]) + "\033[0m")
-    return
-
-    new_tbl = get_new_tbl_by_cmds(
-        r"""
-        cd {:s}
-        gcc -I `pwd`/include/uapi/ -E -D__SYSCALL=SYSCALL arch/openrisc/include/uapi/asm/unistd.h | grep ^SYSCALL | sed -e 's/SYSCALL(//;s/[,)]//g' > /tmp/a
-        grep -oP "__NR\S+\s+\d+$" include/uapi/asm-generic/unistd.h | grep -v __NR_sync_file_range2 > /tmp/b
-        join -2 2 -o 1.1,1.10,2.1,1.2 -e or1k /tmp/a /tmp/b 2>/dev/null | sed -e 's/\(__NR_\|__NR3264_\)//g' | column -t
-        """.format(K_DIR)
-    )
-    old_tbl, s, e = get_gef_defs('or1k_syscall_tbl = """', '"""')
-    print_diff(old_tbl, new_tbl)
-    write_back(new_tbl, s, e)
+    print("\033[1m" + "[!] same with arm64 \033[0m")
     return
 
 def nios2_syscall_tbl_update():
     print(titlify(sys._getframe().f_code.co_name[:-7]))
-    print("\033[1m" + "[!] skip {:s}. need fix manually.".format(sys._getframe().f_code.co_name[:-19]) + "\033[0m")
-    return
-
-    new_tbl = get_new_tbl_by_cmds(
-        r"""
-        cd {:s}
-        gcc -I `pwd`/include/uapi/ -E -D__SYSCALL=SYSCALL arch/nios2/include/uapi/asm/unistd.h | grep ^SYSCALL | sed -e 's/SYSCALL(//;s/[,)]//g' > /tmp/a
-        grep -oP "__NR\S+\s+\d+$" include/uapi/asm-generic/unistd.h | grep -v __NR_sync_file_range2 > /tmp/b
-        join -2 2 -o 1.1,1.10,2.1,1.2 -e nios2 /tmp/a /tmp/b 2>/dev/null | sed -e 's/\(__NR_\|__NR3264_\)//g' | column -t
-        """.format(K_DIR)
-    )
-    old_tbl, s, e = get_gef_defs('nios2_syscall_tbl = """', '"""')
-    print_diff(old_tbl, new_tbl)
-    write_back(new_tbl, s, e)
+    print("\033[1m" + "[!] same with arm64 \033[0m")
     return
 
 def microblaze_syscall_tbl_update():
@@ -552,38 +490,12 @@ def loongarch_syscall_tbl_update():
 
 def arc_syscall_tbl_update():
     print(titlify(sys._getframe().f_code.co_name[:-7]))
-    print("\033[1m" + "[!] skip {:s}. need fix manually.".format(sys._getframe().f_code.co_name[:-19]) + "\033[0m")
-    return
-
-    new_tbl = get_new_tbl_by_cmds(
-        r"""
-        cd {:s}
-        gcc -I `pwd`/include/uapi/ -E -D__SYSCALL=SYSCALL arch/arc/include/uapi/asm/unistd.h | grep ^SYSCALL | sed -e 's/SYSCALL(//;s/[,)]//g' > /tmp/a
-        grep -oP "__NR\S+\s+\d+$" include/uapi/asm-generic/unistd.h | grep -v __NR_sync_file_range2 > /tmp/b
-        join -2 2 -o 1.1,1.10,2.1,1.2 -e arc /tmp/a /tmp/b 2>/dev/null | sed -e 's/\(__NR_\|__NR3264_\)//g' | column -t
-        """.format(K_DIR)
-    )
-    old_tbl, s, e = get_gef_defs('arc_syscall_tbl = """', '"""')
-    print_diff(old_tbl, new_tbl)
-    write_back(new_tbl, s, e)
+    print("\033[1m" + "[!] same with arm64 \033[0m")
     return
 
 def csky_syscall_tbl_update():
     print(titlify(sys._getframe().f_code.co_name[:-7]))
-    print("\033[1m" + "[!] skip {:s}. need fix manually.".format(sys._getframe().f_code.co_name[:-19]) + "\033[0m")
-    return
-
-    new_tbl = get_new_tbl_by_cmds(
-        r"""
-        cd {:s}
-        gcc -I `pwd`/include/uapi/ -E -D__SYSCALL=SYSCALL arch/csky/include/uapi/asm/unistd.h | grep ^SYSCALL | sed -e 's/SYSCALL(//;s/[,)]//g' > /tmp/a
-        grep -oP "__NR\S+\s+\d+$" include/uapi/asm-generic/unistd.h | grep -v __NR_sync_file_range2 > /tmp/b
-        join -2 2 -o 1.1,1.10,2.1,1.2 -e csky /tmp/a /tmp/b 2>/dev/null | sed -e 's/\(__NR_\|__NR3264_\)//g' | column -t
-        """.format(K_DIR)
-    )
-    old_tbl, s, e = get_gef_defs('csky_syscall_tbl = """', '"""')
-    print_diff(old_tbl, new_tbl)
-    write_back(new_tbl, s, e)
+    print("\033[1m" + "[!] same with arm64 \033[0m")
     return
 
 ################################################################################
@@ -597,7 +509,7 @@ if __name__ == "__main__":
 
     x64_syscall_tbl_update()
     i386_syscall_tbl_update()
-    arm64_syscall_tbl_update() # skip
+    arm64_syscall_tbl_update()
     arm_compat_syscall_tbl_update()
     arm_native_syscall_tbl_update()
     mips_o32_syscall_tbl_update()
@@ -612,14 +524,14 @@ if __name__ == "__main__":
     m68k_syscall_tbl_update()
     alpha_syscall_tbl_update()
     hppa_syscall_tbl_update()
-    or1k_syscall_tbl_update() # skip
-    nios2_syscall_tbl_update() # skip
+    or1k_syscall_tbl_update()
+    nios2_syscall_tbl_update()
     microblaze_syscall_tbl_update()
     xtensa_syscall_tbl_update()
     #cris_syscall_tbl_update() # cris is removed at current linux
     loongarch_syscall_tbl_update() # skip
-    arc_syscall_tbl_update() # skip
-    csky_syscall_tbl_update() # skip
+    arc_syscall_tbl_update()
+    csky_syscall_tbl_update()
 
     print_patch_result()
     cleanup()
