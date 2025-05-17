@@ -55542,7 +55542,7 @@ class KernelCurrentCommand(GenericCommand):
             self.quiet_info("current_task: {:#x}".format(current_task))
             task_offset = current_task
             for i, cpu_base in enumerate(cpu_bases):
-                task = read_int_from_memory(cpu_base + task_offset)
+                task = read_int_from_memory(AddressUtil.align_address(cpu_base + task_offset))
                 if not is_valid_addr(task):
                     break
                 gef_print("current (cpu{:d}): {:#x} {:s}".format(i, task, self.get_comm_str(task)))
