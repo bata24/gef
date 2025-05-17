@@ -60923,7 +60923,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
         "proc_ops",
         "regulator_ops",
         "seq_operations",
-        "smp_operations",
+        "smp_operations", # ARM only
         "super_operations",
         "tty_ldisc_ops",
         "tty_operations",
@@ -60949,7 +60949,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
     _note_ = [
         "This command needs CONFIG_RANDSTRUCT=n.",
         "",
-        "Currently it supports from 3.0 to 6.12.",
+        "Currently it supports from 3.0 to 6.15.",
         "",
         "Supported structure:",
     ]
@@ -61169,8 +61169,8 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
 
         pernet_operations = [
             # type       name                                       minver     maxver
-            ["ptr",      "list_head.next",                          None,      None],
-            ["ptr",      "list_head.prev",                          None,      None],
+            ["ptr",      "list.next",                               None,      None],
+            ["ptr",      "list.prev",                               None,      None],
             ["func_ptr", "init",                                    None,      None],
             ["func_ptr", "pre_exit",                                "5.3.0",   None],
             ["func_ptr", "exit",                                    None,      None],
@@ -61293,6 +61293,8 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "d_select_inode",                          "4.1.0",   "4.7.10"],
             ["func_ptr", "d_real",                                  "4.4.0",   None],
             ["func_ptr", "d_select_inode",                          "3.18.23", "3.18.140"],
+            ["func_ptr", "d_unalias_trylock",                       "6.14.0",  None],
+            ["func_ptr", "d_unalias_unlock",                        "6.14.0",  None],
         ]
         self.members["dentry_operations"] = adapt_to_kernel_version(dentry_operations)
 
@@ -61498,6 +61500,8 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "map_blocks",                              "4.0.0",   None],
             ["func_ptr", "commit_blocks",                           "4.0.0",   None],
             ["func_ptr", "fetch_iversion",                          "5.10.0",  "6.2.16"],
+            ["func_ptr", "permission",                              "6.14.0",  None],
+            ["func_ptr", "open",                                    "6.14.0",  None],
             ["long",     "flags",                                   "5.10.0",  None],
         ]
         self.members["export_operations"] = adapt_to_kernel_version(export_operations)
@@ -61725,6 +61729,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "ndo_get_tstamp",                                      "5.19.0",  None],
             ["func_ptr", "ndo_hwtstamp_get",                                    "6.6.0",   None],
             ["func_ptr", "ndo_hwtstamp_set",                                    "6.6.0",   None],
+            ["ptr",      "net_shaper_ops (CONFIG_NET_SHAPER=y)",                "6.12.0",  None],
         ]
         self.members["net_device_ops"] = adapt_to_kernel_version(net_device_ops)
 
@@ -61742,6 +61747,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             # type       name                                       minver     maxver
             ["func_ptr", "read_version",                            "6.11.0",  None],
             ["func_ptr", "read_cci",                                "6.11.0",  None],
+            ["func_ptr", "poll_cci",                                "6.14.0",  None],
             ["func_ptr", "read_message_in",                         "6.11.0",  None],
             ["func_ptr", "sync_control",                            "6.11.0",  None],
             ["func_ptr", "async_control",                           "6.11.0",  None],
@@ -61769,7 +61775,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "update",                                  "5.18.0",  None],
             ["func_ptr", "prepare_access_checks",                   "5.18.0",  None],
             ["func_ptr", "check_accesses",                          "5.18.0",  None],
-            ["func_ptr", "reset_aggregated",                        "5.18.0",  None],
+            ["func_ptr", "reset_aggregated",                        "5.18.0",  "6.14.6"],
             ["func_ptr", "get_scheme_score",                        "5.18.0",  None],
             ["func_ptr", "apply_scheme",                            "5.18.0",  None],
             ["func_ptr", "target_valid",                            "5.18.0",  None],
