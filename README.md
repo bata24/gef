@@ -138,6 +138,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `slub-dump`: dumps slub free-list.
     - Supported on x64/x86/ARM64/ARM + `SLUB` + no-symbol + kASLR.
     - Supported regardless of whether `CONFIG_SLAB_FREELIST_HARDENED` is `y` or `n`.
+    - Supported regardless of whether `CONFIG_SLAB_VIRTUAL` is `y` or `n` (x64-only).
     - It supports dumping partial pages (`-v`) and NUMA node pages (`-vv`).
     - Since `page_to_virt` is difficult to implement, it will heuristically determine the virtual address from the free-list.
     - ![](images/slub-dump.png)
@@ -161,6 +162,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `page`: displays the transformation between a `struct page` and its virtual/physical address.
     - ![](images/page.png)
     - There are shortcuts: `virt2page`, `page2virt`, `phys2page` and `page2phys`.
+- `slab-virtual`: displays the transformation between slab-meta and its slab-data/`struct page` address
+    - ![](images/slab-virtual.png)
 - `kchecksec`: checks kernel security.
     - ![](images/kchecksec.png)
 - `kmagic`: displays useful addresses in the kernel.
