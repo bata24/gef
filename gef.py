@@ -46284,7 +46284,7 @@ class Syscall:
                 "int fd", "int mode", "unsigned int offset_lo", "unsigned int offset_hi",
                 "unsigned int len_lo", "unsigned int len_hi",
             ], # arch/x86/kernel/sys_ia32.c
-            "compat_sys_arch_prctl": [
+            "sys_arch_prctl": [
                 "int option", "unsigned long arg2",
             ], # arch/x86/kernel/process_64.c
         }
