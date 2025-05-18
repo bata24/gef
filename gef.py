@@ -69791,8 +69791,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         "                                 | backing_folio   |     | backing_folio   |   | backing_folio   |",
         "       +-slub_tlbflush_queue-+   | oo              |--+  | oo              |   | oo              |",
         " ...<->|    list_head        |<->| flush_list_elem |<-|->| flush_list_elem |<->| flush_list_elem |<-> ...",
-        "       +---------------------+   | pinstate        |  |  | pinstate        |   | pinstate        |",
-        "                                 | slab_list       |  |  | slab_list       |   | slab_list       |",
+        "       +---------------------+   | slab_list       |  |  | slab_list       |   | slab_list       |",
         "                                 | slab_cache      |  |  | slab_cache      |   | slab_cache      |",
         "                                 | ...             |  |  | ...             |   | ...             |",
         "                                 +-----------------+  |  +-----------------+   +-----------------+",
@@ -70351,19 +70350,19 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     };
 
     struct kmem_cache {                          // if CONFIG_SLAB_VIRTUAL=y
-        :
-        struct kmem_cache_order_objects oo;      // [ANOTATION]
-        struct kmem_cache_order_objects min;     //    In kernel < 6.6, `min` and `oo` are swapped.
-        struct kmem_cache_virtual virtual        // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.6
-        unsigned long nr_freed_pages;            // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.6
-        struct list_head freed_slabs_normal;     // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.6
-        struct list_head freed_slabs_min;        // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.6
-        spinlock_t freed_slabs_lock;             // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.6
+        ...
+        struct kmem_cache_order_objects min;     // [ANOTATION]
+        struct kmem_cache_order_objects oo;      //    In kernel < 6.1.55, `min` and `oo` are swapped.
+        struct kmem_cache_virtual virtual        // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.1.55
+        unsigned long nr_freed_pages;            // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.55
+        struct list_head freed_slabs_normal;     // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.55
+        struct list_head freed_slabs_min;        // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.55
+        spinlock_t freed_slabs_lock;             // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.55
         gfp_t allocflags;
-        :
+        ...
         const char * name;
         struct list_head list; <-----> struct list_head <-----> struct list_head <-----> ...
-        :
+        ...
     };
 
     struct kmem_cache_cpu {
@@ -70376,6 +70375,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         local_lock_t lock;                       // if kernel >= 5.15
         unsigned stat[NR_SLUB_STAT_ITEMS];       // if CONFIG_SLUB_STATS=y
     };
+
 
     struct page {                                // if kernel < 4.18
         unsigned long flags;
@@ -70410,6 +70410,31 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         void *freelist;
         unsigned inuse:16, objects:15, frozen:1;
         ...
+    };
+
+    struct slab {                                // if CONFIG_SLAB_VIRTUAL=y
+        struct slab *compound_slab_head;         // if kernel < 6.6
+        unsigned long __page_flags;              // if kernel >= 6.6 (if freed, used as `backing_folio *` (pointer to vmemmap)
+        struct folio *backing_folio;             // if kernel < 6.6
+        struct kmem_cache *slab_cache;           // if kernel >= 6.6
+        unsigned int oo;
+        unsigned int slab_list_lock;             // if kernel < 6.1.55
+        struct slab *next;                       // if kernel >= 6.6
+        struct list_head flush_list_elem;        // if kernel < 6.6
+        unsigned long align_mask;                // if kernel < 6.6
+        unsigned int pinstate;                   // if kernel < 6.1.55
+        unsigned int slab_lock;                  // if kernel >= 6.1.55
+        struct slab *next;                       // if kernel < 6.6
+        struct kmem_cache *slab_cache;           // if kernel < 6.6
+        void *freelist;
+        unsigned inuse:16, objects:15, frozen:1;
+        ...
+    };
+
+    struct virtual_slab {                        // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.6
+        struct slab slab;
+        struct virtual_slab *compound_slab_head;
+        unsigned long align_mask;
     };
 
     struct kmem_cache_node {
@@ -70488,7 +70513,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         #
         # Heuristic detection that CONFIG_SLAB_VIRTUAL is enabled or not from `struct kmem_cache`.
         # If enabled, `struct kmem_cache` has 2 doubly-link-lists above `kmem_cache->name`.
-        #     - kmem_cache->freed_slabs_normal
+        #     - kmem_cache->freed_slabs_normal/freed_slabs(if kernel < 6.1.55)
         #     - kmem_cache->freed_slabs_min
         if is_x86_64():
             def has_freed_slabs_lists(freed_slabs_normal, freed_slabs_min):
@@ -70519,7 +70544,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             #   - kmem_cache->freed_slabs_min (kernel < 6.6) or kmem_cache->virtual.freed_slabs_min(kernel >= 6.6)
             # offsetof(kmem_cache, oo)
             # offsetof(kmem_cache, nr_freed_pages)
-            if kversion < "6.6":
+            if kversion < "6.1.55":
                 self.kmem_cache_offset_nr_freed_pages = offset_freed_slabs_normal - current_arch.ptrsize * 1
                 self.kmem_cache_offset_oo = offset_freed_slabs_normal - current_arch.ptrsize * 2
             else:
@@ -70597,7 +70622,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         elif kversion < "5.17":
             self.page_offset_next = current_arch.ptrsize
         elif kversion < "6.2":
-            self.page_offset_next = current_arch.ptrsize
+            if self.slab_virtual_enabled:
+                self.page_offset_next = current_arch.ptrsize * 7
+            else:
+                self.page_offset_next = current_arch.ptrsize
         else:
             self.page_offset_next = current_arch.ptrsize * 2
         self.quiet_info("offsetof(page, next): {:#x}".format(self.page_offset_next))
@@ -70608,7 +70636,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         elif kversion < "5.17":
             self.page_offset_freelist = current_arch.ptrsize * 4
         elif kversion < "6.2":
-            self.page_offset_freelist = current_arch.ptrsize * 4
+            if self.slab_virtual_enabled:
+                self.page_offset_freelist = current_arch.ptrsize * 10
+            else:
+                self.page_offset_freelist = current_arch.ptrsize * 4
         else:
             self.page_offset_freelist = current_arch.ptrsize * 4
         self.quiet_info("offsetof(page, freelist): {:#x}".format(self.page_offset_freelist))
@@ -70621,7 +70652,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         elif kversion <= "5.17":
             self.page_offset_slab_cache = current_arch.ptrsize * 3
         elif kversion < "6.2":
-            self.page_offset_slab_cache = current_arch.ptrsize * 3
+            if self.slab_virtual_enabled:
+                self.page_offset_slab_cache = current_arch.ptrsize * 9
+            else:
+                self.page_offset_slab_cache = current_arch.ptrsize * 3
         else:
             self.page_offset_slab_cache = current_arch.ptrsize
         self.quiet_info("offsetof(page, slab_cache): {:#x}".format(self.page_offset_slab_cache))
@@ -70640,19 +70674,14 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             #       member `slab_list` or `next` (which?) as the same link usage.
             #       So, uses `flush_list_elem` as named property.
             #
-            # offsetof(slab, pinstate) if kernel < 6.6
             if kversion < "6.6":
                 self.page_offset_backing_folio = current_arch.ptrsize
                 self.page_offset_oo = current_arch.ptrsize * 2
                 self.page_offset_flush_list_elem = current_arch.ptrsize * 3
-                self.page_offset_pinstate = self.page_offset_next - current_arch.ptrsize
-                self.quiet_info("offsetof(page, pinstate): {:#x}".format(self.page_offset_pinstate))
             else:
                 self.page_offset_backing_folio = 0
                 self.page_offset_oo = current_arch.ptrsize * 6
                 self.page_offset_flush_list_elem = current_arch.ptrsize * 2
-                self.page_offset_pinstate = None
-                self.quiet_info("offsetof(page, pinstate): Not found".format(self.page_offset_pinstate))
 
             self.quiet_info("offsetof(page, backing_folio): {:#x}".format(self.page_offset_backing_folio))
             self.quiet_info("offsetof(page, oo): {:#x}".format(self.page_offset_oo))
@@ -70661,7 +70690,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.page_offset_backing_folio = None
             self.page_offset_oo = None
             self.page_offset_flush_list_elem = None
-            self.page_offset_pinstate = None
 
 
         if self.kmem_cache_offset_node is None:
@@ -70735,28 +70763,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             return 0
         else:
             return read_int_from_memory(addr + self.kmem_cache_offset_random)
-
-    def get_pinstate(self, addr):
-        if self.page_offset_pinstate is None:
-            return 0
-        else:
-            return u32(read_memory(addr, 4))
-
-    def get_pinstate_str(self, state):
-        if not self.slab_virtual_enabled:
-            err("Not supported")
-            return
-
-        _states = {
-            0x40: "UNPOPULATED",
-            0x41: "POPULATED",
-            0x42: "PINNED"
-        }
-        state = _states.get(state)
-        if state:
-            return state
-
-        return "???"
 
     def get_kmem_cache_cpu(self, addr, cpu):
         cpu_slab = read_int_from_memory(addr + self.kmem_cache_offset_cpu_slab)
@@ -71016,20 +71022,16 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     def walk_slab_list(self, list_head, offset_next):
         slab_list = []
         current_slab = read_int_from_memory(list_head) - offset_next
-        # may hit ILLEGAL_POINTER_VALUE or LIST_POISON.
         while is_valid_addr(current_slab) and current_slab + offset_next != list_head:
             slab = {}
             slab["address"] = current_slab
             slab["backing_folio"] = read_int_from_memory(current_slab + self.page_offset_backing_folio)
             slab["oo"] = u32(read_memory(current_slab + self.page_offset_oo, 4))
-            if self.page_offset_pinstate:
-                slab["pinstate"] = self.get_pinstate(current_slab + self.page_offset_pinstate)
             kmem_cache = read_int_from_memory(current_slab + self.page_offset_slab_cache)
             slab["slab_cache_name"] = self.get_name(kmem_cache)
             slab_list.append(slab)
             # next slab
             current_slab = read_int_from_memory(current_slab + offset_next) - offset_next
-
         return slab_list
 
     def walk_slub_tlbflush_queue(self):
@@ -71268,8 +71270,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.out.append("    {:s}: {:#d}/{:#d}".format(name, len(freed_slabs_list), nr_freed_pages))
         for idx, slab in enumerate(freed_slabs_list):
             out = "             0x{:03x} {:#x}".format(idx, slab["address"])
-            if self.page_offset_pinstate:
-                out += " (pinstate: {:s})".format(self.get_pinstate_str(slab["pinstate"]))
             self.out.append(out)
             # self.out.append("               oo: {:#x}".format(slab["oo"]))
         return
@@ -71288,9 +71288,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             # Virt is not mapping, here
             virt = "{:#x}".format(self.slab2virt(slab_addr))
             self.out.append("    virt: {:s}".format(Color.colorify(virt, not_mapped_virt)))
-            if self.page_offset_pinstate:
-                pinstate_str = self.get_pinstate_str(slab["pinstate"])
-                self.out.append("    pinstate: {:s}".format(Color.colorify(pinstate_str, label_inactive_color)))
         self.out.append("")
 
     def dump_caches(self, target_names, cpus, parsed_caches):
@@ -71398,6 +71395,13 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.quiet_err("CPU number is invalid (valid range: {:d}-{:d})".format(0, self.ncpus - 1))
                 return
             target_cpus = [cpu]
+
+        if self.args.tlbflush_queue:
+            if self.slab_virtual_enabled:
+                parsed_queue = self.walk_slub_tlbflush_queue()
+                self.dump_slub_tlbflush_queue(parsed_queue)
+            else:
+                self.quiet_warn("CONFIG_SLAB_VIRTUAL is disabled. option `--tlbflush-queue` is ignored")
 
         parsed_caches = self.walk_caches(target_names, target_cpus)
         self.dump_caches(target_names, target_cpus, parsed_caches)
@@ -72988,13 +72992,6 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                 self.quiet_err("CPU number is invalid (valid range: {:d}-{:d})".format(0, self.ncpus - 1))
                 return
             target_cpus = [cpu]
-
-        if self.args.tlbflush_queue:
-            if self.slab_virtual_enabled:
-                parsed_queue = self.walk_slub_tlbflush_queue()
-                self.dump_slub_tlbflush_queue(parsed_queue)
-            else:
-                self.quiet_warn("CONFIG_SLAB_VIRTUAL is disabled. option `--tlbflush-queue` is ignored")
 
         parsed_caches = self.walk_caches(target_names, target_cpus)
         self.dump_caches(target_names, target_cpus, parsed_caches)
@@ -93709,7 +93706,7 @@ class SlabVirtualCommand(GenericCommand):
         "This command works only in CONFIG_SLAB_VIRTUAL=y",
         "If disabled, Use `page` command",
     ]
-    _note_ "\n".join(_note_)
+    _note_ = "\n".join(_note_)
 
     def __init__(self, *args, **kwargs):
         super().__init__(complete="use_user_complete")
@@ -93741,29 +93738,37 @@ class SlabVirtualCommand(GenericCommand):
             err("Unsupported before v6.1")
             return False
 
-        if self.kversion < "6.6":
-            self.slab_offset_backing_folio = current_arch.ptrsize
-            self.quiet_info("offsetof(slab, backing_folio): {:#x}".format(self.slab_offset_backing_folio))
+        # set size of a single slab meta unit
+        if self.kversion < "6.1.55":
+            self.slab_meta_entry_size = 0xc0 # STRUCT_SLAB_SIZE
+        elif self.kversion < "6.6":
+            self.slab_meta_entry_size = 0x70 # sizeof(struct slab)
+        else:
+            self.slab_meta_entry_size = 0x50 # sizeof(struct virtual_slab)
+        self.quiet_info("single slab meta size: {:#x}".format(self.slab_meta_entry_size))
 
+        # set size of SLAB_META_SIZE
+        if self.kversion < "6.1.55":
+            x = self.SLAB_VPAGES * 0xc0 # STRUCT_SLAB_SIZE
+        else:
+            x = self.SLAB_VPAGES * 0x100 # STRUCT_SLAB_SIZE/STRUCT_VIRTUAL_SLAB_SIZE
+        self.SLAB_META_SIZE = self.align_kernel(x, 1 << self.PAGE_SHIFT)
+        self.quiet_info("SLAB_META_SIZE: {:#x}".format(self.SLAB_META_SIZE))
+
+        # offsetof(slab, compound_slab_head)         if kernel < 6.6
+        # offsetof(virtual_slab, compound_slab_head) if kernel >= 6.6
+        # offsetof(slab, backing_folio)
+        if self.kversion < "6.6":
             self.slab_offset_compound_slab_head = 0
             self.quiet_info("offsetof(slab, compound_slab_head): {:#x}".format(self.slab_offset_compound_slab_head))
 
-            self.slab_meta_entry_size = 0x18 * current_arch.ptrsize # STRUCT_SLAB_SIZE
-
-            self.SLAB_META_SIZE = self.align_kernel(self.SLAB_VPAGES * self.slab_meta_entry_size, 1 << self.PAGE_SHIFT)
-            self.quiet_info("SLAB_META_SIZE: {:#x}".format(self.SLAB_META_SIZE))
+            self.slab_offset_backing_folio = current_arch.ptrsize
         else:
-            self.slab_offset_backing_folio = 0
-            self.quiet_info("offsetof(slab, backing_folio): {:#x}".format(self.slab_offset_backing_folio))
-
-            self.slab_offset_compound_slab_head = 0x40
+            self.slab_offset_compound_slab_head = current_arch.ptrsize * 8
             self.quiet_info("offsetof(virtual_slab, compound_slab_head): {:#x}".format(self.slab_offset_compound_slab_head))
-            self.slab_meta_entry_size = 0x50 # sizeof(struct virtual_slab)
 
-            STRUCT_VIRTUAL_SLAB_SIZE = 0x20 * current_arch.ptrsize # #define STRUCT_VIRTUAL_SLAB_SIZE (32 * sizeof(void *))
-
-            self.SLAB_META_SIZE = self.align_kernel(self.SLAB_VPAGES * STRUCT_VIRTUAL_SLAB_SIZE, 1 << self.PAGE_SHIFT)
-            self.quiet_info("SLAB_META_SIZE: {:#x}".format(self.SLAB_META_SIZE))
+            self.slab_offset_backing_folio = 0
+        self.quiet_info("offsetof(slab, backing_folio): {:#x}".format(self.slab_offset_backing_folio))
 
         self.SLAB_DATA_BASE_ADDR = self.SLAB_BASE_ADDR + self.SLAB_META_SIZE
         self.quiet_info("SLAB_DATA_BASE_ADDR : {:#x}".format(self.SLAB_DATA_BASE_ADDR))
@@ -93790,12 +93795,13 @@ class SlabVirtualCommand(GenericCommand):
             err("Address is not in valid range")
             return None
 
-        if self.kversion < "6.6":
-            slab_data_base = self.SLAB_BASE_ADDR
+        if self.kversion < "6.1.55":
+            slab_base = slab_data_base = self.SLAB_BASE_ADDR
         else:
+            slab_base = self.SLAB_BASE_ADDR
             slab_data_base = self.SLAB_DATA_BASE_ADDR
 
-        slab_idx, is_not_aligned = divmod(slab - self.SLAB_BASE_ADDR, self.slab_meta_entry_size)
+        slab_idx, is_not_aligned = divmod(slab - slab_base, self.slab_meta_entry_size)
         if is_not_aligned:
             warn("Address is not aligned for the size of slab ({:#x})".format(self.slab_meta_entry_size))
         return slab_data_base + (1 << self.PAGE_SHIFT) * slab_idx
@@ -93813,12 +93819,14 @@ class SlabVirtualCommand(GenericCommand):
         if virt&0xfff:
             warn("Address is NOT aligned")
 
-        if self.kversion < "6.6":
-            slab_idx = (virt - self.SLAB_BASE_ADDR) >> self.PAGE_SHIFT
+        if self.kversion < "6.1.55":
+            slab_base = slab_data_base = self.SLAB_BASE_ADDR
         else:
-            slab_idx = (virt - self.SLAB_DATA_BASE_ADDR) >> self.PAGE_SHIFT
+            slab_base = self.SLAB_BASE_ADDR
+            slab_data_base = self.SLAB_DATA_BASE_ADDR
 
-        slab = self.SLAB_BASE_ADDR + slab_idx * self.slab_meta_entry_size
+        slab_idx = (virt - slab_data_base) >> self.PAGE_SHIFT
+        slab = slab_base + slab_idx * self.slab_meta_entry_size
         return read_int_from_memory(slab + self.slab_offset_compound_slab_head) # s->compound_head
 
     def slab_to_page(self, slab):
@@ -93845,7 +93853,7 @@ class SlabVirtualCommand(GenericCommand):
             # If symbol is available, use directly
             vmemmap_base = read_int_from_memory(addr)
         else:
-            # plan 2 available both 6.1-based and 6.6-based from `slab_virt_to_phys`
+            # plan 2 available from `slab_virt_to_phys`
             addr = Symbol.get_ksymaddr("slab_virt_to_phys") # exported
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
@@ -93887,7 +93895,6 @@ class SlabVirtualCommand(GenericCommand):
                     if not is_valid_addr(backing_folio):
                         continue
                     vmemmap_entries.append(backing_folio)
-
                 # The masked address of min page may be vmemmap_base(likely plan 3 of `KF.get_vmemmap()`)
                 vmemmap_base = min(vmemmap_entries) & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
 
@@ -93897,18 +93904,11 @@ class SlabVirtualCommand(GenericCommand):
         pfn = (page - vmemmap_base) // 0x40
         phys_addr = pfn << self.PAGE_SHIFT
 
-        found_va = []
-        for line in gdb.execute("p2v {:#x}".format(phys_addr), to_string=True).splitlines():
-            r = re.search(r"Phys: \S+ -> Virt: (\S+)", line)
-            if r:
-                found_va.append(int(r.group(1), 0x10))
-
         # `p2v` returns 2 results (direct mapping area and slab data)
-        if len(found_va) < 2:
+        r = Kernel.p2v(phys_addr)
+        if not r or len(r) < 2:
             return None
-
-        virt = max(found_va)
-        return self.virt_to_slab(virt)
+        return self.virt_to_slab(max(r))
 
     @parse_args
     @only_if_gdb_running
@@ -93922,7 +93922,7 @@ class SlabVirtualCommand(GenericCommand):
 
         # detect CONFIG_SLAB_VIRTUAL=y without `slub-dump`
         if KernelAddressHeuristicFinder.get_slub_tlbflush_queue() is None:
-            err("CONFIG_SLAB_VIRTUAL=n is NOT supproted")
+            err("CONFIG_SLAB_VIRTUAL=n is NOT supported")
             return
 
         if not self.initialized:
