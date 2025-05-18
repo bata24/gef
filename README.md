@@ -291,7 +291,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
             - ![](images/heap-try-malloc.png)
         - `heap try-free`
             - ![](images/heap-try-free.png)
-            - You can also executea any command on the memory status after emulation is completed.
+            - You can also execute any command on the memory status after emulation is completed.
                 - ![](images/heap-try-free-bs.png)
         - `heap try-realloc`
         - `heap try-calloc`
