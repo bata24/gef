@@ -61911,6 +61911,18 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
         # print
         self.out = []
         if args.address:
+            # show permission
+            if not args.quiet:
+                kinfo = Kernel.get_kernel_base()
+                for vaddr, size, perm in kinfo.maps:
+                    if vaddr <= args.address and args.address < vaddr + size:
+                        perm_str = perm
+                        break
+                else:
+                    perm_str = "???"
+                self.out.append("Address: {:#x} Permission: {:s}".format(args.address, perm_str))
+
+            # get name width
             name_width = max(len(m[1]) for m in members)
             try:
                 addrs = [read_int_from_memory(args.address + current_arch.ptrsize * i) for i in range(len(members))]
@@ -61918,29 +61930,32 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
                 self.quiet_err("Memory read error")
                 return
 
+            # legend
             if not args.quiet:
                 fmt = "{:5s} {:<10s} {:<{:d}s} {:s}"
                 legend = ["Index", "Type", "Name", name_width, "Value"]
                 self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
+            # each entries
             width = AddressUtil.get_format_address_width()
-            for idx, ((type, name), address) in enumerate(zip(members, addrs)):
-                if type == "char*":
+            for idx, ((type_name, name), address) in enumerate(zip(members, addrs)):
+                if type_name == "char*":
                     sym = " {!r}".format(read_cstring_from_memory(address))
                 else:
                     sym = Symbol.get_symbol_string(address)
                 self.out.append("{:<5d} {:10s} {:{:d}s} {:#0{:d}x}{:s}".format(
-                    idx, type, name, name_width, address, width, sym,
+                    idx, type_name, name, name_width, address, width, sym,
                 ))
-
         else:
+            # legend
             if not args.quiet:
                 fmt = "{:5s} {:<10s} {:s}"
                 legend = ["Index", "Type", "Name"]
                 self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-            for idx, (type, name) in enumerate(members):
-                self.out.append("{:<5d} {:10s} {:s}".format(idx, type, name))
+            # each entries
+            for idx, (type_name, name) in enumerate(members):
+                self.out.append("{:<5d} {:10s} {:s}".format(idx, type_name, name))
 
         self.print_output(term=True)
         return
