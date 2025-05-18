@@ -89603,6 +89603,7 @@ class SlabVirtualCommand(GenericCommand):
         "This command works only in CONFIG_SLAB_VIRTUAL=y",
         "If disabled, Use `page` command",
     ]
+    _note_ "\n".join(_note_)
 
     def __init__(self, *args, **kwargs):
         super().__init__(complete="use_user_complete")
