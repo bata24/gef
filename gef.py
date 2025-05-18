@@ -70666,6 +70666,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # parse extra members of `struct slab` for Feat. CONFIG_SLAB_VIRTUAL
         if self.slab_virtual_enabled:
+            # offsetof(slab, backing_folio)
             # offsetof(slab, oo)
             # offsetof(slab, flush_list_elem)
             #   * [ANNOTATION]
@@ -70686,11 +70687,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.quiet_info("offsetof(page, backing_folio): {:#x}".format(self.page_offset_backing_folio))
             self.quiet_info("offsetof(page, oo): {:#x}".format(self.page_offset_oo))
             self.quiet_info("offsetof(page, flush_list_elem): {:#x}".format(self.page_offset_flush_list_elem))
-        else:
-            self.page_offset_backing_folio = None
-            self.page_offset_oo = None
-            self.page_offset_flush_list_elem = None
-
 
         if self.kmem_cache_offset_node is None:
             self.quiet_info("offsetof(kmem_cache_node, partial): Not found")
@@ -71069,12 +71065,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 kmem_cache["freed_slabs_min"] = self.walk_slab_list(
                     current_kmem_cache + self.kmem_cache_offset_freed_slabs_min, self.page_offset_next
                 )
-            else:
-                kmem_cache["oo"] = None
-                kmem_cache["nr_freed_pages"] = None
-                kmem_cache["freed_slabs_normal"] = None
-                kmem_cache["freed_slabs_min"] = None
-
             parsed_caches.append(kmem_cache)
             # goto next
             current_kmem_cache = kmem_cache["next"]
@@ -71634,34 +71624,6 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         void *freelist;
         unsigned inuse:16, objects:15, frozen:1;
         ...
-    };
-
-    struct slab {                                // if kernel < 6.6 && CONFIG_SLAB_VIRTUAL=y
-        struct slab *compound_slab_head;
-        struct folio *backing_folio;
-        unsigned int kmem_cache_order_objects;
-        unsigned int slab_list_lock;
-        struct list_head flush_list_elem;
-        unsigned long align_mask;
-        unsigned int pinstate;
-        union {...};
-        struct kmem_cache *slab_cache;
-        struct {...};
-        unsigned int __unused;
-        unsigned long memcg_data;
-    };
-
-    struct slab {                                // if kernel >= 6.6 && CONFIG_SLAB_VIRTUAL=y
-        unsigned long __page_flags;              // In freed, used as `backing folio *` (pointer to vmemmap)
-        struct kmem_cache *slab_cache;
-        struct slab *next;
-        ...
-    };
-
-    struct virtual_slab {                        // if kernel >= 6.6 && CONFIG_SLAB_VIRTUAL=y
-        struct slab slab;
-        struct virtual_slab *compound_slab_head;
-        unsigned long align_mask;
     };
 
     struct kmem_cache_node {
