@@ -55,7 +55,7 @@ It will be created automatically the next time GEF starts.
 The variable `GEF_TEMP_DIR` is defined in `gef.py` and can be changed if necessary.
 
 ## What is `install.sh`?
-This is the installer that was used before the `venv + uv`-based installation became available.
+This is the installer that was used before the `uv`-based installation became available.
 
 This installer is not currently recommended, but it still works.
 
