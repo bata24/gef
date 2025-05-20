@@ -24698,7 +24698,7 @@ class KernelChecksecCommand(GenericCommand):
     @staticmethod
     def get_slab_type():
         # Cases where ksymaddr-remote is not working properly
-        if not gdb.execute("ksymaddr-remote --quiet commit_creds", to_string=True):
+        if not Symbol.get_ksymaddr("commit_creds"):
             return "Unknown"
 
         if gdb.execute("ksymaddr-remote --quiet --no-pager slub_", to_string=True):
@@ -24706,12 +24706,12 @@ class KernelChecksecCommand(GenericCommand):
             if kversion < "6.2":
                 return "SLUB"
             else:
-                if gdb.execute("ksymaddr-remote --quiet --no-pager deactivate_slab", to_string=True):
+                if Symbol.get_ksymaddr("deactivate_slab"):
                     return "SLUB"
                 else:
                     return "SLUB_TINY"
 
-        if gdb.execute("ksymaddr-remote --quiet --no-pager cache_reap", to_string=True):
+        if Symbol.get_ksymaddr("cache_reap"):
             return "SLAB"
 
         if gdb.execute("ksymaddr-remote --quiet --no-pager slob_", to_string=True):
