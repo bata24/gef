@@ -683,6 +683,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `smart-memory-dump`: dumps all regions of the memory to each file.
     - ![](images/smart-memory-dump.png)
 - `load-file`: loads the file into memory.
+- `load-file-mmap`: loads the file into memory that allocated by `mmap`.
 - `search-cfi-gadgets`: searches for CFI-valid (for CET IBT) and controllable generally gadgets in the executable area.
     - ![](images/search-cfi-gadgets.png)
 - `symbols`: lists all symbols with coloring.
