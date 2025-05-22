@@ -24706,12 +24706,14 @@ class KernelChecksecCommand(GenericCommand):
             if kversion < "6.2":
                 return "SLUB"
             else:
-                if Symbol.get_ksymaddr("deactivate_slab"):
+                # care for both deactivate_slab and deactivate_slab.cold
+                if gdb.execute("ksymaddr-remote --quiet --no-pager deactivate_slab", to_string=True):
                     return "SLUB"
                 else:
                     return "SLUB_TINY"
 
-        if Symbol.get_ksymaddr("cache_reap"):
+        # care for both cache_reap and cache_reap.cold
+        if gdb.execute("ksymaddr-remote --quiet --no-pager cache_reap", to_string=True):
             return "SLAB"
 
         if gdb.execute("ksymaddr-remote --quiet --no-pager slob_", to_string=True):
