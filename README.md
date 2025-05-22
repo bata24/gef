@@ -294,7 +294,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
             - ![](images/heap-try-malloc.png)
         - `heap try-free`
             - ![](images/heap-try-free.png)
-            - You can also executea any command on the memory status after emulation is completed.
+            - You can also execute any command on the memory status after emulation is completed.
                 - ![](images/heap-try-free-bs.png)
         - `heap try-realloc`
         - `heap try-calloc`
@@ -686,6 +686,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `smart-memory-dump`: dumps all regions of the memory to each file.
     - ![](images/smart-memory-dump.png)
 - `load-file`: loads the file into memory.
+- `load-file-mmap`: loads the file into memory that allocated by `mmap`.
 - `search-cfi-gadgets`: searches for CFI-valid (for CET IBT) and controllable generally gadgets in the executable area.
     - ![](images/search-cfi-gadgets.png)
 - `symbols`: lists all symbols with coloring.

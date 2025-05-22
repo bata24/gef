@@ -24698,7 +24698,7 @@ class KernelChecksecCommand(GenericCommand):
     @staticmethod
     def get_slab_type():
         # Cases where ksymaddr-remote is not working properly
-        if not gdb.execute("ksymaddr-remote --quiet commit_creds", to_string=True):
+        if not Symbol.get_ksymaddr("commit_creds"):
             return "Unknown"
 
         if gdb.execute("ksymaddr-remote --quiet --no-pager slub_", to_string=True):
@@ -24706,12 +24706,12 @@ class KernelChecksecCommand(GenericCommand):
             if kversion < "6.2":
                 return "SLUB"
             else:
-                if gdb.execute("ksymaddr-remote --quiet --no-pager deactivate_slab", to_string=True):
+                if Symbol.get_ksymaddr("deactivate_slab"):
                     return "SLUB"
                 else:
                     return "SLUB_TINY"
 
-        if gdb.execute("ksymaddr-remote --quiet --no-pager cache_reap", to_string=True):
+        if Symbol.get_ksymaddr("cache_reap"):
             return "SLAB"
 
         if gdb.execute("ksymaddr-remote --quiet --no-pager slob_", to_string=True):
@@ -30856,6 +30856,82 @@ class LoadFileCommand(GenericCommand):
     """Load the file into memory."""
 
     _cmdline_ = "load-file"
+    _category_ = "03-f. Memory - Dump/Load"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
+                        help="the memory address to load.")
+    parser.add_argument("file_path", metavar="FILE_PATH", help="the filepath to load.")
+    parser.add_argument("file_offset", metavar="FILE_OFFSET", nargs="?", default=0, type=lambda x: int(x, 0),
+                        help="the offset of the file to load.")
+    parser.add_argument("load_size", metavar="LOAD_SIZE", nargs="?", type=lambda x: int(x, 0),
+                        help="the size of the data to load.")
+    _syntax_ = parser.format_help()
+
+    _note_ = [
+        "+-memory------+",
+        "|             |             +-file_start--+",
+        "|             |             | ^           |",
+        "|             |             | |           |",
+        "|             |             | v           |",
+        "| LOCATION <----------------- FILE_OFFSET |",
+        "| ...         | ^           | ...         |",
+        "|             | | LOAD_SIZE |             |",
+        "| ...         | v           | ...         |",
+        "| end <---------------------- end         |",
+        "|             |             |             |",
+        "|             |             |             |",
+        "|             |             +-file_end----+",
+        "|             |",
+        "+-------------+",
+        "If there is not enough space, the load will fail halfway.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    @parse_args
+    @only_if_gdb_running
+    def do_invoke(self, args):
+        if not os.path.exists(args.file_path):
+            err("Not found {:s}".format(args.file_path))
+            return
+
+        if args.load_size is None:
+            data_size = os.path.getsize(args.file_path)
+            if data_size == 0:
+                err("Unsupported zero size mapping")
+                return
+        elif args.load_size < 0:
+            err("Invalid LOAD_SIZE")
+            return
+        else:
+            data_size = args.load_size
+
+        if args.file_offset < 0:
+            err("Invalid FILE_OFFSET")
+            return
+
+        # read file and write to memory
+        fd = open(args.file_path, "rb")
+        if args.file_offset > 0:
+            fd.seek(args.file_offset, 0)
+
+        pos = args.location
+        remain_size = data_size
+        while remain_size > 0:
+            data = fd.read(min(0x1000, remain_size))
+            if len(data) == 0:
+                break
+            write_memory(pos, data)
+            pos += len(data)
+            remain_size -= len(data)
+        return
+
+
+@register_command
+class LoadFileMmapCommand(GenericCommand):
+    """Load the file into memory that allocated by `mmap`."""
+
+    _cmdline_ = "load-file-mmap"
     _category_ = "03-f. Memory - Dump/Load"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
