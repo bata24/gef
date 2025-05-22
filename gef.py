@@ -16410,9 +16410,8 @@ class FileDescriptorsCommand(GenericCommand):
             return
 
         # get fstat system call number
-        try:
-            syscall_table = get_syscall_table()
-        except Exception:
+        syscall_table = get_syscall_table()
+        if syscall_table is None:
             err("syscall table does not exist")
             return
         for nr, entry in syscall_table.nr_table.items():
@@ -16516,9 +16515,12 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
 
             if i == 0: # NR
                 nr = int(elem)
-                table = get_syscall_table()
-                if nr >= 0 and table and nr in table.nr_table:
-                    syscall_name = table.nr_table[nr].name
+                syscall_table = get_syscall_table()
+                if syscall_table is None:
+                    self.out.append("Syscall table is not found")
+                    return
+                if nr >= 0 and syscall_table and nr in syscall_table.nr_table:
+                    syscall_name = syscall_table.nr_table[nr].name
                     self.out.append("{:2d} {:s}: {:s} ({:s})".format(i + 1, elem_name, elem, syscall_name))
                 else:
                     self.out.append("{:2d} {:s}: {:s}".format(i + 1, elem_name, elem))
@@ -18452,9 +18454,8 @@ class CallSyscallCommand(GenericCommand):
             err("current_arch is not set")
             return
 
-        try:
-            syscall_table = get_syscall_table()
-        except Exception:
+        syscall_table = get_syscall_table()
+        if syscall_table is None:
             err("syscall table does not exist")
             return
 
@@ -18524,9 +18525,8 @@ class MmapMemoryCommand(GenericCommand):
     @exclude_specific_arch(arch=("CRIS",))
     def do_invoke(self, args):
         # syscall name (mmap or mmap2 or arch-specific)
-        try:
-            syscall_table = get_syscall_table()
-        except Exception:
+        syscall_table = get_syscall_table()
+        if syscall_table is None:
             err("syscall table does not exist")
             return
 
@@ -37035,9 +37035,9 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
         except ValueError:
             syscall_name_pattern = args.search_pattern
 
-        try:
-            syscall_table = get_syscall_table(target_arch, target_mode)
-        except Exception:
+        syscall_table = get_syscall_table(target_arch, target_mode)
+        if syscall_table is None:
+            err("Please specify the valid architecture.")
             self.usage()
             return
 
@@ -46457,10 +46457,7 @@ class Syscall:
 
         syscall_list = []
         for entry in tbl:
-            if len(entry) == 5:
-                nr, abi, name, func, _ = entry # don't use compat
-            else:
-                nr, abi, name, func = entry
+            nr, abi, name, func = entry[:4] # don't use compat
             if abi != "i386":
                 continue
             # special case
@@ -48276,10 +48273,9 @@ class Syscall:
             syscall_list = Syscall.make_syscall_list_csky()
 
         else:
-            raise
+            return None
 
         Table = collections.namedtuple("Table", "arch mode nr_table name_table")
-        Entry = collections.namedtuple("Entry", "nr name ret_regs arg_regs args_full args")
         syscall_table = Table(arch, mode, {}, {})
 
         # example:
@@ -48299,6 +48295,7 @@ class Syscall:
         #   syscall_table.name_table["read"].args_full: ['unsigned int fd', ...]
         #   syscall_table.name_table["read"].args: ['fd', ...]
         #   syscall_table.name_table["write"] ...
+        Entry = collections.namedtuple("Entry", "nr name ret_regs arg_regs args_full args")
         for nr, name, args_full in sorted(syscall_list, key=lambda x: x[0]):
             # make entry
             args = [re.split(r" |\*", p)[-1] for p in args_full]
@@ -48342,9 +48339,11 @@ def get_syscall_table(arch=None, mode=None):
                 arch, mode = "ARM", "Emulated-32"
             else:
                 arch, mode = "ARM", "Native-32"
-        else:
+        elif current_arch:
             arch = current_arch.arch
             mode = current_arch.mode
+        else:
+            arch, mode = None, None
 
     if arch in ["ARM", "ARM64"] and mode == "S":
         mode = "Secure-World"
@@ -48464,13 +48463,10 @@ class SyscallArgsCommand(GenericCommand):
         else:
             syscall_register, nr = SyscallArgsCommand.get_nr()
 
-        try:
-            syscall_table = get_syscall_table()
-            if nr not in syscall_table.nr_table:
-                warn("There is no system call for {:#x}".format(nr))
-                return
-        except Exception:
-            syscall_table = None
+        syscall_table = get_syscall_table()
+        if syscall_table and nr not in syscall_table.nr_table:
+            warn("There is no system call for {:#x}".format(nr))
+            return
 
         self.print_syscall(syscall_table, syscall_register, nr)
         return
@@ -64784,6 +64780,10 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
         return cached_table
 
     def syscall_table_view(self, orig_tag, sys_call_table_addr, syscall_list, nr_base=0):
+        if syscall_list is None:
+            self.quiet_add_out("{} {}".format(Color.colorify("[+]", "bold red"), "Not found syscall table"))
+            return
+
         if sys_call_table_addr is None:
             self.quiet_add_out("{} {}".format(Color.colorify("[+]", "bold red"), "Not found symbol"))
             return
@@ -89422,10 +89422,12 @@ class ExecUntilCommand(GenericCommand):
                 if not self.args.filter and not self.args.ignore:
                     return True
                 _reg, nr = SyscallArgsCommand.get_nr()
-                try:
-                    syscall_name = get_syscall_table().nr_table[nr].name
-                except KeyError:
+                syscall_table = get_syscall_table()
+                if syscall_table is None:
                     return True # for debug
+                if nr not in syscall_table.nr_table:
+                    return True # for debug
+                syscall_name = syscall_table.nr_table[nr].name
                 if self.args.ignore and syscall_name in self.args.ignore:
                     return False
                 if self.args.filter:
@@ -92145,7 +92147,11 @@ class KmallocAllocatedByCommand(GenericCommand):
                 info("offsetof(kmem_cache, size): {:#x}".format(self.extra_info.kmem_cache_offset_size))
 
         # get syscall table
-        self.syscall_table = {e.name: n for n, e in get_syscall_table().nr_table.items() if n < 0x1000}
+        syscall_table = get_syscall_table()
+        if syscall_table is None:
+            err("Not found syscall table")
+            return
+        self.syscall_table = {e.name: n for n, e in syscall_table.nr_table.items() if n < 0x1000}
         self.syscall_table_view_ret = gdb.execute("syscall-table-view --no-pager --quiet", to_string=True)
 
         # get task
