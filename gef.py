@@ -11941,7 +11941,7 @@ def is_over_serial():
 
 def is_kgdb():
     """GDB mode determination function for KGDB."""
-    return is_x86_64() and is_over_serial()
+    return bool(is_x86_64() and is_over_serial())
 
 
 @Cache.cache_this_session
