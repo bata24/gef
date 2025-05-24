@@ -30456,7 +30456,7 @@ class MemoryUnwatchCommand(GenericCommand):
 
 
 @register_command
-class MemoryWatchResetCommand(GenericCommand):
+class MemoryResetCommand(GenericCommand):
     """Remove all watchpoints."""
 
     _cmdline_ = "memory reset"
