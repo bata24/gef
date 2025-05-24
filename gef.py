@@ -93087,7 +93087,10 @@ class AddSymbolTemporaryCommand(GenericCommand):
         self.quiet_info("1 entries were processed")
 
         # add symbol to gdb
-        gdb.execute("add-symbol-file {!r} {:#x}".format(sym_elf, text_base), to_string=True)
+        try:
+            gdb.execute("add-symbol-file {!r} {:#x}".format(sym_elf, text_base), to_string=True)
+        except gdb.error as e:
+            err(e)
         os.unlink(sym_elf)
         return
 
