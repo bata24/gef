@@ -476,9 +476,10 @@ class Config:
         return
 
 
-def gef_print(x="", less=False, redirect=None, *args, **kwargs):
+def gef_print(x="", less=False, redirect=None, skip_color=False, *args, **kwargs):
     """Wrapper around print(), using string buffering feature."""
-    x = HighlightCommand.highlight_text(x)
+    if not skip_color:
+        x = HighlightCommand.highlight_text(x)
 
     if redirect:
         with open(redirect, "w") as f:
@@ -14029,18 +14030,19 @@ class BufferingOutput:
             self.out.append(msg)
         return
 
-    def print_output(self, term=False):
+    def print_output(self, term=False, skip_color=False):
         if not hasattr(self, "out"):
             return
         if not self.out:
             return
         if term:
             if len(self.out) > GefUtil.get_terminal_size()[0]:
-                gef_print("\n".join(self.out), less=not self.args.no_pager)
+                less = not self.args.no_pager
             else:
-                gef_print("\n".join(self.out), less=False)
+                less = False
         else:
-            gef_print("\n".join(self.out), less=not self.args.no_pager)
+            less = not self.args.no_pager
+        gef_print("\n".join(self.out), less=less, skip_color=skip_color)
         return
 
 
@@ -14850,7 +14852,7 @@ class HistoryCommand(GenericCommand, BufferingOutput):
             prev_ret = ret
             idx += 10
 
-        self.print_output()
+        self.print_output(skip_color=True)
         return
 
 
