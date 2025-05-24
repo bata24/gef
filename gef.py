@@ -1305,8 +1305,10 @@ class AddressUtil:
     @staticmethod
     def parse_address(addr):
         """Parse an address and return it as an Integer."""
-        if String.is_hex(addr):
-            return int(addr, 16)
+        try:
+            return int(addr, 0)
+        except ValueError:
+            pass
         # Don't enclose it in a try-catch. This is because it is used with argparse,
         # and is intended to raise an exception if parsing fails.
         return to_unsigned_long(gdb.parse_and_eval(addr))
