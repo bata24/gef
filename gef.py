@@ -28311,49 +28311,6 @@ class EntryBreakCommand(GenericCommand):
         return
 
 
-class NamedBreakBreakpoint(gdb.Breakpoint):
-    """Breakpoint which shows a specified name."""
-
-    def __init__(self, loc, name):
-        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False, temporary=False)
-        self.name = name
-        self.loc = loc
-        return
-
-    def stop(self):
-        Cache.reset_gef_caches()
-        msg = "Hit breakpoint *{:#x} ({})".format(self.loc, Color.colorify(self.name, "bold red"))
-        ContextExtraCommand.push_context_message("info", msg)
-        return True
-
-
-@register_command
-class NamedBreakCommand(GenericCommand):
-    """Set a breakpoint and assigns a name to it, which will be shown if hit."""
-
-    _cmdline_ = "named-break"
-    _category_ = "01-b. Debugging Support - Breakpoint"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("name", metavar="NAME", help="the name to assign.")
-    parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
-                        help="the address to set breakpoint. (default: current_arch.pc)")
-    _syntax_ = parser.format_help()
-
-    _example_ = [
-        "{0:s} main 0x4008a9",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
-
-    @parse_args
-    def do_invoke(self, args):
-        location = args.location
-        if location is None:
-            location = current_arch.pc
-        NamedBreakBreakpoint(location, args.name)
-        return
-
-
 class CommandBreakBreakpoint(gdb.Breakpoint):
     """Breakpoint which executes user defined command silently and continue."""
 
