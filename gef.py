@@ -1309,6 +1309,9 @@ class AddressUtil:
             return int(addr, 0)
         except ValueError:
             pass
+        # on some unsupported architectures (e.g., tricore), gdb.parse_and_eval may cause a crash
+        if current_arch is None:
+            raise ValueError
         # Don't enclose it in a try-catch. This is because it is used with argparse,
         # and is intended to raise an exception if parsing fails.
         return to_unsigned_long(gdb.parse_and_eval(addr))
@@ -10912,7 +10915,8 @@ def read_memory(addr, length):
 
 def read_int_from_memory(addr):
     """Return an integer read from memory."""
-    sz = current_arch.ptrsize
+    # It works even if current_arch is None
+    sz = AddressUtil.get_memory_alignment()
     mem = read_memory(addr, sz)
     unpack = {2:u16, 4:u32, 8:u64}[sz]
     return unpack(mem)
@@ -11566,6 +11570,20 @@ def only_if_smp_disabled(f):
             err("Disable `-smp N` option for qemu-system")
             return
         return f(*args, **kwargs)
+
+    return wrapper
+
+
+def require_arch_set(f):
+    """Decorator wrapper to check if current_arch is not None."""
+
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        if current_arch is not None:
+            return f(*args, **kwargs)
+        else:
+            err("Unsupported architecture")
+            return
 
     return wrapper
 
@@ -13547,11 +13565,12 @@ def set_arch(arch_str=None):
     if key in MIPS64.load_condition and is_32bit():
         key = "MIPSN32"
 
-    try:
-        current_arch = arches[key]()
-    except KeyError as err:
-        raise OSError("Specified arch {!s} is not supported".format(key)) from err
+    if key not in arches:
+        err("Specified arch {!s} is not supported".format(key))
+        info("A generic mode with minimal functionality will be applied")
+        return
 
+    current_arch = arches[key]()
     Cache.reset_gef_caches(all=True)
     return
 
@@ -15013,6 +15032,7 @@ class BreakRelativeVirtualAddressCommand(GenericCommand):
 
     @parse_args
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         elf = Elf.get_elf()
         if elf is None or not elf.is_valid():
@@ -15225,6 +15245,7 @@ class CanaryCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @require_arch_set
     def do_invoke(self, args):
         self.dump_canary()
         return
@@ -15292,6 +15313,7 @@ class AuxvCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         auxval = Auxv.get_auxiliary_values(args.force_heuristic)
         if not auxval:
@@ -15456,6 +15478,7 @@ class ArgvCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         self.out = []
         self.dump_dl_argv()
@@ -15579,6 +15602,7 @@ class EnvpCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         self.out = []
         self.dump_environ()
@@ -15605,6 +15629,7 @@ class DumpArgsCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         gef_print(titlify("info args (snapshot)"))
         gdb.execute("info args")
@@ -15642,6 +15667,7 @@ class VdsoCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @require_arch_set
     def do_invoke(self, args):
         # get map entry
         maps = ProcessMap.get_process_maps()
@@ -16459,6 +16485,7 @@ class FileDescriptorsCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         self.fd_dump()
         return
@@ -16795,6 +16822,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @only_if_gdb_target_local
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @require_arch_set
     def do_invoke(self, args):
         self.out = []
         self.proc_dump()
@@ -16988,6 +17016,7 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_target_local
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         self.out = []
         self.print_capability_from_pid()
@@ -17076,6 +17105,7 @@ class SmartMemoryDumpCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @require_arch_set
     def do_invoke(self, args):
         self.smart_memory_dump()
         return
@@ -17229,6 +17259,7 @@ class HijackFdCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
     @exclude_specific_arch(arch=("CRIS",))
+    @require_arch_set
     def do_invoke(self, args):
         # In one version of qemu, the fd was sometimes slightly off in case of i386
         # (fd returned by syscall == real opened fd + 80). I have been hard-coding it so far,
@@ -17337,6 +17368,7 @@ class ScanSectionCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @require_arch_set
     def do_invoke(self, args):
         haystack = args.haystack
         needle = args.needle
@@ -17794,6 +17826,7 @@ class PtrDemangleCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     @exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS"))
+    @require_arch_set
     def do_invoke(self, args):
         if args.source:
             s = GefUtil.get_source(current_arch.decode_cookie)
@@ -17835,6 +17868,7 @@ class PtrMangleCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     @exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS"))
+    @require_arch_set
     def do_invoke(self, args):
         if args.source:
             s = GefUtil.get_source(current_arch.encode_cookie)
@@ -17929,6 +17963,7 @@ class SearchMangledPtrCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS"))
+    @require_arch_set
     def do_invoke(self, args):
         # init
         cookie = PtrDemangleCommand.get_cookie()
@@ -18346,6 +18381,7 @@ class EditFlagsCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         if current_arch.flag_register is None:
             warn("This command cannot work under this architecture")
@@ -18386,6 +18422,7 @@ class KillThreadsCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "qemu-user", "kgdb", "vmware", "wine"))
     @exclude_specific_arch(arch=("CRIS",))
+    @require_arch_set
     def do_invoke(self, args):
         # print tid list and exit
         if not args.all and not args.thread_id:
@@ -18454,6 +18491,7 @@ class CallSyscallCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
     @exclude_specific_arch(arch=("CRIS",))
+    @require_arch_set
     def do_invoke(self, args):
         if current_arch is None:
             err("current_arch is not set")
@@ -18528,6 +18566,7 @@ class MmapMemoryCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
     @exclude_specific_arch(arch=("CRIS",))
+    @require_arch_set
     def do_invoke(self, args):
         # syscall name (mmap or mmap2 or arch-specific)
         syscall_table = get_syscall_table()
@@ -18617,6 +18656,7 @@ class MprotectCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
     @exclude_specific_arch(arch=("CRIS",))
+    @require_arch_set
     def do_invoke(self, args):
         # location
         sect = ProcessMap.process_lookup_address(args.location)
@@ -20125,6 +20165,7 @@ class UnicornEmulateCommand(GenericCommand):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @load_capstone
     @load_unicorn
+    @require_arch_set
     def do_invoke(self, args):
         if current_arch.unicorn_support is False:
             warn("This command cannot work under this architecture")
@@ -20530,6 +20571,7 @@ class CapstoneDisassembleCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @load_capstone
+    @require_arch_set
     def do_invoke(self, args):
         kwargs = {}
         for arg in args.args:
@@ -20596,6 +20638,7 @@ class GlibcHeapCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         self.usage()
         return
@@ -20617,6 +20660,7 @@ class GlibcHeapTopCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -20661,6 +20705,7 @@ class GlibcHeapArenasCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         # main_arena
         arena = GlibcHeap.get_main_arena()
@@ -20812,6 +20857,7 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -20858,6 +20904,7 @@ class GlibcHeapChunkCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -21006,6 +21053,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -21068,6 +21116,7 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -21252,6 +21301,7 @@ class GlibcHeapBinsCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -21396,6 +21446,7 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         # Determine if we are using libc with tcache built in (2.26+)
         if get_libc_version() < (2, 26):
@@ -21510,6 +21561,7 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -21555,6 +21607,7 @@ class GlibcHeapUnsortedBinsCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -21602,6 +21655,7 @@ class GlibcHeapSmallBinsCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -21657,6 +21711,7 @@ class GlibcHeapLargeBinsCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -22162,6 +22217,7 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         # Determine if we are using libc with tcache built in (2.26+)
         if get_libc_version() < (2, 26):
@@ -22339,6 +22395,7 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         if is_64bit():
             MIN_SIZE = 0x20
@@ -22387,6 +22444,7 @@ class GlibcExtractHeapAddrCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         if args.source:
             s = GefUtil.get_source(GlibcExtractHeapAddrCommand.reveal)
@@ -22424,6 +22482,7 @@ class GlibcCalcProtectedFdCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         loc = args.location
         if args.as_base:
@@ -22612,6 +22671,7 @@ class GlibcVisualHeapCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -22808,6 +22868,7 @@ class RegistersCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         self.check_unavailable_regs()
 
@@ -22865,6 +22926,7 @@ class RopperCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     @load_ropper
+    @require_arch_set
     def do_invoke(self, argv):
         if "-h" in argv or "--help" in argv:
             self.print_help()
@@ -23090,6 +23152,7 @@ class AssembleCommand(GenericCommand):
 
     @parse_args
     @load_keystone
+    @require_arch_set
     def do_invoke(self, args):
         if (args.arch, args.mode) == (None, None):
             if is_alive():
@@ -23212,6 +23275,7 @@ class DisassembleCommand(GenericCommand):
 
     @parse_args
     @load_capstone
+    @require_arch_set
     def do_invoke(self, args):
         if (args.arch, args.mode) == (None, None):
             if is_alive():
@@ -23470,6 +23534,7 @@ class AsmListCommand(GenericCommand):
 
     @parse_args
     @load_capstone
+    @require_arch_set
     def do_invoke(self, args):
         if (args.arch, args.mode) == (None, None):
             if is_alive():
@@ -23583,6 +23648,7 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
 
     @parse_args
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @require_arch_set
     def do_invoke(self, args):
         if args.pattern:
             pattern = re.compile(args.pattern)
@@ -24633,6 +24699,7 @@ class ChecksecCommand(GenericCommand):
 
     @parse_args
     @exclude_specific_gdb_mode(mode=("wine", "kgdb"))
+    @require_arch_set
     def do_invoke(self, args):
         if is_qemu_system() or is_vmware():
             info("Redirect to kchecksec")
@@ -28260,6 +28327,7 @@ class EntryBreakCommand(GenericCommand):
 
     # Need not @parse_args because argparse can't stop interpreting argument for start.
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, argv):
         if is_alive():
             if is_remote_debug():
@@ -28406,6 +28474,7 @@ class RegisterDumpBreakCommand(GenericCommand):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     @parse_args
+    @require_arch_set
     def do_invoke(self, args):
         if not args.regs:
             self.usage()
@@ -28458,6 +28527,7 @@ class BreakIfTakenCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     @parse_args
+    @require_arch_set
     def do_invoke(self, args):
         TakenOrNotBreakpoint(args.location, True, args.hw)
         return
@@ -28477,6 +28547,7 @@ class BreakIfNotTakenCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     @parse_args
+    @require_arch_set
     def do_invoke(self, args):
         TakenOrNotBreakpoint(args.location, False, args.hw)
         return
@@ -28953,11 +29024,55 @@ class ContextRegistersCommand(GenericCommand):
             target_registers.append(regs)
         return " ".join(target_registers)
 
+    def context_registers_default(self, redirect):
+        def compact_info_registers():
+            res = gdb.execute("info registers", to_string=True)
+            lines = []
+            special_lines = []
+            for line in res.splitlines():
+                s = line.split()
+
+                if len(s) > 3:
+                    # e.g., eflags 0x206 [ PF IF ]
+                    special_lines.append(line)
+                    continue
+
+                lines.append(s[:2])
+
+            if len(lines) <= len(special_lines):
+                # something is wrong
+                ContextCommand.execute_command("info registers", redirect)
+                return
+
+            while len(lines) % 3:
+                lines.append("")
+            first_half = lines[:len(lines) // 3]
+            second_half = lines[len(lines) // 3:][:len(lines) // 3]
+            third_half = lines[len(lines) // 3:]
+
+            pipe = Color.cyanify("|")
+
+            final_lines = []
+            for f, s, t in zip(first_half, second_half, third_half):
+                final_lines.append("{:10s} {:20s} {:s}  {:10s} {:20s}  {:s} {:10s} {:20s}".format(
+                    *f, pipe, *s, pipe, *t,
+                ))
+
+            final_lines = "\n".join(final_lines + special_lines)
+            gef_print(final_lines, redirect=redirect)
+            return
+
+        try:
+            compact_info_registers()
+        except Exception:
+            ContextCommand.execute_command("info registers", redirect)
+        return
+
     def context_registers(self, redirect):
         ContextCommand.context_title("registers", redirect)
 
-        if current_arch is None and is_remote_debug():
-            err("Missing info about architecture. Please set: `file /path/to/target_binary`", redirect=redirect)
+        if current_arch is None:
+            self.context_registers_default(redirect)
             return
 
         target_registers = self.get_target_registers()
@@ -29001,11 +29116,35 @@ class ContextStackCommand(GenericCommand):
         self.add_setting("nb_lines", 8, "Number of line in the stack pane")
         return
 
+    def context_stack_default(self, redirect):
+        try:
+            res = gdb.execute("info register $sp", to_string=True)
+        except gdb.error:
+            err("Failed to get value of $SP", redirect=redirect)
+            return
+
+        try:
+            sp = int(res.split()[1], 0)
+        except (IndexError, ValueError):
+            err("Failed to get value of $SP", redirect=redirect)
+            return
+
+        try:
+            data = read_memory(sp, 0x40)
+        except gdb.MemoryError:
+            err("Failed to read from $sp", redirect)
+            return
+
+        unit = AddressUtil.get_memory_alignment()
+        hexdata = hexdump(data, base=sp, unit=unit)
+        gef_print(hexdata, redirect=redirect)
+        return
+
     def context_stack(self, redirect):
         ContextCommand.context_title("stack", redirect)
 
-        if current_arch is None and is_remote_debug():
-            err("Missing info about architecture. Please set: `file /path/to/target_binary`", redirect=redirect)
+        if current_arch is None:
+            self.context_stack_default(redirect)
             return
 
         if current_arch.sp is None:
@@ -29249,7 +29388,16 @@ class ContextCodeCommand(GenericCommand):
                         pass
         return bp_locations
 
+    def context_code_default(self, redirect):
+        ContextCommand.execute_command("x/8i $pc", redirect)
+        return
+
     def context_code(self, redirect):
+        if current_arch is None:
+            ContextCommand.context_title("code", redirect)
+            self.context_code_default(redirect)
+            return
+
         use_native_x_command = Config.get_gef_setting("context_code.use_native_x_command")
         nb_insn = Config.get_gef_setting("context_code.nb_lines")
         nb_insn_prev = Config.get_gef_setting("context_code.nb_lines_prev")
@@ -29260,11 +29408,6 @@ class ContextCodeCommand(GenericCommand):
         past_lines_color = Config.get_gef_setting("theme.context_code_past")
         future_lines_color = Config.get_gef_setting("theme.context_code_future")
         use_capstone = Config.get_gef_setting("context_code.use_capstone")
-
-        if current_arch is None and is_remote_debug():
-            ContextCommand.context_title("code", redirect)
-            err("Missing info about architecture. Please set: `file /path/to/target_binary`", redirect=redirect)
-            return
 
         pc = current_arch.pc
         bp_locations = self.get_breakpoints()
@@ -29796,8 +29939,7 @@ class ContextArgumentsCommand(GenericCommand):
         return
 
     def context_args(self, redirect):
-        if current_arch is None and is_remote_debug():
-            err("Missing info about architecture. Please set: `file /path/to/target_binary`", redirect=redirect)
+        if current_arch is None:
             return
 
         # get insn
@@ -29925,6 +30067,9 @@ class ContextSourceCommand(GenericCommand):
         return m
 
     def context_source(self, redirect):
+        if current_arch is None:
+            return
+
         try:
             pc = current_arch.pc
             symtabline = gdb.find_pc_line(pc)
@@ -30011,6 +30156,9 @@ class ContextMemoryWatchCommand(GenericCommand):
         return
 
     def context_memory_watch(self, redirect):
+        if current_arch is None:
+            return
+
         for address, opt in sorted(MemoryWatchCommand.mem_watches.items()):
             count, fmt = opt[0:2]
             ContextCommand.context_title("memory:{:#x}".format(address), redirect)
@@ -30385,6 +30533,7 @@ class MemoryCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         self.usage()
         return
@@ -30421,6 +30570,7 @@ class MemoryWatchCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         MemoryWatchCommand.mem_watches[args.address] = (args.count, args.unit)
         ok("Adding memwatch to {:#x}".format(args.address))
@@ -30451,6 +30601,7 @@ class MemoryUnwatchCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         res = MemoryWatchCommand.mem_watches.pop(args.address, None)
         if not res:
@@ -30472,6 +30623,7 @@ class MemoryResetCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         MemoryWatchCommand.mem_watches.clear()
         ok("Memory watches cleared")
@@ -30490,6 +30642,7 @@ class MemoryWatchListCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         if not MemoryWatchCommand.mem_watches:
             info("No memory watches")
@@ -30902,6 +31055,7 @@ class LoadFileMmapCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @require_arch_set
     def do_invoke(self, args):
         if not os.path.exists(args.file_path):
             err("Not found {:s}".format(args.file_path))
@@ -31437,6 +31591,7 @@ class PatchNopCommand(PatchCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("rr",))
+    @require_arch_set
     def do_invoke(self, args):
         if current_arch.nop_insn is None:
             err("This command cannot work under this architecture")
@@ -31525,6 +31680,7 @@ class PatchInfloopCommand(PatchCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("rr",))
+    @require_arch_set
     def do_invoke(self, args):
         if current_arch.infloop_insn is None:
             err("This command cannot work under this architecture")
@@ -31597,6 +31753,7 @@ class PatchTrapCommand(PatchCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("rr",))
+    @require_arch_set
     def do_invoke(self, args):
         if current_arch.trap_insn is None:
             err("This command cannot work under this architecture")
@@ -31669,6 +31826,7 @@ class PatchRetCommand(PatchCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("rr",))
+    @require_arch_set
     def do_invoke(self, args):
         if current_arch.ret_insn is None:
             err("This command cannot work under this architecture")
@@ -31741,6 +31899,7 @@ class PatchSyscallCommand(PatchCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("rr", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         if current_arch.syscall_insn is None:
             err("This command cannot work under this architecture")
@@ -32266,6 +32425,7 @@ class DereferenceCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         if args.slab_contains or args.slab_contains_unaligned or args.phys:
             if not (is_qemu_system() or is_kgdb() or is_vmware()):
@@ -32585,6 +32745,7 @@ class CommentCommand(GenericCommand):
         return
 
     @parse_args
+    @require_arch_set
     def do_invoke(self, args):
         self.usage()
         return
@@ -32608,6 +32769,7 @@ class CommentAddCommand(CommentCommand):
         return
 
     @parse_args
+    @require_arch_set
     def do_invoke(self, args):
         comms = ContextCodeCommand.context_comments.get(args.location, [])
         ContextCodeCommand.context_comments[args.location] = comms + [args.comment]
@@ -32629,6 +32791,7 @@ class CommentLsCommand(CommentCommand):
         return
 
     @parse_args
+    @require_arch_set
     def do_invoke(self, args):
         if not ContextCodeCommand.context_comments:
             warn("Nothing to display")
@@ -32658,6 +32821,7 @@ class CommentRemoveCommand(CommentCommand):
         return
 
     @parse_args
+    @require_arch_set
     def do_invoke(self, args):
         if args.location not in ContextCodeCommand.context_comments:
             err("Invalid location")
@@ -32689,6 +32853,7 @@ class CommentClearCommand(CommentCommand):
         return
 
     @parse_args
+    @require_arch_set
     def do_invoke(self, args):
         ContextCodeCommand.context_comments = {}
         return
@@ -33016,6 +33181,7 @@ class XInfoCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("kgdb",))
+    @require_arch_set
     def do_invoke(self, args):
         if args.location == []:
             locations = [current_arch.pc]
@@ -33990,6 +34156,7 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         Cache.reset_gef_caches(all=True)
 
@@ -34410,6 +34577,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         if args.dynamic_address:
             dynamic = ProcessMap.lookup_address(args.dynamic_address)
@@ -35032,6 +35200,7 @@ class DestructorDumpCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS"))
+    @require_arch_set
     def do_invoke(self, args):
         Cache.reset_gef_caches(all=True)
 
@@ -36224,6 +36393,7 @@ class FormatStringSearchCommand(GenericCommand):
 
     @parse_args
     @exclude_specific_gdb_mode(mode=("wine",))
+    @require_arch_set
     def do_invoke(self, args):
         if args.remove_breakpoint:
             self.remove_breakpoints()
@@ -48419,6 +48589,7 @@ class SyscallArgsCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("wine",))
+    @require_arch_set
     def do_invoke(self, args):
         if args.nr is not None:
             syscall_register, nr = "-", args.nr
@@ -48930,6 +49101,7 @@ class MagicCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("wine", "kgdb"))
+    @require_arch_set
     def do_invoke(self, args):
         if is_qemu_system() or is_vmware():
             info("Redirect to kmagic")
@@ -49465,6 +49637,7 @@ class SysregCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("kgdb",))
+    @require_arch_set
     def do_invoke(self, args):
         self.print_sysreg_compact()
         return
@@ -50778,6 +50951,7 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
 
     @parse_args
     @exclude_specific_gdb_mode(mode=("wine",))
+    @require_arch_set
     def do_invoke(self, args):
         ERRNO_DICT = ErrnoCommand.get_errno_dict()
 
@@ -65182,6 +65356,7 @@ class TlsCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @require_arch_set
     def do_invoke(self, args):
         if not current_arch.tls_supported:
             warn("This command cannot work under this architecture")
@@ -66255,6 +66430,9 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
         self.out = []
         from1data, from2data = ret
         if args.telescope_like:
+            if current_arch is None:
+                err("current_arch is None")
+                return
             if args.size % current_arch.ptrsize != 0:
                 err("The size must be aligned {:#x}".format(current_arch.ptrsize))
                 return
@@ -68440,6 +68618,7 @@ class IiCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         if args.location is None:
             location = current_arch.pc
@@ -89257,6 +89436,7 @@ class XUntilCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         if args.address is None:
             stop_addr = Disasm.gef_instruction_n(current_arch.pc, 1).address
@@ -89538,6 +89718,7 @@ class ExecUntilCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         if self.mode is None:
             self.usage()
@@ -89600,6 +89781,7 @@ class ExecUntilJumpCommand(ExecUntilCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         self.exec_next()
         return
@@ -89669,6 +89851,7 @@ class ExecUntilAllBranchCommand(ExecUntilCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         self.exec_next()
         return
@@ -89703,6 +89886,7 @@ class ExecUntilSyscallCommand(ExecUntilCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("wine",))
+    @require_arch_set
     def do_invoke(self, args):
         self.exec_next()
         return
@@ -89792,6 +89976,7 @@ class ExecUntilKeywordReCommand(ExecUntilCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         self.exec_next()
         return
@@ -89830,6 +90015,7 @@ class ExecUntilCondCommand(ExecUntilCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         condition = args.condition
         if re.search(r"[^><!=]=[^=]", condition):
@@ -89885,6 +90071,7 @@ class ExecUntilUserCodeCommand(ExecUntilCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         if self.mode is None:
             self.usage()
@@ -89932,6 +90119,7 @@ class ExecUntilLibcCodeCommand(ExecUntilCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
     def do_invoke(self, args):
         if self.mode is None:
             self.usage()
@@ -93593,6 +93781,7 @@ class StackFrameCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
+    @require_arch_set
     def do_invoke(self, args):
         ptrsize = current_arch.ptrsize
         try:
@@ -95411,6 +95600,12 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
+    def check_require_arch_set(self, decorators):
+        for line in decorators:
+            if "@require_arch_set" in line:
+                return current_arch is None
+        return False
+
     def check_include_mode(self, decorators):
         for line in decorators:
             if "@only_if_specific_gdb_mode" in line:
@@ -95468,13 +95663,13 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
     def check_include_arch(self, decorators, arch_name):
         for line in decorators:
             if "@only_if_specific_arch" in line:
-                return arch_name in line
+                return str(arch_name) in line
         return True
 
     def check_exclude_arch(self, decorators, arch_name):
         for line in decorators:
             if "@exclude_specific_arch" in line:
-                return arch_name in line
+                return str(arch_name) in line
         return False
 
     def check_load_package(self, decorators, dec_name, import_name):
@@ -95507,6 +95702,9 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
         for cmdline, instance in __gef_command_instances__.items():
             s = GefUtil.get_source(instance.do_invoke)
             decorators = [line for line in s.splitlines() if line.lstrip().startswith("@")]
+            if self.check_require_arch_set(decorators):
+                self.add_out(cmdline, False, "current_arch is None")
+                continue
             if not self.check_include_mode(decorators):
                 self.add_out(cmdline, False, "Unsupported gdb mode")
                 continue
@@ -95613,10 +95811,6 @@ class GefStatusCommand(GenericCommand):
 
     @parse_args
     def do_invoke(self, args):
-        if current_arch is None:
-            err("current_arch is not set")
-            return
-
         gef_print(titlify("GDB/ELF settings"))
         show_arch = gdb.execute("show architecture", to_string=True).rstrip()
         gef_print("{:30s}  ->  {:s}".format("show architecture", show_arch))
@@ -95654,6 +95848,10 @@ class GefStatusCommand(GenericCommand):
             gef_print("{:30s}  ->  {!s}".format("get_current_mmu_mode()", QemuMonitor.get_current_mmu_mode()))
 
         gef_print(titlify("GEF architecture information"))
+        if current_arch is None:
+            gef_print("{:30s}  ->  None".format("current_arch"))
+            gef_print("{:30s}  ->  {!s}".format("ptrsize", AddressUtil.ptr_width()))
+            return
         gef_print("{:30s}  ->  {!s}".format("current_arch.arch", current_arch.arch))
         gef_print("{:30s}  ->  {!s}".format("current_arch.mode", current_arch.mode))
         if is_arm32() or is_arm32_cortex_m():
