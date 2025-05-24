@@ -14282,7 +14282,8 @@ class HighlightListCommand(GenericCommand):
 
         left_pad = max(map(len, HighlightCommand.highlight_table.keys()))
         for match, color in sorted(HighlightCommand.highlight_table.items()):
-            gef_print("{:s} | {:s}".format(
+            # do not use gef_print because the color will be overwrite
+            print("{!s} | {!s}".format(
                 Color.colorify(match.ljust(left_pad), color),
                 Color.colorify(color, color),
             ))
