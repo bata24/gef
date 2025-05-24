@@ -163,7 +163,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/page.png)
     - There are shortcuts: `virt2page`, `page2virt`, `phys2page` and `page2phys`.
 - `slab-virtual`: displays the transformation between slab-meta and its slab-data/`struct page` address
-    - ![](images/slab-virtual.png)
+    - TODO
 - `kchecksec`: checks kernel security.
     - ![](images/kchecksec.png)
 - `kmagic`: displays useful addresses in the kernel.
