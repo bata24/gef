@@ -94543,6 +94543,7 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-t", "--type", action="append", default=[], help="filter by symbol type.")
     parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
     def get_build_id(self, filename):
@@ -94570,7 +94571,7 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
         SYMBOL_FILE_PATTERN = re.compile(r"^Object file (/.*):$")
         build_id_dict = self.get_build_ids()
 
-        tqdm = GefUtil.get_tqdm()
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         for line in tqdm(ret.splitlines(), leave=False):
             line = line.strip()
 
