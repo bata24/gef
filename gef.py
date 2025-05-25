@@ -477,7 +477,7 @@ class Config:
 
 
 def gef_print(x="", less=False, redirect=None, skip_color=False, *args, **kwargs):
-    """Wrapper around print(), using string buffering feature."""
+    """Wrapper around print(), with pager, redirecting and coloring."""
     if not skip_color:
         x = HighlightCommand.highlight_text(x)
 
@@ -1199,12 +1199,7 @@ class AddressUtil:
     @staticmethod
     @Cache.cache_this_session
     def get_memory_alignment(in_bits=False):
-        """Try to determine the size of a pointer on this system.
-        First, try to parse it out of the ELF header.
-        Next, use the size of `size_t`.
-        Finally, try the size of $pc.
-        If `in_bits` is set to True, the result is returned in bits, otherwise in bytes."""
-
+        """Try to determine the size of a pointer on this system."""
         if is_x86_16():
             if current_arch.A20:
                 return 2 if not in_bits else 21
@@ -1274,7 +1269,8 @@ class AddressUtil:
 
     @staticmethod
     def align_address(addr, memalign_size=None):
-        """Align the provided address to the process's native length."""
+        """Align the provided address to the process's native length.
+        e.g., 0x1_2345_6789 -> 0x2345_6789 (for 32-bit arch)"""
         # if qemu-xxx(32bit arch) runs on x86-64 machine, memalign_size does not match
         # AddressUtil.get_memory_alignment(), so use the value forcibly if memalign_size is not None
         if memalign_size is None:
@@ -1295,7 +1291,8 @@ class AddressUtil:
 
     @staticmethod
     def align_address_to_size(addr, align):
-        """Align the address to the given size."""
+        """Align the address to the given size.
+        e.g., 0xdeadbeef with align 8 -> 0xdeadbef0"""
         return addr + ((align - (addr % align)) % align)
 
     @staticmethod
@@ -2962,6 +2959,7 @@ class Instruction:
 
     @staticmethod
     def smartify_text(text):
+        """Simplifies and shortens C++ function/type names for improved readability."""
         smart_cpp_function_name = Config.get_gef_setting("context.smart_cpp_function_name")
         if not smart_cpp_function_name:
             return text
@@ -3694,6 +3692,7 @@ class GlibcHeap:
 
     @staticmethod
     def search_for_main_arena():
+        """Searches for the address of main_arena using multiple strategies and caches the result."""
         if Cache.cached_main_arena:
             return Cache.cached_main_arena
 
@@ -3956,12 +3955,14 @@ class GlibcHeap:
             return GlibcHeap.GlibcChunk(self, addr + 2 * current_arch.ptrsize)
 
         def get_bins_i(self, i):
+            """Returns the forward and backward pointers for the specified bin index."""
             idx = i * 2
             fd = int(self.bins[idx])
             bw = int(self.bins[idx + 1])
             return fd, bw
 
         def get_next(self):
+            """Returns the next arena object if available; otherwise returns None."""
             try:
                 addr_next = int(self.next)
                 if addr_next == 0:
@@ -3975,6 +3976,7 @@ class GlibcHeap:
                 return None
 
         def __str__(self):
+            """Returns a formatted string representation of the arena and its key attributes."""
             arena = Color.colorify("Arena", Config.get_gef_setting("theme.heap_arena_label"))
             if self.heap_base is None:
                 heap_base = "uninitialized"
@@ -4003,6 +4005,8 @@ class GlibcHeap:
             return fmt.format(*args)
 
         def get_tcache_list(self):
+            """Returns a dictionary mapping tcache bin indices to lists of chunk addresses,
+            handling loops and corruption."""
             if get_libc_version() < (2, 26):
                 info("No tcache in this version of libc")
                 return {}
@@ -4039,6 +4043,8 @@ class GlibcHeap:
             return chunks_all
 
         def get_fastbins_list(self):
+            """Returns a dictionary of fastbin indices mapped to lists of chunk addresses,
+            handling loops and corruption."""
             def fastbin_index(sz):
                 return (sz >> 4) - 2 if SIZE_SZ == 8 else (sz >> 3) - 2
 
@@ -4074,6 +4080,7 @@ class GlibcHeap:
             return chunks_all
 
         def get_bins_list(self, index):
+            """Returns a list of chunk addresses in the specified bin, handling loops and corruption."""
             try:
                 fw, bk = self.get_bins_i(index)
             except gdb.MemoryError:
@@ -4132,17 +4139,20 @@ class GlibcHeap:
             return chunks
 
         def get_unsortedbin_list(self):
+            """Returns a dictionary containing the list of chunks in the unsorted bin."""
             chunks_all = {}
             chunks_all[0] = self.get_bins_list(0)
             return chunks_all
 
         def get_smallbins_list(self):
+            """Returns a dictionary mapping small bin indices to lists of chunk addresses."""
             chunks_all = {}
             for i in range(1, 63):
                 chunks_all[i] = self.get_bins_list(i)
             return chunks_all
 
         def get_largebins_list(self):
+            """Returns a dictionary mapping large bin indices to lists of chunk addresses."""
             chunks_all = {}
             for i in range(63, 126):
                 chunks_all[i] = self.get_bins_list(i)
@@ -4239,6 +4249,8 @@ class GlibcHeap:
             return chunk.chunk_base_address in self.cached_largebins_addr_list
 
         def get_bins_info(self, address_or_chunk, skip_top=False):
+            """Returns a list of bin information for the given address or chunk,
+            optionally including the "top" marker."""
             if isinstance(address_or_chunk, GlibcHeap.GlibcChunk):
                 address = address_or_chunk.address
                 base_address = address_or_chunk.chunk_base_address
@@ -4262,6 +4274,7 @@ class GlibcHeap:
 
     @staticmethod
     def get_arena(address=None):
+        """Returns the arena object for the given address or arena index, or None if not found."""
         if address is None or is_valid_addr(address):
             try:
                 arena = GlibcHeap.GlibcArena(address)
@@ -4487,6 +4500,9 @@ class GlibcHeap:
             return "|".join(flags)
 
         def __str__(self):
+            """Returns a formatted string representation of the chunk and its key attributes,
+            including color and symbol information."""
+
             def get_sym(addr):
                 a = ProcessMap.lookup_address(addr)
                 b = Symbol.get_symbol_string(addr)
@@ -4574,6 +4590,8 @@ class GlibcHeap:
             return msg
 
         def psprint(self):
+            """Returns a detailed, multi-line string representation of the chunk,
+            showing both its summary and allocation state."""
             msg = []
             msg.append(str(self))
             if self.is_used():
@@ -4585,6 +4603,8 @@ class GlibcHeap:
     @staticmethod
     @Cache.cache_this_session
     def get_binsize_table():
+        """Returns a dictionary containing size information for tcache, fastbins, unsorted bin,
+        small bins, and large bins, based on architecture and libc version."""
         table = {
             "tcache": {},
             "fastbins": {},
@@ -4780,6 +4800,9 @@ class GlibcHeap:
 
 
 def get_libc_version(verbose=False):
+    """Detects and returns the glibc version as a tuple, using cache, configuration,
+    process maps, or system fallback."""
+
     RE_LIBC_PATH = re.compile(r"libc6?[-_](\d+)\.(\d+)\.so")
     RE_GLIBC_VERSION = re.compile(rb"glibc (\d+)\.(\d+)")
 
@@ -5062,6 +5085,7 @@ class String:
 
     @staticmethod
     def morse_decode(a):
+        """Decodes a bytes or string sequence from Morse code to text."""
         if isinstance(a, str):
             a = String.str2bytes(a)
 
@@ -5072,6 +5096,7 @@ class String:
 
     @staticmethod
     def morse_encode(a):
+        """Encodes a bytes or string sequence from text to Morse code."""
         if isinstance(a, str):
             a = String.str2bytes(a)
 
@@ -5264,7 +5289,7 @@ class Symbol:
     @staticmethod
     @Cache.cache_this_session
     def get_symbol_string(addr, nosymbol_string=""):
-        """ex: 0xffffffff9f6bd2a1 -> ' <commit_creds+0x1>'"""
+        """e.g., 0xffffffff9f6bd2a1 -> ' <commit_creds+0x1>'"""
         try:
             if isinstance(addr, str):
                 addr = Color.remove_color(addr)
@@ -5287,7 +5312,7 @@ class Symbol:
 
     @staticmethod
     def get_ksymaddr(sym):
-        """ex: 'commit_creds' -> 0xffffffff9f6bd2a0"""
+        """e.g., 'commit_creds' -> 0xffffffff9f6bd2a0"""
         try:
             res = gdb.execute("ksymaddr-remote --quiet --no-pager --exact {:s}".format(sym), to_string=True)
             return int(res.split()[0], 16)
@@ -5296,7 +5321,7 @@ class Symbol:
 
     @staticmethod
     def get_ksymaddr_multiple(sym):
-        """ex: 'set_is_seen' -> [0xffffffffba146db0,0xffffffffba6d84e0,0xffffffffba6dd170]"""
+        """e.g., 'set_is_seen' -> [0xffffffffba146db0,0xffffffffba6d84e0,0xffffffffba6dd170]"""
         out = []
         try:
             ret = gdb.execute("ksymaddr-remote --quiet --no-pager --exact {:s}".format(sym), to_string=True)
@@ -5309,7 +5334,7 @@ class Symbol:
 
     @staticmethod
     def get_ksymaddr_symbol(addr):
-        """ex: 0xffffffff9f6bd2a0 -> 'commit_creds'"""
+        """e.g., 0xffffffff9f6bd2a0 -> 'commit_creds'"""
         try:
             res = gdb.execute("ksymaddr-remote --quiet --no-pager {:#x}".format(addr), to_string=True)
             res = res.splitlines()[-1]
@@ -20271,6 +20296,7 @@ class AngrCommand(GenericCommand):
     _note_ = "\n".join(_note_)
 
     def get_valid_plt(self):
+        """Parse and return a dictionary of valid PLT entries from `got` command output."""
         res = gdb.execute("got --quiet --no-pager", to_string=True)
         res = Color.remove_color(res)
         valid_plt = {}
@@ -20282,6 +20308,7 @@ class AngrCommand(GenericCommand):
         return valid_plt
 
     def save_memories(self, dt):
+        """Dump all readable memory regions to files and yield their section info and file paths."""
         filename = Path.get_filename()
         vmmap = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True, allow_vsyscall=True)
         dloc = os.path.join(GEF_TEMP_DIR, "angr-" + dt)
@@ -20295,6 +20322,7 @@ class AngrCommand(GenericCommand):
         return None
 
     def make_angr_script(self, dt):
+        """Generate an angr analysis script with memory, register, and symbolic constraints setup."""
         # initialize
         content = "#!{:s}\n".format(GefUtil.which("python3"))
         content += "import angr\n"
@@ -20428,6 +20456,7 @@ class AngrCommand(GenericCommand):
         return content
 
     def run_angr(self):
+        """Generate, save, and optionally execute an angr analysis script, displaying the results."""
         # make script
         dt = GefUtil.now_str()
         content = self.make_angr_script(dt)
@@ -20745,6 +20774,8 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     def parse_arena(self, arena):
+        """Parses and appends a formatted representation of the given arena's structure
+        to the output list."""
         try:
             cmd = "p ((struct malloc_state*) {:#x})[0]".format(arena.addr)
             title = titlify("[arena] ----- {:s}".format(cmd))
@@ -20782,6 +20813,8 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
         return
 
     def parse_mp(self):
+        """Parses and appends a formatted representation of the malloc_par (mp_) structure
+        to the output list."""
         try:
             mp = AddressUtil.parse_address("&mp_")
         except gdb.error:
@@ -20829,6 +20862,8 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
         return
 
     def parse_heap_info(self, arena):
+        """Parses and appends a formatted representation of the _heap_info structure
+        for the given arena to the output list."""
         if arena.is_main_arena:
             self.out.append(titlify("[heap_info]"))
             self.out.append("Not thread arena")
@@ -20996,6 +21031,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
         return
 
     def print_heap_chunks(self, arena, dump_start, peek_nb, peek_offset):
+        """Iterate and display heap chunks in the given arena, with corruption checks and optional memory peeking."""
         # Do not show if top is broken, as it affects exit conditions.
         if is_32bit() and arena.top % 0x08:
             self.err_add_out("arena.top is corrupted")
@@ -21208,6 +21244,8 @@ class GlibcHeapBinsCommand(GenericCommand):
 
     @staticmethod
     def pprint_bin(arena, index, bin_name, verbose=False):
+        """Pretty-print the contents of a heap bin, following forward and backward links
+        and checking for corruption."""
         fw, bk = arena.get_bins_i(index)
 
         if bk == 0 and fw == 0:
@@ -21383,6 +21421,7 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
 
     @staticmethod
     def print_tcache(arena, verbose=False):
+        """Pretty-print tcache bins for the given arena, detecting loops and chunk corruption."""
         if get_libc_version() < (2, 26):
             return
 
@@ -21498,6 +21537,8 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
 
     @staticmethod
     def print_fastbin(arena, verbose=False):
+        """Pretty-print fastbin lists for the given arena, checking for loops and incorrect indices."""
+
         def fastbin_index(sz):
             return (sz >> 4) - 2 if SIZE_SZ == 8 else (sz >> 3) - 2
 
@@ -21790,6 +21831,8 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         return
 
     def get_caller_address(self, name):
+        """Resolve and return the caller address for a given symbol name,
+        considering user input, PLT, and real addresses."""
         # user specified address
         if self.args.caller_address is not None:
             return self.args.caller_address
@@ -21956,6 +21999,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         return allocated_address
 
     def print_result(self, name, res):
+        """Print the result of an emulation run, displaying errors or success messages based on system call outcomes."""
         if "Emulation failed" in res:
             # fail
             success = False
@@ -21987,6 +22031,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         return success
 
     def make_patch_info_from_emulation_result(self, res):
+        """Parse emulation output and create a dictionary of memory patches from modified memory regions."""
         patches = {}
         if "Modified memories (before | after)" in res:
             modified_memories = res[res.find("Modified memories (before | after)"):]
@@ -22200,6 +22245,7 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     def print_tcache_info(self, arena, index):
+        """Print addresses of tcache count and entry for the specified bin index in the given arena."""
         if index < 0:
             err("Invalid index (< 0)")
             return
@@ -22283,6 +22329,7 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
     _note_ = "\n".join(_note_)
 
     def print_result(self, m, pos, size_candidate):
+        """Display the result of a memory search, including address, flags, and a memory dump with colored highlights."""
         path = "unknown" if m.path == "" else m.path
         address = ProcessMap.lookup_address(m.page_start + pos)
         self.info_add_out("Found at {!s} in {!r} [{!s}]".format(address, path, m.permission))
@@ -22329,6 +22376,7 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
         return
 
     def find_fake_fast(self, target_size):
+        """Scan memory regions for fake fastbin chunks matching the target size and display findings."""
         if is_64bit():
             mask = ~0xf
             unpack = u64
@@ -22534,6 +22582,8 @@ class GlibcVisualHeapCommand(GenericCommand, BufferingOutput):
         return
 
     def generate_visual_chunk(self, chunk, idx):
+        """Generate a visual, colorized representation of a heap chunk's contents,
+        grouping repeated rows and annotating bin info."""
         unpack = u32 if current_arch.ptrsize == 4 else u64
         data = slicer(chunk.data, current_arch.ptrsize * 2)
         group_line_threshold = 8
@@ -22610,6 +22660,8 @@ class GlibcVisualHeapCommand(GenericCommand, BufferingOutput):
         return
 
     def generate_visual_heap(self, arena, dump_start, max_count):
+        """Generate a visual representation of the heap by iterating over chunks,
+        handling corruption and optional progress display."""
         sect = ProcessMap.process_lookup_address(dump_start)
         if sect:
             end = sect.page_end
@@ -22730,6 +22782,7 @@ class RegistersCommand(GenericCommand):
         return all_registers
 
     def check_unavailable_regs(self):
+        """Detect and record unavailable registers for later display handling."""
         if hasattr(self, "regs_to_check_unavailable"):
             return
 
@@ -22743,6 +22796,7 @@ class RegistersCommand(GenericCommand):
         return
 
     def get_regname_color(self, regname, regvalue):
+        """Return the appropriate color for a register name based on whether its value has changed."""
         unchanged_color = Config.get_gef_setting("theme.registers_register_name")
         changed_color = Config.get_gef_setting("theme.registers_value_changed")
 
@@ -22755,6 +22809,7 @@ class RegistersCommand(GenericCommand):
         return color
 
     def dump_seg_reg_x86_16(self):
+        """Format and return x86 16-bit segment register values with color and dereferencing."""
         lines = []
         for regname, (seg, reg) in current_arch.seg_extended_registers.items():
             segval = get_register(seg) & 0xffff
@@ -22776,6 +22831,7 @@ class RegistersCommand(GenericCommand):
         return lines
 
     def dump_regs(self, target_regs):
+        """Format and return register values for display, with color, alignment, and optional dereferencing."""
         aliased_registers = current_arch.get_aliased_registers()
         widest = current_arch.get_aliased_registers_name_max()
         special_line = ""
@@ -23002,6 +23058,7 @@ class RpCommand(GenericCommand, BufferingOutput):
         return
 
     def exec_rp(self, rp, ropN, allow_branches, path):
+        """Run rp++ to search for ROP gadgets, saving output to a file and returning its path."""
         astr = "ab" if allow_branches else ""
         output_file = "rp{:d}{:s}_{:s}.txt".format(ropN, astr, os.path.basename(path))
         output_path = os.path.join(GEF_TEMP_DIR, output_file)
@@ -23013,6 +23070,7 @@ class RpCommand(GenericCommand, BufferingOutput):
         return output_path
 
     def apply_filter(self, rp_output_path, base_address):
+        """Apply regex filters to rp++ output, adjust gadget addresses, and store matching lines."""
         if not os.path.exists(rp_output_path):
             err("{!r} is not found".format(rp_output_path))
             return
@@ -94568,6 +94626,8 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
         return build_id_dict
 
     def get_symbols(self):
+        """Parse and display symbol information from GDB, including file/object info
+        and symbol addresses, with filtering."""
         ret = gdb.execute("maintenance print msymbols", to_string=True).strip()
         SYMBOL_INFO_LINE_PATTERN = re.compile(r"^(\[ ?\d+\]) (.) (0x[0-9a-f]+) (.*)")
         SYMBOL_FILE_PATTERN = re.compile(r"^Object file (/.*):$")
@@ -94661,6 +94721,8 @@ class TypesCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     def get_type_names(self):
+        """Parse and filter type names from GDB's 'info types', skipping basic types and applying
+        user-specified filters."""
         basic_types = [
             "char", "unsigned char", "signed char",
             "int", "unsigned int", "signed int",
@@ -94705,6 +94767,7 @@ class TypesCommand(GenericCommand, BufferingOutput):
         return type_names
 
     def get_types(self):
+        """Display type information for each type name, optionally using verbose output and smart formatting."""
         type_names = self.get_type_names()
 
         # temporarily changed
@@ -94996,6 +95059,8 @@ class GefConfigCommand(GenericCommand):
         return
 
     def print_setting(self, config_name, with_description=False, show_only_changes=False):
+        """Print a GEF configuration setting, with optional description and original value,
+        highlighting changes."""
         res = Config.__gef_config__.get(config_name)
         res_orig = Config.__gef_config_orig__.get(config_name)
 
@@ -95036,6 +95101,7 @@ class GefConfigCommand(GenericCommand):
         return
 
     def set_setting(self, config_name, config_value):
+        """Set a GEF configuration value, validating type and command, and updating the cache."""
         if "." not in config_name:
             err("Invalid command format")
             return
@@ -95068,6 +95134,7 @@ class GefConfigCommand(GenericCommand):
         return
 
     def complete(self, text, word): # noqa
+        """Provide tab-completion suggestions for GEF config settings based on user input."""
         settings = sorted(Config.__gef_config__)
 
         if text.strip() in settings:
@@ -95375,9 +95442,11 @@ class GefArchListCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     def dump_arch_info(self, arch):
-        # unsupported currently.
-        # I made a definition for displaying syscalls, so it's just provisional.
+        """Display detailed architecture information, including bit length, endianness,
+        registers, and feature support."""
         if arch.arch == "HPPA" and arch.mode == "64":
+            # Currently, HPPA-64 is unsupported.
+            # I made a definition for displaying syscalls, but it's just provisional.
             return
 
         # title
@@ -96211,12 +96280,14 @@ class GefTmuxSetupCommand(GenericCommand):
 
     @staticmethod
     def get_tty_gef_used():
+        """Return a set of TTYs currently used by GEF for tmux redirection."""
         tty_gef_used = [Config.get_gef_setting(c) for c in GefTmuxSetupCommand.get_redirect_configs()]
         tty_gef_used = [x for x in tty_gef_used if x] # filter ""
         return set(tty_gef_used)
 
     @staticmethod
     def reset_panes():
+        """Reset tmux panes used by GEF, killing relevant panes and clearing related configurations."""
         # list panes
         tmux = GefUtil.which("tmux")
         res = subprocess.check_output([
@@ -96467,6 +96538,7 @@ class GefUtil:
     @staticmethod
     @Cache.cache_until_next
     def cached_lookup_type(_type):
+        """Looks up a GDB type by name and strips typedefs, returning None on failure."""
         try:
             return gdb.lookup_type(_type).strip_typedefs()
         except RuntimeError:
@@ -96474,6 +96546,8 @@ class GefUtil:
 
     @staticmethod
     def get_tqdm(use_tqdm=True):
+        """Returns the tqdm progress bar if available and enabled;
+        otherwise returns a passthrough function."""
         tqdm = lambda x, leave=None, total=None: x # noqa: F841
         if not use_tqdm:
             return tqdm
@@ -96531,6 +96605,7 @@ class GefUtil:
 
     @staticmethod
     def fromhex_ignore_invalid(value, to_str=False):
+        """Converts a hex string to bytes or string, ignoring invalid characters."""
         sanitized_value = ""
         for c in value.lower():
             if c in "0123456789abcdef":
@@ -96675,6 +96750,7 @@ class GefUtil:
 
     @staticmethod
     def make_legend(msg):
+        """Apply color settings and generate legend string."""
         color = Config.get_gef_setting("theme.table_heading")
         return Color.colorify(msg, color)
 
@@ -96695,7 +96771,11 @@ class Gef:
 
     @staticmethod
     def fix_venv():
+        """Detects if you are in a venv environment and adjusts GEF settings."""
+
         def fast_path():
+            """If you installed it with the latest installer, there should be a gev.venv.conf file.
+            Interpreting this file will speed up the process."""
             gef_venv_conf = os.path.join(os.path.dirname(GEF_FILEPATH), "gef.venv.conf")
             if not os.path.exists(gef_venv_conf):
                 return False
@@ -96736,6 +96816,8 @@ class Gef:
             return
 
         def slow_path():
+            """For those who used the old installer or installed manually.
+            It launches python via shell and collects and imports its configuration."""
             # venv check is very slow, so skip if unneeded
             skip_config = os.path.join(GEF_TEMP_DIR, "skip-venv-check")
             if os.path.exists(skip_config):
