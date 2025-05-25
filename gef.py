@@ -1070,6 +1070,7 @@ class Address:
             self.__module__, self.__class__.__name__, id(self),
             self.value, bool(self.section), bool(self.section), bool(self.valid),
         )
+
     def __str__(self):
         value = AddressUtil.format_address(self.value)
         if not self.valid:
@@ -4269,22 +4270,22 @@ class GlibcHeap:
             except (OSError, AttributeError, gdb.MemoryError):
                 err("Failed to get the arena, heap commands may not work properly")
                 return None
-        else:
-            # interpret `address` as the number following next from main_arena, not the address of arena.
-            arena_number = address
 
-            # main_arena
-            arenas = []
-            arena = GlibcHeap.get_main_arena()
-            while arena:
-                arenas.append(arena)
-                arena = arena.get_next()
+        # interpret `address` as the number following next from main_arena, not the address of arena.
+        arena_number = address
 
-            if arena_number >= len(arenas):
-                err("Failed to get the arena, heap commands may not work properly")
-                return None
+        # main_arena
+        arenas = []
+        arena = GlibcHeap.get_main_arena()
+        while arena:
+            arenas.append(arena)
+            arena = arena.get_next()
 
-            return arenas[arena_number]
+        if arena_number >= len(arenas):
+            err("Failed to get the arena, heap commands may not work properly")
+            return None
+
+        return arenas[arena_number]
 
     @staticmethod
     def get_main_arena():
@@ -4555,7 +4556,8 @@ class GlibcHeap:
                     decoded_fd, decoded_fd_sym = get_sym(self.get_fwd_ptr(sll=True))
                     err = get_err([decoded_fd], sll=True)
                     msg = "{:s}(base={:s}{:s}, addr={:s}{:s}, size={:s}, flags={:s}, fd={!s}{:s}(={!s}{:s}){:s})".format(
-                        chunk_c, base_c_f, base_sym, addr_c_f, addr_sym, size_c, flags, fd, fd_sym, decoded_fd, decoded_fd_sym, err,
+                        chunk_c, base_c_f, base_sym, addr_c_f, addr_sym, size_c, flags,
+                        fd, fd_sym, decoded_fd, decoded_fd_sym, err,
                     )
 
             # top
