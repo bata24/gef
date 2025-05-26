@@ -34,6 +34,10 @@ apt-get install -y gdb-multiarch wget
 apt-get install -y binutils python3-dev gcc make ruby-dev git file colordiff imagemagick
 apt-get install -y binwalk
 
+echo "[+] Installing rust"
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+
 echo "[+] Install uv"
 if [ -z "$(command -v uv)" ]; then
     wget -qO- https://astral.sh/uv/install.sh | sh
