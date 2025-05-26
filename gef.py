@@ -58883,6 +58883,8 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
 
         struct module_memory {
             void *base;
+            void *rw_copy; // v6.13~
+            bool is_rox;   // v6.13~
             unsigned int size;
         #ifdef CONFIG_MODULES_TREE_LOOKUP
             struct mod_tree_node mtn; (0x38)
@@ -58900,7 +58902,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         # TODO: only handles non init module type
         for i in range(300):
             offset_mem = i * current_arch.ptrsize
-            for sizeof_module_memory in (8, 0x48):
+            for sizeof_module_memory in (8, 0x48, 0x50):
                 valid = True
                 for module in module_addrs:
                     for mem_type in (MOD_TEXT, MOD_DATA, MOD_RODATA):
@@ -58915,16 +58917,25 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                             valid = False
                             break
                         # size check
-                        cand_size = u32(read_memory(mem_ptr + current_arch.ptrsize, 4))
-                        if cand_size == 0 or cand_size > 0x100000:
-                            valid = False
-                            break
+                        if sizeof_module_memory == 0x50:
+                            offset_mem_size = offset_mem + current_arch.ptrsize*2 + 4 # void*, void*, bool
+                            cand_size = u32(read_memory(mem_ptr + current_arch.ptrsize*2 + 4, 4))
+                            if cand_size == 0 or cand_size > 0x100000:
+                                valid = False
+                                break
+                        else:
+                            offset_mem_size = offset_mem + current_arch.ptrsize # void*
+                            cand_size = u32(read_memory(mem_ptr + current_arch.ptrsize, 4))
+                            if cand_size == 0 or cand_size > 0x100000:
+                                valid = False
+                                break
                 if valid:
                     self.quiet_info("offsetof(module, mem): {:#x}".format(offset_mem))
+                    self.quiet_info("offsetof(module_memory, size): {:#x}".format(offset_mem_size - offset_mem))
                     self.quiet_info("sizeof(module_memory): {:#x}".format(sizeof_module_memory))
-                    return offset_mem
+                    return offset_mem, offset_mem_size
         self.quiet_err("Not found module->mem")
-        return None
+        return None, None
 
     def get_offset_layout(self, module_addrs): # v4.5 ~ v6.4
         """
@@ -59342,7 +59353,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
 
         kversion = Kernel.kernel_version()
         if kversion >= "6.4":
-            offset_mem = self.get_offset_mem(module_addrs)
+            offset_mem, offset_mem_size = self.get_offset_mem(module_addrs)
             if offset_mem is None:
                 return
         elif kversion >= "4.5":
@@ -59376,7 +59387,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
 
             if kversion >= "6.4":
                 base = read_int_from_memory(module + offset_mem)
-                size = u32(read_memory(module + offset_mem + current_arch.ptrsize, 4))
+                size = u32(read_memory(module + offset_mem_size, 4))
             elif kversion >= "4.5":
                 base = read_int_from_memory(module + offset_layout)
                 size = u32(read_memory(module + offset_layout + current_arch.ptrsize, 4))
