@@ -58931,7 +58931,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                                 break
                 if valid:
                     self.quiet_info("offsetof(module, mem): {:#x}".format(offset_mem))
-                    self.quiet_info("offsetof(module_memory, size): {:#x}".format(offset_mem_size))
+                    self.quiet_info("offsetof(module_memory, size): {:#x}".format(offset_mem_size - offset_mem))
                     self.quiet_info("sizeof(module_memory): {:#x}".format(sizeof_module_memory))
                     return offset_mem, offset_mem_size
         self.quiet_err("Not found module->mem")
