@@ -58918,22 +58918,18 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                             break
                         # size check
                         if sizeof_module_memory == 0x50:
-                            offset_mem_size = offset_mem + current_arch.ptrsize*2 + 4 # void*, void*, bool
-                            cand_size = u32(read_memory(mem_ptr + current_arch.ptrsize*2 + 4, 4))
-                            if cand_size == 0 or cand_size > 0x100000:
-                                valid = False
-                                break
+                            offset_size = current_arch.ptrsize * 2 + 4 # void*, void*, bool
                         else:
-                            offset_mem_size = offset_mem + current_arch.ptrsize # void*
-                            cand_size = u32(read_memory(mem_ptr + current_arch.ptrsize, 4))
-                            if cand_size == 0 or cand_size > 0x100000:
-                                valid = False
-                                break
+                            offset_size = current_arch.ptrsize # void*
+                        cand_size = u32(read_memory(mem_ptr + offset_size, 4))
+                        if cand_size == 0 or cand_size > 0x100000:
+                            valid = False
+                            break
                 if valid:
                     self.quiet_info("offsetof(module, mem): {:#x}".format(offset_mem))
-                    self.quiet_info("offsetof(module_memory, size): {:#x}".format(offset_mem_size - offset_mem))
+                    self.quiet_info("offsetof(module_memory, size): {:#x}".format(offset_size))
                     self.quiet_info("sizeof(module_memory): {:#x}".format(sizeof_module_memory))
-                    return offset_mem, offset_mem_size
+                    return offset_mem, offset_mem + offset_size
         self.quiet_err("Not found module->mem")
         return None, None
 
