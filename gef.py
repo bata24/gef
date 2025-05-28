@@ -5478,7 +5478,12 @@ def load_angr(f):
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
         try:
+            # Angr seems to import readline internally, so tab completion breaks after loading.
+            # Therefore, disable readline temporarily.
+            readline = sys.modules.get("readline", None)
+            sys.modules["readline"] = None
             __import__("angr")
+            sys.modules["readline"] = readline
             return f(*args, **kwargs)
         except ImportError as err:
             msg = "Missing `angr` package for Python, try install with `pip install angr`"
