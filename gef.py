@@ -14885,26 +14885,26 @@ class HistoryCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    def do_invoke(self, args):
-        self.out = []
-
-        idx = 0
+    def get_history(self):
+        history = {}
+        line_idx = 0
         prev_ret = None
         while True:
-            ret = gdb.execute("show commands {:d}".format(idx), to_string=True)
+            ret = gdb.execute("show commands {:d}".format(line_idx), to_string=True)
             for line in ret.splitlines():
                 line_idx = int(line.split()[0])
-                if len(self.out) >= line_idx:
+                if line_idx in history:
                     continue
-                self.out.append(line)
+                history[line_idx] = line
 
             if prev_ret == ret:
                 break
-
             prev_ret = ret
-            idx += 10
+        return list(history.values())
 
+    @parse_args
+    def do_invoke(self, args):
+        self.out = self.get_history()
         self.print_output(skip_color=True)
         return
 
