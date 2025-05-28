@@ -94841,13 +94841,7 @@ class GefCommand(GenericCommand):
     subparsers.add_parser("tmux-setup")
     _syntax_ = parser.format_help()
 
-    DEBUG_PERF_TIME = False
-    DEBUG_CHECK_COMMAND_CONFLICT = False
-    missing_commands = {}
-
     def __init__(self):
-        if GefCommand.DEBUG_CHECK_COMMAND_CONFLICT:
-            self.list_current_commands()
         super().__init__(prefix=True)
         self.add_setting("follow_child", False, "Automatically set GDB to follow child when forking")
         self.add_setting("readline_compat", False, "Workaround for readline SOH/ETX issue (SEGV)")
@@ -94856,109 +94850,6 @@ class GefCommand(GenericCommand):
         self.add_setting("pager_min_lines", 11, "Show pager only if output is longer than this value")
         self.add_setting("keep_pager_result", False, "Leaves temporary files in gef_print()")
         self.add_setting("less_option", "-Rf -j.5", "LESS command option used in gef_print()")
-        return
-
-    def list_current_commands(self):
-        command_list = []
-        res = gdb.execute("help all", to_string=True)
-        for line in res.splitlines():
-            line = line.strip()
-            if " -- " not in line:
-                continue
-            commands = line.split(" -- ")[0]
-            commands = commands.split(", ")
-            command_list.extend(commands)
-        self.loaded_commands = command_list
-        return
-
-    def load_commands(self):
-        """Load all the commands and functions defined by GEF into GDB."""
-        global __gef_command_instances__
-
-        if self.DEBUG_CHECK_COMMAND_CONFLICT:
-            FIRST_TIME = "gef reload" not in self.loaded_commands # skip check when `gef reload`
-
-        nb_missing = 0
-        time_elapsed = []
-        for cmd_class in __gef_commands__:
-            try:
-                if self.DEBUG_PERF_TIME:
-                    start_time_real = time.perf_counter()
-                    start_time_proc = time.process_time()
-
-                if self.DEBUG_CHECK_COMMAND_CONFLICT and FIRST_TIME:
-                    if cmd_class._cmdline_ in self.loaded_commands:
-                        warn("{:s} is already loaded".format(Color.boldify(cmd_class._cmdline_)))
-
-                if cmd_class._cmdline_ == "gef":
-                    instance = self
-                else:
-                    instance = cmd_class() # command loading is here
-                __gef_command_instances__[cmd_class._cmdline_] = instance
-
-                if self.DEBUG_PERF_TIME:
-                    end_time_real = time.perf_counter()
-                    end_time_proc = time.process_time()
-
-                    time_elapsed.append((
-                        cmd_class._cmdline_,
-                        end_time_real - start_time_real,
-                        end_time_proc - start_time_proc,
-                    ))
-
-                if hasattr(cmd_class._aliases_, "__iter__"):
-                    if isinstance(cmd_class._aliases_, str):
-                        cmd_class_aliases = [cmd_class._aliases_]
-                    elif isinstance(cmd_class._aliases_, list):
-                        cmd_class_aliases = cmd_class._aliases_
-                    else:
-                        cmd_class_aliases = []
-
-                    for alias in cmd_class_aliases:
-                        if self.DEBUG_CHECK_COMMAND_CONFLICT and FIRST_TIME:
-                            if alias in self.loaded_commands:
-                                warn("{:s} is already loaded".format(Color.boldify(alias)))
-                        GefAlias(alias, cmd_class._cmdline_, pre_defined=True)
-
-            except Exception as reason:
-                GefCommand.missing_commands[cmd_class._cmdline_] = reason
-                nb_missing += 1
-
-        if self.DEBUG_PERF_TIME:
-            gef_print(titlify("Top 10 commands that took the longest to load"))
-            for cmdline, real, cpu in sorted(time_elapsed, key=lambda x: x[1], reverse=True)[:10]:
-                gef_print("{:30s} Real:{:.10f} s, CPU:{:.10f} s".format(cmdline, real, cpu))
-            gef_print(titlify(""))
-
-        # print message
-        gef_print("{:s} is ready, type '{:s}' to start, '{:s}' to configure".format(
-            Color.greenify("GEF"),
-            Color.colorify("gef", "underline yellow"),
-            Color.colorify("gef config", "underline magenta")
-        ))
-
-        ver = "{:d}.{:d}".format(sys.version_info.major, sys.version_info.minor)
-        gef_print("Loaded {:s} commands (+{:s} aliases) for GDB {:s} using Python engine {:s}".format(
-            Color.colorify(len(__gef_command_instances__), "bold green"),
-            Color.colorify(len(__gef_alias_instances__), "bold green"),
-            Color.colorify(gdb.VERSION, "bold yellow"),
-            Color.colorify(ver, "bold red")
-        ))
-
-        if nb_missing:
-            warn("{:s} command{} could not be loaded, run `{:s}` to know why.".format(
-                Color.colorify(nb_missing, "bold red"),
-                "s" if nb_missing > 1 else "",
-                Color.colorify("gef missing", "underline magenta")
-            ))
-        return
-
-    def setup(self):
-        # load all commands that has @register_command decolator.
-        self.load_commands()
-
-        # load the saved settings
-        gdb.execute("gef restore")
         return
 
     @parse_args
@@ -95322,12 +95213,12 @@ class GefMissingCommand(GenericCommand):
 
     @parse_args
     def do_invoke(self, args):
-        missing_commands = GefCommand.missing_commands.keys()
+        missing_commands = Gef.missing_commands.keys()
         if not missing_commands:
             ok("No missing command")
             return
         for missing_command in missing_commands:
-            reason = GefCommand.missing_commands[missing_command]
+            reason = Gef.missing_commands[missing_command]
             warn("Command `{}` is missing, reason  ->  {}".format(missing_command, reason))
         return
 
@@ -96764,6 +96655,105 @@ class GefUtil:
 class Gef:
     """A collection of utility functions that are related to GEF start up."""
 
+    missing_commands = {}
+
+    @staticmethod
+    def list_current_commands():
+        command_list = []
+        res = gdb.execute("help all", to_string=True)
+        for line in res.splitlines():
+            line = line.strip()
+            if " -- " not in line:
+                continue
+            commands = line.split(" -- ")[0]
+            commands = commands.split(", ")
+            command_list.extend(commands)
+        return command_list
+
+    @staticmethod
+    def load_commands():
+        """Load all the commands and functions defined by GEF into GDB."""
+        global __gef_command_instances__
+
+        DEBUG_PERF_TIME = False
+        DEBUG_CHECK_COMMAND_CONFLICT = False
+
+        if DEBUG_CHECK_COMMAND_CONFLICT:
+            loaded_commands = Gef.list_current_commands()
+            FIRST_TIME = "gef reload" not in loaded_commands # skip check when `gef reload`
+
+        nb_missing = 0
+        time_elapsed = []
+        for cmd_class in __gef_commands__:
+            try:
+                if DEBUG_PERF_TIME:
+                    start_time_real = time.perf_counter()
+                    start_time_proc = time.process_time()
+
+                if DEBUG_CHECK_COMMAND_CONFLICT and FIRST_TIME:
+                    if cmd_class._cmdline_ in loaded_commands:
+                        warn("{:s} is already loaded".format(Color.boldify(cmd_class._cmdline_)))
+
+                instance = cmd_class() # command loading is here
+                __gef_command_instances__[cmd_class._cmdline_] = instance
+
+                if DEBUG_PERF_TIME:
+                    end_time_real = time.perf_counter()
+                    end_time_proc = time.process_time()
+
+                    time_elapsed.append((
+                        cmd_class._cmdline_,
+                        end_time_real - start_time_real,
+                        end_time_proc - start_time_proc,
+                    ))
+
+                if hasattr(cmd_class._aliases_, "__iter__"):
+                    if isinstance(cmd_class._aliases_, str):
+                        cmd_class_aliases = [cmd_class._aliases_]
+                    elif isinstance(cmd_class._aliases_, list):
+                        cmd_class_aliases = cmd_class._aliases_
+                    else:
+                        cmd_class_aliases = []
+
+                    for alias in cmd_class_aliases:
+                        if DEBUG_CHECK_COMMAND_CONFLICT and FIRST_TIME:
+                            if alias in loaded_commands:
+                                warn("{:s} is already loaded".format(Color.boldify(alias)))
+                        GefAlias(alias, cmd_class._cmdline_, pre_defined=True)
+
+            except Exception as reason:
+                Gef.missing_commands[cmd_class._cmdline_] = reason
+                nb_missing += 1
+
+        if DEBUG_PERF_TIME:
+            gef_print(titlify("Top 10 commands that took the longest to load"))
+            for cmdline, real, cpu in sorted(time_elapsed, key=lambda x: x[1], reverse=True)[:10]:
+                gef_print("{:30s} Real:{:.10f} s, CPU:{:.10f} s".format(cmdline, real, cpu))
+            gef_print(titlify(""))
+
+        # print message
+        gef_print("{:s} is ready, type '{:s}' to start, '{:s}' to configure".format(
+            Color.greenify("GEF"),
+            Color.colorify("gef", "underline yellow"),
+            Color.colorify("gef config", "underline magenta")
+        ))
+
+        ver = "{:d}.{:d}".format(sys.version_info.major, sys.version_info.minor)
+        gef_print("Loaded {:s} commands (+{:s} aliases) for GDB {:s} using Python engine {:s}".format(
+            Color.colorify(len(__gef_command_instances__), "bold green"),
+            Color.colorify(len(__gef_alias_instances__), "bold green"),
+            Color.colorify(gdb.VERSION, "bold yellow"),
+            Color.colorify(ver, "bold red")
+        ))
+
+        if nb_missing:
+            warn("{:s} command{} could not be loaded, run `{:s}` to know why.".format(
+                Color.colorify(nb_missing, "bold red"),
+                "s" if nb_missing > 1 else "",
+                Color.colorify("gef missing", "underline magenta")
+            ))
+        return
+
     @staticmethod
     def gef_prompt(_current_prompt):
         """GEF custom prompt function."""
@@ -96931,8 +96921,11 @@ class Gef:
         gdb.execute("set backtrace past-main on")
         gdb.execute("set print frame-arguments all")
 
-        # load GEF
-        GefCommand().setup()
+        # load all commands that has @register_command decolator.
+        Gef.load_commands()
+
+        # load the saved settings
+        gdb.execute("gef restore")
 
         # follow mode
         if Config.get_gef_setting("gef.follow_child"):
