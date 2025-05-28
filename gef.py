@@ -28387,7 +28387,6 @@ class EntryBreakCommand(GenericCommand):
 
     # Need not @parse_args because argparse can't stop interpreting argument for start.
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
     def do_invoke(self, argv):
         if is_alive():
             if is_remote_debug():
@@ -28401,7 +28400,7 @@ class EntryBreakCommand(GenericCommand):
             return
 
         if not os.access(fpath, os.X_OK):
-            warn("The file '{}' is not executable".format(fpath))
+            warn("The file {!r} is not executable".format(fpath))
             return
 
         elf = Elf.get_elf(fpath)
@@ -28420,7 +28419,7 @@ class EntryBreakCommand(GenericCommand):
             # symbol found
             info("Breaking at {:#x} ({:s})".format(value, sym))
             EntryBreakBreakpoint(sym)
-            gdb.execute("run {}".format(" ".join(argv)))
+            gdb.execute("run {:s}".format(" ".join(argv)))
             return
 
         # no symbols. use elf entry point
