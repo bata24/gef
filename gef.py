@@ -22575,7 +22575,7 @@ class GlibcVisualHeapCommand(GenericCommand, BufferingOutput):
         Color.redify,
         Color.greenify,
         Color.blueify,
-        Color.yellowify
+        Color.yellowify,
     ]
     dark_colors = [
         lambda x: Color.colorify(x, "bright_black"),
@@ -80478,7 +80478,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
         Color.redify,
         Color.greenify,
         Color.blueify,
-        Color.yellowify
+        Color.yellowify,
     ]
     dark_colors = [
         lambda x: Color.colorify(x, "bright_black"),
