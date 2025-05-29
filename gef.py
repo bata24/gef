@@ -90248,6 +90248,149 @@ class ExecUntilSecureWorldCommand(ExecUntilCommand):
         return
 
 
+@register_command
+class CallTraceCommand(ExecUntilCommand):
+    """Trace call, ret, and syscall using exec-until."""
+
+    _cmdline_ = "call-trace"
+    _category_ = "01-d. Debugging Support - Execution"
+    _repeat_ = True
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-a", "--print-args", action="store_true",
+                        help="dump arguments, return value, and syscall args.")
+    _syntax_ = parser.format_help()
+    _example_ = None
+
+    def __init__(self):
+        super().__init__(prefix=False)
+        self.mode = None
+        return
+
+    def print_insn(self, insn, indent):
+        colors_table = [
+            Color.redify,
+            Color.greenify,
+            Color.blueify,
+            Color.yellowify,
+        ]
+        color_func = colors_table[(indent // 2) % len(colors_table)]
+        insn_b = String.str2bytes(color_func(str(insn)))
+        msg = b" " * indent + insn_b + b"\n"
+        self.force_write_stdout(msg)
+        return
+
+    def print_insn_call(self, insn, indent):
+        self.print_insn(insn, indent)
+        if self.args.print_args:
+            res = gdb.execute("registers {:s}".format(" ".join(current_arch.function_parameters)), to_string=True)
+            res = "\n".join(" " * indent + x for x in res.splitlines()) + "\n"
+            self.force_write_stdout(String.str2bytes(res))
+        return
+
+    def print_insn_ret(self, insn, indent):
+        self.print_insn(insn, indent)
+        if self.args.print_args:
+            res = gdb.execute("registers {:s}".format(current_arch.return_register), to_string=True)
+            res = "\n".join(" " * indent + x for x in res.splitlines()) + "\n"
+            self.force_write_stdout(String.str2bytes(res))
+        return
+
+    def print_insn_syscall(self, insn, indent):
+        self.print_insn(insn, indent)
+        if self.args.print_args:
+            res = gdb.execute("syscall-args", to_string=True)
+            res = "\n".join(" " * indent + x for x in res.splitlines()) + "\n"
+            self.force_write_stdout(String.str2bytes(res))
+        return
+
+    def call_trace(self):
+        bp_list = self.get_breakpoint_list()
+        EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
+        self.close_stdout_stderr()
+        self.err = None
+
+        prev_addr = -1
+        next_should_print = False # flag to dump instructions to which calls and rets are jumped
+        print_indent = 0
+        try:
+            while True:
+                printed_already = False # flag to not output the same insn twice
+
+                # backup
+                prev_prev_addr = prev_addr
+                prev_addr = current_arch.pc
+
+                # execute 1 instruction
+                gdb.execute("si") # use si wrapper
+                insn = get_insn()
+
+                if next_should_print:
+                    next_should_print = False
+                    self.print_insn(insn, print_indent)
+                    printed_already = True
+
+                # check breakpoint
+                if current_arch.pc in bp_list:
+                    break
+
+                # $pc is not changed
+                if prev_prev_addr == prev_addr == current_arch.pc: # for faster, repeat insn is skip
+                    # infinity self loop
+                    if current_arch.is_call(insn) or current_arch.is_jump(insn) or current_arch.is_ret(insn):
+                        self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
+                        break
+                    # maybe rep prefix
+                    gdb.execute("xuntil")
+                    # recheck
+                    if prev_prev_addr == prev_addr == current_arch.pc:
+                        self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
+                        break
+                    insn = get_insn()
+
+                # call or ret
+                if current_arch.is_call(insn):
+                    if not printed_already:
+                        self.print_insn_call(insn, print_indent)
+                    next_should_print = True
+                    print_indent += 2
+                elif current_arch.is_ret(insn):
+                    if not printed_already:
+                        self.print_insn_ret(insn, print_indent)
+                    next_should_print = True
+                    print_indent = max(print_indent - 2, 0)
+                elif current_arch.is_syscall(insn):
+                    if not printed_already:
+                        self.print_insn_syscall(insn, print_indent)
+
+        except KeyboardInterrupt:
+            pass
+
+        except Exception:
+            if is_alive():
+                exc_type, exc_value, exc_traceback = sys.exc_info()
+                self.err = exc_value
+            else:
+                pass
+
+        finally:
+            self.revert_stdout_stderr() # anytime needed
+            EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler) # anytime needed
+            Cache.reset_gef_caches()
+            if self.err:
+                err(self.err)
+            else:
+                gdb.execute("context")
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @require_arch_set
+    def do_invoke(self, args):
+        self.call_trace()
+        return
+
+
 class CallUsermodehelperSetupBreakpoint(gdb.Breakpoint):
     """Create a breakpoint to print argv information at call_usermodehelper_setup."""
 

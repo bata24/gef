@@ -572,6 +572,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - libc-code
         - secure-world
     - ![](images/exec-until.png)
+- `call-trace`: traces call, ret, and syscall instructions.
+    - ![](images/call-trace.png)
 - `xuntil`: executes until specified address.
     - It is slightly easier to use than the original until command.
 - `add-symbol-temporary`: adds symbol information from command-line.
