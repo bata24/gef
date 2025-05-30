@@ -89524,6 +89524,190 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
+    """Dump memory regions for qemu-system."""
+
+    _cmdline_ = "qemu-system-memory-region-dump"
+    _category_ = "09-h. Misc - Qemu-system"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-s", "--smart", action="store_true",
+                        help="show only entries where read or write is not the default.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    _syntax_ = parser.format_help()
+
+    def get_system_memory(self):
+        try:
+            return AddressUtil.parse_address("system_memory")
+        except gdb.error:
+            pass
+        return None
+
+    def get_system_io(self):
+        try:
+            return AddressUtil.parse_address("system_io")
+        except gdb.error:
+            pass
+        return None
+
+    def initialize(self):
+        if hasattr(self, "initialized") and self.initialized:
+            return True
+
+        # root (system_memory, system_io)
+        self.system_memory = self.get_system_memory()
+        if self.system_memory is None:
+            self.quiet_err("Not found system_memory")
+            return False
+        self.quiet_info_add_out("system_memory: {:#x}".format(self.system_memory))
+
+        self.system_io = self.get_system_io()
+        if self.system_io is None:
+            self.quiet_err("Not found system_io")
+            return False
+        self.quiet_info_add_out("system_io: {:#x}".format(self.system_io))
+
+        # name
+        for offset in range(0, 0x100, current_arch.ptrsize):
+            name_ptr_addr = self.system_memory + offset
+            name_ptr = read_int_from_memory(name_ptr_addr)
+            if not is_valid_addr(name_ptr):
+                continue
+            if read_cstring_from_memory(name_ptr) == "system":
+                self.offset_name = offset
+                break
+        else:
+            self.quiet_err("Not found offsetof(MemoryRegion, name)")
+            return False
+        self.quiet_info_add_out("offsetof(MemoryRegion, name): {:#x}".format(self.offset_name))
+
+        # ops
+        for offset in range(0, 0x80, current_arch.ptrsize):
+            ops_addr = self.system_memory + offset
+            ops = read_int_from_memory(ops_addr)
+            # ops itself is r-x addr
+            if not is_valid_addr(ops):
+                continue
+            if ProcessMap.lookup_address(ops).section.is_writable():
+                continue
+            # ops->read: zero or r-x addr
+            read_func = read_int_from_memory(ops + current_arch.ptrsize * 0)
+            if read_func:
+                if ProcessMap.lookup_address(read_func).section.is_writable():
+                    continue
+            # ops->write: zero or r-x addr
+            write_func = read_int_from_memory(ops + current_arch.ptrsize * 1)
+            if write_func:
+                if ProcessMap.lookup_address(write_func).section.is_writable():
+                    continue
+            self.offset_ops = offset
+            break
+        else:
+            self.quiet_err("Not found offsetof(MemoryRegion, ops)")
+            return False
+        self.quiet_info_add_out("offsetof(MemoryRegion, ops): {:#x}".format(self.offset_ops))
+
+        # subregions, subregions_link
+        self.offset_subregions = self.offset_name - current_arch.ptrsize * 6
+        self.quiet_info_add_out("offsetof(MemoryRegion, subregions): {:#x}".format(self.offset_subregions))
+        self.offset_subregions_link = self.offset_name - current_arch.ptrsize * 4
+        self.quiet_info_add_out("offsetof(MemoryRegion, subregions_link): {:#x}".format(self.offset_subregions_link))
+
+        self.initialized = True
+        return
+
+    def make_symbol_string(self, addr):
+        addr = ProcessMap.lookup_address(addr)
+        sym = Symbol.get_symbol_string(addr.value, nosymbol_string=" <NO_SYMBOL>")
+        return "{!s}{:s}".format(addr, sym)
+
+    def print_region_smart(self, name, ops, level):
+        # skip if uninteresting
+        if not ops:
+            return
+
+        # skip if seen
+        if ops in self.seen:
+            return
+        self.seen.append(ops)
+
+        # print
+        indent = "  " * level
+        read_func = read_int_from_memory(ops + current_arch.ptrsize * 0)
+        write_func = read_int_from_memory(ops + current_arch.ptrsize * 1)
+        if read_func or write_func:
+            self.out.append("{:s}MemoryRegion: {:s}".format(indent, Color.boldify(name)))
+            self.out.append("{:s}  ops:{:s}".format(indent, self.make_symbol_string(ops)))
+            self.out.append("{:s}    read:{:s}, write:{:s}".format(
+                indent,
+                self.make_symbol_string(read_func),
+                self.make_symbol_string(write_func),
+            ))
+        return
+
+    def print_region(self, name, ops, level):
+        # print always
+        indent = "  " * level
+        self.out.append("{:s}MemoryRegion: {:s}".format(indent, Color.boldify(name)))
+        if not ops:
+            self.out.append("{:s}  ops:{:#x}".format(indent, ops))
+            return
+
+        # print
+        self.out.append("{:s}  ops:{:s}".format(indent, self.make_symbol_string(ops)))
+        read_func = read_int_from_memory(ops + current_arch.ptrsize * 0)
+        write_func = read_int_from_memory(ops + current_arch.ptrsize * 1)
+        if read_func or write_func:
+            self.out.append("{:s}    read:{:s}, write:{:s}".format(
+                indent,
+                self.make_symbol_string(read_func),
+                self.make_symbol_string(write_func),
+            ))
+        return
+
+    def dump_region(self, mr, level):
+        name_ptr = read_int_from_memory(mr + self.offset_name)
+        name = read_cstring_from_memory(name_ptr) or ""
+        ops = read_int_from_memory(mr + self.offset_ops)
+
+        # dump ops
+        if self.args.smart:
+            self.print_region_smart(name, ops, level)
+        else:
+            self.print_region(name, ops, level)
+
+        # parse recursively
+        link = read_int_from_memory(mr + self.offset_subregions)
+        while link:
+            self.dump_region(link, level + 1)
+            link = read_int_from_memory(link + self.offset_subregions_link)
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
+    def do_invoke(self, args):
+        self.out = []
+        if self.initialize() is False:
+            return
+
+        # dump system_memory
+        self.seen = []
+        self.quiet_info_add_out("system_memory")
+        self.dump_region(self.system_memory, 0)
+
+        # dump system_io
+        self.seen = []
+        self.quiet_info_add_out("system_io")
+        self.dump_region(self.system_io, 0)
+
+        self.print_output(term=True)
+        return
+
+
+@register_command
 class XUntilCommand(GenericCommand):
     """Execute until specified address easily."""
 

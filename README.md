@@ -751,6 +751,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/crc32rev.png)
 - `vdump`: visualizes memory data like an image.
     - ![](images/vdump.png)
+- `qemu-system-memory-region-dump`: dumps memory regions for `qemu-system`.
+    - ![](images/qemu-system-memory-region-dump.png)
 
 ### Other
 - The category is introduced in `gef help`.
