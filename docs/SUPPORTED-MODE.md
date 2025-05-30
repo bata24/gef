@@ -6,7 +6,7 @@
         - e.g., `gdb-multiarch /PATH/TO/BINARY`, then `run [ARGS]`.
     - Alternatively, `sudo gdb-multiarch /PATH/TO/BINARY`, then `run [ARGS]`.
 - Supported architectures
-    - Host
+    - Debugger (GDB) host (= Debuggee (ELF) host)
         - x86 and x64
         - Possibly ARM and ARM64
 - Notes
@@ -17,7 +17,7 @@
 - Usage
     - Run `gdb-multiarch /PATH/TO/BINARY -p PID`.
 - Supported architectures
-    - Host
+    - Debugger (GDB) host (= Debuggee (ELF) host)
         - x86 and x64
         - Possibly ARM and ARM64
 
@@ -26,7 +26,7 @@
     - Attach from outside of Docker using `gdb-multiarch /PATH/TO/BINARY -p PID`.
         - The `PID` refers to the process ID visible to the host.
 - Supported architectures
-    - Host
+    - Debugger (GDB) host (= Debuggee (Docker, ELF) host)
         - x86 and x64
         - Possibly ARM and ARM64
 - Notes
@@ -38,7 +38,10 @@
     - Start `gdbserver localhost:1234 /PATH/TO/BINARY [ARGS]` to listen on port `0.0.0.0:1234`.
     - Attach using `gdb-multiarch -ex 'target remote <IP address>:1234'`.
 - Supported architectures
-    - Host
+    - Debugger (GDB) host
+        - x86 and x64
+        - Possibly ARM and ARM64
+    - Debugger stub (Gdbserver) host (= Debuggee (ELF) host)
         - x86 and x64
         - Possibly ARM and ARM64
 
@@ -49,9 +52,11 @@
     - Attach using `gdb-multiarch -ex 'target remote localhost:1234'`.
         - Alternatively, use `gdb-multiarch -ex 'set architecture TARGET_ARCH' -ex 'target remote localhost:1234'` (for old versions of QEMU).
 - Supported architectures
-    - Host
+    - Debugger (GDB) host
         - x64
-    - Guest
+    - Debugger stub (Qemu-system) host
+        - x64
+    - Debuggee (Qemu-system guest)
         - x86, x64, ARM and ARM64
         - i8086 (16-bit) is supported experimentally.
 - Notes
@@ -67,9 +72,11 @@
     - Attach using `gdb-multiarch /PATH/TO/BINARY -ex 'target remote localhost:1234'`.
         - Alternatively, use `gdb-multiarch -ex 'set architecture TARGET_ARCH' -ex 'target remote localhost:1234'` (for old versions of QEMU).
 - Supported architectures
-    - Host
+    - Debugger (GDB) host
         - x64
-    - Guest (ELF)
+    - Debugger stub (Qemu-user) host
+        - x64
+    - Debuggee (ELF)
         - See [docs/QEMU-USER-SUPPORTED-ARCH.md](QEMU-USER-SUPPORTED-ARCH.md) for details.
 - Notes
     - It works with any version of `qemu-user`, but the latest version is recommended.
@@ -83,9 +90,11 @@
     - Listen using `pin -appdebug -appdebug_server_port 1234 -t obj-intel64/inscount0.so -- /PATH/TO/BINARY`.
     - Attach using `gdb-multiarch /PATH/TO/BINARY -ex 'target remote localhost:1234'`.
 - Supported architectures
-    - Host
+    - Debugger (GDB) host
         - x64
-    - Guest (ELF)
+    - Debugger stub (Intel Pin) host
+        - x64
+    - Debuggee (ELF)
         - x86 and x64
 - Note
     - This runs very slowly and is not recommended.
@@ -95,9 +104,11 @@
     - Listen using `sde64 -debug -debug-port 1234 -- /PATH/TO/BINARY`.
     - Attach using `gdb-multiarch /PATH/TO/BINARY -ex 'target remote localhost:1234'`.
 - Supported architectures
-    - Host
+    - Debugger (GDB) host
         - x64
-    - Guest (ELF)
+    - Debugger stub (Intel SDE) host
+        - x64
+    - Debuggee (ELF)
         - x86 and x64
 - Note
     - This runs very slowly and is not recommended.
@@ -109,9 +120,11 @@
         - If the target architecture differs from the host architecture, specify the appropriate `rootfs` directory.
     - Attach using `gdb-multiarch /PATH/TO/BINARY -ex 'target remote localhost:1234'`.
 - Supported architectures
-    - Host
+    - Debugger (GDB) host
         - x64
-    - Guest (ELF)
+    - Debugger stub (Qiling framework) host
+        - x64
+    - Debuggee (ELF)
         - x86, x64, ARM and ARM64
 - Notes
     - When debugging ARM64 binaries, the flag register is not available, so branch taken/not taken detection may be incorrect.
@@ -141,9 +154,9 @@
         - Attach using `gdb-multiarch -ex 'target remote /dev/ttyS0'`.
         - Connect with `screen /dev/ttyS1` for console access.
 - Supported architectures
-    - Debugger
+    - Debugger (GDB) host
         - x64
-    - Debuggee
+    - Debuggee (debugged kernel)
         - x64
 - Notes
     - You need `gdb` version 12.x or later.
@@ -164,9 +177,9 @@
     - Debugger
         - Attach using `gdb-multiarch -ex 'target remote <IP address>:1234'`.
 - Supported architectures
-    - Debugger
+    - Debugger (GDB) host
         - x64
-    - Debuggee
+    - Debuggee (debugged kernel)
         - x64
 - Notes
     - It runs faster than KGDB mode, and `Ctrl+C` interrupt works, but it is still slow.
@@ -177,9 +190,7 @@
     - First, run `rr record /PATH/TO/BINARY`.
     - Then, use `rr replay` for time-travel debugging.
 - Supported architectures
-    - Host
-        - x64
-    - Guest (ELF)
+    - Debugger (`rr`) host (= Debuggee (ELF) host)
         - x86 and x64
 - Note
     - This is experimental support, so some commands may not work.
@@ -189,10 +200,12 @@
     - Run `winedbg --gdb --no-start /PATH/TO/BINARY` and attach using `gdb -ex 'target remote localhost:<port>'`.
         - It is recommended to use the `--no-start` option because pressing `Ctrl+C` without `--no-start` will terminate `gdb`.
 - Supported architectures
-    - Host
-       - x64
-    - Guest (PE)
-       - x86 and x64
+    - Debugger (GDB) host
+        - x64
+    - Debugger stub (`winedbg`) host
+        - x64
+    - Debuggee (PE)
+        - x86 and x64
 - Notes
     - You must run `winedbg` on `localhost`.
     - This is experimental support, so some commands may not work.
@@ -204,9 +217,11 @@
         - Available `<AVD_NAME>` values can be obtained with `emulator -list-avds`.
     - Attach using `gdb-multiarch -ex 'set architecture i386:x86-64' -ex 'target remote localhost:1234'`.
 - Supported architectures
-    - Host
+    - Debugger (GDB) host
         - x64
-    - Guest
+    - Debugger stub (Qemu-system) host
+        - x64
+    - Debuggee (Qemu-system guest)
         - x64
         - Possibly x86, ARM and ARM64
 - Notes
@@ -228,9 +243,9 @@
         - `adb shell /data/local/tmp/gdbserver-static localhost:9999 /PATH/TO/BINARY`.
     - Attach using `gdb-multiarch 'target remote localhost:9999'`.
 - Supported architectures
-    - Host
+    - Debugger (GDB) host
         - x64
-    - Guest
+    - Debugger stub (Gdbserver) host (= Debuggee (ELF) host)
         - x64
         - Possibly x86, ARM and ARM64
 - Notes
