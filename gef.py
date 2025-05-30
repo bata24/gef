@@ -89399,16 +89399,47 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
+    _note_ = [
+        "qemu-system must be running on the local host.",
+    ]
+    _note_ = "\n".join(_note_)
+
     def get_device_name(self):
+        """Identifies the device from qemu's command line arguments,
+        or can force the use of the user specified device."""
+        # user specific
         if self.args.device:
             self.info_add_out("device name: {:s}".format(Color.boldify(self.args.device)))
             return self.args.device
 
-        cmdline = String.bytes2str(open("/proc/{:d}/cmdline".format(Pid.get_pid()), "rb").read()).split("\0")
+        # scan from command line
+
+        # check for existence
+        qemu_cmdline_path = "/proc/{:d}/cmdline".format(Pid.get_pid())
+        if not os.path.exists(qemu_cmdline_path):
+            err("Not found {:s}".format(qemu_cmdline_path))
+            return None
+
+        # check if it can be loaded
+        try:
+            content = open(qemu_cmdline_path, "rb").read()
+        except Exception:
+            err("Failed to read {:s}".format(qemu_cmdline_path))
+            return
+
+        # check if it is from qemu-system
+        cmdline = String.bytes2str(content).split("\0")
+        if "qemu-system" not in " ".join(cmdline):
+            err("Not found `qemu-system` in {:s}".format(qemu_cmdline_path))
+            return None
+
+        # check if the number of devices
+        # the device specified by -device is likely to be the target of CTF attacks
         if cmdline.count("-device") == 0:
             err("Not found `-device` option in qemu-system cmdline")
             return None
 
+        # if multiple entries, it will be considered an error because it cannot be uniquely identified
         if cmdline.count("-device") >= 2:
             devices = []
             for i in range(len(cmdline)):
@@ -89418,11 +89449,13 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
             err("Multiple `-device` options are found in qemu-system cmdline: {:s}".format(devices_str))
             return None
 
+        # found
         device_name = cmdline[cmdline.index("-device") + 1]
         self.info_add_out("device name: {:s}".format(Color.boldify(device_name)))
         return device_name
 
     def dump_qdm(self, device_name):
+        """Filter and display the target device from the list of devices recognized by qemu."""
         res = gdb.execute("monitor info qdm", to_string=True)
         for line in res.splitlines():
             if device_name in line:
@@ -89430,6 +89463,7 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_memmap(self, device_name):
+        """Displays information related to the target device from the memory managed by qemu."""
         # get physmem map / IO map
         res = gdb.execute("monitor info mtree", to_string=True)
         self.info_add_out("Related memory address:")
@@ -89440,6 +89474,7 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_symbol_related_device(self, device_name):
+        """Shows symbol information for the qemu-system related to the target device."""
         # get nm
         try:
             nm = GefUtil.which("nm")

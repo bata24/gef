@@ -258,7 +258,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `uefi-ovmf-info`: dumps addresses of some important structures in each boot phase of UEFI when OVMF is used.
     - Supported on x64.
     - ![](images/uefi-ovmf-info.png)
-- `qemu-device-info`: dumps device information for qemu-escape (WIP).
+- `qemu-device-info`: dumps device information for qemu-escape.
 
 ### Qemu-user Cooperation
 - `si`/`ni`: are wrappers for native `si`/`ni` if OpenRISC 1000 or CRIS.
