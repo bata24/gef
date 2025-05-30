@@ -89537,19 +89537,88 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
+    def get_rw_map(self):
+        filepath = Path.get_filepath(append_proc_root_prefix=False)
+        maps = ProcessMap.get_process_maps_linux(Pid.get_pid())
+        RW = Permission.READ | Permission.WRITE
+        rw_maps = [p for p in maps if p.permission.value == RW and p.path == filepath]
+        if len(rw_maps) == 1:
+            return rw_maps[0]
+        return None
+
+    def get_memory_region(self, name_target):
+        """
+        static MemoryRegion *system_memory;
+        static MemoryRegion *system_io;
+
+        AddressSpace address_space_io;
+        AddressSpace address_space_memory;
+
+        struct AddressSpace {
+            struct rcu_head rcu; // ptrsize * 2 bytes
+            char *name; // -> "memory" or "I/O"
+            MemoryRegion *root;
+            struct FlatView *current_map;
+            ...
+        };
+        """
+        rw_map = self.get_rw_map()
+        if rw_map is None:
+            return None
+
+        rw_content = read_memory(rw_map.page_start, rw_map.size)
+        rw_content_sliced = slice_unpack(rw_content, current_arch.ptrsize)
+
+        # Since it is near the end of the RW area, searching in reverse is faster
+        for i, val in enumerate(rw_content_sliced[::-1], start=1):
+            if not is_valid_addr(val):
+                continue
+
+            # name check
+            name = read_cstring_from_memory(val)
+            if name != name_target:
+                continue
+            ofs_name = rw_map.size - (current_arch.ptrsize * i)
+
+            # root check
+            ofs_root = ofs_name + current_arch.ptrsize
+            root = read_int_from_memory(rw_map.page_start + ofs_root)
+            if not is_valid_addr(root):
+                continue
+            root = ProcessMap.lookup_address(root)
+            if not root.section.is_writable():
+                continue
+
+            # current_map check
+            ofs_current_map = ofs_root + current_arch.ptrsize
+            current_map = read_int_from_memory(rw_map.page_start + ofs_current_map)
+            if not is_valid_addr(current_map):
+                continue
+            current_map = ProcessMap.lookup_address(current_map)
+            if not current_map.section.is_writable():
+                continue
+
+            # found
+            return root.value
+        return None
+
     def get_system_memory(self):
+        # fast path
         try:
             return AddressUtil.parse_address("system_memory")
         except gdb.error:
             pass
-        return None
+        # slow path
+        return self.get_memory_region("memory")
 
     def get_system_io(self):
+        # fast path
         try:
             return AddressUtil.parse_address("system_io")
         except gdb.error:
             pass
-        return None
+        # slow path
+        return self.get_memory_region("I/O")
 
     def initialize(self):
         if hasattr(self, "initialized") and self.initialized:
