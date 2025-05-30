@@ -22793,7 +22793,11 @@ class RegistersCommand(GenericCommand):
 
         self.regs_to_check_unavailable = []
         for regname in self.get_all_registers():
-            reg = gdb.parse_and_eval(regname)
+            try:
+                reg = gdb.parse_and_eval(regname)
+            except gdb.error:
+                # older qemu cannot resolve `fs_base` etc.
+                continue
             if reg.type.code == gdb.TYPE_CODE_VOID:
                 continue
             if str(reg) == "<unavailable>":
