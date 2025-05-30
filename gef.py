@@ -89605,7 +89605,8 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
     def get_system_memory(self):
         # fast path
         try:
-            return AddressUtil.parse_address("system_memory")
+            system_memory = AddressUtil.parse_address("&system_memory")
+            return read_int_from_memory(system_memory)
         except gdb.error:
             pass
         # slow path
@@ -89614,7 +89615,8 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
     def get_system_io(self):
         # fast path
         try:
-            return AddressUtil.parse_address("system_io")
+            system_io = AddressUtil.parse_address("&system_io")
+            return read_int_from_memory(system_io)
         except gdb.error:
             pass
         # slow path
