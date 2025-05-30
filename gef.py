@@ -17483,11 +17483,6 @@ class SearchPatternCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    _note_ = [
-        'This command overwrites original "find" command.',
-    ]
-    _note_ = "\n".join(_note_)
-
     def print_section(self, section):
         if isinstance(section, Address):
             section = section.section
