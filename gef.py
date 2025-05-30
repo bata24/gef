@@ -15038,7 +15038,7 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
         else:
             self.apply_type(tp, args.address)
 
-        self.print_output()
+        self.print_output(term=True)
 
         # revert setting
         if args.smart:
