@@ -361,6 +361,12 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - Build with `gyp --depth . scalloc.gyp && make`.
         - Enable overcommit with `echo 1 > /proc/sys/vm/overcommit_memory`.
         - Execute as `LD_PRELOAD=/PATH/TO/libscalloc.so ./a.out`.
+- `snmalloc-heap-dump`: dumps snmalloc free-list (only x64).
+    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/snmalloc-heap-dump.png)
+    * How to test (x64):
+        - Get and extract the latest source from https://github.com/microsoft/snmalloc
+        - Build with `mkdir build && cd build && cmake -G Ninja .. -DCMAKE_BUILD_TYPE=Debug && ninja`.
+        - Execute as `LD_PRELOAD=/PATH/TO/libsnmallocshim.so ./a.out`.
 - `optee-bget-dump`: dumps bget allocator of OPTEE-Trusted-App.
     - ![](images/optee-bget-dump.png)
 

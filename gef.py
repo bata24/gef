@@ -78114,6 +78114,487 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
+    """snmalloc (as of June 2025) heap free-list viewer (only x64)."""
+
+    _cmdline_ = "snmalloc-heap-dump"
+    _category_ = "06-b. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-a", "--all", action="store_true", help="dump all thread_alloc.")
+    parser.add_argument("-l", "--laden", action="store_true", help="dump laden (large or inactive slabs).")
+    parser.add_argument("-r", "--remote", action="store_true", help="dump remote_alloc (WIP).")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display also empty freelists.")
+    _syntax_ = parser.format_help()
+
+    _note_ = [
+        "This command dumps the following four categories:",
+        "- small_fast_free_lists: Free list per small size class (fast path).",
+        "- alloc_classes: Per size class list of active slabs.",
+        "- laden: The set of all slabs and large allocations from this allocator that are full or almost full.",
+        "    - The end of the list may not be dumped correctly.",
+        "- remote_alloc: Message queue for allocations being returned to this allocator.",
+        "    - Currently status: WIP.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def get_current_thread_alloc(self):
+        # fast path
+        try:
+            thread_alloc = AddressUtil.parse_address("&'snmalloc::ThreadAlloc::alloc'")
+            return read_int_from_memory(thread_alloc)
+        except gdb.error:
+            pass
+
+        # slow path
+        """
+        gef> tls
+        ------------------------ TLS-0x80 -----------------------
+              ...
+              0x7ffff7f3f758|+0x0058|+011: 0x00007fbff7800000  <- here
+              0x7ffff7f3f760|+0x0060|+012: 0x0000000000000001
+              0x7ffff7f3f768|+0x0068|+013: 0x0000000000000000
+              0x7ffff7f3f770|+0x0070|+014: 0x0000000000000000
+              0x7ffff7f3f778|+0x0078|+015: 0x0000000000000000
+        -------------------------- TLS --------------------------
+              0x7ffff7f3f780|+0x0000|+000: 0x00007ffff7f3f780
+              0x7ffff7f3f788|+0x0008|+001: 0x00007ffff7f40120
+        """
+        tls = current_arch.get_tls()
+        for i in range(1, 16):
+            addr = tls - (current_arch.ptrsize * i)
+            val = read_int_from_memory(addr)
+            if not is_valid_addr(val):
+                continue
+            if val & 0xfffff:
+                continue
+            if not is_single_link_list(val):
+                continue
+            return val
+        return None
+
+    def get_thread_alloc_list(self, all_thread=False):
+        if all_thread:
+            # travarse all threads
+            orig_thread = gdb.selected_thread()
+            orig_frame = gdb.selected_frame()
+            thread_allocs = []
+            for thread in gdb.selected_inferior().threads():
+                thread.switch() # change thread
+                thread_alloc = self.get_current_thread_alloc()
+                if thread_alloc:
+                    thread_allocs.append((thread.num, thread_alloc))
+            orig_thread.switch() # revert thread
+            orig_frame.select()
+            return thread_allocs
+        else:
+            thread_alloc = self.get_current_thread_alloc()
+            if thread_alloc:
+                return [(gdb.selected_thread().num, thread_alloc)]
+        return None
+
+    def initialize(self):
+        if hasattr(self, "initialized") and self.initialized:
+            return True
+
+        try:
+            self.NUM_SMALL_SIZECLASSES = AddressUtil.parse_address('snmalloc::NUM_SMALL_SIZECLASSES')
+        except gdb.error:
+            self.NUM_SMALL_SIZECLASSES = 43 # hardcoded value
+
+        try:
+            self.INTERMEDIATE_BITS = AddressUtil.parse_address('snmalloc::INTERMEDIATE_BITS')
+        except gdb.error:
+            self.INTERMEDIATE_BITS = 2 # hardcoded value
+
+        try:
+            self.MIN_ALLOC_BITS = AddressUtil.parse_address('snmalloc::MIN_ALLOC_STEP_BITS')
+        except gdb.error:
+            self.MIN_ALLOC_BITS = 4 # hardcoded value
+
+        """
+        gef> dt 'snmalloc::Alloc'
+        struct snmalloc::Allocator<...> {
+            /* offset | size   */
+            /* 0x0000 | 0x0158 */    struct snmalloc::FastFreeLists snmalloc::FastFreeLists; // = 43 * 8 bytes
+            /* 0x0158 | 0x0018 */    class snmalloc::Pooled<...> snmalloc::Pooled<...>;
+            /* 0x0170 | 0x1a10 */    struct snmalloc::RemoteDeallocCache<...> remote_dealloc_cache;
+            /* 0x1b80 | 0x0408 */    struct snmalloc::Allocator<...>::SlabMetadataCache [43] alloc_classes; // 43 * 0x18 bytes
+            /* 0x1f88 | 0x0010 */    class snmalloc::SeqSet<...> laden;
+            /* 0x1f98 | 0x0028 */    class snmalloc::LocalEntropy entropy;
+            /* 0x2000 | 0x0100 */    std::conditional_t remote_alloc;
+            /* 0x2100 | 0x0240 */    std::conditional_t backend_state;
+            /* 0x2340 | 0x0018 */    class snmalloc::Ticker<...> ticker;
+        } // total: 0x2400 bytes
+        gef>
+        """
+
+        try:
+            self.offset_alloc_classes = AddressUtil.parse_address("&((('snmalloc::Alloc'*)0)->alloc_classes)")
+        except gdb.error:
+            self.offset_alloc_classes = 0x1b80 # hardcoded value
+
+        try:
+            self.offset_laden = AddressUtil.parse_address("&((('snmalloc::Alloc'*)0)->laden)")
+        except gdb.error:
+            self.offset_laden = 0x1f88 # hardcoded value
+
+        try:
+            self.offset_remote_alloc = AddressUtil.parse_address("&((('snmalloc::Alloc'*)0)->remote_alloc)")
+        except gdb.error:
+            self.offset_remote_alloc = 0x2000 # hardcoded value
+
+        self.initialized = True
+        return True
+
+    @Cache.cache_this_session
+    def class_to_size(self, cl):
+        def from_exp_mant(m_e, MANTISSA_BITS, LOW_BITS):
+            if MANTISSA_BITS > 0:
+                m_e = m_e + 1
+                MANTISSA_MASK = (1 << MANTISSA_BITS) - 1
+                m = m_e & MANTISSA_MASK
+                e = m_e >> MANTISSA_BITS
+                b = 0 if e == 0 else 1
+                shifted_e = e - b
+                extended_m = (m + (b << MANTISSA_BITS))
+                return extended_m << (shifted_e + LOW_BITS)
+            else:
+                return 1 << (m_e + LOW_BITS)
+
+        return from_exp_mant(cl, self.INTERMEDIATE_BITS, self.MIN_ALLOC_BITS)
+
+    def parse_single_link_list(self, head):
+        """Returns the single linked list (including the head) and error message."""
+        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+
+        # travase next
+        cur = head
+        seen = []
+        while True:
+            if cur == 0:
+                seen.append(cur)
+                break
+            if not is_valid_addr(cur):
+                seen.append(cur)
+                return seen, Color.colorify("(corrupted)", corrupted_msg_color)
+            if cur in seen:
+                seen.append(cur)
+                return seen, Color.colorify("(loop detected)", corrupted_msg_color)
+            seen.append(cur)
+            cur = read_int_from_memory(cur)
+        return seen, None
+
+    def parse_double_link_list(self, head):
+        """Returns the double linked list (excluding the head) and error message."""
+        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+
+        # travarse next
+        cur = head
+        seen = []
+        while True:
+            if not is_valid_addr(cur):
+                seen.append(cur)
+                return seen, Color.colorify("(corrupted)", corrupted_msg_color)
+            if cur in seen:
+                break
+            seen.append(cur)
+            cur = read_int_from_memory(cur)
+
+        if cur != seen[0]:
+            return seen, Color.colorify("(loop detected)", corrupted_msg_color)
+
+        # check prev
+        for i, x in enumerate(seen):
+            p = read_int_from_memory(x + current_arch.ptrsize)
+            if p != seen[i - 1]:
+                return seen, Color.colorify("(corrupted)", corrupted_msg_color)
+
+        if head in seen:
+            seen = [x for x in seen if x != head]
+        return seen, None
+
+    def dump_small_fast(self, thread_alloc):
+        """
+        gef> dt snmalloc::FastFreeLists
+        struct snmalloc::FastFreeLists {
+            /* offset | size   */
+            /* 0x0000 | 0x0158 */    class snmalloc::freelist::Iter<...> [43] small_fast_free_lists; // -> freed chunk
+        } // total: 0x158 bytes
+        gef>
+        """
+
+        self.out.append(titlify("FastFreeLists.small_fast_free_lists[{:d}] @ {:#x}".format(
+            self.NUM_SMALL_SIZECLASSES,
+            thread_alloc,
+        )))
+
+        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+
+        # travarse small_fast_free_lists[0-42]
+        printed_flag = False
+        for i in range(self.NUM_SMALL_SIZECLASSES):
+            free_list_i = thread_alloc + current_arch.ptrsize * i
+            head = read_int_from_memory(free_list_i)
+            free_list, error = self.parse_single_link_list(head)
+
+            # skip if empty
+            if not self.args.verbose:
+                if len(free_list) == 1 and free_list[0] == 0:
+                    continue
+
+            # print
+            self.out.append("small_fast_free_lists[{:d}, size={:s}] @ {!s}:".format(
+                i,
+                Color.colorify_hex(self.class_to_size(i), Config.get_gef_setting("theme.heap_chunk_size")),
+                ProcessMap.lookup_address(free_list_i),
+            ))
+            for i, chunk in enumerate(free_list):
+                chunk_str = Color.colorify_hex(chunk, freed_address_color)
+
+                # skip if empty
+                if not self.args.verbose:
+                    if 4 <= i < len(free_list) - 5:
+                        if i == 4:
+                            self.out.append(" ...")
+                        continue
+
+                if i < len(free_list) - 1:
+                    self.out.append(" -> {:s}".format(chunk_str))
+                elif error:
+                    self.out.append(" -> {:s} {:s}".format(chunk_str, error))
+                else:
+                    self.out.append(" -> {:s} (num: {:#x})".format(chunk_str, len(free_list) - 1))
+
+            printed_flag = True
+
+        if printed_flag is False:
+            self.out.append("Nothing to dump")
+        return
+
+    def dump_slab_meta(self, slab_meta, cl):
+        """
+        gef> dt 'snmalloc::FrontendSlabMetadata<snmalloc::DefaultSlabMetadata<snmalloc::NoClientMetaDataProvider>, \\
+        snmalloc::NoClientMetaDataProvider>'
+        struct snmalloc::FrontendSlabMetadata<...> {
+            /* offset | size   */
+            /* 0x0000 | 0x0001 */    class snmalloc::FrontendSlabMetadata_Trait snmalloc::FrontendSlabMetadata_Trait;
+            /* 0x0000 | 0x0010 */    class snmalloc::SeqSet<...>::Node node;
+            /* 0x0010 | 0x0018 */    class snmalloc::freelist::Builder<...> free_queue; // -> freed chunk
+            /* 0x0022 | 0x0002 */    uint16_t needed_;
+            /* 0x0024 | 0x0001 */    bool sleeping_;
+            /* 0x0025 | 0x0001 */    bool large_;
+            /* 0x0000 | 0x0001 */    snmalloc::NoClientMetaDataProvider::StorageType client_meta_;
+        } // total: 0x28 bytes
+        gef>
+
+        gef> dt 'snmalloc::freelist::Builder<false, false, snmalloc::capptr::bound<(snmalloc::capptr::dimension::Spatial)0, \\
+        (snmalloc::capptr::dimension::AddressSpaceControl)0, (snmalloc::capptr::dimension::Wildness)1>, \\
+        snmalloc::capptr::bound<(snmalloc::capptr::dimension::Spatial)0, (snmalloc::capptr::dimension::AddressSpaceControl)0, \\
+        (snmalloc::capptr::dimension::Wildness)0> >'
+        struct snmalloc::freelist::Builder<...> {
+            /* offset | size   */
+            /*        | 0x0008 */    const size_t LENGTH;
+            /* 0x0000 | 0x0008 */    snmalloc::stl::Array head;
+            /* 0x0008 | 0x0008 */    snmalloc::stl::Array end;
+            /* 0x0010 | 0x0001 */    snmalloc::stl::Array length;
+        } // total: 0x18 bytes
+        gef>
+        """
+
+        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        offset_free_queue = 0x10
+        offset_needed_ = 0x22
+        offset_sleeping_ = 0x24
+        offset_large_ = 0x25
+
+        free_queue = slab_meta + offset_free_queue
+        head = read_int_from_memory(free_queue)
+        free_list, error = self.parse_single_link_list(head)
+
+        # skip if empty
+        if not self.args.verbose:
+            if len(free_list) == 1 and free_list[0] == 0:
+                return False
+
+        if cl is None:
+            cl_msg = "???"
+        else:
+            cl_msg = Color.colorify_hex(self.class_to_size(cl), Config.get_gef_setting("theme.heap_chunk_size"))
+        is_laden = cl is None
+
+        needed_ = u16(read_memory(slab_meta + offset_needed_, 2))
+        sleeping_ = u8(read_memory(slab_meta + offset_sleeping_, 1))
+        large_ = u8(read_memory(slab_meta + offset_large_, 1))
+
+        # print
+        self.out.append("free_queue[size={:s}, needed_={:#x}, sleeping_={:#x}, large_={:#x}] @ {!s}:".format(
+            cl_msg, needed_, sleeping_, large_, ProcessMap.lookup_address(free_queue),
+        ))
+        for i, chunk in enumerate(free_list):
+            if is_laden:
+                chunk_str = hex(chunk)
+            else:
+                chunk_str = Color.colorify_hex(chunk, freed_address_color)
+
+            # skip if empty
+            if not self.args.verbose:
+                if 4 <= i < len(free_list) - 5:
+                    if i == 4:
+                        self.out.append(" ...")
+                    continue
+
+            if i < len(free_list) - 1:
+                self.out.append(" -> {:s}".format(chunk_str))
+            elif error:
+                if is_laden:
+                    self.out.append(" -> {:s} {:s} (but expected)".format(chunk_str, error))
+                else:
+                    self.out.append(" -> {:s} {:s}".format(chunk_str, error))
+            else:
+                self.out.append(" -> {:s} (num: {:#x})".format(chunk_str, len(free_list) - 1))
+        return True
+
+    def dump_alloc_classes(self, thread_alloc):
+        """
+        gef> dt 'struct snmalloc::Allocator<snmalloc::StandardConfigClientMeta<snmalloc::NoClientMetaDataProvider> >\\
+        ::SlabMetadataCache'
+        struct snmalloc::Allocator<...>::SlabMetadataCache {
+            /* offset | size   */
+            /* 0x0000 | 0x0010 */    class snmalloc::SeqSet<...> available; // -> struct snmalloc::FrontendSlabMetadata<...>
+            /* 0x0010 | 0x0002 */    uint16_t unused;
+            /* 0x0012 | 0x0002 */    uint16_t length;
+        } // total: 0x18 bytes
+        """
+
+        self.out.append(titlify("alloc_classes (SlabMetadataCache[{:d}]) @ {:#x}".format(
+            self.NUM_SMALL_SIZECLASSES,
+            thread_alloc + self.offset_alloc_classes,
+        )))
+
+        offset_length = 0x12
+        sizeof_slab_meta = 0x18
+
+        # travarse SlabMetadataCache[0-42]
+        printed_flag = False
+        for i in range(self.NUM_SMALL_SIZECLASSES):
+            entry = thread_alloc + self.offset_alloc_classes + (sizeof_slab_meta * i)
+
+            slab_meta_list, error = self.parse_double_link_list(entry)
+            length = u16(read_memory(entry + offset_length, 2))
+
+            if not self.args.verbose:
+                if slab_meta_list == [] and error is None:
+                    if length == 0:
+                        continue  # unused
+
+            self.out.append("SlabMetadataCache[{:d}, size={:s}] @ {!s}: {:#x} slab(s)".format(
+                i,
+                Color.colorify_hex(self.class_to_size(i), Config.get_gef_setting("theme.heap_chunk_size")),
+                ProcessMap.lookup_address(entry),
+                length,
+            ))
+
+            # travarse SlabMetadataCache[i].available
+            for slab_meta in slab_meta_list:
+                self.dump_slab_meta(slab_meta, cl=i)
+
+            printed_flag = True
+
+        if printed_flag is False:
+            self.out.append("Nothing to dump")
+        return
+
+    def dump_laden(self, thread_alloc):
+        self.out.append(titlify("laden (SeqSet<BackendSlabMetadata>) @ {:#x}".format(
+            thread_alloc + self.offset_laden,
+        )))
+
+        slab_meta_list, error = self.parse_double_link_list(thread_alloc + self.offset_laden)
+
+        if not self.args.verbose:
+            if slab_meta_list == [] and error is None:
+                self.out.append("Nothing to dump")
+                return
+
+        printed_flag = False
+        for slab_meta in slab_meta_list:
+            printed_flag |= self.dump_slab_meta(slab_meta, cl=None)
+
+        if printed_flag is False:
+            self.out.append("Nothing to dump")
+        return
+
+    def dump_remote_alloc(self, thread_alloc):
+        """
+        struct snmalloc::RemoteAllocator {
+            /* offset | size   */
+            /*        | 0x0018 */    struct snmalloc::FreeListKey key_global; // static
+            /* 0x0000 | 0x0100 */    struct snmalloc::FreeListMPSCQ<snmalloc::RemoteAllocator::key_global, 0> list;
+        } // total: 0x100 bytes
+        gef>
+
+        gef> dt 'snmalloc::FreeListMPSCQ<snmalloc::RemoteAllocator::key_global, 0>'
+        struct snmalloc::FreeListMPSCQ<snmalloc::RemoteAllocator::key_global, 0> {
+            /* offset | size   */
+            /* 0x0000 | 0x0008 */    snmalloc::freelist::AtomicQueuePtr back;
+            /* 0x0040 | 0x0008 */    snmalloc::freelist::AtomicQueuePtr front;
+        } // total: 0x100 bytes
+        gef>
+        """
+
+        self.out.append(titlify("remote_alloc (RemoteAllocator) @ {:#x}".format(
+            thread_alloc + self.offset_remote_alloc,
+        )))
+
+        offset_front = 0x40
+        remote_alloc = thread_alloc + self.offset_remote_alloc
+        head = read_int_from_memory(remote_alloc + offset_front)
+        obj_list, error = self.parse_single_link_list(head)
+
+        if obj_list == [0] and error is None:
+            self.out.append("Nothing to dump")
+            return
+
+        for obj in obj_list:
+            # TODO: WIP
+            self.out.append(" -> {:#x}".format(obj))
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @only_if_specific_arch(arch=("x86_64",))
+    def do_invoke(self, args):
+        self.out = []
+        if self.initialize() is False:
+            return
+
+        # get thread_alloc
+        self.thread_alloc_list = self.get_thread_alloc_list(args.all)
+        if not self.thread_alloc_list:
+            self.quiet_err("Not found snmalloc::ThreadAlloc::alloc")
+            return
+
+        # dump
+        for th_num, thread_alloc in self.thread_alloc_list:
+            self.out.append(titlify("ThreadAlloc @ {:#x} (Thread Id:{:d})".format(
+                thread_alloc, th_num,
+            ), color="bold", msg_color="bold"))
+            self.dump_small_fast(thread_alloc) # FastFreeLists
+            self.dump_alloc_classes(thread_alloc) # SlabMetadataCache
+            if self.args.laden:
+                self.dump_laden(thread_alloc) # SeqSet<BackendSlabMetadata>
+            if self.args.remote:
+                self.dump_remote_alloc(thread_alloc) # RemoteAllocator
+
+        # print
+        self.print_output()
+        return
+
+
+@register_command
 class V8Command(GenericCommand):
     """Print v8 tagged object, or load more commands from internet."""
 
