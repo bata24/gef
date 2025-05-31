@@ -32652,11 +32652,8 @@ class SmartCppFunctionNameCommand(GenericCommand):
 
     @parse_args
     def do_invoke(self, args):
-        setting = gdb.execute("gef config context.smart_cpp_function_name", to_string=True)
-        if "False" in setting:
-            gdb.execute("gef config context.smart_cpp_function_name true", to_string=True)
-        else:
-            gdb.execute("gef config context.smart_cpp_function_name false", to_string=True)
+        setting = Config.get_gef_setting("context.smart_cpp_function_name")
+        gdb.execute("gef config context.smart_cpp_function_name {!s}".format(not setting), to_string=True)
         return
 
 
