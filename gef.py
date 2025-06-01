@@ -90336,7 +90336,6 @@ class ExecUntilCommand(GenericCommand):
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
         super().__init__(prefix=prefix)
-        self.mode = None
         return
 
     def close_stdout_stderr(self):
@@ -90370,90 +90369,21 @@ class ExecUntilCommand(GenericCommand):
 
         if (self.args.only_taken, self.args.only_not_taken) == (False, False):
             return True
-        elif (self.args.only_taken, self.args.only_not_taken) == (True, False):
+
+        if (self.args.only_taken, self.args.only_not_taken) == (True, False):
             if current_arch.is_conditional_branch(insn):
                 taken, _reason = current_arch.is_branch_taken(insn)
                 return taken
             else:
                 return True # non-conditional, so always jump
-        elif (self.args.only_taken, self.args.only_not_taken) == (False, True):
+
+        if (self.args.only_taken, self.args.only_not_taken) == (False, True):
             if current_arch.is_conditional_branch(insn):
                 taken, _reason = current_arch.is_branch_taken(insn)
                 return not taken
             else:
                 return False # non-conditional, so always jump
         raise
-
-    def is_target_insn(self, insn):
-        if self.mode == "call":
-            return current_arch.is_call(insn)
-        elif self.mode == "jmp":
-            return self.check_jump_taken(insn)
-        elif self.mode == "indirect-branch":
-            if current_arch.is_call(insn) or self.check_jump_taken(insn):
-                if "[" in str(insn):
-                    return True
-                for reg in current_arch.general_registers:
-                    if reg.replace("$", "") in str(insn):
-                        return True
-            return False
-        elif self.mode == "syscall":
-            if current_arch.is_syscall(insn):
-                if not self.args.filter and not self.args.ignore:
-                    return True
-                _reg, nr = SyscallArgsCommand.get_nr()
-                syscall_table = get_syscall_table()
-                if syscall_table is None:
-                    return True # for debug
-                if nr not in syscall_table.nr_table:
-                    return True # for debug
-                syscall_name = syscall_table.nr_table[nr].name
-                if self.args.ignore and syscall_name in self.args.ignore:
-                    return False
-                if self.args.filter:
-                    return syscall_name in self.args.filter
-                else:
-                    return True
-            return False
-        elif self.mode == "ret":
-            return current_arch.is_ret(insn)
-        if self.mode == "all-branch":
-            return current_arch.is_call(insn) or self.check_jump_taken(insn) or current_arch.is_ret(insn)
-        elif self.mode == "memaccess":
-            return "[" in str(insn)
-        elif self.mode == "keyword":
-            for re_pattern in self.args.keyword:
-                if re_pattern.search(str(insn)):
-                    return True
-            return False
-        elif self.mode == "cond":
-            try:
-                v = gdb.parse_and_eval(self.condition)
-            except gdb.error:
-                return False
-            if v not in [0x0, 0x1]:
-                self.err = "condition result should be True or False"
-                return True
-            if v:
-                return True
-        elif self.mode == "user-code":
-            for p in self.code_addrs:
-                if p.page_start <= insn.address <= p.page_end:
-                    return True
-            else:
-                return False
-        elif self.mode == "libc-code":
-            for p in self.libc_addrs:
-                if p.page_start <= insn.address <= p.page_end:
-                    return True
-            else:
-                return False
-        elif self.mode == "secure-world":
-            scr = get_register("$SCR" if is_arm32() else "$SCR_EL3")
-            if scr is None:
-                return False
-            return (scr & 0b1) == 0
-        return False
 
     def get_breakpoint_list(self):
         lines = gdb.execute("info breakpoints", to_string=True).splitlines()
@@ -90558,10 +90488,7 @@ class ExecUntilCommand(GenericCommand):
     @only_if_gdb_running
     @require_arch_set
     def do_invoke(self, args):
-        if self.mode is None:
-            self.usage()
-            return
-        self.exec_next()
+        self.usage()
         return
 
 
@@ -90586,7 +90513,16 @@ class ExecUntilCallCommand(ExecUntilCommand):
 
     def __init__(self):
         super().__init__(prefix=False)
-        self.mode = "call"
+        return
+
+    def is_target_insn(self, insn):
+        return current_arch.is_call(insn)
+
+    @parse_args
+    @only_if_gdb_running
+    @require_arch_set
+    def do_invoke(self, args):
+        self.exec_next()
         return
 
 
@@ -90614,8 +90550,10 @@ class ExecUntilJumpCommand(ExecUntilCommand):
 
     def __init__(self):
         super().__init__(prefix=False)
-        self.mode = "jmp"
         return
+
+    def is_target_insn(self, insn):
+        return self.check_jump_taken(insn)
 
     @parse_args
     @only_if_gdb_running
@@ -90649,8 +90587,16 @@ class ExecUntilIndirectBranchCommand(ExecUntilCommand):
 
     def __init__(self):
         super().__init__(prefix=False)
-        self.mode = "indirect-branch"
         return
+
+    def is_target_insn(self, insn):
+        if current_arch.is_call(insn) or self.check_jump_taken(insn):
+            if "[" in str(insn):
+                return True
+            for reg in current_arch.general_registers:
+                if reg.replace("$", "") in str(insn):
+                    return True
+        return False
 
     @parse_args
     @only_if_gdb_running
@@ -90684,8 +90630,10 @@ class ExecUntilAllBranchCommand(ExecUntilCommand):
 
     def __init__(self):
         super().__init__(prefix=False)
-        self.mode = "all-branch"
         return
+
+    def is_target_insn(self, insn):
+        return current_arch.is_call(insn) or self.check_jump_taken(insn) or current_arch.is_ret(insn)
 
     @parse_args
     @only_if_gdb_running
@@ -90718,8 +90666,26 @@ class ExecUntilSyscallCommand(ExecUntilCommand):
 
     def __init__(self):
         super().__init__(prefix=False)
-        self.mode = "syscall"
         return
+
+    def is_target_insn(self, insn):
+        if current_arch.is_syscall(insn):
+            if not self.args.filter and not self.args.ignore:
+                return True
+            _reg, nr = SyscallArgsCommand.get_nr()
+            syscall_table = get_syscall_table()
+            if syscall_table is None:
+                return True # for debug
+            if nr not in syscall_table.nr_table:
+                return True # for debug
+            syscall_name = syscall_table.nr_table[nr].name
+            if self.args.ignore and syscall_name in self.args.ignore:
+                return False
+            if self.args.filter:
+                return syscall_name in self.args.filter
+            else:
+                return True
+        return False
 
     @parse_args
     @only_if_gdb_running
@@ -90751,7 +90717,16 @@ class ExecUntilRetCommand(ExecUntilCommand):
 
     def __init__(self):
         super().__init__(prefix=False)
-        self.mode = "ret"
+        return
+
+    def is_target_insn(self, insn):
+        return current_arch.is_ret(insn)
+
+    @parse_args
+    @only_if_gdb_running
+    @require_arch_set
+    def do_invoke(self, args):
+        self.exec_next()
         return
 
 
@@ -90776,7 +90751,16 @@ class ExecUntilMemaccessCommand(ExecUntilCommand):
 
     def __init__(self):
         super().__init__(prefix=False)
-        self.mode = "memaccess"
+        return
+
+    def is_target_insn(self, insn):
+        return "[" in str(insn)
+
+    @parse_args
+    @only_if_gdb_running
+    @require_arch_set
+    def do_invoke(self, args):
+        self.exec_next()
         return
 
 
@@ -90809,8 +90793,13 @@ class ExecUntilKeywordReCommand(ExecUntilCommand):
 
     def __init__(self):
         super().__init__(prefix=False)
-        self.mode = "keyword"
         return
+
+    def is_target_insn(self, insn):
+        for re_pattern in self.args.keyword:
+            if re_pattern.search(str(insn)):
+                return True
+        return False
 
     @parse_args
     @only_if_gdb_running
@@ -90848,8 +90837,17 @@ class ExecUntilCondCommand(ExecUntilCommand):
 
     def __init__(self):
         super().__init__(prefix=False)
-        self.mode = "cond"
         return
+
+    def is_target_insn(self, insn):
+        try:
+            v = gdb.parse_and_eval(self.condition)
+        except gdb.error:
+            return False
+        if v not in [0x0, 0x1]:
+            self.err = "condition result should be True or False"
+            return True
+        return bool(v)
 
     @parse_args
     @only_if_gdb_running
@@ -90903,18 +90901,19 @@ class ExecUntilUserCodeCommand(ExecUntilCommand):
 
     def __init__(self):
         super().__init__(prefix=False)
-        self.mode = "user-code"
         return
+
+    def is_target_insn(self, insn):
+        for p in self.code_addrs:
+            if p.page_start <= insn.address < p.page_end:
+                return True
+        return False
 
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @require_arch_set
     def do_invoke(self, args):
-        if self.mode is None:
-            self.usage()
-            return
-
         filepath = Path.get_filepath(append_proc_root_prefix=False)
         if not filepath and is_remote_debug():
             filepath = gdb.current_progspace().filename
@@ -90951,18 +90950,19 @@ class ExecUntilLibcCodeCommand(ExecUntilCommand):
 
     def __init__(self):
         super().__init__(prefix=False)
-        self.mode = "libc-code"
         return
+
+    def is_target_insn(self, insn):
+        for p in self.libc_addrs:
+            if p.page_start <= insn.address < p.page_end:
+                return True
+        return False
 
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @require_arch_set
     def do_invoke(self, args):
-        if self.mode is None:
-            self.usage()
-            return
-
         libc_targets = ("libc-2.", "libc.so.6", "libuClibc-")
         libc = ProcessMap.process_lookup_path(libc_targets)
         maps = ProcessMap.get_process_maps()
@@ -90993,17 +90993,19 @@ class ExecUntilSecureWorldCommand(ExecUntilCommand):
 
     def __init__(self):
         super().__init__(prefix=False)
-        self.mode = "secure-world"
         return
+
+    def is_target_insn(self, insn):
+        scr = get_register("$SCR" if is_arm32() else "$SCR_EL3")
+        if scr is None:
+            return False
+        return (scr & 0b1) == 0
 
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     @only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
-        if self.mode is None:
-            self.usage()
-            return
         self.args.skip_lib = False
 
         scr = get_register("$SCR" if is_arm32() else "$SCR_EL3")
@@ -91031,7 +91033,6 @@ class CallTraceCommand(ExecUntilCommand):
 
     def __init__(self):
         super().__init__(prefix=False)
-        self.mode = None
         return
 
     def print_insn(self, insn, indent):
