@@ -324,7 +324,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - It will try heuristic search if the binary has no symbol.
     - How to test:
         - See [dev/partition-alloc-dump/downloader.py](dev/partition-alloc-dump/downloader.py).
-- `tcmalloc-dump`: dumps TCMalloc (`gperftools-2.9.1` or named `libgoogle-perftools{4,-dev}`) free-list (only x64).
+- `tcmalloc-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list (only x64).
     - ![](images/tcmalloc-dump.png)
     - How to test:
         - Execute as `LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc.so ./a.out`.

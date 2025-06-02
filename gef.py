@@ -76721,92 +76721,119 @@ class VmlinuxToElfApplyCommand(GenericCommand):
 
 @register_command
 class TcmallocDumpCommand(GenericCommand, BufferingOutput):
-    """tcmalloc (google-perftools-2.9.1) free-list viewer (only x64)."""
+    """tcmalloc (google-perftools-2.16) free-list viewer (only x64)."""
 
     _cmdline_ = "tcmalloc-dump"
     _category_ = "06-b. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    modes = ["self", "all", "central"]
-    parser.add_argument("name", choices=modes, nargs="?", default="self", help="target thread cache.")
+    parser.add_argument("-c", "--central", action="store_true",
+                        help="show central cache instead of thread caches.")
+    parser.add_argument("-f", "--force-heuristic", action="store_true", help="use heuristic detection.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="quiet mode.")
     _syntax_ = parser.format_help()
 
     _example_ = [
-        "{0:s}",
-        "{0:s} self     # (default) print freelist of thread cache for current thread",
-        "{0:s} all      # print freelist of thread cache for all thread",
+        "{0:s}          # print freelist of thread cache for all thread",
         "{0:s} central  # print freelist of central cache",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     def __init__(self):
         super().__init__(complete="use_user_complete")
+        return
 
-        # google-perftools-2.9.1/src/common.h
+    def complete(self, text, word): # noqa
+        if text.strip() in self.modes:
+            # already matched
+            return []
+
+        if text == "":
+            # no prefix
+            return [s for s in self.modes if ((word is None) or (s and word in s))]
+
+        # finally, look for possible values for given prefix
+        return [s for s in self.modes if s and s.startswith(text.strip())]
+
+    def initialize(self):
+        """
+        gef> dt 'tcmalloc::ThreadCache'
+        struct tcmalloc::ThreadCache {
+            /* offset | size   */
+            /*        | 0x0008 */    class tcmalloc::ThreadCache * thread_heaps_;
+            /*        | 0x0004 */    int thread_heap_count_;
+            /*        | 0x0008 */    class tcmalloc::ThreadCache * next_memory_steal_;
+            /*        | 0x0008 */    struct std::atomic<unsigned long> min_per_thread_cache_size_;
+            /*        | 0x0008 */    size_t overall_thread_cache_size_;
+            /*        | 0x0008 */    volatile size_t per_thread_cache_size_;
+            /*        | 0x0008 */    ssize_t unclaimed_cache_space_;
+            /* 0x0000 | 0x1000 */    class tcmalloc::ThreadCache::FreeList [128] list_;
+            /* 0x1000 | 0x0004 */    int32_t size_;
+            /* 0x1004 | 0x0004 */    int32_t max_size_;
+            /* 0x1008 | 0x0018 */    class tcmalloc::Sampler sampler_;
+            /* 0x1020 | 0x0008 */    class tcmalloc::ThreadCache * next_;
+            /* 0x1028 | 0x0008 */    class tcmalloc::ThreadCache * prev_;
+        } // total: 0x1040 bytes
+        gef> p tcmalloc::Static::sizemap
+        """
         kClassSizesMax = 128
-        #kMaxSize = 256 * 1024
-        #kClassArraySize = ((kMaxSize + 127 + (120 << 7)) >> 7) + 1
-
-        # google-perftools-2.9.1/src/thread_cache.h
-        """
-        00000000 ThreadCache     struc ; (sizeof=0x1040, align=0x8) # codespell:ignore
-        00000000 list_           FreeList 128 dup(?) # kClassSizesMax
-        00001000 size_           dd ?
-        00001004 max_size_       dd ?
-        00001008 sampler_        Sampler ?
-        00001020 tid_            dq ?
-        00001028 in_setspecific_ db ?
-        00001029 unused          db 7 dup(?)
-        00001030 next_           dq ?
-        00001038 prev_           dq ?
-        00001040 ThreadCache     ends
-        """
-        self.ThreadCache_offset_next = 0x1030
+        self.ThreadCache_offset_next = 0x1020
         self.ThreadCache_offset_freelist_array = 0x0
-        self.ThreadCache_offset_tls = 0x1020 # actually this is not tid, but TLS base address
         self.ThreadCache_freelist_slot_count = kClassSizesMax
-        # google-perftools-2.9.1/src/thread_cache.h
+
         """
-        00000000 FreeList        struc ; (sizeof=0x20, align=0x8) # codespell:ignore
-        00000000 list_           dq ?
-        00000008 length_         dd ?
-        0000000C lowater_        dd ?
-        00000010 max_length_     dd ?
-        00000014 length_overages_ dd ?
-        00000018 size_           dd ?
-        0000001C unused          dd ?
-        00000020 FreeList        ends
+        gef> dt 'tcmalloc::ThreadCache::FreeList'
+        struct tcmalloc::ThreadCache::FreeList {
+            /* offset | size   */
+            /* 0x0000 | 0x0008 */    void * list_;
+            /* 0x0008 | 0x0004 */    uint32_t length_;
+            /* 0x000c | 0x0004 */    uint32_t lowater_;
+            /* 0x0010 | 0x0004 */    uint32_t max_length_;
+            /* 0x0014 | 0x0004 */    uint32_t length_overages_;
+            /* 0x0018 | 0x0004 */    int32_t size_;
+        } // total: 0x20 bytes
+        gef>
         """
         self.sizeof_FreeList = 0x20
         self.FreeList_offset_list = 0x0
         self.FreeList_offset_length = 0x8
         self.FreeList_offset_size = 0x18
-        # google-perftools-2.9.1/src/central_freelist.h
+
+        """
+        gef> ptype 'tcmalloc::Static::central_cache_'
+        type = class tcmalloc::CentralFreeList {
+            ...
+        } [128]
+
+        gef> dt 'tcmalloc::CentralFreeList'
+        struct tcmalloc::CentralFreeList {
+            /* offset | size   */
+            /*        | 0x0004 */    const int kMaxNumTransferEntries;
+            /* 0x0000 | 0x0004 */    class SpinLock lock_;
+            /* 0x0008 | 0x0008 */    size_t size_class_;
+            /* 0x0010 | 0x0030 */    struct tcmalloc::Span empty_;
+            /* 0x0040 | 0x0030 */    struct tcmalloc::Span nonempty_;
+            /* 0x0070 | 0x0008 */    size_t num_spans_;
+            /* 0x0078 | 0x0008 */    size_t counter_;
+            /* 0x0080 | 0x0400 */    struct tcmalloc::CentralFreeList::TCEntry [64] tc_slots_;
+            /* 0x0480 | 0x0004 */    int32_t used_slots_;
+            /* 0x0484 | 0x0004 */    int32_t cache_size_;
+            /* 0x0488 | 0x0004 */    int32_t max_cache_size_;
+        } // total: 0x4c0 bytes
+        gef>
+
+        gef> dt 'tcmalloc::CentralFreeList::TCEntry'
+        struct tcmalloc::CentralFreeList::TCEntry {
+            /* offset | size   */
+            /* 0x0000 | 0x0008 */    void * head;
+            /* 0x0008 | 0x0008 */    void * tail;
+        } // total: 0x10 bytes
+        gef>
+        """
+        self.CentralCache_array_count = kClassSizesMax
         kMaxNumTransferEntries = 64
         self.CentralCache_freelist_slot_count = kMaxNumTransferEntries
-        # google-perftools-2.9.1/src/static_vars.cc
-        self.CentralCache_array_count = kClassSizesMax
-        # google-perftools-2.9.1/src/central_freelist.h
-        """
-        struct TCEntry {
-          void *head;  // Head of chain of objects.
-          void *tail;  // Tail of chain of objects.
-        };
-        class central_cache_[kClassSizesMax=128]
-          0x0   SpinLock lock_;
-          0x8   size_t   size_class_;     // My size class
-          0x10  Span     empty_;          // Dummy header for list of empty spans
-          0x40  Span     nonempty_;       // Dummy header for list of non-empty spans
-          0x70  size_t   num_spans_;      // Number of spans in empty_ plus nonempty_
-          0x78  size_t   counter_;        // Number of free objects in cache entry
-          0x80  TCEntry  tc_slots_[kMaxNumTransferEntries=64]
-          0x480 int32_t  used_slots_;
-          0x484 int32_t  cache_size_;
-          0x488 int32_t  max_cache_size_;
-          0x48c char     pad[0x34];
-        } // size:0x4c0, total_size:0x26000
-        """
         self.sizeof_CentralCache = 0x4c0
         self.CentralCache_offset_size_class_ = 0x8
         self.CentralCache_offset_tc_slots_ = 0x80
@@ -76814,45 +76841,46 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
 
         # for central cache
         """
-        gef> ptype /o 'tcmalloc::Static::sizemap_'
-        /* offset      |    size */  type = class tcmalloc::SizeMap {
-                                     private:
-                                       static const int kMaxSmallSize;
-                                       static const size_t kClassArraySize;
-        /*      0      |    2169 */    unsigned char class_array_[2169];
-        /* XXX  3-byte hole      */
-        /*   2172      |     512 */    int num_objects_to_move_[128];
-        /*   2684      |     512 */    int32 class_to_size_[128];
-        /* XXX  4-byte hole      */
-        /*   3200      |    1024 */    size_t class_to_pages_[128];
-                                     public:
-        /*   4224      |       8 */    size_t num_size_classes;
+        gef> dt 'tcmalloc::SizeMap'
+        struct tcmalloc::SizeMap {
+            /* offset | size   */
+            /*        | 0x0004 */    const int kMaxSmallSize;
+            /*        | 0x0008 */    const size_t kClassArraySize;
+            /* 0x0000 | 0x0879 */    unsigned char [2169] class_array_;
+            /* 0x087c | 0x0200 */    int [128] num_objects_to_move_;
+            /* 0x0a7c | 0x0200 */    int32_t [128] class_to_size_;
+            /* 0x0c80 | 0x0400 */    size_t [128] class_to_pages_;
+            /* 0x1080 | 0x0008 */    size_t min_span_size_in_pages_;
+            /* 0x1088 | 0x0008 */    size_t num_size_classes;
+        } // total: 0x1090 bytes
+        gef>
 
-                                       /* total size (bytes): 4232 */
-                                     }
-        gef> x/100xw 0x7ffff7df7ee0+2684
-        0x7ffff7df895c <tcmalloc::Static::sizemap_+2684>:       0x00000000      0x00000008      0x00000010      0x00000020
-        0x7ffff7df896c <tcmalloc::Static::sizemap_+2700>:       0x00000030      0x00000040      0x00000050      0x00000060
-        0x7ffff7df897c <tcmalloc::Static::sizemap_+2716>:       0x00000070      0x00000080      0x00000090      0x000000a0
-        0x7ffff7df898c <tcmalloc::Static::sizemap_+2732>:       0x000000b0      0x000000c0      0x000000d0      0x000000e0
-        0x7ffff7df899c <tcmalloc::Static::sizemap_+2748>:       0x000000f0      0x00000100      0x00000120      0x00000140
-        0x7ffff7df89ac <tcmalloc::Static::sizemap_+2764>:       0x00000160      0x00000180      0x000001a0      0x000001c0
-        0x7ffff7df89bc <tcmalloc::Static::sizemap_+2780>:       0x000001e0      0x00000200      0x00000240      0x00000280
-        0x7ffff7df89cc <tcmalloc::Static::sizemap_+2796>:       0x000002c0      0x00000300      0x00000380      0x00000400
-        0x7ffff7df89dc <tcmalloc::Static::sizemap_+2812>:       0x00000480      0x00000500      0x00000580      0x00000600
-        0x7ffff7df89ec <tcmalloc::Static::sizemap_+2828>:       0x00000700      0x00000800      0x00000900      0x00000a00
-        0x7ffff7df89fc <tcmalloc::Static::sizemap_+2844>:       0x00000b00      0x00000c00      0x00000d00      0x00001000
-        0x7ffff7df8a0c <tcmalloc::Static::sizemap_+2860>:       0x00001200      0x00001400      0x00001800      0x00001a00
-        0x7ffff7df8a1c <tcmalloc::Static::sizemap_+2876>:       0x00002000      0x00002400      0x00002800      0x00003000
-        0x7ffff7df8a2c <tcmalloc::Static::sizemap_+2892>:       0x00003400      0x00004000      0x00005000      0x00006000
-        0x7ffff7df8a3c <tcmalloc::Static::sizemap_+2908>:       0x00006800      0x00008000      0x0000a000      0x0000c000
-        0x7ffff7df8a4c <tcmalloc::Static::sizemap_+2924>:       0x0000e000      0x00010000      0x00012000      0x00014000
-        0x7ffff7df8a5c <tcmalloc::Static::sizemap_+2940>:       0x00016000      0x00018000      0x0001a000      0x0001c000
-        0x7ffff7df8a6c <tcmalloc::Static::sizemap_+2956>:       0x0001e000      0x00020000      0x00022000      0x00024000
-        0x7ffff7df8a7c <tcmalloc::Static::sizemap_+2972>:       0x00026000      0x00028000      0x0002a000      0x0002c000
-        0x7ffff7df8a8c <tcmalloc::Static::sizemap_+2988>:       0x0002e000      0x00030000      0x00032000      0x00034000
-        0x7ffff7df8a9c <tcmalloc::Static::sizemap_+3004>:       0x00036000      0x00038000      0x0003a000      0x0003c000
-        0x7ffff7df8aac <tcmalloc::Static::sizemap_+3020>:       0x0003e000      0x00040000      0x00000000      0x00000000
+        gef> hexdump dword "(long)&'tcmalloc::Static::sizemap_'+0xa7c" 400
+        0x7ffff7fb03dc:    0x00000000 0x00000008 0x00000010 0x00000020
+        0x7ffff7fb03ec:    0x00000030 0x00000040 0x00000050 0x00000060
+        0x7ffff7fb03fc:    0x00000070 0x00000080 0x00000090 0x000000a0
+        0x7ffff7fb040c:    0x000000b0 0x000000c0 0x000000d0 0x000000e0
+        0x7ffff7fb041c:    0x000000f0 0x00000100 0x00000120 0x00000140
+        0x7ffff7fb042c:    0x00000160 0x00000180 0x000001a0 0x000001c0
+        0x7ffff7fb043c:    0x000001e0 0x00000200 0x00000240 0x00000280
+        0x7ffff7fb044c:    0x000002c0 0x00000300 0x00000380 0x00000400
+        0x7ffff7fb045c:    0x00000480 0x00000500 0x00000580 0x00000600
+        0x7ffff7fb046c:    0x00000700 0x00000800 0x00000900 0x00000a00
+        0x7ffff7fb047c:    0x00000b00 0x00000c00 0x00000d00 0x00001000
+        0x7ffff7fb048c:    0x00001200 0x00001400 0x00001800 0x00001a00
+        0x7ffff7fb049c:    0x00002000 0x00002400 0x00002800 0x00003000
+        0x7ffff7fb04ac:    0x00003400 0x00004000 0x00005000 0x00006000
+        0x7ffff7fb04bc:    0x00006800 0x00008000 0x0000a000 0x0000c000
+        0x7ffff7fb04cc:    0x0000e000 0x00010000 0x00012000 0x00014000
+        0x7ffff7fb04dc:    0x00016000 0x00018000 0x0001a000 0x0001c000
+        0x7ffff7fb04ec:    0x0001e000 0x00020000 0x00022000 0x00024000
+        0x7ffff7fb04fc:    0x00026000 0x00028000 0x0002a000 0x0002c000
+        0x7ffff7fb050c:    0x0002e000 0x00030000 0x00032000 0x00034000
+        0x7ffff7fb051c:    0x00036000 0x00038000 0x0003a000 0x0003c000
+        0x7ffff7fb052c:    0x0003e000 0x00040000 0x00000000 0x00000000
+        0x7ffff7fb053c:    0x00000000 0x00000000 0x00000000 0x00000000
+        *
+        gef>
         """
         self.class_to_size_dic = [
             0x00000000, 0x00000008, 0x00000010, 0x00000020,
@@ -76881,112 +76909,177 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
 
         return
 
-    def complete(self, text, word): # noqa
-        if text.strip() in self.modes:
-            # already matched
-            return []
-
-        if text == "":
-            # no prefix
-            return [s for s in self.modes if ((word is None) or (s and word in s))]
-
-        # finally, look for possible values for given prefix
-        return [s for s in self.modes if s and s.startswith(text.strip())]
-
     def get_heap_key(self):
         # for future use
         return 0
 
-    def index_to_size(self, freelist, t): # freelist_index -> chunk_size
-        size = read_int_from_memory(freelist + self.FreeList_offset_size)
-        return size
-
     def get_central_cache_(self):
-        # central_caches_ has ATTRIBUTE_HIDDEN, so the symbol is removed. so we need heuristic search.
-        #
-        # In the source code, there is size_map_ just above.
-        #
-        #   google-perftools-2.9.1/src/static_vars.cc
-        #     ...
-        #     SizeMap Static::sizemap_; <-- here
-        #     CentralFreeListPadded Static::central_cache_[kClassSizesMax];
-        #     ...
-        #
-        # And sizemap_ is initialized at the beginning of tcmalloc::Static::InitStaticVars(),
-        # so the addresses are loaded.
-        #
-        #   google-perftools-2.9.1/src/static_vars.cc
-        #   ...
-        #   void Static::InitStaticVars() {
-        #     sizemap_.Init(); <-- here
-        #     span_allocator_.Init();
-        #   ...
-        #
-        # This is a sample.
-        #   0x7ffff7c26110 <tcmalloc::Static::InitStaticVars()>:    endbr64
-        #   0x7ffff7c26114 <tcmalloc::Static::InitStaticVars()+4>:  push rbp
-        #   0x7ffff7c26115 <tcmalloc::Static::InitStaticVars()+5>:  lea rdi,[rip+0x1d1dc4] # 0x7ffff7df7ee0 <-- here
-        #   0x7ffff7c2611c <tcmalloc::Static::InitStaticVars()+12>: push rbx
-        #   0x7ffff7c2611d <tcmalloc::Static::InitStaticVars()+13>: sub rsp,0x8
-        #   0x7ffff7c26121 <tcmalloc::Static::InitStaticVars()+17>: call 0x7ffff7c20d80 <tcmalloc::SizeMap::Init()>
-        #   ...
-        #
-        # The size of central_cache_ is 0x26000, so 0x7ffff7df7ee0 - 0x26000 is central_cache_.
-
+        if self.args.force_heuristic:
+            return None
         try:
-            init_static_vars = AddressUtil.parse_address("&'tcmalloc::Static::InitStaticVars()'")
+            return AddressUtil.parse_address("&'tcmalloc::Static::central_cache_'")
         except gdb.error:
             return None
-        res = gdb.execute("x/10i {:#x}".format(init_static_vars), to_string=True)
-        sizeof_central_cache_ = 0x26000
-        for line in res.splitlines():
-            m = re.search(r"\[rip\+0x\w+\].*#\s*(0x\w+)", line) # maybe size_map
-            if m:
-                v = int(m.group(1), 16) & 0xffffffffffffffff
-                return v - sizeof_central_cache_
-        else:
-            return None
+
+    def get_central_cache_heuristic(self):
+        self.quiet_info("Use heuristic search for central_cache_")
+
+        """
+        gef> dt 'tcmalloc::Span'
+        struct tcmalloc::Span {
+            /* offset | size   */
+            /* 0x0000 | 0x0008 */    PageID start;
+            /* 0x0008 | 0x0008 */    Length length;
+            /* 0x0010 | 0x0008 */    struct tcmalloc::Span * next;
+            /* 0x0018 | 0x0008 */    struct tcmalloc::Span * prev;
+            /* 0x0020 | 0x0008 */    union {...} ;
+            /* 0x0028 | 0x0004 */    unsigned int refcount : 16;
+            /* 0x002a | 0x0004 */    unsigned int sizeclass : 8;
+            /* 0x002b | 0x0004 */    unsigned int location : 2;
+            /* 0x002b | 0x0004 */    unsigned int sample : 1;
+            /* 0x002b | 0x0001 */    bool has_span_iter : 1;
+        } // total: 0x30 bytes
+        gef>
+
+        gef> telescope 0x00007ffff7e06800 -n
+              0x7ffff7e06800|+0x0000|+000: 0x0000000000000000 // lock_
+              0x7ffff7e06808|+0x0008|+001: 0x0000000000000000 // size_class_
+              0x7ffff7e06810|+0x0010|+002: 0x0000000000000000 // empty_.start
+              0x7ffff7e06818|+0x0018|+003: 0x0000000000000000 // empty_.length
+              0x7ffff7e06820|+0x0020|+004: 0x00007ffff7e06810 // empty_.next
+              0x7ffff7e06828|+0x0028|+005: 0x00007ffff7e06810 // empty_.prev
+              0x7ffff7e06830|+0x0030|+006: 0x0000000000000000 // empty_.union
+              0x7ffff7e06838|+0x0038|+007: 0x0000000000000000 // empty_.union
+              0x7ffff7e06840|+0x0040|+008: 0x0000000000000000 // nonempty_.start
+              0x7ffff7e06848|+0x0048|+009: 0x0000000000000000 // nonempty_.length
+              0x7ffff7e06850|+0x0050|+010: 0x00007ffff7e06840 // nonempty_.next
+              0x7ffff7e06858|+0x0058|+011: 0x00007ffff7e06840 // nonempty_.prev
+              0x7ffff7e06860|+0x0060|+012: 0x0000000000000000 // nonempty_.union
+              0x7ffff7e06868|+0x0068|+013: 0x0000000000000000 // nonempty_.union
+              0x7ffff7e06870|+0x0070|+014: 0x0000000000000000
+
+        """
+        offset_next1 = 0x20
+        offset_prev1 = 0x28
+        offset_next2 = 0x50
+        offset_prev2 = 0x58
+
+        for m in ProcessMap.get_process_maps():
+            if "[heap]" in m.path:
+                continue
+            if m.permission != Permission.READ | Permission.WRITE:
+                continue
+            for current_page in range(m.page_start, m.page_end, gef_getpagesize()):
+                # fast check
+                x = read_memory(current_page, gef_getpagesize())
+                if set(x) == {0}:
+                    continue
+
+                # exact check
+                for current in range(current_page, current_page + gef_getpagesize(), current_arch.ptrsize):
+                    error = False
+                    for i in range(self.CentralCache_array_count):
+                        base = current + self.sizeof_CentralCache * i
+                        try:
+                            n1 = read_int_from_memory(base + offset_next1)
+                            p1 = read_int_from_memory(base + offset_prev1)
+                            n2 = read_int_from_memory(base + offset_next2)
+                            p2 = read_int_from_memory(base + offset_prev2)
+                        except gdb.MemoryError:
+                            error = True
+                            break
+                        if not is_valid_addr(n1):
+                            break
+                        if not is_valid_addr(p1):
+                            break
+                        if not is_valid_addr(n2):
+                            break
+                        if not is_valid_addr(p2):
+                            break
+                    if error:
+                        break
+                    if i > 40: # heuristic threashold
+                        return current
+        return None
 
     def get_thread_heaps_(self):
+        if self.args.force_heuristic:
+            return None
         try:
             return AddressUtil.parse_address("&'tcmalloc::ThreadCache::thread_heaps_'")
         except gdb.error:
             return None
 
-    def get_tls_addr_specific_thread(self, lwpid):
-        PTRACE_ARCH_PRCTL = 30
-        ARCH_GET_FS = 0x1003
-        ppvoid = ctypes.POINTER(ctypes.c_void_p)
-        fsvalue = ppvoid(ctypes.c_void_p())
-        fsvalue.contents.value = 0
-        libc = ctypes.CDLL("libc.so.6")
-        result = libc.ptrace(PTRACE_ARCH_PRCTL, lwpid, fsvalue, ARCH_GET_FS)
-        if result == 0:
-            return fsvalue.contents.value
-        else:
-            return None
+    def get_thread_heap_list_heuristic(self):
+        """thread_heap_ itself cannot be found, so it returns the detected list."""
+        self.quiet_info("Use heuristic search for thread_heap_")
 
-    def get_thread_list(self): # create dict: {tls_addr: lwpid}
-        dic = {}
-        lwpids = []
-        for inf in gdb.inferiors():
-            lwpids += [x.ptid[1] for x in inf.threads()]
-        for lwpid in lwpids:
-            tls = self.get_tls_addr_specific_thread(lwpid)
-            if tls is not None:
-                dic[tls] = lwpid
-        return dic
+        """
+        gef> tls
+        $tls = 0x7ffff7c5e080
+        --------------------------------- TLS-0x80 ---------------------------------
+              0x7ffff7c5e000|+0x0000|+000: 0x00007ffff7bbffc0
+              0x7ffff7c5e008|+0x0008|+001: 0x00007ffff7bc08c0
+              0x7ffff7c5e010|+0x0010|+002: 0x0000000000000000
+              0x7ffff7c5e018|+0x0018|+003: 0x0000000000000000
+              0x7ffff7c5e020|+0x0020|+004: 0x0000000000000000
+              0x7ffff7c5e028|+0x0028|+005: 0x0000000000000000
+              0x7ffff7c5e030|+0x0030|+006: 0x0000000000000000
+              0x7ffff7c5e038|+0x0038|+007: 0x0000000000000000
+              0x7ffff7c5e040|+0x0040|+008: 0x0000000000000000
+              0x7ffff7c5e048|+0x0048|+009: 0x0000000000000000
+              0x7ffff7c5e050|+0x0050|+010: 0x0000000000000000
+              0x7ffff7c5e058|+0x0058|+011: 0x0000000000000000
+              0x7ffff7c5e060|+0x0060|+012: 0x0000000000000000
+              0x7ffff7c5e068|+0x0068|+013: 0x0000000000000000
+              0x7ffff7c5e070|+0x0070|+014: 0x0000555555599000  <-- here
+              0x7ffff7c5e078|+0x0078|+015: 0x0000000000000000
+        ------------------------------------ TLS -----------------------------------
+              0x7ffff7c5e080|+0x0000|+000: 0x00007ffff7c5e080
+              ...
+        """
 
-    def get_thread_name_list(self): # create dict: {lwpid: name}
-        lines = gdb.execute("info threads", to_string=True)
-        dic = {}
-        for line in lines.splitlines():
-            r = re.findall(r'\(?LWP (\d+)\)? "(.+?)"', line)
-            if not r:
-                continue
-            lwpid, name = int(r[0][0]), r[0][1]
-            dic[lwpid] = name
-        return dic
+        # search offset
+        for i in range(1, 8):
+            orig_thread = gdb.selected_thread()
+            orig_frame = gdb.selected_frame()
+
+            found = True
+            candidate_thread_heaps = []
+            candidate_next = []
+            candidate_prev = []
+            for thread in gdb.selected_inferior().threads():
+                thread.switch() # change thread
+
+                # search thread_heaps
+                tls = current_arch.get_tls()
+                if tls is None:
+                    continue
+
+                val = read_int_from_memory(tls - current_arch.ptrsize * i)
+                if not is_valid_addr(val):
+                    found = False
+                    break
+
+                p = read_int_from_memory(val + self.ThreadCache_offset_next)
+                b = read_int_from_memory(val + self.ThreadCache_offset_next + current_arch.ptrsize)
+                candidate_next.append(p)
+                candidate_next.append(b)
+                candidate_thread_heaps.append(val)
+
+            orig_thread.switch() # revert thread
+            orig_frame.select()
+
+            if not candidate_thread_heaps:
+                found = False
+
+            elif set(candidate_next) | set(candidate_prev) != set(candidate_thread_heaps) | {0}:
+                found = False
+
+            if found:
+                return candidate_thread_heaps
+
+        return None
 
     def dump_thread_heap_freelist_single(self, freelist, idx):
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
@@ -77023,58 +77116,47 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
             if length != real_length and error is False:
                 out.append(Color.colorify("    (length corrupted; len != {:d})".format(length), corrupted_msg_color))
                 error = True
+
+            chunksize = read_int_from_memory(freelist + self.FreeList_offset_size)
+
             # print
-            chunksize = self.index_to_size(freelist, idx)
-            if chunksize is None:
-                chunksize = Color.colorify("unknown", chunk_size_color)
-            else:
-                chunksize = Color.colorify_hex(chunksize, chunk_size_color)
             self.out.append("freelist[idx={:d}, size={:s}, len={:d}] @ {!s}".format(
-                idx, chunksize, length, ProcessMap.lookup_address(freelist),
+                idx,
+                Color.colorify_hex(chunksize, chunk_size_color),
+                length,
+                ProcessMap.lookup_address(freelist),
             ))
             self.out.extend(out)
         return
 
-    def dump_thread_heap_freelist_array(self, thread_heap):
-        # lwpid check
-        tls = read_int_from_memory(thread_heap + self.ThreadCache_offset_tls)
-        lwpid = self.get_thread_list()[tls]
-        _, current_lwpid, _ = gdb.selected_thread().ptid
-        name = self.get_thread_name_list()[lwpid]
-
-        if self.FreeList_print_target_thread == "all":
-            pass
-        elif self.FreeList_print_target_thread == "self" and lwpid != current_lwpid:
-            return
-        elif isinstance(self.FreeList_print_target_thread, list) and name not in self.FreeList_print_target_thread:
-            return
-
-        current_or_not = "(current thread)" if lwpid == current_lwpid else ""
-        self.out.append(titlify('thread cache [lwpid={:d}{:s},name="{:s}"] @ {:#x} freelist'.format(
-            lwpid, current_or_not, name, thread_heap,
-        )))
-
-        freelist = thread_heap + self.ThreadCache_offset_freelist_array
-        for i in range(self.ThreadCache_freelist_slot_count):
-            self.dump_thread_heap_freelist_single(freelist, i)
-            freelist += self.sizeof_FreeList
-        return
-
     def dump_thread_heaps(self):
+        # exact way
         thread_heap_head = self.get_thread_heaps_()
-        if thread_heap_head is None:
-            err("Not found tcmalloc::ThreadCache::thread_heaps_")
-            return
-        self.out.append(titlify("thread_heaps_ (head) @ {:#x}".format(thread_heap_head)))
+        if thread_heap_head:
+            self.out.append(titlify("thread_heaps_ (head) @ {:#x}".format(thread_heap_head)))
+
+            thread_heap = read_int_from_memory(thread_heap_head)
+            thread_heaps = []
+            while thread_heap:
+                thread_heaps.append(thread_heap)
+                thread_heap = read_int_from_memory(thread_heap + self.ThreadCache_offset_next)
+        else:
+            # heuristic way
+            thread_heaps = self.get_thread_heap_list_heuristic()
+            if thread_heaps is None:
+                err("Not found tcmalloc::ThreadCache::thread_heaps_")
+                return
 
         heap_key = self.get_heap_key()
         if heap_key != 0:
             self.out.append("heap_key: {:#x} (xor chunk->fd)".format(heap_key))
 
-        thread_heap = read_int_from_memory(thread_heap_head)
-        while thread_heap:
-            self.dump_thread_heap_freelist_array(thread_heap)
-            thread_heap = read_int_from_memory(thread_heap + self.ThreadCache_offset_next)
+        for thread_heap in thread_heaps:
+            self.out.append(titlify('thread cache @ {:#x}'.format(thread_heap)))
+            freelist = thread_heap + self.ThreadCache_offset_freelist_array
+            for i in range(self.ThreadCache_freelist_slot_count):
+                self.dump_thread_heap_freelist_single(freelist, i)
+                freelist += self.sizeof_FreeList
         return
 
     def dump_central_cache_freelist_single(self, freelist, i, j):
@@ -77111,8 +77193,10 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
     def dump_central_cache(self):
         central_cache_ = self.get_central_cache_()
         if central_cache_ is None:
-            err("Not found tcmalloc::Static::central_cache_")
-            return
+            central_cache_ = self.get_central_cache_heuristic()
+            if central_cache_ is None:
+                err("Not found tcmalloc::Static::central_cache_")
+                return
         self.out.append(titlify("central_cache_ @ {:#x}".format(central_cache_)))
 
         heap_key = self.get_heap_key()
@@ -77123,7 +77207,7 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
             central_cache_i = central_cache_ + i * self.sizeof_CentralCache # &central_cache[i]
 
             # check slot count
-            used_slots = read_int_from_memory(central_cache_i + self.CentralCache_offset_used_slots_) & 0xffffffff
+            used_slots = u32(read_memory(central_cache_i + self.CentralCache_offset_used_slots_, 4))
             max_slots = self.CentralCache_freelist_slot_count
             if used_slots == 0:
                 continue
@@ -77150,10 +77234,10 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         self.out = []
-        if args.name == "central":
+        self.initialize()
+        if args.central:
             self.dump_central_cache()
         else:
-            self.FreeList_print_target_thread = args.name
             self.dump_thread_heaps()
         self.print_output()
         return
