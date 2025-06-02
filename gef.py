@@ -96709,7 +96709,10 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
         for line in decorators:
             if dec_name in line:
                 try:
+                    readline = sys.modules.get("readline", None)
+                    sys.modules["readline"] = None
                     __import__(import_name)
+                    sys.modules["readline"] = readline
                 except ImportError:
                     return False
                 return True
