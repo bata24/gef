@@ -85049,8 +85049,8 @@ class PagewalkX64Command(PagewalkCommand):
                         help="filter by map included specified physical address.")
     parser.add_argument("--trace", metavar="VADDR", default=[], action="append", type=AddressUtil.parse_address,
                         help="show all level pagetables only associated specified address.")
-    parser.add_argument("--include-kasan", action="store_true",
-                        help="include KASAN shadow memory (sometimes heavy memory use).")
+    parser.add_argument("--include-esp-fixup-stacks", action="store_true",
+                        help="include `%%esp fixup stacks` area (sometimes heavy memory use).")
     parser.add_argument("-U", "--user-pt", action="store_true",
                         help="print userland pagetables (for KPTI, only x64, in kernel context).")
     parser.add_argument("--cr3", dest="user_specified_cr3", type=AddressUtil.parse_address,
@@ -85373,7 +85373,7 @@ class PagewalkX64Command(PagewalkCommand):
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
 
-            if not self.args.include_kasan:
+            if not self.args.include_esp_fixup_stacks:
                 if len({e & ~0b111 for e in entries}) == 1:
                     continue
 
@@ -85474,7 +85474,7 @@ class PagewalkX64Command(PagewalkCommand):
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
 
-            if not self.args.include_kasan:
+            if not self.args.include_esp_fixup_stacks:
                 if len({e & ~0b111 for e in entries}) == 1:
                     continue
 
