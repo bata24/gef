@@ -4492,11 +4492,17 @@ class GlibcHeap:
         def flags_as_string(self):
             flags = []
             if self.has_p_bit():
-                flags.append(Color.colorify("PREV_INUSE", Config.get_gef_setting("theme.heap_chunk_flag_prev_inuse")))
+                flags.append(Color.colorify(
+                    "PREV_INUSE", Config.get_gef_setting("theme.heap_chunk_flag_prev_inuse"),
+                ))
             if self.has_m_bit():
-                flags.append(Color.colorify("IS_MMAPPED", Config.get_gef_setting("theme.heap_chunk_flag_is_mmapped")))
+                flags.append(Color.colorify(
+                    "IS_MMAPPED", Config.get_gef_setting("theme.heap_chunk_flag_is_mmapped"),
+                ))
             if self.has_n_bit():
-                flags.append(Color.colorify("NON_MAIN_ARENA", Config.get_gef_setting("theme.heap_chunk_flag_non_main_arena")))
+                flags.append(Color.colorify(
+                    "NON_MAIN_ARENA", Config.get_gef_setting("theme.heap_chunk_flag_non_main_arena"),
+                ))
             return "|".join(flags)
 
         def __str__(self):
@@ -4521,7 +4527,9 @@ class GlibcHeap:
                         if sll and a.value == 0:
                             # single link-list && 0: ok
                             continue
-                        return ", {:s}".format(Color.colorify("corrupted", Config.get_gef_setting("theme.heap_corrupted_msg")))
+                        return ", {:s}".format(Color.colorify(
+                            "corrupted", Config.get_gef_setting("theme.heap_corrupted_msg"),
+                        ))
                 return ""
 
             chunk_c = Color.colorify("Chunk", Config.get_gef_setting("theme.heap_chunk_label"))
@@ -77021,8 +77029,9 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
                 chunksize = Color.colorify("unknown", chunk_size_color)
             else:
                 chunksize = Color.colorify_hex(chunksize, chunk_size_color)
-            fmt = "freelist[idx={:d}, size={:s}, len={:d}] @ {!s}"
-            self.out.append(fmt.format(idx, chunksize, length, ProcessMap.lookup_address(freelist)))
+            self.out.append("freelist[idx={:d}, size={:s}, len={:d}] @ {!s}".format(
+                idx, chunksize, length, ProcessMap.lookup_address(freelist),
+            ))
             self.out.extend(out)
         return
 
@@ -77041,8 +77050,9 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
             return
 
         current_or_not = "(current thread)" if lwpid == current_lwpid else ""
-        fmt = 'thread cache [lwpid={:d}{:s},name="{:s}"] @ {:#x} freelist'
-        self.out.append(titlify(fmt.format(lwpid, current_or_not, name, thread_heap)))
+        self.out.append(titlify('thread cache [lwpid={:d}{:s},name="{:s}"] @ {:#x} freelist'.format(
+            lwpid, current_or_not, name, thread_heap,
+        )))
 
         freelist = thread_heap + self.ThreadCache_offset_freelist_array
         for i in range(self.ThreadCache_freelist_slot_count):
@@ -77067,7 +77077,7 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
             thread_heap = read_int_from_memory(thread_heap + self.ThreadCache_offset_next)
         return
 
-    def dump_central_cache_freelist_single(self, freelist, _i, _j):
+    def dump_central_cache_freelist_single(self, freelist, i, j):
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
 
@@ -77092,8 +77102,9 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
                     out.append(Color.colorify(" -> {:#x} (loop)".format(chunk), corrupted_msg_color))
                     break
             # print
-            fmt = "central_cache_[{:d}].tc_slot[{:d}] @ {!s}"
-            self.out.append(fmt.format(_i, _j, ProcessMap.lookup_address(freelist)))
+            self.out.append("central_cache_[{:d}].tc_slot[{:d}] @ {!s}".format(
+                i, j, ProcessMap.lookup_address(freelist),
+            ))
             self.out.extend(out)
         return
 
@@ -77122,8 +77133,11 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
             size_byte = self.class_to_size_dic[size_class]
 
             # dump
-            fmt = "central_cache_[{:d}] @ {:#x} (used_slots:{:d}/{:d}, size_class:{:#x}, chunk_size:{:#x})"
-            self.out.append(titlify(fmt.format(i, central_cache_i, used_slots, max_slots, size_class, size_byte)))
+            self.out.append(titlify(
+                "central_cache_[{:d}] @ {:#x} (used_slots:{:d}/{:d}, size_class:{:#x}, chunk_size:{:#x})".format(
+                    i, central_cache_i, used_slots, max_slots, size_class, size_byte,
+                ),
+            ))
             tc_slots = central_cache_i + self.CentralCache_offset_tc_slots_ # &central_cache[i].tc_slots_
             for j in range(min(used_slots, self.CentralCache_freelist_slot_count)):
                 addr = tc_slots + j * 0x10 # &central_cache[i].tc_slots_[j]
@@ -80462,13 +80476,15 @@ class uClibcNgHeap:
             if is_fastbin:
                 decoded_fd = ProcessMap.lookup_address(self.get_fwd_ptr(sll=True))
                 fd = self.get_fwd_ptr(sll=False)
-                fmt = "{:s}(base={:s}, addr={:s}, size={:s}, flags={:s}, fd={:#x}(={!s})"
-                msg = fmt.format(chunk_c, base_c, addr_c, size_c, flags, fd, decoded_fd)
+                msg = "{:s}(base={:s}, addr={:s}, size={:s}, flags={:s}, fd={:#x}(={!s})".format(
+                    chunk_c, base_c, addr_c, size_c, flags, fd, decoded_fd,
+                )
             else:
                 fd = ProcessMap.lookup_address(self.fd)
                 bk = ProcessMap.lookup_address(self.bk)
-                fmt = "{:s}(base={:s}, addr={:s}, size={:s}, flags={:s}, fd={!s}, bk={!s})"
-                msg = fmt.format(chunk_c, base_c, addr_c, size_c, flags, fd, bk)
+                msg = "{:s}(base={:s}, addr={:s}, size={:s}, flags={:s}, fd={!s}, bk={!s})".format(
+                    chunk_c, base_c, addr_c, size_c, flags, fd, bk,
+                )
             return msg
 
 
@@ -82162,23 +82178,34 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
             if isinstance(chunk, str):
                 self.out.append(" -> {:s}".format(Color.colorify(chunk, corrupted_msg_color)))
             else:
-                chunk_addr = Color.colorify("{:#010x}".format(chunk.addr), freed_address_color)
-                colored_chunk_bsize = Color.colorify("{:#010x}".format(chunk.bsize), chunk_size_color)
                 fmt = " -> {:s}: prevfree:{:#x} bsize:{:s} flink:{:#010x} blink:{:#010x}"
                 fmt += " next_prevfree:{:#010x} next_bsize:{:#010x} (={:#010x})"
-                self.out.append(fmt.format(chunk_addr, chunk.prevfree, colored_chunk_bsize, chunk.flink, chunk.blink,
-                                     chunk.next_prevfree, chunk.next_bsize, (-chunk.next_bsize) & 0xffffffff))
+                self.out.append(fmt.format(
+                    Color.colorify("{:#010x}".format(chunk.addr), freed_address_color),
+                    chunk.prevfree,
+                    Color.colorify("{:#010x}".format(chunk.bsize), chunk_size_color),
+                    chunk.flink, chunk.blink,
+                    chunk.next_prevfree,
+                    chunk.next_bsize,
+                    (-chunk.next_bsize) & 0xffffffff,
+                ))
         self.out.append("blink:    {:#x}".format(malloc_ctx.blink))
         for chunk in malloc_ctx.blink_list:
             if isinstance(chunk, str):
                 self.out.append(" -> {:s}".format(Color.colorify(chunk, corrupted_msg_color)))
             else:
-                chunk_addr = Color.colorify("{:#010x}".format(chunk.addr), freed_address_color)
-                colored_chunk_bsize = Color.colorify("{:#010x}".format(chunk.bsize), chunk_size_color)
                 fmt = " -> {:s}: prevfree:{:#x} bsize:{:s} flink:{:#010x} blink:{:#010x}"
                 fmt += " next_prevfree:{:#010x} next_bsize:{:#010x} (={:#010x})"
-                self.out.append(fmt.format(chunk_addr, chunk.prevfree, colored_chunk_bsize, chunk.flink, chunk.blink,
-                                     chunk.next_prevfree, chunk.next_bsize, (-chunk.next_bsize) & 0xffffffff))
+                self.out.append(fmt.format(
+                    Color.colorify("{:#010x}".format(chunk.addr), freed_address_color),
+                    chunk.prevfree,
+                    Color.colorify("{:#010x}".format(chunk.bsize), chunk_size_color),
+                    chunk.flink,
+                    chunk.blink,
+                    chunk.next_prevfree,
+                    chunk.next_bsize,
+                    (-chunk.next_bsize) & 0xffffffff,
+                ))
         self.out.append("pool:     {:#x}".format(malloc_ctx.pool))
         self.out.append("pool_len: {:#x}".format(malloc_ctx.pool_len))
 
@@ -82218,18 +82245,24 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
                     break
                 bsize_inv = (-bsize) & 0xffffffff
                 if bsize_inv < 0x80000000: # used
-                    fmt = "{:s} {:s}: prevfree:{:#010x} bsize:{:#010x} ({:s})"
-                    used = Color.colorify("used", chunk_used_color)
-                    colored_chunk_addr = Color.colorify("{:#010x}".format(chunk), used_address_color)
-                    colored_bsize_inv = Color.colorify("{:#010x}".format(bsize_inv), chunk_size_color)
-                    self.out.append(fmt.format(used, colored_chunk_addr, prevfree, bsize, colored_bsize_inv))
+                    self.out.append("{:s} {:s}: prevfree:{:#010x} bsize:{:#010x} ({:s})".format(
+                        Color.colorify("used", chunk_used_color),
+                        Color.colorify("{:#010x}".format(chunk), used_address_color),
+                        prevfree,
+                        bsize,
+                        Color.colorify("{:#010x}".format(bsize_inv), chunk_size_color),
+                    ))
                     chunk += bsize_inv
                 else: # freed
-                    fmt = "{:s} {:s}: prevfree:{:#010x} bsize:{:s}              flink:{:#010x} blink:{:#010x}"
-                    freed = Color.colorify("free", chunk_freed_color)
-                    colored_chunk_addr = Color.colorify("{:#010x}".format(chunk), freed_address_color)
-                    colored_bsize = Color.colorify("{:#010x}".format(bsize), chunk_size_color)
-                    self.out.append(fmt.format(freed, colored_chunk_addr, prevfree, colored_bsize, flink, blink))
+                    self.out.append(
+                        "{:s} {:s}: prevfree:{:#010x} bsize:{:s}              flink:{:#010x} blink:{:#010x}".format(
+                            Color.colorify("free", chunk_freed_color),
+                            Color.colorify("{:#010x}".format(chunk), freed_address_color),
+                            prevfree,
+                            Color.colorify("{:#010x}".format(bsize), chunk_size_color),
+                            flink, blink,
+                        ),
+                    )
                     chunk += bsize
                 if chunk % 8:
                     self.out.append(Color.colorify("unaligned orrupted", corrupted_msg_color))
@@ -84318,22 +84351,26 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
                 vend = vend[:pos[0]] + "*" + vend[pos[1]:]
             pend = pa + size * cnt
             if self.args.simple:
-                fmt = "0x{:16s}-0x{:16s}  {:37s}  {:<#12x} {:<11s} {:<6s} [{:s}]"
-                text = fmt.format(va, vend, "-", size, "-", "-", flags)
+                text = "0x{:16s}-0x{:16s}  {:37s}  {:<#12x} {:<11s} {:<6s} [{:s}]".format(
+                    va, vend, "-", size, "-", "-", flags,
+                )
             else:
-                fmt = "0x{:16s}-0x{:16s}  {:#018x}-{:#018x}  {:<#12x} {:<#11x} {:<6d} [{:s}]"
-                text = fmt.format(va, vend, pa, pend, size * cnt, size, cnt, flags)
+                text = "0x{:16s}-0x{:16s}  {:#018x}-{:#018x}  {:<#12x} {:<#11x} {:<6d} [{:s}]".format(
+                    va, vend, pa, pend, size * cnt, size, cnt, flags,
+                )
         else:
             if isinstance(va, str):
                 va = int(va, 16)
             vend = va + size * cnt
             pend = pa + size * cnt
             if self.args.simple:
-                fmt = "{:#018x}-{:#018x}  {:37s}  {:<#12x} {:<11s} {:<6s} [{:s}]"
-                text = fmt.format(va, vend, "-", size, "-", "-", flags)
+                text = "{:#018x}-{:#018x}  {:37s}  {:<#12x} {:<11s} {:<6s} [{:s}]".format(
+                    va, vend, "-", size, "-", "-", flags,
+                )
             else:
-                fmt = "{:#018x}-{:#018x}  {:#018x}-{:#018x}  {:<#12x} {:<#11x} {:<6d} [{:s}]"
-                text = fmt.format(va, vend, pa, pend, size * cnt, size, cnt, flags)
+                text = "{:#018x}-{:#018x}  {:#018x}-{:#018x}  {:<#12x} {:<#11x} {:<6d} [{:s}]".format(
+                    va, vend, pa, pend, size * cnt, size, cnt, flags,
+                )
         return text
 
     def merging(self):
@@ -84345,9 +84382,13 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
         else:
             if is_x86_64():
                 self.mappings = self.merge1(self.mappings)
-                self.quiet_info_add_out("PT Entry (merged similar pages that refer the same physpage): {:d}".format(len(self.mappings)))
+                self.quiet_info_add_out("PT Entry (merged similar pages that refer the same physpage): {:d}".format(
+                    len(self.mappings),
+                ))
             self.mappings = self.merge2(self.mappings)
-            self.quiet_info_add_out("PT Entry (merged consecutive pages): {:d}".format(len(self.mappings)))
+            self.quiet_info_add_out("PT Entry (merged consecutive pages): {:d}".format(
+                len(self.mappings),
+            ))
         return
 
     def make_out(self, mappings):
@@ -84360,12 +84401,16 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
         # filter by virtual address range
         if self.vrange != []:
             filtered_mappings = self.vrange_filter(filtered_mappings)
-            self.quiet_info_add_out("PT Entry (filtered by virtual address range): {:d}".format(len(filtered_mappings)))
+            self.quiet_info_add_out("PT Entry (filtered by virtual address range): {:d}".format(
+                len(filtered_mappings),
+            ))
 
         # filter by physical address range
         if self.args.prange != []:
             filtered_mappings = self.prange_filter(filtered_mappings)
-            self.quiet_info_add_out("PT Entry (filtered by physical address range): {:d}".format(len(filtered_mappings)))
+            self.quiet_info_add_out("PT Entry (filtered by physical address range): {:d}".format(
+                len(filtered_mappings),
+            ))
 
         # create output
         lines = []
@@ -84890,8 +84935,9 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     if self.is_not_trace_target(new_va, new_va_end):
                         continue
                     addr = table_base + i * self.bits["ENTRY_SIZE"]
-                    fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
-                    line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
+                    line = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}".format(
+                        addr, entry, new_va, new_va_end, entry_type, " ".join(flags),
+                    )
                     if self.is_not_filter_target(line):
                         continue
                     self.out.append(line)
@@ -85167,8 +85213,9 @@ class PagewalkX64Command(PagewalkCommand):
                     if self.is_not_trace_target(new_va, new_va_end):
                         continue
                     addr = table_base + i * self.bits["ENTRY_SIZE"]
-                    fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
-                    line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
+                    line = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}".format(
+                        addr, entry, new_va, new_va_end, entry_type, " ".join(flags),
+                    )
                     if self.is_not_filter_target(line):
                         continue
                     self.out.append(line)
@@ -85243,8 +85290,9 @@ class PagewalkX64Command(PagewalkCommand):
                     if self.is_not_trace_target(new_va, new_va_end):
                         continue
                     addr = table_base + i * self.bits["ENTRY_SIZE"]
-                    fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
-                    line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
+                    line = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}".format(
+                        addr, entry, new_va, new_va_end, entry_type, " ".join(flags),
+                    )
                     if self.is_not_filter_target(line):
                         continue
                     self.out.append(line)
@@ -85338,8 +85386,9 @@ class PagewalkX64Command(PagewalkCommand):
                     if self.is_not_trace_target(new_va, new_va_end):
                         continue
                     addr = table_base + i * self.bits["ENTRY_SIZE"]
-                    fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
-                    line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
+                    line = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}".format(
+                        addr, entry, new_va, new_va_end, entry_type, " ".join(flags),
+                    )
                     if self.is_not_filter_target(line):
                         continue
                     self.out.append(line)
@@ -85444,8 +85493,9 @@ class PagewalkX64Command(PagewalkCommand):
                     if self.is_not_trace_target(new_va, new_va_end):
                         continue
                     addr = table_base + i * self.bits["ENTRY_SIZE"]
-                    fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
-                    line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
+                    line = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}".format(
+                        addr, entry, new_va, new_va_end, entry_type, " ".join(flags),
+                    )
                     if self.is_not_filter_target(line):
                         continue
                     self.out.append(line)
@@ -85537,8 +85587,9 @@ class PagewalkX64Command(PagewalkCommand):
                     if self.is_not_trace_target(virt_addr, virt_addr_end):
                         continue
                     addr = table_base + i * self.bits["ENTRY_SIZE"]
-                    fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
-                    line = fmt.format(addr, entry, virt_addr, virt_addr_end, entry_type, " ".join(flags))
+                    line = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}".format(
+                        addr, entry, virt_addr, virt_addr_end, entry_type, " ".join(flags),
+                    )
                     if self.is_not_filter_target(line):
                         continue
                     self.out.append(line)
@@ -86093,8 +86144,9 @@ class PagewalkArmCommand(PagewalkCommand):
                 if self.is_not_trace_target(new_va, new_va_end):
                     continue
                 addr = table_base + i * 4
-                fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
-                line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
+                line = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}".format(
+                    addr, entry, new_va, new_va_end, entry_type, " ".join(flags),
+                )
                 if self.is_not_filter_target(line):
                     continue
                 self.out.append(line)
@@ -86189,8 +86241,9 @@ class PagewalkArmCommand(PagewalkCommand):
                     if self.is_not_trace_target(virt_addr, virt_addr_end):
                         continue
                     addr = table_base + i * 4
-                    fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
-                    line = fmt.format(addr, entry, virt_addr, virt_addr_end, entry_type, " ".join(flags))
+                    line = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}".format(
+                        addr, entry, virt_addr, virt_addr_end, entry_type, " ".join(flags),
+                    )
                     if self.is_not_filter_target(line):
                         continue
                     self.out.append(line)
@@ -86289,8 +86342,9 @@ class PagewalkArmCommand(PagewalkCommand):
                     if self.is_not_trace_target(new_va, new_va_end):
                         continue
                     addr = table_base + i * 8
-                    fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
-                    line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
+                    line = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}".format(
+                        addr, entry, new_va, new_va_end, entry_type, " ".join(flags),
+                    )
                     if self.is_not_filter_target(line):
                         continue
                     self.out.append(line)
@@ -86376,8 +86430,9 @@ class PagewalkArmCommand(PagewalkCommand):
                     if self.is_not_trace_target(new_va, new_va_end):
                         continue
                     addr = table_base + i * 8
-                    fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
-                    line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
+                    line = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}".format(
+                        addr, entry, new_va, new_va_end, entry_type, " ".join(flags),
+                    )
                     if self.is_not_filter_target(line):
                         continue
                     self.out.append(line)
@@ -86442,8 +86497,9 @@ class PagewalkArmCommand(PagewalkCommand):
                     if self.is_not_trace_target(virt_addr, virt_addr_end):
                         continue
                     addr = table_base + i * 8
-                    fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
-                    line = fmt.format(addr, entry, virt_addr, virt_addr_end, entry_type, " ".join(flags))
+                    line = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}".format(
+                        addr, entry, virt_addr, virt_addr_end, entry_type, " ".join(flags),
+                    )
                     if self.is_not_filter_target(line):
                         continue
                     self.out.append(line)
@@ -87240,8 +87296,9 @@ class PagewalkArm64Command(PagewalkCommand):
                         if self.is_not_trace_target(new_va, new_va_end):
                             continue
                         addr = table_base + i * 8
-                        fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
-                        line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
+                        line = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}".format(
+                            addr, entry, new_va, new_va_end, entry_type, " ".join(flags),
+                        )
                         if self.is_not_filter_target(line):
                             continue
                         self.out.append(line)
@@ -87393,8 +87450,9 @@ class PagewalkArm64Command(PagewalkCommand):
                         if self.is_not_trace_target(new_va, new_va_end):
                             continue
                         addr = table_base + i * 8
-                        fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
-                        line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
+                        line = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}".format(
+                            addr, entry, new_va, new_va_end, entry_type, " ".join(flags),
+                        )
                         if self.is_not_filter_target(line):
                             continue
                         self.out.append(line)
@@ -87560,8 +87618,9 @@ class PagewalkArm64Command(PagewalkCommand):
                         if self.is_not_trace_target(new_va, new_va_end):
                             continue
                         addr = table_base + i * 8
-                        fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
-                        line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
+                        line = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}".format(
+                            addr, entry, new_va, new_va_end, entry_type, " ".join(flags),
+                        )
                         if self.is_not_filter_target(line):
                             continue
                         self.out.append(line)
@@ -87729,8 +87788,9 @@ class PagewalkArm64Command(PagewalkCommand):
                         if self.is_not_trace_target(new_va, new_va_end):
                             continue
                         addr = table_base + i * 8
-                        fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
-                        line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
+                        line = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}".format(
+                            addr, entry, new_va, new_va_end, entry_type, " ".join(flags),
+                        )
                         if self.is_not_filter_target(line):
                             continue
                         self.out.append(line)
@@ -87888,8 +87948,9 @@ class PagewalkArm64Command(PagewalkCommand):
                         if self.is_not_trace_target(virt_addr, virt_addr_end):
                             continue
                         addr = table_base + i * 8
-                        fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
-                        line = fmt.format(addr, entry, virt_addr, virt_addr_end, entry_type, " ".join(flags))
+                        line = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}".format(
+                            addr, entry, virt_addr, virt_addr_end, entry_type, " ".join(flags),
+                        )
                         if self.is_not_filter_target(line):
                             continue
                         self.out.append(line)
@@ -94025,8 +94086,9 @@ class UefiOvmfInfoCommand(GenericCommand):
             memtype = type_names[entry["Type"]]
             att = entry["Attribute"]
             att_s = att2str(att)
-            fmt = "{:#010x}-{:#010x} {:#010x} {:#010x} {:#x}:{:26s} {:#x}:[{:s}]"
-            entry_text = fmt.format(paddr_s, paddr_e, vaddr, size, typ, memtype, att, att_s)
+            entry_text = "{:#010x}-{:#010x} {:#010x} {:#010x} {:#x}:{:26s} {:#x}:[{:s}]".format(
+                paddr_s, paddr_e, vaddr, size, typ, memtype, att, att_s,
+            )
             entries.append(entry_text)
 
             if entry["Signature"] != u32(b"mmap"):
@@ -95357,8 +95419,9 @@ class BinwalkMemoryCommand(GenericCommand):
                 path = path.replace("<", "").replace(">", "") # consider <tls-th1>, <explored>
             path = path.replace(" ", "_") # consider deleted case. e.g., /path/to/file (deleted)
 
-            fmt = "binwalk-{:0{}x}-{:0{}x}_{:s}_{:s}.raw"
-            dumpfile_name = fmt.format(start, addr_len, end, addr_len, perm, path)
+            dumpfile_name = "binwalk-{:0{}x}-{:0{}x}_{:s}_{:s}.raw".format(
+                start, addr_len, end, addr_len, perm, path,
+            )
 
             if self.args.filter and not any(filt.search(dumpfile_name) for filt in self.args.filter):
                 continue
@@ -95473,8 +95536,9 @@ class BincompareCommand(GenericCommand):
         for _ in range(16 - len(line)):
             line.append("--")
 
-        fmt = " {:s} |{:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s}| {:s}"
-        gef_print(fmt.format(prefix, *line, label))
+        gef_print(" {:s} |{:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s}| {:s}".format(
+            prefix, *line, label,
+        ))
         return
 
     @parse_args
