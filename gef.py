@@ -11497,6 +11497,9 @@ def parse_args(f):
         except Exception as e:
             err("Invalid argument: {}".format(e))
             return
+        if hasattr(args, "help_simple") and args.help_simple:
+            self.usage(simple=True)
+            return
         self.args = args
         return f(self, args, **kwargs)
 
@@ -13973,7 +13976,7 @@ class GenericCommand(gdb.Command):
             GefUtil.show_last_exception()
         return
 
-    def usage(self):
+    def usage(self, simple=False):
         gef_print(Color.colorify("Syntax:", "bold yellow"))
         gef_print(self._syntax_.strip())
 
@@ -13981,6 +13984,9 @@ class GenericCommand(gdb.Command):
             gef_print("")
             gef_print(Color.colorify("Example:", "bold yellow"))
             gef_print(self._example_.strip())
+
+        if simple:
+            return
 
         if self._note_:
             gef_print("")
@@ -25969,6 +25975,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
     _category_ = "02-e. Process Information - Complex Structure Information"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-f", "--file", help="the file path to parse.")
     parser.add_argument("-r", "--remote", action="store_true",
                         help="parse remote binary if download feature is available.")
@@ -55855,6 +55862,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[],
                         help="REGEXP filter.")
     parser.add_argument("-m", "--print-maps", action="store_true",
@@ -58732,6 +58740,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     group = parser.add_mutually_exclusive_group(required=False)
     group.add_argument("-s", "--resolve-symbol", action="store_true", help="try to resolve symbols.")
     group.add_argument("-a", "--apply-symbol", action="store_true",
@@ -60047,6 +60056,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
@@ -62254,6 +62264,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="REGEXP filter.")
     parser.add_argument("-s", "--skip-symlink", action="store_true", help="do not follow symlink (net.* and user.*).")
     parser.add_argument("-e", "--exact", action="store_true", help="use exact match.")
@@ -62727,6 +62738,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
     _aliases_ = ["kmounts"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-s", "--skip-mount-path", action="store_true", help="skip resolving path.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
@@ -63198,6 +63210,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
@@ -63304,6 +63317,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
@@ -64377,6 +64391,7 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
@@ -68759,6 +68774,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     _category_ = "08-e. Qemu-system Cooperation - Linux Allocator"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("cache_name", metavar="SLUB_CACHE_NAME", nargs="*",
                         help="filter by specific slub cache name.")
     parser.add_argument("--list", action="store_true", help="list all slub cache names.")
@@ -69880,6 +69896,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     _category_ = "08-e. Qemu-system Cooperation - Linux Allocator"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("cache_name", metavar="SLUB_CACHE_NAME", nargs="*", help="filter by specific slub cache name.")
     parser.add_argument("--list", action="store_true", help="list all slub cache names.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
@@ -70574,6 +70591,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     _category_ = "08-e. Qemu-system Cooperation - Linux Allocator"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("cache_name", metavar="SLAB_CACHE_NAME", nargs="*", help="filter by specific slab cache name.")
     parser.add_argument("--list", action="store_true", help="list all slab cache names.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
@@ -71414,6 +71432,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
     _category_ = "08-e. Qemu-system Cooperation - Linux Allocator"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("cache_name", metavar="SLOB_CACHE_NAME", nargs="*",
                         help="filter by specific slob cache name (need -v option).")
     parser.add_argument("--list", action="store_true", help="list all slob cache names.")
@@ -72004,6 +72023,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     _aliases_ = ["zone-dump", "pcplist"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-z", "--zone", dest="zone_filter", action="append",
                         choices=["DMA", "DMA32", "Normal", "HighMem", "Movable", "Device"],
                         help="filter by specified zone name.")
@@ -72598,6 +72618,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-i", "--inode-filter", type=AddressUtil.parse_address, default=[], action="append",
                         help="filter by specific struct inode.")
     parser.add_argument("-f", "--file-filter", type=AddressUtil.parse_address, default=[], action="append",
@@ -73007,6 +73028,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-p", "--only-progs", action="store_true", help="print progs only.")
     parser.add_argument("-m", "--only-maps", action="store_true", help="print maps only.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
@@ -73482,6 +73504,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-v", "--verbose", action="store_true", help="dump the beginning of msg_msg.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
@@ -73969,6 +73992,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
@@ -74176,6 +74200,7 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
@@ -74494,6 +74519,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
@@ -74906,6 +74932,7 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
@@ -75043,6 +75070,7 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
     _category_ = "08-e. Qemu-system Cooperation - Linux Allocator"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("--only-used", action="store_true", help="display only used area.")
     parser.add_argument("--only-freed", action="store_true", help="display only freed area.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
@@ -82024,6 +82052,7 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
     _category_ = "08-g. Qemu-system Cooperation - TrustZone"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-m", "--malloc_ctx", metavar="OFFSET_malloc_ctx", type=AddressUtil.parse_address,
                         help="The offset of `malloc_ctx` at OPTEE-TA.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
