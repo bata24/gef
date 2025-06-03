@@ -52706,7 +52706,10 @@ class KernelAddressHeuristicFinder:
         sys_fork = Symbol.get_ksymaddr("sys_fork")
         sys_read = Symbol.get_ksymaddr("sys_read")
         if None not in [sys_restart_syscall, sys_exit, sys_fork, sys_read]:
-            seq_to_find = p32(sys_restart_syscall) + p32(sys_exit) + p32(sys_fork) + p32(sys_read)
+            if is_x86_64():
+                seq_to_find = p64(sys_restart_syscall) + p64(sys_exit) + p64(sys_fork) + p64(sys_read)
+            else:
+                seq_to_find = p32(sys_restart_syscall) + p32(sys_exit) + p32(sys_fork) + p32(sys_read)
             kinfo = Kernel.get_kernel_base()
             if kinfo and kinfo.ro_base:
                 ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
