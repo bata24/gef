@@ -63645,11 +63645,13 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
             for base_n in range(self.num_of_clock_base):
                 htb = clock_base + self.sizeof_hrtimer_clock_base * base_n
                 clockid = u32(read_memory(htb + self.offset_clockid, 4))
-                clockid_s = clockid_dict.get(clockid, "UNKNOWN")
                 get_time = read_int_from_memory(htb + self.offset_get_time)
-                sym = Symbol.get_symbol_string(get_time, nosymbol_string=" <NO_SYMBOL>")
-                fmt = "cpu{:d} hrtimer_clock_base[{:d}]: {:#x}  [{:s}; get_time: {:#x}{:s}]"
-                self.out.append(titlify(fmt.format(cpu, base_n, htb, clockid_s, get_time, sym)))
+                self.out.append(titlify("cpu{:d} hrtimer_clock_base[{:d}]: {:#x}  [{:s}; get_time: {:#x}{:s}]".format(
+                    cpu, base_n, htb,
+                    clockid_dict.get(clockid, "UNKNOWN"),
+                    get_time,
+                    Symbol.get_symbol_string(get_time, nosymbol_string=" <NO_SYMBOL>"),
+                )))
 
                 # print legend
                 if not self.args.quiet:
@@ -63664,9 +63666,12 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                     if is_32bit() and not is_valid_addr(function):
                         expires = u64(read_memory(hrtimer + current_arch.ptrsize * 3 + 4, 8))
                         function = read_int_from_memory(hrtimer + current_arch.ptrsize * 3 + 4 + 8 * 2)
-                    sym = Symbol.get_symbol_string(function, nosymbol_string=" <NO_SYMBOL>")
-                    tte = "? (too hard to calc)"
-                    self.out.append("{:#018x}  {:#018x}  {:23s}  {:#018x}{:s}".format(hrtimer, expires, tte, function, sym))
+                    self.out.append("{:#018x}  {:#018x}  {:23s}  {:#018x}{:s}".format(
+                        hrtimer, expires,
+                        "? (too hard to calc)",
+                        function,
+                        Symbol.get_symbol_string(function, nosymbol_string=" <NO_SYMBOL>"),
+                    ))
         return
 
     def dump_timer(self):
