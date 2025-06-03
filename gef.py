@@ -59360,6 +59360,10 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         if module_addrs is None:
             return
 
+        if module_addrs == []:
+            self.quiet_err("Not found any modules")
+            return
+
         offset_name = self.get_offset_name(module_addrs)
         if offset_name is None:
             return
