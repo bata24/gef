@@ -69147,19 +69147,19 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         seen.append(val)
 
                 if found:
-                    # Too few random numbers.
+                    # Too few random numbers
                     if len(seen) < 10:
                         found = False
 
-                    # Occurrences of non-negative small integers are stochastically rare.
+                    # Occurrences of non-negative small integers are stochastically rare
                     elif sum([0 < x < 0x100000 for x in seen]) >= 3:
                         found = False
 
-                    # Occurrences of big integers are stochastically rare.
+                    # Occurrences of big integers are stochastically rare
                     elif sum([0xffff000000000000 < x <= 0xffffffffffffffff for x in seen]) >= 3:
                         found = False
 
-                    # Occurrences of 0xXXXX000 are stochastically rare.
+                    # Occurrences of 0xXXXX000 are stochastically rare
                     elif sum([x and (x & 0xfff) == 0 for x in seen]) >= 3:
                         found = False
 
@@ -69190,7 +69190,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.quiet_info("offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node))
         else:
             start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
-            for candidate_offset in range(start_offset, start_offset + 0x100, current_arch.ptrsize): # walk from list for heuristic search
+            # walk from list for heuristic search
+            for candidate_offset in range(start_offset, start_offset + 0x100, current_arch.ptrsize):
                 found = True
                 for kmem_cache in kmem_caches:
                     # fast path
@@ -69547,8 +69548,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         x = read_int_from_memory(current_partial_page + self.page_offset_inuse_objects_frozen)
                         partial_page["inuse"] = x & 0xffff
                         partial_page["objects"] = (x >> 16) & 0x7fff
-                        if partial_page["objects"] == 0 or partial_page["inuse"] > partial_page["objects"]: # something is wrong
-                            break
+                        if partial_page["objects"] == 0 or partial_page["inuse"] > partial_page["objects"]:
+                            break # something is wrong
                         partial_page["frozen"] = (x >> 31) & 1
                         partial_chunk = read_int_from_memory(current_partial_page + self.page_offset_freelist)
                         partial_page["freelist"] = self.walk_freelist(partial_chunk, kmem_cache)
@@ -69590,8 +69591,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                             x = read_int_from_memory(node_page["address"] + self.page_offset_inuse_objects_frozen)
                             node_page["inuse"] = x & 0xffff
                             node_page["objects"] = (x >> 16) & 0x7fff
-                            if node_page["objects"] == 0 or node_page["inuse"] > node_page["objects"]: # something is wrong
-                                break
+                            if node_page["objects"] == 0 or node_page["inuse"] > node_page["objects"]:
+                                break # something is wrong
                             node_page["frozen"] = (x >> 31) & 1
                             node_chunk = read_int_from_memory(node_page["address"] + self.page_offset_freelist)
                             node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache)
@@ -69681,8 +69682,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     else:
                         next_msg = "in-use"
                     chunk_s = Color.colorify_hex(chunk, used_address_color)
-                layout_msg = "layout:" if idx == 0 else ""
-                self.out.append("        {:7s}   {:#05x} {:s} ({:s})".format(layout_msg, idx, chunk_s, next_msg))
+                self.out.append("        {:7s}   {:#05x} {:s} ({:s})".format(
+                    "layout:" if idx == 0 else "", idx, chunk_s, next_msg,
+                ))
 
                 # dump chunks
                 if self.args.hexdump_used and next_msg == "in-use":
@@ -69812,8 +69814,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                             self.dump_page(node_page, kmem_cache, "node")
                             printed_count += 1
                         if printed_count == 0:
-                            tag = Color.colorify("node pages", label_inactive_color)
-                            self.out.append("      {:s}: (none)".format(tag))
+                            self.out.append("      {:s}: (none)".format(Color.colorify("node pages", label_inactive_color)))
 
             self.out.append("    next: {:#x}".format(kmem_cache["next"]))
         return
@@ -70369,12 +70370,14 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
                     x = read_int_from_memory(node_page["address"] + self.page_offset_inuse_objects_frozen)
                     node_page["inuse"] = x & 0xffff
                     node_page["objects"] = (x >> 16) & 0x7fff
-                    if node_page["objects"] == 0 or node_page["inuse"] > node_page["objects"]: # something is wrong
-                        break
+                    if node_page["objects"] == 0 or node_page["inuse"] > node_page["objects"]:
+                        break # something is wrong
                     node_page["frozen"] = (x >> 31) & 1
                     node_chunk = read_int_from_memory(node_page["address"] + self.page_offset_freelist)
                     node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache)
-                    node_page["num_pages"] = (kmem_cache["size"] * node_page["objects"] + gef_getpagesize_mask_low()) // gef_getpagesize()
+                    node_page["num_pages"] = (
+                        kmem_cache["size"] * node_page["objects"] + gef_getpagesize_mask_low()
+                    ) // gef_getpagesize()
                     node_page["virt_addr"] = self.page2virt(node_page, kmem_cache)
                     node_page_list.append(node_page)
                     current_node_page = read_int_from_memory(node_page["address"] + self.page_offset_next)
@@ -70990,7 +70993,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
 
             if found:
                 self.kmem_cache_node_offset_slabs_partial = candidate_offset
-                self.quiet_info("offsetof(kmem_cache_node, slabs_partial): {:#x}".format(self.kmem_cache_node_offset_slabs_partial))
+                self.quiet_info("offsetof(kmem_cache_node, slabs_partial): {:#x}".format(
+                    self.kmem_cache_node_offset_slabs_partial,
+                ))
                 break
         else:
             self.quiet_info("offsetof(kmem_cache_node, slabs_partial): Not found")
@@ -71164,12 +71169,13 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             kmem_cache["array_cache"]["freelist_all"] = []
             for cpu in cpus:
                 kmem_cache["array_cache"][cpu] = {}
-                if is_valid_addr(self.get_array_cache_cpu(kmem_cache["address"], cpu)):
-                    kmem_cache["array_cache"][cpu]["address"] = array_cache = self.get_array_cache_cpu(kmem_cache["address"], cpu)
-                    kmem_cache["array_cache"][cpu]["avail"] = u32(read_memory(array_cache + self.array_cache_offset_avail, 4))
-                    kmem_cache["array_cache"][cpu]["limit"] = u32(read_memory(array_cache + self.array_cache_offset_limit, 4))
-                    kmem_cache["array_cache"][cpu]["freelist"] = self.walk_array_cache(array_cache, cpu, kmem_cache)
-                    kmem_cache["array_cache"]["freelist_all"].extend(kmem_cache["array_cache"][cpu]["freelist"])
+                if not is_valid_addr(self.get_array_cache_cpu(kmem_cache["address"], cpu)):
+                    continue
+                kmem_cache["array_cache"][cpu]["address"] = array_cache = self.get_array_cache_cpu(kmem_cache["address"], cpu)
+                kmem_cache["array_cache"][cpu]["avail"] = u32(read_memory(array_cache + self.array_cache_offset_avail, 4))
+                kmem_cache["array_cache"][cpu]["limit"] = u32(read_memory(array_cache + self.array_cache_offset_limit, 4))
+                kmem_cache["array_cache"][cpu]["freelist"] = self.walk_array_cache(array_cache, cpu, kmem_cache)
+                kmem_cache["array_cache"]["freelist_all"].extend(kmem_cache["array_cache"][cpu]["freelist"])
 
             # parse node
             kmem_cache["nodes"] = []
@@ -71264,7 +71270,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                 else:
                     next_msg = "in-use"
                 chunk_s = Color.colorify_hex(chunk, used_address_color)
-            self.out.append("        {:7s}   {:#04x} {:s} ({:s})".format("layout:" if idx == 0 else "", idx, chunk_s, next_msg))
+            self.out.append("        {:7s}   {:#04x} {:s} ({:s})".format(
+                "layout:" if idx == 0 else "", idx, chunk_s, next_msg,
+            ))
 
             # dump chunks
             if self.args.hexdump_used and next_msg == "in-use":
@@ -71355,7 +71363,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                 self.out.append("      {:s}: (none)".format(Color.colorify("node pages", label_inactive_color)))
             else:
                 for node_index, slabs_list in enumerate(kmem_cache["nodes"]):
-                    node_addr = read_int_from_memory(kmem_cache["address"] + self.kmem_cache_offset_node + current_arch.ptrsize * node_index)
+                    node_addr = read_int_from_memory(
+                        kmem_cache["address"] + self.kmem_cache_offset_node + current_arch.ptrsize * node_index,
+                    )
                     self.out.append("    kmem_cache_node[{:d}]: {:#x}".format(node_index, node_addr))
 
                     if not self.args.skip_partial and "slabs_partial" in slabs_list:
@@ -71770,9 +71780,12 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("    num pages: {:d}".format(page["num_pages"]))
             self.out.append("    total units: {:#x}".format(page["units"]))
             for i, (chunk, units) in enumerate(page["freelist"]):
-                msg = Color.colorify_hex(chunk, freed_address_color)
-                msg_sz = Color.colorify_hex(units * 2, chunk_size_color)
-                self.out.append("    {:9s} {:s} (units: {:#x}, size: {:s})".format("freelist:" if i == 0 else "", msg, units, msg_sz))
+                self.out.append("    {:9s} {:s} (units: {:#x}, size: {:s})".format(
+                    "freelist:" if i == 0 else "",
+                    Color.colorify_hex(chunk, freed_address_color),
+                    units,
+                    Color.colorify_hex(units * 2, chunk_size_color),
+                ))
             self.out.append("    next: {:#x}".format(page["next"]))
             self.out.append("")
         return
