@@ -2939,7 +2939,7 @@ class Instruction:
         # formatting
         out = "{:s} {:s} {:s}   {:s} {:s} {:s}".format(
             address, opcodes_text, location, mnemonic, operands, additional_1,
-        )
+        ).rstrip()
         return out
 
     def __repr__(self):
@@ -22935,7 +22935,7 @@ class RegistersCommand(GenericCommand):
             lines.append(flag_line)
 
         if special_line:
-            lines.append(special_line)
+            lines.append(special_line.rstrip())
 
         if not self.args.simple:
             if is_x86_16():
@@ -58415,7 +58415,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             # make output
             self.out.append("{:#018x} {:<7s} {:<3s} {:<7d} {:<16s} {:#018x} [{:s}] {:<8s} {:#018x} {:<18s}".format(
                 task, currentN, proctype, pid, comm_string, cred, uids_str, seccomp, kstack, kcanary,
-            ))
+            ).rstrip())
 
             # skip additional information when swapper/N
             if pid == 0:
@@ -58430,7 +58430,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 if mms:
                     self.out.append(titlify("memory map of `{:s}`".format(comm_string)))
                     for mm in mms:
-                        self.out.append("{:#018x}-{:#018x} {:s} {:s}".format(mm.start, mm.end, mm.flags, mm.file))
+                        self.out.append("{:#018x}-{:#018x} {:s} {:s}".format(mm.start, mm.end, mm.flags, mm.file).rstrip())
 
             # additional information (regs)
             if proctype == "U" and self.args.print_regs:
@@ -58512,7 +58512,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 real_cred = read_int_from_memory(task + self.offset_cred - current_arch.ptrsize)
                 user_ns = read_int_from_memory(real_cred + self.offset_user_ns)
                 is_init_ns = str(user_ns == init_user_ns)
-                self.out.append("{:30s} {:#018x} {:8s}".format("real_cred->user_ns", user_ns, is_init_ns))
+                self.out.append("{:30s} {:#018x} {:8s}".format("real_cred->user_ns", user_ns, is_init_ns).rstrip())
 
                 # other ns (via nsproxy)
                 nsproxy = read_int_from_memory(task + self.offset_nsproxy)
@@ -58523,7 +58523,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     else:
                         init_value = read_int_from_memory(init_nsproxy + current_arch.ptrsize * i)
                         is_init_ns = str(value == init_value)
-                    self.out.append("{:30s} {:#018x} {:8s}".format("nsproxy->" + name, value, is_init_ns))
+                    self.out.append("{:30s} {:#018x} {:8s}".format("nsproxy->" + name, value, is_init_ns).rstrip())
 
             # additional information (seccomp)
             if proctype == "U" and self.args.print_seccomp:
@@ -60054,7 +60054,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
 
         # print
         for major, minor, name, bdev in sorted(bdevs_with_info):
-            self.out.append("{:#018x} {:<18s} {:<6d} {:<6d}".format(bdev, name, major, minor))
+            self.out.append("{:#018x} {:<18s} {:<6d} {:<6d}".format(bdev, name, major, minor).rstrip())
 
         self.print_output(term=True)
         return
@@ -63303,8 +63303,8 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
         self.out = []
         width = AddressUtil.get_format_address_width()
         if not args.quiet:
-            fmt = "{:<{:d}s} {:20s} {:<{:d}s}"
-            legend = ["address", width, "name", "read", width]
+            fmt = "{:<{:d}s} {:20s} {:<{:d}s} {:<{:d}s}"
+            legend = ["address", width, "name", "read", width, "symbol", width]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         current = read_int_from_memory(clocksource_list)
@@ -75300,6 +75300,7 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
                 virt_str = Color.colorify(virt_str, used_address_color)
                 state = "in-use"
                 flags_str = " " + self.get_flags(flags)
+                flags_str = flags_str.rstrip()
             else:
                 virt_str = Color.colorify(virt_str, freed_address_color)
                 state = "freed"
@@ -97778,7 +97779,7 @@ class GefUtil:
     def make_legend(msg):
         """Apply color settings and generate legend string."""
         color = Config.get_gef_setting("theme.table_heading")
-        return Color.colorify(msg, color)
+        return Color.colorify(msg.rstrip(), color)
 
 
 class Gef:
