@@ -57438,10 +57438,10 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         """
         [~v6.4]
         struct file {
-            union {                           // ~v6.0
-                struct llist_node fu_llist;   // ~v6.0
-                struct rcu_head fu_rcuhead;   // ~v6.0
-            } f_u;                            // ~v6.0
+            union {                           // ~v5.19
+                struct llist_node fu_llist;   // ~v5.19
+                struct rcu_head fu_rcuhead;   // ~v5.19
+            } f_u;                            // ~v5.19
             union {                           // v6.0~
                 struct llist_node f_llist;    // v6.0~
                 struct rcu_head f_rcuhead;    // v6.0~
@@ -57455,11 +57455,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
 
-        [v6.5~]
+        [v6.5~v6.11]
         struct file {
             union {
+                struct callback_head {
+                    struct callback_head *next;
+                    void (*func)(struct callback_head *head);
+                } f_task_work; // v6.8~;
                 struct llist_node f_llist;
-                struct rcu_head f_rcuhead;
+                struct rcu_head f_rcuhead; // ~v6.7
                 unsigned int f_iocb_flags;
             };
             spinlock_t f_lock;
@@ -57491,25 +57495,44 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             struct inode *f_inode;
             ...
         };
+
+        [v6.12~]
+        struct file {
+            atomic_long_t f_count;
+            spinlock_t f_lock;
+            fmode_t f_mode;
+            const struct file_operations *f_op;
+            struct address_space *f_mapping;
+            void *private_data;
+            struct inode *f_inode;
+            unsigned int f_flags;
+            unsigned int f_iocb_flags;
+            const struct cred *f_cred;
+            /* --- cacheline 1 boundary (64 bytes) --- */
+            struct path {
+                struct vfsmount *mnt;
+                struct dentry *dentry;
+            } f_path;
+            ...
         """
         kversion = Kernel.kernel_version()
 
         if kversion < "6.5":
             offset_mnt = current_arch.ptrsize * 2
 
-        else: # kversion >= "6.5"
+        elif kversion >= "6.5" and kversion < "6.12":
+            # plan 1
+            """
+            gef> slab-contains 0xffff9f49811d33e0
+            slab: 0xfffff93f800474c0
+            kmem_cache: 0xffff9f4981048c00
+            base: 0xffff9f49811d3000
+            name: mnt_cache  size: 0x140  num_pages: 0x1 (unaligned?)
+            """
             for i in range(0x40):
                 cand_offset_mnt = current_arch.ptrsize * i
                 mnt = read_int_from_memory(file + cand_offset_mnt)
-
-                """
-                gef> slab-contains 0xffff9f49811d33e0
-                slab: 0xfffff93f800474c0
-                kmem_cache: 0xffff9f4981048c00
-                base: 0xffff9f49811d3000
-                name: mnt_cache  size: 0x140  num_pages: 0x1 (unaligned?)
-                """
-                # f_path.mnt points in the middle of the chunk, so the "unaligned?" warning is not a problem.
+                # f_path.mnt points in the middle of the chunk, so the "unaligned?" warning is not a problem
                 ret = Kernel.get_slab_contains(mnt, allow_unaligned=True)
                 if not ret:
                     continue
@@ -57517,28 +57540,33 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     offset_mnt = cand_offset_mnt
                     break
             else:
-                # not found
+                # plan 2
+                """
+                It has also been observed when mnt_cache is not used.
+                In this case, the 2 previous elements from ext4_inode_cache or shmem_inode_cache
+                seem to be the relevant pointer.
+
+                0xffff8b864013a298|+0x0098|+019: 0xffff8b86436e4da0 (task_group) <-- here is mnt but various slab names
+                0xffff8b864013a2a0|+0x00a0|+020: 0xffff8b86404079c0 (kmalloc-rcl-192)
+                0xffff8b864013a2a8|+0x00a8|+021: 0xffff8b864041e0a8 (ext4_inode_cache) <- unique (`*_inode_cache`)
+
+                0xffff8b864013a698|+0x0098|+019: 0xffff8b8640171020 (task_group) <-- here is mnt but various slab names
+                0xffff8b864013a6a0|+0x00a0|+020: 0xffff8b86436159c0 (kmalloc-rcl-192)
+                0xffff8b864013a6a8|+0x00a8|+021: 0xffff8b8643730640 (shmem_inode_cache) <- unique (`*_inode_cache`)
+                """
                 for i in range(0x40):
                     cand_offset_mnt = current_arch.ptrsize * i
                     mnt = read_int_from_memory(file + cand_offset_mnt)
-                    """
-                    It has also been observed when mnt_cache is not used.
-                    In this case, the 2 previous elements from ext4_inode_cache or shmem_inode_cache
-                    seem to be the relevant pointer.
-
-                    0xffff8b864013a298|+0x0098|+019: 0xffff8b86436e4da0 (task_group) <-- here
-                    0xffff8b864013a2a0|+0x00a0|+020: 0xffff8b86404079c0 (kmalloc-rcl-192)
-                    0xffff8b864013a2a8|+0x00a8|+021: 0xffff8b864041e0a8 (ext4_inode_cache)
-
-                    0xffff8b864013a698|+0x0098|+019: 0xffff8b8640171020 (task_group) <-- here
-                    0xffff8b864013a6a0|+0x00a0|+020: 0xffff8b86436159c0 (kmalloc-rcl-192)
-                    0xffff8b864013a6a8|+0x00a8|+021: 0xffff8b8643730640 (shmem_inode_cache)
-                    """
+                    ret = Kernel.get_slab_contains(mnt, allow_unaligned=True)
+                    if not ret:
+                        continue
                     if "inode_cache" in ret:
                         offset_mnt = cand_offset_mnt - current_arch.ptrsize * 2
                         break
                 else:
                     raise
+        elif kversion >= "6.12":
+            offset_mnt = 64
         return offset_mnt
 
     def get_offset_dentry(self, offset_mnt):
