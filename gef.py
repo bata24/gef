@@ -1225,8 +1225,8 @@ class AddressUtil:
     def is_msb_on(addr):
         """Return whether provided address MSB is on."""
         if AddressUtil.get_memory_alignment() == 4:
-            return addr & 0x80000000
-        return addr & 0x8000000000000000
+            return bool(addr & 0x80000000)
+        return bool(addr & 0x8000000000000000)
 
     @staticmethod
     def get_format_address_width(memalign_size=None):
@@ -52313,21 +52313,22 @@ class KernelAddressHeuristicFinder:
             return [x - offset_tasks for x in task_list]
 
         # plan 3 (from current)
+        current = None
         if is_arm64() or is_arm32():
             current = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
         elif is_x86_64() or is_x86_32():
             current_task = KernelAddressHeuristicFinder.get_current_task()
-            if current_task and AddressUtil.is_msb_on(current_task):
-                # no __per_cpu_offset
-                current = read_int_from_memory(current_task)
-            else:
-                # use __per_cpu_offset
-                p = KernelAddressHeuristicFinder.get_per_cpu_offset()
-                if p and is_valid_addr(p):
-                    cpu_base = read_int_from_memory(p)
-                    current = read_int_from_memory(cpu_base + current_task)
+            if current_task:
+                if AddressUtil.is_msb_on(current_task) and is_valid_addr(current_task):
+                    # no __per_cpu_offset
+                    current = read_int_from_memory(current_task)
                 else:
-                    current = None
+                    # use __per_cpu_offset
+                    p = KernelAddressHeuristicFinder.get_per_cpu_offset()
+                    if p and is_valid_addr(p):
+                        cpu_base = read_int_from_memory(p)
+                        current_ptr = AddressUtil.align_address(cpu_base + current_task)
+                        current = read_int_from_memory(current_ptr)
         if current:
             offset_tasks = get_offset_tasks(current)
             if offset_tasks:
@@ -58634,7 +58635,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # parse
         self.out = []
         self.dump(task_addrs)
-        self.print_output()
+        self.print_output(term=True)
         return
 
 
