@@ -22332,7 +22332,7 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
     parser.add_argument("--include-heap", action="store_true", help="heap is also included in the search target.")
     parser.add_argument("--aligned", action="store_true", help="search only aligned chunks.")
     parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address, help="search target size.")
-    parser.add_argument("--region-size-threashold", type=AddressUtil.parse_address, default=0x2000000,
+    parser.add_argument("--region-size-threshold", type=AddressUtil.parse_address, default=0x2000000,
                         help="threshold for region size to skip search. (default: %(default)#x)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
@@ -22420,10 +22420,10 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
                     continue
 
             # skip if too large region
-            if m.size >= self.args.region_size_threashold:
+            if m.size >= self.args.region_size_threshold:
                 path = "unknown" if m.path == "" else m.path
                 self.info_add_out("{!r} is skipped since too large ({:#x} >= {:#x})".format(
-                    path, m.size, self.args.region_size_threashold,
+                    path, m.size, self.args.region_size_threshold,
                 ))
                 continue
 
@@ -77065,7 +77065,7 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
                             break
                     if error:
                         break
-                    if i > 40: # heuristic threashold
+                    if i > 40: # heuristic threshold
                         return current
         return None
 
