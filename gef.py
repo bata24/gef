@@ -55072,7 +55072,9 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)
                 for x in g:
                     # here, x points &db_list.lock
-                    return x - current_arch.ptrsize * 2
+                    v = x - current_arch.ptrsize * 2
+                    if is_double_link_list(v):
+                        return v
 
         # plan 3 (available v3.17 ~ 5.9)
         if kversion and kversion >= "3.17" and kversion < "5.10":
@@ -55089,7 +55091,9 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)
                 for x in g:
                     # here, x points &db_list.lock
-                    return x - current_arch.ptrsize * 2
+                    v = x - current_arch.ptrsize * 2
+                    if is_double_link_list(v):
+                        return v
         return None
 
     @staticmethod
