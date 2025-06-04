@@ -54525,7 +54525,10 @@ class KernelAddressHeuristicFinder:
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_array_base(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.x64_qword_ptr_array_base(res),
+                        KernelAddressHeuristicFinderUtil.x64_lea_reg_const(res),
+                    )
                 elif is_x86_32():
                     # TODO
                     g = []
@@ -72333,13 +72336,17 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             self.MAX_NR_ZONES += 1
         self.quiet_info("MAX_NR_ZONES: {:d}".format(self.MAX_NR_ZONES))
 
+        """
+        struct free_area {
+            struct list_head free_list[MIGRATE_TYPES];
+            unsigned long nr_free;
+        };
+        """
         # zone->free_area
         current = self.nodes[0] + self.offset_name + current_arch.ptrsize
         while True:
             # search for list_head
-            val1 = read_int_from_memory(current)
-            val2 = read_int_from_memory(current + current_arch.ptrsize)
-            if is_valid_addr(val1) and is_valid_addr(val2):
+            if is_double_link_list(current):
                 break
             current += current_arch.ptrsize
         self.offset_free_area = current - self.nodes[0]
@@ -72399,12 +72406,6 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             err("MIGRATE_TYPES: {:#x}".format(self.MIGRATE_TYPES))
             raise
 
-        """
-        struct free_area {
-            struct list_head free_list[MIGRATE_TYPES];
-            unsigned long nr_free;
-        };
-        """
         # sizeof(free_area)
         self.sizeof_free_area = offset_nr_free + current_arch.ptrsize
         self.quiet_info("sizeof(free_area): {:#x}".format(self.sizeof_free_area))
