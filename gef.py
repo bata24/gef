@@ -15003,7 +15003,7 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
 
     def apply_type(self, tp, args_address):
         if not is_valid_addr(args_address):
-            err("Memory access error")
+            err("Memory read error")
             return
 
         # change setting
@@ -24324,7 +24324,7 @@ class ElfInfoCommand(GenericCommand):
             try:
                 elf = Elf.get_elf(args.address)
             except gdb.MemoryError:
-                err("Memory error")
+                err("Memory read error")
                 return
 
             if elf is None or not elf.is_valid():
@@ -35030,7 +35030,7 @@ class DestructorDumpCommand(GenericCommand):
             try:
                 func, obj, link_map, next = read_fns(current)
             except gdb.MemoryError:
-                err("Memory access error at {:#x}".format(current))
+                err("Memory read error at {:#x}".format(current))
                 break
 
             decoded_fn = current_arch.decode_cookie(func.value, self.cookie)
@@ -35079,7 +35079,7 @@ class DestructorDumpCommand(GenericCommand):
             next = ProcessMap.lookup_address(read_int_from_memory(current))
             idx = ProcessMap.lookup_address(read_int_from_memory(current + ptrsize))
         except gdb.MemoryError:
-            err("Memory access error at {:#x}".format(current))
+            err("Memory read error at {:#x}".format(current))
             return
         current += ptrsize * 2
         gef_print("    -> next:     {:s}: {!s}".format(self.C(head.value + ptrsize * 0), next))
@@ -35099,7 +35099,7 @@ class DestructorDumpCommand(GenericCommand):
             try:
                 flavor, fn, arg, dso_handle = read_fns(addr)
             except gdb.MemoryError:
-                err("Memory access error at {:#x}".format(addr))
+                err("Memory read error at {:#x}".format(addr))
                 break
             if fn.value == 0:
                 continue
@@ -35956,7 +35956,7 @@ class GotCommand(GenericCommand, BufferingOutput):
             try:
                 got_value = read_int_from_memory(got_address)
             except gdb.error:
-                self.quiet_err("Memory access error")
+                self.quiet_err("Memory read error")
                 return
 
             # resolve got value's symbol
@@ -62773,7 +62773,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                 self.sysctl_dump(self.root_rb_node)
             except gdb.MemoryError:
                 self.cache = []
-                self.quiet_err("Memory error")
+                self.quiet_err("Memory read error")
                 return
 
         self.print_output(term=True)
@@ -72058,7 +72058,7 @@ class SlabContainsCommand(GenericCommand):
             gef_print(msg)
 
         except (gdb.MemoryError, ZeroDivisionError):
-            self.quiet_err("Memory error")
+            self.quiet_err("Memory read error")
         return
 
     @parse_args
@@ -81444,7 +81444,7 @@ class XStringCommand(GenericCommand, BufferingOutput):
     def dump_string(self, address, count, max_length, tohex, quiet):
         for _ in range(count):
             if not is_valid_addr(address):
-                err("Memory access error at {:#x}".format(address))
+                err("Memory read error at {:#x}".format(address))
                 break
 
             # read string
@@ -89789,7 +89789,7 @@ class PageCommand(GenericCommand):
 
     def page2virt(self, page):
         if not is_valid_addr(page):
-            err("Memory error")
+            err("Memory read error")
             return None
 
         if is_x86_64():
@@ -89855,7 +89855,7 @@ class PageCommand(GenericCommand):
 
     def virt2page(self, virt):
         if not is_valid_addr(virt):
-            err("Memory error")
+            err("Memory read error")
             return None
 
         if is_x86_64():
