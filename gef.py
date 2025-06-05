@@ -68861,6 +68861,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         help="telescope `used chunks` if layout is resolved.")
     parser.add_argument("--telescope-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
                         help="telescope `unused (freed) chunks` if layout is resolved.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cached offset.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     parser.add_argument("--skip-page2virt", action="store_true",
@@ -68876,11 +68877,12 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     _example_ = [
-        "{0:s} kmalloc-256            # dump kmalloc-256 from all cpus",
-        "{0:s} kmalloc-256 --cpu 1    # dump kmalloc-256 from cpu 1",
-        "{0:s} kmalloc-256 --partial  # show active pages and partial pages",
-        "{0:s} kmalloc-256 --node     # show active pages, partial pages and node pages",
-        "{0:s} --list                 # list slub cache names",
+        "{0:s} kmalloc-256             # dump kmalloc-256 from all cpus",
+        "{0:s} kmalloc-256 --cpu 1     # dump kmalloc-256 from cpu 1",
+        "{0:s} kmalloc-256 --partial   # show active pages and partial pages",
+        "{0:s} kmalloc-256 --node      # show active pages, partial pages and node pages",
+        "{0:s} --list                  # list slub cache names",
+        "{0:s} -vv --offset-node 0xc8  # user specified offsetof(kmem_cache, node)",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -69061,7 +69063,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
     def initialize(self):
         if hasattr(self, "initialized") and self.initialized:
-            if not self.args.meta:
+            if not self.args.meta and not self.args.rescan:
                 return True
 
         # resolve slab_caches
@@ -69936,6 +69938,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         else:
             self.swap = not args.no_byte_swap
 
+        if args.no_xor or args.no_byte_swap:
+            args.rescan = True
+        if args.offset_random is not None or args.offset_node is not None:
+            args.rescan = True
+
         # dump target
         self.dump_target_active = True
         self.dump_target_partial = args.verbose or args.vverbose
@@ -69977,6 +69984,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
                         help="telescope `used chunks` if layout is resolved.")
     parser.add_argument("--telescope-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
                         help="telescope `unused (freed) chunks` if layout is resolved.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cached offset.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     parser.add_argument("--skip-page2virt", action="store_true",
@@ -70105,7 +70113,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
     def initialize(self):
         if hasattr(self, "initialized") and self.initialized:
-            if not self.args.meta:
+            if not self.args.meta and not self.args.rescan:
                 return True
 
         # resolve slab_caches
@@ -70678,6 +70686,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                         help="telescope `used chunks` if layout is resolved.")
     parser.add_argument("--telescope-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
                         help="telescope `unused (freed) chunks` if layout is resolved.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cached offset.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
@@ -70841,7 +70850,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
 
     def initialize(self):
         if hasattr(self, "initialized") and self.initialized:
-            if not self.args.meta:
+            if not self.args.meta and not self.args.rescan:
                 return True
 
         # resolve slab_caches
@@ -71518,6 +71527,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("--large", action="store_true", help="display only free_slob_large.")
     parser.add_argument("--medium", action="store_true", help="display only free_slob_medium.")
     parser.add_argument("--small", action="store_true", help="display only free_slob_small.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cached offset.")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode (print kmem_cache).")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
@@ -71602,7 +71612,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
 
     def initialize(self):
         if hasattr(self, "initialized") and self.initialized:
-            if not self.args.meta:
+            if not self.args.meta and not self.args.rescan:
                 return True
 
         # resolve slab_caches
