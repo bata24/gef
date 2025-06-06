@@ -11573,7 +11573,10 @@ def only_if_in_kernel_or_kpti_disabled(f):
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
         def is_kpti_enabled():
-            s = KernelAddressHeuristicFinder.get_saved_command_line()
+            try:
+                s = KernelAddressHeuristicFinder.get_saved_command_line()
+            except gdb.MemoryError:
+                return True
             if s and is_valid_addr(s):
                 # You can access the kernel's .data area while in userland.
                 # This means KPTI is disabled.
@@ -57400,6 +57403,12 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             current += current_arch.ptrsize
             if is_32bit():
                 mask = Kernel.get_kernel_base().text_base & 0xf0000000
+            elif is_x86_64():
+                cr4 = get_register("cr4", use_monitor=True)
+                if (cr4 >> 12) & 1:
+                    mask = 0xff00_0000_0000_0000 # level 5 pagetable
+                else:
+                    mask = 0xffff_0000_0000_0000 # level 4 pagetable
             else:
                 mask = 0xffff_0000_0000_0000
             while True:
@@ -58129,6 +58138,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             self.quiet_info("offsetof(file, f_path.dentry): {:#x}".format(self.offset_dentry))
 
             if self.offset_d_iname is None:
+                vm_file = read_int_from_memory(current + self.offset_vm_file)
                 dentry = read_int_from_memory(vm_file + self.offset_dentry)
                 self.offset_d_iname = self.get_offset_d_iname(dentry)
             self.quiet_info("offsetof(dentry, d_iname): {:#x}".format(self.offset_d_iname))
