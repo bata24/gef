@@ -72406,6 +72406,13 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         if hasattr(self, "initialized") and self.initialized:
             return True
 
+        # per_cpu_offset
+        __per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
+        if __per_cpu_offset is None:
+            self.cpu_offset = None
+        else:
+            self.cpu_offset = KernelCurrentCommand.get_each_cpu_offset(__per_cpu_offset)
+
         # search for node_data
         node_data = KernelAddressHeuristicFinder.get_node_data()
         if node_data:
@@ -72438,7 +72445,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             ...
         };
 
-        struct zone {
+        struct zone { // v3.12~
             ...
             struct pglist_data *zone_pgdat;
             struct per_cpu_pageset __percpu *pageset; // ~v5.14
@@ -72451,10 +72458,43 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         #ifdef CONFIG_MEMORY_HOTPLUG
             seqlock_t span_seqlock;
         #endif
-            int initialized;
+            int initialized; // v4.9~
+            wait_queue_head_t *wait_table; // ~v4.8
+            unsigned long wait_table_hash_nr_entries; // ~v4.8
+            unsigned long wait_table_bits; // ~v4.8
             ZONE_PADDING(_pad1_)
+            spinlock_t lock; // ~v3.19
             struct free_area free_area[MAX_ORDER];
             ...
+        };
+
+        struct zone { // ~v3.11
+            unsigned long watermark[NR_WMARK];
+            unsigned long percpu_drift_mark;
+            unsigned long lowmem_reserve[MAX_NR_ZONES];
+            unsigned long dirty_balance_reserve; // v3.3~
+        #ifdef CONFIG_NUMA
+            int node;
+            unsigned long min_unmapped_pages;
+            unsigned long min_slab_pages;
+        #endif
+            struct per_cpu_pageset __percpu *pageset;
+            spinlock_t lock;
+            int all_unreclaimable;
+        #if defined CONFIG_COMPACTION || defined CONFIG_CMA
+            bool compact_blockskip_flush; // v3.7~
+            unsigned long compact_cached_free_pfn; // v3.6~
+            unsigned long compact_cached_migrate_pfn; // v3.7~
+        #endif
+        #ifdef CONFIG_MEMORY_HOTPLUG
+            seqlock_t span_seqlock;
+        #endif
+        #ifdef CONFIG_CMA
+            unsigned long min_cma_pages; // v3.4~v3.7
+        #endif
+            struct free_area free_area[MAX_ORDER];
+            ...
+            const char *name;
         };
 
         static char * const zone_names[MAX_NR_ZONES] = {
@@ -72470,7 +72510,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         #endif
              "Movable",
         #ifdef CONFIG_ZONE_DEVICE
-             "Device",
+             "Device", // v4.3~
         #endif
         };
         """
@@ -72489,25 +72529,46 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(zone, name): {:#x}".format(self.offset_name))
 
         # zone->per_cpu_pageset
-        current = self.nodes[0]
-        while current < self.nodes[0] + self.offset_name:
-            val = read_int_from_memory(current)
-            if is_valid_addr(val):
-                offset_zone_pgdat = current - self.nodes[0]
-                self.offset_per_cpu_pageset = offset_zone_pgdat + current_arch.ptrsize
-                break
-            current += current_arch.ptrsize
-        if current == self.offset_name:
-            self.quiet_err("Failed to resolve per_cpu_pageset")
-            return False
-        self.quiet_info("offsetof(zone, per_cpu_pageset): {:#x}".format(self.offset_per_cpu_pageset))
-
-        # per_cpu_offset
-        __per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
-        if __per_cpu_offset is None:
-            self.cpu_offset = None
+        kversion = Kernel.kernel_version()
+        if kversion >= "3.12":
+            current = self.nodes[0]
+            while current < self.nodes[0] + self.offset_name:
+                val = read_int_from_memory(current)
+                if is_valid_addr(val):
+                    offset_zone_pgdat = current - self.nodes[0]
+                    self.offset_per_cpu_pageset = offset_zone_pgdat + current_arch.ptrsize
+                    break
+                current += current_arch.ptrsize
+            if current == self.offset_name:
+                self.quiet_err("Failed to resolve per_cpu_pageset")
+                return False
         else:
-            self.cpu_offset = KernelCurrentCommand.get_each_cpu_offset(__per_cpu_offset)
+            for i in range(1, 100):
+                candidate_offset = current_arch.ptrsize * i
+                val = read_int_from_memory(self.nodes[0] + candidate_offset)
+
+                if val == 0 or val < 0x100:
+                    continue
+
+                if self.cpu_offset is None:
+                    if not is_valid_addr(val):
+                        continue
+                    # found
+                    self.offset_per_cpu_pageset = candidate_offset
+                    break
+                else:
+                    if not is_valid_addr(self.cpu_offset[0] + val):
+                        continue
+                    x = read_memory(self.cpu_offset[0] + val, 0x40)
+                    if set(x) == {0}:
+                        continue
+                    # found
+                    self.offset_per_cpu_pageset = candidate_offset
+                    break
+            else:
+                self.quiet_err("Failed to resolve per_cpu_pageset")
+                return False
+        self.quiet_info("offsetof(zone, per_cpu_pageset): {:#x}".format(self.offset_per_cpu_pageset))
 
         """
         struct per_cpu_pageset { // ~5.14
@@ -72570,7 +72631,10 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         };
         """
         # zone->free_area
-        current = self.nodes[0] + self.offset_name + current_arch.ptrsize
+        if kversion >= "3.12":
+            current = self.nodes[0] + self.offset_name + current_arch.ptrsize
+        else:
+            current = self.nodes[0]
         while True:
             # search for list_head
             if is_double_link_list(current):
@@ -72606,29 +72670,56 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("MIGRATE_TYPES: {:d}".format(self.MIGRATE_TYPES))
 
         if self.MIGRATE_TYPES == 4:
-            self.migrate_types = [
-                "Unmovable",
-                "Movable",
-                "Reclaimable",
-                "HighAtomic",
-            ]
+            if kversion >= "4.4":
+                self.migrate_types = [
+                    "Unmovable",
+                    "Movable",
+                    "Reclaimable",
+                    "HighAtomic",
+                ]
+            else:
+                self.migrate_types = [
+                    "Unmovable",
+                    "Reclaimable",
+                    "Movable",
+                    "Reserve",
+                ]
         elif self.MIGRATE_TYPES == 5:
-            self.migrate_types = [
-                "Unmovable",
-                "Movable",
-                "Reclaimable",
-                "HighAtomic",
-                "Isolate",
-            ]
+            if kversion >= "4.4":
+                self.migrate_types = [
+                    "Unmovable",
+                    "Movable",
+                    "Reclaimable",
+                    "HighAtomic",
+                    "Isolate",
+                ]
+            else:
+                self.migrate_types = [
+                    "Unmovable",
+                    "Reclaimable",
+                    "Movable",
+                    "Reserve",
+                    "Isolate",
+                ]
         elif self.MIGRATE_TYPES == 6:
-            self.migrate_types = [
-                "Unmovable",
-                "Movable",
-                "Reclaimable",
-                "HighAtomic",
-                "Contiguous", # CONFIG_CMA needs CONFIG_MEMORY_ISOLATION, so there is only this pattern
-                "Isolate",
-            ]
+            if kversion >= "4.4":
+                self.migrate_types = [
+                    "Unmovable",
+                    "Movable",
+                    "Reclaimable",
+                    "HighAtomic",
+                    "Contiguous", # CONFIG_CMA needs CONFIG_MEMORY_ISOLATION, so there is only this pattern
+                    "Isolate",
+                ]
+            else:
+                self.migrate_types = [
+                    "Unmovable",
+                    "Reclaimable",
+                    "Movable",
+                    "Reserve",
+                    "Contiguous", # CONFIG_CMA needs CONFIG_MEMORY_ISOLATION, so there is only this pattern
+                    "Isolate",
+                ]
         else:
             err("MIGRATE_TYPES: {:#x}".format(self.MIGRATE_TYPES))
             raise
@@ -72648,15 +72739,38 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("MAX_ORDER: {:d}".format(self.MAX_ORDER))
 
         """
-        struct page {
+        struct page { // v5.18~
+            unsigned long flags;
+            union {
+                struct {
+                    union {
+                        struct list_head lru;
+                        ...
+        };
+
+        struct page { // v4.18~v5.17
             unsigned long flags;
             union {
                 struct {
                     struct list_head lru;
                     ...
+        };
+
+        struct page { // v3.1~v4.17
+            unsigned long flags;
+            union { }; // ptrsize
+            union { }; // ptrsize
+            union { }; // 8 bytes
+            union {
+                struct list_head lru;
+                ...
+        };
         """
         # page->lru
-        self.offset_lru = current_arch.ptrsize
+        if kversion >= "4.18":
+            self.offset_lru = current_arch.ptrsize
+        else:
+            self.offset_lru = current_arch.ptrsize * 3 + 8
 
         self.initialized = True
         return True
@@ -72876,6 +72990,11 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        kversion = Kernel.kernel_version()
+        if kversion < "3.1":
+            self.quiet_err("Unsupported before v3.1")
+            return
+
         # parse args
         if args.rescan:
             self.initialized = False
