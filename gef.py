@@ -62850,8 +62850,8 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         struct file_system_type {
             const char *name;
             int fs_flags;
-            int (*init_fs_context)(struct fs_context *);
-            const struct fs_parameter_spec *parameters;
+            int (*init_fs_context)(struct fs_context *); // v5.1~
+            const struct fs_parameter_spec *parameters; // v5.1~
             struct dentry *(*mount) (struct file_system_type *, int, const char *, void *);
             void (*kill_sb) (struct super_block *);
             struct module *owner;
@@ -62860,11 +62860,12 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             struct lock_class_key s_lock_key;
             struct lock_class_key s_umount_key;
             struct lock_class_key s_vfs_rename_key;
-            struct lock_class_key s_writers_key[SB_FREEZE_LEVELS];
+            struct lock_class_key s_writers_key[SB_FREEZE_LEVELS]; // v3.6~
             struct lock_class_key i_lock_key;
             struct lock_class_key i_mutex_key;
-            struct lock_class_key invalidate_lock_key;
+            struct lock_class_key invalidate_lock_key; // v5.15~
             struct lock_class_key i_mutex_dir_key;
+            struct lock_class_key i_alloc_sem_key; // ~v3.0
         };
         """
         # file_system_type->name
@@ -62912,47 +62913,20 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         """
         struct super_block {
             struct list_head s_list;
-            dev_t s_dev;
+            dev_t s_dev; // u32
+            unsigned char s_dirt; // ~v3.5
             unsigned char s_blocksize_bits;
             unsigned long s_blocksize;
-            loff_t s_maxbytes;
-            struct file_system_type *s_type;
-            const struct super_operations *s_op;
-            const struct dquot_operations *dq_op;
-            const struct quotactl_ops *s_qcop;
-            const struct export_operations *s_export_op;
-            unsigned long s_flags;
-            unsigned long s_iflags;
-            unsigned long s_magic;
-            struct dentry *s_root;
-            struct rw_semaphore s_umount;
-            int s_count;
-            atomic_t s_active;
-        #ifdef CONFIG_SECURITY
-            void *s_security;
-        #endif
-            const struct xattr_handler **s_xattr;
-        #ifdef CONFIG_FS_ENCRYPTION
-            const struct fscrypt_operations *s_cop;
-            struct fscrypt_keyring *s_master_keys;
-        #endif
-        #ifdef CONFIG_FS_VERITY
-            const struct fsverity_operations *s_vop;
-        #endif
-        #ifdef CONFIG_UNICODE
-            struct unicode_map *s_encoding;
-            __u16 s_encoding_flags;
-        #endif
-            struct hlist_bl_head s_roots;
-            struct list_head s_mounts;
-            struct block_device *s_bdev;
-            struct backing_dev_info *s_bdi;
-            struct mtd_info *s_mtd;
+            ...
             struct hlist_node s_instances;  <-- fs_supers points here
             ...
         } __randomize_layout;
         """
-        # super_block->{s_instances,s_mounts}
+        # super_block->s_dev
+        self.offset_s_dev = current_arch.ptrsize * 2
+        self.quiet_info("offsetof(super_block, s_dev): {:#x}".format(self.offset_s_dev))
+
+        # super_block->s_instances
         current = read_int_from_memory(self.file_systems)
         while True:
             if current == 0:
@@ -62975,45 +62949,84 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             0xffff8cb085375830|+0x0030|+006: 0xffffffff8ba36da0 <shmem_ops>
             """
             # check s_list
-            a = read_int_from_memory(fs_supers - offset_base)
-            if not is_valid_addr(a):
-                continue
-            b = read_int_from_memory(fs_supers - offset_base + current_arch.ptrsize)
-            if not is_valid_addr(b):
+            if not is_double_link_list(fs_supers - offset_base):
                 continue
 
             # check s_blocksize
-            c = read_int_from_memory(fs_supers - offset_base + current_arch.ptrsize * 2 + 4 * 2)
-            if c == 0x1000:
+            x = read_int_from_memory(fs_supers - offset_base + current_arch.ptrsize * 2 + 4 * 2)
+            if x == 0x1000:
                 self.offset_s_instances = offset_base
-                self.offset_s_mounts = self.offset_s_instances - current_arch.ptrsize * 5
                 break
         else:
             self.quiet_err("Not found super_block->s_instances")
             return False
         self.quiet_info("offsetof(super_block, s_instances): {:#x}".format(self.offset_s_instances))
-        self.quiet_info("offsetof(super_block, s_mounts): {:#x}".format(self.offset_s_mounts))
 
-        # super_block->s_dev
-        self.offset_s_dev = current_arch.ptrsize * 2
-        self.quiet_info("offsetof(super_block, s_dev): {:#x}".format(self.offset_s_dev))
+        """
+        struct super_block { // ~v3.11
+            ...
+            struct list_head s_mounts; // v3.3~ <-- double link list
+            struct list_head s_dentry_lru;      <-- double link list
+            int s_nr_dentry_unused;
+            spinlock_t s_inode_lru_lock ____cacheline_aligned_in_smp;
+            struct list_head s_inode_lru;       <-- double link list
+            int s_nr_inodes_unused;
+            struct block_device *s_bdev;
+            struct backing_dev_info *s_bdi;
+            struct mtd_info *s_mtd;
+            struct hlist_node s_instances;  <-- fs_supers points here
+            ...
+        };
+
+        struct super_block { // v3.12~
+            ...
+            struct list_head s_mounts;
+            struct block_device *s_bdev;
+            struct bdev_handle *s_bdev_handle; // v6.6.47~v6.8
+            struct file *s_bdev_file; // v6.9~
+            struct backing_dev_info *s_bdi;
+            struct mtd_info *s_mtd;
+            struct hlist_node s_instances;  <-- fs_supers points here
+            ...
+        }; // ~v4.12
+        } __randomize_layout; // v4.13~
+        """
+        # super_block->s_mounts
+        kversion = Kernel.kernel_version()
+        if kversion < "3.12":
+            current = fs_supers - current_arch.ptrsize * 2
+            double_link_list_count = 0
+            while True:
+                if is_double_link_list(current):
+                    double_link_list_count += 1
+                if double_link_list_count == 3:
+                    difference = fs_supers - current
+                    self.offset_s_mounts = self.offset_s_instances - difference
+                    break
+                current -= current_arch.ptrsize
+        elif kversion < "6.6.47":
+            self.offset_s_mounts = self.offset_s_instances - current_arch.ptrsize * 5
+        else:
+            self.offset_s_mounts = self.offset_s_instances - current_arch.ptrsize * 6
+        self.quiet_info("offsetof(super_block, s_mounts): {:#x}".format(self.offset_s_mounts))
 
         """
         struct mount {
-            struct hlist_node mnt_hash; // ptrsize
+            struct hlist_node mnt_hash; // v3.13~ // ptrsize * 2
+            struct list_node mnt_hash; // ~v3.12 // ptrsize * 2
             struct mount *mnt_parent;
             struct dentry *mnt_mountpoint;
             struct vfsmount {
                 struct dentry *mnt_root;
                 struct super_block *mnt_sb;
                 int mnt_flags;
-                struct user_namespace *mnt_userns; // v5.12~v6.2
+                struct user_namespace *mnt_userns; // v5.12~v6.1
                 struct mnt_idmap *mnt_idmap; // v6.2~
             } mnt;
             union {
                 struct rb_node mnt_node; // v6.12~ // ptrsize * 3
-                struct rcu_head mnt_rcu; // ptrsize * 2
-                struct llist_node mnt_llist; // ptrsize
+                struct rcu_head mnt_rcu; // v3.13~ // ptrsize * 2
+                struct llist_node mnt_llist; // v3.18~ // ptrsize
             };
         #ifdef CONFIG_SMP
             struct mnt_pcp __percpu *mnt_pcp;
@@ -63029,13 +63042,14 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         } __randomize_layout;
         """
         # mount->mnt_instance
-        kversion = Kernel.kernel_version()
-        common1 = current_arch.ptrsize * 3 # mnt_hash ~ mnt_mount_point
+        common1 = current_arch.ptrsize * 4 # mnt_hash ~ mnt_mount_point
         if kversion < "5.12":
-            sizeof_vfsmount = current_arch.ptrsize * 4
+            sizeof_vfsmount = current_arch.ptrsize * 3
         else:
-            sizeof_vfsmount = current_arch.ptrsize * 5
-        if kversion < "6.12":
+            sizeof_vfsmount = current_arch.ptrsize * 4
+        if kversion < "3.13":
+            sizeof_union = 0
+        elif kversion < "6.12":
             sizeof_union = current_arch.ptrsize * 2
         else:
             sizeof_union = current_arch.ptrsize * 3
@@ -63256,6 +63270,11 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
+
+        kversion = Kernel.kernel_version()
+        if kversion < "3.3":
+            err("Unsupported before v3.3")
+            return
 
         if not self.initialize():
             return
