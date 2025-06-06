@@ -56084,7 +56084,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     valid = False
                     break
                 s = read_cstring_from_memory(task + offset_comm)
-                if s == "swapper/0": # Very common name, so for speeding up, we assume that offset is found
+                # very common name, so for speeding up, we assume that offset is found
+                if s == "swapper/0":
                     break
                 if len(s) < 2:
                     valid = False
@@ -56147,7 +56148,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             # 0xffffa122c17db000 U   106     chal.sh ... 0xffffa43100218000 0xd16ef01535a35500
             # 0xffffa122c17da000 U   108     socat   ... 0xffffa43100278000 0x3d378b9e6f59bf00
             # 0xffffa122c17dc000 U   109     chal    ... 0xffffa431002d4000 0x277c67d5e5854500
-            # 0xffffa122c17dd000 K   110     3       ... 0x0000000000000000 0x22a999743f180500
+            # 0xffffa122c17dd000 K   110     3       ... 0x0000000000000000 0x22a999743f180500 <-- here
             # So I decided to allow a few NULL pointer.
             if zcount > len(task_addrs) // 10:
                 found = False
@@ -56481,8 +56482,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         if found:
             return offset_stack_canary
-        else:
-            return None
+        return None
 
     def get_offset_group_leader(self, offset_pid, offset_kcanary):
         """
@@ -56969,7 +56969,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         0xffffffffbb4545e0|+0x0060|+012: 0x0000000000000000  // process_keyring
         0xffffffffbb4545e8|+0x0068|+013: 0x0000000000000000  // thread_keyring
         0xffffffffbb4545f0|+0x0070|+014: 0x0000000000000000  // request_key_auth
-        0xffffffffbb4545f8|+0x0078|+015: 0xffff998d8106cb68  ->  0xffff998d81052eb0  ->  0x0000000000000241 // security
+        0xffffffffbb4545f8|+0x0078|+015: 0xffff998d8106cb68  ->  0xffff998d81052eb0 // security
         0xffffffffbb454600|+0x0080|+016: 0xffffffffbb44c6c0  ->  0x0000004e00000075 // user
         0xffffffffbb454608|+0x0088|+017: 0xffffffffbb44c740  ->  0x0000000000000001 // user_ns
 
@@ -56989,7 +56989,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         0xffff9ec6c8837a20|+0x0060|+012: 0x0000000000000000  // process_keyring
         0xffff9ec6c8837a28|+0x0068|+013: 0x0000000000000000  // thread_keyring
         0xffff9ec6c8837a30|+0x0070|+014: 0x0000000000000000  // request_key_auth
-        0xffff9ec6c8837a38|+0x0078|+015: 0xffff9ec6c8873fe0  ->  0xffff9ec6c1052eb0  ->  0x00000000000002e8 // security
+        0xffff9ec6c8837a38|+0x0078|+015: 0xffff9ec6c8873fe0  ->  0xffff9ec6c1052eb0 // security
         0xffff9ec6c8837a40|+0x0080|+016: 0xffffffffbb64c5c0  ->  0x0000004f00000084 // user
         0xffff9ec6c8837a48|+0x0088|+017: 0xffff9ec6c820eaa0  ->  0x0000000000000001 // user_ns
 
@@ -57034,17 +57034,20 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         0xc1aabc38|+0x0058|+022: 0x00000000  // process_keyring
         0xc1aabc3c|+0x005c|+023: 0x00000000  // thread_keyring
         0xc1aabc40|+0x0060|+024: 0x00000000  // request_key_auth
-        0xc1aabc44|+0x0064|+025: 0xc201e8b0  ->  0xc20ecd94  ->  0x00000234 // security
+        0xc1aabc44|+0x0064|+025: 0xc201e8b0  ->  0xc20ecd94 // security
         0xc1aabc48|+0x0068|+026: 0xc1aa6b80  ->  0x00000068 // user
         0xc1aabc4c|+0x006c|+027: 0xc1aa6be0  ->  0x00000001 // user_ns
         """
         kversion = Kernel.kernel_version()
-        uid_gid_size = 4 * 8 # uid_t:4byte. len([uid,gid,suid,sgid,euid,egid,fsuid,fsgid]) == 8
+        # uid_t:4byte. len([uid,gid,suid,sgid,euid,egid,fsuid,fsgid]) == 8
+        uid_gid_size = 4 * 8
         sizeof_securebits = 4
         if kversion >= "4.3":
-            cap_size = 8 * 5 # cap_t:8byte. len([cap_inheritable,cap_permitted,cap_effective,cap_bset,cap_ambient]) == 5
+            # cap_t:8byte. len([cap_inheritable,cap_permitted,cap_effective,cap_bset,cap_ambient]) == 5
+            cap_size = 8 * 5
         else:
-            cap_size = 8 * 4 # cap_t:8byte. len([cap_inheritable,cap_permitted,cap_effective,cap_bset]) == 4
+            # cap_t:8byte. len([cap_inheritable,cap_permitted,cap_effective,cap_bset]) == 4
+            cap_size = 8 * 4
 
         """
         struct user_namespace {
