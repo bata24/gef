@@ -70270,8 +70270,8 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             int free_meta_offset;
             bool is_kmalloc;
         } kasan_info;                            // if CONFIG_KASAN=y
-        unsigned int useroffset;
-        unsigned int usersize;
+        unsigned int useroffset;                 // if CONFIG_HARDENED_USERCOPY=y
+        unsigned int usersize;                   // if CONFIG_HARDENED_USERCOPY=y
         struct kmem_cache_node *node[MAX_NUMNODES];
     };
 
@@ -70359,7 +70359,8 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
         # offsetof(kmem_cache, node)
         start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
-        for candidate_offset in range(start_offset, start_offset + 0x100, current_arch.ptrsize): # walk from list for heuristic search
+        for candidate_offset in range(start_offset, start_offset + 0x100, current_arch.ptrsize):
+            # walk from list for heuristic search
             found = True
             for kmem_cache in kmem_caches:
                 top = kmem_cache - self.kmem_cache_offset_list
@@ -70367,23 +70368,29 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
                 if not is_valid_addr(maybe_node):
                     found = False
                     break
+                # skip node[0].{list_lock,nr_partial} and check node[0].partial.next
                 if not is_valid_addr(maybe_node + current_arch.ptrsize * 2):
                     found = False
                     break
-                maybe_slub = read_int_from_memory(maybe_node + current_arch.ptrsize * 2)
-                if not is_valid_addr(maybe_slub):
+                # node[0].partial.next is slab
+                # maybe_slab actually points to &slab.next, not to the beginning of the structure
+                maybe_slab = read_int_from_memory(maybe_node + current_arch.ptrsize * 2)
+                if not is_valid_addr(maybe_slab):
                     found = False
                     break
-                a = read_int_from_memory(maybe_slub)
+                # slab.next (it's actually the list_head)
+                a = read_int_from_memory(maybe_slab)
                 if not is_valid_addr(a):
                     found = False
                     break
-                b = read_int_from_memory(maybe_slub + current_arch.ptrsize)
+                b = read_int_from_memory(maybe_slab + current_arch.ptrsize)
                 if not is_valid_addr(b):
                     found = False
                     break
-                if a != maybe_node + current_arch.ptrsize * 2: # something is in linklist
-                    c = read_int_from_memory(maybe_slub - current_arch.ptrsize)
+                # something is in linklist
+                if a != maybe_node + current_arch.ptrsize * 2:
+                    # check slab->slab_cache
+                    c = read_int_from_memory(maybe_slab - current_arch.ptrsize)
                     if c != top:
                         found = False
                         break
@@ -71038,6 +71045,11 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             if not self.args.meta and not self.args.rescan:
                 return True
 
+        kversion = Kernel.kernel_version()
+        if not kversion:
+            self.quiet_err("Failed to resolve kernel version")
+            return False
+
         # resolve slab_caches
         self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
         if self.slab_caches is None:
@@ -71067,7 +71079,6 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.ncpus = len(self.cpu_offset)
 
         # offsetof(kmem_cache, list)
-        kversion = Kernel.kernel_version()
         if kversion < "3.18":
             self.kmem_cache_offset_list = current_arch.ptrsize * 6 + 4 * 10
         elif kversion < "6.1":
@@ -71148,7 +71159,6 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.quiet_info("offsetof(kmem_cache, array): {:#x}".format(self.kmem_cache_offset_array))
 
         # offsetof(page, next)
-        kversion = Kernel.kernel_version()
         if kversion < "4.16":
             self.page_offset_next = current_arch.ptrsize * 3 + 4 * 2
         elif kversion < "4.18":
@@ -71802,6 +71812,11 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             if not self.args.meta and not self.args.rescan:
                 return True
 
+        kversion = Kernel.kernel_version()
+        if not kversion:
+            self.quiet_err("Failed to resolve kernel version")
+            return False
+
         # resolve slab_caches
         self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
         if self.slab_caches is None:
@@ -71833,7 +71848,6 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             self.quiet_info("free_slob_small: {:#x}".format(self.free_slob_small))
 
         # offsetof(kmem_cache, list)
-        kversion = Kernel.kernel_version()
         if kversion < "4.16":
             self.kmem_cache_offset_list = current_arch.ptrsize * 3 + 4 * 4
         else:
@@ -71857,7 +71871,6 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags))
 
         # offsetof(page, next)
-        kversion = Kernel.kernel_version()
         if kversion < "4.16":
             self.page_offset_next = current_arch.ptrsize * 3 + 4 * 2
         elif kversion < "4.18":
