@@ -69527,6 +69527,66 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         self.kmem_cache_offset_node = offset_node
 
         if self.kmem_cache_offset_node is None:
+            # heuristic way 5
+            # A kmem_cache may itself be allocated contiguously.
+            # It may be possible to find a node from this relationship.
+            #          +-kmem_cache-+
+            #          | ...        |
+            #    ...-->| list       |-->...(1)
+            #          | ...        |
+            #          | node       |
+            #          | (padding)  |
+            #          +-kmem_cache-+
+            #          | ...        |
+            # (1)...-->| list       |-->...
+            #          | ...        |
+            #          | node       |
+            #          | (padding)  |
+            #          +------------+
+
+            # Find the two nearest pairs and count the number of cases
+            min_diff_pairs = []
+            min_diff = 0xffffffffffffffff
+            for km1, km2 in itertools.combinations(kmem_caches, 2):
+                diff = abs(km1 - km2)
+                if diff < min_diff:
+                    min_diff_pairs = [(min(km1, km2), max(km1, km2))]
+                    min_diff = diff
+                    continue
+                if diff == min_diff:
+                    min_diff_pairs.append((min(km1, km2), max(km1, km2)))
+                    continue
+
+            # If there are enough such cases, we can determine that they are likely arranged consecutively
+            if len(min_diff_pairs) >= 10:
+                # Specifies the maximum traversal range for scanning node locations
+                # Note that these are kmem_cache.list addresses
+                km0_0, km0_1 = min_diff_pairs[0]
+                km0_1_top = km0_1 - self.kmem_cache_offset_list
+                km0_0_after_list = km0_0 + current_arch.ptrsize * 2
+                max_search_range = km0_1_top - km0_0_after_list
+
+                # Check that the address is valid for all pairs
+                for i in range(max_search_range // current_arch.ptrsize):
+                    candidate_offset = current_arch.ptrsize * (i + 1)
+                    found = True
+                    for _, m in min_diff_pairs:
+                        m_top = m - self.kmem_cache_offset_list
+                        x = read_int_from_memory(m_top - candidate_offset)
+                        if not is_valid_addr(x):
+                            found = False
+                            break
+                    if found:
+                        offset_node_from_after_list = max_search_range - candidate_offset
+                        offset_after_list = self.kmem_cache_offset_list + current_arch.ptrsize * 2
+                        maxlen = len(list(itertools.combinations(kmem_caches, 2)))
+                        msg = "min_diff_pairs:{:d}/{:d}, ".format(len(min_diff_pairs), maxlen)
+                        msg += "min_diff:{:#x}".format(min_diff)
+                        self.quiet_info("offset of node found by heuristic way5 ({:s})".format(msg))
+                        self.kmem_cache_offset_node = offset_after_list + offset_node_from_after_list
+                        break
+
+        if self.kmem_cache_offset_node is None:
             self.quiet_info("offsetof(kmem_cache, node): Not found")
         else:
             self.quiet_info("offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node))
