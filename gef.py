@@ -25377,15 +25377,29 @@ class KernelChecksecCommand(GenericCommand):
         return
 
     def check_integrity(self):
-        cfg = "Integrity"
+        cfg = "Integrity (IMA/EVM)"
         integrity_iintcache_init = Symbol.get_ksymaddr("integrity_iintcache_init")
         if integrity_iintcache_init is None:
             additional = "integrity_iintcache_init: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
             return
 
-        additional = "integrity_iintcache_init: Found"
-        gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
+        kcmdline = Kernel.kernel_cmdline()
+        if kcmdline and "ima_appraise=enforce" in kcmdline.cmdline:
+            additional = "integrity_iintcache_init: Found, ima_appraise=enforce is in cmdline"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+        elif kcmdline and "ima_appraise=off" in kcmdline.cmdline:
+            additional = "integrity_iintcache_init: Found, ima_appraise=off is in cmdline"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+        elif kcmdline and "ima_appraise=log" in kcmdline.cmdline:
+            additional = "integrity_iintcache_init: Found, ima_appraise=log is in cmdline"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Permissive", "bold red"), additional))
+        elif kcmdline and "ima_appraise=fix" in kcmdline.cmdline:
+            additional = "integrity_iintcache_init: Found, ima_appraise=fix is in cmdline"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Permissive", "bold red"), additional))
+        else:
+            additional = "integrity_iintcache_init: Found"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
         return
 
     def check_loadpin(self):
@@ -25396,15 +25410,22 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
             return
 
-        loadpin_enabled_addr = KernelAddressHeuristicFinder.get_loadpin_enabled()
-        if loadpin_enabled_addr is None:
-            additional = "loadpin_init: Found, kernel.loadpin.enabled: Not found"
+        kversion = Kernel.kernel_version()
+        if kversion < "4.20":
+            loadpin_cfg_name = "kernel.loadpin.enabled"
+            loadpin_cfg_addr = KernelAddressHeuristicFinder.get_loadpin_enabled()
+        else:
+            loadpin_cfg_name = "kernel.loadpin.enforce"
+            loadpin_cfg_addr = KernelAddressHeuristicFinder.get_loadpin_enforce()
+
+        if loadpin_cfg_addr is None:
+            additional = "loadpin_init: Found, {:s}: Not found".format(loadpin_cfg_name)
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
             return
 
-        loadpin_enabled = u32(read_memory(loadpin_enabled_addr, 4))
-        additional = "loadpin_init: Found, kernel.loadpin.enabled: {:d}".format(loadpin_enabled)
-        if loadpin_enabled == 0:
+        loadpin_status = u32(read_memory(loadpin_cfg_addr, 4))
+        additional = "loadpin_init: Found, {:s}: {:d}".format(loadpin_cfg_name, loadpin_status)
+        if loadpin_status == 0:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         else:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
@@ -53849,6 +53870,16 @@ class KernelAddressHeuristicFinder:
         # plan 1 (from ksysctl)
         if KernelAddressHeuristicFinder.USE_KSYSCTL:
             x = Kernel.get_ksysctl("kernel.loadpin.enabled")
+            if x:
+                return x
+        return None
+
+    @staticmethod
+    @switch_to_intel_syntax
+    def get_loadpin_enforce():
+        # plan 1 (from ksysctl)
+        if KernelAddressHeuristicFinder.USE_KSYSCTL:
+            x = Kernel.get_ksysctl("kernel.loadpin.enforce")
             if x:
                 return x
         return None
