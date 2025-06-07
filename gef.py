@@ -32422,7 +32422,59 @@ class DereferenceCommand(GenericCommand):
             line += Color.colorify(extra_str, registers_color)
         return line
 
+    def check_list_head(self, start_address, from_idx, to_idx, step):
+        for idx in range(from_idx, to_idx, step):
+            current_address = start_address + idx * current_arch.ptrsize
+            if is_double_link_list(current_address):
+                # next
+                tag = self.tags_dict.get(idx + 0, "")
+                if tag:
+                    tag += ", "
+                tag += Color.colorify("list_head.next", "bold magenta")
+                self.tags_dict[idx + 0] = tag
+                self.max_tag_width = max(self.max_tag_width, len(Color.remove_color(tag)))
+
+                # prev
+                tag = self.tags_dict.get(idx + 1, "")
+                if tag:
+                    tag += ", "
+                tag += Color.colorify("list_head.prev", "bold magenta")
+                self.tags_dict[idx + 1] = tag
+                self.max_tag_width = max(self.max_tag_width, len(Color.remove_color(tag)))
+        return
+
+    def check_slab_contains(self, start_address, from_idx, to_idx, step):
+        for idx in range(from_idx, to_idx, step):
+            current_address = start_address + idx * current_arch.ptrsize
+            if not is_valid_addr(current_address):
+                continue
+            v = read_int_from_memory(current_address)
+            ret = Kernel.get_slab_contains(
+                v, allow_unaligned=self.args.slab_contains_unaligned, keep_color=True,
+            )
+            if ret:
+                tag = self.tags_dict.get(idx, "")
+                if tag:
+                    tag += ", "
+                tag += ret.split()[1]
+                if "unaligned?" in ret:
+                    tag += "(unaligned)"
+                self.tags_dict[idx] = tag
+                self.max_tag_width = max(self.max_tag_width, len(Color.remove_color(tag)))
+        return
+
     def dereference_line_by_line(self, start_address, from_idx, to_idx, step):
+        if self.args.list_head:
+            self.check_list_head(start_address, from_idx, to_idx, step)
+
+        if self.args.slab_contains or self.args.slab_contains_unaligned:
+            self.check_slab_contains(start_address, from_idx, to_idx, step)
+
+        has_tag = bool(self.args.tag)
+        has_tag |= bool(self.args.list_head)
+        has_tag |= bool(self.args.slab_contains)
+        has_tag |= bool(self.args.slab_contains_unaligned)
+
         out = []
         seen = []
         for idx in range(from_idx, to_idx, step):
@@ -32462,8 +32514,10 @@ class DereferenceCommand(GenericCommand):
                         continue
 
                 # tags
-                if self.args.tag:
-                    tag = self.tags_dict.get(idx, "").ljust(self.max_tag_width)
+                if has_tag:
+                    tag = self.tags_dict.get(idx, "")
+                    padlen = self.max_tag_width - len(Color.remove_color(tag))
+                    tag += " " * padlen
                 else:
                     tag = None
 
@@ -32491,24 +32545,6 @@ class DereferenceCommand(GenericCommand):
                 msg = "Cannot access memory at address {:#x}".format(current_address)
                 out.append("{} {}".format(Color.colorify("[!]", "bold red"), msg))
                 break
-
-            # dump slab cache
-            if self.args.slab_contains or self.args.slab_contains_unaligned:
-                v = read_int_from_memory(current_address)
-                ret = Kernel.get_slab_contains(
-                    v, allow_unaligned=self.args.slab_contains_unaligned, keep_color=True,
-                )
-                if ret:
-                    out.append("  {:#x}: {:s}".format(v, ret))
-
-            # link list
-            if self.args.list_head:
-                # next
-                if is_double_link_list(current_address):
-                    out.append(Color.colorify("  list_head.next", "bold magenta"))
-                # prev
-                if is_double_link_list(start_address + (idx - 1) * current_arch.ptrsize):
-                    out.append(Color.colorify("  list_head.prev", "bold magenta"))
 
             # multiple level dump
             if self.args.depth - 1 > 0:
@@ -32540,9 +32576,9 @@ class DereferenceCommand(GenericCommand):
             err("Unsupported option pairs")
             return
 
+        self.tags_dict = {}
+        self.max_tag_width = 0
         if args.tag:
-            self.tags_dict = {}
-            self.max_tag_width = 0
             for tag_idx, tag in args.tag:
                 try:
                     tag_idx = int(tag_idx, 0) + args.tag_offset
