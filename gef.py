@@ -32242,6 +32242,8 @@ class DereferenceCommand(GenericCommand):
                         help="display in reverse order line by line.")
     parser.add_argument("-u", "--uniq", action="store_true",
                         help="display with uniq.")
+    parser.add_argument("-i", "--interval", type=lambda x: int(x, 16), default=1,
+                        help="the line number of the interval for showing.")
     parser.add_argument("-d", "--depth", default=1, type=int,
                         help="depth of recursive. (default: %(default)s)")
     parser.add_argument("-D", "--depth-nb-lines", default=4, type=int,
@@ -32566,9 +32568,9 @@ class DereferenceCommand(GenericCommand):
         to_idx = nb_lines * (self.repeat_count + 1)
 
         if from_idx <= to_idx:
-            step = 1
+            step = 1 * args.interval
         else:
-            step = -1
+            step = -1 * args.interval
             if args.depth > 1:
                 err("Unsupported using together -NB_LINES and -d DEPTH")
                 return

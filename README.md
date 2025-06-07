@@ -411,6 +411,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - `--non-zero`
         - `--tag`
         - `--uniq`
+        - `--interval`
         - `--depth`
         - `--phys`
         - `--list-head`
