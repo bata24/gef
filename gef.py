@@ -69422,7 +69422,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             # 0xffff8f9d8104c418|+0x0018|+003: 0x00000bc0000001e0
             # 0xffff8f9d8104c420|+0x0020|+004: 0x0000020000000360
             # 0xffff8f9d8104c428|+0x0028|+005: 0x0000024000000320
-            # Random_seq another example
+            # random_seq another example
             # 0xffff89c3ce772240|+0x0000|+000: 0x00000000000019e0
             # 0xffff89c3ce772248|+0x0008|+001: 0x00005a9000004da0
             # 0xffff89c3ce772250|+0x0010|+002: 0x00000cf0000026d0
@@ -69443,9 +69443,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         if self.kmem_cache_offset_node is None and is_64bit():
             # heuristic way 2
-            # find the offset that has the initial value of 1000 for remote_node_defrag_ratio.
-            # the first valid pointer encountered after that is either random_seq or node[0].
-            # we look at the contents to determine whether the pointer is random_seq.
+            # Find the offset that has the initial value of 1000 for remote_node_defrag_ratio.
+            # The first valid pointer encountered after that is either random_seq or node[0].
+            # We look at the contents to determine whether the pointer is random_seq.
 
             start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
             search_range = 0x100 if kversion >= "5.9" else 0x200
@@ -69490,7 +69490,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         if self.kmem_cache_offset_node is None:
             # heuristic way 3
-            # this method valid for kernel < 6.2, or (CONFIG_HARDENED_USERCOPY=y and kernel >= 6.2).
+            # This method valid for kernel < 6.2, or (CONFIG_HARDENED_USERCOPY=y and kernel >= 6.2).
 
             start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
             search_range = 0x100 if kversion >= "5.9" else 0x200
@@ -69500,7 +69500,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 for kmem_cache in kmem_caches:
                     kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
 
-                    # check whether user_offset, user_size, and object_size satisfy some relationships
+                    # Check whether user_offset, user_size, and object_size satisfy some relationships
                     user_offset = u32(read_memory(kmem_cache_top + candidate_offset, 4))
                     user_size = u32(read_memory(kmem_cache_top + candidate_offset + 4, 4))
                     object_size = u32(read_memory(kmem_cache_top + self.kmem_cache_offset_object_size, 4))
@@ -69516,7 +69516,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         found = False
                         break
 
-                    # and check that the immediately following node is a valid address
+                    # And check that the immediately following node is a valid address
                     node_offset = candidate_offset + 4 + 4
                     node_addr = read_int_from_memory(kmem_cache_top + node_offset)
                     if not is_valid_addr(node_addr):
@@ -69535,7 +69535,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             # heuristic way 4
             # user_offset and user_size probably don't exist.
             # remote_node_defrag_ratio does not exist either.
-            # search random_seq from random, then go like heuristic way 2.
+            # Search random_seq from random, then go like heuristic way 2.
             offset_random_seq = self.kmem_cache_offset_random + current_arch.ptrsize
 
             found = False
