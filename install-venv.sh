@@ -41,10 +41,7 @@ fi
 . "${GEF_VENV_PATH}/bin/activate"
 
 echo "[+] pip3"
-pip3 install setuptools crccheck unicorn capstone ropper keystone-engine tqdm magika codext angr==9.2.154 pycryptodome pillow pyzbar
-# Since angr version 9.2.156, installing via pip or uv triggers a build process.
-# This requires Rust to be installed and can take around 10 minutes to complete, which is not intended.
-# To ensure the expected behavior, we pin the version to 9.2.154. See PR #115 for details.
+pip3 install setuptools crccheck unicorn capstone ropper keystone-engine tqdm magika codext angr pycryptodome pillow pyzbar
 
 echo "[+] Install seccomp-tools"
 if [ -z "$(command -v seccomp-tools)" ]; then

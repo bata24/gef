@@ -32,14 +32,7 @@ apt-get install -y binutils python3-pip ruby-dev git file colordiff imagemagick
 apt-get install -y binwalk
 
 echo "[+] pip3"
-pip3 install setuptools crccheck unicorn capstone ropper keystone-engine tqdm magika codext pycryptodome pillow pyzbar
-
-# Since angr version 9.2.156, installing via pip or uv triggers a build process.
-# This requires Rust to be installed and can take around 10 minutes to complete, which is not intended.
-# To ensure the expected behavior, we pin the version to 9.2.154. See PR #115 for details.
-if ! pip3 show angr > /dev/null 2>&1; then
-    pip3 install angr==9.2.154
-fi
+pip3 install setuptools crccheck unicorn capstone ropper keystone-engine tqdm magika codext angr pycryptodome pillow pyzbar
 
 echo "[+] Install seccomp-tools"
 if [ -z "$(command -v seccomp-tools)" ]; then
