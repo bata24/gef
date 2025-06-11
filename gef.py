@@ -32242,7 +32242,7 @@ class DereferenceCommand(GenericCommand):
                         help="display in reverse order line by line.")
     parser.add_argument("-u", "--uniq", action="store_true",
                         help="display with uniq.")
-    parser.add_argument("-i", "--interval", type=lambda x: int(x, 16), default=1,
+    parser.add_argument("-i", "--interval", type=lambda x: int(x, 0), default=1,
                         help="the line number of the interval for showing.")
     parser.add_argument("-d", "--depth", default=1, type=int,
                         help="depth of recursive. (default: %(default)s)")
@@ -64443,7 +64443,7 @@ class KernelSearchCodePtrCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-d", "--depth", default=1, type=int, help="depth of reference. (default: %(default)s)")
-    parser.add_argument("-r", "--max-range", default=0, type=lambda x: int(x, 16),
+    parser.add_argument("-r", "--max-range", default=0, type=lambda x: int(x, 0),
                         help="allowable offset range for each reference. (default: %(default)s)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
@@ -64964,7 +64964,7 @@ class StringsCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="REGEXP include filter.")
     parser.add_argument("-e", "--exclude", action="append", type=re.compile, default=[], help="REGEXP exclude filter.")
     parser.add_argument("-d", "--depth", default=0, type=int, help="recursive depth. (default: %(default)s)")
-    parser.add_argument("-r", "--range", default=0x40, type=lambda x: int(x, 16),
+    parser.add_argument("-r", "--range", default=0x40, type=lambda x: int(x, 0),
                         help="search range for recursively. (default: %(default)s)")
     parser.add_argument("-m", "--minlen", default=8, type=int, help="minimum string length (default: %(default)s)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
@@ -68968,9 +68968,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         help="[FOR DEVELOPER] skip xor to chunk->next when `kmem_cache.random` is falsely detected.")
     parser.add_argument("--no-byte-swap", action="store_true", default=None,
                         help="[FOR DEVELOPER] skip byteswap to chunk->next when `kmem_cache.random` is falsely detected.")
-    parser.add_argument("--offset-random", type=lambda x: int(x, 16),
+    parser.add_argument("--offset-random", type=lambda x: int(x, 0),
                         help="[FOR DEVELOPER] specified offsetof(kmem_cache, random) when `kmem_cache.random` is falsely detected.")
-    parser.add_argument("--offset-node", type=lambda x: int(x, 16),
+    parser.add_argument("--offset-node", type=lambda x: int(x, 0),
                         help="[FOR DEVELOPER] specified offsetof(kmem_cache, node) when `kmem_cache.node` is falsely detected.")
     _syntax_ = parser.format_help()
 
@@ -82021,9 +82021,9 @@ class XColoredCommand(GenericCommand, BufferingOutput):
     parser.add_argument("format", metavar="FMT", nargs="?", default="", help="dump format.")
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
                         help="dump address.")
-    parser.add_argument("-i", "--interval", type=lambda x: int(x, 16),
+    parser.add_argument("-i", "--interval", type=lambda x: int(x, 0),
                         help="the line of interval for coloring.")
-    parser.add_argument("-c", "--color-num", type=lambda x: int(x, 16), default=4,
+    parser.add_argument("-c", "--color-num", type=lambda x: int(x, 0), default=4,
                         help="the number of colors used (1-5).")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet mode.")
