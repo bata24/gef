@@ -69386,7 +69386,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 if y != 0xdead4ead00000000: # SPINLOCK_MAGIC
                     continue
                 # found
-                self.quiet_info("offset of node found by heuristic way1")
+                self.quiet_info("offset of node is found by heuristic way1")
                 self.kmem_cache_offset_node = candidate_offset
                 break
 
@@ -69469,7 +69469,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     # At this point, x is random_seq or node[0]
                     if not is_random_seq(x):
                         # x is not random_seq, but node[0]
-                        self.quiet_info("offset of node found by heuristic way2-1")
+                        self.quiet_info("offset of node is found by heuristic way2-1")
                         self.kmem_cache_offset_node = offset_random_seq
                         break
                     else:
@@ -69484,7 +69484,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     offset_node = start_offset_node_search + extend_offset
                     y = read_int_from_memory(kmem_cache_0_top + offset_node)
                     if is_valid_addr(y) and not is_random_seq(y):
-                        self.quiet_info("offset of node found by heuristic way2-2")
+                        self.quiet_info("offset of node is found by heuristic way2-2")
                         self.kmem_cache_offset_node = offset_node
                         break
 
@@ -69527,7 +69527,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     found = False
 
                 if found:
-                    self.quiet_info("offset of node found by heuristic way3")
+                    self.quiet_info("offset of node is found by heuristic way3")
                     self.kmem_cache_offset_node = node_offset
                     break
 
@@ -69545,7 +69545,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 # At this point, x is random_seq or node[0]
                 if not is_random_seq(x):
                     # x is not random_seq, but node[0]
-                    self.quiet_info("offset of node found by heuristic way4-1")
+                    self.quiet_info("offset of node is found by heuristic way4-1")
                     self.kmem_cache_offset_node = offset_random_seq
                     found = True
                 else:
@@ -69561,7 +69561,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     offset_node = start_offset_node_search + extend_offset
                     y = read_int_from_memory(kmem_cache_0_top + offset_node)
                     if is_valid_addr(y) and not is_random_seq(y):
-                        self.quiet_info("offset of node found by heuristic way4-2")
+                        self.quiet_info("offset of node is found by heuristic way4-2")
                         self.kmem_cache_offset_node = offset_node
 
         if self.kmem_cache_offset_node is None:
@@ -69620,7 +69620,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         maxlen = len(list(itertools.combinations(kmem_caches, 2)))
                         msg = "min_diff_pairs:{:d}/{:d}, ".format(len(min_diff_pairs), maxlen)
                         msg += "min_diff:{:#x}".format(min_diff)
-                        self.quiet_info("offset of node found by heuristic way5 ({:s})".format(msg))
+                        self.quiet_info("offset of node is found by heuristic way5 ({:s})".format(msg))
                         self.kmem_cache_offset_node = offset_after_list + offset_node_from_after_list
                         break
 
