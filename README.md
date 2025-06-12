@@ -21,7 +21,7 @@
 
 ## What Is This?
 This is a fork of [GEF](https://github.com/hugsy/gef) that includes three major improvements:
-1. Adds heuristic commands for kernel debugging __without requiring a symbolized `vmlinux`__ (for `qemu-system`, supports Linux kernel 3.x-6.14.x).
+1. Adds heuristic commands for kernel debugging __without requiring a symbolized `vmlinux`__ (for `qemu-system`, supports Linux kernel 3.x-6.15.x).
 2. Expands support to [many architectures](docs/QEMU-USER-SUPPORTED-ARCH.md) (for `qemu-user`).
 3. Provides heap dump commands for multiple memory allocators.
 
@@ -126,7 +126,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `kcurrent`: displays current task address.
     - ![](images/kbase-kversion-kcmdline-kcurrent.png)
 - `ksymaddr-remote`: displays kallsyms information from scanning kernel memory.
-    - Supported kernel versions: 3.x to 6.14.x.
+    - Supported kernel versions: 3.x to 6.15.x.
     - ![](images/ksymaddr-remote.png)
 - `ksymaddr-remote-apply`/`vmlinux-to-elf-apply`: applies kallsyms information obtained by `ksymaddr-remote` or `vmlinux-to-elf` to gdb.
     - ![](images/ksymaddr-remote-apply.png)
