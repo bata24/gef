@@ -79666,9 +79666,10 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 bool with_thread_cache = false;
                 bool use_cookie = false;
                 bool brp_enabled_ = false;
-                bool mac11_malloc_size_hack_enabled_ = false;
-                size_t mac11_malloc_size_hack_usable_size_ = 0;
-                bool use_configurable_pool = false;
+                size_t in_slot_metadata_size = 0;
+                internal::pool_handle pool_handle = internal::pool_handle::kNullPoolHandle;
+                internal::PoolOffsetLookup offset_lookup;
+                internal::ReservationOffsetTable reservation_offset_table;
                 bool eventually_zero_freed_memory = false;
                 internal::SchedulerLoopQuarantineConfig scheduler_loop_quarantine;
                 bool fewer_memory_regions = false;
@@ -79676,11 +79677,11 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 bool use_random_memory_tagging_enabled_ = false;
                 TagViolationReportingMode memory_tagging_reporting_mode_ = TagViolationReportingMode::kUndefined;
                 ThreadIsolationOption thread_isolation;
-                bool use_pool_offset_freelists = false;
                 uint32_t extras_size = 0;
+                std::ptrdiff_t shadow_pool_offset_ = 0;
             } settings; // 64 bytes or 128 bytes
             internal::Lock lock_;  // 8 bytes
-            Bucket buckets[internal::kNumBuckets] = {};
+            Bucket buckets[BucketIndexLookup::kNumBuckets] = {};
             Bucket sentinel_bucket{};
             bool initialized = false;
             std::atomic<size_t> total_size_of_committed_pages{0};
@@ -79713,8 +79714,8 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             uintptr_t inverted_self = 0;
             internal::Lock thread_cache_construction_lock; // 8 bytes
             size_t scheduler_loop_quarantine_branch_capacity_in_bytes = 0;
-            internal::LightweightQuarantineRoot scheduler_loop_quarantine_root;
-            internal::SchedulerLoopQuarantineBranch scheduler_loop_quarantine;
+            internal::SchedulerLoopQuarantineRoot scheduler_loop_quarantine_root;
+            internal::GlobalSchedulerLoopQuarantineBranch scheduler_loop_quarantine;
         };
         """
         x = read_int_from_memory(current + 0x40 + 8) # sizeof(struct Settings) + sizeof(lock_)
@@ -79943,7 +79944,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         src/partition_alloc/partition_page.h
 
         struct SlotSpanMetadata {
-          PartitionFreelistEntry* freelist_head = nullptr;
+          FreelistEntry* freelist_head = nullptr;
           SlotSpanMetadata<MetadataKind::kReadOnly>* next_slot_span = nullptr;
           PartitionBucket* const bucket = nullptr;
           uint32_t num_allocated_slots : kMaxSlotsPerSlotSpanBits = 0u; // 15 bits
@@ -80004,7 +80005,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
     def dump_root(self, root):
         self.out.append(titlify("*{} @ {:#x}".format(root.name, root.addr)))
-        self.out.append("uint8_t one_cacheline[64]:                             ...")
+        self.out.append("struct Settings settings:                              ...")
         self.out.append("::partition_alloc::Lock lock_:                         {:#x}".format(
             root.lock_,
         ))
@@ -80118,10 +80119,10 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         self.out.append("size_t scheduler_loop_quarantine_branch_capacity_in_bytes: {:#x}".format(
             root.scheduler_loop_quarantine_branch_capacity_in_bytes,
         ))
-        self.out.append("internal::LightweightQuarantineRoot scheduler_loop_quarantine_root: {:#x}".format(
+        self.out.append("internal::SchedulerLoopQuarantineRoot scheduler_loop_quarantine_root: {:#x}".format(
             root.scheduler_loop_quarantine_root,
         ))
-        self.out.append("internal::SchedulerLoopQuarantineBranch scheduler_loop_quarantine: {:#x}".format(
+        self.out.append("internal::GlobalSchedulerLoopQuarantineBranch scheduler_loop_quarantine: {:#x}".format(
             root.scheduler_loop_quarantine,
         ))
         return
