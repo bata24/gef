@@ -79340,6 +79340,10 @@ class V8Command(GenericCommand):
                     comm = line.split()[1]
                     gef_print(titlify(comm))
                     gdb.execute("help {:s}".format(comm))
+                elif line.startswith(("super(", "super (")) and '"' in line:
+                    comm = line.split('"')[-2]
+                    gef_print(titlify(comm))
+                    gdb.execute("help {:s}".format(comm))
             return
 
         if args.address:
