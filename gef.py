@@ -69203,7 +69203,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # offsetof(kmem_cache, list)
         # This value should be at most 0x70 by default. However, I found a case where offset 0x98 is used.
-        # This is because CONFIG_SLAB_VIRTUAL=y, that is not in main line (but some kenrel introduces).
+        # This is because CONFIG_SLAB_VIRTUAL=y, that is not in main line (but some kernel introduces).
         # However, I decided to expand this search range.
         max_offset = 0x100
         for candidate_offset in range(current_arch.ptrsize * 2, max_offset, current_arch.ptrsize):
