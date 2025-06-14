@@ -79287,6 +79287,555 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class CageCommand(GenericCommand, BufferingOutput):
+    """Display v8 (especially d8) ubercage area."""
+
+    _cmdline_ = "cage"
+    _category_ = "09-e. Misc - V8"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
+                        help="the address for filtering.")
+    parser.add_argument("-f", "--force-heuristic", action="store_true", help="use heuristic detection.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="show with zero page.")
+    parser.add_argument("-vv", "--vverbose", action="store_true", help="show with permission NONE.")
+    parser.add_argument("-vvv", "--vvverbose", action="store_true", help="show all maps (=~ vmmap).")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    _syntax_ = parser.format_help()
+
+    def get_sym_addr(self, sym, force_heuristic=False):
+        if force_heuristic:
+            return None
+        try:
+            x = AddressUtil.parse_address(f"&{sym}")
+            return read_int_from_memory(x)
+        except Exception:
+            pass
+        return None
+
+    def get_sym_value(self, sym, force_heuristic=False):
+        if force_heuristic:
+            return None
+        try:
+            return AddressUtil.parse_address(f"{sym}")
+        except Exception:
+            pass
+        return None
+
+    @Cache.cache_until_next
+    def get_isolate(self, force_heuristic=False):
+        sym = "&'v8::internal::g_current_isolate_'.isolate_data_"
+        addr = self.get_sym_value(sym, force_heuristic)
+        if addr:
+            return addr
+
+        tls = current_arch.get_tls()
+        for i in range(256):
+            try:
+                x = read_int_from_memory(tls - current_arch.ptrsize * i)
+            except gdb.MemoryError:
+                continue
+            if x == 0:
+                continue
+            if x & 7:
+                continue
+            if not is_valid_addr(x):
+                continue
+            try:
+                y = read_int_from_memory(x)
+            except gdb.MemoryError:
+                continue
+            if y == 0:
+                continue
+            if y & 0xffffffff:
+                continue
+            if not is_valid_addr(y):
+                continue
+            return x
+        return None
+
+    @Cache.cache_until_next
+    def get_cage_base(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.cage_base_"
+        addr = self.get_sym_addr(sym, force_heuristic)
+        if addr:
+            return addr
+
+        addr = self.get_isolate(force_heuristic)
+        if addr:
+            return read_int_from_memory(addr)
+        return None
+
+    @Cache.cache_until_next
+    def get_table_candidates(self):
+        isolate = self.get_isolate(force_heuristic=True)
+        if not isolate:
+            return None
+
+        candidates = []
+        for i in range(256):
+            addr = isolate + current_arch.ptrsize * i
+            try:
+                value = read_int_from_memory(addr)
+            except gdb.MemoryError:
+                return []
+            if value & 0xffffff:
+                continue
+            if not is_valid_addr(value):
+                continue
+            pm = ProcessMap.lookup_address(value)
+            try:
+                if pm.section.permission.value != Permission.READ:
+                    continue
+            except Exception:
+                continue
+            candidates.append(value)
+        if len(candidates) != 6:
+            warn("len(candidates) != 6")
+        return candidates
+
+    @Cache.cache_until_next
+    def get_external_pointer_table_base(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.external_pointer_table_.base_"
+        addr = self.get_sym_addr(sym, force_heuristic)
+        if addr:
+            return addr
+
+        candidates = self.get_table_candidates()
+        if candidates and len(candidates) > 1:
+            return candidates[1]
+        return None
+
+    @Cache.cache_until_next
+    def get_external_pointer_table_size(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.external_pointer_table_.kReservationSize"
+        value = self.get_sym_value(sym, force_heuristic)
+        if value:
+            return value
+        return 0x400_0000 # hard-coded
+
+    @Cache.cache_until_next
+    def get_shared_external_pointer_table_base(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.shared_external_pointer_table_.base_"
+        addr = self.get_sym_addr(sym, force_heuristic)
+        if addr:
+            return addr
+        return None
+
+    @Cache.cache_until_next
+    def get_shared_external_pointer_table_size(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.shared_external_pointer_table_.kReservationSize"
+        value = self.get_sym_value(sym, force_heuristic)
+        if value:
+            return value
+        return 0x400_0000 # hard-coded
+
+    @Cache.cache_until_next
+    def get_cpp_heap_pointer_table_base(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.cpp_heap_pointer_table_.base_"
+        addr = self.get_sym_addr(sym, force_heuristic)
+        if addr:
+            return addr
+
+        candidates = self.get_table_candidates()
+        if candidates and len(candidates) > 2:
+            return candidates[2]
+        return None
+
+    @Cache.cache_until_next
+    def get_cpp_heap_pointer_table_size(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.cpp_heap_pointer_table_.kReservationSize"
+        value = self.get_sym_value(sym, force_heuristic)
+        if value:
+            return value
+        return 0x400_0000 # hard-coded
+
+    @Cache.cache_until_next
+    def get_trusted_pointer_table_base(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.trusted_pointer_table_.base_"
+        addr = self.get_sym_addr(sym, force_heuristic)
+        if addr:
+            return addr
+
+        candidates = self.get_table_candidates()
+        if candidates and len(candidates) > 3:
+            return candidates[3]
+        return None
+
+    @Cache.cache_until_next
+    def get_trusted_pointer_table_size(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.trusted_pointer_table_.kReservationSize"
+        value = self.get_sym_value(sym, force_heuristic)
+        if value:
+            return value
+        return 0x400_0000 # hard-coded
+
+    @Cache.cache_until_next
+    def get_shared_trusted_pointer_table_base(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.shared_trusted_pointer_table_.base_"
+        addr = self.get_sym_addr(sym, force_heuristic)
+        if addr:
+            return addr
+        return None
+
+    @Cache.cache_until_next
+    def get_shared_trusted_pointer_table_size(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.shared_trusted_pointer_table_.kReservationSize"
+        value = self.get_sym_value(sym, force_heuristic)
+        if value:
+            return value
+        return 0x400_0000 # hard-coded
+
+    @Cache.cache_until_next
+    def get_code_pointer_table_base(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.code_pointer_table_base_address_"
+        addr = self.get_sym_addr(sym, force_heuristic)
+        if addr:
+            return addr
+
+        candidates = self.get_table_candidates()
+        if candidates and len(candidates) > 4:
+            return candidates[4]
+        return None
+
+    @Cache.cache_until_next
+    def get_code_pointer_table_size(self, force_heuristic=False):
+        return 0x400_0000 # hard-coded
+
+    @Cache.cache_until_next
+    def get_js_dispatch_table_base(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.js_dispatch_table_base_"
+        addr = self.get_sym_addr(sym, force_heuristic)
+        if addr:
+            return addr
+
+        candidates = self.get_table_candidates()
+        if candidates and len(candidates) > 5:
+            return candidates[5]
+        return None
+
+    @Cache.cache_until_next
+    def get_js_dispatch_table_size(self, force_heuristic=False):
+        return 0x400_0000 # hard-coded
+
+    @Cache.cache_until_next
+    def get_code_range_base(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'->heap().code_range_.base_"
+        addr = self.get_sym_addr(sym, force_heuristic)
+        if addr:
+            return addr
+
+        maps = ProcessMap.get_process_maps()
+        if not maps:
+            return None
+        for i, m in enumerate(maps):
+            if m.permission.value != Permission.READ | Permission.WRITE | Permission.EXECUTE:
+                continue
+            if (m.page_start & 0xffff) != 0:
+                continue
+            if m.size > 0x2000_0000:
+                continue
+            if m.size == 0x2000_0000:
+                return m.page_start
+            if m.size < 0x2000_0000:
+                if i == len(maps) - 1:
+                    continue
+                if maps[i + 1].permission.value & Permission.EXECUTE == 0:
+                    continue
+                return m.page_start
+        return None
+
+    @Cache.cache_until_next
+    def get_code_range_size(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'->heap().code_range_.size_"
+        value = self.get_sym_value(sym, force_heuristic)
+        if value:
+            return value
+        return 0x2000_0000 # hard-coded
+
+    @Cache.cache_until_next
+    def get_cage_rw_space_candidates(self):
+        maps = ProcessMap.get_process_maps()
+        if not maps:
+            return None
+        candidates = []
+        for m in maps:
+            if m.permission.value != Permission.READ | Permission.WRITE:
+                continue
+            if not self.is_cage(m):
+                continue
+            candidates.append(m)
+        return candidates
+
+    @Cache.cache_until_next
+    def get_new_space_start(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.new_allocation_info_.start_"
+        addr = self.get_sym_addr(sym, force_heuristic)
+        if addr:
+            return addr
+
+        candidates = self.get_cage_rw_space_candidates()
+        if candidates and len(candidates) > 1:
+            return candidates[1].page_start
+        return None
+
+    @Cache.cache_until_next
+    def get_new_space_limit(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.new_allocation_info_.limit_"
+        addr = self.get_sym_addr(sym, force_heuristic)
+        if addr:
+            return addr
+
+        candidates = self.get_cage_rw_space_candidates()
+        if candidates and len(candidates) > 1:
+            return candidates[1].page_end
+        return None
+
+    @Cache.cache_until_next
+    def get_old_space_start(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.old_allocation_info_.start_"
+        addr = self.get_sym_addr(sym, force_heuristic)
+        if addr:
+            return addr
+
+        candidates = self.get_cage_rw_space_candidates()
+        if candidates and len(candidates) > 0:
+            return candidates[0].page_start
+        return None
+
+    @Cache.cache_until_next
+    def get_old_space_limit(self, force_heuristic=False):
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.old_allocation_info_.limit_"
+        addr = self.get_sym_addr(sym, force_heuristic)
+        if addr:
+            return addr
+
+        candidates = self.get_cage_rw_space_candidates()
+        if candidates and len(candidates) > 0:
+            return candidates[0].page_end
+        return None
+
+    def dump_entry(self, entry, path):
+        # get color
+        line_color = ""
+        if entry.path.startswith("[stack]"):
+            line_color = Config.get_gef_setting("theme.address_stack")
+        elif entry.path.startswith("[heap]"):
+            line_color = Config.get_gef_setting("theme.address_heap")
+        elif entry.permission.value & Permission.EXECUTE:
+            line_color = Config.get_gef_setting("theme.address_code")
+        elif entry.permission.value & Permission.WRITE:
+            line_color = Config.get_gef_setting("theme.address_writable")
+        elif entry.permission.value & Permission.READ:
+            line_color = Config.get_gef_setting("theme.address_readonly")
+        elif entry.permission.value == Permission.NONE:
+            line_color = Config.get_gef_setting("theme.address_valid_but_none")
+        if entry.permission.value == (Permission.READ | Permission.WRITE | Permission.EXECUTE):
+            line_color += " " + Config.get_gef_setting("theme.address_rwx")
+
+        # make line
+        lines = []
+        lines.append(Color.colorify(
+            AddressUtil.format_address(entry.page_start, current_arch.ptrsize, long_fmt=True), line_color,
+        ))
+        lines.append(Color.colorify(
+            AddressUtil.format_address(entry.page_end, current_arch.ptrsize, long_fmt=True), line_color,
+        ))
+        lines.append(Color.colorify(
+            AddressUtil.format_address(entry.size, current_arch.ptrsize, long_fmt=True), line_color,
+        ))
+        lines.append(Color.colorify(
+            AddressUtil.format_address(entry.offset, current_arch.ptrsize, long_fmt=True), line_color,
+        ))
+        lines.append(Color.colorify(
+            str(entry.permission), line_color,
+        ))
+
+        if entry.path and path:
+            path = entry.path + "," + path
+        elif entry.path:
+            path = entry.path
+        lines.append(Color.colorify(path, line_color))
+
+        self.out.append(" ".join(lines))
+        return
+
+    def is_external_pointer_table(self, entry):
+        area_start = self.get_external_pointer_table_base(self.args.force_heuristic)
+        area_size = self.get_external_pointer_table_size(self.args.force_heuristic)
+        if area_start is not None and area_size is not None:
+            area_end = area_start + area_size
+            return area_start <= entry.page_start < area_end
+        return False
+
+    def is_shared_external_pointer_table(self, entry):
+        area_start = self.get_shared_external_pointer_table_base(self.args.force_heuristic)
+        area_size = self.get_shared_external_pointer_table_size(self.args.force_heuristic)
+        if area_start is not None and area_size is not None:
+            area_end = area_start + area_size
+            return area_start <= entry.page_start < area_end
+        return False
+
+    def is_cpp_heap_pointer_table(self, entry):
+        area_start = self.get_cpp_heap_pointer_table_base(self.args.force_heuristic)
+        area_size = self.get_cpp_heap_pointer_table_size(self.args.force_heuristic)
+        if area_start is not None and area_size is not None:
+            area_end = area_start + area_size
+            return area_start <= entry.page_start < area_end
+        return False
+
+    def is_trusted_pointer_table(self, entry):
+        area_start = self.get_trusted_pointer_table_base(self.args.force_heuristic)
+        area_size = self.get_trusted_pointer_table_size(self.args.force_heuristic)
+        if area_start is not None and area_size is not None:
+            area_end = area_start + area_size
+            return area_start <= entry.page_start < area_end
+        return False
+
+    def is_shared_trusted_pointer_table(self, entry):
+        area_start = self.get_shared_trusted_pointer_table_base(self.args.force_heuristic)
+        area_size = self.get_shared_trusted_pointer_table_size(self.args.force_heuristic)
+        if area_start is not None and area_size is not None:
+            area_end = area_start + area_size
+            return area_start <= entry.page_start < area_end
+        return False
+
+    def is_code_pointer_table(self, entry):
+        area_start = self.get_code_pointer_table_base(self.args.force_heuristic)
+        area_size = self.get_code_pointer_table_size(self.args.force_heuristic)
+        if area_start is not None and area_size is not None:
+            area_end = area_start + area_size
+            return area_start <= entry.page_start < area_end
+        return False
+
+    def is_js_dispatch_table_space(self, entry):
+        area_start = self.get_js_dispatch_table_base(self.args.force_heuristic)
+        area_size = self.get_js_dispatch_table_size(self.args.force_heuristic)
+        if area_start is not None and area_size is not None:
+            area_end = area_start + area_size
+            return area_start <= entry.page_start < area_end
+        return False
+
+    def is_code_range(self, entry):
+        area_start = self.get_code_range_base(self.args.force_heuristic)
+        area_size = self.get_code_range_size(self.args.force_heuristic)
+        if area_start is not None and area_size is not None:
+            area_end = area_start + area_size
+            return area_start <= entry.page_start < area_end
+        return False
+
+    def is_new_space(self, entry):
+        area_start = self.get_new_space_start(self.args.force_heuristic)
+        area_end = self.get_new_space_limit(self.args.force_heuristic)
+        if area_start is None or area_end is None:
+            return False
+        return entry.page_start <= area_start < area_end <= entry.page_end
+
+    def is_old_space(self, entry):
+        area_start = self.get_old_space_start(self.args.force_heuristic)
+        area_end = self.get_old_space_limit(self.args.force_heuristic)
+        if area_start is None or area_end is None:
+            return False
+        return entry.page_start <= area_start < area_end <= entry.page_end
+
+    def is_ro_space(self, entry):
+        if self.is_cage(entry):
+            return entry.permission.value == Permission.READ
+        return False
+
+    def is_array_buffer(self, entry):
+        if self.is_cage(entry):
+            if entry.permission.value == Permission.READ | Permission.WRITE:
+                if (entry.page_start & 0xffffffff) == 0:
+                    return True
+        return False
+
+    def is_cage(self, entry):
+        area_start = self.get_cage_base(self.args.force_heuristic)
+        if area_start is None:
+            return False
+        area_end = area_start + (1 * 1024 * 1024 * 1024 * 1024) # 1TB
+        return area_start <= entry.page_start < area_end
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @only_if_specific_arch(arch=("x86_64",))
+    def do_invoke(self, args):
+        maps = ProcessMap.get_process_maps()
+        if not maps:
+            err("Not found any maps")
+            return
+
+        if args.vvverbose:
+            args.vverbose = True
+        if args.vverbose:
+            args.verbose = True
+
+        self.out = []
+        for entry in maps:
+            # location filtering
+            if args.location is not None:
+                if args.location < entry.page_start or entry.page_end <= args.location:
+                    continue
+
+            if not args.vverbose:
+                # None permission filtering
+                if entry.permission.value == Permission.NONE:
+                    continue
+
+            if not args.verbose:
+                # zero contents filtering
+                try:
+                    if entry.size <= 0x100000:
+                        d = read_memory(entry.page_start, entry.size)
+                        if set(d) == {0}:
+                            continue
+                except gdb.error:
+                    pass
+
+            # known already entry filtering
+            if entry.path:
+                if args.vvverbose:
+                    self.dump_entry(entry, "")
+                continue
+
+            # display the cage regions
+            if self.is_external_pointer_table(entry):
+                self.dump_entry(entry, "[v8:external_pointer_table]")
+            elif self.is_shared_external_pointer_table(entry):
+                self.dump_entry(entry, "[v8:shared_external_pointer_table]")
+            elif self.is_cpp_heap_pointer_table(entry):
+                self.dump_entry(entry, "[v8:cpp_heap_pointer_table]")
+            elif self.is_trusted_pointer_table(entry):
+                self.dump_entry(entry, "[v8:trusted_pointer_table]")
+            elif self.is_shared_trusted_pointer_table(entry):
+                self.dump_entry(entry, "[v8:shared_trusted_pointer_table]")
+            elif self.is_code_pointer_table(entry):
+                self.dump_entry(entry, "[v8:code_pointer_table]")
+            elif self.is_js_dispatch_table_space(entry):
+                self.dump_entry(entry, "[v8:js_dispatch_table]")
+            elif self.is_code_range(entry):
+                self.dump_entry(entry, "[v8:code_range]")
+            elif self.is_new_space(entry):
+                self.dump_entry(entry, "[v8:new_space]")
+            elif self.is_old_space(entry):
+                self.dump_entry(entry, "[v8:old_space]")
+            elif self.is_ro_space(entry):
+                self.dump_entry(entry, "[v8:ro_space]")
+            elif self.is_array_buffer(entry):
+                self.dump_entry(entry, "[v8:ArrayBuffer]")
+            elif self.is_cage(entry):
+                self.dump_entry(entry, "[v8:cage]")
+            else:
+                if args.vvverbose:
+                    self.dump_entry(entry, "")
+
+        self.print_output(term=True)
+        return
+
+
+@register_command
 class V8Command(GenericCommand):
     """Print v8 tagged object, or load more commands from internet."""
 

@@ -717,6 +717,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/v8.png)
     - It also loads more commands from latest gdbinit for v8.
     - ![](images/v8-load.png)
+- `cage`: displays v8 (especially `d8`) ubercage.
+    - ![](images/cage.png)
 - `mte-tags`: displays the MTE tags for the specified address.
     - Supported on ARM64.
     - ![](images/mte-tags.png)
