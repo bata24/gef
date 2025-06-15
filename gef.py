@@ -10941,6 +10941,18 @@ def read_memory(addr, length):
         except Exception:
             pass
 
+    if is_arm64() and is_qemu_system():
+        if Config.get_gef_setting("gef.read_memory_work_around_for_aarch64_secure_memory"):
+            sm = QemuMonitor.get_secure_memory_map()
+            if sm:
+                target_phys = XSecureMemAddrCommand.v2p_secure(addr) # heavy
+                if target_phys:
+                    if sm.sm_base <= target_phys < sm.sm_base + sm.sm_size:
+                        target_offset = target_phys - sm.sm_base
+                        data = XSecureMemAddrCommand.read_secure_memory(sm, target_offset, length)
+                        if data:
+                            return data
+
     # Don't include it in a try-catch, as we might expect a memory error on read_memory.
     return gdb.selected_inferior().read_memory(addr, length).tobytes()
 
@@ -97075,6 +97087,8 @@ class GefCommand(GenericCommand):
         self.add_setting("pager_min_lines", 11, "Show pager only if output is longer than this value")
         self.add_setting("keep_pager_result", False, "Leaves temporary files in gef_print()")
         self.add_setting("less_option", "-Rf -j.5", "LESS command option used in gef_print()")
+        self.add_setting("read_memory_work_around_for_aarch64_secure_memory", False,
+                         "Workaround for AArch64 secure memory read_memory failures")
         return
 
     @parse_args
