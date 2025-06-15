@@ -11353,6 +11353,8 @@ class QemuMonitor:
                 continue
             if verbose:
                 info("secure memory page of pid {:d}: {:#x}".format(qemu_system_pid, m.page_start))
+            m.sm_base = secure_memory_base
+            m.sm_size = secure_memory_size
             return m
         return None
 
@@ -82830,8 +82832,8 @@ class XSecureMemAddrCommand(GenericCommand):
             return
 
         if args.phys:
-            if sm.page_start <= args.location < sm.page_end:
-                target_offset = args.location - sm.page_start
+            if sm.sm_base <= args.location < sm.sm_base + sm.sm_size:
+                target_offset = args.location - sm.sm_base
             else:
                 err("Phys {:#x} is not default secure memory (unsupported)".format(args.location))
                 return
@@ -82846,8 +82848,8 @@ class XSecureMemAddrCommand(GenericCommand):
             if target_phys is None:
                 err("Not found physical address")
                 return
-            if sm.page_start <= target_phys < sm.page_end:
-                target_offset = target_phys - sm.page_start
+            if sm.sm_base <= target_phys < sm.sm_base + sm.sm_size:
+                target_offset = target_phys - sm.sm_base
             else:
                 err("Virt {:#x} is not default secure memory (unsupported)".format(args.location))
                 return
@@ -83012,8 +83014,8 @@ class WSecureMemAddrCommand(GenericCommand):
             return
 
         if args.phys:
-            if sm.page_start <= args.location < sm.page_end:
-                target_offset = args.location - sm.page_start
+            if sm.sm_base <= args.location < sm.sm_base + sm.sm_size:
+                target_offset = args.location - sm.sm_base
             else:
                 err("Phys {:#x} is not default secure memory (unsupported)".format(args.location))
                 return
@@ -83028,8 +83030,8 @@ class WSecureMemAddrCommand(GenericCommand):
             if target_phys is None:
                 err("Not found physical address")
                 return
-            if sm.page_start <= target_phys < sm.page_end:
-                target_offset = target_phys - sm.page_start
+            if sm.sm_base <= target_phys < sm.sm_base + sm.sm_size:
+                target_offset = target_phys - sm.sm_base
             else:
                 err("Virt {:#x} is not default secure memory (unsupported)".format(args.location))
                 return
