@@ -88517,7 +88517,11 @@ class PagewalkArm64Command(PagewalkCommand):
 
                     # calc next table / output phys addr (drop the flag bits)
                     if has_next_level(entry):
-                        next_level_table = (entry & 0x0003fffffffff000) | (((entry >> 8) & 0b11) << 50)
+                        # In aRMv8.7, level -1 must be 4k_granule
+                        if self.TCR_ELx_DS:
+                            next_level_table = (entry & 0x0003fffffffff000) | (((entry >> 8) & 0b11) << 50)
+                        else:
+                            next_level_table = entry & 0x0003fffffffff000
                     else:
                         # In ARMv8.7, level -1 has no block descriptors
                         raise
@@ -88656,12 +88660,20 @@ class PagewalkArm64Command(PagewalkCommand):
                     # calc next table / output phys addr (drop the flag bits)
                     if has_next_level(entry):
                         if self.FEAT_LPA:
-                            next_level_table = (entry & 0x0003fffffffff000) | (((entry >> 8) & 0b11) << 50)
+                            # In aRMv8.7, level 0 must be 4k_granule or 16k_granule
+                            if self.TCR_ELx_DS:
+                                next_level_table = (entry & 0x0003fffffffff000) | (((entry >> 8) & 0b11) << 50)
+                            else:
+                                next_level_table = entry & 0x0003fffffffff000
                         else:
                             next_level_table = entry & 0x0000fffffffff000
                     else:
                         if self.FEAT_LPA:
-                            phys_addr = (entry & 0x0003fffffffe0000) | (((entry >> 8) & 0b11) << 50)
+                            # In aRMv8.7, level 0 must be 4k_granule or 16k_granule
+                            if self.TCR_ELx_DS:
+                                phys_addr = (entry & 0x0003fffffffe0000) | (((entry >> 8) & 0b11) << 50)
+                            else:
+                                phys_addr = entry & 0x0003fffffffe0000
                         else:
                             # In ARMv8.7, level 0 + no-FEAT_LPA has no block descriptors
                             raise
@@ -88815,16 +88827,22 @@ class PagewalkArm64Command(PagewalkCommand):
                         if self.FEAT_LPA:
                             if is_64k_granule:
                                 next_level_table = (entry & 0x0000ffffffff0000) | (((entry >> 12) & 0b1111) << 48)
-                            else:
-                                next_level_table = (entry & 0x0003fffffffff000) | (((entry >> 8) & 0b11) << 50)
+                            else: # 4k or 16k
+                                if self.TCR_ELx_DS:
+                                    next_level_table = (entry & 0x0003fffffffff000) | (((entry >> 8) & 0b11) << 50)
+                                else:
+                                    next_level_table = entry & 0x0003fffffffff000
                         else:
                             next_level_table = entry & 0x0000fffffffff000
                     else:
                         if self.FEAT_LPA:
                             if is_64k_granule:
                                 phys_addr = (entry & 0x0000fffffffe0000) | (((entry >> 12) & 0b1111) << 48)
-                            else:
-                                phys_addr = (entry & 0x0003fffffffe0000) | (((entry >> 8) & 0b11) << 50)
+                            else: # 4k or 16k
+                                if self.TCR_ELx_DS:
+                                    phys_addr = (entry & 0x0003fffffffe0000) | (((entry >> 8) & 0b11) << 50)
+                                else:
+                                    phys_addr = entry & 0x0003fffffffe0000
                         else:
                             phys_addr = entry & 0x0000fffffffe0000
 
@@ -88985,16 +89003,22 @@ class PagewalkArm64Command(PagewalkCommand):
                         if self.FEAT_LPA:
                             if is_64k_granule:
                                 next_level_table = (entry & 0x0000ffffffff0000) | (((entry >> 12) & 0b1111) << 48)
-                            else:
-                                next_level_table = (entry & 0x0003fffffffff000) | (((entry >> 8) & 0b11) << 50)
+                            else: # 4k or 16k
+                                if self.TCR_ELx_DS:
+                                    next_level_table = (entry & 0x0003fffffffff000) | (((entry >> 8) & 0b11) << 50)
+                                else:
+                                    next_level_table = entry & 0x0003fffffffff000
                         else:
                             next_level_table = entry & 0x0000fffffffff000
                     else:
                         if self.FEAT_LPA:
                             if is_64k_granule:
                                 phys_addr = (entry & 0x0000fffffffe0000) | (((entry >> 12) & 0b1111) << 48)
-                            else:
-                                phys_addr = (entry & 0x0003fffffffe0000) | (((entry >> 8) & 0b11) << 50)
+                            else: # 4k or 16k
+                                if self.TCR_ELx_DS:
+                                    phys_addr = (entry & 0x0003fffffffe0000) | (((entry >> 8) & 0b11) << 50)
+                                else:
+                                    phys_addr = entry & 0x0003fffffffe0000
                         else:
                             phys_addr = entry & 0x0000fffffffe0000
 
@@ -89149,12 +89173,18 @@ class PagewalkArm64Command(PagewalkCommand):
                     # calc next table / output phys addr (drop the flag bits)
                     if is_4k_granule:
                         if self.FEAT_LPA:
-                            phys_addr = (entry & 0x0003fffffffff000) | (((entry >> 8) & 0b11) << 50)
+                            if self.TCR_ELx_DS:
+                                phys_addr = (entry & 0x0003fffffffff000) | (((entry >> 8) & 0b11) << 50)
+                            else:
+                                phys_addr = entry & 0x0003fffffffff000
                         else:
                             phys_addr = entry & 0x0000fffffffff000
                     elif is_16k_granule:
                         if self.FEAT_LPA:
-                            phys_addr = (entry & 0x0003ffffffffc000) | (((entry >> 8) & 0b11) << 50)
+                            if self.TCR_ELx_DS:
+                                phys_addr = (entry & 0x0003ffffffffc000) | (((entry >> 8) & 0b11) << 50)
+                            else:
+                                phys_addr = entry & 0x0003ffffffffc000
                         else:
                             phys_addr = entry & 0x0000ffffffffc000
                     elif is_64k_granule:
@@ -89257,6 +89287,7 @@ class PagewalkArm64Command(PagewalkCommand):
             self.warn_add_out("Maybe unused TTBR0_EL1")
             return
 
+        self.TCR_ELx_DS = ((TCR_EL1 >> 59) & 1) == 1
         IPS = (TCR_EL1 >> 32) & 0b111
         TG0 = (TCR_EL1 >> 14) & 0b11
         T0SZ = TCR_EL1 & 0b111111
@@ -89305,6 +89336,7 @@ class PagewalkArm64Command(PagewalkCommand):
             self.warn_add_out("Maybe unused TTBR1_EL1")
             return
 
+        self.TCR_ELx_DS = ((TCR_EL1 >> 59) & 1) == 1
         IPS = (TCR_EL1 >> 32) & 0b111
         TG1 = (TCR_EL1 >> 30) & 0b11
         T1SZ = (TCR_EL1 >> 16) & 0b111111
@@ -89355,6 +89387,7 @@ class PagewalkArm64Command(PagewalkCommand):
                 self.warn_add_out("Maybe unused VTTBR_EL2")
             return
 
+        self.TCR_ELx_DS = ((VTCR_EL2 >> 32) & 1) == 1
         SL2 = (VTCR_EL2 >> 33) & 0b1
         PS = (VTCR_EL2 >> 16) & 0b11
         TG0 = (VTCR_EL2 >> 14) & 0b11
@@ -89472,6 +89505,7 @@ class PagewalkArm64Command(PagewalkCommand):
             self.warn_add_out("Maybe unused TTBR0_EL2")
             return
 
+        self.TCR_ELx_DS = ((TCR_EL2 >> 32) & 1) == 1
         if self.EL2_E2H:
             IPS = (TCR_EL2 >> 32) & 0b111
         else:
@@ -89539,6 +89573,7 @@ class PagewalkArm64Command(PagewalkCommand):
             self.warn_add_out("Maybe unused TTBR1_EL2")
             return
 
+        self.TCR_ELx_DS = ((TCR_EL2 >> 32) & 1) == 1
         IPS = (TCR_EL2 >> 32) & 0b111
         TG1 = (TCR_EL2 >> 30) & 0b11
         T1SZ = (TCR_EL2 >> 16) & 0b111111
@@ -89587,6 +89622,7 @@ class PagewalkArm64Command(PagewalkCommand):
             self.warn_add_out("Maybe unused TTBR0_EL3")
             return
 
+        self.TCR_ELx_DS = ((TCR_EL3 >> 32) & 1) == 1
         PS = (TCR_EL3 >> 16) & 0b111
         TG0 = (TCR_EL3 >> 14) & 0b11
         T0SZ = TCR_EL3 & 0b111111
