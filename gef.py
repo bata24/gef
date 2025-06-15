@@ -415,17 +415,9 @@ class Cache:
         return wrapper
 
     @staticmethod
-    def reset_gef_caches(function=None, all=False):
+    def reset_gef_caches(all=False):
         """Clears the cache of GEF.
         By default, it only clears caches of `until_next` type."""
-
-        if function:
-            for v in Cache.__gef_caches__.values():
-                try:
-                    del v[function.__name__, id(function)]
-                except KeyError:
-                    pass
-            return
 
         Cache.__gef_caches__["until_next"] = {}
 
@@ -14017,7 +14009,7 @@ class GenericCommand(gdb.Command):
         Config.__gef_config_orig__[key] = [value, type(value), description] # for debugging
 
         # reset cache
-        Cache.reset_gef_caches(function=Config.get_gef_setting)
+        Cache.reset_gef_caches()
         return
 
     def set_repeat_count(self, argv, from_tty):
@@ -17855,7 +17847,7 @@ class PtrDemangleCommand(GenericCommand):
         try:
             auxv = Auxv.get_auxiliary_values()
             if auxv is None:
-                Cache.reset_gef_caches(function=Auxv.get_auxiliary_values)
+                Cache.reset_gef_caches()
                 auxv = Auxv.get_auxiliary_values()
             if auxv and "AT_RANDOM" in auxv:
                 if is_s390x():
