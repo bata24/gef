@@ -89748,7 +89748,7 @@ class PagewalkArm64Command(PagewalkCommand):
     @only_if_specific_arch(arch=("ARM64",))
     def do_invoke(self, args):
         if args.optee:
-            Cache.reset_gef_caches(function=PageMap.get_page_maps_arm64_optee_secure_memory)
+            Cache.reset_gef_caches()
             PageMap.get_page_maps_arm64_optee_secure_memory(True)
             return
 
