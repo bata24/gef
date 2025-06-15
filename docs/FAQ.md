@@ -260,17 +260,21 @@ Similarly, this GEF cannot be used at the same time as `peda` or `pwndbg`.
 Make sure you only load one of them.
 
 ## GDB will not load GEF.
-Please start it as `root` user, or with `sudo`.
+Please start GDB as the `root` user, or run it with `sudo`.
 
-## GDB will not load GEF even as the `root` user.
-This is probably because GDB does not support integration with `python3`.
+## GDB still does not load GEF, even as the `root` user.
+It is likely that your GDB does not support integration with `python3`.
 
-Consider building GDB from the latest tarball or Git repository.
+This can happen if you are not using the GDB provided by Ubuntu's `apt` package manager. For example:
+- You built it yourself from source code
+- You are using a version that someone else prepared for a specific architecture
+
+Consider rebuilding GDB from the latest tarball or from the Git repository.
 
 - From the latest tarball:
     - Download latest tarball from https://ftp.gnu.org/gnu/gdb/
     ```
-    tar xf gdb-15.2.tar.xz && cd gdb-15.2
+    tar xf gdb-16.3.tar.xz && cd gdb-16.3
     ./configure --enable-targets=all --with-python=/usr/bin/python3
     make && make install
     ```
