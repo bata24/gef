@@ -91313,7 +91313,25 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
         filepath = Path.get_filepath(append_proc_root_prefix=False)
         maps = ProcessMap.get_process_maps_linux(Pid.get_pid())
         RW = Permission.READ | Permission.WRITE
-        rw_maps = [p for p in maps if p.permission.value == RW and p.path == filepath]
+        rw_maps = []
+        for m in maps:
+            if m.permission.value != RW:
+                continue
+            if m.path == filepath:
+                rw_maps.append(m)
+                continue
+            if len(rw_maps) > 0:
+                if m.page_start == rw_maps[-1].page_end:
+                    # concat
+                    new_m = Section(
+                        page_start=rw_maps[-1].page_start,
+                        page_end=m.page_end,
+                        offset=rw_maps[-1].offset,
+                        permission=rw_maps[-1].permission,
+                        inode=rw_maps[-1].inode,
+                        path=rw_maps[-1].path,
+                    )
+                    rw_maps[-1] = new_m
         if len(rw_maps) == 1:
             return rw_maps[0]
         return None
