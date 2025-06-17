@@ -85237,15 +85237,6 @@ class PageMap:
                 continue
             maps.append([va, va + size, pa, pa + size])
             old_i = i
-        if verbose:
-            fmt = "{:37s}  {:37s}  {:12s}"
-            legend = ["Virtual address start-end", "Physical address start-end", "Total size"]
-            gef_print(GefUtil.make_legend(fmt.format(*legend)))
-
-            for va_start, va_end, pa_start, pa_end in maps:
-                gef_print("{:#018x}-{:#018x}  {:#018x}-{:#018x}  {:<#12x}".format(
-                    va_start, va_end, pa_start, pa_end, va_end - va_start,
-                ))
         return maps
 
     @staticmethod
@@ -85318,8 +85309,6 @@ class Virt2PhysCommand(GenericCommand):
                        help="ARMv7/v8: use TTBRn_ELm to parse start.")
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
                         help="the address of data to translate.")
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="verbose output (for arm64 secure memory).")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -85340,7 +85329,7 @@ class Virt2PhysCommand(GenericCommand):
                 FORCE_PREFIX_S = True
 
         # do not use cache
-        maps = PageMap.get_page_maps(FORCE_PREFIX_S, args.verbose)
+        maps = PageMap.get_page_maps(FORCE_PREFIX_S)
         if maps is None:
             return
         paddr = PageMap.v2p_from_map(args.address, maps)
@@ -89801,14 +89790,50 @@ class PagewalkArm64Command(PagewalkCommand):
             self.quiet_info_add_out("EL3 translation is unused")
         return
 
+    def aarch64_optee_pseudo_pagewalk(self):
+        Cache.reset_gef_caches()
+        maps = PageMap.get_page_maps_arm64_optee_secure_memory(verbose=not self.args.quiet)
+        if not maps:
+            return
+        fmt = "{:37s}  {:37s}  {:12s}  {:s}"
+        legend = ["Virtual address start-end", "Physical address start-end", "Total size", "Hint (Maybe)"]
+        gef_print(GefUtil.make_legend(fmt.format(*legend)))
+
+        text_end = None
+        for va_start, va_end, pa_start, pa_end in maps:
+            # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/plat-vexpress/conf.mk
+            if va_start == pa_start == 0xe100000:
+                hint = "TEE-OS Exception Vector (first 0x2000 bytes)"
+            elif pa_start == 0xe100000:
+                hint = "TEE-OS .text"
+                text_end = va_end
+            elif text_end is not None and va_start == text_end:
+                hint = "TEE-OS stack"
+            elif pa_start == 0x42000000:
+                hint = "Non-secure <-> Secure shared memory"
+            # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/plat-vexpress/platform_config.h
+            elif pa_start == 0x08000000:
+                hint = "GIC_BASE"
+            elif pa_start == 0x09000000:
+                hint = "UART0_BASE"
+            elif pa_start == 0x09040000:
+                hint = "UART1_BASE"
+            elif pa_start == 0x09100000:
+                hint = "PCSC_BASE"
+            else:
+                hint = ""
+            gef_print("{:#018x}-{:#018x}  {:#018x}-{:#018x}  {:<#12x}  {:s}".format(
+                va_start, va_end, pa_start, pa_end, va_end - va_start, hint,
+            ))
+        return
+
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     @only_if_specific_arch(arch=("ARM64",))
     def do_invoke(self, args):
         if args.optee:
-            Cache.reset_gef_caches()
-            PageMap.get_page_maps_arm64_optee_secure_memory(True)
+            self.aarch64_optee_pseudo_pagewalk()
             return
 
         if self.args.trace:
