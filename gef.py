@@ -82839,13 +82839,17 @@ class XSecureMemAddrCommand(GenericCommand):
             if sm.sm_base <= args.location < sm.sm_base + sm.sm_size:
                 target_offset = args.location - sm.sm_base
             else:
-                err("Phys {:#x} is not default secure memory (unsupported)".format(args.location))
+                err("Phys {:#x} is not default secure memory ({:#x}-{:#x})".format(
+                    args.location, sm.sm_base, sm.sm_base + sm.sm_size,
+                ))
                 return
         elif args.off:
             if 0 <= args.location < sm.size:
                 target_offset = args.location
             else:
-                err("Offset {:#x} is not default secure memory (unsupported)".format(args.location))
+                err("Offset {:#x} is not default secure memory ({:#x}-{:#x})".format(
+                    args.location, sm.sm_base, sm.sm_base + sm.sm_size,
+                ))
                 return
         elif args.virt:
             target_phys = XSecureMemAddrCommand.v2p_secure(args.location, args.verbose)
@@ -82855,7 +82859,9 @@ class XSecureMemAddrCommand(GenericCommand):
             if sm.sm_base <= target_phys < sm.sm_base + sm.sm_size:
                 target_offset = target_phys - sm.sm_base
             else:
-                err("Virt {:#x} is not default secure memory (unsupported)".format(args.location))
+                err("Virt {:#x} is not default secure memory ({:#x}-{:#x})".format(
+                    args.location, sm.sm_base, sm.sm_base + sm.sm_size,
+                ))
                 return
 
         # fix for size, offset (when thumb2)
@@ -83021,13 +83027,17 @@ class WSecureMemAddrCommand(GenericCommand):
             if sm.sm_base <= args.location < sm.sm_base + sm.sm_size:
                 target_offset = args.location - sm.sm_base
             else:
-                err("Phys {:#x} is not default secure memory (unsupported)".format(args.location))
+                err("Phys {:#x} is not default secure memory ({:#x}-{:#x})".format(
+                    args.location, sm.sm_base, sm.sm_base + sm.sm_size,
+                ))
                 return
         elif args.off:
             if 0 <= args.location < sm.size:
                 target_offset = args.location
             else:
-                err("Offset {:#x} is not default secure memory (unsupported)".format(args.location))
+                err("Offset {:#x} is not default secure memory ({:#x}-{:#x})".format(
+                    args.location, sm.sm_base, sm.sm_base + sm.sm_size,
+                ))
                 return
         elif args.virt:
             target_phys = XSecureMemAddrCommand.v2p_secure(args.location, args.verbose)
@@ -83037,7 +83047,9 @@ class WSecureMemAddrCommand(GenericCommand):
             if sm.sm_base <= target_phys < sm.sm_base + sm.sm_size:
                 target_offset = target_phys - sm.sm_base
             else:
-                err("Virt {:#x} is not default secure memory (unsupported)".format(args.location))
+                err("Virt {:#x} is not default secure memory ({:#x}-{:#x})".format(
+                    args.location, sm.sm_base, sm.sm_base + sm.sm_size,
+                ))
                 return
 
         # write
@@ -83072,7 +83084,12 @@ class BreakSecureMemAddrCommand(GenericCommand):
     def do_invoke(self, args):
         if args.verbose:
             info("phys address: {:#x}".format(args.location))
+
         virt_addrs = XSecureMemAddrCommand.p2v_secure(args.location, args.verbose)
+        if virt_addrs == []:
+            warn("Not found virtual address")
+            return
+
         for virt_addr in virt_addrs:
             gdb.execute("break *{:#x}".format(virt_addr))
         return
