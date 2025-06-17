@@ -96769,7 +96769,7 @@ class BinwalkMemoryCommand(GenericCommand):
 
 
 @register_command
-class BincompareCommand(GenericCommand):
+class BincompareCommand(GenericCommand, BufferingOutput):
     """Compare an binary file with the memory position looking for badchars."""
 
     _cmdline_ = "bincompare"
@@ -96781,74 +96781,93 @@ class BincompareCommand(GenericCommand):
                         help="specifies the memory address.")
     parser.add_argument("size", metavar="SIZE", nargs="?", type=AddressUtil.parse_address,
                         help="specifies the size.")
-    parser.add_argument("--file-offset", type=AddressUtil.parse_address,
+    parser.add_argument("--file-offset", type=AddressUtil.parse_address, default=0,
                         help="specifies the file offset.")
+    parser.add_argument("-f", "--full", action="store_true", help="display the same line without omitting.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
         return
 
-    def compare(self, file_data, memory_data):
-        result_table = []
-        badchars = ""
-        cnt = 0
-        corrupted = -1
-        for eachByte in file_data:
-            hexchar = "{:02x}".format(eachByte)
-            if cnt > len(memory_data):
-                result_table.append((hexchar, "--"))
-                corrupted = -1
-            elif eachByte == memory_data[cnt]:
-                result_table.append((hexchar, "  "))
-                corrupted = -1
-            else:
-                result_table.append((hexchar, "{:02x}".format(memory_data[cnt])))
-                if len(badchars) == 0:
-                    badchars = hexchar
+    def compare(self, from1data, from2data, size):
+        diff_found = False
+        asterisk = True
+
+        hex_pad_len = {
+            1: 37,
+            2: 35,
+            3: 32,
+            4: 30,
+            5: 27,
+            6: 25,
+            7: 22,
+            8: 20,
+            9: 17,
+            10: 15,
+            11: 12,
+            12: 9,
+            13: 7,
+            14: 5,
+            15: 2,
+            16: 0,
+        }
+
+        width = len(hex(size))
+
+        for pos in range(0, size, 16):
+            # determining continuity
+            f1_bin = from1data[pos : pos + 16]
+            f2_bin = from2data[pos : pos + 16]
+            if not self.args.full:
+                if f1_bin == f2_bin:
+                    if asterisk is False:
+                        self.out.append("*")
+                        asterisk = True
+                    continue
+
+            diff_found = True
+            asterisk = False
+
+            # coloring
+            f1_hex = []
+            f2_hex = []
+            f1_ascii = []
+            f2_ascii = []
+            for i in range(min(len(f1_bin), 16)):
+                if f1_bin[i] == f2_bin[i]:
+                    color_func = lambda x: x
                 else:
-                    badchars += ", " + hexchar
-                if corrupted == -1:
-                    corrupted = cnt
-            cnt += 1
+                    color_func = Color.boldify
+                f1_hex.append(color_func("{:02x}".format(f1_bin[i])))
+                f2_hex.append(color_func("{:02x}".format(f2_bin[i])))
+                f1_ascii.append(color_func(chr(f1_bin[i]) if 0x20 <= f1_bin[i] < 0x7f else "."))
+                f2_ascii.append(color_func(chr(f2_bin[i]) if 0x20 <= f2_bin[i] < 0x7f else "."))
 
-        line = 0
+            # formatting
+            # ["00", "00", "00" "00", ...] -> ["0000", "0000", ...]
+            f1_hex2 = ["".join(x) for x in slicer(f1_hex, 2)]
+            f2_hex2 = ["".join(x) for x in slicer(f2_hex, 2)]
 
-        info("Comparison result:")
-        gef_print("    +-----------------------------------------------+")
-        for line in range(0, len(result_table), 16):
-            pdata1 = []
-            pdata2 = []
-            for i in range(line, line + 16):
-                if i < len(result_table):
-                    pdata1.append(result_table[i][0])
-                    pdata2.append(result_table[i][1])
+            # padding
+            # ["0000", "0000", ...] -> "0000 0000 ..."
+            f1_hex_s = " ".join(f1_hex2) + " " * hex_pad_len[len(f1_hex)]
+            f2_hex_s = " ".join(f2_hex2) + " " * hex_pad_len[len(f2_hex)]
+            # [".", ".", ...] -> "................"
+            f1_ascii_s = "".join(f1_ascii) + " " * (16 - len(f1_ascii))
+            f2_ascii_s = "".join(f2_ascii) + " " * (16 - len(f2_ascii))
 
-            self.print_line("{:02x}".format(line), pdata1, "file")
-            self.print_line("  ", pdata2, "memory")
+            # make line
+            addr1 = "{:#{:d}x}".format(self.args.file_offset + pos, width)
+            addr2 = ProcessMap.lookup_address(self.args.address + pos)
+            self.out.append("{:s}: {:s} |{:s}| {!s}: {:s} |{:s}|".format(
+                addr1, f1_hex_s, f1_ascii_s,
+                addr2, f2_hex_s, f2_ascii_s,
+            ))
 
-        gef_print("    +-----------------------------------------------+")
-        gef_print("")
-
-        if corrupted > -1:
-            info("Corruption after {:d} bytes".format(corrupted))
-
-        if badchars == "":
-            info("No badchars found!")
-        else:
-            info("Badchars found: {:s}".format(badchars))
-        return
-
-    def print_line(self, prefix, data, label):
-        line = []
-        for d in data:
-            line.append(d)
-        for _ in range(16 - len(line)):
-            line.append("--")
-
-        gef_print(" {:s} |{:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s} {:s}| {:s}".format(
-            prefix, *line, label,
-        ))
+        if diff_found is False:
+            self.info_add_out("Not found diff")
         return
 
     @parse_args
@@ -96859,8 +96878,7 @@ class BincompareCommand(GenericCommand):
             err("specified file '{:s}' not exists".format(args.filename))
             return
         file_data = open(args.filename, "rb").read()
-        if args.file_offset:
-            file_data = file_data[args.file_offset:]
+        file_data = file_data[args.file_offset:]
         file_size = len(file_data)
 
         # size
@@ -96884,7 +96902,9 @@ class BincompareCommand(GenericCommand):
             err("cannot reach memory {:#x}".format(args.address))
             return
 
-        self.compare(file_data, memory_data)
+        self.out = []
+        self.compare(file_data, memory_data, size)
+        self.print_output(term=True)
         return
 
 
