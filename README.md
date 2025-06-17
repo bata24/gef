@@ -252,6 +252,9 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `optee-break-ta`: sets the breakpoint to the offset of OPTEE-Trusted-App when gdb is in normal world.
     - Supported on ARM64 and ARM.
     - ![](images/optee-break-ta.png)
+- `optee-smc-service-dump`: dumps OPTEE SMC services.
+    - Supported on ARM64.
+    - ![](images/optee-smc-service-dump.png)
 - `pac-keys`: pretty prints ARM64 PAC keys.
     - Supported on ARM64.
     - ![](images/pac-keys.png)

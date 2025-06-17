@@ -83188,6 +83188,160 @@ class OpteeBreakTaAddrCommand(GenericCommand):
 
 
 @register_command
+class OpteeSmcServiceDumpCommand(GenericCommand, BufferingOutput):
+    """Dump the OPTEE SMC (EL3) service (specifically, the arm-trusted-firmware implementation)."""
+
+    _cmdline_ = "optee-smc-service-dump"
+    _category_ = "08-g. Qemu-system Cooperation - TrustZone"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="verbose output.")
+    _syntax_ = parser.format_help()
+
+    def find_service(self, sm, data):
+        """search services from *.secure-ram."""
+
+        def is_valid_secure_addr(addr):
+            return sm.sm_base <= addr < sm.sm_base + sm.sm_size
+
+        def read_cstring_from_secure_memory(addr):
+            if not is_valid_secure_addr(addr):
+                return None
+
+            offset = addr - sm.sm_base
+            s = ""
+            i = 0
+            while offset + i < len(data):
+                c = data[offset + i]
+                if 0x20 <= c < 0x7f:
+                    s += chr(c)
+                    i += 1
+                    continue
+                if c == 0x00:
+                    return s
+                break
+            return None
+
+        """
+        typedef struct rt_svc_desc {
+            uint8_t start_oen;
+            uint8_t end_oen;
+            uint8_t call_type;
+            const char *name;
+            rt_svc_init_t init;
+            rt_svc_handle_t handle;
+        } rt_svc_desc_t;
+        """
+        candidate_services = []
+        data_list = slice_unpack(data, current_arch.ptrsize)
+        for i in range(len(data_list) - 3):
+            # https://github.com/ARM-software/arm-trusted-firmware/blob/master/include/lib/smccc.h
+
+            # start_oen, end_oen
+            v = data_list[i]
+            start_oen = v & 0xff
+            end_oen = (v >> 8) & 0xff
+            if start_oen > 64 or end_oen > 64:
+                continue
+            if start_oen > end_oen:
+                continue
+
+            # call_type
+            call_type = (v >> 16) & 0xff
+            if call_type > 1:
+                continue
+
+            # padding
+            if (v >> 24) != 0:
+                continue
+
+            # name
+            name_ptr = data_list[i + 1]
+            if not is_valid_secure_addr(name_ptr):
+                continue
+            name = read_cstring_from_secure_memory(name_ptr)
+            if not name:
+                continue
+
+            # init
+            init_ptr = data_list[i + 2]
+            if init_ptr != 0 and not is_valid_secure_addr(init_ptr):
+                continue
+
+            # handle
+            handle_ptr = data_list[i + 3]
+            if not is_valid_secure_addr(handle_ptr):
+                continue
+
+            s = {}
+            s["address"] = sm.sm_base + i * current_arch.ptrsize
+            s["start_oen"] = start_oen
+            s["end_oen"] = end_oen
+            s["call_type"] = call_type
+            s["name"] = name_ptr
+            s["name_string"] = name
+            s["init"] = init_ptr
+            s["handle"] = handle_ptr
+            Service = collections.namedtuple("Service", s.keys())
+            candidate_services.append(Service(*s.values()))
+
+        # filter false positive
+        valid_services = []
+        for s in candidate_services:
+            if s.name_string == "opteed_fast":
+                valid_services.append(s)
+                valid_min_addr = s.address
+                valid_max_addr = s.address
+                break
+        else:
+            return []
+
+        while True:
+            for s in candidate_services:
+                if valid_min_addr - current_arch.ptrsize * 4 == s.address:
+                    valid_min_addr = s.address
+                    valid_services.append(s)
+                    break
+                if valid_max_addr + current_arch.ptrsize * 4 == s.address:
+                    valid_max_addr = s.address
+                    valid_services.append(s)
+                    break
+            else:
+                break
+
+        return sorted(valid_services, key=lambda x: x.address)
+
+    def dump_service(self, services):
+        legend = ["Address", "start_oen", "end_oen", "call_type", "init", "handle", "name"]
+        fmt = "{:10s}  {:9s}  {:7s}  {:9s}  {:10s}  {:10s}  {:s}"
+        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+        for s in services:
+            self.out.append("{:#010x}  {:<#9x}  {:<#7x}  {:<#9x}  {:#010x}  {:#010x}  {:s}".format(
+                s.address, s.start_oen, s.end_oen, s.call_type, s.init, s.handle, s.name_string,
+            ))
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system",))
+    @only_if_specific_arch(arch=("ARM64",))
+    def do_invoke(self, args):
+        sm = QemuMonitor.get_secure_memory_map(args.verbose)
+        if sm is None:
+            err("Not found secure memory maps")
+            return None
+
+        self.out = []
+        data = XSecureMemAddrCommand.read_secure_memory(sm, 0x0, sm.size, args.verbose)
+        services = self.find_service(sm, data)
+        self.dump_service(services)
+        self.print_output(term=True)
+        return
+
+
+@register_command
 class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
     """Dump bget allocator of OPTEE-Trusted-App."""
 
