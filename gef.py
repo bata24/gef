@@ -29645,7 +29645,12 @@ class ContextCodeCommand(GenericCommand):
         try:
             self.context_code(redirect)
         except Exception as e:
-            err(str(e), redirect=redirect)
+            # In ARM64, before and after the transition to EL3,
+            # there are cases where read_memory fails but the x command works.
+            try:
+                ContextCommand.execute_command("x/8i $pc", redirect)
+            except Exception:
+                err(str(e), redirect=redirect) # use first Exception string
         return
 
 
