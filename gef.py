@@ -83077,6 +83077,50 @@ class BreakSecureMemAddrCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
+    def aarch64_get_page_maps_el3(self):
+        res = PageMap.get_page_maps_by_pagewalk("pagewalk 3 --quiet --no-pager --no-merge")
+        res = sorted(set(res.splitlines()))
+        res = list(filter(lambda line: line.endswith("]"), res))
+        res = list(filter(lambda line: "[+]" not in line, res))
+        maps = []
+        for line in res:
+            vrange, prange, *_ = line.split()
+            vstart, vend = [int(x, 16) for x in vrange.split("-")]
+            pstart, pend = [int(x, 16) for x in prange.split("-")]
+            maps.append((vstart, vend, pstart, pend))
+        if maps == []:
+            warn("Make sure you are in EL1 (=kernel mode)")
+            warn("Make sure qemu 3.x or higher")
+            return None
+        return maps
+
+    def aarch64_switch_el(self, target_el):
+        cpsr = get_register("$cpsr") & 0xffffffff
+        current_el = int((cpsr >> 2) & 0b11)
+        if target_el == current_el:
+            info("Current EL{:d} == Target EL{:d}".format(current_el, target_el))
+            return 0
+
+        # change EL
+        try:
+            saved_cpsr = cpsr
+            cpsr = cpsr & ~(0b11 << 2) # clear EL
+            cpsr |= target_el << 2 # set desired EL
+            gdb.parse_and_eval("$cpsr = {:#x}".format(cpsr))
+            info("Moving to EL{:d}".format(target_el))
+        except gdb.error:
+            err("Maybe unsupported to change to EL{:d}".format(target_el))
+            return 0
+        return saved_cpsr
+
+    def aarch64_revert_el(self, saved_cpsr):
+        if saved_cpsr == 0:
+            return
+        gdb.parse_and_eval("$cpsr = {:#x}".format(saved_cpsr))
+        saved_el = (saved_cpsr >> 2) & 0b11
+        info("Moving back to EL{:d}".format(saved_el))
+        return
+
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system",))
@@ -83084,6 +83128,19 @@ class BreakSecureMemAddrCommand(GenericCommand):
     def do_invoke(self, args):
         if args.verbose:
             info("phys address: {:#x}".format(args.location))
+
+        if is_arm64():
+            maps = self.aarch64_get_page_maps_el3()
+            if maps:
+                virt_addrs = PageMap.p2v_from_map(args.location, maps)
+                # change to EL3 and set bp
+                saved_cpsr = self.aarch64_switch_el(target_el=3)
+                for virt_addr in virt_addrs:
+                    gdb.execute("break *{:#x}".format(virt_addr))
+                self.aarch64_revert_el(saved_cpsr)
+                # found any, fast return
+                if virt_addrs:
+                    return
 
         virt_addrs = XSecureMemAddrCommand.p2v_secure(args.location, args.verbose)
         if virt_addrs == []:
@@ -89823,7 +89880,7 @@ class PagewalkArm64Command(PagewalkCommand):
         return
 
     def pagewalk_init(self):
-        res = gdb.execute("info registers", to_string=True)
+        res = gdb.execute("info registers TTBR0_EL1", to_string=True)
         if "TTBR" not in res:
             self.err_add_out("Not found system registers, try check qemu version (at least: 3.x~, recommend: 5.x~)")
             return
