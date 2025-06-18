@@ -17097,10 +17097,100 @@ class SmartMemoryDumpCommand(GenericCommand):
     parser.add_argument("-e", "--exclude", action="append", type=re.compile, default=[],
                         help="REGEXP exclude filter.")
     parser.add_argument("-c", "--commit", action="store_true", help="actually perform the dump.")
+    parser.add_argument("-m", "--max-region-size", type=lambda x: int(x, 0), default=0x10000000,
+                        help="maximum size of dump region. (default: %(default)#x; 0: infinity)")
     _syntax_ = parser.format_help()
 
-    def smart_memory_dump(self):
-        maps = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
+    def get_size_str(self, size):
+        if 0 <= size < 1024:
+            return "{} B".format(size)
+        elif 1024 <= size < 1024 ** 2:
+            return "{:5.1f} KB".format(size / 1024)
+        elif 1024 ** 2 <= size < 100 * (1024 ** 2): # 1MB~100MB
+            return "{:5.1f} MB".format(size / 1024 / 1024)
+        elif 100 * (1024 ** 2) <= size < 1024 ** 3: # 100MB~1GB
+            return Color.colorify("{:5.1f} MB".format(size / 1024 / 1024), "yellow bold")
+        elif 1024 ** 3 <= size:
+            return Color.colorify("{:5.1f} GB".format(size / 1024 / 1024 / 1024), "red bold")
+        return "???"
+
+    def do_dump(self, filepath, start, size):
+        if self.args.max_region_size and self.args.max_region_size < size:
+            warn("Too large, so skip: {:s}".format(filepath))
+            return
+
+        size_str = self.get_size_str(size)
+
+        if self.args.commit:
+            # make dir
+            if not os.path.exists(os.path.dirname(filepath)):
+                os.mkdir(os.path.dirname(filepath))
+
+            # read
+            try:
+                data = read_memory(start, size)
+            except gdb.MemoryError:
+                warn("Memory read error; skipped: {:s} ({:s})".format(filepath, size_str))
+                return
+
+            # write
+            open(filepath, "wb").write(data)
+            info("Saved to {:s} ({:s})".format(filepath, size_str))
+        else:
+            info("It will be saved to {:s} ({:s})".format(filepath, size_str))
+        return
+
+    def smart_memory_dump(self, maps, prefix, suffix):
+        dirpath = os.path.join(GEF_TEMP_DIR, "mem-dump-" + GefUtil.now_str())
+        width = current_arch.ptrsize * 2
+        for entry in maps:
+            if isinstance(entry, list):
+                start = entry[0]
+                end = entry[0] + entry[1]
+                size = entry[1]
+                perm = entry[2].lower()
+                path = ""
+            else:
+                start = entry.page_start
+                end = entry.page_end
+                perm = str(entry.permission)
+
+                if not entry.path.startswith(("[", "<")):
+                    path = os.path.basename(entry.path)
+                else:
+                    path = entry.path
+                    path = path.replace("[", "").replace("]", "") # consider [heap], [stack], [vdso]
+                    path = path.replace("<", "").replace(">", "") # consider <tls-th1>, <explored>
+                path = path.replace(" ", "_") # consider deleted case. e.g., /path/to/file (deleted)
+
+            dumpfile_name = "{:s}{:0{:d}x}-{:0{:d}x}_{:s}_{:s}{:s}.raw".format(
+                prefix, start, width, end, width, perm, path, suffix,
+            )
+            filepath = os.path.join(dirpath, dumpfile_name)
+
+            # filtering
+            if self.args.filter and not any(filt.search(dumpfile_name) for filt in self.args.filter):
+                continue
+            if self.args.exclude and any(ex.search(dumpfile_name) for ex in self.args.exclude):
+                continue
+
+            # dump
+            self.do_dump(filepath, start, size)
+
+        if not self.args.commit:
+            info("The directory name is replaced with the latest timestamp")
+            warn('This dry run mode skips dumping; add "--commit" to proceed')
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("kgdb", "vmware"))
+    @require_arch_set
+    def do_invoke(self, args):
+        if is_qemu_system():
+            maps = Kernel.get_maps()
+        else:
+            maps = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
         if maps is None:
             err("Failed to get maps")
             return
@@ -17113,56 +17203,7 @@ class SmartMemoryDumpCommand(GenericCommand):
         if suffix:
             suffix = "_" + suffix
 
-        addr_len = current_arch.ptrsize * 2
-        for entry in maps:
-            start = entry.page_start
-            end = entry.page_end
-            perm = str(entry.permission)
-
-            if not entry.path.startswith(("[", "<")):
-                path = os.path.basename(entry.path)
-            else:
-                path = entry.path
-                path = path.replace("[", "").replace("]", "") # consider [heap], [stack], [vdso]
-                path = path.replace("<", "").replace(">", "") # consider <tls-th1>, <explored>
-            path = path.replace(" ", "_") # consider deleted case. e.g., /path/to/file (deleted)
-
-            dumpfile_name = "{:s}{:0{:d}x}-{:0{:d}x}_{:s}_{:s}{:s}.raw".format(
-                prefix, start, addr_len, end, addr_len, perm, path, suffix,
-            )
-
-            if self.args.filter and not any(filt.search(dumpfile_name) for filt in self.args.filter):
-                continue
-
-            if self.args.exclude and any(ex.search(dumpfile_name) for ex in self.args.exclude):
-                continue
-
-            dirpath = os.path.join(GEF_TEMP_DIR, "mem-dump-" + GefUtil.now_str())
-            filepath = os.path.join(dirpath, dumpfile_name)
-
-            if self.args.commit:
-                if not os.path.exists(dirpath):
-                    os.mkdir(dirpath)
-                try:
-                    data = read_memory(start, end - start)
-                except gdb.MemoryError:
-                    continue
-                open(filepath, "wb").write(data)
-                info("Saved to {:s}".format(filepath))
-            else:
-                info("It will be saved to {:s}".format(filepath))
-
-        if not self.args.commit:
-            info("The directory name is replaced with the latest timestamp")
-            warn('This dry run mode skips dumping; add "--commit" to proceed')
-        return
-
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @require_arch_set
-    def do_invoke(self, args):
-        self.smart_memory_dump()
+        self.smart_memory_dump(maps, prefix, suffix)
         return
 
 
