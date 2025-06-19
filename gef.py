@@ -82716,22 +82716,19 @@ class XphysAddrCommand(GenericCommand):
         out = "\n".join(out)
         return out
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    def do_invoke(self, args):
-        # arg parse
-        m = re.search(r"/(\d*)([xibhwg]*)", args.format)
+    @staticmethod
+    def parse_type_unit_count(fmt):
+        m = re.search(r"/(\d*)([xibhwg]*)", fmt)
         if not m:
-            self.usage()
-            return
+            return None
 
         dump_type = "x"
         dump_unit = current_arch.ptrsize
         dump_count = 1
+
         if m.group(1):
             dump_count = int(m.group(1))
+
         for c in m.group(2):
             if c in ["x", "i"]:
                 dump_type = c
@@ -82739,24 +82736,50 @@ class XphysAddrCommand(GenericCommand):
                 dump_unit = {"b": 1, "h": 2, "w": 4, "g": 8}[c]
             else:
                 err("Unsupported format: {}".format(c))
-                return
+                return None
+        return dump_type, dump_unit, dump_count
 
-        target = args.location
+    @staticmethod
+    def fix_size_and_target(dump_type, dump_unit, dump_count, target):
         if dump_type == "x":
             dump_size = dump_count * dump_unit
-        elif dump_type == "i":
+            return dump_size, target
+
+        if dump_type == "i":
             if is_x86():
                 # I don't know the length, but I'll read it 10 bytes at a time.
                 dump_size = dump_count * 10
-            else:
-                if target & 1: # fix thumb2
-                    if is_arm32():
-                        target -= 1
-                    else:
-                        err("Unsupported odd address: {}".format(target))
-                        return
-                # ARM opcode is at most 4byte
-                dump_size = dump_count * 4
+                return dump_size, target
+
+            if target & 1: # fix thumb2
+                if is_arm32():
+                    target -= 1
+                else:
+                    err("Unsupported odd address: {}".format(target))
+                    return None
+            # ARM opcode is at most 4byte
+            dump_size = dump_count * 4
+            return dump_size, target
+
+        return None
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    def do_invoke(self, args):
+        # arg parse
+        ret = XphysAddrCommand.parse_type_unit_count(args.format)
+        if ret is None:
+            self.usage()
+            return
+        dump_type, dump_unit, dump_count = ret
+
+        # fix for size and target (when thumb2)
+        ret = XphysAddrCommand.fix_size_and_target(dump_type, dump_unit, dump_count, args.location)
+        if ret is None:
+            return
+        dump_size, target = ret
 
         # read
         data = read_physmem(target, dump_size)
@@ -82850,81 +82873,104 @@ class XSecureMemAddrCommand(GenericCommand):
             info("read size result: {:#x}".format(len(data)))
         return data
 
+    @staticmethod
+    def get_sm_offset(sm, args):
+        if args.phys:
+            if sm.sm_base <= args.location < sm.sm_base + sm.sm_size:
+                return args.location - sm.sm_base
+
+            err("Phys {:#x} is not default secure memory ({:#x}-{:#x})".format(
+                args.location, sm.sm_base, sm.sm_base + sm.sm_size,
+            ))
+            return None
+
+        elif args.off:
+            if 0 <= args.location < sm.size:
+                return args.location
+
+            err("Offset {:#x} is not default secure memory ({:#x}-{:#x})".format(
+                args.location, sm.sm_base, sm.sm_base + sm.sm_size,
+            ))
+            return None
+
+        elif args.virt:
+            target_phys = XSecureMemAddrCommand.v2p_secure(args.location, args.verbose)
+            if target_phys is None:
+                err("Not found physical address")
+                return None
+
+            if sm.sm_base <= target_phys < sm.sm_base + sm.sm_size:
+                return target_phys - sm.sm_base
+
+            err("Virt {:#x} is not default secure memory ({:#x}-{:#x})".format(
+                args.location, sm.sm_base, sm.sm_base + sm.sm_size,
+            ))
+            return None
+
+        return None
+
+    def redirect_to_xp(self, dump_count, dump_type, dump_unit):
+        if self.args.off:
+            return
+
+        if self.args.phys:
+            phys_addr = self.args.location
+            info("redirect to xp command")
+
+        elif self.args.virt:
+            maps = PageMap.get_page_maps_arm64_optee_secure_memory()
+            for m in maps:
+                if m[2] == 0:
+                    continue
+                if m[0] <= self.args.location < m[1]:
+                    phys_base = m[2]
+                    offset = self.args.location - m[0]
+                    phys_addr = phys_base + offset
+                    info("redirect to xp command (virt:{:#x} -> phys:{:#x})".format(
+                        self.args.location, phys_addr,
+                    ))
+                    break
+            else:
+                return
+
+        gdb.execute("xp/{:d}{:s}{:s} {:#x}".format(
+            dump_count,
+            dump_type,
+            {1: "b", 2: "h", 4: "w", 8: "g"}[dump_unit],
+            phys_addr,
+        ))
+        return
+
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     @only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
         # arg parse
-        m = re.search(r"/(\d*)([xibhwg]*)", args.format)
-        if not m:
+        ret = XphysAddrCommand.parse_type_unit_count(args.format)
+        if ret is None:
             self.usage()
             return
+        dump_type, dump_unit, dump_count = ret
 
-        dump_type = "x"
-        dump_unit = current_arch.ptrsize
-        dump_count = 1
-        if m.group(1):
-            dump_count = int(m.group(1))
-        for c in m.group(2):
-            if c in ["x", "i"]:
-                dump_type = c
-            elif c in ["b", "h", "w", "g"]:
-                dump_unit = {"b": 1, "h": 2, "w": 4, "g": 8}[c]
-            else:
-                err("Unsupported format: {}".format(c))
-                return
-
-        # initialize
+        # get offset
         sm = QemuMonitor.get_secure_memory_map(args.verbose)
         if sm is None:
             err("Not found secure memory maps")
             return
+        target_offset = XSecureMemAddrCommand.get_sm_offset(sm, args)
+        if target_offset is None:
+            self.redirect_to_xp(dump_count, dump_type, dump_unit)
+            return
 
-        if args.phys:
-            if sm.sm_base <= args.location < sm.sm_base + sm.sm_size:
-                target_offset = args.location - sm.sm_base
-            else:
-                err("Phys {:#x} is not default secure memory ({:#x}-{:#x})".format(
-                    args.location, sm.sm_base, sm.sm_base + sm.sm_size,
-                ))
-                return
-        elif args.off:
-            if 0 <= args.location < sm.size:
-                target_offset = args.location
-            else:
-                err("Offset {:#x} is not default secure memory ({:#x}-{:#x})".format(
-                    args.location, sm.sm_base, sm.sm_base + sm.sm_size,
-                ))
-                return
-        elif args.virt:
-            target_phys = XSecureMemAddrCommand.v2p_secure(args.location, args.verbose)
-            if target_phys is None:
-                err("Not found physical address")
-                return
-            if sm.sm_base <= target_phys < sm.sm_base + sm.sm_size:
-                target_offset = target_phys - sm.sm_base
-            else:
-                err("Virt {:#x} is not default secure memory ({:#x}-{:#x})".format(
-                    args.location, sm.sm_base, sm.sm_base + sm.sm_size,
-                ))
-                return
-
-        # fix for size, offset (when thumb2)
-        if dump_type == "x":
-            dump_size = dump_count * dump_unit
-        elif dump_type == "i":
-            if target_offset & 1: # fix thumb2
-                if is_arm32():
-                    target_offset -= 1
-                else:
-                    err("Unsupported odd address: {}".format(target_offset))
-                    return
-            # ARM opcode is at most 4byte
-            dump_size = dump_count * 4
+        # fix for size and offset (when thumb2)
+        ret = XphysAddrCommand.fix_size_and_target(dump_type, dump_unit, dump_count, target_offset)
+        if ret is None:
+            return
+        dump_size, target_offset = ret
 
         # read
-        data = self.read_secure_memory(sm, target_offset, dump_size, args.verbose)
+        data = XSecureMemAddrCommand.read_secure_memory(sm, target_offset, dump_size, args.verbose)
         if data is None:
             err("read memory error")
             return
@@ -83033,6 +83079,36 @@ class WSecureMemAddrCommand(GenericCommand):
             Config.set_gef_setting("context_code.use_capstone", True)
         return ret
 
+    def redirect_to_write_physmem(self, data):
+        if self.args.off:
+            return
+
+        if self.args.phys:
+            phys_addr = self.args.location
+            info("redirect to write_physmem")
+
+        elif self.args.virt:
+            maps = PageMap.get_page_maps_arm64_optee_secure_memory()
+            for m in maps:
+                if m[2] == 0:
+                    continue
+                if m[0] <= self.args.location < m[1]:
+                    phys_base = m[2]
+                    offset = self.args.location - m[0]
+                    phys_addr = phys_base + offset
+                    info("redirect to write_physmem (virt:{:#x} -> phys:{:#x})".format(
+                        self.args.location, phys_addr,
+                    ))
+                    break
+            else:
+                return
+
+        try:
+            write_physmem(phys_addr, data)
+        except Exception:
+            err("Failed to write adata")
+        return
+
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system",))
@@ -83068,38 +83144,13 @@ class WSecureMemAddrCommand(GenericCommand):
         if sm is None:
             err("Not found secure memory maps")
             return
-
-        if args.phys:
-            if sm.sm_base <= args.location < sm.sm_base + sm.sm_size:
-                target_offset = args.location - sm.sm_base
-            else:
-                err("Phys {:#x} is not default secure memory ({:#x}-{:#x})".format(
-                    args.location, sm.sm_base, sm.sm_base + sm.sm_size,
-                ))
-                return
-        elif args.off:
-            if 0 <= args.location < sm.size:
-                target_offset = args.location
-            else:
-                err("Offset {:#x} is not default secure memory ({:#x}-{:#x})".format(
-                    args.location, sm.sm_base, sm.sm_base + sm.sm_size,
-                ))
-                return
-        elif args.virt:
-            target_phys = XSecureMemAddrCommand.v2p_secure(args.location, args.verbose)
-            if target_phys is None:
-                err("Not found physical address")
-                return
-            if sm.sm_base <= target_phys < sm.sm_base + sm.sm_size:
-                target_offset = target_phys - sm.sm_base
-            else:
-                err("Virt {:#x} is not default secure memory ({:#x}-{:#x})".format(
-                    args.location, sm.sm_base, sm.sm_base + sm.sm_size,
-                ))
-                return
+        target_offset = XSecureMemAddrCommand.get_sm_offset(sm, args)
+        if target_offset is None:
+            self.redirect_to_write_physmem(data)
+            return
 
         # write
-        ret = self.write_secure_memory(sm, target_offset, data, args.verbose)
+        ret = WSecureMemAddrCommand.write_secure_memory(sm, target_offset, data, args.verbose)
         if ret is None:
             err("memory write error")
         return
