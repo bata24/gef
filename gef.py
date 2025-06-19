@@ -90056,16 +90056,45 @@ class PagewalkArm64Command(PagewalkCommand):
         legend = ["Virtual address start-end", "Physical address start-end", "Total size", "Hint (Maybe)"]
         gef_print(GefUtil.make_legend(fmt.format(*legend)))
 
+        """
+        [Newer version]
+        gef> pagewalk --optee -n -q
+        Virtual address start-end              Physical address start-end             Total size    Hint (Maybe)
+        0x000000000e100000-0x000000000e102000  0x000000000e100000-0x000000000e102000  0x2000        TEE-OS Exception Vector (first 0x2000 bytes)
+        0x000000009e400000-0x000000009e600000  0x0000000042000000-0x0000000042200000  0x200000      Non-secure <-> Secure shared memory
+        0x000000009e600000-0x000000009e800000  0x0000000009000000-0x0000000009200000  0x200000      UART0_BASE
+        0x000000009e800000-0x000000009f800000  0x0000000008000000-0x0000000009000000  0x1000000     GIC_BASE
+        0x000000009fa00000-0x00000000a0400000  0x0000000000000000-0x0000000000a00000  0xa00000
+        0x00000000a0600000-0x00000000a2600000  0x0000000000000000-0x0000000002000000  0x2000000
+        0x00000000a2900000-0x00000000a3600000  0x000000000e300000-0x000000000f000000  0xd00000
+        0x00000000a362a000-0x00000000a36ae000  0x000000000e100000-0x000000000e184000  0x84000       TEE-OS .text
+        0x00000000a36ae000-0x00000000a382a000  0x000000000e184000-0x000000000e300000  0x17c000      TEE-OS stack
+        gef>
+
+        [Older version]
+        gef> pagewalk --optee -n -q
+        Virtual address start-end              Physical address start-end             Total size    Hint (Maybe)
+        0x000000000e100000-0x000000000e15d000  0x000000000e100000-0x000000000e15d000  0x5d000       TEE-OS .text
+        0x000000000e15d000-0x000000000e300000  0x000000000e15d000-0x000000000e300000  0x1a3000      TEE-OS .data / stack
+        0x000000000e300000-0x000000000f000000  0x000000000e300000-0x000000000f000000  0xd00000
+        0x000000000f200000-0x000000000fa00000  0x0000000000000000-0x0000000000800000  0x800000
+        0x000000000fa00000-0x0000000011a00000  0x0000000000000000-0x0000000002000000  0x2000000
+        0x0000000011a00000-0x0000000011c00000  0x0000000009000000-0x0000000009200000  0x200000      UART0_BASE
+        0x0000000011c00000-0x0000000011e00000  0x0000000042000000-0x0000000042200000  0x200000      Non-secure <-> Secure shared memory
+        0x000000000f000000-0x000000000f200000  0x0000000040000000-0x0000000040200000  0x200000
+        gef>
+        """
         text_end = None
         for va_start, va_end, pa_start, pa_end in maps:
             # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/plat-vexpress/conf.mk
-            if va_start == pa_start == 0xe100000:
-                hint = "TEE-OS Exception Vector (first 0x2000 bytes)"
-            elif pa_start == 0xe100000:
-                hint = "TEE-OS .text"
-                text_end = va_end
-            elif text_end is not None and va_start == text_end:
-                hint = "TEE-OS stack"
+            if pa_start == 0xe100000:
+                if va_start == 0xe100000 and va_end - va_start == 0x2000:
+                    hint = "TEE-OS Exception Vector (first 0x2000 bytes)"
+                else:
+                    hint = "TEE-OS .text"
+                    text_end = va_end
+            elif text_end and va_start == text_end:
+                hint = "TEE-OS .data / stack"
             elif pa_start == 0x42000000:
                 hint = "Non-secure <-> Secure shared memory"
             # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/plat-vexpress/platform_config.h
