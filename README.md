@@ -255,6 +255,9 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `optee-smc-service-dump`: dumps OPTEE SMC services.
     - Supported on ARM64.
     - ![](images/optee-smc-service-dump.png)
+- `optee-ta-dump`: dumps the information of OPTEE-Trusted-Apps from the memory or specified host directory.
+    - Supported on ARM64 and ARM.
+    - ![](images/optee-ta-dump.png)
 - `pac-keys`: pretty prints ARM64 PAC keys.
     - Supported on ARM64.
     - ![](images/pac-keys.png)

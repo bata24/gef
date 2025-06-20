@@ -83483,6 +83483,543 @@ class OpteeSmcServiceDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class OpteeTaDumpCommand(GenericCommand, BufferingOutput):
+    """The base command to dump OPTEE Trusted Application."""
+
+    _cmdline_ = "optee-ta-dump"
+    _category_ = "08-g. Qemu-system Cooperation - TrustZone"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
+        subparsers = parser.add_subparsers(title="command", required=True)
+    else:
+        subparsers = parser.add_subparsers(title="command")
+    subparsers.add_parser("memory")
+    subparsers.add_parser("dir")
+    _syntax_ = parser.format_help()
+
+    uuid_hint = {
+        "023f8f1a-292a-432b-8fc4-de8471358067": "avb",
+        "02a42f43-d8b7-4a57-aa4d-87bd9b5587cb": "crypto_perf",
+        "057f4b66-bdab-11eb-96cf-33d6e41cc849": "acipher-rs",
+        "0864c8ec-bdab-11eb-8926-c7fa47a8c92d": "aes-rs",
+        "0a5a06b2-bdab-11eb-add0-77f29de31296": "authentication-rs",
+        "0bef16a2-bdab-11eb-94be-6f9815f37c21": "bigint-rs",
+        "0e6bf4fe-bdab-11eb-9bc5-3f4ecb50aee7": "diffie_hellman-rs",
+        "10de87e2-bdab-11eb-b73c-63fec73e597c": "digest-rs",
+        "12345678-5b69-11e4-9dbb-101f74f00099": "sdp_basic",
+        "133af0ca-bdab-11eb-9130-43bf7873bf67": "hello_world-rs",
+        "1585d412-bdab-11eb-ba91-3b085fd2601f": "hotp-rs",
+        "17556a46-bdab-11eb-b325-d38c9a9af725": "message_passing_interface-rs",
+        "197c710c-bdab-11eb-8f3f-17a5f698d23b": "random-rs",
+        "1b5f5b74-e9cf-4e62-8c3e-7e41da6d76f6": "mnist-rs (train)",
+        "1cd6d392-bdab-11eb-9082-abc902ac5cd4": "secure_storage-rs",
+        "1ed47816-bdab-11eb-9ebd-3ffe0648da93": "serde-rs",
+        "21b1a1da-bdab-11eb-b614-275a7098826f": "time-rs",
+        "25497083-a58a-4fc5-8a72-1ad7b69b8562": "large",
+        "255fc838-de89-42d3-9a8e-d044c50fa57c": "supp_plugin-rs (ta)",
+        "2a287631-de1b-4fdd-a55c-b9312e40769a": "optee_example_plugins",
+        "3616069b-504d-4044-9497-feb84a073a14": "bti_test",
+        "380231ac-fb99-47ad-a689-9e017eb6e78a": "supp_plugin",
+        "3a2f8978-5dc0-11e8-9c2d-fa7ae01bbebc": "inter_ta-rs (system)",
+        "3b996a7d-2c2b-4a49-a896-e1fb5766d2f4": "socket (?)",
+        "484d4143-2d53-4841-3120-4a6f636b6542": "optee_example_hotp",
+        "4d573443-6a56-4272-ac6f-2425af9ef9bb": "gatekeeper",
+        "528938ce-fc59-11e8-8eb2-f2801f1b9fd1": "miss",
+        "59db8536-e5e6-11eb-8e9b-a316ce7a6568": "tcp_client-rs",
+        "5b9e0e40-2636-11e1-ad9e-0002a5d5c51b": "os_test",
+        "5c206987-16a3-59cc-ab0f-64b9cfc9e758": "subkey1",
+        "5ce0c432-0ab0-40e5-a056-782ca0e6aba2": "concurrent_large",
+        "5dbac793-f574-4871-8ad3-04331ec17f24": "optee_example_aes",
+        "60276949-7ff3-4920-9bce-840c9dcf3098": "tmesg",
+        "614789f2-39c0-4ebf-b235-92b32ac107ed": "sha_perf",
+        "68373894-5bb3-403c-9eec-3114a1f5d3fc": "teep-agent-ta",
+        "69547de6-f47e-11eb-994e-f34e88d5c2b4": "tls_server-rs",
+        "6e256cba-fc4d-4941-ad09-2ca1860342dd": "secstor_ta_mgmt",
+        "7011a688-ddde-4053-a5a9-7b3c4ddf13b8": "device.pta",
+        "731e279e-aafb-4575-a771-38caa6f0cca6": "storage2",
+        "80a4c275-0a47-4905-8285-1486a9771a08": "remoteproc",
+        "873bcd08-c2c3-11e6-a937-d0bf9c45c61c": "socket",
+        "87c2d78e-eb7b-11eb-8d25-df4d5338f285": "udp_socket-rs",
+        "8aaaf200-2450-11e4-abe2-0002a5d5c51b": "optee_example_hello_world",
+        "8d82573a-926d-4754-9353-32dc29997f74": "hello-teep-ta",
+        "a3859d33-b540-4a69-8d29-696dde9115cc": "property-rs",
+        "a4c04d50-f180-11e8-8eb2-f2801f1b9fd1": "sims_keepalive",
+        "a720ccbb-51da-417d-b82e-e5445d474a7a": "subkey2",
+        "a734eed9-d6a1-4244-aa50-7c99719e7b7b": "optee_example_acipher",
+        "a8cfe406-d4f5-4a2e-9f8d-a25dc754c099": "stm32_pwr.pta (?)",
+        "b3091a65-9751-4784-abf7-0298a7cc35ba": "os_test_lib_dl",
+        "b689f2a7-8adf-477a-9f99-32e90c0ad0a2": "storage",
+        "b6c53aba-9669-4668-a7f2-205629d00f86": "optee_example_random",
+        "bc50d971-d4c9-42c4-82cb-343fb7f37896": "optee-ftpm",
+        "bcac6292-5b9d-4b20-a2e5-b389d5e8ae2f": "build_with_optee_utee_sys-rs",
+        "c3f6e2c0-3548-11e1-b86c-0800200c9a66": "create_fail_test",
+        "c7e478c2-89b3-46eb-ac19-571e66c3830d": "signature_verification-rs",
+        "c9d73f40-ba45-4315-92c4-cf1255958729": "client_pool-rs",
+        "cb3e5ba0-adf1-11e0-998b-0002a5d5c51b": "crypt",
+        "d17f73a0-36ef-11e1-984a-0002a5d5c51b": "rpc_test",
+        "d96a5b40-c3e5-21e3-8794-1002a5d5c61b": "invoke_tests.pta",
+        "d96a5b40-e2c7-b1af-8794-1002a5d5c61b": "stats",
+        "dba51a17-0563-11e7-93b1-6fa7b0071a51": "keymaster",
+        "e13010e0-2ae1-11e5-896a-0002a5d5c51b": "concurrent",
+        "e55291e1-521c-4dca-aa24-51e34ab32ad9": "secure_db_abstraction-rs",
+        "e626662e-c0e2-485c-b8c8-09fbce6edf3d": "aes_perf",
+        "e6a33ed4-562b-463a-bb7e-ff5e15a493c8": "sims",
+        "ebb6f4b5-7e33-4ad2-9802-e64f2a7cc20c": "basicAlgUse",
+        "ec55bfe2-d9c7-11eb-8b0e-f3f8fad927f7": "tls_client-rs",
+        "ec59c1fc-b9e0-4c3c-8756-0a3cc48f0088": "error_handling-rs",
+        "ee90d523-90ad-46a0-859d-8eea0b150086": "tpm_log_test",
+        "ef620757-fa2b-4f19-a1c4-6e51cfe4c0f9": "supp_plugin-rs (plugin)",
+        "f04a0fe7-1f5d-4b9b-abf7-619b85b4ce8c": "trusted_keys",
+        "f07bfc66-958c-4a15-99c0-260e4e7375dd": "tee-supplicant plugin",
+        "f157cda0-550c-11e5-a6fa-0002a5d5c51b": "storage_benchmark",
+        "f4e750bb-1437-4fbf-8785-8d3580c34994": "optee_example_secure_storage",
+        "fd02c9da-306c-48c7-a49c-bbd827ae86ee": "pkcs11",
+        "fa9ea860-ef3b-4d59-8457-5564a60c0379": "inter_ta-rs",
+        "ff09aa8a-fbb9-4734-ae8c-d7cd1a3f6744": "mnist-rs (inference)",
+        "ffd2bded-ab7d-4988-95ee-e4962fff7154": "os_test_lib",
+    }
+
+    def __init__(self, *args, **kwargs):
+        prefix = kwargs.get("prefix", True)
+        complete = kwargs.get("complete", gdb.COMPLETE_NONE)
+        super().__init__(prefix=prefix, complete=complete)
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        self.usage()
+        return
+
+
+@register_command
+class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
+    """Dump the OPTEE-Trusted-App list from OPTEE kernel memory."""
+
+    _cmdline_ = "optee-ta-dump memory"
+    _category_ = "08-g. Qemu-system Cooperation - TrustZone"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-o", "--for-old-version", action="store_true", help="for OP-TEE OS before v3.12.0.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__(prefix=False)
+        return
+
+    def find_list_head(self, data, virt_start):
+        def is_valid_rw_addr(addr):
+            return virt_start <= addr < virt_start + len(data)
+
+        def read_int_from_memory(addr):
+            if not is_valid_rw_addr(addr):
+                return None
+            index = (addr - virt_start) // current_arch.ptrsize
+            return data_list[index]
+
+        def is_tailq_head(addr, head_next, head_prev, offset):
+            current = head_next
+            prev = addr
+            while True:
+                current_next = read_int_from_memory(current + offset)
+                if current_next is None:
+                    return False
+
+                current_prev = read_int_from_memory(current + offset + current_arch.ptrsize)
+                if current_prev is None:
+                    return False
+                if prev != current_prev:
+                    return False
+
+                if current_next == 0:
+                    return current + offset == head_prev
+
+                prev = current + offset
+                current = current_next
+            return False
+
+        """
+        struct tee_ta_ctx_head tee_ctxes = TAILQ_HEAD_INITIALIZER(tee_ctxes);
+
+        struct list { // TAILQ_ENTRY
+            struct list  *tqe_next;
+            struct list **tqe_prev;
+        }
+
+        [OP-TEE OS v3.12.0~]
+        struct tee_ta_ctx {
+            uint32_t flags; /* TA_FLAGS from TA header */
+            TAILQ_ENTRY(tee_ta_ctx) link;
+            struct ts_ctx {
+                struct TEE_UUID {
+                    uint32_t timeLow;
+                    uint16_t timeMid;
+                    uint16_t timeHiAndVersion;
+                    uint8_t clockSeqAndNode[8];
+                } uuid;
+                const struct ts_ops *ops;
+            } ts_ctx;
+            uint32_t panicked; /* True if TA has panicked, written from asm */
+            uint32_t panic_code; /* Code supplied for panic */
+            uint32_t ref_count; /* Reference counter for multi session TA */
+            bool busy; /* Context is busy and cannot be entered */
+            bool is_initializing; /* Context initialization is not completed */
+            bool is_releasing; /* Context is about to be released */
+            struct condvar {
+                unsigned int spin_lock;
+                struct mutex *m;
+            } busy_cv; /* CV used when context is busy */
+        };
+
+        [OP-TEE OS ~v3.11.0]
+        struct tee_ta_ctx {
+            struct TEE_UUID {
+                uint32_t timeLow;
+                uint16_t timeMid;
+                uint16_t timeHiAndVersion;
+                uint8_t clockSeqAndNode[8];
+            } uuid;
+            const struct tee_ta_ops *ops;
+            uint32_t flags; /* TA_FLAGS from TA header */
+            TAILQ_ENTRY(tee_ta_ctx) link;
+            uint32_t panicked; /* True if TA has panicked, written from asm */
+            uint32_t panic_code; /* Code supplied for panic */
+            uint32_t ref_count; /* Reference counter for multi session TA */
+            bool busy; /* Context is busy and cannot be entered */
+            bool initializing; /* Context is initializing */
+            struct condvar {
+                unsigned int spin_lock;
+                struct mutex *m;
+            } busy_cv; /* CV used when context is busy */
+        };
+        """
+
+        if not self.args.for_old_version:
+            offsetof_link = current_arch.ptrsize
+        else:
+            offsetof_link = 16 + current_arch.ptrsize * 2
+
+        candidate_head = []
+        data_list = slice_unpack(data, current_arch.ptrsize)
+        for i in range(len(data_list) - 1):
+            # check if head
+            addr = virt_start + current_arch.ptrsize * i
+            next_value = data_list[i]
+            prev_value = data_list[i + 1]
+            if not is_tailq_head(addr, next_value, prev_value, offsetof_link):
+                continue
+
+            j = (next_value - virt_start) // current_arch.ptrsize
+
+            if not self.args.for_old_version:
+                # check flags
+                if is_valid_rw_addr(data_list[j]):
+                    continue
+
+                # check uuid
+                if is_64bit():
+                    if is_valid_rw_addr(data_list[j + 3]) or \
+                       is_valid_rw_addr(data_list[j + 4]):
+                        continue
+                else:
+                    if is_valid_rw_addr(data_list[j + 3]) or \
+                       is_valid_rw_addr(data_list[j + 4]) or \
+                       is_valid_rw_addr(data_list[j + 5]) or \
+                       is_valid_rw_addr(data_list[j + 6]):
+                        continue
+
+                # check ops
+                if is_64bit():
+                    if not is_valid_rw_addr(data_list[j + 5]):
+                        continue
+                else:
+                    if not is_valid_rw_addr(data_list[j + 7]):
+                        continue
+            else:
+                # check uuid
+                if is_64bit():
+                    if is_valid_rw_addr(data_list[j + 0]) or \
+                       is_valid_rw_addr(data_list[j + 1]):
+                        continue
+                else:
+                    if is_valid_rw_addr(data_list[j + 0]) or \
+                       is_valid_rw_addr(data_list[j + 1]) or \
+                       is_valid_rw_addr(data_list[j + 2]) or \
+                       is_valid_rw_addr(data_list[j + 3]):
+                        continue
+
+                # check ops
+                if is_64bit():
+                    if not is_valid_rw_addr(data_list[j + 2]):
+                        continue
+                else:
+                    if not is_valid_rw_addr(data_list[j + 4]):
+                        continue
+
+                # check flags
+                if is_64bit():
+                    if is_valid_rw_addr(data_list[j + 3]):
+                        continue
+                else:
+                    if is_valid_rw_addr(data_list[j + 5]):
+                        continue
+
+            candidate_head.append(addr)
+
+        if len(candidate_head) == 0:
+            err("Not found &tee_ctxes")
+        elif len(candidate_head) > 1:
+            warn("Found multiple canddiate for &tee_ctxes")
+        return candidate_head
+
+    def dump_service(self, data, virt_start, heads):
+        import uuid
+
+        def is_valid_rw_addr(addr):
+            return virt_start <= addr < virt_start + len(data)
+
+        def read_int_from_memory(addr):
+            if not is_valid_rw_addr(addr):
+                return None
+            index = (addr - virt_start) // current_arch.ptrsize
+            return data_list[index]
+
+        if not self.args.for_old_version:
+            offsetof_link = current_arch.ptrsize
+            offsetof_uuid = offsetof_link + current_arch.ptrsize * 2
+        else:
+            offsetof_link = 16 + current_arch.ptrsize * 2
+            offsetof_uuid = 0
+
+        data_list = slice_unpack(data, current_arch.ptrsize)
+        for head in heads:
+            self.out.append(titlify("&tee_ctxes: {:#x}".format(head)))
+
+            fmt = "{:10s}  {:36s}  {:s}"
+            legend = ["tee_ta_ctx", "UUID", "Hint"]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+            current = read_int_from_memory(head)
+            while current:
+                # uuid
+                raw_uuid = data[current + offsetof_uuid - virt_start:][:16]
+                uuid_str = str(uuid.UUID(bytes_le=raw_uuid))
+                hint = self.uuid_hint.get(uuid_str, "???")
+                # dump
+                self.out.append("{:#010x}  {:36s}  {:s}".format(current, uuid_str, hint))
+                # goto next
+                current = read_int_from_memory(current + offsetof_link)
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system",))
+    @only_if_specific_arch(arch=("ARM32", "ARM64"))
+    def do_invoke(self, args):
+        maps = PageMap.get_page_maps_by_pagewalk("pagewalk --optee --quiet --no-pager").splitlines()
+        if not maps:
+            err("Not found memory maps")
+            return
+
+        for m in maps:
+            s = m.split(None, 3)
+            if len(s) != 4:
+                continue
+            virt_range, phys_range, size, hint = s
+            if "TEE-OS .data / stack" not in hint:
+                continue
+            virt_start = int(virt_range.split("-")[0], 16)
+            phys_start = int(phys_range.split("-")[0], 16)
+            size = int(size, 16)
+            break
+        else:
+            err("Not found memory maps")
+            return
+
+        self.out = []
+        data = read_physmem(phys_start, size)
+        list_heads = self.find_list_head(data, virt_start)
+        if not list_heads:
+            if not args.for_old_version:
+                info("Trying with --for-old-version...")
+                gdb.execute("optee-ta-dump memory --for-old-version")
+            return
+
+        self.dump_service(data, virt_start, list_heads)
+        self.print_output(term=True)
+        return
+
+
+@register_command
+class OpteeTaDumpDirectoryCommand(OpteeTaDumpCommand):
+    """Dump the OPTEE-Trusted-App list from host directory."""
+
+    _cmdline_ = "optee-ta-dump dir"
+    _category_ = "08-g. Qemu-system Cooperation - TrustZone"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("host_dir", metavar="HOST_DIR",
+                        help="The host directory where you extracted the guest's /lib/optee_armtz/.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="verbose output.")
+    _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__(prefix=False, complete=gdb.COMPLETE_FILENAME)
+        return
+
+    def get_ta_info_single(self, file_path, first_offset):
+        import uuid
+
+        IMG_TYPE = {0: "LegacyTA", 1: "BootstrapTA", 2: "EncryptedTA", 3: "Subkey"}
+        ALGOS = {
+            0x70004830: "TEE_ALG_RSASSA_PKCS1_V1_5_SHA256",
+            0x70414930: "TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA256",
+            0x40000810: "TEE_ALG_AES_GCM",
+        }
+
+        d = {}
+        with open(file_path, "rb") as f:
+            f.seek(first_offset)
+
+            # struct shdr
+            magic = u32(f.read(4))
+            if magic != 0x4F545348:
+                return None
+            img_type = u32(f.read(4))
+            img_size = u32(f.read(4))
+            algo = u32(f.read(4))
+            hash_size = u16(f.read(2))
+            sig_size = u16(f.read(2))
+            d.update({
+                "magic": magic,
+                "img_type": (img_type, IMG_TYPE.get(img_type, "Unknown")),
+                "img_size": (img_size, GefUtil.get_size_str(img_size, enable_color=False)),
+                "algo": (algo, ALGOS.get(algo, f"unknown-{algo:#x}")),
+                "hash_size": hash_size,
+                "sig_size": sig_size,
+            })
+            f.seek(hash_size + sig_size, 1)
+
+            # sub header
+            if img_type == 0:
+                pass
+
+            elif img_type == 1:
+                # struct shdr_bootstrap_ta
+                raw_uuid = f.read(16)
+                ta_ver = u32(f.read(4))
+                d["bootstrap_uuid"] = str(uuid.UUID(bytes=raw_uuid))
+                d["bootstrap_version"] = ta_ver
+
+            elif img_type == 2:
+                # struct shdr_encrypted_ta
+                enc_algo = u32(f.read(4))
+                flags = u32(f.read(4))
+                iv_sz = u16(f.read(2))
+                tag_sz = u16(f.read(2))
+                iv = f.read(iv_sz)
+                tag = f.read(tag_sz)
+                d.update({
+                    "enc_algo": (enc_algo, ALGOS.get(enc_algo, f"unknown-{enc_algo:#x}")),
+                    "enc_flags": flags,
+                    "iv_len": iv_sz,
+                    "tag_len": tag_sz,
+                    "iv_hex": iv.hex(),
+                    "tag_hex": tag.hex(),
+                })
+
+            elif img_type == 3:
+                # struct shdr_subkey
+                raw_uuid = f.read(16)
+                name_sz = u32(f.read(4))
+                subk_version = u32(f.read(4))
+                max_depth = u32(f.read(4))
+                sk_algo = u32(f.read(4))
+                attr_cnt = u32(f.read(4))
+                f.seek(img_size - len(raw_uuid) - 4 * 5, 1)
+                name = f.read(name_sz).decode(errors="ignore") if name_sz else ""
+                d.update({
+                    "subkey_uuid": str(uuid.UUID(bytes=raw_uuid)),
+                    "subkey_name_size": name_sz,
+                    "subkey_version": subk_version,
+                    "subkey_max_depth": max_depth,
+                    "subkey_algo": (sk_algo, ALGOS.get(sk_algo, f"unknown-0x{sk_algo:x}")),
+                    "subkey_attr_count": attr_cnt,
+                    "next_name": name.rstrip("\0"),
+                })
+
+            processed_size = f.tell()
+
+        TAInfo = collections.namedtuple("TAInfo", d.keys())
+        return TAInfo(*d.values()), processed_size
+
+    def get_ta_info(self, file_path):
+        filesize = os.path.getsize(file_path)
+        processed_size = 0
+        ta_list = []
+        while processed_size < filesize:
+            ret = self.get_ta_info_single(file_path, processed_size)
+            if ret is None:
+                break
+            ta_info, processed_size = ret
+            ta_list.append(ta_info)
+        return ta_list
+
+    def dump_directory(self):
+        fmt = "{:39s}  {:11s}  {:8s}  {:s}"
+        legend = ["Filename", "TA type", "Size", "Hint"]
+        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+        for filepath in GefUtil.walk(self.args.host_dir):
+            filename = os.path.basename(filepath)
+            r = re.match(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.ta",
+                filename,
+            )
+            if not r:
+                continue
+
+            # uuid -> hint
+            uuid = filename[:-3]
+            hint = self.uuid_hint.get(uuid, "???")
+
+            # other info
+            ta_list = self.get_ta_info(filepath)
+            if not ta_list:
+                self.out.append("{:39s}  {:11s}  {:8s}  {:s}".format(filename, "???", "???", hint))
+                continue
+
+            # dump
+            self.out.append("{:39s}  {:11s}  {:8s}  {:s}".format(
+                filename, ta_list[0].img_type[1], ta_list[0].img_size[1], hint,
+            ))
+            if self.args.verbose:
+                for ta_info in ta_list:
+                    for k, v in ta_info._asdict().items():
+                        if isinstance(v, tuple):
+                            self.out.append("  {:20s}: {:#x} ({:s})".format(k, v[0], v[1]))
+                        elif isinstance(v, int):
+                            self.out.append("  {:20s}: {:#x}".format(k, v))
+                        else:
+                            self.out.append("  {:20s}: {:s}".format(k, v))
+                    self.out.append("")
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        if not os.path.isdir(args.host_dir):
+            err("Not found directory")
+            return
+
+        self.out = []
+        self.dump_directory()
+        self.print_output(term=True)
+        return
+
+
+@register_command
 class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
     """Dump bget allocator of OPTEE-Trusted-App."""
 
