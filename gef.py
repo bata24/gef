@@ -33396,7 +33396,7 @@ class XInfoCommand(GenericCommand):
 
 @register_command
 class XorMemoryCommand(GenericCommand):
-    """The base command to XOR a block of memory."""
+    """The base command to xor a block of memory."""
 
     _cmdline_ = "xor-memory"
     _category_ = "03-e. Memory - Calculation"
@@ -68055,7 +68055,7 @@ class MorseDecodeValueCommand(MorseDecodeCommand):
 
 @register_command
 class MorseEncodeCommand(GenericCommand):
-    """The base command to Encode morse code."""
+    """The base command to encode morse code."""
 
     _cmdline_ = "morse-encode"
     _category_ = "03-e. Memory - Calculation"
