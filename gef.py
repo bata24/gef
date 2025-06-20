@@ -17101,25 +17101,12 @@ class SmartMemoryDumpCommand(GenericCommand):
                         help="maximum size of dump region. (default: %(default)#x; 0: infinity)")
     _syntax_ = parser.format_help()
 
-    def get_size_str(self, size):
-        if 0 <= size < 1024:
-            return "{} B".format(size)
-        elif 1024 <= size < 1024 ** 2:
-            return "{:5.1f} KB".format(size / 1024)
-        elif 1024 ** 2 <= size < 100 * (1024 ** 2): # 1MB~100MB
-            return "{:5.1f} MB".format(size / 1024 / 1024)
-        elif 100 * (1024 ** 2) <= size < 1024 ** 3: # 100MB~1GB
-            return Color.colorify("{:5.1f} MB".format(size / 1024 / 1024), "yellow bold")
-        elif 1024 ** 3 <= size:
-            return Color.colorify("{:5.1f} GB".format(size / 1024 / 1024 / 1024), "red bold")
-        return "???"
-
     def do_dump(self, filepath, start, size):
         if self.args.max_region_size and self.args.max_region_size < size:
             warn("Too large, so skip: {:s}".format(filepath))
             return
 
-        size_str = self.get_size_str(size)
+        size_str = GefUtil.get_size_str(size)
 
         if self.args.commit:
             # make dir
@@ -99327,6 +99314,26 @@ class GefUtil:
         """Apply color settings and generate legend string."""
         color = Config.get_gef_setting("theme.table_heading")
         return Color.colorify(msg.rstrip(), color)
+
+    @staticmethod
+    def get_size_str(size, enable_color=True):
+        if 0 <= size < 1024:
+            return "{:5.1f} B".format(size)
+        elif 1024 <= size < 1024 ** 2:
+            return "{:5.1f} KB".format(size / 1024)
+        elif 1024 ** 2 <= size < 100 * (1024 ** 2): # 1MB~100MB
+            return "{:5.1f} MB".format(size / 1024 / 1024)
+        elif 100 * (1024 ** 2) <= size < 1024 ** 3: # 100MB~1GB
+            if enable_color:
+                return Color.colorify("{:5.1f} MB".format(size / 1024 / 1024), "yellow bold")
+            else:
+                return "{:5.1f} MB".format(size / 1024 / 1024)
+        elif 1024 ** 3 <= size:
+            if enable_color:
+                return Color.colorify("{:5.1f} GB".format(size / 1024 / 1024 / 1024), "red bold")
+            else:
+                return "{:5.1f} GB".format(size / 1024 / 1024 / 1024)
+        return "???"
 
 
 class Gef:
