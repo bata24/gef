@@ -87848,6 +87848,7 @@ class PagewalkArmCommand(PagewalkCommand):
                         help="filter by map included specified physical address.")
     parser.add_argument("--trace", metavar="VADDR", default=[], action="append", type=AddressUtil.parse_address,
                         help="show all level pagetables only associated specified address.")
+    parser.add_argument("--optee", action="store_true", help="show the secure world memory maps if used OP-TEE.")
     parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
@@ -88819,11 +88820,113 @@ class PagewalkArmCommand(PagewalkCommand):
             self.pagewalk_short()
         return
 
+    def arm32_optee_exact_pagewalk(self):
+        res = PageMap.get_page_maps_by_pagewalk("pagewalk arm -S -q -n")
+        if not res:
+            return
+
+        # extract lines
+        entries = []
+        for line in res.splitlines():
+            if not line.startswith("0x"):
+                continue
+
+            vrange, prange, total_size, page_size, count, flags = line.split(None, 5)
+            d = {}
+            d["va_start"], d["va_end"] = [int(x, 16) for x in vrange.split("-")]
+            d["pa_start"], d["pa_end"] = [int(x, 16) for x in prange.split("-")]
+            d.update({
+                "total_size": int(total_size, 16),
+                "page_size": int(page_size, 16),
+                "count": int(count, 16),
+                "flags": flags,
+            })
+            Entry = collections.namedtuple("Entry", d.keys())
+            entry = Entry(*d.values())
+            entries.append(entry)
+
+        fmt = "{:37s}  {:37s}  {:10s}  {:20s}  {:s}"
+        legend = ["Virtual address start-end", "Physical address start-end", "Total size", "Flags", "Hint (Maybe)"]
+        gef_print(GefUtil.make_legend(fmt.format(*legend)))
+
+        """
+        gef> pagewalk --optee -n -q
+        Virtual address start-end              Physical address start-end             Total size  Flags                 Hint (Maybe)
+        0x000000000e100000-0x000000000e101000  0x000000000e100000-0x000000000e101000  0x1000      [PL0/--- PL1/R-X]     TEE-OS bootstrap region
+        0x00000000be700000-0x00000000be900000  0x000000007fe00000-0x0000000080000000  0x200000    [PL0/--- PL1/RW- NS]  NS<->S shared memory
+        0x00000000be9ab000-0x00000000bea00000  0x000000000e1ab000-0x000000000e200000  0x55000     [PL0/--- PL1/RW-]
+        0x00000000bea00000-0x00000000bf800000  0x000000000e200000-0x000000000f000000  0xe00000    [PL0/--- PL1/RW-]
+        0x00000000bf900000-0x00000000bfa00000  0x000000000e000000-0x000000000e100000  0x100000    [PL0/--- PL1/RW-]
+        0x00000000bfa00000-0x00000000bfb00000  0x0000000009000000-0x0000000009100000  0x100000    [PL0/--- PL1/RW-]     UART0_BASE
+        0x00000000bfb00000-0x00000000bfc00000  0x0000000008000000-0x0000000008100000  0x100000    [PL0/--- PL1/RW-]     GIC_BASE
+        0x00000000c2879000-0x00000000c2924000  0x000000000e100000-0x000000000e1ab000  0xab000     [PL0/--- PL1/R-X]     TEE-OS .text
+        0x00000000c2924000-0x00000000c295f000  0x000000000e1ab000-0x000000000e1e6000  0x3b000     [PL0/--- PL1/RW-]     TEE-OS .data / stack
+        gef>
+        """
+        text_end = None
+        pl0_count = 0
+        after_ldelf = False
+        after_ta = False
+
+        for e in entries:
+            if "PL0/---" in e.flags:
+                after_ta = False
+
+            # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/plat-vexpress/conf.mk
+            if e.pa_start == 0xe100000:
+                if e.va_start == 0xe100000 and e.va_end - e.va_start == 0x1000:
+                    hint = "TEE-OS bootstrap region"
+                else:
+                    hint = "TEE-OS .text"
+                    text_end = e.va_end
+            elif text_end and e.va_start == text_end:
+                hint = "TEE-OS .data / stack"
+            elif e.pa_start == 0x7fe00000:
+                hint = "NS<->S shared memory"
+            # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/plat-vexpress/platform_config.h
+            elif e.pa_start == 0x08000000:
+                hint = "GIC_BASE"
+            elif e.pa_start == 0x09000000:
+                hint = "UART0_BASE"
+            elif e.pa_start == 0x09040000:
+                hint = "UART1_BASE"
+            elif e.pa_start == 0x09100000:
+                hint = "PCSC_BASE"
+            # others
+            elif "[PL0/RW-" in e.flags and pl0_count == 0:
+                hint = "ldelf"
+            elif "[PL0/R-X" in e.flags:
+                if pl0_count == 0:
+                    hint = "ldelf"
+                    after_ldelf = True
+                else:
+                    hint = "TA"
+                    after_ta = True
+                pl0_count += 1
+            elif after_ldelf:
+                hint = "ldelf"
+                after_ldelf = False
+            elif after_ta:
+                if "NS" in e.flags and e.total_size == 0x1000:
+                    hint = "TA (param)"
+                else:
+                    hint = "TA .data / stack"
+            else:
+                hint = ""
+            gef_print("{:#018x}-{:#018x}  {:#018x}-{:#018x}  {:<#10x}  {:20s}  {:s}".format(
+                e.va_start, e.va_end, e.pa_start, e.pa_end, e.total_size, e.flags, hint,
+            ).rstrip())
+        return
+
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     @only_if_specific_arch(arch=("ARM32",))
     def do_invoke(self, args):
+        if args.optee:
+            self.arm32_optee_exact_pagewalk()
+            return
+
         if self.args.trace:
             # You should not modify the self.args.vrange directly.
             self.vrange = self.args.vrange + self.args.trace # merge vrange and trace
@@ -90627,35 +90730,35 @@ class PagewalkArm64Command(PagewalkCommand):
         maps = PageMap.get_page_maps_arm64_optee_secure_memory(verbose=not self.args.quiet)
         if not maps:
             return
-        fmt = "{:37s}  {:37s}  {:12s}  {:s}"
+        fmt = "{:37s}  {:37s}  {:10s}  {:s}"
         legend = ["Virtual address start-end", "Physical address start-end", "Total size", "Hint (Maybe)"]
         gef_print(GefUtil.make_legend(fmt.format(*legend)))
 
         """
         [Newer version]
         gef> pagewalk --optee -n -q
-        Virtual address start-end              Physical address start-end             Total size    Hint (Maybe)
-        0x000000000e100000-0x000000000e102000  0x000000000e100000-0x000000000e102000  0x2000        TEE-OS Exception Vector (first 0x2000 bytes)
-        0x000000009e400000-0x000000009e600000  0x0000000042000000-0x0000000042200000  0x200000      Non-secure <-> Secure shared memory
-        0x000000009e600000-0x000000009e800000  0x0000000009000000-0x0000000009200000  0x200000      UART0_BASE
-        0x000000009e800000-0x000000009f800000  0x0000000008000000-0x0000000009000000  0x1000000     GIC_BASE
+        Virtual address start-end              Physical address start-end             Total size  Hint (Maybe)
+        0x000000000e100000-0x000000000e102000  0x000000000e100000-0x000000000e102000  0x2000      TEE-OS bootstrap region
+        0x000000009e400000-0x000000009e600000  0x0000000042000000-0x0000000042200000  0x200000    NS<->S shared memory
+        0x000000009e600000-0x000000009e800000  0x0000000009000000-0x0000000009200000  0x200000    UART0_BASE
+        0x000000009e800000-0x000000009f800000  0x0000000008000000-0x0000000009000000  0x1000000   GIC_BASE
         0x000000009fa00000-0x00000000a0400000  0x0000000000000000-0x0000000000a00000  0xa00000
         0x00000000a0600000-0x00000000a2600000  0x0000000000000000-0x0000000002000000  0x2000000
         0x00000000a2900000-0x00000000a3600000  0x000000000e300000-0x000000000f000000  0xd00000
-        0x00000000a362a000-0x00000000a36ae000  0x000000000e100000-0x000000000e184000  0x84000       TEE-OS .text
-        0x00000000a36ae000-0x00000000a382a000  0x000000000e184000-0x000000000e300000  0x17c000      TEE-OS stack
+        0x00000000a362a000-0x00000000a36ae000  0x000000000e100000-0x000000000e184000  0x84000     TEE-OS .text
+        0x00000000a36ae000-0x00000000a382a000  0x000000000e184000-0x000000000e300000  0x17c000    TEE-OS .data / stack
         gef>
 
         [Older version]
         gef> pagewalk --optee -n -q
-        Virtual address start-end              Physical address start-end             Total size    Hint (Maybe)
-        0x000000000e100000-0x000000000e15d000  0x000000000e100000-0x000000000e15d000  0x5d000       TEE-OS .text
-        0x000000000e15d000-0x000000000e300000  0x000000000e15d000-0x000000000e300000  0x1a3000      TEE-OS .data / stack
+        Virtual address start-end              Physical address start-end             Total size  Hint (Maybe)
+        0x000000000e100000-0x000000000e15d000  0x000000000e100000-0x000000000e15d000  0x5d000     TEE-OS .text
+        0x000000000e15d000-0x000000000e300000  0x000000000e15d000-0x000000000e300000  0x1a3000    TEE-OS .data / stack
         0x000000000e300000-0x000000000f000000  0x000000000e300000-0x000000000f000000  0xd00000
         0x000000000f200000-0x000000000fa00000  0x0000000000000000-0x0000000000800000  0x800000
         0x000000000fa00000-0x0000000011a00000  0x0000000000000000-0x0000000002000000  0x2000000
-        0x0000000011a00000-0x0000000011c00000  0x0000000009000000-0x0000000009200000  0x200000      UART0_BASE
-        0x0000000011c00000-0x0000000011e00000  0x0000000042000000-0x0000000042200000  0x200000      Non-secure <-> Secure shared memory
+        0x0000000011a00000-0x0000000011c00000  0x0000000009000000-0x0000000009200000  0x200000    UART0_BASE
+        0x0000000011c00000-0x0000000011e00000  0x0000000042000000-0x0000000042200000  0x200000    NS<->S shared memory
         0x000000000f000000-0x000000000f200000  0x0000000040000000-0x0000000040200000  0x200000
         gef>
         """
@@ -90664,14 +90767,14 @@ class PagewalkArm64Command(PagewalkCommand):
             # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/plat-vexpress/conf.mk
             if pa_start == 0xe100000:
                 if va_start == 0xe100000 and va_end - va_start == 0x2000:
-                    hint = "TEE-OS Exception Vector (first 0x2000 bytes)"
+                    hint = "TEE-OS bootstrap region"
                 else:
                     hint = "TEE-OS .text"
                     text_end = va_end
             elif text_end and va_start == text_end:
                 hint = "TEE-OS .data / stack"
             elif pa_start == 0x42000000:
-                hint = "Non-secure <-> Secure shared memory"
+                hint = "NS<->S shared memory"
             # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/plat-vexpress/platform_config.h
             elif pa_start == 0x08000000:
                 hint = "GIC_BASE"
@@ -90679,13 +90782,11 @@ class PagewalkArm64Command(PagewalkCommand):
                 hint = "UART0_BASE"
             elif pa_start == 0x09040000:
                 hint = "UART1_BASE"
-            elif pa_start == 0x09100000:
-                hint = "PCSC_BASE"
             else:
                 hint = ""
-            gef_print("{:#018x}-{:#018x}  {:#018x}-{:#018x}  {:<#12x}  {:s}".format(
+            gef_print("{:#018x}-{:#018x}  {:#018x}-{:#018x}  {:<#10x}  {:s}".format(
                 va_start, va_end, pa_start, pa_end, va_end - va_start, hint,
-            ))
+            ).rstrip())
         return
 
     @parse_args
