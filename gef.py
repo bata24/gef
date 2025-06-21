@@ -1916,7 +1916,7 @@ class Elf:
             elf = None
         return elf
 
-    def __init__(self, elf=None):
+    def __init__(self, elf=None, file_offset=0):
         """Instantiate an ELF object."""
         if elf is None:
             elf = Path.get_filepath()
@@ -1932,7 +1932,9 @@ class Elf:
                 return
             self.fd = open(elf, "rb")
             self.addr = None
+            self.seek_init_offset = file_offset
             self.pos = 0
+            self.seek(self.pos)
             self.filename = elf
         elif isinstance(elf, int):
             self.fd = None
@@ -2018,7 +2020,7 @@ class Elf:
 
     def seek(self, off):
         if self.fd is not None:
-            self.fd.seek(off, 0)
+            self.fd.seek(self.seek_init_offset + off, 0)
         elif self.addr is not None:
             self.pos = off
         else:
@@ -83239,20 +83241,25 @@ class BreakSecureMemAddrCommand(GenericCommand):
 class OpteeThreadEnterUserModeBreakpoint(gdb.Breakpoint):
     """Create a breakpoint to thread_enter_user_mode."""
 
-    def __init__(self, vaddr, ta_offset):
+    def __init__(self, vaddr, ta_offset, verbose):
         super().__init__("*{:#x}".format(vaddr), type=gdb.BP_BREAKPOINT, internal=True)
-        self.count = 0
         self.ta_offset = ta_offset
+        self.verbose = verbose
         return
 
     @staticmethod
-    def get_ta_loaded_address():
+    def get_ta_loaded_address(verbose=False):
+        Cache.reset_gef_caches()
         if is_arm32():
             res = PageMap.get_page_maps_by_pagewalk("pagewalk -S --quiet --no-pager")
+            if verbose:
+                gef_print(res)
             res = sorted(set(res.splitlines()))
             res = list(filter(lambda line: "PL0/R-X" in line, res))
         elif is_arm64():
             res = PageMap.get_page_maps_by_pagewalk("pagewalk 1 --quiet --no-pager")
+            if verbose:
+                gef_print(res)
             res = sorted(set(res.splitlines()))
             res = list(filter(lambda line: "EL0/R-X" in line, res))
         maps = []
@@ -83267,14 +83274,9 @@ class OpteeThreadEnterUserModeBreakpoint(gdb.Breakpoint):
             return None
 
     def stop(self):
-        if self.count != 1:
-            self.count += 1
-            return False
-
-        ta_address = self.get_ta_loaded_address()
+        ta_address = self.get_ta_loaded_address(self.verbose)
         if ta_address is None:
-            err("TA address is not found")
-            self.enabled = False
+            info("TA address is not found, so continue (this is 1st stop?)")
             return False
 
         ta_vstart, ta_vend, _, _ = ta_address
@@ -83286,8 +83288,7 @@ class OpteeThreadEnterUserModeBreakpoint(gdb.Breakpoint):
             self.enabled = False
             return False
 
-        gdb.execute("break *{:#x}".format(ta_vstart + self.ta_offset))
-        self.enabled = False
+        gdb.execute("tbreak *{:#x}".format(ta_vstart + self.ta_offset))
         return False
 
 
@@ -83299,32 +83300,173 @@ class OpteeBreakTaAddrCommand(GenericCommand):
     _category_ = "08-g. Qemu-system Cooperation - TrustZone"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("thread_enter_user_mode", metavar="PHYS_ADDR_thread_enter_user_mode", type=AddressUtil.parse_address,
-                        help="The physical address of `thread_enter_user_mode` in OPTEE-OS.")
-    parser.add_argument("ta_offset", metavar="TA_OFFSET", type=AddressUtil.parse_address,
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("ta_offset", metavar="TA_OFFSET", nargs="?", type=AddressUtil.parse_address,
                         help="The breakpoint target offset of OPTEE-TA.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="verbose output.")
+    group.add_argument("-f", "--ta-file", help="parse the TA file (or ELF file) and stop at the entry point.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="show memory map if stopped at __thread_enter_user_mode.")
     _syntax_ = parser.format_help()
 
     _example_ = [
-        "{0:s} 0xe137c78 0x2784",
+        "{0:s} 0x2784",
+        "{0:s} -f /path/to/deadbeef-dead-dead-dead-deaddeadbeef.ta",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "It is not straightforward to set a breakpoint on a Trusted Application (TA) while you are still",
+        "in the normal world, because at that moment the TA has not yet been loaded into the secure world.",
+        "",
+        "The TA is loaded only when the TEE OS routine thread_enter_user_mode stops for the second time.",
+        " - At the 1st stop, only ldelf (the user-space loader that actually loads the TA) is executed, so the TA is still absent.",
+        " - At the 2nd stop, ldelf has finished and the TA is finally present in memory.",
+        "",
+        "Now, thread_enter_user_mode calls __thread_enter_user_mode.",
+        "This __thread_enter_user_mode in TEE OS is written directly in assembly.",
+        "Because of this, it is immune to compiler optimizations. By searching memory for the fixed byte sequence",
+        "of this assembly routine, we can reliably locate its offset and set your breakpoint there.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def __init__(self):
+        super().__init__(complete=gdb.COMPLETE_FILENAME)
+        return
+
+    def get_secure_memory_maps(self):
+        maps = PageMap.get_page_maps_by_pagewalk("pagewalk --optee --quiet --no-pager").splitlines()
+        if not maps:
+            err("Not found memory maps")
+            return None
+
+        for m in maps:
+            s = m.split(None, 3)
+            if len(s) != 4:
+                continue
+            virt_range, phys_range, size, hint = s
+            if "TEE-OS .text" not in hint:
+                continue
+            virt_start = int(virt_range.split("-")[0], 16)
+            phys_start = int(phys_range.split("-")[0], 16)
+            size = int(size, 16)
+            break
+        else:
+            err("Not found memory maps")
+            return None
+        return virt_start, phys_start, size
+
+    def search_thread_enter_user_mode(self):
+        ret = self.get_secure_memory_maps()
+        if ret is None:
+            return
+        virt_start, phys_start, size = ret
+
+        data = read_physmem(phys_start, size)
+        if not data:
+            err("Memory read error")
+            return None
+
+        if is_arm32():
+            # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/kernel/thread_a32.S
+            """
+            FUNC __thread_enter_user_mode , :
+                push {r4-r12,lr}
+                cps	#CPSR_MODE_SYS
+                mov	r4, sp
+                ...
+
+            gef> xp/3xi 0x0E101158
+                0xe101158 f05f2de9   <NO_SYMBOL>   push   {r4, r5, r6, r7, r8, sb, sl, fp, ip, lr}
+                0xe10115c 1f0002f1   <NO_SYMBOL>   cps    #0x1f
+                0xe101160 0d40a0e1   <NO_SYMBOL>   mov    r4, sp
+            gef>
+            """
+            byte_seq = b"\xf0\x5f\x2d\xe9" + b"\x1f\x00\x02\xf1" + b"\x0d\x40\xa0\xe1"
+        else:
+            # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/kernel/thread_a64.S
+            """
+            FUNC __thread_enter_user_mode , :
+                sub	sp, sp, #THREAD_USER_MODE_REC_SIZE                  // size may change in future
+                store_xregs sp, THREAD_USER_MODE_REC_CTX_REGS_PTR, 0, 2 // macro
+                store_xregs sp, THREAD_USER_MODE_REC_X19, 19, 30        // macro
+                mov	x19, sp
+                msr	spsel, #1
+                ...
+
+            gef> xp/11i 0xE1030C0
+                0xe1030c0 ff0302d1                  <NO_SYMBOL>   sub    sp, sp, #0x80
+                0xe1030c4 e00700a9                  <NO_SYMBOL>   stp    x0, x1, [sp] <--- here
+                0xe1030c8 e20b00f9                  <NO_SYMBOL>   str    x2, [sp, #0x10]
+                0xe1030cc f35302a9                  <NO_SYMBOL>   stp    x19, x20, [sp, #0x20]
+                0xe1030d0 f55b03a9                  <NO_SYMBOL>   stp    x21, x22, [sp, #0x30]
+                0xe1030d4 f76304a9                  <NO_SYMBOL>   stp    x23, x24, [sp, #0x40]
+                0xe1030d8 f96b05a9                  <NO_SYMBOL>   stp    x25, x26, [sp, #0x50]
+                0xe1030dc fb7306a9                  <NO_SYMBOL>   stp    x27, x28, [sp, #0x60]
+                0xe1030e0 fd7b07a9                  <NO_SYMBOL>   stp    x29, x30, [sp, #0x70]
+                0xe1030e4 f3030091                  <NO_SYMBOL>   mov    x19, sp      <--- here
+                0xe1030e8 bf4100d5                  <NO_SYMBOL>   msr    spsel, #1    <--- here
+            gef>
+            """
+            byte_seq = b"\xf3\x03\x00\x91" + b"\xbf\x41\x00\xd5"
+
+        x = data.split(byte_seq)
+        if len(x) == 1:
+            err("Not found __thread_enter_user_mode")
+            return None
+        if len(x) > 2:
+            err("Found multiple candidates")
+            return None
+
+        if is_arm32():
+            __thread_enter_user_mode = virt_start + len(x[0])
+
+        else:
+            r = x[0].rfind(b"\xe0\x07\x00\xa9")
+            if r == -1 or r < 4:
+                err("Not found __thread_enter_user_mode")
+                return None
+            __thread_enter_user_mode = virt_start + (r - 4)
+
+        return __thread_enter_user_mode
 
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     @only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
-        if args.verbose:
-            info("thread_enter_user_mode @ OPTEE-OS: {:#x}".format(args.thread_enter_user_mode))
-            info("breakpoint target offset of TA: {:#x}".format(args.ta_offset))
+        thread_enter_user_mode_virt = self.search_thread_enter_user_mode()
+        if thread_enter_user_mode_virt is None:
+            return
 
-        thread_enter_user_mode_virt = XSecureMemAddrCommand.p2v_secure(args.thread_enter_user_mode, args.verbose)
+        if args.ta_offset is not None:
+            ta_offset = args.ta_offset
+        else:
+            if not os.path.exists(self.args.ta_file):
+                err("Not found TA")
+                return
+            contents = open(self.args.ta_file, "rb").read()
+            if not contents.startswith((b"HSTO", b"\x7fELF")):
+                err("Invalid TA/ELF")
+                return
 
-        for vaddr in thread_enter_user_mode_virt:
-            OpteeThreadEnterUserModeBreakpoint(vaddr, args.ta_offset)
-            info("Temporarily breakpoint at {:#x}".format(vaddr))
+            elf_header_off = contents.find(b"\x7fELF")
+            if elf_header_off == -1:
+                err("Not found ELF header")
+                return
+
+            elf = Elf(self.args.ta_file, elf_header_off)
+            if elf is None:
+                err("Invalid ELF")
+                return
+            ta_offset = elf.e_entry
+
+        if ta_offset is None:
+            return
+
+        info("__thread_enter_user_mode @ OPTEE-OS: {:#x}".format(thread_enter_user_mode_virt))
+        info("breakpoint target offset of TA: {:#x}".format(ta_offset))
+
+        OpteeThreadEnterUserModeBreakpoint(thread_enter_user_mode_virt, ta_offset, args.verbose)
+        info("Temporarily breakpoint at {:#x}".format(thread_enter_user_mode_virt))
         return
 
 
