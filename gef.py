@@ -84395,7 +84395,7 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
 
         self.dump_malloc_ctx(malloc_ctx)
         self.dump_chunk_list(malloc_ctx)
-        self.print_output()
+        self.print_output(term=True)
         return
 
 
