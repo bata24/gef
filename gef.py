@@ -84229,6 +84229,229 @@ class OpteeTaDumpDirectoryCommand(OpteeTaDumpCommand):
 
 
 @register_command
+class OpteeShmListCommand(GenericCommand, BufferingOutput):
+    """List dynamic shared-memory buffers currently registered in OP-TEE (for OP-TEE v4.3.0~)."""
+
+    _cmdline_  = "optee-shm-list"
+    _category_ = "08-g. Qemu-system Cooperation - TrustZone"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    _syntax_ = parser.format_help()
+
+    def find_reg_shm_list(self, data, virt_start):
+        def is_valid_rw_addr(addr):
+            return virt_start <= addr < virt_start + len(data)
+
+        def read_int_from_memory(addr):
+            if not is_valid_rw_addr(addr):
+                return None
+            index = (addr - virt_start) // current_arch.ptrsize
+            return data_list[index]
+
+        def is_slist_head(addr, head_next, offset):
+            current = head_next
+            while True:
+                current_next = read_int_from_memory(current + offset)
+                if current_next is None:
+                    return False
+
+                if current_next == 0:
+                    return True
+
+                current = current_next
+            return False
+
+        """
+        struct list { // SLIST_ENTRY
+            struct list  *next;
+        }
+
+        [OP-TEE OS v4.3.0~]
+        struct mobj_reg_shm {
+            struct mobj {
+                const struct mobj_ops *ops;
+                size_t size;
+                size_t phys_granule;
+                struct refcount {
+                    unsigned int val;
+                } refc;
+            } mobj;
+            SLIST_ENTRY(mobj_reg_shm) next;
+            uint64_t cookie;
+            tee_mm_entry_t *mm;
+            paddr_t page_offset;
+            struct refcount mapcount;
+            bool guarded;
+            bool releasing;
+            bool release_frees;
+            paddr_t pages[];
+        };
+        """
+
+        offsetof_ops = 0
+        offsetof_size = offsetof_ops + current_arch.ptrsize
+        offsetof_refc = offsetof_size + current_arch.ptrsize * 2
+        offsetof_next = offsetof_refc + current_arch.ptrsize
+        offsetof_cookie = offsetof_next + 8 # with pad
+        offsetof_mm = offsetof_cookie + 8
+        offsetof_page_offset = offsetof_mm + current_arch.ptrsize
+        offsetof_pages = offsetof_page_offset + current_arch.ptrsize + 4 + 4 # 4, 4 = map_count, bool*3
+
+        candidate_head = []
+        data_list = slice_unpack(data, current_arch.ptrsize)
+        for i in range(len(data_list) - 1):
+            # check if head
+            head_addr = virt_start + current_arch.ptrsize * i
+            next_value = data_list[i]
+            if not is_slist_head(head_addr, next_value, offsetof_next):
+                continue
+
+            current = next_value
+            seen = []
+            entries = []
+            found = True
+            while current:
+                if not is_valid_rw_addr(current):
+                    found = False
+                    break
+                if current in seen:
+                    found = False
+                    break
+                ops = read_int_from_memory(current + offsetof_ops)
+                size = read_int_from_memory(current + offsetof_size)
+                refc = read_int_from_memory(current + offsetof_refc)
+                next_ = read_int_from_memory(current + offsetof_next)
+                cookie = read_int_from_memory(current + offsetof_cookie)
+                mm = read_int_from_memory(current + offsetof_mm)
+                page_offset = read_int_from_memory(current + offsetof_page_offset)
+                seen.append(current)
+
+                # check ops
+                if is_valid_rw_addr(ops): # r-x
+                    found = False
+                    break
+                # check size
+                if is_valid_rw_addr(size):
+                    found = False
+                    break
+                # check size + page_offset
+                if (size + page_offset) % gef_getpagesize():
+                    found = False
+                    break
+                # check refc
+                if is_valid_rw_addr(refc):
+                    found = False
+                    break
+                if refc == 0 or refc >= 0x100:
+                    found = False
+                    break
+                # check cookie
+                if is_64bit():
+                    if cookie & 0xffff0000_00000000 != 0xffff0000_00000000:
+                        found = False
+                        break
+                # check mm
+                if mm and not is_valid_rw_addr(mm): # mm == 0 is ok
+                    found = False
+                    break
+                # check pages
+                pages = []
+                for j in range((size + page_offset) // gef_getpagesize()):
+                    p = read_int_from_memory(current + offsetof_pages + current_arch.ptrsize * j)
+                    if p & gef_getpagesize_mask_low():
+                        found = False
+                        break
+                    pages.append(p)
+                if not found:
+                    break
+
+                # already parsed
+                if len(seen) == 1: # first element
+                    for _, ents in candidate_head:
+                        if current in [e[0] for e in ents]:
+                            found = False
+                            break
+                    if not found:
+                        break
+
+                # add entry
+                entries.append([current, ops, size, refc, cookie, mm, page_offset, pages])
+                # goto next
+                current = next_
+
+            if found:
+                candidate_head.append([head_addr, entries])
+
+        if len(candidate_head) == 0:
+            err("Not found &tee_ctxes")
+        elif len(candidate_head) > 1:
+            warn("Found multiple canddiate for &reg_shm_list")
+        return candidate_head
+
+    def dump_list(self, list_heads):
+        for head, entries in list_heads:
+            self.out.append(titlify("&reg_shm_list: {:#x}".format(head)))
+            fmt = "{:12s}  {:10s}  {:10s}  {:10s}  {:18s}  {:10s}  {:11s}  {:s}"
+            legend = ["mobj_reg_shm", "ops", "size", "refc", "cookie", "mm", "page_offset", "pages (phys)"]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+            for addr, ops, size, refc, cookie, mm, page_offset, pages in entries:
+                pages_str = []
+                if pages:
+                    start = end = pages[0]
+                    for addr in pages[1:]:
+                        if addr == end + gef_getpagesize():
+                            end = addr
+                        else:
+                            pages_str.append("{:#x}-{:#x}".format(start, end + gef_getpagesize()))
+                            start = end = addr
+                    pages_str.append("{:#x}-{:#x}".format(start, end + gef_getpagesize()))
+
+                self.out.append(
+                    "{:#010x}    {:#010x}  {:#010x}  {:#010x}  {:#018x}  {:#010x}  {:#010x}   {:s}".format(
+                    addr, ops, size, refc, cookie, mm, page_offset, ",".join(pages_str),
+                ))
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system",))
+    @only_if_specific_arch(arch=("ARM32", "ARM64"))
+    def do_invoke(self, args):
+        maps = PageMap.get_page_maps_by_pagewalk("pagewalk --optee --quiet --no-pager").splitlines()
+        if not maps:
+            err("Not found memory maps")
+            return
+
+        for m in maps:
+            s = m.split(None, 3)
+            if len(s) != 4:
+                continue
+            virt_range, phys_range, size, hint = s
+            if "TEE-OS .data / stack" not in hint:
+                continue
+            virt_start = int(virt_range.split("-")[0], 16)
+            phys_start = int(phys_range.split("-")[0], 16)
+            size = int(size, 16)
+            break
+        else:
+            err("Not found memory maps")
+            return
+
+        data = read_physmem(phys_start, size)
+        parsed_list_heads = self.find_reg_shm_list(data, virt_start)
+        if not parsed_list_heads:
+            err("Not found reg_shm_list")
+            return
+
+        self.out = []
+        self.dump_list(parsed_list_heads)
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
 class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
     """Dump bget allocator of OPTEE-Trusted-App."""
 

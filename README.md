@@ -258,6 +258,9 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `optee-ta-dump`: dumps the information of OPTEE-Trusted-Apps from the memory or specified host directory.
     - Supported on ARM64 and ARM.
     - ![](images/optee-ta-dump.png)
+- `optee-shm-list`: shows the information of dynamic shared-memory buffers.
+    - Supported on ARM64 and ARM.
+    - ![](images/optee-shm-list.png)
 - `pac-keys`: pretty prints ARM64 PAC keys.
     - Supported on ARM64.
     - ![](images/pac-keys.png)
