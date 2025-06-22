@@ -83746,6 +83746,20 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
+    _note_ = [
+        "Walks the global TEE context list (`tee_ctxes`) and prints `struct tee_ta_ctx` currently linked to it.",
+        "- A context is added to this list the first time its TA is successfully loaded.",
+        "  (that is: after `ldelf` has relocated the ELF and handed the entry point back to the OP-TEE core)",
+        "- A TA that has never been loaded will therefore not appear here.",
+        "- For normal user TAs the entry is removed automatically when the last session is closed and the context is freed,",
+        "  so terminated TAs usually vanish from the list.",
+        "- `TA_FLAG_SINGLE_INSTANCE`, `TA_FLAG_INSTANCE_KEEP_ALIVE`, early-TAs and pseudo-TAs stay linked once they",
+        "  have been created because the core keeps them resident.",
+        "- ref_count shows the number of sessions currently open for that TA (the live open-session reference counter),",
+        "  not a cumulative load count.",
+    ]
+    _note_ = "\n".join(_note_)
+
     def __init__(self):
         super().__init__(prefix=False)
         return
@@ -83915,6 +83929,32 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
             warn("Found multiple canddiate for &tee_ctxes")
         return candidate_head
 
+    def get_flags_str(self, flags_value):
+        _flags = {
+            "TA_FLAG_DEVICE_ENUM_TEE_STORAGE_PRIVATE":     0x00001000,
+            "TA_FLAG_DONT_CLOSE_HANDLE_ON_CORRUPT_OBJECT": 0x00000800,
+            "TA_FLAG_DEVICE_ENUM_SUPP":                    0x00000400,
+            "TA_FLAG_DEVICE_ENUM":                         0x00000200,
+            "TA_FLAG_CONCURRENT":                          0x00000100,
+            "TA_FLAG_CACHE_MAINTENANCE":                   0x00000080,
+            "TA_FLAG_REMAP_SUPPORT":                       0x00000040,
+            "TA_FLAG_SECURE_DATA_PATH":                    0x00000020,
+            "TA_FLAG_INSTANCE_KEEP_ALIVE":                 0x00000010,
+            "TA_FLAG_MULTI_SESSION":                       0x00000008,
+            "TA_FLAG_SINGLE_INSTANCE":                     0x00000004,
+            "TA_FLAG_EXEC_DDR":                            0x00000002,
+            "TA_FLAG_USER_MODE":                           0x00000001,
+        }
+        flags = []
+        for k, v in _flags.items():
+            if flags_value & v:
+                flags.append(k)
+
+        flags_str = " | ".join(flags)
+        if flags_str == "":
+            flags_str = "none"
+        return flags_str.replace("TA_FLAG_", "")
+
     def dump_service(self, data, virt_start, heads):
         import uuid
 
@@ -83928,30 +83968,57 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
             return data_list[index]
 
         if not self.args.for_old_version:
-            offsetof_link = current_arch.ptrsize
+            offsetof_flags = 0
+            offsetof_link = offsetof_flags + current_arch.ptrsize
             offsetof_uuid = offsetof_link + current_arch.ptrsize * 2
+            offsetof_ops = offsetof_uuid + 16
+            offsetof_ref_count = offsetof_ops + 4 * 2
         else:
-            offsetof_link = 16 + current_arch.ptrsize * 2
             offsetof_uuid = 0
+            offsetof_ops = offsetof_uuid + 16
+            offsetof_flags = offsetof_ops + current_arch.ptrsize
+            offsetof_link = offsetof_flags + current_arch.ptrsize
+            offsetof_ref_count = offsetof_link + current_arch.ptrsize * 2 + 4 * 2
 
         data_list = slice_unpack(data, current_arch.ptrsize)
         for head in heads:
             self.out.append(titlify("&tee_ctxes: {:#x}".format(head)))
 
-            fmt = "{:10s}  {:36s}  {:s}"
-            legend = ["tee_ta_ctx", "UUID", "Hint"]
-            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
+            taa_ctx_list = []
             current = read_int_from_memory(head)
             while current:
+                d = {}
+                # addr
+                d["addr"] = current
                 # uuid
-                raw_uuid = data[current + offsetof_uuid - virt_start:][:16]
-                uuid_str = str(uuid.UUID(bytes_le=raw_uuid))
-                hint = self.uuid_hint.get(uuid_str, "???")
-                # dump
-                self.out.append("{:#010x}  {:36s}  {:s}".format(current, uuid_str, hint))
+                d["raw_uuid"] = data[current + offsetof_uuid - virt_start:][:16]
+                d["uuid_str"] = str(uuid.UUID(bytes_le=d["raw_uuid"]))
+                d["hint"] = self.uuid_hint.get(d["uuid_str"], "???")
+                # flags
+                d["flags"] = read_int_from_memory(current + offsetof_flags)
+                d["flags_string"] = "(" + self.get_flags_str(d["flags"]) + ")"
+                # ops
+                d["ops"] = read_int_from_memory(current + offsetof_ops)
+                # ref_count
+                d["ref_count"] = read_int_from_memory(current + offsetof_ref_count)
+                # append
+                Ctx = collections.namedtuple("Ctx", d.keys())
+                taa_ctx_list.append(Ctx(*d.values()))
                 # goto next
                 current = read_int_from_memory(current + offsetof_link)
+
+            width = max([len(taa.hint) for taa in taa_ctx_list] + [0])
+            fmt = "{:10s}  {:36s}  {:{:d}s}  {:10s}  {:10s}  {:s}"
+            legend = ["tee_ta_ctx", "uuid", "hint", width, "ops", "ref_count", "flags"]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+            for ctx in taa_ctx_list:
+                # dump
+                self.out.append("{:#010x}  {:36s}  {:{:d}s}  {:#010x}  {:#010x}  {:#010x} {:s}".format(
+                    ctx.addr, ctx.uuid_str, ctx.hint, width,
+                    ctx.ops, ctx.ref_count,
+                    ctx.flags, ctx.flags_string,
+                ))
         return
 
     @parse_args
@@ -84111,7 +84178,7 @@ class OpteeTaDumpDirectoryCommand(OpteeTaDumpCommand):
 
     def dump_directory(self):
         fmt = "{:39s}  {:11s}  {:8s}  {:s}"
-        legend = ["Filename", "TA type", "Size", "Hint"]
+        legend = ["filename", "TA type", "size", "hint"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         for filepath in GefUtil.walk(self.args.host_dir):
