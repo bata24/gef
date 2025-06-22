@@ -14108,12 +14108,12 @@ class BufferingOutput:
             self.out.append(msg)
         return
 
-    def print_output(self, term=False, skip_color=False):
+    def print_output(self, check_terminal_size=False, skip_color=False):
         if not hasattr(self, "out"):
             return
         if not self.out:
             return
-        if term:
+        if check_terminal_size:
             if len(self.out) > GefUtil.get_terminal_size()[0]:
                 less = not self.args.no_pager
             else:
@@ -15063,7 +15063,7 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
         else:
             self.apply_type(tp, args.address)
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
 
         # revert setting
         if args.smart:
@@ -15541,7 +15541,7 @@ class ArgvCommand(GenericCommand, BufferingOutput):
         self.dump_dl_argv()
         self.dump_libc_argv()
         self.dump_proc_cmdline()
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -15665,7 +15665,7 @@ class EnvpCommand(GenericCommand, BufferingOutput):
         self.dump_environ()
         self.dump_last_environ()
         self.dump_proc_environ()
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -15766,7 +15766,7 @@ class VdsoCommand(GenericCommand, BufferingOutput):
             else:
                 break
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -15824,7 +15824,7 @@ class VvarCommand(GenericCommand, BufferingOutput):
         self.out.extend(hex_data.splitlines())
 
         # print
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -15881,7 +15881,7 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
             self.out.extend(hex_data_merged)
 
         # print
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -16883,7 +16883,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.out = []
         self.proc_dump()
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -17078,7 +17078,7 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
         self.out = []
         self.print_capability_from_pid()
         self.print_capability_from_file()
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -21178,7 +21178,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.print_heap_chunks(arena, dump_start, peek_nb, peek_offset)
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -22511,7 +22511,7 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.find_fake_fast(args.size)
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -23222,7 +23222,7 @@ class RpCommand(GenericCommand, BufferingOutput):
         self.apply_filter(rp_output_path, base_address)
 
         # print
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -30939,7 +30939,7 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
             lines.reverse()
 
         self.out = lines
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -33231,7 +33231,7 @@ class VMMapCommand(GenericCommand, BufferingOutput):
                 self.info_add_out("Permissions use ELF header or default rw-; dynamic changes undetectable")
 
         # print
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -34360,7 +34360,7 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
             err("Failed to parse link_map")
             return
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -34773,7 +34773,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
             err("Failed to parse _DYNAMIC")
             return
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -35740,7 +35740,7 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.stdio_dump(struct_io_file_array)
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -36365,7 +36365,7 @@ class GotCommand(GenericCommand, BufferingOutput):
         # doit
         resolved_info = self.parse_plt_got()
         self.make_output(resolved_info)
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
 
         # clean up
         if tmp_filepath and os.path.exists(tmp_filepath):
@@ -36421,7 +36421,7 @@ class GotAllCommand(GenericCommand, BufferingOutput):
             self.out.append("")
             processed.append(m.path)
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -37353,7 +37353,7 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.make_output(syscall_table, syscall_num, syscall_name_pattern)
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -51137,7 +51137,7 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
             self.out = []
             for val, (sym, desc) in sorted(ERRNO_DICT.items()):
                 self.out.append('{:3d} (={:#4x}): {:<15s}: "{:s}"'.format(val, val, sym, desc))
-            self.print_output(term=True)
+            self.print_output(check_terminal_size=True)
             return
 
         if args.errno is None:
@@ -58765,7 +58765,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # parse
         self.out = []
         self.dump(task_addrs)
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -59595,7 +59595,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                 entries = self.parse_kallsyms(kallsyms)
                 self.apply_symbol(name_string, base, entries)
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -60218,7 +60218,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         for major, minor, name, bdev in sorted(bdevs_with_info):
             self.out.append("{:#018x} {:<18s} {:<6d} {:<6d}".format(bdev, name, major, minor).rstrip())
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -61353,7 +61353,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
                 m["cdev"], m["parent"], m["parent_name"], m["ops"], m["ops_sym"],
             ))
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -62426,7 +62426,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             for idx, (type_name, name) in enumerate(members):
                 self.out.append("{:<5d} {:10s} {:s}".format(idx, type_name, name))
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -62899,7 +62899,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                 self.quiet_err("Memory read error")
                 return
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -63391,7 +63391,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.parse_file_systems(args.skip_mount_path)
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -63498,7 +63498,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
             self.out.append("{:#0{:d}x} {:20s} {:#0{:d}x}{:s}".format(cs, width, name, read, width, read_sym))
             current = read_int_from_memory(current)
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -63936,7 +63936,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         self.out = []
         self.dump_timer()
         self.dump_hrtimer()
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -64397,7 +64397,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.dump_pci()
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -65320,7 +65320,7 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.dump_syscall_table()
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -65673,7 +65673,7 @@ class TlsCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.dump_tls(tls)
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -66296,7 +66296,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
         else:
             self.quiet_info_add_out("for flags description, use `-v`")
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -66549,7 +66549,7 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
         else:
             self.quiet_info_add_out("for flags description, use `-v`")
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -66735,7 +66735,7 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
             self.memcmp_telescope_like(from1data, from2data)
         else:
             self.memcmp(from1data, from2data)
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -67453,7 +67453,7 @@ class CrcMemoryCommand(CrcCommand):
             if crc is None:
                 continue
             self.out.append("{:20s}: {:s} ({:d}-bit)".format(cname, crc, len(crc) * 4))
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -67503,7 +67503,7 @@ class CrcValueCommand(CrcCommand):
             except ValueError:
                 continue
             self.out.append("{:20s}: {:s} ({:d}-bit)".format(cname, crc, len(crc) * 4))
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -67749,7 +67749,7 @@ class BaseNDecodeMemoryCommand(BaseNDecodeCommand):
                 self.out.append("{:17s}: {!s}".format(bname, b))
             except ValueError:
                 self.out.append("{:17s}: ERROR".format(bname))
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -67797,7 +67797,7 @@ class BaseNDecodeValueCommand(BaseNDecodeCommand):
                 self.out.append("{:17s}: {!s}".format(bname, b))
             except ValueError:
                 self.out.append("{:17s}: ERROR".format(bname))
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -67892,7 +67892,7 @@ class BaseNEncodeMemoryCommand(BaseNEncodeCommand):
                 self.out.append("{:17s}: {!s}".format(bname, b))
             except ValueError:
                 self.out.append("{:17s}: ERROR".format(bname))
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -67943,7 +67943,7 @@ class BaseNEncodeValueCommand(BaseNEncodeCommand):
                 self.out.append("{:17s}: {!s}".format(bname, b))
             except ValueError:
                 self.out.append("{:17s}: ERROR".format(bname))
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -73622,7 +73622,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         # dump
         self.out = []
         self.dump_pipe(pipe_files)
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -74098,7 +74098,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
         if not args.only_progs:
             self.dump_bpf_maps(maps)
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -74586,7 +74586,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             self.dump_ipc_msg_ids(ipc_ns + self.offset_ids + self.sizeof_ipc_ids * 1)
             self.dump_ipc_shm_ids(ipc_ns + self.offset_ids + self.sizeof_ipc_ids * 2)
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -74794,7 +74794,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
                     addr, start, end, name, name_width, flags, self.get_flags_str(flags),
                 ))
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -75113,7 +75113,7 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.dump_db_list()
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -75526,7 +75526,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.dump_irq()
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -75664,7 +75664,7 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.dump_net()
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -77190,7 +77190,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         if args.vmlinux_file:
             self.parse_vmlinux()
             self.print_kallsyms(args.keyword, args.type, args.smart)
-            self.print_output(term=True)
+            self.print_output(check_terminal_size=True)
             return
 
         self.quiet_info("Wait for memory scan")
@@ -77209,7 +77209,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             return
 
         self.print_kallsyms(args.keyword, args.type, args.smart)
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -79872,7 +79872,7 @@ class CageCommand(GenericCommand, BufferingOutput):
                 if args.vvverbose:
                     self.dump_entry(entry, "")
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -82601,7 +82601,7 @@ class XStringCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.dump_string(args.address, count, max_length, args.hex, args.quiet)
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -82654,7 +82654,7 @@ class XColoredCommand(GenericCommand, BufferingOutput):
                 color_func = self.colors[:args.color_num][0]
             self.out.append(color_func(line))
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -83620,7 +83620,7 @@ class OpteeSmcServiceDumpCommand(GenericCommand, BufferingOutput):
         data = XSecureMemAddrCommand.read_secure_memory(sm, 0x0, sm.size, args.verbose)
         services = self.find_service(sm, data)
         self.dump_service(services)
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -83989,7 +83989,7 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
             return
 
         self.dump_service(data, virt_start, list_heads)
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -84157,7 +84157,7 @@ class OpteeTaDumpDirectoryCommand(OpteeTaDumpCommand):
 
         self.out = []
         self.dump_directory()
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -84537,7 +84537,7 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
 
         self.dump_malloc_ctx(malloc_ctx)
         self.dump_chunk_list(malloc_ctx)
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -92479,7 +92479,7 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
         if not args.device:
             self.info_add_out("use `-d` if less information")
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -92752,7 +92752,7 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info_add_out("system_io")
         self.dump_region(self.system_io, 0)
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -97133,7 +97133,7 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
             err("You must provide either a single address or both --from-addr and --to-addr")
             return
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -97248,7 +97248,7 @@ class PeekPageFlagsCommand(GenericCommand, BufferingOutput):
         for flag in set_flags:
             self.out.append("  {:s}".format(flag))
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -97390,7 +97390,7 @@ class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
         ))
         self.xref_telescope(args.pattern, args.depth, [args.pattern])
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -98033,7 +98033,7 @@ class BincompareCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.compare(file_data, memory_data, size)
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -99164,7 +99164,7 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
         self.listup_avail_comms()
         if args.sort:
             self.out = sorted(self.out)
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -99869,7 +99869,7 @@ class AliasesListCommand(AliasesCommand, BufferingOutput):
             if not a._pre_defined_:
                 self.out.append("{:{:d}s}  ->  {:s}".format(a._alias_, width, a._command_))
 
-        self.print_output(term=True)
+        self.print_output(check_terminal_size=True)
         return
 
 
