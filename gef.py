@@ -98750,6 +98750,20 @@ class GefResetBreakpointsCommand(GenericCommand):
     parser.add_argument("-c", "--commit", action="store_true", help="actually perform delete.")
     _syntax_ = parser.format_help()
 
+    def get_breakpoint(self, b):
+        if hasattr(b, "locations"): # gdb 13.1~
+            for bl in b.locations:
+                if bl and bl.address is not None:
+                    return bl.address
+        else: # for old gdb
+            if b.location and b.location.startswith("*"):
+                pos = b.location.lstrip("*")
+                try:
+                    return int(pos, 16)
+                except ValueError:
+                    pass
+        return None
+
     @parse_args
     def do_invoke(self, args):
         breakpoints = gdb.breakpoints()
@@ -98757,11 +98771,18 @@ class GefResetBreakpointsCommand(GenericCommand):
 
         for bp in breakpoints:
             bp_str = repr(bp)
+            bp_addr = self.get_breakpoint(bp)
             if args.commit:
                 bp.delete()
-                gef_print("Delete successfully: {:s}".format(bp_str))
+                if bp_addr is not None:
+                    gef_print("Delete successfully: {:s} (@{:#x})".format(bp_str, bp_addr))
+                else:
+                    gef_print("Delete successfully: {:s}".format(bp_str))
             else:
-                info("Breakpoint is found: {:s}".format(bp_str))
+                if bp_addr is not None:
+                    info("Breakpoint is found: {:s} (@{:#x})".format(bp_str, bp_addr))
+                else:
+                    info("Breakpoint is found: {:s}".format(bp_str))
 
         if not args.commit and n > 0:
             warn('This dry run mode skips deleting breakpoint; add "--commit" to proceed')
