@@ -671,7 +671,7 @@ Here are some notes:
     - Use the `gef_print()` function instead of the `print()` function whenever possible.
     - The function named `complete()` is reserved.
 
-## `pi current_arch` is always `None`
+## `pi current_arch` is always `None`.
 Use `pi import gef; gef.current_arch`, or load GEF using the old style.
 
 This issue occurs when GEF is loaded using the new style (`python sys.path.insert(0, "/root/.gef"); from gef import *; Gef.main()`).
