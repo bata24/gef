@@ -2786,12 +2786,16 @@ class Instruction:
 
         # format address
         address = hex(self.address)
+        # format location
+        location = self.smartify_text(self.location)
+
         if enable_color:
             if highlight:
                 color_address = Config.get_gef_setting("theme.disassemble_address_highlight")
             else:
                 color_address = Config.get_gef_setting("theme.disassemble_address")
             address = Color.colorify(address, color_address)
+            location = Color.colorify(location, color_address)
 
         # format opcode
         opcodes_text = "".join("{:02x}".format(b) for b in self.opcodes) # e.g., "488d0de51e0100"
@@ -2807,9 +2811,6 @@ class Instruction:
             else:
                 color_opcode = Config.get_gef_setting("theme.disassemble_opcode")
             opcodes_text = Color.colorify(opcodes_text, color_opcode)
-
-        # format location
-        location = self.smartify_text(self.location)
 
         # format mnemonic
         if current_arch.is_syscall(self):
