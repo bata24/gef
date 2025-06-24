@@ -14203,7 +14203,7 @@ class GefThemeCommand(GenericCommand):
         self.add_setting("address_readonly", "white", "Color to use when a read-only address is found")
         self.add_setting("address_rwx", "underline", "Color to use when a RWX address is found")
         self.add_setting("address_valid_but_none", "bright_black", "Color to use when a --- address is found")
-        self.add_setting("source_current_line", "green", "Color to use for the current code line in the source window")
+        self.add_setting("source_current_line", "bold green", "Color to use for the current code line in the source window")
         self.add_setting("heap_arena_label", "bold cyan underline", "Color of the arena label used heap")
         self.add_setting("heap_chunk_label", "bold cyan underline", "Color of the chunk label used heap")
         self.add_setting("heap_label_active", "bold green underline", "Color of the (active) label used heap")
