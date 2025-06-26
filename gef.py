@@ -83931,25 +83931,25 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
         return candidate_head
 
     def get_flags_str(self, flags_value):
-        _flags = {
-            "TA_FLAG_DEVICE_ENUM_TEE_STORAGE_PRIVATE":     0x00001000,
-            "TA_FLAG_DONT_CLOSE_HANDLE_ON_CORRUPT_OBJECT": 0x00000800,
-            "TA_FLAG_DEVICE_ENUM_SUPP":                    0x00000400,
-            "TA_FLAG_DEVICE_ENUM":                         0x00000200,
-            "TA_FLAG_CONCURRENT":                          0x00000100,
-            "TA_FLAG_CACHE_MAINTENANCE":                   0x00000080,
-            "TA_FLAG_REMAP_SUPPORT":                       0x00000040,
-            "TA_FLAG_SECURE_DATA_PATH":                    0x00000020,
-            "TA_FLAG_INSTANCE_KEEP_ALIVE":                 0x00000010,
-            "TA_FLAG_MULTI_SESSION":                       0x00000008,
-            "TA_FLAG_SINGLE_INSTANCE":                     0x00000004,
-            "TA_FLAG_EXEC_DDR":                            0x00000002,
-            "TA_FLAG_USER_MODE":                           0x00000001,
+        flags_dic = {
+            0x00001000: "TA_FLAG_DEVICE_ENUM_TEE_STORAGE_PRIVATE",
+            0x00000800: "TA_FLAG_DONT_CLOSE_HANDLE_ON_CORRUPT_OBJECT",
+            0x00000400: "TA_FLAG_DEVICE_ENUM_SUPP",
+            0x00000200: "TA_FLAG_DEVICE_ENUM",
+            0x00000100: "TA_FLAG_CONCURRENT",
+            0x00000080: "TA_FLAG_CACHE_MAINTENANCE",
+            0x00000040: "TA_FLAG_REMAP_SUPPORT",
+            0x00000020: "TA_FLAG_SECURE_DATA_PATH",
+            0x00000010: "TA_FLAG_INSTANCE_KEEP_ALIVE",
+            0x00000008: "TA_FLAG_MULTI_SESSION",
+            0x00000004: "TA_FLAG_SINGLE_INSTANCE",
+            0x00000002: "TA_FLAG_EXEC_DDR",
+            0x00000001: "TA_FLAG_USER_MODE",
         }
         flags = []
-        for k, v in _flags.items():
-            if flags_value & v:
-                flags.append(k)
+        for k, v in flags_dic.items():
+            if flags_value & k:
+                flags.append(v)
 
         flags_str = " | ".join(flags)
         if flags_str == "":
@@ -84001,7 +84001,7 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
                 # ops
                 d["ops"] = read_int_from_memory(current + offsetof_ops)
                 # ref_count
-                d["ref_count"] = read_int_from_memory(current + offsetof_ref_count)
+                d["ref_count"] = read_int_from_memory(current + offsetof_ref_count) & 0xffffffff
                 # append
                 Ctx = collections.namedtuple("Ctx", d.keys())
                 taa_ctx_list.append(Ctx(*d.values()))
