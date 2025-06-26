@@ -73391,19 +73391,19 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         return pipe_files
 
     def get_flags_str(self, flags_value):
-        _flags = {
-            "PIPE_BUF_FLAG_LRU":       0x01,
-            "PIPE_BUF_FLAG_ATOMIC":    0x02,
-            "PIPE_BUF_FLAG_GIFT":      0x04,
-            "PIPE_BUF_FLAG_PACKET":    0x08,
-            "PIPE_BUF_FLAG_CAN_MERGE": 0x10,
-            "PIPE_BUF_FLAG_WHOLE":     0x20,
-            "PIPE_BUF_FLAG_LOSS":      0x40,
+        flags_dic = {
+            0x01: "PIPE_BUF_FLAG_LRU",
+            0x02: "PIPE_BUF_FLAG_ATOMIC",
+            0x04: "PIPE_BUF_FLAG_GIFT",
+            0x08: "PIPE_BUF_FLAG_PACKET",
+            0x10: "PIPE_BUF_FLAG_CAN_MERGE",
+            0x20: "PIPE_BUF_FLAG_WHOLE",
+            0x40: "PIPE_BUF_FLAG_LOSS",
         }
         flags = []
-        for k, v in _flags.items():
-            if flags_value & v:
-                flags.append(k)
+        for k, v in flags_dic.items():
+            if flags_value & k:
+                flags.append(v)
 
         flags_str = " | ".join(flags)
         if flags_str == "":
@@ -73441,12 +73441,16 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 tail = u32(read_memory(pipe_inode_info + self.offset_tail, 4))
                 max_usage = u32(read_memory(pipe_inode_info + self.offset_max_usage, 4))
                 ring_size = u32(read_memory(pipe_inode_info + self.offset_ring_size, 4))
-                self.out.append("    head: {:d}, tail: {:d}, max: {:d}, ring_size: {:d}".format(head, tail, max_usage, ring_size))
+                self.out.append("    head: {:d}, tail: {:d}, max: {:d}, ring_size: {:d}".format(
+                    head, tail, max_usage, ring_size,
+                ))
             else:
                 nrbuf = u32(read_memory(pipe_inode_info + self.offset_nrbuf, 4))
                 curbuf = u32(read_memory(pipe_inode_info + self.offset_curbuf, 4))
                 buffers = u32(read_memory(pipe_inode_info + self.offset_buffers, 4))
-                self.out.append("    nrbuf: {:d}, curbuf: {:d}, buffers: {:d}".format(nrbuf, curbuf, buffers))
+                self.out.append("    nrbuf: {:d}, curbuf: {:d}, buffers: {:d}".format(
+                    nrbuf, curbuf, buffers,
+                ))
                 head = curbuf + nrbuf
                 tail = curbuf
                 max_usage = buffers
@@ -73475,11 +73479,15 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 else:
                     tail_marker = "    "
 
-                out = "    {:s} {:s} {:s} [{:02d}] page: {:#x}, ".format(head_marker, tail_marker, status, idx, page)
+                out = "    {:s} {:s} {:s} [{:02d}] page: {:#x}, ".format(
+                    head_marker, tail_marker, status, idx, page,
+                )
                 if virt:
                     colored_virt = Color.colorify_hex(virt, heap_page_color)
                     out += "(virt: {:s}), ".format(colored_virt)
-                out += "offset: {:#x}, len: {:#x}, flags: {:#x} ({:s})".format(offset, len_, flags, self.get_flags_str(flags))
+                out += "offset: {:#x}, len: {:#x}, flags: {:#x} ({:s})".format(
+                    offset, len_, flags, self.get_flags_str(flags),
+                )
                 self.out.append(out)
         return
 
