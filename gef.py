@@ -64212,36 +64212,37 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
 
         return "{:s} / {:s}".format(class_str, device_str) + qemu_monitor_out
 
-    def get_flags_str(self, flags_value):
-        _flags = {
-            "IORESOURCE_BUSY":                  0x80000000,
-            "IORESOURCE_AUTO":                  0x40000000,
-            "IORESOURCE_UNSET":                 0x20000000,
-            "IORESOURCE_DISABLED":              0x10000000,
-            "IORESOURCE_EXCLUSIVE":             0x08000000,
-            "IORESOURCE_SYSRAM_MERGEABLE":      0x04000000,
-            "IORESOURCE_SYSRAM_DRIVER_MANAGED": 0x02000000,
-            "IORESOURCE_SYSRAM":                0x01000000,
-            "IORESOURCE_MUXED":                 0x00400000,
-            "IORESOURCE_WINDOW":                0x00200000,
-            "IORESOURCE_MEM_64":                0x00100000,
-            "IORESOURCE_STARTALIGN":            0x00080000,
-            "IORESOURCE_SIZEALIGN":             0x00040000,
-            "IORESOURCE_SHADOWABLE":            0x00020000,
-            "IORESOURCE_RANGELENGTH":           0x00010000,
-            "IORESOURCE_CACHEABLE":             0x00008000,
-            "IORESOURCE_READONLY":              0x00004000,
-            "IORESOURCE_PREFETCH":              0x00002000,
-            "IORESOURCE_BUS":                   0x00001000,
-            "IORESOURCE_DMA":                   0x00000800,
-            "IORESOURCE_IRQ":                   0x00000400,
-            "IORESOURCE_MEM":                   0x00000200,
-            "IORESOURCE_IO":                    0x00000100,
+    @staticmethod
+    def get_flags_str(flags_value):
+        flags_dic = {
+            0x80000000: "IORESOURCE_BUSY",
+            0x40000000: "IORESOURCE_AUTO",
+            0x20000000: "IORESOURCE_UNSET",
+            0x10000000: "IORESOURCE_DISABLED",
+            0x08000000: "IORESOURCE_EXCLUSIVE",
+            0x04000000: "IORESOURCE_SYSRAM_MERGEABLE",
+            0x02000000: "IORESOURCE_SYSRAM_DRIVER_MANAGED",
+            0x01000000: "IORESOURCE_SYSRAM",
+            0x00400000: "IORESOURCE_MUXED",
+            0x00200000: "IORESOURCE_WINDOW",
+            0x00100000: "IORESOURCE_MEM_64",
+            0x00080000: "IORESOURCE_STARTALIGN",
+            0x00040000: "IORESOURCE_SIZEALIGN",
+            0x00020000: "IORESOURCE_SHADOWABLE",
+            0x00010000: "IORESOURCE_RANGELENGTH",
+            0x00008000: "IORESOURCE_CACHEABLE",
+            0x00004000: "IORESOURCE_READONLY",
+            0x00002000: "IORESOURCE_PREFETCH",
+            0x00001000: "IORESOURCE_BUS",
+            0x00000800: "IORESOURCE_DMA",
+            0x00000400: "IORESOURCE_IRQ",
+            0x00000200: "IORESOURCE_MEM",
+            0x00000100: "IORESOURCE_IO",
         }
         flags = []
-        for k, v in _flags.items():
-            if flags_value & v:
-                flags.append(k)
+        for k, v in flags_dic.items():
+            if flags_value & k:
+                flags.append(v)
 
         if "IORESOURCE_IO" in flags and "IORESOURCE_MEM" in flags:
             flags.remove("IORESOURCE_IO")
@@ -64332,7 +64333,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
                     if resource_i_start != 0 and resource_i_end != 0:
                         # parse resource flags
                         resource_i_flags = read_int_from_memory(resource_i + 8 * 2 + current_arch.ptrsize)
-                        flag_str = self.get_flags_str(resource_i_flags)
+                        flag_str = KernelPciDeviceCommand.get_flags_str(resource_i_flags)
                         if (resource_i_flags & 0x300) == 0x300:
                             type_str = "RegOffs"
                         elif resource_i_flags & 0x100:
@@ -74586,47 +74587,6 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
             ret += self.dump_resource(child)
         return ret
 
-    def get_flags_str(self, flags_value):
-        _flags = {
-            "IORESOURCE_BUSY":                  0x80000000,
-            "IORESOURCE_AUTO":                  0x40000000,
-            "IORESOURCE_UNSET":                 0x20000000,
-            "IORESOURCE_DISABLED":              0x10000000,
-            "IORESOURCE_EXCLUSIVE":             0x08000000,
-            "IORESOURCE_SYSRAM_MERGEABLE":      0x04000000,
-            "IORESOURCE_SYSRAM_DRIVER_MANAGED": 0x02000000,
-            "IORESOURCE_SYSRAM":                0x01000000,
-            "IORESOURCE_MUXED":                 0x00400000,
-            "IORESOURCE_WINDOW":                0x00200000,
-            "IORESOURCE_MEM_64":                0x00100000,
-            "IORESOURCE_STARTALIGN":            0x00080000,
-            "IORESOURCE_SIZEALIGN":             0x00040000,
-            "IORESOURCE_SHADOWABLE":            0x00020000,
-            "IORESOURCE_RANGELENGTH":           0x00010000,
-            "IORESOURCE_CACHEABLE":             0x00008000,
-            "IORESOURCE_READONLY":              0x00004000,
-            "IORESOURCE_PREFETCH":              0x00002000,
-            "IORESOURCE_BUS":                   0x00001000,
-            "IORESOURCE_DMA":                   0x00000800,
-            "IORESOURCE_IRQ":                   0x00000400,
-            "IORESOURCE_MEM":                   0x00000200,
-            "IORESOURCE_IO":                    0x00000100,
-        }
-        flags = []
-        for k, v in _flags.items():
-            if flags_value & v:
-                flags.append(k)
-
-        if "IORESOURCE_IO" in flags and "IORESOURCE_MEM" in flags:
-            flags.remove("IORESOURCE_IO")
-            flags.remove("IORESOURCE_MEM")
-            flags.append("IORESOURCE_REG")
-
-        flags_str = " | ".join(flags)
-        if flags_str == "":
-            flags_str = "none"
-        return flags_str.replace("IORESOURCE_", "")
-
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
@@ -74658,7 +74618,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
 
             for addr, start, end, name, flags in sorted(resources, key=lambda x: x[1]):
                 self.out.append("{:#018x} {:#08x}-{:#08x} {:{:d}s} {:#010x} ({:s})".format(
-                    addr, start, end, name, name_width, flags, self.get_flags_str(flags),
+                    addr, start, end, name, name_width, flags, KernelPciDeviceCommand.get_flags_str(flags),
                 ))
 
         # iomem
@@ -74682,7 +74642,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
 
             for addr, start, end, name, flags in sorted(resources, key=lambda x: x[1]):
                 self.out.append("{:#018x} {:#018x}-{:#018x} {:{:d}s} {:#010x} ({:s})".format(
-                    addr, start, end, name, name_width, flags, self.get_flags_str(flags),
+                    addr, start, end, name, name_width, flags, KernelPciDeviceCommand.get_flags_str(flags),
                 ))
 
         self.print_output(check_terminal_size=True)
