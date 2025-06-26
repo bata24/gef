@@ -69743,37 +69743,38 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.initialized = True
         return True
 
-    def get_flags_str(self, flags_value):
-        _flags = {
-            "__OBJECT_POISON":         0x80000000,
-            "__CMPXCHG_DOUBLE":        0x40000000,
-            "SLAB_SKIP_KFENCE":        0x20000000,
-            "SLAB_NO_USER_FLAGS":      0x10000000,
-            "SLAB_KASAN":              0x08000000,
-            "SLAB_ACCOUNT":            0x04000000,
-            "SLAB_FAILSLAB":           0x02000000,
-            "SLAB_NOTRACK":            0x01000000,
-            "SLAB_NOLEAKTRACE":        0x00800000,
-            "SLAB_DEBUG_OBJECTS":      0x00400000,
-            "SLAB_TRACE":              0x00200000,
-            "SLAB_MEM_SPREAD":         0x00100000,
-            "SLAB_TYPESAFE_BY_RCU":    0x00080000,
-            "SLAB_PANIC":              0x00040000,
-            "SLAB_RECLAIM_ACCOUNT":    0x00020000,
-            "SLAB_STORE_USER":         0x00010000,
-            "SLAB_CACHE_DMA32":        0x00008000,
-            "SLAB_CACHE_DMA":          0x00004000,
-            "SLAB_HWCACHE_ALIGN":      0x00002000,
-            "SLAB_KMALLOC":            0x00001000,
-            "SLAB_POISON":             0x00000800,
-            "SLAB_RED_ZONE":           0x00000400,
-            "SLAB_DEBUG_INITIAL":      0x00000200, # kernel < v2.6.22
-            "SLAB_CONSISTENCY_CHECKS": 0x00000100,
+    @staticmethod
+    def get_flags_str(flags_value):
+        flags_dic = {
+            0x80000000: "__OBJECT_POISON",
+            0x40000000: "__CMPXCHG_DOUBLE",
+            0x20000000: "SLAB_SKIP_KFENCE",
+            0x10000000: "SLAB_NO_USER_FLAGS",
+            0x08000000: "SLAB_KASAN",
+            0x04000000: "SLAB_ACCOUNT",
+            0x02000000: "SLAB_FAILSLAB",
+            0x01000000: "SLAB_NOTRACK",
+            0x00800000: "SLAB_NOLEAKTRACE",
+            0x00400000: "SLAB_DEBUG_OBJECTS",
+            0x00200000: "SLAB_TRACE",
+            0x00100000: "SLAB_MEM_SPREAD",
+            0x00080000: "SLAB_TYPESAFE_BY_RCU",
+            0x00040000: "SLAB_PANIC",
+            0x00020000: "SLAB_RECLAIM_ACCOUNT",
+            0x00010000: "SLAB_STORE_USER",
+            0x00008000: "SLAB_CACHE_DMA32",
+            0x00004000: "SLAB_CACHE_DMA",
+            0x00002000: "SLAB_HWCACHE_ALIGN",
+            0x00001000: "SLAB_KMALLOC",
+            0x00000800: "SLAB_POISON",
+            0x00000400: "SLAB_RED_ZONE",
+            0x00000200: "SLAB_DEBUG_INITIAL", # kernel < v2.6.22
+            0x00000100: "SLAB_CONSISTENCY_CHECKS",
         }
         flags = []
-        for k, v in _flags.items():
-            if flags_value & v:
-                flags.append(k)
+        for k, v in flags_dic.items():
+            if flags_value & k:
+                flags.append(v)
 
         flags_str = " | ".join(flags)
         if flags_str == "":
@@ -69927,7 +69928,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 continue
             kmem_cache["address"] = current_kmem_cache
             kmem_cache["flags"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_flags, 4))
-            kmem_cache["flags_str"] = self.get_flags_str(kmem_cache["flags"])
+            kmem_cache["flags_str"] = SlubDumpCommand.get_flags_str(kmem_cache["flags"])
             kmem_cache["size"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_size, 4))
             kmem_cache["object_size"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_object_size, 4))
             kmem_cache["offset"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_offset, 4))
@@ -70634,43 +70635,6 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         self.initialized = True
         return True
 
-    def get_flags_str(self, flags_value):
-        _flags = {
-            "__OBJECT_POISON":         0x80000000,
-            "__CMPXCHG_DOUBLE":        0x40000000,
-            "SLAB_SKIP_KFENCE":        0x20000000,
-            "SLAB_NO_USER_FLAGS":      0x10000000,
-            "SLAB_KASAN":              0x08000000,
-            "SLAB_ACCOUNT":            0x04000000,
-            "SLAB_FAILSLAB":           0x02000000,
-            "SLAB_NOTRACK":            0x01000000,
-            "SLAB_NOLEAKTRACE":        0x00800000,
-            "SLAB_DEBUG_OBJECTS":      0x00400000,
-            "SLAB_TRACE":              0x00200000,
-            "SLAB_MEM_SPREAD":         0x00100000,
-            "SLAB_TYPESAFE_BY_RCU":    0x00080000,
-            "SLAB_PANIC":              0x00040000,
-            "SLAB_RECLAIM_ACCOUNT":    0x00020000,
-            "SLAB_STORE_USER":         0x00010000,
-            "SLAB_CACHE_DMA32":        0x00008000,
-            "SLAB_CACHE_DMA":          0x00004000,
-            "SLAB_HWCACHE_ALIGN":      0x00002000,
-            "SLAB_KMALLOC":            0x00001000,
-            "SLAB_POISON":             0x00000800,
-            "SLAB_RED_ZONE":           0x00000400,
-            "SLAB_DEBUG_INITIAL":      0x00000200, # kernel < v2.6.22
-            "SLAB_CONSISTENCY_CHECKS": 0x00000100,
-        }
-        flags = []
-        for k, v in _flags.items():
-            if flags_value & v:
-                flags.append(k)
-
-        flags_str = " | ".join(flags)
-        if flags_str == "":
-            flags_str = "none"
-        return flags_str
-
     def get_next_kmem_cache(self, addr, point_to_base=True):
         if point_to_base:
             addr += self.kmem_cache_offset_list
@@ -70774,7 +70738,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
                 continue
             kmem_cache["address"] = current_kmem_cache
             kmem_cache["flags"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_flags, 4))
-            kmem_cache["flags_str"] = self.get_flags_str(kmem_cache["flags"])
+            kmem_cache["flags_str"] = SlubDumpCommand.get_flags_str(kmem_cache["flags"])
             kmem_cache["size"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_size, 4))
             kmem_cache["object_size"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_object_size, 4))
             kmem_cache["offset"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_offset, 4))
@@ -71479,43 +71443,6 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         self.initialized = True
         return True
 
-    def get_flags_str(self, flags_value):
-        _flags = {
-            "__OBJECT_POISON":         0x80000000,
-            "__CMPXCHG_DOUBLE":        0x40000000,
-            "SLAB_SKIP_KFENCE":        0x20000000,
-            "SLAB_NO_USER_FLAGS":      0x10000000,
-            "SLAB_KASAN":              0x08000000,
-            "SLAB_ACCOUNT":            0x04000000,
-            "SLAB_FAILSLAB":           0x02000000,
-            "SLAB_NOTRACK":            0x01000000,
-            "SLAB_NOLEAKTRACE":        0x00800000,
-            "SLAB_DEBUG_OBJECTS":      0x00400000,
-            "SLAB_TRACE":              0x00200000,
-            "SLAB_MEM_SPREAD":         0x00100000,
-            "SLAB_TYPESAFE_BY_RCU":    0x00080000,
-            "SLAB_PANIC":              0x00040000,
-            "SLAB_RECLAIM_ACCOUNT":    0x00020000,
-            "SLAB_STORE_USER":         0x00010000,
-            "SLAB_CACHE_DMA32":        0x00008000,
-            "SLAB_CACHE_DMA":          0x00004000,
-            "SLAB_HWCACHE_ALIGN":      0x00002000,
-            "SLAB_KMALLOC":            0x00001000,
-            "SLAB_POISON":             0x00000800,
-            "SLAB_RED_ZONE":           0x00000400,
-            "SLAB_DEBUG_INITIAL":      0x00000200, # kernel < v2.6.22
-            "SLAB_CONSISTENCY_CHECKS": 0x00000100,
-        }
-        flags = []
-        for k, v in _flags.items():
-            if flags_value & v:
-                flags.append(k)
-
-        flags_str = " | ".join(flags)
-        if flags_str == "":
-            flags_str = "none"
-        return flags_str
-
     def get_next_kmem_cache(self, addr, point_to_base=True):
         if point_to_base:
             addr += self.kmem_cache_offset_list
@@ -71598,7 +71525,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                 continue
             kmem_cache["address"] = current_kmem_cache
             kmem_cache["flags"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_flags, 4))
-            kmem_cache["flags_str"] = self.get_flags_str(kmem_cache["flags"])
+            kmem_cache["flags_str"] = SlubDumpCommand.get_flags_str(kmem_cache["flags"])
             kmem_cache["size"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_size, 4))
             kmem_cache["object_size"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_object_size, 4))
             kmem_cache["objperslab"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_num, 4))
@@ -72102,43 +72029,6 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         self.initialized = True
         return True
 
-    def get_flags_str(self, flags_value):
-        _flags = {
-            "__OBJECT_POISON":         0x80000000,
-            "__CMPXCHG_DOUBLE":        0x40000000,
-            "SLAB_SKIP_KFENCE":        0x20000000,
-            "SLAB_NO_USER_FLAGS":      0x10000000,
-            "SLAB_KASAN":              0x08000000,
-            "SLAB_ACCOUNT":            0x04000000,
-            "SLAB_FAILSLAB":           0x02000000,
-            "SLAB_NOTRACK":            0x01000000,
-            "SLAB_NOLEAKTRACE":        0x00800000,
-            "SLAB_DEBUG_OBJECTS":      0x00400000,
-            "SLAB_TRACE":              0x00200000,
-            "SLAB_MEM_SPREAD":         0x00100000,
-            "SLAB_TYPESAFE_BY_RCU":    0x00080000,
-            "SLAB_PANIC":              0x00040000,
-            "SLAB_RECLAIM_ACCOUNT":    0x00020000,
-            "SLAB_STORE_USER":         0x00010000,
-            "SLAB_CACHE_DMA32":        0x00008000,
-            "SLAB_CACHE_DMA":          0x00004000,
-            "SLAB_HWCACHE_ALIGN":      0x00002000,
-            "SLAB_KMALLOC":            0x00001000,
-            "SLAB_POISON":             0x00000800,
-            "SLAB_RED_ZONE":           0x00000400,
-            "SLAB_DEBUG_INITIAL":      0x00000200, # kernel < v2.6.22
-            "SLAB_CONSISTENCY_CHECKS": 0x00000100,
-        }
-        flags = []
-        for k, v in _flags.items():
-            if flags_value & v:
-                flags.append(k)
-
-        flags_str = " | ".join(flags)
-        if flags_str == "":
-            flags_str = "none"
-        return flags_str
-
     def get_next_kmem_cache(self, addr, point_to_base=True):
         if point_to_base:
             addr += self.kmem_cache_offset_list
@@ -72201,7 +72091,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
                 continue
             kmem_cache["address"] = current_kmem_cache
             kmem_cache["flags"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_flags, 4))
-            kmem_cache["flags_str"] = self.get_flags_str(kmem_cache["flags"])
+            kmem_cache["flags_str"] = SlubDumpCommand.get_flags_str(kmem_cache["flags"])
             kmem_cache["size"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_size, 4))
             kmem_cache["object_size"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_object_size, 4))
             kmem_cache["next"] = self.get_next_kmem_cache(current_kmem_cache)
