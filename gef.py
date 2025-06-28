@@ -17510,6 +17510,10 @@ class SearchPatternCommand(GenericCommand):
                         help="maximum size of search region when no range is specified. (default: %(default)#x; 0: infinity)")
     parser.add_argument("-d", "--disable-utf16", action="store_true",
                         help="disable utf16 search if PATTERN is ascii string.")
+    parser.add_argument("-k", "--kernel-only", action="store_true",
+                        help="search from kernel area (available in qemu-system).")
+    parser.add_argument("-u", "--user-only", action="store_true",
+                        help="search from user area (available in qemu-system).")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="shows the section currently searching.")
     parser.add_argument("-q", "--quiet", action="store_true", help="suppress warnings.")
@@ -17659,6 +17663,13 @@ class SearchPatternCommand(GenericCommand):
             maps_generator = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
 
         for section in maps_generator:
+            if self.args.user_only:
+                if AddressUtil.is_msb_on(section.page_start):
+                    continue
+            if self.args.kernel_only:
+                if not AddressUtil.is_msb_on(section.page_start):
+                    continue
+
             # too big
             if self.args.max_region_size != 0:
                 if section.size >= self.args.max_region_size:
@@ -17788,6 +17799,11 @@ class SearchPatternCommand(GenericCommand):
     @only_if_gdb_running
     def do_invoke(self, args):
         self.found_count = 0
+
+        if args.kernel_only or args.user_only:
+            if not is_qemu_system():
+                err("Unsupported")
+                return
 
         # permission check
         if len(args.perm) != 3:
