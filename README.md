@@ -296,6 +296,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
             - ![](images/heap-top.png)
         - `heap bins-simple`
             - ![](images/heap-bins-simple.png)
+        - `heap parse`
+            - ![](images/heap-parse.png)
         - `heap try-malloc`
             - ![](images/heap-try-malloc.png)
         - `heap try-free`

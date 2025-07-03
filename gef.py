@@ -4243,6 +4243,19 @@ class GlibcHeap:
                 self.reset_cache()
             return chunk.chunk_base_address in self.cached_largebins_addr_list
 
+        def is_chunk_in_freelists(self, chunk):
+            if self.is_chunk_in_tcache(chunk):
+                return True
+            if self.is_chunk_in_fastbins(chunk):
+                return True
+            if self.is_chunk_in_unsortedbin(chunk):
+                return True
+            if self.is_chunk_in_smallbins(chunk):
+                return True
+            if self.is_chunk_in_largebins(chunk):
+                return True
+            return False
+
         def get_bins_info(self, address_or_chunk, skip_top=False):
             """Returns a list of bin information for the given address or chunk,
             optionally including the "top" marker."""
@@ -20978,6 +20991,7 @@ class GlibcHeapCommand(GenericCommand):
     subparsers.add_parser("calc-protected-fd")
     subparsers.add_parser("visual-heap")
     subparsers.add_parser("tracer")
+    subparsers.add_parser("parse")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -21443,6 +21457,142 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.print_heap_chunks(arena, dump_start, peek_nb, peek_offset)
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
+    """Display information all heap chunks as Pwngdb style."""
+
+    _cmdline_ = "heap parse"
+    _category_ = "06-a. Heap - Glibc"
+    _aliases_ = ["parseheap"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
+                        help="the address or number to interpret as an arena. (default: main_arena)")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s}",
+        "{0:s} -a 0x7ffff0000020",
+        "{0:s} -a 1",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = GlibcHeapChunksCommand._note_
+
+    def make_line(self, arena, chunk):
+        width = 14 if is_64bit() else 10
+
+        info = arena.get_bins_info(chunk)
+        hint = ", ".join(info)
+
+        if arena.is_chunk_in_freelists(chunk):
+            chunk_freed_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+            chunk_base_addr_str = Color.colorify("{:<#{:d}x}".format(chunk.chunk_base_address, width), chunk_freed_color)
+            used_str = Color.colorify("{:{:d}s}".format("Freed", width), chunk_freed_color)
+            if arena.is_chunk_in_tcache(chunk) or arena.is_chunk_in_fastbins(chunk):
+                fd_str = "{:<#{:d}x}".format(chunk.get_fwd_ptr(True), width)
+                bk_str = "{:<{:d}s}".format("-", width)
+            else:
+                fd_str = "{:<#{:d}x}".format(chunk.fd, width)
+                bk_str = "{:<#{:d}x}".format(chunk.bk, width)
+        else:
+            chunk_used_color = Config.get_gef_setting("theme.heap_chunk_address_used")
+            chunk_base_addr_str = Color.colorify("{:<#{:d}x}".format(chunk.chunk_base_address, width), chunk_used_color)
+            used_str = Color.colorify("{:{:d}s}".format("Used", width), chunk_used_color)
+            fd_str = "{:<{:d}s}".format("-", width)
+            bk_str = "{:<{:d}s}".format("-", width)
+
+        if chunk.has_p_bit():
+            prev_size_str = "({:#x})".format(chunk.get_prev_chunk_size())
+        else:
+            prev_size_str = "{:#x}".format(chunk.get_prev_chunk_size())
+
+        return "{:s}  {:<{:d}s}  {:<#{:d}x}  {:s}  {:s}  {:s}  {:s}".format(
+            chunk_base_addr_str,
+            prev_size_str,
+            width,
+            chunk.size,
+            width,
+            used_str,
+            fd_str,
+            bk_str,
+            hint,
+        )
+
+    def parse_heap(self, arena, dump_start):
+        # Do not show if top is broken, as it affects exit conditions.
+        if is_32bit() and arena.top % 0x08:
+            self.err_add_out("arena.top is corrupted")
+            return
+        elif is_64bit() and arena.top % 0x10:
+            self.err_add_out("arena.top is corrupted")
+            return
+
+        # It continues even if last_remainder is broken because it doesn't affect the exit condition.
+        if is_32bit() and arena.last_remainder % 0x08:
+            self.warn_add_out("arena.last_remainder is corrupted")
+        elif is_64bit() and arena.last_remainder % 0x10:
+            self.warn_add_out("arena.last_remainder is corrupted")
+
+        width = 14 if is_64bit() else 10
+        fmt = "{:{:d}s}  {:{:d}s}  {:{:d}s}  {:{:d}s}  {:{:d}s}  {:{:d}s}  {:s}"
+        legend = ["addr", width, "prev_size", width, "size", width, "status", width, "fd", width, "bk", width, "hint"]
+        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+        current_chunk = GlibcHeap.GlibcChunk(arena, dump_start, from_base=True)
+        while True:
+            if current_chunk.chunk_base_address == arena.top:
+                self.out.append(self.make_line(arena, current_chunk))
+                break
+            if current_chunk.chunk_base_address > arena.top:
+                self.err_add_out("Corrupted: chunk > top")
+                break
+            if current_chunk.size == 0:
+                # EOF
+                break
+
+            line = self.make_line(arena, current_chunk)
+            self.out.append(line)
+
+            # goto next
+            next_chunk = current_chunk.get_next_chunk()
+            if next_chunk is None:
+                break
+            if not Address(value=next_chunk.address).valid:
+                self.err_add_out("Corrupted: next_chunk_address is invalid")
+                break
+            current_chunk = next_chunk
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
+    def do_invoke(self, args):
+        # parse arena
+        arena = GlibcHeap.get_arena(args.arena_addr)
+
+        if arena is None:
+            err("No valid arena")
+            return
+
+        if arena.heap_base is None or not is_valid_addr(arena.heap_base):
+            err("Heap is not initialized")
+            return
+
+        dump_start = arena.heap_base
+        # specific pattern
+        if arena.is_main_arena:
+            if (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
+                dump_start += 8
+
+        self.out = []
+        self.parse_heap(arena, dump_start)
         self.print_output(check_terminal_size=True)
         return
 
