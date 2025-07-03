@@ -35801,6 +35801,7 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
 
     _cmdline_ = "stdio-dump"
     _category_ = "02-e. Process Information - Complex Structure Information"
+    _aliases_ = ["fp"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("address", nargs="*", type=AddressUtil.parse_address,
