@@ -398,7 +398,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `context`
     - It supports automatic display of system call arguments when calling a system call.
         - ![](images/context-syscall-args.png)
-    - It supports new modes:
+    - It supports new commands:
         - `context on`
         - `context off`
     - It supports automatic display of address and value when accessing memory.
