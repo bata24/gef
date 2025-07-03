@@ -35741,6 +35741,61 @@ class DestructorDumpCommand(GenericCommand):
 
 
 @register_command
+class FpChainCommand(GenericCommand):
+    """Dump chains from __IO_list_all."""
+
+    _cmdline_ = "fpchain"
+    _category_ = "02-e. Process Information - Complex Structure Information"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("address", nargs="?", type=AddressUtil.parse_address,
+                        help="the _IO_list_all address to parse.")
+    _syntax_ = parser.format_help()
+
+    def get_io_list_all(self):
+        try:
+            return AddressUtil.parse_address("(void*) &_IO_list_all")
+        except gdb.error:
+            pass
+        return None
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        if args.address is None:
+            io_list_all = self.get_io_list_all()
+            if not io_list_all:
+                err("Not found _IO_list_all")
+                return
+        else:
+            io_list_all = args.address
+
+        gef_print("[0]    {!s}{:s}".format(
+            ProcessMap.lookup_address(io_list_all), Symbol.get_symbol_string(io_list_all),
+        ))
+
+        if is_64bit():
+            offset_of_chain = 0x68
+        else:
+            offset_of_chain = 0x34
+
+        current = io_list_all
+        i = 1
+        while is_valid_addr(current):
+            if i == 1:
+                current = read_int_from_memory(current)
+            else:
+                current = read_int_from_memory(current + offset_of_chain)
+            gef_print("[{:d}] -> {!s}{:s}".format(
+                i, ProcessMap.lookup_address(current), Symbol.get_symbol_string(current),
+            ))
+
+            i += 1
+        return
+
+
+@register_command
 class StandardIoCommand(GenericCommand, BufferingOutput):
     """Dump members of stdin/stdout/stderr."""
 

@@ -773,6 +773,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/qemu-system-memory-region-dump.png)
 - `find-syscall`: searches the syscall gadget.
     - ![](images/find-syscall.png)
+- `fpchain`: dups chains from `__IO_list_all`.
+    - ![](images/fpchain.png)
 
 ### Other
 - The category is introduced in `gef help`.
