@@ -17482,6 +17482,217 @@ class ScanSectionCommand(GenericCommand):
 
 
 @register_command
+class FindSyscallCommand(GenericCommand, BufferingOutput):
+    """Find the syscall gadget."""
+
+    _cmdline_ = "find-syscall"
+    _category_ = "03-a. Memory - Search"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("section", metavar="SECTION_OR_START_ADDR", nargs="?",
+                        help="section name or starting address of search range.")
+    parser.add_argument("size", metavar="SIZE", nargs="?",
+                        help="search range size. valid only when a start address is specified.")
+    parser.add_argument("-b", "--nb-insns-before", type=lambda x: int(x, 0), default=0,
+                        help="the number of previous lines when print syscall instruction.")
+    parser.add_argument("-s", "--max-region-size", type=lambda x: int(x, 0), default=0x10000000,
+                        help="maximum search region size. (default: %(default)#x; 0: infinity)")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} libc                   # search syscall from libc .text",
+        "{0:s} binary                 # 'binary' means the area executable itself (only usermode)",
+        "{0:s} 0x400000-0x404000      # search syscall from specific range",
+        "{0:s} 0x400000 0x4000        # another valid format",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    def print_section(self, section):
+        if isinstance(section, Address):
+            section = section.section
+
+        if section is None:
+            return
+
+        title = "In "
+
+        if section.path:
+            title += "'{}' ".format(Color.blueify(section.path))
+
+        title += "({:#x}-{:#x} [{}] ({:#x} bytes)".format(
+            section.page_start, section.page_end,
+            section.permission, section.page_end - section.page_start,
+        )
+
+        self.info_add_out(title)
+        return
+
+    def print_loc(self, loc):
+        if is_x86():
+            show_opcodes_size = Config.get_gef_setting("context_code.show_opcodes_size_x64_x86")
+        else:
+            show_opcodes_size = Config.get_gef_setting("context_code.show_opcodes_size")
+
+        nb_lines = 1
+
+        # fix loc and nb_lines
+        if self.args.nb_insns_before > 0:
+             a = Disasm.gdb_get_nth_previous_instruction_address(loc, self.args.nb_insns_before)
+             if a is not None:
+                loc = a
+                nb_lines += self.args.nb_insns_before
+
+        # disasm
+        res = Disasm.gdb_disassemble(loc, nb_lines)
+        if res:
+            for insn in res:
+                self.out.append(insn.colored_text(show_opcodes_size))
+
+        # add blank line
+        if self.args.nb_insns_before > 0:
+            self.out.append("")
+        return
+
+    def search_pattern_by_address(self, pattern, start_address, end_address):
+        """Search for a pattern within a range defined by arguments."""
+        step = 0x400 * gef_getpagesize()
+        locations = []
+
+        tqdm = GefUtil.get_tqdm()
+        old_mem_target = b""
+        for chunk_addr in tqdm(range(start_address, end_address, step), leave=False):
+            # get read size
+            if chunk_addr + step > end_address:
+                chunk_size = end_address - chunk_addr
+            else:
+                chunk_size = step
+
+            # read memory
+            try:
+                mem_target = read_memory(chunk_addr, chunk_size)
+            except (gdb.MemoryError, ValueError, OverflowError):
+                # cannot access memory this range. It doesn't make sense to try any more
+                self.err_add_out("skip due to memory access error")
+                break
+
+            # cases where step boundaries are crossed
+            if old_mem_target and mem_target:
+                ofs = len(pattern) - 1
+                tmp_target = old_mem_target[-ofs:] + mem_target[:ofs]
+                r = tmp_target.find(pattern)
+                if r >= 0:
+                    locations.append(chunk_addr - ofs + r)
+
+            # normal case
+            for match in re.finditer(pattern, mem_target):
+                start = chunk_addr + match.start()
+                locations.append(start)
+
+            old_mem_target = mem_target
+        return locations
+
+    def process_by_address(self, pattern, start_address, end_address):
+        info("Searching for '{:s}' in {:#x}-{:#x}".format(
+            Color.yellowify(pattern), start_address, end_address,
+        ))
+        ret = self.search_pattern_by_address(pattern, start_address, end_address)
+        for loc in ret:
+            self.print_loc(loc)
+        return
+
+    def process_by_section(self, pattern, section_name=None):
+        """Search for a pattern within the whole userland memory."""
+
+        if section_name is None:
+            self.info_add_out("Searching for '{:s}' in {:s}".format(Color.yellowify(pattern), "whole memory"))
+        else:
+            self.info_add_out("Searching for '{:s}' in {:s}".format(Color.yellowify(pattern), section_name))
+
+        maps_generator = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
+
+        for section in maps_generator:
+            # too big
+            if self.args.max_region_size != 0:
+                if section.size >= self.args.max_region_size:
+                    self.quiet_info_add_out(
+                        "{:#x}-{:#x} is skipped due to size ({:#x}) >= MAX_REGION_SIZE ({:#x})".format(
+                            section.page_start, section.page_end,
+                            section.size, self.args.max_region_size,
+                        )
+                    )
+                    continue
+
+            # permission filter
+            if not section.is_executable():
+                continue
+
+            # specific section name filter
+            if section_name and section_name not in section.path:
+                continue
+
+            # search
+            self.print_section(section)
+            start = section.page_start
+            end = section.page_end
+            ret = self.search_pattern_by_address(pattern, start, end) # search
+            for loc in ret:
+                self.print_loc(loc)
+
+            # check process is alive
+            if not is_alive():
+                self.err_add_out("The process is dead")
+                break
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @require_arch_set
+    def do_invoke(self, args):
+        if not current_arch.syscall_insn:
+            err("Unsupported arch")
+            return
+
+        pattern = current_arch.syscall_insn
+        self.out = []
+
+        if args.section and args.size:
+            # the case `find-syscall 0x400000 0x4000`
+            try:
+                start = int(args.section, 16)
+                end = start + int(args.size, 16)
+            except ValueError:
+                self.usage()
+                return
+            self.process_by_address(pattern, start, end)
+
+        elif args.section and re.match(r"(0x)?[0-9a-fA-F]+-(0x)?[0-9a-fA-F]+", args.section):
+            # the case `find-syscall 0x400000-0x404000` etc.
+            try:
+                start, end = AddressUtil.parse_string_range(args.section)
+            except ValueError:
+                self.usage()
+                return
+            self.process_by_address(pattern, start, end)
+
+        elif args.section:
+            # search from specific section
+            if args.section in ["binary", "bin"]:
+                section_name = Path.get_filepath(append_proc_root_prefix=False)
+            else:
+                section_name = args.section
+            self.process_by_section(pattern, section_name)
+
+        else:
+            # search from whole memory
+            self.process_by_section(pattern)
+
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
 class SearchPatternCommand(GenericCommand):
     """Search for a pattern in memory."""
 

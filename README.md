@@ -771,6 +771,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/vdump.png)
 - `qemu-system-memory-region-dump`: dumps memory regions for `qemu-system`.
     - ![](images/qemu-system-memory-region-dump.png)
+- `find-syscall`: searches the syscall gadget.
+    - ![](images/find-syscall.png)
 
 ### Other
 - The category is introduced in `gef help`.
