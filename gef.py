@@ -7234,7 +7234,7 @@ class X86_64(X86):
         if not is_remote_debug() and not is_in_kernel() and not is_qiling() and not is_rr():
             PTRACE_ARCH_PRCTL = 30
             ARCH_GET_FS = 0x1003
-            pid, lwpid, tid = gdb.selected_thread().ptid
+            _pid, lwpid, _tid = gdb.selected_thread().ptid
             ppvoid = ctypes.POINTER(ctypes.c_void_p)
             value = ppvoid(ctypes.c_void_p())
             value.contents.value = 0
@@ -7258,7 +7258,7 @@ class X86_64(X86):
         if not is_remote_debug() and not is_in_kernel() and not is_qiling() and not is_rr():
             PTRACE_ARCH_PRCTL = 30
             ARCH_GET_GS = 0x1004
-            pid, lwpid, tid = gdb.selected_thread().ptid
+            _pid, lwpid, _tid = gdb.selected_thread().ptid
             ppvoid = ctypes.POINTER(ctypes.c_void_p)
             value = ppvoid(ctypes.c_void_p())
             value.contents.value = 0
