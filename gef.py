@@ -21453,11 +21453,12 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
 
     _cmdline_ = "heap bins-simple"
     _category_ = "06-a. Heap - Glibc"
-    _aliases_ = ["bs"]
+    _aliases_ = ["bs", "heapinfo"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
                         help="the address or number to interpret as an arena. (default: main_arena)")
+    parser.add_argument("-s", "--skip-size", action="store_true", help="skip size information.")
     parser.add_argument("-v", "--verbose", action="store_true", help="display empty bins.")
     parser.add_argument("--all", action="store_true", help="dump all arenas.")
     _syntax_ = parser.format_help()
@@ -21468,6 +21469,77 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
         "{0:s} -a 1 -v",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
+
+    def bins_simple(self, arenas):
+        def get_size(arena, c):
+            if self.args.skip_size:
+                return ""
+            try:
+                sz = GlibcHeap.GlibcChunk(arena, c + current_arch.ptrsize * 2).size
+                return " (sz:{:#x})".format(sz)
+            except gdb.MemoryError:
+                return ""
+
+        for arena in arenas:
+            gef_print(titlify("arena: {:#x}{:s}".format(
+                arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
+            )
+
+            gef_print(titlify("tcache"))
+            for i, chunks in arena.get_tcache_list().items():
+                m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
+                if m or self.args.verbose:
+                    size = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
+                    tcache_perthread_struct = arena.heap_base + 0x10
+                    if get_libc_version() < (2, 30):
+                        count = ord(read_memory(tcache_perthread_struct + i, 1))
+                    else:
+                        count = u16(read_memory(tcache_perthread_struct + 2 * i, 2))
+                    gef_print("{:#x} [{:d}] ({:d}): ".format(size, i, count) + " -> ".join(m))
+
+            gef_print(titlify("fastbins"))
+            for i, chunks in arena.get_fastbins_list().items():
+                m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
+                if m or self.args.verbose:
+                    size = GlibcHeap.get_binsize_table()["fastbins"][i]["size"]
+                    gef_print("{:#x} [{:d}]: ".format(size, i) + " -> ".join(m))
+
+            gef_print(titlify("unsorted bin"))
+            for _, chunks in arena.get_unsortedbin_list().items():
+                m = ["{!s}{:s}{:s}".format(
+                        ProcessMap.lookup_address(c), Symbol.get_symbol_string(c), get_size(arena, c),
+                    ) for c in chunks]
+                if m or self.args.verbose:
+                    gef_print("any [0]: " + " <-> ".join(m))
+
+            gef_print(titlify("small bins"))
+            for i, chunks in arena.get_smallbins_list().items():
+                m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
+                if m or self.args.verbose:
+                    size = GlibcHeap.get_binsize_table()["small_bins"][i]["size"]
+                    gef_print("{:#x} [{:d}]: ".format(size, i) + " <-> ".join(m))
+
+            gef_print(titlify("large bins"))
+            for i, chunks in arena.get_largebins_list().items():
+                m = ["{!s}{:s}{:s}".format(
+                        ProcessMap.lookup_address(c), Symbol.get_symbol_string(c), get_size(arena, c),
+                    ) for c in chunks]
+                if m or self.args.verbose:
+                    size_min = GlibcHeap.get_binsize_table()["large_bins"][i]["size_min"]
+                    size_max = GlibcHeap.get_binsize_table()["large_bins"][i]["size_max"]
+                    gef_print("{:#x}-{:#x} [{:d}]: ".format(size_min, size_max, i) + " <-> ".join(m))
+
+            gef_print(titlify("arena"))
+            top = arena.top
+            gef_print("top: {!s}{:s}{:s}".format(
+                ProcessMap.lookup_address(top), Symbol.get_symbol_string(top), get_size(arena, top),
+            ))
+
+            lm = arena.last_remainder
+            gef_print("last_remainder: {!s}{:s}{:s}".format(
+                ProcessMap.lookup_address(lm), Symbol.get_symbol_string(lm), get_size(arena, lm),
+            ))
+        return
 
     @parse_args
     @only_if_gdb_running
@@ -21490,47 +21562,7 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
         else:
             arenas = [arena]
 
-        # doit
-        for arena in arenas:
-            gef_print(titlify("tcache"))
-            for i, chunks in arena.get_tcache_list().items():
-                m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
-                if m or args.verbose:
-                    size = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
-                    tcache_perthread_struct = arena.heap_base + 0x10
-                    if get_libc_version() < (2, 30):
-                        count = ord(read_memory(tcache_perthread_struct + i, 1))
-                    else:
-                        count = u16(read_memory(tcache_perthread_struct + 2 * i, 2))
-                    gef_print("{:#x} [{:d}]: ".format(size, count) + " -> ".join(m))
-
-            gef_print(titlify("fastbins"))
-            for i, chunks in arena.get_fastbins_list().items():
-                m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
-                if m or args.verbose:
-                    size = GlibcHeap.get_binsize_table()["fastbins"][i]["size"]
-                    gef_print("{:#x}: ".format(size) + " -> ".join(m))
-
-            gef_print(titlify("unsorted bin"))
-            for _, chunks in arena.get_unsortedbin_list().items():
-                m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
-                if m or args.verbose:
-                    gef_print("any: " + " -> ".join(m))
-
-            gef_print(titlify("small bins"))
-            for i, chunks in arena.get_smallbins_list().items():
-                m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
-                if m or args.verbose:
-                    size = GlibcHeap.get_binsize_table()["small_bins"][i]["size"]
-                    gef_print("{:#x}: ".format(size) + " -> ".join(m))
-
-            gef_print(titlify("large bins"))
-            for i, chunks in arena.get_largebins_list().items():
-                m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
-                if m or args.verbose:
-                    size_min = GlibcHeap.get_binsize_table()["large_bins"][i]["size_min"]
-                    size_max = GlibcHeap.get_binsize_table()["large_bins"][i]["size_max"]
-                    gef_print("{:#x}-{:#x}: ".format(size_min, size_max) + " -> ".join(m))
+        self.bins_simple(arenas)
         return
 
 
