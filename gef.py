@@ -17718,7 +17718,7 @@ class SearchPatternCommand(GenericCommand):
     parser.add_argument("-l", "--limit", type=lambda x: int(x, 0),
                         help="the limit of the search result.")
     parser.add_argument("-s", "--max-region-size", type=lambda x: int(x, 0), default=0x10000000,
-                        help="maximum size of search region when no range is specified. (default: %(default)#x; 0: infinity)")
+                        help="maximum search region size. (default: %(default)#x; 0: infinity)")
     parser.add_argument("-d", "--disable-utf16", action="store_true",
                         help="disable utf16 search if PATTERN is ascii string.")
     parser.add_argument("-k", "--kernel-only", action="store_true",
@@ -17730,7 +17730,7 @@ class SearchPatternCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="suppress warnings.")
     parser.add_argument("pattern", metavar="PATTERN",
                         help='search target value. "double-escaped string" or 0xXXXXXXXX style.')
-    parser.add_argument("section", metavar="SECTION_OR_START_ADDR", nargs="?", default="",
+    parser.add_argument("section", metavar="SECTION_OR_START_ADDR", nargs="?",
                         help="section name or starting address of search range.")
     parser.add_argument("size", metavar="SIZE", nargs="?",
                         help="search range size. valid only when a start address is specified.")
@@ -17752,6 +17752,15 @@ class SearchPatternCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
+    _note_ = [
+        "To efficiently search large memory regions, the search is usually performed internally by dividing",
+        "the region into chunks. The chunk size is 0x10 pages for qemu-system, and 0x400 pages for others.",
+        "",
+        "However, when the --hex-regex option is enabled, this chunked search is disabled,",
+        "because it is difficult to implement regular expression searches that span multiple chunks.",
+    ]
+    _note_ = "\n".join(_note_)
+
     def print_section(self, section):
         if isinstance(section, Address):
             section = section.section
@@ -17765,7 +17774,8 @@ class SearchPatternCommand(GenericCommand):
             title += "'{}' ".format(Color.blueify(section.path))
 
         title += "({:#x}-{:#x} [{}] ({:#x} bytes)".format(
-            section.page_start, section.page_end, section.permission, section.page_end - section.page_start,
+            section.page_start, section.page_end, section.permission,
+            section.page_end - section.page_start,
         )
 
         ok(title)
@@ -17783,19 +17793,24 @@ class SearchPatternCommand(GenericCommand):
         if not self.args.hex_regex:
             pattern = String.str2bytes(pattern)
 
-        if is_qemu_system():
-            step = gef_getpagesize()
+        if self.args.hex_regex:
+            step = end_address - start_address
+        elif is_qemu_system():
+            step = 0x10 * gef_getpagesize()
         else:
             step = 0x400 * gef_getpagesize()
         locations = []
 
         tqdm = GefUtil.get_tqdm(self.args.verbose)
+        old_mem_target = b""
         for chunk_addr in tqdm(range(start_address, end_address, step), leave=False):
+            # get read size
             if chunk_addr + step > end_address:
                 chunk_size = end_address - chunk_addr
             else:
                 chunk_size = step
 
+            # read memory
             try:
                 if self.args.phys:
                     mem = read_physmem(chunk_addr, chunk_size)
@@ -17807,11 +17822,33 @@ class SearchPatternCommand(GenericCommand):
                     err("skip due to memory access error")
                 break
 
+            # for regex
             if self.args.hex_regex:
                 mem_target = mem.hex()
             else:
                 mem_target = mem
 
+            # cases where step boundaries are crossed
+            if not self.args.hex_regex and old_mem_target and mem_target:
+                ofs = len(pattern) - 1
+                tmp_target = old_mem_target[-ofs:] + mem_target[:ofs]
+                r = tmp_target.find(pattern)
+                if r >= 0:
+                    to_add = True
+                    # check interval
+                    if self.args.interval:
+                        if len(locations) > 0:
+                            if chunk_addr - ofs + r < locations[-1][0] + self.args.interval:
+                                to_add = False
+                    if to_add:
+                        data = (old_mem_target[-ofs:] + mem_target)[r:][:0x10]
+                        locations.append((chunk_addr - ofs + r, data))
+                        # check limit
+                        self.found_count += 1
+                        if self.args.limit and self.args.limit <= self.found_count:
+                            return locations
+
+            # normal case
             for match in re.finditer(pattern, mem_target):
                 if self.args.hex_regex:
                     if match.start() % 2:
@@ -17821,24 +17858,47 @@ class SearchPatternCommand(GenericCommand):
                     start_pos = match.start()
                 start = chunk_addr + start_pos
 
+                # check interval
                 if self.args.interval:
                     if len(locations) > 0:
                         if start < locations[-1][0] + self.args.interval:
                             continue
 
+                # read dump data
                 data = mem[start_pos:][:0x10]
                 if len(data) < 0x10:
                     try:
-                        data += read_memory(chunk_addr + chunk_size, 0x10 - len(data))
-                    except gdb.MemoryError:
+                        if self.args.phys:
+                            data += read_physmem(chunk_addr + chunk_size, 0x10 - len(data))
+                        else:
+                            data += read_memory(chunk_addr + chunk_size, 0x10 - len(data))
+                    except (gdb.MemoryError, ValueError, OverflowError):
                         pass
 
                 locations.append((start, data))
 
+                # check limit
                 self.found_count += 1
                 if self.args.limit and self.args.limit <= self.found_count:
                     return locations
+
+            old_mem_target = mem_target
+
         return locations
+
+    def process_by_address(self, patterns, start, end):
+        extra = " (phys)" if self.args.phys else ""
+
+        for pattern in patterns:
+            if pattern:
+                info("Searching for '{:s}' in {:#x}-{:#x}{:s}".format(
+                    Color.yellowify(pattern), start, end, extra,
+                ))
+
+                ret = self.search_pattern_by_address(pattern, start, end)
+                for found_loc in ret:
+                    self.print_loc(found_loc)
+        return
 
     def get_process_maps_qemu_system(self):
         res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager")
@@ -17866,7 +17926,7 @@ class SearchPatternCommand(GenericCommand):
                 perm = Permission.from_process_maps(perm.lower())
             yield Section(page_start=addr_start, page_end=addr_end, permission=perm)
 
-    def search_pattern_by_section(self, pattern, section_name=""):
+    def search_pattern_by_section(self, pattern, section_name=None):
         """Search for a pattern within the whole userland memory."""
         if is_qemu_system():
             maps_generator = self.get_process_maps_qemu_system()
@@ -17874,6 +17934,7 @@ class SearchPatternCommand(GenericCommand):
             maps_generator = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
 
         for section in maps_generator:
+            # user or kernel memory address filter
             if self.args.user_only:
                 if AddressUtil.is_msb_on(section.page_start):
                     continue
@@ -17884,26 +17945,28 @@ class SearchPatternCommand(GenericCommand):
             # too big
             if self.args.max_region_size != 0:
                 if section.size >= self.args.max_region_size:
-                    self.quiet_info("{:#x}-{:#x} is skipped due to size ({:#x}) >= MAX_REGION_SIZE ({:#x})".format(
-                        section.page_start, section.page_end,
-                        section.size, self.args.max_region_size,
-                    ))
+                    self.quiet_info(
+                        "{:#x}-{:#x} is skipped due to size ({:#x}) >= MAX_REGION_SIZE ({:#x})".format(
+                            section.page_start, section.page_end,
+                            section.size, self.args.max_region_size,
+                        )
+                    )
                     continue
 
             # permission filter
-            if not section.permission & Permission.READ:
+            if not section.is_readable():
                 continue
-            if self.args.perm[1] in "wW" and not section.permission & Permission.WRITE:
+            if self.args.perm[1] in "wW" and not section.is_writable():
                 continue
-            if self.args.perm[1] in "-_" and section.permission & Permission.WRITE:
+            if self.args.perm[1] in "-_" and section.is_writable():
                 continue
-            if self.args.perm[2] in "xX" and not section.permission & Permission.EXECUTE:
+            if self.args.perm[2] in "xX" and not section.is_executable():
                 continue
-            if self.args.perm[2] in "-_" and section.permission & Permission.EXECUTE:
+            if self.args.perm[2] in "-_" and section.is_executable():
                 continue
 
             # specific section name filter
-            if section_name not in section.path:
+            if section_name and section_name not in section.path:
                 continue
 
             # verbose print
@@ -17928,6 +17991,23 @@ class SearchPatternCommand(GenericCommand):
 
             if self.args.limit and self.args.limit <= self.found_count:
                 break
+        return
+
+    def process_by_section(self, patterns, section_name=None):
+        extra = " (phys)" if self.args.phys else ""
+
+        for pattern in patterns:
+            if pattern:
+                if section_name is None:
+                    info("Searching for '{:s}' in {:s}{:s}".format(
+                        Color.yellowify(pattern), "whole memory", extra,
+                    ))
+                else:
+                    info("Searching for '{:s}' in {:s}{:s}".format(
+                        Color.yellowify(pattern), section_name, extra,
+                    ))
+
+                self.search_pattern_by_section(pattern, section_name)
         return
 
     def create_patterns(self):
@@ -17962,55 +18042,9 @@ class SearchPatternCommand(GenericCommand):
                 pattern_utf16 = "".join([x + "\\x00" for x in pattern])
         return pattern, pattern_utf16
 
-    def process_by_address(self, patterns, start, end):
-        extra = " (phys)" if self.args.phys else ""
-
-        # normal search and print
-        info("Searching for '{:s}' in {:#x}-{:#x}{:s}".format(
-            Color.yellowify(patterns[0]), start, end, extra,
-        ))
-        ret = self.search_pattern_by_address(patterns[0], start, end)
-        for found_loc in ret:
-            self.print_loc(found_loc)
-
-        # utf16 search and print
-        if patterns[1] is not None:
-            info("Searching for '{:s}' in {:#x}-{:#x}{:s}".format(
-                Color.yellowify(patterns[1]), start, end, extra,
-            ))
-            ret = self.search_pattern_by_address(patterns[1], start, end)
-            for found_loc in ret:
-                self.print_loc(found_loc)
-        return
-
-    def process_by_section(self, patterns, section_name):
-        extra = " (phys)" if self.args.phys else ""
-
-        # normal search and print
-        if section_name == "":
-            info("Searching for '{:s}' in {:s}{:s}".format(
-                Color.yellowify(patterns[0]), "whole memory", extra,
-            ))
-        else:
-            info("Searching for '{:s}' in {:s}{:s}".format(
-                Color.yellowify(patterns[0]), section_name, extra,
-            ))
-        self.search_pattern_by_section(patterns[0], section_name)
-
-        # utf16 search and print
-        if patterns[1] is not None:
-            if section_name == "":
-                info("Searching for '{:s}' in {:s}{:s}".format(Color.yellowify(patterns[1]), "whole memory", extra))
-            else:
-                info("Searching for '{:s}' in {:s}{:s}".format(Color.yellowify(patterns[1]), section_name, extra))
-            self.search_pattern_by_section(patterns[1], section_name)
-        return
-
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        self.found_count = 0
-
         if args.kernel_only or args.user_only:
             if not is_qemu_system():
                 err("Unsupported")
@@ -18034,8 +18068,9 @@ class SearchPatternCommand(GenericCommand):
         if patterns is None:
             return
 
-        # the case `find AAAA 0x400000 0x4000`
+        self.found_count = 0
         if args.section and args.size:
+            # the case `find AAAA 0x400000 0x4000`
             try:
                 start = int(args.section, 16)
                 end = start + int(args.size, 16)
@@ -18044,8 +18079,8 @@ class SearchPatternCommand(GenericCommand):
                 return
             self.process_by_address(patterns, start, end)
 
-        # the case `find AAAA 0x400000-0x404000`
         elif args.section and re.match(r"(0x)?[0-9a-fA-F]+-(0x)?[0-9a-fA-F]+", args.section):
+            # the case `find AAAA 0x400000-0x404000`
             try:
                 start, end = AddressUtil.parse_string_range(args.section)
             except ValueError:
@@ -18053,13 +18088,13 @@ class SearchPatternCommand(GenericCommand):
                 return
             self.process_by_address(patterns, start, end)
 
-        # search from specific section or whole memory
         else:
             if args.phys:
                 err("--phys mode needs address information")
                 return
 
             if args.section:
+                # search from specific section
                 if is_qemu_system() or is_kgdb() or is_vmware():
                     err("Unsupported")
                     return
@@ -18067,10 +18102,12 @@ class SearchPatternCommand(GenericCommand):
                     section_name = Path.get_filepath(append_proc_root_prefix=False)
                 else:
                     section_name = args.section
-            else:
-                section_name = args.section
-            self.process_by_section(patterns, section_name)
+                self.process_by_section(patterns, section_name)
 
+            else:
+                # search from whole memory
+                section_name = args.section
+                self.process_by_section(patterns)
         return
 
 
