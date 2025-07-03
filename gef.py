@@ -32568,9 +32568,9 @@ class DereferenceCommand(GenericCommand):
                         help="display only valid addresses.")
     parser.add_argument("-A", "--is-not-addr", action="store_true",
                         help="display only invalid addresses.")
-    parser.add_argument("-z", "--zero", action="store_true",
+    parser.add_argument("-z", "--is-zero", action="store_true",
                         help="display only zero values.")
-    parser.add_argument("-Z", "--non-zero", action="store_true",
+    parser.add_argument("-Z", "--is-not-zero", action="store_true",
                         help="display only non-zero values.")
     parser.add_argument("-t", "--tag", nargs=2, action="append", metavar=("IDX", "TAG"),
                         help="display with tags.")
@@ -32840,13 +32840,13 @@ class DereferenceCommand(GenericCommand):
                         continue
 
                 # zero filtering
-                if self.args.zero:
+                if self.args.is_zero:
                     v = self.read_int_from_memory(current_address)
                     if v != 0:
                         continue
 
                 # non-zero filtering
-                if self.args.non_zero:
+                if self.args.is_not_zero:
                     v = self.read_int_from_memory(current_address)
                     if v == 0:
                         continue
