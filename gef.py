@@ -25641,6 +25641,34 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Disabled", "bold red")))
         return
 
+    def check_CONFIG_SLAB_VIRTUAL(self):
+        cfg = "CONFIG_SLAB_VIRTUAL"
+        # https://patchwork.kernel.org/project/linux-mm/patch/20230915105933.495735-12-matteorizzo@google.com/#25548022
+        stw = "slub_tlbflush_worker"
+        if not Symbol.get_ksymaddr(stw):
+            additional = "{:s}: {:s}".format(stw, "Not found")
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+            return
+
+        kversion = Kernel.kernel_version()
+        if kversion < "6.6":
+            additional = "{:s}: Found (kernel version < 6.6)".format(stw)
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+        else:
+            # If version is >= 6.6, vmlinux can switch `slab_virtual` status with boot-parameter
+            kcmdline = Kernel.kernel_cmdline()
+            r = re.search(r"slab_virtual=(\d+)", kcmdline.cmdline)
+            if r:
+                additional = "{:s}: Found, {:s} is in cmdline".format(stw, r.group(0))
+                if r.group(1) == "0":
+                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+                else:
+                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+            else:
+                additional = "{:s}: Found, slab_virtual is NOT in cmdline".format(stw)
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+        return
+
     def check_selinux(self):
         cfg = "SELinux"
         # SELinux does not support being built as a kernel module.
@@ -26446,6 +26474,7 @@ class KernelChecksecCommand(GenericCommand):
         gef_print("{:<40s}: {:s}".format("Allocator", allocator))
         if allocator == "SLUB":
             self.check_CONFIG_SLAB_FREELIST_HARDENED()
+            self.check_CONFIG_SLAB_VIRTUAL()
 
         gef_print(titlify("Security Module"))
         self.check_selinux()
