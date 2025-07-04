@@ -12254,6 +12254,11 @@ class Pid:
             return None # gdbserver etc.
         return gdb.selected_inferior().pid
 
+    @staticmethod
+    def get_tid():
+        ptid = gdb.selected_thread().ptid
+        return ptid[1] or ptid[2]
+
 
 class Path:
     """A collection of utility functions that obtains a path."""
@@ -37111,11 +37116,13 @@ class TraceMallocBreakpoint(gdb.Breakpoint):
         return
 
     def check_nested(self):
+        tid = Pid.get_tid()
         for bp in gdb.breakpoints():
             try:
                 if bp.__class__.__name__ in ["TraceMallocRetBreakpoint", "TraceReallocRetBreakpoint"]:
-                    if bp.enabled:
-                        return True
+                    if tid == bp.tid:
+                        if bp.enabled:
+                            return True
             except Exception:
                 pass
         return False
@@ -37165,6 +37172,7 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
         self.size = size
         self.memptr = memptr
         self.alignment = alignment
+        self.tid = Pid.get_tid()
         GlibcHeapTracerCommand.clear_disabled_breakpoints()
         return
 
@@ -37205,7 +37213,7 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
                 Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
                 self.name, self.memptr, self.alignment, self.size,
             )
-        pad = " " * (80 - len(Color.remove_color(text)))
+        pad = " " * (60 - len(Color.remove_color(text)))
         text = "{:s}{:s}= {!s}".format(text, pad, allocated)
         gef_print(text)
         return
@@ -37234,6 +37242,11 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
         return
 
     def stop(self):
+        # check if expected thread
+        if Pid.get_tid() != self.tid:
+            return False
+
+        # invalidate
         self.enabled = False
         Cache.reset_gef_caches()
 
@@ -37276,11 +37289,13 @@ class TraceReallocBreakpoint(gdb.Breakpoint):
         return
 
     def check_nested(self):
+        tid = Pid.get_tid()
         for bp in gdb.breakpoints():
             try:
                 if bp.__class__.__name__ in ["TraceMallocRetBreakpoint", "TraceReallocRetBreakpoint"]:
-                    if bp.enabled:
-                        return True
+                    if tid == bp.tid:
+                        if bp.enabled:
+                            return True
             except Exception:
                 pass
         return False
@@ -37317,6 +37332,7 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
         self.old_loc = old_loc
         self.nmemb = nmemb
         self.size = size
+        self.tid = Pid.get_tid()
         GlibcHeapTracerCommand.clear_disabled_breakpoints()
         return
 
@@ -37366,7 +37382,7 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
                 self.old_loc if self.old_loc.value != 0 else Color.boldify("NULL"),
                 self.nmemb, self.size, action_index_s,
             )
-        pad = " " * (80 - len(Color.remove_color(text)))
+        pad = " " * (60 - len(Color.remove_color(text)))
         text = "{:s}{:s}= {:s}".format(text, pad, extra)
         gef_print(text)
         return
@@ -37430,6 +37446,11 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
         return
 
     def stop(self):
+        # check if expected thread
+        if Pid.get_tid() != self.tid:
+            return False
+
+        # invalidate
         self.enabled = False
         Cache.reset_gef_caches()
 

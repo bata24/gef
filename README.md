@@ -316,7 +316,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
             - ![](images/heap-calc-protected-fd.png)
         - `heap visual-heap`: is colorized heap viewer.
             - ![](images/heap-visual-heap.png)
-        - `heap tracer`: has been integrated from `heap-analysis-helper`.
+        - `heap tracer`: has been integrated from `heap-analysis-helper` and rewritten.
+            - ![](images/heap-tracer.png)
 - uClibc heap commands are added.
     - `uclibc-ng-heap-dump`: dumps uClibc-ng heap chunks.
         - Supported on x64 and x86, based on uClibc-ng v1.0.42 malloc-standard.
