@@ -26298,6 +26298,22 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         return
 
+    def check_CONFIG_FUSE_FS(self):
+        cfg = "CONFIG_FUSE_FS"
+        fuse_do_open = Symbol.get_ksymaddr("fuse_do_open")
+        if fuse_do_open:
+            additional = "fuse_do_open: Found"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
+        else:
+            ret = gdb.execute("kmod --filter fuse --quiet", to_string=True)
+            if ret:
+                additional = "fuse module: Found"
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
+            else:
+                additional = "fuse module: Not found"
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
+        return
+
     def check_kadr_kallsyms(self):
         cfg = "KADR (kallsyms)"
         kversion = Kernel.kernel_version()
@@ -26463,6 +26479,7 @@ class KernelChecksecCommand(GenericCommand):
         self.check_CONFIG_STACKPROTECTOR()
         self.check_CONFIG_SHADOW_CALL_STACK()
         self.check_CONFIG_HARDENED_USERCOPY()
+        self.check_CONFIG_FUSE_FS()
         self.check_kadr_kallsyms()
         self.check_kadr_dmesg()
         self.check_mmap_min_addr()
