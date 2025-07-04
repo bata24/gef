@@ -71108,6 +71108,50 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
+    def get_kmem_cache_offset_node(self, kmem_caches):
+        self.kmem_cache_offset_node = None
+        start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
+        for candidate_offset in range(start_offset, start_offset + 0x100, current_arch.ptrsize):
+            # walk from list for heuristic search
+            found = True
+            for kmem_cache in kmem_caches:
+                top = kmem_cache - self.kmem_cache_offset_list
+                maybe_node = read_int_from_memory(top + candidate_offset)
+                if not is_valid_addr(maybe_node):
+                    found = False
+                    break
+                # skip node[0].{list_lock,nr_partial} and check node[0].partial.next
+                if not is_valid_addr(maybe_node + current_arch.ptrsize * 2):
+                    found = False
+                    break
+                # node[0].partial.next is slab
+                # maybe_slab actually points to &slab.next, not to the beginning of the structure
+                maybe_slab = read_int_from_memory(maybe_node + current_arch.ptrsize * 2)
+                if not is_valid_addr(maybe_slab):
+                    found = False
+                    break
+                # slab.next (it's actually the list_head)
+                a = read_int_from_memory(maybe_slab)
+                if not is_valid_addr(a):
+                    found = False
+                    break
+                b = read_int_from_memory(maybe_slab + current_arch.ptrsize)
+                if not is_valid_addr(b):
+                    found = False
+                    break
+                # something is in linklist
+                if a != maybe_node + current_arch.ptrsize * 2:
+                    # check slab->slab_cache
+                    c = read_int_from_memory(maybe_slab - current_arch.ptrsize)
+                    if c != top:
+                        found = False
+                        break
+
+            if found:
+                self.kmem_cache_offset_node = candidate_offset
+                return
+        return
+
     """
     struct kmem_cache {
         slab_flags_t flags;                      // unsigned int (+ padding 4 byte)
@@ -71203,7 +71247,6 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         candidate = (0, -1) # (count, candidate_offset)
         for candidate_offset in range(current_arch.ptrsize * 2, 0x70, current_arch.ptrsize):
             # backward search for the start of `struct kmem_cache`
-            found = True
             count = 0
             for kmem_cache in kmem_caches:
                 val = read_int_from_memory(kmem_cache - candidate_offset)
@@ -71240,50 +71283,11 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad))
 
         # offsetof(kmem_cache, node)
-        start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
-        for candidate_offset in range(start_offset, start_offset + 0x100, current_arch.ptrsize):
-            # walk from list for heuristic search
-            found = True
-            for kmem_cache in kmem_caches:
-                top = kmem_cache - self.kmem_cache_offset_list
-                maybe_node = read_int_from_memory(top + candidate_offset)
-                if not is_valid_addr(maybe_node):
-                    found = False
-                    break
-                # skip node[0].{list_lock,nr_partial} and check node[0].partial.next
-                if not is_valid_addr(maybe_node + current_arch.ptrsize * 2):
-                    found = False
-                    break
-                # node[0].partial.next is slab
-                # maybe_slab actually points to &slab.next, not to the beginning of the structure
-                maybe_slab = read_int_from_memory(maybe_node + current_arch.ptrsize * 2)
-                if not is_valid_addr(maybe_slab):
-                    found = False
-                    break
-                # slab.next (it's actually the list_head)
-                a = read_int_from_memory(maybe_slab)
-                if not is_valid_addr(a):
-                    found = False
-                    break
-                b = read_int_from_memory(maybe_slab + current_arch.ptrsize)
-                if not is_valid_addr(b):
-                    found = False
-                    break
-                # something is in linklist
-                if a != maybe_node + current_arch.ptrsize * 2:
-                    # check slab->slab_cache
-                    c = read_int_from_memory(maybe_slab - current_arch.ptrsize)
-                    if c != top:
-                        found = False
-                        break
-
-            if found:
-                self.kmem_cache_offset_node = candidate_offset
-                self.quiet_info("offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node))
-                break
-        else:
+        self.get_kmem_cache_offset_node(kmem_caches)
+        if self.kmem_cache_offset_node is None:
             self.quiet_info("offsetof(kmem_cache, node): Not found")
-            self.kmem_cache_offset_node = None
+        else:
+            self.quiet_info("offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node))
 
         # offsetof(page, next)
         self.page_offset_next = current_arch.ptrsize * 2
@@ -71394,16 +71398,63 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
                 addr = chunk + kmem_cache["offset"]
                 chunk = read_int_from_memory(addr) # get next chunk
             except gdb.MemoryError:
-                freelist.append("{:s}".format(Color.colorify("Corrupted (Memory access denied)", corrupted_msg_color)))
+                freelist.append("{:s}".format(
+                    Color.colorify("Corrupted (Memory access denied)", corrupted_msg_color),
+                ))
                 break
             if chunk % 8:
-                freelist.append("{:#x}: {:s}".format(chunk, Color.colorify("Corrupted (Not aligned)", corrupted_msg_color)))
+                freelist.append("{:#x}: {:s}".format(
+                    chunk, Color.colorify("Corrupted (Not aligned)", corrupted_msg_color),
+                ))
                 break
             if chunk in freelist:
-                freelist.append("{:#x}: {:s}".format(chunk, Color.colorify("Corrupted (Loop detected)", corrupted_msg_color)))
+                freelist.append("{:#x}: {:s}".format(
+                    chunk, Color.colorify("Corrupted (Loop detected)", corrupted_msg_color),
+                ))
                 break
             freelist.append(chunk)
         return freelist
+
+    def walk_caches_node_page(self, kmem_cache):
+        kmem_cache["nodes"] = []
+        kmem_cache_node_array = kmem_cache["address"] + self.kmem_cache_offset_node
+        current_kmem_cache_node_ptr = kmem_cache_node_array
+        while True:
+            current_kmem_cache_node = read_int_from_memory(current_kmem_cache_node_ptr)
+            if current_kmem_cache_node == 0:
+                break
+            if current_kmem_cache_node == current_kmem_cache_node_ptr:
+                break
+            if current_kmem_cache_node & 0b111:
+                break
+            node_page_list = []
+            node_page_head = current_kmem_cache_node + self.kmem_cache_node_offset_partial
+            if not is_valid_addr(node_page_head):
+                break
+            current_node_page = read_int_from_memory(node_page_head)
+            while current_node_page != node_page_head:
+                node_page = {}
+                node_page["address"] = current_node_page - self.page_offset_next
+                if not is_valid_addr(node_page["address"]):
+                    node_page_list.append(node_page)
+                    break
+                x = read_int_from_memory(node_page["address"] + self.page_offset_inuse_objects_frozen)
+                node_page["inuse"] = x & 0xffff
+                node_page["objects"] = (x >> 16) & 0x7fff
+                if node_page["objects"] == 0 or node_page["inuse"] > node_page["objects"]:
+                    break # something is wrong
+                node_page["frozen"] = (x >> 31) & 1
+                node_chunk = read_int_from_memory(node_page["address"] + self.page_offset_freelist)
+                node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache)
+                node_page["num_pages"] = (
+                    kmem_cache["size"] * node_page["objects"] + gef_getpagesize_mask_low()
+                ) // gef_getpagesize()
+                node_page["virt_addr"] = self.page2virt(node_page, kmem_cache)
+                node_page_list.append(node_page)
+                current_node_page = read_int_from_memory(node_page["address"] + self.page_offset_next)
+            kmem_cache["nodes"].append(node_page_list)
+            current_kmem_cache_node_ptr += current_arch.ptrsize
+        return
 
     def walk_caches(self, target_names):
         current_kmem_cache = self.get_next_kmem_cache(self.slab_caches, point_to_base=False)
@@ -71430,57 +71481,110 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             current_kmem_cache = kmem_cache["next"]
 
         if self.args.list:
-            return parsed_caches
+            return parsed_caches # fast return
 
         # second, parse node then update
         tqdm = GefUtil.get_tqdm(not self.args.quiet)
         for kmem_cache in tqdm(parsed_caches[1:], leave=False): # parsed_caches[0] is slab_caches, so skip
             # parse node
-            kmem_cache["nodes"] = []
-            kmem_cache_node_array = kmem_cache["address"] + self.kmem_cache_offset_node
-            current_kmem_cache_node_ptr = kmem_cache_node_array
-            while True:
-                current_kmem_cache_node = read_int_from_memory(current_kmem_cache_node_ptr)
-                if current_kmem_cache_node == 0:
-                    break
-                if current_kmem_cache_node == current_kmem_cache_node_ptr:
-                    break
-                if current_kmem_cache_node & 0b111:
-                    break
-                node_page_list = []
-                node_page_head = current_kmem_cache_node + self.kmem_cache_node_offset_partial
-                if not is_valid_addr(node_page_head):
-                    break
-                current_node_page = read_int_from_memory(node_page_head)
-                while current_node_page != node_page_head:
-                    node_page = {}
-                    node_page["address"] = current_node_page - self.page_offset_next
-                    if not is_valid_addr(node_page["address"]):
-                        node_page_list.append(node_page)
-                        break
-                    x = read_int_from_memory(node_page["address"] + self.page_offset_inuse_objects_frozen)
-                    node_page["inuse"] = x & 0xffff
-                    node_page["objects"] = (x >> 16) & 0x7fff
-                    if node_page["objects"] == 0 or node_page["inuse"] > node_page["objects"]:
-                        break # something is wrong
-                    node_page["frozen"] = (x >> 31) & 1
-                    node_chunk = read_int_from_memory(node_page["address"] + self.page_offset_freelist)
-                    node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache)
-                    node_page["num_pages"] = (
-                        kmem_cache["size"] * node_page["objects"] + gef_getpagesize_mask_low()
-                    ) // gef_getpagesize()
-                    node_page["virt_addr"] = self.page2virt(node_page, kmem_cache)
-                    node_page_list.append(node_page)
-                    current_node_page = read_int_from_memory(node_page["address"] + self.page_offset_next)
-                kmem_cache["nodes"].append(node_page_list)
-                current_kmem_cache_node_ptr += current_arch.ptrsize
+            self.walk_caches_node_page(kmem_cache)
+
         return parsed_caches
+
+    def dump_page_print_layout(self, kmem_cache, page, freelist):
+        used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
+        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+
+        if page["virt_addr"] is None:
+            self.out.append("        layout: Failed to the get first page")
+            return
+
+        end_virt = page["virt_addr"] + page["num_pages"] * gef_getpagesize()
+        start_addr = page["virt_addr"] + kmem_cache["red_left_pad"]
+
+        if kmem_cache["red_left_pad"]:
+            chunk_s = Color.colorify_hex(page["virt_addr"], used_address_color)
+            self.out.append("        {:7s}   {:#05x} {:s} ({:s})".format("layout:", 0, chunk_s, "never-used"))
+            start_idx = 1
+        else:
+            start_idx = 0
+
+        for idx, chunk in enumerate(range(start_addr, end_virt, kmem_cache["size"]), start=start_idx):
+            if chunk in freelist[:-1]:
+                next_chunk = freelist[freelist.index(chunk) + 1]
+                if isinstance(next_chunk, str):
+                    next_msg = "next: {:s}".format(next_chunk)
+                else:
+                    next_msg = "next: {:#x}".format(next_chunk)
+                chunk_s = Color.colorify_hex(chunk, freed_address_color)
+            else:
+                if page["objects"] <= idx:
+                    next_msg = "never-used"
+                else:
+                    next_msg = "in-use"
+                chunk_s = Color.colorify_hex(chunk, used_address_color)
+            layout_msg = "layout:" if idx == 0 else ""
+            self.out.append("        {:7s}   {:#05x} {:s} ({:s})".format(layout_msg, idx, chunk_s, next_msg))
+
+            # dump chunks
+            if self.args.hexdump_used and next_msg == "in-use":
+                peeked_data = read_memory(chunk, self.args.hexdump_used)
+                h = hexdump(peeked_data, 0x10, base=chunk, unit=current_arch.ptrsize)
+                self.out.append(h)
+
+            if self.args.hexdump_freed and next_msg.startswith("next: "):
+                peeked_data = read_memory(chunk, self.args.hexdump_freed)
+                h = hexdump(peeked_data, 0x10, base=chunk, unit=current_arch.ptrsize)
+                self.out.append(h)
+
+            if self.args.telescope_used and next_msg == "in-use":
+                n = self.args.telescope_used // current_arch.ptrsize
+                for i in range(n):
+                    line = DereferenceCommand.pprint_dereferenced(chunk, i)
+                    self.out.append(line)
+
+            if self.args.telescope_freed and next_msg.startswith("next: "):
+                n = self.args.telescope_freed // current_arch.ptrsize
+                for i in range(n):
+                    line = DereferenceCommand.pprint_dereferenced(chunk, i)
+                    self.out.append(line)
+        return
+
+    def dump_page_print_freelist(self, kmem_cache, page, freelist):
+        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+
+        if freelist == [] or freelist == [0]:
+            self.out.append("        freelist: (none)")
+            return
+
+        for idx, chunk_addr in enumerate(freelist):
+            if page["virt_addr"] is not None:
+                if chunk_addr == 0:
+                    continue
+                if isinstance(chunk_addr, str):
+                    chunk_idx = ""
+                    msg = chunk_addr
+                else:
+                    chunk_idx = (chunk_addr - page["virt_addr"]) // kmem_cache["size"]
+                    if chunk_idx < 0 or page["objects"] <= chunk_idx:
+                        chunk_idx = ""
+                    else:
+                        chunk_idx = "{:#05x}".format(chunk_idx)
+                    msg = Color.colorify_hex(chunk_addr, freed_address_color)
+                freelist_msg = "freelist:" if idx == 0 else ""
+                self.out.append("        {:9s} {:5s} {:s}".format(freelist_msg, chunk_idx, msg))
+            else:
+                if isinstance(chunk_addr, str):
+                    msg = chunk_addr
+                else:
+                    msg = Color.colorify_hex(chunk_addr, freed_address_color)
+                freelist_msg = "freelist:" if idx == 0 else ""
+                self.out.append("        {:9s}       {:s}".format(freelist_msg, msg))
+        return
 
     def dump_page(self, page, kmem_cache, tag, freelist=None):
         label_active_color = Config.get_gef_setting("theme.heap_label_active")
         heap_page_color = Config.get_gef_setting("theme.heap_page_address")
-        used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
 
         # page address
         tag_s = Color.colorify("{:s} page".format(tag), label_active_color)
@@ -71516,86 +71620,10 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         self.out.append("        frozen: {:d}".format(page["frozen"]))
 
         # print layout
-        if page["virt_addr"] is not None:
-            end_virt = page["virt_addr"] + page["num_pages"] * gef_getpagesize()
-            start_addr = page["virt_addr"] + kmem_cache["red_left_pad"]
-
-            if kmem_cache["red_left_pad"]:
-                chunk_s = Color.colorify_hex(page["virt_addr"], used_address_color)
-                self.out.append("        {:7s}   {:#05x} {:s} ({:s})".format("layout:", 0, chunk_s, "never-used"))
-                start_idx = 1
-            else:
-                start_idx = 0
-
-            for idx, chunk in enumerate(range(start_addr, end_virt, kmem_cache["size"]), start=start_idx):
-                if chunk in freelist[:-1]:
-                    next_chunk = freelist[freelist.index(chunk) + 1]
-                    if isinstance(next_chunk, str):
-                        next_msg = "next: {:s}".format(next_chunk)
-                    else:
-                        next_msg = "next: {:#x}".format(next_chunk)
-                    chunk_s = Color.colorify_hex(chunk, freed_address_color)
-                else:
-                    if page["objects"] <= idx:
-                        next_msg = "never-used"
-                    else:
-                        next_msg = "in-use"
-                    chunk_s = Color.colorify_hex(chunk, used_address_color)
-                layout_msg = "layout:" if idx == 0 else ""
-                self.out.append("        {:7s}   {:#05x} {:s} ({:s})".format(layout_msg, idx, chunk_s, next_msg))
-
-                # dump chunks
-                if self.args.hexdump_used and next_msg == "in-use":
-                    peeked_data = read_memory(chunk, self.args.hexdump_used)
-                    h = hexdump(peeked_data, 0x10, base=chunk, unit=current_arch.ptrsize)
-                    self.out.append(h)
-
-                if self.args.hexdump_freed and next_msg.startswith("next: "):
-                    peeked_data = read_memory(chunk, self.args.hexdump_freed)
-                    h = hexdump(peeked_data, 0x10, base=chunk, unit=current_arch.ptrsize)
-                    self.out.append(h)
-
-                if self.args.telescope_used and next_msg == "in-use":
-                    n = self.args.telescope_used // current_arch.ptrsize
-                    for i in range(n):
-                        line = DereferenceCommand.pprint_dereferenced(chunk, i)
-                        self.out.append(line)
-
-                if self.args.telescope_freed and next_msg.startswith("next: "):
-                    n = self.args.telescope_freed // current_arch.ptrsize
-                    for i in range(n):
-                        line = DereferenceCommand.pprint_dereferenced(chunk, i)
-                        self.out.append(line)
-        else:
-            self.out.append("        layout: Failed to the get first page")
+        self.dump_page_print_layout(kmem_cache, page, freelist)
 
         # print freelist
-        if freelist == [] or freelist == [0]:
-            self.out.append("        freelist: (none)")
-        else:
-            for idx, chunk_addr in enumerate(freelist):
-                if page["virt_addr"] is not None:
-                    if chunk_addr == 0:
-                        continue
-                    if isinstance(chunk_addr, str):
-                        chunk_idx = ""
-                        msg = chunk_addr
-                    else:
-                        chunk_idx = (chunk_addr - page["virt_addr"]) // kmem_cache["size"]
-                        if chunk_idx < 0 or page["objects"] <= chunk_idx:
-                            chunk_idx = ""
-                        else:
-                            chunk_idx = "{:#05x}".format(chunk_idx)
-                        msg = Color.colorify_hex(chunk_addr, freed_address_color)
-                    freelist_msg = "freelist:" if idx == 0 else ""
-                    self.out.append("        {:9s} {:5s} {:s}".format(freelist_msg, chunk_idx, msg))
-                else:
-                    if isinstance(chunk_addr, str):
-                        msg = chunk_addr
-                    else:
-                        msg = Color.colorify_hex(chunk_addr, freed_address_color)
-                    freelist_msg = "freelist:" if idx == 0 else ""
-                    self.out.append("        {:9s}       {:s}".format(freelist_msg, msg))
+        self.dump_page_print_freelist(kmem_cache, page, freelist)
         return
 
     def dump_caches(self, target_names, parsed_caches):
@@ -71620,7 +71648,9 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
             # dump nodes
             for node_index, node_page_list in enumerate(kmem_cache["nodes"]):
-                node_addr = read_int_from_memory(kmem_cache["address"] + self.kmem_cache_offset_node + current_arch.ptrsize * node_index)
+                node_addr = read_int_from_memory(
+                    kmem_cache["address"] + self.kmem_cache_offset_node + current_arch.ptrsize * node_index,
+                )
                 self.out.append("    kmem_cache_node[{:d}]: {:#x}".format(node_index, node_addr))
                 printed_count = 0
                 for node_page in node_page_list:
