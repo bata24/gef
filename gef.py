@@ -69689,6 +69689,387 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
+    def get_kmem_cache_offset_random(self, kmem_caches):
+        if self.args.no_xor:
+            self.kmem_cache_offset_random = None
+            return
+
+        if self.args.offset_random is not None:
+            self.kmem_cache_offset_random = self.args.offset_random
+            return
+
+        self.kmem_cache_offset_random = None # CONFIG_SLAB_FREELIST_HARDENED=n
+
+        """
+        struct kmem_cache {
+            ...
+            struct list_head list; <-----> struct list_head <-----> struct list_head <-----> ...
+            struct kobject kobj;                     // if CONFIG_SYSFS=y
+            struct work_struct kobj_remove_work;     // if CONFIG_SYSFS=y && kernel < 5.9
+            struct memcg_cache_params memcg_params;  // if CONFIG_MEMCG=y && kernel < 5.9
+            unsigned int max_attr_size;              // if CONFIG_MEMCG=y && kernel < 5.9
+            struct kset *memcg_kset;                 // if CONFIG_MEMCG=y && CONFIG_SYSFS=y && kernel < 5.9
+            unsigned long random;                    // if CONFIG_SLAB_FREELIST_HARDENED=y
+            unsigned int remote_node_defrag_ratio;   // if CONFIG_NUMA=y
+            unsigned int *random_seq;                // if CONFIG_SLAB_FREELIST_RANDOM=y
+            struct kasan_cache {
+                int alloc_meta_offset;
+                int free_meta_offset;
+                bool is_kmalloc;
+            } kasan_info;                            // if CONFIG_KASAN=y
+            unsigned int useroffset;                 // kernel < 6.2 || (6.2 <= kernel && CONFIG_HARDENED_USERCOPY=y)
+            unsigned int usersize;                   // kernel < 6.2 || (6.2 <= kernel && CONFIG_HARDENED_USERCOPY=y)
+            struct kmem_cache_node *node[MAX_NUMNODES];
+        };
+        """
+
+        for i in range(2, 0x40):
+            candidate_offset = current_arch.ptrsize * i
+            found = True
+            count = 0
+            seen = []
+            for kmem_cache in kmem_caches:
+                if not is_valid_addr(kmem_cache + candidate_offset):
+                    found = False
+                    break
+
+                val = read_int_from_memory(kmem_cache + candidate_offset)
+                # random may happen to be a valid address, so some are acceptable
+                if is_valid_addr(val):
+                    count += 1
+                    if count >= 3:
+                        found = False
+                        break
+                else:
+                    if val > 0xffffff:
+                        count -= 1
+
+                # The probability of the same random value appearing multiple times is negligible
+                if val != 0:
+                    if val in seen:
+                        found = False
+                        break
+                    seen.append(val)
+
+            if found:
+                # Too few random numbers
+                if len(seen) < 10:
+                    found = False
+
+                # Occurrences of non-negative small integers are stochastically rare
+                elif sum([0 < x < 0x100000 for x in seen]) >= 3:
+                    found = False
+
+                # Occurrences of big integers are stochastically rare
+                elif sum([0xffff000000000000 < x <= 0xffffffffffffffff for x in seen]) >= 3:
+                    found = False
+
+                # Occurrences of 0xXXXX000 are stochastically rare
+                elif sum([x and (x & 0xfff) == 0 for x in seen]) >= 3:
+                    found = False
+
+            if found:
+                # search for `struct kmem_cache_node *node` or `unsigned int *random_seq`
+                for i in range(1, 9):
+                    maybe_ptrs = []
+                    for kmem_cache in kmem_caches:
+                        v = read_int_from_memory(kmem_cache + candidate_offset + current_arch.ptrsize * i)
+                        maybe_ptrs.append(v)
+                    # they should be at the same offset
+                    if all(is_valid_addr(p) for p in maybe_ptrs):
+                        break
+                else:
+                    found = False
+
+            if found:
+                self.kmem_cache_offset_random = self.kmem_cache_offset_list + candidate_offset
+                return
+        return
+
+    def get_kmem_cache_offset_node(self, kmem_caches):
+        if self.args.offset_node is not None:
+            self.kmem_cache_offset_node = self.args.offset_node
+            return
+
+        self.kmem_cache_offset_node = None
+        kversion = Kernel.kernel_version()
+
+        """
+        struct kmem_cache {
+            ...
+            unsigned int object_size;
+            ...
+            struct list_head list; <-----> struct list_head <-----> struct list_head <-----> ...
+            struct kobject kobj;                     // if CONFIG_SYSFS=y
+            struct work_struct kobj_remove_work;     // if CONFIG_SYSFS=y && kernel < 5.9
+            struct memcg_cache_params memcg_params;  // if CONFIG_MEMCG=y && kernel < 5.9
+            unsigned int max_attr_size;              // if CONFIG_MEMCG=y && kernel < 5.9
+            struct kset *memcg_kset;                 // if CONFIG_MEMCG=y && CONFIG_SYSFS=y && kernel < 5.9
+            unsigned long random;                    // if CONFIG_SLAB_FREELIST_HARDENED=y
+            unsigned int remote_node_defrag_ratio;   // if CONFIG_NUMA=y (<-- maybe 1000)
+            unsigned int *random_seq;                // if CONFIG_SLAB_FREELIST_RANDOM=y
+            struct kasan_cache {
+                int alloc_meta_offset;
+                int free_meta_offset;
+                bool is_kmalloc;
+            } kasan_info;                            // if CONFIG_KASAN=y
+            unsigned int useroffset;                 // kernel < 6.2 || (6.2 <= kernel && CONFIG_HARDENED_USERCOPY=y)
+            unsigned int usersize;                   // kernel < 6.2 || (6.2 <= kernel && CONFIG_HARDENED_USERCOPY=y)
+            struct kmem_cache_node *node[MAX_NUMNODES]; <-- this includes SPINLOCK_MAGIC if CONFIG_DEBUG_SPINLOCK=y
+        }
+        """
+
+        # heuristic way 1 (SPINLOCK_MAGIC)
+        if is_64bit():
+            # kmem_cache_node[0]->list_lock has SPINLOCK_MAGIC when CONFIG_DEBUG_SPINLOCK=y
+            start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
+            search_range = 0x100 if kversion >= "5.9" else 0x200
+            for candidate_offset in range(start_offset, start_offset + search_range, current_arch.ptrsize):
+                kmem_cache_top = kmem_caches[0] - self.kmem_cache_offset_list
+
+                x = read_int_from_memory(kmem_cache_top + candidate_offset)
+                if not is_valid_addr(x):
+                    continue
+                y = read_int_from_memory(x)
+                if y != 0xdead4ead00000000: # SPINLOCK_MAGIC
+                    continue
+
+                # found
+                self.quiet_info("offset of node is found by heuristic way1")
+                self.kmem_cache_offset_node = candidate_offset
+                return
+
+        # helper functions (for way2, way4)
+
+        def get_next_valid_ptr_offset(addr, in_range=5):
+            """Returns the nearest valid pointer within a specified range."""
+            # Depending on the configuration, the offset where the address exists will vary,
+            # so we need to find the closest valid address.
+            for i in range(in_range):
+                candidate_offset = current_arch.ptrsize * i
+                v = read_int_from_memory(addr + candidate_offset)
+                if is_valid_addr(v):
+                    return candidate_offset
+            return None
+
+        def is_random_seq(addr, N=8):
+            # What random_seq points to is a rearrangement of sequential numbers of type u32.
+            # Therefore, no two values will be the same. If the first some elements contain
+            # the same value, we can determine that it is not random_seq but node[0].
+            #
+            # kmem_cache_node example
+            # 0xffff888003c40180|+0x0000|+000: 0xb7f638bb00000000
+            # 0xffff888003c40188|+0x0008|+001: 0x000000000000000a
+            # 0xffff888003c40190|+0x0010|+002: 0xffffea000012da90
+            # 0xffff888003c40198|+0x0018|+003: 0xffffea0000118710
+            # 0xffff888003c401a0|+0x0020|+004: 0x0000000000000010
+            # 0xffff888003c401a8|+0x0028|+005: 0x0000000000000800
+            # random_seq example
+            # 0xffff8f9d8104c400|+0x0000|+000: 0x00000e8000000b40
+            # 0xffff8f9d8104c408|+0x0008|+001: 0x00000f4000000080
+            # 0xffff8f9d8104c410|+0x0010|+002: 0x000000a000000ae0
+            # 0xffff8f9d8104c418|+0x0018|+003: 0x00000bc0000001e0
+            # 0xffff8f9d8104c420|+0x0020|+004: 0x0000020000000360
+            # 0xffff8f9d8104c428|+0x0028|+005: 0x0000024000000320
+            # random_seq another example
+            # 0xffff89c3ce772240|+0x0000|+000: 0x00000000000019e0
+            # 0xffff89c3ce772248|+0x0008|+001: 0x00005a9000004da0
+            # 0xffff89c3ce772250|+0x0010|+002: 0x00000cf0000026d0
+            # 0xffff89c3ce772258|+0x0018|+003: 0x00006780000040b0
+            # 0xffff89c3ce772260|+0x0020|+004: 0x00000000000033c0
+            # 0xffff89c3ce772268|+0x0028|+005: 0x0000000000000000
+            # 0xffff89c3ce772270|+0x0030|+006: 0x0000000000000000
+            sizeof_uint32 = 4
+            data = read_memory(addr, sizeof_uint32 * N)
+            data = slice_unpack(data, sizeof_uint32)
+            if len(set(data)) != N:
+                return False
+            if any(x & 0x80000000 for x in data):
+                return False
+            return True
+
+        # helper functions end
+
+        # heuristic way 2 (remote_node_defrag_ratio == 1000)
+        if is_64bit():
+            # Find the offset that has the initial value of 1000 for remote_node_defrag_ratio.
+            # The first valid pointer encountered after that is either random_seq or node[0].
+            # We look at the contents to determine whether the pointer is random_seq.
+            start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
+            search_range = 0x100 if kversion >= "5.9" else 0x200
+            for candidate_offset in range(start_offset, start_offset + search_range, current_arch.ptrsize):
+                # First, we search remote_node_defrag_ratio.
+                remote_node_defrag_ratio_1000_count = 0
+                for kmem_cache in kmem_caches:
+                    kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
+                    remote_node_defrag_ratio = u32(read_memory(kmem_cache_top + candidate_offset, 4))
+                    if remote_node_defrag_ratio == 0x3e8:
+                        remote_node_defrag_ratio_1000_count += 1
+                if remote_node_defrag_ratio_1000_count < len(kmem_caches) // 10: # heuristic threshold: 10%
+                    continue
+                offset_remote_node_defrag_ratio = candidate_offset
+                offset_random_seq = offset_remote_node_defrag_ratio + current_arch.ptrsize
+
+                # Check the value next to remote_node_defrag_ratio whether pointer or not.
+                kmem_cache_0_top = kmem_caches[0] - self.kmem_cache_offset_list
+                x = read_int_from_memory(kmem_cache_0_top + offset_random_seq)
+                if is_valid_addr(x):
+                    # At this point, x is random_seq or node[0]
+                    if not is_random_seq(x):
+                        # x is not random_seq, but node[0]
+                        self.quiet_info("offset of node is found by heuristic way2-1")
+                        self.kmem_cache_offset_node = offset_random_seq
+                        return
+                    else:
+                        # x is random_seq, so skip it
+                        start_offset_node_search = offset_random_seq + current_arch.ptrsize
+                else:
+                    # x is kasan_info or user_offset
+                    start_offset_node_search = offset_random_seq
+
+                extend_offset = get_next_valid_ptr_offset(kmem_cache_0_top + start_offset_node_search)
+                if extend_offset is not None:
+                    offset_node = start_offset_node_search + extend_offset
+                    y = read_int_from_memory(kmem_cache_0_top + offset_node)
+                    if is_valid_addr(y) and not is_random_seq(y):
+                        self.quiet_info("offset of node is found by heuristic way2-2")
+                        self.kmem_cache_offset_node = offset_node
+                        return
+
+        # heuristic way 3 (relationship of user_offset, user_size, and object_size)
+        # This method valid for kernel < 6.2, or (CONFIG_HARDENED_USERCOPY=y and kernel >= 6.2).
+        start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
+        search_range = 0x100 if kversion >= "5.9" else 0x200
+        for candidate_offset in range(start_offset, start_offset + search_range, current_arch.ptrsize):
+            found = True
+            user_offset_user_size_non_zero_flag = False
+            for kmem_cache in kmem_caches:
+                kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
+
+                # Check whether user_offset, user_size, and object_size satisfy some relationships
+                user_offset = u32(read_memory(kmem_cache_top + candidate_offset, 4))
+                user_size = u32(read_memory(kmem_cache_top + candidate_offset + 4, 4))
+                object_size = u32(read_memory(kmem_cache_top + self.kmem_cache_offset_object_size, 4))
+
+                if user_offset == user_size == 0:
+                    continue
+                user_offset_user_size_non_zero_flag = True
+
+                if user_offset != 0 and user_size == 0:
+                    found = False
+                    break
+                if object_size < user_size:
+                    found = False
+                    break
+
+                # And check that the immediately following node is a valid address
+                node_offset = candidate_offset + 4 + 4
+                node_addr = read_int_from_memory(kmem_cache_top + node_offset)
+                if not is_valid_addr(node_addr):
+                    found = False
+                    break
+
+            if user_offset_user_size_non_zero_flag is False:
+                found = False
+
+            if found:
+                self.quiet_info("offset of node is found by heuristic way3")
+                self.kmem_cache_offset_node = node_offset
+                return
+
+        # heuristic way 4 (detect random_seq)
+        if is_64bit() and self.kmem_cache_offset_random:
+            # user_offset and user_size probably don't exist.
+            # remote_node_defrag_ratio does not exist either.
+            # Search random_seq from random, then go like heuristic way 2.
+            offset_random_seq = self.kmem_cache_offset_random + current_arch.ptrsize
+
+            kmem_cache_0_top = kmem_caches[0] - self.kmem_cache_offset_list
+            x = read_int_from_memory(kmem_cache_0_top + offset_random_seq)
+            if is_valid_addr(x):
+                # At this point, x is random_seq or node[0]
+                if not is_random_seq(x):
+                    # x is not random_seq, but node[0]
+                    self.quiet_info("offset of node is found by heuristic way4-1")
+                    self.kmem_cache_offset_node = offset_random_seq
+                    return
+                else:
+                    # x is random_seq, so skip it
+                    start_offset_node_search = offset_random_seq + current_arch.ptrsize
+            else:
+                # x is kasan_info or user_offset
+                start_offset_node_search = offset_random_seq
+
+            # not found
+            extend_offset = get_next_valid_ptr_offset(kmem_cache_0_top + start_offset_node_search)
+            if extend_offset is not None:
+                offset_node = start_offset_node_search + extend_offset
+                y = read_int_from_memory(kmem_cache_0_top + offset_node)
+                if is_valid_addr(y) and not is_random_seq(y):
+                    self.quiet_info("offset of node is found by heuristic way4-2")
+                    self.kmem_cache_offset_node = offset_node
+                    return
+
+        # heuristic way 5 (consecutive kmem_cache)
+        # A kmem_cache may itself be allocated contiguously.
+        # It may be possible to find a node from this relationship.
+        #          +-kmem_cache-+
+        #          | ...        |
+        #    ...-->| list       |-->...(*)  (1) detect consecutive kmem_cache
+        #          | ...        |  -------^
+        #          | node       |         | (2) search this area
+        #          | (padding)  |         |
+        #          +-kmem_cache-+  -------v
+        #          | ...        |
+        # (*)...-->| list       |-->...
+        #          | ...        |
+        #          | node       |
+        #          | (padding)  |
+        #          +------------+
+
+        # Find the two nearest pairs and count the number of cases
+        min_diff_pairs = []
+        min_diff = 0xffffffffffffffff
+        for km1, km2 in itertools.combinations(kmem_caches, 2):
+            diff = abs(km1 - km2)
+            if diff < min_diff:
+                min_diff_pairs = [(min(km1, km2), max(km1, km2))]
+                min_diff = diff
+                continue
+            if diff == min_diff:
+                min_diff_pairs.append((min(km1, km2), max(km1, km2)))
+                continue
+
+        # If there are enough such cases, we can determine that they are likely arranged consecutively
+        if len(min_diff_pairs) >= 10:
+            # Specifies the maximum traversal range for scanning node locations
+            # Note that these are kmem_cache.list addresses
+            km0_0, km0_1 = min_diff_pairs[0]
+            km0_1_top = km0_1 - self.kmem_cache_offset_list
+            km0_0_after_list = km0_0 + current_arch.ptrsize * 2
+            max_search_range = km0_1_top - km0_0_after_list
+
+            # Check that the address is valid for all pairs
+            for i in range(max_search_range // current_arch.ptrsize):
+                candidate_offset = current_arch.ptrsize * (i + 1)
+                found = True
+                for _, m in min_diff_pairs:
+                    m_top = m - self.kmem_cache_offset_list
+                    x = read_int_from_memory(m_top - candidate_offset)
+                    if not is_valid_addr(x):
+                        found = False
+                        break
+                if found:
+                    offset_node_from_after_list = max_search_range - candidate_offset
+                    offset_after_list = self.kmem_cache_offset_list + current_arch.ptrsize * 2
+                    maxlen = len(list(itertools.combinations(kmem_caches, 2)))
+                    msg = "min_diff_pairs:{:d}/{:d}, ".format(len(min_diff_pairs), maxlen)
+                    msg += "min_diff:{:#x}".format(min_diff)
+                    self.quiet_info("offset of node is found by heuristic way5 ({:s})".format(msg))
+                    self.kmem_cache_offset_node = offset_after_list + offset_node_from_after_list
+                    return
+        return
+
     """
     struct kmem_cache {
         struct kmem_cache_cpu *cpu_slab;         // In fact, the offset value, not the pointer
@@ -69894,361 +70275,14 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad))
 
         # offsetof(kmem_cache, random)
-        if self.args.no_xor:
-            self.kmem_cache_offset_random = None
-            self.quiet_info("offsetof(kmem_cache, random): None")
-        elif self.args.offset_random is not None:
-            self.kmem_cache_offset_random = self.args.offset_random
-            self.quiet_info("offsetof(kmem_cache, random): {:#x}".format(self.kmem_cache_offset_random))
+        self.get_kmem_cache_offset_random(kmem_caches)
+        if self.kmem_cache_offset_random is None:
+            self.quiet_info("offsetof(kmem_cache, random): Not found")
         else:
-            for i in range(2, 0x40): # walk from list for heuristic search
-                candidate_offset = current_arch.ptrsize * i
-                found = True
-                count = 0
-                seen = []
-                for kmem_cache in kmem_caches:
-                    if not is_valid_addr(kmem_cache + candidate_offset):
-                        found = False
-                        break
-
-                    val = read_int_from_memory(kmem_cache + candidate_offset)
-                    if is_valid_addr(val):
-                        count += 1
-                        if count >= 3:
-                            found = False
-                            break
-                    else:
-                        if val > 0xffffff:
-                            count -= 1
-
-                    if val != 0:
-                        if val in seen:
-                            found = False
-                            break
-                        seen.append(val)
-
-                if found:
-                    # Too few random numbers
-                    if len(seen) < 10:
-                        found = False
-
-                    # Occurrences of non-negative small integers are stochastically rare
-                    elif sum([0 < x < 0x100000 for x in seen]) >= 3:
-                        found = False
-
-                    # Occurrences of big integers are stochastically rare
-                    elif sum([0xffff000000000000 < x <= 0xffffffffffffffff for x in seen]) >= 3:
-                        found = False
-
-                    # Occurrences of 0xXXXX000 are stochastically rare
-                    elif sum([x and (x & 0xfff) == 0 for x in seen]) >= 3:
-                        found = False
-
-                if found:
-                    # search for `struct kmem_cache_node *node` or `unsigned int *random_seq`
-                    for i in range(1, 9):
-                        maybe_ptrs = []
-                        for kmem_cache in kmem_caches:
-                            v = read_int_from_memory(kmem_cache + candidate_offset + current_arch.ptrsize * i)
-                            maybe_ptrs.append(v)
-                        # they should be at the same offset
-                        if all(is_valid_addr(p) for p in maybe_ptrs):
-                            break
-                    else:
-                        found = False
-
-                if found:
-                    self.kmem_cache_offset_random = self.kmem_cache_offset_list + candidate_offset
-                    self.quiet_info("offsetof(kmem_cache, random): {:#x}".format(self.kmem_cache_offset_random))
-                    break
-            else:
-                self.quiet_info("offsetof(kmem_cache, random): Not found")
-                self.kmem_cache_offset_random = None # maybe CONFIG_SLAB_FREELIST_HARDENED=n
+            self.quiet_info("offsetof(kmem_cache, random): {:#x}".format(self.kmem_cache_offset_random))
 
         # offsetof(kmem_cache, node)
-        if self.args.offset_node is not None:
-            self.kmem_cache_offset_node = self.args.offset_node
-        else:
-            self.kmem_cache_offset_node = None
-
-        """
-        struct kmem_cache {
-            ...
-            unsigned int object_size;
-            ...
-            struct list_head list; <-----> struct list_head <-----> struct list_head <-----> ...
-            struct kobject kobj;                     // if CONFIG_SYSFS=y
-            struct work_struct kobj_remove_work;     // if CONFIG_SYSFS=y && kernel < 5.9
-            struct memcg_cache_params memcg_params;  // if CONFIG_MEMCG=y && kernel < 5.9
-            unsigned int max_attr_size;              // if CONFIG_MEMCG=y && kernel < 5.9
-            struct kset *memcg_kset;                 // if CONFIG_MEMCG=y && CONFIG_SYSFS=y && kernel < 5.9
-            unsigned long random;                    // if CONFIG_SLAB_FREELIST_HARDENED=y
-            unsigned int remote_node_defrag_ratio;   // if CONFIG_NUMA=y
-            unsigned int *random_seq;                // if CONFIG_SLAB_FREELIST_RANDOM=y
-            struct kasan_cache {
-                int alloc_meta_offset;
-                int free_meta_offset;
-                bool is_kmalloc;
-            } kasan_info;                            // if CONFIG_KASAN=y
-            unsigned int useroffset;                 // kernel < 6.2 || (6.2 <= kernel && CONFIG_HARDENED_USERCOPY=y)
-            unsigned int usersize;                   // kernel < 6.2 || (6.2 <= kernel && CONFIG_HARDENED_USERCOPY=y)
-            struct kmem_cache_node *node[MAX_NUMNODES]; <-- this includes SPINLOCK_MAGIC if CONFIG_DEBUG_SPINLOCK=y
-        }
-        """
-        if self.kmem_cache_offset_node is None and is_64bit():
-            # heuristic way 1
-            # kmem_cache_node[0]->list_lock has SPINLOCK_MAGIC when CONFIG_DEBUG_SPINLOCK=y
-
-            start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
-            search_range = 0x100 if kversion >= "5.9" else 0x200
-            for candidate_offset in range(start_offset, start_offset + search_range, current_arch.ptrsize):
-                kmem_cache_top = kmem_caches[0] - self.kmem_cache_offset_list
-
-                x = read_int_from_memory(kmem_cache_top + candidate_offset)
-                if not is_valid_addr(x):
-                    continue
-                y = read_int_from_memory(x)
-                if y != 0xdead4ead00000000: # SPINLOCK_MAGIC
-                    continue
-                # found
-                self.quiet_info("offset of node is found by heuristic way1")
-                self.kmem_cache_offset_node = candidate_offset
-                break
-
-        # helper functions
-
-        def get_next_valid_ptr_offset(addr, in_range=5):
-            """Returns the nearest valid pointer within a specified range."""
-            # Depending on the configuration, the offset where the address exists will vary,
-            # so we need to find the closest valid address.
-            for i in range(in_range):
-                candidate_offset = current_arch.ptrsize * i
-                v = read_int_from_memory(addr + candidate_offset)
-                if is_valid_addr(v):
-                    return candidate_offset
-            return None
-
-        def is_random_seq(addr, N=8):
-            # What random_seq points to is a rearrangement of sequential numbers of type u32.
-            # Therefore, no two values will be the same. If the first some elements contain
-            # the same value, we can determine that it is not random_seq but node[0].
-            #
-            # kmem_cache_node example
-            # 0xffff888003c40180|+0x0000|+000: 0xb7f638bb00000000
-            # 0xffff888003c40188|+0x0008|+001: 0x000000000000000a
-            # 0xffff888003c40190|+0x0010|+002: 0xffffea000012da90
-            # 0xffff888003c40198|+0x0018|+003: 0xffffea0000118710
-            # 0xffff888003c401a0|+0x0020|+004: 0x0000000000000010
-            # 0xffff888003c401a8|+0x0028|+005: 0x0000000000000800
-            # random_seq example
-            # 0xffff8f9d8104c400|+0x0000|+000: 0x00000e8000000b40
-            # 0xffff8f9d8104c408|+0x0008|+001: 0x00000f4000000080
-            # 0xffff8f9d8104c410|+0x0010|+002: 0x000000a000000ae0
-            # 0xffff8f9d8104c418|+0x0018|+003: 0x00000bc0000001e0
-            # 0xffff8f9d8104c420|+0x0020|+004: 0x0000020000000360
-            # 0xffff8f9d8104c428|+0x0028|+005: 0x0000024000000320
-            # random_seq another example
-            # 0xffff89c3ce772240|+0x0000|+000: 0x00000000000019e0
-            # 0xffff89c3ce772248|+0x0008|+001: 0x00005a9000004da0
-            # 0xffff89c3ce772250|+0x0010|+002: 0x00000cf0000026d0
-            # 0xffff89c3ce772258|+0x0018|+003: 0x00006780000040b0
-            # 0xffff89c3ce772260|+0x0020|+004: 0x00000000000033c0
-            # 0xffff89c3ce772268|+0x0028|+005: 0x0000000000000000
-            # 0xffff89c3ce772270|+0x0030|+006: 0x0000000000000000
-            sizeof_uint32 = 4
-            data = read_memory(addr, sizeof_uint32 * N)
-            data = slice_unpack(data, sizeof_uint32)
-            if len(set(data)) != N:
-                return False
-            if any(x & 0x80000000 for x in data):
-                return False
-            return True
-
-        # helper functions end
-
-        if self.kmem_cache_offset_node is None and is_64bit():
-            # heuristic way 2
-            # Find the offset that has the initial value of 1000 for remote_node_defrag_ratio.
-            # The first valid pointer encountered after that is either random_seq or node[0].
-            # We look at the contents to determine whether the pointer is random_seq.
-
-            start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
-            search_range = 0x100 if kversion >= "5.9" else 0x200
-            for candidate_offset in range(start_offset, start_offset + search_range, current_arch.ptrsize):
-                # First, we search remote_node_defrag_ratio.
-                remote_node_defrag_ratio_1000_count = 0
-                for kmem_cache in kmem_caches:
-                    kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
-                    remote_node_defrag_ratio = u32(read_memory(kmem_cache_top + candidate_offset, 4))
-                    if remote_node_defrag_ratio == 0x3e8:
-                        remote_node_defrag_ratio_1000_count += 1
-                if remote_node_defrag_ratio_1000_count < len(kmem_caches) // 10: # heuristic threshold: 10%
-                    continue
-                offset_remote_node_defrag_ratio = candidate_offset
-                offset_random_seq = offset_remote_node_defrag_ratio + current_arch.ptrsize
-
-                # Check the value next to remote_node_defrag_ratio whether pointer or not.
-                kmem_cache_0_top = kmem_caches[0] - self.kmem_cache_offset_list
-                x = read_int_from_memory(kmem_cache_0_top + offset_random_seq)
-                if is_valid_addr(x):
-                    # At this point, x is random_seq or node[0]
-                    if not is_random_seq(x):
-                        # x is not random_seq, but node[0]
-                        self.quiet_info("offset of node is found by heuristic way2-1")
-                        self.kmem_cache_offset_node = offset_random_seq
-                        break
-                    else:
-                        # x is random_seq, so skip it
-                        start_offset_node_search = offset_random_seq + current_arch.ptrsize
-                else:
-                    # x is kasan_info or user_offset
-                    start_offset_node_search = offset_random_seq
-
-                extend_offset = get_next_valid_ptr_offset(kmem_cache_0_top + start_offset_node_search)
-                if extend_offset is not None:
-                    offset_node = start_offset_node_search + extend_offset
-                    y = read_int_from_memory(kmem_cache_0_top + offset_node)
-                    if is_valid_addr(y) and not is_random_seq(y):
-                        self.quiet_info("offset of node is found by heuristic way2-2")
-                        self.kmem_cache_offset_node = offset_node
-                        break
-
-        if self.kmem_cache_offset_node is None:
-            # heuristic way 3
-            # This method valid for kernel < 6.2, or (CONFIG_HARDENED_USERCOPY=y and kernel >= 6.2).
-
-            start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
-            search_range = 0x100 if kversion >= "5.9" else 0x200
-            for candidate_offset in range(start_offset, start_offset + search_range, current_arch.ptrsize):
-                found = True
-                user_offset_user_size_non_zero_flag = False
-                for kmem_cache in kmem_caches:
-                    kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
-
-                    # Check whether user_offset, user_size, and object_size satisfy some relationships
-                    user_offset = u32(read_memory(kmem_cache_top + candidate_offset, 4))
-                    user_size = u32(read_memory(kmem_cache_top + candidate_offset + 4, 4))
-                    object_size = u32(read_memory(kmem_cache_top + self.kmem_cache_offset_object_size, 4))
-
-                    if user_offset == user_size == 0:
-                        continue
-                    user_offset_user_size_non_zero_flag = True
-
-                    if user_offset != 0 and user_size == 0:
-                        found = False
-                        break
-                    if object_size < user_size:
-                        found = False
-                        break
-
-                    # And check that the immediately following node is a valid address
-                    node_offset = candidate_offset + 4 + 4
-                    node_addr = read_int_from_memory(kmem_cache_top + node_offset)
-                    if not is_valid_addr(node_addr):
-                        found = False
-                        break
-
-                if user_offset_user_size_non_zero_flag is False:
-                    found = False
-
-                if found:
-                    self.quiet_info("offset of node is found by heuristic way3")
-                    self.kmem_cache_offset_node = node_offset
-                    break
-
-        if self.kmem_cache_offset_node is None and is_64bit() and self.kmem_cache_offset_random:
-            # heuristic way 4
-            # user_offset and user_size probably don't exist.
-            # remote_node_defrag_ratio does not exist either.
-            # Search random_seq from random, then go like heuristic way 2.
-            offset_random_seq = self.kmem_cache_offset_random + current_arch.ptrsize
-
-            found = False
-            kmem_cache_0_top = kmem_caches[0] - self.kmem_cache_offset_list
-            x = read_int_from_memory(kmem_cache_0_top + offset_random_seq)
-            if is_valid_addr(x):
-                # At this point, x is random_seq or node[0]
-                if not is_random_seq(x):
-                    # x is not random_seq, but node[0]
-                    self.quiet_info("offset of node is found by heuristic way4-1")
-                    self.kmem_cache_offset_node = offset_random_seq
-                    found = True
-                else:
-                    # x is random_seq, so skip it
-                    start_offset_node_search = offset_random_seq + current_arch.ptrsize
-            else:
-                # x is kasan_info or user_offset
-                start_offset_node_search = offset_random_seq
-
-            if not found:
-                extend_offset = get_next_valid_ptr_offset(kmem_cache_0_top + start_offset_node_search)
-                if extend_offset is not None:
-                    offset_node = start_offset_node_search + extend_offset
-                    y = read_int_from_memory(kmem_cache_0_top + offset_node)
-                    if is_valid_addr(y) and not is_random_seq(y):
-                        self.quiet_info("offset of node is found by heuristic way4-2")
-                        self.kmem_cache_offset_node = offset_node
-
-        if self.kmem_cache_offset_node is None:
-            # heuristic way 5
-            # A kmem_cache may itself be allocated contiguously.
-            # It may be possible to find a node from this relationship.
-            #          +-kmem_cache-+
-            #          | ...        |
-            #    ...-->| list       |-->...(1)
-            #          | ...        |
-            #          | node       |
-            #          | (padding)  |
-            #          +-kmem_cache-+
-            #          | ...        |
-            # (1)...-->| list       |-->...
-            #          | ...        |
-            #          | node       |
-            #          | (padding)  |
-            #          +------------+
-
-            # Find the two nearest pairs and count the number of cases
-            min_diff_pairs = []
-            min_diff = 0xffffffffffffffff
-            for km1, km2 in itertools.combinations(kmem_caches, 2):
-                diff = abs(km1 - km2)
-                if diff < min_diff:
-                    min_diff_pairs = [(min(km1, km2), max(km1, km2))]
-                    min_diff = diff
-                    continue
-                if diff == min_diff:
-                    min_diff_pairs.append((min(km1, km2), max(km1, km2)))
-                    continue
-
-            # If there are enough such cases, we can determine that they are likely arranged consecutively
-            if len(min_diff_pairs) >= 10:
-                # Specifies the maximum traversal range for scanning node locations
-                # Note that these are kmem_cache.list addresses
-                km0_0, km0_1 = min_diff_pairs[0]
-                km0_1_top = km0_1 - self.kmem_cache_offset_list
-                km0_0_after_list = km0_0 + current_arch.ptrsize * 2
-                max_search_range = km0_1_top - km0_0_after_list
-
-                # Check that the address is valid for all pairs
-                for i in range(max_search_range // current_arch.ptrsize):
-                    candidate_offset = current_arch.ptrsize * (i + 1)
-                    found = True
-                    for _, m in min_diff_pairs:
-                        m_top = m - self.kmem_cache_offset_list
-                        x = read_int_from_memory(m_top - candidate_offset)
-                        if not is_valid_addr(x):
-                            found = False
-                            break
-                    if found:
-                        offset_node_from_after_list = max_search_range - candidate_offset
-                        offset_after_list = self.kmem_cache_offset_list + current_arch.ptrsize * 2
-                        maxlen = len(list(itertools.combinations(kmem_caches, 2)))
-                        msg = "min_diff_pairs:{:d}/{:d}, ".format(len(min_diff_pairs), maxlen)
-                        msg += "min_diff:{:#x}".format(min_diff)
-                        self.quiet_info("offset of node is found by heuristic way5 ({:s})".format(msg))
-                        self.kmem_cache_offset_node = offset_after_list + offset_node_from_after_list
-                        break
-
+        self.get_kmem_cache_offset_node(kmem_caches)
         if self.kmem_cache_offset_node is None:
             self.quiet_info("offsetof(kmem_cache, node): Not found")
         else:
