@@ -95963,7 +95963,7 @@ class KmallocTracerCommand(GenericCommand):
 
         kversion = Kernel.kernel_version()
         if kversion < "3.0":
-            err("Unsupported before 3.0")
+            err("Unsupported before v3.0")
             return
 
         allocator = KernelChecksecCommand.get_slab_type()
@@ -97363,7 +97363,7 @@ class KmallocAllocatedByCommand(GenericCommand):
 
         kversion = Kernel.kernel_version()
         if kversion < "3.0":
-            err("Unsupported before 3.0")
+            err("Unsupported before v3.0")
             return
 
         allocator = KernelChecksecCommand.get_slab_type()
