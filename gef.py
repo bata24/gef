@@ -93709,10 +93709,10 @@ class SlabVirtualCommand(GenericCommand):
         self.quiet_info("SLAB_BASE_ADDR: {:#x}".format(self.SLAB_BASE_ADDR))
 
         self.SLAB_END_ADDR = self.SLAB_BASE_ADDR + (1 << self.P4D_SHIFT)
-        self.quiet_info("SLAB_END_ADDR : {:#x}".format(self.SLAB_END_ADDR))
+        self.quiet_info("SLAB_END_ADDR: {:#x}".format(self.SLAB_END_ADDR))
 
         self.SLAB_VPAGES = (self.SLAB_END_ADDR - self.SLAB_BASE_ADDR) >> self.PAGE_SHIFT
-        self.quiet_info("SLAB_VPAGES   : {:#x}".format(self.SLAB_VPAGES))
+        self.quiet_info("SLAB_VPAGES: {:#x}".format(self.SLAB_VPAGES))
 
         self.kversion = Kernel.kernel_version()
 
@@ -93755,7 +93755,7 @@ class SlabVirtualCommand(GenericCommand):
         self.quiet_info("offsetof(slab, backing_folio): {:#x}".format(self.slab_offset_backing_folio))
 
         self.SLAB_DATA_BASE_ADDR = self.SLAB_BASE_ADDR + self.SLAB_META_SIZE
-        self.quiet_info("SLAB_DATA_BASE_ADDR : {:#x}".format(self.SLAB_DATA_BASE_ADDR))
+        self.quiet_info("SLAB_DATA_BASE_ADDR: {:#x}".format(self.SLAB_DATA_BASE_ADDR))
 
         self.initialized = True
         return True

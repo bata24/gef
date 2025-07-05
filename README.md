@@ -162,7 +162,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `page`: displays the transformation between a `struct page` and its virtual/physical address.
     - ![](images/page.png)
     - There are shortcuts: `virt2page`, `page2virt`, `phys2page` and `page2phys`.
-- `slab-virtual`: displays the transformation between slab-meta and its slab-data/`struct page` address.
+- `slab-virtual`: displays the transformation between slab-meta and its slab-data/`struct page` address (for `CONFIG_SLAB_VIRTUAL=y`).
     - ![](images/slab-virtual.png)
 - `kchecksec`: checks kernel security.
     - ![](images/kchecksec.png)
