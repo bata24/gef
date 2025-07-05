@@ -3672,14 +3672,14 @@ class GlibcHeap:
             if not is_valid_addr(top):
                 continue
 
-            _next = to_unsigned_long(candidate_arena.next)
+            next_addr = to_unsigned_long(candidate_arena.next)
             while True:
-                if not is_valid_addr(_next):
+                if not is_valid_addr(next_addr):
                     break
-                if candidate_arena_addr == _next:
+                if candidate_arena_addr == next_addr:
                     selected_thread.switch() # revert thread
                     return addr
-                _next = to_unsigned_long(GlibcHeap.MallocStateStruct(_next).next)
+                next_addr = to_unsigned_long(GlibcHeap.MallocStateStruct(next_addr).next)
 
         # not found
         selected_thread.switch() # revert thread
@@ -5644,11 +5644,10 @@ class Disasm:
             return Instruction(cs_insn.address, loc, cs_insn.mnemonic, cs_insn.op_str, cs_insn.bytes)
 
         capstone = sys.modules["capstone"]
-        _arch = kwargs.get("arch", None)
-        _mode = kwargs.get("mode", None)
-        _endian = kwargs.get("endian", None)
         arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
-            arch=_arch, mode=_mode, endian=_endian,
+            arch=kwargs.get("arch", None),
+            mode=kwargs.get("mode", None),
+            endian=kwargs.get("endian", None),
         )
         try:
             cs = capstone.Cs(arch, mode)
@@ -5660,11 +5659,11 @@ class Disasm:
         # fix location by nb_prev
         nb_prev = kwargs.get("nb_prev", 0)
         if nb_prev > 0:
-            _location = Disasm.capstone_get_nth_previous_instruction_address(
+            location_tmp = Disasm.capstone_get_nth_previous_instruction_address(
                 location, nb_prev, capstone.Cs(arch, mode),
             )
-            if _location is not None:
-                location = _location
+            if location_tmp is not None:
+                location = location_tmp
                 nb_insn += nb_prev
 
         # split reading by page_size
@@ -23957,28 +23956,28 @@ class AsmListCommand(GenericCommand):
         DISP8 = "11"
 
         @Cache.cache_this_session
-        def get_typical_bytecodes_modrm(_reg):
-            _mod = range(4)
-            assert 0 <= _reg <= 7
-            _reg = [_reg]
-            _rm = [0, 0b100] # The correct value is range(8), but it is reduced for speed.
-            _sib = [0, 0b01001001] # The correct value is range(256), but it is reduced for speed.
+        def get_typical_bytecodes_modrm(reg_value):
+            mod_list = range(4)
+            assert 0 <= reg_value <= 7
+            reg_list = [reg_value]
+            rm_list = [0, 0b100] # The correct value is range(8), but it is reduced for speed.
+            sib_list = [0, 0b01001001] # The correct value is range(256), but it is reduced for speed.
 
             bytecodes = []
-            for mod, reg, rm in itertools.product(_mod, _reg, _rm):
+            for mod, reg, rm in itertools.product(mod_list, reg_list, rm_list):
                 modrm = "{:02X}".format((mod << 6) | (reg << 3) | rm)
                 if mod == 0b00:
                     if rm == 0b101: # special case; [REG + disp32]
                         bytecode = modrm + DISP32
                     elif rm == 0b100: # use sib; [INDEX * SCALE + BASE]
-                        for sib in _sib:
+                        for sib in sib_list:
                             bytecode = modrm + "{:02X}".format(sib)
                     else: # [REG]
                         bytecode = modrm
                 elif mod == 0b01:
                     if rm == 0b100: # use sib; [INDEX * SCALE + BASE + disp8]
                         bytecode = []
-                        for sib in _sib:
+                        for sib in sib_list:
                             b = modrm + "{:02X}".format(sib) + DISP8
                             bytecode.append(b)
                     else: # [REG + disp8]
@@ -23986,7 +23985,7 @@ class AsmListCommand(GenericCommand):
                 elif mod == 0b10:
                     if rm == 0b100: # use sib; [INDEX * SCALE + BASE + disp32]
                         bytecode = []
-                        for sib in _sib:
+                        for sib in sib_list:
                             b = modrm + "{:02X}".format(sib) + DISP32
                             bytecode.append(b)
                     else: # [REG + disp32]
@@ -27186,16 +27185,16 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                                 pos = new_pos
 
                     if ptr_size == 4 or ptr_size == 8:
-                        _cie = {}
-                        _cie["cie_offset"] = offset
-                        _cie["augmentation"] = augmentation
-                        _cie["fde_encoding"] = fde_encoding
-                        _cie["lsda_encoding"] = lsda_encoding
-                        _cie["address_size"] = ptr_size
-                        _cie["code_alignment_factor"] = code_alignment_factor
-                        _cie["data_alignment_factor"] = data_alignment_factor
-                        Cie = collections.namedtuple("Cie", _cie.keys())
-                        cie = Cie(*_cie.values())
+                        cie = {}
+                        cie["cie_offset"] = offset
+                        cie["augmentation"] = augmentation
+                        cie["fde_encoding"] = fde_encoding
+                        cie["lsda_encoding"] = lsda_encoding
+                        cie["address_size"] = ptr_size
+                        cie["code_alignment_factor"] = code_alignment_factor
+                        cie["data_alignment_factor"] = data_alignment_factor
+                        Cie = collections.namedtuple("Cie", cie.keys())
+                        cie = Cie(*cie.values())
                         cies.append(cie)
 
                 else: # FDE parsing
@@ -49282,8 +49281,8 @@ class SyscallArgsCommand(GenericCommand):
         values = []
         for reg in registers:
             if "+" in reg: # `$sp + 0x10`
-                _reg, _off = reg.split("+")
-                values.append(read_int_from_memory(get_register(_reg) + int(_off, 0)))
+                reg_n, off_n = reg.split("+")
+                values.append(read_int_from_memory(get_register(reg_n) + int(off_n, 0)))
             elif is_x86_16() and ":" in reg: # $ds:$dx
                 seg, reg = reg.split(":")
                 values.append(current_arch.real2phys(seg, reg))
@@ -66544,19 +66543,19 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             val = vals
 
         # parse
-        _entry = {}
-        _entry["value"] = val
+        entry = {}
+        entry["value"] = val
 
-        _entry["type_bytes"] = (val >> 40) & 0b1111
-        _entry["p"] = (val >> 47) & 0b1
-        _entry["dpl"] = (val >> 45) & 0b11
+        entry["type_bytes"] = (val >> 40) & 0b1111
+        entry["p"] = (val >> 47) & 0b1
+        entry["dpl"] = (val >> 45) & 0b11
 
-        _entry["s"] = (val >> 44) & 0b1
-        _entry["s_s"] = ["SYSTEM", "CODE/DATA"][_entry["s"]]
+        entry["s"] = (val >> 44) & 0b1
+        entry["s_s"] = ["SYSTEM", "CODE/DATA"][entry["s"]]
 
-        if _entry["s"] == 0:
+        if entry["s"] == 0:
             # SYSTEM segment
-            _entry["type_bytes_s"] = Color.boldify({
+            entry["type_bytes_s"] = Color.boldify({
                 0b0000: ["Reserved", "Reserved"],
                 0b0001: ["Available 16bit TSS", "Reserved"],
                 0b0010: ["LDT", "LDT"],
@@ -66573,69 +66572,69 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
                 0b1101: ["Reserved", "Reserved"],
                 0b1110: ["32bit interrupt gate", "64bit interrupt gate"],
                 0b1111: ["32bit trap gate", "64bit trap gate"],
-            }[_entry["type_bytes"]][is_x86_64()])
+            }[entry["type_bytes"]][is_x86_64()])
 
-        if _entry["s"] == 0 and _entry["type_bytes"] == 0b1100:
+        if entry["s"] == 0 and entry["type_bytes"] == 0b1100:
             # SYSTEM segment (call gate)
-            _entry["offseg0"] = val & 0xffff
-            _entry["segsel"] = (val >> 16) & 0xffff
-            _entry["offseg1"] = (val >> 48) & 0xffff
-            _entry["offseg"] = (_entry["offseg1"] << 16) | _entry["offseg0"]
+            entry["offseg0"] = val & 0xffff
+            entry["segsel"] = (val >> 16) & 0xffff
+            entry["offseg1"] = (val >> 48) & 0xffff
+            entry["offseg"] = (entry["offseg1"] << 16) | entry["offseg0"]
 
             if isinstance(vals, list):
                 # for 64bit SYSTEM segment (call gate)
-                _entry["value"] = vals[1] # overwrite
-                _entry["offseg2"] = vals[1] & 0xffffffff
-                _entry["offseg"] |= _entry["offseg2"] << 32
+                entry["value"] = vals[1] # overwrite
+                entry["offseg2"] = vals[1] & 0xffffffff
+                entry["offseg"] |= entry["offseg2"] << 32
 
         else:
             # CODE/DATA segment or SYSTEM segment (not call gate)
-            _entry["g"] = (val >> 54) & 0x01
-            grsize = {0: 1, 1: 4096}[_entry["g"]]
+            entry["g"] = (val >> 54) & 0x01
+            grsize = {0: 1, 1: 4096}[entry["g"]]
 
-            _entry["limit0"] = val & 0xffff
-            _entry["base0"] = (val >> 16) & 0xffff
-            _entry["base1"] = (val >> 32) & 0xff
-            _entry["limit1"] = (val >> 48) & 0x0f
-            _entry["base2"] = (val >> 56) & 0xff
+            entry["limit0"] = val & 0xffff
+            entry["base0"] = (val >> 16) & 0xffff
+            entry["base1"] = (val >> 32) & 0xff
+            entry["limit1"] = (val >> 48) & 0x0f
+            entry["base2"] = (val >> 56) & 0xff
 
-            _entry["limit"] = ((_entry["limit1"] << 16) | _entry["limit0"]) * grsize
-            _entry["base"] = (_entry["base2"] << 24) | (_entry["base1"] << 16) | _entry["base0"]
+            entry["limit"] = ((entry["limit1"] << 16) | entry["limit0"]) * grsize
+            entry["base"] = (entry["base2"] << 24) | (entry["base1"] << 16) | entry["base0"]
 
             if isinstance(vals, list):
                 # for 64bit SYSTEM segment (not call gate)
-                _entry["value"] = vals[1] # overwrite
-                _entry["base3"] = vals[1] & 0xffffffff
-                _entry["base"] |= _entry["base3"] << 32
+                entry["value"] = vals[1] # overwrite
+                entry["base3"] = vals[1] & 0xffffffff
+                entry["base"] |= entry["base3"] << 32
 
-            if _entry["s"] == 1:
+            if entry["s"] == 1:
                 # CODE/DATA segment
-                _entry["db"] = (val >> 53) & 0x01
-                _entry["l"] = (val >> 52) & 0x01
-                dbl = (_entry["db"] << 1) | _entry["l"]
-                _entry["dbl"] = "{:d}".format(dbl)
-                _entry["dbl_s"] = ["16bit", "64bit", "32bit", "(N/A)"][dbl]
+                entry["db"] = (val >> 53) & 0x01
+                entry["l"] = (val >> 52) & 0x01
+                dbl = (entry["db"] << 1) | entry["l"]
+                entry["dbl"] = "{:d}".format(dbl)
+                entry["dbl_s"] = ["16bit", "64bit", "32bit", "(N/A)"][dbl]
 
-                _entry["avl"] = (val >> 51) & 0x01
+                entry["avl"] = (val >> 51) & 0x01
 
-                _entry["e"] = (val >> 43) & 0x01
-                _entry["dc"] = (val >> 42) & 0x01
-                _entry["rw"] = (val >> 41) & 0x01
-                _entry["ac"] = (val >> 40) & 0x01
-                if _entry["e"] == 0:
+                entry["e"] = (val >> 43) & 0x01
+                entry["dc"] = (val >> 42) & 0x01
+                entry["rw"] = (val >> 41) & 0x01
+                entry["ac"] = (val >> 40) & 0x01
+                if entry["e"] == 0:
                     # DATA segment
-                    _entry["e_s"] = Color.boldify("DATA")
-                    _entry["rw_s"] = ["RO", "RW"][_entry["rw"]]
-                    _entry["dc_s"] = ["EXPAND-UP", "EXPAND-DOWN"][_entry["dc"]]
+                    entry["e_s"] = Color.boldify("DATA")
+                    entry["rw_s"] = ["RO", "RW"][entry["rw"]]
+                    entry["dc_s"] = ["EXPAND-UP", "EXPAND-DOWN"][entry["dc"]]
                 else:
                     # CODE segment
-                    _entry["e_s"] = Color.boldify("CODE")
-                    _entry["rw_s"] = ["RO", "RX"][_entry["rw"]]
-                    _entry["dc_s"] = ["NON-CONFORMING", "CONFORMING"][_entry["dc"]]
-                _entry["ac_s"] = ["NotAccessed", "Accessed"][_entry["ac"]]
+                    entry["e_s"] = Color.boldify("CODE")
+                    entry["rw_s"] = ["RO", "RX"][entry["rw"]]
+                    entry["dc_s"] = ["NON-CONFORMING", "CONFORMING"][entry["dc"]]
+                entry["ac_s"] = ["NotAccessed", "Accessed"][entry["ac"]]
 
-        Entry = collections.namedtuple("Entry", _entry.keys())
-        return Entry(*_entry.values())
+        Entry = collections.namedtuple("Entry", entry.keys())
+        return Entry(*entry.values())
 
     def entry2str(self, value, value_only=False):
         if value_only:
@@ -67063,20 +67062,20 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
 
     @staticmethod
     def idt_unpack(val):
-        _idt = {}
-        _idt["value"] = val
+        idt = {}
+        idt["value"] = val
 
-        _idt["offset"] = val & 0xffff
-        _idt["offset"] = _idt["offset"] | ((val >> 32) & (0xffff0000))
-        _idt["offset"] = ((val >> 32) & (0xffffffff00000000)) | _idt["offset"]
-        _idt["segment"] = (val >> 16) & 0xffff
-        _idt["ist"] = (val >> 32) & 0b111 # codespell:ignore
-        _idt["gate_type"] = (val >> 40) & (0b1111)
-        _idt["dpl"] = (val >> 45) & (0b11)
-        _idt["present"] = (val >> 47) & (0b1)
+        idt["offset"] = val & 0xffff
+        idt["offset"] = idt["offset"] | ((val >> 32) & (0xffff0000))
+        idt["offset"] = ((val >> 32) & (0xffffffff00000000)) | idt["offset"]
+        idt["segment"] = (val >> 16) & 0xffff
+        idt["ist"] = (val >> 32) & 0b111 # codespell:ignore
+        idt["gate_type"] = (val >> 40) & (0b1111)
+        idt["dpl"] = (val >> 45) & (0b11)
+        idt["present"] = (val >> 47) & (0b1)
 
-        Idt = collections.namedtuple("Idt", _idt.keys())
-        return Idt(*_idt.values())
+        Idt = collections.namedtuple("Idt", idt.keys())
+        return Idt(*idt.values())
 
     @staticmethod
     def idtval2str(value):
@@ -76884,22 +76883,22 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
         return areas
 
     def get_flags(self, flags_value):
-        _flags = {
-            "VM_IOREMAP":           0x00000001,
-            "VM_ALLOC":             0x00000002,
-            "VM_MAP":               0x00000004,
-            "VM_USERMAP":           0x00000008,
-            "VM_DMA_COHERENT":      0x00000010,
-            "VM_UNINITIALIZED":     0x00000020,
-            "VM_NO_GUARD":          0x00000040,
-            "VM_KASAN":             0x00000080,
-            "VM_FLUSH_RESET_PERMS": 0x00000100,
-            "VM_MAP_PUT_PAGES":     0x00000200,
+        flags_dic = {
+            0x00000001: "VM_IOREMAP",
+            0x00000002: "VM_ALLOC",
+            0x00000004: "VM_MAP",
+            0x00000008: "VM_USERMAP",
+            0x00000010: "VM_DMA_COHERENT",
+            0x00000020: "VM_UNINITIALIZED",
+            0x00000040: "VM_NO_GUARD",
+            0x00000080: "VM_KASAN",
+            0x00000100: "VM_FLUSH_RESET_PERMS",
+            0x00000200: "VM_MAP_PUT_PAGES",
         }
         flags = []
-        for k, v in _flags.items():
-            if flags_value & v:
-                flags.append(k)
+        for k, v in flags_dic.items():
+            if flags_value & k:
+                flags.append(v)
         return "|".join(flags)
 
     def dump_areas(self, areas):
@@ -81293,9 +81292,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
     def read_root(self, addr, name):
         ptrsize = current_arch.ptrsize
-        _root = {}
-        _root["name"] = name
-        _root["addr"] = current = read_int_from_memory(addr)
+        root = {}
+        root["name"] = name
+        root["addr"] = current = read_int_from_memory(addr)
         """
         https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/  \
         src/partition_alloc/partition_root.h
@@ -81364,7 +81363,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         else:
             current += 0x80 # sizeof(struct Settings) is 2 cache lines
 
-        _root["lock_"] = u64(read_memory(current, 8))
+        root["lock_"] = u64(read_memory(current, 8))
         current += 8
 
         # for 32bit, there is 2 patterns because aligned or packed
@@ -81378,94 +81377,94 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             if self.align_pad:
                 current += ptrsize
 
-        _root["buckets"] = []
+        root["buckets"] = []
         while True:
             if read_int_from_memory(current) == 1: # search for `bool initialized`
                 break
             bucket, current = self.read_bucket(current)
-            _root["buckets"].append(bucket)
+            root["buckets"].append(bucket)
 
-        _root["sentinel_bucket"] = _root["buckets"].pop()
+        root["sentinel_bucket"] = root["buckets"].pop()
 
-        _root["initialized"] = read_int_from_memory(current) & 0xff
+        root["initialized"] = read_int_from_memory(current) & 0xff
         current += ptrsize # with pad
-        _root["total_size_of_committed_pages"] = read_int_from_memory(current)
+        root["total_size_of_committed_pages"] = read_int_from_memory(current)
         current += ptrsize
-        _root["max_size_of_committed_pages"] = read_int_from_memory(current)
+        root["max_size_of_committed_pages"] = read_int_from_memory(current)
         current += ptrsize
-        _root["total_size_of_super_pages"] = read_int_from_memory(current)
+        root["total_size_of_super_pages"] = read_int_from_memory(current)
         current += ptrsize
-        _root["total_size_of_direct_mapped_pages"] = read_int_from_memory(current)
+        root["total_size_of_direct_mapped_pages"] = read_int_from_memory(current)
         current += ptrsize
-        _root["total_size_of_allocated_bytes"] = read_int_from_memory(current)
+        root["total_size_of_allocated_bytes"] = read_int_from_memory(current)
         current += ptrsize
-        _root["max_size_of_allocated_bytes"] = read_int_from_memory(current)
+        root["max_size_of_allocated_bytes"] = read_int_from_memory(current)
         current += ptrsize
-        _root["syscall_count"] = read_int_from_memory(current)
+        root["syscall_count"] = read_int_from_memory(current)
         current += ptrsize
-        _root["syscall_total_time_ns"] = read_int_from_memory(current)
+        root["syscall_total_time_ns"] = read_int_from_memory(current)
         current += ptrsize
-        _root["total_size_of_brp_quarantined_bytes"] = read_int_from_memory(current)
+        root["total_size_of_brp_quarantined_bytes"] = read_int_from_memory(current)
         current += ptrsize
-        _root["total_count_of_brp_quarantined_slots"] = read_int_from_memory(current)
+        root["total_count_of_brp_quarantined_slots"] = read_int_from_memory(current)
         current += ptrsize
-        _root["cumulative_size_of_brp_quarantined_bytes"] = read_int_from_memory(current)
+        root["cumulative_size_of_brp_quarantined_bytes"] = read_int_from_memory(current)
         current += ptrsize
-        _root["cumulative_count_of_brp_quarantined_slots"] = read_int_from_memory(current)
+        root["cumulative_count_of_brp_quarantined_slots"] = read_int_from_memory(current)
         current += ptrsize
-        _root["empty_slot_spans_dirty_bytes"] = u32(read_memory(current, 4))
+        root["empty_slot_spans_dirty_bytes"] = u32(read_memory(current, 4))
         current += ptrsize # with pad
-        _root["max_empty_slot_spans_dirty_bytes_shift"] = u32(read_memory(current, 4))
+        root["max_empty_slot_spans_dirty_bytes_shift"] = u32(read_memory(current, 4))
         current += ptrsize # with pad
-        _root["next_super_page"] = read_int_from_memory(current)
+        root["next_super_page"] = read_int_from_memory(current)
         current += ptrsize
-        _root["next_partition_page"] = read_int_from_memory(current)
+        root["next_partition_page"] = read_int_from_memory(current)
         current += ptrsize
-        _root["next_partition_page_end"] = read_int_from_memory(current)
+        root["next_partition_page_end"] = read_int_from_memory(current)
         current += ptrsize
-        _root["current_extent"] = read_int_from_memory(current)
+        root["current_extent"] = read_int_from_memory(current)
         current += ptrsize
-        _root["first_extent"] = read_int_from_memory(current)
+        root["first_extent"] = read_int_from_memory(current)
         current += ptrsize
-        _root["direct_map_list"] = read_int_from_memory(current)
+        root["direct_map_list"] = read_int_from_memory(current)
         current += ptrsize
 
-        _root["global_empty_slot_span_ring"] = []
-        inv = _root["addr"] ^ ((1 << (current_arch.ptrsize * 8)) - 1)
+        root["global_empty_slot_span_ring"] = []
+        inv = root["addr"] ^ ((1 << (current_arch.ptrsize * 8)) - 1)
         while True:
             if read_int_from_memory(current + ptrsize) == inv: # search for `inverted_self`
                 break
             x = read_int_from_memory(current)
             current += ptrsize
-            _root["global_empty_slot_span_ring"].append(x)
-        _root["global_empty_slot_span_ring_index"] = u16(read_memory(current, 2))
+            root["global_empty_slot_span_ring"].append(x)
+        root["global_empty_slot_span_ring_index"] = u16(read_memory(current, 2))
         current += 2
-        _root["global_empty_slot_span_ring_size"] = u16(read_memory(current, 2))
+        root["global_empty_slot_span_ring_size"] = u16(read_memory(current, 2))
         current += 2
-        _root["purge_generation"] = u16(read_memory(current, 2))
+        root["purge_generation"] = u16(read_memory(current, 2))
         current += 2
-        _root["purge_next_bucket_index"] = u16(read_memory(current, 2))
+        root["purge_next_bucket_index"] = u16(read_memory(current, 2))
         current += ptrsize - 6 # with pad
-        _root["inverted_self"] = read_int_from_memory(current)
+        root["inverted_self"] = read_int_from_memory(current)
         current += ptrsize
-        _root["thread_cache_construction_lock"] = u64(read_memory(current, 8))
+        root["thread_cache_construction_lock"] = u64(read_memory(current, 8))
         current += 8
-        _root["scheduler_loop_quarantine_branch_capacity_in_bytes"] = u32(read_memory(current, 4))
+        root["scheduler_loop_quarantine_branch_capacity_in_bytes"] = u32(read_memory(current, 4))
         current += ptrsize # with pad
-        _root["scheduler_loop_quarantine_root"] = read_int_from_memory(current)
+        root["scheduler_loop_quarantine_root"] = read_int_from_memory(current)
         current += ptrsize
-        _root["scheduler_loop_quarantine"] = read_int_from_memory(current)
+        root["scheduler_loop_quarantine"] = read_int_from_memory(current)
         current += ptrsize
 
-        Root = collections.namedtuple("Root", _root.keys())
-        root = Root(*_root.values())
+        Root = collections.namedtuple("Root", root.keys())
+        root = Root(*root.values())
         return root, current
 
     @Cache.cache_until_next
     def read_bucket(self, addr):
         ptrsize = current_arch.ptrsize
-        _bucket = {}
-        _bucket["addr"] = current = addr
+        bucket = {}
+        bucket["addr"] = current = addr
         """
         https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/  \
         src/partition_alloc/partition_bucket.h
@@ -81481,39 +81480,39 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             bool can_store_raw_size;
         };
         """
-        _bucket["active_slot_spans_head"] = read_int_from_memory(current)
+        bucket["active_slot_spans_head"] = read_int_from_memory(current)
         current += ptrsize
-        _bucket["empty_slot_spans_head"] = read_int_from_memory(current)
+        bucket["empty_slot_spans_head"] = read_int_from_memory(current)
         current += ptrsize
-        _bucket["decommitted_slot_spans_head"] = read_int_from_memory(current)
+        bucket["decommitted_slot_spans_head"] = read_int_from_memory(current)
         current += ptrsize
-        _bucket["slot_size"] = u32(read_memory(current, 4))
+        bucket["slot_size"] = u32(read_memory(current, 4))
         current += 4
         x = u32(read_memory(current, 4))
-        _bucket["num_system_pages_per_slot_span"] = x & 0xff
-        _bucket["num_full_slot_spans"] = (x >> 8) & 0xffffff
+        bucket["num_system_pages_per_slot_span"] = x & 0xff
+        bucket["num_full_slot_spans"] = (x >> 8) & 0xffffff
         current += 4
 
         # for 32bit, there is 2 patterns because aligned or packed
         if is_32bit() and self.align_pad:
             current += 4
-        _bucket["slot_size_reciprocal"] = u64(read_memory(current, 8))
+        bucket["slot_size_reciprocal"] = u64(read_memory(current, 8))
         current += 8
 
         x = u32(read_memory(current, 4))
-        _bucket["can_store_raw_size"] = x & 0xff
+        bucket["can_store_raw_size"] = x & 0xff
         current += ptrsize # with pad
 
-        Bucket = collections.namedtuple("Bucket", _bucket.keys())
-        bucket = Bucket(*_bucket.values())
+        Bucket = collections.namedtuple("Bucket", bucket.keys())
+        bucket = Bucket(*bucket.values())
         return bucket, current
 
     @Cache.cache_until_next
     def read_extent(self, addr):
         ptrsize = current_arch.ptrsize
-        _extent = {}
-        _extent["addr"] = current = addr
-        _extent["super_page_base"] = current - 0x1000
+        extent = {}
+        extent["addr"] = current = addr
+        extent["super_page_base"] = current - 0x1000
         """
         https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/  \
         src/partition_alloc/partition_superpage_extent_entry.h
@@ -81525,25 +81524,25 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
           uint16_t number_of_nonempty_slot_spans;
         };
         """
-        _extent["root"] = read_int_from_memory(current)
+        extent["root"] = read_int_from_memory(current)
         current += ptrsize
-        _extent["next"] = read_int_from_memory(current)
+        extent["next"] = read_int_from_memory(current)
         current += ptrsize
-        _extent["number_of_consecutive_super_pages"] = u16(read_memory(current, 2))
+        extent["number_of_consecutive_super_pages"] = u16(read_memory(current, 2))
         current += 2
-        _extent["number_of_nonempty_slot_spans"] = u16(read_memory(current, 2))
+        extent["number_of_nonempty_slot_spans"] = u16(read_memory(current, 2))
         current += 2
-        _extent["super_page_end"] = _extent["super_page_base"] + _extent["number_of_consecutive_super_pages"] * 0x200000
+        extent["super_page_end"] = extent["super_page_base"] + extent["number_of_consecutive_super_pages"] * 0x200000
 
-        Extent = collections.namedtuple("Extent", _extent.keys())
-        extent = Extent(*_extent.values())
+        Extent = collections.namedtuple("Extent", extent.keys())
+        extent = Extent(*extent.values())
         return extent, current
 
     @Cache.cache_until_next
     def read_direct_map(self, addr):
         ptrsize = current_arch.ptrsize
-        _direct_map = {}
-        _direct_map["addr"] = current = addr
+        direct_map = {}
+        direct_map["addr"] = current = addr
         """
         https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/  \
         src/partition_alloc/partition_direct_map_extent.h
@@ -81556,29 +81555,29 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
           size_t padding_for_alignment;
         };
         """
-        _direct_map["next_extent"] = read_int_from_memory(current)
+        direct_map["next_extent"] = read_int_from_memory(current)
         current += ptrsize
-        _direct_map["prev_extent"] = read_int_from_memory(current)
+        direct_map["prev_extent"] = read_int_from_memory(current)
         current += ptrsize
-        _direct_map["bucket"] = read_int_from_memory(current)
+        direct_map["bucket"] = read_int_from_memory(current)
         current += ptrsize
-        _direct_map["reservation_size"] = read_int_from_memory(current)
+        direct_map["reservation_size"] = read_int_from_memory(current)
         current += ptrsize
-        _direct_map["padding_for_alignment"] = read_int_from_memory(current)
+        direct_map["padding_for_alignment"] = read_int_from_memory(current)
         current += ptrsize
 
-        DirectMap = collections.namedtuple("DirectMap", _direct_map.keys())
-        direct_map = DirectMap(*_direct_map.values())
+        DirectMap = collections.namedtuple("DirectMap", direct_map.keys())
+        direct_map = DirectMap(*direct_map.values())
         return direct_map, current
 
     @Cache.cache_until_next
     def read_slot_span(self, addr):
         ptrsize = current_arch.ptrsize
-        _slot_span = {}
-        _slot_span["addr"] = current = addr
-        _slot_span["super_page_addr"] = (_slot_span["addr"] & gef_getpagesize_mask_high()) - gef_getpagesize()
-        _slot_span["partition_page_index"] = (_slot_span["addr"] & gef_getpagesize_mask_low()) // 0x20
-        _slot_span["partition_page_start"] = _slot_span["super_page_addr"] + _slot_span["partition_page_index"] * gef_getpagesize() * 4
+        slot_span = {}
+        slot_span["addr"] = current = addr
+        slot_span["super_page_addr"] = (slot_span["addr"] & gef_getpagesize_mask_high()) - gef_getpagesize()
+        slot_span["partition_page_index"] = (slot_span["addr"] & gef_getpagesize_mask_low()) // 0x20
+        slot_span["partition_page_start"] = slot_span["super_page_addr"] + slot_span["partition_page_index"] * gef_getpagesize() * 4
         """
         https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/  \
         src/partition_alloc/partition_page.h
@@ -81596,27 +81595,27 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
           uint16_t empty_cache_index_ : kMaxEmptyCacheIndexBits = 0u; // 10 bits
         };
         """
-        _slot_span["freelist_head"] = read_int_from_memory(current)
+        slot_span["freelist_head"] = read_int_from_memory(current)
         current += ptrsize
-        _slot_span["next_slot_span"] = read_int_from_memory(current)
+        slot_span["next_slot_span"] = read_int_from_memory(current)
         current += ptrsize
-        _slot_span["bucket"] = read_int_from_memory(current)
+        slot_span["bucket"] = read_int_from_memory(current)
         current += ptrsize
         x = u32(read_memory(current, 4))
         current += 4
-        _slot_span["num_allocated_slots"] = (x >> 0) & 0x7fff
-        _slot_span["num_unprovisioned_slots"] = (x >> 15) & 0x7fff
-        _slot_span["marked_full"] = (x >> 30) & 1
-        _slot_span["can_store_raw_size_"] = (x >> 31) & 1
+        slot_span["num_allocated_slots"] = (x >> 0) & 0x7fff
+        slot_span["num_unprovisioned_slots"] = (x >> 15) & 0x7fff
+        slot_span["marked_full"] = (x >> 30) & 1
+        slot_span["can_store_raw_size_"] = (x >> 31) & 1
 
         x = u16(read_memory(current, 2))
         current += 2
-        _slot_span["freelist_is_sorted_"] = (x >> 0) & 1
-        _slot_span["in_empty_cache_"] = (x >> 1) & 1
-        _slot_span["empty_cache_index_"] = (x >> 2) & 0x3ff
+        slot_span["freelist_is_sorted_"] = (x >> 0) & 1
+        slot_span["in_empty_cache_"] = (x >> 1) & 1
+        slot_span["empty_cache_index_"] = (x >> 2) & 0x3ff
 
-        SlotSpan = collections.namedtuple("SlotSpan", _slot_span.keys())
-        slot_span = SlotSpan(*_slot_span.values())
+        SlotSpan = collections.namedtuple("SlotSpan", slot_span.keys())
+        slot_span = SlotSpan(*slot_span.values())
         return slot_span, current
 
     def C(self, address):
@@ -82405,8 +82404,8 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def read_ctx(self):
         ptrsize = current_arch.ptrsize
-        _ctx = {}
-        _ctx["addr"] = current = self.get_malloc_context()
+        ctx = {}
+        ctx["addr"] = current = self.get_malloc_context()
         if current is None:
             return None
         """
@@ -82433,54 +82432,54 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
             uintptr_t brk;
         };
         """
-        _ctx["secret"] = u64(read_memory(current, 8))
+        ctx["secret"] = u64(read_memory(current, 8))
         current += 8
         x = read_int_from_memory(current)
         if x == gef_getpagesize():
-            _ctx["pagesize"] = x
+            ctx["pagesize"] = x
             current += ptrsize
         else:
-            _ctx["pagesize"] = None
+            ctx["pagesize"] = None
 
-        _ctx["init_done"] = u32(read_memory(current, 4))
+        ctx["init_done"] = u32(read_memory(current, 4))
         current += 4
-        _ctx["mmap_counter"] = u32(read_memory(current, 4))
+        ctx["mmap_counter"] = u32(read_memory(current, 4))
         current += 4
-        _ctx["free_meta_head"] = read_int_from_memory(current)
+        ctx["free_meta_head"] = read_int_from_memory(current)
         current += ptrsize
-        _ctx["avail_meta"] = read_int_from_memory(current)
+        ctx["avail_meta"] = read_int_from_memory(current)
         current += ptrsize
-        _ctx["avail_meta_count"] = read_int_from_memory(current)
+        ctx["avail_meta_count"] = read_int_from_memory(current)
         current += ptrsize
-        _ctx["avail_meta_area_count"] = read_int_from_memory(current)
+        ctx["avail_meta_area_count"] = read_int_from_memory(current)
         current += ptrsize
-        _ctx["alloc_shift"] = read_int_from_memory(current)
+        ctx["alloc_shift"] = read_int_from_memory(current)
         current += ptrsize
-        _ctx["meta_area_head"] = read_int_from_memory(current)
+        ctx["meta_area_head"] = read_int_from_memory(current)
         current += ptrsize
-        _ctx["meta_area_tail"] = read_int_from_memory(current)
+        ctx["meta_area_tail"] = read_int_from_memory(current)
         current += ptrsize
-        _ctx["avail_meta_areas"] = read_int_from_memory(current)
+        ctx["avail_meta_areas"] = read_int_from_memory(current)
         current += ptrsize
-        _ctx["active"] = []
+        ctx["active"] = []
         for _ in range(48):
-            _ctx["active"].append(read_int_from_memory(current))
+            ctx["active"].append(read_int_from_memory(current))
             current += ptrsize
-        _ctx["usage_by_class"] = []
+        ctx["usage_by_class"] = []
         for _ in range(48):
-            _ctx["usage_by_class"].append(read_int_from_memory(current))
+            ctx["usage_by_class"].append(read_int_from_memory(current))
             current += ptrsize
-        _ctx["unmap_seq"] = read_memory(current, 32)
+        ctx["unmap_seq"] = read_memory(current, 32)
         current += 32
-        _ctx["bounces"] = read_memory(current, 32)
+        ctx["bounces"] = read_memory(current, 32)
         current += 32
-        _ctx["seq"] = ord(read_memory(current, 1))
+        ctx["seq"] = ord(read_memory(current, 1))
         current += ptrsize # with padding
-        _ctx["brk"] = read_int_from_memory(current)
+        ctx["brk"] = read_int_from_memory(current)
         current += ptrsize
 
-        Ctx = collections.namedtuple("Ctx", _ctx.keys())
-        return Ctx(*_ctx.values())
+        Ctx = collections.namedtuple("Ctx", ctx.keys())
+        return Ctx(*ctx.values())
 
     def dump_ctx(self, ctx):
         self.out.append(titlify("__malloc_context: {:#x}".format(ctx.addr)))
@@ -82511,8 +82510,8 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def read_meta(self, addr):
         ptrsize = current_arch.ptrsize
-        _meta = {}
-        _meta["addr"] = current = addr
+        meta = {}
+        meta["addr"] = current = addr
         """
         struct meta {
             struct meta *prev;
@@ -82526,25 +82525,25 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
             uintptr_t maplen:8*sizeof(uintptr_t)-12;
         };
         """
-        _meta["prev"] = read_int_from_memory(current)
+        meta["prev"] = read_int_from_memory(current)
         current += ptrsize
-        _meta["next"] = read_int_from_memory(current)
+        meta["next"] = read_int_from_memory(current)
         current += ptrsize
-        _meta["mem"] = read_int_from_memory(current)
+        meta["mem"] = read_int_from_memory(current)
         current += ptrsize
-        _meta["avail_mask"] = u32(read_memory(current, 4))
+        meta["avail_mask"] = u32(read_memory(current, 4))
         current += 4
-        _meta["freed_mask"] = u32(read_memory(current, 4))
+        meta["freed_mask"] = u32(read_memory(current, 4))
         current += 4
         x = read_int_from_memory(current)
-        _meta["last_idx"] = x & 0b11111
-        _meta["freeable"] = (x >> 5) & 0b1
-        _meta["sizeclass"] = (x >> 6) & 0b111111
-        _meta["maplen"] = (x >> 12)
+        meta["last_idx"] = x & 0b11111
+        meta["freeable"] = (x >> 5) & 0b1
+        meta["sizeclass"] = (x >> 6) & 0b111111
+        meta["maplen"] = (x >> 12)
         current += ptrsize
 
-        Meta = collections.namedtuple("Meta", _meta.keys())
-        return Meta(*_meta.values())
+        Meta = collections.namedtuple("Meta", meta.keys())
+        return Meta(*meta.values())
 
     def make_state(self, meta):
         avail_mask = meta.avail_mask
@@ -82564,9 +82563,9 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def read_group(self, meta, offset):
         ptrsize = current_arch.ptrsize
-        _group = {}
-        _group["addr"] = current = meta.mem + offset
-        _group["data"] = read_memory(_group["addr"], self.class_to_size(meta.sizeclass))
+        group = {}
+        group["addr"] = current = meta.mem + offset
+        group["data"] = read_memory(group["addr"], self.class_to_size(meta.sizeclass))
         """
         from source code:
         struct group {
@@ -82586,21 +82585,21 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
             unsigned short slot_offset16;
         };
         """
-        _group["meta"] = read_int_from_memory(current)
+        group["meta"] = read_int_from_memory(current)
         current += ptrsize
         x = u32(read_memory(current, 4))
         current += 4 if is_x86_64() else 8
         y = u32(read_memory(current, 4))
-        _group["reserved"] = (x >> 13) & 0b111
-        _group["slot_idx"] = (y >> 8) & 0b11111
+        group["reserved"] = (x >> 13) & 0b111
+        group["slot_idx"] = (y >> 8) & 0b11111
         if y & 0xff:
-            _group["slot_offset"] = x
+            group["slot_offset"] = x
         else:
-            _group["slot_offset"] = (y >> 16) & 0xffff
+            group["slot_offset"] = (y >> 16) & 0xffff
         current += ptrsize
 
-        Group = collections.namedtuple("Group", _group.keys())
-        return Group(*_group.values())
+        Group = collections.namedtuple("Group", group.keys())
+        return Group(*group.values())
 
     def dump_chunk(self, group, state):
         chunk_used_color = Config.get_gef_setting("theme.heap_chunk_used")
@@ -83047,107 +83046,107 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
         };
         """
 
-        _malloc_state = {}
+        malloc_state = {}
         if specified_malloc_state_ptr is None:
-            _malloc_state["address"] = current = self.get_malloc_state()
+            malloc_state["address"] = current = self.get_malloc_state()
             if current is None:
                 return None
         else:
-            _malloc_state["address"] = current = specified_malloc_state_ptr
+            malloc_state["address"] = current = specified_malloc_state_ptr
 
-        _malloc_state["max_fast"] = max_fast = read_int_from_memory(current)
+        malloc_state["max_fast"] = max_fast = read_int_from_memory(current)
         current += current_arch.ptrsize
 
-        _malloc_state["max_fast_flags"] = []
+        malloc_state["max_fast_flags"] = []
         if max_fast & 1:
-            _malloc_state["max_fast_flags"] += ["ANYCHUNKS_BIT"]
+            malloc_state["max_fast_flags"] += ["ANYCHUNKS_BIT"]
         if max_fast & 2:
-            _malloc_state["max_fast_flags"] += ["FASTCHUNKS_BIT"]
+            malloc_state["max_fast_flags"] += ["FASTCHUNKS_BIT"]
 
         if is_64bit():
             self.NFASTBINS = 11
         else:
             self.NFASTBINS = 10
-        _malloc_state["fastbins"] = []
+        malloc_state["fastbins"] = []
         for i in range(self.NFASTBINS):
             n = read_int_from_memory(current)
             size = self.fast_size_table[i][is_32bit()]
-            _malloc_state["fastbins"].append((current, n, size))
+            malloc_state["fastbins"].append((current, n, size))
             current += current_arch.ptrsize
 
-        _malloc_state["top"] = read_int_from_memory(current)
+        malloc_state["top"] = read_int_from_memory(current)
         current += current_arch.ptrsize
-        _malloc_state["last_remainder"] = read_int_from_memory(current)
+        malloc_state["last_remainder"] = read_int_from_memory(current)
         current += current_arch.ptrsize
 
         self.NBINS = 96
         self.NSMALLBINS = 32
         self.NLARGEBINS = self.NBINS - self.NSMALLBINS
 
-        _malloc_state["smallbins"] = []
+        malloc_state["smallbins"] = []
         for i in range(self.NSMALLBINS):
             n = read_int_from_memory(current)
             p = read_int_from_memory(current + current_arch.ptrsize)
             size = self.size_table[i][is_32bit()]
-            _malloc_state["smallbins"].append((current, n, p, size))
+            malloc_state["smallbins"].append((current, n, p, size))
             current += current_arch.ptrsize * 2
 
-        _malloc_state["largebins"] = []
+        malloc_state["largebins"] = []
         for i in range(self.NLARGEBINS):
             n = read_int_from_memory(current)
             p = read_int_from_memory(current + current_arch.ptrsize)
             size = self.size_table[i + self.NSMALLBINS][is_32bit()]
-            _malloc_state["largebins"].append((current, n, p, size))
+            malloc_state["largebins"].append((current, n, p, size))
             current += current_arch.ptrsize * 2
 
         self.BINMAPSIZE = 3
-        _malloc_state["binmap"] = []
+        malloc_state["binmap"] = []
         for _ in range(self.BINMAPSIZE + 1):
             x = u32(read_memory(current, 4))
-            _malloc_state["binmap"].append(x)
+            malloc_state["binmap"].append(x)
             current += 4
 
-        _malloc_state["trim_threshold"] = read_int_from_memory(current)
+        malloc_state["trim_threshold"] = read_int_from_memory(current)
         current += current_arch.ptrsize
-        _malloc_state["top_pad"] = read_int_from_memory(current)
+        malloc_state["top_pad"] = read_int_from_memory(current)
         current += current_arch.ptrsize
-        _malloc_state["mmap_threshold"] = read_int_from_memory(current)
+        malloc_state["mmap_threshold"] = read_int_from_memory(current)
         current += current_arch.ptrsize
-        _malloc_state["n_mmaps"] = u32(read_memory(current, 4))
+        malloc_state["n_mmaps"] = u32(read_memory(current, 4))
         current += 4
-        _malloc_state["n_mmaps_max"] = u32(read_memory(current, 4))
+        malloc_state["n_mmaps_max"] = u32(read_memory(current, 4))
         current += 4
-        _malloc_state["max_n_mmaps"] = u32(read_memory(current, 4))
+        malloc_state["max_n_mmaps"] = u32(read_memory(current, 4))
         current += 4
-        _malloc_state["pagesize"] = u32(read_memory(current, 4))
+        malloc_state["pagesize"] = u32(read_memory(current, 4))
         current += 4
-        _malloc_state["morecore_properties"] = morecore_properties = u32(read_memory(current, 4))
+        malloc_state["morecore_properties"] = morecore_properties = u32(read_memory(current, 4))
         current += 4
-        _malloc_state["morecore_properties_flags"] = []
+        malloc_state["morecore_properties_flags"] = []
         if morecore_properties & 1:
-            _malloc_state["morecore_properties_flags"] += ["MORECORE_CONTIGUOUS_BIT"]
+            malloc_state["morecore_properties_flags"] += ["MORECORE_CONTIGUOUS_BIT"]
         if is_64bit():
             current += 4 # pad
-        _malloc_state["mmaped_mem"] = read_int_from_memory(current)
+        malloc_state["mmaped_mem"] = read_int_from_memory(current)
         current += current_arch.ptrsize
-        _malloc_state["sbrked_mem"] = read_int_from_memory(current)
+        malloc_state["sbrked_mem"] = read_int_from_memory(current)
         current += current_arch.ptrsize
-        _malloc_state["max_sbrked_mem"] = read_int_from_memory(current)
+        malloc_state["max_sbrked_mem"] = read_int_from_memory(current)
         current += current_arch.ptrsize
-        _malloc_state["max_mmaped_mem"] = read_int_from_memory(current)
+        malloc_state["max_mmaped_mem"] = read_int_from_memory(current)
         current += current_arch.ptrsize
-        _malloc_state["max_total_mem"] = read_int_from_memory(current)
+        malloc_state["max_total_mem"] = read_int_from_memory(current)
         current += current_arch.ptrsize
 
         try:
-            top_sz = read_int_from_memory(_malloc_state["top"] + current_arch.ptrsize) & ~0b11
-            heap_end = _malloc_state["top"] + top_sz
-            _malloc_state["heap_base"] = heap_end - _malloc_state["sbrked_mem"]
+            top_sz = read_int_from_memory(malloc_state["top"] + current_arch.ptrsize) & ~0b11
+            heap_end = malloc_state["top"] + top_sz
+            malloc_state["heap_base"] = heap_end - malloc_state["sbrked_mem"]
         except gdb.MemoryError:
-            _malloc_state["heap_base"] = 0
+            malloc_state["heap_base"] = 0
 
-        MallocState = collections.namedtuple("MallocState", _malloc_state.keys())
-        return MallocState(*_malloc_state.values())
+        MallocState = collections.namedtuple("MallocState", malloc_state.keys())
+        return MallocState(*malloc_state.values())
 
     def dump_malloc_state(self, malloc_state):
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
@@ -85643,12 +85642,12 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
             if flink % 8 or blink % 8 or bsize % 8 or next_prevfree % 8 or next_bsize % 8:
                 flinks.append("unaligned corrupted")
                 break
-            _chunk = {
+            chunk = {
                 "addr": current, "prevfree": prevfree, "bsize": bsize, "flink": flink, "blink": blink,
                 "next_prevfree": next_prevfree, "next_bsize": next_bsize,
             }
-            Chunk = collections.namedtuple("Chunk", _chunk.keys())
-            flinks.append(Chunk(*_chunk.values()))
+            Chunk = collections.namedtuple("Chunk", chunk.keys())
+            flinks.append(Chunk(*chunk.values()))
             if flink == head:
                 break
             if flink in seen[1:]:
@@ -85676,12 +85675,12 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
             if flink % 8 or blink % 8 or bsize % 8 or next_prevfree % 8 or next_bsize % 8:
                 blinks.append("unaligned corrupted")
                 break
-            _chunk = {
+            chunk = {
                 "addr": current, "prevfree": prevfree, "bsize": bsize, "flink": flink, "blink": blink,
                 "next_prevfree": next_prevfree, "next_bsize": next_bsize,
             }
-            Chunk = collections.namedtuple("Chunk", _chunk.keys())
-            blinks.append(Chunk(*_chunk.values()))
+            Chunk = collections.namedtuple("Chunk", chunk.keys())
+            blinks.append(Chunk(*chunk.values()))
             if blink == head:
                 break
             if blink in seen[1:]:
@@ -85692,18 +85691,18 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
         return blinks
 
     def parse_malloc_ctx(self, malloc_ctx_addr):
-        _malloc_ctx = {}
-        _malloc_ctx["addr"] = current = malloc_ctx_addr
+        malloc_ctx = {}
+        malloc_ctx["addr"] = current = malloc_ctx_addr
 
-        _malloc_ctx["prevfree"] = read_int_from_memory(current)
+        malloc_ctx["prevfree"] = read_int_from_memory(current)
         current += current_arch.ptrsize
-        _malloc_ctx["bsize"] = read_int_from_memory(current)
+        malloc_ctx["bsize"] = read_int_from_memory(current)
         current += current_arch.ptrsize
-        _malloc_ctx["flink"] = read_int_from_memory(current)
-        _malloc_ctx["flink_list"] = self.parse_flink(_malloc_ctx["flink"])
+        malloc_ctx["flink"] = read_int_from_memory(current)
+        malloc_ctx["flink_list"] = self.parse_flink(malloc_ctx["flink"])
         current += current_arch.ptrsize
-        _malloc_ctx["blink"] = read_int_from_memory(current)
-        _malloc_ctx["blink_list"] = self.parse_blink(_malloc_ctx["blink"])
+        malloc_ctx["blink"] = read_int_from_memory(current)
+        malloc_ctx["blink_list"] = self.parse_blink(malloc_ctx["blink"])
         current += current_arch.ptrsize
 
         # search for pool
@@ -85711,25 +85710,25 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
             pool_candidate = read_int_from_memory(current)
             current += current_arch.ptrsize
             if self.is_readable_virt_memory(pool_candidate):
-                _malloc_ctx["pool"] = pool_candidate
+                malloc_ctx["pool"] = pool_candidate
                 break
         else:
             err("Not found malloc_ctx->pool")
             return None
 
-        _malloc_ctx["pool_len"] = read_int_from_memory(current)
+        malloc_ctx["pool_len"] = read_int_from_memory(current)
         current += current_arch.ptrsize
 
-        _malloc_ctx["pool_list"] = []
-        for i in range(_malloc_ctx["pool_len"]):
-            buf = read_int_from_memory(_malloc_ctx["pool"] + (i * 2) * current_arch.ptrsize)
-            size = read_int_from_memory(_malloc_ctx["pool"] + (i * 2 + 1) * current_arch.ptrsize)
-            _pool = {"buf": buf, "len": size}
-            Pool = collections.namedtuple("Pool", _pool.keys())
-            _malloc_ctx["pool_list"].append(Pool(*_pool.values()))
+        malloc_ctx["pool_list"] = []
+        for i in range(malloc_ctx["pool_len"]):
+            buf = read_int_from_memory(malloc_ctx["pool"] + (i * 2) * current_arch.ptrsize)
+            size = read_int_from_memory(malloc_ctx["pool"] + (i * 2 + 1) * current_arch.ptrsize)
+            pool = {"buf": buf, "len": size}
+            Pool = collections.namedtuple("Pool", pool.keys())
+            malloc_ctx["pool_list"].append(Pool(*pool.values()))
 
-        MallocCtx = collections.namedtuple("MallocCtx", _malloc_ctx.keys())
-        return MallocCtx(*_malloc_ctx.values())
+        MallocCtx = collections.namedtuple("MallocCtx", malloc_ctx.keys())
+        return MallocCtx(*malloc_ctx.values())
 
     def dump_malloc_ctx(self, malloc_ctx):
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
@@ -89112,21 +89111,21 @@ class PagewalkX64Command(PagewalkCommand):
                     if x is not None:
                         flags.extend(x)
                     else:
-                        _flags = []
+                        flags_tmp = []
                         if ((entry >> 1) & 1) == 0:
-                            _flags.append("NO_RW")
+                            flags_tmp.append("NO_RW")
                         if ((entry >> 2) & 1) == 0:
-                            _flags.append("NO_US")
+                            flags_tmp.append("NO_US")
                         if ((entry >> 5) & 1) == 1:
-                            _flags.append("A")
+                            flags_tmp.append("A")
                         if ((entry >> 6) & 1) == 1:
-                            _flags.append("D")
+                            flags_tmp.append("D")
                         if ((entry >> 8) & 1) == 1:
-                            _flags.append("G")
+                            flags_tmp.append("G")
                         if self.PAE and ((entry >> 63) & 1) == 1:
-                            _flags.append("XD")
-                        flag_cache[entry_flags_key] = _flags
-                        flags.extend(_flags)
+                            flags_tmp.append("XD")
+                        flag_cache[entry_flags_key] = flags_tmp
+                        flags.extend(flags_tmp)
 
                 # calc physical addr (drop the flag bits)
                 phys_addr = entry & 0x000ffffffffff000
@@ -91539,31 +91538,31 @@ class PagewalkArm64Command(PagewalkCommand):
                             if x is not None:
                                 flags.extend(x)
                             else:
-                                _flags = []
-                                _flags.append("AttrIndx={:03b}".format((entry >> 2) & 0b111))
+                                flags_tmp = []
+                                flags_tmp.append("AttrIndx={:03b}".format((entry >> 2) & 0b111))
                                 if ((entry >> 5) & 1) == 1:
-                                    _flags.append("NS")
-                                _flags.append("AP={:02b}".format((entry >> 6) & 0b11))
-                                _flags.append("SH={:02b}".format((entry >> 8) & 0b11))
+                                    flags_tmp.append("NS")
+                                flags_tmp.append("AP={:02b}".format((entry >> 6) & 0b11))
+                                flags_tmp.append("SH={:02b}".format((entry >> 8) & 0b11))
                                 if ((entry >> 10) & 1) == 1:
-                                    _flags.append("AF")
+                                    flags_tmp.append("AF")
                                 if ((entry >> 11) & 1) == 1:
-                                    _flags.append("nG")
+                                    flags_tmp.append("nG")
                                 if ((entry >> 16) & 1) == 1:
-                                    _flags.append("nT")
+                                    flags_tmp.append("nT")
                                 if ((entry >> 50) & 1) == 1:
-                                    _flags.append("GP")
+                                    flags_tmp.append("GP")
                                 if ((entry >> 51) & 1) == 1:
-                                    _flags.append("DBM")
+                                    flags_tmp.append("DBM")
                                 if ((entry >> 52) & 1) == 1:
-                                    _flags.append("Contiguous")
+                                    flags_tmp.append("Contiguous")
                                 if ((entry >> 53) & 1) == 1:
-                                    _flags.append("PXN")
+                                    flags_tmp.append("PXN")
                                 if ((entry >> 54) & 1) == 1:
-                                    _flags.append("UXN")
-                                _flags.append("PBHA={:#x}".format((entry >> 59) & 0b1111))
-                                flag_cache[entry_flags_key] = _flags
-                                flags.extend(_flags)
+                                    flags_tmp.append("UXN")
+                                flags_tmp.append("PBHA={:#x}".format((entry >> 59) & 0b1111))
+                                flag_cache[entry_flags_key] = flags_tmp
+                                flags.extend(flags_tmp)
                         else:
                             flags.append("AttrIndx={:03b}".format((entry >> 2) & 0b111))
                             if ((entry >> 5) & 1) == 1:
@@ -97479,11 +97478,11 @@ class KtraceBreakpoint(gdb.Breakpoint):
         nb_argument = 6 # guessed
         for i in range(nb_argument):
             try:
-                _key, _value = current_arch.get_ith_parameter(i, in_func=True)
-                _value = AddressUtil.recursive_dereference_to_string(_value)
+                key, value = current_arch.get_ith_parameter(i, in_func=True)
+                value = AddressUtil.recursive_dereference_to_string(value)
             except Exception:
                 break
-            args.append("    {} = {}".format(Color.colorify(_key, arg_key_color), _value))
+            args.append("    {} = {}".format(Color.colorify(key, arg_key_color), value))
 
         # random id to distinguish between nested functions
         import random
@@ -100213,10 +100212,10 @@ class GefRestoreCommand(GenericCommand):
                     continue
 
                 # restore type
-                _type = Config.__gef_config__.get(key)[1]
+                Type = Config.__gef_config__.get(key)[1]
                 new_value = cfg.get(section, optname)
                 try:
-                    if _type is bool:
+                    if Type is bool:
                         if new_value == "True":
                             new_value = True
                         elif new_value == "False":
@@ -100224,7 +100223,7 @@ class GefRestoreCommand(GenericCommand):
                         else:
                             raise ValueError
                     else:
-                        new_value = _type(new_value)
+                        new_value = Type(new_value)
                 except ValueError:
                     err("Config '{:s}' has bad value, skipping...".format(Color.boldify(key)))
                     continue
