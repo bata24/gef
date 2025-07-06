@@ -52792,13 +52792,14 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @switch_to_intel_syntax
     def get_saved_command_line():
-        # Do not use Symbol.get_ksymaddr as this function is used to discover KPTI.
+        # Do not use Symbol.get_ksymaddr directry since this function is used to discover KPTI.
         # This is because Symbol.get_ksymaddr uses a cache.
 
         kversion = Kernel.kernel_version()
 
         # plan 1 (available v2.6.28 or later)
         if kversion and kversion >= "2.6.28":
+            # This is OK since we are not looking for `saved_command_line` directly.
             addr = Symbol.get_ksymaddr("cmdline_proc_show")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -55771,7 +55772,7 @@ class KernelAddressHeuristicFinder:
                     if is_double_link_list(v):
                         return v
 
-        # plan 3 (available v3.17 ~ 5.9)
+        # plan 3 (available v3.17 ~ v5.9)
         if kversion and kversion >= "3.17" and kversion < "5.10":
             addr = Symbol.get_ksymaddr("dma_buf_release")
             if addr:
@@ -55805,7 +55806,7 @@ class KernelAddressHeuristicFinder:
         if kversion and kversion >= "6.5":
             return False
 
-        # plan 2 (available v2.6.37 ~ 6.4)
+        # plan 2 (available v2.6.37 ~ v6.4)
         if kversion and kversion >= "2.6.37" and kversion < "6.5":
             addr = Symbol.get_ksymaddr("irq_to_desc")
             if addr:
@@ -57341,7 +57342,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             struct list_head ptrace_entry;
             struct pid *thread_pid;           // v4.19~
             struct hlist_node pid_links[4];   // v4.19~
-            struct pid_link pids[3];          // ~v4.19
+            struct pid_link pids[3];          // ~v4.18
             struct list_head thread_group;
             ...
         };
@@ -57635,7 +57636,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             unsigned long last_switch_count;
             unsigned long last_switch_time;
         #endif
-            struct thread_struct thread; // ~v4.2
+            struct thread_struct thread; // ~v4.1
             struct fs_struct *fs;
             struct files_struct *files; <-- here
             ...
@@ -57698,13 +57699,13 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     def get_offset_uid(self, init_task_cred_ptr):
         """
         struct cred {
-            atomic_t usage; // ~v6.1.69, v6.2~v6.6.8
-            atomic_long_t usage; // v6.1.69~v6.2, v6.6.8~
-        #ifdef CONFIG_DEBUG_CREDENTIALS // ~v6.6.8
-            atomic_t subscribers; // ~v6.6.8
-            void *put_addr; // ~v6.6.8
-            unsigned magic; // ~v6.6.8
-        #endif // ~v6.6.8
+            atomic_t usage; // ~v6.1.69, v6.2~v6.6.7
+            atomic_long_t usage; // v6.1.69~v6.1.143, v6.6.8~
+        #ifdef CONFIG_DEBUG_CREDENTIALS // ~v6.6.7
+            atomic_t subscribers; // ~v6.6.7
+            void *put_addr; // ~v6.6.7
+            unsigned magic; // ~v6.6.7
+        #endif // ~v6.6.7
             kuid_t uid;
             kgid_t gid;
             kuid_t suid;
@@ -57880,11 +57881,11 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         };
 
         struct uid_gid_map { /* 64 bytes -- 1 cache line */
-            u32 nr_extents; // ~v6.12
+            u32 nr_extents; // ~v6.11
             union {
                 struct {
                     struct uid_gid_extent extent[UID_GID_MAP_MAX_BASE_EXTENTS];
-                    u32 nr_extents; ~v6.12~
+                    u32 nr_extents; v6.12~
                 };
                 struct {
                     struct uid_gid_extent *forward;
@@ -57930,7 +57931,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 struct {
                     struct {
                         atomic_t mm_count;
-                    } ____cacheline_aligned_in_smp; // ~6.4
+                    } ____cacheline_aligned_in_smp; // v6.4~
                     struct maple_tree {
                         union {
                             spinlock_t ma_lock;
@@ -57938,7 +57939,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                         };
                         unsigned int ma_flags; // v6.6~
                         void __rcu *ma_root; // this points root maple_node. (lower 8-bits are some flags)
-                        unsigned int ma_flags; // ~v6.6
+                        unsigned int ma_flags; // ~v6.5
                     } mm_mt;
                     ...
                 } __randomize_layout;
@@ -58096,7 +58097,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                         };
                         unsigned int ma_flags; // v6.6~
                         void __rcu *ma_root; // this points root maple_node. (lower 8-bits are some flags)
-                        unsigned int ma_flags; // ~v6.6
+                        unsigned int ma_flags; // ~v6.5
                     } mm_mt;
                     ...
                 } __randomize_layout;
@@ -58160,13 +58161,17 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 struct vma_lock *vm_lock;              // v6.4~
                 bool detached;                         // v6.4~
             #endif                                     // v6.4~
-                union {                                // ~v6.2
-                    struct {
-                        struct rb_node rb;
-                        unsigned long rb_subtree_last;
-                    } shared;
-                    struct anon_vma_name *anon_name;   // ~v6.2
-                };                                     // ~v6.2
+                struct {                               // v6.2~
+                    struct rb_node rb;                 // v6.2~
+                    unsigned long rb_subtree_last;     // v6.2~
+                } shared;                              // v6.2~
+                union {                                // ~v6.1
+                    struct {                           // ~v6.1
+                        struct rb_node rb;             // ~v6.1
+                        unsigned long rb_subtree_last; // ~v6.1
+                    } shared;                          // ~v6.1
+                    struct anon_vma_name *anon_name;   // ~v6.1
+                };                                     // ~v6.1
                 struct list_head anon_vma_chain;
                 struct anon_vma *anon_vma;
                 const struct vm_operations_struct *vm_ops;
@@ -58654,7 +58659,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
     def get_offset_action(self, sighand):
         """
-        v5.3~
+        [v5.3~]
         struct sighand_struct {
             spinlock_t siglock;
             refcount_t count;
@@ -58677,7 +58682,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             } action[_NSIG]; // 64
         };
 
-        ~v5.3
+        [~v5.2]
         struct sighand_struct {
             refcount_t count;
             struct k_sigaction {
@@ -59659,11 +59664,11 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         "                   |     ro_size             |",
         "                   |     ro_after_init_size  |",
         "                   |     ...                 |",
-        "                   | module_core    (~v4.5)  |",
-        "                   | init_size      (~v4.5)  |",
-        "                   | core_size      (~v4.5)  |",
-        "                   | init_text_size (~v4.5)  |  +-->+-mod_kallsyms---+",
-        "                   | core_text_size (~v4.5)  |  |   | symtab         |",
+        "                   | module_core    (~v4.4)  |",
+        "                   | init_size      (~v4.4)  |",
+        "                   | core_size      (~v4.4)  |",
+        "                   | init_text_size (~v4.4)  |  +-->+-mod_kallsyms---+",
+        "                   | core_text_size (~v4.4)  |  |   | symtab         |",
         "                   | ...                     |  |   | num_symtab     |",
         "                   | kallsyms                |--+   | strtab         |",
         "                   | ...                     |      | typetab (v5.2~)|",
@@ -59965,9 +59970,9 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         self.quiet_err("Not found module->init_layout")
         return None
 
-    def get_offset_module_core(self, module_addrs): # ~ v4.5
+    def get_offset_module_core(self, module_addrs): # ~v4.4
         """
-        struct module { // ~v4.5
+        struct module { // ~v4.4
             enum module_state state;
             struct list_head list;
             char name[MODULE_NAME_LEN];
@@ -60258,7 +60263,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             offset_layout = self.get_offset_layout(module_addrs)
             if offset_layout is None:
                 return
-        else: # ~ v4.5
+        else: # ~v4.4
             offset_module_core = self.get_offset_module_core(module_addrs)
             if offset_module_core is None:
                 return
@@ -60289,7 +60294,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             elif kversion >= "4.5":
                 base = read_int_from_memory(module + offset_layout)
                 size = u32(read_memory(module + offset_layout + current_arch.ptrsize, 4))
-            else: # ~ 4.5
+            else: # ~v4.4
                 base = read_int_from_memory(module + offset_module_core)
                 size = u32(read_memory(module + offset_module_core + current_arch.ptrsize + 4, 4))
 
@@ -60858,7 +60863,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
 
     def get_dev_num(self, bdev):
         """
-        [~v5.11]
+        [~v5.10]
         struct block_device {
             dev_t                       bd_dev;
             ...
@@ -73715,7 +73720,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         struct zone { // v3.12~
             ...
             struct pglist_data *zone_pgdat;
-            struct per_cpu_pageset __percpu *pageset; // ~v5.14
+            struct per_cpu_pageset __percpu *pageset; // ~v5.13
             struct per_cpu_pages __percpu *per_cpu_pageset; // v5.14~
             ...
             const char *name;
@@ -73838,22 +73843,22 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(zone, per_cpu_pageset): {:#x}".format(self.offset_per_cpu_pageset))
 
         """
-        struct per_cpu_pageset { // ~5.14
+        struct per_cpu_pageset { // ~v5.13
             struct per_cpu_pages pcp;
             ...
         }
 
         struct per_cpu_pages {
-            spinlock_t lock; // 5.14~
+            spinlock_t lock; // v5.14~
             int count;
             int high;
             int batch;
-            short free_factor; // 5.14~
+            short free_factor; // v5.14~
         #ifdef CONFIG_NUMA
-            short expire; // 5.14~
+            short expire; // v5.14~
         #endif
-            struct list_head lists[NR_PCP_LISTS]; // 5.14~
-            struct list_head lists[MIGRATE_PCPTYPES]; // ~5.14
+            struct list_head lists[NR_PCP_LISTS]; // v5.14~
+            struct list_head lists[MIGRATE_PCPTYPES]; // ~v5.13
         } ____cacheline_aligned_in_smp;
         """
         # per_cpu_pageset->lists
@@ -74335,8 +74340,8 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         "+->| d_inode  |--+  | i_pipe    |--+  | head, tail, (v5.5~)    |  |  | offset      |",
         "   | ...      |     | ...       |     | max_usage, (v5.5~)     |  |  | len         |",
         "   +----------+     +-----------+     | ring_size, (v5.5~)     |  |  | ...         |",
-        "                                      | nrbuf, curbuf, (~v5.5) |  |  +-------------+",
-        "                                      | buffers (~v5.5)        |  |  | page        |--->page",
+        "                                      | nrbuf, curbuf, (~v5.4) |  |  +-------------+",
+        "                                      | buffers (~v5.4)        |  |  | page        |--->page",
         "                                      | ...                    |  |  | offset      |",
         "                                      | bufs                   |--+  | len         |",
         "                                      | ...                    |     | ...         |",
@@ -74363,9 +74368,9 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             };
             struct file_lock_context *i_flctx;
             struct address_space i_data;
-        #ifdef CONFIG_QUOTA                   // ~3.18
-            struct dquot *i_dquot[MAXQUOTAS]; // ~3.18 // MAXQUOTAS=2
-        #endif                                // ~3.18
+        #ifdef CONFIG_QUOTA                   // ~v3.18
+            struct dquot *i_dquot[MAXQUOTAS]; // ~v3.18 // MAXQUOTAS=2
+        #endif                                // ~v3.18
             struct list_head i_devices;
             union {
                 struct pipe_inode_info *i_pipe;  <-- here
@@ -74405,7 +74410,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         struct pipe_inode_info {
             struct mutex mutex;
             wait_queue_head_t rd_wait, wr_wait; // v5.6~
-            wait_queue_head_t wait; // ~v5.6
+            wait_queue_head_t wait; // ~v5.5
             unsigned int head;
             unsigned int tail;
             unsigned int max_usage;
@@ -74430,7 +74435,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         #endif                               // v5.8~
         };
 
-        [~v5.5]
+        [~v5.4]
         struct pipe_inode_info {
             struct mutex mutex;
             wait_queue_head_t wait;
@@ -76592,7 +76597,7 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
         "Simplified net_device structure:",
         "",
         "                     +-net_device--------+    +-net_device--------+",
-        "                     | ... (kernel 6.8~) |    | ... (kernel 6.8~) |",
+        "                     | ... (v6.8~)       |    | ... (v6.8~)       |",
         "+-init_net------+    | name[]            |    | name[]            |",
         "| ...           |    | ...               |    | ...               |",
         "| dev_base_head |--->| dev_list          |--->| dev_list          |--->...",
@@ -76627,7 +76632,7 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
             struct list_head unreg_list;
             struct list_head close_list;
             struct list_head ptype_all;
-            struct list_head ptype_specific; // ~v6.8
+            struct list_head ptype_specific; // ~v6.7
             ...
         };
         """
@@ -76765,23 +76770,23 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
         struct vmap_area {
             unsigned long va_start;
             unsigned long va_end;
-            unsigned long subtree_max_size; // 5.2~5.3
-            unsigned long flags;            // ~5.3
+            unsigned long subtree_max_size; // v5.2.0~v5.2.21
+            unsigned long flags;            // ~v5.3
             struct rb_node {
                 unsigned long __rb_parent_color;
                 struct rb_node *rb_right;
                 struct rb_node *rb_left;
             } rb_node;
             struct list_head list;
-            union {                             // 5.4~
-                unsigned long subtree_max_size; // 5.4~
-                struct vm_struct *vm;           // 5.4~
-                struct llist_node purge_list;   // 5.4~5.10
-            };                                  // 5.4~
-            struct llist_node purge_list; // 4.7~5.3
-            struct list_head purge_list;  // ~4.7
-            struct vm_struct *vm;         // ~5.3
-            unsigned long flags; // 6.3~
+            union {                             // v5.4~
+                unsigned long subtree_max_size; // v5.4~
+                struct vm_struct *vm;           // v5.4~
+                struct llist_node purge_list;   // v5.4~v5.10
+            };                                  // v5.4~
+            struct llist_node purge_list; // v4.7~v5.3
+            struct list_head purge_list;  // ~v4.7
+            struct vm_struct *vm;         // ~v5.3
+            unsigned long flags; // v6.3~
         };
 
         struct vm_struct {
@@ -76790,9 +76795,9 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             unsigned long size;
             unsigned long flags;
             struct page **pages;
-        #ifdef CONFIG_HAVE_ARCH_HUGE_VMALLOC // 5.13~
-            unsigned int page_order;         // 5.13~
-        #endif                               // 5.13~
+        #ifdef CONFIG_HAVE_ARCH_HUGE_VMALLOC // v5.13~
+            unsigned int page_order;         // v5.13~
+        #endif                               // v5.13~
             unsigned int nr_pages;
             phys_addr_t phys_addr;
             const void *caller;
@@ -77427,20 +77432,20 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         """
         [Search policy]
         - From kallsyms_token_table, search backwards for 0x00000000.
-        - For kernel 6.1.42~6.8, there is kallsyms_seqs_of_names between kallsyms_markers and kallsyms_token_table,
+        - For kernel v6.1.42~v6.8, there is kallsyms_seqs_of_names between kallsyms_markers and kallsyms_token_table,
           so this should be skipped.
 
         [Positional relationship]
         ...
         - kallsyms_markers
-        - kallsyms_seqs_of_names (6.1.42~6.8)
+        - kallsyms_seqs_of_names (v6.1.42~v6.8)
         - kallsyms_token_table
         - kallsyms_token_index
         ...
-        - kallsyms_seqs_of_names (6.9~)
+        - kallsyms_seqs_of_names (v6.9~)
         ...
 
-        [Sample values for 64bit ~6.1.41]
+        [Sample values for 64bit ~v6.1.41]
         gef> hexdump -n dword kallsyms_markers
         0xffffffff8b2b4b48:    0x00000000 0x00000ab0 0x000016d3 0x00002316    |  .............#..  | <- kallsyms_markers
         0xffffffff8b2b4b58:    0x00002f38 0x00003cf8 0x00004c4c 0x000059c8    |  8/...<..LL...Y..  |
@@ -77452,7 +77457,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         0xffffffff8b2b51a0:    0x00144e55 0x001458d8 0x00146338 0x00000000    |  UN...X..8c......  |
         0xffffffff8b2b51b0:    0x77007565 0x6461005f 0x5f640064 0x6e75665f    |  eu.w_.add.d__fun  | <- kallsyms_token_table
 
-        [Sample values for 64bit 6.1.42~]
+        [Sample values for 64bit v6.1.42~]
         gef> hexdump -n dword kallsyms_markers
         0xffffffff8d5fcde0:    0x00000000 0x00000b55 0x000017bb 0x000024c3    |  ....U........$..  | <- kallsyms_markers
         0xffffffff8d5fcdf0:    0x000030c1 0x00003dca 0x00004983 0x000058aa    |  .0...=...I...X..  |
@@ -77464,7 +77469,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         0xffffffff8d5fd7b0:    0xa400291c 0x10a50024 0x0154a500 0xaa0116aa    |  .)..$.....T.....  |
         0xffffffff8d5fd7c0:    0x87610214 0x01274902 0xb201cbaf 0xbbbc01c9    |  ..a..I'.........  |
 
-        [Sample values for 32bit 6.1.42~]
+        [Sample values for 32bit v6.1.42~]
         gef> hexdump -n dword kallsyms_markers
         0xc6e0dc98:    0x00000000 0x00000c61 0x0000188f 0x00002641    |  ....a.......A&..  | <- kallsyms_markers
         0xc6e0dca8:    0x00003492 0x000041a7 0x00004e6b 0x00005ace    |  .4...A..kN...Z..  |
@@ -77578,11 +77583,11 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         ...
         - kallsyms_names
         - kallsyms_markers
-        - kallsyms_seqs_of_names (6.1.42~6.8)
+        - kallsyms_seqs_of_names (v6.1.42~v6.8)
         - kallsyms_token_table
         - kallsyms_token_index
         ...
-        - kallsyms_seqs_of_names (6.9~)
+        - kallsyms_seqs_of_names (v6.9~)
         ...
 
         [Sample values for 64bit]
@@ -77656,11 +77661,11 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         - kallsyms_num_syms
         - kallsyms_names
         - kallsyms_markers
-        - kallsyms_seqs_of_names (6.1.42~6.8)
+        - kallsyms_seqs_of_names (v6.1.42~v6.8)
         - kallsyms_token_table
         - kallsyms_token_index
         ...
-        - kallsyms_seqs_of_names (6.9~)
+        - kallsyms_seqs_of_names (v6.9~)
         ...
 
         [Sample values for 64bit]
@@ -77839,49 +77844,49 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
     def find_kallsyms_offsets(self):
         """
         [Search policy]
-        - ~6.4
+        - ~v6.3
           - From kallsyms_num_syms, go back by num_symbols element sizes.
           - num_symbols offsets are stored, so get them.
-        - 6.4~
+        - v6.4~
           - From kallsyms_token_index + 0x200, num_symbols offsets are stored, so get them.
 
         [Positional relationship]
         - ...
-        - kallsyms_offsets (4.6~6.3, CONFIG_KALLSYMS_BASE_RELATIVE=y)
-        - kallsyms_relative_base (4.6~6.3, CONFIG_KALLSYMS_BASE_RELATIVE=y)
+        - kallsyms_offsets (v4.6~v6.3, CONFIG_KALLSYMS_BASE_RELATIVE=y)
+        - kallsyms_relative_base (v4.6~v6.3, CONFIG_KALLSYMS_BASE_RELATIVE=y)
         - kallsyms_num_syms
         - kallsyms_names
         - kallsyms_markers
-        - kallsyms_seqs_of_names (6.1.42~6.8)
+        - kallsyms_seqs_of_names (v6.1.42~v6.8)
         - kallsyms_token_table
         - kallsyms_token_index
-        - kallsyms_offsets (6.4~, CONFIG_KALLSYMS_BASE_RELATIVE=y)
-        - kallsyms_relative_base (6.4~, CONFIG_KALLSYMS_BASE_RELATIVE=y)
-        - kallsyms_seqs_of_names (6.9~)
+        - kallsyms_offsets (v6.4~, CONFIG_KALLSYMS_BASE_RELATIVE=y)
+        - kallsyms_relative_base (v6.4~, CONFIG_KALLSYMS_BASE_RELATIVE=y)
+        - kallsyms_seqs_of_names (v6.9~)
         - ...
 
-        [Sample values for 64bit ~6.3, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n (use positive offset)]
+        [Sample values for 64bit ~v6.3, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n (use positive offset)]
         gef> hexdump -n dword kallsyms_offsets
         0xffffffff8b108550:    0x00000000 0x00000000 0x00001000 0x00002000    |  ............. ..  |
         0xffffffff8b108560:    0x00006000 0x0000b000 0x0000c000 0x00018000    |  .`..............  |
         0xffffffff8b108570:    0x00019000 0x00019008 0x00019010 0x00019020    |  ............ ...  |
         0xffffffff8b108580:    0x00019420 0x00019440 0x00019448 0x00019450    |   ...@...H...P...  |
 
-        [Sample values for 64bit ~6.3, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=y (use negative offset)]
+        [Sample values for 64bit ~v6.3, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=y (use negative offset)]
         gef> hexdump -n dword kallsyms_offsets
         0xffffffffa72854b0:    0xffffffff 0xffffffff 0xffffffff 0xffffffbf    |  ................  |
         0xffffffffa72854c0:    0xffffffba 0xfffffeef 0xfffffdef 0xfffffddf    |  ................  |
         0xffffffffa72854d0:    0xfffffdcf 0xfffffa1f 0xfffff9cf 0xfffff9bf    |  ................  |
         0xffffffffa72854e0:    0xfffff99f 0xfffff8ff 0xfffff76f 0xfffff73f    |  ........o...?...  |
 
-        [Sample values for 32bit ~6.3, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n (use positive offset)]
+        [Sample values for 32bit ~v6.3, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n (use positive offset)]
         gef> hexdump -n dword kallsyms_offsets
         0xc6c59370:    0x00000000 0x00000000 0x00000000 0x00000070    |  ............p...  |
         0xc6c59380:    0x00000080 0x000001d8 0x000002e0 0x00000320    |  ............ ...  |
         0xc6c59390:    0x00000360 0x000003a8 0x000003e8 0x000004a8    |  `...............  |
         0xc6c593a0:    0x000005a8 0x0000066c 0x0000073c 0x000007ac    |  ....l...<.......  |
 
-        [Sample values for 64bit 6.4~, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n (use positive offset)]
+        [Sample values for 64bit v6.4~, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n (use positive offset)]
         gef> hexdump -n word kallsyms_token_index
         0xffffffff844fa178:    0x0000 0x0003 0x0006 0x000a 0x0010 0x0013 0x0016 0x0019    |  ................  |
         0xffffffff844fa188:    0x001d 0x0029 0x002d 0x0030 0x0034 0x0037 0x003b 0x003e    |  ..).-.0.4.7.;.>.  |
@@ -77897,7 +77902,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         0xffffffff8461e45c:    0x00000000 0x81000000 0xffffffff 0x02fa0e02    |  ................  |
         relative_base_address: 0xffffffff81000000
 
-        [Sample values for 64bit 6.4~, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=y (use negative offset)]
+        [Sample values for 64bit v6.4~, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=y (use negative offset)]
         gef> hexdump -n word kallsyms_token_index
         0xffffffff86744a38:    0x0000 0x0004 0x000c 0x0010 0x0014 0x0017 0x001b 0x0020    |  .............. .  |
         0xffffffff86744a48:    0x002d 0x0034 0x0039 0x003d 0x0042 0x0045 0x0048 0x004b    |  -.4.9.=.B.E.H.K.  |
@@ -78012,18 +78017,18 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
 
         [Positional relationship]
         - ...
-        - kallsyms_addresses (~6.3, CONFIG_KALLSYMS_BASE_RELATIVE=n)
+        - kallsyms_addresses (~v6.3, CONFIG_KALLSYMS_BASE_RELATIVE=n)
         - kallsyms_num_syms
         - kallsyms_names
         - kallsyms_markers
-        - kallsyms_seqs_of_names (6.1.42~6.8)
+        - kallsyms_seqs_of_names (v6.1.42~v6.8)
         - kallsyms_token_table
         - kallsyms_token_index
-        - kallsyms_addresses (6.4~?, CONFIG_KALLSYMS_BASE_RELATIVE=n) # unimplemented yet because I have never seen this pattern.
-        - kallsyms_seqs_of_names (6.9~)
+        - kallsyms_addresses (v6.4~?, CONFIG_KALLSYMS_BASE_RELATIVE=n) # unimplemented yet because I have never seen this pattern.
+        - kallsyms_seqs_of_names (v6.9~)
         - ...
 
-        [Sample values for 64bit ~6.3]
+        [Sample values for 64bit ~v6.3]
         gef> hexdump -n qword kallsyms_addresses
         0xffffffff81ae3cb8:    0x0000000000000000 0x0000000000000000    |  ................  |
         0xffffffff81ae3cc8:    0x0000000000004000 0x0000000000009000    |  .@..............  |
@@ -78031,7 +78036,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         0xffffffff81ae4588:    0xffffffff81000000 0xffffffff81000000    |  ................  |
         0xffffffff81ae4598:    0xffffffff81000110 0xffffffff810001a9    |  ................  |
 
-        [Sample values for 32bit ~6.3]
+        [Sample values for 32bit ~v6.3]
         gef> hexdump -n dword kallsyms_addresses
         0xc1940888:    0xc1000000 0xc1000000 0xc10000bc 0xc10000cc    |  ................  |
         0xc1940898:    0xc10000ed 0xc1000165 0xc10001e7 0xc1000239    |  ....e.......9...  |
@@ -84415,8 +84420,8 @@ class OpteeBreakTaAddrCommand(GenericCommand):
             """
             FUNC __thread_enter_user_mode , :
                 push {r4-r12,lr}
-                cps	#CPSR_MODE_SYS
-                mov	r4, sp
+                cps #CPSR_MODE_SYS
+                mov r4, sp
                 ...
 
             gef> xp/3xi 0x0E101158
@@ -84430,11 +84435,11 @@ class OpteeBreakTaAddrCommand(GenericCommand):
             # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/kernel/thread_a64.S
             """
             FUNC __thread_enter_user_mode , :
-                sub	sp, sp, #THREAD_USER_MODE_REC_SIZE                  // size may change in future
+                sub sp, sp, #THREAD_USER_MODE_REC_SIZE                  // size may change in future
                 store_xregs sp, THREAD_USER_MODE_REC_CTX_REGS_PTR, 0, 2 // macro
                 store_xregs sp, THREAD_USER_MODE_REC_X19, 19, 30        // macro
-                mov	x19, sp
-                msr	spsel, #1
+                mov x19, sp
+                msr spsel, #1
                 ...
 
             gef> xp/11i 0xE1030C0
@@ -95917,7 +95922,7 @@ class KmallocTracerCommand(GenericCommand):
                 ["kmem_cache_alloc_noprof", -1],
                 ["krealloc_noprof", 1],
             ]
-        elif kversion >= "6.11": # 6.11 ~ 6.14
+        elif kversion >= "6.11": # v6.11 ~ v6.14
             kmalloc_syms = [
                 ["__kmalloc_cache_node_noprof", 3],
                 ["__kmalloc_cache_noprof", 2],
