@@ -57465,17 +57465,17 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         """
         struct seccomp_filter {
-            refcount_t refs; // 5.9~
-            refcount_t users; // 5.9~
-            refcount_t usage; // ~5.9
-            bool log; // 4.14~
-            bool wait_killable_recv; // 5.19~
-            struct action_cache cache; // 5.11~
+            refcount_t refs; // v5.9~
+            refcount_t users; // v5.9~
+            refcount_t usage; // ~v5.8
+            bool log; // v4.14~
+            bool wait_killable_recv; // v5.19~
+            struct action_cache cache; // v5.11~
             struct seccomp_filter *prev;
             struct bpf_prog *prog;
-            struct notification *notif; // 5.0~
-            struct mutex notify_lock; // 5.0~
-            wait_queue_head_t wqh; // 5.9~
+            struct notification *notif; // v5.0~
+            struct mutex notify_lock; // v5.0~
+            wait_queue_head_t wqh; // v5.9~
         };
 
         [Example x64; v6.12.3]
@@ -63400,7 +63400,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                 union {
                     struct {
                         struct ctl_table *ctl_table;
-                        int ctl_table_size;               // 6.6 ~
+                        int ctl_table_size;               // v6.6~
                         int used;
                         int count;
                         int nreg;
@@ -63416,13 +63416,13 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                 struct ctl_table_set *set;
                 struct ctl_dir *parent;
                 struct ctl_node *node;
-                struct hlist_head inodes;                 // 4.12.2 ~
-                struct list_head inodes;                  // 4.11 ~ 4.12.2
-                struct hlist_head inodes;                 // 4.9.120 ~ 4.10
+                struct hlist_head inodes;                 // v4.12.2~
+                struct list_head inodes;                  // v4.11~v4.12.1
+                struct hlist_head inodes;                 // v4.9.120~v4.9.337
                 enum {
                     SYSCTL_TABLE_TYPE_DEFAULT,
                     SYSCTL_TABLE_TYPE_PERMANENTLY_EMPTY,
-                } type;                                   // 6.10 ~
+                } type;                                   // v6.10~
             } header;
             struct rb_root {
                 struct rb_node *rb_node;
@@ -63443,11 +63443,11 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             void *data;
             int maxlen;
             umode_t mode;
-            struct ctl_table *child;                      // ~ 6.5
+            struct ctl_table *child;                      // ~v6.4
             enum {
                 SYSCTL_TABLE_TYPE_DEFAULT,
                 SYSCTL_TABLE_TYPE_PERMANENTLY_EMPTY
-            } type;                                       // 6.5 ~ 6.10
+            } type;                                       // v6.5~v6.10
             proc_handler *proc_handler;
             struct ctl_table_poll *poll;
             void *extra1;
@@ -65400,7 +65400,7 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
 
     def dump_printk_ringbuffer(self, ring_buffer_name, ring_buffer_address):
         """
-        # linux 5.10.x ~
+        # [v5.10~]
         struct printk_ringbuffer {
             struct prb_desc_ring {
                 unsigned int count_bits;
@@ -65590,7 +65590,7 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
 
     def dump_printk_log_buffer(self, log_first_idx, log_end_idx, buf_start, buf_end):
         """
-        # ~ linux 5.9.x
+        # [~v5.9]
         struct printk_log {
             u64 ts_nsec;        /* timestamp in nanoseconds */
             u16 len;            /* length of entire record */
@@ -74977,12 +74977,12 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             u32 len;
             u32 jited_len;
             u8 tag[BPF_TAG_SIZE]; // 8 byte
-            struct bpf_prog_stats __percpu *stats; // 5.12~
-            int __percpu *active;                  // 5.12~
-            unsigned int (*bpf_func)(const void *ctx, const struct bpf_insn *insn); // 5.12~
+            struct bpf_prog_stats __percpu *stats; // v5.12~
+            int __percpu *active;                  // v5.12~
+            unsigned int (*bpf_func)(const void *ctx, const struct bpf_insn *insn); // v5.12~
             struct bpf_prog_aux *aux;
             struct sock_fprog_kern *orig_prog;
-            unsigned int (*bpf_func)(const void *ctx, const struct bpf_insn *insn); // ~5.11
+            unsigned int (*bpf_func)(const void *ctx, const struct bpf_insn *insn); // ~v5.11
             const struct bpf_insn *insn);
             struct sock_filter insns[0];
             struct bpf_insn insnsi[];
@@ -77316,7 +77316,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             return True
 
         """
-        [Search policy]
+        [Search strategy]
         - kallsyms_token_table has unique sequences like "30 00 31 00 32 00 33 00 34 00 35 00 36 00 37 00 38 00 39 00".
         - We search for it from .rodata area, then search backwards for invalid characters to get the top.
 
@@ -77417,7 +77417,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             return True
 
         """
-        [Search policy]
+        [Search strategy]
         - Find the index where the string appears in kallsyms_token_table.
         - Find where that index is arranged like a table.
 
@@ -77501,7 +77501,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
                 return True
 
         """
-        [Search policy]
+        [Search strategy]
         - From kallsyms_token_table, search backwards for 0x00000000.
         - For kernel v6.1.42~v6.8, there is kallsyms_seqs_of_names between kallsyms_markers and kallsyms_token_table,
           so this should be skipped.
@@ -77536,7 +77536,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         0xffffffff8d5fce10:    0x00009efa 0x0000ab20 0x0000b73a 0x0000c37d    |  .... ...:...}...  |
         ...
         0xffffffff8d5fd790:    0x00212755 0x002131b8 0x00213af8 0x00214558    |  U'!..1!..:!.XE!.  |
-        0xffffffff8d5fd7a0:    0x01069d01 0x9d01019d 0x029d0100 0x02039d01    |  ................  | <- kallsyms_seqs_of_names
+        0xffffffff8d5fd7a0: (*)0x01069d01 0x9d01019d 0x029d0100 0x02039d01    |  ................  | <- kallsyms_seqs_of_names (*)
         0xffffffff8d5fd7b0:    0xa400291c 0x10a50024 0x0154a500 0xaa0116aa    |  .)..$.....T.....  |
         0xffffffff8d5fd7c0:    0x87610214 0x01274902 0xb201cbaf 0xbbbc01c9    |  ..a..I'.........  |
 
@@ -77547,7 +77547,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         0xc6e0dcb8:    0x0000691b 0x00007703 0x00008411 0x00008fc1    |  .i...w..........  |
         0xc6e0dcc8:    0x00009c98 0x0000a8ea 0x0000b719 0x0000c4dd    |  ................  |
         ...
-        0xc6e0e2c8:    0x0014f2fa 0x0014fbeb 0x00150653 0x00634401*   |  ........S....Dc.  | <- kallsyms_seqs_of_names (*)
+        0xc6e0e2c8:    0x0014f2fa 0x0014fbeb 0x00150653 0x00634401(*) |  ........S....Dc.  | <- kallsyms_seqs_of_names (*)
         0xc6e0e2d8:    0xd90030d9 0x8bd30032 0x0189d300 0x6a01e97f    |  .0..2..........j  |
         0xc6e0e2e8:    0x31d90063 0x0007e100 0xd600b7e1 0xd1d900cb    |  c..1............  |
         0xc6e0e2f8:    0x0083dd00 0xd90004e9 0x85ef00ab 0x00bfdb00    |  ................  |
@@ -77646,13 +77646,13 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             return True
 
         """
-        [Search policy]
+        [Search strategy]
         - From kallsyms_markers, go back as far as we can definitively go back.
         - This address is not accurate.
 
         [Positional relationship]
         ...
-        - kallsyms_names
+        - kallsyms_names (this is not accurate address in this step)
         - kallsyms_markers
         - kallsyms_seqs_of_names (v6.1.42~v6.8)
         - kallsyms_token_table
@@ -77723,14 +77723,14 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             return True
 
         """
-        [Search policy]
+        [Search strategy]
         - From candidate address of kallsyms_names, search backwards to the top of what can be correctly
           interpreted as kallsyms_names.
 
         [Positional relationship]
         ...
         - kallsyms_num_syms
-        - kallsyms_names
+        - kallsyms_names (to be fixed in this step)
         - kallsyms_markers
         - kallsyms_seqs_of_names (v6.1.42~v6.8)
         - kallsyms_token_table
@@ -77914,7 +77914,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
 
     def find_kallsyms_offsets(self):
         """
-        [Search policy]
+        [Search strategy]
         - ~v6.3
           - From kallsyms_num_syms, go back by num_symbols element sizes.
           - num_symbols offsets are stored, so get them.
@@ -78082,7 +78082,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
 
     def find_kallsyms_addresses(self):
         """
-        [Search policy]
+        [Search strategy]
         - From kallsyms_num_syms, go back by num_symbols element sizes.
         - num_symbols addresses are stored, so get them.
 
