@@ -73613,6 +73613,8 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-S", "--sort-verbose", action="store_true",
                         help="enable --sort and add used area. filtered areas are treated as used.")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="show all entries for non-sort mode.")
+    parser.add_argument("-vv", "--vverbose", action="store_true", help="show empty entries too for non-sort mode.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
@@ -73668,11 +73670,6 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         "You can combine this result with information of in-use space. Try using `pagewalk-with-hints` command.",
     ]
     _note_ = "\n".join(_note_)
-
-    def add_out(self, msg):
-        if not self.args.sort:
-            self.out.append(msg)
-        return
 
     def initialize(self):
         if hasattr(self, "initialized") and self.initialized:
@@ -74047,214 +74044,285 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         self.initialized = True
         return True
 
-    def get_virt_phys_str(self, page, size, is_highmem):
-        virt_str = "???"
-        phys_str = "???"
+    class Entry:
+        def __init__(self, page, size, is_highmem, cpu_num=None):
+            self.page = page
+            self.size = size
+            self.is_highmem = is_highmem
+            self.cpu_num = cpu_num
+            return
 
-        if is_highmem:
+        def get_virt_phys_str(self):
+            virt_str = "???"
+            phys_str = "???"
+
+            if self.is_highmem:
+                return virt_str, phys_str
+
+            heap_page_color = Config.get_gef_setting("theme.heap_page_address")
+            align = AddressUtil.get_format_address_width()
+
+            virt = Kernel.page2virt(self.page)
+            phys = None
+            if virt:
+                phys = PageMap.v2p_from_map(virt, BuddyDumpCommand.maps)
+            if virt is not None:
+                virt_str = "{:#0{:d}x}-{:#0{:d}x}".format(virt, align, virt + self.size, align)
+                virt_str = Color.colorify(virt_str, heap_page_color)
+            if phys is not None:
+                phys_str = "{:#0{:d}x}-{:#0{:d}x}".format(phys, align, phys + self.size, align)
             return virt_str, phys_str
 
-        heap_page_color = Config.get_gef_setting("theme.heap_page_address")
-        align = AddressUtil.get_format_address_width()
+        def __str__(self):
+            chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
+            freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+            align = AddressUtil.get_format_address_width()
 
-        virt = Kernel.page2virt(page)
-        phys = None
-        if virt:
-            phys = PageMap.v2p_from_map(virt, self.maps)
-        if virt is not None:
-            virt_str = "{:#0{:d}x}-{:#0{:d}x}".format(virt, align, virt + size, align)
-            virt_str = Color.colorify(virt_str, heap_page_color)
-        if phys is not None:
-            phys_str = "{:#0{:d}x}-{:#0{:d}x}".format(phys, align, phys + size, align)
-        return virt_str, phys_str
+            page_str = Color.colorify("{:#0{:d}x}".format(self.page, align), freed_address_color)
+            size_str = Color.colorify("{:#08x}".format(self.size), chunk_size_color)
+            virt_str, phys_str = self.get_virt_phys_str()
 
-    # for per_cpu_pageset
-    def dump_list(self, list_i, i, cpu_num, is_highmem):
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
-        align = AddressUtil.get_format_address_width()
+            if self.cpu_num is not None:
+                msg = "    page:{:s}  size:{:s}  virt:{:s}  phys:{:s} (pcp, cpu={:d})".format(
+                    page_str, size_str, virt_str, phys_str, self.cpu_num,
+                )
+            else:
+                msg = "    page:{:s}  size:{:s}  virt:{:s}  phys:{:s}".format(
+                    page_str, size_str, virt_str, phys_str,
+                )
+            return msg
 
+    def dump_pcp_entry(self, list_i, i, cpu_num, is_highmem):
         MIGRATE_PCPTYPES = 3
         order = i // MIGRATE_PCPTYPES
         mtype = i % MIGRATE_PCPTYPES
 
-        # filtering
-        if self.args.mtype_filter and mtype not in self.args.mtype_filter:
-            return
-        if self.args.order_filter and order not in self.args.order_filter:
-            return
-
         # size info
         size = 0x1000 * (2 ** order)
+        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
         size_str = Color.colorify("{:#08x}".format(size), chunk_size_color)
 
-        self.add_out("  pcp_index: {:d}, order: {:d} ({:s} bytes), mtype: {:d} (={:s})".format(
+        # make title
+        pcp_title = "  pcp_index: {:d}, order: {:d} ({:s} bytes), mtype: {:d} (={:s})".format(
             i, order, size_str, mtype, self.migrate_types[mtype],
-        ))
+        )
+        entries = []
 
-        seen = [list_i]
+        # filtering
+        if self.args.mtype_filter and mtype not in self.args.mtype_filter:
+            return pcp_title, entries, bool(len(entries))
+        if self.args.order_filter and order not in self.args.order_filter:
+            return pcp_title, entries, bool(len(entries))
+
+        # fast check
         current = read_int_from_memory(list_i)
         if not is_valid_addr(current):
-            return
+            return pcp_title, entries, bool(len(entries))
 
-        while current not in seen:
-            # page info
+        # parse pcp entries
+        while current != list_i:
             page = current - self.offset_lru
-            page_str = Color.colorify("{:#0{:d}x}".format(page, align), freed_address_color)
-
-            # address info
-            virt_str, phys_str = self.get_virt_phys_str(page, size, is_highmem)
-
-            # create msg
-            msg = "    page:{:s}  size:{:s}  virt:{:s}  phys:{:s} (pcp, cpu={:d})".format(
-                page_str, size_str, virt_str, phys_str, cpu_num,
-            )
-
-            # add msg
-            if self.args.sort:
-                self.out.append([page, size, msg])
-            else:
-                self.out.append(msg)
-
-            # get next
+            entry = self.Entry(page, size, is_highmem, cpu_num=cpu_num)
+            entries.append(entry)
             current = read_int_from_memory(current)
-        return
+        return pcp_title, entries, bool(len(entries))
 
     def dump_pcp(self, zone, is_highmem):
+        # list pageset
         per_cpu_pageset = read_int_from_memory(zone + self.offset_per_cpu_pageset)
         if self.cpu_offset is None:
             per_cpu_pageset = [per_cpu_pageset]
         else:
             per_cpu_pageset = [AddressUtil.align_address(cpuoff + per_cpu_pageset) for cpuoff in self.cpu_offset]
 
+        # parse each cpu
         sizeof_list_head = current_arch.ptrsize * 2
+        pcp_all_entries = {}
         for cpu_num, pcp in enumerate(per_cpu_pageset):
             if self.args.cpu and cpu_num not in self.args.cpu:
                 continue
-            self.add_out("cpu: {:d}".format(cpu_num))
+            # parse each pcp list
+            pcp_entries = []
             for i in range(self.NR_PCP_LISTS):
                 if self.args.pcp_index_filter and i not in self.args.pcp_index_filter:
                     continue
                 lists_i = pcp + self.offset_lists + sizeof_list_head * i
-                self.dump_list(lists_i, i, cpu_num, is_highmem)
-        return
+                res = self.dump_pcp_entry(lists_i, i, cpu_num, is_highmem)
+                pcp_entries.append(res)
+            pcp_all_entries[cpu_num] = pcp_entries
+        return pcp_all_entries
 
     def dump_free_list(self, free_list, mtype, size, is_highmem):
-        seen = [free_list]
+        # make title
+        mtype_title = "  mtype: {:d} (={:s})".format(mtype, self.migrate_types[mtype])
+        entries = []
+
+        # fast check
         current = read_int_from_memory(free_list)
         if not is_valid_addr(current):
-            return
+            return mtype_title, entries, bool(len(entries))
 
         # parse free list
-        while current not in seen:
-            seen.append(current)
-            # get next
-            current = read_int_from_memory(current)
-
-        # dump free list
-        self.add_out("  mtype: {:d} (={:s})".format(mtype, self.migrate_types[mtype]))
-
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
-        align = AddressUtil.get_format_address_width()
-        size_str = Color.colorify("{:#08x}".format(size), chunk_size_color)
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-
-        for current in tqdm(seen[1:], leave=False):
-            # page info
+        while current != free_list:
             page = current - self.offset_lru
-            page_str = Color.colorify("{:#0{:d}x}".format(page, align), freed_address_color)
-
-            # address info
-            virt_str, phys_str = self.get_virt_phys_str(page, size, is_highmem)
-
-            # create msg
-            msg = "    page:{:s}  size:{:s}  virt:{:s}  phys:{:s}".format(
-                page_str, size_str, virt_str, phys_str,
-            )
-
-            # add msg
-            if self.args.sort:
-                self.out.append([page, size, msg])
-            else:
-                self.out.append(msg)
-        return
+            entry = self.Entry(page, size, is_highmem)
+            entries.append(entry)
+            current = read_int_from_memory(current)
+        return mtype_title, entries, bool(len(entries))
 
     def dump_free_area(self, free_area, order, is_highmem):
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
-
+        # size info
         size = 0x1000 * (2 ** order)
+        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
         size_str = Color.colorify_hex(size, chunk_size_color)
-        self.add_out("order: {:d} ({:s} bytes)".format(order, size_str))
+        order_title = "order: {:d} ({:s} bytes)".format(order, size_str)
 
+        # prase free area
         sizeof_list_head = current_arch.ptrsize * 2
+        free_lists = []
+        has_any = False
         for mtype in range(self.MIGRATE_TYPES):
             if self.args.mtype_filter and mtype not in self.args.mtype_filter:
                 continue
             free_list = free_area + sizeof_list_head * mtype
-            self.dump_free_list(free_list, mtype, size, is_highmem)
-        return
+            res = self.dump_free_list(free_list, mtype, size, is_highmem)
+            has_any |= res[2]
+            free_lists.append(res)
+        return order_title, free_lists, has_any
 
     def dump_zone(self, zone, is_highmem=False):
-        # dump pcp
-        if not self.args.skip_pcp:
-            self.add_out(titlify("per_cpu_pageset"))
-            self.dump_pcp(zone, is_highmem)
+        zone_entry = {}
 
-        # dump free_area
+        # parse pcp
+        if not self.args.skip_pcp:
+            zone_entry["per_cpu_pageset"] = self.dump_pcp(zone, is_highmem)
+
+        # parse free_area
         if not self.args.only_pcp:
-            tqdm = GefUtil.get_tqdm(not self.args.quiet)
-            self.add_out(titlify("free_area"))
-            free_area_array = zone + self.offset_free_area
-            for order in tqdm(range(self.MAX_ORDER), leave=False):
+            free_area_entries = []
+            for order in range(self.MAX_ORDER):
                 if self.args.order_filter and order not in self.args.order_filter:
                     continue
-                free_area_i = free_area_array + self.sizeof_free_area * order
-                self.dump_free_area(free_area_i, order, is_highmem)
-        return
+                free_area_i = zone + self.offset_free_area + self.sizeof_free_area * order
+                res = self.dump_free_area(free_area_i, order, is_highmem)
+                free_area_entries.append(res)
+            zone_entry["free_area"] = free_area_entries
+        return zone_entry
 
     def dump_node(self, node):
+        zone_entries = []
         for i in range(self.MAX_NR_ZONES):
             zone = node + self.sizeof_zone * i
             name_ptr = read_int_from_memory(zone + self.offset_name)
             name = read_cstring_from_memory(name_ptr)
             if self.args.zone_filter and name not in self.args.zone_filter:
                 continue
-            self.add_out(titlify("zone[{:d}] @ {:#x} ({:s})".format(i, zone, name)))
+            title = "zone[{:d}] @ {:#x} ({:s})".format(i, zone, name)
             is_highmem = name == "HighMem"
-            self.dump_zone(zone, is_highmem=is_highmem)
-        return
+            res = self.dump_zone(zone, is_highmem=is_highmem)
+            zone_entries.append([title, res])
+        return zone_entries
 
-    def do_sort(self, output):
+    def make_output_for_sort(self, node_entries):
+        # get all etnries
+        all_entries = []
+        for _, zone_entries in node_entries:
+            for _, zone_entry in zone_entries:
+                if "per_cpu_pageset" in zone_entry:
+                    for _, pcp_all_entries in zone_entry["per_cpu_pageset"].items():
+                        for _, pcp_entries, has_any in pcp_all_entries:
+                            if not has_any:
+                                continue
+                            for entry in pcp_entries:
+                                all_entries.append(entry)
+
+                if "free_area" in zone_entry:
+                    for _, free_lists, has_any in zone_entry["free_area"]:
+                        if not has_any:
+                            continue
+                        for _, free_list, has_any2 in free_lists:
+                            if not has_any2:
+                                continue
+                            for entry in free_list:
+                                all_entries.append(entry)
+
+        # sort
+        all_entries = sorted(all_entries, key=lambda e: e.page)
+
+        # make output
         prev_virt = None
         prev_size = None
+        first = True
         align = AddressUtil.get_format_address_width()
-
-        out = []
-        for page, size, msg in sorted(output, key=lambda x: x[0]):
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
+        for entry in tqdm(all_entries, leave=False):
+            # for simple sort
             if not self.args.sort_verbose:
-                out.append(msg)
+                self.out.append(str(entry))
                 continue
 
-            # sort_verbose (filling the gap)
-            virt = Kernel.page2virt(page)
+            # for verbose sort (filling the gap)
 
-            if prev_virt is None:
-                # first entry
+            # add used area if calculable
+            virt = Kernel.page2virt(entry.page)
+            if first:
                 if virt is not None:
-                    phys = PageMap.v2p_from_map(virt, self.maps)
+                    phys = PageMap.v2p_from_map(virt, BuddyDumpCommand.maps)
                     if phys is not None:
-                        out.append("    used:{:{:d}s}  size:{:#08x}".format("", align, phys))
+                        self.out.append("    used:{:{:d}s}  size:{:#08x}".format("", align, phys))
+                first = False
             else:
-                # second or after entries
-                if prev_virt + prev_size != virt:
-                    diff = virt - (prev_virt + prev_size)
-                    out.append("    used:{:{:d}s}  size:{:#08x}".format("", align, diff))
+                if isinstance(virt, int) and isinstance(prev_virt, int):
+                    if prev_virt + prev_size != virt:
+                        diff = virt - (prev_virt + prev_size)
+                        self.out.append("    used:{:{:d}s}  size:{:#08x}".format("", align, diff))
 
-            out.append(msg)
+            # add free area
+            self.out.append(str(entry))
+
             prev_virt = virt
-            prev_size = size
-        return out
+            prev_size = entry.size
+        return
+
+    def make_output(self, node_entries):
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
+
+        for node_title, zone_entries in tqdm(node_entries, leave=False):
+            self.out.append(titlify(node_title))
+
+            for zone_title, zone_entry in tqdm(zone_entries, leave=False):
+                self.out.append(titlify(zone_title))
+
+                if "per_cpu_pageset" in zone_entry:
+                    self.out.append(titlify("per_cpu_pageset"))
+                    for cpu_num, pcp_all_entries in tqdm(zone_entry["per_cpu_pageset"].items(), leave=False):
+                        self.out.append("cpu: {:d}".format(cpu_num))
+                        for pcp_title, pcp_entries, has_any in tqdm(pcp_all_entries, leave=False):
+                            if not has_any and not self.args.vverbose:
+                                continue
+                            self.out.append(pcp_title)
+                            for i, entry in enumerate(pcp_entries):
+                                if not self.args.verbose and i >= 10:
+                                    self.out.append("    ...")
+                                    break
+                                self.out.append(str(entry))
+
+                if "free_area" in zone_entry:
+                    self.out.append(titlify("free_area"))
+                    for order_title, free_lists, has_any in tqdm(zone_entry["free_area"], leave=False):
+                        if not has_any and not self.args.vverbose:
+                            continue
+                        self.out.append(order_title)
+                        for mtype_title, free_list, has_any2 in tqdm(free_lists, leave=False):
+                            if not has_any2 and not self.args.vverbose:
+                                continue
+                            self.out.append(mtype_title)
+                            for i, entry in enumerate(free_list):
+                                if not self.args.verbose and i >= 10:
+                                    self.out.append("    ...")
+                                    break
+                                self.out.append(str(entry))
+        return
 
     @parse_args
     @only_if_gdb_running
@@ -74271,6 +74339,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         if args.rescan:
             self.initialized = False
         self.args.sort = args.sort_verbose or args.sort
+        self.args.verbose = args.vverbose or args.verbose
 
         # initialize
         self.quiet_info("Wait for memory scan")
@@ -74278,24 +74347,26 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             return
 
         # do not use cache
-        self.maps = PageMap.get_page_maps(None)
-        if self.maps is None:
+        BuddyDumpCommand.maps = PageMap.get_page_maps(None)
+        if BuddyDumpCommand.maps is None:
             self.quiet_err("Failed to resolve maps")
             return
 
         # dump
-        self.out = []
+        node_entries = []
         for i, node in enumerate(self.nodes):
-            self.add_out(titlify("node[{:d}] @ {:#x}".format(i, node)))
-            self.dump_node(node)
-            # When self.args.sort is False, self.out contains a list of messages.
-            # When self.args.sort is True, self.out contains a list of information for constructing messages.
+            title = "node[{:d}] @ {:#x}".format(i, node)
+            res = self.dump_node(node)
+            node_entries.append([title, res])
+        self.quiet_info("Parse OK, making output...")
 
-        # sort
-        if args.sort:
-            self.out = self.do_sort(self.out)
-
-        self.print_output()
+        # print
+        self.out = []
+        if self.args.sort:
+            self.make_output_for_sort(node_entries)
+        else:
+            self.make_output(node_entries)
+        self.print_output(check_terminal_size=True)
         return
 
 
