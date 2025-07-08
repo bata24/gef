@@ -297,9 +297,9 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
             - ![](images/heap-arenas.png)
         - `heap top`
             - ![](images/heap-top.png)
-        - `heap bins-simple`
+        - `heap bins-simple`: displays the heap like pwndbg style.
             - ![](images/heap-bins-simple.png)
-        - `heap parse`
+        - `heap parse`: displays the heap like as Pwngdb/angelheap style.
             - ![](images/heap-parse.png)
         - `heap try-malloc`
             - ![](images/heap-try-malloc.png)
@@ -422,8 +422,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - It supports some new options:
         - `--is-addr`
         - `--is-not-addr`
-        - `--zero`
-        - `--non-zero`
+        - `--is-zero`
+        - `--is-not-zero`
         - `--tag`
         - `--uniq`
         - `--interval`
