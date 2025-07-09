@@ -10981,6 +10981,30 @@ def read_int_from_memory(addr):
     return unpack(mem)
 
 
+def read_int8_from_memory(addr):
+    """Return a uint_8 read from memory."""
+    mem = read_memory(addr, 1)
+    return u8(mem)
+
+
+def read_int16_from_memory(addr):
+    """Return a uint_16 read from memory."""
+    mem = read_memory(addr, 2)
+    return u16(mem)
+
+
+def read_int32_from_memory(addr):
+    """Return a uint_32 read from memory."""
+    mem = read_memory(addr, 4)
+    return u32(mem)
+
+
+def read_int64_from_memory(addr):
+    """Return a uint_64 read from memory."""
+    mem = read_memory(addr, 8)
+    return u64(mem)
+
+
 def read_cstring_from_memory(addr, max_length=None):
     """Return a C-string read from memory."""
     if max_length is None:
@@ -21646,9 +21670,9 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
                     size = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
                     tcache_perthread_struct = arena.heap_base + 0x10
                     if get_libc_version() < (2, 30):
-                        count = ord(read_memory(tcache_perthread_struct + i, 1))
+                        count = read_int8_from_memory(tcache_perthread_struct + i)
                     else:
-                        count = u16(read_memory(tcache_perthread_struct + 2 * i, 2))
+                        count = read_int16_from_memory(tcache_perthread_struct + 2 * i)
                     gef_print("{:#x} [{:d}] ({:d}): ".format(size, i, count) + " -> ".join(m))
 
             gef_print(titlify("fastbins"))
@@ -21973,9 +21997,9 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
 
             if m or verbose:
                 if get_libc_version() < (2, 30):
-                    count = ord(read_memory(tcache_perthread_struct + i, 1))
+                    count = read_int8_from_memory(tcache_perthread_struct + i)
                 else:
-                    count = u16(read_memory(tcache_perthread_struct + 2 * i, 2))
+                    count = read_int16_from_memory(tcache_perthread_struct + 2 * i)
                 size = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
                 bins_addr = ProcessMap.lookup_address(arena.addrof_tcachebins_i(i))
                 fd = ProcessMap.lookup_address(read_int_from_memory(bins_addr.value))
@@ -25692,8 +25716,8 @@ class KernelChecksecCommand(GenericCommand):
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
                 return
 
-            selinux_enabled = u32(read_memory(selinux_enabled_addr, 4))
-            selinux_enforcing = u32(read_memory(selinux_enforcing_addr, 4))
+            selinux_enabled = read_int32_from_memory(selinux_enabled_addr)
+            selinux_enforcing = read_int32_from_memory(selinux_enforcing_addr)
             additional = "selinux_init: Found, selinux_enabled: {:d}, selinux_enforcing: {:d}".format(
                 selinux_enabled, selinux_enforcing,
             )
@@ -25740,7 +25764,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
             return
 
-        if u64(read_memory(selinux_state, 8)) == 0:
+        if read_int64_from_memory(selinux_state) == 0:
             additional = "selinux_init: Found, selinux_state: Not initialized"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
             return
@@ -25752,7 +25776,7 @@ class KernelChecksecCommand(GenericCommand):
 
         # selinux_state.disabled
         if CONFIG_SECURITY_SELINUX_DISABLE:
-            selinux_disabled = u8(read_memory(selinux_state, 1))
+            selinux_disabled = read_int8_from_memory(selinux_state)
             additional = "selinux_init: Found, selinux_state.disable: {:d}".format(selinux_disabled)
         else:
             selinux_disabled = None
@@ -25760,10 +25784,10 @@ class KernelChecksecCommand(GenericCommand):
 
         # selinux_state.enforcing
         if CONFIG_SECURITY_SELINUX_DEVELOP and CONFIG_SECURITY_SELINUX_DISABLE:
-            selinux_enforcing = u8(read_memory(selinux_state + 1, 1))
+            selinux_enforcing = read_int8_from_memory(selinux_state + 1)
             additional += ", selinux_state.enforcing: {:d}".format(selinux_enforcing)
         elif CONFIG_SECURITY_SELINUX_DEVELOP and not CONFIG_SECURITY_SELINUX_DISABLE:
-            selinux_enforcing = u8(read_memory(selinux_state, 1)) != 0
+            selinux_enforcing = read_int8_from_memory(selinux_state)
             additional += ", selinux_state.enforcing: {:d}".format(selinux_enforcing)
         else:
             selinux_enforcing = True
@@ -25821,10 +25845,10 @@ class KernelChecksecCommand(GenericCommand):
 
         kversion = Kernel.kernel_version()
         if kversion < "5.1":
-            apparmor_enabled = u8(read_memory(apparmor_enabled_addr, 1)) # bool
+            apparmor_enabled = read_int8_from_memory(apparmor_enabled_addr) # bool
         else:
-            apparmor_enabled = u32(read_memory(apparmor_enabled_addr, 4)) # int
-        apparmor_initialized = u32(read_memory(apparmor_initialized_addr, 4))
+            apparmor_enabled = read_int32_from_memory(apparmor_enabled_addr) # int
+        apparmor_initialized = read_int32_from_memory(apparmor_initialized_addr)
 
         if apparmor_enabled not in [0, 1]:
             additional = "apparmor_init: Found, apparmor_enabled: {:#x}".format(apparmor_enabled)
@@ -25861,7 +25885,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
             return
 
-        tomoyo_enabled = u32(read_memory(tomoyo_enabled_addr, 4))
+        tomoyo_enabled = read_int32_from_memory(tomoyo_enabled_addr)
         additional = "tomoyo_init: Found, tomoyo_enabled: {:d}".format(tomoyo_enabled)
         if tomoyo_enabled == 0:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
@@ -25883,7 +25907,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
             return
 
-        ptrace_scope = u32(read_memory(ptrace_scope_addr, 4))
+        ptrace_scope = read_int32_from_memory(ptrace_scope_addr)
         additional = "yama_init: Found, kernel.yama.ptrace_scope: {:d}".format(ptrace_scope)
         if ptrace_scope == 0:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
@@ -25938,7 +25962,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
             return
 
-        loadpin_status = u32(read_memory(loadpin_cfg_addr, 4))
+        loadpin_status = read_int32_from_memory(loadpin_cfg_addr)
         additional = "loadpin_init: Found, {:s}: {:d}".format(loadpin_cfg_name, loadpin_status)
         if loadpin_status == 0:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
@@ -26034,7 +26058,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
             return
 
-        v = u32(read_memory(sysctl_unprivileged_userfaultfd, 4))
+        v = read_int32_from_memory(sysctl_unprivileged_userfaultfd)
         additional = "{:s}: {:d}".format(cfg, v)
         if v == 0:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
@@ -26068,7 +26092,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
             return
 
-        v = u32(read_memory(sysctl_unprivileged_bpf_disabled, 4))
+        v = read_int32_from_memory(sysctl_unprivileged_bpf_disabled)
         additional = "{:s}: {:d}".format(cfg, v)
         if v == 0:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
@@ -26105,7 +26129,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
             return
 
-        v1 = u32(read_memory(kexec_load_disabled, 4))
+        v1 = read_int32_from_memory(kexec_load_disabled)
         additional = "{:s}: {:d}".format(cfg, v1)
         if v1 == 0:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
@@ -26150,7 +26174,7 @@ class KernelChecksecCommand(GenericCommand):
                 prev_fail = True
                 continue
 
-            val = u32(read_memory(addr, 4))
+            val = read_int32_from_memory(addr)
             if val:
                 gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("{:d}".format(val), "bold red")))
             else:
@@ -26165,7 +26189,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
             return
 
-        val = u32(read_memory(addr, 4))
+        val = read_int32_from_memory(addr)
         additional = "{:s}: {:d}, Only present in debian-based environments".format(cfg, val)
         if val:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
@@ -26181,7 +26205,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
             return
 
-        val = u32(read_memory(addr, 4))
+        val = read_int32_from_memory(addr)
         additional = "{:s}: {:d}, Only present in ALT-linux-based environments".format(cfg, val)
         if val:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
@@ -26351,7 +26375,7 @@ class KernelChecksecCommand(GenericCommand):
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
                 return
 
-            v1 = u32(read_memory(kptr_restrict, 4))
+            v1 = read_int32_from_memory(kptr_restrict)
             additional = "kernel.kptr_restrict: {:d}".format(v1)
             if v1 == 0:
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
@@ -26371,7 +26395,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
             return
 
-        v1 = u32(read_memory(kptr_restrict, 4))
+        v1 = read_int32_from_memory(kptr_restrict)
         v2 = u32(read_memory(sysctl_perf_event_paranoid, 4), s=True)
         additional = "kernel.kptr_restrict: {:d}, kernel.perf_event_paranoid: {:d}".format(v1, v2)
         if v1 == 0 and v2 <= 1:
@@ -26388,7 +26412,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
             return
 
-        v1 = u32(read_memory(dmesg_restrict, 4))
+        v1 = read_int32_from_memory(dmesg_restrict)
         additional = "kernel.dmesg_restrict: {:d}".format(v1)
         if v1 == 0:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
@@ -36085,7 +36109,7 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
                 sym = Symbol.get_symbol_string(val)
                 msg += "{:s}{:{:d}s} ".format(address_obj.long_fmt(), sym, sym_width)
             elif member_size == 8:
-                val = u64(read_memory(member_addr, 8))
+                val = read_int64_from_memory(member_addr)
                 # special case
                 if is_32bit() and member_name == "_offset":
                     if Endian.is_big_endian():
@@ -36097,19 +36121,19 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
                         member_offset += adjust
                         msg = "{:+#05x} | {:16s}: ".format(member_offset, member_name)
                         member_addr += adjust
-                        val = u64(read_memory(member_addr, 8))
+                        val = read_int64_from_memory(member_addr)
                 val_s = "{:#018x}".format(val)
                 msg += "{:s}{:{:d}s} ".format(val_s, "", sym_width - [8, 0][is_64bit()])
             elif member_size == 4:
-                val = u32(read_memory(member_addr, 4))
+                val = read_int32_from_memory(member_addr)
                 val_s = "{:#010x}".format(val)
                 msg += "{:{:d}s}{:{:d}s} ".format(val_s, val_width, "", sym_width)
             elif member_size == 2:
-                val = u16(read_memory(member_addr, 2))
+                val = read_int16_from_memory(member_addr)
                 val_s = "{:#06x}".format(val)
                 msg += "{:{:d}s}{:{:d}s} ".format(val_s, val_width, "", sym_width)
             elif member_size == 1:
-                val = u8(read_memory(member_addr, 1))
+                val = read_int8_from_memory(member_addr)
                 val_s = "{:#04x}".format(val)
                 msg += "{:{:d}s}{:{:d}s} ".format(val_s, val_width, "", sym_width)
             else:
@@ -54185,7 +54209,7 @@ class KernelAddressHeuristicFinder:
                         if not is_valid_addr(v):
                             continue
                         if kversion < "5.13":
-                            w = u32(read_memory(v, 4))
+                            w = read_int32_from_memory(v)
                             if w == 0x00005403: # magic
                                 return x
                         else:
@@ -54993,7 +55017,7 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
                 for x in g:
-                    v = u32(read_memory(x, 4))
+                    v = read_int32_from_memory(x)
                     if is_valid_addr(v):
                         continue
                     return x
@@ -55032,7 +55056,7 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res, skip=1),
                     )
                 for x in g:
-                    v = u32(read_memory(x, 4))
+                    v = read_int32_from_memory(x)
                     if v == 0:
                         continue
                     return x
@@ -55120,7 +55144,7 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
                 for x in g:
-                    v = u32(read_memory(x, 4))
+                    v = read_int32_from_memory(x)
                     if v and (v & 0xfff) == 0:
                         return x
 
@@ -55140,7 +55164,7 @@ class KernelAddressHeuristicFinder:
                     # TODO
                     g = []
                 for x in g:
-                    v = u32(read_memory(x, 4))
+                    v = read_int32_from_memory(x)
                     if v and (v & 0xfff) == 0:
                         return x
         return None
@@ -56989,7 +57013,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         kstack = read_int_from_memory(task_addr + offset_stack)
         if not is_valid_addr(kstack):
             return None
-        stack_top_val = u32(read_memory(kstack, 4))
+        stack_top_val = read_int32_from_memory(kstack)
         if stack_top_val == 0x57ac6e9d: # STACK_END_MAGIC
             """
             struct task_struct {
@@ -57015,10 +57039,10 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 flags = read_int_from_memory(thread_info)
                 return bool(flags & (1 << 8)) # TIF_SECCOMP
             elif kversion >= "4.1":
-                flags = u32(read_memory(thread_info + current_arch.ptrsize, 4))
+                flags = read_int32_from_memory(thread_info + current_arch.ptrsize)
                 return bool(flags & (1 << 8)) # TIF_SECCOMP
             else:
-                flags = u32(read_memory(thread_info + current_arch.ptrsize * 2, 4))
+                flags = read_int32_from_memory(thread_info + current_arch.ptrsize * 2)
                 return bool(flags & (1 << 8)) # TIF_SECCOMP
         elif is_arm32():
             if kversion >= "6.0":
@@ -57256,8 +57280,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             found = False
             seen_pid = []
             for task in task_addrs[1:]: # swapper/0 has pid 0. Don't use it as it will cause false positives.
-                v1 = u32(read_memory(task + (i + 0) * 4, 4))
-                v2 = u32(read_memory(task + (i + 1) * 4, 4))
+                v1 = read_int32_from_memory(task + (i + 0) * 4)
+                v2 = read_int32_from_memory(task + (i + 1) * 4)
                 if v1 == 0 or pid_max < v1: # pid is 1 ~ pid_max
                     break
                 if v2 == 0 or pid_max < v2: # tgid is 1 ~ pid_max
@@ -57444,8 +57468,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             if not is_valid_addr(filt):
                 continue
 
-            mode = u32(read_memory(seccomped_task + offset_filter - 4 * 2, 4))
-            filtcnt = u32(read_memory(seccomped_task + offset_filter - 4, 4))
+            mode = read_int32_from_memory(seccomped_task + offset_filter - 4 * 2)
+            filtcnt = read_int32_from_memory(seccomped_task + offset_filter - 4)
 
             """
             #define SECCOMP_MODE_DISABLED 0
@@ -57521,11 +57545,11 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             if not self.has_seccomp(task):
                 continue
 
-            mode = u32(read_memory(task + self.offset_seccomp, 4))
+            mode = read_int32_from_memory(task + self.offset_seccomp)
             if mode != 2: # SECCOMP_MODE_FILTER
                 continue
 
-            filter_count = u32(read_memory(task + self.offset_seccomp + 4, 4))
+            filter_count = read_int32_from_memory(task + self.offset_seccomp + 4)
             if filter_count == 0:
                 continue # something is wrong
 
@@ -57968,7 +57992,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                         offset_ma_flags = offset_ma_root + current_arch.ptrsize
                     else:
                         offset_ma_flags = offset_ma_root - 4
-                        if is_64bit() and u32(read_memory(mm + offset_ma_flags, 4)) == 0:
+                        if is_64bit() and read_int32_from_memory(mm + offset_ma_flags) == 0:
                             offset_ma_flags = offset_ma_root - 8
                     break
             else:
@@ -58806,7 +58830,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     found_offset_case1.append(offset)
 
                 # check case 2 (sa_mask)
-                v = u64(read_memory(current + offset, 8))
+                v = read_int64_from_memory(current + offset)
                 if bin(v)[2:].count("1") > 56: # heuristic threshold
                     found_offset_case2.append(offset)
 
@@ -59245,7 +59269,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     continue
 
             kstack = read_int_from_memory(task + self.offset_stack)
-            pid = u32(read_memory(task + self.offset_pid, 4))
+            pid = read_int32_from_memory(task + self.offset_pid)
             cred = read_int_from_memory(task + self.offset_cred)
 
             # current
@@ -59270,10 +59294,10 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
             # uid
             if self.args.print_all_id:
-                uids = [u32(read_memory(cred + self.offset_uid + j * 4, 4)) for j in range(8)]
+                uids = [read_int32_from_memory(cred + self.offset_uid + j * 4) for j in range(8)]
                 uids_fmt = "{:>5d},{:>5d},{:>5d},{:>5d},{:>5d},{:>5d},{:>5d},{:>5d}"
             else:
-                uids = [u32(read_memory(cred + self.offset_uid + j * 4, 4)) for j in range(2)]
+                uids = [read_int32_from_memory(cred + self.offset_uid + j * 4) for j in range(2)]
                 uids_fmt = "{:>5d},{:>5d}"
             uids_str = uids_fmt.format(*uids)
 
@@ -59341,7 +59365,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 files = read_int_from_memory(task + self.offset_files)
                 fdt = read_int_from_memory(files + self.offset_fdt)
                 if is_valid_addr(fdt):
-                    max_fds = u32(read_memory(fdt, 4))
+                    max_fds = read_int32_from_memory(fdt)
                     array = read_int_from_memory(fdt + current_arch.ptrsize)
                     for i in range(max_fds):
                         file = read_int_from_memory(array + current_arch.ptrsize * i)
@@ -59414,14 +59438,14 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
                     seccomp = task + self.offset_seccomp
-                    mode = u32(read_memory(seccomp, 4))
+                    mode = read_int32_from_memory(seccomp)
                     mode_define = {
                         0: "SECCOMP_MODE_DISABLED",
                         1: "SECCOMP_MODE_STRICT",
                         2: "SECCOMP_MODE_FILTER",
                     }.get(mode, "UNKNOWN")
                     mode_str = "{:d} ({:s})".format(mode, mode_define)
-                    filter_count = u32(read_memory(seccomp + 4, 4))
+                    filter_count = read_int32_from_memory(seccomp + 4)
                     filter_current = read_int_from_memory(seccomp + 4 * 2)
                     self.out.append("{:#018x} {:25s} {:<12d} {:#018x}".format(seccomp, mode_str, filter_count, filter_current))
 
@@ -59824,7 +59848,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                             offset_size = current_arch.ptrsize * 2 + 4 # void*, void*, bool
                         else:
                             offset_size = current_arch.ptrsize # void*
-                        cand_size = u32(read_memory(mem_ptr + offset_size, 4))
+                        cand_size = read_int32_from_memory(mem_ptr + offset_size)
                         if cand_size == 0 or cand_size > 0x100000:
                             valid = False
                             break
@@ -59944,22 +59968,22 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                     valid = False
                     break
                 # size check
-                cand_size = u32(read_memory(init_layout_ptr + current_arch.ptrsize, 4))
+                cand_size = read_int32_from_memory(init_layout_ptr + current_arch.ptrsize)
                 if cand_size == 0 or cand_size > 0x200000:
                     valid = False
                     break
                 # text_size check
-                cand_text_size = u32(read_memory(init_layout_ptr + current_arch.ptrsize + 4 * 1, 4))
+                cand_text_size = read_int32_from_memory(init_layout_ptr + current_arch.ptrsize + 4 * 1)
                 if cand_text_size == 0 or cand_text_size > 0x200000:
                     valid = False
                     break
                 # ro_size check
-                cand_ro_size = u32(read_memory(init_layout_ptr + current_arch.ptrsize + 4 * 2, 4))
+                cand_ro_size = read_int32_from_memory(init_layout_ptr + current_arch.ptrsize + 4 * 2)
                 if cand_ro_size == 0 or cand_ro_size > 0x200000:
                     valid = False
                     break
                 # ro_after_init_size check
-                cand_ro_after_init_size = u32(read_memory(init_layout_ptr + current_arch.ptrsize + 4 * 3, 4))
+                cand_ro_after_init_size = read_int32_from_memory(init_layout_ptr + current_arch.ptrsize + 4 * 3)
                 if cand_ro_after_init_size == 0 or cand_ro_after_init_size > 0x200000:
                     valid = False
                     break
@@ -60053,22 +60077,22 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                     valid = False
                     break
                 # init_size check
-                cand_init_size = u32(read_memory(module_core_ptr + current_arch.ptrsize, 4))
+                cand_init_size = read_int32_from_memory(module_core_ptr + current_arch.ptrsize)
                 if cand_init_size > 0x100000:
                     valid = False
                     break
                 # core_size check
-                cand_core_size = u32(read_memory(module_core_ptr + current_arch.ptrsize + 4 * 1, 4))
+                cand_core_size = read_int32_from_memory(module_core_ptr + current_arch.ptrsize + 4 * 1)
                 if cand_core_size == 0 or cand_core_size > 0x100000:
                     valid = False
                     break
                 # init_text_size check
-                cand_init_text_size = u32(read_memory(module_core_ptr + current_arch.ptrsize + 4 * 2, 4))
+                cand_init_text_size = read_int32_from_memory(module_core_ptr + current_arch.ptrsize + 4 * 2)
                 if cand_init_text_size > 0x100000:
                     valid = False
                     break
                 # core_text_size check
-                cand_core_text_size = u32(read_memory(module_core_ptr + current_arch.ptrsize + 4 * 3, 4))
+                cand_core_text_size = read_int32_from_memory(module_core_ptr + current_arch.ptrsize + 4 * 3)
                 if cand_core_text_size == 0 or cand_core_text_size > 0x100000:
                     valid = False
                     break
@@ -60154,19 +60178,19 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             strtab_pos += len(sym_name) + 1
 
             if kversion >= "5.2":
-                sym_type = chr(u8(read_memory(typetab + i, 1)))
+                sym_type = chr(read_int8_from_memory(typetab + i))
             elif kversion >= "5.0":
                 # st_size
                 if is_64bit():
-                    sym_type = chr(u8(read_memory(symtab + sizeof_symtab_entry * i + 16, 1)))
+                    sym_type = chr(read_int8_from_memory(symtab + sizeof_symtab_entry * i + 16))
                 else:
-                    sym_type = chr(u8(read_memory(symtab + sizeof_symtab_entry * i + 8, 1)))
+                    sym_type = chr(read_int8_from_memory(symtab + sizeof_symtab_entry * i + 8))
             else:
                 # st_info
                 if is_64bit():
-                    sym_type = chr(u8(read_memory(symtab + sizeof_symtab_entry * i + 4, 1)))
+                    sym_type = chr(read_int8_from_memory(symtab + sizeof_symtab_entry * i + 4))
                 else:
-                    sym_type = chr(u8(read_memory(symtab + sizeof_symtab_entry * i + 12, 1)))
+                    sym_type = chr(read_int8_from_memory(symtab + sizeof_symtab_entry * i + 12))
             entries.append([sym_addr, sym_type, sym_name])
         return entries
 
@@ -60290,13 +60314,13 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
 
             if kversion >= "6.4":
                 base = read_int_from_memory(module + offset_mem)
-                size = u32(read_memory(module + offset_mem_size, 4))
+                size = read_int32_from_memory(module + offset_mem_size)
             elif kversion >= "4.5":
                 base = read_int_from_memory(module + offset_layout)
-                size = u32(read_memory(module + offset_layout + current_arch.ptrsize, 4))
+                size = read_int32_from_memory(module + offset_layout + current_arch.ptrsize)
             else: # ~v4.4
                 base = read_int_from_memory(module + offset_module_core)
-                size = u32(read_memory(module + offset_module_core + current_arch.ptrsize + 4, 4))
+                size = read_int32_from_memory(module + offset_module_core + current_arch.ptrsize + 4)
 
             if not args.apply_symbol:
                 self.out.append("{:#018x} {:<24s} {:#018x} {:#018x}".format(module, name_string, base, size))
@@ -60893,7 +60917,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
             else:
                 self.offset_bd_dev = 8 * 2 + current_arch.ptrsize * 4 + 4
 
-        dev = u32(read_memory(bdev + self.offset_bd_dev, 4))
+        dev = read_int32_from_memory(bdev + self.offset_bd_dev)
         major = dev >> 20
         minor = dev & ((1 << 20) - 1)
         name = KernelBlockDevicesCommand.get_bdev_name(major, minor)
@@ -61929,7 +61953,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
             addr = read_int_from_memory(cdev_map_ + i * current_arch.ptrsize)
             while addr:
                 cdev = read_int_from_memory(addr + 6 * current_arch.ptrsize)
-                dev = u32(read_memory(addr + current_arch.ptrsize, 4))
+                dev = read_int32_from_memory(addr + current_arch.ptrsize)
                 major = dev >> 20
                 minor = dev & ((1 << 20) - 1)
                 if cdev and cdev not in seen:
@@ -61996,8 +62020,8 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
         # merge chrdev (from chrdevs)
         merged = {}
         for chrdev in chrdev_addrs:
-            major = u32(read_memory(chrdev + current_arch.ptrsize, 4))
-            minor = u32(read_memory(chrdev + current_arch.ptrsize + 4, 4))
+            major = read_int32_from_memory(chrdev + current_arch.ptrsize)
+            minor = read_int32_from_memory(chrdev + current_arch.ptrsize + 4)
             name_string = read_cstring_from_memory(chrdev + current_arch.ptrsize + 4 * 3) or "<None>"
             off = chrdev + current_arch.ptrsize + 4 * 3 + 64
             while off % current_arch.ptrsize: # align
@@ -63225,7 +63249,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         if not self.should_be_print(param_path):
             return
 
-        maxlen = u32(read_memory(ctl_table + self.offset_maxlen, 4))
+        maxlen = read_int32_from_memory(ctl_table + self.offset_maxlen)
         # data
         data_addr = read_int_from_memory(ctl_table + current_arch.ptrsize)
         if data_addr and is_valid_addr(data_addr):
@@ -63238,17 +63262,17 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                     param_path, data_addr, maxlen, mode, data_val,
                 )) # allow None
             elif maxlen == 4:
-                data_val = u32(read_memory(data_addr, 4))
+                data_val = read_int32_from_memory(data_addr)
                 self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {:#018x}".format(
                     param_path, data_addr, maxlen, mode, data_val,
                 ))
             elif maxlen == 8:
-                data_val = u64(read_memory(data_addr, 8))
+                data_val = read_int64_from_memory(data_addr)
                 self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {:#018x}".format(
                     param_path, data_addr, maxlen, mode, data_val,
                 ))
             elif maxlen == 1:
-                data_val = u8(read_memory(data_addr, 1))
+                data_val = read_int8_from_memory(data_addr)
                 self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {:#018x}".format(
                     param_path, data_addr, maxlen, mode, data_val,
                 ))
@@ -63343,7 +63367,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                     break
 
                 # mode
-                mode = u32(read_memory(ctl_table + self.offset_mode, 4))
+                mode = read_int32_from_memory(ctl_table + self.offset_mode)
 
                 # dump
                 if (mode & 0o0120000) == 0o0120000: # symlink
@@ -64053,7 +64077,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
                     super_block = s_instances - self.offset_s_instances
 
                     # dev
-                    dev = u32(read_memory(super_block + self.offset_s_dev, 4))
+                    dev = read_int32_from_memory(super_block + self.offset_s_dev)
                     major, minor, devname = self.get_dev_num(dev)
 
                     # mount
@@ -64541,7 +64565,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
             clock_base = hrtimer_cpu_base + self.offset_clock_base
             for base_n in range(self.num_of_clock_base):
                 htb = clock_base + self.sizeof_hrtimer_clock_base * base_n
-                clockid = u32(read_memory(htb + self.offset_clockid, 4))
+                clockid = read_int32_from_memory(htb + self.offset_clockid)
                 get_time = read_int_from_memory(htb + self.offset_get_time)
                 self.out.append(titlify("cpu{:d} hrtimer_clock_base[{:d}]: {:#x}  [{:s}; get_time: {:#x}{:s}]".format(
                     cpu, base_n, htb,
@@ -64558,10 +64582,10 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
 
                 rb_node = read_int_from_memory(htb + self.offset_rb_root)
                 for hrtimer in self.parse_rb_node(rb_node):
-                    expires = u64(read_memory(hrtimer + current_arch.ptrsize * 3, 8))
+                    expires = read_int64_from_memory(hrtimer + current_arch.ptrsize * 3)
                     function = read_int_from_memory(hrtimer + current_arch.ptrsize * 3 + 8 * 2)
                     if is_32bit() and not is_valid_addr(function):
-                        expires = u64(read_memory(hrtimer + current_arch.ptrsize * 3 + 4, 8))
+                        expires = read_int64_from_memory(hrtimer + current_arch.ptrsize * 3 + 4)
                         function = read_int_from_memory(hrtimer + current_arch.ptrsize * 3 + 4 + 8 * 2)
                     self.out.append("{:#018x}  {:#018x}  {:23s}  {:#018x}{:s}".format(
                         hrtimer, expires,
@@ -65010,14 +65034,14 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
 
             # parse device info
             dev_name = read_cstring_from_memory(read_int_from_memory(dev + self.offset_pci_dev_dev))
-            vendor = u16(read_memory(dev + self.offset_pci_dev_vendor, 2))
-            device = u16(read_memory(dev + self.offset_pci_dev_device, 2))
-            sub_vendor = u16(read_memory(dev + self.offset_pci_dev_subsystem_vendor, 2))
-            sub_device = u16(read_memory(dev + self.offset_pci_dev_subsystem_device, 2))
-            revision = u8(read_memory(dev + self.offset_pci_dev_revision, 1))
+            vendor = read_int16_from_memory(dev + self.offset_pci_dev_vendor)
+            device = read_int16_from_memory(dev + self.offset_pci_dev_device)
+            sub_vendor = read_int16_from_memory(dev + self.offset_pci_dev_subsystem_vendor)
+            sub_device = read_int16_from_memory(dev + self.offset_pci_dev_subsystem_device)
+            revision = read_int8_from_memory(dev + self.offset_pci_dev_revision)
 
             # u32:class = u8:unused || u8:base_class || u8:sub_class || u8:programming-interface
-            class_val = u32(read_memory(dev + self.offset_pci_dev_class, 4))
+            class_val = read_int32_from_memory(dev + self.offset_pci_dev_class)
             prgif = class_val & 0xff
             sub_class = (class_val >> 8) & 0xff
             base_class = (class_val >> 16) & 0xff
@@ -65503,18 +65527,18 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
             if not is_valid_addr(current):
                 return False
             info = {}
-            info["seq"] = u64(read_memory(current, 8))
+            info["seq"] = read_int64_from_memory(current)
             current += 8
-            info["ts_nsec"] = u64(read_memory(current, 8))
+            info["ts_nsec"] = read_int64_from_memory(current)
             current += 8
-            info["text_len"] = u16(read_memory(current, 2))
+            info["text_len"] = read_int16_from_memory(current)
             current += 2
-            info["facility"] = u8(read_memory(current, 1))
+            info["facility"] = read_int8_from_memory(current)
             current += 1
-            info["flags"] = u8(read_memory(current, 1)) & 0b11111
-            info["level"] = (u8(read_memory(current, 1)) >> 5) & 0b111
+            info["flags"] = read_int8_from_memory(current) & 0b11111
+            info["level"] = (read_int8_from_memory(current) >> 5) & 0b111
             current += 1
-            info["caller_id"] = u32(read_memory(current, 4))
+            info["caller_id"] = read_int32_from_memory(current)
             current += 4
             info["dev_info"] = {}
             info["dev_info"]["subsystem"] = read_memory(current, 16)
@@ -65692,9 +65716,9 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
                 return
             self.quiet_info("log_buf_len: {:#x}".format(log_buf_len_ptr))
 
-            log_first_idx = u32(read_memory(log_first_idx_ptr, 4))
-            log_next_idx = u32(read_memory(log_next_idx_ptr, 4))
-            log_buf_len = u32(read_memory(log_buf_len_ptr, 4))
+            log_first_idx = read_int32_from_memory(log_first_idx_ptr)
+            log_next_idx = read_int32_from_memory(log_next_idx_ptr)
+            log_buf_len = read_int32_from_memory(log_buf_len_ptr)
             log_buf_end = log_buf_start + log_buf_len
             self.quiet_info("*log_first_idx: {:#x}".format(log_first_idx))
             self.quiet_info("*log_next_idx: {:#x}".format(log_next_idx))
@@ -70203,7 +70227,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 remote_node_defrag_ratio_1000_count = 0
                 for kmem_cache in kmem_caches:
                     kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
-                    remote_node_defrag_ratio = u32(read_memory(kmem_cache_top + candidate_offset, 4))
+                    remote_node_defrag_ratio = read_int32_from_memory(kmem_cache_top + candidate_offset)
                     if remote_node_defrag_ratio == 0x3e8:
                         remote_node_defrag_ratio_1000_count += 1
                 if remote_node_defrag_ratio_1000_count < len(kmem_caches) // 10: # heuristic threshold: 10%
@@ -70248,9 +70272,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
 
                 # Check whether user_offset, user_size, and object_size satisfy some relationships
-                user_offset = u32(read_memory(kmem_cache_top + candidate_offset, 4))
-                user_size = u32(read_memory(kmem_cache_top + candidate_offset + 4, 4))
-                object_size = u32(read_memory(kmem_cache_top + self.kmem_cache_offset_object_size, 4))
+                user_offset = read_int32_from_memory(kmem_cache_top + candidate_offset)
+                user_size = read_int32_from_memory(kmem_cache_top + candidate_offset + 4)
+                object_size = read_int32_from_memory(kmem_cache_top + self.kmem_cache_offset_object_size)
 
                 if user_offset == user_size == 0:
                     continue
@@ -70577,8 +70601,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # offsetof(kmem_cache, offset)
         top = read_int_from_memory(self.slab_caches) - self.kmem_cache_offset_list
-        object_size = u32(read_memory(top + current_arch.ptrsize * 3 + 4, 4))
-        maybe_recip = u32(read_memory(top + current_arch.ptrsize * 3 + 4 + 4, 4))
+        object_size = read_int32_from_memory(top + current_arch.ptrsize * 3 + 4)
+        maybe_recip = read_int32_from_memory(top + current_arch.ptrsize * 3 + 4 + 4)
         if object_size < maybe_recip or (maybe_recip % 8) != 0:
             self.kmem_cache_offset_offset = current_arch.ptrsize * 3 + 4 + 4 + 8
         else:
@@ -71095,12 +71119,12 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 current_kmem_cache = self.get_next_kmem_cache(current_kmem_cache)
                 continue
             kmem_cache["address"] = current_kmem_cache
-            kmem_cache["flags"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_flags, 4))
+            kmem_cache["flags"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_flags)
             kmem_cache["flags_str"] = SlubDumpCommand.get_flags_str(kmem_cache["flags"])
-            kmem_cache["size"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_size, 4))
-            kmem_cache["object_size"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_object_size, 4))
-            kmem_cache["offset"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_offset, 4))
-            kmem_cache["red_left_pad"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_red_left_pad, 4))
+            kmem_cache["size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_size)
+            kmem_cache["object_size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_object_size)
+            kmem_cache["offset"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_offset)
+            kmem_cache["red_left_pad"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_red_left_pad)
             kmem_cache["random"] = self.get_random(current_kmem_cache)
             kmem_cache["next"] = self.get_next_kmem_cache(current_kmem_cache)
             # parse extra members for Feat. CONFIG_SLAB_VIRTUAL
@@ -71934,12 +71958,12 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
                 current_kmem_cache = self.get_next_kmem_cache(current_kmem_cache)
                 continue
             kmem_cache["address"] = current_kmem_cache
-            kmem_cache["flags"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_flags, 4))
+            kmem_cache["flags"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_flags)
             kmem_cache["flags_str"] = SlubDumpCommand.get_flags_str(kmem_cache["flags"])
-            kmem_cache["size"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_size, 4))
-            kmem_cache["object_size"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_object_size, 4))
-            kmem_cache["offset"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_offset, 4))
-            kmem_cache["red_left_pad"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_red_left_pad, 4))
+            kmem_cache["size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_size)
+            kmem_cache["object_size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_object_size)
+            kmem_cache["offset"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_offset)
+            kmem_cache["red_left_pad"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_red_left_pad)
             kmem_cache["next"] = self.get_next_kmem_cache(current_kmem_cache)
             parsed_caches.append(kmem_cache)
             # goto next
@@ -72464,9 +72488,10 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             for candidate_offset in range(start_offset, start_offset + 0x100, 4):
                 found = True
                 for kmem_cache in kmem_caches:
-                    user_offset = u32(read_memory(kmem_cache - self.kmem_cache_offset_list + candidate_offset, 4))
-                    user_size = u32(read_memory(kmem_cache - self.kmem_cache_offset_list + candidate_offset + 4, 4))
-                    object_size = u32(read_memory(kmem_cache - self.kmem_cache_offset_list + self.kmem_cache_offset_object_size, 4))
+                    kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
+                    user_offset = read_int32_from_memory(kmem_cache_top + candidate_offset)
+                    user_size = read_int32_from_memory(kmem_cache_top + candidate_offset + 4)
+                    object_size = read_int32_from_memory(kmem_cache_top + self.kmem_cache_offset_object_size)
                     if user_offset == user_size == 0:
                         continue
                     if user_offset != 0 and user_size == 0:
@@ -72475,7 +72500,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                     if object_size < user_size:
                         found = False
                         break
-                    node_addr_ptr = kmem_cache - self.kmem_cache_offset_list + candidate_offset + 4 + 4
+                    node_addr_ptr = kmem_cache_top + candidate_offset + 4 + 4
                     node_addr_ptr = AddressUtil.align_address_to_ptrsize(node_addr_ptr)
                     node_addr = read_int_from_memory(node_addr_ptr)
                     if not is_valid_addr(node_addr):
@@ -72672,7 +72697,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             if not self.args.simple:
                 freelist_addr = read_int_from_memory(node_page["address"] + self.page_offset_freelist)
                 if is_valid_addr(freelist_addr):
-                    active = u32(read_memory(node_page["address"] + self.page_offset_active, 4))
+                    active = read_int32_from_memory(node_page["address"] + self.page_offset_active)
                     if kversion >= "3.15":
                         freelist_byteseq = read_memory(freelist_addr, kmem_cache["objperslab"])
                         node_page["freelist"] = list(freelist_byteseq[active:])
@@ -72700,12 +72725,12 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                 current_kmem_cache = self.get_next_kmem_cache(current_kmem_cache)
                 continue
             kmem_cache["address"] = current_kmem_cache
-            kmem_cache["flags"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_flags, 4))
+            kmem_cache["flags"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_flags)
             kmem_cache["flags_str"] = SlubDumpCommand.get_flags_str(kmem_cache["flags"])
-            kmem_cache["size"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_size, 4))
-            kmem_cache["object_size"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_object_size, 4))
-            kmem_cache["objperslab"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_num, 4))
-            gfporder = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_gfporder, 4))
+            kmem_cache["size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_size)
+            kmem_cache["object_size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_object_size)
+            kmem_cache["objperslab"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_num)
+            gfporder = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_gfporder)
             kmem_cache["pagesperslab"] = 1 << gfporder
             kmem_cache["next"] = self.get_next_kmem_cache(current_kmem_cache)
             parsed_caches.append(kmem_cache)
@@ -72726,8 +72751,8 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                 if not is_valid_addr(self.get_array_cache_cpu(kmem_cache["address"], cpu)):
                     continue
                 kmem_cache["array_cache"][cpu]["address"] = array_cache = self.get_array_cache_cpu(kmem_cache["address"], cpu)
-                kmem_cache["array_cache"][cpu]["avail"] = u32(read_memory(array_cache + self.array_cache_offset_avail, 4))
-                kmem_cache["array_cache"][cpu]["limit"] = u32(read_memory(array_cache + self.array_cache_offset_limit, 4))
+                kmem_cache["array_cache"][cpu]["avail"] = read_int32_from_memory(array_cache + self.array_cache_offset_avail)
+                kmem_cache["array_cache"][cpu]["limit"] = read_int32_from_memory(array_cache + self.array_cache_offset_limit)
                 kmem_cache["array_cache"][cpu]["freelist"] = self.walk_array_cache(array_cache, cpu, kmem_cache)
                 kmem_cache["array_cache"]["freelist_all"].extend(kmem_cache["array_cache"][cpu]["freelist"])
 
@@ -73242,7 +73267,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             seen.append(current)
             page = {}
             page["address"] = current - self.page_offset_next
-            page["units"] = u32(read_memory(page["address"] + self.page_offset_units, 4))
+            page["units"] = read_int32_from_memory(page["address"] + self.page_offset_units)
             freelist_head = read_int_from_memory(page["address"] + self.page_offset_freelist)
             page["virt_addr"] = freelist_head & gef_getpagesize_mask_high()
             page["num_pages"] = 1
@@ -73266,10 +73291,10 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
                 current_kmem_cache = self.get_next_kmem_cache(current_kmem_cache)
                 continue
             kmem_cache["address"] = current_kmem_cache
-            kmem_cache["flags"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_flags, 4))
+            kmem_cache["flags"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_flags)
             kmem_cache["flags_str"] = SlubDumpCommand.get_flags_str(kmem_cache["flags"])
-            kmem_cache["size"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_size, 4))
-            kmem_cache["object_size"] = u32(read_memory(current_kmem_cache + self.kmem_cache_offset_object_size, 4))
+            kmem_cache["size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_size)
+            kmem_cache["object_size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_object_size)
             kmem_cache["next"] = self.get_next_kmem_cache(current_kmem_cache)
             parsed_caches.append(kmem_cache)
             # goto next
@@ -73537,14 +73562,14 @@ class SlabContainsCommand(GenericCommand):
                 self.quiet_err("This address is not managed by slab")
                 return
             slab_cache_name_c = Color.colorify(slab_cache_name, chunk_label_color)
-            slab_cache_size = u32(read_memory(kmem_cache + self.kmem_cache_offset_size, 4))
+            slab_cache_size = read_int32_from_memory(kmem_cache + self.kmem_cache_offset_size)
 
             if self.allocator in ["SLUB", "SLUB_TINY"]:
                 x = read_int_from_memory(page + self.page_offset_inuse_objects_frozen)
                 objects = (x >> 16) & 0x7fff
                 num_pages = (slab_cache_size * objects + gef_getpagesize_mask_low()) // gef_getpagesize()
             else:
-                gfporder = u32(read_memory(kmem_cache + self.kmem_cache_offset_gfporder, 4))
+                gfporder = read_int32_from_memory(kmem_cache + self.kmem_cache_offset_gfporder)
                 num_pages = 1 << gfporder
 
             msg = ("name: {:s}  size: {:#x}  num_pages: {:#x}".format(slab_cache_name_c, slab_cache_size, num_pages))
@@ -74560,7 +74585,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 if is_valid_addr(v1):
                     continue
                 # head is too large
-                v1_4 = u32(read_memory(pipe_inode_info + current_arch.ptrsize * i, 4))
+                v1_4 = read_int32_from_memory(pipe_inode_info + current_arch.ptrsize * i)
                 if v1_4 > 0x100:
                     continue
                 # max_usage is not address
@@ -74568,7 +74593,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 if is_valid_addr(v2):
                     continue
                 # max_usage is too large or zero
-                v2_4 = u32(read_memory(pipe_inode_info + current_arch.ptrsize * (i + 1), 4))
+                v2_4 = read_int32_from_memory(pipe_inode_info + current_arch.ptrsize * (i + 1))
                 if v2_4 > 0x100 or v2_4 == 0:
                     continue
                 self.offset_head = current_arch.ptrsize * i
@@ -74591,7 +74616,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 if is_valid_addr(v1):
                     continue
                 # nrbuf is too large
-                v1_4 = u32(read_memory(pipe_inode_info + current_arch.ptrsize * i, 4))
+                v1_4 = read_int32_from_memory(pipe_inode_info + current_arch.ptrsize * i)
                 if v1_4 > 0x100:
                     continue
                 # buffers is not address
@@ -74599,7 +74624,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 if is_valid_addr(v2):
                     continue
                 # buffers is too large or zero
-                v2_4 = u32(read_memory(pipe_inode_info + current_arch.ptrsize * (i + 1), 4))
+                v2_4 = read_int32_from_memory(pipe_inode_info + current_arch.ptrsize * (i + 1))
                 if v2_4 > 0x100 or v2_4 == 0:
                     continue
                 self.offset_nrbuf = current_arch.ptrsize * i
@@ -74699,17 +74724,17 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             self.out.append("    pipe_buffer: {:#x}".format(pipe_buffer))
 
             if kversion >= "5.5":
-                head = u32(read_memory(pipe_inode_info + self.offset_head, 4))
-                tail = u32(read_memory(pipe_inode_info + self.offset_tail, 4))
-                max_usage = u32(read_memory(pipe_inode_info + self.offset_max_usage, 4))
-                ring_size = u32(read_memory(pipe_inode_info + self.offset_ring_size, 4))
+                head = read_int32_from_memory(pipe_inode_info + self.offset_head)
+                tail = read_int32_from_memory(pipe_inode_info + self.offset_tail)
+                max_usage = read_int32_from_memory(pipe_inode_info + self.offset_max_usage)
+                ring_size = read_int32_from_memory(pipe_inode_info + self.offset_ring_size)
                 self.out.append("    head: {:d}, tail: {:d}, max: {:d}, ring_size: {:d}".format(
                     head, tail, max_usage, ring_size,
                 ))
             else:
-                nrbuf = u32(read_memory(pipe_inode_info + self.offset_nrbuf, 4))
-                curbuf = u32(read_memory(pipe_inode_info + self.offset_curbuf, 4))
-                buffers = u32(read_memory(pipe_inode_info + self.offset_buffers, 4))
+                nrbuf = read_int32_from_memory(pipe_inode_info + self.offset_nrbuf)
+                curbuf = read_int32_from_memory(pipe_inode_info + self.offset_curbuf)
+                buffers = read_int32_from_memory(pipe_inode_info + self.offset_buffers)
                 self.out.append("    nrbuf: {:d}, curbuf: {:d}, buffers: {:d}".format(
                     nrbuf, curbuf, buffers,
                 ))
@@ -74721,9 +74746,9 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             for idx in range(max_usage):
                 base = pipe_buffer + self.sizeof_pipe_buffer * idx
                 page = read_int_from_memory(base + self.offset_page)
-                offset = u32(read_memory(base + self.offset_offset, 4))
-                len_ = u32(read_memory(base + self.offset_len, 4))
-                flags = u32(read_memory(base + self.offset_flags, 4))
+                offset = read_int32_from_memory(base + self.offset_offset)
+                len_ = read_int32_from_memory(base + self.offset_len)
+                flags = read_int32_from_memory(base + self.offset_flags)
                 virt = Kernel.page2virt(page)
 
                 if idx in used_range:
@@ -74858,8 +74883,8 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             node = read_int_from_memory(ptr + self.offset_xa_head)
             return self.parse_xarray(node)
 
-        shift = u8(read_memory(ptr + self.offset_shift, 1))
-        count = u8(read_memory(ptr + self.offset_count, 1))
+        shift = read_int8_from_memory(ptr + self.offset_shift)
+        count = read_int8_from_memory(ptr + self.offset_count)
         slots = ptr + self.offset_slots
         elems = []
         for i in range(64): # 16 or 64
@@ -75051,9 +75076,9 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             };
             """
             # bpf_array->union_array
-            value_size = u32(read_memory(maps[0] + self.offset_value_size, 4))
+            value_size = read_int32_from_memory(maps[0] + self.offset_value_size)
             value_size_aligned_8 = AddressUtil.align_address_to_size(value_size, 8)
-            max_entries = u32(read_memory(maps[0] + self.offset_max_entries, 4))
+            max_entries = read_int32_from_memory(maps[0] + self.offset_max_entries)
             k = 1
             while k < max_entries:
                 k <<= 1
@@ -75063,8 +75088,8 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             base = maps[0] + sizeof_cache_line * 3
             for i in range(100):
                 pos = base + current_arch.ptrsize * i
-                x = u32(read_memory(pos, 4))
-                y = u32(read_memory(pos + 4, 4))
+                x = read_int32_from_memory(pos)
+                y = read_int32_from_memory(pos + 4)
                 if x == value_size_aligned_8 and y == index_mask:
                     self.offset_union_array = (pos - maps[0]) + 4 * 2 + current_arch.ptrsize
                     self.quiet_info("offsetof(bpf_array, union_array): {:#x}".format(self.offset_union_array))
@@ -75156,11 +75181,11 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
 
         fmt = "{:<3d} {:#018x} {:23s} {:24s} {:#018x} {:#018x} {:#018x}"
         for i, prog in enumerate(progs):
-            bpf_type = u32(read_memory(prog + self.offset_prog_type, 4))
-            bpf_attach_type = u32(read_memory(prog + self.offset_expected_attach_type, 4))
+            bpf_type = read_int32_from_memory(prog + self.offset_prog_type)
+            bpf_attach_type = read_int32_from_memory(prog + self.offset_expected_attach_type)
             t1 = defined_prog_types[bpf_type]
             t2 = defined_attach_types[bpf_attach_type]
-            tag = u64(read_memory(prog + self.offset_tag, 8))
+            tag = read_int64_from_memory(prog + self.offset_tag)
             aux = read_int_from_memory(prog + self.offset_aux)
             bpf_func = read_int_from_memory(prog + self.offset_bpf_func)
             self.out.append(fmt.format(i, prog, t1, t2, tag, aux, bpf_func))
@@ -75210,11 +75235,11 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
 
         fmt = "{:<3d} {:#018x} {:21s} {:#010x} {:#010x} {:#010x} {:#018x}"
         for i, m in enumerate(maps):
-            map_type = u32(read_memory(m + self.offset_map_type, 4))
+            map_type = read_int32_from_memory(m + self.offset_map_type)
             t1 = defined_map_types[map_type]
-            key_size = u32(read_memory(m + self.offset_key_size, 4))
-            val_size = u32(read_memory(m + self.offset_value_size, 4))
-            max_ents = u32(read_memory(m + self.offset_max_entries, 4))
+            key_size = read_int32_from_memory(m + self.offset_key_size)
+            val_size = read_int32_from_memory(m + self.offset_value_size)
+            max_ents = read_int32_from_memory(m + self.offset_max_entries)
             union_array = m + self.offset_union_array
             self.out.append(fmt.format(i, m, t1, key_size, val_size, max_ents, union_array))
 
@@ -75529,8 +75554,8 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             node = read_int_from_memory(ptr + self.offset_xa_head)
             return self.parse_xarray(node)
 
-        shift = u8(read_memory(ptr + self.offset_shift, 1))
-        count = u8(read_memory(ptr + self.offset_count, 1))
+        shift = read_int8_from_memory(ptr + self.offset_shift)
+        count = read_int8_from_memory(ptr + self.offset_count)
         slots = ptr + self.offset_slots
         elems = []
         for i in range(64): # 16 or 64
@@ -75565,11 +75590,11 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
 
         elems = self.parse_xarray(ipc_ids_ptr, root=True)
         for e in elems:
-            semid = u32(read_memory(e + self.offset_id, 4))
-            key = u32(read_memory(e + self.offset_key, 4))
-            uid = u32(read_memory(e + self.offset_uid, 4))
-            gid = u32(read_memory(e + self.offset_gid, 4))
-            mode = u16(read_memory(e + self.offset_mode, 2))
+            semid = read_int32_from_memory(e + self.offset_id)
+            key = read_int32_from_memory(e + self.offset_key)
+            uid = read_int32_from_memory(e + self.offset_uid)
+            gid = read_int32_from_memory(e + self.offset_gid)
+            mode = read_int16_from_memory(e + self.offset_mode)
 
             if not hasattr(self, "offset_sem_nsems"):
                 for i in range(1, 64):
@@ -75624,11 +75649,11 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
 
         elems = self.parse_xarray(ipc_ids_ptr, root=True)
         for e in elems:
-            msqid = u32(read_memory(e + self.offset_id, 4))
-            key = u32(read_memory(e + self.offset_key, 4))
-            uid = u32(read_memory(e + self.offset_uid, 4))
-            gid = u32(read_memory(e + self.offset_gid, 4))
-            mode = u16(read_memory(e + self.offset_mode, 2))
+            msqid = read_int32_from_memory(e + self.offset_id)
+            key = read_int32_from_memory(e + self.offset_key)
+            uid = read_int32_from_memory(e + self.offset_uid)
+            gid = read_int32_from_memory(e + self.offset_gid)
+            mode = read_int16_from_memory(e + self.offset_mode)
 
             if not hasattr(self, "offset_q_cbytes"):
                 for i in range(1, 64):
@@ -75685,11 +75710,11 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
 
         elems = self.parse_xarray(ipc_ids_ptr, root=True)
         for e in elems:
-            shmid = u32(read_memory(e + self.offset_id, 4))
-            key = u32(read_memory(e + self.offset_key, 4))
-            uid = u32(read_memory(e + self.offset_uid, 4))
-            gid = u32(read_memory(e + self.offset_gid, 4))
-            mode = u16(read_memory(e + self.offset_mode, 2))
+            shmid = read_int32_from_memory(e + self.offset_id)
+            key = read_int32_from_memory(e + self.offset_key)
+            uid = read_int32_from_memory(e + self.offset_uid)
+            gid = read_int32_from_memory(e + self.offset_gid)
+            mode = read_int16_from_memory(e + self.offset_mode)
 
             if not hasattr(self, "offset_shm_nattch"):
                 for i in range(1, 64):
@@ -75830,11 +75855,11 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
         };
         """
         if self.sizeof_resource_size_t == 8:
-            start = u64(read_memory(addr, 8))
-            end = u64(read_memory(addr + 8, 8))
+            start = read_int64_from_memory(addr)
+            end = read_int64_from_memory(addr + 8)
         elif self.sizeof_resource_size_t == 4:
-            start = u32(read_memory(addr, 4))
-            end = u32(read_memory(addr + 4, 4))
+            start = read_int32_from_memory(addr)
+            end = read_int32_from_memory(addr + 4)
         name = read_cstring_from_memory(read_int_from_memory(addr + self.sizeof_resource_size_t * 2))
         flags = read_int_from_memory(addr + self.sizeof_resource_size_t * 2 + current_arch.ptrsize)
 
@@ -76136,8 +76161,8 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
                     r = [hex(x) for x in r if AddressUtil.is_msb_on(x)]
                     virt_str = ",".join(r)
 
-            offset = u32(read_memory(sg + current_arch.ptrsize, 4))
-            length = u32(read_memory(sg + current_arch.ptrsize + 4, 4))
+            offset = read_int32_from_memory(sg + current_arch.ptrsize)
+            length = read_int32_from_memory(sg + current_arch.ptrsize + 4)
 
             self.out.append("  page: {:#018x}  offset: {:#010x}  length: {:#010x}  phys: {:18s}  virt: {:s}".format(
                 page, offset, length, phys_str, virt_str,
@@ -76286,8 +76311,8 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
             node = read_int_from_memory(ptr + self.offset_xa_head)
             return self.parse_xarray(node)
 
-        shift = u8(read_memory(ptr + self.offset_shift, 1))
-        count = u8(read_memory(ptr + self.offset_count, 1))
+        shift = read_int8_from_memory(ptr + self.offset_shift)
+        count = read_int8_from_memory(ptr + self.offset_count)
         slots = ptr + self.offset_slots
         elems = []
         for i in range(64): # 16 or 64
@@ -76339,7 +76364,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                         offset_ma_flags = offset_ma_root + current_arch.ptrsize
                     else:
                         offset_ma_flags = offset_ma_root - 4
-                        if is_64bit() and u32(read_memory(ptr + offset_ma_flags, 4)) == 0:
+                        if is_64bit() and read_int32_from_memory(ptr + offset_ma_flags) == 0:
                             offset_ma_flags = offset_ma_root - 8
                     break
             else:
@@ -76600,7 +76625,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
 
         entries = {}
         for desc in descs:
-            irq = u32(read_memory(desc + self.offset_irq, 4))
+            irq = read_int32_from_memory(desc + self.offset_irq)
             action = read_int_from_memory(desc + self.offset_action)
             if action == 0:
                 entries[irq] = [desc, action, None, None]
@@ -78963,7 +78988,7 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
             central_cache_i = central_cache_ + i * self.sizeof_CentralCache # &central_cache[i]
 
             # check slot count
-            used_slots = u32(read_memory(central_cache_i + self.CentralCache_offset_used_slots_, 4))
+            used_slots = read_int32_from_memory(central_cache_i + self.CentralCache_offset_used_slots_)
             max_slots = self.CentralCache_freelist_slot_count
             if used_slots == 0:
                 continue
@@ -79156,7 +79181,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
             return None
 
         # spanclass = (sizeclass << 1) | (noscan bit)
-        spanclass = u8(read_memory(mspan + self.offset_spanclass, 1)) >> 1
+        spanclass = read_int8_from_memory(mspan + self.offset_spanclass) >> 1
         chunk_size = self.class_to_size_dic[spanclass]
         if not self.args.verbose and chunk_size == 0:
             return None
@@ -79316,7 +79341,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
         if not is_valid_addr(pool):
             return None
 
-        if u32(read_memory(pool, 4)) == 0x2A59FA59: # TLSF_SIGNATURE
+        if read_int32_from_memory(pool) == 0x2A59FA59: # TLSF_SIGNATURE
             return pool
         return None
 
@@ -79340,7 +79365,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
             bhdr_t *matrix[REAL_FLI][MAX_SLI];
         } tlsf_t;
         """
-        sig = u32(read_memory(pool, 4))
+        sig = read_int32_from_memory(pool)
         if sig != 0x2A59FA59:
             return None
 
@@ -79373,7 +79398,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
             return None
 
         offset_fl_bitmap = offset_area_head + current_arch.ptrsize
-        fl_bitmap = u32(read_memory(pool + offset_fl_bitmap, 4))
+        fl_bitmap = read_int32_from_memory(pool + offset_fl_bitmap)
 
         offset_sl_bitmap = offset_fl_bitmap + 4
         sl_bitmap = read_memory(pool + offset_sl_bitmap, 4 * self.REAL_FLI)
@@ -79530,7 +79555,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
 
         # pattern2: thread variable holds it
         objectSize = read_int_from_memory(sb + current_arch.ptrsize * 2)
-        totalObjects = u32(read_memory(sb + current_arch.ptrsize * 3 + 4, 4))
+        totalObjects = read_int32_from_memory(sb + current_arch.ptrsize * 3 + 4)
 
         sizeof_super_block_header = 0x70
         sb_start = sb + sizeof_super_block_header
@@ -79578,7 +79603,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
         sz = read_int_from_memory(sb + current_arch.ptrsize * 2)
         self.out.append(titlify("superblock @{:#x} (chunk_size={:#x})".format(sb, sz)))
 
-        reap_count = u32(read_memory(sb + current_arch.ptrsize * 8, 4))
+        reap_count = read_int32_from_memory(sb + current_arch.ptrsize * 8)
         if reap_count > 0:
             self.out.append("Before allocating from freelist, you must use up all unused blocks")
             self.out.append("There are {:s} unused blocks left".format(Color.colorify_hex(reap_count, "bold")))
@@ -79884,10 +79909,10 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def dump_page(self, mi_page):
         bs = read_int_from_memory(mi_page + self.offset_block_size)
-        cap = u16(read_memory(mi_page + self.offset_capacity, 2))
-        used = u16(read_memory(mi_page + self.offset_used, 2))
-        key0 = u64(read_memory(mi_page + self.offset_keys0, 8))
-        key1 = u64(read_memory(mi_page + self.offset_keys1, 8))
+        cap = read_int16_from_memory(mi_page + self.offset_capacity)
+        used = read_int16_from_memory(mi_page + self.offset_used)
+        key0 = read_int64_from_memory(mi_page + self.offset_keys0)
+        key1 = read_int64_from_memory(mi_page + self.offset_keys1)
         if self.args.use_decode:
             self.out.append(titlify(
                 "mi_page_t @{:#x} (block_size={:#x}, capacity={:#x}, used={:#x}, key0={:#x}, key1={:#x})".format(
@@ -80278,9 +80303,9 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             cl_msg = Color.colorify_hex(self.class_to_size(cl), Config.get_gef_setting("theme.heap_chunk_size"))
         is_laden = cl is None
 
-        needed_ = u16(read_memory(slab_meta + offset_needed_, 2))
-        sleeping_ = u8(read_memory(slab_meta + offset_sleeping_, 1))
-        large_ = u8(read_memory(slab_meta + offset_large_, 1))
+        needed_ = read_int16_from_memory(slab_meta + offset_needed_)
+        sleeping_ = read_int8_from_memory(slab_meta + offset_sleeping_)
+        large_ = read_int8_from_memory(slab_meta + offset_large_)
 
         # print
         self.out.append("free_queue[size={:s}, needed_={:#x}, sleeping_={:#x}, large_={:#x}] @ {!s}:".format(
@@ -80336,7 +80361,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             entry = thread_alloc + self.offset_alloc_classes + (sizeof_slab_meta * i)
 
             slab_meta_list, error = self.parse_double_link_list(entry)
-            length = u16(read_memory(entry + offset_length, 2))
+            length = read_int16_from_memory(entry + offset_length)
 
             if not self.args.verbose:
                 if slab_meta_list == [] and error is None:
@@ -81439,7 +81464,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         else:
             current += 0x80 # sizeof(struct Settings) is 2 cache lines
 
-        root["lock_"] = u64(read_memory(current, 8))
+        root["lock_"] = read_int64_from_memory(current)
         current += 8
 
         # for 32bit, there is 2 patterns because aligned or packed
@@ -81488,9 +81513,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         current += ptrsize
         root["cumulative_count_of_brp_quarantined_slots"] = read_int_from_memory(current)
         current += ptrsize
-        root["empty_slot_spans_dirty_bytes"] = u32(read_memory(current, 4))
+        root["empty_slot_spans_dirty_bytes"] = read_int32_from_memory(current)
         current += ptrsize # with pad
-        root["max_empty_slot_spans_dirty_bytes_shift"] = u32(read_memory(current, 4))
+        root["max_empty_slot_spans_dirty_bytes_shift"] = read_int32_from_memory(current)
         current += ptrsize # with pad
         root["next_super_page"] = read_int_from_memory(current)
         current += ptrsize
@@ -81513,19 +81538,19 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             x = read_int_from_memory(current)
             current += ptrsize
             root["global_empty_slot_span_ring"].append(x)
-        root["global_empty_slot_span_ring_index"] = u16(read_memory(current, 2))
+        root["global_empty_slot_span_ring_index"] = read_int16_from_memory(current)
         current += 2
-        root["global_empty_slot_span_ring_size"] = u16(read_memory(current, 2))
+        root["global_empty_slot_span_ring_size"] = read_int16_from_memory(current)
         current += 2
-        root["purge_generation"] = u16(read_memory(current, 2))
+        root["purge_generation"] = read_int16_from_memory(current)
         current += 2
-        root["purge_next_bucket_index"] = u16(read_memory(current, 2))
+        root["purge_next_bucket_index"] = read_int16_from_memory(current)
         current += ptrsize - 6 # with pad
         root["inverted_self"] = read_int_from_memory(current)
         current += ptrsize
-        root["thread_cache_construction_lock"] = u64(read_memory(current, 8))
+        root["thread_cache_construction_lock"] = read_int64_from_memory(current)
         current += 8
-        root["scheduler_loop_quarantine_branch_capacity_in_bytes"] = u32(read_memory(current, 4))
+        root["scheduler_loop_quarantine_branch_capacity_in_bytes"] = read_int32_from_memory(current)
         current += ptrsize # with pad
         root["scheduler_loop_quarantine_root"] = read_int_from_memory(current)
         current += ptrsize
@@ -81562,9 +81587,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         current += ptrsize
         bucket["decommitted_slot_spans_head"] = read_int_from_memory(current)
         current += ptrsize
-        bucket["slot_size"] = u32(read_memory(current, 4))
+        bucket["slot_size"] = read_int32_from_memory(current)
         current += 4
-        x = u32(read_memory(current, 4))
+        x = read_int32_from_memory(current)
         bucket["num_system_pages_per_slot_span"] = x & 0xff
         bucket["num_full_slot_spans"] = (x >> 8) & 0xffffff
         current += 4
@@ -81572,10 +81597,10 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         # for 32bit, there is 2 patterns because aligned or packed
         if is_32bit() and self.align_pad:
             current += 4
-        bucket["slot_size_reciprocal"] = u64(read_memory(current, 8))
+        bucket["slot_size_reciprocal"] = read_int64_from_memory(current)
         current += 8
 
-        x = u32(read_memory(current, 4))
+        x = read_int32_from_memory(current)
         bucket["can_store_raw_size"] = x & 0xff
         current += ptrsize # with pad
 
@@ -81604,9 +81629,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         current += ptrsize
         extent["next"] = read_int_from_memory(current)
         current += ptrsize
-        extent["number_of_consecutive_super_pages"] = u16(read_memory(current, 2))
+        extent["number_of_consecutive_super_pages"] = read_int16_from_memory(current)
         current += 2
-        extent["number_of_nonempty_slot_spans"] = u16(read_memory(current, 2))
+        extent["number_of_nonempty_slot_spans"] = read_int16_from_memory(current)
         current += 2
         extent["super_page_end"] = extent["super_page_base"] + extent["number_of_consecutive_super_pages"] * 0x200000
 
@@ -81677,14 +81702,14 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         current += ptrsize
         slot_span["bucket"] = read_int_from_memory(current)
         current += ptrsize
-        x = u32(read_memory(current, 4))
+        x = read_int32_from_memory(current)
         current += 4
         slot_span["num_allocated_slots"] = (x >> 0) & 0x7fff
         slot_span["num_unprovisioned_slots"] = (x >> 15) & 0x7fff
         slot_span["marked_full"] = (x >> 30) & 1
         slot_span["can_store_raw_size_"] = (x >> 31) & 1
 
-        x = u16(read_memory(current, 2))
+        x = read_int16_from_memory(current)
         current += 2
         slot_span["freelist_is_sorted_"] = (x >> 0) & 1
         slot_span["in_empty_cache_"] = (x >> 1) & 1
@@ -82229,15 +82254,15 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
         dic["next"] = read_int_from_memory(addr + current_arch.ptrsize * 0)
         dic["prev"] = read_int_from_memory(addr + current_arch.ptrsize * 1)
         dic["owner"] = read_int_from_memory(addr + current_arch.ptrsize * 2)
-        dic["epoch"] = u32(read_memory(addr + current_arch.ptrsize * 3, 4))
-        dic["size_class"] = u32(read_memory(addr + current_arch.ptrsize * 3 + 4, 4))
+        dic["epoch"] = read_int32_from_memory(addr + current_arch.ptrsize * 3)
+        dic["size_class"] = read_int32_from_memory(addr + current_arch.ptrsize * 3 + 4)
         dic["object_num"] = self.class_to_objects(dic["size_class"]) # number of objects in each span
         dic["object_size"] = self.class_to_size(dic["size_class"])
         dic["freelist"] = read_int_from_memory(addr + current_arch.ptrsize * 5)
         dic["freelist_addr"] = addr + current_arch.ptrsize * 5
         dic["bump_pointer"] = read_int_from_memory(addr + current_arch.ptrsize * 6) # top pointer in glibc
-        dic["freelist_len"] = u32(read_memory(addr + current_arch.ptrsize * 7, 4))
-        dic["freelist_increment"] = u32(read_memory(addr + current_arch.ptrsize * 7 + 4, 4)) # = object_size
+        dic["freelist_len"] = read_int32_from_memory(addr + current_arch.ptrsize * 7)
+        dic["freelist_increment"] = read_int32_from_memory(addr + current_arch.ptrsize * 7 + 4) # = object_size
         dic["top"] = read_int_from_memory(addr + current_arch.ptrsize * 8) # encoded remote freelist
         dic["top_addr"] = addr + current_arch.ptrsize * 8
         dic["top_decoded"] = self.decode_top(dic["top"])
@@ -82438,7 +82463,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                         libc_bss_base = rw_maps[0].page_start
                         __malloc_context_init_done = libc_bss_base + __malloc_context_init_done_offset
                     # check
-                    value = u32(read_memory(__malloc_context_init_done, 4))
+                    value = read_int32_from_memory(__malloc_context_init_done)
                     if value not in [0, 1]: # init_done is 1 or 0
                         continue
                     # found
@@ -82508,7 +82533,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
             uintptr_t brk;
         };
         """
-        ctx["secret"] = u64(read_memory(current, 8))
+        ctx["secret"] = read_int64_from_memory(current)
         current += 8
         x = read_int_from_memory(current)
         if x == gef_getpagesize():
@@ -82517,9 +82542,9 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         else:
             ctx["pagesize"] = None
 
-        ctx["init_done"] = u32(read_memory(current, 4))
+        ctx["init_done"] = read_int32_from_memory(current)
         current += 4
-        ctx["mmap_counter"] = u32(read_memory(current, 4))
+        ctx["mmap_counter"] = read_int32_from_memory(current)
         current += 4
         ctx["free_meta_head"] = read_int_from_memory(current)
         current += ptrsize
@@ -82607,9 +82632,9 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         current += ptrsize
         meta["mem"] = read_int_from_memory(current)
         current += ptrsize
-        meta["avail_mask"] = u32(read_memory(current, 4))
+        meta["avail_mask"] = read_int32_from_memory(current)
         current += 4
-        meta["freed_mask"] = u32(read_memory(current, 4))
+        meta["freed_mask"] = read_int32_from_memory(current)
         current += 4
         x = read_int_from_memory(current)
         meta["last_idx"] = x & 0b11111
@@ -82663,9 +82688,9 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         """
         group["meta"] = read_int_from_memory(current)
         current += ptrsize
-        x = u32(read_memory(current, 4))
+        x = read_int32_from_memory(current)
         current += 4 if is_x86_64() else 8
-        y = u32(read_memory(current, 4))
+        y = read_int32_from_memory(current)
         group["reserved"] = (x >> 13) & 0b111
         group["slot_idx"] = (y >> 8) & 0b11111
         if y & 0xff:
@@ -83178,7 +83203,7 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
         self.BINMAPSIZE = 3
         malloc_state["binmap"] = []
         for _ in range(self.BINMAPSIZE + 1):
-            x = u32(read_memory(current, 4))
+            x = read_int32_from_memory(current)
             malloc_state["binmap"].append(x)
             current += 4
 
@@ -83188,15 +83213,15 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
         current += current_arch.ptrsize
         malloc_state["mmap_threshold"] = read_int_from_memory(current)
         current += current_arch.ptrsize
-        malloc_state["n_mmaps"] = u32(read_memory(current, 4))
+        malloc_state["n_mmaps"] = read_int32_from_memory(current)
         current += 4
-        malloc_state["n_mmaps_max"] = u32(read_memory(current, 4))
+        malloc_state["n_mmaps_max"] = read_int32_from_memory(current)
         current += 4
-        malloc_state["max_n_mmaps"] = u32(read_memory(current, 4))
+        malloc_state["max_n_mmaps"] = read_int32_from_memory(current)
         current += 4
-        malloc_state["pagesize"] = u32(read_memory(current, 4))
+        malloc_state["pagesize"] = read_int32_from_memory(current)
         current += 4
-        malloc_state["morecore_properties"] = morecore_properties = u32(read_memory(current, 4))
+        malloc_state["morecore_properties"] = morecore_properties = read_int32_from_memory(current)
         current += 4
         malloc_state["morecore_properties_flags"] = []
         if morecore_properties & 1:
@@ -95540,7 +95565,7 @@ class KmallocBreakpoint(gdb.Breakpoint):
             slab_cache_name = read_cstring_from_memory(slab_cache_name_ptr)
             if not slab_cache_name.startswith("kmalloc-"):
                 return False
-            size = u32(read_memory(kmem_cache + self.extra.kmem_cache_offset_size, 4))
+            size = read_int32_from_memory(kmem_cache + self.extra.kmem_cache_offset_size)
 
         # Use gdb.Breakpoint instead of gdb.FinishBreakpoint because gdb.FinishBreakpoint is buggy
         ret_addr = gdb.newest_frame().older().pc()
@@ -96875,8 +96900,8 @@ class KmallocAllocatedByCommand(GenericCommand):
                 yield ("pipe(&pipefd[])", "pipe", [pipefd_array])
                 self.skipped_syscall.add("pipe2")
                 if u2i(ret_history[-1]) >= 0:
-                    pipefd0 = u32(read_memory(current_arch.sp, 4))
-                    pipefd1 = u32(read_memory(current_arch.sp + 4, 4))
+                    pipefd0 = read_int32_from_memory(current_arch.sp)
+                    pipefd1 = read_int32_from_memory(current_arch.sp + 4)
                     offset = p64(0)
                     yield ("sendfile(pipefd[1], fd, &offset, 4)", "sendfile", [pipefd1, fd, offset, 4])
                     off_in = p64(0)
@@ -96897,11 +96922,11 @@ class KmallocAllocatedByCommand(GenericCommand):
             yield "pipe -> pipe -> tee -> close_range"
             pipefd_array = p32(0) * 2 # pipefd[2]
             yield ("pipe(&pipefd[])", "pipe", [pipefd_array])
-            pipefd0 = u32(read_memory(current_arch.sp, 4))
-            _pipefd1 = u32(read_memory(current_arch.sp + 4, 4))
+            pipefd0 = read_int32_from_memory(current_arch.sp)
+            _pipefd1 = read_int32_from_memory(current_arch.sp + 4)
             yield ("pipe(&pipefd[])", "pipe", [pipefd_array])
-            _pipefd2 = u32(read_memory(current_arch.sp, 4))
-            pipefd3 = u32(read_memory(current_arch.sp + 4, 4))
+            _pipefd2 = read_int32_from_memory(current_arch.sp)
+            pipefd3 = read_int32_from_memory(current_arch.sp + 4)
             yield ("tee(pipefd[0], pipefd[3], 0", "tee", [pipefd0, pipefd3])
             yield ("close_range(pipefd[0], pipefd[3], 0)", "close_range", [pipefd0, pipefd3, 0])
 
@@ -97260,8 +97285,8 @@ class KmallocAllocatedByCommand(GenericCommand):
             sv_array = p32(0) * 2 # sv[2]
             yield ("socketpair(AF_UNIX, SOCK_STREAM, 0, &sv[])", "socketpair", [1, 1, 0, sv_array])
             if u2i(ret_history[-1]) >= 0:
-                sv0 = u32(read_memory(current_arch.sp, 4))
-                sv1 = u32(read_memory(current_arch.sp + 4, 4))
+                sv0 = read_int32_from_memory(current_arch.sp)
+                sv1 = read_int32_from_memory(current_arch.sp + 4)
                 buf = "A" * 4
                 yield ('sendto(sv[0], "AAAA", 4, 0, NULL, 0)', "sendto", [sv0, buf, len(buf), 0, 0, 0])
                 buf = "\0" * 4
@@ -99279,7 +99304,7 @@ class SixelMemoryCommand(GenericCommand):
             if args.size is not None:
                 size = args.size
             elif read_memory(args.location, 2) == b"BM": # BMP
-                size = u32(read_memory(args.location + 2, 4))
+                size = read_int32_from_memory(args.location + 2)
             elif read_memory(args.location, 2) == b"\xff\xd8": # JPG
                 size = self.get_jpg_size(args.location)
             elif read_memory(args.location, 4) == b"\x89PNG": # PNG
