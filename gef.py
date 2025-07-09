@@ -93158,7 +93158,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class PageCommand(GenericCommand):
-    """The base command for converting virtual addresses and physical addresses from page."""
+    """Converts between virtual addresses, physical addresses, and page addresses."""
 
     _cmdline_ = "page"
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
@@ -93779,7 +93779,8 @@ class Phys2PageCommand(GenericCommand):
 
 @register_command
 class SlabVirtualCommand(GenericCommand):
-    """The base command for converting slab virtual addresses page address."""
+    """Converts between slab-virtual addresses and page addresses."""
+
     _cmdline_ = "slab-virtual"
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
