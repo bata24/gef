@@ -85,7 +85,7 @@ Please refer to [install.sh](install.sh) or [install-minimal.sh](install-minimal
 For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md).
 
 ### Qemu-system Cooperation
-- `pagewalk`: scans physical memory, parses page tables, and displays memory maps.
+- `pagewalk`: dumps page tables.
     - x64 (Supported: 4-Level/5-Level Paging)
         - ![](images/pagewalk-x64.png)
     - x86 (Supported: PAE/Non-PAE)
@@ -442,8 +442,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - ![](images/elf-info.png)
 - `xinfo`
     - It shows more information.
-    - It also supports kernel debugging.
         - ![](images/xinfo.png)
+    - It also supports kernel debugging.
 - `checksec`
     - It shows additional information.
         - Static or Dynamic or Static-PIE

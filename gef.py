@@ -87984,7 +87984,7 @@ class Phys2VirtCommand(GenericCommand):
 
 @register_command
 class PagewalkCommand(GenericCommand, BufferingOutput):
-    """The base command to get physical memory info via qemu-monitor."""
+    """The base command to dump page tables."""
 
     _cmdline_ = "pagewalk"
     _category_ = "08-a. Qemu-system Cooperation - General"
