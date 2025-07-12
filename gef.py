@@ -18813,14 +18813,7 @@ class KillThreadsCommand(GenericCommand):
         # print tid list and exit
         if not args.all and not args.thread_id:
             info("Non-current `Thread Id`(s) from the list are available")
-            # back up
-            nb_lines = Config.get_gef_setting("context_threads.nb_lines")
-            # change temporarily
-            Config.set_gef_setting("context_threads.nb_lines", -1)
-            # print
-            gdb.execute("context threads -i")
-            # restore
-            Config.set_gef_setting("context_threads.nb_lines", nb_lines)
+            gdb.execute("context-threads -i -1")
             return
 
         # list target thread id
@@ -30981,13 +30974,15 @@ class ContextThreadsCommand(GenericCommand):
     _category_ = "01-a. Debugging Support - Context"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("nb_lines", metavar="NB_LINES", nargs="?", type=lambda x: int(x, 0),
+                        help="temporarily overrides context-threads.nb_lines.")
     parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
     _syntax_ = parser.format_help()
 
     def __init__(self):
         super().__init__()
         self.add_setting("redirect", "", "The target tty name to redirect `context threads` to")
-        self.add_setting("nb_lines", -1, "Number of line in the threads pane")
+        self.add_setting("nb_lines", 4, "Number of line in the threads pane (-1: infinity)")
         return
 
     def reason(self):
@@ -31018,9 +31013,18 @@ class ContextThreadsCommand(GenericCommand):
         if is_kgdb():
             return
 
-        nb_lines = Config.get_gef_setting("context_threads.nb_lines")
-        threads = gdb.selected_inferior().threads()[::-1]
+        if self.args.nb_lines is not None:
+            nb_lines = self.args.nb_lines
+        else:
+            nb_lines = Config.get_gef_setting("context_threads.nb_lines")
 
+        # get all threads
+        threads = gdb.selected_inferior().threads()
+        # Note that the order of the list returned by gdb.selected_inferior().threads()
+        # may differ depending on the version of gdb.
+        threads = sorted(threads, key=lambda t: t.num)
+
+        # title
         if nb_lines < 0:
             shown_threads = len(threads)
         else:
@@ -31032,15 +31036,26 @@ class ContextThreadsCommand(GenericCommand):
         else:
             ContextCommand.context_title("threads", redirect)
 
-        if nb_lines > 0:
-            threads = threads[:nb_lines]
-        elif nb_lines == 0:
+        # check max threads
+        if nb_lines == 0:
             return
+        if nb_lines > 0:
+            # bring selected thread to the top
+            selected_thread = gdb.selected_thread()
+            for i, t in enumerate(threads):
+                if t.num == selected_thread.num:
+                    threads = [threads[i]] + threads[:i] + threads[i + 1:]
+                    break
+            # cut off
+            threads = threads[:nb_lines]
+            # re-sort
+            threads = sorted(threads, key=lambda t: t.num)
 
         if not threads:
             err("No thread selected", redirect)
             return
 
+        # get selected frame
         selected_thread = gdb.selected_thread()
         try:
             selected_frame = gdb.selected_frame()
@@ -31048,8 +31063,10 @@ class ContextThreadsCommand(GenericCommand):
             # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
             selected_frame = None
 
+        # walk threads
         lines = []
         for thread in threads:
+            # selected, tid
             tid = str(thread.ptid[1]) or str(thread.ptid[2]) or "???"
             if thread == selected_thread:
                 line = "[*{:s}] ".format(
@@ -31060,21 +31077,25 @@ class ContextThreadsCommand(GenericCommand):
                     Color.colorify("Thread Id:{:d}, tid:{:s}".format(thread.num, tid), "bold magenta"),
                 )
 
+            # name
             if thread.name:
                 line += 'Name: "{:s}", '.format(thread.name)
 
+            # status
             if thread.is_running():
                 line += Color.colorify("running", "bold green")
             elif thread.is_exited():
                 line += Color.colorify("exited", "bold yellow")
             elif thread.is_stopped():
                 line += Color.colorify("stopped", "bold red")
+                # switch test
                 try:
                     thread.switch()
                 except Exception:
                     line += " - Failed to switch to this thread"
                     gef_print(line, redirect=redirect)
                     continue
+                # get pc
                 try:
                     frame = gdb.selected_frame()
                     pc = frame.pc()
@@ -31082,14 +31103,18 @@ class ContextThreadsCommand(GenericCommand):
                     # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
                     # if failed, print thread information without frame (but with $pc).
                     pc = get_register("$pc")
+                # make reason
                 sym = Symbol.get_symbol_string(pc, nosymbol_string=" <NO_SYMBOL>")
                 line += " at {!s}{:s}".format(ProcessMap.lookup_address(pc), sym)
                 line += ", reason: {:s}".format(Color.colorify(self.reason(), "bold magenta"))
+
             lines.append([thread.num, line])
 
+        # print
         for _, line in sorted(lines):
             gef_print(line, redirect=redirect)
 
+        # revert
         selected_thread.switch()
         if selected_frame is not None:
             try:
