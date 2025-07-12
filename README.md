@@ -384,6 +384,16 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - Execute as `LD_PRELOAD=/PATH/TO/libsnmallocshim.so ./a.out`.
 - `optee-bget-dump`: dumps bget allocator of OPTEE-Trusted-App.
     - ![](images/optee-bget-dump.png)
+- `v8`: displays v8 tagged object.
+    - ![](images/v8.png)
+    - It also loads more commands from latest gdbinit for v8.
+    - ![](images/v8-load.png)
+- `cage`: displays v8 (especially `d8`) ubercage.
+    - ![](images/cage.png)
+- `v8-list-maps`: lists v8 (especially d8) built-in maps.
+    - ![](images/v8-list-maps.png)
+- `v8-dump-space`: dumps v8 (especially d8) each space contains (WIP).
+    - ![](images/v8-dump-space.png)
 
 ### Improved Features
 - `vmmap`
@@ -728,14 +738,6 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         5. When debugging a binary written in the Golang, the `p ((TYPE*) ADDRESS)[0]` command will be broken.
            This is because the Golang helper script is automatically loaded and overwrites the behavior of `p` command.
            This command creates the display results on the Python side, so we can display it without any problems.
-- `v8`: displays v8 tagged object.
-    - ![](images/v8.png)
-    - It also loads more commands from latest gdbinit for v8.
-    - ![](images/v8-load.png)
-- `cage`: displays v8 (especially `d8`) ubercage.
-    - ![](images/cage.png)
-- `v8-list-maps`: lists v8 (especially d8) built-in maps.
-    - ![](images/v8-list-maps.png)
 - `mte-tags`: displays the MTE tags for the specified address.
     - Supported on ARM64.
     - ![](images/mte-tags.png)

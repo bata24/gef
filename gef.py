@@ -81258,6 +81258,510 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
+    """Dump v8 (especially d8) each space contains (WIP)."""
+
+    _cmdline_ = "v8-dump-space"
+    _category_ = "09-e. Misc - V8"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    spaces = ["old_space", "new_space", "ro_space", "trusted_space", "o", "n", "r", "t"]
+    parser.add_argument("target_space", metavar="TARGET_SPACE", choices=spaces, nargs="?", default="old_space",
+                        help="the space name to dump.")
+    parser.add_argument("-m", "--max-count", type=AddressUtil.parse_address, default=0,
+                        help="max count for each space.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="display also object details for string like objects (slow!).")
+    parser.add_argument("-vv", "--vverbose", action="store_true",
+                        help="display also object details for all objects (very slow!).")
+    _syntax_ = parser.format_help()
+
+    _note_ = [
+        "It only works with the debug build of d8.",
+        "Since many parts are detected heuristically and testing is insufficient,",
+        "it is highly likely that it will not work depending on the version of v8.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def redirect_stdout(self):
+        syscall_table = get_syscall_table()
+
+        # dup
+        ret = ExecSyscall(syscall_table.name_table["dup"].nr, [1]).exec_code()
+        self.stdout_oldfd = ret["reg"][current_arch.return_register]
+
+        # open
+        gdb.execute("patch string $sp '{:s}\\x00'".format(self.temp_output_path), to_string=True)
+        flags = 0o100 | 0o1 | 0o1000 # O_CREAT | O_WRONLY | O_TRUNC
+        ret = ExecSyscall(syscall_table.name_table["open"].nr, [current_arch.sp, flags, 0o666]).exec_code()
+        file_fd = ret["reg"][current_arch.return_register]
+        gdb.execute("patch revert 0", to_string=True)
+
+        # dup2
+        ExecSyscall(syscall_table.name_table["dup2"].nr, [file_fd, 1]).exec_code()
+
+        # close
+        ExecSyscall(syscall_table.name_table["close"].nr, [file_fd]).exec_code()
+        return
+
+    def revert_stdout(self):
+        syscall_table = get_syscall_table()
+        # dup2
+        ExecSyscall(syscall_table.name_table["dup2"].nr, [self.stdout_oldfd, 1]).exec_code()
+
+        # close
+        ExecSyscall(syscall_table.name_table["close"].nr, [self.stdout_oldfd]).exec_code()
+        return
+
+    def get_target_regions(self):
+        res = gdb.execute("cage --no-pager", to_string=True)
+        if "Not found" in res:
+            return []
+
+        regions = []
+        for line in res.splitlines():
+            line = Color.remove_color(line)
+            if self.args.target_space in ["old_space", "o"]:
+                if "[v8:old_space]" not in line:
+                    continue
+            elif self.args.target_space in ["new_space", "n"]:
+                if "[v8:new_space]" not in line:
+                    continue
+            elif self.args.target_space in ["ro_space", "r"]:
+                if "[v8:ro_space]" not in line:
+                    continue
+            elif self.args.target_space in ["trusted_space", "t"]:
+                if "[v8:trusted_space]" not in line:
+                    continue
+            start, limit, _, _, perm, path = line.split()
+            start = int(start, 16)
+            limit = int(limit, 16)
+            regions.append([start, limit, perm, path])
+        return regions
+
+    def is_map(self, value, cage_base):
+        if value & 1 == 0:
+            return False # not a tagged pointer
+
+        map_addr = cage_base + (value - 1) # untag
+        if not is_valid_addr(map_addr):
+            return False
+
+        value2 = read_int32_from_memory(map_addr)
+        if value2 & 1 == 0:
+            return False # not a metamap
+
+        meta_map_addr = cage_base + (value2 - 1) # untag
+        if not is_valid_addr(meta_map_addr):
+            return False
+        return True
+
+    instance_type_dic = {}
+
+    def load_instance_type_dict(self):
+        lines = open(self.instace_type_cache_path).read().splitlines()
+        for line in lines:
+            instance_type, type_name = line.split("=")
+            self.instance_type_dic[int(instance_type)] = type_name
+        return
+
+    def append_instance_type_dict(self, instance_type, type_name):
+        with open(self.instace_type_cache_path, "a") as f:
+            f.write("{:d}={:s}\n".format(instance_type, type_name))
+        return
+
+    def get_instance_name(self, map_addr):
+        # load from cache file
+        if not self.instance_type_dic:
+            if os.path.exists(self.instace_type_cache_path):
+                self.load_instance_type_dict()
+
+        # fast path: load from cache
+        instance_type = read_int16_from_memory((map_addr & ~1) + 8)
+        if instance_type in self.instance_type_dic:
+            return self.instance_type_dic[instance_type]
+
+        # slow path
+        self.redirect_stdout()
+        gdb.execute("v8 {:#x}".format(map_addr | 1), to_string=True)
+        self.revert_stdout()
+        map_content = open(self.temp_output_path).read()
+        r = re.search(r"- type: (.+)", map_content)
+        if r:
+            type_name = r.group(1)
+            self.instance_type_dic[instance_type] = type_name
+            # save to cache file
+            self.append_instance_type_dict(instance_type, type_name)
+        else:
+            type_name = "???"
+        return type_name
+
+    def get_object_size(self, addr, map_addr, cage_base, area_end):
+        """get header size and variable size"""
+
+        """
+        https://github.com/v8/v8/blob/main/src/objects/map.h
+        Map layout:
+          TaggedPointer   map - Always a pointer to the MetaMap root
+          Int             The first int field
+            Byte          [instance_size]
+            ...
+          Int             The second int field
+            Short         [instance_type]
+            ...
+          ...
+        """
+        # fixed length pattern (map has instance size)
+        instance_size = read_int8_from_memory(map_addr + 4)
+        if instance_size > 0:
+            return instance_size * 4, None
+
+        # instance_size == 0
+        instance_name = self.get_instance_name(map_addr)
+
+        # TODO: inline property <-> external property
+        if instance_name == "ARRAY_LIST_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 12, length * 4
+        elif instance_name == "BIG_INT_BASE_TYPE":
+            length = read_int16_from_memory(addr + 4)
+            return 8, length * 4
+        elif instance_name == "BYTECODE_ARRAY_TYPE":
+            length = read_int32_from_memory(addr + 8)
+            length >>= 1
+            length = AddressUtil.align_address_to_size(length, 4)
+            return 0x28, length
+        elif instance_name == "BYTE_ARRAY_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            length = AddressUtil.align_address_to_size(length, 4)
+            return 8, length
+        elif instance_name == "CLOSURE_FEEDBACK_CELL_ARRAY_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 8, length * 4
+        elif instance_name == "CODE_TYPE": # ???
+            return 0x44, 0
+        elif instance_name == "COVERAGE_INFO_TYPE":
+            pass # TODO
+        elif instance_name == "DESCRIPTOR_ARRAY_TYPE":
+            length = read_int16_from_memory(addr + 4)
+            return 0x14, length * 4 * 3
+        elif instance_name == "DOUBLE_STRING_CACHE_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            return 8, length * 12
+        elif instance_name == "EMBEDDER_DATA_ARRAY_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            return 8, length * 4
+        elif instance_name == "EPHEMERON_HASH_TABLE_TYPE":
+            length = read_int32_from_memory(addr + 0x10)
+            length >>= 1
+            return 0x14, length * 8
+        elif instance_name == "FEEDBACK_METADATA_TYPE":
+            length1 = read_int32_from_memory(addr + 4)
+            if length1 != 0:
+                length1 = (length1 - 1) // 6 + 1 # 5-bit encode
+            length2 = read_int32_from_memory(addr + 8)
+            length = AddressUtil.align_address_to_size(length1 * 4 + length2 * 2, 4)
+            return 12, length
+        elif instance_name == "FEEDBACK_VECTOR_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            return 0x1c, length * 4
+        elif instance_name == "FIXED_ARRAY_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 8, length * 4
+        elif instance_name == "FIXED_DOUBLE_ARRAY_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            return 8, length * 4
+        elif instance_name == "FREE_SPACE_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            length -= 2 # size of the free space including the header
+            return 8, length * 4
+        elif instance_name == "GLOBAL_DICTIONARY_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 8, length * 4
+        elif instance_name == "HASH_TABLE_TYPE":
+            length = read_int32_from_memory(addr + 0x10)
+            length >>= 1
+            return 0x14, length * 4
+        elif instance_name == "INSTRUCTION_STREAM_TYPE":
+            pass # TODO
+        elif instance_name == "INTERNALIZED_ONE_BYTE_STRING_TYPE":
+            length = read_int32_from_memory(addr + 8)
+            length = AddressUtil.align_address_to_size(length, 4)
+            return 12, length
+        elif instance_name == "INTERNALIZED_TWO_BYTE_STRING_TYPE":
+            pass # TODO
+        elif instance_name == "NAME_DICTIONARY_TYPE":
+            length = read_int32_from_memory(addr + 0x10)
+            length >>= 1
+            return 0x20, length * 12
+        elif instance_name == "NAME_TO_INDEX_HASH_TABLE_TYPE":
+            length = read_int32_from_memory(addr + 0x10)
+            length >>= 1
+            return 0x14, length * 8
+        elif instance_name == "NATIVE_CONTEXT_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 8, (length * 4) + (2 * 4)
+        elif instance_name == "NUMBER_DICTIONARY_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 8, length * 4
+        elif instance_name == "OBJECT_BOILERPLATE_DESCRIPTION_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 0x10, length * 4
+        elif instance_name == "ORDERED_HASH_MAP_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 8, length * 4
+        elif instance_name == "ORDERED_HASH_SET_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 8, length * 4
+        elif instance_name == "ORDERED_NAME_DICTIONARY_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 8, length * 4
+        elif instance_name == "PREPARSE_DATA_TYPE":
+            pass # TODO
+        elif instance_name == "PROPERTY_ARRAY_TYPE":
+            length_or_hash = read_int32_from_memory(addr + 4)
+            length = length_or_hash & 0x3ff
+            length >>= 1
+            return 8, length * 4
+        elif instance_name == "PROTECTED_FIXED_ARRAY_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 8, length * 4
+        elif instance_name == "PROTECTED_WEAK_FIXED_ARRAY_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 8, length * 4
+        elif instance_name == "REGISTERED_SYMBOL_TABLE_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            return 12, length * 4
+        elif instance_name == "REG_EXP_MATCH_INFO_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 0x14, length * 4
+        elif instance_name == "SCOPE_INFO_TYPE":
+            # TODO: More accurate calculations
+            length = read_int32_from_memory(addr + 12)
+            length >>= 1
+            length2 = read_int32_from_memory(addr + 8)
+            length += length2 * 4
+            additional = 0
+            while True:
+                v = read_int32_from_memory(addr + 0x18 + length * 4 + length * 4 + additional)
+                if v != 0x49 and v & 1:
+                    break
+                additional += 4
+            return 0x18, length * 4 + length * 4 + additional
+        elif instance_name == "SCRIPT_CONTEXT_TABLE_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 0x10, length * 4
+        elif instance_name == "SCRIPT_CONTEXT_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 8, length * 4
+        elif instance_name == "SEQ_ONE_BYTE_STRING_TYPE":
+            length = read_int32_from_memory(addr + 8)
+            length = AddressUtil.align_address_to_size(length, 4)
+            return 12, length
+        elif instance_name == "SEQ_TWO_BYTE_STRING_TYPE":
+            pass # TODO
+        elif instance_name == "SHARED_SEQ_ONE_BYTE_STRING_TYPE":
+            pass # TODO
+        elif instance_name == "SHARED_SEQ_TWO_BYTE_STRING_TYPE":
+            pass # TODO
+        elif instance_name == "SIMPLE_NAME_DICTIONARY_TYPE":
+            pass # TODO
+        elif instance_name == "SIMPLE_NUMBER_DICTIONARY_TYPE":
+            pass # TODO
+        elif instance_name == "SLOPPY_ARGUMENTS_ELEMENTS_TYPE":
+            pass # TODO
+        elif instance_name == "SMALL_ORDERED_HASH_MAP_TYPE":
+            pass # TODO
+        elif instance_name == "SMALL_ORDERED_HASH_SET_TYPE":
+            pass # TODO
+        elif instance_name == "SMALL_ORDERED_NAME_DICTIONARY_TYPE":
+            pass # TODO
+        elif instance_name == "STRONG_DESCRIPTOR_ARRAY_TYPE":
+            pass # TODO
+        elif instance_name == "SWISS_NAME_DICTIONARY_TYPE": # ???
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 0x20, length * 4
+        elif instance_name == "TRANSITION_ARRAY_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 8, length * 4
+        elif instance_name == "TRUSTED_BYTE_ARRAY_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            length = AddressUtil.align_address_to_size(length, 4)
+            return 8, length
+        elif instance_name == "TRUSTED_FIXED_ARRAY_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 8, length * 4
+        elif instance_name == "TRUSTED_WEAK_FIXED_ARRAY_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 8, length * 4
+        elif instance_name == "TURBOSHAFT_FLOAT64_SET_TYPE_TYPE":
+            pass # TODO
+        elif instance_name == "TURBOSHAFT_WORD32_SET_TYPE_TYPE":
+            pass # TODO
+        elif instance_name == "TURBOSHAFT_WORD64_SET_TYPE_TYPE":
+            pass # TODO
+        elif instance_name == "WASM_DISPATCH_TABLE_TYPE": # ???
+            return 0x1c, 0
+        elif instance_name == "WASM_NULL_TYPE":
+            pass # TODO
+        elif instance_name == "WASM_TYPE_INFO_TYPE":
+            pass # TODO
+        elif instance_name == "WEAK_ARRAY_LIST_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 12, length * 4
+        elif instance_name == "WEAK_FIXED_ARRAY_TYPE":
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 8, length * 4
+
+        instance_type = read_int16_from_memory((map_addr & ~1) + 8)
+        self.warn_add_out("instance_type: {:#x}".format(instance_type))
+        return 0, 0
+
+    def walk_space(self, start, limit, cage_base):
+        v = read_int32_from_memory(start)
+        if v & 1:
+            addr = start
+        else:
+            addr = start + 0x10
+
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            tqdm = None
+        if tqdm:
+            pbar = tqdm(total=limit - start, leave=False)
+
+        count = 0
+        while addr < limit:
+            # check max_count
+            if self.args.max_count:
+                if count >= self.args.max_count:
+                    return
+
+            # get compressed pointer
+            try:
+                map_raw = read_int32_from_memory(addr)
+            except gdb.MemoryError:
+                self.warn_add_out("Cannot read memory at {:#x}".format(addr))
+                return
+
+            # check if magic number
+            if map_raw == 0xbeadbeef:
+                self.info_add_out("End of objects")
+                return
+
+            # check if it is a map
+            if not self.is_map(map_raw, cage_base):
+                self.warn_add_out("Not found map")
+                return
+            map_addr = cage_base + map_raw - 1 # untag
+
+            # get size, type, name
+            header_size, variable_size = self.get_object_size(addr, map_addr, cage_base, limit)
+            instance_type = read_int16_from_memory(map_addr + 8)
+            instance_name = self.get_instance_name(map_addr + 1)
+
+            # dump
+            if variable_size is not None:
+                size_str = "{:#x}+{:#x},".format(header_size, variable_size)
+            else:
+                size_str = "{:#x},".format(header_size)
+
+            line = "{:s}: map:{:#x}, sz={:12s} type={:#05x}(={:s})".format(
+                Color.colorify_hex(addr + 1, 'blue'),
+                map_addr + 1, size_str, instance_type, instance_name,
+            )
+            self.out.append(line)
+
+            # dump details
+            if (self.args.verbose and "STRING" in instance_name) or self.args.vverbose:
+                self.redirect_stdout()
+                gdb.execute("v8 {:#x}".format(addr | 1), to_string=True)
+                self.revert_stdout()
+                content = open(self.temp_output_path).read()
+                if not content:
+                    self.warn_add_out("No content; Something is wrong")
+                    return
+                self.out.extend(content.splitlines()[:20])
+
+            # check if last
+            if instance_name == "FREE_SPACE_TYPE":
+                self.info_add_out("End of objects")
+                return
+
+            # goto next
+            if header_size == 0:
+                return
+            if variable_size is None:
+                total_size = header_size
+            else:
+                total_size = header_size + variable_size
+            addr += total_size
+
+            if tqdm:
+                pbar.update(total_size)
+
+            count += 1
+        return
+
+    def walk_spaces(self, target_regions, cage_base):
+        tqdm = GefUtil.get_tqdm()
+        for start, limit, perm, path in tqdm(target_regions, leave=False):
+            self.out.append(titlify("{:#x}-{:#x} {:s} {:s}".format(start, limit, perm, path)))
+            self.walk_space(start, limit, cage_base)
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @only_if_specific_arch(arch=("x86_64",))
+    def do_invoke(self, args):
+        cage_base = V8ListMapsCommand.get_cage_base()
+        if not cage_base:
+            err("Cannot determine cage base")
+            return
+        info("cage base: {:#x}".format(cage_base))
+
+        self.temp_output_path = os.path.join(GEF_TEMP_DIR, "v8-dump-space-{:#x}.txt".format(cage_base))
+        self.instace_type_cache_path = os.path.join(GEF_TEMP_DIR, "v8-dump-space-instance-type.txt")
+
+        target_regions = self.get_target_regions()
+        if not target_regions:
+            err("Cannot determine target space address range")
+            return
+
+        self.out = []
+        self.walk_spaces(target_regions, cage_base)
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
 class V8Command(GenericCommand):
     """Print v8 tagged object, or load more commands from internet."""
 
