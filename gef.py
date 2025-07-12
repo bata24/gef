@@ -81048,6 +81048,158 @@ class CageCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class V8ListMapsCommand(GenericCommand, BufferingOutput):
+    """List v8 (especially d8) each maps."""
+
+    _cmdline_ = "v8-list-maps"
+    _category_ = "09-e. Misc - V8"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use map cache.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    _syntax_ = parser.format_help()
+
+    def redirect_stdout(self):
+        syscall_table = get_syscall_table()
+
+        # dup
+        ret = ExecSyscall(syscall_table.name_table["dup"].nr, [1]).exec_code()
+        self.stdout_oldfd = ret["reg"][current_arch.return_register]
+
+        # open
+        gdb.execute("patch string $sp '{:s}\\x00'".format(self.output_path), to_string=True)
+        flags = 0o100 | 0o2 # O_CREAT | O_RDWR
+        ret = ExecSyscall(syscall_table.name_table["open"].nr, [current_arch.sp, flags, 0o666]).exec_code()
+        file_fd = ret["reg"][current_arch.return_register]
+        gdb.execute("patch revert 0", to_string=True)
+
+        # dup2
+        ExecSyscall(syscall_table.name_table["dup2"].nr, [file_fd, 1]).exec_code()
+
+        # close
+        ExecSyscall(syscall_table.name_table["close"].nr, [file_fd]).exec_code()
+        return
+
+    def revert_stdout(self):
+        syscall_table = get_syscall_table()
+        # dup2
+        ExecSyscall(syscall_table.name_table["dup2"].nr, [self.stdout_oldfd, 1]).exec_code()
+
+        # close
+        ExecSyscall(syscall_table.name_table["close"].nr, [self.stdout_oldfd]).exec_code()
+        return
+
+    @staticmethod
+    def get_cage_base():
+        res = gdb.execute("cage --no-pager", to_string=True)
+        if "Not found" in res:
+            return None
+
+        for i, line in enumerate(res.splitlines()):
+            line = Color.remove_color(line)
+            if i == 0:
+                cage_base, *_ = line.split(None, 1)
+                cage_base = int(cage_base, 16)
+                return cage_base
+        return None
+
+    def get_old_space(self):
+        res = gdb.execute("cage --no-pager", to_string=True)
+        if "Not found" in res:
+            return None
+
+        for line in res.splitlines():
+            line = Color.remove_color(line)
+            if "[v8:old_space]" not in line:
+                continue
+            start, *_ = line.split()
+            return int(start, 16)
+        return None
+
+    def do_list_maps(self, region, cage_base):
+        ofs = read_int32_from_memory(region + 0x10)
+        map1 = cage_base + ofs
+        if not is_valid_addr(map1):
+            err("Memory access error")
+            return
+
+        heap_base = HeapbaseCommand.heap_base()
+        if not heap_base:
+            err("Not found heap")
+            return
+
+        heap_section = ProcessMap.lookup_address(heap_base).section
+        heap_contents = read_memory(heap_base, heap_section.size)
+        heap_contents = slice_unpack(heap_contents, current_arch.ptrsize)
+
+        try:
+            sidx = eidx = heap_contents.index(map1)
+        except ValueError:
+            err("Not found wanted maps")
+            return
+
+        cage_mask = cage_base & 0xffff_ffff_0000_0000
+        while sidx >= 0:
+            v = heap_contents[sidx]
+            if v & 1 == 0:
+                break
+            if cage_mask != (v & 0xffff_ffff_0000_0000):
+                break
+            sidx -= 1
+        sidx += 1
+
+        while eidx < len(heap_contents):
+            v = heap_contents[eidx]
+            if v & 1 == 0:
+                break
+            if cage_mask != (v & 0xffff_ffff_0000_0000):
+                break
+            eidx += 1
+
+        self.redirect_stdout()
+        tqdm = GefUtil.get_tqdm()
+        for idx in tqdm(range(sidx, eidx), leave=False):
+            v = heap_contents[idx]
+            gdb.execute("v8 {:#x}".format(v), to_string=True)
+        self.revert_stdout()
+
+    def list_maps(self, region, cage_base):
+        self.output_path = os.path.join(GEF_TEMP_DIR, "v8-list-maps-{:#x}.txt".format(cage_base))
+
+        # not found a cache file
+        if self.args.rescan or not os.path.exists(self.output_path):
+            self.do_list_maps(region, cage_base)
+        else:
+            info("Use cache")
+
+        res = open(self.output_path).read()
+        for line in res.splitlines():
+            line = re.sub(r"^(0x[0-9a-f]+)", lambda x:Color.blueify(x.group(1)), line)
+            self.out.append(line)
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @only_if_specific_arch(arch=("x86_64",))
+    def do_invoke(self, args):
+        cage_base = V8ListMapsCommand.get_cage_base()
+        if not cage_base:
+            err("Cannot determine cage base")
+            return
+
+        old_space_region = self.get_old_space()
+        if not old_space_region:
+            err("Cannot determine old space")
+            return
+
+        self.out = []
+        self.list_maps(old_space_region, cage_base)
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
 class V8Command(GenericCommand):
     """Print v8 tagged object, or load more commands from internet."""
 
