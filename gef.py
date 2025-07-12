@@ -80901,7 +80901,12 @@ class CageCommand(GenericCommand, BufferingOutput):
         area_size = self.get_trusted_pointer_table_size(self.args.force_heuristic)
         if area_start is not None and area_size is not None:
             area_end = area_start + area_size
-            return area_start <= entry.page_start < area_end
+            if area_start <= entry.page_start < area_end:
+                # keep trusted space address
+                if entry.permission.value == Permission.READ | Permission.WRITE:
+                    v = read_int_from_memory(entry.page_start)
+                    self.trusted_space_high = v & 0x0000_ffff_0000_0000
+                    return True
         return False
 
     def is_shared_trusted_pointer_table(self, entry):
@@ -80969,6 +80974,13 @@ class CageCommand(GenericCommand, BufferingOutput):
         area_end = area_start + (1 * 1024 * 1024 * 1024 * 1024) # 1TB
         return area_start <= entry.page_start < area_end
 
+    def is_trusted_space(self, entry):
+        if not hasattr(self, "trusted_space_high"):
+            return False
+        if self.trusted_space_high == (entry.page_start & 0x0000_ffff_0000_0000):
+            return True
+        return False
+
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
@@ -80985,7 +80997,8 @@ class CageCommand(GenericCommand, BufferingOutput):
             args.verbose = True
 
         self.out = []
-        for entry in maps:
+        # To find the trusted_space from the trusted_pointer_table, traverse it in reverse order
+        for entry in maps[::-1]:
             # location filtering
             if args.location is not None:
                 if args.location < entry.page_start or entry.page_end <= args.location:
@@ -81039,9 +81052,14 @@ class CageCommand(GenericCommand, BufferingOutput):
                 self.dump_entry(entry, "[v8:ArrayBuffer]")
             elif self.is_cage(entry):
                 self.dump_entry(entry, "[v8:cage]")
+            elif self.is_trusted_space(entry):
+                self.dump_entry(entry, "[v8:trusted_space]")
             else:
                 if args.vvverbose:
                     self.dump_entry(entry, "")
+
+        # Order the results in ascending order
+        self.out = self.out[::-1]
 
         self.print_output(check_terminal_size=True)
         return
@@ -81049,7 +81067,7 @@ class CageCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class V8ListMapsCommand(GenericCommand, BufferingOutput):
-    """List v8 (especially d8) each maps."""
+    """List v8 (especially d8) built-in maps."""
 
     _cmdline_ = "v8-list-maps"
     _category_ = "09-e. Misc - V8"
@@ -81068,7 +81086,7 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
 
         # open
         gdb.execute("patch string $sp '{:s}\\x00'".format(self.output_path), to_string=True)
-        flags = 0o100 | 0o2 # O_CREAT | O_RDWR
+        flags = 0o100 | 0o1 | 0o1000 # O_CREAT | O_WRONLY | O_TRUNC
         ret = ExecSyscall(syscall_table.name_table["open"].nr, [current_arch.sp, flags, 0o666]).exec_code()
         file_fd = ret["reg"][current_arch.return_register]
         gdb.execute("patch revert 0", to_string=True)
@@ -81082,6 +81100,7 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
 
     def revert_stdout(self):
         syscall_table = get_syscall_table()
+
         # dup2
         ExecSyscall(syscall_table.name_table["dup2"].nr, [self.stdout_oldfd, 1]).exec_code()
 
@@ -81095,12 +81114,12 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
         if "Not found" in res:
             return None
 
-        for i, line in enumerate(res.splitlines()):
+        for line in res.splitlines():
             line = Color.remove_color(line)
-            if i == 0:
+            if "[v8:cage]" in line:
                 cage_base, *_ = line.split(None, 1)
                 cage_base = int(cage_base, 16)
-                return cage_base
+                return cage_base & 0x0000_ffff_0000_0000
         return None
 
     def get_old_space(self):
@@ -81117,12 +81136,14 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
         return None
 
     def do_list_maps(self, region, cage_base):
+        # old_space+0x10 has heap_object
         ofs = read_int32_from_memory(region + 0x10)
         map1 = cage_base + ofs
         if not is_valid_addr(map1):
             err("Memory access error")
             return
 
+        # get glibc heap content
         heap_base = HeapbaseCommand.heap_base()
         if not heap_base:
             err("Not found heap")
@@ -81132,12 +81153,15 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
         heap_contents = read_memory(heap_base, heap_section.size)
         heap_contents = slice_unpack(heap_contents, current_arch.ptrsize)
 
+        # get reference index (from glibc heap)
         try:
             sidx = eidx = heap_contents.index(map1)
         except ValueError:
             err("Not found wanted maps")
             return
 
+        # glibc heap contains a array of addresses of v8 heap objects
+        # find the top of the array
         cage_mask = cage_base & 0xffff_ffff_0000_0000
         while sidx >= 0:
             v = heap_contents[sidx]
@@ -81148,6 +81172,7 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
             sidx -= 1
         sidx += 1
 
+        # find the tail of the array
         while eidx < len(heap_contents):
             v = heap_contents[eidx]
             if v & 1 == 0:
@@ -81156,12 +81181,14 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
                 break
             eidx += 1
 
+        # dump
         self.redirect_stdout()
         tqdm = GefUtil.get_tqdm()
         for idx in tqdm(range(sidx, eidx), leave=False):
             v = heap_contents[idx]
             gdb.execute("v8 {:#x}".format(v), to_string=True)
         self.revert_stdout()
+        return
 
     def list_maps(self, region, cage_base):
         self.output_path = os.path.join(GEF_TEMP_DIR, "v8-list-maps-{:#x}.txt".format(cage_base))

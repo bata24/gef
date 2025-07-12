@@ -734,7 +734,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/v8-load.png)
 - `cage`: displays v8 (especially `d8`) ubercage.
     - ![](images/cage.png)
-- `v8-list-maps`: lists v8 (especially d8) each maps.
+- `v8-list-maps`: lists v8 (especially d8) built-in maps.
     - ![](images/v8-list-maps.png)
 - `mte-tags`: displays the MTE tags for the specified address.
     - Supported on ARM64.
