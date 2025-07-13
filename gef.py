@@ -99548,7 +99548,7 @@ class VisualDumpCommand(GenericCommand):
     parser.add_argument("-d", "--disable-autoscale", action="store_true",
                         help="disable autoscaling to fit the terminal.")
     parser.add_argument("-w", "--width", type=AddressUtil.parse_address,
-                        help="the number of wrap bytes. (default: sqrt(len))")
+                        help="the number of wrap bytes. (default: sqrt(len(content)))")
     parser.add_argument("-c", "--color", choices=("r", "g", "b"),
                         help="convert the grayscale tone to either r,g,b.")
     parser.add_argument("-n", "--negate", action="store_true",
@@ -99562,6 +99562,16 @@ class VisualDumpCommand(GenericCommand):
     parser.add_argument("-As", "--auto-inclement-step-width", type=lambda x: int(x, 0), default=2,
                         help="auto inclement step width. (default: %(default)s)")
     _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} $rsp 0x1000                                 # width =~ sqrt(len(content))",
+        "{0:s} -w 0x100 $rsp 0x1000                        # use fixed width",
+        "{0:s} -c r $rsp 0x1000                            # change color: gray -> red",
+        "{0:s} -c r -n $rsp 0x1000                         # change color: gray -> red and negate",
+        "{0:s} -A $rsp 0x1000                              # bruteforce the width",
+        "{0:s} -A -Ab 0x100 -Ae 0x200 -As 0x10 $rsp 0x1000 # bruteforce the width (w=0x100; w<0x200; w+=0x10)",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
 
     def make_command_line(self, img_width, img_height, tmp_path):
         command_options = [
