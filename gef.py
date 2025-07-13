@@ -15720,7 +15720,7 @@ class DumpArgsCommand(GenericCommand):
     _aliases_ = ["args"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-c", "--count", type=lambda x: int(x, 0),
+    parser.add_argument("-c", "--count", type=AddressUtil.parse_address,
                         help="number of arguments to guess.")
     parser.add_argument("-o", "--out-of-function", action="store_true",
                         help="assume here is out of the function.")
@@ -17141,7 +17141,7 @@ class SmartMemoryDumpCommand(GenericCommand):
     parser.add_argument("-e", "--exclude", action="append", type=re.compile, default=[],
                         help="REGEXP exclude filter.")
     parser.add_argument("-c", "--commit", action="store_true", help="actually perform the dump.")
-    parser.add_argument("-m", "--max-region-size", type=lambda x: int(x, 0), default=0x10000000,
+    parser.add_argument("-m", "--max-region-size", type=AddressUtil.parse_address, default=0x10000000,
                         help="maximum size of dump region. (default: %(default)#x; 0: infinity)")
     _syntax_ = parser.format_help()
 
@@ -17534,9 +17534,9 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
                         help="section name or starting address of search range.")
     parser.add_argument("size", metavar="SIZE", nargs="?",
                         help="search range size. valid only when a start address is specified.")
-    parser.add_argument("-b", "--nb-insns-before", type=lambda x: int(x, 0), default=0,
+    parser.add_argument("-b", "--nb-insns-before", type=AddressUtil.parse_address, default=0,
                         help="the number of previous lines when print syscall instruction.")
-    parser.add_argument("-s", "--max-region-size", type=lambda x: int(x, 0), default=0x10000000,
+    parser.add_argument("-s", "--max-region-size", type=AddressUtil.parse_address, default=0x10000000,
                         help="maximum search region size. (default: %(default)#x; 0: infinity)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
@@ -17754,11 +17754,11 @@ class SearchPatternCommand(GenericCommand):
                         help="alignment unit. (default: %(default)s)")
     parser.add_argument("-p", "--perm", default="r??",
                         help="the filter by permission. (default: %(default)s)")
-    parser.add_argument("-i", "--interval", type=lambda x: int(x, 0),
+    parser.add_argument("-i", "--interval", type=AddressUtil.parse_address,
                         help="the interval to skip searching from the last found position within the same section.")
-    parser.add_argument("-l", "--limit", type=lambda x: int(x, 0),
+    parser.add_argument("-l", "--limit", type=AddressUtil.parse_address,
                         help="the limit of the search result.")
-    parser.add_argument("-s", "--max-region-size", type=lambda x: int(x, 0), default=0x10000000,
+    parser.add_argument("-s", "--max-region-size", type=AddressUtil.parse_address, default=0x10000000,
                         help="maximum search region size. (default: %(default)#x; 0: infinity)")
     parser.add_argument("-d", "--disable-utf16", action="store_true",
                         help="disable utf16 search if PATTERN is ascii string.")
@@ -18161,7 +18161,7 @@ class PtrDemangleCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("value", metavar="VALUE", nargs="?", type=lambda x: int(x, 0),
+    group.add_argument("value", metavar="VALUE", nargs="?", type=AddressUtil.parse_address,
                        help="the value to demangle.")
     group.add_argument("--source", action="store_true",
                        help="shows the source instead of displaying demangled value.")
@@ -18244,7 +18244,7 @@ class PtrMangleCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("value", metavar="VALUE", nargs="?", type=lambda x: int(x, 0),
+    group.add_argument("value", metavar="VALUE", nargs="?", type=AddressUtil.parse_address,
                        help="the value to mangle.")
     group.add_argument("--source", action="store_true",
                        help="shows the source instead of displaying mangled value.")
@@ -21347,9 +21347,9 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
                         help="the address interpreted as the beginning of a contiguous chunk. (default: arena.heap_base)")
     parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
                         help="the address or number to interpret as an arena. (default: main_arena)")
-    parser.add_argument("-b", "--nb-byte", type=lambda x: int(x, 0),
+    parser.add_argument("-b", "--nb-byte", type=AddressUtil.parse_address,
                         help="temporarily override `heap_chunks.peek_nb_byte`.")
-    parser.add_argument("-o", "--peek-offset", type=lambda x: int(x, 0), default=0,
+    parser.add_argument("-o", "--peek-offset", type=AddressUtil.parse_address, default=0,
                         help="temporarily override `heap_chunks.peek_offset`.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
@@ -22757,7 +22757,7 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
                         help="the address or number to interpret as an arena. (default: main_arena)")
-    parser.add_argument("-i", "--index", type=lambda x: int(x, 0),
+    parser.add_argument("-i", "--index", type=AddressUtil.parse_address,
                         help="the index of tcache entry (0 ~ 0x3f).")
     parser.add_argument("-c", "--count-addr", type=AddressUtil.parse_address,
                         help="the address of &tcache.counts[i].")
@@ -22992,7 +22992,7 @@ class GlibcExtractHeapAddrCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("value", metavar="VALUE", nargs="?", type=lambda x: int(x, 0),
+    group.add_argument("value", metavar="VALUE", nargs="?", type=AddressUtil.parse_address,
                        help="the value to extract.")
     group.add_argument("--source", action="store_true",
                        help="shows the source instead of displaying extractedd value.")
@@ -23037,7 +23037,7 @@ class GlibcCalcProtectedFdCommand(GenericCommand):
     _category_ = "06-a. Heap - Glibc"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("fd", type=lambda x: int(x, 0), help="the fd value.")
+    parser.add_argument("fd", type=AddressUtil.parse_address, help="the fd value.")
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the address to interpret as a chunk.")
     parser.add_argument("-b", "--as-base", action="store_true",
@@ -23562,7 +23562,7 @@ class RpCommand(GenericCommand, BufferingOutput):
     group.add_argument("--file", help="apply rp++ to specified file.")
     group.add_argument("--kernel", action="store_true", help="dump kernel, then apply vmlinux-to-elf and rp++.")
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="REGEXP filter.")
-    parser.add_argument("-r", "--rop", dest="rop_N", default=3, type=int,
+    parser.add_argument("-r", "--rop", dest="rop_N", type=int, default=3,
                         help="the max length of rop gadget. (default: %(default)s)")
     parser.add_argument("-a", "--allow-branches", action="store_true", help="enable --allow-branches.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
@@ -30974,7 +30974,7 @@ class ContextThreadsCommand(GenericCommand):
     _category_ = "01-a. Debugging Support - Context"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("nb_lines", metavar="NB_LINES", nargs="?", type=lambda x: int(x, 0),
+    parser.add_argument("nb_lines", metavar="NB_LINES", nargs="?", type=AddressUtil.parse_address,
                         help="temporarily overrides context-threads.nb_lines.")
     parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
     _syntax_ = parser.format_help()
@@ -31238,7 +31238,7 @@ class MemoryWatchCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
                         help="the memory address to register for display in `context memory`.")
-    parser.add_argument("count", metavar="COUNT", nargs="?", type=lambda x: int(x, 0), default=0x10,
+    parser.add_argument("count", metavar="COUNT", nargs="?", type=AddressUtil.parse_address, default=0x10,
                         help="the count of displayed units. (default: %(default)s)")
     parser.add_argument("unit", nargs="?", default="pointers",
                         choices=["byte", "word", "dword", "qword", "pointers"],
@@ -31359,7 +31359,7 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
                         help="dump mode. It also works if you specify the first character. (default: %(default)s)")
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the memory address to dump.")
-    parser.add_argument("count", metavar="COUNT", nargs="?", type=lambda x: int(x, 0), default=0x100,
+    parser.add_argument("count", metavar="COUNT", nargs="?", type=AddressUtil.parse_address, default=0x100,
                         help="the count of displayed units. (default: %(default)s)")
     parser.add_argument("--phys", action="store_true",
                         help="treat LOCATION as a physical address (only qemu-system).")
@@ -31501,7 +31501,7 @@ class XxdCommand(HexdumpCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the memory address to dump.")
-    parser.add_argument("count", metavar="COUNT", nargs="?", type=lambda x: int(x, 0), default=0x100,
+    parser.add_argument("count", metavar="COUNT", nargs="?", type=AddressUtil.parse_address, default=0x100,
                         help="the count of displayed units. (default: %(default)s)")
     parser.add_argument("--phys", action="store_true",
                         help="treat LOCATION as a physical address (only qemu-system).")
@@ -31546,7 +31546,7 @@ class HexdumpFlexibleCommand(GenericCommand):
     parser.add_argument("format", metavar="FORMAT", help="dump format.")
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the memory address to dump.")
-    parser.add_argument("count", metavar="COUNT", nargs="?", type=lambda x: int(x, 0), default=1,
+    parser.add_argument("count", metavar="COUNT", nargs="?", type=AddressUtil.parse_address, default=1,
                         help="the count of displayed units. (default: %(default)s)")
     parser.add_argument("--phys", action="store_true",
                         help="treat LOCATION as a physical address (only qemu-system).")
@@ -31640,9 +31640,9 @@ class LoadFileCommand(GenericCommand):
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the memory address to load.")
     parser.add_argument("file_path", metavar="FILE_PATH", help="the filepath to load.")
-    parser.add_argument("file_offset", metavar="FILE_OFFSET", nargs="?", default=0, type=lambda x: int(x, 0),
+    parser.add_argument("file_offset", metavar="FILE_OFFSET", nargs="?", type=AddressUtil.parse_address, default=0,
                         help="the offset of the file to load.")
-    parser.add_argument("load_size", metavar="LOAD_SIZE", nargs="?", type=lambda x: int(x, 0),
+    parser.add_argument("load_size", metavar="LOAD_SIZE", nargs="?", type=AddressUtil.parse_address,
                         help="the size of the data to load.")
     _syntax_ = parser.format_help()
 
@@ -31716,9 +31716,9 @@ class LoadFileMmapCommand(GenericCommand):
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the memory address to load.")
     parser.add_argument("file_path", metavar="FILE_PATH", help="the filepath to load.")
-    parser.add_argument("file_offset", metavar="FILE_OFFSET", nargs="?", default=0, type=lambda x: int(x, 0),
+    parser.add_argument("file_offset", metavar="FILE_OFFSET", nargs="?", type=AddressUtil.parse_address, default=0,
                         help="the offset of the file to load.")
-    parser.add_argument("load_size", metavar="LOAD_SIZE", nargs="?", type=lambda x: int(x, 0),
+    parser.add_argument("load_size", metavar="LOAD_SIZE", nargs="?", type=AddressUtil.parse_address,
                         help="the size of the data to load.")
     _syntax_ = parser.format_help()
 
@@ -32067,7 +32067,7 @@ class PatchStringCommand(PatchCommand):
                         help="the memory address to patch.")
     parser.add_argument("vstr", metavar='"double backslash-escaped string"', type=lambda x: codecs.escape_decode(x)[0],
                         help="the string to patch.")
-    parser.add_argument("length", metavar="LENGTH", nargs="?", type=lambda x: int(x, 0),
+    parser.add_argument("length", metavar="LENGTH", nargs="?", type=AddressUtil.parse_address,
                         help="the length of repeat. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
@@ -32122,7 +32122,7 @@ class PatchHexCommand(PatchCommand):
                         help="the memory address to patch.")
     parser.add_argument("hstr", metavar='"hex-string"', type=lambda x: bytes.fromhex(x),
                         help="the string to patch.")
-    parser.add_argument("length", metavar="LENGTH", nargs="?", type=lambda x: int(x, 0),
+    parser.add_argument("length", metavar="LENGTH", nargs="?", type=AddressUtil.parse_address,
                         help="the length of repeat. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
@@ -32176,7 +32176,7 @@ class PatchPatternCommand(PatchCommand):
     parser.add_argument("-d", "--dry-run", action="store_true", help="only generates patterns.")
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the memory address to patch.")
-    parser.add_argument("length", metavar="LENGTH", type=lambda x: int(x, 0),
+    parser.add_argument("length", metavar="LENGTH", type=AddressUtil.parse_address,
                         help="the length of repeat. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
@@ -32229,9 +32229,9 @@ class PatchNopCommand(PatchCommand):
     parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
                         help="the memory address to patch. (default: current_arch.pc)")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("-b", dest="byte_length", type=lambda x: int(x, 0),
+    group.add_argument("-b", dest="byte_length", type=AddressUtil.parse_address,
                        help="the patch length of byte (mutually exclusive with `-i`). (default: %(default)s)")
-    group.add_argument("-i", dest="inst_count", type=lambda x: int(x, 0), default=1,
+    group.add_argument("-i", dest="inst_count", type=AddressUtil.parse_address, default=1,
                        help="the patch length of instruction (mutually exclusive with `-b`). (default: 1)")
     _syntax_ = parser.format_help()
 
@@ -32811,7 +32811,7 @@ class DereferenceCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
                         help="the memory address to dump. (default: current_arch.sp)")
-    parser.add_argument("nb_lines", metavar="NB_LINES", nargs="?", type=lambda x: int(x, 0),
+    parser.add_argument("nb_lines", metavar="NB_LINES", nargs="?", type=AddressUtil.parse_address,
                         help="the count of lines.")
     parser.add_argument("-a", "--is-addr", action="store_true",
                         help="display only valid addresses.")
@@ -32823,17 +32823,17 @@ class DereferenceCommand(GenericCommand):
                         help="display only non-zero values.")
     parser.add_argument("-t", "--tag", nargs=2, action="append", metavar=("IDX", "TAG"),
                         help="display with tags.")
-    parser.add_argument("-T", "--tag-offset", default=0, type=int,
+    parser.add_argument("-T", "--tag-offset", type=int, default=0,
                         help="the slide offset of all tag positions.")
     parser.add_argument("-r", "--reverse", action="store_true",
                         help="display in reverse order line by line.")
     parser.add_argument("-u", "--uniq", action="store_true",
                         help="display with uniq.")
-    parser.add_argument("-i", "--interval", type=lambda x: int(x, 0), default=1,
+    parser.add_argument("-i", "--interval", type=AddressUtil.parse_address, default=1,
                         help="the line number of the interval for showing.")
-    parser.add_argument("-d", "--depth", default=1, type=int,
+    parser.add_argument("-d", "--depth", type=int, default=1,
                         help="depth of recursive. (default: %(default)s)")
-    parser.add_argument("-D", "--depth-nb-lines", default=4, type=int,
+    parser.add_argument("-D", "--depth-nb-lines", type=int, default=4,
                         help="NB_LINES when recursive. (default: %(default)s)")
     parser.add_argument("-p", "--phys", action="store_true",
                         help="treat LOCATION as a physical address. (only qemu-system)")
@@ -49291,7 +49291,7 @@ class SyscallArgsCommand(GenericCommand):
     _category_ = "01-a. Debugging Support - Context"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("nr", metavar="SYSCALL_NUM", nargs="?", type=lambda x: int(x, 0),
+    parser.add_argument("nr", metavar="SYSCALL_NUM", nargs="?", type=AddressUtil.parse_address,
                         help="syscall number to search.")
     _syntax_ = parser.format_help()
 
@@ -51173,7 +51173,7 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
     _category_ = "02-d. Process Information - Trivial Information"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("errno", metavar="ERRNO", nargs="?", type=lambda x: int(x, 0),
+    parser.add_argument("errno", metavar="ERRNO", nargs="?", type=AddressUtil.parse_address,
                         help="show specific errno definitions.")
     parser.add_argument("-a", "--all", action="store_true", help="show all errno definitions.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
@@ -65249,8 +65249,8 @@ class KernelSearchCodePtrCommand(GenericCommand):
     _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-d", "--depth", default=1, type=int, help="depth of reference. (default: %(default)s)")
-    parser.add_argument("-r", "--max-range", default=0, type=lambda x: int(x, 0),
+    parser.add_argument("-d", "--depth", type=int, default=1, help="depth of reference. (default: %(default)s)")
+    parser.add_argument("-r", "--max-range", type=AddressUtil.parse_address, default=0,
                         help="allowable offset range for each reference. (default: %(default)s)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
@@ -65770,10 +65770,10 @@ class StringsCommand(GenericCommand, BufferingOutput):
                         help="the end location to search for. (default: end of region or LOCATION+0x1000)")
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="REGEXP include filter.")
     parser.add_argument("-e", "--exclude", action="append", type=re.compile, default=[], help="REGEXP exclude filter.")
-    parser.add_argument("-d", "--depth", default=0, type=int, help="recursive depth. (default: %(default)s)")
-    parser.add_argument("-r", "--range", default=0x40, type=lambda x: int(x, 0),
+    parser.add_argument("-d", "--depth", type=int, default=0, help="recursive depth. (default: %(default)s)")
+    parser.add_argument("-r", "--range", type=AddressUtil.parse_address, default=0x40,
                         help="search range for recursively. (default: %(default)s)")
-    parser.add_argument("-m", "--minlen", default=8, type=int, help="minimum string length (default: %(default)s)")
+    parser.add_argument("-m", "--minlen", type=int, default=8, help="minimum string length (default: %(default)s)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
@@ -69776,9 +69776,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         help="[FOR DEVELOPER] skip xor to chunk->next when `kmem_cache.random` is falsely detected.")
     parser.add_argument("--no-byte-swap", action="store_true", default=None,
                         help="[FOR DEVELOPER] skip byteswap to chunk->next when `kmem_cache.random` is falsely detected.")
-    parser.add_argument("--offset-random", type=lambda x: int(x, 0),
+    parser.add_argument("--offset-random", type=AddressUtil.parse_address,
                         help="[FOR DEVELOPER] specified offsetof(kmem_cache, random) when `kmem_cache.random` is falsely detected.")
-    parser.add_argument("--offset-node", type=lambda x: int(x, 0),
+    parser.add_argument("--offset-node", type=AddressUtil.parse_address,
                         help="[FOR DEVELOPER] specified offsetof(kmem_cache, node) when `kmem_cache.node` is falsely detected.")
     parser.add_argument("--tlbflush-queue", action="store_true",
                         help="dump `slub_tlbflush_queue` (only if x86-64 && CONFIG_SLAB_VIRTUAL=y).")
@@ -83966,9 +83966,9 @@ class XColoredCommand(GenericCommand, BufferingOutput):
     parser.add_argument("format", metavar="FMT", nargs="?", default="", help="dump format.")
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
                         help="dump address.")
-    parser.add_argument("-i", "--interval", type=lambda x: int(x, 0),
+    parser.add_argument("-i", "--interval", type=AddressUtil.parse_address,
                         help="the line of interval for coloring.")
-    parser.add_argument("-c", "--color-num", type=lambda x: int(x, 0), default=4,
+    parser.add_argument("-c", "--color-num", type=AddressUtil.parse_address, default=4,
                         help="the number of colors used (1-5).")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet mode.")
@@ -88357,13 +88357,13 @@ class PagewalkRiscvCommand(PagewalkCommand):
                         help="sort by physical address.")
     parser.add_argument("--simple", action="store_true",
                         help="merge with ignoring physical address consecutivness.")
-    parser.add_argument("--filter", metavar="REGEX", default=[], action="append", type=re.compile,
+    parser.add_argument("--filter", metavar="REGEX", action="append", type=re.compile, default=[],
                         help="filter by REGEX pattern.")
-    parser.add_argument("--vrange", metavar="VADDR", default=[], action="append", type=AddressUtil.parse_address,
+    parser.add_argument("--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="filter by map included specified virtual address.")
-    parser.add_argument("--prange", metavar="PADDR", default=[], action="append", type=AddressUtil.parse_address,
+    parser.add_argument("--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="filter by map included specified physical address.")
-    parser.add_argument("--trace", metavar="VADDR", default=[], action="append", type=AddressUtil.parse_address,
+    parser.add_argument("--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="show all level pagetables only associated specified address.")
     parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
@@ -88946,13 +88946,13 @@ class PagewalkX64Command(PagewalkCommand):
                         help="sort by physical address.")
     parser.add_argument("--simple", action="store_true",
                         help="merge with ignoring physical address consecutivness.")
-    parser.add_argument("--filter", metavar="REGEX", default=[], action="append", type=re.compile,
+    parser.add_argument("--filter", metavar="REGEX", action="append", type=re.compile, default=[],
                         help="filter by REGEX pattern.")
-    parser.add_argument("--vrange", metavar="VADDR", default=[], action="append", type=AddressUtil.parse_address,
+    parser.add_argument("--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="filter by map included specified virtual address.")
-    parser.add_argument("--prange", metavar="PADDR", default=[], action="append", type=AddressUtil.parse_address,
+    parser.add_argument("--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="filter by map included specified physical address.")
-    parser.add_argument("--trace", metavar="VADDR", default=[], action="append", type=AddressUtil.parse_address,
+    parser.add_argument("--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="show all level pagetables only associated specified address.")
     parser.add_argument("--include-esp-fixup-stacks", action="store_true",
                         help="include `%%esp fixup stacks` area (sometimes heavy memory use).")
@@ -89622,13 +89622,13 @@ class PagewalkArmCommand(PagewalkCommand):
     parser.add_argument("--no-merge", action="store_true", help="do not merge similar/consecutive address.")
     parser.add_argument("--sort-by-phys", action="store_true", help="sort by physical address.")
     parser.add_argument("--simple", action="store_true", help="merge with ignoring physical address consecutivness.")
-    parser.add_argument("--filter", metavar="REGEX", default=[], action="append", type=re.compile,
+    parser.add_argument("--filter", metavar="REGEX", action="append", type=re.compile, default=[],
                         help="filter by REGEX pattern.")
-    parser.add_argument("--vrange", metavar="VADDR", default=[], action="append", type=AddressUtil.parse_address,
+    parser.add_argument("--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="filter by map included specified virtual address.")
-    parser.add_argument("--prange", metavar="PADDR", default=[], action="append", type=AddressUtil.parse_address,
+    parser.add_argument("--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="filter by map included specified physical address.")
-    parser.add_argument("--trace", metavar="VADDR", default=[], action="append", type=AddressUtil.parse_address,
+    parser.add_argument("--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="show all level pagetables only associated specified address.")
     parser.add_argument("--optee", action="store_true", help="show the secure world memory maps if used OP-TEE.")
     parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
@@ -90746,13 +90746,13 @@ class PagewalkArm64Command(PagewalkCommand):
     parser.add_argument("--no-merge", action="store_true", help="do not merge similar/consecutive address.")
     parser.add_argument("--sort-by-phys", action="store_true", help="sort by physical address.")
     parser.add_argument("--simple", action="store_true", help="merge with ignoring physical address consecutivness.")
-    parser.add_argument("--filter", metavar="REGEX", default=[], action="append", type=re.compile,
+    parser.add_argument("--filter", metavar="REGEX", action="append", type=re.compile, default=[],
                         help="filter by REGEX pattern.")
-    parser.add_argument("--vrange", metavar="VADDR", default=[], action="append", type=AddressUtil.parse_address,
+    parser.add_argument("--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="filter by map included specified virtual address.")
-    parser.add_argument("--prange", metavar="PADDR", default=[], action="append", type=AddressUtil.parse_address,
+    parser.add_argument("--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="filter by map included specified physical address.")
-    parser.add_argument("--trace", metavar="VADDR", default=[], action="append", type=AddressUtil.parse_address,
+    parser.add_argument("--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="show all level pagetables only associated specified address.")
     parser.add_argument("--optee", action="store_true", help="show the secure world memory maps if used OP-TEE.")
     parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
@@ -97877,7 +97877,7 @@ class KernelTraceCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--task-name", action="append", default=[],
                         help="task name (from `ktask`) for filtering.")
-    parser.add_argument("--task-addr", action="append", default=[], type=AddressUtil.parse_address,
+    parser.add_argument("--task-addr", action="append", type=AddressUtil.parse_address, default=[],
                         help="task address for filtering.")
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[],
                         help="function include filter (REGEXP).")
@@ -99555,11 +99555,11 @@ class VisualDumpCommand(GenericCommand):
                         help="negate the grayscale tone.")
     parser.add_argument("-A", "--auto-width-inclement", action="store_true",
                         help="repeat the display while shifting the interpretation of the width.")
-    parser.add_argument("-Ab", "--auto-inclement-begin-width", type=lambda x: int(x, 0), default=16,
+    parser.add_argument("-Ab", "--auto-inclement-begin-width", type=AddressUtil.parse_address, default=16,
                         help="auto inclement begin width. (default: %(default)s)")
-    parser.add_argument("-Ae", "--auto-inclement-end-width", type=lambda x: int(x, 0),
+    parser.add_argument("-Ae", "--auto-inclement-end-width", type=AddressUtil.parse_address,
                         help="auto inclement end width. (default: min(len(data) // begin_width, 512)")
-    parser.add_argument("-As", "--auto-inclement-step-width", type=lambda x: int(x, 0), default=2,
+    parser.add_argument("-As", "--auto-inclement-step-width", type=AddressUtil.parse_address, default=2,
                         help="auto inclement step width. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
@@ -99750,7 +99750,7 @@ class BinwalkMemoryCommand(GenericCommand):
                         help="REGEXP include filter.")
     parser.add_argument("-e", "--exclude", action="append", type=re.compile, default=[],
                         help="REGEXP exclude filter.")
-    parser.add_argument("-m", "--maxsize", default=0x10000000, type=AddressUtil.parse_address,
+    parser.add_argument("-m", "--maxsize", type=AddressUtil.parse_address, default=0x10000000,
                         help="maximum size of a section to be dumped. (default: 256 MB)")
     parser.add_argument("-c", "--commit", action="store_true", help="actually perform binwalk.")
     _syntax_ = parser.format_help()
