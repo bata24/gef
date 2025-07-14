@@ -31536,7 +31536,7 @@ class XxdCommand(HexdumpCommand):
 
 
 @register_command
-class HexdumpFlexibleCommand(GenericCommand):
+class HexdumpFlexibleCommand(GenericCommand, BufferingOutput):
     """Display the hexdump with user defined format."""
 
     _cmdline_ = "hexdump-flexible"
@@ -31550,6 +31550,8 @@ class HexdumpFlexibleCommand(GenericCommand):
                         help="the count of displayed units. (default: %(default)s)")
     parser.add_argument("--phys", action="store_true",
                         help="treat LOCATION as a physical address (only qemu-system).")
+    parser.add_argument("-t", "--tag", nargs=2, action="append", metavar=("IDX", "TAG"),
+                        help="display with tags.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
 
     _example_ = [
@@ -31575,6 +31577,64 @@ class HexdumpFlexibleCommand(GenericCommand):
                 repeat = 1
         return out
 
+    def do_dump(self, fmt, size, each_type):
+        base_address_color = Config.get_gef_setting("theme.dereference_base_address")
+
+        # parse tag
+        max_tag_width = 0
+        tags_dic = {}
+        if self.args.tag:
+            for idx, tag in self.args.tag:
+                idx = int(idx, 0)
+                tags_dic[idx] = tag
+                max_tag_width = max(max_tag_width, len(tag))
+
+        for i in range(self.args.count):
+            # read content
+            address = self.args.location + size * i
+            try:
+                if self.args.phys:
+                    data = read_physmem(address, size)
+                else:
+                    data = read_memory(address, size)
+            except (gdb.MemoryError, ValueError, OverflowError):
+                self.err_add_out("Failed to read memory")
+                break
+
+            # unpack
+            values = struct.unpack(fmt.replace("-", ""), data)
+
+            # make address line
+            if max_tag_width == 0:
+                line = "{:s}|{:+#06x}|{:+04d}:   ".format(
+                    Color.colorify(AddressUtil.format_address(address), base_address_color),
+                    size * i, i,
+                )
+            else:
+                tag_i = tags_dic.get(i, "")
+                line = "{:s}|{:+#06x}|{:+04d}: {:{:d}s}:".format(
+                    Color.colorify(AddressUtil.format_address(address), base_address_color),
+                    size * i, i,
+                    tag_i, max_tag_width,
+                )
+
+            # dump each element
+            for t, v in zip(each_type, values):
+                if t.startswith("-"):
+                    continue
+                if t in "BHILQ":
+                    line += " {:#0{:d}x}".format(v, 2 + struct.calcsize(t) * 2)
+                elif t in "bhilq":
+                    line += " {:+#0{:d}x}".format(v, 2 + struct.calcsize(t) * 2 + 1)
+                elif t in "fd":
+                    line += " {:20e}".format(v)
+                else:
+                    self.err_add_out("Unsupported format: {:s}".format(t))
+                    return
+
+            self.out.append(line)
+        return
+
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
@@ -31593,39 +31653,10 @@ class HexdumpFlexibleCommand(GenericCommand):
             return
 
         each_type = self.extract_each_type(args.format)
-        base_address_color = Config.get_gef_setting("theme.dereference_base_address")
 
         self.out = []
-        for i in range(args.count):
-            address = args.location + size * i
-            try:
-                if args.phys:
-                    data = read_physmem(address, size)
-                else:
-                    data = read_memory(address, size)
-            except (gdb.MemoryError, ValueError, OverflowError):
-                err("Failed to read memory")
-                break
-
-            values = struct.unpack(fmt.replace("-", ""), data)
-            colored_address = Color.colorify(AddressUtil.format_address(address), base_address_color)
-            line_elem = ["{:s}|{:+#06x}|{:+04d}:   ".format(colored_address, size * i, i)]
-            for t, v in zip(each_type, values):
-                if t.startswith("-"):
-                    continue
-                if t in "BHILQ":
-                    line_elem.append("{:#0{:d}x}".format(v, 2 + struct.calcsize(t) * 2))
-                elif t in "bhilq":
-                    line_elem.append("{:+#0{:d}x}".format(v, 2 + struct.calcsize(t) * 2 + 1))
-                elif t in "fd":
-                    line_elem.append("{:20e}".format(v))
-                else:
-                    err("Unsupported format: {:s}".format(t))
-                    return
-            self.out.append(" ".join(line_elem))
-
-        if self.out:
-            gef_print("\n".join(self.out), less=not args.no_pager)
+        self.do_dump(fmt, size, each_type)
+        self.print_output()
         return
 
 
