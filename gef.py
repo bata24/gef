@@ -81147,7 +81147,7 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
 
         for line in res.splitlines():
             line = Color.remove_color(line)
-            if "[v8:cage]" in line:
+            if "[v8:cage]" in line or "[v8:ro_space]" in line:
                 cage_base, *_ = line.split(None, 1)
                 cage_base = int(cage_base, 16)
                 return cage_base & 0x0000_ffff_0000_0000
@@ -81426,7 +81426,7 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             length >>= 1
             return 12, length * 4
         elif instance_name == "BIG_INT_BASE_TYPE":
-            length = read_int16_from_memory(addr + 4)
+            length = read_int32_from_memory(addr + 4)
             return 8, length * 4
         elif instance_name == "BYTECODE_ARRAY_TYPE":
             length = read_int32_from_memory(addr + 8)
@@ -81442,7 +81442,7 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             length = read_int32_from_memory(addr + 4)
             length >>= 1
             return 8, length * 4
-        elif instance_name == "CODE_TYPE": # ???
+        elif instance_name == "CODE_TYPE":
             return 0x44, 0
         elif instance_name == "COVERAGE_INFO_TYPE":
             pass # TODO
@@ -81456,9 +81456,9 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             length = read_int32_from_memory(addr + 4)
             return 8, length * 4
         elif instance_name == "EPHEMERON_HASH_TABLE_TYPE":
-            length = read_int32_from_memory(addr + 0x10)
+            length = read_int32_from_memory(addr + 4)
             length >>= 1
-            return 0x14, length * 8
+            return 8, length * 4
         elif instance_name == "FEEDBACK_METADATA_TYPE":
             length1 = read_int32_from_memory(addr + 4)
             if length1 != 0:
@@ -81475,7 +81475,8 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             return 8, length * 4
         elif instance_name == "FIXED_DOUBLE_ARRAY_TYPE":
             length = read_int32_from_memory(addr + 4)
-            return 8, length * 4
+            length >>= 1
+            return 8, length * 8
         elif instance_name == "FREE_SPACE_TYPE":
             length = read_int32_from_memory(addr + 4)
             length >>= 1
@@ -81486,9 +81487,9 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             length >>= 1
             return 8, length * 4
         elif instance_name == "HASH_TABLE_TYPE":
-            length = read_int32_from_memory(addr + 0x10)
+            length = read_int32_from_memory(addr + 4)
             length >>= 1
-            return 0x14, length * 4
+            return 8, length * 4
         elif instance_name == "INSTRUCTION_STREAM_TYPE":
             pass # TODO
         elif instance_name == "INTERNALIZED_ONE_BYTE_STRING_TYPE":
@@ -81496,15 +81497,17 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             length = AddressUtil.align_address_to_size(length, 4)
             return 12, length
         elif instance_name == "INTERNALIZED_TWO_BYTE_STRING_TYPE":
-            pass # TODO
+            length = read_int32_from_memory(addr + 8)
+            length = AddressUtil.align_address_to_size(length * 2, 4)
+            return 12, length
         elif instance_name == "NAME_DICTIONARY_TYPE":
-            length = read_int32_from_memory(addr + 0x10)
+            length = read_int32_from_memory(addr + 4)
             length >>= 1
-            return 0x20, length * 12
+            return 8, length * 4
         elif instance_name == "NAME_TO_INDEX_HASH_TABLE_TYPE":
-            length = read_int32_from_memory(addr + 0x10)
+            length = read_int32_from_memory(addr + 4)
             length >>= 1
-            return 0x14, length * 8
+            return 8, length * 4
         elif instance_name == "NATIVE_CONTEXT_TYPE":
             length = read_int32_from_memory(addr + 4)
             length >>= 1
@@ -81546,24 +81549,23 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             return 8, length * 4
         elif instance_name == "REGISTERED_SYMBOL_TABLE_TYPE":
             length = read_int32_from_memory(addr + 4)
-            return 12, length * 4
+            length >>= 1
+            return 8, length * 4
         elif instance_name == "REG_EXP_MATCH_INFO_TYPE":
             length = read_int32_from_memory(addr + 4)
             length >>= 1
             return 0x14, length * 4
         elif instance_name == "SCOPE_INFO_TYPE":
-            # TODO: More accurate calculations
-            length = read_int32_from_memory(addr + 12)
-            length >>= 1
-            length2 = read_int32_from_memory(addr + 8)
-            length += length2 * 4
-            additional = 0
-            while True:
-                v = read_int32_from_memory(addr + 0x18 + length * 4 + length * 4 + additional)
-                if v != 0x49 and v & 1:
-                    break
-                additional += 4
-            return 0x18, length * 4 + length * 4 + additional
+            # It's very complicated, so I'll use the v8 command.
+            self.redirect_stdout()
+            gdb.execute("v8 {:#x}".format(addr | 1), to_string=True)
+            self.revert_stdout()
+            content = open(self.temp_output_path).read()
+            r = re.search(r"- length: (\d+)", content)
+            if r:
+                return 4, int(r.group(1)) * 4
+            else:
+                return 4, 5 * 4
         elif instance_name == "SCRIPT_CONTEXT_TABLE_TYPE":
             length = read_int32_from_memory(addr + 4)
             length >>= 1
@@ -81577,7 +81579,9 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             length = AddressUtil.align_address_to_size(length, 4)
             return 12, length
         elif instance_name == "SEQ_TWO_BYTE_STRING_TYPE":
-            pass # TODO
+            length = read_int32_from_memory(addr + 8)
+            length = AddressUtil.align_address_to_size(length * 2, 4)
+            return 12, length
         elif instance_name == "SHARED_SEQ_ONE_BYTE_STRING_TYPE":
             pass # TODO
         elif instance_name == "SHARED_SEQ_TWO_BYTE_STRING_TYPE":
@@ -81596,10 +81600,12 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             pass # TODO
         elif instance_name == "STRONG_DESCRIPTOR_ARRAY_TYPE":
             pass # TODO
-        elif instance_name == "SWISS_NAME_DICTIONARY_TYPE": # ???
-            length = read_int32_from_memory(addr + 4)
-            length >>= 1
-            return 0x20, length * 4
+        elif instance_name == "SWISS_NAME_DICTIONARY_TYPE":
+            length = read_int32_from_memory(addr + 8)
+            data_table_len = length * 2 * 4
+            ctrl_table_len = AddressUtil.align_address_to_size(length + 0x10, 4)
+            property_details_table_len = AddressUtil.align_address_to_size(length, 4)
+            return 0x10, data_table_len + ctrl_table_len + property_details_table_len
         elif instance_name == "TRANSITION_ARRAY_TYPE":
             length = read_int32_from_memory(addr + 4)
             length >>= 1
