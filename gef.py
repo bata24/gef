@@ -77452,18 +77452,24 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
 
         unique_bytes_offset = []
         for r in re.finditer(target_pattern, self.kernel_img):
-            unique_bytes_offset.append(r.span())
+            unique_bytes_offset.append(r.span()) # (start_pos, end_pos)
 
         if len(unique_bytes_offset) == 0:
             self.verbose_err("Could not find kallsyms_token_table (0 candidate)")
             return False
 
         if len(unique_bytes_offset) > 1:
-            for offsets in unique_bytes_offset.copy():
+            # strict check
+            for i, offsets in enumerate(unique_bytes_offset.copy()):
+                self.verbose_info("unique_bytes {:d}: {:#x}".format(i, self.ro_base + offsets[0]))
                 follow = self.kernel_img[offsets[1]:offsets[1] + 1]
-                if not (follow.isalnum() or follow == b"_"):
+                if not follow.isalnum() and follow not in [b"_", b"."]:
                     unique_bytes_offset.remove(offsets)
-            if len(unique_bytes_offset) != 1:
+            # re-check
+            if len(unique_bytes_offset) == 0:
+                self.verbose_err("Could not find kallsyms_token_table (0 candidate)")
+                return False
+            if len(unique_bytes_offset) > 1:
                 self.verbose_err("Could not find kallsyms_token_table (multiple candidates)")
                 return False
 
