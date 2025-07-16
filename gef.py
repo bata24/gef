@@ -81265,8 +81265,8 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
     _category_ = "09-e. Misc - V8"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    spaces = ["old_space", "new_space", "ro_space", "trusted_space", "o", "n", "r", "t"]
-    parser.add_argument("target_space", metavar="TARGET_SPACE", choices=spaces, nargs="?", default="old_space",
+    spaces = ["old_space", "new_space", "ro_space", "trusted_space", "all", "o", "n", "r", "t", "a"]
+    parser.add_argument("target_space", metavar="TARGET_SPACE", choices=spaces, nargs="?", default="all",
                         help="the space name to dump.")
     parser.add_argument("-m", "--max-count", type=AddressUtil.parse_address, default=0,
                         help="max count for each space.")
@@ -81322,7 +81322,10 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
         regions = []
         for line in res.splitlines():
             line = Color.remove_color(line)
-            if self.args.target_space in ["old_space", "o"]:
+            if self.args.target_space in ["all", "a"]:
+                if "_space]" not in line:
+                    continue
+            elif self.args.target_space in ["old_space", "o"]:
                 if "[v8:old_space]" not in line:
                     continue
             elif self.args.target_space in ["new_space", "n"]:
