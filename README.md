@@ -392,7 +392,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/cage.png)
 - `v8-list-maps`: lists v8 (especially d8) built-in maps.
     - ![](images/v8-list-maps.png)
-- `v8-dump-space`: dumps v8 (especially d8) each space contains (WIP).
+- `v8-dump-space`: dumps v8 (especially d8) heap objects in each space.
     - ![](images/v8-dump-space.png)
 
 ### Improved Features

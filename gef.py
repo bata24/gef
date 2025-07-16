@@ -81265,7 +81265,7 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
-    """Dump v8 (especially d8) each space contains (WIP)."""
+    """Dump v8 (especially d8) heap objects in each space."""
 
     _cmdline_ = "v8-dump-space"
     _category_ = "09-e. Misc - V8"
