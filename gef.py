@@ -14224,15 +14224,20 @@ class GefThemeCommand(GenericCommand):
         self.add_setting("disassemble_opcode", "white", "Color of location when disassembling")
         self.add_setting("disassemble_opcode_highlight", "bold white", "Color of location when disassembling (=$pc)")
         self.add_setting("disassemble_mnemonic_normal", "yellow", "Color of normal mnemonic when disassembling")
-        self.add_setting("disassemble_mnemonic_normal_highlight", "bold bright_yellow", "Color of normal mnemonic when disassembling (=$pc)")
+        self.add_setting("disassemble_mnemonic_normal_highlight", "bold bright_yellow",
+                         "Color of normal mnemonic when disassembling (=$pc)")
         self.add_setting("disassemble_mnemonic_branch", "bold bright_yellow", "Color of branch mnemonic when disassembling")
-        self.add_setting("disassemble_mnemonic_branch_highlight", "bold bright_yellow", "Color of branch mnemonic when disassembling (=$pc)")
+        self.add_setting("disassemble_mnemonic_branch_highlight", "bold bright_yellow",
+                         "Color of branch mnemonic when disassembling (=$pc)")
         self.add_setting("disassemble_operands_normal", "cyan", "Color of normal operands when disassembling")
-        self.add_setting("disassemble_operands_normal_highlight", "bold cyan", "Color of normal operands when disassembling (=$pc)")
+        self.add_setting("disassemble_operands_normal_highlight", "bold cyan",
+                         "Color of normal operands when disassembling (=$pc)")
         self.add_setting("disassemble_operands_const", "bright_blue", "Color of const operands when disassembling")
-        self.add_setting("disassemble_operands_const_highlight", "bold bright_blue", "Color of const operands when disassembling (=$pc)")
+        self.add_setting("disassemble_operands_const_highlight", "bold bright_blue",
+                         "Color of const operands when disassembling (=$pc)")
         self.add_setting("disassemble_operands_symbol", "white", "Color of symbol operands when disassembling)")
-        self.add_setting("disassemble_operands_symbol_highlight", "bold white", "Color of symbol operands when disassembling (=$pc)")
+        self.add_setting("disassemble_operands_symbol_highlight", "bold white",
+                         "Color of symbol operands when disassembling (=$pc)")
         self.add_setting("dereference_string", "yellow", "Color of dereferenced string")
         self.add_setting("dereference_base_address", "cyan", "Color of dereferenced address")
         self.add_setting("dereference_register_value", "bold blue", "Color of dereferenced register")
@@ -36408,8 +36413,10 @@ class GotCommand(GenericCommand, BufferingOutput):
 
     def __init__(self, *args, **kwargs):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
-        self.add_setting("function_resolved", "green", "Line color of the got command output if the function has been resolved")
-        self.add_setting("function_not_resolved", "yellow", "Line color of the got command output if the function has not been resolved")
+        self.add_setting("function_resolved", "green",
+                         "Line color of the got command output if the function has been resolved")
+        self.add_setting("function_not_resolved", "yellow",
+                         "Line color of the got command output if the function has not been resolved")
         return
 
     def get_jmp_slots(self):
@@ -70837,10 +70844,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         if self.slab_virtual_enabled:
             # offsetof(slab, flush_list_elem)
             #   * [ANNOTATION]
-            #       In 6.6-based implementation, the member `flush_list_elem` has
-            #       been removed from `struct slab`, however, `slub_tlbflush_queue` uses the
-            #       member `slab_list` or `next` (which?) as the same link usage.
-            #       So, uses `flush_list_elem` as named property.
+            #       In 6.6-based implementation, the member `flush_list_elem` has been removed from `struct slab`,
+            #       however, `slub_tlbflush_queue` uses the member `slab_list` or `next` (which?) for the same purpose.
+            #       So, when CONFIG_SLAB_VIRTUAL=y and 6.6 or later, `flush_list_elem` means `next`.
             if kversion < "6.6":
                 self.page_offset_flush_list_elem = current_arch.ptrsize * 3
             else:
