@@ -31034,7 +31034,7 @@ class ContextThreadsCommand(GenericCommand):
             shown_threads = len(threads)
         else:
             shown_threads = nb_lines
-        if shown_threads != len(threads):
+        if shown_threads < len(threads):
             ContextCommand.context_title(
                 "threads (shown:{:d} / all:{:d})".format(shown_threads, len(threads)), redirect,
             )
