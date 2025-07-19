@@ -59240,7 +59240,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             if self.offset_orig_prog is None:
                 self.quiet_err("Not found bpf_prog->orig_prog")
                 return False
-            self.quiet_info("offsetof(bpf_prog: orig_prog): {:#x}".format(self.offset_orig_prog))
+            self.quiet_info("offsetof(bpf_prog, orig_prog): {:#x}".format(self.offset_orig_prog))
 
             try:
                 self.seccomp_tools_command = GefUtil.which("seccomp-tools")
