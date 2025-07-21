@@ -70021,7 +70021,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note2_ = "\n".join(_note2_)
 
-    def get_kmem_cache_offset_list(self, kmem_caches):
+    def resolve_kmem_cache_offset_list(self, kmem_caches):
         """
         struct kmem_cache {
             struct kmem_cache_cpu *cpu_slab;         // In fact, the offset value, not the pointer
@@ -70078,7 +70078,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 return True
         return False
 
-    def get_kmem_cache_offset_random(self, kmem_caches):
+    def resolve_kmem_cache_offset_random(self, kmem_caches):
         if self.args.no_xor:
             self.kmem_cache_offset_random = None
             return
@@ -70175,7 +70175,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 return
         return
 
-    def get_kmem_cache_offset_node(self, kmem_caches):
+    def resolve_kmem_cache_offset_node(self, kmem_caches):
         if self.args.offset_node is not None:
             self.kmem_cache_offset_node = self.args.offset_node
             return
@@ -70653,7 +70653,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.ncpus = len(self.cpu_offset)
 
         # offsetof(kmem_cache, list)
-        ret = self.get_kmem_cache_offset_list(kmem_caches)
+        ret = self.resolve_kmem_cache_offset_list(kmem_caches)
         if not ret:
             self.quiet_info("offsetof(kmem_cache, list): Not found")
             return False
@@ -70757,14 +70757,14 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad))
 
         # offsetof(kmem_cache, random)
-        self.get_kmem_cache_offset_random(kmem_caches)
+        self.resolve_kmem_cache_offset_random(kmem_caches)
         if self.kmem_cache_offset_random is None:
             self.quiet_info("offsetof(kmem_cache, random): Not found")
         else:
             self.quiet_info("offsetof(kmem_cache, random): {:#x}".format(self.kmem_cache_offset_random))
 
         # offsetof(kmem_cache, node)
-        self.get_kmem_cache_offset_node(kmem_caches)
+        self.resolve_kmem_cache_offset_node(kmem_caches)
         if self.kmem_cache_offset_node is None:
             self.quiet_info("offsetof(kmem_cache, node): Not found")
         else:
@@ -71660,7 +71660,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def get_kmem_cache_offset_node(self, kmem_caches):
+    def resolve_kmem_cache_offset_node(self, kmem_caches):
         self.kmem_cache_offset_node = None
         start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
         for candidate_offset in range(start_offset, start_offset + 0x100, current_arch.ptrsize):
@@ -71835,7 +71835,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad))
 
         # offsetof(kmem_cache, node)
-        self.get_kmem_cache_offset_node(kmem_caches)
+        self.resolve_kmem_cache_offset_node(kmem_caches)
         if self.kmem_cache_offset_node is None:
             self.quiet_info("offsetof(kmem_cache, node): Not found")
         else:
