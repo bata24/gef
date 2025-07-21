@@ -69785,7 +69785,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
-    parser.add_argument("-hs", "--help-for-slab-virtual", action="store_true", help="show slab-virtual ascii diagram.")
+    parser.add_argument("-hs", "--help-for-slab-virtual", action="store_true",
+                        help="show ascii diagram for CONFIG_SLAB_VIRTUAL=y.")
     parser.add_argument("cache_name", metavar="SLUB_CACHE_NAME", nargs="*",
                         help="filter by specific slub cache name.")
     parser.add_argument("--list", action="store_true", help="list all slub cache names.")
@@ -69808,6 +69809,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cached offset.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    parser.add_argument("--tlbflush-queue", action="store_true",
+                        help="dump `slub_tlbflush_queue` (only if x86-64 && CONFIG_SLAB_VIRTUAL=y).")
     parser.add_argument("--skip-page2virt", action="store_true",
                         help="[FOR DEVELOPER] used internally in gef, please don't use it.")
     parser.add_argument("--no-xor", action="store_true",
@@ -69818,8 +69821,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         help="[FOR DEVELOPER] specified offsetof(kmem_cache, random) when `kmem_cache.random` is falsely detected.")
     parser.add_argument("--offset-node", type=AddressUtil.parse_address,
                         help="[FOR DEVELOPER] specified offsetof(kmem_cache, node) when `kmem_cache.node` is falsely detected.")
-    parser.add_argument("--tlbflush-queue", action="store_true",
-                        help="dump `slub_tlbflush_queue` (only if x86-64 && CONFIG_SLAB_VIRTUAL=y).")
     _syntax_ = parser.format_help()
 
     _example_ = [
