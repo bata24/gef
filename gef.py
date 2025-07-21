@@ -70459,6 +70459,99 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     return
         return
 
+    def resolve_for_CONFIG_SLAB_VIRTUAL(self, top):
+        kversion = Kernel.kernel_version()
+
+        # Feat. CONFIG_SLAB_VIRUTAL (this patchset is supported only in x86-64).
+        # See https://lwn.net/Articles/944647/.
+        if not is_x86_64():
+            self.slab_virtual_enabled = False
+        elif kversion < "6.1":
+            self.slab_virtual_enabled = False
+        elif not Symbol.get_ksymaddr("slub_tlbflush_worker"):
+            self.slab_virtual_enabled = False
+        else:
+            # Heuristic detection that CONFIG_SLAB_VIRTUAL is enabled or not from `struct kmem_cache`.
+            # If enabled, `struct kmem_cache` has 2 doubly-link-lists above `kmem_cache->name`.
+            #     - kmem_cache->freed_slabs_normal (kernel >= 6.1.55)
+            #     - kmem_cache->freed_slabs (kernel < 6.1.55)
+            #     - kmem_cache->freed_slabs_min
+            def has_freed_slabs_lists(freed_slabs_normal, freed_slabs_min):
+                return is_double_link_list(freed_slabs_normal) and is_double_link_list(freed_slabs_min)
+
+            # TODO: CONFIG_MEMCG
+            offset_freed_slabs_normal = current_arch.ptrsize * 9
+            offset_freed_slabs_min = current_arch.ptrsize * 11
+            self.slab_virtual_enabled = has_freed_slabs_lists(
+                top + offset_freed_slabs_normal, top + offset_freed_slabs_min,
+            )
+
+            # cares CONFIG_SLUB_CPU_PARTIAL=n
+            if not self.slab_virtual_enabled:
+                offset_freed_slabs_normal = current_arch.ptrsize * 8
+                offset_freed_slabs_min = current_arch.ptrsize * 10
+                self.slab_virtual_enabled = has_freed_slabs_lists(
+                    top + offset_freed_slabs_normal, top + offset_freed_slabs_min,
+                )
+
+        # parse kmem_cache for CONFIG_SLAB_VIRTUAL
+        if self.slab_virtual_enabled:
+            self.quiet_info("CONFIG_SLAB_VIRTUAL: detected")
+
+            # 1. get global queue buffering freed slabs
+            self.slub_tlbflush_queue = KernelAddressHeuristicFinder.get_slub_tlbflush_queue()
+            if not self.slub_tlbflush_queue:
+                return False
+            self.quiet_info("slub_tlbflush_queue: {:#x}".format(self.slub_tlbflush_queue))
+
+            # 2. parse extra members of kmem_cache
+            #   - kmem_cache->nr_freed_pages (kernel < 6.6) or kmem_cache->virtual.nr_freed_pages (kernel >= 6.6)
+            #   - kmem_cache->freed_slabs_normal (kernel < 6.6) or kmem_cache->virtual.freed_slabs (kernel >= 6.6)
+            #   - kmem_cache->freed_slabs_min (kernel < 6.6) or kmem_cache->virtual.freed_slabs_min (kernel >= 6.6)
+
+            # offsetof(kmem_cache, nr_freed_pages)
+            if kversion < "6.1.55":
+                self.kmem_cache_offset_nr_freed_pages = offset_freed_slabs_normal - current_arch.ptrsize * 1
+            else:
+                self.kmem_cache_offset_nr_freed_pages = offset_freed_slabs_min + current_arch.ptrsize * 2
+            self.quiet_info("offsetof(kmem_cache, nr_freed_pages): {:#x}".format(
+                self.kmem_cache_offset_nr_freed_pages,
+            ))
+
+            # offsetof(kmem_cache, freed_slabs_normal)
+            self.kmem_cache_offset_freed_slabs_normal = offset_freed_slabs_normal
+            self.quiet_info("offsetof(kmem_cache, freed_slabs_normal): {:#x}".format(
+                self.kmem_cache_offset_freed_slabs_normal,
+            ))
+
+            # offsetof(kmem_cache, freed_slabs_min)
+            self.kmem_cache_offset_freed_slabs_min = offset_freed_slabs_min
+            self.quiet_info("offsetof(kmem_cache, freed_slabs_min): {:#x}".format(
+                self.kmem_cache_offset_freed_slabs_min,
+            ))
+        else:
+            if self.args.tlbflush_queue:
+                warn("CONFIG_SLAB_VIRTUAL is not enabled (maybe), option `--tlbflush-queue` is ignored.")
+        return
+
+    def resolve_kmem_cache_node_offset_partial(self, top):
+        if self.kmem_cache_offset_node is None:
+            self.quiet_info("offsetof(kmem_cache_node, partial): Not found")
+            self.kmem_cache_node_offset_partial = None
+            return
+
+        node = read_int_from_memory(top + self.kmem_cache_offset_node)
+        for i in range(2, 16):
+            offset_partial = current_arch.ptrsize * i
+            if is_double_link_list(node + offset_partial):
+                self.kmem_cache_node_offset_partial = offset_partial
+                self.quiet_info("offsetof(kmem_cache_node, partial): {:#x}".format(self.kmem_cache_node_offset_partial))
+                break
+        else:
+            self.quiet_info("offsetof(kmem_cache_node, partial): Not found")
+            self.kmem_cache_node_offset_partial = None
+        return
+
     """
     struct kmem_cache {
         struct kmem_cache_cpu *cpu_slab;         // In fact, the offset value, not the pointer
@@ -70632,6 +70725,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         else:
             self.quiet_info("slab_caches: {:#x}".format(self.slab_caches))
 
+        # parse kmem_caches
         seen = [self.slab_caches]
         current = self.slab_caches
         while True:
@@ -70664,7 +70758,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name))
 
         # offsetof(kmem_cache, offset)
-        top = read_int_from_memory(self.slab_caches) - self.kmem_cache_offset_list
+        top = kmem_caches[0] - self.kmem_cache_offset_list
         object_size = read_int32_from_memory(top + current_arch.ptrsize * 3 + 4)
         maybe_recip = read_int32_from_memory(top + current_arch.ptrsize * 3 + 4 + 4)
         if object_size < maybe_recip or (maybe_recip % 8) != 0:
@@ -70673,68 +70767,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.kmem_cache_offset_offset = current_arch.ptrsize * 3 + 4 + 4
         self.quiet_info("offsetof(kmem_cache, offset): {:#x}".format(self.kmem_cache_offset_offset))
 
-        kversion = Kernel.kernel_version()
-
-        # Feat. CONFIG_SLAB_VIRUTAL (this patchset is supported only in x86-64).
-        # See https://lwn.net/Articles/944647/.
-        if not is_x86_64():
-            self.slab_virtual_enabled = False
-        elif kversion < "6.1":
-            self.slab_virtual_enabled = False
-        elif not Symbol.get_ksymaddr("slub_tlbflush_worker"):
-            self.slab_virtual_enabled = False
-        else:
-            # Heuristic detection that CONFIG_SLAB_VIRTUAL is enabled or not from `struct kmem_cache`.
-            # If enabled, `struct kmem_cache` has 2 doubly-link-lists above `kmem_cache->name`.
-            #     - kmem_cache->freed_slabs_normal (kernel >= 6.1.55)
-            #     - kmem_cache->freed_slabs (kernel < 6.1.55)
-            #     - kmem_cache->freed_slabs_min
-            def has_freed_slabs_lists(freed_slabs_normal, freed_slabs_min):
-                return is_double_link_list(freed_slabs_normal) and is_double_link_list(freed_slabs_min)
-
-            # TODO: CONFIG_MEMCG
-            offset_freed_slabs_normal = current_arch.ptrsize * 9
-            offset_freed_slabs_min = current_arch.ptrsize * 11
-            self.slab_virtual_enabled = has_freed_slabs_lists(top + offset_freed_slabs_normal, top + offset_freed_slabs_min)
-
-            # cares CONFIG_SLUB_CPU_PARTIAL=n
-            if not self.slab_virtual_enabled:
-                offset_freed_slabs_normal = current_arch.ptrsize * 8
-                offset_freed_slabs_min = current_arch.ptrsize * 10
-                self.slab_virtual_enabled = has_freed_slabs_lists(top + offset_freed_slabs_normal, top + offset_freed_slabs_min)
-
-        # parse kmem_cache for CONFIG_SLAB_VIRTUAL
-        if self.slab_virtual_enabled:
-            self.quiet_info("CONFIG_SLAB_VIRTUAL: detected")
-
-            # 1. get global queue buffering freed slabs
-            self.slub_tlbflush_queue = KernelAddressHeuristicFinder.get_slub_tlbflush_queue()
-            if not self.slub_tlbflush_queue:
-                return False
-            self.quiet_info("slub_tlbflush_queue: {:#x}".format(self.slub_tlbflush_queue))
-
-            # 2. parse extra members of kmem_cache
-            #   - kmem_cache->nr_freed_pages (kernel < 6.6) or kmem_cache->virtual.nr_freed_pages (kernel >= 6.6)
-            #   - kmem_cache->freed_slabs_normal (kernel < 6.6) or kmem_cache->virtual.freed_slabs (kernel >= 6.6)
-            #   - kmem_cache->freed_slabs_min (kernel < 6.6) or kmem_cache->virtual.freed_slabs_min (kernel >= 6.6)
-
-            # offsetof(kmem_cache, nr_freed_pages)
-            if kversion < "6.1.55":
-                self.kmem_cache_offset_nr_freed_pages = offset_freed_slabs_normal - current_arch.ptrsize * 1
-            else:
-                self.kmem_cache_offset_nr_freed_pages = offset_freed_slabs_min + current_arch.ptrsize * 2
-            self.quiet_info("offsetof(kmem_cache, nr_freed_pages): {:#x}".format(self.kmem_cache_offset_nr_freed_pages))
-
-            # offsetof(kmem_cache, freed_slabs_normal)
-            self.kmem_cache_offset_freed_slabs_normal = offset_freed_slabs_normal
-            self.quiet_info("offsetof(kmem_cache, freed_slabs_normal): {:#x}".format(self.kmem_cache_offset_freed_slabs_normal))
-
-            # offsetof(kmem_cache, freed_slabs_min)
-            self.kmem_cache_offset_freed_slabs_min = offset_freed_slabs_min
-            self.quiet_info("offsetof(kmem_cache, freed_slabs_min): {:#x}".format(self.kmem_cache_offset_freed_slabs_min))
-        else:
-            if self.args.tlbflush_queue:
-                warn("CONFIG_SLAB_VIRTUAL is not enabled (maybe), option `--tlbflush-queue` is ignored.")
+        # for CONFIG_SLAB_VIRTUAL
+        self.resolve_for_CONFIG_SLAB_VIRTUAL(top)
 
         # offsetof(kmem_cache, cpu_slab)
         self.kmem_cache_offset_cpu_slab = 0
@@ -70841,34 +70875,21 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.page_offset_inuse_objects_frozen = self.page_offset_freelist + current_arch.ptrsize
         self.quiet_info("offsetof(page, inuse_objects_frozen): {:#x}".format(self.page_offset_inuse_objects_frozen))
 
-        # parse extra members of `struct slab` for Feat. CONFIG_SLAB_VIRTUAL
+        # parse extra members of `struct slab` for CONFIG_SLAB_VIRTUAL=y
         if self.slab_virtual_enabled:
             # offsetof(slab, flush_list_elem)
-            #   * [ANNOTATION]
-            #       In 6.6-based implementation, the member `flush_list_elem` has been removed from `struct slab`,
-            #       however, `slub_tlbflush_queue` uses the member `slab_list` or `next` (which?) for the same purpose.
-            #       So, when CONFIG_SLAB_VIRTUAL=y and 6.6 or later, `flush_list_elem` means `next`.
+            # [ANNOTATION]
+            #   In 6.6-based implementation, the member `flush_list_elem` has been removed from `struct slab`,
+            #   however, `slub_tlbflush_queue` uses the member `slab_list` or `next` (which?) for the same purpose.
+            #   So, when CONFIG_SLAB_VIRTUAL=y and 6.6 or later, `flush_list_elem` means `next`.
             if kversion < "6.6":
                 self.page_offset_flush_list_elem = current_arch.ptrsize * 3
             else:
                 self.page_offset_flush_list_elem = current_arch.ptrsize * 2
             self.quiet_info("offsetof(page, flush_list_elem): {:#x}".format(self.page_offset_flush_list_elem))
 
-        if self.kmem_cache_offset_node is None:
-            self.quiet_info("offsetof(kmem_cache_node, partial): Not found")
-            self.kmem_cache_node_offset_partial = None
-        else:
-            # offsetof(kmem_cache_node, partial)
-            node = read_int_from_memory(kmem_caches[0] - self.kmem_cache_offset_list + self.kmem_cache_offset_node)
-            for i in range(2, 16):
-                offset_partial = current_arch.ptrsize * i
-                if is_double_link_list(node + offset_partial):
-                    self.kmem_cache_node_offset_partial = offset_partial
-                    self.quiet_info("offsetof(kmem_cache_node, partial): {:#x}".format(self.kmem_cache_node_offset_partial))
-                    break
-            else:
-                self.quiet_info("offsetof(kmem_cache_node, partial): Not found")
-                self.kmem_cache_node_offset_partial = None
+        # offsetof(kmem_cache_node, partial)
+        self.resolve_kmem_cache_node_offset_partial(top)
 
         self.initialized = True
         return True
@@ -71786,6 +71807,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         else:
             self.quiet_info("slab_caches: {:#x}".format(self.slab_caches))
 
+        # parse kmem_caches
         seen = [self.slab_caches]
         current = self.slab_caches
         while True:
@@ -72485,6 +72507,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         else:
             self.quiet_info("slab_caches: {:#x}".format(self.slab_caches))
 
+        # parse kmem_caches
         seen = [self.slab_caches]
         current = self.slab_caches
         while True:
