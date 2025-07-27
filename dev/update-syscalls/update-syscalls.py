@@ -292,7 +292,7 @@ def get_new_tbl(tbl_path):
     path = os.path.join(K_DIR, tbl_path)
     print("[+] path:", path)
     new_tbl = open(path, "rb").read().decode("ascii").expandtabs(8).splitlines()
-    new_tbl = [l for l in new_tbl if not l.startswith("#")]
+    new_tbl = [l for l in new_tbl if l and not l.startswith("#")]
     return new_tbl
 
 def get_new_tbl_by_cmds(cmds):

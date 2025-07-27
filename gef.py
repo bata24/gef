@@ -38989,7 +38989,6 @@ x64_syscall_tbl = """
 465     common  listxattrat             sys_listxattrat
 466     common  removexattrat           sys_removexattrat
 467     common  open_tree_attr          sys_open_tree_attr
-
 512     x32     rt_sigaction            compat_sys_rt_sigaction
 513     x32     rt_sigreturn            compat_sys_x32_rt_sigreturn
 514     x32     ioctl                   compat_sys_ioctl
@@ -39778,17 +39777,12 @@ arm64_syscall_tbl = """
 246     arc     arc_gettls                      sys_arc_gettls
 247     arc     sysfs                           sys_sysfs
 248     arc     arc_usr_cmpxchg                 sys_arc_usr_cmpxchg
-
 244     csky    set_thread_area                 sys_set_thread_area
 245     csky    cacheflush                      sys_cacheflush
-
 244     nios2   cacheflush                      sys_cacheflush
-
 244     or1k    or1k_atomic                     sys_or1k_atomic
-
 258     riscv   riscv_hwprobe                   sys_riscv_hwprobe
 259     riscv   riscv_flush_icache              sys_riscv_flush_icache
-
 260     time32  wait4                           sys_wait4                       compat_sys_wait4
 260     64      wait4                           sys_wait4
 261     common  prlimit64                       sys_prlimit64
@@ -62235,7 +62229,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
     _note_ = [
         "This command needs CONFIG_RANDSTRUCT=n.",
         "",
-        "Currently it supports from 3.0 to 6.15.",
+        "Currently it supports from 3.0 to 6.16.",
         "",
         "Supported structure:",
     ]
@@ -62328,6 +62322,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "fadvise",                                 "4.19.0",  None],
             ["func_ptr", "uring_cmd",                               "5.19.0",  None],
             ["func_ptr", "uring_cmd_iopoll",                        "6.1.0",   None],
+            ["func_ptr", "mmap_prepare",                            "6.16.0",  None],
         ]
         self.members["file_operations"] = adapt_to_kernel_version(file_operations)
 
@@ -62461,6 +62456,8 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "pre_exit",                                "5.3.0",   None],
             ["func_ptr", "exit",                                    None,      None],
             ["func_ptr", "exit_batch",                              None,      None],
+            ["func_ptr", "exit_batch_rtnl",                         "6.9.0",   "6.15.8"],
+            ["func_ptr", "exit_rtnl",                               "6.16.0",  None],
             ["ptr",      "id",                                      None,      None],
             ["long",     "size",                                    None,      None],
         ]
@@ -62468,7 +62465,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
 
         address_space_operations = [
             # type       name                                       minver     maxver
-            ["func_ptr", "writepage",                               None,      None],
+            ["func_ptr", "writepage",                               None,      "6.15.8"],
             ["func_ptr", "read_folio",                              "5.19.0",  None],
             ["func_ptr", "readpage",                                None,      "5.18.19"],
             ["func_ptr", "writepages",                              None,      None],
@@ -62638,7 +62635,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
 
         dma_buf_ops = [
             # type         name                                     minver     maxver
-            ["bool",       "cache_sgt_mapping",                     "5.7.0",   None],
+            ["bool",       "cache_sgt_mapping",                     "5.7.0",   "6.15.8"],
             ["bool, bool", "cache_sgt_mapping, dynamic_mapping",    "5.5.0",   "5.6.19"],
             ["bool",       "cache_sgt_mapping",                     "5.3.0",   "5.4.264"],
             ["func_ptr",   "attach",                                "3.2.0",   None],
@@ -63061,7 +63058,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "update",                                  "5.18.0",  None],
             ["func_ptr", "prepare_access_checks",                   "5.18.0",  None],
             ["func_ptr", "check_accesses",                          "5.18.0",  None],
-            ["func_ptr", "reset_aggregated",                        "5.18.0",  "6.14.6"],
+            ["func_ptr", "reset_aggregated",                        "5.18.0",  "6.14.11"],
             ["func_ptr", "get_scheme_score",                        "5.18.0",  None],
             ["func_ptr", "apply_scheme",                            "5.18.0",  None],
             ["func_ptr", "target_valid",                            "5.18.0",  None],
@@ -96712,7 +96709,7 @@ class KmallocTracerCommand(GenericCommand):
         EXPORT_SYMBOL(kmem_cache_alloc_node_noprof);
         EXPORT_SYMBOL(kmem_cache_alloc_noprof);
         EXPORT_SYMBOL(krealloc_noprof);
-        [6.11~6.14]
+        [6.11~6.16-rc7]
         EXPORT_SYMBOL(__kmalloc_cache_node_noprof);
         EXPORT_SYMBOL(__kmalloc_cache_noprof);
         EXPORT_SYMBOL(__kmalloc_large_node_noprof);
@@ -96817,7 +96814,7 @@ class KmallocTracerCommand(GenericCommand):
                 ["kmem_cache_alloc_noprof", -1],
                 ["krealloc_noprof", 1],
             ]
-        elif kversion >= "6.11": # v6.11 ~ v6.14
+        elif kversion >= "6.11": # v6.11 ~ v6.16-rc7
             kmalloc_syms = [
                 ["__kmalloc_cache_node_noprof", 3],
                 ["__kmalloc_cache_noprof", 2],
