@@ -25510,30 +25510,44 @@ class KernelChecksecCommand(GenericCommand):
         return
 
     def check_fgkaslr(self):
-        # https://github.com/alobakin/linux/pull/3
         if not is_x86_64():
             return
 
+        # https://github.com/alobakin/linux/pull/3
         cfg = "CONFIG_FG_KASLR (FGKASLR)"
-        kcmdline = Kernel.kernel_cmdline()
+
+        kversion = Kernel.kernel_version()
+        if kversion < "5.5":
+            # https://lore.kernel.org/kernel-hardening/20200205223950.1212394-1-kristen@linux.intel.com/
+            additional = "FGKASLR was first proposed in 5.5.0-rc7"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
+            cfg = "CONFIG_MODULE_FG_KASLR (FGKASLR)"
+            gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Unsupported", "bold red")))
+            return
+
+        if kversion >= "6.14":
+            # As of 6.14, following detection logic is no longer available.
+            # It has not yet been incorporated into the mainline, and samples are not available,
+            # so I will disable this check.
+            gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
+            cfg = "CONFIG_MODULE_FG_KASLR (FGKASLR)"
+            gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
+            return
+
         swapgs_restore_regs_and_return_to_usermode = Symbol.get_ksymaddr("swapgs_restore_regs_and_return_to_usermode")
         commit_creds = Symbol.get_ksymaddr("commit_creds")
 
-        if not swapgs_restore_regs_and_return_to_usermode:
-            if commit_creds:
-                additional = "swapgs_restore_regs_and_return_to_usermode: Not found"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
-                cfg = "CONFIG_MODULE_FG_KASLR (FGKASLR)"
-                gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Unsupported", "bold red")))
-            else:
-                gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
-                cfg = "CONFIG_MODULE_FG_KASLR (FGKASLR)"
-                gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
+        # something is wrong
+        if not swapgs_restore_regs_and_return_to_usermode or not commit_creds:
+            gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
+            cfg = "CONFIG_MODULE_FG_KASLR (FGKASLR)"
+            gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
             return
 
         # swapgs_restore_regs_and_return_to_usermode is in a fixed location.
         # commit_creds are placed dynamically.
         if swapgs_restore_regs_and_return_to_usermode < commit_creds: # For some reason this works fine
+            kcmdline = Kernel.kernel_cmdline()
             if kcmdline and "nokaslr" in kcmdline.cmdline:
                 additional = "nokaslr is in cmdline"
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
@@ -25551,12 +25565,11 @@ class KernelChecksecCommand(GenericCommand):
             # It's included in the patch that introduces FGKASLR, so I'm assuming it's always enabled.
             cfg = "CONFIG_MODULE_FG_KASLR (FGKASLR)"
             gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Enabled (maybe)", "bold green")))
-            return
-
-        additional = "swapgs_restore_regs_and_return_to_usermode > commit_creds"
-        gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
-        cfg = "CONFIG_MODULE_FG_KASLR (FGKASLR)"
-        gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Unsupported", "bold red")))
+        else:
+            additional = "swapgs_restore_regs_and_return_to_usermode > commit_creds"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
+            cfg = "CONFIG_MODULE_FG_KASLR (FGKASLR)"
+            gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Unsupported", "bold red")))
         return
 
     def check_kpti(self):
