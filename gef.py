@@ -26108,7 +26108,8 @@ class KernelChecksecCommand(GenericCommand):
 
         r1 = gdb.execute("syscall-table-view -f kexec_load --quiet --no-pager", to_string=True)
         r2 = gdb.execute("syscall-table-view -f kexec_file_load --quiet --no-pager", to_string=True)
-        if ("kexec_load" not in r1 or "invalid kexec_load" in r1) and ("kexec_file_load" not in r2 or "invalid kexec_file_load" in r2):
+        if ("kexec_load" not in r1 or "invalid kexec_load" in r1) and \
+           ("kexec_file_load" not in r2 or "invalid kexec_file_load" in r2):
             additional = ""
             if "kexec_load" not in r1:
                 additional = "kexec_load syscall: Unimplemented"
