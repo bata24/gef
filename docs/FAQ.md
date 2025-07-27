@@ -27,7 +27,7 @@ The next time GEF starts, it will automatically load this file and apply the sav
 This includes the current values of items configurable with `gef config` and user-defined command aliases.
 
 ## What is `~/.gdbinit`?
-This is the command file that gdb will execute when it starts up.
+This is the command file that GDB will execute when it starts up.
 
 By including the following command to load `gef.py`, GEF will be loaded automatically.
 There are two styles for writing `.gdbinit`; either one works.
@@ -477,7 +477,7 @@ If you think there is a problem with GEF, please report it on the issues page.
 ## The `vmmap` command does not recognize options.
 Try the `pagewalk` command.
 
-When connected to qemu-system or vmware's gdb stub, the `vmmap` command is simply redirected to the `pagewalk` command.
+When connected to qemu-system or VMware's GDB stub, the `vmmap` command is simply redirected to the `pagewalk` command.
 All options are ignored in this case.
 If you want to use options, please use the `pagewalk` command instead of the `vmmap` command.
 
@@ -500,6 +500,21 @@ Optionally, also run `ksymaddr-remote --vmlinux-file <vmlinux_path>`.
 |Memory-resident `kallsyms`|- Not available by default<br>- Accessible via `ks-apply` command|- Accessible after `ksymaddr-remote` command<br>- Used by various GEF commands internally|
 
 The `kload` command is a wrapper for the `add-symbol-file` command. This automatically applies `kbase` address.
+
+## The kernel-related commands are unstable; sometimes they work fine, sometimes they don’t. / The output of `ksymaddr-remote` seems odd.
+This may be due to the GEF's caching mechanism.
+
+GEF resolves kernel symbols using the `ksymaddr-remote` command.
+This command caches the offsets (needed for parsing) under the `/tmp/gef` directory.
+At that time, it uses the kernel version string (its hash) as the cache key.
+
+Because of this, in a situation like following, you may encounter an issue where the wrong cache is used.
+- You have built and debug multiple kernels with slightly different build configs (same kernel version)
+
+To resolve this, after attaching with GDB, execute either of the following:
+- `gef reset-cache --hard` (clears the cache)
+- `ks -rv` (resolves symbols ignoring the cache)
+    - Once symbols are resolved, it remains in effect for the duration of that GDB (GEF) debug session.
 
 ## The `got` command does not display PLT address.
 This problem is probably caused by an outdated version of `binutils`.
@@ -691,12 +706,12 @@ There are no plans.
 Yes. However, it is becoming difficult to find new targets to support.
 
 This is because three things are required:
-1. toolchain
+1. Toolchain
     - `linux-headers`, `binutils`, `gcc`, `glibc` (or `uClibc`) are needed.
     - A prebuilt tarball is preferred.
-2. qemu-user
-    - It needs an implementation of gdb-stub.
-3. gdb
+2. Qemu-user
+    - It needs an implementation of GDB stub.
+3. GDB
     - It needs `python3` support.
 
 
