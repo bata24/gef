@@ -282,7 +282,8 @@ Consider rebuilding GDB from the latest tarball or from the Git repository.
     ```
     apt install -y libdebuginfod-dev libreadline-dev
     git clone --depth 1 https://github.com/bminor/binutils-gdb && cd binutils-gdb
-    ./configure --disable-{binutils,ld,gold,gas,sim,gprof,gprofng} --enable-targets=all --with-python=/usr/bin/python3 --with-debuginfod --with-system-{zlib,readline}
+    ./configure --disable-{binutils,ld,gold,gas,sim,gprof,gprofng} --enable-targets=all \
+    --with-python=/usr/bin/python3 --with-debuginfod --with-system-{zlib,readline}
     make && make install
     ```
 
@@ -489,14 +490,15 @@ The logic is slightly different, so it might work.
 If it still does not work, please report it on the issue page.
 
 ## If I have a `vmlinux` with debuginfo, how can I use `ks-apply`?
-The `ks-apply` command is unnecessary. Run `kload <vmlinux_path>`.
+The `ks-apply` command is unnecessary.
+Run `kload <vmlinux_path>` (The `kload` command is an easy-to-use wrapper around the `add-symbol-file` command).
 
 Optionally, also run `ksymaddr-remote --vmlinux-file <vmlinux_path>`.
 
 |Component|How GDB uses it|How GEF uses it|
 |:---|:---|:---|
-|`vmlinux` debuginfo|- Loaded via `kload` command<br>- Essential for source-level debugging|- Not utilized|
-|`vmlinux` symbols|- Loaded via `kload` command<br>- Provides kernel symbol resolution |- Accessible via `ksymaddr-remote --vmlinux-file <path>`<br>- This overrides the result of parsing `kallsyms` in memory<br>- Addresses will be automatically rebased|
+|`vmlinux` debuginfo|- Loaded via `kload` command<br>- Essential for source-level debugging|- Unused|
+|`vmlinux` symbols|- Loaded via `kload` command<br>- Provides kernel symbol resolution|- Accessible via `ksymaddr-remote --vmlinux-file <path>`<br>- This overrides the result of parsing `kallsyms` in memory<br>- Addresses will be automatically rebased|
 |Memory-resident `kallsyms`|- Not available by default<br>- Accessible via `ks-apply` command|- Accessible after `ksymaddr-remote` command<br>- Used by various GEF commands internally|
 
 The `kload` command is a wrapper for the `add-symbol-file` command. This automatically applies `kbase` address.
