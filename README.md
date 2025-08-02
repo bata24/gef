@@ -334,7 +334,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `partition-alloc-dump`: dumps Partition-Alloc free-list for chromium.
     - ![](images/partition-alloc-dump.png)
     - This command is reserved for the implementation of the latest version of Chromium.
-        - Currently tested: v139.x / [1468821](https://commondatastorage.googleapis.com/chromium-browser-snapshots/index.html?prefix=Linux_x64/1468821/) / 01178c42622d4ffcf6a7b2a974a62d35a231f7b8
+        - Currently tested: v140.x / [1493770](https://commondatastorage.googleapis.com/chromium-browser-snapshots/index.html?prefix=Linux_x64/1493770/) / 4175e5c939a0f18e5176d49a79f36b9a81ea77fd
     - Supported on x64 and ARM64 (maybe it works on x86/ARM too, but not tested).
     - It will try heuristic search if the binary has no symbol.
     - How to test:
