@@ -71447,7 +71447,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             if target_names != [] and kmem_cache["name"] not in target_names:
                 continue
 
-            # dump meta
+            # dump kmem_cache metadata
             self.out.append("")
             self.out.append("  kmem_cache: {:#x}".format(kmem_cache["address"]))
             self.out.append("    name: {:s}".format(Color.colorify(kmem_cache["name"], chunk_label_color)))
@@ -71469,15 +71469,22 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             if self.slab_virtual_enabled:
                 nr_freed_pages = kmem_cache["nr_freed_pages"]
                 self.out.append("    nr_freed_pages: {:#d}".format(nr_freed_pages))
+
                 # freed_slabs_normal/freed_slabs
-                self.out.append("    freed_slabs_normal: {:#d}/{:#d}".format(len(kmem_cache["freed_slabs_normal"]), nr_freed_pages))
+                self.out.append("    freed_slabs_normal: {:#d}/{:#d}".format(
+                    len(kmem_cache["freed_slabs_normal"]), nr_freed_pages,
+                ))
                 for idx, slab in enumerate(kmem_cache["freed_slabs_normal"]):
                     self.out.append("             {:#05x} {:#x}".format(idx, slab["address"]))
+
                 # freed_slabs_min
-                self.out.append("    freed_slabs_min: {:#d}/{:#d}".format(len(kmem_cache["freed_slabs_min"]), nr_freed_pages))
+                self.out.append("    freed_slabs_min: {:#d}/{:#d}".format(
+                    len(kmem_cache["freed_slabs_min"]), nr_freed_pages,
+                ))
                 for idx, slab in enumerate(kmem_cache["freed_slabs_min"]):
                     self.out.append("             {:#05x} {:#x}".format(idx, slab["address"]))
 
+            # dump each kmem_cache_cpu
             for cpu in cpus:
                 self.out.append("    kmem_cache_cpu (cpu{:d}): {:#x}".format(
                     cpu, kmem_cache["kmem_cache_cpu"][cpu]["address"],
@@ -72221,7 +72228,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             if target_names != [] and kmem_cache["name"] not in target_names:
                 continue
 
-            # dump meta
+            # dump kmem_cache metadata
             self.out.append("")
             self.out.append("  kmem_cache: {:#x}".format(kmem_cache["address"]))
             self.out.append("    name: {:s}".format(Color.colorify(kmem_cache["name"], chunk_label_color)))
@@ -73020,7 +73027,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             if target_names != [] and kmem_cache["name"] not in target_names:
                 continue
 
-            # dump meta
+            # dump kmem_cache metadata
             self.out.append("")
             self.out.append("  kmem_cache: {:#x}".format(kmem_cache["address"]))
             self.out.append("    name: {:s}".format(Color.colorify(kmem_cache["name"], chunk_label_color)))
