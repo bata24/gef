@@ -172,6 +172,11 @@ This is not officially supported.
 
 However, the following configuration might work:
 ```
+# Please replace the username and path as appropriate
+
+# First, install GEF as root
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sudo sh
+
 # Move .gef (including gef.py, .venv-gef, etc.)
 mv /root/.gef /home/user
 
@@ -180,9 +185,21 @@ sed -i -e 's#/root#/home/user#' /home/user/.gef/gef.venv.conf
 
 # Edit .gdbinit to load GEF
 echo 'python sys.path.insert(0, "/home/user/.gef"); from gef import *; Gef.main()' >> /home/user/.gdbinit
+
+# Delete /tmp/gef directory (if exists)
+rm -rf /tmp/gef
 ```
 
-Please replace the username and path as appropriate.
+Alternative simple method (no-external tools, load simply):
+
+```
+# Download
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/gef.py -O ~/.gdbinit-gef.py
+
+# Add path to .gdbinit
+echo "source $HOME/.gdbinit-gef.py" >> ~/.gdbinit
+```
+
 
 ## How can I install GEF offline?
 Please refer to [`install.sh`](../install.sh) or [`install-minimal.sh`](../install-minimal.sh) for dependencies and other requirements, and set them up manually.
