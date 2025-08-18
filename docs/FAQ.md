@@ -186,7 +186,7 @@ sed -i -e 's#/root#/home/user#' /home/user/.gef/gef.venv.conf
 # Edit .gdbinit to load GEF
 echo 'python sys.path.insert(0, "/home/user/.gef"); from gef import *; Gef.main()' >> /home/user/.gdbinit
 
-# Delete /tmp/gef directory (if exists)
+# Delete /tmp/gef directory (if it exists)
 rm -rf /tmp/gef
 ```
 
