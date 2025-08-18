@@ -79765,12 +79765,24 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-m", "--mi-heap-main", type=AddressUtil.parse_address,
                         help="the address of _mi_heap_main (v2.x) / heap_main (v3.x).")
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--v21x", action="store_true", help="for v2.1.x.")
-    group.add_argument("--v22x", action="store_true", help="for v2.2.x.")
-    group.add_argument("--v30x", action="store_true", help="for v3.0.x.")
+    group.add_argument("--v21x", action="store_true", help="for mimalloc v2.1.x.")
+    group.add_argument("--v22x", action="store_true", help="for mimalloc v2.2.x.")
+    group.add_argument("--v30x", action="store_true", help="for mimalloc v3.0.x.")
     parser.add_argument("-d", "--use-decode", action="store_true", help="use pointer decoding (for debug build).")
+    parser.add_argument("-D", "--dump-chunk", action="store_true", help="dump each chunks.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
+
+    _note_ = [
+        "In mimalloc, the member offsets of important structures vary depending on the version.",
+        "You should be able to check the version with a command like `strings libmimalloc.so | grep git`.",
+        "If you cannot determine it, please choose an option that can successfully decode it.",
+        "",
+        "For _mi_heap_main (v2.x) or heap_main (v3.x), GEF tries to resolve the address from symbol.",
+        "If symbols are not available, GEF scans the TLS area for automatic detection.",
+        "If, for some reason, detection fails, please specify the address manually.",
+    ]
+    _note_ = "\n".join(_note_)
 
     def initialize(self):
         if self.args.v21x:
@@ -79982,7 +79994,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             return mi_heap_main
         return None
 
-    def dump_list(self, head, current, key0, key1):
+    def dump_list(self, head, current, key0, key1, bs):
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
 
@@ -79995,13 +80007,13 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         while True:
             # loop check
             if current in seen:
-                self.out.append(Color.colorify("-> {:#x} (loop) ".format(current), corrupted_msg_color))
+                self.out.append(Color.colorify(" -> {:#x} (loop) ".format(current), corrupted_msg_color))
                 break
             seen.append(current)
 
             # check wrong value
             if current != 0 and not is_valid_addr(current):
-                self.out.append(Color.colorify("-> {:#x} (corrupted) ".format(current), corrupted_msg_color))
+                self.out.append(Color.colorify(" -> {:#x} (corrupted) ".format(current), corrupted_msg_color))
                 break
 
             # ok
@@ -80010,6 +80022,12 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             # check the end of the list
             if current == 0 or current == head:
                 break
+
+            # dump
+            if self.args.dump_chunk:
+                data = read_memory(current, bs)
+                out = hexdump(data, show_symbol=False, base=current, unit=8)
+                self.out.append(out)
 
             # get next
             current = read_int_from_memory(current)
@@ -80040,13 +80058,13 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         freelist_addr = mi_page + self.offset_free
         self.out.append("freelist @{:#x}:".format(freelist_addr))
         current = read_int_from_memory(freelist_addr)
-        self.dump_list(mi_page, current, key0, key1)
+        self.dump_list(mi_page, current, key0, key1, bs)
 
         # local freelist
         local_freelist_addr = mi_page + self.offset_local_free
         self.out.append("local_freelist @{:#x}:".format(local_freelist_addr))
         current = read_int_from_memory(local_freelist_addr)
-        self.dump_list(mi_page, current, key0, key1)
+        self.dump_list(mi_page, current, key0, key1, bs)
         return
 
     def dump_heap(self, mi_heap):
