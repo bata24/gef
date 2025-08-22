@@ -12947,12 +12947,17 @@ class ProcessMap:
         """Retrieve all the files loaded by debuggee."""
         lines = gdb.execute("info files", to_string=True).splitlines()
         info_files = []
+        seen = []
         for line in lines:
             line = line.strip()
             if not line:
                 break
             if not line.startswith("0x"):
                 continue
+            if line in seen:
+                continue
+            seen.append(line)
+
             blobs = [x.strip() for x in line.split(" ")]
             addr_start = int(blobs[0], 16)
             addr_end = int(blobs[2], 16)
@@ -33737,9 +33742,13 @@ class VMMapCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("kgdb",))
-    @exclude_specific_arch(arch=("ARM32M",))
     def do_invoke(self, args):
         if is_qemu_system() or is_vmware():
+            if is_arm32_cortex_m():
+                info("Redirect to xfiles (args are ignored)")
+                gdb.execute("xfiles")
+                return
+
             info("Redirect to pagewalk (args are ignored)")
             gdb.execute("pagewalk")
             return
