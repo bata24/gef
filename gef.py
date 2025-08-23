@@ -19905,9 +19905,9 @@ class UnicornEmulateCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     _example_ = [
-        "{0:s} -g 10                         # from $pc to the point where 4 instructions are executed",
-        "{0:s} -n 5                          # from $pc to 5 later instructions (assume it is no branch)",
-        "{0:s} -t 0x805678a4 -o /tmp/emu.py  # from $pc to specified address with saving script",
+        "{0:s} -g 10               # from $pc to the point where 4 instructions are executed",
+        "{0:s} -n 5                # from $pc to 5 later instructions (assume it is no branch)",
+        "{0:s} -t 0x805678a4 -s    # from $pc to specified address with saving script",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
