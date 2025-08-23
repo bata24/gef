@@ -789,7 +789,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 ### Other
 - The category is introduced in `gef help`.
     - ![](images/gef-help.png)
-- Combined into one file (from `gef-extra`). The following are moved from `gef-extra`s.
+- Combined into one file (from `gef-extras`). The following are moved from `gef-extras`.
     - `current-stack-frame`, `xref-telescope`, `bytearray`, and `bincompare`.
     - This is because a single file is more attractive for me than ease of maintenance.
 - The system-call table used by `syscall-args` is moved from `gef-extras`.
