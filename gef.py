@@ -65831,6 +65831,7 @@ class StringsCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-d", "--depth", type=int, default=0, help="recursive depth. (default: %(default)s)")
     parser.add_argument("-r", "--range", type=AddressUtil.parse_address, default=0x40,
                         help="search range for recursively. (default: %(default)s)")
+    parser.add_argument("-s", "--skip-save", action="store_true", help="do not save the output.")
     parser.add_argument("-m", "--minlen", type=int, default=8, help="minimum string length (default: %(default)s)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
@@ -65917,6 +65918,11 @@ class StringsCommand(GenericCommand, BufferingOutput):
         self.out = []
         queue = [(args.location, first_range, args.depth)]
         self.search_ascii(queue)
+
+        if not args.skip_save:
+            tmp_fd, tmp_path = GefUtil.mkstemp(prefix="strings", suffix=".txt")
+            os.fdopen(tmp_fd, "w").write("\n".join(self.out))
+            info("The output is saved to {:s}".format(tmp_path))
 
         self.print_output()
         return
