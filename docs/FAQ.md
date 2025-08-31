@@ -36,14 +36,17 @@ There are two styles for writing `.gdbinit`; either one works.
 python sys.path.insert(0, "/root/.gef"); from gef import *; Gef.main()
 
 # Old style
-source /root/.gdbinit-gef.py
+source /root/.gef/gef.py
+
+# Another old style
+source /root/.gdbinit-gef.py  # In the old installer, GEF was located here
 ```
 
-The former imports GEF using Python.
+The former (new style) imports GEF using Python.
 Because a `*.pyc` file is generated and cached, subsequent startups are faster.
 This is the default setting in recent versions of GEF.
 
-The latter is the traditional method, where GEF is loaded directly.
+The latter (old style) is the traditional method, where GEF is loaded directly.
 It takes longer to load each time, but the command is simpler.
 
 ## What is `/tmp/gef`?
