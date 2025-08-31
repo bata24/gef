@@ -63341,7 +63341,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             # data length
             if handler in self.str_types:
                 data_val = read_cstring_from_memory(data_addr)
-                self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {!s}".format(
+                self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {!r}".format(
                     param_path, data_addr, maxlen, mode, data_val,
                 )) # allow None
             elif maxlen == 4:
@@ -63368,7 +63368,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                 # type from heuristic
                 data_val = read_cstring_from_memory(data_addr)
                 if data_val and data_val.isprintable() and len(data_val) >= 2:
-                    self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {:s}".format(
+                    self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {!r}".format(
                         param_path, data_addr, maxlen, mode, data_val,
                     ))
                 else:
