@@ -38072,6 +38072,8 @@ asmlinkage long sys_removexattr(const char __user *path, const char __user *name
 asmlinkage long sys_removexattrat(int dfd, const char __user *path, unsigned int at_flags, const char __user *name);
 asmlinkage long sys_lremovexattr(const char __user *path, const char __user *name);
 asmlinkage long sys_fremovexattr(int fd, const char __user *name);
+asmlinkage long sys_file_getattr(int dfd, const char __user *filename, struct file_attr __user *attr, size_t usize, unsigned int at_flags);
+asmlinkage long sys_file_setattr(int dfd, const char __user *filename, struct file_attr __user *attr, size_t usize, unsigned int at_flags);
 asmlinkage long sys_getcwd(char __user *buf, unsigned long size);
 asmlinkage long sys_eventfd2(unsigned int count, int flags);
 asmlinkage long sys_epoll_create1(int flags);
@@ -38998,6 +39000,8 @@ x64_syscall_tbl = """
 465     common  listxattrat             sys_listxattrat
 466     common  removexattrat           sys_removexattrat
 467     common  open_tree_attr          sys_open_tree_attr
+468     common  file_getattr            sys_file_getattr
+469     common  file_setattr            sys_file_setattr
 512     x32     rt_sigaction            compat_sys_rt_sigaction
 513     x32     rt_sigreturn            compat_sys_x32_rt_sigreturn
 514     x32     ioctl                   compat_sys_ioctl
@@ -39497,6 +39501,8 @@ x86_syscall_tbl = """
 465     i386    listxattrat             sys_listxattrat
 466     i386    removexattrat           sys_removexattrat
 467     i386    open_tree_attr          sys_open_tree_attr
+468     i386    file_getattr            sys_file_getattr
+469     i386    file_setattr            sys_file_setattr
 """
 
 
@@ -39894,6 +39900,8 @@ arm64_syscall_tbl = """
 465     common  listxattrat                     sys_listxattrat
 466     common  removexattrat                   sys_removexattrat
 467     common  open_tree_attr                  sys_open_tree_attr
+468     common  file_getattr                    sys_file_getattr
+469     common  file_setattr                    sys_file_setattr
 """
 
 
@@ -40320,6 +40328,8 @@ arm_compat_syscall_tbl = """
 465     common  listxattrat                     sys_listxattrat
 466     common  removexattrat                   sys_removexattrat
 467     common  open_tree_attr                  sys_open_tree_attr
+468     common  file_getattr                    sys_file_getattr
+469     common  file_setattr                    sys_file_setattr
 """
 
 # ARM (native)
@@ -40757,6 +40767,8 @@ arm_native_syscall_tbl = """
 465     common  listxattrat                     sys_listxattrat
 466     common  removexattrat                   sys_removexattrat
 467     common  open_tree_attr                  sys_open_tree_attr
+468     common  file_getattr                    sys_file_getattr
+469     common  file_setattr                    sys_file_setattr
 """
 
 
@@ -41204,6 +41216,8 @@ mips_o32_syscall_tbl = """
 465     o32     listxattrat                     sys_listxattrat
 466     o32     removexattrat                   sys_removexattrat
 467     o32     open_tree_attr                  sys_open_tree_attr
+468     o32     file_getattr                    sys_file_getattr
+469     o32     file_setattr                    sys_file_setattr
 """
 
 
@@ -41605,6 +41619,8 @@ mips_n32_syscall_tbl = """
 465     n32     listxattrat                     sys_listxattrat
 466     n32     removexattrat                   sys_removexattrat
 467     n32     open_tree_attr                  sys_open_tree_attr
+468     n32     file_getattr                    sys_file_getattr
+469     n32     file_setattr                    sys_file_setattr
 """
 
 
@@ -41982,6 +41998,8 @@ mips_n64_syscall_tbl = """
 465     n64     listxattrat                     sys_listxattrat
 466     n64     removexattrat                   sys_removexattrat
 467     n64     open_tree_attr                  sys_open_tree_attr
+468     n64     file_getattr                    sys_file_getattr
+469     n64     file_setattr                    sys_file_setattr
 """
 
 
@@ -42534,6 +42552,8 @@ ppc_syscall_tbl = """
 465     common  listxattrat                     sys_listxattrat
 466     common  removexattrat                   sys_removexattrat
 467     common  open_tree_attr                  sys_open_tree_attr
+468     common  file_getattr                    sys_file_getattr
+469     common  file_setattr                    sys_file_setattr
 """
 
 
@@ -43042,6 +43062,8 @@ sparc_syscall_tbl = """
 465     common  listxattrat                     sys_listxattrat
 466     common  removexattrat                   sys_removexattrat
 467     common  open_tree_attr                  sys_open_tree_attr
+468     common  file_getattr                    sys_file_getattr
+469     common  file_setattr                    sys_file_setattr
 """
 
 
@@ -43517,6 +43539,8 @@ s390x_syscall_tbl = """
 465  common     listxattrat             sys_listxattrat                 sys_listxattrat
 466  common     removexattrat           sys_removexattrat               sys_removexattrat
 467  common     open_tree_attr          sys_open_tree_attr              sys_open_tree_attr
+468  common     file_getattr            sys_file_getattr                sys_file_getattr
+469  common     file_setattr            sys_file_setattr                sys_file_setattr
 """
 
 
@@ -43955,6 +43979,8 @@ sh4_syscall_tbl = """
 465     common  listxattrat                     sys_listxattrat
 466     common  removexattrat                   sys_removexattrat
 467     common  open_tree_attr                  sys_open_tree_attr
+468     common  file_getattr                    sys_file_getattr
+469     common  file_setattr                    sys_file_setattr
 """
 
 
@@ -44400,6 +44426,8 @@ m68k_syscall_tbl = """
 465     common  listxattrat                     sys_listxattrat
 466     common  removexattrat                   sys_removexattrat
 467     common  open_tree_attr                  sys_open_tree_attr
+468     common  file_getattr                    sys_file_getattr
+469     common  file_setattr                    sys_file_setattr
 """
 
 
@@ -44901,6 +44929,8 @@ alpha_syscall_tbl = """
 575     common  listxattrat                     sys_listxattrat
 576     common  removexattrat                   sys_removexattrat
 577     common  open_tree_attr                  sys_open_tree_attr
+578     common  file_getattr                    sys_file_getattr
+579     common  file_setattr                    sys_file_setattr
 """
 
 
@@ -45347,6 +45377,8 @@ hppa_syscall_tbl = """
 465     common  listxattrat                     sys_listxattrat
 466     common  removexattrat                   sys_removexattrat
 467     common  open_tree_attr                  sys_open_tree_attr
+468     common  file_getattr                    sys_file_getattr
+469     common  file_setattr                    sys_file_setattr
 """
 
 
@@ -45821,6 +45853,8 @@ microblaze_syscall_tbl = """
 465     common  listxattrat                     sys_listxattrat
 466     common  removexattrat                   sys_removexattrat
 467     common  open_tree_attr                  sys_open_tree_attr
+468     common  file_getattr                    sys_file_getattr
+469     common  file_setattr                    sys_file_setattr
 """
 
 
@@ -46240,6 +46274,8 @@ xtensa_syscall_tbl = """
 465     common  listxattrat                     sys_listxattrat
 466     common  removexattrat                   sys_removexattrat
 467     common  open_tree_attr                  sys_open_tree_attr
+468     common  file_getattr                    sys_file_getattr
+469     common  file_setattr                    sys_file_setattr
 """
 
 
@@ -62564,6 +62600,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "bdev_try_to_free_page",                   None,      "5.13.19"],
             ["func_ptr", "nr_cached_objects",                       "3.1.0",   None],
             ["func_ptr", "free_cached_objects",                     "3.1.0",   None],
+            ["func_ptr", "remove_bdev",                             "6.17.0",  None],
             ["func_ptr", "shutdown",                                "6.5.0",   None],
         ]
         self.members["super_operations"] = adapt_to_kernel_version(super_operations)
@@ -62688,14 +62725,22 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "dev_config",                              None,      None],
             ["func_ptr", "freeze",                                  None,      None],
             ["func_ptr", "thaw",                                    None,      None],
-            ["func_ptr", "prereset",                                None,      None],
-            ["func_ptr", "softreset",                               None,      None],
-            ["func_ptr", "hardreset",                               None,      None],
-            ["func_ptr", "postreset",                               None,      None],
-            ["func_ptr", "pmp_prereset",                            None,      None],
-            ["func_ptr", "pmp_softreset",                           None,      None],
-            ["func_ptr", "pmp_hardreset",                           None,      None],
-            ["func_ptr", "pmp_postreset",                           None,      None],
+            ["func_ptr", "prereset",                                None,      "6.16.4"],
+            ["func_ptr", "softreset",                               None,      "6.16.4"],
+            ["func_ptr", "hardreset",                               None,      "6.16.4"],
+            ["func_ptr", "postreset",                               None,      "6.16.4"],
+            ["func_ptr", "reset.prereset",                          "6.17.0",  None],
+            ["func_ptr", "reset.softreset",                         "6.17.0",  None],
+            ["func_ptr", "reset.hardreset",                         "6.17.0",  None],
+            ["func_ptr", "reset.postreset",                         "6.17.0",  None],
+            ["func_ptr", "pmp_prereset",                            None,      "6.16.4"],
+            ["func_ptr", "pmp_softreset",                           None,      "6.16.4"],
+            ["func_ptr", "pmp_hardreset",                           None,      "6.16.4"],
+            ["func_ptr", "pmp_postreset",                           None,      "6.16.4"],
+            ["func_ptr", "pmp_reset.pmp_prereset",                  "6.17.0",  None],
+            ["func_ptr", "pmp_reset.pmp_softreset",                 "6.17.0",  None],
+            ["func_ptr", "pmp_reset.pmp_hardreset",                 "6.17.0",  None],
+            ["func_ptr", "pmp_reset.pmp_postreset",                 "6.17.0",  None],
             ["func_ptr", "error_handler",                           None,      None],
             ["func_ptr", "lost_interrupt",                          None,      None],
             ["func_ptr", "post_internal_cmd",                       None,      None],
@@ -63071,6 +63116,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "get_scheme_score",                        "5.18.0",  None],
             ["func_ptr", "apply_scheme",                            "5.18.0",  None],
             ["func_ptr", "target_valid",                            "5.18.0",  None],
+            ["func_ptr", "cleanup_target",                          "6.17.0",  None],
             ["func_ptr", "cleanup",                                 "5.18.0",  None],
         ]
         self.members["damon_operations"] = adapt_to_kernel_version(damon_operations)

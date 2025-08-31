@@ -342,7 +342,7 @@ The reason for this is not entirely clear.
 # About the Guest (Debugged) Environment
 
 ## What Linux kernel versions does GEF support as guests in qemu-system?
-I have confirmed that most commands work on versions 3.x through 6.16.x.
+I have confirmed that most commands work on versions 3.x through 6.17.x.
 
 However, I have not verified every kernel version.
 For example, certain symbols in some versions may not be supported by heuristic symbol detection.
