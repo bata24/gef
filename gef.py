@@ -92706,6 +92706,17 @@ class PagewalkArm64Command(PagewalkCommand):
                         return -1
         return 0
 
+    def get_translation_base_addr(self, PS, TTBR):
+        if PS == 0b110:
+            if self.FEAT_LPA:
+                high = TTBR & 0xffffffffffc0
+                low = (TTBR >> 2) & 0b1111
+                return high | (low << 48)
+            else:
+                self.err_add_out("Unsupported FEAT_LPA and IPS pair")
+                return None
+        return TTBR & 0xfffffffffffe
+
     def pagewalk_TTBR0_EL1(self):
         self.out.append(titlify("$TTBR0_EL1", color="bold", msg_color="bold"))
 
@@ -92731,14 +92742,9 @@ class PagewalkArm64Command(PagewalkCommand):
         intermediate_pa_size = self.get_pa_size_for_ps(IPS, granule_bits)
         start_level = self.get_start_level(T0SZ, granule_bits)
 
-        if IPS == 0b110:
-            if self.FEAT_LPA:
-                translation_base_addr = (TTBR0_EL1 & 0xffffffffffc0) | (((TTBR0_EL1 >> 2) & 0b1111) << 48)
-            else:
-                self.err_add_out("Unsupported FEAT_LPA and IPS pair")
-                return
-        else:
-            translation_base_addr = TTBR0_EL1 & 0xfffffffffffe
+        translation_base_addr = self.get_translation_base_addr(IPS, TTBR0_EL1)
+        if translation_base_addr is None:
+            return
 
         self.quiet_info_add_out("$TTBR0_EL1: {:#x}".format(TTBR0_EL1))
         self.quiet_info_add_out("$TCR_EL1: {:#x}".format(TCR_EL1))
@@ -92781,14 +92787,9 @@ class PagewalkArm64Command(PagewalkCommand):
         intermediate_pa_size = self.get_pa_size_for_ps(IPS, granule_bits)
         start_level = self.get_start_level(T1SZ, granule_bits)
 
-        if IPS == 0b110:
-            if self.FEAT_LPA:
-                translation_base_addr = (TTBR1_EL1 & 0xffffffffffc0) | (((TTBR1_EL1 >> 2) & 0b1111) << 48)
-            else:
-                self.err_add_out("Unsupported FEAT_LPA and IPS pair")
-                return
-        else:
-            translation_base_addr = TTBR1_EL1 & 0xfffffffffffe
+        translation_base_addr = self.get_translation_base_addr(IPS, TTBR1_EL1)
+        if translation_base_addr is None:
+            return
 
         self.quiet_info_add_out("$TTBR1_EL1: {:#x}".format(TTBR1_EL1))
         self.quiet_info_add_out("$TCR_EL1: {:#x}".format(TCR_EL1))
@@ -92895,15 +92896,9 @@ class PagewalkArm64Command(PagewalkCommand):
                     self.err_add_out("Unsupported stage2 start level")
                 return
 
-        if PS == 0b110:
-            if self.FEAT_LPA:
-                translation_base_addr = (VTTBR_EL2 & 0xffffffffffc0) | (((VTTBR_EL2 >> 2) & 0b1111) << 48)
-            else:
-                if not self.silent:
-                    self.err_add_out("Unsupported FEAT_LPA and PS pair")
-                return
-        else:
-            translation_base_addr = VTTBR_EL2 & 0xfffffffffffe
+        translation_base_addr = self.get_translation_base_addr(PS, VTTBR_EL2)
+        if translation_base_addr is None:
+            return
 
         if not self.silent:
             self.quiet_info_add_out("$VTTBR_EL2: {:#x}".format(VTTBR_EL2))
@@ -92951,14 +92946,9 @@ class PagewalkArm64Command(PagewalkCommand):
         pa_size = self.get_pa_size_for_ps(PS, granule_bits)
         start_level = self.get_start_level(T0SZ, granule_bits)
 
-        if PS == 0b110:
-            if self.FEAT_LPA:
-                translation_base_addr = (TTBR0_EL2 & 0xffffffffffc0) | (((TTBR0_EL2 >> 2) & 0b1111) << 48)
-            else:
-                self.err_add_out("Unsupported FEAT_LPA and PS pair")
-                return
-        else:
-            translation_base_addr = TTBR0_EL2 & 0xfffffffffffe
+        translation_base_addr = self.get_translation_base_addr(PS, TTBR0_EL2)
+        if translation_base_addr is None:
+            return
 
         self.quiet_info_add_out("$TTBR0_EL2: {:#x}".format(TTBR0_EL2))
         self.quiet_info_add_out("$TCR_EL2: {:#x}".format(TCR_EL2))
@@ -93008,14 +92998,9 @@ class PagewalkArm64Command(PagewalkCommand):
         intermediate_pa_size = self.get_pa_size_for_ps(IPS, granule_bits)
         start_level = self.get_start_level(T1SZ, granule_bits)
 
-        if IPS == 0b110:
-            if self.FEAT_LPA:
-                translation_base_addr = (TTBR1_EL2 & 0xffffffffffc0) | (((TTBR1_EL2 >> 2) & 0b1111) << 48)
-            else:
-                self.err_add_out("Unsupported FEAT_LPA and IPS pair")
-                return
-        else:
-            translation_base_addr = TTBR1_EL2 & 0xfffffffffffe
+        translation_base_addr = self.get_translation_base_addr(IPS, TTBR1_EL2)
+        if translation_base_addr is None:
+            return
 
         self.quiet_info_add_out("$TTBR1_EL2: {:#x}".format(TTBR1_EL2))
         self.quiet_info_add_out("$TCR_EL2: {:#x}".format(TCR_EL2))
@@ -93058,14 +93043,9 @@ class PagewalkArm64Command(PagewalkCommand):
         pa_size = self.get_pa_size_for_ps(PS, granule_bits)
         start_level = self.get_start_level(T0SZ, granule_bits)
 
-        if PS == 0b110:
-            if self.FEAT_LPA:
-                translation_base_addr = (TTBR0_EL3 & 0xffffffffffc0) | (((TTBR0_EL3 >> 2) & 0b1111) << 48)
-            else:
-                self.err_add_out("Unsupported FEAT_LPA and PS pair")
-                return
-        else:
-            translation_base_addr = TTBR0_EL3 & 0xfffffffffffe
+        translation_base_addr = self.get_translation_base_addr(PS, TTBR0_EL3)
+        if translation_base_addr is None:
+            return
 
         self.quiet_info_add_out("$TTBR0_EL3: {:#x}".format(TTBR0_EL3))
         self.quiet_info_add_out("$TCR_EL3: {:#x}".format(TCR_EL3))
