@@ -91847,11 +91847,11 @@ class PagewalkArm64Command(PagewalkCommand):
             self.quiet_info_add_out("OFFSET_BIT_RANGE: " + str(self.OFFSET_BIT_RANGE))
         return
 
-    def do_pagewalk(self, table_base, granule_bits, region_start, start_level=0, is_stage2=False, is_2VAranges=False):
+    def do_pagewalk(self, table_base, granule_bits, region_start, start_level, is_stage2=False, is_2VAranges=False):
         # table_base: The start address of pagewalk.
         # granule_bits: One of [12, 14, 16]; It specifies how to separate the bits used for address translation.
         # region_start: The base address of translated address.
-        # start_level: Only used at stage2. In stage2, the starting level will fluctuate.
+        # start_level: The start level of the pagewalking.
         # is_stage2: Whether VTTBR0_EL2 or not. Affects entry bitfield interpretation.
         # is_2VAranges: TTBR0/TTBR1 presence at target EL. Affects entry bitfield interpretation.
         self.mappings = []
@@ -92698,6 +92698,14 @@ class PagewalkArm64Command(PagewalkCommand):
             0b111: 56, # unsupported for TCR_EL2
         }[ps]
 
+    def get_start_level(self, TnSZ, granule_bits):
+        if self.FEAT_LPA2:
+            if self.TCR_ELx_DS:
+                if granule_bits == 12:
+                    if TnSZ < 0x10:
+                        return -1
+        return 0
+
     def pagewalk_TTBR0_EL1(self):
         self.out.append(titlify("$TTBR0_EL1", color="bold", msg_color="bold"))
 
@@ -92721,6 +92729,7 @@ class PagewalkArm64Command(PagewalkCommand):
         region_bits = GefUtil.log2(region_end - region_start)
         page_size = 2 ** (granule_bits - 10)
         intermediate_pa_size = self.get_pa_size_for_ps(IPS, granule_bits)
+        start_level = self.get_start_level(T0SZ, granule_bits)
 
         if IPS == 0b110:
             if self.FEAT_LPA:
@@ -92740,7 +92749,7 @@ class PagewalkArm64Command(PagewalkCommand):
         self.parse_bit_range(granule_bits, region_bits)
         if not self.args.use_cache or not self.ttbr0el1_mappings:
             self.flags_strings_cache = {}
-            self.do_pagewalk(translation_base_addr, granule_bits, region_start, is_2VAranges=True)
+            self.do_pagewalk(translation_base_addr, granule_bits, region_start, start_level, is_2VAranges=True)
             self.flags_strings_cache = None
             self.merging()
             self.ttbr0el1_mappings = self.mappings.copy()
@@ -92770,6 +92779,7 @@ class PagewalkArm64Command(PagewalkCommand):
         region_bits = GefUtil.log2(region_end - region_start)
         page_size = 2 ** (granule_bits - 10)
         intermediate_pa_size = self.get_pa_size_for_ps(IPS, granule_bits)
+        start_level = self.get_start_level(T1SZ, granule_bits)
 
         if IPS == 0b110:
             if self.FEAT_LPA:
@@ -92789,7 +92799,7 @@ class PagewalkArm64Command(PagewalkCommand):
         self.parse_bit_range(granule_bits, region_bits)
         if not self.args.use_cache or not self.ttbr1el1_mappings:
             self.flags_strings_cache = {}
-            self.do_pagewalk(translation_base_addr, granule_bits, region_start, is_2VAranges=True)
+            self.do_pagewalk(translation_base_addr, granule_bits, region_start, start_level, is_2VAranges=True)
             self.flags_strings_cache = None
             self.merging()
             self.ttbr1el1_mappings = self.mappings.copy()
@@ -92906,7 +92916,7 @@ class PagewalkArm64Command(PagewalkCommand):
         self.parse_bit_range(granule_bits, region_bits)
         if not self.args.use_cache or not self.vttbrel2_mappings:
             self.flags_strings_cache = {}
-            self.do_pagewalk(translation_base_addr, granule_bits, region_start, start_level=stage2_start_level, is_stage2=True)
+            self.do_pagewalk(translation_base_addr, granule_bits, region_start, stage2_start_level, is_stage2=True)
             self.flags_strings_cache = None
             if not self.silent:
                 self.merging()
@@ -92939,6 +92949,7 @@ class PagewalkArm64Command(PagewalkCommand):
         region_bits = GefUtil.log2(region_end - region_start)
         page_size = 2 ** (granule_bits - 10)
         pa_size = self.get_pa_size_for_ps(PS, granule_bits)
+        start_level = self.get_start_level(T0SZ, granule_bits)
 
         if PS == 0b110:
             if self.FEAT_LPA:
@@ -92965,7 +92976,7 @@ class PagewalkArm64Command(PagewalkCommand):
         self.parse_bit_range(granule_bits, region_bits)
         if not self.args.use_cache or not self.ttbr0el2_mappings:
             self.flags_strings_cache = {}
-            self.do_pagewalk(translation_base_addr, granule_bits, region_start, is_2VAranges=self.EL2_M20)
+            self.do_pagewalk(translation_base_addr, granule_bits, region_start, start_level, is_2VAranges=self.EL2_M20)
             self.flags_strings_cache = None
             self.merging()
             self.ttbr0el2_mappings = self.mappings.copy()
@@ -92995,6 +93006,7 @@ class PagewalkArm64Command(PagewalkCommand):
         region_bits = GefUtil.log2(region_end - region_start)
         page_size = 2 ** (granule_bits - 10)
         intermediate_pa_size = self.get_pa_size_for_ps(IPS, granule_bits)
+        start_level = self.get_start_level(T1SZ, granule_bits)
 
         if IPS == 0b110:
             if self.FEAT_LPA:
@@ -93014,7 +93026,7 @@ class PagewalkArm64Command(PagewalkCommand):
         self.parse_bit_range(granule_bits, region_bits)
         if not self.args.use_cache or not self.ttbr1el2_mappings:
             self.flags_strings_cache = {}
-            self.do_pagewalk(translation_base_addr, granule_bits, region_start, is_2VAranges=self.EL2_M20)
+            self.do_pagewalk(translation_base_addr, granule_bits, region_start, start_level, is_2VAranges=self.EL2_M20)
             self.flags_strings_cache = None
             self.merging()
             self.ttbr1el2_mappings = self.mappings.copy()
@@ -93044,6 +93056,7 @@ class PagewalkArm64Command(PagewalkCommand):
         region_bits = GefUtil.log2(region_end - region_start)
         page_size = 2 ** (granule_bits - 10)
         pa_size = self.get_pa_size_for_ps(PS, granule_bits)
+        start_level = self.get_start_level(T0SZ, granule_bits)
 
         if PS == 0b110:
             if self.FEAT_LPA:
@@ -93063,7 +93076,7 @@ class PagewalkArm64Command(PagewalkCommand):
         self.parse_bit_range(granule_bits, region_bits)
         if not self.args.use_cache or not self.ttbr0el3_mappings:
             self.flags_strings_cache = {}
-            self.do_pagewalk(translation_base_addr, granule_bits, region_start)
+            self.do_pagewalk(translation_base_addr, granule_bits, region_start, start_level)
             self.flags_strings_cache = None
             self.merging()
             self.ttbr0el3_mappings = self.mappings.copy()
