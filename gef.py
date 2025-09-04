@@ -92679,6 +92679,24 @@ class PagewalkArm64Command(PagewalkCommand):
             self.quiet_info_add_out("Moving back to EL{:d}".format(SavedEL))
         return
 
+    def get_granule_bits(self, TG, reg_name):
+        if reg_name == "TG0":
+            if TG == 0b00:
+                return 12 # 4KB
+            elif TG == 0b01:
+                return 16 # 64KB
+            elif TG == 0b10:
+                return 14 # 16KB
+        elif reg_name == "TG1":
+            if TG == 0b01:
+                return 14 # 16KB
+            elif TG == 0b10:
+                return 12 # 4KB
+            elif TG == 0b11:
+                return 16 # 64KB
+        self.err_add_out("Unsupported {:s}".format(reg_name))
+        return None
+
     def get_pa_size_for_ps(self, ps, granule):
         if ps == 0b110:
             if granule == 16:
@@ -92730,11 +92748,11 @@ class PagewalkArm64Command(PagewalkCommand):
         IPS = (TCR_EL1 >> 32) & 0b111
         TG0 = (TCR_EL1 >> 14) & 0b11
         T0SZ = TCR_EL1 & 0b111111
-        try:
-            granule_bits = {0b00: 12, 0b01: 16, 0b10: 14}[TG0]
-        except KeyError:
-            self.err_add_out("Unsupported $TCR_EL1.TG0")
+
+        granule_bits = self.get_granule_bits(TG0, "TG0")
+        if granule_bits is None:
             return
+
         region_start = 0
         region_end = region_start + (2 ** (64 - T0SZ))
         region_bits = GefUtil.log2(region_end - region_start)
@@ -92775,11 +92793,11 @@ class PagewalkArm64Command(PagewalkCommand):
         IPS = (TCR_EL1 >> 32) & 0b111
         TG1 = (TCR_EL1 >> 30) & 0b11
         T1SZ = (TCR_EL1 >> 16) & 0b111111
-        try:
-            granule_bits = {0b01: 14, 0b10: 12, 0b11: 16}[TG1]
-        except KeyError:
-            self.err_add_out("Unsupported $TCR_EL1.TG1")
+
+        granule_bits = self.get_granule_bits(TG1, "TG1")
+        if granule_bits is None:
             return
+
         region_end = 2 ** 64
         region_start = region_end - (2 ** (64 - T1SZ))
         region_bits = GefUtil.log2(region_end - region_start)
@@ -92824,12 +92842,11 @@ class PagewalkArm64Command(PagewalkCommand):
         TG0 = (VTCR_EL2 >> 14) & 0b11
         SL0 = (VTCR_EL2 >> 6) & 0b11
         T0SZ = VTCR_EL2 & 0b111111
-        try:
-            granule_bits = {0b00: 12, 0b01: 16, 0b10: 14}[TG0]
-        except KeyError:
-            if not self.silent:
-                self.err_add_out("Unsupported $VTCR_EL2.TG0")
+
+        granule_bits = self.get_granule_bits(TG0, "TG0")
+        if granule_bits is None:
             return
+
         region_start = 0
         region_end = region_start + (2 ** (64 - T0SZ))
         region_bits = GefUtil.log2(region_end - region_start)
@@ -92934,11 +92951,11 @@ class PagewalkArm64Command(PagewalkCommand):
         PS = (TCR_EL2 >> 16) & 0b111
         TG0 = (TCR_EL2 >> 14) & 0b11
         T0SZ = TCR_EL2 & 0b111111
-        try:
-            granule_bits = {0b00: 12, 0b01: 16, 0b10: 14}[TG0]
-        except KeyError:
-            self.err_add_out("Unsupported $TCR_EL2.TG0")
+
+        granule_bits = self.get_granule_bits(TG0, "TG0")
+        if granule_bits is None:
             return
+
         region_start = 0
         region_end = region_start + (2 ** (64 - T0SZ))
         region_bits = GefUtil.log2(region_end - region_start)
@@ -92986,11 +93003,11 @@ class PagewalkArm64Command(PagewalkCommand):
         IPS = (TCR_EL2 >> 32) & 0b111
         TG1 = (TCR_EL2 >> 30) & 0b11
         T1SZ = (TCR_EL2 >> 16) & 0b111111
-        try:
-            granule_bits = {0b01: 14, 0b10: 12, 0b11: 16}[TG1]
-        except KeyError:
-            self.err_add_out("Unsupported $TCR_EL2.TG1")
+
+        granule_bits = self.get_granule_bits(TG1, "TG1")
+        if granule_bits is None:
             return
+
         region_end = 2 ** 64
         region_start = region_end - (2 ** (64 - T1SZ))
         region_bits = GefUtil.log2(region_end - region_start)
@@ -93031,11 +93048,11 @@ class PagewalkArm64Command(PagewalkCommand):
         PS = (TCR_EL3 >> 16) & 0b111
         TG0 = (TCR_EL3 >> 14) & 0b11
         T0SZ = TCR_EL3 & 0b111111
-        try:
-            granule_bits = {0b00: 12, 0b01: 16, 0b10: 14}[TG0]
-        except KeyError:
-            self.err_add_out("Unsupported $TCR_EL3.TG0")
+
+        granule_bits = self.get_granule_bits(TG0, "TG0")
+        if granule_bits is None:
             return
+
         region_start = 0
         region_end = region_start + (2 ** (64 - T0SZ))
         region_bits = GefUtil.log2(region_end - region_start)
