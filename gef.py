@@ -92679,6 +92679,25 @@ class PagewalkArm64Command(PagewalkCommand):
             self.quiet_info_add_out("Moving back to EL{:d}".format(SavedEL))
         return
 
+    def get_pa_size_for_ps(self, ps, granule):
+        if ps == 0b110:
+            if granule == 16:
+                return 52
+            if (granule == 14 or granule == 12) and self.TCR_ELx_DS:
+                return 52
+            return 48
+
+        return {
+            0b000: 32,
+            0b001: 36,
+            0b010: 40,
+            0b011: 42,
+            0b100: 44,
+            0b101: 48,
+            0b110: 52,
+            0b111: 56, # unsupported for TCR_EL2
+        }[ps]
+
     def pagewalk_TTBR0_EL1(self):
         self.out.append(titlify("$TTBR0_EL1", color="bold", msg_color="bold"))
 
@@ -92701,7 +92720,7 @@ class PagewalkArm64Command(PagewalkCommand):
         region_end = region_start + (2 ** (64 - T0SZ))
         region_bits = GefUtil.log2(region_end - region_start)
         page_size = 2 ** (granule_bits - 10)
-        intermediate_pa_size = 32 + (IPS * 4)
+        intermediate_pa_size = self.get_pa_size_for_ps(IPS, granule_bits)
 
         if IPS == 0b110:
             if self.FEAT_LPA:
@@ -92750,7 +92769,7 @@ class PagewalkArm64Command(PagewalkCommand):
         region_start = region_end - (2 ** (64 - T1SZ))
         region_bits = GefUtil.log2(region_end - region_start)
         page_size = 2 ** (granule_bits - 10)
-        intermediate_pa_size = 32 + (IPS * 4)
+        intermediate_pa_size = self.get_pa_size_for_ps(IPS, granule_bits)
 
         if IPS == 0b110:
             if self.FEAT_LPA:
@@ -92790,7 +92809,7 @@ class PagewalkArm64Command(PagewalkCommand):
 
         self.TCR_ELx_DS = ((VTCR_EL2 >> 32) & 1) == 1
         SL2 = (VTCR_EL2 >> 33) & 0b1
-        PS = (VTCR_EL2 >> 16) & 0b11
+        PS = (VTCR_EL2 >> 16) & 0b111
         TG0 = (VTCR_EL2 >> 14) & 0b11
         SL0 = (VTCR_EL2 >> 6) & 0b11
         T0SZ = VTCR_EL2 & 0b111111
@@ -92804,7 +92823,7 @@ class PagewalkArm64Command(PagewalkCommand):
         region_end = region_start + (2 ** (64 - T0SZ))
         region_bits = GefUtil.log2(region_end - region_start)
         page_size = 2 ** (granule_bits - 10)
-        pa_size = 32 + (PS * 4)
+        pa_size = self.get_pa_size_for_ps(PS, granule_bits)
 
         if self.FEAT_TTST:
             if SL0 == 0b00:
@@ -92907,10 +92926,7 @@ class PagewalkArm64Command(PagewalkCommand):
             return
 
         self.TCR_ELx_DS = ((TCR_EL2 >> 32) & 1) == 1
-        if self.EL2_E2H:
-            IPS = (TCR_EL2 >> 32) & 0b111
-        else:
-            PS = (TCR_EL2 >> 16) & 0b111
+        PS = (TCR_EL2 >> 16) & 0b111
         TG0 = (TCR_EL2 >> 14) & 0b11
         T0SZ = TCR_EL2 & 0b111111
         try:
@@ -92922,22 +92938,13 @@ class PagewalkArm64Command(PagewalkCommand):
         region_end = region_start + (2 ** (64 - T0SZ))
         region_bits = GefUtil.log2(region_end - region_start)
         page_size = 2 ** (granule_bits - 10)
-        if self.EL2_E2H:
-            intermediate_pa_size = 32 + (IPS * 4)
-        else:
-            pa_size = 32 + (PS * 4)
+        pa_size = self.get_pa_size_for_ps(PS, granule_bits)
 
-        if not self.EL2_E2H and PS == 0b110:
+        if PS == 0b110:
             if self.FEAT_LPA:
                 translation_base_addr = (TTBR0_EL2 & 0xffffffffffc0) | (((TTBR0_EL2 >> 2) & 0b1111) << 48)
             else:
                 self.err_add_out("Unsupported FEAT_LPA and PS pair")
-                return
-        elif self.EL2_E2H and IPS == 0b110:
-            if self.FEAT_LPA:
-                translation_base_addr = (TTBR0_EL2 & 0xffffffffffc0) | (((TTBR0_EL2 >> 2) & 0b1111) << 48)
-            else:
-                self.err_add_out("Unsupported FEAT_LPA and IPS pair")
                 return
         else:
             translation_base_addr = TTBR0_EL2 & 0xfffffffffffe
@@ -92945,7 +92952,7 @@ class PagewalkArm64Command(PagewalkCommand):
         self.quiet_info_add_out("$TTBR0_EL2: {:#x}".format(TTBR0_EL2))
         self.quiet_info_add_out("$TCR_EL2: {:#x}".format(TCR_EL2))
         if self.EL2_E2H:
-            self.quiet_info_add_out("Intermediate Physical Address Size: {:d} bits".format(intermediate_pa_size))
+            self.quiet_info_add_out("Intermediate Physical Address Size: {:d} bits".format(pa_size))
         else:
             self.quiet_info_add_out("Physical Address Size: {:d} bits".format(pa_size))
         if self.EL2_M20:
@@ -92987,7 +92994,7 @@ class PagewalkArm64Command(PagewalkCommand):
         region_start = region_end - (2 ** (64 - T1SZ))
         region_bits = GefUtil.log2(region_end - region_start)
         page_size = 2 ** (granule_bits - 10)
-        intermediate_pa_size = 32 + (IPS * 4)
+        intermediate_pa_size = self.get_pa_size_for_ps(IPS, granule_bits)
 
         if IPS == 0b110:
             if self.FEAT_LPA:
@@ -93036,7 +93043,7 @@ class PagewalkArm64Command(PagewalkCommand):
         region_end = region_start + (2 ** (64 - T0SZ))
         region_bits = GefUtil.log2(region_end - region_start)
         page_size = 2 ** (granule_bits - 10)
-        pa_size = 32 + (PS * 4)
+        pa_size = self.get_pa_size_for_ps(PS, granule_bits)
 
         if PS == 0b110:
             if self.FEAT_LPA:
