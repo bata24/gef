@@ -91847,7 +91847,21 @@ class PagewalkArm64Command(PagewalkCommand):
             self.quiet_info_add_out("OFFSET_BIT_RANGE: " + str(self.OFFSET_BIT_RANGE))
         return
 
-    def do_pagewalk(self, table_base, granule_bits, region_start, start_level, is_stage2=False, is_2VAranges=False):
+    def get_entries_per_table(self, BIT_RANGE, granule_bits, region_bits, is_first_level):
+        if is_first_level:
+            idx_bits = {12: 9, 14: 11, 16: 13}[granule_bits]
+            offset_bits = granule_bits
+            remainder = (region_bits - offset_bits) % idx_bits
+            entries_per_table = 1 << (idx_bits + remainder)
+        else:
+            used_from_ia = BIT_RANGE[1] - BIT_RANGE[0]
+            entries_per_table = 1 << used_from_ia
+
+        if not self.silent:
+            self.quiet_info_add_out("Entries per table: {:d}".format(entries_per_table))
+        return entries_per_table
+
+    def do_pagewalk(self, table_base, granule_bits, region_start, region_bits, start_level, is_stage2=False, is_2VAranges=False):
         # table_base: The start address of pagewalk.
         # granule_bits: One of [12, 14, 16]; It specifies how to separate the bits used for address translation.
         # region_start: The base address of translated address.
@@ -91860,12 +91874,6 @@ class PagewalkArm64Command(PagewalkCommand):
         is_16k_granule = granule_bits == 14
         is_64k_granule = granule_bits == 16
 
-        def get_entries_per_table(BIT_RANGE):
-            entries_per_table = 2 ** (BIT_RANGE[1] - BIT_RANGE[0])
-            if not self.silent:
-                self.quiet_info_add_out("Entries per table: {:d}".format(entries_per_table))
-            return entries_per_table
-
         def has_next_level(entry): # for Level0, 1, 2 but not Level3
             return (entry & 0b11) == 0b11
 
@@ -91876,7 +91884,9 @@ class PagewalkArm64Command(PagewalkCommand):
         if not self.silent:
             self.quiet_add_out(titlify("LEVEL -1"))
         if self.LEVELM1_BIT_RANGE is not None and start_level == -1:
-            entries_per_table = get_entries_per_table(self.LEVELM1_BIT_RANGE)
+            entries_per_table = self.get_entries_per_table(
+                self.LEVELM1_BIT_RANGE, granule_bits, region_bits, is_first_level=(start_level == -1),
+            )
             LEVELM1 = []
             COUNT = 0
             for va_base, table_base, parent_flags in TABLE_BASE:
@@ -91963,7 +91973,9 @@ class PagewalkArm64Command(PagewalkCommand):
         if not self.silent:
             self.quiet_add_out(titlify("LEVEL 0"))
         if self.LEVEL0_BIT_RANGE is not None and start_level <= 0:
-            entries_per_table = get_entries_per_table(self.LEVEL0_BIT_RANGE)
+            entries_per_table = self.get_entries_per_table(
+                self.LEVEL0_BIT_RANGE, granule_bits, region_bits, is_first_level=(start_level == 0),
+            )
             LEVEL0 = []
             GB512 = []
             COUNT = 0
@@ -92126,7 +92138,9 @@ class PagewalkArm64Command(PagewalkCommand):
         if not self.silent:
             self.quiet_add_out(titlify("LEVEL 1"))
         if self.LEVEL1_BIT_RANGE is not None and start_level <= 1:
-            entries_per_table = get_entries_per_table(self.LEVEL1_BIT_RANGE)
+            entries_per_table = self.get_entries_per_table(
+                self.LEVEL1_BIT_RANGE, granule_bits, region_bits, is_first_level=(start_level == 1),
+            )
             LEVEL1 = []
             GB1 = []
             TB4 = []
@@ -92302,7 +92316,9 @@ class PagewalkArm64Command(PagewalkCommand):
         if not self.silent:
             self.quiet_add_out(titlify("LEVEL 2"))
         if self.LEVEL2_BIT_RANGE is not None and start_level <= 2:
-            entries_per_table = get_entries_per_table(self.LEVEL2_BIT_RANGE)
+            entries_per_table = self.get_entries_per_table(
+                self.LEVEL2_BIT_RANGE, granule_bits, region_bits, is_first_level=(start_level == 2),
+            )
             LEVEL2 = []
             MB2 = []
             MB32 = []
@@ -92478,7 +92494,9 @@ class PagewalkArm64Command(PagewalkCommand):
         if not self.silent:
             self.quiet_add_out(titlify("LEVEL 3"))
         if self.LEVEL3_BIT_RANGE is not None and start_level <= 3:
-            entries_per_table = get_entries_per_table(self.LEVEL3_BIT_RANGE)
+            entries_per_table = self.get_entries_per_table(
+                self.LEVEL3_BIT_RANGE, granule_bits, region_bits, is_first_level=False,
+            )
             KB4 = []
             KB16 = []
             KB64 = []
@@ -92773,7 +92791,7 @@ class PagewalkArm64Command(PagewalkCommand):
         self.parse_bit_range(granule_bits, region_bits)
         if not self.args.use_cache or not self.ttbr0el1_mappings:
             self.flags_strings_cache = {}
-            self.do_pagewalk(translation_base_addr, granule_bits, region_start, start_level, is_2VAranges=True)
+            self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, start_level, is_2VAranges=True)
             self.flags_strings_cache = None
             self.merging()
             self.ttbr0el1_mappings = self.mappings.copy()
@@ -92818,7 +92836,7 @@ class PagewalkArm64Command(PagewalkCommand):
         self.parse_bit_range(granule_bits, region_bits)
         if not self.args.use_cache or not self.ttbr1el1_mappings:
             self.flags_strings_cache = {}
-            self.do_pagewalk(translation_base_addr, granule_bits, region_start, start_level, is_2VAranges=True)
+            self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, start_level, is_2VAranges=True)
             self.flags_strings_cache = None
             self.merging()
             self.ttbr1el1_mappings = self.mappings.copy()
@@ -92928,7 +92946,7 @@ class PagewalkArm64Command(PagewalkCommand):
         self.parse_bit_range(granule_bits, region_bits)
         if not self.args.use_cache or not self.vttbrel2_mappings:
             self.flags_strings_cache = {}
-            self.do_pagewalk(translation_base_addr, granule_bits, region_start, stage2_start_level, is_stage2=True)
+            self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, stage2_start_level, is_stage2=True)
             self.flags_strings_cache = None
             if not self.silent:
                 self.merging()
@@ -92983,7 +93001,7 @@ class PagewalkArm64Command(PagewalkCommand):
         self.parse_bit_range(granule_bits, region_bits)
         if not self.args.use_cache or not self.ttbr0el2_mappings:
             self.flags_strings_cache = {}
-            self.do_pagewalk(translation_base_addr, granule_bits, region_start, start_level, is_2VAranges=self.EL2_M20)
+            self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, start_level, is_2VAranges=self.EL2_M20)
             self.flags_strings_cache = None
             self.merging()
             self.ttbr0el2_mappings = self.mappings.copy()
@@ -93028,7 +93046,7 @@ class PagewalkArm64Command(PagewalkCommand):
         self.parse_bit_range(granule_bits, region_bits)
         if not self.args.use_cache or not self.ttbr1el2_mappings:
             self.flags_strings_cache = {}
-            self.do_pagewalk(translation_base_addr, granule_bits, region_start, start_level, is_2VAranges=self.EL2_M20)
+            self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, start_level, is_2VAranges=self.EL2_M20)
             self.flags_strings_cache = None
             self.merging()
             self.ttbr1el2_mappings = self.mappings.copy()
@@ -93073,7 +93091,7 @@ class PagewalkArm64Command(PagewalkCommand):
         self.parse_bit_range(granule_bits, region_bits)
         if not self.args.use_cache or not self.ttbr0el3_mappings:
             self.flags_strings_cache = {}
-            self.do_pagewalk(translation_base_addr, granule_bits, region_start, start_level)
+            self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, start_level)
             self.flags_strings_cache = None
             self.merging()
             self.ttbr0el3_mappings = self.mappings.copy()
