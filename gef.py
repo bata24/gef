@@ -90687,13 +90687,13 @@ class PagewalkArmCommand(PagewalkCommand):
 
             # calc next table (drop the flag bits)
             if has_next_level(entry):
-                next_level_table = entry & 0xfffffc00
+                next_level_table = entry & 0xffff_fc00
             elif is_section(entry):
-                next_level_table = entry & 0xfff00000
+                next_level_table = entry & 0xfff0_0000
             elif is_super_section(entry):
-                next_level_table = entry & 0xff000000         # PA[31:24]
-                next_level_table += (entry & 0x00f0000) << 12 # PA[35:32]
-                next_level_table += (entry & 0x00001e0) << 31 # PA[39:36]
+                next_level_table = entry & 0xff00_0000             # PA[31:24]
+                next_level_table += ((entry >> 20) & 0b1111) << 32 # PA[35:32]
+                next_level_table += ((entry >> 5) & 0b1111) << 36  # PA[39:36]
 
             # make entry
             if has_next_level(entry):
@@ -90855,7 +90855,8 @@ class PagewalkArmCommand(PagewalkCommand):
             LEVEL1 = []
             GB = []
             COUNT = 0
-            entries = self.read_physmem_cache(table_base, 8 * (2 ** 2))
+            l1_count = 1 << max(0, 2 - self.N)
+            entries = self.read_physmem_cache(table_base, 8 * l1_count)
             entries = slice_unpack(entries, 8)
             COUNT += len(entries)
             for i, entry in enumerate(entries):
@@ -91065,7 +91066,7 @@ class PagewalkArmCommand(PagewalkCommand):
                 page_size = 4 * 1024
                 page_count = 1
                 KB.append([virt_addr, phys_addr, page_size, page_count, self.format_flags_long(flags)])
-                entry_type = "1KB-PAGE"
+                entry_type = "4KB-PAGE"
 
                 # dump
                 if self.args.print_each_level:
@@ -91111,8 +91112,8 @@ class PagewalkArmCommand(PagewalkCommand):
 
         # pagewalk TTBR0_EL1
         self.N = TTBCR & 0b111
-        ml = 14 - self.N
-        pl0_base = ((TTBR0_EL1 & ((1 << 32) - 1)) >> ml) << ml
+        x = 14 - self.N
+        pl0_base = ((TTBR0_EL1 & 0xffff_ffff) >> x) << x
         self.quiet_info_add_out("$TTBR0_EL1{}: {:#x}".format(self.suffix, TTBR0_EL1))
         self.quiet_info_add_out("$TTBCR{}: {:#x}".format(self.suffix, TTBCR))
         self.quiet_info_add_out("PL0 base: {:#x}".format(pl0_base))
@@ -91147,7 +91148,7 @@ class PagewalkArmCommand(PagewalkCommand):
                 6: 0x0400_0000,
                 7: 0x0200_0000,
             }[self.N]
-        pl1_base = ((TTBR1_EL1 & ((1 << 32) - 1)) >> ml) << ml
+        pl1_base = ((TTBR1_EL1 & 0xffff_ffff) >> x) << x
         self.N = 0 # Whenever TTBCR.N is nonzero, the size of the translation table addressed by TTBR1 is 16KB (N=0).
         if pl1_vabase is not None:
             self.quiet_info_add_out("$TTBR1_EL1{}: {:#x}".format(self.suffix, TTBR1_EL1))
@@ -91182,13 +91183,21 @@ class PagewalkArmCommand(PagewalkCommand):
             self.err_add_out("$TTBCR{} is not found".format(self.suffix))
             return
 
+        def get_x(TxSZ):
+            if TxSZ > 1:
+                return 14 - TxSZ
+            else:
+                return 5 - TxSZ
+
         # pagewalk TTBR0_EL1
         T0SZ = TTBCR & 0b111
         T1SZ = (TTBCR >> 16) & 0b111
         self.N = T0SZ
-        pl0_base = TTBR0_EL1 & ((1 << 40) - 1)
+        x0 = get_x(T0SZ)
+        pl0_base = ((TTBR0_EL1 & 0xff_ffff_ffff) >> x0) << x0
         self.quiet_info_add_out("$TTBR0_EL1{}: {:#x}".format(self.suffix, TTBR0_EL1))
         self.quiet_info_add_out("$TTBCR{}: {:#x}".format(self.suffix, TTBCR))
+        self.quiet_info_add_out("T0SZ: {:#x}".format(T0SZ))
         self.quiet_info_add_out("PL0 base: {:#x}".format(pl0_base))
         if not self.args.use_cache or not self.ttbr0_mappings:
             self.flags_strings_cache = {}
@@ -91210,12 +91219,15 @@ class PagewalkArmCommand(PagewalkCommand):
 
         if T0SZ != 0 or T1SZ != 0:
             self.N = T1SZ
-            pl1_base = TTBR1_EL1 & ((1 << 40) - 1)
+            x1 = get_x(T1SZ)
+            pl1_base = ((TTBR1_EL1 & 0xff_ffff_ffff) >> x1) << x1
             if T1SZ == 0:
                 pl1_vabase = 2 ** (32 - T0SZ)
             else:
                 pl1_vabase = (2 ** 32) - (2 ** (32 - T1SZ))
             self.quiet_info_add_out("$TTBR1_EL1{}: {:#x}".format(self.suffix, TTBR1_EL1))
+            self.quiet_info_add_out("$TTBCR{}: {:#x}".format(self.suffix, TTBCR))
+            self.quiet_info_add_out("T1SZ: {:#x}".format(T1SZ))
             self.quiet_info_add_out("PL1 base: {:#x}".format(pl1_base))
             self.quiet_info_add_out("PL1 va_base: {:#x}".format(pl1_vabase))
             if not self.args.use_cache or not self.ttbr1_mappings:
