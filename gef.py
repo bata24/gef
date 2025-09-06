@@ -89750,7 +89750,7 @@ class PagewalkX64Command(PagewalkCommand):
                     continue
 
                 # calc virtual address
-                sign_ext = 0xfe00000000000000 if ((i >> (self.bits["PML5T_BITS"] - 1)) & 1) else 0
+                sign_ext = 0xfe00_0000_0000_0000 if ((i >> (self.bits["PML5T_BITS"] - 1)) & 1) else 0
                 new_va = va_base + (sign_ext | (i << bit_shift))
                 new_va_end = new_va + (1 << bit_shift)
 
@@ -89776,7 +89776,7 @@ class PagewalkX64Command(PagewalkCommand):
                         flags.append("XD")
 
                 # calc next table (drop the flag bits)
-                next_level_table = entry & 0x000ffffffffff000
+                next_level_table = entry & 0x000f_ffff_ffff_f000
 
                 # make entry
                 PML5E.append([new_va, next_level_table, flags])
@@ -89827,7 +89827,7 @@ class PagewalkX64Command(PagewalkCommand):
                     new_va = va_base + (i << bit_shift)
                     new_va_end = new_va + (1 << bit_shift)
                 else:
-                    sign_ext = 0xffff000000000000 if ((i >> (self.bits["PML4T_BITS"] - 1)) & 1) else 0
+                    sign_ext = 0xffff_0000_0000_0000 if ((i >> (self.bits["PML4T_BITS"] - 1)) & 1) else 0
                     new_va = va_base + (sign_ext | (i << bit_shift))
                     new_va_end = new_va + (1 << bit_shift)
 
@@ -89853,7 +89853,7 @@ class PagewalkX64Command(PagewalkCommand):
                         flags.append("XD")
 
                 # calc next table (drop the flag bits)
-                next_level_table = entry & 0x000ffffffffff000
+                next_level_table = entry & 0x000f_ffff_ffff_f000
 
                 # make entry
                 PML4E.append([new_va, next_level_table, flags])
@@ -89939,9 +89939,9 @@ class PagewalkX64Command(PagewalkCommand):
 
                 # calc next table (drop the flag bits)
                 if is_x86_64() and is_set_PS(entry):
-                    next_level_table = entry & 0x000fffffffffe000
+                    next_level_table = entry & 0x000f_ffff_ffff_e000
                 else:
-                    next_level_table = entry & 0x000ffffffffff000
+                    next_level_table = entry & 0x000f_ffff_ffff_f000
 
                 # make entry
                 if is_set_PS(entry):
@@ -90038,13 +90038,13 @@ class PagewalkX64Command(PagewalkCommand):
 
                 # calc next table (drop the flag bits)
                 if is_x86_64() and is_set_PS(entry):
-                    next_level_table = entry & 0x000fffffffffe000
+                    next_level_table = entry & 0x000f_ffff_ffff_e000
                 elif is_x86_32() and is_set_PS(entry):
                     high = (entry >> 13) & 0xf
                     low = (entry >> 22) & 0x3ff
                     next_level_table = ((high << 10) | low) << 22
                 else:
-                    next_level_table = entry & 0x000ffffffffff000
+                    next_level_table = entry & 0x000f_ffff_ffff_f000
 
                 # make entry
                 if is_set_PS(entry):
@@ -90126,7 +90126,7 @@ class PagewalkX64Command(PagewalkCommand):
                         flags.append("D")
                 else:
                     # This route passes many times, so make a memo
-                    entry_flags_key = entry & 0x8000000000000166
+                    entry_flags_key = entry & 0x8000_0000_0000_0166
                     x = flag_cache.get(entry_flags_key, None)
                     if x is not None:
                         flags.extend(x)
@@ -90148,7 +90148,7 @@ class PagewalkX64Command(PagewalkCommand):
                         flags.extend(flags_tmp)
 
                 # calc physical addr (drop the flag bits)
-                phys_addr = entry & 0x000ffffffffff000
+                phys_addr = entry & 0x000f_ffff_ffff_f000
 
                 # make entry
                 page_size = 4 * 1024
@@ -90795,9 +90795,9 @@ class PagewalkArmCommand(PagewalkCommand):
 
                 # calc physical addr (drop the flag bits)
                 if is_large_page(entry):
-                    phys_addr = entry & 0xffff0000
+                    phys_addr = entry & 0xffff_0000
                 elif is_small_page(entry):
-                    phys_addr = entry & 0xfffff000
+                    phys_addr = entry & 0xffff_f000
 
                 # make entry
                 if is_large_page(entry):
@@ -90896,9 +90896,9 @@ class PagewalkArmCommand(PagewalkCommand):
 
                 # calc next table (drop the flag bits)
                 if has_next_level(entry):
-                    next_level_table = entry & 0x000000fffffff000
+                    next_level_table = entry & 0x0000_00ff_ffff_f000
                 elif is_1GB_page(entry):
-                    next_level_table = entry & 0x000000ffc0000000
+                    next_level_table = entry & 0x0000_00ff_c000_0000
 
                 # make entry
                 if has_next_level(entry):
@@ -90984,9 +90984,9 @@ class PagewalkArmCommand(PagewalkCommand):
 
                 # calc next table (drop the flag bits)
                 if has_next_level(entry):
-                    next_level_table = entry & 0x000000fffffff000
+                    next_level_table = entry & 0x0000_00ff_ffff_f000
                 elif is_2MB_page(entry):
-                    next_level_table = entry & 0x000000ffffe00000
+                    next_level_table = entry & 0x0000_00ff_ffe0_0000
 
                 # make entry
                 if has_next_level(entry):
@@ -91059,7 +91059,7 @@ class PagewalkArmCommand(PagewalkCommand):
                     flags.append("XN")
 
                 # calc physical addr (drop the flag bits)
-                phys_addr = entry & 0x000000fffffff000
+                phys_addr = entry & 0x0000_00ff_ffff_f000
 
                 # make entry
                 page_size = 4 * 1024
@@ -91138,8 +91138,14 @@ class PagewalkArmCommand(PagewalkCommand):
             pl1_vabase = 0 # I don't know why, but vabase of PL1 seems to be 0x0 when using TTBR1_EL1_S.
         else:
             pl1_vabase = {
-                0: None, 1: 0x80000000, 2: 0x40000000, 3: 0x20000000,
-                4: 0x10000000, 5: 0x08000000, 6: 0x04000000, 7: 0x02000000
+                0: None,
+                1: 0x8000_0000,
+                2: 0x4000_0000,
+                3: 0x2000_0000,
+                4: 0x1000_0000,
+                5: 0x0800_0000,
+                6: 0x0400_0000,
+                7: 0x0200_0000,
             }[self.N]
         pl1_base = ((TTBR1_EL1 & ((1 << 32) - 1)) >> ml) << ml
         self.N = 0 # Whenever TTBCR.N is nonzero, the size of the translation table addressed by TTBR1 is 16KB (N=0).
@@ -91370,24 +91376,24 @@ class PagewalkArmCommand(PagewalkCommand):
                 after_ta = False
 
             # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/plat-vexpress/conf.mk
-            if e.pa_start == 0xe100000:
-                if e.va_start == 0xe100000 and e.va_end - e.va_start == 0x1000:
+            if e.pa_start == 0x0e10_0000:
+                if e.va_start == 0x0e10_0000 and e.va_end - e.va_start == 0x1000:
                     hint = "TEE-OS bootstrap region"
                 else:
                     hint = "TEE-OS .text"
                     text_end = e.va_end
             elif text_end and e.va_start == text_end:
                 hint = "TEE-OS .data / stack"
-            elif e.pa_start == 0x7fe00000:
+            elif e.pa_start == 0x7fe0_0000:
                 hint = "NS<->S shared memory"
             # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/plat-vexpress/platform_config.h
-            elif e.pa_start == 0x08000000:
+            elif e.pa_start == 0x0800_0000:
                 hint = "GIC_BASE"
-            elif e.pa_start == 0x09000000:
+            elif e.pa_start == 0x0900_0000:
                 hint = "UART0_BASE"
-            elif e.pa_start == 0x09040000:
+            elif e.pa_start == 0x0904_0000:
                 hint = "UART1_BASE"
-            elif e.pa_start == 0x09100000:
+            elif e.pa_start == 0x0910_0000:
                 hint = "PCSC_BASE"
             # others
             elif "[PL0/RW-" in e.flags and pl0_count == 0:
@@ -91509,7 +91515,7 @@ class PagewalkArm64Command(PagewalkCommand):
                     va, entry, sz, cnt, flags = entry_info
                     if isinstance(va, str):
                         va = int(va, 16)
-                    pa = entry & 0x0000fffffffff000
+                    pa = entry & 0x0000_ffff_ffff_f000
                     if va <= addr < va + sz:
                         offset = addr - va
                         return pa + offset, sz - offset
@@ -91967,9 +91973,9 @@ class PagewalkArm64Command(PagewalkCommand):
                     if has_next_level(entry):
                         # In aRMv8.7, level -1 must be 4k_granule
                         if self.TCR_ELx_DS:
-                            next_level_table = (entry & 0x0003fffffffff000) | (((entry >> 8) & 0b11) << 50)
+                            next_level_table = (entry & 0x0003_ffff_ffff_f000) | (((entry >> 8) & 0b11) << 50)
                         else:
-                            next_level_table = entry & 0x0003fffffffff000
+                            next_level_table = entry & 0x0003_ffff_ffff_f000
                     else:
                         # In ARMv8.7, level -1 has no block descriptors
                         raise
@@ -92112,18 +92118,18 @@ class PagewalkArm64Command(PagewalkCommand):
                         if self.FEAT_LPA:
                             # In aRMv8.7, level 0 must be 4k_granule or 16k_granule
                             if self.TCR_ELx_DS:
-                                next_level_table = (entry & 0x0003fffffffff000) | (((entry >> 8) & 0b11) << 50)
+                                next_level_table = (entry & 0x0003_ffff_ffff_f000) | (((entry >> 8) & 0b11) << 50)
                             else:
-                                next_level_table = entry & 0x0003fffffffff000
+                                next_level_table = entry & 0x0003_ffff_ffff_f000
                         else:
-                            next_level_table = entry & 0x0000fffffffff000
+                            next_level_table = entry & 0x0000_ffff_ffff_f000
                     else:
                         if self.FEAT_LPA:
                             # In aRMv8.7, level 0 must be 4k_granule or 16k_granule
                             if self.TCR_ELx_DS:
-                                phys_addr = (entry & 0x0003fffffffe0000) | (((entry >> 8) & 0b11) << 50)
+                                phys_addr = (entry & 0x0003_ffff_fffe_0000) | (((entry >> 8) & 0b11) << 50)
                             else:
-                                phys_addr = entry & 0x0003fffffffe0000
+                                phys_addr = entry & 0x0003_ffff_fffe_0000
                         else:
                             # In ARMv8.7, level 0 + no-FEAT_LPA has no block descriptors
                             raise
@@ -92278,25 +92284,25 @@ class PagewalkArm64Command(PagewalkCommand):
                     if has_next_level(entry):
                         if self.FEAT_LPA:
                             if is_64k_granule:
-                                next_level_table = (entry & 0x0000ffffffff0000) | (((entry >> 12) & 0b1111) << 48)
+                                next_level_table = (entry & 0x0000_ffff_ffff_0000) | (((entry >> 12) & 0b1111) << 48)
                             else: # 4k or 16k
                                 if self.TCR_ELx_DS:
-                                    next_level_table = (entry & 0x0003fffffffff000) | (((entry >> 8) & 0b11) << 50)
+                                    next_level_table = (entry & 0x0003_ffff_ffff_f000) | (((entry >> 8) & 0b11) << 50)
                                 else:
-                                    next_level_table = entry & 0x0003fffffffff000
+                                    next_level_table = entry & 0x0003_ffff_ffff_f000
                         else:
-                            next_level_table = entry & 0x0000fffffffff000
+                            next_level_table = entry & 0x0000_ffff_ffff_f000
                     else:
                         if self.FEAT_LPA:
                             if is_64k_granule:
-                                phys_addr = (entry & 0x0000fffffffe0000) | (((entry >> 12) & 0b1111) << 48)
+                                phys_addr = (entry & 0x0000_ffff_fffe_0000) | (((entry >> 12) & 0b1111) << 48)
                             else: # 4k or 16k
                                 if self.TCR_ELx_DS:
-                                    phys_addr = (entry & 0x0003fffffffe0000) | (((entry >> 8) & 0b11) << 50)
+                                    phys_addr = (entry & 0x0003_ffff_fffe_0000) | (((entry >> 8) & 0b11) << 50)
                                 else:
-                                    phys_addr = entry & 0x0003fffffffe0000
+                                    phys_addr = entry & 0x0003_ffff_fffe_0000
                         else:
-                            phys_addr = entry & 0x0000fffffffe0000
+                            phys_addr = entry & 0x0000_ffff_fffe_0000
 
                     # make entry
                     if has_next_level(entry):
@@ -92456,25 +92462,25 @@ class PagewalkArm64Command(PagewalkCommand):
                     if has_next_level(entry):
                         if self.FEAT_LPA:
                             if is_64k_granule:
-                                next_level_table = (entry & 0x0000ffffffff0000) | (((entry >> 12) & 0b1111) << 48)
+                                next_level_table = (entry & 0x0000_ffff_ffff_0000) | (((entry >> 12) & 0b1111) << 48)
                             else: # 4k or 16k
                                 if self.TCR_ELx_DS:
-                                    next_level_table = (entry & 0x0003fffffffff000) | (((entry >> 8) & 0b11) << 50)
+                                    next_level_table = (entry & 0x0003_ffff_ffff_f000) | (((entry >> 8) & 0b11) << 50)
                                 else:
-                                    next_level_table = entry & 0x0003fffffffff000
+                                    next_level_table = entry & 0x0003_ffff_ffff_f000
                         else:
-                            next_level_table = entry & 0x0000fffffffff000
+                            next_level_table = entry & 0x0000_ffff_ffff_f000
                     else:
                         if self.FEAT_LPA:
                             if is_64k_granule:
-                                phys_addr = (entry & 0x0000fffffffe0000) | (((entry >> 12) & 0b1111) << 48)
+                                phys_addr = (entry & 0x0000_ffff_fffe_0000) | (((entry >> 12) & 0b1111) << 48)
                             else: # 4k or 16k
                                 if self.TCR_ELx_DS:
-                                    phys_addr = (entry & 0x0003fffffffe0000) | (((entry >> 8) & 0b11) << 50)
+                                    phys_addr = (entry & 0x0003_ffff_fffe_0000) | (((entry >> 8) & 0b11) << 50)
                                 else:
-                                    phys_addr = entry & 0x0003fffffffe0000
+                                    phys_addr = entry & 0x0003_ffff_fffe_0000
                         else:
-                            phys_addr = entry & 0x0000fffffffe0000
+                            phys_addr = entry & 0x0000_ffff_fffe_0000
 
                     # make entry
                     if has_next_level(entry):
@@ -92571,7 +92577,7 @@ class PagewalkArm64Command(PagewalkCommand):
                             flags.append("PBHA={:#x}".format((entry >> 59) & 0b1111))
                         elif is_2VAranges:
                             # This route passes many times, so make a memo
-                            entry_flags_key = entry & 0x787c000000010ffc
+                            entry_flags_key = entry & 0x787c_0000_0001_0ffc
                             x = flag_cache.get(entry_flags_key, None)
                             if x is not None:
                                 flags.extend(x)
@@ -92630,24 +92636,24 @@ class PagewalkArm64Command(PagewalkCommand):
                     if is_4k_granule:
                         if self.FEAT_LPA:
                             if self.TCR_ELx_DS:
-                                phys_addr = (entry & 0x0003fffffffff000) | (((entry >> 8) & 0b11) << 50)
+                                phys_addr = (entry & 0x0003_ffff_ffff_f000) | (((entry >> 8) & 0b11) << 50)
                             else:
-                                phys_addr = entry & 0x0003fffffffff000
+                                phys_addr = entry & 0x0003_ffff_ffff_f000
                         else:
-                            phys_addr = entry & 0x0000fffffffff000
+                            phys_addr = entry & 0x0000_ffff_ffff_f000
                     elif is_16k_granule:
                         if self.FEAT_LPA:
                             if self.TCR_ELx_DS:
-                                phys_addr = (entry & 0x0003ffffffffc000) | (((entry >> 8) & 0b11) << 50)
+                                phys_addr = (entry & 0x0003_ffff_ffff_c000) | (((entry >> 8) & 0b11) << 50)
                             else:
-                                phys_addr = entry & 0x0003ffffffffc000
+                                phys_addr = entry & 0x0003_ffff_ffff_c000
                         else:
-                            phys_addr = entry & 0x0000ffffffffc000
+                            phys_addr = entry & 0x0000_ffff_ffff_c000
                     elif is_64k_granule:
                         if self.FEAT_LPA:
-                            phys_addr = (entry & 0x0000ffffffff0000) | (((entry >> 12) & 0b1111) << 48)
+                            phys_addr = (entry & 0x0000_ffff_ffff_0000) | (((entry >> 12) & 0b1111) << 48)
                         else:
-                            phys_addr = entry & 0x0000ffffffff0000
+                            phys_addr = entry & 0x0000_ffff_ffff_0000
 
                     # make entry
                     page_count = 1
@@ -92702,7 +92708,7 @@ class PagewalkArm64Command(PagewalkCommand):
 
     def switch_el(self):
         self.SAVED_CPSR = 0
-        CPSR = get_register("$cpsr") & 0xffffffff
+        CPSR = get_register("$cpsr") & 0xffff_ffff
         CurrentEL = int((CPSR >> 2) & 0b11)
         # change EL
         try:
@@ -92722,7 +92728,7 @@ class PagewalkArm64Command(PagewalkCommand):
             self.err_add_out("Maybe unsupported to change to EL{:d}".format(self.TargetEL))
             return
         # reload CPSR
-        CPSR = get_register("$cpsr") & 0xffffffff
+        CPSR = get_register("$cpsr") & 0xffff_ffff
         CurrentEL = int((CPSR >> 2) & 0b11)
         self.quiet_info_add_out("CPSR: EL{:d}".format(CurrentEL))
         return True
@@ -92782,13 +92788,13 @@ class PagewalkArm64Command(PagewalkCommand):
     def get_translation_base_addr(self, PS, TTBR):
         if PS == 0b110:
             if self.FEAT_LPA:
-                high = TTBR & 0xffffffffffc0
+                high = TTBR & 0xffff_ffff_ffc0
                 low = (TTBR >> 2) & 0b1111
                 return high | (low << 48)
             else:
                 self.err_add_out("Unsupported FEAT_LPA and IPS pair")
                 return None
-        return TTBR & 0xfffffffffffe
+        return TTBR & 0xffff_ffff_fffe
 
     def pagewalk_TTBR0_EL1(self):
         self.out.append(titlify("$TTBR0_EL1", color="bold", msg_color="bold"))
@@ -93297,22 +93303,22 @@ class PagewalkArm64Command(PagewalkCommand):
         text_end = None
         for va_start, va_end, pa_start, pa_end in maps:
             # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/plat-vexpress/conf.mk
-            if pa_start == 0xe100000:
-                if va_start == 0xe100000 and va_end - va_start == 0x2000:
+            if pa_start == 0x0e10_0000:
+                if va_start == 0x0e10_0000 and va_end - va_start == 0x2000:
                     hint = "TEE-OS bootstrap region"
                 else:
                     hint = "TEE-OS .text"
                     text_end = va_end
             elif text_end and va_start == text_end:
                 hint = "TEE-OS .data / stack"
-            elif pa_start == 0x42000000:
+            elif pa_start == 0x4200_0000:
                 hint = "NS<->S shared memory"
             # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/plat-vexpress/platform_config.h
-            elif pa_start == 0x08000000:
+            elif pa_start == 0x0800_0000:
                 hint = "GIC_BASE"
-            elif pa_start == 0x09000000:
+            elif pa_start == 0x0900_0000:
                 hint = "UART0_BASE"
-            elif pa_start == 0x09040000:
+            elif pa_start == 0x0904_0000:
                 hint = "UART1_BASE"
             else:
                 hint = ""
@@ -93370,7 +93376,7 @@ class SwitchELCommand(GenericCommand):
 
     def switch_el(self, target_el):
         # current EL
-        CPSR = get_register("$cpsr") & 0xffffffff
+        CPSR = get_register("$cpsr") & 0xffff_ffff
         CurrentEL = (CPSR >> 2) & 0b11
 
         # check argv
@@ -93397,7 +93403,7 @@ class SwitchELCommand(GenericCommand):
             info("Already at EL{:d}".format(target_el))
 
         # reprint CPSR
-        CPSR = int(gdb.parse_and_eval("$cpsr")) & 0xffffffff
+        CPSR = int(gdb.parse_and_eval("$cpsr")) & 0xffff_ffff
         CurrentEL = (CPSR >> 2) & 0b11
         info("$cpsr = {:#x} (EL{:d})".format(CPSR, CurrentEL))
         return
