@@ -47252,6 +47252,7 @@ class Syscall:
                     continue
                 if line.startswith("#"):
                     continue
+                # ignore `!`
                 m = re.search(r"asmlinkage\s+(?:long|ssize_t)\s+(\S+)\((.+?)\);", line)
                 if not m:
                     continue
@@ -47268,7 +47269,7 @@ class Syscall:
 
     @staticmethod
     def parse_syscall_table_defs(table_defs):
-        """Parses and returns whether syscalls are enabled or disabled for each architecture."""
+        """Parses and returns syscall table defines for specified architecture."""
         table = []
         for line in table_defs.splitlines():
             if line == "":
@@ -47308,11 +47309,12 @@ class Syscall:
             "sys_rt_sigreturn": [], # arch/x86/kernel/signal.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # include/linux/syscalls.h
         }
 
         syscall_list = []
+        __X32_SYSCALL_BIT = 0x4000_0000
         for entry in tbl:
             nr, abi, name, func = entry[:4]
             if abi not in ["common", "64", "x32"]:
@@ -47322,7 +47324,7 @@ class Syscall:
                 if abi in ["common", "64"]:
                     syscall_list.append([nr, name, arch_specific_dic[func]])
                 if abi in ["common", "x32"]:
-                    syscall_list.append([nr + 0x40000000, name, arch_specific_dic[func]])
+                    syscall_list.append([nr + __X32_SYSCALL_BIT, name, arch_specific_dic[func]])
                 continue
             # common case
             if func == "sys_ni_syscall":
@@ -47333,7 +47335,7 @@ class Syscall:
             if abi in ["common", "64"]:
                 syscall_list.append([nr, name, sc_def[func]])
             if abi in ["common", "x32"]:
-                syscall_list.append([nr + 0x40000000, name, sc_def[func]])
+                syscall_list.append([nr + __X32_SYSCALL_BIT, name, sc_def[func]])
         return syscall_list
 
     @staticmethod
@@ -47495,7 +47497,7 @@ class Syscall:
             ], # arch/x86/kernel/process_32.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "unsigned int mask_1",
-                "unsigned int mask_2", "int dfd", "const char  __user *pathname",
+                "unsigned int mask_2", "int dfd", "const char __user *pathname",
             ], # include/linux/syscalls.h
         }
 
@@ -47533,7 +47535,7 @@ class Syscall:
             ], # arch/arm64/kernel/sys.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # include/linux/syscalls.h
         }
 
@@ -47669,7 +47671,7 @@ class Syscall:
             ], # arch/arm/kernel/sys_arm.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
         }
 
@@ -47750,7 +47752,7 @@ class Syscall:
             ], # arch/mips/kernel/signal.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
         }
 
@@ -47818,7 +47820,7 @@ class Syscall:
             "sysn32_rt_sigreturn": [], # arch/mips/kernel/signal_n32.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
         }
 
@@ -47874,7 +47876,7 @@ class Syscall:
             ], #
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
         }
 
@@ -47961,7 +47963,7 @@ class Syscall:
             ], # arch/powerpc/kernel/sys_ppc32.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "unsigned int mask_1",
-                "unsigned int mask_2", "int dfd", "const char  __user *pathname",
+                "unsigned int mask_2", "int dfd", "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
         }
 
@@ -48016,7 +48018,7 @@ class Syscall:
             "sys_switch_endian": [], # arch/powerpc/kernel/syscalls.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
         }
 
@@ -48075,7 +48077,7 @@ class Syscall:
             ], # kernel/fork.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
         }
 
@@ -48162,7 +48164,7 @@ class Syscall:
             ], # arch/sparc/kernel/signal_64.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
         }
 
@@ -48200,7 +48202,7 @@ class Syscall:
             ], # arch/riscv/kernel/sys_riscv.c"
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
             "sys_riscv_flush_icache": [
                 "uintptr_t start", "uintptr_t end", "uintptr_t flags",
@@ -48246,7 +48248,7 @@ class Syscall:
             ], # arch/riscv/kernel/sys_riscv.c"
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
             "sys_riscv_flush_icache": [
                 "uintptr_t start", "uintptr_t end", "uintptr_t flags",
@@ -48312,7 +48314,7 @@ class Syscall:
             ], # arch/s390/kernel/sthyi.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
         }
 
@@ -48368,7 +48370,7 @@ class Syscall:
             ], # arch/sh/kernel/sys_sh32.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
             "sys_sh_sync_file_range6": [
                 "int fd", "u64 offset", "u64 nbytes", "unsigned int flags",
@@ -48428,7 +48430,7 @@ class Syscall:
             ], #
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
         }
 
@@ -48578,7 +48580,7 @@ class Syscall:
             ], # arch/alpha/kernel/signal.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
         }
 
@@ -48680,7 +48682,7 @@ class Syscall:
             ], # arch/parisc/kernel/cache.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "unsigned int mask_1",
-                "unsigned int mask_2", "int dfd", "const char  __user *pathname",
+                "unsigned int mask_2", "int dfd", "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
         }
 
@@ -48751,7 +48753,7 @@ class Syscall:
             ], # arch/parisc/kernel/cache.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
 
         }
@@ -48789,7 +48791,7 @@ class Syscall:
             ], # include/asm-generic/syscalls.h
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
             "sys_or1k_atomic": [
                 "unsigned long type", "unsigned long *v1", "unsigned long *v2",
@@ -48831,7 +48833,7 @@ class Syscall:
             ], # include/asm-generic/syscalls.h
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
             "sys_cacheflush": [
                 "unsigned long addr", "unsigned long len", "unsigned int op",
@@ -48879,7 +48881,7 @@ class Syscall:
             ], # arch/microblaze/kernel/sys_microblaze.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
         }
 
@@ -48919,7 +48921,7 @@ class Syscall:
             "xtensa_rt_sigreturn": [], # arch/xtensa/kernel/signal.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
         }
 
@@ -48967,7 +48969,7 @@ class Syscall:
             ], # fs/dcookies.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
         }
 
@@ -49005,7 +49007,7 @@ class Syscall:
             ], # arch/loongarch/kernel/syscall.c
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
         }
 
@@ -49050,7 +49052,7 @@ class Syscall:
             ], # arch/arc/kernel/sys.c (sys_mmap_pgoff)
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
             "sys_cacheflush": [
                 "uint32_t start", "uint32_t sz", "uint32_t flags",
@@ -49105,7 +49107,7 @@ class Syscall:
             ], # arch/csky/include/asm/syscalls.h
             "sys_fanotify_mark": [
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-                "const char  __user *pathname",
+                "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
             "sys_set_thread_area": [
                 "unsigned long addr",
