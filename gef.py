@@ -11992,8 +11992,19 @@ def is_attach():
 @Cache.cache_this_session
 def is_container_attach():
     """GDB mode determination function for attaching another namespace."""
-    return not is_remote_debug() and is_attach() and gdb.current_progspace().filename.startswith("target:")
-
+    if is_remote_debug():
+        return False
+    if not is_attach():
+        return False
+    filename = gdb.current_progspace().filename
+    if filename and filename.startswith("target:"):
+        return True
+    path = "/proc/{:d}/status".format(Pid.get_pid())
+    if os.path.exists(path):
+        content = open(path, "rb").read()
+        r = re.search(rb"\nNSpid:\s+(\d+)\s+(\d+)", content)
+        return bool(r)
+    return False
 
 @Cache.cache_this_session
 def is_pin():
