@@ -90205,11 +90205,11 @@ class PagewalkX64Command(PagewalkCommand):
             pagewalk_base = cr3 # without mask
         else:
             if is_x86_64(): # 64bit
-                pagewalk_base = (cr3 >> 12) << 12
+                pagewalk_base = cr3 & ~0xfff
             elif ((cr4 >> 5) & 1) == 1: # 32bit PAE
-                pagewalk_base = (cr3 >> 5) << 5
+                pagewalk_base = cr3 & ~0x1f
             else: # 32bit non-PAE
-                pagewalk_base = (cr3 >> 12) << 12
+                pagewalk_base = cr3 & ~0xfff
 
         # we ignore PWT and PCD flags.
         flags = []
