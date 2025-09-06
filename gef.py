@@ -49722,6 +49722,14 @@ class LibcCommand(GenericCommand):
             gef_print("ver:\t{:s}".format(String.bytes2str(pos.group(0))))
         return
 
+    def show_libc_assume_version(self):
+        try:
+            v = get_libc_version(verbose=True)
+            gef_print("GEF recognized: {}".format(v))
+        except Exception:
+            gef_print("GEF recognized: None")
+        return
+
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
@@ -49744,6 +49752,10 @@ class LibcCommand(GenericCommand):
 
         if not args.quiet:
             self.libc_calc_hash(libc_targets)
+
+        self.quiet_print(titlify("GEF libc info"))
+        if not args.quiet:
+            self.show_libc_assume_version()
         return
 
 
