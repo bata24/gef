@@ -4912,19 +4912,17 @@ def get_libc_version(verbose=False):
         return libc_version
 
     # resolve from system libc
-    libc_version = get_system_libc_version()
-    if libc_version is not None:
-        if verbose:
-            info("resolve from system libc")
-        Cache.cached_libc_version = libc_version
-        return libc_version
+    if not is_container_attach():
+        libc_version = get_system_libc_version()
+        if libc_version is not None:
+            if verbose:
+                info("resolve from system libc")
+            Cache.cached_libc_version = libc_version
+            return libc_version
 
-    # assume Ubuntu 24.04
-    libc_version = (2, 39)
-    if verbose:
-        info("use fixed value (2.39)")
-    Cache.cached_libc_version = libc_version
-    return libc_version
+    err("The libc version could not be determined.")
+    err("Please specify it with the following command: `gef config libc.assume_version (2,39)`")
+    raise
 
 
 def titlify(text, color=None, msg_color=None, horizontal_line="-"):
