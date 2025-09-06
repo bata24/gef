@@ -3739,7 +3739,12 @@ class GlibcHeap:
     class GlibcArena:
         """Glibc arena class."""
 
-        TCACHE_MAX_BINS = 0x40
+        @property
+        def TCACHE_MAX_BINS(self):
+            if get_libc_version() < (2, 42):
+                return 0x40
+            else:
+                return 0x40 + 12
 
         def __init__(self, arena_addr=None):
             # Manually calling a command like `call malloc(0x10)` alters the heap's internal structure.
@@ -4635,7 +4640,11 @@ class GlibcHeap:
             MIN_SIZE = 0x10
 
         # tcache
-        for i in range(64):
+        if get_libc_version() < (2, 42):
+            TCACHE_MAX_BINS = 0x40
+        else:
+            TCACHE_MAX_BINS = 0x40 + 12
+        for i in range(TCACHE_MAX_BINS):
             # MALLOC_ALIGNMENT is changed from libc 2.26.
             # for x86_32, tcache 0x8 align is no longer used.
             # but for ARM32, or maybe other arch, still 0x8 align is used.
@@ -21218,7 +21227,10 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
                 self.out.append("  max_total_mem = {:#x},".format(int(mp.max_total_mem)))
             self.out.append("  sbrk_base = {:#x},".format(int(mp.sbrk_base)))
             if get_libc_version() >= (2, 26):
-                self.out.append("  tcache_bins = {:#x},".format(int(mp.tcache_bins)))
+                if get_libc_version() < (2, 42):
+                    self.out.append("  tcache_bins = {:#x},".format(int(mp.tcache_bins)))
+                else:
+                    self.out.append("  tcache_small_bins = {:#x},".format(int(mp.tcache_bins)))
                 self.out.append("  tcache_max_bytes = {:#x},".format(int(mp.tcache_max_bytes)))
                 self.out.append("  tcache_unsorted_limit = {:#x},".format(int(mp.tcache_unsorted_limit)))
             self.out.append("}")
@@ -21676,6 +21688,8 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
                         count = read_int8_from_memory(tcache_perthread_struct + i)
                     else:
                         count = read_int16_from_memory(tcache_perthread_struct + 2 * i)
+                        if get_libc_version() >= (2, 42):
+                            count = 7 - count
                     gef_print("{:#x} [{:d}] ({:d}): ".format(size, i, count) + " -> ".join(m))
 
             gef_print(titlify("fastbins"))
@@ -21965,7 +21979,7 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
 
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
         nb_chunk = 0
-        for i in range(GlibcHeap.GlibcArena.TCACHE_MAX_BINS):
+        for i in range(arena.TCACHE_MAX_BINS):
             chunk = arena.get_tcachebins_i(i)
             chunks = []
             m = []
@@ -22003,6 +22017,8 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
                     count = read_int8_from_memory(tcache_perthread_struct + i)
                 else:
                     count = read_int16_from_memory(tcache_perthread_struct + 2 * i)
+                    if get_libc_version() >= (2, 42):
+                        count = 7 - count
                 size = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
                 bins_addr = ProcessMap.lookup_address(arena.addrof_tcachebins_i(i))
                 fd = ProcessMap.lookup_address(read_int_from_memory(bins_addr.value))
