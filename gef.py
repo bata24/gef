@@ -91905,7 +91905,7 @@ class PagewalkArm64Command(PagewalkCommand):
         return
 
     def get_entries_per_table(self, BIT_RANGE, granule_bits, region_bits, is_first_level):
-        if is_first_level:
+        if is_first_level and region_bits > BIT_RANGE[1]:
             idx_bits = {12: 9, 14: 11, 16: 13}[granule_bits]
             offset_bits = granule_bits
             remainder = (region_bits - offset_bits) % idx_bits
