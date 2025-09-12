@@ -1217,8 +1217,8 @@ class AddressUtil:
     def is_msb_on(addr):
         """Return whether provided address MSB is on."""
         if AddressUtil.get_memory_alignment() == 4:
-            return bool(addr & 0x80000000)
-        return bool(addr & 0x8000000000000000)
+            return bool(addr & 0x8000_0000)
+        return bool(addr & 0x8000_0000_0000_0000)
 
     @staticmethod
     def get_format_address_width(memalign_size=None):
@@ -1269,16 +1269,16 @@ class AddressUtil:
             memalign_size = AddressUtil.get_memory_alignment()
 
         if memalign_size == 8:
-            return addr & 0xffffffffffffffff
+            return addr & 0xffff_ffff_ffff_ffff
         elif memalign_size == 4:
-            return addr & 0xffffffff
+            return addr & 0xffff_ffff
         elif memalign_size == 2:
             return addr & 0xffff
         elif memalign_size == 2.5:
             if current_arch.A20:
-                return addr & 0x1fffff
+                return addr & 0x1f_ffff
             else:
-                return addr & 0x0fffff
+                return addr & 0x0f_ffff
         return None
 
     @staticmethod
@@ -2254,7 +2254,7 @@ class Elf:
                 pr_datasz, note = u32(note[:4]), note[4:]
                 pr_data, note = note[:pr_datasz], note[pr_datasz:]
 
-                if pr_type == 0xc0000002: # GNU_PROPERTY_X86_FEATURE_1_AND
+                if pr_type == 0xc000_0002: # GNU_PROPERTY_X86_FEATURE_1_AND
                     if pr_datasz == 4:
                         return u32(pr_data)
 
@@ -2381,76 +2381,76 @@ class Elf:
         PT_SHLIB              = 5
         PT_PHDR               = 6
         PT_TLS                = 7
-        #PT_LOOS              = 0x60000000
-        PT_GNU_EH_FRAME       = 0x6474e550
-        PT_GNU_STACK          = 0x6474e551
-        PT_GNU_RELRO          = 0x6474e552
-        PT_GNU_PROPERTY       = 0x6474e553
-        PT_GNU_SFRAME         = 0x6474e554
-        #PT_GNU_MBIND_LO      = 0x6474e555
-        #PT_GNU_MBIND_HI      = 0x6474f554
-        #PT_LOSUNW            = 0x6ffffffa
-        PT_SUNWBSS            = 0x6ffffffa
-        PT_SUNWSTACK          = 0x6ffffffb
-        #PT_HISUNW            = 0x6fffffff
-        #PT_HIOS              = 0x6fffffff
-        #PT_LOPROC            = 0x70000000
-        #PT_HIPROC            = 0x7fffffff
-        PT_AARCH64_ARCHEXT    = 0x70000000 # noqa: F841
-        PT_AARCH64_MEMTAG_MTE = 0x70000002 # noqa: F841
-        PT_ARM_ARCHEXT        = 0x70000000 # noqa: F841
-        PT_ARM_EXIDX          = 0x70000001 # noqa: F841
-        PT_HP_TLS             = 0x60000000 # noqa: F841
-        PT_HP_CORE_NONE       = 0x60000001 # noqa: F841
-        PT_HP_CORE_VERSION    = 0x60000002 # noqa: F841
-        PT_HP_CORE_KERNEL     = 0x60000003 # noqa: F841
-        PT_HP_CORE_COMM       = 0x60000004 # noqa: F841
-        PT_HP_CORE_PROC       = 0x60000005 # noqa: F841
-        PT_HP_CORE_LOADABLE   = 0x60000006 # noqa: F841
-        PT_HP_CORE_STACK      = 0x60000007 # noqa: F841
-        PT_HP_CORE_SHM        = 0x60000008 # noqa: F841
-        PT_HP_CORE_MMF        = 0x60000009 # noqa: F841
-        PT_HP_PARALLEL        = 0x60000010 # noqa: F841
-        PT_HP_FASTBIND        = 0x60000011 # noqa: F841
-        PT_HP_OPT_ANNOT       = 0x60000012 # noqa: F841
-        PT_HP_HSL_ANNOT       = 0x60000013 # noqa: F841
-        PT_HP_STACK           = 0x60000014 # noqa: F841
-        PT_HP_CORE_UTSNAME    = 0x60000015 # noqa: F841
-        PT_IA_64_HP_OPT_ANOT  = 0x60000012 # noqa: F841
-        PT_IA_64_HP_HSL_ANOT  = 0x60000013 # noqa: F841
-        PT_IA_64_HP_STACK     = 0x60000014 # noqa: F841
-        PT_IA_64_ARCHEXT      = 0x70000000 # noqa: F841
-        PT_IA_64_UNWIND       = 0x70000001 # noqa: F841
-        PT_MIPS_REGINFO       = 0x70000000 # noqa: F841
-        PT_MIPS_RTPROC        = 0x70000001 # noqa: F841
-        PT_MIPS_OPTIONS       = 0x70000002 # noqa: F841
-        PT_MIPS_ABIFLAGS      = 0x70000003 # noqa: F841
-        PT_PARISC_ARCHEXT     = 0x70000000 # noqa: F841
-        PT_PARISC_UNWIND      = 0x70000001 # noqa: F841
-        PT_PARISC_WEAKORDER   = 0x70000002 # noqa: F841
-        PT_RISCV_ATTRIBUTES   = 0x70000003 # noqa: F841
-        PT_S390_PGSTE         = 0x70000000 # noqa: F841
+        #PT_LOOS              = 0x6000_0000
+        PT_GNU_EH_FRAME       = 0x6474_e550
+        PT_GNU_STACK          = 0x6474_e551
+        PT_GNU_RELRO          = 0x6474_e552
+        PT_GNU_PROPERTY       = 0x6474_e553
+        PT_GNU_SFRAME         = 0x6474_e554
+        #PT_GNU_MBIND_LO      = 0x6474_e555
+        #PT_GNU_MBIND_HI      = 0x6474_f554
+        #PT_LOSUNW            = 0x6fff_fffa
+        PT_SUNWBSS            = 0x6fff_fffa
+        PT_SUNWSTACK          = 0x6fff_fffb
+        #PT_HISUNW            = 0x6fff_ffff
+        #PT_HIOS              = 0x6fff_ffff
+        #PT_LOPROC            = 0x7000_0000
+        #PT_HIPROC            = 0x7fff_ffff
+        PT_AARCH64_ARCHEXT    = 0x7000_0000 # noqa: F841
+        PT_AARCH64_MEMTAG_MTE = 0x7000_0002 # noqa: F841
+        PT_ARM_ARCHEXT        = 0x7000_0000 # noqa: F841
+        PT_ARM_EXIDX          = 0x7000_0001 # noqa: F841
+        PT_HP_TLS             = 0x6000_0000 # noqa: F841
+        PT_HP_CORE_NONE       = 0x6000_0001 # noqa: F841
+        PT_HP_CORE_VERSION    = 0x6000_0002 # noqa: F841
+        PT_HP_CORE_KERNEL     = 0x6000_0003 # noqa: F841
+        PT_HP_CORE_COMM       = 0x6000_0004 # noqa: F841
+        PT_HP_CORE_PROC       = 0x6000_0005 # noqa: F841
+        PT_HP_CORE_LOADABLE   = 0x6000_0006 # noqa: F841
+        PT_HP_CORE_STACK      = 0x6000_0007 # noqa: F841
+        PT_HP_CORE_SHM        = 0x6000_0008 # noqa: F841
+        PT_HP_CORE_MMF        = 0x6000_0009 # noqa: F841
+        PT_HP_PARALLEL        = 0x6000_0010 # noqa: F841
+        PT_HP_FASTBIND        = 0x6000_0011 # noqa: F841
+        PT_HP_OPT_ANNOT       = 0x6000_0012 # noqa: F841
+        PT_HP_HSL_ANNOT       = 0x6000_0013 # noqa: F841
+        PT_HP_STACK           = 0x6000_0014 # noqa: F841
+        PT_HP_CORE_UTSNAME    = 0x6000_0015 # noqa: F841
+        PT_IA_64_HP_OPT_ANOT  = 0x6000_0012 # noqa: F841
+        PT_IA_64_HP_HSL_ANOT  = 0x6000_0013 # noqa: F841
+        PT_IA_64_HP_STACK     = 0x6000_0014 # noqa: F841
+        PT_IA_64_ARCHEXT      = 0x7000_0000 # noqa: F841
+        PT_IA_64_UNWIND       = 0x7000_0001 # noqa: F841
+        PT_MIPS_REGINFO       = 0x7000_0000 # noqa: F841
+        PT_MIPS_RTPROC        = 0x7000_0001 # noqa: F841
+        PT_MIPS_OPTIONS       = 0x7000_0002 # noqa: F841
+        PT_MIPS_ABIFLAGS      = 0x7000_0003 # noqa: F841
+        PT_PARISC_ARCHEXT     = 0x7000_0000 # noqa: F841
+        PT_PARISC_UNWIND      = 0x7000_0001 # noqa: F841
+        PT_PARISC_WEAKORDER   = 0x7000_0002 # noqa: F841
+        PT_RISCV_ATTRIBUTES   = 0x7000_0003 # noqa: F841
+        PT_S390_PGSTE         = 0x7000_0000 # noqa: F841
 
         # p_flags
         PF_X                = 1
         PF_W                = 2
         PF_R                = 4
-        PF_ARM_SB           = 0x10000000 # noqa: F841
-        PF_ARM_PI           = 0x20000000 # noqa: F841
-        PF_ARM_ABS          = 0x40000000 # noqa: F841
-        PF_HP_CODE          = 0x00040000 # noqa: F841
-        PF_HP_MODIFY        = 0x00080000 # noqa: F841
-        PF_HP_PAGE_SIZE     = 0x00100000 # noqa: F841
-        PF_HP_FAR_SHARED    = 0x00200000 # noqa: F841
-        PF_HP_NEAR_SHARED   = 0x00400000 # noqa: F841
-        PF_HP_LAZYSWAP      = 0x00800000 # noqa: F841
-        PF_HP_CODE_DEPR     = 0x01000000 # noqa: F841
-        PF_HP_MODIFY_DEPR   = 0x02000000 # noqa: F841
-        PF_HP_LAZYSWAP_DEPR = 0x04000000 # noqa: F841
-        PF_HP_SBP           = 0x08000000 # noqa: F841
-        PF_IA_64_NORECOV    = 0x80000000 # noqa: F841
-        PF_OVERRAY          = 0x08000000 # noqa: F841
-        PF_PARISC_SBP       = 0x08000000 # noqa: F841
+        PF_ARM_SB           = 0x1000_0000 # noqa: F841
+        PF_ARM_PI           = 0x2000_0000 # noqa: F841
+        PF_ARM_ABS          = 0x4000_0000 # noqa: F841
+        PF_HP_CODE          = 0x0004_0000 # noqa: F841
+        PF_HP_MODIFY        = 0x0008_0000 # noqa: F841
+        PF_HP_PAGE_SIZE     = 0x0010_0000 # noqa: F841
+        PF_HP_FAR_SHARED    = 0x0020_0000 # noqa: F841
+        PF_HP_NEAR_SHARED   = 0x0040_0000 # noqa: F841
+        PF_HP_LAZYSWAP      = 0x0080_0000 # noqa: F841
+        PF_HP_CODE_DEPR     = 0x0100_0000 # noqa: F841
+        PF_HP_MODIFY_DEPR   = 0x0200_0000 # noqa: F841
+        PF_HP_LAZYSWAP_DEPR = 0x0400_0000 # noqa: F841
+        PF_HP_SBP           = 0x0800_0000 # noqa: F841
+        PF_IA_64_NORECOV    = 0x8000_0000 # noqa: F841
+        PF_OVERRAY          = 0x0800_0000 # noqa: F841
+        PF_PARISC_SBP       = 0x0800_0000 # noqa: F841
 
         p_type   = None
         p_flags  = None
@@ -2507,142 +2507,142 @@ class Elf:
         SHT_GROUP                          = 17
         SHT_SYMTAB_SHNDX                   = 18
         SHT_RELR                           = 19
-        #SHT_LOOS                          = 0x60000000
-        SHT_ANDROID_REL                    = 0x60000001
-        SHT_ANDROID_RELA                   = 0x60000002
-        SHT_HP_OVLBITS                     = 0x60000000 # noqa: F841
-        SHT_HP_DLKM                        = 0x60000001 # noqa: F841
-        SHT_HP_COMDAT                      = 0x60000002 # noqa: F841
-        SHT_HP_OBJDICT                     = 0x60000003 # noqa: F841
-        SHT_HP_ANNOT                       = 0x60000004 # noqa: F841
-        SHT_IA_64_VMS_TRACE                = 0x60000000 # noqa: F841
-        SHT_IA_64_VMS_TIE_SIGNATURES       = 0x60000001 # noqa: F841
-        SHT_IA_64_VMS_DEBUG                = 0x60000002 # noqa: F841
-        SHT_IA_64_VMS_DEBUG_STR            = 0x60000003 # noqa: F841
-        SHT_IA_64_VMS_LINKAGES             = 0x60000004 # noqa: F841
-        SHT_IA_64_VMS_SYMBOL_VECTOR        = 0x60000005 # noqa: F841
-        SHT_IA_64_VMS_FIXUP                = 0x60000006 # noqa: F841
-        SHT_IA_64_VMS_DISPLAY_NAME_INFO    = 0x60000007 # noqa: F841
-        SHT_GNU_INCREMENTAL_INPUTS         = 0x6fff4700
-        SHT_LLVM_ODRTAB                    = 0x6fff4c00
-        SHT_LLVM_LINKER_OPTIONS            = 0x6fff4c01
-        SHT_LLVM_CALL_GRAPH_PROFILE        = 0x6fff4c02
-        SHT_LLVM_ADDRSIG                   = 0x6fff4c03
-        SHT_LLVM_DEPENDENT_LIBRARIES       = 0x6fff4c04
-        SHT_LLVM_SYMPART                   = 0x6fff4c05
-        SHT_LLVM_PART_EHDR                 = 0x6fff4c06
-        SHT_LLVM_PART_PHDR                 = 0x6fff4c07
-        SHT_LLVM_BB_ADDR_MAP_V0            = 0x6fff4c08
-        SHT_LLVM_CALL_GRAPH_PROFILE        = 0x6fff4c09
-        SHT_LLVM_BB_ADDR_MAP               = 0x6fff4c0a
-        SHT_LLVM_OFFLOADING                = 0x6fff4c0b
-        SHT_LLVM_LTO                       = 0x6fff4c0c
-        SHT_ANDROID_RELR                   = 0x6fffff00
-        SHT_GNU_ATTRIBUTES                 = 0x6ffffff5
-        SHT_GNU_HASH                       = 0x6ffffff6
-        SHT_GNU_LIBLIST                    = 0x6ffffff7
-        SHT_CHECKSUM                       = 0x6ffffff8
-        #SHT_LOSUNW                        = 0x6ffffffa
-        SHT_SUNW_move                      = 0x6ffffffa
-        SHT_SUNW_COMDAT                    = 0x6ffffffb
-        SHT_SUNW_syminfo                   = 0x6ffffffc
-        SHT_GNU_verdef                     = 0x6ffffffd
-        SHT_GNU_verneed                    = 0x6ffffffe
-        SHT_GNU_versym                     = 0x6fffffff
-        #SHT_HISUNW                        = 0x6fffffff
-        #SHT_HIOS                          = 0x6fffffff
-        #SHT_LOPROC                        = 0x70000000
-        SHT_AARCH64_ATTRIBUTES             = 0x70000003 # noqa: F841
-        SHT_AARCH64_AUTH_RELR              = 0x70000004 # noqa: F841
-        SHT_AARCH64_MEMTAG_GLOBALS_STATIC  = 0x70000007 # noqa: F841
-        SHT_AARCH64_MEMTAG_GLOBALS_DYNAMIC = 0x70000008 # noqa: F841
-        SHT_ALPHA_DEBUG                    = 0x70000001 # noqa: F841
-        SHT_ALPHA_REGINFO                  = 0x70000002 # noqa: F841
-        SHT_ARC_ATTRIBUTES                 = 0x70000001 # noqa: F841
-        SHT_ARM_EXIDX                      = 0x70000001 # noqa: F841
-        SHT_ARM_PREEMPTMAP                 = 0x70000002 # noqa: F841
-        SHT_ARM_ATTRIBUTES                 = 0x70000003 # noqa: F841
-        SHT_ARM_DEBUGOVERLAY               = 0x70000004 # noqa: F841
-        SHT_ARM_OVERLAYSECTION             = 0x70000005 # noqa: F841
-        SHT_C6000_UNWIND                   = 0x70000001 # noqa: F841
-        SHT_C6000_PREEMPTMAP               = 0x70000002 # noqa: F841
-        SHT_C6000_ATTRIBUTES               = 0x70000003 # noqa: F841
-        SHT_CSKY_ATTRIBUTES                = 0x70000001 # noqa: F841
-        SHT_IA_64_EXT                      = 0x70000000 # noqa: F841
-        SHT_IA_64_UNWIND                   = 0x70000001 # noqa: F841
-        SHT_IA_64_LOPSREG                  = 0x78000000 # noqa: F841
-        SHT_IA_64_HIPSREG                  = 0x78ffffff # noqa: F841
-        SHT_IA_64_PRIORITY_INIT            = 0x79000000 # noqa: F841
-        SHT_MIPS_LIBLIST                   = 0x70000000 # noqa: F841
-        SHT_MIPS_MSYM                      = 0x70000001 # noqa: F841
-        SHT_MIPS_CONFLICT                  = 0x70000002 # noqa: F841
-        SHT_MIPS_GPTAB                     = 0x70000003 # noqa: F841
-        SHT_MIPS_UCODE                     = 0x70000004 # noqa: F841
-        SHT_MIPS_DEBUG                     = 0x70000005 # noqa: F841
-        SHT_MIPS_REGINFO                   = 0x70000006 # noqa: F841
-        SHT_MIPS_PACKAGE                   = 0x70000007 # noqa: F841
-        SHT_MIPS_PACKSYM                   = 0x70000008 # noqa: F841
-        SHT_MIPS_RELD                      = 0x70000009 # noqa: F841
-        SHT_MIPS_IFACE                     = 0x7000000b # noqa: F841
-        SHT_MIPS_CONTENT                   = 0x7000000c # noqa: F841
-        SHT_MIPS_OPTIONS                   = 0x7000000d # noqa: F841
-        SHT_MIPS_SHDR                      = 0x70000010 # noqa: F841
-        SHT_MIPS_FDESC                     = 0x70000011 # noqa: F841
-        SHT_MIPS_EXTSYM                    = 0x70000012 # noqa: F841
-        SHT_MIPS_DENSE                     = 0x70000013 # noqa: F841
-        SHT_MIPS_PDESC                     = 0x70000014 # noqa: F841
-        SHT_MIPS_LOCSYM                    = 0x70000015 # noqa: F841
-        SHT_MIPS_AUXSYM                    = 0x70000016 # noqa: F841
-        SHT_MIPS_OPTSYM                    = 0x70000017 # noqa: F841
-        SHT_MIPS_LOCSTR                    = 0x70000018 # noqa: F841
-        SHT_MIPS_LINE                      = 0x70000019 # noqa: F841
-        SHT_MIPS_RFDESC                    = 0x7000001a # noqa: F841
-        SHT_MIPS_DELTASYM                  = 0x7000001b # noqa: F841
-        SHT_MIPS_DELTAINST                 = 0x7000001c # noqa: F841
-        SHT_MIPS_DELTACLASS                = 0x7000001d # noqa: F841
-        SHT_MIPS_DWARF                     = 0x7000001e # noqa: F841
-        SHT_MIPS_DELTADECL                 = 0x7000001f # noqa: F841
-        SHT_MIPS_SYMBOL_LIB                = 0x70000020 # noqa: F841
-        SHT_MIPS_EVENTS                    = 0x70000021 # noqa: F841
-        SHT_MIPS_TRANSLATE                 = 0x70000022 # noqa: F841
-        SHT_MIPS_PIXIE                     = 0x70000023 # noqa: F841
-        SHT_MIPS_XLATE                     = 0x70000024 # noqa: F841
-        SHT_MIPS_XLATE_DEBUG               = 0x70000025 # noqa: F841
-        SHT_MIPS_WHIRL                     = 0x70000026 # noqa: F841
-        SHT_MIPS_EH_REGION                 = 0x70000027 # noqa: F841
-        SHT_MIPS_XLATE_OLD                 = 0x70000028 # noqa: F841
-        SHT_MIPS_PDR_EXCEPTION             = 0x70000029 # noqa: F841
-        SHT_MIPS_ABIFLAGS                  = 0x7000002a # noqa: F841
-        SHT_MIPS_XHASH                     = 0x7000002b # noqa: F841
-        SHT_MSP430_ATTRIBUTES              = 0x70000003 # noqa: F841
-        SHT_MSP430_SEC_FLAGS               = 0x70000005 # noqa: F841
-        SHT_MSP430_SYM_ALIASES             = 0x70000006 # noqa: F841
-        SHT_NFP_MECONFIG                   = 0x70000001 # noqa: F841
-        SHT_NFP_INITREG                    = 0x70000002 # noqa: F841
-        SHT_PARISC_EXT                     = 0x70000000 # noqa: F841
-        SHT_PARISC_UNWIND                  = 0x70000001 # noqa: F841
-        SHT_PARISC_DOC                     = 0x70000002 # noqa: F841
-        SHT_PARISC_ANNOT                   = 0x70000003 # noqa: F841
-        SHT_PARISC_DLKM                    = 0x70000004 # noqa: F841
-        SHT_PARISC_SYMEXTN                 = 0x70000008 # noqa: F841
-        SHT_PARISC_STUBS                   = 0x70000009 # noqa: F841
-        SHT_RISCV_ATTRIBUTES               = 0x70000003 # noqa: F841
-        SHT_V850_SCOMMON                   = 0x70000000 # noqa: F841
-        SHT_V850_TCOMMON                   = 0x70000001 # noqa: F841
-        SHT_V850_ZCOMMON                   = 0x70000002 # noqa: F841
-        SHT_X86_64_UNWIND                  = 0x70000001 # noqa: F841
-        SHT_TI_ICODE                       = 0x7F000000 # noqa: F841
-        SHT_TI_XREF                        = 0x7F000001 # noqa: F841
-        SHT_TI_HANDLER                     = 0x7F000002 # noqa: F841
-        SHT_TI_INITINFO                    = 0x7F000003 # noqa: F841
-        SHT_TI_PHATTRS                     = 0x7F000004 # noqa: F841
-        SHT_ORDERED                        = 0x7fffffff # noqa: F841
-        #SHT_HIPROC                        = 0x7fffffff
-        #SHT_LOUSER                        = 0x80000000
-        SHT_NFP_UDEBUG                     = 0x80000000 # noqa: F841
-        SHT_RENESAS_IOP                    = 0x80000000 # noqa: F841
-        #SHT_HIUSER                        = 0x8fffffff
-        SHT_RENESAS_INFO                   = 0xa0000000 # noqa: F841
+        #SHT_LOOS                          = 0x6000_0000
+        SHT_ANDROID_REL                    = 0x6000_0001
+        SHT_ANDROID_RELA                   = 0x6000_0002
+        SHT_HP_OVLBITS                     = 0x6000_0000 # noqa: F841
+        SHT_HP_DLKM                        = 0x6000_0001 # noqa: F841
+        SHT_HP_COMDAT                      = 0x6000_0002 # noqa: F841
+        SHT_HP_OBJDICT                     = 0x6000_0003 # noqa: F841
+        SHT_HP_ANNOT                       = 0x6000_0004 # noqa: F841
+        SHT_IA_64_VMS_TRACE                = 0x6000_0000 # noqa: F841
+        SHT_IA_64_VMS_TIE_SIGNATURES       = 0x6000_0001 # noqa: F841
+        SHT_IA_64_VMS_DEBUG                = 0x6000_0002 # noqa: F841
+        SHT_IA_64_VMS_DEBUG_STR            = 0x6000_0003 # noqa: F841
+        SHT_IA_64_VMS_LINKAGES             = 0x6000_0004 # noqa: F841
+        SHT_IA_64_VMS_SYMBOL_VECTOR        = 0x6000_0005 # noqa: F841
+        SHT_IA_64_VMS_FIXUP                = 0x6000_0006 # noqa: F841
+        SHT_IA_64_VMS_DISPLAY_NAME_INFO    = 0x6000_0007 # noqa: F841
+        SHT_GNU_INCREMENTAL_INPUTS         = 0x6fff_4700
+        SHT_LLVM_ODRTAB                    = 0x6fff_4c00
+        SHT_LLVM_LINKER_OPTIONS            = 0x6fff_4c01
+        SHT_LLVM_CALL_GRAPH_PROFILE        = 0x6fff_4c02
+        SHT_LLVM_ADDRSIG                   = 0x6fff_4c03
+        SHT_LLVM_DEPENDENT_LIBRARIES       = 0x6fff_4c04
+        SHT_LLVM_SYMPART                   = 0x6fff_4c05
+        SHT_LLVM_PART_EHDR                 = 0x6fff_4c06
+        SHT_LLVM_PART_PHDR                 = 0x6fff_4c07
+        SHT_LLVM_BB_ADDR_MAP_V0            = 0x6fff_4c08
+        SHT_LLVM_CALL_GRAPH_PROFILE        = 0x6fff_4c09
+        SHT_LLVM_BB_ADDR_MAP               = 0x6fff_4c0a
+        SHT_LLVM_OFFLOADING                = 0x6fff_4c0b
+        SHT_LLVM_LTO                       = 0x6fff_4c0c
+        SHT_ANDROID_RELR                   = 0x6fff_ff00
+        SHT_GNU_ATTRIBUTES                 = 0x6fff_fff5
+        SHT_GNU_HASH                       = 0x6fff_fff6
+        SHT_GNU_LIBLIST                    = 0x6fff_fff7
+        SHT_CHECKSUM                       = 0x6fff_fff8
+        #SHT_LOSUNW                        = 0x6fff_fffa
+        SHT_SUNW_move                      = 0x6fff_fffa
+        SHT_SUNW_COMDAT                    = 0x6fff_fffb
+        SHT_SUNW_syminfo                   = 0x6fff_fffc
+        SHT_GNU_verdef                     = 0x6fff_fffd
+        SHT_GNU_verneed                    = 0x6fff_fffe
+        SHT_GNU_versym                     = 0x6fff_ffff
+        #SHT_HISUNW                        = 0x6fff_ffff
+        #SHT_HIOS                          = 0x6fff_ffff
+        #SHT_LOPROC                        = 0x7000_0000
+        SHT_AARCH64_ATTRIBUTES             = 0x7000_0003 # noqa: F841
+        SHT_AARCH64_AUTH_RELR              = 0x7000_0004 # noqa: F841
+        SHT_AARCH64_MEMTAG_GLOBALS_STATIC  = 0x7000_0007 # noqa: F841
+        SHT_AARCH64_MEMTAG_GLOBALS_DYNAMIC = 0x7000_0008 # noqa: F841
+        SHT_ALPHA_DEBUG                    = 0x7000_0001 # noqa: F841
+        SHT_ALPHA_REGINFO                  = 0x7000_0002 # noqa: F841
+        SHT_ARC_ATTRIBUTES                 = 0x7000_0001 # noqa: F841
+        SHT_ARM_EXIDX                      = 0x7000_0001 # noqa: F841
+        SHT_ARM_PREEMPTMAP                 = 0x7000_0002 # noqa: F841
+        SHT_ARM_ATTRIBUTES                 = 0x7000_0003 # noqa: F841
+        SHT_ARM_DEBUGOVERLAY               = 0x7000_0004 # noqa: F841
+        SHT_ARM_OVERLAYSECTION             = 0x7000_0005 # noqa: F841
+        SHT_C6000_UNWIND                   = 0x7000_0001 # noqa: F841
+        SHT_C6000_PREEMPTMAP               = 0x7000_0002 # noqa: F841
+        SHT_C6000_ATTRIBUTES               = 0x7000_0003 # noqa: F841
+        SHT_CSKY_ATTRIBUTES                = 0x7000_0001 # noqa: F841
+        SHT_IA_64_EXT                      = 0x7000_0000 # noqa: F841
+        SHT_IA_64_UNWIND                   = 0x7000_0001 # noqa: F841
+        SHT_IA_64_LOPSREG                  = 0x7800_0000 # noqa: F841
+        SHT_IA_64_HIPSREG                  = 0x78ff_ffff # noqa: F841
+        SHT_IA_64_PRIORITY_INIT            = 0x7900_0000 # noqa: F841
+        SHT_MIPS_LIBLIST                   = 0x7000_0000 # noqa: F841
+        SHT_MIPS_MSYM                      = 0x7000_0001 # noqa: F841
+        SHT_MIPS_CONFLICT                  = 0x7000_0002 # noqa: F841
+        SHT_MIPS_GPTAB                     = 0x7000_0003 # noqa: F841
+        SHT_MIPS_UCODE                     = 0x7000_0004 # noqa: F841
+        SHT_MIPS_DEBUG                     = 0x7000_0005 # noqa: F841
+        SHT_MIPS_REGINFO                   = 0x7000_0006 # noqa: F841
+        SHT_MIPS_PACKAGE                   = 0x7000_0007 # noqa: F841
+        SHT_MIPS_PACKSYM                   = 0x7000_0008 # noqa: F841
+        SHT_MIPS_RELD                      = 0x7000_0009 # noqa: F841
+        SHT_MIPS_IFACE                     = 0x7000_000b # noqa: F841
+        SHT_MIPS_CONTENT                   = 0x7000_000c # noqa: F841
+        SHT_MIPS_OPTIONS                   = 0x7000_000d # noqa: F841
+        SHT_MIPS_SHDR                      = 0x7000_0010 # noqa: F841
+        SHT_MIPS_FDESC                     = 0x7000_0011 # noqa: F841
+        SHT_MIPS_EXTSYM                    = 0x7000_0012 # noqa: F841
+        SHT_MIPS_DENSE                     = 0x7000_0013 # noqa: F841
+        SHT_MIPS_PDESC                     = 0x7000_0014 # noqa: F841
+        SHT_MIPS_LOCSYM                    = 0x7000_0015 # noqa: F841
+        SHT_MIPS_AUXSYM                    = 0x7000_0016 # noqa: F841
+        SHT_MIPS_OPTSYM                    = 0x7000_0017 # noqa: F841
+        SHT_MIPS_LOCSTR                    = 0x7000_0018 # noqa: F841
+        SHT_MIPS_LINE                      = 0x7000_0019 # noqa: F841
+        SHT_MIPS_RFDESC                    = 0x7000_001a # noqa: F841
+        SHT_MIPS_DELTASYM                  = 0x7000_001b # noqa: F841
+        SHT_MIPS_DELTAINST                 = 0x7000_001c # noqa: F841
+        SHT_MIPS_DELTACLASS                = 0x7000_001d # noqa: F841
+        SHT_MIPS_DWARF                     = 0x7000_001e # noqa: F841
+        SHT_MIPS_DELTADECL                 = 0x7000_001f # noqa: F841
+        SHT_MIPS_SYMBOL_LIB                = 0x7000_0020 # noqa: F841
+        SHT_MIPS_EVENTS                    = 0x7000_0021 # noqa: F841
+        SHT_MIPS_TRANSLATE                 = 0x7000_0022 # noqa: F841
+        SHT_MIPS_PIXIE                     = 0x7000_0023 # noqa: F841
+        SHT_MIPS_XLATE                     = 0x7000_0024 # noqa: F841
+        SHT_MIPS_XLATE_DEBUG               = 0x7000_0025 # noqa: F841
+        SHT_MIPS_WHIRL                     = 0x7000_0026 # noqa: F841
+        SHT_MIPS_EH_REGION                 = 0x7000_0027 # noqa: F841
+        SHT_MIPS_XLATE_OLD                 = 0x7000_0028 # noqa: F841
+        SHT_MIPS_PDR_EXCEPTION             = 0x7000_0029 # noqa: F841
+        SHT_MIPS_ABIFLAGS                  = 0x7000_002a # noqa: F841
+        SHT_MIPS_XHASH                     = 0x7000_002b # noqa: F841
+        SHT_MSP430_ATTRIBUTES              = 0x7000_0003 # noqa: F841
+        SHT_MSP430_SEC_FLAGS               = 0x7000_0005 # noqa: F841
+        SHT_MSP430_SYM_ALIASES             = 0x7000_0006 # noqa: F841
+        SHT_NFP_MECONFIG                   = 0x7000_0001 # noqa: F841
+        SHT_NFP_INITREG                    = 0x7000_0002 # noqa: F841
+        SHT_PARISC_EXT                     = 0x7000_0000 # noqa: F841
+        SHT_PARISC_UNWIND                  = 0x7000_0001 # noqa: F841
+        SHT_PARISC_DOC                     = 0x7000_0002 # noqa: F841
+        SHT_PARISC_ANNOT                   = 0x7000_0003 # noqa: F841
+        SHT_PARISC_DLKM                    = 0x7000_0004 # noqa: F841
+        SHT_PARISC_SYMEXTN                 = 0x7000_0008 # noqa: F841
+        SHT_PARISC_STUBS                   = 0x7000_0009 # noqa: F841
+        SHT_RISCV_ATTRIBUTES               = 0x7000_0003 # noqa: F841
+        SHT_V850_SCOMMON                   = 0x7000_0000 # noqa: F841
+        SHT_V850_TCOMMON                   = 0x7000_0001 # noqa: F841
+        SHT_V850_ZCOMMON                   = 0x7000_0002 # noqa: F841
+        SHT_X86_64_UNWIND                  = 0x7000_0001 # noqa: F841
+        SHT_TI_ICODE                       = 0x7F00_0000 # noqa: F841
+        SHT_TI_XREF                        = 0x7F00_0001 # noqa: F841
+        SHT_TI_HANDLER                     = 0x7F00_0002 # noqa: F841
+        SHT_TI_INITINFO                    = 0x7F00_0003 # noqa: F841
+        SHT_TI_PHATTRS                     = 0x7F00_0004 # noqa: F841
+        SHT_ORDERED                        = 0x7fff_ffff # noqa: F841
+        #SHT_HIPROC                        = 0x7fff_ffff
+        #SHT_LOUSER                        = 0x8000_0000
+        SHT_NFP_UDEBUG                     = 0x8000_0000 # noqa: F841
+        SHT_RENESAS_IOP                    = 0x8000_0000 # noqa: F841
+        #SHT_HIUSER                        = 0x8fff_ffff
+        SHT_RENESAS_INFO                   = 0xa000_0000 # noqa: F841
 
         # sh_flags
         SHF_WRITE            = 1
@@ -2656,23 +2656,23 @@ class Elf:
         SHF_GROUP            = 0x200
         SHF_TLS              = 0x400
         SHF_COMPRESSED       = 0x800
-        SHF_RELA_LIVEPATCH   = 0x00100000 # noqa: F841
-        SHF_RO_AFTER_INIT    = 0x00200000 # noqa: F841
-        SHF_ORDERED          = 0x40000000 # noqa: F841
-        SHF_EXCLUDE          = 0x80000000
-        SHF_MIPS_NODUPES     = 0x01000000 # noqa: F841
-        SHF_MIPS_NAMES       = 0x02000000 # noqa: F841
-        SHF_MIPS_LOCAL       = 0x04000000 # noqa: F841
-        SHF_MIPS_NOSTRIP     = 0x08000000 # noqa: F841
-        SHF_MIPS_GPREL       = 0x10000000 # noqa: F841
-        SHF_MIPS_MERGE       = 0x20000000 # noqa: F841
-        SHF_MIPS_ADDR        = 0x40000000 # noqa: F841
-        SHF_MIPS_STRING      = 0x80000000 # noqa: F841
-        SHF_PARISC_SHORT     = 0x20000000 # noqa: F841
-        SHF_PARISC_HUGE      = 0x40000000 # noqa: F841
-        SHF_PARISC_SBP       = 0x80000000 # noqa: F841
-        SHF_ALPHA_GPREL      = 0x10000000 # noqa: F841
-        SHF_IA_64_SHORT      = 0x10000000 # noqa: F841
+        SHF_RELA_LIVEPATCH   = 0x0010_0000 # noqa: F841
+        SHF_RO_AFTER_INIT    = 0x0020_0000 # noqa: F841
+        SHF_ORDERED          = 0x4000_0000 # noqa: F841
+        SHF_EXCLUDE          = 0x8000_0000
+        SHF_MIPS_NODUPES     = 0x0100_0000 # noqa: F841
+        SHF_MIPS_NAMES       = 0x0200_0000 # noqa: F841
+        SHF_MIPS_LOCAL       = 0x0400_0000 # noqa: F841
+        SHF_MIPS_NOSTRIP     = 0x0800_0000 # noqa: F841
+        SHF_MIPS_GPREL       = 0x1000_0000 # noqa: F841
+        SHF_MIPS_MERGE       = 0x2000_0000 # noqa: F841
+        SHF_MIPS_ADDR        = 0x4000_0000 # noqa: F841
+        SHF_MIPS_STRING      = 0x8000_0000 # noqa: F841
+        SHF_PARISC_SHORT     = 0x2000_0000 # noqa: F841
+        SHF_PARISC_HUGE      = 0x4000_0000 # noqa: F841
+        SHF_PARISC_SBP       = 0x8000_0000 # noqa: F841
+        SHF_ALPHA_GPREL      = 0x1000_0000 # noqa: F841
+        SHF_IA_64_SHORT      = 0x1000_0000 # noqa: F841
 
         sh_name              = None
         sh_type              = None
@@ -5898,7 +5898,7 @@ class Checksec:
         output_line = res.splitlines()[-1]
         ret = int(output_line.split()[2], 0)
 
-        pQ = lambda a: struct.pack("<Q", a & 0xffffffffffffffff)
+        pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
         uq = lambda a: struct.unpack("<q", a)[0]
         u2i = lambda a: uq(pQ(a))
         return u2i(ret)
@@ -5914,7 +5914,7 @@ class Checksec:
         output_line = res.splitlines()[-1]
         ret = int(output_line.split()[2], 0)
 
-        pQ = lambda a: struct.pack("<Q", a & 0xffffffffffffffff)
+        pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
         uq = lambda a: struct.unpack("<q", a)[0]
         u2i = lambda a: uq(pQ(a))
         return u2i(ret)
@@ -6292,11 +6292,11 @@ class RISCV(Architecture):
         def long_to_twos_complement(v):
             """Convert a python long value to its two's complement."""
             if is_32bit():
-                if v & 0x80000000:
-                    return v - 0x100000000
+                if v & 0x8000_0000:
+                    return v - 0x1_0000_0000
             elif is_64bit():
-                if v & 0x8000000000000000:
-                    return v - 0x10000000000000000
+                if v & 0x8000_0000_0000_0000:
+                    return v - 0x1_0000_0000_0000_0000
             else:
                 raise OSError("RISC-V: ELF file is not ELF32 or ELF64. This is not currently supported")
             return v
@@ -6714,7 +6714,7 @@ class ARM(Architecture):
         # http://www.botskool.com/user-pages/tutorials/electronics/arm-7-tutorial-part-1
         if val is None:
             reg = self.flag_register
-            val = get_register(reg) & 0xffffffff
+            val = get_register(reg) & 0xffff_ffff
 
         if self.is_cortex_m():
             return Architecture.flags_to_human(val, self.flags_table)
@@ -6859,7 +6859,7 @@ class AARCH64(ARM):
         # http://events.linuxfoundation.org/sites/events/files/slides/KoreaLinuxForum-2014.pdf
         if val is None:
             reg = self.flag_register
-            val = get_register(reg) & 0xffffffff
+            val = get_register(reg) & 0xffff_ffff
 
         if self.__SCR_EL3_available is False: # for speed up
             mode = " [EL={:d},SP={:d}]".format((val >> 2) & 0b11, val & 0b11)
@@ -6961,7 +6961,7 @@ class X86(Architecture):
     def flag_register_to_human(self, val=None):
         if val is None:
             reg = self.flag_register
-            val = get_register(reg) & 0xffffffff
+            val = get_register(reg) & 0xffff_ffff
         mode = " [Ring={:d}]".format(get_register("$cs") & 0b11)
         return Architecture.flags_to_human(val, self.flags_table) + mode
 
@@ -7060,7 +7060,7 @@ class X86(Architecture):
                     reg = to_unsigned_long(AddressUtil.dereference(current_arch.sp))
                     seg = AddressUtil.dereference(current_arch.sp + current_arch.ptrsize) & 0xffff
                     if get_register("$cs") == 0x08:
-                        return ((seg << 4) + reg) & (0x1fffff if X86_16.A20 else 0x0fffff)
+                        return ((seg << 4) + reg) & (0x1f_ffff if X86_16.A20 else 0x0f_ffff)
                     return reg
             elif frame.older():
                 ra = frame.older().pc()
@@ -7397,9 +7397,9 @@ class X86_16(X86):
         else:
             regval = reg
         if self.A20:
-            return ((segval << 4) + regval) & 0x1fffff
+            return ((segval << 4) + regval) & 0x1f_ffff
         else:
-            return ((segval << 4) + regval) & 0x0fffff
+            return ((segval << 4) + regval) & 0x0f_ffff
 
     @property
     def pc(self):
@@ -8037,7 +8037,7 @@ class MIPS(Architecture):
         mnemo, ops = insn.mnemonic, insn.operands
         taken, reason = False, ""
 
-        p = lambda a: struct.pack("<I", a & 0xffffffff)
+        p = lambda a: struct.pack("<I", a & 0xffff_ffff)
         ui = lambda a: struct.unpack("<i", a)[0]
         u2i = lambda a: ui(p(a))
 
@@ -8457,13 +8457,13 @@ class S390X(Architecture):
 
         def for_compare(insn, signed, bit):
             if signed and bit == 32:
-                trans = lambda a: struct.unpack("<i", struct.pack("<I", a & 0xffffffff))[0]
+                trans = lambda a: struct.unpack("<i", struct.pack("<I", a & 0xffff_ffff))[0]
             elif signed and bit == 64:
-                trans = lambda a: struct.unpack("<q", struct.pack("<Q", a & 0xffffffffffffffff))[0]
+                trans = lambda a: struct.unpack("<q", struct.pack("<Q", a & 0xffff_ffff_ffff_ffff))[0]
             elif not signed and bit == 32:
-                trans = lambda a: a & 0xffffffff
+                trans = lambda a: a & 0xffff_ffff
             elif not signed and bit == 64:
-                trans = lambda a: a & 0xffffffffffffffff
+                trans = lambda a: a & 0xffff_ffff_ffff_ffff
             else:
                 raise
 
@@ -9614,7 +9614,7 @@ class NIOS2(Architecture):
         v0 = get_register(ops[0])
         v1 = get_register(ops[1])
 
-        pI = lambda a: struct.pack("<I", a & 0xffffffff)
+        pI = lambda a: struct.pack("<I", a & 0xffff_ffff)
         ui = lambda a: struct.unpack("<i", a)[0]
         u2i = lambda a: ui(pI(a))
         v0s = u2i(v0)
@@ -9751,7 +9751,7 @@ class MICROBLAZE(Architecture):
         mnemo, ops = insn.mnemonic, [x.split()[0] for x in insn.operands]
         taken, reason = False, ""
 
-        pI = lambda a: struct.pack("<I", a & 0xffffffff)
+        pI = lambda a: struct.pack("<I", a & 0xffff_ffff)
         ui = lambda a: struct.unpack("<i", a)[0]
         u2i = lambda a: ui(pI(a))
 
@@ -9888,7 +9888,7 @@ class XTENSA(Architecture):
         mnemo, ops = insn.mnemonic, insn.operands
         taken, reason = False, ""
 
-        pI = lambda a: struct.pack("<I", a & 0xffffffff)
+        pI = lambda a: struct.pack("<I", a & 0xffff_ffff)
         ui = lambda a: struct.unpack("<i", a)[0]
         u2i = lambda a: ui(pI(a))
 
@@ -10231,7 +10231,7 @@ class LOONGARCH64(Architecture):
             for alias_reg in v.split("/"):
                 alias_inverse[alias_reg] = k
 
-        pQ = lambda a: struct.pack("<Q", a & 0xffffffffffffffff)
+        pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
         uq = lambda a: struct.unpack("<q", a)[0]
         u2i = lambda a: uq(pQ(a))
 
@@ -10460,7 +10460,7 @@ class ARC(Architecture):
         carry = bool(val & (1 << flags["carry"]))
 
         if len(ops) >= 2:
-            pI = lambda a: struct.pack("<I", a & 0xffffffff)
+            pI = lambda a: struct.pack("<I", a & 0xffff_ffff)
             ui = lambda a: struct.unpack("<i", a)[0]
             u2i = lambda a: ui(pI(a))
             v0u = get_register(ops[0])
@@ -10689,7 +10689,7 @@ class CSKY(Architecture):
 
         carry = bool(val & (1 << flags["carry"]))
 
-        pI = lambda a: struct.pack("<I", a & 0xffffffff)
+        pI = lambda a: struct.pack("<I", a & 0xffff_ffff)
         ui = lambda a: struct.unpack("<i", a)[0]
         u2i = lambda a: ui(pI(a))
 
@@ -15943,9 +15943,9 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
         # dump
         self.out = []
         for entry in iouring_entries:
-            if entry.offset in [0, 0x8000000]: # IORING_OFF_SQ_RING ,IORING_OFF_CQ_RING
+            if entry.offset in [0, 0x0800_0000]: # IORING_OFF_SQ_RING ,IORING_OFF_CQ_RING
                 self.out.append(titlify("struct io_rings: {:#x}".format(entry.page_start)))
-            elif entry.offset == 0x10000000: # IORING_OFF_SQES
+            elif entry.offset == 0x1000_0000: # IORING_OFF_SQES
                 self.out.append(titlify("struct io_uring_sqe: {:#x}".format(entry.page_start)))
 
             data = self.read(entry.page_start, entry.size)
@@ -16576,7 +16576,7 @@ class FileDescriptorsCommand(GenericCommand):
             err("syscall table does not exist")
             return
         for nr, entry in syscall_table.nr_table.items():
-            if is_x86_64() and nr >= 0x40000000:
+            if is_x86_64() and nr >= 0x4000_0000:
                 continue
             if "fstat" == entry.name:
                 fstat_nr = nr
@@ -17105,13 +17105,13 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
         magic = struct.unpack("<I", raw_caps[:4])[0]
         caps["magic"] = magic & ~1
         caps["cap_eff"] = magic & 1
-        if caps["magic"] == 0x01000000:
+        if caps["magic"] == 0x0100_0000:
             cap_prm, cap_inh = struct.unpack("<II", raw_caps[4:12])
-        elif caps["magic"] == 0x02000000:
+        elif caps["magic"] == 0x0200_0000:
             cap_prm_low, cap_inh_low, cap_prm_high, cap_inh_high = struct.unpack("<IIII", raw_caps[4:20])
             cap_prm = (cap_prm_high << 32) | cap_prm_low
             cap_inh = (cap_inh_high << 32) | cap_inh_low
-        elif caps["magic"] == 0x03000000:
+        elif caps["magic"] == 0x0300_0000:
             cap_prm_low, cap_inh_low, cap_prm_high, cap_inh_high, rootid = struct.unpack("<IIIII", raw_caps[4:24])
             cap_prm = (cap_prm_high << 32) | cap_prm_low
             cap_inh = (cap_inh_high << 32) | cap_inh_low
@@ -17172,7 +17172,7 @@ class SmartMemoryDumpCommand(GenericCommand):
     parser.add_argument("-e", "--exclude", action="append", type=re.compile, default=[],
                         help="REGEXP exclude filter.")
     parser.add_argument("-c", "--commit", action="store_true", help="actually perform the dump.")
-    parser.add_argument("-m", "--max-region-size", type=AddressUtil.parse_address, default=0x10000000,
+    parser.add_argument("-m", "--max-region-size", type=AddressUtil.parse_address, default=0x1000_0000,
                         help="maximum size of dump region. (default: %(default)#x; 0: infinity)")
     _syntax_ = parser.format_help()
 
@@ -17567,7 +17567,7 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
                         help="search range size. valid only when a start address is specified.")
     parser.add_argument("-b", "--nb-insns-before", type=AddressUtil.parse_address, default=0,
                         help="the number of previous lines when print syscall instruction.")
-    parser.add_argument("-s", "--max-region-size", type=AddressUtil.parse_address, default=0x10000000,
+    parser.add_argument("-s", "--max-region-size", type=AddressUtil.parse_address, default=0x1000_0000,
                         help="maximum search region size. (default: %(default)#x; 0: infinity)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
@@ -17789,7 +17789,7 @@ class SearchPatternCommand(GenericCommand):
                         help="the interval to skip searching from the last found position within the same section.")
     parser.add_argument("-l", "--limit", type=AddressUtil.parse_address,
                         help="the limit of the search result.")
-    parser.add_argument("-s", "--max-region-size", type=AddressUtil.parse_address, default=0x10000000,
+    parser.add_argument("-s", "--max-region-size", type=AddressUtil.parse_address, default=0x1000_0000,
                         help="maximum search region size. (default: %(default)#x; 0: infinity)")
     parser.add_argument("-d", "--disable-utf16", action="store_true",
                         help="disable utf16 search if PATTERN is ascii string.")
@@ -18230,7 +18230,7 @@ class PtrDemangleCommand(GenericCommand):
                 auxv = Auxv.get_auxiliary_values()
             if auxv and "AT_RANDOM" in auxv:
                 if is_s390x():
-                    cookie = read_int_from_memory(auxv["AT_RANDOM"]) & 0x00ffffffffffffff
+                    cookie = read_int_from_memory(auxv["AT_RANDOM"]) & 0x00ff_ffff_ffff_ffff
                 else:
                     cookie = read_int_from_memory(auxv["AT_RANDOM"] + current_arch.ptrsize)
                 if cookie != 0:
@@ -18914,7 +18914,7 @@ class CallSyscallCommand(GenericCommand):
 
         # get syscall entry
         for nr, entry in syscall_table.nr_table.items():
-            if is_x86_64() and nr >= 0x40000000:
+            if is_x86_64() and nr >= 0x4000_0000:
                 continue
             if args.syscall_name == entry.name:
                 break
@@ -20136,7 +20136,7 @@ class UnicornEmulateCommand(GenericCommand):
             content += "    if a4 != 0x22: # MAP_ANONYMOUS|MAP_PRIVATE\n"
             content += "        return False\n"
             content += "    a5 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[4])
-            content += "    if a5 != 0xffffffff:\n"
+            content += "    if a5 != 0xffff_ffff:\n"
             content += "        return False\n"
             content += "    a6 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[5])
             content += "    \n"
@@ -20226,7 +20226,7 @@ class UnicornEmulateCommand(GenericCommand):
             content += "def b2i(x, width={:d}):\n".format(current_arch.ptrsize)
             content += "    i = int.from_bytes(x, byteorder='little')\n"
             content += "    if width == 4:\n"
-            content += "        return i & 0xffffffff\n"
+            content += "        return i & 0xffff_ffff\n"
             content += "    return i\n"
             content += "\n"
             content += "def add_4_pc(emu):\n"
@@ -20386,13 +20386,13 @@ class UnicornEmulateCommand(GenericCommand):
             content += "    emu.mem_map(scratch, 0x1000)\n"
             content += "    emu.mem_write(scratch, buf)\n"
             if is_x86_64():
-                content += "    emu.reg_write(unicorn.x86_const.UC_X86_REG_RAX, value & 0xffffffff)\n"
-                content += "    emu.reg_write(unicorn.x86_const.UC_X86_REG_RDX, (value >> 32) & 0xffffffff)\n"
-                content += "    emu.reg_write(unicorn.x86_const.UC_X86_REG_RCX, msr & 0xffffffff)\n"
+                content += "    emu.reg_write(unicorn.x86_const.UC_X86_REG_RAX, value & 0xffff_ffff)\n"
+                content += "    emu.reg_write(unicorn.x86_const.UC_X86_REG_RDX, (value >> 32) & 0xffff_ffff)\n"
+                content += "    emu.reg_write(unicorn.x86_const.UC_X86_REG_RCX, msr & 0xffff_ffff)\n"
             else:
-                content += "    emu.reg_write(unicorn.x86_const.UC_X86_REG_EAX, value & 0xffffffff)\n"
-                content += "    emu.reg_write(unicorn.x86_const.UC_X86_REG_EDX, (value >> 32) & 0xffffffff)\n"
-                content += "    emu.reg_write(unicorn.x86_const.UC_X86_REG_ECX, msr & 0xffffffff)\n"
+                content += "    emu.reg_write(unicorn.x86_const.UC_X86_REG_EAX, value & 0xffff_ffff)\n"
+                content += "    emu.reg_write(unicorn.x86_const.UC_X86_REG_EDX, (value >> 32) & 0xffff_ffff)\n"
+                content += "    emu.reg_write(unicorn.x86_const.UC_X86_REG_ECX, msr & 0xffff_ffff)\n"
             content += "    emu.emu_start(scratch, scratch + len(buf), count=1)\n"
             content += "    emu.mem_unmap(scratch, 0x1000)\n"
             content += "    return\n"
@@ -22877,7 +22877,7 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
     parser.add_argument("--include-heap", action="store_true", help="heap is also included in the search target.")
     parser.add_argument("--aligned", action="store_true", help="search only aligned chunks.")
     parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address, help="search target size.")
-    parser.add_argument("--region-size-threshold", type=AddressUtil.parse_address, default=0x2000000,
+    parser.add_argument("--region-size-threshold", type=AddressUtil.parse_address, default=0x0200_0000,
                         help="threshold for region size to skip search. (default: %(default)#x)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
@@ -26794,7 +26794,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         i = 0
         while True:
             if i == 10:
-                return pos, 0xffffffffffffffff
+                return pos, 0xffff_ffff_ffff_ffff
             pos, b = self.read_1ubyte(data, pos)
             acc |= (b & 0x7f) << (i * 7)
             if (b & 0x80) == 0:
@@ -26844,7 +26844,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         return pos + 4, acc
 
     def read_4sbyte(self, data, pos):
-        pI = lambda a: struct.pack("<I", a & 0xffffffff)
+        pI = lambda a: struct.pack("<I", a & 0xffff_ffff)
         ui = lambda a: struct.unpack("<i", a)[0]
         u2i = lambda a: ui(pI(a))
         acc = (data[pos + 3] << 24) | (data[pos + 2] << 16)
@@ -26859,7 +26859,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         return pos + 8, acc
 
     def read_8sbyte(self, data, pos):
-        pQ = lambda a: struct.pack("<Q", a & 0xffffffffffffffff)
+        pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
         uq = lambda a: struct.unpack("<q", a)[0]
         u2i = lambda a: uq(pQ(a))
         acc = (data[pos + 7] << 56) | (data[pos + 6] << 48)
@@ -27084,7 +27084,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                     pos, data[pos:new_pos], "length", unit_length,
                 ))
                 pos = new_pos
-                if unit_length == 0xffffffff:
+                if unit_length == 0xffff_ffff:
                     new_pos, unit_length = self.read_8ubyte(data, pos)
                     length = 8
                     tmp_entries.append(self.DataEntry(
@@ -27284,9 +27284,9 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                     if (cie.fde_encoding & 0x70) == self.DW_EH_PE_pcrel:
                         vma_base = shdr.sh_offset + base + initial_location
                         if ptr_size == 4:
-                            vma_base &= 0xffffffff
+                            vma_base &= 0xffff_ffff
                         elif ptr_size == 8:
-                            vma_base &= 0xffffffffffffffff
+                            vma_base &= 0xffff_ffff_ffff_ffff
                         if self.elf.is_pie():
                             extra_s = "pc_begin vma: $codebase+{:#x}".format(load_base + vma_base)
                         else:
@@ -27310,9 +27310,9 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                     else:
                         end_off = initial_location + pc_range
                     if ptr_size == 4:
-                        end_off &= 0xffffffff
+                        end_off &= 0xffff_ffff
                     elif ptr_size == 8:
-                        end_off &= 0xffffffffffffffff
+                        end_off &= 0xffff_ffff_ffff_ffff
                     if self.elf.is_pie():
                         extra_s = "pc_end vma: $codebase+{:#x}".format(load_base + end_off)
                     else:
@@ -31473,7 +31473,7 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
         return lines
 
     def read_memory(self, read_from, read_len):
-        if read_len > 0x1000000: # Too large
+        if read_len > 0x0100_0000: # Too large
             return None
 
         try:
@@ -32968,7 +32968,7 @@ class DereferenceCommand(GenericCommand):
         frames = []
         try:
             frame = gdb.newest_frame()
-            no_ret_addr = [0, 0xffffffff, 0xffffffffffffffff]
+            no_ret_addr = [0, 0xffff_ffff, 0xffff_ffff_ffff_ffff]
             while frame:
                 pc = frame.pc()
                 if pc in no_ret_addr:
@@ -34877,19 +34877,19 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
                     tag = i
                     mb += "(={:s})".format(DT_TABLE.get(tag, "???"))
                 elif i < DT_NUM + DT_THISPROCNUM:
-                    tag = 0x70000000 + (i - DT_NUM)
+                    tag = 0x7000_0000 + (i - DT_NUM)
                     mb += "(={:s})".format(DT_TABLE.get(tag, "???"))
                 elif i < DT_NUM + DT_THISPROCNUM + DT_VERSIONTAGNUM:
-                    tag = 0x6fffffff - (i - (DT_NUM + DT_THISPROCNUM))
+                    tag = 0x6fff_ffff - (i - (DT_NUM + DT_THISPROCNUM))
                     mb += "(={:s})".format(DT_TABLE.get(tag, "???"))
                 elif i < DT_NUM + DT_THISPROCNUM + DT_VERSIONTAGNUM + DT_EXTRANUM:
-                    tag = 0x7fffffff - (i - (DT_NUM + DT_THISPROCNUM + DT_VERSIONTAGNUM))
+                    tag = 0x7fff_ffff - (i - (DT_NUM + DT_THISPROCNUM + DT_VERSIONTAGNUM))
                     mb += "(={:s})".format(DT_TABLE.get(tag, "???"))
                 elif i < DT_NUM + DT_THISPROCNUM + DT_VERSIONTAGNUM + DT_EXTRANUM + DT_VALNUM:
-                    tag = 0x6ffffdff - (i - (DT_NUM + DT_THISPROCNUM + DT_VERSIONTAGNUM + DT_EXTRANUM))
+                    tag = 0x6fff_fdff - (i - (DT_NUM + DT_THISPROCNUM + DT_VERSIONTAGNUM + DT_EXTRANUM))
                     mb += "(={:s})".format(DT_TABLE.get(tag, "???"))
                 elif i < DT_NUM + DT_THISPROCNUM + DT_VERSIONTAGNUM + DT_EXTRANUM + DT_VALNUM + DT_ADDRNUM:
-                    tag = 0x6ffffeff - (i - (DT_NUM + DT_THISPROCNUM + DT_VERSIONTAGNUM + DT_EXTRANUM + DT_VALNUM))
+                    tag = 0x6fff_feff - (i - (DT_NUM + DT_THISPROCNUM + DT_VERSIONTAGNUM + DT_EXTRANUM + DT_VALNUM))
                     mb += "(={:s})".format(DT_TABLE.get(tag, "???"))
                 members.append(mb)
             members += ["l_phdr", "l_entry", "l_ldnum || l_phnum"]
@@ -36228,7 +36228,7 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
                         val_ = byteswap(val, 8)
                     else:
                         val_ = val
-                    if val_ == 0xffffffff00000000:
+                    if val_ == 0xffff_ffff_0000_0000:
                         adjust = 4
                         member_offset += adjust
                         msg = "{:+#05x} | {:16s}: ".format(member_offset, member_name)
@@ -50670,7 +50670,7 @@ class MmxCommand(GenericCommand):
             result = gdb.execute(f"info registers $st{i}", to_string=True)
             r = re.findall(r"\(raw (0x[0-9a-f]+)\)", result)
             if r:
-                reg = int(r[0], 16) & 0xffffffffffffffff
+                reg = int(r[0], 16) & 0xffff_ffff_ffff_ffff
                 regs.append(reg)
 
         fstat = get_register("$fstat")
@@ -50967,7 +50967,7 @@ class FpuCommand(GenericCommand):
         return u(pf(a))
 
     def u2f(self, a):
-        p = lambda a: struct.pack("<I", a & 0xffffffff)
+        p = lambda a: struct.pack("<I", a & 0xffff_ffff)
         uf = lambda a: struct.unpack("<f", a)[0]
         return uf(p(a))
 
@@ -50977,7 +50977,7 @@ class FpuCommand(GenericCommand):
         return uQ(pd(a))
 
     def u2d(self, a):
-        pQ = lambda a: struct.pack("<Q", a & 0xffffffffffffffff)
+        pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
         ud = lambda a: struct.unpack("<d", a)[0]
         return ud(pQ(a))
 
@@ -51053,15 +51053,19 @@ class FpuCommand(GenericCommand):
             if "invalid" in result:
                 r = re.findall(r"\(raw (0x[0-9a-f]+)\)", result)
                 u80 = int(r[0], 16)
-                u64 = 0xfff8000000000000 # nan
-                u32 = 0xffc00000 # nan
-                gef_print("{:4s}({:3s}) : {:<27s}\t{:<#24x} {:<#18x} {:<#10x}".format(red(regname), regs[i], "<invalid>", u80, u64, u32))
+                u64 = 0xfff8_0000_0000_0000 # nan
+                u32 = 0xffc0_0000 # nan
+                gef_print("{:4s}({:3s}) : {:<27s}\t{:<#24x} {:<#18x} {:<#10x}".format(
+                    red(regname), regs[i], "<invalid>", u80, u64, u32,
+                ))
             else:
                 reg = float(result.split()[1])
                 u80 = self.d2u80(reg)
                 u64 = self.d2u(reg)
                 u32 = self.f2u(reg)
-                gef_print("{:4s}({:3s}) : {:<+.20e}\t{:<#24x} {:<#18x} {:<#10x}".format(red(regname), regs[i], reg, u80, u64, u32))
+                gef_print("{:4s}({:3s}) : {:<+.20e}\t{:<#24x} {:<#18x} {:<#10x}".format(
+                    red(regname), regs[i], reg, u80, u64, u32,
+                ))
         info('XWORD: Real register value; Used at "fstp xword ptr [rax]".')
         info('QWORD: Used at "fst/fstp qword ptr [rax]".')
         info('DWORD: Used at "fst/fstp dword ptr [rax]".')
@@ -52007,7 +52011,7 @@ class U2dCommand(GenericCommand):
         return u(pf(x))
 
     def u2f(self, x):
-        p = lambda a: struct.pack("<I", a & 0xffffffff)
+        p = lambda a: struct.pack("<I", a & 0xffff_ffff)
         uf = lambda a: struct.unpack("<f", a)[0]
         return uf(p(x))
 
@@ -52017,7 +52021,7 @@ class U2dCommand(GenericCommand):
         return uQ(pd(x))
 
     def u2d(self, x):
-        pQ = lambda a: struct.pack("<Q", a & 0xffffffffffffffff)
+        pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
         ud = lambda a: struct.unpack("<d", a)[0]
         return ud(pQ(x))
 
@@ -52031,7 +52035,7 @@ class U2dCommand(GenericCommand):
         return
 
     def convert_from_int(self, n):
-        n &= 0xffffffffffffffff
+        n &= 0xffff_ffff_ffff_ffff
         gef_print(titlify("unsigned long long <-> double"))
         gef_print(Color.cyanify("ull -> double (reinterpret_cast)"))
         gef_print("  {:#018x} ---> {:.20e}".format(n, self.u2d(n)))
@@ -52043,7 +52047,7 @@ class U2dCommand(GenericCommand):
         except ValueError:
             gef_print("  {:18s} ---> ???".format("nan"))
 
-        n &= 0xffffffff
+        n &= 0xffff_ffff
         gef_print(titlify("unsigned int <-> float"))
         gef_print(Color.cyanify("uint -> float (reinterpret_cast)"))
         gef_print("  {:#010x} ---> {:.20e}".format(n, self.u2f(n)))
@@ -52185,10 +52189,10 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify("pack"))
             self.out.append("pack8:          {!s}".format(p8(value & 0xff)))
             self.out.append("pack16:         {!s}".format(p16(value & 0xffff)))
-            self.out.append("pack32:         {!s}".format(p32(value & 0xffffffff)))
-            self.out.append("pack64:         {!s}".format(p64(value & 0xffffffffffffffff)))
-            low = value & 0xffffffffffffffff
-            high = (value >> 64) & 0xffffffffffffffff
+            self.out.append("pack32:         {!s}".format(p32(value & 0xffff_ffff)))
+            self.out.append("pack64:         {!s}".format(p64(value & 0xffff_ffff_ffff_ffff)))
+            low = value & 0xffff_ffff_ffff_ffff
+            high = (value >> 64) & 0xffff_ffff_ffff_ffff
             val128 = p64(low) + p64(high)
             self.out.append("pack128:        {!s}".format(val128))
         except ValueError:
@@ -52201,10 +52205,10 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify("pack-hex"))
             self.out.append("pack8-hex:      {!s}".format(p8(value & 0xff).hex()))
             self.out.append("pack16-hex:     {!s}".format(p16(value & 0xffff).hex()))
-            self.out.append("pack32-hex:     {!s}".format(p32(value & 0xffffffff).hex()))
-            self.out.append("pack64-hex:     {!s}".format(p64(value & 0xffffffffffffffff).hex()))
-            low = value & 0xffffffffffffffff
-            high = (value >> 64) & 0xffffffffffffffff
+            self.out.append("pack32-hex:     {!s}".format(p32(value & 0xffff_ffff).hex()))
+            self.out.append("pack64-hex:     {!s}".format(p64(value & 0xffff_ffff_ffff_ffff).hex()))
+            low = value & 0xffff_ffff_ffff_ffff
+            high = (value >> 64) & 0xffff_ffff_ffff_ffff
             val128 = p64(low) + p64(high)
             self.out.append("pack128-hex:    {!s}".format(val128.hex()))
         except ValueError:
@@ -52288,9 +52292,9 @@ class ConvertCommand(GenericCommand, BufferingOutput):
         return
 
     def signed(self, value):
-        pQ = lambda a: struct.pack("<Q", a & 0xffffffffffffffff)
+        pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
         uq = lambda a: struct.unpack("<q", a)[0]
-        p = lambda a: struct.pack("<I", a & 0xffffffff)
+        p = lambda a: struct.pack("<I", a & 0xffff_ffff)
         ui = lambda a: struct.unpack("<i", a)[0]
         try:
             value = int(value, 0)
@@ -53076,16 +53080,16 @@ class KernelAddressHeuristicFinder:
             if not maps:
                 return None
             kern_min = maps[0][0]
-            if kern_min < 0x80000000:
-                PAGE_OFFSET = 0x40000000 # VMSPLIT_1G
-            elif kern_min < 0xb0000000:
-                PAGE_OFFSET = 0x80000000 # VMSPLIT_2G
-            elif kern_min < 0xbf000000:
+            if kern_min < 0x8000_0000:
+                PAGE_OFFSET = 0x4000_0000 # VMSPLIT_1G
+            elif kern_min < 0xb000_0000:
+                PAGE_OFFSET = 0x8000_0000 # VMSPLIT_2G
+            elif kern_min < 0xbf00_0000:
                 # 0xbf000000-0xc0000000 is kernel module area.
                 # Even if it is VMSPLIT_3G, this is used.
-                PAGE_OFFSET = 0xb0000000 # VMSPLIT_3G_OPT
+                PAGE_OFFSET = 0xb000_0000 # VMSPLIT_3G_OPT
             else:
-                PAGE_OFFSET = 0xc0000000 # VMSPLIT_3G
+                PAGE_OFFSET = 0xc000_0000 # VMSPLIT_3G
 
             # check if valid kernel address or not
             current_thread_info = current_arch.sp & ~0x1fff
@@ -53202,7 +53206,7 @@ class KernelAddressHeuristicFinder:
             if offset_tasks:
                 task_list = get_task_list(current, offset_tasks)
                 kinfo = Kernel.get_kernel_base()
-                min_distance_task = (None, 0xffffffffffffffff)
+                min_distance_task = (None, 0xffff_ffff_ffff_ffff)
                 for task in task_list:
                     distance = abs((kinfo.rw_base or kinfo.text_base) - task)
                     if min_distance_task[1] > distance:
@@ -53982,7 +53986,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
         if kversion and kversion < "4.8":
             # kASLR and Level5 pagetable is unsupported, so fixed address
-            return 0xffff880000000000
+            return 0xffff_8800_0000_0000
 
         # plan 2 (from get_page_offset_base)
         page_offset_base = KernelAddressHeuristicFinder.get_page_offset_base()
@@ -54006,7 +54010,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
         if kversion and kversion < "4.8":
             # kASLR and Level5 pagetable is unsupported, so fixed address
-            return 0xffffc90000000000
+            return 0xffff_c900_0000_0000
 
         # plan 2 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -54081,7 +54085,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
         if kversion and kversion < "4.8":
             # kASLR and Level5 pagetable is unsupported, so fixed address
-            return 0xffffea0000000000
+            return 0xffff_ea00_0000_0000
 
         # plan 2 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -54162,18 +54166,18 @@ class KernelAddressHeuristicFinder:
         # calc VMEMMAP_START
         kversion = Kernel.kernel_version()
         if kversion < "5.4":
-            PAGE_OFFSET = AddressUtil.align_address(0xffffffffffffffff - (1 << (VA_BITS - 1)) + 1)
+            PAGE_OFFSET = AddressUtil.align_address(0xffff_ffff_ffff_ffff - (1 << (VA_BITS - 1)) + 1)
             VMEMMAP_SIZE = 1 << (VA_BITS - PAGE_SHIFT - 1 + STRUCT_PAGE_MAX_SHIFT)
             VMEMMAP_START = PAGE_OFFSET - VMEMMAP_SIZE
         elif kversion < "5.12":
             PAGE_OFFSET = AddressUtil.align_address(-(1 << VA_BITS))
             PAGE_END = lambda va: -(1 << ((va) - 1))
             VMEMMAP_SIZE = ((PAGE_END(VA_BITS_MIN) - PAGE_OFFSET) >> (PAGE_SHIFT - STRUCT_PAGE_MAX_SHIFT))
-            VMEMMAP_START = (-VMEMMAP_SIZE - 0x00200000) & 0xffffffffffffffff
+            VMEMMAP_START = (-VMEMMAP_SIZE - 0x0020_0000) & 0xffff_ffff_ffff_ffff
         else: # v5.12~
             PAGE_OFFSET = AddressUtil.align_address(-(1 << VA_BITS))
             VMEMMAP_SHIFT = PAGE_SHIFT - STRUCT_PAGE_MAX_SHIFT
-            VMEMMAP_START = -(1 << (VA_BITS - VMEMMAP_SHIFT)) & 0xffffffffffffffff
+            VMEMMAP_START = -(1 << (VA_BITS - VMEMMAP_SHIFT)) & 0xffff_ffff_ffff_ffff
         return VMEMMAP_START, PAGE_OFFSET
 
     @staticmethod
@@ -57073,7 +57077,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         """
         offset_mm = offset_tasks + 2 * current_arch.ptrsize
         r = read_int_from_memory(task_addr + offset_mm)
-        if 0 < r <= 0xffffffff:
+        if 0 < r <= 0xffff_ffff:
             # maybe prio, so CONFIG_SMP is y
             kversion = Kernel.kernel_version()
             if kversion >= "3.14":
@@ -58410,7 +58414,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             # now, `current` points vm_flags
             current += current_arch.ptrsize
             if is_32bit():
-                mask = Kernel.get_kernel_base().text_base & 0xf0000000
+                mask = Kernel.get_kernel_base().text_base & 0xf000_0000
             elif is_x86_64():
                 cr4 = get_register("cr4", use_monitor=True)
                 if (cr4 >> 12) & 1:
@@ -58672,10 +58676,10 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             if v == 0:
                 current += current_arch.ptrsize
                 continue
-            if is_64bit() and v == 0xffffffffffffffff:
+            if is_64bit() and v == 0xffff_ffff_ffff_ffff:
                 current += current_arch.ptrsize
                 continue
-            elif is_32bit() and v == 0xffffffff:
+            elif is_32bit() and v == 0xffff_ffff:
                 current += current_arch.ptrsize
                 continue
             elif is_valid_addr(v):
@@ -58966,7 +58970,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             possible_sizes = [0x18, 0x20, 0x28]
 
         # calc sizeof(action[0])
-        sizeof_action = 0xffffffffffffffff
+        sizeof_action = 0xffff_ffff_ffff_ffff
         for task in task_addrs:
             mm = read_int_from_memory(task + offset_mm)
             if mm == 0:
@@ -58984,7 +58988,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 # check case 1 (sa_flags)
                 v = read_int_from_memory(current + offset)
                 # SA_RESTORER, SA_RESTART, SA_NODEFER, SA_RESTART|SA_RESTORER, SA_NODEFER|SA_RESTORER
-                if v in [0x4000000, 0x10000000, 0x40000000, 0x14000000, 0x44000000]:
+                if v in [0x0400_0000, 0x1000_0000, 0x4000_0000, 0x1400_0000, 0x4400_0000]:
                     found_offset_case1.append(offset)
 
                 # check case 2 (sa_mask)
@@ -59008,7 +59012,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 # not minimum size, so check next task
                 sizeof_action = min(sizeof_action, sizeof_action_tmp)
 
-        if sizeof_action != 0xffffffffffffffff:
+        if sizeof_action != 0xffff_ffff_ffff_ffff:
             for ps in possible_sizes:
                 if sizeof_action % ps == 0:
                     return sizeof_action
@@ -60007,7 +60011,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                         else:
                             offset_size = current_arch.ptrsize # void*
                         cand_size = read_int32_from_memory(mem_ptr + offset_size)
-                        if cand_size == 0 or cand_size > 0x100000:
+                        if cand_size == 0 or cand_size > 0x10_0000:
                             valid = False
                             break
                 if valid:
@@ -60127,22 +60131,22 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                     break
                 # size check
                 cand_size = read_int32_from_memory(init_layout_ptr + current_arch.ptrsize)
-                if cand_size == 0 or cand_size > 0x200000:
+                if cand_size == 0 or cand_size > 0x20_0000:
                     valid = False
                     break
                 # text_size check
                 cand_text_size = read_int32_from_memory(init_layout_ptr + current_arch.ptrsize + 4 * 1)
-                if cand_text_size == 0 or cand_text_size > 0x200000:
+                if cand_text_size == 0 or cand_text_size > 0x20_0000:
                     valid = False
                     break
                 # ro_size check
                 cand_ro_size = read_int32_from_memory(init_layout_ptr + current_arch.ptrsize + 4 * 2)
-                if cand_ro_size == 0 or cand_ro_size > 0x200000:
+                if cand_ro_size == 0 or cand_ro_size > 0x20_0000:
                     valid = False
                     break
                 # ro_after_init_size check
                 cand_ro_after_init_size = read_int32_from_memory(init_layout_ptr + current_arch.ptrsize + 4 * 3)
-                if cand_ro_after_init_size == 0 or cand_ro_after_init_size > 0x200000:
+                if cand_ro_after_init_size == 0 or cand_ro_after_init_size > 0x20_0000:
                     valid = False
                     break
             if valid:
@@ -60236,22 +60240,22 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                     break
                 # init_size check
                 cand_init_size = read_int32_from_memory(module_core_ptr + current_arch.ptrsize)
-                if cand_init_size > 0x100000:
+                if cand_init_size > 0x10_0000:
                     valid = False
                     break
                 # core_size check
                 cand_core_size = read_int32_from_memory(module_core_ptr + current_arch.ptrsize + 4 * 1)
-                if cand_core_size == 0 or cand_core_size > 0x100000:
+                if cand_core_size == 0 or cand_core_size > 0x10_0000:
                     valid = False
                     break
                 # init_text_size check
                 cand_init_text_size = read_int32_from_memory(module_core_ptr + current_arch.ptrsize + 4 * 2)
-                if cand_init_text_size > 0x100000:
+                if cand_init_text_size > 0x10_0000:
                     valid = False
                     break
                 # core_text_size check
                 cand_core_text_size = read_int32_from_memory(module_core_ptr + current_arch.ptrsize + 4 * 3)
-                if cand_core_text_size == 0 or cand_core_text_size > 0x100000:
+                if cand_core_text_size == 0 or cand_core_text_size > 0x10_0000:
                     valid = False
                     break
             if valid:
@@ -60721,7 +60725,7 @@ class KernelModuleLoadCommand(GenericCommand):
 
             # get nsections
             sect_attrs = read_int_from_memory(module + self.offset_sect_attrs)
-            nsections = read_int_from_memory(sect_attrs + self.offset_nsections) & 0xffffffff
+            nsections = read_int_from_memory(sect_attrs + self.offset_nsections) & 0xffff_ffff
             self.quiet_info("nsections = {}".format(nsections))
 
             # get each section name and address
@@ -66207,7 +66211,7 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
             self.quiet_add_out(titlify("x32_sys_call_table"))
             if kversion < "6.6.26":
                 sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x32()
-                self.syscall_table_view("x86_x32", sys_call_table_addr, get_syscall_table("X86", "64"), nr_base=0x40000000)
+                self.syscall_table_view("x86_x32", sys_call_table_addr, get_syscall_table("X86", "64"), nr_base=0x4000_0000)
             else:
                 self.quiet_add_out("x32_sys_call_table is removed from 6.6.26.")
                 self.quiet_add_out("each entry is embedded in `x32_sys_call()` as call instruction.")
@@ -66790,7 +66794,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             if isinstance(vals, list):
                 # for 64bit SYSTEM segment (call gate)
                 entry["value"] = vals[1] # overwrite
-                entry["offseg2"] = vals[1] & 0xffffffff
+                entry["offseg2"] = vals[1] & 0xffff_ffff
                 entry["offseg"] |= entry["offseg2"] << 32
 
         else:
@@ -66810,7 +66814,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             if isinstance(vals, list):
                 # for 64bit SYSTEM segment (not call gate)
                 entry["value"] = vals[1] # overwrite
-                entry["base3"] = vals[1] & 0xffffffff
+                entry["base3"] = vals[1] & 0xffff_ffff
                 entry["base"] |= entry["base3"] << 32
 
             if entry["s"] == 1:
@@ -66979,57 +66983,57 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
         # print entry
         if is_x86_64() or is_emulated32():
             entries = [
-                0x0000000000000000,
-                0x00cf9b000000ffff,
-                0x00af9b000000ffff,
-                0x00cf93000000ffff,
-                0x00cffb000000ffff,
-                0x00cff3000000ffff,
-                0x00affb000000ffff,
-                0x0000000000000000,
-                0x00008b000000206f,
-                0x00000000fffffe00,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0040f50000000000,
+                0x0000_0000_0000_0000,
+                0x00cf_9b00_0000_ffff,
+                0x00af_9b00_0000_ffff,
+                0x00cf_9300_0000_ffff,
+                0x00cf_fb00_0000_ffff,
+                0x00cf_f300_0000_ffff,
+                0x00af_fb00_0000_ffff,
+                0x0000_0000_0000_0000,
+                0x0000_8b00_0000_206f,
+                0x0000_0000_ffff_fe00,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x0040_f500_0000_0000,
             ]
         else:
             entries = [
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x00cf9a000000ffff,
-                0x00cf93000000ffff,
-                0x00cffa000000ffff,
-                0x00cff3000000ffff,
-                0xff008b804000206b,
-                0x0000000000000000,
-                0x00409a000000ffff,
-                0x00009a000000ffff,
-                0x000092000000ffff,
-                0x0000920000000000,
-                0x0000920000000000,
-                0x00409a000000ffff,
-                0x00009a000000ffff,
-                0x004092000000ffff,
-                0x00cf92000000ffff,
-                0x038f93708000ffff,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0xc40089706000206b,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x00cf_9a00_0000_ffff,
+                0x00cf_9300_0000_ffff,
+                0x00cf_fa00_0000_ffff,
+                0x00cf_f300_0000_ffff,
+                0xff00_8b80_4000_206b,
+                0x0000_0000_0000_0000,
+                0x0040_9a00_0000_ffff,
+                0x0000_9a00_0000_ffff,
+                0x0000_9200_0000_ffff,
+                0x0000_9200_0000_0000,
+                0x0000_9200_0000_0000,
+                0x0040_9a00_0000_ffff,
+                0x0000_9a00_0000_ffff,
+                0x0040_9200_0000_ffff,
+                0x00cf_9200_0000_ffff,
+                0x038f_9370_8000_ffff,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0xc400_8970_6000_206b,
             ]
 
         if is_x86_64():
@@ -67097,7 +67101,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify("LDT Entry: base:{:#x} / limit:{:#x}".format(base, limit)))
 
         # check initialized or not
-        if (base == 0x0 and limit == 0xffffffff) or limit == 0x0:
+        if (base == 0x0 and limit == 0xffff_ffff) or limit == 0x0:
             self.err_add_out("LDT is uninitialized")
             return
 
@@ -67272,8 +67276,8 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
         idt["value"] = val
 
         idt["offset"] = val & 0xffff
-        idt["offset"] = idt["offset"] | ((val >> 32) & (0xffff0000))
-        idt["offset"] = ((val >> 32) & (0xffffffff00000000)) | idt["offset"]
+        idt["offset"] = idt["offset"] | ((val >> 32) & (0xffff_0000))
+        idt["offset"] = ((val >> 32) & (0xffff_ffff_0000_0000)) | idt["offset"]
         idt["segment"] = (val >> 16) & 0xffff
         idt["ist"] = (val >> 32) & 0b111 # codespell:ignore
         idt["gate_type"] = (val >> 40) & (0b1111)
@@ -67325,58 +67329,58 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
         if is_x86_64() or is_emulated32():
             entries = [
                 # idx, value
-                [0,    0x0000000000ffffffff81608e0000100c30],
-                [1,    0x0000000000ffffffff81608e0300100f00],
-                [2,    0x0000000000ffffffff81608e02001012f0],
-                [3,    0x0000000000ffffffff8160ee0000100f60],
-                [4,    0x0000000000ffffffff8160ee0000100c60],
-                [5,    0x0000000000ffffffff81608e0000100c90],
-                [6,    0x0000000000ffffffff81608e0000100cc0],
-                [7,    0x0000000000ffffffff81608e0000100cf0],
-                [8,    0x0000000000ffffffff81608e0100100d20],
-                [9,    0x0000000000ffffffff81608e0000100d50],
-                [10,   0x0000000000ffffffff81608e0000100d80],
-                [11,   0x0000000000ffffffff81608e0000100db0],
-                [12,   0x0000000000ffffffff81608e0000100fb0],
-                [13,   0x0000000000ffffffff81608e0000100fe0],
-                [14,   0x0000000000ffffffff81608e0000101010],
-                [15,   0x0000000000ffffffff81608e0000100de0],
-                [16,   0x0000000000ffffffff81608e0000100e10],
-                [17,   0x0000000000ffffffff81608e0000100e40],
-                [18,   0x0000000000ffffffff81608e0400101090],
-                [19,   0x0000000000ffffffff81608e0000100e70],
-                [20,   0x0000000000ffffffff81c98e000010f0b4],
-                [21,   0x0000000000ffffffff81c98e000010f0bd],
-                [29,   0x0000000000ffffffff81c98e000010f105],
-                [32,   0x0000000000ffffffff81608e0000100b90],
+                [0,    0x00_0000_0000_ffff_ffff_8160_8e00_0010_0c30],
+                [1,    0x00_0000_0000_ffff_ffff_8160_8e03_0010_0f00],
+                [2,    0x00_0000_0000_ffff_ffff_8160_8e02_0010_12f0],
+                [3,    0x00_0000_0000_ffff_ffff_8160_ee00_0010_0f60],
+                [4,    0x00_0000_0000_ffff_ffff_8160_ee00_0010_0c60],
+                [5,    0x00_0000_0000_ffff_ffff_8160_8e00_0010_0c90],
+                [6,    0x00_0000_0000_ffff_ffff_8160_8e00_0010_0cc0],
+                [7,    0x00_0000_0000_ffff_ffff_8160_8e00_0010_0cf0],
+                [8,    0x00_0000_0000_ffff_ffff_8160_8e01_0010_0d20],
+                [9,    0x00_0000_0000_ffff_ffff_8160_8e00_0010_0d50],
+                [10,   0x00_0000_0000_ffff_ffff_8160_8e00_0010_0d80],
+                [11,   0x00_0000_0000_ffff_ffff_8160_8e00_0010_0db0],
+                [12,   0x00_0000_0000_ffff_ffff_8160_8e00_0010_0fb0],
+                [13,   0x00_0000_0000_ffff_ffff_8160_8e00_0010_0fe0],
+                [14,   0x00_0000_0000_ffff_ffff_8160_8e00_0010_1010],
+                [15,   0x00_0000_0000_ffff_ffff_8160_8e00_0010_0de0],
+                [16,   0x00_0000_0000_ffff_ffff_8160_8e00_0010_0e10],
+                [17,   0x00_0000_0000_ffff_ffff_8160_8e00_0010_0e40],
+                [18,   0x00_0000_0000_ffff_ffff_8160_8e04_0010_1090],
+                [19,   0x00_0000_0000_ffff_ffff_8160_8e00_0010_0e70],
+                [20,   0x00_0000_0000_ffff_ffff_81c9_8e00_0010_f0b4],
+                [21,   0x00_0000_0000_ffff_ffff_81c9_8e00_0010_f0bd],
+                [29,   0x00_0000_0000_ffff_ffff_81c9_8e00_0010_f105],
+                [32,   0x00_0000_0000_ffff_ffff_8160_8e00_0010_0b90],
             ]
         else:
             entries = [
                 # idx, value
-                [0,    0x00c3788e0000605974],
-                [1,    0x00c3788e0000605c4c],
-                [2,    0x00c3788e0000605c5c],
-                [3,    0x00c378ee0000605ef8],
-                [4,    0x00c378ee00006058f4],
-                [5,    0x00c3788e0000605904],
-                [6,    0x00c3788e0000605914],
-                [7,    0x00c3788e00006058e0],
-                [8,    0x000000850000f80000],
-                [9,    0x00c3788e0000605924],
-                [10,   0x00c3788e0000605934],
-                [11,   0x00c3788e0000605944],
-                [12,   0x00c3788e0000605954],
-                [13,   0x00c3788e0000605ffc],
-                [14,   0x00c3788e00006059a4],
-                [15,   0x00c3788e0000605994],
-                [16,   0x00c3788e00006058c0],
-                [17,   0x00c3788e0000605964],
-                [18,   0x00c3788e0000605984],
-                [19,   0x00c3788e00006058d0],
-                [20,   0x00c3958e00006030bc],
-                [21,   0x00c3958e00006030c5],
-                [29,   0x00c3958e000060310d],
-                [32,   0x00c3788e0000604b90],
+                [0,    0x00_c378_8e00_0060_5974],
+                [1,    0x00_c378_8e00_0060_5c4c],
+                [2,    0x00_c378_8e00_0060_5c5c],
+                [3,    0x00_c378_ee00_0060_5ef8],
+                [4,    0x00_c378_ee00_0060_58f4],
+                [5,    0x00_c378_8e00_0060_5904],
+                [6,    0x00_c378_8e00_0060_5914],
+                [7,    0x00_c378_8e00_0060_58e0],
+                [8,    0x00_0000_8500_00f8_0000],
+                [9,    0x00_c378_8e00_0060_5924],
+                [10,   0x00_c378_8e00_0060_5934],
+                [11,   0x00_c378_8e00_0060_5944],
+                [12,   0x00_c378_8e00_0060_5954],
+                [13,   0x00_c378_8e00_0060_5ffc],
+                [14,   0x00_c378_8e00_0060_59a4],
+                [15,   0x00_c378_8e00_0060_5994],
+                [16,   0x00_c378_8e00_0060_58c0],
+                [17,   0x00_c378_8e00_0060_5964],
+                [18,   0x00_c378_8e00_0060_5984],
+                [19,   0x00_c378_8e00_0060_58d0],
+                [20,   0x00_c395_8e00_0060_30bc],
+                [21,   0x00_c395_8e00_0060_30c5],
+                [29,   0x00_c395_8e00_0060_310d],
+                [32,   0x00_c378_8e00_0060_4b90],
             ]
 
         for i, value in entries:
@@ -68477,14 +68481,14 @@ class Crc32revCommand(GenericCommand):
                     fwd = (fwd >> 1) ^ self.reflected_poly
                 else:
                     fwd >>= 1
-                fwd &= 0xffffffff
+                fwd &= 0xffff_ffff
 
                 # build reverse table
-                if (rev & 0x80000000) == 0x80000000:
+                if (rev & 0x8000_0000) == 0x8000_0000:
                     rev = ((rev ^ self.reflected_poly) << 1) | 1
                 else:
                     rev <<= 1
-                rev &= 0xffffffff
+                rev &= 0xffff_ffff
 
             self.normal_table.append(fwd)
             self.reverse_table.append(rev)
@@ -68500,12 +68504,12 @@ class Crc32revCommand(GenericCommand):
         return b
 
     def calc_crc32(self, msg):
-        crc = self.args.init_value ^ 0xffffffff
+        crc = self.args.init_value ^ 0xffff_ffff
         for c in msg:
             if isinstance(c, str):
                 c = ord(c)
             crc = (crc >> 8) ^ self.normal_table[(crc ^ c) & 0xff]
-        return crc ^ 0xffffffff
+        return crc ^ 0xffff_ffff
 
     def calc_forward(self, accum, string):
         fwd_crc = accum
@@ -68516,7 +68520,7 @@ class Crc32revCommand(GenericCommand):
     def calc_backward(self, wanted, string):
         bkd_crc = wanted
         for c in string[::-1]:
-            bkd_crc = ((bkd_crc << 8) & 0xffffffff) ^ self.reverse_table[bkd_crc >> 24] ^ c
+            bkd_crc = ((bkd_crc << 8) & 0xffff_ffff) ^ self.reverse_table[bkd_crc >> 24] ^ c
         return bkd_crc
 
     def find_bridge(self, init_value, wanted_crc, prefix, suffix):
@@ -68524,7 +68528,7 @@ class Crc32revCommand(GenericCommand):
         fwd_crc = self.calc_forward(init_value, prefix)
 
         # backward calculation of CRC, sets wanted backward CRC state
-        bkd_crc = self.calc_backward(wanted_crc ^ 0xffffffff, suffix)
+        bkd_crc = self.calc_backward(wanted_crc ^ 0xffff_ffff, suffix)
 
         # deduce the 4 bytes we need to insert
         bridge = self.calc_backward(bkd_crc, self.v2b(fwd_crc))
@@ -68539,7 +68543,7 @@ class Crc32revCommand(GenericCommand):
         self.init_poly()
         self.build_crc_tables()
 
-        init_value = self.args.init_value ^ 0xffffffff
+        init_value = self.args.init_value ^ 0xffff_ffff
         wanted_crc = self.args.wanted_crc
 
         ascii_range = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_"
@@ -69256,7 +69260,7 @@ class SequenceLengthCommand(GenericCommand):
                 err("Unsupported `--phys` option in this gdb mode")
                 return
 
-        if args.unit >= 0x100000:
+        if args.unit >= 0x100_000:
             err("Too large unit size")
             return
 
@@ -70173,7 +70177,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             seen = []
             for kmem_cache in kmem_caches:
                 val = read_int_from_memory(kmem_cache - candidate_offset)
-                if val in [0, 0xffffffff, 0xffffffffffffffff]:
+                if val in [0, 0xffff_ffff, 0xffff_ffff_ffff_ffff]:
                     found = False
                     break
                 if val in seen:
@@ -70244,7 +70248,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         found = False
                         break
                 else:
-                    if val > 0xffffff:
+                    if val > 0xff_ffff:
                         count -= 1
 
                 # The probability of the same random value appearing multiple times is negligible
@@ -70260,11 +70264,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     found = False
 
                 # Occurrences of non-negative small integers are stochastically rare
-                elif sum([0 < x < 0x100000 for x in seen]) >= 3:
+                elif sum([0 < x < 0x10_0000 for x in seen]) >= 3:
                     found = False
 
                 # Occurrences of big integers are stochastically rare
-                elif sum([0xffff000000000000 < x <= 0xffffffffffffffff for x in seen]) >= 3:
+                elif sum([0xffff_0000_0000_0000 < x <= 0xffff_ffff_ffff_ffff for x in seen]) >= 3:
                     found = False
 
                 # Occurrences of 0xXXXX000 are stochastically rare
@@ -70334,7 +70338,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 if not is_valid_addr(x):
                     continue
                 y = read_int_from_memory(x)
-                if y != 0xdead4ead00000000: # SPINLOCK_MAGIC
+                if y != 0xdead_4ead_0000_0000: # SPINLOCK_MAGIC
                     continue
 
                 # found
@@ -70532,7 +70536,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # Find the two nearest pairs and count the number of cases
         min_diff_pairs = []
-        min_diff = 0xffffffffffffffff
+        min_diff = 0xffff_ffff_ffff_ffff
         for km1, km2 in itertools.combinations(kmem_caches, 2):
             diff = abs(km1 - km2)
             if diff < min_diff:
@@ -71945,7 +71949,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             count = 0
             for kmem_cache in kmem_caches:
                 val = read_int_from_memory(kmem_cache - candidate_offset)
-                if val & 0x40000000: # __CMPXCHG_DOUBLE
+                if val & 0x4000_0000: # __CMPXCHG_DOUBLE
                     count += 1
             if candidate[0] < count:
                 candidate = (count, candidate_offset)
@@ -73750,7 +73754,7 @@ class SlabContainsCommand(GenericCommand):
 
                 self.quiet_print("kmem_cache: {:#x}".format(kmem_cache))
 
-                if (kmem_cache & gef_getpagesize_mask_high()) == 0xdead000000000000:
+                if (kmem_cache & gef_getpagesize_mask_high()) == 0xdead_0000_0000_0000:
                     current -= gef_getpagesize()
                     self.quiet_warn("Detected invalid value, continue exploring...")
                     continue
@@ -77832,7 +77836,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
                 first_10_elements = self.kernel_img[position + self.kallsyms_markers_table_element_size:]
                 first_10_elements = first_10_elements[:self.kallsyms_markers_table_element_size * 10]
                 first_10_elements = slice_unpack(first_10_elements, self.kallsyms_markers_table_element_size)
-                if all((x & 0xfff0000) == 0 for x in first_10_elements):
+                if all((x & 0xfff_0000) == 0 for x in first_10_elements):
                     break
 
                 needle = self.kernel_img.rfind(seq_to_find, 0, position)
@@ -77869,7 +77873,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
                 b = u32(self.kernel_img[position:position + self.kallsyms_markers_table_element_size]) # current
                 # kallsyms_markers are monotonically increasing.
                 # and it doesn't increase very dramatically.
-                if a > b or b - a > 0x100000:
+                if a > b or b - a > 0x10_0000:
                     break
                 position += self.kallsyms_markers_table_element_size
             self.offset_kallsyms_seqs_of_names = position
@@ -78523,8 +78527,8 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             # It will take a long time to parse if you just use it.
             # Gradually increasing ro_size while searching can speed up several times.
             self.ro_base = kinfo.ro_base
-            base_size = 0x100000
-            step = 0x100000
+            base_size = 0x10_0000
+            step = 0x10_0000
             for candidate_size in range(base_size, kinfo.ro_size, step):
                 self.ro_size = candidate_size
                 self.kernel_img = read_memory(self.ro_base, self.ro_size)
@@ -78618,7 +78622,7 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         # Since they tend to be very large, we put a size cap on the rodata to make it faster.
         if kinfo.rwx:
             # The number 0x400000 has no basis.
-            fixed_ro_base_size = min(0x400000, kinfo.ro_size)
+            fixed_ro_base_size = min(0x40_0000, kinfo.ro_size)
         else:
             fixed_ro_base_size = kinfo.ro_size
 
@@ -79081,7 +79085,7 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
 
         chunk = read_int_from_memory(freelist + self.FreeList_offset_list)
-        length = read_int_from_memory(freelist + self.FreeList_offset_length) & 0xffffffff
+        length = read_int_from_memory(freelist + self.FreeList_offset_length) & 0xffff_ffff
         real_length = 0
         error = False
         if chunk != 0: # freelist exists
@@ -79732,7 +79736,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
                     continue
                 # magic check
                 m = read_int_from_memory(p + current_arch.ptrsize)
-                if p ^ m != 0xcafed00d:
+                if p ^ m != 0xcafe_d00d:
                     continue
                 super_blocks.append(p)
         return super_blocks
@@ -80102,7 +80106,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
 
         def ptr_decode(addr, key0, key1):
-            addr = (addr - key0) & 0xffffffffffffffff
+            addr = (addr - key0) & 0xffff_ffff_ffff_ffff
             shift = key0 & 0x3f
             return ror(addr, shift) ^ key1
 
@@ -80277,7 +80281,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             val = read_int_from_memory(addr)
             if not is_valid_addr(val):
                 continue
-            if val & 0xfffff:
+            if val & 0xf_ffff:
                 continue
             if not is_single_link_list(val):
                 continue
@@ -80765,7 +80769,7 @@ class CageCommand(GenericCommand, BufferingOutput):
                 continue
             if y == 0:
                 continue
-            if y & 0xffffffff:
+            if y & 0xffff_ffff:
                 continue
             if not is_valid_addr(y):
                 continue
@@ -80797,7 +80801,7 @@ class CageCommand(GenericCommand, BufferingOutput):
                 value = read_int_from_memory(addr)
             except gdb.MemoryError:
                 return []
-            if value & 0xffffff:
+            if value & 0xff_ffff:
                 continue
             if not is_valid_addr(value):
                 continue
@@ -81169,7 +81173,7 @@ class CageCommand(GenericCommand, BufferingOutput):
     def is_array_buffer(self, entry):
         if self.is_cage(entry):
             if entry.permission.value == Permission.READ | Permission.WRITE:
-                if (entry.page_start & 0xffffffff) == 0:
+                if (entry.page_start & 0xffff_ffff) == 0:
                     return True
         return False
 
@@ -81218,7 +81222,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             if not args.verbose:
                 # zero contents filtering
                 try:
-                    if entry.size <= 0x100000:
+                    if entry.size <= 0x10_0000:
                         d = read_memory(entry.page_start, entry.size)
                         if set(d) == {0}:
                             continue
@@ -82141,11 +82145,11 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         maps = ProcessMap.get_process_maps()
         if is_64bit():
             codebase = ProcessMap.get_section_base_address(filepath)
-            mask = 0x0000ffff00000000
+            mask = 0x0000_ffff_0000_0000
             chromium_rw_maps = [p for p in maps if p.permission.value == Permission.READ | Permission.WRITE]
             chromium_rw_maps = [p for p in chromium_rw_maps if (p.page_start & mask) == (codebase & mask) and p.path != filepath]
         elif is_32bit():
-            mask = 0xff000000
+            mask = 0xff00_0000
             heapbase = HeapbaseCommand.heap_base()
             chromium_rw_maps = [p for p in maps if p.permission.value == Permission.READ | Permission.WRITE]
             chromium_rw_maps = [p for p in chromium_rw_maps if p.page_start < heapbase and p.path != filepath]
@@ -82514,7 +82518,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         current += 4
         x = read_int32_from_memory(current)
         bucket["num_system_pages_per_slot_span"] = x & 0xff
-        bucket["num_full_slot_spans"] = (x >> 8) & 0xffffff
+        bucket["num_full_slot_spans"] = (x >> 8) & 0xff_ffff
         current += 4
 
         # for 32bit, there is 2 patterns because aligned or packed
@@ -82556,7 +82560,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         current += 2
         extent["number_of_nonempty_slot_spans"] = read_int16_from_memory(current)
         current += 2
-        extent["super_page_end"] = extent["super_page_base"] + extent["number_of_consecutive_super_pages"] * 0x200000
+        extent["super_page_end"] = extent["super_page_base"] + extent["number_of_consecutive_super_pages"] * 0x20_0000
 
         Extent = collections.namedtuple("Extent", extent.keys())
         extent = Extent(*extent.values())
@@ -82958,7 +82962,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             try:
                 next_chunk = byteswap(read_int_from_memory(chunk))
                 if is_64bit() and next_chunk:
-                    next_chunk |= chunk & 0xffffffff00000000
+                    next_chunk |= chunk & 0xffff_ffff_0000_0000
             except gdb.MemoryError:
                 text += Color.colorify("-> {:#x} (corrupted) ".format(chunk), corrupted_msg_color)
                 break
@@ -83088,7 +83092,7 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
         for m in maps:
             if m.path != "":
                 continue
-            if m.size > 0x1000000: # heuristic
+            if m.size > 0x100_0000: # heuristic
                 continue
             for addr in range(m.page_start, m.page_end, current_arch.ptrsize):
                 v = read_int_from_memory(addr)
@@ -83147,7 +83151,7 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
     def decode_top(self, raw):
         kValueBits = 48
         kValueMask= (1 << kValueBits) - 1
-        kExtendMask = 0xffffffffffffffff
+        kExtendMask = 0xffff_ffff_ffff_ffff
         return (raw & kValueMask) | (((raw >> (kValueBits - 1)) & 0x1) * kExtendMask)
 
     def read_span(self, addr):
@@ -83227,7 +83231,7 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 ))
                 self.out.append("remote freelist @ {!s}:".format(ProcessMap.lookup_address(span.top_addr)))
                 self.dump_freelist(span.top_decoded)
-            current += 0x200000 # kVirtualSpanSize
+            current += 0x20_0000 # kVirtualSpanSize
         return span
 
     @parse_args
@@ -85251,7 +85255,7 @@ class BreakSecureMemAddrCommand(GenericCommand):
         return maps
 
     def aarch64_switch_el(self, target_el):
-        cpsr = get_register("$cpsr") & 0xffffffff
+        cpsr = get_register("$cpsr") & 0xffff_ffff
         current_el = int((cpsr >> 2) & 0b11)
         if target_el == current_el:
             info("Current EL{:d} == Target EL{:d}".format(current_el, target_el))
@@ -86001,19 +86005,19 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
 
     def get_flags_str(self, flags_value):
         flags_dic = {
-            0x00001000: "TA_FLAG_DEVICE_ENUM_TEE_STORAGE_PRIVATE",
-            0x00000800: "TA_FLAG_DONT_CLOSE_HANDLE_ON_CORRUPT_OBJECT",
-            0x00000400: "TA_FLAG_DEVICE_ENUM_SUPP",
-            0x00000200: "TA_FLAG_DEVICE_ENUM",
-            0x00000100: "TA_FLAG_CONCURRENT",
-            0x00000080: "TA_FLAG_CACHE_MAINTENANCE",
-            0x00000040: "TA_FLAG_REMAP_SUPPORT",
-            0x00000020: "TA_FLAG_SECURE_DATA_PATH",
-            0x00000010: "TA_FLAG_INSTANCE_KEEP_ALIVE",
-            0x00000008: "TA_FLAG_MULTI_SESSION",
-            0x00000004: "TA_FLAG_SINGLE_INSTANCE",
-            0x00000002: "TA_FLAG_EXEC_DDR",
-            0x00000001: "TA_FLAG_USER_MODE",
+            0x0000_1000: "TA_FLAG_DEVICE_ENUM_TEE_STORAGE_PRIVATE",
+            0x0000_0800: "TA_FLAG_DONT_CLOSE_HANDLE_ON_CORRUPT_OBJECT",
+            0x0000_0400: "TA_FLAG_DEVICE_ENUM_SUPP",
+            0x0000_0200: "TA_FLAG_DEVICE_ENUM",
+            0x0000_0100: "TA_FLAG_CONCURRENT",
+            0x0000_0080: "TA_FLAG_CACHE_MAINTENANCE",
+            0x0000_0040: "TA_FLAG_REMAP_SUPPORT",
+            0x0000_0020: "TA_FLAG_SECURE_DATA_PATH",
+            0x0000_0010: "TA_FLAG_INSTANCE_KEEP_ALIVE",
+            0x0000_0008: "TA_FLAG_MULTI_SESSION",
+            0x0000_0004: "TA_FLAG_SINGLE_INSTANCE",
+            0x0000_0002: "TA_FLAG_EXEC_DDR",
+            0x0000_0001: "TA_FLAG_USER_MODE",
         }
         flags = []
         for k, v in flags_dic.items():
@@ -86070,7 +86074,7 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
                 # ops
                 d["ops"] = read_int_from_memory(current + offsetof_ops)
                 # ref_count
-                d["ref_count"] = read_int_from_memory(current + offsetof_ref_count) & 0xffffffff
+                d["ref_count"] = read_int_from_memory(current + offsetof_ref_count) & 0xffff_ffff
                 # append
                 Ctx = collections.namedtuple("Ctx", d.keys())
                 taa_ctx_list.append(Ctx(*d.values()))
@@ -86153,9 +86157,9 @@ class OpteeTaDumpDirectoryCommand(OpteeTaDumpCommand):
 
         IMG_TYPE = {0: "LegacyTA", 1: "BootstrapTA", 2: "EncryptedTA", 3: "Subkey"}
         ALGOS = {
-            0x70004830: "TEE_ALG_RSASSA_PKCS1_V1_5_SHA256",
-            0x70414930: "TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA256",
-            0x40000810: "TEE_ALG_AES_GCM",
+            0x7000_4830: "TEE_ALG_RSASSA_PKCS1_V1_5_SHA256",
+            0x7041_4930: "TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA256",
+            0x4000_0810: "TEE_ALG_AES_GCM",
         }
 
         d = {}
@@ -86418,7 +86422,7 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
                     break
                 # check cookie
                 if is_64bit():
-                    if cookie & 0xffff0000_00000000 != 0xffff0000_00000000:
+                    if cookie & 0xffff_0000_0000_0000 != 0xffff_0000_0000_0000:
                         found = False
                         break
                 # check mm
@@ -86777,7 +86781,7 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
                     chunk.flink, chunk.blink,
                     chunk.next_prevfree,
                     chunk.next_bsize,
-                    (-chunk.next_bsize) & 0xffffffff,
+                    (-chunk.next_bsize) & 0xffff_ffff,
                 ))
         self.out.append("blink:    {:#x}".format(malloc_ctx.blink))
         for chunk in malloc_ctx.blink_list:
@@ -86794,7 +86798,7 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
                     chunk.blink,
                     chunk.next_prevfree,
                     chunk.next_bsize,
-                    (-chunk.next_bsize) & 0xffffffff,
+                    (-chunk.next_bsize) & 0xffff_ffff,
                 ))
         self.out.append("pool:     {:#x}".format(malloc_ctx.pool))
         self.out.append("pool_len: {:#x}".format(malloc_ctx.pool_len))
@@ -86833,8 +86837,8 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
                 except gdb.MemoryError:
                     self.out.append(Color.colorify("unaligned orrupted", corrupted_msg_color))
                     break
-                bsize_inv = (-bsize) & 0xffffffff
-                if bsize_inv < 0x80000000: # used
+                bsize_inv = (-bsize) & 0xffff_ffff
+                if bsize_inv < 0x8000_0000: # used
                     self.out.append("{:s} {:s}: prevfree:{:#010x} bsize:{:#010x} ({:s})".format(
                         Color.colorify("used", chunk_used_color),
                         Color.colorify("{:#010x}".format(chunk), used_address_color),
@@ -86931,10 +86935,10 @@ class CpuidCommand(GenericCommand, BufferingOutput):
         ret = ExecAsm(codes, regs=regs).exec_code()
 
         if is_x86_64():
-            eax = ret["reg"]["$rax"] & 0xffffffff
-            ebx = ret["reg"]["$rbx"] & 0xffffffff
-            ecx = ret["reg"]["$rcx"] & 0xffffffff
-            edx = ret["reg"]["$rdx"] & 0xffffffff
+            eax = ret["reg"]["$rax"] & 0xffff_ffff
+            ebx = ret["reg"]["$rbx"] & 0xffff_ffff
+            ecx = ret["reg"]["$rcx"] & 0xffff_ffff
+            edx = ret["reg"]["$rdx"] & 0xffff_ffff
         else:
             eax = ret["reg"]["$eax"]
             ebx = ret["reg"]["$ebx"]
@@ -87082,12 +87086,12 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append(c(eax, 24, 0x7f,       "EAX 30-24: Reserved"))
             self.out.append(c(eax, 31, 1,          "EAX    31: IP payloads are LIP"))
             self.out.append(c(ebx,  0, 0xf,        "EBX  3- 0: Number of interrupted thresholds of digital temperature sensor"))
-            self.out.append(c(ebx,  4, 0xfffffff,  "EBX 31- 4: Reserved"))
+            self.out.append(c(ebx,  4, 0xfff_ffff, "EBX 31- 4: Reserved"))
             self.out.append(c(ecx,  0, 1,          "ECX     0: Hardware Coordination Feedback Capability (APERF and MPERF)"))
             self.out.append(c(ecx,  1, 1,          "ECX     1: Reserved"))
             self.out.append(c(ecx,  2, 1,          "ECX     2: Reserved"))
             self.out.append(c(ecx,  3, 1,          "ECX     3: Performance-energy bias preference"))
-            self.out.append(c(ecx,  4, 0xfffffff,  "ECX 31- 4: Reserved"))
+            self.out.append(c(ecx,  4, 0xfff_ffff, "ECX 31- 4: Reserved"))
             self.out.append(c(edx,  0, 1,          "EDX     0: Performance feature report"))
             self.out.append(c(edx,  1, 1,          "EDX     1: Energy efficiency capacity report"))
             self.out.append(c(edx,  2, 0x3f,       "EDX  7- 2: Reserved"))
@@ -87210,8 +87214,8 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append(c(ebx,  4, 1,          "EBX     4: Last level cache misses event unavailable"))
             self.out.append(c(ebx,  5, 1,          "EBX     5: Branch instructions retired event unavailable"))
             self.out.append(c(ebx,  6, 1,          "EBX     6: Branch mispredicts retired event unavailable"))
-            self.out.append(c(ebx,  7, 0x1ffffff,  "EBX 31- 7: Reserved"))
-            self.out.append(c(ecx,  0, 0xffffffff, "ECX 31- 0: Reserved"))
+            self.out.append(c(ebx,  7, 0x1ff_ffff, "EBX 31- 7: Reserved"))
+            self.out.append(c(ecx,  0, 0xffff_ffff,"ECX 31- 0: Reserved"))
             self.out.append(c(edx,  0, 0x1f,       "EDX  4- 0: Number of fixed function PeMo counters"))
             self.out.append(c(edx,  5, 0xff,       "EDX 12- 5: Bit width of fixed function PeMo counter"))
             self.out.append(c(edx, 13, 1,          "EDX    13: Reserved"))
@@ -87243,12 +87247,12 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append(c(ebx,  4, 1,          "EBX     4: PTWRITE"))
             self.out.append(c(ebx,  5, 1,          "EBX     5: Power Event Trace"))
             self.out.append(c(ebx,  6, 1,          "EBX     6: PSB and PMI preservation MSRs"))
-            self.out.append(c(ebx,  7, 0x1ffffff,  "EBX 31- 7: Reserved"))
+            self.out.append(c(ebx,  7, 0x1ff_ffff, "EBX 31- 7: Reserved"))
             self.out.append(c(ecx,  0, 1,          "ECX     0: ToPA output scheme"))
             self.out.append(c(ecx,  1, 1,          "ECX     1: ToPA tables hold multiple output entries"))
             self.out.append(c(ecx,  2, 1,          "ECX     2: Single-range output scheme"))
             self.out.append(c(ecx,  3, 1,          "ECX     3: Trace Transport output support"))
-            self.out.append(c(ecx,  4, 0x7ffffff,  "ECX 30- 4: Reserved"))
+            self.out.append(c(ecx,  4, 0x7ff_ffff, "ECX 30- 4: Reserved"))
             self.out.append(c(ecx, 31, 1,          "ECX    31: IP payloads are LIP"))
         elif id == 21:
             self.out.append("TSC and Nominal Core Crystal Clock")
@@ -87260,7 +87264,7 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append(c(ebx, 16, 0xffff,     "EBX 31-16: Reserved"))
             self.out.append(c(ecx,  0, 0xffff,     "ECX 15- 0: Bus (Reference) Frequency (MHz)"))
             self.out.append(c(ecx, 16, 0xffff,     "ECX 31-16: Reserved"))
-            self.out.append(c(edx,  0, 0xffffffff, "EDX 31- 0: Reserved"))
+            self.out.append(c(edx,  0, 0xffff_ffff,"EDX 31- 0: Reserved"))
         elif id == 23:
             self.out.append("Information of System-On-Chip Vendor Attribute Enumeration")
         elif id == 24:
@@ -87269,11 +87273,11 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append("Information of Hybrid Information Enumeration")
         elif id == 31:
             self.out.append("Information of V2 Extended Topology Enumeration")
-        elif id == 0x40000000:
+        elif id == 0x4000_0000:
             vid = String.bytes2str(p32(ebx) + p32(ecx) + p32(edx))
             self.out.append("eax: Maximum Input Value for Hypervisor Function CPUID Information")
             self.out.append("ebx+ecx+edx: Hypervisor Brand String (={!r})".format(vid))
-        elif id == 0x40000001:
+        elif id == 0x4000_0001:
             self.out.append("Hypervisor")
             self.out.append(c(eax,  0, 1,          "EAX     0: Clocksource"))
             self.out.append(c(eax,  1, 1,          "EAX     1: NOP IO Delay"))
@@ -87298,8 +87302,8 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append(c(eax, 25, 1,          "EAX    25: Clocksource Stable"))
             self.out.append(c(eax, 26, 0x3f,       "EAX 31-26: Reserved"))
             self.out.append(c(edx,  0, 1,          "EDX     0: vCPUs realtime, never preempted"))
-            self.out.append(c(edx,  1, 0x7fffffff, "EDX 31- 1: Reserved"))
-        elif id == 0x40000003:
+            self.out.append(c(edx,  1, 0x7fff_ffff,"EDX 31- 1: Reserved"))
+        elif id == 0x4000_0003:
             self.out.append("Hypervisor")
             self.out.append(c(eax,  0, 1,          "EAX     0: VP_RUNTIME"))
             self.out.append(c(eax,  1, 1,          "EAX     1: TIME_REF_COUNT"))
@@ -87315,7 +87319,7 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append(c(eax, 11, 1,          "EAX    11: Timer Frequency MSRs"))
             self.out.append(c(eax, 12, 1,          "EAX    12: Debug MSRs"))
             self.out.append(c(eax, 13, 1,          "EAX    13: Reenlightenment controls"))
-            self.out.append(c(eax, 14, 0x3ffff,    "EAX 31-14: Reserved"))
+            self.out.append(c(eax, 14, 0x3_ffff,   "EAX 31-14: Reserved"))
             self.out.append(c(ebx,  0, 1,          "EBX     0: CreatePartitions"))
             self.out.append(c(ebx,  1, 1,          "EBX     1: AccessPartitionId"))
             self.out.append(c(ebx,  2, 1,          "EBX     2: AccessMemoryPool"))
@@ -87367,7 +87371,7 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append(c(edx, 25, 1,          "EDX    25: Reserved"))
             self.out.append(c(edx, 26, 1,          "EDX    26: Intel Last Branch Record (LBR) feature"))
             self.out.append(c(edx, 27, 1,          "EDX 31-27: Reserved"))
-        elif id == 0x40000004:
+        elif id == 0x4000_0004:
             self.out.append("Hypervisor implementation recommendations")
             self.out.append(c(eax,  0, 1,          "EAX     0: Hypercall for address space switches"))
             self.out.append(c(eax,  1, 1,          "EAX     1: Hypercall for local TLB flushes"))
@@ -87389,7 +87393,7 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append(c(eax, 17, 1,          "EAX    17: Direct local flush entire"))
             self.out.append(c(eax, 18, 1,          "EAX    18: No architectural core sharing"))
             self.out.append(c(eax, 19, 0x1fff,     "EAX 31-19: Reserved"))
-        elif id == 0x40000006:
+        elif id == 0x4000_0006:
             self.out.append("Hypervisor hardware features enable")
             self.out.append(c(eax,  0, 1,          "EAX     0: APIC overlay assist"))
             self.out.append(c(eax,  1, 1,          "EAX     1: MSR bitmaps"))
@@ -87401,24 +87405,24 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append(c(eax,  7, 1,          "EAX     7: DMA protection"))
             self.out.append(c(eax,  8, 1,          "EAX     8: HPET"))
             self.out.append(c(eax,  9, 1,          "EAX     9: Volatile synthetic timers"))
-            self.out.append(c(eax, 10, 0x3fffff,   "EAX 31-10: Reserved"))
-        elif id == 0x40000007:
+            self.out.append(c(eax, 10, 0x3f_ffff,  "EAX 31-10: Reserved"))
+        elif id == 0x4000_0007:
             self.out.append("Hypervisor CPU management features")
             self.out.append(c(eax,  0, 1,          "EAX     0: Start logical processor"))
             self.out.append(c(eax,  1, 1,          "EAX     1: Create root virtual processor"))
             self.out.append(c(eax,  2, 1,          "EAX     2: Performance counter sync"))
-            self.out.append(c(eax,  3, 0x1fffffff, "EAX 31- 3: Reserved"))
+            self.out.append(c(eax,  3, 0x1fff_ffff,"EAX 31- 3: Reserved"))
             self.out.append(c(ebx,  0, 1,          "EBX     0: Processor power management"))
             self.out.append(c(ebx,  1, 1,          "EBX     1: MWAIT idle states"))
             self.out.append(c(ebx,  2, 1,          "EBX     2: Logical processor idling"))
-            self.out.append(c(ebx,  3, 0x1fffffff, "EBX 31- 3: Reserved"))
+            self.out.append(c(ebx,  3, 0x1fff_ffff,"EBX 31- 3: Reserved"))
             self.out.append(c(ecx,  0, 1,          "ECX     0: Remap guest uncached"))
-            self.out.append(c(ecx,  1, 0x7fffffff, "ECX 31- 1: Reserved"))
-        elif id == 0x40000008:
+            self.out.append(c(ecx,  1, 0x7fff_ffff,"ECX 31- 1: Reserved"))
+        elif id == 0x4000_0008:
             self.out.append("Hypervisor shared virtual memory (SVM) features")
             self.out.append(c(eax,  0, 1,          "EAX     0: SVM (Shared Virtual Memory)"))
-            self.out.append(c(eax,  1, 0x7fffffff, "EAX 31- 1: Reserved"))
-        elif id == 0x40000009:
+            self.out.append(c(eax,  1, 0x7fff_ffff,"EAX 31- 1: Reserved"))
+        elif id == 0x4000_0009:
             self.out.append("Nested hypervisor feature identification")
             self.out.append(c(eax,  0, 1,          "EAX     0: Reserved"))
             self.out.append(c(eax,  1, 1,          "EAX     1: Reserved"))
@@ -87429,7 +87433,7 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append(c(eax,  6, 1,          "EAX     6: VP index MSR"))
             self.out.append(c(eax,  7, 0x1f,       "EAX 11- 7: Reserved"))
             self.out.append(c(eax, 12, 1,          "EAX    12: Reenlightenment controls"))
-            self.out.append(c(eax, 13, 0x7ffff,    "EAX 31-13: Reserved"))
+            self.out.append(c(eax, 13, 0x7_ffff,   "EAX 31-13: Reserved"))
             self.out.append(c(edx,  0, 0xf,        "EDX  3- 0: Reserved"))
             self.out.append(c(eax,  4, 1,          "EDX     4: Hypercall input params via XMM registers"))
             self.out.append(c(edx,  5, 0x3ff,      "EDX 14- 5: Reserved"))
@@ -87437,23 +87441,23 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append(c(edx, 16, 1,          "EDX    16: Reserved"))
             self.out.append(c(edx, 17, 1,          "EDX    17: Soft interrupt polling mode available"))
             self.out.append(c(edx, 18, 0x3fff,     "EDX 31-18: Reserved"))
-        elif id == 0x4000000a:
+        elif id == 0x4000_000a:
             self.out.append("Nested hypervisor feature identification")
-            self.out.append(c(eax,  0, 0x1ffff,    "EAX 16- 0: Reserved"))
+            self.out.append(c(eax,  0, 0x1_ffff,   "EAX 16- 0: Reserved"))
             self.out.append(c(eax, 17, 1,          "EAX    17: Direct virtual flush hypercalls"))
             self.out.append(c(eax, 18, 1,          "EAX    18: Flush GPA space and list hypercalls"))
             self.out.append(c(eax, 19, 1,          "EAX    19: Enlightened MSR bitmaps"))
             self.out.append(c(eax, 20, 1,          "EAX    20: Combining virtualization exceptions in page fault exception class"))
             self.out.append(c(eax, 21, 0x7ff,      "EAX 31-21: Reserved"))
-        elif id == 0x40000010:
+        elif id == 0x4000_0010:
             self.out.append("Hypervisor timing information")
             self.out.append("eax: (Virtual) TSC frequency in kHz")
             self.out.append("ebx: (Virtual) Bus (local apic timer) frequency in kHz")
             self.out.append("ecx,edx: Reserved")
-        elif id == 0x80000000:
+        elif id == 0x8000_0000:
             self.out.append("eax: Maximum Input Value for Extended Function CPUID Information")
             self.out.append("ebx,ecx,edx: Reserved")
-        elif id == 0x80000001:
+        elif id == 0x8000_0001:
             self.out.append("eax,ebx: Extended Processor Signature")
             self.out.append("edx,ecx: Extended Processor Feature")
             self.out.append(c(edx,  0, 1,          "EDX     0: FPU (Floating Point Unit on-chip)"))
@@ -87522,29 +87526,29 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append(c(ecx, 29, 1,          "ECX    29: MONITORX/MWAITX instructions"))
             self.out.append(c(ecx, 30, 1,          "ECX    30: Address mask extension for instruction breakpoint"))
             self.out.append(c(ecx, 31, 1,          "ECX    31: Reserved"))
-        elif id in [0x80000002, 0x80000003, 0x80000004]:
+        elif id in [0x8000_0002, 0x8000_0003, 0x8000_0004]:
             vid = String.bytes2str(p32(eax) + p32(ebx) + p32(ecx) + p32(edx))
             self.out.append("eax+ebx+ecx+edx: Processor Brand String (={!r})".format(vid))
-        elif id == 0x80000005:
+        elif id == 0x8000_0005:
             self.out.append("L1 Cache Information")
             self.out.append("eax: 4/2 MB L1 TLB configuration descriptor")
             self.out.append("ebx: 4 KB L1 TLB configuration descriptor")
             self.out.append("ecx: data L1 cache configuration descriptor")
             self.out.append("edx: code L1 cache configuration descriptor")
-        elif id == 0x80000006:
+        elif id == 0x8000_0006:
             self.out.append("L2/L3 Cache Information")
             self.out.append("eax: 4/2 MB L2 TLB configuration descriptor")
             self.out.append("ebx: 4 KB L2 TLB configuration descriptor")
             self.out.append("ecx: unified L2 cache configuration descriptor")
             self.out.append("edx: unified L3 cache configuration descriptor")
-        elif id == 0x80000007:
+        elif id == 0x8000_0007:
             self.out.append("ebx: RAS Capabilities")
             self.out.append(c(ebx,  0, 1,          "EBX     0: MCA overflow recovery"))
             self.out.append(c(ebx,  1, 1,          "EBX     1: Software uncorrectable error containment and recovery"))
             self.out.append(c(ebx,  2, 1,          "EBX     2: HWA (HardWare Assert)"))
             self.out.append(c(ebx,  3, 1,          "EBX     3: Scalable MCA"))
             self.out.append(c(ebx,  4, 1,          "EBX     4: PFEH (Platform First Error Handling)"))
-            self.out.append(c(ebx,  5, 0x7ffffff,  "EBX 31- 5: Reserved"))
+            self.out.append(c(ebx,  5, 0x7ff_ffff, "EBX 31- 5: Reserved"))
             self.out.append("edx: Advanced Power Management information")
             self.out.append(c(edx,  0, 1,          "EDX     0: TS (Temperature Sensor)"))
             self.out.append(c(edx,  1, 1,          "EDX     1: FID (Frequency ID control)"))
@@ -87561,8 +87565,8 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append(c(edx, 12, 1,          "EDX    12: Core power reporting"))
             self.out.append(c(edx, 13, 1,          "EDX    13: Connected standby"))
             self.out.append(c(edx, 14, 1,          "EDX    14: RAPL (Running Average Power Limit)"))
-            self.out.append(c(edx, 15, 0x1ffff,    "EAX 31-15: Reserved"))
-        elif id == 0x80000008:
+            self.out.append(c(edx, 15, 0x1_ffff,   "EAX 31-15: Reserved"))
+        elif id == 0x8000_0008:
             self.out.append("eax: Extended Address Length Information")
             self.out.append(c(eax,  0, 0xff,       "EAX  7- 0: Physical address length"))
             self.out.append(c(eax,  8, 0xff,       "EAX 15- 8: Linear address length"))
@@ -87606,7 +87610,7 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append(c(ecx,  8, 0xf,        "ECX 11- 8: Reserved"))
             self.out.append(c(ecx, 12, 0xf,        "ECX 15-12: Number of LSBs in APIC ID that indicate core ID"))
             self.out.append(c(ecx, 16, 0xffff,     "ECX 31-16: Reserved"))
-        elif id == 0x8000000a:
+        elif id == 0x8000_000a:
             self.out.append("SVM Revision and Feature Identification")
             self.out.append(c(edx,  0, 1,          "EDX     0: Nested paging"))
             self.out.append(c(edx,  1, 1,          "EDX     1: LBR virtualization"))
@@ -87634,15 +87638,15 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append(c(edx, 23, 1,          "EDX    23: Host MCE override"))
             self.out.append(c(edx, 24, 1,          "EDX    24: INVLPGB/TLBSYNC hypervisor enable"))
             self.out.append(c(edx, 25, 0x7f,       "EDX 31-25: Reserved"))
-        elif id == 0x80000019:
+        elif id == 0x8000_0019:
             self.out.append("TLB Configuration Descriptors")
-        elif id == 0x8000001a:
+        elif id == 0x8000_001a:
             self.out.append("Performance Optimization Identifiers")
             self.out.append(c(eax,  0, 1,          "EAX     0: FP128 (128-bit SSE full-width pipelines)"))
             self.out.append(c(eax,  1, 1,          "EAX     1: MOVU (Efficient MOVU SSE instructions)"))
             self.out.append(c(eax,  2, 1,          "EAX     2: FP256 (256-bit AVX full-width pipelines)"))
-            self.out.append(c(eax,  3, 0x1fffffff, "EAX 31- 3: Reserved"))
-        elif id == 0x8000001b:
+            self.out.append(c(eax,  3, 0x1fff_ffff,"EAX 31- 3: Reserved"))
+        elif id == 0x8000_001b:
             self.out.append("Instruction Based Sampling Identifiers")
             self.out.append(c(eax,  0, 1,          "EAX     0: IBSFFV (IBS Feature Flags Valid)"))
             self.out.append(c(eax,  1, 1,          "EAX     1: FetchSam (IBS Fetch Sampling)"))
@@ -87655,14 +87659,14 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append(c(eax,  8, 1,          "EAX     8: OpBrnFuse (IBS fused Branch micro-op indication)"))
             self.out.append(c(eax,  9, 1,          "EAX     9: IbsFetchCtlExtd (IBS Fetch Control Extended MSR)"))
             self.out.append(c(eax, 10, 1,          "EAX    10: IbsOpData4 (IBS Op Data 4 MSR)"))
-            self.out.append(c(eax, 11, 0x1fffff,   "EAX 31-11: Reserved"))
-        elif id == 0x8fffffff:
+            self.out.append(c(eax, 11, 0x1f_ffff,  "EAX 31-11: Reserved"))
+        elif id == 0x8fff_ffff:
             vid = String.bytes2str(p32(eax) + p32(ebx) + p32(ecx) + p32(edx))
             self.out.append("eax+ebx+ecx+edx: Easter egg (={!r})".format(vid))
-        elif id == 0xc0000000:
+        elif id == 0xc000_0000:
             self.out.append("eax: Maximum Input Value for Extended Function CPUID Information")
             self.out.append("ebx,ecx,edx: Reserved")
-        elif id == 0xc0000001:
+        elif id == 0xc000_0001:
             self.out.append("Centaur features")
             self.out.append(c(edx,  0, 1,          "EDX     0: AIS (Alternate Instruction Set available)"))
             self.out.append(c(edx,  1, 1,          "EDX     1: AIS_EN (Alternate Instruction Set ENabled)"))
@@ -87678,7 +87682,7 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             self.out.append(c(edx, 11, 1,          "EDX    11: PHE_EN (Padlock Hash Engine ENabled)"))
             self.out.append(c(edx, 12, 1,          "EDX    12: PMM (Padlock Montgomery Multiplier available)"))
             self.out.append(c(edx, 13, 1,          "EDX    13: PMM_EN (Padlock Montgomery Multiplier ENabled)"))
-            self.out.append(c(edx, 14, 0x3ffff,    "EAX 31-14: Reserved"))
+            self.out.append(c(edx, 14, 0x3_ffff,   "EAX 31-14: Reserved"))
         return
 
     @parse_args
@@ -87715,29 +87719,29 @@ class CpuidCommand(GenericCommand, BufferingOutput):
                 self.make_out(id, None, eax, ebx, ecx, edx)
 
         # Hypervisor Information
-        valid_max_cpuid, _, _, _ = self.execute_cpuid(0x40000000)
-        for id in range(0x40000000, valid_max_cpuid + 1):
+        valid_max_cpuid, _, _, _ = self.execute_cpuid(0x4000_0000)
+        for id in range(0x4000_0000, valid_max_cpuid + 1):
             eax, ebx, ecx, edx = self.execute_cpuid(id)
             self.make_out(id, None, eax, ebx, ecx, edx)
 
         # Extended Information
-        valid_max_cpuid, _, _, _ = self.execute_cpuid(0x80000000)
-        for id in range(0x80000000, valid_max_cpuid + 1):
+        valid_max_cpuid, _, _, _ = self.execute_cpuid(0x8000_0000)
+        for id in range(0x8000_0000, valid_max_cpuid + 1):
             eax, ebx, ecx, edx = self.execute_cpuid(id)
             self.make_out(id, None, eax, ebx, ecx, edx)
-        for id in [0x8fffffff]:
+        for id in [0x8fff_ffff]:
             eax, ebx, ecx, edx = self.execute_cpuid(id)
             self.make_out(id, None, eax, ebx, ecx, edx)
 
         # Transmeta Specific Information
-        valid_max_cpuid, _, _, _ = self.execute_cpuid(0x80860000)
-        for id in range(0x80860000, valid_max_cpuid + 1):
+        valid_max_cpuid, _, _, _ = self.execute_cpuid(0x8086_0000)
+        for id in range(0x8086_0000, valid_max_cpuid + 1):
             eax, ebx, ecx, edx = self.execute_cpuid(id)
             self.make_out(id, None, eax, ebx, ecx, edx)
 
         # Centaur(VIA) Specific Information
-        valid_max_cpuid, _, _, _ = self.execute_cpuid(0xc0000000)
-        for id in range(0xc0000000, valid_max_cpuid + 1):
+        valid_max_cpuid, _, _, _ = self.execute_cpuid(0xc000_0000)
+        for id in range(0xc000_0000, valid_max_cpuid + 1):
             eax, ebx, ecx, edx = self.execute_cpuid(id)
             self.make_out(id, None, eax, ebx, ecx, edx)
 
@@ -87775,26 +87779,26 @@ class MsrCommand(GenericCommand):
 
     msr_table = [
         # frequently used x86-64 MSRs
-        ["MSR_EFER",              0xc0000080, "Extended feature register"],
-        ["MSR_STAR",              0xc0000081, "Legacy mode SYSCALL target"],
-        ["MSR_LSTAR",             0xc0000082, "Long mode SYSCALL target"],
-        ["MSR_CSTAR",             0xc0000083, "Compat mode SYSCALL target"],
-        ["MSR_SYSCALL_MASK",      0xc0000084, "EFLAGS mask for syscall"],
-        ["MSR_FS_BASE",           0xc0000100, "64bit FS base"],
-        ["MSR_GS_BASE",           0xc0000101, "64bit GS base"],
-        ["MSR_KERNEL_GS_BASE",    0xc0000102, "SwapGS GS shadow"],
-        ["MSR_TSC_AUX",           0xc0000103, "Auxiliary TSC"],
+        ["MSR_EFER",              0xc000_0080, "Extended feature register"],
+        ["MSR_STAR",              0xc000_0081, "Legacy mode SYSCALL target"],
+        ["MSR_LSTAR",             0xc000_0082, "Long mode SYSCALL target"],
+        ["MSR_CSTAR",             0xc000_0083, "Compat mode SYSCALL target"],
+        ["MSR_SYSCALL_MASK",      0xc000_0084, "EFLAGS mask for syscall"],
+        ["MSR_FS_BASE",           0xc000_0100, "64bit FS base"],
+        ["MSR_GS_BASE",           0xc000_0101, "64bit GS base"],
+        ["MSR_KERNEL_GS_BASE",    0xc000_0102, "SwapGS GS shadow"],
+        ["MSR_TSC_AUX",           0xc000_0103, "Auxiliary TSC"],
         # x86-32 and x86-64
-        ["MSR_IA32_SYSENTER_CS",  0x00000174, "Sysenter CS"],
-        ["MSR_IA32_SYSENTER_ESP", 0x00000175, "Sysenter ESP"],
-        ["MSR_IA32_SYSENTER_EIP", 0x00000176, "Sysenter EIP"],
-        ["MSR_IA32_U_CET",        0x000006a0, "User mode CET"],
-        ["MSR_IA32_S_CET",        0x000006a2, "Kernel mode CET"],
-        ["MSR_IA32_PL0_SSP",      0x000006a4, "Ring-0 shadow stack pointer"],
-        ["MSR_IA32_PL1_SSP",      0x000006a5, "Ring-1 shadow stack pointer"],
-        ["MSR_IA32_PL2_SSP",      0x000006a6, "Ring-2 shadow stack pointer"],
-        ["MSR_IA32_PL3_SSP",      0x000006a7, "Ring-3 shadow stack pointer"],
-        ["MSR_IA32_INT_SSP_TAB",  0x000006a8, "Exception shadow stack table"],
+        ["MSR_IA32_SYSENTER_CS",  0x0000_0174, "Sysenter CS"],
+        ["MSR_IA32_SYSENTER_ESP", 0x0000_0175, "Sysenter ESP"],
+        ["MSR_IA32_SYSENTER_EIP", 0x0000_0176, "Sysenter EIP"],
+        ["MSR_IA32_U_CET",        0x0000_06a0, "User mode CET"],
+        ["MSR_IA32_S_CET",        0x0000_06a2, "Kernel mode CET"],
+        ["MSR_IA32_PL0_SSP",      0x0000_06a4, "Ring-0 shadow stack pointer"],
+        ["MSR_IA32_PL1_SSP",      0x0000_06a5, "Ring-1 shadow stack pointer"],
+        ["MSR_IA32_PL2_SSP",      0x0000_06a6, "Ring-2 shadow stack pointer"],
+        ["MSR_IA32_PL3_SSP",      0x0000_06a7, "Ring-3 shadow stack pointer"],
+        ["MSR_IA32_INT_SSP_TAB",  0x0000_06a8, "Exception shadow stack table"],
     ]
 
     def lookup_name2const(self, target_name):
@@ -87849,19 +87853,19 @@ class MsrCommand(GenericCommand):
             return None
 
         if is_x86_64():
-            edx = ret["reg"]["$rdx"] & 0xffffffff
-            eax = ret["reg"]["$rax"] & 0xffffffff
+            edx = ret["reg"]["$rdx"] & 0xffff_ffff
+            eax = ret["reg"]["$rax"] & 0xffff_ffff
         else:
             edx = ret["reg"]["$edx"]
             eax = ret["reg"]["$eax"]
-        return ((edx << 32) | eax) & 0xffffffffffffffff
+        return ((edx << 32) | eax) & 0xffff_ffff_ffff_ffff
 
     def write_msr(self, const, value):
         codes = [b"\x0f\x30"] # wrmsr
         if is_x86_64():
-            regs = {"$rcx": const, "$rdx": value >> 32, "$rax": value & 0xffffffff}
+            regs = {"$rcx": const, "$rdx": value >> 32, "$rax": value & 0xffff_ffff}
         else:
-            regs = {"$ecx": const, "$edx": value >> 32, "$eax": value & 0xffffffff}
+            regs = {"$ecx": const, "$edx": value >> 32, "$eax": value & 0xffff_ffff}
         ret = ExecAsm(codes, regs=regs).exec_code()
         return bool(ret)
 
@@ -88554,18 +88558,18 @@ class PageMap:
         maps = []
         old_i = -1
         for i in range(len(data_list) - 4):
-            type = data_list[i] & 0xffffffff
+            type = data_list[i] & 0xffff_ffff
             if 26 < type: # enum teecore_memtypes
                 continue
-            region_size = (data_list[i] >> 32) & 0xffffffff
-            if region_size & 0xfff or region_size < 0x1000 or 0xfffff000 < region_size:
+            region_size = (data_list[i] >> 32) & 0xffff_ffff
+            if region_size & 0xfff or region_size < 0x1000 or 0xffff_f000 < region_size:
                 continue
             pa, va, size, attr = data_list[i + 1:i + 5]
-            if pa & 0xfff or 0xfffff000 < pa:
+            if pa & 0xfff or 0xffff_f000 < pa:
                 continue
-            if va & 0xfff or 0xfffff000 < va:
+            if va & 0xfff or 0xffff_f000 < va:
                 continue
-            if size & 0xfff or size < 0x1000 or 0xfffff000 < size:
+            if size & 0xfff or size < 0x1000 or 0xffff_f000 < size:
                 continue
             if len(maps) > 0 and old_i + 5 != i: # Judging continuity
                 continue
@@ -89154,12 +89158,12 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     continue
 
                 # calc virtual address
-                sign_ext = 0xfe00000000000000 if ((i >> (self.bits["L5_BITS"] - 1)) & 1) else 0
+                sign_ext = 0xfe00_0000_0000_0000 if ((i >> (self.bits["L5_BITS"] - 1)) & 1) else 0
                 new_va = va_base + (sign_ext | (i << bit_shift))
                 new_va_end = new_va + (1 << bit_shift)
 
                 # calc ppn
-                ppn = (entry >> 10) & 0xfffffffffff # 44 bit
+                ppn = (entry >> 10) & 0xfff_ffff_ffff # 44 bit
 
                 # calc flags
                 flags = parent_flags.copy()
@@ -89238,12 +89242,12 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     new_va = va_base + (i << bit_shift)
                     new_va_end = new_va + (1 << bit_shift)
                 else:
-                    sign_ext = 0xffff000000000000 if ((i >> (self.bits["L4_BITS"] - 1)) & 1) else 0
+                    sign_ext = 0xffff_0000_0000_0000 if ((i >> (self.bits["L4_BITS"] - 1)) & 1) else 0
                     new_va = va_base + (sign_ext | (i << bit_shift))
                     new_va_end = new_va + (1 << bit_shift)
 
                 # calc ppn
-                ppn = (entry >> 10) & 0xfffffffffff # 44 bit
+                ppn = (entry >> 10) & 0xfff_ffff_ffff # 44 bit
 
                 # calc flags
                 flags = parent_flags.copy()
@@ -89321,12 +89325,12 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     new_va = va_base + (i << bit_shift)
                     new_va_end = new_va + (1 << bit_shift)
                 else:
-                    sign_ext = 0xffffff8000000000 if ((i >> (self.bits["L3_BITS"] - 1)) & 1) else 0
+                    sign_ext = 0xffff_ff80_0000_0000 if ((i >> (self.bits["L3_BITS"] - 1)) & 1) else 0
                     new_va = va_base + (sign_ext | (i << bit_shift))
                     new_va_end = new_va + (1 << bit_shift)
 
                 # calc ppn
-                ppn = (entry >> 10) & 0xfffffffffff # 44 bit
+                ppn = (entry >> 10) & 0xfff_ffff_ffff # 44 bit
 
                 # calc flags
                 flags = parent_flags.copy()
@@ -89404,9 +89408,9 @@ class PagewalkRiscvCommand(PagewalkCommand):
 
                 # calc ppn
                 if is_riscv64():
-                    ppn = (entry >> 10) & 0xfffffffffff # 44 bit
+                    ppn = (entry >> 10) & 0xfff_ffff_ffff # 44 bit
                 else:
-                    ppn = (entry >> 10) & 0x3fffff # 22 bit
+                    ppn = (entry >> 10) & 0x3f_ffff # 22 bit
 
                 # calc flags
                 flags = parent_flags.copy()
@@ -89480,9 +89484,9 @@ class PagewalkRiscvCommand(PagewalkCommand):
 
                 # calc ppn
                 if is_riscv64():
-                    ppn = (entry >> 10) & 0xfffffffffff # 44 bit
+                    ppn = (entry >> 10) & 0xfff_ffff_ffff # 44 bit
                 else:
-                    ppn = (entry >> 10) & 0x3fffff # 22 bit
+                    ppn = (entry >> 10) & 0x3f_ffff # 22 bit
 
                 # calc flags
                 flags = parent_flags.copy()
@@ -89549,10 +89553,10 @@ class PagewalkRiscvCommand(PagewalkCommand):
 
         if is_riscv64():
             mode = (satp >> 60) & 0b1111 # upper 4 bit
-            pagewalk_base = (satp & 0xfffffffffff) * gef_getpagesize() # lower 44 bit
+            pagewalk_base = (satp & 0xfff_ffff_ffff) * gef_getpagesize() # lower 44 bit
         else:
             mode = (satp >> 31) & 0b1 # upper 1 bit
-            pagewalk_base = (satp & 0x3fffff) * gef_getpagesize() # lower 22 bit
+            pagewalk_base = (satp & 0x3f_ffff) * gef_getpagesize() # lower 22 bit
         self.sstatus_sum = (sstatus >> 18) & 1
 
         # virtual address base
@@ -93795,7 +93799,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
                 continue
             if region.perm != "rw-":
                 continue
-            if region.size >= 0x200000: # heuristic threshold
+            if region.size >= 0x20_0000: # heuristic threshold
                 continue
             current = region.addr_start
             while current < region.addr_end:
@@ -94284,7 +94288,7 @@ class PageCommand(GenericCommand):
                 err("Not found phys_base")
                 return False
 
-            self.START_KERNEL_map = 0xffffffff80000000
+            self.START_KERNEL_map = 0xffff_ffff_8000_0000
 
             ret = self.get_page_virt_pair()
             if not ret:
@@ -94303,16 +94307,16 @@ class PageCommand(GenericCommand):
                 err("Not found maps")
                 return False
             kern_min = maps[0][0]
-            if kern_min < 0x78000000:
-                self.PAGE_OFFSET = 0x40000000 # VMSPLIT_1G
-            elif kern_min < 0x80000000:
-                self.PAGE_OFFSET = 0x78000000 # VMSPLIT_2G_OPT
-            elif kern_min < 0xb0000000:
-                self.PAGE_OFFSET = 0x80000000 # VMSPLIT_2G
-            elif kern_min < 0xc0000000:
-                self.PAGE_OFFSET = 0xb0000000 # VMSPLIT_3G_OPT
+            if kern_min < 0x7800_0000:
+                self.PAGE_OFFSET = 0x4000_0000 # VMSPLIT_1G
+            elif kern_min < 0x8000_0000:
+                self.PAGE_OFFSET = 0x7800_0000 # VMSPLIT_2G_OPT
+            elif kern_min < 0xb000_0000:
+                self.PAGE_OFFSET = 0x8000_0000 # VMSPLIT_2G
+            elif kern_min < 0xc000_0000:
+                self.PAGE_OFFSET = 0xb000_0000 # VMSPLIT_3G_OPT
             else:
-                self.PAGE_OFFSET = 0xc0000000 # VMSPLIT_3G
+                self.PAGE_OFFSET = 0xc000_0000 # VMSPLIT_3G
 
             # Determine whether it is CONFIG_FLATMEM or CONFIG_SPARSEMEM.
             self.mem_map = KernelAddressHeuristicFinder.get_mem_map()
@@ -94360,7 +94364,7 @@ class PageCommand(GenericCommand):
                 self.PFN_SECTION_SHIFT = SECTION_SIZE_BITS - self.PAGE_SHIFT
 
                 SECTION_MAP_LAST_BIT = 1 << 3
-                self.SECTION_MAP_MASK = ~(SECTION_MAP_LAST_BIT - 1) & 0xffffffff
+                self.SECTION_MAP_MASK = ~(SECTION_MAP_LAST_BIT - 1) & 0xffff_ffff
 
                 # calc sizeof(mem_section)
                 v = read_int_from_memory(self.mem_section + current_arch.ptrsize * 3)
@@ -94404,16 +94408,16 @@ class PageCommand(GenericCommand):
                 err("Not found maps")
                 return False
             kern_min = maps[0][0]
-            if kern_min < 0x80000000:
-                self.PAGE_OFFSET = 0x40000000 # VMSPLIT_1G
-            elif kern_min < 0xb0000000:
-                self.PAGE_OFFSET = 0x80000000 # VMSPLIT_2G
-            elif kern_min < 0xbf000000:
+            if kern_min < 0x8000_0000:
+                self.PAGE_OFFSET = 0x4000_0000 # VMSPLIT_1G
+            elif kern_min < 0xb000_0000:
+                self.PAGE_OFFSET = 0x8000_0000 # VMSPLIT_2G
+            elif kern_min < 0xbf00_0000:
                 # 0xbf000000-0xc0000000 is kernel module area.
                 # Even if it is VMSPLIT_3G, this is used.
-                self.PAGE_OFFSET = 0xb0000000 # VMSPLIT_3G_OPT
+                self.PAGE_OFFSET = 0xb000_0000 # VMSPLIT_3G_OPT
             else:
-                self.PAGE_OFFSET = 0xc0000000 # VMSPLIT_3G
+                self.PAGE_OFFSET = 0xc000_0000 # VMSPLIT_3G
 
             self.mem_map = KernelAddressHeuristicFinder.get_mem_map()
             if self.mem_map is None:
@@ -97186,7 +97190,7 @@ class KmallocAllocatedByCommand(GenericCommand):
     def test_syscall(self, breakpoints):
 
         def u2i(x):
-            x = struct.pack("<Q", ret & 0xffffffffffffffff)
+            x = struct.pack("<Q", ret & 0xffff_ffff_ffff_ffff)
             return struct.unpack("<q", x)[0]
 
         def gen_testcase():
@@ -97659,7 +97663,7 @@ class KmallocAllocatedByCommand(GenericCommand):
             yield ("getrusage(RUSAGE_SELF, &buf)", "getrusage", [0, buf])
 
             yield "personality"
-            yield ("personality(0xffffffff)", "personality", [0xffffffff])
+            yield ("personality(0xffffffff)", "personality", [0xffff_ffff])
 
             yield "get_mempolicy -> set_mempolicy"
             nodemask = p64(0)
@@ -98299,10 +98303,10 @@ class KmallocAllocatedByCommand(GenericCommand):
             tkey = "test:testkey\0"
             payload = "payload\0"
             yield ('add_key("user", "test:testkey", "payload", plen, KEY_SPEC_PROCESS_KEYRING)',
-                   "add_key", [user, tkey, payload, len(payload) - 1, 0xfffffffe])
+                   "add_key", [user, tkey, payload, len(payload) - 1, 0xffff_fffe])
             callout_info = "\0" * 0x100
             yield ('request_key("user", "test:testkey", &callout_info, KEY_SPEC_PROCESS_KEYRING)',
-                   "request_key", [user, tkey, callout_info, 0xfffffffe])
+                   "request_key", [user, tkey, callout_info, 0xffff_fffe])
             if u2i(ret_history[-1]) >= 0:
                 key_serial = ret_history[-1]
                 yield ("keyctl(KEYCTL_REVOKE, key_serial)", "keyctl", [3, key_serial])
@@ -98310,7 +98314,7 @@ class KmallocAllocatedByCommand(GenericCommand):
             yield "invalid add_key"
             tkey = "A" * 0x100
             yield ('add_key("user", "AAAAAAAA...", NULL, 0, KEY_SPEC_PROCESS_KEYRING)',
-                   "add_key", [user, tkey, 0, 0, 0xfffffffe])
+                   "add_key", [user, tkey, 0, 0, 0xffff_fffe])
 
             yield "open /dev/ptmx -> close"
             yield ('fd = open("/dev/ptmx", O_RDWR|O_NOCTTY)', "open", ["/dev/ptmx\0", 0o2 | 0o400])
@@ -98565,7 +98569,7 @@ class KtraceBreakpoint(gdb.Breakpoint):
 
         # random id to distinguish between nested functions
         import random
-        random_id = random.randint(1, 0xffffffff)
+        random_id = random.randint(1, 0xffff_ffff)
 
         # print
         task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
@@ -99179,11 +99183,11 @@ class UefiOvmfInfoCommand(GenericCommand):
             0x2000: "RP",
             0x4000: "XP",
             0x8000: "NV",
-            0x10000: "MORE_RELIABLE",
-            0x20000: "RO",
-            0x40000: "SPM",
-            0x80000: "CPU_CRYPTO",
-            0x8000000000000000: "RUNTIME"
+            0x1_0000: "MORE_RELIABLE",
+            0x2_0000: "RO",
+            0x4_0000: "SPM",
+            0x8_0000: "CPU_CRYPTO",
+            0x8000_0000_0000_0000: "RUNTIME"
         }
 
         def att2str(att):
@@ -99393,7 +99397,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
             target_offset = data.rfind(seq_to_find) + 0x10
             seq_to_write = p64(new_size)
         else:
-            if text_base > 0xffffffff:
+            if text_base > 0xffff_ffff:
                 err("Unsupported adding 64 bit guest symbols when you use 32 bit host")
                 return None
             seq_to_find = p32(text_base)
@@ -99670,7 +99674,7 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
         return (x >> bit) & 1
 
     def get_pfn(self, x):
-        return x & 0x7fffffffffffff
+        return x & 0x7f_ffff_ffff_ffff
 
     def append_pfn_zero_warn(self):
         warn_messages = [
@@ -100523,7 +100527,7 @@ class BinwalkMemoryCommand(GenericCommand):
                         help="REGEXP include filter.")
     parser.add_argument("-e", "--exclude", action="append", type=re.compile, default=[],
                         help="REGEXP exclude filter.")
-    parser.add_argument("-m", "--maxsize", type=AddressUtil.parse_address, default=0x10000000,
+    parser.add_argument("-m", "--maxsize", type=AddressUtil.parse_address, default=0x1000_0000,
                         help="maximum size of a section to be dumped. (default: 256 MB)")
     parser.add_argument("-c", "--commit", action="store_true", help="actually perform binwalk.")
     _syntax_ = parser.format_help()
