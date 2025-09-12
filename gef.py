@@ -12979,7 +12979,10 @@ class ProcessMap:
             blobs = [x.strip() for x in line.split(" ")]
             addr_start = int(blobs[0], 16)
             addr_end = int(blobs[2], 16)
-            section_name = blobs[4]
+            if len(blobs) > 4:
+                section_name = blobs[4]
+            else:
+                section_name = ""
             if "system-supplied DSO" in line:
                 filepath = "[vdso]"
             elif len(blobs) == 7:
