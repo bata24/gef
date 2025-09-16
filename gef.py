@@ -11958,7 +11958,7 @@ def is_remote_debug():
         connection = gdb.selected_inferior().connection
         if connection is None:
             return False
-        return connection and connection.type == "remote"
+        return connection and connection.type in ("remote", "extended-remote")
     except AttributeError:
         # before gdb 11.x: AttributeError: 'gdb.Inferior' object has no attribute 'connection'
         res = gdb.execute("maintenance print target-stack", to_string=True)
