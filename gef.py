@@ -70698,7 +70698,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             return
 
         node = read_int_from_memory(top + self.kmem_cache_offset_node)
-        for i in range(2, 16):
+        for i in range(1, 16):
             offset_partial = current_arch.ptrsize * i
             if is_double_link_list(node + offset_partial):
                 self.kmem_cache_node_offset_partial = offset_partial
