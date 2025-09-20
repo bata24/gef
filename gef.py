@@ -69963,6 +69963,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         help="telescope `used chunks` if layout is resolved.")
     parser.add_argument("--telescope-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
                         help="telescope `unused (freed) chunks` if layout is resolved.")
+    parser.add_argument("--slub-debug-y", action="store_true",
+                        help="assumes `CONFIG_SLUB_DEBUG=y` and dumps kmem_cache_cpu->full slabs.")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cached offset.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
@@ -70048,7 +70050,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         "       v                      +-page(numa-node)+         +-chunk---+  +-chunk---+",
         "      +-kmem_cache_node-+     | freelist       |----+    | ^       |  | ^       |",
         "      | partial         |---->| next           |--+ |    | |offset |  | |offset |",
-        "      |                 |     +----------------+  | |    | v       |  | v       |",
+        "      | (full)          |     +----------------+  | |    | v       |  | v       |",
         "      +-----------------+                         | +--->| next    |->| next    |->NULL",
         "      | ...             |  +----------------------+      +---------+  +---------+",
         "      |                 |  |",
@@ -71048,6 +71050,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         # offsetof(kmem_cache_node, partial)
         self.resolve_kmem_cache_node_offset_partial(top)
 
+        # offsetof(kmem_cache_node, full)
+        self.kmem_cache_node_offset_full = self.kmem_cache_node_offset_partial + current_arch.ptrsize * 4
+
         self.initialized = True
         return True
 
@@ -71288,13 +71293,43 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             current_partial_page = next_partial_page
         return
 
+    def walk_node_list(self, kmem_cache, kmem_cache_node, offset_list):
+        node_page_list = []
+        node_page_head = kmem_cache_node + offset_list
+        if not is_valid_addr(node_page_head):
+            return node_page_list
+        current_node_page = read_int_from_memory(node_page_head)
+        while current_node_page != node_page_head:
+            node_page = {}
+            node_page["address"] = current_node_page - self.page_offset_next
+            if not is_valid_addr(node_page["address"]):
+                node_page_list.append(node_page)
+                break
+            x = read_int_from_memory(node_page["address"] + self.page_offset_inuse_objects_frozen)
+            node_page["inuse"] = x & 0xffff
+            node_page["objects"] = (x >> 16) & 0x7fff
+            if node_page["objects"] == 0 or node_page["inuse"] > node_page["objects"]:
+                break # something is wrong
+            node_page["frozen"] = (x >> 31) & 1
+            node_chunk = read_int_from_memory(node_page["address"] + self.page_offset_freelist)
+            node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache)
+            node_page["num_pages"] = (
+                kmem_cache["size"] * node_page["objects"] + gef_getpagesize_mask_low()
+            ) // gef_getpagesize()
+            node_page["virt_addr"] = self.page2virt(node_page, kmem_cache)
+            node_page_list.append(node_page)
+            current_node_page = read_int_from_memory(node_page["address"] + self.page_offset_next)
+        return node_page_list
+
     def walk_caches_node_page(self, cpu, kmem_cache):
         if not self.kmem_cache_offset_node:
             return
         if not self.kmem_cache_node_offset_partial:
             return
 
-        kmem_cache["nodes"] = []
+        kmem_cache["nodes_partial"] = []
+        if self.args.slub_debug_y:
+            kmem_cache["nodes_full"] = []
         kmem_cache_node_array = kmem_cache["address"] + self.kmem_cache_offset_node
         current_kmem_cache_node_ptr = kmem_cache_node_array
         while True:
@@ -71305,32 +71340,20 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 break
             if current_kmem_cache_node & 0b111:
                 break
-            node_page_list = []
-            node_page_head = current_kmem_cache_node + self.kmem_cache_node_offset_partial
-            if not is_valid_addr(node_page_head):
-                break
-            current_node_page = read_int_from_memory(node_page_head)
-            while current_node_page != node_page_head:
-                node_page = {}
-                node_page["address"] = current_node_page - self.page_offset_next
-                if not is_valid_addr(node_page["address"]):
-                    node_page_list.append(node_page)
-                    break
-                x = read_int_from_memory(node_page["address"] + self.page_offset_inuse_objects_frozen)
-                node_page["inuse"] = x & 0xffff
-                node_page["objects"] = (x >> 16) & 0x7fff
-                if node_page["objects"] == 0 or node_page["inuse"] > node_page["objects"]:
-                    break # something is wrong
-                node_page["frozen"] = (x >> 31) & 1
-                node_chunk = read_int_from_memory(node_page["address"] + self.page_offset_freelist)
-                node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache)
-                node_page["num_pages"] = (
-                    kmem_cache["size"] * node_page["objects"] + gef_getpagesize_mask_low()
-                ) // gef_getpagesize()
-                node_page["virt_addr"] = self.page2virt(node_page, kmem_cache)
-                node_page_list.append(node_page)
-                current_node_page = read_int_from_memory(node_page["address"] + self.page_offset_next)
-            kmem_cache["nodes"].append(node_page_list)
+
+            # node list (partial)
+            node_page_list_partial = self.walk_node_list(
+                kmem_cache, current_kmem_cache_node, self.kmem_cache_node_offset_partial,
+            )
+            kmem_cache["nodes_partial"].append(node_page_list_partial)
+
+            # node list (full; exists when CONFIG_SLUB_DEBUG=y)
+            if self.args.slub_debug_y:
+                node_page_list_full = self.walk_node_list(
+                    kmem_cache, current_kmem_cache_node, self.kmem_cache_node_offset_full,
+                )
+                kmem_cache["nodes_full"].append(node_page_list_full)
+
             current_kmem_cache_node_ptr += current_arch.ptrsize
         return
 
@@ -71652,18 +71675,34 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         self.out.append("        (end of the list)")
 
             # dump nodes
-            if self.dump_target_node and "nodes" in kmem_cache:
-                for node_index, node_page_list in enumerate(kmem_cache["nodes"]):
+            if self.dump_target_node and "nodes_partial" in kmem_cache:
+                for node_index, node_page_list_partial in enumerate(kmem_cache["nodes_partial"]):
                     node_addr = read_int_from_memory(
                         kmem_cache["address"] + self.kmem_cache_offset_node + current_arch.ptrsize * node_index,
                     )
                     self.out.append("    kmem_cache_node[{:d}]: {:#x}".format(node_index, node_addr))
+
+                    # node list (patial)
                     printed_count = 0
-                    for node_page in node_page_list:
+                    for node_page in node_page_list_partial:
                         self.dump_page(node_page, kmem_cache, "node")
                         printed_count += 1
                     if printed_count == 0:
-                        self.out.append("      {:s}: (none)".format(Color.colorify("node pages", label_inactive_color)))
+                        self.out.append("      {:s}: (none)".format(
+                            Color.colorify("node pages", label_inactive_color),
+                        ))
+
+                    # node list (full; exists when CONFIG_SLUB_DEBUG=y)
+                    if "nodes_full" in kmem_cache:
+                        node_page_list_full = kmem_cache["nodes_full"][node_index]
+                        printed_count = 0
+                        for node_page in node_page_list_full:
+                            self.dump_page(node_page, kmem_cache, "node (full)")
+                            printed_count += 1
+                        if printed_count == 0:
+                            self.out.append("      {:s}: (none)".format(
+                                Color.colorify("node (full) pages", label_inactive_color),
+                            ))
 
             self.out.append("    next: {:#x}".format(kmem_cache["next"]))
         return
