@@ -779,6 +779,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/crc32rev.png)
 - `vdump`: visualizes memory data like an image.
     - ![](images/vdump.png)
+- `freq-analysis`: visualizes the frequency of occurrence of each byte.
 - `qemu-system-memory-region-dump`: dumps memory regions for `qemu-system`.
     - ![](images/qemu-system-memory-region-dump.png)
 - `find-syscall`: searches the syscall gadget.

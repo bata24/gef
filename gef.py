@@ -100354,6 +100354,111 @@ class SixelMemoryCommand(GenericCommand):
 
 
 @register_command
+class FreqencyAnalysisCommand(GenericCommand, BufferingOutput):
+    """Visualize the frequency of occurrence of each byte."""
+
+    _cmdline_ = "freq-analysis"
+    _category_ = "03-g. Memory - Investigation"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
+                        help="start address to analyze.")
+    parser.add_argument("size", metavar="SIZE", nargs="?", type=AddressUtil.parse_address,
+                        help="the size to analyze; if omitted, calculated from the end of the area.")
+    parser.add_argument("--topn", type=AddressUtil.parse_address, default=16,
+                        help="outputs the top N numbers. (default: %(default)s)")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    _syntax_ = parser.format_help()
+
+    def hist256(self, data):
+        h = [0] * 256
+        for b in data:
+            h[b] += 1
+        return h
+
+    def print_heatmap(self, h):
+        GRAD = ".:-=+*$#%@"
+
+        def scale_to_grad(value, vmax):
+            if vmax <= 0:
+                return GRAD[0]
+            idx = int((value * (len(GRAD) - 1)) / vmax)
+            return GRAD[idx]
+
+        legend = "Legend: [few] {!r} [many]".format(GRAD)
+        self.out.append(legend)
+
+        col_labels = "   " + " ".join(f"{x:X}" for x in range(16))
+        self.out.append(col_labels)
+
+        vmax = max(h) if h else 0
+        for hi in range(16):
+            line = [f"{hi:X} "]
+            for lo in range(16):
+                idx = (hi << 4) | lo
+                ch = scale_to_grad(h[idx], vmax)
+                line.append(ch * 1)
+            self.out.append(" ".join(line))
+
+        self.out.append(f"Total bytes: {sum(h)}  Max bin count: {vmax}")
+        self.out.append("")
+        return
+
+    def top_n(self, h, n):
+        order = sorted(range(256), key=lambda b: (-h[b], b))
+        rows = []
+        for i in range(min(n, 256)):
+            b = order[i]
+            c = h[b]
+            if c == 0:
+                break
+            rows.append((b, c))
+        return rows
+
+    def print_top_n(self, h, n):
+        rows = self.top_n(h, n)
+        if not rows:
+            self.out.append("No data.")
+            return
+        maxc = rows[0][1]
+        width = 40
+        self.out.append("Top frequencies:")
+        for b, c in rows:
+            bar_len = int(width * c / maxc) if maxc > 0 else 0
+            bar = "#" * bar_len
+            self.out.append(f"  {b:02X}: {c:>10d} |{bar}")
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    def do_invoke(self, args):
+
+        if args.size is None:
+            loc = ProcessMap.lookup_address(args.location)
+            if loc.valid:
+                size = loc.section.page_end - args.location
+            else:
+                err("The size could not be calculated")
+                return
+        else:
+            size = args.size
+
+        try:
+            data = read_memory(args.location, size)
+        except (gdb.MemoryError, MemoryError, TypeError):
+            err("Memory read error")
+            return
+
+        self.out = []
+        hist = self.hist256(data)
+        self.print_heatmap(hist)
+        self.print_top_n(hist, self.args.topn)
+
+        self.print_output()
+        return
+
+
+@register_command
 class VisualDumpCommand(GenericCommand):
     """Visualize memory data like an image."""
 
