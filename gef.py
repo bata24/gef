@@ -2728,6 +2728,16 @@ class Elf:
 class Instruction:
     """GEF representation of a CPU instruction."""
 
+    RE_SPLIT_LAST_OPERAND_X86_64 = re.compile(r"(.*?)\s+(#.+)$")
+    RE_SPLIT_LAST_OPERAND_ARM64 = re.compile(r"//.+$")
+    RE_SPLIT_LAST_OPERAND_ARM32 = re.compile(r";.+$")
+    RE_SPLIT_LAST_OPERAND_MICROBLAZE = re.compile(r"//.+$")
+    RE_SPLIT_LAST_OPERAND_LOONGARCH64 = re.compile(r"(# .*)$")
+    RE_SPLIT_ELEM = re.compile(r"([*%\[\](): ]|(?<![#@%])(?<=.)[-+]|<.+>)")
+    RE_IS_DIGIT_COMMENT = re.compile(r"#?-?(0x[0-9a-f]+|\d+)")
+    RE_SPLIT_SYMBOL = re.compile(r"(.*?)<(.+)>(.*)$")
+    RE_SPLIT_SYMBOL_OFFSET = re.compile(r"(.+)\+(\d+)$")
+
     def __init__(self, address, location, mnemo, operands, opcodes):
         # example:
         #   address: 0x55555555a7d0
@@ -2757,7 +2767,124 @@ class Instruction:
         self.opcodes = opcodes
         return
 
+    @property
+    def is_branch(self):
+        if hasattr(self, "__is_branch"):
+            return self.__is_branch
+
+        if current_arch.is_syscall(self):
+            self.__is_branch = True
+        elif current_arch.is_call(self):
+            self.__is_branch = True
+        elif current_arch.is_jump(self):
+            self.__is_branch = True
+        elif current_arch.is_ret(self):
+            self.__is_branch = True
+        elif current_arch.is_conditional_branch(self):
+            self.__is_branch = True
+        else:
+            self.__is_branch = False
+        return self.__is_branch
+
+    def get_color(self, highlight, config_name):
+        if highlight:
+            return Config.get_gef_setting(config_name + "_highlight")
+        else:
+            return Config.get_gef_setting(config_name)
+
+    def get_string_if_valid_addr(self, operands):
+        if not operands:
+            return None
+        last_operand = operands[-1]
+        if " " in last_operand:
+            last_operand = last_operand.split()[-1]
+        if len(last_operand) < 10: # 0xXXXXXXXX or 0xXXXXXXXXXXXXXXXX
+            return None
+        try:
+            v = int(last_operand, 0)
+        except ValueError:
+            return None
+        if not is_valid_addr(v):
+            return None
+        s = read_cstring_from_memory(v)
+        return s
+
+    def split_last_operands(self, operands):
+        if len(operands) == 0:
+            return [], ""
+
+        comment = ""
+        last_operand = operands[-1]
+        if is_x86_64():
+            r = self.RE_SPLIT_LAST_OPERAND_X86_64.match(last_operand) # r"(.*?)\s+(#.+)$"
+            if r:
+                last_operand = r.group(1)
+                comment = r.group(2)
+                operands = operands[:-1] + [last_operand]
+        elif is_arm64():
+            r = self.RE_SPLIT_LAST_OPERAND_ARM64.match(last_operand) # r"//.+$"
+            if r:
+                comment = last_operand
+                operands = operands[:-1]
+        elif is_arm32() or is_arm32_cortex_m():
+            r = self.RE_SPLIT_LAST_OPERAND_ARM32.match(last_operand) # r";.+$"
+            if r:
+                comment = last_operand
+                operands = operands[:-1]
+        elif is_microblaze():
+            r = self.RE_SPLIT_LAST_OPERAND_MICROBLAZE.match(last_operand) # r"//.+$"
+            if r:
+                comment = last_operand
+                operands = operands[:-1]
+        elif is_loongarch64():
+            r = self.RE_SPLIT_LAST_OPERAND_LOONGARCH64.match(last_operand) # r"(# .*)$"
+            if r:
+                comment = r.group(1)
+                operands = operands[:-1]
+        return operands, comment
+
+    def colored_operands_text(self, highlight, operands):
+        color_operands_normal = self.get_color(highlight, "theme.disassemble_operands_normal")
+        color_operands_const = self.get_color(highlight, "theme.disassemble_operands_const")
+        color_operands_symbol = self.get_color(highlight, "theme.disassemble_operands_symbol")
+
+        # extract -> coloring -> join
+        colored_operands = []
+        for o1 in operands:
+            colored_o1 = []
+            # split by *, [, ], (, ), %, :, space, non-first +, - (without #, @, %), <...>
+            for o2 in self.RE_SPLIT_ELEM.split(o1): # r"([*%\[\](): ]|(?<![#@%])(?<=.)[-+]|<.+>)"
+                o2 = o2.strip()
+                if o2 == "":
+                    continue
+                if o2[0] == "<":
+                    colored_o1.append(self.hexlify_symbol_offset(o2))
+                    colored_o1.append(" ")
+                elif o2 in ["-", "+", "*"]:
+                    colored_o1.append(Color.colorify(o2, color_operands_symbol))
+                    colored_o1.append(" ")
+                elif o2 in [":", "%"]:
+                    if colored_o1 and colored_o1[-1] == " ":
+                        colored_o1 = colored_o1[:-1]
+                    colored_o1.append(Color.colorify(o2, color_operands_symbol))
+                elif o2 in ["[", "("]:
+                    colored_o1.append(Color.colorify(o2, color_operands_symbol))
+                elif o2 in ["]", ")"]:
+                    if colored_o1 and colored_o1[-1] == " ":
+                        colored_o1 = colored_o1[:-1]
+                    colored_o1.append(Color.colorify(o2, color_operands_symbol))
+                elif self.RE_IS_DIGIT_COMMENT.match(o2): # r"#?-?(0x[0-9a-f]+|\d+)"
+                    colored_o1.append(Color.colorify(o2, color_operands_const))
+                    colored_o1.append(" ")
+                else:
+                    colored_o1.append(Color.colorify(o2, color_operands_normal))
+                    colored_o1.append(" ")
+            colored_operands.append("".join(colored_o1).strip())
+        operands_text = Color.colorify(", ", color_operands_symbol).join(colored_operands)
+        return operands_text
+
     def hexlify_symbol_offset(self, x):
+        """i.e., <memcmp+20> -> <memcmp+0x14>"""
         r1 = self.RE_SPLIT_SYMBOL.match(x) # r"(.*?)<(.+)>(.*)$"
         if not r1:
             return x
@@ -2768,16 +2895,6 @@ class Instruction:
             sym_x = self.smartify_text(r1.group(2))
         return "{:s}<{:s}>{:s}".format(r1.group(1), sym_x, r1.group(3))
 
-    RE_SPLIT_LAST_OPERAND_X86_64 = re.compile(r"(.*?)\s+(#.+)$")
-    RE_SPLIT_LAST_OPERAND_ARM64 = re.compile(r"//.+$")
-    RE_SPLIT_LAST_OPERAND_ARM32 = re.compile(r";.+$")
-    RE_SPLIT_LAST_OPERAND_MICROBLAZE = re.compile(r"//.+$")
-    RE_SPLIT_LAST_OPERAND_LOONGARCH64 = re.compile(r"(# .*)$")
-    RE_SPLIT_ELEM = re.compile(r"([*%\[\](): ]|(?<![#@%])(?<=.)[-+]|<.+>)")
-    RE_IS_DIGIT_COMMENT = re.compile(r"#?-?(0x[0-9a-f]+|\d+)")
-    RE_SPLIT_SYMBOL = re.compile(r"(.*?)<(.+)>(.*)$")
-    RE_SPLIT_SYMBOL_OFFSET = re.compile(r"(.+)\+(\d+)$")
-
     def colored_text(self, opcodes_len=0, highlight=False, disable_color=False):
         if opcodes_len == 0:
             return str(self)
@@ -2785,155 +2902,77 @@ class Instruction:
         enable_color = not disable_color
 
         # format address
-        address = hex(self.address)
+        address_text = hex(self.address)
         # format location
-        location = self.smartify_text(self.location)
+        location_text = self.smartify_text(self.location)
 
         if enable_color:
-            if highlight:
-                color_address = Config.get_gef_setting("theme.disassemble_address_highlight")
-            else:
-                color_address = Config.get_gef_setting("theme.disassemble_address")
-            address = Color.colorify(address, color_address)
-            location = Color.colorify(location, color_address)
+            color_address = self.get_color(highlight, "theme.disassemble_address")
+            address_text = Color.colorify(address_text, color_address)
+            location_text = Color.colorify(location_text, color_address)
 
         # format opcode
-        opcodes_text = "".join("{:02x}".format(b) for b in self.opcodes) # e.g., "488d0de51e0100"
+        opcodes_hex = "".join("{:02x}".format(b) for b in self.opcodes) # e.g., "488d0de51e0100"
         # e.g., len=4: opcodes:01020304   -> 01020304
         # e.g., len=4: opcodes:0102030405 -> 010203..
         if opcodes_len < len(self.opcodes):
-            opcodes_text = opcodes_text[:opcodes_len * 2 - 2] + ".."
+            opcodes_hex = opcodes_hex[:opcodes_len * 2 - 2] + ".."
+        opcodes_hex = "{:{:d}}".format(opcodes_hex, opcodes_len * 2)
 
-        opcodes_text = "{:{:d}}".format(opcodes_text, opcodes_len * 2)
         if enable_color:
-            if highlight:
-                color_opcode = Config.get_gef_setting("theme.disassemble_opcode_highlight")
-            else:
-                color_opcode = Config.get_gef_setting("theme.disassemble_opcode")
-            opcodes_text = Color.colorify(opcodes_text, color_opcode)
+            color_opcode = self.get_color(highlight, "theme.disassemble_opcode")
+            opcodes_hex = Color.colorify(opcodes_hex, color_opcode)
 
         # format mnemonic
-        if current_arch.is_syscall(self):
-            is_branch = True
-        elif current_arch.is_call(self):
-            is_branch = True
-        elif current_arch.is_jump(self):
-            is_branch = True
-        elif current_arch.is_ret(self):
-            is_branch = True
-        elif current_arch.is_conditional_branch(self):
-            is_branch = True
-        else:
-            is_branch = False
+        mnemonic_text = "{:6s}".format(self.mnemonic)
 
-        mnemonic = "{:6s}".format(self.mnemonic)
         if enable_color:
-            if is_branch:
-                if highlight:
-                    color_mnemonic = Config.get_gef_setting("theme.disassemble_mnemonic_branch_highlight")
-                else:
-                    color_mnemonic = Config.get_gef_setting("theme.disassemble_mnemonic_branch")
+            if self.is_branch:
+                color_mnemonic = self.get_color(highlight, "theme.disassemble_mnemonic_branch")
             else:
-                if highlight:
-                    color_mnemonic = Config.get_gef_setting("theme.disassemble_mnemonic_normal_highlight")
-                else:
-                    color_mnemonic = Config.get_gef_setting("theme.disassemble_mnemonic_normal")
-            mnemonic = Color.colorify(mnemonic, color_mnemonic)
+                color_mnemonic = self.get_color(highlight, "theme.disassemble_mnemonic_normal")
+            mnemonic_text = Color.colorify(mnemonic_text, color_mnemonic)
 
-        # break down last operands
-        operands = self.operands[::]
-
-        # ;, #, //
-        additional_1 = ""
-        if len(operands) > 0:
-            last_operands = operands[-1]
-            if is_x86_64():
-                r = self.RE_SPLIT_LAST_OPERAND_X86_64.match(last_operands) # r"(.*?)\s+(#.+)$"
-                if r:
-                    last_operands = r.group(1)
-                    additional_1 = r.group(2)
-                    operands = operands[:-1] + [last_operands]
-            elif is_arm64():
-                r = self.RE_SPLIT_LAST_OPERAND_ARM64.match(last_operands) # r"//.+$"
-                if r:
-                    additional_1 = last_operands
-                    operands = operands[:-1]
-            elif is_arm32() or is_arm32_cortex_m():
-                r = self.RE_SPLIT_LAST_OPERAND_ARM32.match(last_operands) # r";.+$"
-                if r:
-                    additional_1 = last_operands
-                    operands = operands[:-1]
-            elif is_microblaze():
-                r = self.RE_SPLIT_LAST_OPERAND_MICROBLAZE.match(last_operands) # r"//.+$"
-                if r:
-                    additional_1 = last_operands
-                    operands = operands[:-1]
-            elif is_loongarch64():
-                r = self.RE_SPLIT_LAST_OPERAND_LOONGARCH64.match(last_operands) # r"(# .*)$"
-                if r:
-                    additional_1 = r.group(1)
-                    operands = operands[:-1]
-
-        additional_1 = self.hexlify_symbol_offset(additional_1)
+        # split last operand by ;, #, //
+        operands_array, comment = self.split_last_operands(self.operands[::])
+        comment = self.hexlify_symbol_offset(comment)
 
         # format operands
         if enable_color:
-            if highlight:
-                color_operands_normal = Config.get_gef_setting("theme.disassemble_operands_normal_highlight")
-                color_operands_const = Config.get_gef_setting("theme.disassemble_operands_const_highlight")
-                color_operands_symbol = Config.get_gef_setting("theme.disassemble_operands_symbol_highlight")
-            else:
-                color_operands_normal = Config.get_gef_setting("theme.disassemble_operands_normal")
-                color_operands_const = Config.get_gef_setting("theme.disassemble_operands_const")
-                color_operands_symbol = Config.get_gef_setting("theme.disassemble_operands_symbol")
-
-            # extract -> coloring -> join
-            colored_operands = []
-            for o1 in operands:
-                colored_o1 = []
-                # split by *, [, ], (, ), %, :, space, non-first +, - (without #, @, %), <...>
-                for o2 in self.RE_SPLIT_ELEM.split(o1): # r"([*%\[\](): ]|(?<![#@%])(?<=.)[-+]|<.+>)"
-                    o2 = o2.strip()
-                    if o2 == "":
-                        continue
-                    if o2[0] == "<":
-                        colored_o1.append(self.hexlify_symbol_offset(o2))
-                        colored_o1.append(" ")
-                    elif o2 in ["-", "+", "*"]:
-                        colored_o1.append(Color.colorify(o2, color_operands_symbol))
-                        colored_o1.append(" ")
-                    elif o2 in [":", "%"]:
-                        if colored_o1 and colored_o1[-1] == " ":
-                            colored_o1 = colored_o1[:-1]
-                        colored_o1.append(Color.colorify(o2, color_operands_symbol))
-                    elif o2 in ["[", "("]:
-                        colored_o1.append(Color.colorify(o2, color_operands_symbol))
-                    elif o2 in ["]", ")"]:
-                        if colored_o1 and colored_o1[-1] == " ":
-                            colored_o1 = colored_o1[:-1]
-                        colored_o1.append(Color.colorify(o2, color_operands_symbol))
-                    elif self.RE_IS_DIGIT_COMMENT.match(o2): # r"#?-?(0x[0-9a-f]+|\d+)"
-                        colored_o1.append(Color.colorify(o2, color_operands_const))
-                        colored_o1.append(" ")
-                    else:
-                        colored_o1.append(Color.colorify(o2, color_operands_normal))
-                        colored_o1.append(" ")
-                colored_operands.append("".join(colored_o1).strip())
-            operands = Color.colorify(", ", color_operands_symbol).join(colored_operands)
+            operands_text = self.colored_operands_text(highlight, operands_array)
         else:
-            operands = ", ".join(operands)
+            operands_text = ", ".join(operands_array)
 
         # the case that gdb does not append symbol but symbol exists
-        if is_branch:
-            if "<" not in operands and "<" not in additional_1:
+        if self.is_branch:
+            if "<" not in operands_text and "<" not in comment:
                 if self.operands and self.operands[-1]:
                     addr = ContextCodeCommand.get_branch_addr(self)
-                    sym = Symbol.get_symbol_string(addr).lstrip()
-                    additional_1 = sym
+                    # Not using += is intentional; useless comments are discarded
+                    comment = Symbol.get_symbol_string(addr).lstrip()
+
+        # add strings
+        if not self.is_branch:
+            if not comment:
+                s = self.get_string_if_valid_addr(operands_array)
+            else:
+                s = self.get_string_if_valid_addr([comment])
+            if s:
+                if enable_color:
+                    string_color = Config.get_gef_setting("theme.dereference_string")
+                    if len(s) < current_arch.ptrsize:
+                        comment += " ({:s}?)".format(Color.colorify(repr(s), string_color))
+                    else:
+                        comment += " ({:s})".format(Color.colorify(repr(s), string_color))
+                else:
+                    if len(s) < current_arch.ptrsize:
+                        comment += " ({:s}?)".format(repr(s))
+                    else:
+                        comment += " ({:s})".format(repr(s))
 
         # formatting
         out = "{:s} {:s} {:s}   {:s} {:s} {:s}".format(
-            address, opcodes_text, location, mnemonic, operands, additional_1,
+            address_text, opcodes_hex, location_text, mnemonic_text, operands_text, comment,
         ).rstrip()
         return out
 
