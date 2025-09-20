@@ -175,22 +175,23 @@ This is not officially supported.
 
 However, the following configuration might work:
 ```
-# Please replace the username and path as appropriate
+# First, download GEF install script
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -P /tmp
 
-# First, install GEF as root
-wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sudo sh
+# apt-get install as root
+sudo apt-get update
+sudo apt-get install <needed-package>   # see /tmp/install-uv.sh
 
-# Move .gef (including gef.py, .venv-gef, etc.)
-mv /root/.gef /home/user
+# 1. replace GDBINIT_PATH and GEF_DIR as you wanted
+# 2. remove root user check
+# 3. remove apt-get install
+vim /tmp/install-uv.sh
 
-# Edit .gef/gef.venv.conf (if it exists)
-sed -i -e 's#/root#/home/user#' /home/user/.gef/gef.venv.conf
-
-# Edit .gdbinit to load GEF
-echo 'python sys.path.insert(0, "/home/user/.gef"); from gef import *; Gef.main()' >> /home/user/.gdbinit
+# install
+sh /tmp/install-uv.sh
 
 # Delete /tmp/gef directory (if it exists)
-rm -rf /tmp/gef
+sudo rm -rf /tmp/gef
 ```
 
 Alternative simple method (no-external tools, load simply):
