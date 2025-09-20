@@ -100364,7 +100364,7 @@ class VisualDumpCommand(GenericCommand):
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="start address to dump.")
     parser.add_argument("size", metavar="SIZE", nargs="?", type=AddressUtil.parse_address,
-                        help="the size to dump.")
+                        help="the size to dump; if omitted, calculated from the end of the area.")
     parser.add_argument("-d", "--disable-autoscale", action="store_true",
                         help="disable autoscaling to fit the terminal.")
     parser.add_argument("-w", "--width", type=AddressUtil.parse_address,
@@ -100447,8 +100447,18 @@ class VisualDumpCommand(GenericCommand):
             err("{}".format(e))
             return
 
+        if args.size is None:
+            loc = ProcessMap.lookup_address(args.location)
+            if loc.valid:
+                size = loc.section.page_end - args.location
+            else:
+                err("The size could not be calculated")
+                return
+        else:
+            size = args.size
+
         try:
-            data = read_memory(args.location, args.size)
+            data = read_memory(args.location, size)
         except (gdb.MemoryError, MemoryError, TypeError):
             err("Memory read error")
             return
