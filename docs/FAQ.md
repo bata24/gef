@@ -17,7 +17,9 @@
 # About GEF's Files or Directories
 
 ## Where is `gef.py`?
-By default, GEF (`gef.py`) is placed at `/root/.gef/gef.py`. GEF consists of a single file.
+By default, GEF (`gef.py`) is placed at `/root/.gef/gef.py`.
+
+GEF is primarily a single file (`gef.py`). Optional configuration and helper files may accompany it.
 
 ## What is `~/.gef.rc`?
 This is the GEF configuration file. It is not present by default.
@@ -30,7 +32,7 @@ This includes the current values of items configurable with `gef config` and use
 This is the command file that GDB will execute when it starts up.
 
 By including the following command to load `gef.py`, GEF will be loaded automatically.
-There are two styles for writing `.gdbinit`; either one works.
+There are two ways to load GEF from `.gdbinit`; either one works.
 ```
 # New style
 python sys.path.insert(0, "/root/.gef"); from gef import *; Gef.main()
@@ -42,12 +44,9 @@ source /root/.gef/gef.py
 source /root/.gdbinit-gef.py  # In the old installer, GEF was located here
 ```
 
-The former (new style) imports GEF using Python.
-Because a `*.pyc` file is generated and cached, subsequent startups are faster.
-This is the default setting in recent versions of GEF.
-
-The latter (old style) is the traditional method, where GEF is loaded directly.
-It takes longer to load each time, but the command is simpler.
+Notes:
+- The former (new style) imports GEF using Python. Because a `*.pyc` file is generated and cached, subsequent startups are faster. This is the default setting in recent versions of GEF.
+- The latter (old style) is the traditional method, where GEF is loaded directly. It takes longer to load each time, but the command is simpler.
 
 ## What is `/tmp/gef`?
 This is the directory where GEF temporarily stores files.
@@ -57,79 +56,65 @@ It will be created automatically the next time GEF starts.
 
 The variable `GEF_TEMP_DIR` is defined in `gef.py` and can be changed if necessary.
 
+## What is `install-uv.sh`?
+This is the new installer that creates and uses a Python virtual environment (`venv`).
+
+It installs the same packages as `install.sh`.
+The key difference is that Python packages are installed into the virtual environment (`venv`).
+
+By default, it installs into `/root/.gef/.venv-gef`.
+External tools such as `rp++`(`rp-lin`), `seccomp-tools`, etc. are also installed under this directory (`/root/.gef/.venv-gef/bin`).
+
+Usage:
+```
+# Run the following commands as `root` or `sudo`
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sudo sh
+```
+
 ## What is `install.sh`?
-This is the installer that was used before the `uv`-based installation became available.
+This is the old installer that was used before the `uv`-based installation became available.
 
 This installer is not currently recommended, but it still works.
 
 Usage:
 ```
-# Run the following commands as `root`
+# Run the following commands as `root` or `sudo`
 
 # On Ubuntu 23.04 or later, global Python package installation via pip3 is restricted.
 # Use the --break-system-packages option.
 wget -q https://raw.githubusercontent.com/bata24/gef/dev/install.sh -O- \
-| sed -e 's/pip3 install/pip3 install --break-system-packages/g' | sh
+| sed -e 's/pip3 install/pip3 install --break-system-packages/g' | sudo sh
 
 # For Ubuntu 22.10 or earlier
-wget -q https://raw.githubusercontent.com/bata24/gef/dev/install.sh -O- | sh
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install.sh -O- | sudo sh
 ```
 
 ## What is `install-minimal.sh`?
 This is an installer for running GEF in restricted environments where required packages cannot be installed due to various limitations.
 
-Usage:
-```
-# Run the following commands as `root`
-
-# For any Ubuntu version
-wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-minimal.sh -O- | sh
-```
-
-Use this if you do not require all features (it is suitable for restricted environments).
-It should work for most functionality, though some commands may not be available.
-
-The process is straightforward: download `gef.py`, place it in the appropriate location, and add a line to `.gdbinit` to load it.
-You can also do the same thing manually.
-
-Since it will not install any Python packages, it will not create a `venv`.
-
-## What are `install-venv.sh` and `install-uv.sh`?
-These are the virtual environment (`venv`) versions of `install.sh`.
-
-They will install the same packages as `install.sh`.
-The only difference is that Python packages will be installed into the `venv` environment.
-
-By default, they will be installed into `/root/.gef/.venv-gef`.
-External tools such as `rp-lin`, `seccomp-tools`, etc. are also installed under this directory (`/root/.gef/.venv-gef/bin`).
-
-`install-uv.sh` uses `uv` instead of `python3-{venv,pip}` to install, so it is faster.
+Most core features work, but commands that depend on extra Python packages or external tools will be unavailable.
 
 Usage:
 ```
-# Run the following commands as `root`
-
-# For any Ubuntu version
-
-# If you want to install using python3-venv + python3-pip
-wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-venv.sh -O- | sh
-
-# If you want to install using uv
-wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sh
+# Run the following commands as `root` or `sudo`
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-minimal.sh -O- | sudo sh
 ```
+
+Notes:
+- The process is straightforward: download `gef.py`, place it in the appropriate location, and add a line to `.gdbinit` to load it. You can also do the same thing manually.
+- Because it does not install any Python packages, it does not create a `venv`.
 
 ## What is `gef.venv.conf`?
-This is a path information file required by GEF if you installed GEF using `install-venv.sh` or `install-uv.sh`.
+This is a path information file required by GEF if you installed GEF using `install-uv.sh`.
 It is not generated if you use `install.sh` or `install-minimal.sh`.
 Place this file in the same directory as `gef.py`.
 
 It contains three pieces of path information:
 - `GEF_VENV_GEM_HOME`
-    - By default, tools installed via `gem` will not work.
-    - GEF will set this specified path as the `GEM_HOME` environment variable.
+    - Sets `GEM_HOME` so Ruby `gem`-installed tools can be discovered and used by GEF.
 - `GEF_VENV_SYS_PATH`
-    - By default, GEF searches for globally installed Python packages.
-    - GEF will prepend this specified path to the package search directories.
+    - By default, GEF searches globally installed Python packages.
+    - Prepend this path to `sys.path` so that packages inside the `venv` take precedence.
 - `GEF_VENV_BIN_PATH`
     - By default, GEF searches for executables using the `$PATH` environment variable (the actual process is a bit more complicated).
     - GEF will prepend the specified path to the search directories before searching.
@@ -138,17 +123,13 @@ It contains three pieces of path information:
 # About the Installation
 
 ## How many ways are there to install GEF?
-There are four types of installers.
+There are three installers.
 
 - `uv`-based install
     - This is the installation method provided by `install-uv.sh`.
     - This uses `uv` to install Python packages into an isolated environment.
     - This is a full installation, so you can use all the features that GEF provides.
     - This is the currently recommended installer for GEF, because it is faster than the other methods.
-- `venv + pip`-based install
-    - This is the installation method provided by `install-venv.sh`.
-    - This uses `python3-venv` and `python3-pip` to install Python packages into an isolated environment.
-    - This is a full installation, so you can use all the features that GEF provides.
 - Minimal install
     - This is the installation method provided by `install-minimal.sh`.
     - Simply download `gef.py` and place it in the appropriate location.
@@ -162,18 +143,9 @@ There are four types of installers.
 
 For an explanation of each installer, see [About GEF's Files or Directories](#about-gefs-files-or-directories).
 
-## How to change the location of GEF?
-Move `/root/.gef`, then edit `/root/.gdbinit` and `/root/.gef/gef.venv.conf`.
+## How to change the location of GEF? / How can I run GEF as a non-`root` user?
+This is not officially supported; proceed at your own risk. Future updates may break this workflow.
 
-If `gef.venv.conf` does not exist, no changes are necessary. This file exists only if you used `install-uv.sh` or `install-venv.sh` to install GEF.
-
-With appropriate modifications (see following), it will probably work for normal user (non-`root` user) as well, but it is not recommended.
-Because the development has been conducted with `root` user, and operation with non-`root` user has not been verified.
-
-## How can I run GEF as a non-`root` user?
-This is not officially supported.
-
-However, the following configuration might work:
 ```
 # First, download GEF install script
 wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -P /tmp
@@ -194,7 +166,7 @@ sh /tmp/install-uv.sh
 sudo rm -rf /tmp/gef
 ```
 
-Alternative simple method (no-external tools, load simply):
+Alternative simple method (no external tools; simple loading):
 
 ```
 # Download
@@ -204,13 +176,9 @@ wget -q https://raw.githubusercontent.com/bata24/gef/dev/gef.py -O ~/.gdbinit-ge
 echo "source $HOME/.gdbinit-gef.py" >> ~/.gdbinit
 ```
 
-
-## How can I install GEF offline?
-Please refer to [`install.sh`](../install.sh) or [`install-minimal.sh`](../install-minimal.sh) for dependencies and other requirements, and set them up manually.
-
-Note: GEF is designed to have as few dependencies as possible.
-Many commands should work with just `gef.py` without any additional external tools.
-If you do not install external tools, the features that will not be available are listed below.
+Notes:
+- GEF is designed to have as few dependencies as possible. Many commands should work with just `gef.py` without any additional external tools.
+- If you do not install external tools, the features that will not be available are listed below.
 
 ## If I do not install external tools, which commands will no longer be available?
 The following is a breakdown. It may not be comprehensive.
@@ -242,11 +210,11 @@ To use these commands fully, you need to manually install the necessary packages
 |`capstone-disassemble`|-|`capstone`|-|
 |`dasm`|-|`capstone`|-|
 |`i8086` mode|-|`capstone`|-|
-|`unicorn-emulate`|-|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
-|`heap try-free`|-|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
-|`heap try-malloc`|-|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
-|`heap try-realloc`|-|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
-|`heap try-calloc`|-|`capstone`, `unicorn`, `setuptools`(python 3.12~)|-|
+|`unicorn-emulate`|-|`capstone`, `unicorn`, `setuptools`(python 3.12+)|-|
+|`heap try-free`|-|`capstone`, `unicorn`, `setuptools`(python 3.12+)|-|
+|`heap try-malloc`|-|`capstone`, `unicorn`, `setuptools`(python 3.12+)|-|
+|`heap try-realloc`|-|`capstone`, `unicorn`, `setuptools`(python 3.12+)|-|
+|`heap try-calloc`|-|`capstone`, `unicorn`, `setuptools`(python 3.12+)|-|
 |`asm`|-|`keystone-engine`|-|
 |`base-n-decode`|-|`codext`|-|
 |`base-n-encode`|-|`codext`|-|
@@ -265,7 +233,7 @@ If you do not use the `binwalk-memory` command, you do not need to install `binw
 # About the Host Environment
 
 ## Does GEF work properly on operating systems other than Ubuntu?
-Yes, it likely works well on most standard Linux distributions.
+Yes, it generally works on most standard Linux distributions; however, not every command is validated on every distribution.
 
 I have used it on Debian, and some users are running it on Arch Linux.
 It also seems to be working fine on WSL2 (Ubuntu) so far.
@@ -281,7 +249,9 @@ Similarly, this GEF cannot be used at the same time as `peda` or `pwndbg`.
 Make sure you only load one of them.
 
 ## GDB will not load GEF.
-Please start GDB as the `root` user, or run it with `sudo`.
+Start GDB as the `root` user or with `sudo`.
+By default, GEF is installed under `/root/.gef`, so non-`root` sessions will not find it unless you change the install paths or update your `.gdbinit` to point to the actual location.
+
 
 ## GDB still does not load GEF, even as the `root` user.
 It is likely that your GDB does not support integration with `python3`.
@@ -324,9 +294,8 @@ For Ubuntu 22.10 and later, it is recommended to use `debuginfod`.
     echo "set debug-file-directory /usr/lib/debug" >> ~/.gdbinit
     ```
 
-However, for some reason, `debuginfod` does not display the `glibc` source code.
-Therefore, you need to obtain and place the source code separately.
-The reason for this is not entirely clear.
+However, `debuginfod` often does not provide `glibc` source files.
+Fetch and place the `glibc` sources locally as shown below.
 
 - Get the `glibc` source
     ```
@@ -346,7 +315,7 @@ The reason for this is not entirely clear.
 # About the Guest (Debugged) Environment
 
 ## What Linux kernel versions does GEF support as guests in qemu-system?
-I have confirmed that most commands work on versions 3.x through 6.17.x.
+Most commands have been validated on kernels from 3.x up to 6.17.x. Newer kernels may work but are not fully validated.
 
 However, I have not verified every kernel version.
 For example, certain symbols in some versions may not be supported by heuristic symbol detection.
@@ -354,10 +323,10 @@ Also, the structure may differ depending on the build configuration and the comp
 Therefore, there may be environments where GEF does not work.
 If you encounter any issues, please report them on the issue page.
 
-## Is there a way to get a pre-built kernel for each version?
+## Is there a way to get a prebuilt kernel for each version?
 I use [https://kernel.ubuntu.com/](https://kernel.ubuntu.com/mainline).
 
-Download your preferred `linux-image-unsigned-*_amd64.deb` file, then extract the `/boot/vmlinuz-*` file from it.
+Download the desired `linux-image-unsigned-*_amd64.deb` and extract `/boot/vmlinuz-*` from it (e.g., with `dpkg-deb -x`).
 No filesystem image is provided. Please use one created with `buildroot` or one provided in past CTF challenges.
 
 Download the `linux-modules-*_amd64.deb` package for `System.map` and `config`.
@@ -379,12 +348,12 @@ Yes, GEF supports real mode experimentally.
 Use `qemu-system-i386`, and do NOT use `qemu-system-x86_64`.
 Explicitly specify the i8086 architecture before connecting: `gdb -ex 'set architecture i8086' -ex 'target remote localhost:1234'`.
 
-GEF automatically handles the transition between 16-bit real mode and 32-bit protected mode.
+GEF automatically handles transitions between 16-bit real mode and 32-bit protected mode, but expect limitations compared to 32/64-bit workflows.
 
 ## Does GEF support ARM Cortex-M?
 Yes, GEF supports ARM Cortex-M.
 
-It can be used to debug microcontrollers, but please note that you cannot see the memory map.
+You can debug microcontrollers, but the memory map cannot be enumerated via GDB; consult vendor documentation or SVD files for layout details.
 
 ## Is it possible to debug userland with GEF when using qemu-system?
 Partially, yes.
@@ -394,16 +363,14 @@ However, of course, I do not recommend continually debugging userland with qemu-
 This is because many commands are restricted for various reasons.
 Consider setting up `gdbserver` in the guest and connecting from the outside.
 
-Note: If KPTI is enabled, many kernel-related commands cannot be used in userland.
-This is because most memory access to kernel space is unavailable if KPTI is enabled.
+Note:
+- If KPTI is enabled, many kernel-related commands cannot be used in userland. This is because most memory access to kernel space is unavailable if KPTI is enabled.
 
 ## How do I break in userland when using qemu-system?
 Use a hardware breakpoint.
 
-When you are stopped inside the kernel, are you in the intended process context?
-If so, just use `break *ADDRESS` as usual.
-However, if you're stopped in the kernel context of a different user process than you expected, or in a kernel thread like `swapper/0`,
-the virtual address of the process you want is not mapped.
+When execution is stopped in the kernel, first ensure you are in the intended process context. If so, you can set a `break *ADDRESS` as usual.
+If execution stopped in the kernel context of a different user process than you expected, or in a kernel thread like `swapper/0`, the virtual address of the process you want is not mapped.
 For this reason, software breakpoints that embed `0xcc` in virtual memory cannot be used in some situations.
 However, hardware breakpoints can be used without any problems.
 
@@ -434,8 +401,8 @@ No, GEF does not support them.
 
 # About GEF Settings
 
-## I prefer the AT&T style.
-You can set the AT&T style for each session using the `set disassembly-flavor att` command.
+## I prefer the AT&T syntax.
+You can set the AT&T syntax for each session using the `set disassembly-flavor att` command.
 
 Alternatively, since the `set disassembly-flavor intel` command is executed in the main function of GEF, you may want to comment it out.
 However, as GEF is not optimized for AT&T syntax parsing, some commands may not function correctly.
@@ -460,10 +427,11 @@ After that, try `slub-dump`, `ktask` and `ksysctl` as well.
 Other commands are less important, so check them with `gef help` if necessary.
 
 ## Is it possible for GEF to re-display the results of a command (for using the `less` pager)?
-Basically you cannot.
+In general, no.
 
-Please save the output as needed `|$cat > /tmp/foo.txt` while the `less` pager is running.
-Or try `gef config gef.keep_pager_result True` then `gef save`.
+If you need to keep output while the `less` pager is active, use `|$cat > /tmp/foo.txt`.
+
+Alternatively, set `gef config gef.keep_pager_result True` and then `gef save`.
 From the next time onwards, temporary files will no longer be deleted.
 
 ## Is it possible for GEF to pass the result of a command to a shell command?
@@ -539,7 +507,7 @@ To resolve this, after attaching with GDB, execute either of the following:
 - `ks -rv` (resolves symbols ignoring the cache)
     - Once symbols are resolved, it remains in effect for the duration of that GDB (GEF) debug session.
 
-## The `got` command does not display PLT address.
+## The `got` command does not display PLT addresses.
 This problem is probably caused by an outdated version of `binutils`.
 
 The `got` command uses `objdump` internally to obtain the PLT addresses.
@@ -552,12 +520,10 @@ This problem occurs when you try to use a newer `glibc` in an Ubuntu 22.04 envir
 The workaround is to build and install a newer version of `binutils` from source code.
 
 ## Can I switch to a mode that references physical memory?
-Yes. It is possible if you are using qemu-system. You can switch with `pi enable_phys()` and `pi disable_phys()`.
+Yes, when using qemu-system. Switch with `pi enable_phys()` and revert with `pi disable_phys()`.
+GEF uses this internally; if a command is interrupted mid-execution, you may need to revert manually.
 
-GEF uses this function internally to switch mode.
-If the mode remains switched due to an interruption during command execution, you will need to fix it manually.
-
-## The `magic` command products few valid results.
+## The `magic` command produces few valid results.
 This is because libc symbols are not loaded.
 
 Unlike kernel symbols, userland symbols do not undergo heuristic detection (with some special exceptions).
@@ -568,9 +534,9 @@ If you are referring to system-wide `glibc`, you can resolve this with the follo
 2. Add `set debug-file-directory /usr/lib/debug` to `~/.gdbinit`.
 
 ## The command to get the source (e.g., `ptr-mangle --source`) does not work.
-Please do not use a tilde (`~`) in the path to specify the directory of `gef.py` in `.gdbinit`.
+Do not use `~` in paths that point to the `gef.py` directory in `.gdbinit`.
 
-Depending on the environment, Python's `inspect` module may not interpret tildes.
+Python’s `inspect` may not expand tildes reliably; use absolute paths instead.
 I encountered this behavior in Python 3.9.2 on Debian 11.
 
 ## When using qemu-user, an error occurs when continuing execution.
@@ -631,8 +597,8 @@ Therefore, GEF calls the `slub-dump` command internally and temporarily, then ca
 
 This is the reason why the first time the `page2virt` command runs, it takes a long time: it parses the page tables, identifies function symbols, and internally calls `slub-dump` twice.
 
-Note: The `slub-dump` command itself uses the `page` to `virt` conversion function as well, resulting in a circular reference.
-I avoid this problem by adding an option to skip this (`--skip-page2virt`).
+Note:
+- The `slub-dump` command itself uses the `page` to `virt` conversion function as well, resulting in a circular reference. GEF avoid this problem by adding an option to skip this (`--skip-page2virt`).
 
 
 # About the Python Interface
@@ -740,8 +706,8 @@ This is because three things are required:
 
 # About Reporting, etc.
 
-## After I upgraded GEF, it stopped working.
-The format of the configuration file may have changed. Try renaming `/root/.gef.rc`.
+## After upgrading GEF, it stopped working.
+The configuration file format may have changed. Try renaming `~/.gef.rc` (for the `root` user this is `/root/.gef.rc`).
 
 ## I found a bug.
 Please feel free to report it on the issue page. I will respond as soon as possible.
@@ -758,7 +724,7 @@ Please provide a screenshot or a copy of the terminal output when the issue occu
 - If the issue is related to kernel debugging, please also provide your environment files (such as `run.sh`, `bzImage`, etc.) or information on where they can be obtained.
 
 ## Is it okay to fork and modify?
-Yes. However, please follow the license.
+Yes, please follow the license terms and preserve copyright and attribution notices.
 
 
 # Other Memo (Japanese)

@@ -43,8 +43,7 @@ Numerous other commands have been added and enhanced. Enjoy!
     - To simplify installation, `gef.py` is always installed to `/root/.gef/gef.py`
     - The required Python packages are in `/root/.gef/.venv-gef`.
     - GEF's directory (`/root/.gef`) is also registered in `/root/.gdbinit`.
-    - If you want to use a different user or location, move or edit these files manually.
-    - For more installation options (no `venv`, minimal install, and using `venv + pip`), see [docs/FAQ.md](docs/FAQ.md).
+    - For more installation options (no `venv`, minimal install, and for non-`root` user), see [docs/FAQ.md](docs/FAQ.md).
 
 ### Upgrade
 ```bash
