@@ -23814,10 +23814,9 @@ class AssembleCommand(GenericCommand):
 
     @parse_args
     @load_keystone
-    @require_arch_set
     def do_invoke(self, args):
         if (args.arch, args.mode) == (None, None):
-            if is_alive():
+            if is_alive() and current_arch:
                 arch, mode = UnicornKeystoneCapstone.get_keystone_arch(
                     arch=current_arch.arch, mode=current_arch.mode, endian=Endian.is_big_endian(),
                 )
@@ -23937,10 +23936,9 @@ class DisassembleCommand(GenericCommand):
 
     @parse_args
     @load_capstone
-    @require_arch_set
     def do_invoke(self, args):
         if (args.arch, args.mode) == (None, None):
-            if is_alive():
+            if is_alive() and current_arch:
                 arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
                     arch=current_arch.arch, mode=current_arch.mode, endian=Endian.is_big_endian(),
                 )
