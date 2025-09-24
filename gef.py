@@ -30760,15 +30760,17 @@ class ContextSourceCommand(GenericCommand):
             return []
         bp_locations = []
         for b in breakpoints:
-            if hasattr(b, "locations"):
+            if hasattr(b, "locations") and b.locations:
                 for bl in b.locations:
-                    if bl.source:
+                    if bl and bl.source:
                         bp_locations.append("{:s}:{:d}".format(bl.source[0], bl.source[1]))
             else: # for old gdb
                 bp_locations.append(b.location)
         return bp_locations
 
     def line_has_breakpoint(self, file_name, line_number, bp_locations):
+        if not bp_locations:
+            return False
         filename_line = "{}:{}".format(file_name, line_number)
         return any(filename_line in loc for loc in bp_locations)
 
