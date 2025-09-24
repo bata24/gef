@@ -480,7 +480,7 @@ If it still does not work, please report it on the issue page.
 
 ## If I have a `vmlinux` with debuginfo, how can I use `ks-apply`?
 The `ks-apply` command is unnecessary.
-Run `kload <vmlinux_path>` (The `kload` command is an easy-to-use wrapper around the `add-symbol-file` command).
+Run `kload <vmlinux_path>` (The `kload` command is an easy-to-use wrapper around the `add-symbol-file` command. This automatically applies `kbase` address.)
 
 Optionally, also run `ksymaddr-remote --vmlinux-file <vmlinux_path>`.
 
@@ -489,8 +489,6 @@ Optionally, also run `ksymaddr-remote --vmlinux-file <vmlinux_path>`.
 |`vmlinux` debuginfo|- Loaded via `kload` command<br>- Essential for source-level debugging|- Unused|
 |`vmlinux` symbols|- Loaded via `kload` command<br>- Provides kernel symbol resolution|- Accessible via `ksymaddr-remote --vmlinux-file <path>`<br>- This overrides the result of parsing `kallsyms` in memory<br>- Addresses will be automatically rebased|
 |Memory-resident `kallsyms`|- Not available by default<br>- Accessible via `ks-apply` command|- Accessible after `ksymaddr-remote` command<br>- Used by various GEF commands internally|
-
-The `kload` command is a wrapper for the `add-symbol-file` command. This automatically applies `kbase` address.
 
 ## The kernel-related commands are unstable; sometimes they work fine, sometimes they don’t. / The output of `ksymaddr-remote` seems odd.
 This may be due to the GEF's caching mechanism.
