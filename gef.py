@@ -29526,7 +29526,11 @@ class ContextCommand(GenericCommand):
                 self.clear_screen(redirect)
 
             # call each context sub command
-            gdb.execute("context-{:s} {:s}".format(section, opts))
+            try:
+                gdb.execute("context-{:s} {:s}".format(section, opts))
+            except gdb.error:
+                exc_type, exc_value, exc_traceback = sys.exc_info()
+                gef_print(exc_value, redirect=redirect)
 
             # for time measurement
             #from cProfile import Profile
