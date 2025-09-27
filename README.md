@@ -119,6 +119,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `msr`: reads/writes MSR (Model Specific Registers) value by embedding/executing dynamic assembly.
     - Supported on x64 and x86.
     - ![](images/msr.png)
+- `cet`: displays Intel CET settings.
 - `kbase`: displays the kernel base address.
 - `kversion`: displays the kernel version.
 - `kcmdline`: displays the kernel cmdline used at boot time.

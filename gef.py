@@ -87909,7 +87909,7 @@ class MsrCommand(GenericCommand):
         gef_print(GefUtil.make_legend(fmt.format(*legend)))
 
         for name, const, desc in self.msr_table:
-            value = self.read_msr(const)
+            value = MsrCommand.read_msr(const)
             if value is None:
                 gef_print("{:30s}  {:#010x}  {:30s}  {!s}".format(
                     name, const, desc, None,
@@ -87927,7 +87927,8 @@ class MsrCommand(GenericCommand):
         info("See more info: https://elixir.bootlin.com/linux/latest/source/arch/x86/include/asm/msr-index.h")
         return
 
-    def read_msr(self, const):
+    @staticmethod
+    def read_msr(const):
         codes = [b"\x0f\x32"] # rdmsr
         if is_x86_64():
             regs = {"$rcx": const}
@@ -87946,7 +87947,8 @@ class MsrCommand(GenericCommand):
             eax = ret["reg"]["$eax"]
         return ((edx << 32) | eax) & 0xffff_ffff_ffff_ffff
 
-    def write_msr(self, const, value):
+    @staticmethod
+    def write_msr(const, value):
         codes = [b"\x0f\x30"] # wrmsr
         if is_x86_64():
             regs = {"$rcx": const, "$rdx": value >> 32, "$rax": value & 0xffff_ffff}
@@ -87975,7 +87977,7 @@ class MsrCommand(GenericCommand):
 
         if args.msr_value is None:
             # exec rdmsr
-            value = self.read_msr(const)
+            value = MsrCommand.read_msr(const)
             if value is None:
                 err("Failed to read")
                 return
@@ -87987,11 +87989,99 @@ class MsrCommand(GenericCommand):
 
         else:
             # exec wrmsr
-            ret = self.write_msr(const, args.msr_value)
+            ret = MsrCommand.write_msr(const, args.msr_value)
             if ret:
                 info("Success to write")
             else:
                 err("Failed to write")
+        return
+
+
+@register_command
+class CetCommand(GenericCommand):
+    """Display Intel CET settings."""
+
+    _cmdline_ = "cet"
+    _category_ = "04-a. Register - View"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    _syntax_ = parser.format_help()
+
+    U_S_COMMON_BITS = {
+        "SH_STK_EN": 0,    # Shadow Stack enable
+        "WR_SHSTK_EN": 1,  # WRSS{D,Q}W enable
+        "ENDBR_EN": 2,     # IBT enable
+        "LEG_IW_EN": 3,    # Legacy indirect-write compat
+        "NO_TRACK_EN": 4,  # No-track prefix enable
+        "SUPPRESS_DIS": 5, # Suppress disable
+        # 6..9 reserved
+        "SUPPRESS": 10,    # IBT suppression state
+        "TRACKER": 11,     # TRACKER state bit-field (0:IDLE, 1:WAIT_FOR_ENDBRANCH)
+        # 12..63 EB_LEG_BITMAP_BASE (bitmap base, <<12)
+    }
+
+    TRACKER_STATES = {0: "IDLE", 1: "WAIT_FOR_ENDBRANCH"}
+
+    def decode_cet_bits(self, val):
+        if val is None:
+            return None
+        d = {}
+        for name, bit in self.U_S_COMMON_BITS.items():
+            d[name] = (val >> bit) & 1
+        tracker = (val >> 11) & 0x1
+        d["TRACKER"] = "{:d} ({:s})".format(d["TRACKER"], self.TRACKER_STATES[tracker])
+        d["EB_LEG_BITMAP_BASE"] = AddressUtil.format_address(val & ~0xfff)
+        return d
+
+    def print_cet_bits(self, title, d):
+        gef_print(titlify(title))
+        for k, v in d.items():
+            if k in ["TRACKER", "EB_LEG_BITMAP_BASE"]:
+                gef_print("{:20s} : {:s}".format(k, v))
+            else:
+                gef_print("{:20s} : {:x}".format(k, v))
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @only_if_in_kernel
+    @only_if_kvm_disabled
+    def do_invoke(self, args):
+        cr4 = get_register("cr4", use_monitor=True)
+        gef_print(titlify("CET summary"))
+        if cr4 is not None:
+            cet_master = (cr4 >> 23) & 1
+            gef_print("CR4 = {:#x} (CR4.CET = {:#x})".format(cr4, cet_master))
+        else:
+            gef_print("CR4 = N/A")
+
+        IA32_U_CET = MsrCommand.read_msr(0x6a0)
+        ud = self.decode_cet_bits(IA32_U_CET)
+        if ud is not None:
+            self.print_cet_bits("IA32_U_CET ({:#x})".format(IA32_U_CET), ud)
+        else:
+            gef_print("IA_32_U_CET = N/A")
+
+        IA32_S_CET = MsrCommand.read_msr(0x6a2)
+        sd = self.decode_cet_bits(IA32_S_CET)
+        if sd is not None:
+            self.print_cet_bits("IA32_S_CET ({:#x})".format(IA32_S_CET), ud)
+        else:
+            gef_print("IA_32_U_CET = N/A")
+
+        IA32_PL0_SSP = MsrCommand.read_msr(0x6a4)
+        IA32_PL1_SSP = MsrCommand.read_msr(0x6a5)
+        IA32_PL2_SSP = MsrCommand.read_msr(0x6a6)
+        IA32_PL3_SSP = MsrCommand.read_msr(0x6a7)
+        IA32_INT_SSP_TAB = MsrCommand.read_msr(0x6a8)
+        gef_print(titlify("SSP MSRs"))
+        gef_print("PL0_SSP = {:s}".format(AddressUtil.format_address(IA32_PL0_SSP)))
+        gef_print("PL1_SSP = {:s}".format(AddressUtil.format_address(IA32_PL1_SSP)))
+        gef_print("PL2_SSP = {:s}".format(AddressUtil.format_address(IA32_PL2_SSP)))
+        gef_print("PL3_SSP = {:s}".format(AddressUtil.format_address(IA32_PL3_SSP)))
+        gef_print("IA32_INTERRUPT_SSP_TABLE_ADDR = {:s}".format(AddressUtil.format_address(IA32_INT_SSP_TAB)))
         return
 
 
