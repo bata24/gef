@@ -37363,6 +37363,9 @@ class FormatStringSearchCommand(GenericCommand):
             except gdb.error:
                 continue
             if args.verbose:
+                # The reason for the `end=""` is that when you set a breakpoint,
+                # gdb automatically outputs the following message:
+                # printf: Breakpoint 1 at 0x7ffff7c63f90: file ./stdio-common/printf.c, line 28.
                 gef_print(func_name + ": ", end="")
             bp = FormatStringBreakpoint(func_address, func_name, num_arg, verbose=args.verbose)
             FormatStringSearchCommand.breakpoints.append(bp)
