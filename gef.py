@@ -13936,7 +13936,7 @@ def only_if_events_supported(event_type):
 
     def wrap(f):
         def wrapped_f(*args, **kwargs):
-            if gdb.events and getattr(gdb.events, event_type):
+            if hasattr(gdb.events, event_type):
                 return f(*args, **kwargs)
             warn("GDB events cannot be set")
         return wrapped_f
