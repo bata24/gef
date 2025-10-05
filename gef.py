@@ -14744,7 +14744,7 @@ class SiCommand(GenericCommand):
         insn = get_insn()
         insn_next = get_insn_next()
 
-        if insn and current_arch.is_jump(insn) or current_arch.is_call(insn): # si also stops at `call` target
+        if insn and (current_arch.is_jump(insn) or current_arch.is_call(insn)): # si also stops at `call` target
             target = ContextCodeCommand.get_branch_addr(insn)
             delay_slot = current_arch.has_delay_slot
         elif insn and current_arch.is_ret(insn):
