@@ -32391,9 +32391,9 @@ class PatchNopCommand(PatchCommand):
                         help="the memory address to patch. (default: current_arch.pc)")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("-b", dest="byte_length", type=AddressUtil.parse_address,
-                       help="the patch length of byte (mutually exclusive with `-i`). (default: %(default)s)")
+                       help="the patch length of byte. (default: %(default)s)")
     group.add_argument("-i", dest="inst_count", type=AddressUtil.parse_address, default=1,
-                       help="the patch length of instruction (mutually exclusive with `-b`). (default: 1)")
+                       help="the patch length of instruction. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -32462,10 +32462,10 @@ class PatchNopCommand(PatchCommand):
             location = args.location
 
         try:
-            if args.inst_count:
-                num_bytes = self.get_insns_size(location, args.inst_count)
-            else:
+            if args.byte_length is not None:
                 num_bytes = args.byte_length
+            else:
+                num_bytes = self.get_insns_size(location, args.inst_count)
         except Exception:
             err("Failed to get patch bytes")
             if args.phys:
