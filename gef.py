@@ -32112,7 +32112,7 @@ class PatchQwordCommand(PatchCommand):
                         help="treat LOCATION as a physical address (only qemu-system).")
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the memory address to patch.")
-    parser.add_argument("values", metavar="QWORD", nargs="*", help="the value to patch.")
+    parser.add_argument("values", metavar="QWORD", nargs="+", help="the value to patch.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -32141,7 +32141,7 @@ class PatchDwordCommand(PatchCommand):
                         help="treat LOCATION as a physical address (only qemu-system).")
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the memory address to patch.")
-    parser.add_argument("values", metavar="DWORD", nargs="*", help="the value to patch.")
+    parser.add_argument("values", metavar="DWORD", nargs="+", help="the value to patch.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -32170,7 +32170,7 @@ class PatchWordCommand(PatchCommand):
                         help="treat LOCATION as a physical address (only qemu-system).")
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the memory address to patch.")
-    parser.add_argument("values", metavar="WORD", nargs="*", help="the value to patch.")
+    parser.add_argument("values", metavar="WORD", nargs="+", help="the value to patch.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -32199,7 +32199,7 @@ class PatchByteCommand(PatchCommand):
                         help="treat LOCATION as a physical address (only qemu-system).")
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the memory address to patch.")
-    parser.add_argument("values", metavar="BYTE", nargs="*", help="the value to patch.")
+    parser.add_argument("values", metavar="BYTE", nargs="+", help="the value to patch.")
     _syntax_ = parser.format_help()
 
     _example_ = [
