@@ -31273,9 +31273,9 @@ class ContextExtraCommand(GenericCommand):
                 err(text, redirect=redirect)
             elif level == "warn":
                 warn(text, redirect=redirect)
-            elif level == "success":
+            elif level == "ok":
                 ok(text, redirect=redirect)
-            else:
+            elif level == "info":
                 info(text, redirect=redirect)
 
         for command in self.context_extra_commands:
