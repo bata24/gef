@@ -69687,7 +69687,7 @@ class DiffOutputColordiffCommand(DiffOutputCommand):
         if not os.path.exists(f1):
             err("{:s} is not found".format(f1))
             return
-        if not os.path.exists(f1):
+        if not os.path.exists(f2):
             err("{:s} is not found".format(f2))
             return
 
@@ -69751,7 +69751,7 @@ class DiffOutputGitDiffCommand(DiffOutputCommand):
         if not os.path.exists(f1):
             err("{:s} is not found".format(f1))
             return
-        if not os.path.exists(f1):
+        if not os.path.exists(f2):
             err("{:s} is not found".format(f2))
             return
 
