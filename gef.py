@@ -3050,7 +3050,8 @@ class GenericType:
     def addr(self):
         return self.__addr
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def sizeof(self):
         pass
 
@@ -5994,123 +5995,151 @@ class Architecture:
 
     # base properties
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def arch(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def mode(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def load_condition(self):
         pass
 
     # register properties
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def all_registers(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def alias_registers(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def special_registers(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def flag_register(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def flags_table(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def return_register(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def function_parameters(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def syscall_register(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def syscall_parameters(self):
         pass
 
     # architecture properties
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def bit_length(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def endianness(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def instruction_length(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def has_delay_slot(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def has_syscall_delay_slot(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def has_ret_delay_slot(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def stack_grow_down(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def tls_supported(self):
         pass
 
     # module properties
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def keystone_support(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def capstone_support(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def unicorn_support(self):
         pass
 
     # instruction properties
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def nop_insn(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def infloop_insn(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def trap_insn(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def ret_insn(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def syscall_insn(self):
         pass
 
@@ -14004,27 +14033,33 @@ class GenericCommand(gdb.Command):
 
     __metaclass__ = abc.ABCMeta
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def _cmdline_(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def _syntax_(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def _example_(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def _note_(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def _repeat_(self):
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def _aliases_(self):
         pass
 
