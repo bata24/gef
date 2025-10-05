@@ -102790,12 +102790,12 @@ class GefAlias(gdb.Command):
             self._repeat_ = False
         else:
             self._repeat_ = force_repeat
-        self._pre_defined_ = pre_defined
+        self._pre_defined_ = pre_defined # default alias settings of GEF
         self.__doc__ = "Alias for '{:s}'".format(Color.greenify(command))
 
         # Inherit settings from the aliased command
-        if command in __gef_command_instances__:
-            instance = __gef_command_instances__[command]
+        instance = __gef_command_instances__.get(command, None)
+        if instance:
             # repeat settings
             if force_repeat is None:
                 self._repeat_ = instance._repeat_
@@ -102878,6 +102878,9 @@ class AliasesAddCommand(AliasesCommand):
 
     @parse_args
     def do_invoke(self, args):
+        if args.alias in __gef_command_instances__:
+            err("Not allowed due to circular references")
+            return
         command = " ".join(args.command)
         GefAlias(args.alias, command, force_repeat=args.repeat)
         gef_print("{:s} = {:s}".format(args.alias, command))
