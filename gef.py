@@ -14904,9 +14904,12 @@ class ContCommand(GenericCommand):
             err(exc_value)
 
         # clean up
-        if self.pid_is_alive(child_pid):
-            os.kill(child_pid, signal.SIGKILL)
-        os.waitpid(child_pid, 0)
+        try:
+            if self.pid_is_alive(child_pid):
+                os.kill(child_pid, signal.SIGKILL)
+            os.waitpid(child_pid, os.WNOHANG)
+        except (ProcessLookupError, ChildProcessError):
+            pass
         return
 
     @parse_args
