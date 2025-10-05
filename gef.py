@@ -69181,7 +69181,7 @@ class IsMemoryZeroCommand(GenericCommand):
                 else:
                     data = read_memory(current, read_size)
             except (gdb.MemoryError, ValueError, OverflowError):
-                err("Read error {:#x}".format(addr))
+                err("Read error {:#x}".format(current))
                 return
             if data == b"\0" * len(data):
                 is_ff = False
@@ -69193,21 +69193,27 @@ class IsMemoryZeroCommand(GenericCommand):
             if is_zero is False and is_ff is False:
                 end = current + read_size
                 break
-            current += page_size
+            current += read_size
 
         if is_zero:
             info("{:#x} - {:#x} is {:s}".format(start, end, Color.colorify("All 0x00", "bold yellow")))
-        elif is_ff:
+            return
+
+        if is_ff:
             info("{:#x} - {:#x} is {:s}".format(start, end, Color.colorify("All 0xFF", "bold yellow")))
+            return
+
+        # find non-zero address
+        for i, d in enumerate(data):
+            if d != 0:
+                found_addr = ProcessMap.lookup_address(current + i)
+                break
         else:
-            for i, d in enumerate(data):
-                if d != 0:
-                    found_addr = ProcessMap.lookup_address(current + i)
-                    break
-            else:
-                raise
-            info("{:#x} - {:#x} is {:s}".format(start, end, Color.colorify("NON-ZERO", "bold red")))
-            info("Around {!s} is NON-ZERO".format(found_addr))
+            warn("Scan failed to find non-zero byte unexpectedly")
+            return
+        info("{:#x} - {:#x} is {:s}".format(start, end, Color.colorify("NON-ZERO", "bold red")))
+        info("Around {!s} is NON-ZERO".format(found_addr))
+        info("Length of 0x00: {:d}".format(found_addr.value - start))
         return
 
     @parse_args
