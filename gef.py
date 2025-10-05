@@ -102706,7 +102706,10 @@ class GefTmuxSetupCommand(GenericCommand):
 
         # remove destructor
         import atexit
-        atexit.unregister(GefTmuxSetupCommand.reset_panes)
+        try:
+            atexit.unregister(GefTmuxSetupCommand.reset_panes)
+        except Exception:
+            pass
         return
 
     def tmux_setup(self):
