@@ -101911,7 +101911,7 @@ class GefRaiseExceptionCommand(GenericCommand):
 
     @parse_args
     def do_invoke(self, args):
-        raise
+        raise RuntimeError("Test exception")
 
 
 @register_command
