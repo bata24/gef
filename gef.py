@@ -14562,6 +14562,10 @@ class HighlightAddCommand(GenericCommand):
 
     @parse_args
     def do_invoke(self, args):
+        for a in args.color:
+            if a not in Color.colors.keys():
+                err("Invalid color")
+                return
         HighlightCommand.highlight_table[args.match] = " ".join(args.color)
         return
 
