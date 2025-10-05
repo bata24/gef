@@ -29503,9 +29503,15 @@ class ContextCommand(GenericCommand):
     def do_invoke(self, args):
         # check on/off
         if "off" in args.commands:
+            if len(args.commands) > 1:
+                self.usage()
+                return
             ContextCommand.hide_context()
             return
         if "on" in args.commands:
+            if len(args.commands) > 1:
+                self.usage()
+                return
             ContextCommand.unhide_context()
             return
 
