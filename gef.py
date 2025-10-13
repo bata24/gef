@@ -89307,20 +89307,20 @@ class PagewalkRiscvCommand(PagewalkCommand):
     _aliases_ = ["pagewalk riscv32", "pagewalk riscv64"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("--print-each-level", action="store_true", help="show all level pagetables.")
-    parser.add_argument("--no-merge", action="store_true",
+    parser.add_argument("-L", "--print-each-level", action="store_true", help="show all level pagetables.")
+    parser.add_argument("-N", "--no-merge", action="store_true",
                         help="do not merge similar/consecutive address.")
-    parser.add_argument("--sort-by-phys", action="store_true",
+    parser.add_argument("-P", "--sort-by-phys", action="store_true",
                         help="sort by physical address.")
-    parser.add_argument("--simple", action="store_true",
+    parser.add_argument("-Q", "--simple", action="store_true",
                         help="merge with ignoring physical address consecutivness.")
-    parser.add_argument("--filter", metavar="REGEX", action="append", type=re.compile, default=[],
+    parser.add_argument("-f", "--filter", metavar="REGEX", action="append", type=re.compile, default=[],
                         help="filter by REGEX pattern.")
-    parser.add_argument("--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+    parser.add_argument("-v", "--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="filter by map included specified virtual address.")
-    parser.add_argument("--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
+    parser.add_argument("-p", "--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="filter by map included specified physical address.")
-    parser.add_argument("--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+    parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="show all level pagetables only associated specified address.")
     parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
@@ -89896,20 +89896,20 @@ class PagewalkX64Command(PagewalkCommand):
     _aliases_ = ["pagewalk x86"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("--print-each-level", action="store_true", help="show all level pagetables.")
-    parser.add_argument("--no-merge", action="store_true",
+    parser.add_argument("-L", "--print-each-level", action="store_true", help="show all level pagetables.")
+    parser.add_argument("-N", "--no-merge", action="store_true",
                         help="do not merge similar/consecutive address.")
-    parser.add_argument("--sort-by-phys", action="store_true",
+    parser.add_argument("-P", "--sort-by-phys", action="store_true",
                         help="sort by physical address.")
-    parser.add_argument("--simple", action="store_true",
+    parser.add_argument("-Q", "--simple", action="store_true",
                         help="merge with ignoring physical address consecutivness.")
-    parser.add_argument("--filter", metavar="REGEX", action="append", type=re.compile, default=[],
+    parser.add_argument("-f", "--filter", metavar="REGEX", action="append", type=re.compile, default=[],
                         help="filter by REGEX pattern.")
-    parser.add_argument("--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+    parser.add_argument("-v", "--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="filter by map included specified virtual address.")
-    parser.add_argument("--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
+    parser.add_argument("-p", "--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="filter by map included specified physical address.")
-    parser.add_argument("--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+    parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="show all level pagetables only associated specified address.")
     parser.add_argument("--include-esp-fixup-stacks", action="store_true",
                         help="include `%%esp fixup stacks` area (sometimes heavy memory use).")
@@ -90575,17 +90575,17 @@ class PagewalkArmCommand(PagewalkCommand):
     group = parser.add_mutually_exclusive_group()
     group.add_argument("-S", dest="force_secure", action="store_true", help="use TTBRn_ELm_S to parse start.")
     group.add_argument("-s", dest="force_normal", action="store_true", help="use TTBRn_ELm to parse start.")
-    parser.add_argument("--print-each-level", action="store_true", help="show all level pagetables.")
-    parser.add_argument("--no-merge", action="store_true", help="do not merge similar/consecutive address.")
-    parser.add_argument("--sort-by-phys", action="store_true", help="sort by physical address.")
-    parser.add_argument("--simple", action="store_true", help="merge with ignoring physical address consecutivness.")
-    parser.add_argument("--filter", metavar="REGEX", action="append", type=re.compile, default=[],
+    parser.add_argument("-L", "--print-each-level", action="store_true", help="show all level pagetables.")
+    parser.add_argument("-N", "--no-merge", action="store_true", help="do not merge similar/consecutive address.")
+    parser.add_argument("-P", "--sort-by-phys", action="store_true", help="sort by physical address.")
+    parser.add_argument("-Q", "--simple", action="store_true", help="merge with ignoring physical address consecutivness.")
+    parser.add_argument("-f", "--filter", metavar="REGEX", action="append", type=re.compile, default=[],
                         help="filter by REGEX pattern.")
-    parser.add_argument("--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+    parser.add_argument("-v", "--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="filter by map included specified virtual address.")
-    parser.add_argument("--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
+    parser.add_argument("-p", "--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="filter by map included specified physical address.")
-    parser.add_argument("--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+    parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="show all level pagetables only associated specified address.")
     parser.add_argument("--optee", action="store_true", help="show the secure world memory maps if used OP-TEE.")
     parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
@@ -91717,17 +91717,17 @@ class PagewalkArm64Command(PagewalkCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("target_el", metavar="TARGET_EL", nargs="?", type=int,
                         help="target Exception Level. (default: current EL)")
-    parser.add_argument("--print-each-level", action="store_true", help="show all level pagetables.")
-    parser.add_argument("--no-merge", action="store_true", help="do not merge similar/consecutive address.")
-    parser.add_argument("--sort-by-phys", action="store_true", help="sort by physical address.")
-    parser.add_argument("--simple", action="store_true", help="merge with ignoring physical address consecutivness.")
-    parser.add_argument("--filter", metavar="REGEX", action="append", type=re.compile, default=[],
+    parser.add_argument("-L", "--print-each-level", action="store_true", help="show all level pagetables.")
+    parser.add_argument("-N", "--no-merge", action="store_true", help="do not merge similar/consecutive address.")
+    parser.add_argument("-P", "--sort-by-phys", action="store_true", help="sort by physical address.")
+    parser.add_argument("-Q", "--simple", action="store_true", help="merge with ignoring physical address consecutivness.")
+    parser.add_argument("-f", "--filter", metavar="REGEX", action="append", type=re.compile, default=[],
                         help="filter by REGEX pattern.")
-    parser.add_argument("--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+    parser.add_argument("-v", "--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="filter by map included specified virtual address.")
-    parser.add_argument("--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
+    parser.add_argument("-p", "--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="filter by map included specified physical address.")
-    parser.add_argument("--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+    parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="show all level pagetables only associated specified address.")
     parser.add_argument("--optee", action="store_true", help="show the secure world memory maps if used OP-TEE.")
     parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
