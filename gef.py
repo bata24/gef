@@ -2765,6 +2765,7 @@ class Instruction:
 
         self.operands = operands
         self.opcodes = opcodes
+        self.size = len(opcodes)
         return
 
     @property
@@ -88203,6 +88204,217 @@ class PacKeysCommand(GenericCommand):
             except Exception:
                 err("Failed to get the value of PAC keys")
                 break
+        return
+
+
+@register_command
+class VBARCommand(GenericCommand, BufferingOutput):
+    """Pretty-print ARM/ARM64 vector table."""
+
+    _cmdline_ = "vbar"
+    _category_ = "04-a. Register - View"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-a", "--address", type=AddressUtil.parse_address, help="the vector address.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display all instructions (for ARM64).")
+    _syntax_ = parser.format_help()
+
+    A32_VECTOR_NAMES = [
+        (0x00, 0x04, "Reset"),
+        (0x04, 0x04, "Undefined Instruction"),
+        (0x08, 0x04, "Supervisor Call"),
+        (0x0c, 0x04, "Prefetch Abort"),
+        (0x10, 0x04, "Data Abort"),
+        (0x14, 0x04, "Reserved"),
+        (0x18, 0x04, "IRQ Interrupt"),
+        (0x1c, 0x04, "FIQ Interrupt"),
+    ]
+
+    A64_VECTOR_NAMES = [
+        (0x000, 0x80, "Current EL (SP0)   - Synchronous"),
+        (0x080, 0x80, "Current EL (SP0)   - IRQ/vIRQ"),
+        (0x100, 0x80, "Current EL (SP0)   - FIQ/vFIQ"),
+        (0x180, 0x80, "Current EL (SP0)   - SError/vSError"),
+        (0x200, 0x80, "Current EL (SPx)   - Synchronous"),
+        (0x280, 0x80, "Current EL (SPx)   - IRQ/vIRQ"),
+        (0x300, 0x80, "Current EL (SPx)   - FIQ/vFIQ"),
+        (0x380, 0x80, "Current EL (SPx)   - SError/vSError"),
+        (0x400, 0x80, "Lower EL (AArch64) - Synchronous"),
+        (0x480, 0x80, "Lower EL (AArch64) - IRQ/vIRQ"),
+        (0x500, 0x80, "Lower EL (AArch64) - FIQ/vFIQ"),
+        (0x580, 0x80, "Lower EL (AArch64) - SError/vSError"),
+        (0x600, 0x80, "Lower EL (AArch32) - Synchronous"),
+        (0x680, 0x80, "Lower EL (AArch32) - IRQ/vIRQ"),
+        (0x700, 0x80, "Lower EL (AArch32) - FIQ/vFIQ"),
+        (0x780, 0x80, "Lower EL (AArch32) - SError/vSError"),
+    ]
+
+    def get_vbar_arm32(self):
+        if self.args.address is not None:
+            vbars = [("User specified", self.args.address)]
+            return vbars
+
+        vbars = []
+
+        # VBAR
+        sctlr = get_register("$SCTLR") or get_register("$SCTLR_EL1")
+        if (sctlr >> 13) & 1:
+            vbars.append(("$VBAR ($SCTLR.V==1)", 0xFFFF0000)) # default
+        else:
+            vbar = get_register("$VBAR") or get_register("$VBAR_EL1")
+            vbars.append(("$VBAR ($SCTLR.V==0)", vbar))
+
+        # VBAR_S
+        sctlr_s = get_register("$SCTLR_S") or get_register("$SCTLR_EL1_S")
+        if sctlr_s is not None:
+            if (sctlr_s >> 13) & 1:
+                vbars.append(("$VBAR_S ($SCTLR_S.V==1)", 0xFFFF0000)) # default
+            else:
+                vbar = get_register("$VBAR_S") or get_register("$VBAR_EL1_S")
+                vbars.append(("$VBAR_S ($SCTLR_S.V==0)", vbar))
+        return vbars
+
+    def dump_vbar_arm32(self):
+        vbars = self.get_vbar_arm32()
+        max_width = max(len(x[2]) for x in self.A32_VECTOR_NAMES)
+
+        def is_secure():
+            scr = get_register("$SCR")
+            if scr is None:
+                return False
+            return (scr & 0b1) == 0
+
+        for regname, vbar in vbars:
+            self.out.append(titlify(regname))
+
+            # address check
+            if "$VBAR_S" in regname and not is_secure():
+                vbar_phys = XSecureMemAddrCommand.v2p_secure(vbar)
+                if vbar_phys is None:
+                    self.err_add_out("Invalid VBAR address: {:#x}".format(vbar))
+                    continue
+            else:
+                if not is_valid_addr(vbar):
+                    if vbar is None:
+                        self.err_add_out("Invalid VBAR address: None")
+                    else:
+                        self.err_add_out("Invalid VBAR address: {:#x}".format(vbar))
+                    continue
+
+            # read each entry
+            for ofs, _sz, s in self.A32_VECTOR_NAMES:
+                s = Color.colorify(s.ljust(max_width), "bold")
+                if "$VBAR_S" in regname and not is_secure():
+                    try:
+                        code = read_physmem(vbar_phys + ofs, 4)
+                    except gdb.MemoryError:
+                        self.out.append("[{:+#05x}] {:s}: {:s}".format(ofs, s, "Memory access error"))
+                        continue
+                    try:
+                        insn_str = gdb.execute("pdisas {:#x} code={:s} -l 1".format(vbar + ofs, code.hex()), to_string=True)
+                        insn_str = insn_str.replace("            ", "")
+                    except gdb.error:
+                        self.out.append("[{:+#05x}] {:s}: {:s}".format(ofs, s, "Capstone not found"))
+                        continue
+                else:
+                    try:
+                        insn = get_insn(vbar + ofs)
+                    except gdb.MemoryError:
+                        self.out.append("[{:+#05x}] {:s}: {:s}".format(ofs, s, "Memory access error"))
+                        continue
+                    insn_str = insn.colored_text(4)
+                self.out.append("[{:+#05x}] {:s}: {:s}".format(ofs, s, insn_str.strip()))
+        return
+
+    def get_vbar_arm64(self):
+        if self.args.address is not None:
+            vbars = [("User specified", self.args.address)]
+            return vbars
+
+        vbars = []
+
+        # VBAR
+        vbar = get_register("$VBAR") or get_register("$VBAR_EL1")
+        vbars.append(("$VBAR", vbar))
+
+        # VBAR_EL2
+        vbar = get_register("$VBAR_EL2")
+        vbars.append(("$VBAR_EL2", vbar))
+
+        # VBAR_EL3
+        vbar = get_register("$VBAR_EL3")
+        vbars.append(("$VBAR_EL3", vbar))
+        return vbars
+
+    def dump_vbar_arm64(self):
+        vbars = self.get_vbar_arm64()
+        max_width = max(len(x[2]) for x in self.A64_VECTOR_NAMES)
+
+        def get_EL():
+            CPSR = get_register("$cpsr") & 0xffff_ffff
+            return (CPSR >> 2) & 0b11
+
+        base_EL = get_EL()
+
+        for regname, vbar in vbars:
+            self.out.append(titlify(regname))
+
+            # switch EL
+            if regname == "$VBAR" and base_EL != 1:
+                gdb.execute("switch-el 1", to_string=True)
+            elif regname == "$VBAR_EL2" and base_EL != 2:
+                gdb.execute("switch-el 2", to_string=True)
+            elif regname == "$VBAR_EL3" and base_EL != 3:
+                gdb.execute("switch-el 3", to_string=True)
+            else:
+                gdb.execute("switch-el {:d}".format(base_EL), to_string=True)
+
+            # address check
+            if not is_valid_addr(vbar):
+                if vbar is None:
+                    self.err.add_out("Invalid VBAR address: None")
+                else:
+                    self.err_add_out("Invalid VBAR address: {:#x}".format(vbar))
+                continue
+
+            # read each entry
+            for ofs, sz, s in self.A64_VECTOR_NAMES:
+                if self.args.verbose:
+                    # full
+                    pos = 0
+                    while pos < sz:
+                        insn = get_insn(vbar + ofs + pos)
+                        insn_str = insn.colored_text(4)
+                        if pos == 0:
+                            s = Color.colorify(s.ljust(max_width), "bold")
+                            self.out.append("[{:+#06x}] {:s}: {:s}".format(ofs, s, insn_str))
+                        else:
+                            s = " " * max_width
+                            self.out.append("{:8s} {:s}: {:s}".format("", s, insn_str))
+                        pos += insn.size
+                else:
+                    # compact
+                    insn = get_insn(vbar + ofs)
+                    insn_str = insn.colored_text(4)
+                    s = Color.colorify(s.ljust(max_width), "bold")
+                    self.out.append("[{:+#06x}] {:s}: {:s}".format(ofs, s, insn_str))
+
+        # revert
+        gdb.execute("switch-el {:d}".format(base_EL), to_string=True)
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system",))
+    @only_if_specific_arch(arch=("ARM32", "ARM64"))
+    def do_invoke(self, args):
+        self.out = []
+        if is_arm32():
+            self.dump_vbar_arm32()
+        elif is_arm64():
+            self.dump_vbar_arm64()
+        self.print_output(check_terminal_size=True)
         return
 
 

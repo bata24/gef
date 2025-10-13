@@ -120,6 +120,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - Supported on x64 and x86.
     - ![](images/msr.png)
 - `cet`: displays Intel CET settings.
+- `vbar`: displays ARM/ARM64 vector table.
+    - ![](images/vbar.png)
 - `kbase`: displays the kernel base address.
 - `kversion`: displays the kernel version.
 - `kcmdline`: displays the kernel cmdline used at boot time.
