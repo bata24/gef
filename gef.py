@@ -68525,156 +68525,294 @@ class CrcValueCommand(CrcCommand):
 
 
 @register_command
-class Crc32revCommand(GenericCommand):
+class Crc32revCommand(GenericCommand, BufferingOutput):
     """Perform CRC32 reverse calculation limited to ASCII character range."""
 
     _cmdline_ = "crc32rev"
     _category_ = "09-f. Misc - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-p", "--poly", type=lambda x: int(x, 16), default=0x04c11db7,
-                        help="polynomial. (default: %(default)#x)")
-    parser.add_argument("-i", "--init-value", type=lambda x: int(x, 16), default=0x0,
-                        help="initial value. (default: %(default)#x)")
-    parser.add_argument("wanted_crc", metavar="WANTED_CRC", type=lambda x: int(x, 16),
-                        help="crc target value.")
-    parser.add_argument("--prefix", default="", help="prefix string. (default: '')")
-    parser.add_argument("--suffix", default="", help="suffix string. (default: '')")
+    parser.add_argument("-p", "--poly", type=lambda x: int(x, 16), help="generator polynomial in MSB form.")
+    parser.add_argument("--poly-reflected", action="store_true",
+                        help="treat --poly as already reflected (LSB form, e.g., 0xedb88320).")
+    parser.add_argument("-i", "--init-value", type=lambda x: int(x, 16), help="initial CRC register value.")
+    parser.add_argument("-o", "--xorout", type=lambda x: int(x, 16), help="final XOR value applied after output reflection.")
+    parser.add_argument("--refin", action="store_true", help="enable input reflection (LSB-first).")
+    parser.add_argument("--no-refin", action="store_true", help="disable input reflection (MSB-first).")
+    parser.add_argument("--refout", action="store_true", help="enable output reflection.")
+    parser.add_argument("--no-refout", action="store_true", help="disable output reflection.")
+    parser.add_argument("--preset", choices=[
+        "", "base", "ieee", "isohdlc", "adccp", "v42", "xz", "pkzip",
+        "aixm", "q",
+        "autosar",
+        "base91d", "d",
+        "bzip2", "aal5", "dectb", "b",
+        "cdromedc",
+        "cksum", "posix",
+        "iscsi", "base91c", "castagnoli", "interlaken", "c", "nvme",
+        "jamcrc",
+        "mef",
+        "mpeg2", "ether",
+        "xfer",
+    ], default="", help="quick parameter presets, explicit flags override preset values.")
+    parser.add_argument("--list", action="store_true", help="print CRC presets.")
+    parser.add_argument("wanted_crc", metavar="WANTED_CRC", nargs="?", type=lambda x: int(x, 16),
+                        help="target CRC value (hex).")
+    parser.add_argument("--prefix", default="", help="prefix string (ASCII).")
+    parser.add_argument("--suffix", default="", help="suffix string (ASCII).")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
     _example_ = [
+        "{0:s} --list",
+        "{0:s} 0x41414141",
         "{0:s} 0x41414141 --prefix AAAA --suffix BBBB",
+        "{0:s} 0x41414141 --preset mpeg2",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    _note_ = [
-        "The commonly polynomials (and work correctly) are as follows (after / is the reflected one):",
-        "- 0x04c11db7 / 0xedb88320 : CRC-32-IEEE 802.3",
-        "- 0x1edc6f41 / 0x82f63b78 : CRC-32C Castagnoli",
-        "- 0x741b8cd7 / 0xeb31d82e : CRC-32K Koopman",
-        "- 0x814141ab / 0xd5828281 : CRC-32Q",
-        "- 0xf4acfb13 / 0xc8df352f : CRC-Autosar",
-        "- 0xa833982b / 0xd419cc15 : CRC-32D",
-    ]
-    _note_ = "\n".join(_note_)
+    preset_dic = {
+        # https://reveng.sourceforge.io/crc-catalogue/all.htm
+        # preset name: (poly,        init_value,  xorout,      refin, refout, alias)
+        "":            (0x04c1_1db7, 0xffff_ffff, 0xffff_ffff, True,  True,   False),
+        "base":        (0x04c1_1db7, 0xffff_ffff, 0xffff_ffff, True,  True,   True),
+        "ieee":        (0x04c1_1db7, 0xffff_ffff, 0xffff_ffff, True,  True,   True),
+        "isohdlc":     (0x04c1_1db7, 0xffff_ffff, 0xffff_ffff, True,  True,   True),
+        "adccp":       (0x04c1_1db7, 0xffff_ffff, 0xffff_ffff, True,  True,   True),
+        "v42":         (0x04c1_1db7, 0xffff_ffff, 0xffff_ffff, True,  True,   True),
+        "xz":          (0x04c1_1db7, 0xffff_ffff, 0xffff_ffff, True,  True,   True),
+        "pkzip":       (0x04c1_1db7, 0xffff_ffff, 0xffff_ffff, True,  True,   True),
+        "aixm":        (0x8141_41ab, 0x0000_0000, 0x0000_0000, False, False,  False),
+        "q":           (0x8141_41ab, 0x0000_0000, 0x0000_0000, False, False,  True),
+        "autosar":     (0xf4ac_fb13, 0xffff_ffff, 0xffff_ffff, True,  True,   False),
+        "base91d":     (0xa833_982b, 0xffff_ffff, 0xffff_ffff, True,  True,   False),
+        "d":           (0xa833_982b, 0xffff_ffff, 0xffff_ffff, True,  True,   True),
+        "bzip2":       (0x04c1_1db7, 0xffff_ffff, 0xffff_ffff, False, False,  False),
+        "aal5":        (0x04c1_1db7, 0xffff_ffff, 0xffff_ffff, False, False,  True),
+        "dectb":       (0x04c1_1db7, 0xffff_ffff, 0xffff_ffff, False, False,  True),
+        "b":           (0x04c1_1db7, 0xffff_ffff, 0xffff_ffff, False, False,  True),
+        "cdromedc":    (0x8001_801b, 0x0000_0000, 0x0000_0000, True,  True,   False),
+        "cksum":       (0x04c1_1db7, 0x0000_0000, 0xffff_ffff, False, False,  False),
+        "posix":       (0x04c1_1db7, 0x0000_0000, 0xffff_ffff, False, False,  True),
+        "iscsi":       (0x1edc_6f41, 0xffff_ffff, 0xffff_ffff, True,  True,   False),
+        "base91c":     (0x1edc_6f41, 0xffff_ffff, 0xffff_ffff, True,  True,   True),
+        "castagnoli":  (0x1edc_6f41, 0xffff_ffff, 0xffff_ffff, True,  True,   True),
+        "interlaken":  (0x1edc_6f41, 0xffff_ffff, 0xffff_ffff, True,  True,   True),
+        "c":           (0x1edc_6f41, 0xffff_ffff, 0xffff_ffff, True,  True,   True),
+        "nvme":        (0x1edc_6f41, 0xffff_ffff, 0xffff_ffff, True,  True,   True),
+        "jamcrc":      (0x04c1_1db7, 0xffff_ffff, 0x0000_0000, True,  True,   False),
+        "mef":         (0x741b_8cd7, 0xffff_ffff, 0x0000_0000, True,  True,   False),
+        "mpeg2":       (0x04c1_1db7, 0xffff_ffff, 0x0000_0000, False, False,  False),
+        "ether":       (0x04c1_1db7, 0xffff_ffff, 0x0000_0000, False, False,  True),
+        "xfer":        (0x0000_00af, 0x0000_0000, 0x0000_0000, False, False,  False),
+    }
 
-    def init_poly(self):
-        self.reflected_poly = 0
-        for i in range(32):
-            self.reflected_poly |= ((self.args.poly >> i) & 1) << (31 - i)
+    def print_preset_dict(self):
+        fmt = "{:<10s}  {:<10s}  {:<10s}  {:<10s}  {:<10s}  {:5s}  {:6s}  {:5s}"
+        legend = ["name", "poly", "rpoly", "init_value", "xorout", "refin", "refout", "alias"]
+        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+        for k, v in self.preset_dic.items():
+            if v[5]:
+                alias = "(alias)"
+            else:
+                alias = ""
+            self.out.append("{:10s}  {:#010x}  {:#010x}  {:#010x}  {:#010x}  {!s:5s}  {!s:6s}  {:s}".format(
+                k or "''", v[0], self.reflect32(v[0]), v[1], v[2], v[3], v[4], alias),
+            )
         return
 
-    def build_crc_tables(self):
-        self.normal_table = []
-        self.reverse_table = []
-        for i in range(256):
-            fwd = i
-            rev = i << 24
-            for _ in range(8):
-                # build normal table
-                if (fwd & 1) == 1:
-                    fwd = (fwd >> 1) ^ self.reflected_poly
-                else:
-                    fwd >>= 1
-                fwd &= 0xffff_ffff
+    def reflect32(self, x):
+        """bit reverse."""
+        return int("{:032b}".format(x)[::-1], 2) & 0xffff_ffff
 
-                # build reverse table
-                if (rev & 0x8000_0000) == 0x8000_0000:
-                    rev = ((rev ^ self.reflected_poly) << 1) | 1
-                else:
-                    rev <<= 1
-                rev &= 0xffff_ffff
-
-            self.normal_table.append(fwd)
-            self.reverse_table.append(rev)
+    def build_crc(self):
+        """Apply preset parameters if requested. Explicit CLI flags override these."""
+        poly, init_value, xorout, refin, refout, _ = self.preset_dic[self.args.preset]
+        # override from CLI
+        if self.args.poly is not None:
+            poly = self.args.poly & 0xffff_ffff
+        if self.args.poly_reflected:
+            poly = self.reflect32(poly)
+        rpoly = self.reflect32(poly)
+        if self.args.init_value is not None:
+            init_value = self.args.init_value & 0xffff_ffff
+        if self.args.xorout is not None:
+            xorout = self.args.xorout & 0xffff_ffff
+        if self.args.refin:
+            refin = True
+        if self.args.no_refin:
+            refin = False
+        if self.args.refout:
+            refout = True
+        if self.args.no_refout:
+            refout = False
+        assert refin == refout
+        # build
+        CRC = collections.namedtuple("CRC", ["poly", "rpoly", "init_value", "xorout", "refin", "refout"])
+        self.CRC = CRC(poly, rpoly, init_value, xorout, refin, refout)
         return
 
-    def v2b(self, x):
-        b = [
-            (x >> 0) & 0xff,
-            (x >> 8) & 0xff,
-            (x >> 16) & 0xff,
-            (x >> 24) & 0xff,
-        ]
-        return b
+    def build_tables(self):
+        """Build forward / reverse table and the inverse index used by backward steps."""
+        self.FT = [] # used always
+        self.RT = [] # used when refin == refout == True
+        self.inv_idx = [0] * 256 # used when refin == refout == False
 
-    def calc_crc32(self, msg):
-        crc = self.args.init_value ^ 0xffff_ffff
-        for c in msg:
-            if isinstance(c, str):
-                c = ord(c)
-            crc = (crc >> 8) ^ self.normal_table[(crc ^ c) & 0xff]
-        return crc ^ 0xffff_ffff
+        if not self.CRC.refin and not self.CRC.refout:
+            for i in range(256):
+                fwd = i << 24
+                for _ in range(8):
+                    if fwd & 0x8000_0000:
+                        fwd = ((fwd << 1) ^ self.CRC.poly) & 0xffff_ffff
+                    else:
+                        fwd = (fwd << 1) & 0xffff_ffff
+                self.FT.append(fwd)
+            for i in range(256):
+                self.inv_idx[self.FT[i] & 0xff] = i
+        else:
+            for i in range(256):
+                fwd = i
+                rev = i << 24
+                for _ in range(8):
+                    if fwd & 1:
+                        fwd = ((fwd >> 1) ^ self.CRC.rpoly) & 0xffff_ffff
+                    else:
+                        fwd = (fwd >> 1) & 0xffff_ffff
+                    if (rev >> 31) & 1:
+                        rev = (((rev ^ self.CRC.rpoly) << 1) | 1) & 0xffff_ffff
+                    else:
+                        rev = (rev << 1) & 0xffff_ffff
+                self.FT.append(fwd)
+                self.RT.append(rev)
+        return
 
-    def calc_forward(self, accum, string):
-        fwd_crc = accum
-        for c in string:
-            fwd_crc = (fwd_crc >> 8) ^ self.normal_table[(fwd_crc ^ c) & 0xff]
-        return fwd_crc
+    def calc_forward(self, accum, data_bytes):
+        crc = accum
+        if not self.CRC.refin and not self.CRC.refout:
+            for c in data_bytes:
+                idx = ((crc >> 24) ^ c) & 0xff
+                crc = ((crc << 8) & 0xffff_ffff) ^ self.FT[idx]
+        else:
+            for c in data_bytes:
+                idx = (crc ^ c) & 0xff
+                crc = (crc >> 8) ^ self.FT[idx]
+        return crc
 
-    def calc_backward(self, wanted, string):
-        bkd_crc = wanted
-        for c in string[::-1]:
-            bkd_crc = ((bkd_crc << 8) & 0xffff_ffff) ^ self.reverse_table[bkd_crc >> 24] ^ c
-        return bkd_crc
+    def calc_backward(self, wanted, data_bytes):
+        crc = wanted
+        if not self.CRC.refin and not self.CRC.refout:
+            for c in data_bytes[::-1]:
+                b = self.inv_idx[crc & 0xff]
+                prev_top = b ^ c
+                q = crc ^ self.FT[b]
+                crc = ((q >> 8) & 0xffff_ffff) | ((prev_top & 0xff) << 24)
+        else:
+            for c in data_bytes[::-1]:
+                idx = crc >> 24
+                crc = ((crc << 8) & 0xffff_ffff) ^ self.RT[idx] ^ c
+        return crc
+
+    def calc_crc32(self, msg_bytes):
+        crc = self.CRC.init_value
+        crc = self.calc_forward(crc, msg_bytes)
+        return crc ^ self.CRC.xorout
 
     def find_bridge(self, init_value, wanted_crc, prefix, suffix):
-        # forward calculation of CRC, sets current forward CRC state
+        """Compute a 4-byte bridge so that CRC(prefix + bridge + suffix) == wanted_crc."""
+        # forward state after prefix (raw)
         fwd_crc = self.calc_forward(init_value, prefix)
 
-        # backward calculation of CRC, sets wanted backward CRC state
-        bkd_crc = self.calc_backward(wanted_crc ^ 0xffff_ffff, suffix)
+        # map external wanted -> raw wanted (invert output formatting)
+        wanted_raw = wanted_crc ^ self.CRC.xorout
 
-        # deduce the 4 bytes we need to insert
-        bridge = self.calc_backward(bkd_crc, self.v2b(fwd_crc))
-        bridge = self.v2b(bridge)
+        # rewind suffix to get the raw state right before suffix
+        bkd_crc = self.calc_backward(wanted_raw, suffix)
 
-        # check
-        res = prefix + bridge + suffix
-        assert self.calc_crc32(res) == wanted_crc
-        return bridge
+        def state_bytes(x):
+            if not self.CRC.refin and not self.CRC.refout:
+                xs = [(x >> 24) & 0xff, (x >> 16) & 0xff, (x >> 8) & 0xff, (x >> 0) & 0xff]
+                return xs
+            else:
+                xs = [(x >> 0) & 0xff, (x >> 8) & 0xff, (x >> 16) & 0xff, (x >> 24) & 0xff]
+                return xs
+
+        # 4-byte exact bridge between fwd_crc and bkd_crc
+        bridge_word = self.calc_backward(bkd_crc, state_bytes(fwd_crc))
+        bridge_bytes = state_bytes(bridge_word)
+
+        # sanity check
+        test_seq = prefix + bridge_bytes + suffix
+        assert self.calc_crc32(test_seq) == wanted_crc
+        return bridge_bytes
 
     def find_reverse(self, prefix, suffix):
-        self.init_poly()
-        self.build_crc_tables()
+        """Search ASCII-only bridges of length 4..6(+7)."""
+        self.build_crc()
+        self.build_tables()
 
-        init_value = self.args.init_value ^ 0xffff_ffff
-        wanted_crc = self.args.wanted_crc
+        init_value = self.CRC.init_value
+        wanted_crc = self.args.wanted_crc & 0xffff_ffff
 
         ascii_range = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_"
         solutions = []
 
-        # check 4 bytes
+        # 4 bytes
         bridge = self.find_bridge(init_value, wanted_crc, prefix, suffix)
         if all(c in ascii_range for c in bridge):
             solutions.append(bridge)
-
-        # check 5 bytes
+        # 5 bytes
         for b in ascii_range:
             new_prefix = prefix + [b]
             bridge = self.find_bridge(init_value, wanted_crc, new_prefix, suffix)
             if all(c in ascii_range for c in bridge):
                 solutions.append([b] + bridge)
-
-        # check 6 bytes
+        # 6 bytes
         for b1 in ascii_range:
             for b2 in ascii_range:
                 new_prefix = prefix + [b1, b2]
                 bridge = self.find_bridge(init_value, wanted_crc, new_prefix, suffix)
                 if all(c in ascii_range for c in bridge):
                     solutions.append([b1, b2] + bridge)
+
+        if solutions:
+            return solutions
+
+        # 7 bytes
+        for b1 in ascii_range:
+            for b2 in ascii_range:
+                for b3 in ascii_range:
+                    new_prefix = prefix + [b1, b2, b3]
+                    bridge = self.find_bridge(init_value, wanted_crc, new_prefix, suffix)
+                    if all(c in ascii_range for c in bridge):
+                        solutions.append([b1, b2, b3] + bridge)
         return solutions
 
     @parse_args
     def do_invoke(self, args):
+        if self.args.list == (self.args.wanted_crc is not None):
+            self.usage()
+            return
+
+        self.out = []
+
+        if self.args.list:
+            self.print_preset_dict()
+            self.print_output(check_terminal_size=True)
+            return
+
         prefix = [ord(c) for c in self.args.prefix]
         suffix = [ord(c) for c in self.args.suffix]
 
-        solutions = self.find_reverse(prefix, suffix)
-        for sol in solutions:
-            msg = prefix + sol + suffix
-            crc = self.calc_crc32(msg)
-            gef_print("{}: CRC32({}) = {:#x}".format(bytes(sol), bytes(msg), crc))
+        sols = self.find_reverse(prefix, suffix)
+        if sols:
+            for sol in sols:
+                msg = prefix + sol + suffix
+                crc = self.calc_crc32(msg)
+                self.out.append("{}: CRC32({}) = {:#010x}".format(bytes(sol), bytes(msg), crc))
+        else:
+            self.err_add_out("No ASCII-only bridge found under given constraints.")
+        self.print_output(check_terminal_size=True)
         return
 
 
