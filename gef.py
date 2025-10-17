@@ -52346,7 +52346,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             self.out.append("unhex:          {!s}".format(value))
             value_null = b"\x00".join(slicer(value, 1)) + b"\x00"
             self.out.append("unhex w/NULL:   {!s}".format(value_null))
-        except binascii.Error:
+        except (binascii.Error, ValueError):
             pass
         return
 
@@ -52358,6 +52358,31 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify("byteswap"))
             self.out.append("byteswap-64:    {:#018x}".format(converted64))
             self.out.append("byteswap-32:    {:#010x}".format(converted32))
+        except ValueError:
+            pass
+        return
+
+    def bit_reverse(self, value):
+        def bit_reverse(x, n):
+            mask = (1 << n) - 1
+            b = "{:0{:d}b}".format(x & mask, n)
+            return int(b[::-1], 2)
+
+        try:
+            value = int(value, 0)
+            br8 = bit_reverse(value, 8)
+            br16 = bit_reverse(value, 16)
+            br32 = bit_reverse(value, 32)
+            br64 = bit_reverse(value, 64)
+            self.out.append(titlify("bit-reverse"))
+            self.out.append("bit-reverse8:   {:#04x}".format(br8))
+            self.out.append("bit-reverse16:  {:#06x}".format(br16))
+            self.out.append("bit-reverse32:  {:#010x}".format(br32))
+            self.out.append("bit-reverse64:  {:#018x}".format(br64))
+            bl = (value.bit_length() + 3) // 4 * 4
+            if bl > 64:
+                brN = bit_reverse(value, bl)
+                self.out.append("bit-reverse:    {:#0{:d}x}".format(brN, bl // 4 + 2))
         except ValueError:
             pass
         return
@@ -52411,6 +52436,28 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             pass
         return
 
+    def url_encode(self, value):
+        try:
+            import urllib.parse
+            s = urllib.parse.quote(value)
+            if s != value:
+                self.out.append(titlify("URL-encode"))
+                self.out.append("URL-encode:     {:s}".format(s))
+        except Exception:
+            pass
+        return
+
+    def url_decode(self, value):
+        try:
+            import urllib.parse
+            s = urllib.parse.unquote(value)
+            if s != value:
+                self.out.append(titlify("URL-decode"))
+                self.out.append("URL-decode:     {:s}".format(s))
+        except Exception:
+            pass
+        return
+
     def unhex_xor(self, value):
         try:
             if value.startswith("0x"):
@@ -52424,7 +52471,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
                     self.out.append("xor-{:02X}({:s}):      {!s}".format(i, chr(i), xored))
                 else:
                     self.out.append("xor-{:02X}:         {!s}".format(i, xored))
-        except binascii.Error:
+        except (binascii.Error, ValueError):
             pass
         return
 
@@ -52441,7 +52488,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
                     self.out.append("add-{:02X}({:s}):      {!s}".format(i, chr(i), added))
                 else:
                     self.out.append("add-{:02X}:         {!s}".format(i, added))
-        except binascii.Error:
+        except (binascii.Error, ValueError):
             pass
         return
 
@@ -52455,7 +52502,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             for i in range(9):
                 rored = b"".join(bytes([((x << i) | x >> (8 - i)) & 0xff]) for x in value)
                 self.out.append("rol-{:02X}:         {!s}".format(i, rored))
-        except binascii.Error:
+        except (binascii.Error, ValueError):
             pass
         return
 
@@ -52501,7 +52548,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
                             x += ord("a") - 1
                     slided.append(x)
                 self.out.append("caesar-{:02d}:      {!s}".format(i, bytes(slided)))
-        except binascii.Error:
+        except (binascii.Error, ValueError):
             pass
         return
 
@@ -52591,9 +52638,12 @@ class ConvertCommand(GenericCommand, BufferingOutput):
         self.tohex(value)
         self.unhex(value)
         self.byteswap(value)
+        self.bit_reverse(value)
         self.integer(value)
         self.signed(value)
         self.string(value)
+        self.url_encode(value)
+        self.url_decode(value)
 
         if args.verbose:
             self.unhex_xor(value)
