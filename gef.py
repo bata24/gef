@@ -68412,6 +68412,128 @@ class HashValueCommand(HashCommand):
 
 
 @register_command
+class JsonCommand(GenericCommand, BufferingOutput):
+    """The base command to pretty print for JSON."""
+
+    _cmdline_ = "json"
+    _category_ = "03-e. Memory - Calculation"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
+        subparsers = parser.add_subparsers(title="command", required=True)
+    else:
+        subparsers = parser.add_subparsers(title="command")
+    subparsers.add_parser("memory")
+    subparsers.add_parser("value")
+    _syntax_ = parser.format_help()
+
+    def __init__(self, *args, **kwargs):
+        prefix = kwargs.get("prefix", True)
+        complete = kwargs.get("complete", gdb.COMPLETE_NONE)
+        super().__init__(prefix=prefix, complete=complete)
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        self.usage()
+        return
+
+
+@register_command
+class JsonMemoryCommand(JsonCommand):
+    """Pretty print JSON from memory values."""
+
+    _cmdline_ = "json memory"
+    _category_ = "03-e. Memory - Calculation"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
+                        help="start address for json.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} $rdi",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    def __init__(self):
+        super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
+        return
+
+    def read_json(self, loc):
+        pos = 0
+        s = b""
+        while True:
+            try:
+                blob = read_memory(loc + pos, 1)
+            except gdb.MemoryError:
+                err("Memory read error")
+                break
+            if blob == b"\x00":
+                break
+            s += blob
+            pos += 1
+        return s
+
+    @parse_args
+    @only_if_gdb_running
+    def do_invoke(self, args):
+        j = self.read_json(args.location)
+        if not j:
+            err("Not found JSON")
+            return
+
+        import json
+        try:
+            jstr = json.dumps(json.loads(j), indent=2)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            err("Invalid JSON")
+            return
+
+        self.out = []
+        self.out.append(jstr)
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class JsonValueCommand(JsonCommand):
+    """Pretty print JSON from specified value."""
+
+    _cmdline_ = "json value"
+    _category_ = "03-e. Memory - Calculation"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("value", metavar="VALUE", help="the string of JSON.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        '{0:s} \'["foo", {{"bar": ["baz", null, 1.0, 2]}}]\'',
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    def __init__(self):
+        super().__init__(prefix=False)
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        import json
+        try:
+            jstr = json.dumps(json.loads(self.args.value), indent=2)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            err("Invalid JSON")
+            return
+
+        self.out = []
+        self.out.append(jstr)
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
 class CrcCommand(GenericCommand, BufferingOutput):
     """The base command to calculate crc."""
 
