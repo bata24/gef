@@ -77723,6 +77723,158 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class KtypesCommand(GenericCommand, BufferingOutput):
+    """Display kernel type information from /sys/kernel/btf/vmlinux."""
+
+    _cmdline_ = "ktypes"
+    _category_ = "08-c. Qemu-system Cooperation - Linux Symbol"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    _syntax_ = parser.format_help()
+
+    _note_ = [
+        "This command needs CONFIG_DEBUG_INFO_BTF=y.",
+        "CONFIG_KALLSYMS_ALL=y is not required.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def check_command(self):
+        try:
+            GefUtil.which("bpftool")
+            GefUtil.which("gcc")
+        except FileNotFoundError as e:
+            err("{}".format(e))
+            return False
+        return True
+
+    def get_base_name(self):
+        if not hasattr(__gef_command_instances__["ksymaddr-remote"], "kernel_version"):
+            gdb.execute("ksymaddr-remote --no-pager GEF_DUMMY_STRING", to_string=True)
+            if not hasattr(__gef_command_instances__["ksymaddr-remote"], "kernel_version"):
+                err("Not found kernel version")
+                return None
+
+        ks = __gef_command_instances__["ksymaddr-remote"]
+        h = hashlib.sha256(String.str2bytes(ks.version_string)).hexdigest()[-16:]
+        major, minor, patch = ks.kernel_version
+        base_name = os.path.join(GEF_TEMP_DIR, "ktypes-{:d}.{:d}.{:d}-{:s}".format(major, minor, patch, h))
+        return base_name
+
+    def get_btf_addr(self):
+        start = Symbol.get_ksymaddr("__start_BTF")
+        if start is None:
+            return None
+        end = Symbol.get_ksymaddr("__stop_BTF")
+        return start, end - start
+
+    def build_header_file(self):
+        base_path = self.get_base_name()
+        if base_path is None:
+            return None
+
+        raw_path = base_path + ".raw"
+        header_path = base_path + ".h"
+
+        # use cache
+        if not self.args.rescan:
+            if os.path.exists(header_path) and os.path.getsize(header_path) > 0:
+                return header_path
+
+        # get address of /sys/kernel/btf/vmlinux
+        addr_size = self.get_btf_addr()
+        if addr_size is None:
+            err("Not found /sys/kernel/btf/vmlinux")
+            return None
+
+        # read /sys/kernel/btf/vmlinux
+        try:
+            content = read_memory(*addr_size)
+        except gdb.MemoryError:
+            err("Memory read error")
+            return None
+
+        # save it
+        open(raw_path, "wb").write(content)
+
+        # raw -> vmlinux.h
+        os.system("{!r} btf dump file {!r} format c > {!r}".format(GefUtil.which("bpftool"), raw_path, header_path))
+        return header_path
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    def do_invoke(self, args):
+        if not self.check_command():
+            return
+
+        header_path = self.build_header_file()
+        if header_path is None:
+            warn("This kernel may be CONFIG_DEBUG_INFO_BTF=n")
+            return
+
+        content = open(header_path, "r").read()
+
+        self.out = []
+        self.out.extend(content.splitlines())
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class KtypesLoadCommand(KtypesCommand):
+    """Load kernel type information from /sys/kernel/btf/vmlinux."""
+
+    _cmdline_ = "ktypes-load"
+    _category_ = "08-c. Qemu-system Cooperation - Linux Symbol"
+    _aliases_ = ["kt-load"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
+    _syntax_ = parser.format_help()
+
+    def build_obj_file(self, header_path):
+        source_path = header_path[:-2] + ".c"
+        obj_path = source_path[:-2]
+
+        # use cache
+        if not self.args.rescan:
+            if os.path.exists(obj_path) and os.path.getsize(obj_path) > 0:
+                return obj_path
+
+        # copy vmlinux.h to vmlinux.c
+        open(source_path, "wb").write(open(header_path, "rb").read())
+
+        # build with debug types
+        os.system("{!r} -g -O0 -g -fno-eliminate-unused-debug-types -c {!r} -o {!r}".format(
+            GefUtil.which("gcc"), source_path, obj_path,
+        ))
+        return obj_path
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    def do_invoke(self, args):
+        if not self.check_command():
+            return
+
+        header_path = self.build_header_file()
+        if header_path is None:
+            return
+
+        obj_path = self.build_obj_file(header_path)
+        if obj_path is None:
+            return
+
+        gdb.execute("file {:s}".format(obj_path), to_string=True)
+        info("Kernel types are loaded successfully")
+        return
+
+
+@register_command
 class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
     """Resolve kernel symbols from kallsyms table."""
     # Thanks to https://github.com/marin-m/vmlinux-to-elf

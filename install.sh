@@ -28,7 +28,7 @@ echo "[+] apt"
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata
 apt-get install -y gdb-multiarch wget
-apt-get install -y binutils python3-pip ruby-dev git file colordiff imagemagick
+apt-get install -y binutils python3-pip ruby-dev git file colordiff imagemagick bpftool
 apt-get install -y binwalk
 
 echo "[+] pip3"

@@ -193,6 +193,8 @@ To use these commands fully, you need to manually install the necessary packages
 |`add-symbol-temporary`|`binutils` (`objcopy`)|-|-|
 |`ksymaddr-remote-apply`|`binutils` (`objcopy`)|-|-|
 |`ksymaddr-remote --vmlinux-file`|`binutils` (`nm`)|-|-|
+|`ktypes`|`bpftool`|-|-|
+|`ktypes-load`|`bpftool`,`gcc`|-|-|
 |`qemu-device-info`|`binutils` (`nm`)|-|-|
 |`rp`|`binutils` (`nm`)|-|`rp++`|
 |`binwalk-memory`|`binwalk`|-|-|
@@ -479,16 +481,16 @@ The logic is slightly different, so it might work.
 If it still does not work, please report it on the issue page.
 
 ## If I have a `vmlinux` with debuginfo, how can I use `ks-apply`?
-The `ks-apply` command is unnecessary.
-Run `kload <vmlinux_path>` (The `kload` command is an easy-to-use wrapper around the `add-symbol-file` command. This automatically applies `kbase` address.)
-
+The `ks-apply` command is unnecessary. Run `kload <vmlinux_path>`.
 Optionally, also run `ksymaddr-remote --vmlinux-file <vmlinux_path>`.
 
+Below is a summary of each.
 |Component|How GDB uses it|How GEF uses it|
 |:---|:---|:---|
-|`vmlinux` debuginfo|- Loaded via `kload` command<br>- Essential for source-level debugging|- Unused|
-|`vmlinux` symbols|- Loaded via `kload` command<br>- Provides kernel symbol resolution|- Accessible via `ksymaddr-remote --vmlinux-file <path>`<br>- This overrides the result of parsing `kallsyms` in memory<br>- Addresses will be automatically rebased|
-|Memory-resident `kallsyms`|- Not available by default<br>- Accessible via `ks-apply` command|- Accessible after `ksymaddr-remote` command<br>- Used by various GEF commands internally|
+|`vmlinux` debuginfo|- Loaded via `add-symbol-file`<br>- Or `kload` (easy wrapper with `kbase`)<br>- Essential for source-level debugging|- Unused<br>- Can be viewed with `dt`|
+|`vmlinux` symbols|- Loaded via `add-symbol-file`<br>- Or `kload` (easy wrapper with `kbase`)<br>- Provides kernel symbol resolution|- Accessible via `ksymaddr-remote --vmlinux-file <path>`<br>- This overrides the result of parsing `kallsyms` in memory<br>- Addresses will be automatically rebased|
+|Memory-resident `debuginfo`<br>(if `CONFIG_DEBUG_INFO_BTF=y`)|- Not available by default<br>- Accessible via `ktypes-load`|- Unused<br>- Can be viewed with `dt`|
+|Memory-resident `kallsyms`<br>(if `CONFIG_KALLSYMS=y`)|- Not available by default<br>- Accessible via `ks-apply`|- Accessible after `ksymaddr-remote`<br>- Used by various GEF commands internally|
 
 ## The kernel-related commands are unstable; sometimes they work fine, sometimes they don’t. / The output of `ksymaddr-remote` seems odd.
 This may be due to the GEF's caching mechanism.
