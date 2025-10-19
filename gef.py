@@ -57061,7 +57061,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[],
-                        help="REGEXP filter.")
+                        help="comm string REGEXP filter.")
+    parser.add_argument("-T", "--task-filter", action="append", type=AddressUtil.parse_address, default=[],
+                        help="task address filter.")
     parser.add_argument("-m", "--print-maps", action="store_true",
                         help="print memory map for each user-land process.")
     parser.add_argument("-r", "--print-regs", action="store_true",
@@ -59587,6 +59589,10 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             comm_string = read_cstring_from_memory(task + self.offset_comm)
             if self.args.filter:
                 if not any(re_pattern.search(comm_string) for re_pattern in self.args.filter):
+                    continue
+
+            if self.args.task_filter:
+                if task not in self.args.task_filter:
                     continue
 
             kstack = read_int_from_memory(task + self.offset_stack)
@@ -90632,8 +90638,8 @@ class PagewalkX64Command(PagewalkCommand):
                         help="filter by map included specified physical address.")
     parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="show all level pagetables only associated specified address.")
-    parser.add_argument("--include-esp-fixup-stacks", action="store_true",
-                        help="include `%%esp fixup stacks` area (sometimes heavy memory use).")
+    parser.add_argument("-i", "--include-esp-fixup-stacks", action="store_true",
+                        help="include `%%esp fixup stacks` area (sometimes heavy memory use; x64 only).")
     parser.add_argument("-U", "--user-pt", action="store_true",
                         help="print userland pagetables (for KPTI, only x64, in kernel context).")
     parser.add_argument("--cr3", dest="user_specified_cr3", type=AddressUtil.parse_address,
@@ -91261,6 +91267,10 @@ class PagewalkX64Command(PagewalkCommand):
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16"))
     def do_invoke(self, args):
+        if self.args.include_esp_fixup_stacks and not is_x86_64():
+            err("Unsupported --include-esp-fixup-stacks option in this arch")
+            return
+
         if self.args.trace:
             # You should not modify the self.args.vrange directly.
             self.vrange = self.args.vrange + self.args.trace # merge vrange and trace
@@ -94401,20 +94411,31 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
 
     _cmdline_ = "pagewalk-with-hints"
     _category_ = "08-a. Qemu-system Cooperation - General"
+    _aliases_ = ["kvmmap"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-s", "--skip-full-slab-cache", action="store_true",
-                        help="skip search full slab cache. use this option if take a long time to parse.")
+    parser.add_argument("-U", "--exclude-user", action="store_true", help="exclude userland memory.")
+    parser.add_argument("-i", "--include-esp-fixup-stacks", action="store_true",
+                        help="include `%%esp fixup stacks` area (sometimes heavy memory use; x64 only).")
+    parser.add_argument("-v", "--verbose", action="count", default=0,
+                        help="increase output verbosity. (-v, -vv, -vvv)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
-    parser.add_argument("-r", "--rescan", action="store_true", help="do not use map cache.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
     class Region:
         def __init__(self, addr_start, addr_end, perm, description="", merge=True):
-            self.addr_start = addr_start
-            self.addr_end = addr_end
-            self.size = addr_end - addr_start
+            if isinstance(addr_start, str):
+                self.addr_start = int(addr_start.replace("*", "0"), 16)
+                self.addr_end = int(addr_end.replace("*", "0"), 16)
+                self.espfix = True
+                self.addr_start_str = addr_start
+                self.addr_end_str = addr_end
+            else:
+                self.addr_start = addr_start
+                self.addr_end = addr_end
+                self.espfix = False
+            self.size = self.addr_end - self.addr_start
             self.perm = perm
             self.description = description
             self.merge = merge
@@ -94442,6 +94463,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         target_address_start = to_insert_address
         target_address_end = to_insert_address + to_insert_size
 
+        updated = False
         for _key, r in sorted(self.regions.items()):
             # no overwrap
             if r.addr_end <= target_address_start:
@@ -94495,6 +94517,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
                 addr_start_1st = r.addr_start
                 addr_end_1st = addr_start_1st + size_1st
                 self.regions[addr_start_1st] = self.Region(addr_start_1st, addr_end_1st, r.perm, r.description, merge)
+                updated = True
             if size_2nd > 0:
                 addr_start_2nd = max(target_address_start, r.addr_start)
                 addr_end_2nd = addr_start_2nd + size_2nd
@@ -94506,14 +94529,19 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
                 else:
                     new_description = description
                 self.regions[addr_start_2nd] = self.Region(addr_start_2nd, addr_end_2nd, r.perm, new_description, merge)
+                updated = True
             if size_3rd > 0:
                 addr_start_3rd = target_address_end
                 addr_end_3rd = addr_start_3rd + size_3rd
                 self.regions[addr_start_3rd] = self.Region(addr_start_3rd, addr_end_3rd, r.perm, r.description, merge)
+                updated = True
 
             if r.addr_end < target_address_end:
                 target_address_start = r.addr_end
-        return
+        return updated
+
+    def insert_region_range(self, to_insert_address, to_insert_end, description, merge=True):
+        return self.insert_region(to_insert_address, to_insert_end - to_insert_address, description, merge)
 
     def merge_region(self):
         new_regions = {}
@@ -94564,24 +94592,42 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def get_maps(self):
-        res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --disable-color")
+        option = ""
+        if self.args.include_esp_fixup_stacks:
+            option = " --include-esp-fixup-stacks"
+        res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --disable-color" + option)
         res = sorted(set(res.splitlines()))
         res = list(filter(lambda line: line.endswith("]"), res))
         res = list(filter(lambda line: "[+]" not in line, res))
-        res = list(filter(lambda line: "*" not in line, res))
 
         regions = {}
         for line in res:
+            # esp_fixup special handling
+            if is_x86_64() and self.args.include_esp_fixup_stacks and "*" in line:
+                line = line.split()
+                addr_start_str, addr_end_str = line[0].split("-")
+                perm = Permission.from_process_maps(line[5][1:4].lower())
+                addr_start = int(addr_start_str.replace("*", "0"), 16)
+                regions[addr_start] = self.Region(addr_start_str, addr_end_str, str(perm), "esp_fixup", merge=False)
+                continue
+
+            # parse entry
             line = line.split()
             addr_start, addr_end = [int(x, 16) for x in line[0].split("-")]
-            # TODO: more suitable check for kernel address
-            if (addr_start >> ((current_arch.ptrsize * 8) - 1)) != 1:
-                continue
+            if self.args.exclude_user:
+                # TODO: more suitable check for kernel address
+                if not AddressUtil.is_msb_on(addr_start):
+                    continue
             if is_x86():
                 perm = Permission.from_process_maps(line[5][1:4].lower())
             elif is_arm64() or is_arm32():
                 perm = Permission.from_process_maps(line[6][4:7].lower())
-            regions[addr_start] = self.Region(addr_start, addr_end, str(perm))
+
+            # add region
+            if not AddressUtil.is_msb_on(addr_start):
+                regions[addr_start] = self.Region(addr_start, addr_end, str(perm), "userland")
+            else:
+                regions[addr_start] = self.Region(addr_start, addr_end, str(perm))
         return regions
 
     def resolve_kbase(self):
@@ -94630,64 +94676,207 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
     def resolve_direct_map(self):
         self.quiet_info("resolve direct map")
 
-        page_offset = KernelAddressHeuristicFinder.get_page_offset()
-        if not page_offset:
-            return
+        if is_x86_64():
+            # try 5-level pagetables
+            r = self.insert_region_range(0xff11_0000_0000_0000, 0xff91_0000_0000_0000, "physmap")
+            if not r:
+                # 4-level pagetables
+                self.insert_region_range(0xffff_8880_0000_0000, 0xffff_c880_0000_0000, "physmap")
+        elif is_arm64():
+            # try 3-level pagetables
+            r = self.insert_region_range(0xfff0_0000_0000_0000, 0xff80_0000_0000_0000, "physmap")
+            if not r:
+                # 4-level pagetables
+                self.insert_region_range(0xffff_0000_0000_0000, 0xffff_8000_0000_0000, "physmap")
+        elif is_arm32() or is_x86_32():
+            # get start address
+            kern_min = Kernel.get_maps()[0][0]
+            if kern_min < 0x8000_0000:
+                PAGE_OFFSET = 0x4000_0000 # VMSPLIT_1G
+            elif kern_min < 0xb000_0000:
+                PAGE_OFFSET = 0x8000_0000 # VMSPLIT_2G
+            elif kern_min < 0xbf00_0000:
+                # 0xbf000000-0xc0000000 is kernel module area.
+                # Even if it is VMSPLIT_3G, this is used.
+                PAGE_OFFSET = 0xb000_0000 # VMSPLIT_3G_OPT
+            else:
+                PAGE_OFFSET = 0xc000_0000 # VMSPLIT_3G
 
-        vmalloc_start = KernelAddressHeuristicFinder.get_vmalloc_start()
-        if not vmalloc_start:
-            return
-
-        phys_page_start = page_offset
-        phys_mem_size = vmalloc_start - phys_page_start
-
-        self.insert_region(phys_page_start, phys_mem_size, "physmem direct map")
+            # get end address
+            mem_map = KernelAddressHeuristicFinder.get_mem_map()
+            if mem_map is None:
+                return
+            mem_map &= gef_getpagesize_mask_high()
+            dir_map_end = mem_map - 8 * 1024 * 1024 # 8MB guard
+            self.insert_region_range(PAGE_OFFSET, dir_map_end, "physmap")
         return
 
     def resolve_vmalloc(self):
         self.quiet_info("resolve vmalloc")
 
-        vmalloc_start = KernelAddressHeuristicFinder.get_vmalloc_start()
-        if not vmalloc_start:
-            return
-
-        cr4 = get_register("cr4", use_monitor=True)
-        if (cr4 >> 12) & 1: # PML5T check
-            VMALLOC_SIZE_TB = 12800
+        if is_x86_64():
+            # try 5-level pagetables
+            r = self.insert_region_range(0xffa0_0000_0000_0000, 0xffd2_0000_0000_0000, "vmalloc")
+            if not r:
+                # 4-level pagetables
+                self.insert_region_range(0xffff_c900_0000_0000, 0xffff_e900_0000_0000, "vmalloc")
+        elif is_arm64():
+            kversion = Kernel.kernel_version()
+            if kversion < "5.11":
+                # Without KASAN, the memory map may differ from the official documentation.
+                kasan = gdb.execute("ksymaddr-remote kasan_ --quiet --no-pager", to_string=True) # do not use --exact
+                is_52bit_range = is_valid_addr(0xfff0_0000_0000_0000)
+                if kasan:
+                    if is_52bit_range:
+                        self.insert_region_range(0xffff_a000_1000_0000, 0xffff_f81f_ffff_0000, "vmalloc")
+                    else:
+                        self.insert_region_range(0xffff_a000_1000_0000, 0xffff_fdff_bfff_0000, "vmalloc")
+                else:
+                    if is_52bit_range:
+                        self.insert_region_range(0xffff_8000_0000_0000, 0xffff_f81f_ffff_0000, "vmalloc")
+                    else:
+                        self.insert_region_range(0xffff_8000_0000_0000, 0xffff_fdff_bfff_0000, "vmalloc")
+            elif kversion < "6.5":
+                self.insert_region_range(0xffff_8000_0800_0000, 0xffff_fbff_f000_0000, "vmalloc")
+            else:
+                self.insert_region_range(0xffff_8000_8000_0000, 0xffff_fbff_f000_0000, "vmalloc")
         else:
-            VMALLOC_SIZE_TB = 32
-
-        vmalloc_region_size = VMALLOC_SIZE_TB << 40
-        self.insert_region(vmalloc_start, vmalloc_region_size, "vmalloc area")
+            res = gdb.execute("vmalloc-dump --quiet --no-pager --only-freed", to_string=True)
+            lines = [Color.remove_color(line) for line in res.splitlines()]
+            if len(lines) > 3:
+                """
+                gef> vmalloc-dump --quiet --no-pager --only-freed
+                #    state  virtual address                       size               flags
+                0    freed  0x0000000000000001-0x00000000f77fe000 0xf77fdfff
+                1    freed  0x00000000f7828000-0x00000000f782a000 0x2000
+                2    freed  0x00000000f7834000-0x00000000f7835000 0x1000
+                3    freed  0x00000000f783b000-0x00000000fefdf000 0x77a4000
+                4    freed  0x00000000feffe000-0x00000000ffffffff 0x1001fff
+                gef>
+                """
+                _, _, vrange, _, *_ = lines[1].split()
+                vmalloc_start = int(vrange.split("-")[1], 16)
+                _, _, vrange, _, *_ = lines[-1].split()
+                vmalloc_end = int(vrange.split("-")[0], 16)
+                self.insert_region_range(vmalloc_start, vmalloc_end, "vmalloc")
+                return
         return
 
-    def resolve_page(self):
+    def resolve_vmemmap(self):
         self.quiet_info("resolve page")
 
         if is_x86_64():
             vmemmap = KernelAddressHeuristicFinder.get_vmemmap()
             if vmemmap is None:
                 return
+            # already there
             if vmemmap in self.regions:
-                self.regions[vmemmap].add_description("struct page area")
-
+                self.regions[vmemmap].add_description("vmemmap(=page[])")
+                return
+            # require division
+            pass
         elif is_x86_32() or is_arm32():
-            # TODO support x86_32 mem_section
             mem_map = KernelAddressHeuristicFinder.get_mem_map()
             if mem_map is None:
                 return
+            mem_map &= gef_getpagesize_mask_high()
+            # already there
             if mem_map in self.regions:
-                self.regions[mem_map].add_description("struct page area")
-
+                self.regions[mem_map].add_description("mem_map(=page[])")
+                return
+            # require division
+            for _key, r in sorted(self.regions.items()):
+                if r.addr_start <= mem_map < r.addr_end:
+                    size = r.addr_end - mem_map
+                    self.insert_region(mem_map, size, "mem_map(=page[])")
+                    return
+            # TODO support x86_32 mem_section
         elif is_arm64():
-            VMEMMAP_START, _ = KernelAddressHeuristicFinder.get_VMEMMAP_START()
-            # It will shift due to KASLR, so we will correct it.
-            for key in sorted(self.regions.keys()):
-                if key >= VMEMMAP_START:
-                    self.regions[key].add_description("struct page area")
+            kversion = Kernel.kernel_version()
+            if kversion < "5.11":
+                is_52bit_range = is_valid_addr(0xfff0_0000_0000_0000)
+                if is_52bit_range:
+                    self.insert_region_range(0xffff_fc1f_ffe0_0000, 0xffff_ffff_ffe0_0000, "vmemmap(=page[])")
+                else:
+                    self.insert_region_range(0xffff_fdff_ffe0_0000, 0xffff_ffff_ffe0_0000, "vmemmap(=page[])")
+            else:
+                self.insert_region_range(0xffff_fc00_0000_0000, 0xffff_fe00_0000_0000, "vmemmap(=page[])")
+        return
+
+    def resolve_cpu_entry(self):
+        if is_arm64() or is_arm32() or is_x86_32():
+            return
+
+        self.quiet_info("resolve cpu entry")
+        if is_x86_64():
+            self.insert_region_range(0xffff_fe00_0000_0000, 0xffff_fe80_0000_0000, "cpu_entry")
+        return
+
+    def resolve_fixmap(self):
+        if is_x86_32():
+            return
+
+        self.quiet_info("resolve fixmap")
+        if is_x86_64():
+            self.insert_region_range(0xffff_ffff_ff50_0000, 0xffff_ffff_ff60_0000, "fixmap")
+        elif is_arm64():
+            kversion = Kernel.kernel_version()
+            if kversion < "5.11":
+                is_52bit_range = is_valid_addr(0xfff0_0000_0000_0000)
+                if is_52bit_range:
+                    self.insert_region_range(0xffff_fc1f_fe59_0000, 0xffff_fc1f_fea0_0000, "fixmap")
+                else:
+                    self.insert_region_range(0xffff_fdff_fe5f_9000, 0xffff_fdff_fea0_0000, "fixmap")
+            else:
+                self.insert_region_range(0xffff_fbff_f000_0000, 0xffff_fbff_fe00_0000, "fixmap")
+        elif is_arm32():
+            kversion = Kernel.kernel_version()
+            if kversion < "3.16":
+                self.insert_region_range(0xfff0_0000, 0xfffe_0000, "fixmap")
+            elif kversion < "3.19":
+                self.insert_region_range(0xffc0_0000, 0xffe0_0000, "fixmap")
+            elif kversion < "5.4":
+                self.insert_region_range(0xffc0_0000, 0xfff0_0000, "fixmap")
+            else:
+                self.insert_region_range(0xffc8_0000, 0xfff0_0000, "fixmap")
+        return
+
+    def resolve_pci(self):
+        if is_x86_64() or is_x86_32():
+            return
+
+        self.quiet_info("resolve pci")
+        if is_arm64():
+            kversion = Kernel.kernel_version()
+            if kversion < "5.11":
+                is_52bit_range = is_valid_addr(0xfff0_0000_0000_0000)
+                if is_52bit_range:
+                    self.insert_region_range(0xffff_fc1f_fec0_0000, 0xffff_fc1f_ffc0_0000, "pci")
+                else:
+                    self.insert_region_range(0xffff_fdff_fec0_0000, 0xffff_fdff_ffc0_0000, "pci")
+            else:
+                self.insert_region_range(0xffff_fbff_fe80_0000, 0xffff_fbff_ff80_0000, "pci")
+        elif is_arm32():
+            kversion = Kernel.kernel_version()
+            if kversion < "3.7":
+                pass
+            else:
+                self.insert_region_range(0xfee0_0000, 0xff00_0000, "pci")
+        return
+
+    def resolve_vector(self):
+        if is_x86_64() or is_x86_32() or is_arm64():
+            return
+
+        self.quiet_info("resolve vector")
+        if is_arm32():
+            self.insert_region_range(0xffff_0000, 0xffff_1000, "vector")
         return
 
     def resolve_buddy(self):
+        if self.args.verbose < 1:
+            self.quiet_warn("resolve buddy: skipped (args.verbose < 1)")
+            return
         self.quiet_info("resolve buddy")
 
         res = gdb.execute("buddy-dump --quiet --no-pager --sort", to_string=True)
@@ -94739,15 +94928,58 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
             elems = line.split()
             pid, kstack = int(elems[3]), int(elems[-2], 16)
             process_name = line.split(maxsplit=4)[4][:16].strip()
-            description = "kernel stack of PID:{:d} ({:s})".format(pid, process_name)
+            description = "kstack PID:{:d} ({:s})".format(pid, process_name)
             self.insert_region(kstack, kstack_size, description)
         return
 
-    def resolve_more_slub(self):
-        if self.args.skip_full_slab_cache:
+    def resolve_userland(self):
+        self.quiet_info("resolve userland")
+
+        # If current is a kernel thread, the userland memory map details will not be displayed.
+        # Even if you are in a kernel thread, you may be able to see the userland memory map,
+        # but it takes time to identify which process it belongs to.
+        try:
+            th_num = gdb.selected_thread().num
+            res = gdb.execute("kcurrent --quiet", to_string=True)
+            r = re.search(r"current \(cpu{:d}\): (0x\S+) .*".format(th_num - 1), res)
+            if not r:
+                return
+            curr_task = int(r.group(1), 16)
+        except Exception:
             return
 
-        self.quiet_info("resolve slub (search for full slab cache; skip if target region size >= 0x200000)")
+        res = gdb.execute(f"ktask --quiet --no-pager -u --task-filter {curr_task:#x}", to_string=True)
+        if not res:
+            return
+
+        res = gdb.execute(f"ktask --quiet --no-pager -u --task-filter {curr_task:#x} -m", to_string=True)
+        pid = -1
+        comm = "?"
+        for line in res.splitlines():
+            if not line.startswith("0x"):
+                continue
+            line = line.split()
+
+            # process name
+            if "-" not in line[0]:
+                pid, comm = int(line[3]), line[4]
+                continue
+
+            # map name
+            addr_start, addr_end = line[0].split("-")
+            addr_start = int(addr_start, 16)
+            addr_end = int(addr_end, 16)
+            map_size = addr_end - addr_start
+            description = "PID:{:d} ({:s}) {:s}".format(pid, comm, " ".join(line[2:]))
+            self.insert_region(addr_start, map_size, description.rstrip())
+        return
+
+    def resolve_full_slub(self):
+        if self.args.verbose < 2:
+            self.quiet_warn("resolve full slub: skipped (args.verbose < 2)")
+            return
+
+        self.quiet_info("resolve full slub (skip if target region size >= 0x200000)")
         old_regions = list(self.regions.items())[::]
 
         tqdm = GefUtil.get_tqdm()
@@ -94790,6 +95022,9 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_slub(self):
+        if self.args.verbose < 1:
+            self.quiet_warn("resolve slub: skipped (args.verbose < 1)")
+            return
         self.quiet_info("resolve slub")
 
         res = gdb.execute("slub-dump --quiet --no-pager -vv", to_string=True)
@@ -94813,10 +95048,13 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
                 address, size = None, None # for detect logic error. name will be reused until next parsing
                 continue
 
-        self.resolve_more_slub()
+        self.resolve_full_slub()
         return
 
     def resolve_slab(self):
+        if self.args.verbose < 1:
+            self.quiet_warn("resolve slab: skipped (args.verbose < 1)")
+            return
         self.quiet_info("resolve slab")
 
         res = gdb.execute("slab-dump --quiet --no-pager", to_string=True)
@@ -94842,6 +95080,9 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_slob(self):
+        if self.args.verbose < 1:
+            self.quiet_warn("resolve slob: skipped (args.verbose < 1)")
+            return
         self.quiet_info("resolve slob")
 
         res = gdb.execute("slob-dump --quiet --no-pager", to_string=True)
@@ -94863,6 +95104,9 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_slub_tiny(self):
+        if self.args.verbose < 1:
+            self.quiet_warn("resolve slub-tiny: skipped (args.verbose < 1)")
+            return
         self.quiet_info("resolve slub-tiny")
 
         res = gdb.execute("slub-tiny-dump --quiet --no-pager", to_string=True)
@@ -94915,6 +95159,9 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_vdso(self):
+        if self.args.verbose < 1:
+            self.quiet_warn("resolve vdso: skipped (args.verbose < 1)")
+            return
         self.quiet_info("resolve vdso")
 
         if is_x86_64():
@@ -94952,6 +95199,9 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_device_physmem(self):
+        if self.args.verbose < 2:
+            self.quiet_warn("resolve device physmem: skipped (args.verbose < 2)")
+            return
         self.quiet_info("resolve device physmem")
 
         try:
@@ -95040,55 +95290,62 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
+    @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        if not hasattr(self, "out"):
-            self.out = []
+        if self.args.include_esp_fixup_stacks and not is_x86_64():
+            err("Unsupported --include-esp-fixup-stacks option in this arch")
+            return
 
-        if args.rescan:
-            self.out = []
+        # initial regions
+        self.regions = self.get_maps()
 
-        if not self.out:
-            self.add_legend()
+        # add info
+        self.out = []
+        self.add_legend()
+        self.resolve_direct_map()
+        self.resolve_vmalloc()
+        self.resolve_kbase()
+        self.resolve_vmemmap()
+        self.resolve_cpu_entry()
+        self.resolve_fixmap()
+        self.resolve_pci()
+        self.resolve_vector()
+        self.resolve_device_physmem()
+        self.resolve_buddy()
+        self.resolve_kstack()
+        self.resolve_userland()
+        self.resolve_each_slab()
+        self.resolve_module()
+        self.resolve_vdso()
+        self.detect_zero_page()
 
-            # initial regions
-            self.regions = self.get_maps()
-
-            # add info
-            self.resolve_kbase()
-            if is_x86_64():
-                self.resolve_direct_map()
-                self.resolve_vmalloc()
-            self.resolve_page()
-            self.resolve_device_physmem()
-            self.resolve_buddy()
-            self.resolve_kstack()
-            self.resolve_each_slab()
-            self.resolve_module()
-            self.resolve_vdso()
-            self.detect_zero_page()
-
-            # make output
-            self.merge_region()
-            for _, r in sorted(self.regions.items()):
-                # make line
+        # make output
+        self.merge_region()
+        for _, r in sorted(self.regions.items()):
+            # make line
+            if r.espfix:
+                line = "{:18s}-{:18s} {:#018x} [{:s}] {:s}".format(
+                    r.addr_start_str, r.addr_end_str, r.size, r.perm, r.description,
+                ).rstrip()
+            else:
                 line = "{:#018x}-{:#018x} {:#018x} [{:s}] {:s}".format(
                     r.addr_start, r.addr_end, r.size, r.perm, r.description,
-                )
+                ).rstrip()
 
-                # coloring
-                if r.perm == "r--":
-                    line_color = Config.get_gef_setting("theme.address_readonly")
-                elif r.perm == "rw-":
-                    line_color = Config.get_gef_setting("theme.address_writable")
-                elif r.perm.endswith("x"):
-                    line_color = Config.get_gef_setting("theme.address_code")
-                else:
-                    line_color = ""
+            # coloring
+            if r.perm == "r--":
+                line_color = Config.get_gef_setting("theme.address_readonly")
+            elif r.perm == "rw-":
+                line_color = Config.get_gef_setting("theme.address_writable")
+            elif r.perm.endswith("x"):
+                line_color = Config.get_gef_setting("theme.address_code")
+            else:
+                line_color = ""
 
-                if r.perm == "rwx":
-                    line_color += " " + Config.get_gef_setting("theme.address_rwx")
+            if r.perm == "rwx":
+                line_color += " " + Config.get_gef_setting("theme.address_rwx")
 
-                self.out.append(Color.colorify(line, line_color))
+            self.out.append(Color.colorify(line, line_color))
 
         self.print_output()
         return
