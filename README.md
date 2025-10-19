@@ -634,7 +634,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/hash.png)
 - `crc`: calculates various CRCs.
     - ![](images/crc.png)
-- `json`: pretty print json.
+- `json`: pretty prints json.
     - ![](images/json.png)
 - `base-n-decode`/`base-n-encode`: decodes/encodes various baseN.
     - ![](images/base-n-decode.png)

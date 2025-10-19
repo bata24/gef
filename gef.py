@@ -53123,7 +53123,7 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @switch_to_intel_syntax
     def get_saved_command_line():
-        # Do not use Symbol.get_ksymaddr directry since this function is used to discover KPTI.
+        # Do not use Symbol.get_ksymaddr directory since this function is used to discover KPTI.
         # This is because Symbol.get_ksymaddr uses a cache.
 
         kversion = Kernel.kernel_version()
@@ -70448,7 +70448,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
     _note2_ = [
         "* A mitigation called CONFIG_SLAB_VIRTUAL was proposed in September 2023 to prevent cross-cache attack.",
-        "  This config is not merged into mainline as of May 2025, but used in KernelCTF@Google Securty Research.",
+        "  This config is not merged into mainline as of May 2025, but used in KernelCTF@Google Security Research.",
         "* A unique feature of CONFIG_SLAB_VIRTUAL is that in addition to the existing SLUB structure,",
         "  it also has a structure for managing released slab structures.",
         "",
@@ -71128,7 +71128,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
     struct kmem_cache {                          // if CONFIG_SLAB_VIRTUAL=y
         ...
-        struct kmem_cache_order_objects min;     // [ANOTATION]
+        struct kmem_cache_order_objects min;     // [ANNOTATION]
         struct kmem_cache_order_objects oo;      //    In kernel < 6.1.55, `min` and `oo` are swapped.
         struct kmem_cache_virtual {              // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.1.55
             spinlock_t freed_slabs_lock;
@@ -72054,7 +72054,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     )
                     self.out.append("    kmem_cache_node[{:d}]: {:#x}".format(node_index, node_addr))
 
-                    # node list (patial)
+                    # node list (partial)
                     printed_count = 0
                     for node_page in node_page_list_partial:
                         self.dump_page(node_page, kmem_cache, "node")
@@ -79557,7 +79557,6 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
               0x7ffff7e06860|+0x0060|+012: 0x0000000000000000 // nonempty_.union
               0x7ffff7e06868|+0x0068|+013: 0x0000000000000000 // nonempty_.union
               0x7ffff7e06870|+0x0070|+014: 0x0000000000000000
-
         """
         offset_next1 = 0x20
         offset_prev1 = 0x28
