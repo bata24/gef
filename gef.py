@@ -26360,6 +26360,17 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
         return
 
+    def check_CONFIG_DEBUG_INFO_BTF(self):
+        cfg = "CONFIG_DEBUG_INFO_BTF"
+        __start_BTF = Symbol.get_ksymaddr("__start_BTF")
+        if __start_BTF:
+            additional = "__start_BTF: Found"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
+        else:
+            additional = "__start_BTF: Not found"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
+        return
+
     def check_CONFIG_RANDSTRUCT(self):
         cfg = "CONFIG_RANDSTRUCT"
         # In cases where kallsyms could be resolved, but ksysctl could not be resolved correctly,
@@ -26651,6 +26662,7 @@ class KernelChecksecCommand(GenericCommand):
         gef_print(titlify("Other"))
         self.check_CONFIG_KALLSYMS_ALL()
         self.check_CONFIG_IKCONFIG()
+        self.check_CONFIG_DEBUG_INFO_BTF()
         self.check_CONFIG_RANDSTRUCT()
         self.check_CONFIG_STATIC_USERMODEHELPER()
         self.check_CONFIG_STACKPROTECTOR()
