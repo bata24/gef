@@ -18055,7 +18055,7 @@ class SearchPatternCommand(GenericCommand):
         return
 
     def get_process_maps_qemu_system(self):
-        res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager")
+        res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --disable-color")
         res = sorted(set(res.splitlines()))
         res = list(filter(lambda line: line.endswith("]"), res))
         res = list(filter(lambda line: "[+]" not in line, res))
@@ -25711,7 +25711,7 @@ class KernelChecksecCommand(GenericCommand):
                 additional = "pti=on is in cmdline"
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
             elif is_in_kernel():
-                lines = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --simple").splitlines()
+                lines = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --simple --disable-color").splitlines()
                 for line in lines:
                     if "USER" in line and "R-X" in line:
                         # If the qemu startup option does not include `-cpu kvm64`,
@@ -33882,7 +33882,7 @@ class VMMapCommand(GenericCommand, BufferingOutput):
                 return
 
             info("Redirect to pagewalk (args are ignored)")
-            gdb.execute("pagewalk")
+            gdb.execute("pagewalk --quiet")
             return
 
         if args.outer and not is_qemu_user():
@@ -56338,7 +56338,7 @@ class Kernel:
     @Cache.cache_until_next
     def get_maps():
         maps = []
-        res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --simple")
+        res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --simple --disable-color")
         res = sorted(set(res.splitlines()))
         res = list(filter(lambda line: line.endswith("]"), res))
         res = list(filter(lambda line: "[+]" not in line, res))
@@ -58552,7 +58552,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             else:
                 offset_vm_flags = offset_vm_mm + 4 * 2
         elif is_arm32():
-            ret = gdb.execute("pagewalk -n", to_string=True)
+            ret = gdb.execute("pagewalk --no-pager --disable-color", to_string=True)
             if "using long description" in ret:
                 offset_vm_flags = offset_vm_mm + 8 * 2
             else:
@@ -85851,7 +85851,7 @@ class BreakSecureMemAddrCommand(GenericCommand):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     def aarch64_get_page_maps_el3(self):
-        res = PageMap.get_page_maps_by_pagewalk("pagewalk 3 --quiet --no-pager --no-merge")
+        res = PageMap.get_page_maps_by_pagewalk("pagewalk 3 --quiet --no-pager --no-merge --disable-color")
         res = sorted(set(res.splitlines()))
         res = list(filter(lambda line: line.endswith("]"), res))
         res = list(filter(lambda line: "[+]" not in line, res))
@@ -85938,13 +85938,13 @@ class OpteeThreadEnterUserModeBreakpoint(gdb.Breakpoint):
     def get_ta_loaded_address(verbose=False):
         Cache.reset_gef_caches()
         if is_arm32():
-            res = PageMap.get_page_maps_by_pagewalk("pagewalk -S --quiet --no-pager")
+            res = PageMap.get_page_maps_by_pagewalk("pagewalk -S --quiet --no-pager --disable-color")
             if verbose:
                 gef_print(res)
             res = sorted(set(res.splitlines()))
             res = list(filter(lambda line: "PL0/R-X" in line, res))
         elif is_arm64():
-            res = PageMap.get_page_maps_by_pagewalk("pagewalk 1 --quiet --no-pager")
+            res = PageMap.get_page_maps_by_pagewalk("pagewalk 1 --quiet --no-pager --disable-color")
             if verbose:
                 gef_print(res)
             res = sorted(set(res.splitlines()))
@@ -86020,7 +86020,7 @@ class OpteeBreakTaAddrCommand(GenericCommand):
         return
 
     def get_secure_memory_maps(self):
-        maps = PageMap.get_page_maps_by_pagewalk("pagewalk --optee --quiet --no-pager").splitlines()
+        maps = PageMap.get_page_maps_by_pagewalk("pagewalk --optee --quiet --no-pager --disable-color").splitlines()
         if not maps:
             err("Not found memory maps")
             return None
@@ -86713,7 +86713,7 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     @only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
-        maps = PageMap.get_page_maps_by_pagewalk("pagewalk --optee --quiet --no-pager").splitlines()
+        maps = PageMap.get_page_maps_by_pagewalk("pagewalk --optee --quiet --no-pager --disable-color").splitlines()
         if not maps:
             err("Not found memory maps")
             return
@@ -87106,7 +87106,7 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     @only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
-        maps = PageMap.get_page_maps_by_pagewalk("pagewalk --optee --quiet --no-pager").splitlines()
+        maps = PageMap.get_page_maps_by_pagewalk("pagewalk --optee --quiet --no-pager --disable-color").splitlines()
         if not maps:
             err("Not found memory maps")
             return
@@ -87188,11 +87188,11 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
 
     def is_readable_virt_memory(self, addr):
         if is_arm32():
-            res = PageMap.get_page_maps_by_pagewalk("pagewalk -S --quiet --no-pager")
+            res = PageMap.get_page_maps_by_pagewalk("pagewalk -S --quiet --no-pager --disable-color")
             res = sorted(set(res.splitlines()))
             res = list(filter(lambda line: "PL0/RW-" in line, res))
         elif is_arm64():
-            res = PageMap.get_page_maps_by_pagewalk("pagewalk 1 --quiet --no-pager")
+            res = PageMap.get_page_maps_by_pagewalk("pagewalk 1 --quiet --no-pager --disable-color")
             res = sorted(set(res.splitlines()))
             res = list(filter(lambda line: "EL0/RW-" in line, res))
         for line in res:
@@ -87205,10 +87205,10 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
 
     def get_ta_rw_address(self, ta_loaded_rx_end):
         if is_arm32():
-            res = PageMap.get_page_maps_by_pagewalk("pagewalk -S --quiet --no-pager")
+            res = PageMap.get_page_maps_by_pagewalk("pagewalk -S --quiet --no-pager --disable-color")
             res = sorted(set(res.splitlines()))
         elif is_arm64():
-            res = PageMap.get_page_maps_by_pagewalk("pagewalk 1 --quiet --no-pager")
+            res = PageMap.get_page_maps_by_pagewalk("pagewalk 1 --quiet --no-pager --disable-color")
             res = sorted(set(res.splitlines()))
         for line in res:
             if not re.search("[PE]L1/RW", line):
@@ -89501,14 +89501,14 @@ class PageMap:
             if FORCE_PREFIX_S is True:
                 return PageMap.get_page_maps_arm64_optee_secure_memory(verbose) # already parsed
             else:
-                res = PageMap.get_page_maps_by_pagewalk("pagewalk 1 --quiet --no-pager --no-merge")
+                res = PageMap.get_page_maps_by_pagewalk("pagewalk 1 --quiet --no-pager --no-merge --disable-color")
         else:
             if FORCE_PREFIX_S is None:
-                res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --no-merge")
+                res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --no-merge --disable-color")
             elif FORCE_PREFIX_S is True:
-                res = PageMap.get_page_maps_by_pagewalk("pagewalk -S --quiet --no-pager --no-merge")
+                res = PageMap.get_page_maps_by_pagewalk("pagewalk -S --quiet --no-pager --no-merge --disable-color")
             elif FORCE_PREFIX_S is False:
-                res = PageMap.get_page_maps_by_pagewalk("pagewalk -s --quiet --no-pager --no-merge")
+                res = PageMap.get_page_maps_by_pagewalk("pagewalk -s --quiet --no-pager --no-merge --disable-color")
         res = sorted(set(res.splitlines()))
         res = list(filter(lambda line: line.endswith("]"), res))
         res = list(filter(lambda line: "[+]" not in line, res))
@@ -89892,6 +89892,40 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
             ))
         return
 
+    def add_color(self, lines):
+        for i in range(len(lines)):
+            line = lines[i].split(None, 5)
+            if len(line) < 6:
+                continue
+            if is_x86() or is_riscv32() or is_riscv64():
+                if re.search(r"^\[R-- ", line[5]):
+                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_readonly"))
+                elif re.search(r"^\[..X ", line[5]):
+                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_code"))
+                elif re.search(r"^\[RW- ", line[5]):
+                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_writable"))
+                if re.search(r"^\[RWX ", line[5]):
+                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_rwx"))
+            elif is_arm32():
+                if re.search(r"PL/R--", line[5]):
+                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_readonly"))
+                elif re.search(r"PL1/..X", line[5]):
+                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_code"))
+                elif re.search(r"PL1/RW-", line[5]):
+                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_writable"))
+                if re.search(r"PL1/RWX", line[5]):
+                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_rwx"))
+            elif is_arm64():
+                if re.search(r"EL[1-3]/R--", line[5]):
+                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_readonly"))
+                elif re.search(r"EL[1-3]/..X", line[5]):
+                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_code"))
+                elif re.search(r"EL[1-3]/RW-", line[5]):
+                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_writable"))
+                if re.search(r"EL[1-3]/RWX", line[5]):
+                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_rwx"))
+        return lines
+
     def make_out(self, mappings):
         if mappings is None or len(mappings) == 0:
             self.warn_add_out("No virtual mappings found")
@@ -89944,6 +89978,10 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
         fmt = "{:37s}  {:37s}  {:12s} {:11s} {:6s} {:s}"
         legend = ["Virtual address start-end", "Physical address start-end", "Total size", "Page size", "Count", "Flags"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+        # coloring
+        if not self.args.disable_color:
+            lines = self.add_color(lines)
 
         # add out
         self.out.extend(lines)
@@ -90007,6 +90045,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
                         help="filter by map included specified physical address.")
     parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="show all level pagetables only associated specified address.")
+    parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
     parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
@@ -90605,6 +90644,7 @@ class PagewalkX64Command(PagewalkCommand):
     parser.add_argument("--cr4", dest="user_specified_cr4", type=AddressUtil.parse_address,
                         help="use specified value as cr4.")
     parser.add_argument("--ept", action="store_true", help="parse cr3 as EPT (Extended Page Table).")
+    parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
     parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
@@ -91273,6 +91313,7 @@ class PagewalkArmCommand(PagewalkCommand):
     parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="show all level pagetables only associated specified address.")
     parser.add_argument("--optee", action="store_true", help="show the secure world memory maps if used OP-TEE.")
+    parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
     parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
@@ -92263,7 +92304,7 @@ class PagewalkArmCommand(PagewalkCommand):
         return
 
     def arm32_optee_exact_pagewalk(self):
-        res = PageMap.get_page_maps_by_pagewalk("pagewalk arm -S -q -n")
+        res = PageMap.get_page_maps_by_pagewalk("pagewalk arm -S --quiet --no-pager --disable-color")
         if not res:
             return
 
@@ -92415,6 +92456,7 @@ class PagewalkArm64Command(PagewalkCommand):
     parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="show all level pagetables only associated specified address.")
     parser.add_argument("--optee", action="store_true", help="show the secure world memory maps if used OP-TEE.")
+    parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
     parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
@@ -94525,7 +94567,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def get_maps(self):
-        res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager")
+        res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --disable-color")
         res = sorted(set(res.splitlines()))
         res = list(filter(lambda line: line.endswith("]"), res))
         res = list(filter(lambda line: "[+]" not in line, res))
