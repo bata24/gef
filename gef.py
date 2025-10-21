@@ -19303,7 +19303,7 @@ class ReadSystemRegisterCommand(GenericCommand):
     """Read system register for old qemu-system-arm."""
 
     _cmdline_ = "read-system-register"
-    _category_ = "04-a. Register - View"
+    _category_ = "08-b. Qemu-system Cooperation - Register"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("reg_name", metavar="REGISTER_NAME", help="register name to read a value.")
@@ -25494,7 +25494,7 @@ class KernelChecksecCommand(GenericCommand):
     """Checksec the security properties of the current kernel."""
 
     _cmdline_ = "kchecksec"
-    _category_ = "08-b. Qemu-system Cooperation - Linux Basic"
+    _category_ = "08-c. Qemu-system Cooperation - Linux Basic"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
@@ -50189,7 +50189,7 @@ class KernelMagicCommand(GenericCommand):
     """Display useful kernel addresses and offsets."""
 
     _cmdline_ = "kmagic"
-    _category_ = "08-b. Qemu-system Cooperation - Linux Basic"
+    _category_ = "08-c. Qemu-system Cooperation - Linux Basic"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("filter", metavar="FILTER", nargs="*", help="filter string.")
@@ -56797,7 +56797,7 @@ class KernelbaseCommand(GenericCommand):
     """Display kernel base address."""
 
     _cmdline_ = "kbase"
-    _category_ = "08-b. Qemu-system Cooperation - Linux Basic"
+    _category_ = "08-c. Qemu-system Cooperation - Linux Basic"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
@@ -56843,7 +56843,7 @@ class KernelVersionCommand(GenericCommand):
     """Display kernel version string."""
 
     _cmdline_ = "kversion"
-    _category_ = "08-b. Qemu-system Cooperation - Linux Basic"
+    _category_ = "08-c. Qemu-system Cooperation - Linux Basic"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
@@ -56877,7 +56877,7 @@ class KernelCmdlineCommand(GenericCommand):
     """Display kernel cmdline string."""
 
     _cmdline_ = "kcmdline"
-    _category_ = "08-b. Qemu-system Cooperation - Linux Basic"
+    _category_ = "08-c. Qemu-system Cooperation - Linux Basic"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
@@ -56911,7 +56911,7 @@ class KernelCurrentCommand(GenericCommand):
     """Display current task."""
 
     _cmdline_ = "kcurrent"
-    _category_ = "08-b. Qemu-system Cooperation - Linux Basic"
+    _category_ = "08-c. Qemu-system Cooperation - Linux Basic"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
@@ -57056,7 +57056,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     """Display process list."""
 
     _cmdline_ = "ktask"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-f. Qemu-system Cooperation - Linux Task"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -59841,7 +59841,7 @@ class KernelFilesCommand(GenericCommand):
     """Display open files list of each process (shortcut for `ktask -quF`)."""
 
     _cmdline_ = "kfiles"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-f. Qemu-system Cooperation - Linux Task"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
@@ -59867,7 +59867,7 @@ class KernelSavedRegsCommand(GenericCommand):
     """Display saved registers of each process (shortcut for `ktask -qur`)."""
 
     _cmdline_ = "kregs"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-f. Qemu-system Cooperation - Linux Task"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
@@ -59893,7 +59893,7 @@ class KernelSignalsCommand(GenericCommand):
     """Display signal handlers of each process (shortcut for `ktask -qus`)."""
 
     _cmdline_ = "ksighands"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-f. Qemu-system Cooperation - Linux Task"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
@@ -59919,7 +59919,7 @@ class KernelNamespacesCommand(GenericCommand):
     """Display namespaces of each process (shortcut for `ktask -quN`)."""
 
     _cmdline_ = "knamespaces"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-f. Qemu-system Cooperation - Linux Task"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
@@ -59945,7 +59945,7 @@ class KernelLoadCommand(GenericCommand):
     """Load the vmlinux without a load address."""
 
     _cmdline_ = "kload"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-e. Qemu-system Cooperation - Linux Symbol/Type"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("path", metavar="VMLINUX_PATH", type=str, help="path of the vmlinux.")
@@ -59974,7 +59974,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
     """Display kernel module list."""
 
     _cmdline_ = "kmod"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -60671,7 +60671,7 @@ class KernelModuleLoadCommand(GenericCommand):
     """Load the kernel module without a load address."""
 
     _cmdline_ = "kmod-load"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-e. Qemu-system Cooperation - Linux Symbol/Type"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("name", type=str, help="name of the loaded module to search for by `kmod`.")
@@ -60919,7 +60919,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
     """Display block device list."""
 
     _cmdline_ = "kbdev"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
@@ -61294,7 +61294,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
     """Display character device list."""
 
     _cmdline_ = "kcdev"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -62429,7 +62429,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
     """Display the members of commonly used function table (like struct file_operations) in the kernel."""
 
     _cmdline_ = "kops"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
 
     types = [
         "address_space_operations",
@@ -63515,7 +63515,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     """Dump the sysctl parameters."""
 
     _cmdline_ = "ksysctl"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -63988,7 +63988,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
     """Dump filesystems."""
 
     _cmdline_ = "kfilesystems"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
     _aliases_ = ["kmounts"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -64480,7 +64480,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
     """Dump the clocksource list."""
 
     _cmdline_ = "kclock-source"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -64587,7 +64587,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
     """Dump the timer."""
 
     _cmdline_ = "ktimer"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -65025,7 +65025,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
     """Dump the PCI devices."""
 
     _cmdline_ = "kpcidev"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
@@ -65487,7 +65487,7 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
     """Dump the kernel config if available."""
 
     _cmdline_ = "kconfig"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[],
@@ -65561,7 +65561,7 @@ class KernelSearchCodePtrCommand(GenericCommand):
     """Search the code pointer in kernel data area."""
 
     _cmdline_ = "ksearch-code-ptr"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-k. Qemu-system Cooperation - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-d", "--depth", type=int, default=1, help="depth of reference. (default: %(default)s)")
@@ -65675,7 +65675,7 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
     """Dump the ring buffer of the dmesg area."""
 
     _cmdline_ = "kdmesg"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -66190,7 +66190,8 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
     """Display syscall_table entries."""
 
     _cmdline_ = "syscall-table-view"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
+    _aliases_ = ["kst"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="REGEXP filter.")
@@ -68436,7 +68437,7 @@ class JsonCommand(GenericCommand, BufferingOutput):
     """The base command to pretty print for JSON."""
 
     _cmdline_ = "json"
-    _category_ = "03-e. Memory - Calculation"
+    _category_ = "03-b. Memory - View"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
@@ -68464,7 +68465,7 @@ class JsonMemoryCommand(JsonCommand):
     """Pretty print JSON from memory values."""
 
     _cmdline_ = "json memory"
-    _category_ = "03-e. Memory - Calculation"
+    _category_ = "03-b. Memory - View"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
@@ -68522,7 +68523,7 @@ class JsonValueCommand(JsonCommand):
     """Pretty print JSON from specified value."""
 
     _cmdline_ = "json value"
-    _category_ = "03-e. Memory - Calculation"
+    _category_ = "03-b. Memory - View"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("value", metavar="VALUE", help="the string of JSON.")
@@ -70330,7 +70331,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     """Dump slub free-list."""
 
     _cmdline_ = "slub-dump"
-    _category_ = "08-e. Qemu-system Cooperation - Linux Allocator"
+    _category_ = "08-h. Qemu-system Cooperation - Linux Allocator"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -72211,7 +72212,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     """Dump slub-tiny free-list."""
 
     _cmdline_ = "slub-tiny-dump"
-    _category_ = "08-e. Qemu-system Cooperation - Linux Allocator"
+    _category_ = "08-h. Qemu-system Cooperation - Linux Allocator"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -72901,7 +72902,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     """Dump slab free-list."""
 
     _cmdline_ = "slab-dump"
-    _category_ = "08-e. Qemu-system Cooperation - Linux Allocator"
+    _category_ = "08-h. Qemu-system Cooperation - Linux Allocator"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -73719,7 +73720,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
     """Dump slob free-list."""
 
     _cmdline_ = "slob-dump"
-    _category_ = "08-e. Qemu-system Cooperation - Linux Allocator"
+    _category_ = "08-h. Qemu-system Cooperation - Linux Allocator"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -74106,7 +74107,7 @@ class SlabContainsCommand(GenericCommand):
     """Resolve the slab cache (kmem_cache) that an object belongs to (for slab/slub/slub-tiny)."""
 
     _cmdline_ = "slab-contains"
-    _category_ = "08-e. Qemu-system Cooperation - Linux Allocator"
+    _category_ = "08-h. Qemu-system Cooperation - Linux Allocator"
     _aliases_ = ["xslab"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -74297,7 +74298,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     """Dump the zone of the page allocator (buddy allocator) free-list."""
 
     _cmdline_ = "buddy-dump"
-    _category_ = "08-e. Qemu-system Cooperation - Linux Allocator"
+    _category_ = "08-h. Qemu-system Cooperation - Linux Allocator"
     _aliases_ = ["zone-dump", "pcplist"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -75081,7 +75082,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
     """Dump pipe information."""
 
     _cmdline_ = "kpipe"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -75499,7 +75500,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
     """Dump the BPF information."""
 
     _cmdline_ = "kbpf"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -75975,7 +75976,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
     """Dump IPCs information (System V semaphore, message queue and shared memory)."""
 
     _cmdline_ = "kipcs"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -76463,7 +76464,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
     """Dump I/O-port and I/O-memory information."""
 
     _cmdline_ = "kdevio"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -76630,7 +76631,7 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
     """Dump DMA-BUF information."""
 
     _cmdline_ = "kdmabuf"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -76949,7 +76950,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
     """Dump IRQ (interrupt request) information."""
 
     _cmdline_ = "kirq"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -77362,7 +77363,7 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
     """Dump net device information."""
 
     _cmdline_ = "knetdev"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-g. Qemu-system Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -77500,7 +77501,7 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
     """Dump vmalloc used list and freed list."""
 
     _cmdline_ = "vmalloc-dump"
-    _category_ = "08-e. Qemu-system Cooperation - Linux Allocator"
+    _category_ = "08-h. Qemu-system Cooperation - Linux Allocator"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -77748,7 +77749,7 @@ class KtypesCommand(GenericCommand, BufferingOutput):
     """Display kernel type information from /sys/kernel/btf/vmlinux."""
 
     _cmdline_ = "ktypes"
-    _category_ = "08-c. Qemu-system Cooperation - Linux Symbol"
+    _category_ = "08-e. Qemu-system Cooperation - Linux Symbol/Type"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
@@ -77849,7 +77850,7 @@ class KtypesLoadCommand(KtypesCommand):
     """Load kernel type information from /sys/kernel/btf/vmlinux."""
 
     _cmdline_ = "ktypes-load"
-    _category_ = "08-c. Qemu-system Cooperation - Linux Symbol"
+    _category_ = "08-e. Qemu-system Cooperation - Linux Symbol/Type"
     _aliases_ = ["kt-load"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -77901,7 +77902,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
     # Thanks to https://github.com/marin-m/vmlinux-to-elf
 
     _cmdline_ = "ksymaddr-remote"
-    _category_ = "08-c. Qemu-system Cooperation - Linux Symbol"
+    _category_ = "08-e. Qemu-system Cooperation - Linux Symbol/Type"
     _aliases_ = ["ks"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -79204,7 +79205,7 @@ class VmlinuxToElfApplyCommand(GenericCommand):
     """Apply symbol from kallsyms in memory using vmlinux-to-elf."""
 
     _cmdline_ = "vmlinux-to-elf-apply"
-    _category_ = "08-c. Qemu-system Cooperation - Linux Symbol"
+    _category_ = "08-e. Qemu-system Cooperation - Linux Symbol/Type"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-r", "--rescan", action="store_true",
@@ -85359,7 +85360,7 @@ class XphysAddrCommand(GenericCommand):
     """Dump physical memory taking into account ROM mapping."""
 
     _cmdline_ = "xp"
-    _category_ = "08-a. Qemu-system Cooperation - General"
+    _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("format", metavar="/FMT", help="specified output format.")
@@ -85486,7 +85487,7 @@ class XSecureMemAddrCommand(GenericCommand):
     """Dump secure memory via qemu-system memory map."""
 
     _cmdline_ = "xsm"
-    _category_ = "08-g. Qemu-system Cooperation - TrustZone"
+    _category_ = "08-j. Qemu-system Cooperation - TrustZone"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     group = parser.add_mutually_exclusive_group(required=True)
@@ -85692,7 +85693,7 @@ class WSecureMemAddrCommand(GenericCommand):
     """Write secure memory via qemu-system memory map."""
 
     _cmdline_ = "wsm"
-    _category_ = "08-g. Qemu-system Cooperation - TrustZone"
+    _category_ = "08-j. Qemu-system Cooperation - TrustZone"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     modes = ["byte", "short", "dword", "qword", "string", "hex"]
@@ -85846,7 +85847,7 @@ class BreakSecureMemAddrCommand(GenericCommand):
     """Set a breakpoint in virtual memory by specifying the physical memory of the secure world."""
 
     _cmdline_ = "bsm"
-    _category_ = "08-g. Qemu-system Cooperation - TrustZone"
+    _category_ = "08-j. Qemu-system Cooperation - TrustZone"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="PHYS_ADDRESS", type=AddressUtil.parse_address,
@@ -85993,7 +85994,7 @@ class OpteeBreakTaAddrCommand(GenericCommand):
     """Set a breakpoint to OPTEE-TA."""
 
     _cmdline_ = "optee-break-ta"
-    _category_ = "08-g. Qemu-system Cooperation - TrustZone"
+    _category_ = "08-j. Qemu-system Cooperation - TrustZone"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     group = parser.add_mutually_exclusive_group(required=True)
@@ -86171,7 +86172,7 @@ class OpteeSmcServiceDumpCommand(GenericCommand, BufferingOutput):
     """Dump the OPTEE SMC (EL3) service (specifically, the arm-trusted-firmware implementation)."""
 
     _cmdline_ = "optee-smc-service-dump"
-    _category_ = "08-g. Qemu-system Cooperation - TrustZone"
+    _category_ = "08-j. Qemu-system Cooperation - TrustZone"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
@@ -86325,7 +86326,7 @@ class OpteeTaDumpCommand(GenericCommand, BufferingOutput):
     """The base command to dump OPTEE Trusted Application."""
 
     _cmdline_ = "optee-ta-dump"
-    _category_ = "08-g. Qemu-system Cooperation - TrustZone"
+    _category_ = "08-j. Qemu-system Cooperation - TrustZone"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
@@ -86435,7 +86436,7 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
     """Dump the OPTEE-Trusted-App list from OPTEE kernel memory."""
 
     _cmdline_ = "optee-ta-dump memory"
-    _category_ = "08-g. Qemu-system Cooperation - TrustZone"
+    _category_ = "08-j. Qemu-system Cooperation - TrustZone"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-o", "--for-old-version", action="store_true", help="for OP-TEE OS before v3.12.0.")
@@ -86761,7 +86762,7 @@ class OpteeTaDumpDirectoryCommand(OpteeTaDumpCommand):
     """Dump the OPTEE-Trusted-App list from host directory."""
 
     _cmdline_ = "optee-ta-dump dir"
-    _category_ = "08-g. Qemu-system Cooperation - TrustZone"
+    _category_ = "08-j. Qemu-system Cooperation - TrustZone"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("host_dir", metavar="HOST_DIR",
@@ -86929,7 +86930,7 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
     """List dynamic shared-memory buffers currently registered in OP-TEE (for OP-TEE v4.3.0~)."""
 
     _cmdline_  = "optee-shm-list"
-    _category_ = "08-g. Qemu-system Cooperation - TrustZone"
+    _category_ = "08-j. Qemu-system Cooperation - TrustZone"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
@@ -87152,7 +87153,7 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
     """Dump bget allocator of OPTEE-Trusted-App."""
 
     _cmdline_ = "optee-bget-dump"
-    _category_ = "08-g. Qemu-system Cooperation - TrustZone"
+    _category_ = "08-j. Qemu-system Cooperation - TrustZone"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -88380,7 +88381,7 @@ class MsrCommand(GenericCommand):
     """Read or write MSR value."""
 
     _cmdline_ = "msr"
-    _category_ = "04-a. Register - View"
+    _category_ = "08-b. Qemu-system Cooperation - Register"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("msr_target", metavar="MSR_NAME|MSR_CONST", nargs="?",
@@ -88542,7 +88543,7 @@ class CetCommand(GenericCommand):
     """Display Intel CET settings."""
 
     _cmdline_ = "cet"
-    _category_ = "04-a. Register - View"
+    _category_ = "08-b. Qemu-system Cooperation - Register"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
@@ -88694,7 +88695,7 @@ class VBARCommand(GenericCommand, BufferingOutput):
     """Pretty-print ARM/ARM64 vector table."""
 
     _cmdline_ = "vbar"
-    _category_ = "04-a. Register - View"
+    _category_ = "08-b. Qemu-system Cooperation - Register"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-a", "--address", type=AddressUtil.parse_address, help="the vector address.")
@@ -89038,7 +89039,7 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
     """Get registers via qemu-monitor and shows the detail of x64/x86 system registers."""
 
     _cmdline_ = "qreg"
-    _category_ = "08-a. Qemu-system Cooperation - General"
+    _category_ = "08-b. Qemu-system Cooperation - Register"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-v", "--verbose", action="store_true", help="also display detailed bit information.")
@@ -89558,7 +89559,7 @@ class Virt2PhysCommand(GenericCommand):
     """Transfer from virtual address to physical address."""
 
     _cmdline_ = "v2p"
-    _category_ = "08-a. Qemu-system Cooperation - General"
+    _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     group = parser.add_mutually_exclusive_group()
@@ -89602,7 +89603,7 @@ class Phys2VirtCommand(GenericCommand):
     """Transfer from physical address to virtual address."""
 
     _cmdline_ = "p2v"
-    _category_ = "08-a. Qemu-system Cooperation - General"
+    _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     group = parser.add_mutually_exclusive_group()
@@ -89659,7 +89660,7 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
     """The base command to dump page tables."""
 
     _cmdline_ = "pagewalk"
-    _category_ = "08-a. Qemu-system Cooperation - General"
+    _category_ = "08-a. Qemu-system Cooperation - Memory Map"
     _aliases_ = ["pw", "ptdump", "pt"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -90029,7 +90030,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
     """Dump pagetable for riscv64/32."""
 
     _cmdline_ = "pagewalk riscv"
-    _category_ = "08-a. Qemu-system Cooperation - General"
+    _category_ = "08-a. Qemu-system Cooperation - Memory Map"
     _aliases_ = ["pagewalk riscv32", "pagewalk riscv64"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -90619,7 +90620,7 @@ class PagewalkX64Command(PagewalkCommand):
     """Dump pagetable for x64/x86."""
 
     _cmdline_ = "pagewalk x64"
-    _category_ = "08-a. Qemu-system Cooperation - General"
+    _category_ = "08-a. Qemu-system Cooperation - Memory Map"
     _aliases_ = ["pagewalk x86"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -91300,7 +91301,7 @@ class PagewalkArmCommand(PagewalkCommand):
     """Dump pagetable for ARM Cortex-A. PL2 pagewalk is unsupported."""
 
     _cmdline_ = "pagewalk arm"
-    _category_ = "08-a. Qemu-system Cooperation - General"
+    _category_ = "08-a. Qemu-system Cooperation - Memory Map"
     _aliases_ = ["pagewalk arm32"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -92444,7 +92445,7 @@ class PagewalkArm64Command(PagewalkCommand):
     """Dump pagetable for ARM64 Cortex-A (ARM v8.7 base)."""
 
     _cmdline_ = "pagewalk arm64"
-    _category_ = "08-a. Qemu-system Cooperation - General"
+    _category_ = "08-a. Qemu-system Cooperation - Memory Map"
     _aliases_ = [] # re-overwrite
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -94355,7 +94356,7 @@ class SwitchELCommand(GenericCommand):
     """Switch EL (Exception Level) on ARM64 architecture."""
 
     _cmdline_ = "switch-el"
-    _category_ = "08-a. Qemu-system Cooperation - General"
+    _category_ = "08-b. Qemu-system Cooperation - Register"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("target_el", metavar="TARGET_EL", nargs="?", type=int,
@@ -94410,7 +94411,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
     """Add hint to the result of pagewalk."""
 
     _cmdline_ = "pagewalk-with-hints"
-    _category_ = "08-a. Qemu-system Cooperation - General"
+    _category_ = "08-a. Qemu-system Cooperation - Memory Map"
     _aliases_ = ["kvmmap"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -95356,7 +95357,7 @@ class PageCommand(GenericCommand):
     """Converts between virtual addresses, physical addresses, and page addresses."""
 
     _cmdline_ = "page"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
@@ -95882,7 +95883,7 @@ class Page2VirtCommand(GenericCommand):
     """Transfer from page to virtual address (shortcut for `page to_virt ...`)."""
 
     _cmdline_ = "page2virt"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("page", metavar="ADDRESS", type=AddressUtil.parse_address,
@@ -95906,7 +95907,7 @@ class Virt2PageCommand(GenericCommand):
     """Transfer from virtual address to page (shortcut for `page from_virt ...`)."""
 
     _cmdline_ = "virt2page"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("virt", metavar="ADDRESS", type=AddressUtil.parse_address,
@@ -95930,7 +95931,7 @@ class Page2PhysCommand(GenericCommand):
     """Transfer from page to physical address (shortcut for `page to_phys ...`)."""
 
     _cmdline_ = "page2phys"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("page", metavar="ADDRESS", type=AddressUtil.parse_address,
@@ -95954,7 +95955,7 @@ class Phys2PageCommand(GenericCommand):
     """Transfer from physical address to page (shortcut for `page from_phys ...`)."""
 
     _cmdline_ = "phys2page"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("phys", metavar="ADDRESS", type=AddressUtil.parse_address,
@@ -95978,7 +95979,7 @@ class SlabVirtualCommand(GenericCommand):
     """Converts between slab-virtual addresses and page addresses."""
 
     _cmdline_ = "slab-virtual"
-    _category_ = "08-d. Qemu-system Cooperation - Linux Advanced"
+    _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     modes = ["to_virt", "to_page", "from_virt", "from_page"]
@@ -96250,7 +96251,7 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
     """Dump device information for qemu-escape."""
 
     _cmdline_ = "qemu-device-info"
-    _category_ = "08-h. Qemu-system Cooperation - Other"
+    _category_ = "08-k. Qemu-system Cooperation - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-d", "--device", help="device name.")
@@ -97588,7 +97589,7 @@ class UsermodehelperTracerCommand(GenericCommand):
     """Collect and display information that is executed by call_usermodehelper_setup."""
 
     _cmdline_ = "usermodehelper-tracer"
-    _category_ = "08-f. Qemu-system Cooperation - Linux Dynamic Inspection"
+    _category_ = "08-i. Qemu-system Cooperation - Linux Dynamic Inspection"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
@@ -97686,7 +97687,7 @@ class ThunkTracerCommand(GenericCommand):
     """Collect and display the thunk addresses that are called automatically (only x64/x86)."""
 
     _cmdline_ = "thunk-tracer"
-    _category_ = "08-f. Qemu-system Cooperation - Linux Dynamic Inspection"
+    _category_ = "08-i. Qemu-system Cooperation - Linux Dynamic Inspection"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
@@ -97881,7 +97882,7 @@ class KmallocTracerCommand(GenericCommand):
     """Collect and display information when kmalloc/kfree."""
 
     _cmdline_ = "kmalloc-tracer"
-    _category_ = "08-f. Qemu-system Cooperation - Linux Dynamic Inspection"
+    _category_ = "08-i. Qemu-system Cooperation - Linux Dynamic Inspection"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-f", "--filter", default=[], help="filter specified name (e.g., kmalloc-XX)")
@@ -98315,7 +98316,7 @@ class KmallocAllocatedByCommand(GenericCommand):
     """Call predefined system-calls and prints kmalloc-N chunks allocated and freed (only x64)."""
 
     _cmdline_ = "kmalloc-allocated-by"
-    _category_ = "08-f. Qemu-system Cooperation - Linux Dynamic Inspection"
+    _category_ = "08-i. Qemu-system Cooperation - Linux Dynamic Inspection"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-f", "--filter", default=[], help="filter specified name (e.g., kmalloc-XX)")
@@ -99860,7 +99861,7 @@ class KernelTraceCommand(GenericCommand):
     """Trace kernel functions and arguments."""
 
     _cmdline_ = "ktrace"
-    _category_ = "08-f. Qemu-system Cooperation - Linux Dynamic Inspection"
+    _category_ = "08-i. Qemu-system Cooperation - Linux Dynamic Inspection"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--task-name", action="append", default=[],
@@ -99995,7 +99996,7 @@ class UefiOvmfInfoCommand(GenericCommand):
     # https://github.com/tianocore/edk2/blob/master/MdeModulePkg/Universal/BdsDxe/BdsEntry.c
     # https://uefi.org/sites/default/files/resources/UEFI_Spec_2_8_final.pdf
     _cmdline_ = "uefi-ovmf-info"
-    _category_ = "08-h. Qemu-system Cooperation - Other"
+    _category_ = "08-k. Qemu-system Cooperation - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
@@ -100673,7 +100674,7 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
     """Apply symbol from kallsyms in memory."""
 
     _cmdline_ = "ksymaddr-remote-apply"
-    _category_ = "08-c. Qemu-system Cooperation - Linux Symbol"
+    _category_ = "08-e. Qemu-system Cooperation - Linux Symbol/Type"
     _aliases_ = ["ks-apply"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
