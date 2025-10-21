@@ -55712,76 +55712,46 @@ class KernelAddressHeuristicFinder:
                 return x
 
         kversion = Kernel.kernel_version()
+        if kversion >= "6.9":
+            return None
 
-        def is_looped_link_list(x):
-            seen = []
-            while True:
-                if not is_valid_addr(x):
-                    return False
-                if len(seen) > 1 and x in seen[1:]:
-                    return False
-                if len(seen) > 0 and x == seen[0]:
-                    return True
-                seen.append(x)
-                x = read_int_from_memory(x)
+        # plan 2 (from register_vmap_purge_notifier)
+        addr = Symbol.get_ksymaddr("register_vmap_purge_notifier")
+        if addr:
+            res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
+            if is_x86_64():
+                g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+                """
+                x86 or x64
+                vmap_notify_list     # rarely leads to long lists
+                free_vmap_area_list  <- here (false positive)
+                vmap_area_list       <- here
+                """
+            elif is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+            elif is_arm64():
+                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
+                """
+                arm32 or arm64
 
-        # plan 2 (available v3.10 ~ v6.3: vread, v6.4~: vread_iter)
-        if kversion and kversion >= "3.17":
-            addr = Symbol.get_ksymaddr("vread") or Symbol.get_ksymaddr("vread_iter")
-            if addr:
-                res = gdb.execute("x/100i {:#x}".format(addr), to_string=True)
-                if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_x86_cmp_const(res, read_valid=True)
-                elif is_x86_32():
-                    g = KernelAddressHeuristicFinderUtil.x64_x86_cmp_const(res, read_valid=True)
-                elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res)
-                elif is_arm32():
-                    g = itertools.chain(
-                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
-                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
-                    )
-                for x in g:
-                    if is_looped_link_list(x):
-                        return x
-
-        # plan 3 (available v4.10~)
-        if kversion and kversion >= "4.10":
-            addrs = Symbol.get_ksymaddr_multiple("s_next")
-            if addrs:
-                for s_next in addrs:
-                    res = gdb.execute("x/20i {:#x}".format(s_next), to_string=True)
-                    if is_x86_64():
-                        g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, "rsi")
-                    elif is_x86_32():
-                        g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, "e.x")
-                    elif is_arm64():
-                        g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res, read_valid=True)
-                    elif is_arm32():
-                        g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)
-                    for x in g:
-                        if is_looped_link_list(x):
-                            return x
-
-        # plan 4 (available v2.6.28 ~ v5.1)
-        if kversion and kversion >= "2.6.28" and kversion < "5.2":
-            addr = Symbol.get_ksymaddr("__insert_vmap_area")
-            if addr:
-                res = gdb.execute("x/100i {:#x}".format(addr), to_string=True)
-                if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res, read_valid=True)
-                elif is_x86_32():
-                    g = KernelAddressHeuristicFinderUtil.x86_dword_ptr_ds(res, read_valid=True)
-                elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res)
-                elif is_arm32():
-                    g = itertools.chain(
-                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
-                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
-                    )
-                for x in g:
-                    if is_looped_link_list(x):
-                        return x
+                [~v6.8]
+                vmap_notify_list     # rarely leads to long lists
+                vmap_area_list       <- here
+                free_vmap_area_list
+                """
+            elif is_arm32():
+                g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+            for x in g:
+                if is_x86():
+                    count = 0
+                else:
+                    count = 1
+                for i in range(16):
+                    a = x + current_arch.ptrsize * i
+                    if is_double_link_list(a, min_len=10):
+                        count += 1
+                    if count == 2:
+                        return a
         return None
 
     @staticmethod
@@ -55794,39 +55764,56 @@ class KernelAddressHeuristicFinder:
                 return x
 
         kversion = Kernel.kernel_version()
+        if kversion < "5.2":
+            return None
 
-        # plan 2 (from get_vmap_area_list; v5.2~)
-        if kversion and kversion >= "5.2":
-            if kversion >= "5.4":
-                offset_list = current_arch.ptrsize * 5 # offsetof(struct vmap_area, list)
-            elif kversion >= "5.2":
-                offset_list = current_arch.ptrsize * 7 # offsetof(struct vmap_area, list)
+        # plan 2 (from register_vmap_purge_notifier)
+        addr = Symbol.get_ksymaddr("register_vmap_purge_notifier")
+        if addr:
+            res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
+            if is_x86_64():
+                g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+                """
+                x86 or x64
 
-            bits = AddressUtil.get_memory_alignment(in_bits=True)
-            vend = (1 << bits) - 1
+                [~v6.8]
+                vmap_notify_list     # rarely leads to long lists
+                free_vmap_area_list  <- here
+                vmap_area_list
 
-            if is_x86():
-                direction = -1
-            elif is_arm64() or is_arm32():
-                direction = 1
+                [v6.9~]
+                vmap_notify_list     # rarely leads to long lists
+                free_vmap_area_list  <- here
+                """
+            elif is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+            elif is_arm64():
+                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
+                """
+                arm32 or arm64
 
-            vmap_area_list = KernelAddressHeuristicFinder.get_vmap_area_list()
-            if vmap_area_list:
-                for i in range(2, 16): # 2: sizeof(list_head) / sizeof(long)
-                    x = vmap_area_list + current_arch.ptrsize * i * direction
-                    y = read_int_from_memory(x)
-                    z = read_int_from_memory(x + current_arch.ptrsize)
-                    if not is_valid_addr(y) or not is_valid_addr(z):
-                        continue
-                    ydata = read_int_from_memory(y - offset_list)
-                    zdata = read_int_from_memory(z - offset_list)
-                    if ydata == 0 or zdata == 0:
-                        continue
-                    if ydata != 1 and (ydata & 0xfff) != 0:
-                        continue
-                    if zdata != vend and (zdata & 0xfff) != 0:
-                        continue
-                    return x
+                [~v6.8]
+                vmap_notify_list     # rarely leads to long lists
+                vmap_area_list       <- here (false positive)
+                free_vmap_area_list  <- here
+
+                [v6.9~]
+                vmap_notify_list     # rarely leads to long lists
+                free_vmap_area_list  <- here
+                """
+            elif is_arm32():
+                g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+            for x in g:
+                if kversion < "6.9" and (is_arm32() or is_arm64()):
+                    count = 0
+                else:
+                    count = 1
+                for i in range(16):
+                    a = x + current_arch.ptrsize * i
+                    if is_double_link_list(a, min_len=10):
+                        count += 1
+                    if count == 2:
+                        return a
         return None
 
     @staticmethod
@@ -77593,6 +77580,7 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             unsigned int nr_pages;
             phys_addr_t phys_addr;
             const void *caller;
+            unsigned long requested_size; // v6.12~
         };
         """
 
@@ -77714,13 +77702,13 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             if used:
                 virt_str = Color.colorify(virt_str, used_address_color)
                 state = "in-use"
-                flags_str = " " + self.get_flags(flags)
+                flags_str = self.get_flags(flags)
                 flags_str = flags_str.rstrip()
             else:
                 virt_str = Color.colorify(virt_str, freed_address_color)
                 state = "freed"
-                flags_str = ""
-            self.out.append("{:<4d} {:6s} {:s} {:s}{:s}".format(idx, state, virt_str, size_str, flags_str))
+                flags_str = "-"
+            self.out.append("{:<4d} {:6s} {:s} {:s} {:s}".format(idx, state, virt_str, size_str, flags_str))
         return
 
     @parse_args
