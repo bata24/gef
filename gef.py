@@ -6765,7 +6765,6 @@ class ARM(Architecture):
             taken, reason = not carry, "!C"
         return taken, reason
 
-    __SCR_available = None
     __mode_dic = {
         # encoding: [mode, PL]
         0b10000: ["User", 0],
@@ -6791,17 +6790,12 @@ class ARM(Architecture):
         key = val & 0b11111
         CurrentMode, CurrentPL = self.__mode_dic[key]
 
-        if self.__SCR_available is False: # for speed up
+        if not is_support_secure_world():
             mode = " [Mode={:s}({:#07b},PL{:d})]".format(CurrentMode, key, CurrentPL)
         else:
             scr = get_register("$SCR")
-            if scr is not None:
-                self.__SCR_available = True
-                secure_state = ["Secure", "Non-Secure"][scr & 1]
-                mode = " [Mode={:s}({:#07b},PL{:d}),{:s}]".format(CurrentMode, key, CurrentPL, secure_state)
-            else:
-                self.__SCR_available = False
-                mode = " [Mode={:s}({:#07b},PL{:d})]".format(CurrentMode, key, CurrentPL)
+            secure_state = ["Secure", "Non-Secure"][scr & 1]
+            mode = " [Mode={:s}({:#07b},PL{:d}),{:s}]".format(CurrentMode, key, CurrentPL, secure_state)
         return Architecture.flags_to_human(val, self.flags_table) + mode
 
     def get_ra(self, insn, frame):
@@ -6823,7 +6817,9 @@ class ARM(Architecture):
         return ra
 
     def get_tls(self):
-        if is_in_kernel() or is_rr():
+        if is_in_kernel() or is_in_secure():
+            return None
+        if is_rr(): # unsupported ExecAsm when rr
             return None
         if self.is_thumb():
             codes = [b"\x1d\xee", b"\x70\x2f"] # mrc p15, #0, r2, c13, c0, #3
@@ -6922,30 +6918,22 @@ class AARCH64(ARM):
 
     # is_branch_taken is the same as ARM
 
-    __SCR_EL3_available = None
-
     def flag_register_to_human(self, val=None):
         # http://events.linuxfoundation.org/sites/events/files/slides/KoreaLinuxForum-2014.pdf
         if val is None:
             reg = self.flag_register
             val = get_register(reg) & 0xffff_ffff
 
-        if self.__SCR_EL3_available is False: # for speed up
+        if not is_support_secure_world():
             mode = " [EL={:d},SP={:d}]".format((val >> 2) & 0b11, val & 0b11)
         else:
             scr = get_register("$SCR_EL3")
-            if scr is not None:
-                self.__SCR_EL3_available = True
-                secure_state = ["Secure", "Non-Secure"][scr & 1]
-                mode = " [EL={:d},SP={:d},{:s}]".format((val >> 2) & 0b11, val & 0b11, secure_state)
-            else:
-                self.__SCR_EL3_available = False
-                mode = " [EL={:d},SP={:d}]".format((val >> 2) & 0b11, val & 0b11)
-
+            secure_state = ["Secure", "Non-Secure"][scr & 1]
+            mode = " [EL={:d},SP={:d},{:s}]".format((val >> 2) & 0b11, val & 0b11, secure_state)
         return Architecture.flags_to_human(val, self.flags_table) + mode
 
     def get_tls(self):
-        if is_in_kernel():
+        if is_in_kernel() or is_in_secure():
             return None
 
         tls = get_register("$TPIDR_EL0") # qemu-user + gdb-multiarch
@@ -6956,6 +6944,8 @@ class AARCH64(ARM):
         if tls is not None:
             return tls
 
+        if is_rr(): # unsupported ExecAsm when rr
+            return None
         codes = [b"\x40\xd0\x3b\xd5"] # mrs x0, tpidr_el0
         ret = ExecAsm(codes).exec_code()
         return ret["reg"]["$x0"]
@@ -7153,8 +7143,10 @@ class X86(Architecture):
         fs = get_register("$fs_base")
         if fs is not None:
             return fs
+        if is_rr(): # unsupported ptrace and ExecAsm when rr
+            return None
         # fast path
-        if not is_remote_debug() and not is_in_kernel() and not is_qiling() and not is_rr():
+        if not is_remote_debug() and not is_in_kernel() and not is_qiling():
             PTRACE_ARCH_PRCTL = 30
             ARCH_GET_FS = 0x1003
             pid, lwpid, tid = gdb.selected_thread().ptid
@@ -7166,7 +7158,7 @@ class X86(Architecture):
             if ret == 0: # success
                 return value.contents.value or 0
         # slow path
-        if not is_kvm_enabled() and not is_qiling() and not is_rr():
+        if not is_kvm_enabled() and not is_qiling():
             codes = [b"\x64\xa1\x00\x00\x00\x00"] # mov eax, dword ptr fs:[0x0]
             ret = ExecAsm(codes).exec_code()
             return ret["reg"]["$eax"]
@@ -7177,8 +7169,10 @@ class X86(Architecture):
         gs = get_register("$gs_base")
         if gs is not None:
             return gs
+        if is_rr(): # unsupported ptrace and ExecAsm when rr
+            return None
         # fast path
-        if not is_remote_debug() and not is_in_kernel() and not is_qiling() and not is_rr():
+        if not is_remote_debug() and not is_in_kernel() and not is_qiling():
             PTRACE_ARCH_PRCTL = 30
             ARCH_GET_GS = 0x1004
             pid, lwpid, tid = gdb.selected_thread().ptid
@@ -7190,7 +7184,7 @@ class X86(Architecture):
             if ret == 0: # success
                 return value.contents.value or 0
         # slow path
-        if not is_kvm_enabled() and not is_qiling() and not is_rr():
+        if not is_kvm_enabled() and not is_qiling():
             codes = [b"\x65\xa1\x00\x00\x00\x00"] # mov eax, dword ptr gs:[0x0]
             ret = ExecAsm(codes).exec_code()
             return ret["reg"]["$eax"]
@@ -7305,8 +7299,10 @@ class X86_64(X86):
         fs = get_register("$fs_base")
         if fs is not None:
             return fs
+        if is_rr(): # unsupported ptrace and ExecAsm when rr
+            return None
         # fast path
-        if not is_remote_debug() and not is_in_kernel() and not is_qiling() and not is_rr():
+        if not is_remote_debug() and not is_in_kernel() and not is_qiling():
             PTRACE_ARCH_PRCTL = 30
             ARCH_GET_FS = 0x1003
             _pid, lwpid, _tid = gdb.selected_thread().ptid
@@ -7318,7 +7314,7 @@ class X86_64(X86):
             if ret == 0: # success
                 return value.contents.value or 0
         # slow path
-        if not is_kvm_enabled() and not is_qiling() and not is_rr():
+        if not is_kvm_enabled() and not is_qiling():
             codes = [b"\x64\x48\xa1\x00\x00\x00\x00\x00\x00\x00\x00"] # movabs rax, qword ptr fs:[0x0]
             ret = ExecAsm(codes).exec_code()
             return ret["reg"]["$rax"]
@@ -7329,8 +7325,10 @@ class X86_64(X86):
         gs = get_register("$gs_base")
         if gs is not None:
             return gs
+        if is_rr(): # unsupported ptrace and ExecAsm when rr
+            return None
         # fast path
-        if not is_remote_debug() and not is_in_kernel() and not is_qiling() and not is_rr():
+        if not is_remote_debug() and not is_in_kernel() and not is_qiling():
             PTRACE_ARCH_PRCTL = 30
             ARCH_GET_GS = 0x1004
             _pid, lwpid, _tid = gdb.selected_thread().ptid
@@ -7342,7 +7340,7 @@ class X86_64(X86):
             if ret == 0: # success
                 return value.contents.value or 0
         # slow path
-        if not is_kvm_enabled() and not is_qiling() and not is_rr():
+        if not is_kvm_enabled() and not is_qiling():
             codes = [b"\x65\x48\xa1\x00\x00\x00\x00\x00\x00\x00\x00"] # movabs rax, qword ptr gs:[0x0]
             ret = ExecAsm(codes).exec_code()
             return ret["reg"]["$rax"]
@@ -12204,11 +12202,15 @@ def is_in_kernel():
             return False
         return (cs & 0b11) != 3
     elif is_arm32():
+        if is_in_secure():
+            return False
         cpsr = get_register(current_arch.flag_register)
         if cpsr is None:
             return False
         return (cpsr & 0b11111) not in [0b10000, 0b11010]
     elif is_arm64():
+        if is_in_secure():
+            return False
         cpsr = get_register(current_arch.flag_register)
         if cpsr is None:
             return False
@@ -12220,6 +12222,33 @@ def is_in_kernel():
         return priv == 1
     # All other architectures are considered userland.
     return False
+
+
+@Cache.cache_this_session
+def is_support_secure_world():
+    if not is_arm32() and not is_arm64():
+        return False
+    if not is_qemu_system():
+        return False
+    ret = gdb.execute("monitor info mtree -f", to_string=True)
+    return ".secure-ram" in ret
+
+
+@Cache.cache_until_next
+def is_in_secure():
+    """GDB mode determination function for secure world."""
+    if not is_support_secure_world():
+        return False
+    if is_arm32():
+        scr = get_register("$SCR")
+    elif is_arm64():
+        scr = get_register("$SCR_EL3")
+    # In environments without a secure world:
+    # Older qemu versions did not have the SCR register. (return None)
+    # Newer qemu versions always return 0.
+    if not scr:
+        return False
+    return (scr & 0b1) == 0
 
 
 @Cache.cache_this_session
@@ -49469,12 +49498,6 @@ class Syscall:
 
 def get_syscall_table(arch=None, mode=None):
 
-    def is_secure():
-        scr = get_register("$SCR" if is_arm32() else "$SCR_EL3")
-        if scr is None:
-            return False
-        return (scr & 0b1) == 0
-
     if arch is None and mode is None :
         if is_x86_64():
             arch, mode = "X86", "64"
@@ -49484,12 +49507,12 @@ def get_syscall_table(arch=None, mode=None):
             else:
                 arch, mode = "X86", "Native-32"
         elif is_arm64():
-            if is_secure():
+            if is_in_secure():
                 arch, mode = "ARM64", "Secure-World"
             else:
                 arch, mode = "ARM64", "ARM"
         elif is_arm32():
-            if is_secure():
+            if is_in_secure():
                 arch, mode = "ARM", "Secure-World"
             elif is_emulated32():
                 arch, mode = "ARM", "Emulated-32"
@@ -88752,17 +88775,11 @@ class VBARCommand(GenericCommand, BufferingOutput):
         vbars = self.get_vbar_arm32()
         max_width = max(len(x[2]) for x in self.A32_VECTOR_NAMES)
 
-        def is_secure():
-            scr = get_register("$SCR")
-            if scr is None:
-                return False
-            return (scr & 0b1) == 0
-
         for regname, vbar in vbars:
             self.out.append(titlify(regname))
 
             # address check
-            if "$VBAR_S" in regname and not is_secure():
+            if "$VBAR_S" in regname and not is_in_secure():
                 vbar_phys = XSecureMemAddrCommand.v2p_secure(vbar)
                 if vbar_phys is None:
                     self.err_add_out("Invalid VBAR address: {:#x}".format(vbar))
@@ -88778,7 +88795,7 @@ class VBARCommand(GenericCommand, BufferingOutput):
             # read each entry
             for ofs, _sz, s in self.A32_VECTOR_NAMES:
                 s = Color.colorify(s.ljust(max_width), "bold")
-                if "$VBAR_S" in regname and not is_secure():
+                if "$VBAR_S" in regname and not is_in_secure():
                     try:
                         code = read_physmem(vbar_phys + ofs, 4)
                     except gdb.MemoryError:
@@ -97145,11 +97162,8 @@ class ExecUntilSecureWorldCommand(ExecUntilCommand):
         super().__init__(prefix=False)
         return
 
-    def is_target_insn(self, insn):
-        scr = get_register("$SCR" if is_arm32() else "$SCR_EL3")
-        if scr is None:
-            return False
-        return (scr & 0b1) == 0
+    def is_target_insn(self, _insn):
+        return is_in_secure()
 
     @parse_args
     @only_if_gdb_running
@@ -97158,9 +97172,8 @@ class ExecUntilSecureWorldCommand(ExecUntilCommand):
     def do_invoke(self, args):
         self.args.skip_lib = False
 
-        scr = get_register("$SCR" if is_arm32() else "$SCR_EL3")
-        if scr is None:
-            err("Not found {:s}".format("$SCR" if is_arm32() else "$SCR_EL3"))
+        if not is_support_secure_world():
+            err("Not found secure-world")
             return
 
         self.exec_next()
@@ -103046,12 +103059,14 @@ class GefStatusCommand(GenericCommand):
         gef_print("{:30s}  ->  {!s}".format("is_qiling()", is_qiling()))
         gef_print("{:30s}  ->  {!s}".format("is_vmware()", is_vmware()))
         gef_print("{:30s}  ->  {!s}".format("is_in_kernel()", is_in_kernel()))
+        gef_print("{:30s}  ->  {!s}".format("is_in_secure()", is_in_secure()))
         gef_print("{:30s}  ->  {!s}".format("is_rr()", is_rr()))
         gef_print("{:30s}  ->  {!s}".format("is_wine()", is_wine()))
 
         gef_print(titlify("Others"))
         gef_print("{:30s}  ->  {!s}".format("is_alive()", is_alive()))
         gef_print("{:30s}  ->  {!s}".format("is_kvm_enabled()", is_kvm_enabled()))
+        gef_print("{:30s}  ->  {!s}".format("is_support_secure_world()", is_support_secure_world()))
         gef_print("{:30s}  ->  {!s}".format("is_supported_physmode()", is_supported_physmode()))
         if is_supported_physmode():
             gef_print("{:30s}  ->  {!s}".format("get_current_mmu_mode()", QemuMonitor.get_current_mmu_mode()))
