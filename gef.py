@@ -86948,6 +86948,7 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
 
         def is_slist_head(addr, head_next, offset):
             current = head_next
+            seen = [current]
             while True:
                 current_next = read_int_from_memory(current + offset)
                 if current_next is None:
@@ -86955,6 +86956,10 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
 
                 if current_next == 0:
                     return True
+
+                if current_next in seen:
+                    return False
+                seen.append(current)
 
                 current = current_next
             return False
