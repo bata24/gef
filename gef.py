@@ -58570,45 +58570,35 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return offset_vm_flags
 
     def get_offset_vm_file(self, task_addrs, offset_mm, offset_vm_flags):
-        for task in task_addrs:
-            mm = read_int_from_memory(task + offset_mm)
-            if mm == 0:
-                continue
-
-            vm_area_struct, _ = self.get_vm_area_struct(mm)
-            current = vm_area_struct + offset_vm_flags
-
-            # now, `current` points vm_flags
-            current += current_arch.ptrsize
-            if is_32bit():
-                mask = Kernel.get_kernel_base().text_base & 0xf000_0000
-            elif is_x86_64():
-                cr4 = get_register("cr4", use_monitor=True)
-                if (cr4 >> 12) & 1:
-                    mask = 0xff00_0000_0000_0000 # level 5 pagetable
-                else:
-                    mask = 0xffff_0000_0000_0000 # level 4 pagetable
-            else:
-                mask = 0xffff_0000_0000_0000
-            while True:
-                x = read_int_from_memory(current)
-                if not is_valid_addr(x):
-                    current += current_arch.ptrsize
+        for i in range(50):
+            found = True
+            for task in task_addrs:
+                mm = read_int_from_memory(task + offset_mm)
+                if mm == 0:
                     continue
 
-                y = read_int_from_memory(current + current_arch.ptrsize) # read one unit ahead
-                if not is_valid_addr(y):
-                    current += current_arch.ptrsize
-                    continue
-
-                if (x & mask) == (y & mask) == mask and x == y: # search for anon_vma_chain
+                vm_area_struct, _ = self.get_vm_area_struct(mm)
+                ptr_anon_vma_chain = vm_area_struct + offset_vm_flags + current_arch.ptrsize * i
+                if not is_double_link_list(ptr_anon_vma_chain):
+                    found = False
                     break
-                current += current_arch.ptrsize
-
-            # now, `current` points anon_vma_chain
-            offset_anon_vma_chain = current - vm_area_struct
-            offset_vm_file = offset_anon_vma_chain + current_arch.ptrsize * 5
-            return offset_vm_file
+                ptr_anon_vma = vm_area_struct + offset_vm_flags + current_arch.ptrsize * (i + 2)
+                anon_vma = read_int_from_memory(ptr_anon_vma)
+                if anon_vma != 0 and not is_valid_addr(anon_vma): # allow NULL
+                    found = False
+                    break
+                ptr_vm_ops = vm_area_struct + offset_vm_flags + current_arch.ptrsize * (i + 3)
+                vm_ops = read_int_from_memory(ptr_vm_ops)
+                if not is_valid_addr(vm_ops):
+                    found = False
+                    break
+                ptr_vm_file = vm_area_struct + offset_vm_flags + current_arch.ptrsize * (i + 5)
+                vm_file = read_int_from_memory(ptr_vm_file)
+                if not is_valid_addr(vm_file):
+                    found = False
+                    break
+            if found:
+                return offset_vm_flags + current_arch.ptrsize * (i + 5)
         return None
 
     def get_mm(self, task, offset_mm):
@@ -59317,6 +59307,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             self.quiet_info("offsetof(file, f_path.dentry): {:#x}".format(self.offset_dentry))
 
             if self.offset_d_iname is None:
+                mm = read_int_from_memory(task_addrs[1] + self.offset_mm)
+                current, _ = self.get_vm_area_struct(mm)
                 vm_file = read_int_from_memory(current + self.offset_vm_file)
                 dentry = read_int_from_memory(vm_file + self.offset_dentry)
                 self.offset_d_iname = self.get_offset_d_iname(dentry)
