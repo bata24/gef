@@ -55715,43 +55715,111 @@ class KernelAddressHeuristicFinder:
         if kversion >= "6.9":
             return None
 
-        # plan 2 (from register_vmap_purge_notifier)
-        addr = Symbol.get_ksymaddr("register_vmap_purge_notifier")
-        if addr:
-            res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
-            if is_x86_64():
-                g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
-                """
-                x86 or x64
-                vmap_notify_list     # rarely leads to long lists
-                free_vmap_area_list  <- here (false positive)
-                vmap_area_list       <- here
-                """
-            elif is_x86_32():
-                g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
-            elif is_arm64():
-                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
-                """
-                arm32 or arm64
+        # plan 2 (available v4.7~)
+        if kversion and kversion >= "4.7":
+            addr = Symbol.get_ksymaddr("register_vmap_purge_notifier")
+            if addr:
+                res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
+                if is_x86_64():
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+                    """
+                    x86 or x64
 
-                [~v6.8]
-                vmap_notify_list     # rarely leads to long lists
-                vmap_area_list       <- here
-                free_vmap_area_list
-                """
-            elif is_arm32():
-                g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-            for x in g:
-                if is_x86():
-                    count = 0
-                else:
-                    count = 1
-                for i in range(16):
-                    a = x + current_arch.ptrsize * i
-                    if is_double_link_list(a, min_len=10):
-                        count += 1
-                    if count == 2:
-                        return a
+                    [~v5.1]
+                    vmap_notify_list     # rarely leads to long lists
+                    vmap_area_list       <- here
+
+                    [v5.2~v6.8]
+                    vmap_notify_list     # rarely leads to long lists
+                    free_vmap_area_list  <- here (false positive)
+                    vmap_area_list       <- here
+                    """
+                elif is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+                elif is_arm64():
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
+                    """
+                    arm32 or arm64
+
+                    [~v6.8]
+                    vmap_notify_list     # rarely leads to long lists
+                    vmap_area_list       <- here
+                    free_vmap_area_list
+                    """
+                elif is_arm32():
+                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                for x in g:
+                    if is_x86():
+                        if kversion < "5.2":
+                            count = 1
+                        else:
+                            count = 2
+                    else:
+                        count = 1
+                    for i in range(16):
+                        a = x + current_arch.ptrsize * i
+                        if is_double_link_list(a, min_len=10):
+                            count -= 1
+                        if count == 0:
+                            return a
+
+        # plan 3 (available v3.10 ~ v6.3: vread, v6.4~: vread_iter)
+        if kversion and kversion >= "3.17":
+            addr = Symbol.get_ksymaddr("vread") or Symbol.get_ksymaddr("vread_iter")
+            if addr:
+                res = gdb.execute("x/100i {:#x}".format(addr), to_string=True)
+                if is_x86_64():
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_cmp_const(res, read_valid=True)
+                elif is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_cmp_const(res, read_valid=True)
+                elif is_arm64():
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res)
+                elif is_arm32():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
+                for x in g:
+                    if is_double_link_list(x):
+                        return x
+
+        # plan 4 (available v4.10~)
+        if kversion and kversion >= "4.10":
+            addrs = Symbol.get_ksymaddr_multiple("s_next")
+            if addrs:
+                for s_next in addrs:
+                    res = gdb.execute("x/20i {:#x}".format(s_next), to_string=True)
+                    if is_x86_64():
+                        g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, "rsi")
+                    elif is_x86_32():
+                        g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, "e.x")
+                    elif is_arm64():
+                        g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res, read_valid=True)
+                    elif is_arm32():
+                        g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)
+                    for x in g:
+                        if is_double_link_list(x):
+                            return x
+
+        # plan 5 (available v2.6.28 ~ v5.1)
+        if kversion and kversion >= "2.6.28" and kversion < "5.2":
+            addr = Symbol.get_ksymaddr("__insert_vmap_area")
+            if addr:
+                res = gdb.execute("x/100i {:#x}".format(addr), to_string=True)
+                if is_x86_64():
+                    g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res, read_valid=True)
+                elif is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x86_dword_ptr_ds(res, read_valid=True)
+                elif is_arm64():
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res)
+                elif is_arm32():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
+                for x in g:
+                    if is_double_link_list(x):
+                        return x
         return None
 
     @staticmethod
@@ -55767,7 +55835,7 @@ class KernelAddressHeuristicFinder:
         if kversion < "5.2":
             return None
 
-        # plan 2 (from register_vmap_purge_notifier)
+        # plan 2 (available v4.7~; here, always True)
         addr = Symbol.get_ksymaddr("register_vmap_purge_notifier")
         if addr:
             res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
@@ -55776,7 +55844,7 @@ class KernelAddressHeuristicFinder:
                 """
                 x86 or x64
 
-                [~v6.8]
+                [v5.2~v6.8]
                 vmap_notify_list     # rarely leads to long lists
                 free_vmap_area_list  <- here
                 vmap_area_list
@@ -55792,7 +55860,7 @@ class KernelAddressHeuristicFinder:
                 """
                 arm32 or arm64
 
-                [~v6.8]
+                [v5.2~v6.8]
                 vmap_notify_list     # rarely leads to long lists
                 vmap_area_list       <- here (false positive)
                 free_vmap_area_list  <- here
@@ -55804,15 +55872,18 @@ class KernelAddressHeuristicFinder:
             elif is_arm32():
                 g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
             for x in g:
-                if kversion < "6.9" and (is_arm32() or is_arm64()):
-                    count = 0
+                if is_arm32() or is_arm64():
+                    if kversion < "6.9":
+                        count = 2
+                    else:
+                        count = 1
                 else:
                     count = 1
                 for i in range(16):
                     a = x + current_arch.ptrsize * i
                     if is_double_link_list(a, min_len=10):
-                        count += 1
-                    if count == 2:
+                        count -= 1
+                    if count == 0:
                         return a
         return None
 
@@ -77703,6 +77774,8 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
                 state = "in-use"
                 flags_str = self.get_flags(flags)
                 flags_str = flags_str.rstrip()
+                if not flags_str:
+                    flags_str = "-"
             else:
                 virt_str = Color.colorify(virt_str, freed_address_color)
                 state = "freed"
@@ -94720,6 +94793,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
     def resolve_vmalloc(self):
         self.quiet_info("resolve vmalloc")
 
+        kversion = Kernel.kernel_version()
         if is_x86_64():
             # try 5-level pagetables
             r = self.insert_region_range(0xffa0_0000_0000_0000, 0xffd2_0000_0000_0000, "vmalloc")
@@ -94727,7 +94801,6 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
                 # 4-level pagetables
                 self.insert_region_range(0xffff_c900_0000_0000, 0xffff_e900_0000_0000, "vmalloc")
         elif is_arm64():
-            kversion = Kernel.kernel_version()
             if kversion < "5.11":
                 # Without KASAN, the memory map may differ from the official documentation.
                 kasan = gdb.execute("ksymaddr-remote kasan_ --quiet --no-pager", to_string=True) # do not use --exact
@@ -94747,25 +94820,41 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
             else:
                 self.insert_region_range(0xffff_8000_8000_0000, 0xffff_fbff_f000_0000, "vmalloc")
         else:
-            res = gdb.execute("vmalloc-dump --quiet --no-pager --only-freed", to_string=True)
-            lines = [Color.remove_color(line) for line in res.splitlines()]
-            if len(lines) > 3:
-                """
-                gef> vmalloc-dump --quiet --no-pager --only-freed
-                #    state  virtual address                       size               flags
-                0    freed  0x0000000000000001-0x00000000f77fe000 0xf77fdfff
-                1    freed  0x00000000f7828000-0x00000000f782a000 0x2000
-                2    freed  0x00000000f7834000-0x00000000f7835000 0x1000
-                3    freed  0x00000000f783b000-0x00000000fefdf000 0x77a4000
-                4    freed  0x00000000feffe000-0x00000000ffffffff 0x1001fff
-                gef>
-                """
-                _, _, vrange, _, *_ = lines[1].split()
-                vmalloc_start = int(vrange.split("-")[1], 16)
-                _, _, vrange, _, *_ = lines[-1].split()
-                vmalloc_end = int(vrange.split("-")[0], 16)
-                self.insert_region_range(vmalloc_start, vmalloc_end, "vmalloc")
-                return
+            if kversion >= "5.2":
+                res = gdb.execute("vmalloc-dump --quiet --no-pager --only-freed", to_string=True)
+                lines = [Color.remove_color(line) for line in res.splitlines()]
+                if len(lines) > 3:
+                    """
+                    gef> vmalloc-dump --quiet --no-pager --only-freed
+                    #    state  virtual address                       size               flags
+                    0    freed  0x0000000000000001-0x00000000f77fe000 0xf77fdfff
+                    1    freed  0x00000000f7828000-0x00000000f782a000 0x2000
+                    2    freed  0x00000000f7834000-0x00000000f7835000 0x1000
+                    3    freed  0x00000000f783b000-0x00000000fefdf000 0x77a4000
+                    4    freed  0x00000000feffe000-0x00000000ffffffff 0x1001fff
+                    gef>
+                    """
+                    _, _, vrange, _, *_ = lines[1].split()
+                    vmalloc_start = int(vrange.split("-")[1], 16)
+                    _, _, vrange, _, *_ = lines[-1].split()
+                    vmalloc_end = int(vrange.split("-")[0], 16)
+                    self.insert_region_range(vmalloc_start, vmalloc_end, "vmalloc")
+            else:
+                res = gdb.execute("vmalloc-dump --quiet --no-pager --only-used", to_string=True)
+                lines = [Color.remove_color(line) for line in res.splitlines()]
+                if len(lines) > 3:
+                    """
+                    gef> vmalloc-dump --quiet --no-pager --only-used
+                    #    state  virtual address                       size               flags
+                    0    in-use 0x00000000bf000000-0x00000000bf003000 0x3000             VM_ALLOC
+                    39   in-use 0x00000000f6000000-0x00000000fa000000 0x4000000          VM_IOREMAP
+                    gef>
+                    """
+                    _, _, vrange, _, *_ = lines[1].split()
+                    vmalloc_start = int(vrange.split("-")[0], 16)
+                    _, _, vrange, _, *_ = lines[-1].split()
+                    vmalloc_end = int(vrange.split("-")[1], 16)
+                    self.insert_region_range(vmalloc_start, vmalloc_end, "vmalloc")
         return
 
     def resolve_vmemmap(self):
