@@ -77314,7 +77314,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
             else:
                 handler = read_int_from_memory(action + self.offset_handler)
                 name_ptr = read_int_from_memory(action + self.offset_name)
-                name = read_cstring_from_memory(name_ptr)
+                name = read_cstring_from_memory(name_ptr) or "???"
                 entries[irq] = [desc, action, handler, name]
 
         fmt = "{:3s} {:18s} {:18s} {:24s} {:18s}"
