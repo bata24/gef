@@ -58778,6 +58778,11 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 struct vfsmount *mnt;
                 struct dentry *dentry;
             } f_path;
+            union {
+                struct mutex f_pos_lock;
+                u64 f_pipe;
+            };
+            loff_t f_pos;
             ...
         """
         kversion = Kernel.kernel_version()
@@ -58831,7 +58836,42 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 else:
                     raise
         elif kversion >= "6.12":
-            offset_mnt = 64
+            if is_64bit():
+                offset_mnt = 64
+            else:
+                """
+                0x811f3180|+0x0000|+000: f_count     : 0x00000004
+                0x811f3184|+0x0004|+001: f_lock      : 0x00000000
+                0x811f3188|+0x0008|+002: f_mode      : 0x004a801d
+                0x811f318c|+0x000c|+003: f_op        : 0x80a0e040  ->  0x00000000
+                0x811f3190|+0x0010|+004: f_mapping   : 0x813a2140  ->  0x813a2050  ->  0x000589ed
+                0x811f3194|+0x0014|+005: private_data: 0x00000000
+                0x811f3198|+0x0018|+006: f_inode     : 0x813a2050  ->  0x000589ed
+                0x811f319c|+0x001c|+007: f_flags     : 0x00020020
+                0x811f31a0|+0x0020|+008: f_iocb_flags: 0x00000000
+                0x811f31a4|+0x0024|+009: f_cred      : 0x81378280  ->  0x00000005
+                0x811f31a8|+0x0028|+010:             : 0x810043d0  ->  0x81402088  ->  0x00210000
+                0x811f31ac|+0x002c|+011:             : 0x814fd990  ->  0x00400008
+                0x811f31b0|+0x0030|+012:             : 0x00000000
+                0x811f31b4|+0x0034|+013:             : 0x00000000
+                0x811f31b8|+0x0038|+014:             : 0x00000000
+                """
+                for i in range(16):
+                    cand_offset_mnt = current_arch.ptrsize * (i + 10)
+                    if not is_valid_addr_addr(file + cand_offset_mnt):
+                        continue
+                    if not is_valid_addr_addr(file + cand_offset_mnt + current_arch.ptrsize * 1):
+                        continue
+                    if is_valid_addr_addr(file + cand_offset_mnt + current_arch.ptrsize * 2):
+                        continue
+                    if is_valid_addr_addr(file + cand_offset_mnt + current_arch.ptrsize * 3):
+                        continue
+                    if is_valid_addr_addr(file + cand_offset_mnt + current_arch.ptrsize * 4):
+                        continue
+                    offset_mnt = cand_offset_mnt
+                    break
+                else:
+                    raise
         return offset_mnt
 
     def get_offset_dentry(self, offset_mnt):
@@ -59373,8 +59413,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             if self.offset_mnt is None:
                 mm = read_int_from_memory(task_addrs[1] + self.offset_mm)
                 current, _ = self.get_vm_area_struct(mm)
+                self.quiet_info("vm_area_struct (init process): {:#x}".format(current))
                 vm_file = read_int_from_memory(current + self.offset_vm_file)
-                info("vm_file (init process): {:#x}".format(vm_file))
+                self.quiet_info("vm_file (init process): {:#x}".format(vm_file))
                 self.offset_mnt = self.get_offset_mnt(vm_file)
             if self.offset_mnt is None:
                 self.quiet_err("Not found file->f_path.mnt")
