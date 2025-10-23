@@ -94735,7 +94735,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         regions = {}
         for line in res:
             # esp_fixup special handling
-            if is_x86_64() and self.args.include_esp_fixup_stacks and "*" in line:
+            if is_x86_64() and "*" in line:
                 line = line.split()
                 addr_start_str, addr_end_str = line[0].split("-")
                 perm = Permission.from_process_maps(line[5][1:4].lower())
