@@ -74547,6 +74547,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             struct pglist_data *zone_pgdat;
             struct per_cpu_pageset __percpu *pageset; // ~v5.13
             struct per_cpu_pages __percpu *per_cpu_pageset; // v5.14~
+            struct per_cpu_zonestat	__percpu *per_cpu_zonestats; // v5.14~
             ...
             const char *name;
         #ifdef CONFIG_MEMORY_ISOLATION
@@ -74828,8 +74829,12 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         # MAX_ORDER
         current = free_area
         while True:
-            val = read_int_from_memory(current)
-            if not is_valid_addr(val):
+            ok = True
+            for i in range(self.MIGRATE_TYPES):
+                if not is_double_link_list(current + current_arch.ptrsize * (i * 2)):
+                    ok = False
+                    break
+            if not ok:
                 break
             current += self.sizeof_free_area
         self.MAX_ORDER = (current - free_area) // self.sizeof_free_area
