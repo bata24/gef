@@ -71562,7 +71562,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.resolve_kmem_cache_node_offset_partial(top)
 
         # offsetof(kmem_cache_node, full)
-        self.kmem_cache_node_offset_full = self.kmem_cache_node_offset_partial + current_arch.ptrsize * 4
+        if self.kmem_cache_node_offset_partial:
+            self.kmem_cache_node_offset_full = self.kmem_cache_node_offset_partial + current_arch.ptrsize * 4
+        else:
+            self.kmem_cache_node_offset_full = None
 
         self.initialized = True
         return True
@@ -71859,7 +71862,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             kmem_cache["nodes_partial"].append(node_page_list_partial)
 
             # node list (full; exists when CONFIG_SLUB_DEBUG=y)
-            if self.args.slub_debug_y:
+            if self.args.slub_debug_y and self.kmem_cache_node_offset_full:
                 node_page_list_full = self.walk_node_list(
                     kmem_cache, current_kmem_cache_node, self.kmem_cache_node_offset_full,
                 )
