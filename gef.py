@@ -59014,7 +59014,10 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 lwp = task
                 while lwp not in seen:
                     seen.append(lwp)
-                    lwp = read_int_from_memory(lwp + self.offset_thread_group) - self.offset_thread_group
+                    try:
+                        lwp = read_int_from_memory(lwp + self.offset_thread_group) - self.offset_thread_group
+                    except gdb.MemoryError:
+                        break
                 lwp_task_addrs.extend(seen)
 
             else:
