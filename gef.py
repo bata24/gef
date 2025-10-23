@@ -65431,7 +65431,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
                 label_list.append(line)
 
         if label_list == []:
-            label_list.append("      -> Not found from `monitor info mtree -f")
+            label_list.append("      -> Not found from `monitor info mtree -f`")
         return label_list
 
     def walk_devices(self, dev):
@@ -77581,6 +77581,8 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     parser.add_argument("--only-used", action="store_true", help="display only used area.")
     parser.add_argument("--only-freed", action="store_true", help="display only freed area.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
@@ -77616,7 +77618,8 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
 
     def initialize(self):
         if hasattr(self, "initialized") and self.initialized:
-            return True
+            if not self.args.meta and not self.args.rescan:
+                return True
 
         """
         struct vmap_area {
@@ -77726,7 +77729,7 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             flags = None
             if used:
                 vm = read_int_from_memory(vmap_area + self.offset_vm)
-                if vm:
+                if is_valid_addr(vm):
                     flags = read_int_from_memory(vm + self.offset_flags)
                 else:
                     flags = 0
@@ -77796,6 +77799,9 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
 
         ret = self.initialize()
         if ret is False:
+            return
+
+        if self.args.meta:
             return
 
         self.out = []
