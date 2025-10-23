@@ -54290,7 +54290,10 @@ class KernelAddressHeuristicFinder:
         if allocator in ["SLUB", "SLUB_TINY"]:
             command = {"SLUB": "slub-dump --node", "SLUB_TINY": "slub-tiny-dump"}[allocator]
             for n in [8, 16, 32, 64, 96, 128, 192, 256, 512]:
-                ret = gdb.execute("{:s} --simple --no-pager --quiet --skip-page2virt kmalloc-{:d}".format(command, n), to_string=True)
+                ret = gdb.execute(
+                    "{:s} --simple --no-pager --quiet --skip-page2virt kmalloc-{:d}".format(command, n),
+                    to_string=True,
+                )
                 r = re.findall(r"(?:active|partial|node) page: (0x\S\S+)", Color.remove_color(ret))
                 min_page = get_min_page(r)
                 if min_page is not None:
@@ -94762,6 +94765,9 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_direct_map(self):
+        return
+        # Under development
+
         self.quiet_info("resolve direct map")
 
         if is_x86_64():
@@ -94800,6 +94806,9 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_vmalloc(self):
+        return
+        # Under development
+
         self.quiet_info("resolve vmalloc")
 
         kversion = Kernel.kernel_version()
@@ -94867,6 +94876,9 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_vmemmap(self):
+        return
+        # Under development
+
         self.quiet_info("resolve page")
 
         if is_x86_64():
@@ -94908,6 +94920,9 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_cpu_entry(self):
+        return
+        # Under development
+
         if is_arm64() or is_arm32() or is_x86_32():
             return
 
@@ -94917,6 +94932,9 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_fixmap(self):
+        return
+        # Under development
+
         if is_x86_32():
             return
 
@@ -94946,6 +94964,9 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_pci(self):
+        return
+        # Under development
+
         if is_x86_64() or is_x86_32():
             return
 
@@ -94983,7 +95004,10 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
             return
         self.quiet_info("resolve buddy")
 
-        res = gdb.execute("buddy-dump --quiet --no-pager --sort", to_string=True)
+        try:
+            res = gdb.execute("buddy-dump --quiet --no-pager --sort", to_string=True)
+        except gdb.error:
+            return
 
         for line in res.splitlines():
             line = Color.remove_color(line)
@@ -95007,7 +95031,10 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
     def resolve_kstack(self):
         self.quiet_info("resolve kstack")
 
-        res = gdb.execute("ktask --quiet --no-pager --print-thread", to_string=True)
+        try:
+            res = gdb.execute("ktask --quiet --no-pager --print-thread", to_string=True)
+        except gdb.error:
+            return
 
         # calc kstack address pattern
         kstacks = []
@@ -95052,11 +95079,14 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         except Exception:
             return
 
-        res = gdb.execute(f"ktask --quiet --no-pager -u --task-filter {curr_task:#x}", to_string=True)
-        if not res:
+        try:
+            res = gdb.execute(f"ktask --quiet --no-pager -u --task-filter {curr_task:#x}", to_string=True)
+            if not res:
+                return
+            res = gdb.execute(f"ktask --quiet --no-pager -u --task-filter {curr_task:#x} -m", to_string=True)
+        except gdb.error:
             return
 
-        res = gdb.execute(f"ktask --quiet --no-pager -u --task-filter {curr_task:#x} -m", to_string=True)
         pid = -1
         comm = "?"
         for line in res.splitlines():
@@ -95096,7 +95126,10 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
                 continue
             current = region.addr_start
             while current < region.addr_end:
-                res = Kernel.get_slab_contains(current)
+                try:
+                    res = Kernel.get_slab_contains(current)
+                except gdb.error:
+                    break
                 if not res:
                     current += gef_getpagesize()
                     continue
@@ -95131,7 +95164,11 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
             return
         self.quiet_info("resolve slub")
 
-        res = gdb.execute("slub-dump --quiet --no-pager -vv", to_string=True)
+        try:
+            res = gdb.execute("slub-dump --quiet --no-pager -vv", to_string=True)
+        except gdb.error:
+            return
+
         name, address, size = None, None, None
         for line in res.splitlines():
             r = re.search(r"name: (.+)", line)
@@ -95161,7 +95198,11 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
             return
         self.quiet_info("resolve slab")
 
-        res = gdb.execute("slab-dump --quiet --no-pager", to_string=True)
+        try:
+            res = gdb.execute("slab-dump --quiet --no-pager", to_string=True)
+        except gdb.error:
+            return
+
         name, address, size = None, None, None
         for line in res.splitlines():
             r = re.search(r"name: (.+)", line)
@@ -95189,7 +95230,11 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
             return
         self.quiet_info("resolve slob")
 
-        res = gdb.execute("slob-dump --quiet --no-pager", to_string=True)
+        try:
+            res = gdb.execute("slob-dump --quiet --no-pager", to_string=True)
+        except gdb.error:
+            return
+
         address, size = None, None
         for line in res.splitlines():
             r = re.search(r"virtual address: (.+0x.+)", line)
@@ -95213,7 +95258,11 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
             return
         self.quiet_info("resolve slub-tiny")
 
-        res = gdb.execute("slub-tiny-dump --quiet --no-pager", to_string=True)
+        try:
+            res = gdb.execute("slub-tiny-dump --quiet --no-pager", to_string=True)
+        except gdb.error:
+            return
+
         name, address, size = None, None, None
         for line in res.splitlines():
             r = re.search(r"name: (.+)", line)
@@ -95250,7 +95299,11 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
     def resolve_module(self):
         self.quiet_info("resolve module")
 
-        res = gdb.execute("kmod --quiet --no-pager", to_string=True)
+        try:
+            res = gdb.execute("kmod --quiet --no-pager", to_string=True)
+        except gdb.error:
+            return
+
         for line in res.splitlines():
             if not line:
                 continue
