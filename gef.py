@@ -50431,28 +50431,42 @@ class KernelMagicCommand(GenericCommand):
             self.resolve_and_print_kernel(
                 "TSS base (fixed address?)", None, maps, KernelAddressHeuristicFinder.get_tss_base,
             )
-        if is_x86_64():
+        if is_x86_64() or is_arm64():
             gef_print(titlify("Memory base"))
             self.resolve_and_print_kernel(
-                "PAGE_OFFSET (physmem direct map)", None, maps, KernelAddressHeuristicFinder.get_page_offset,
+                "PAGE_OFFSET (physmem direct map)", None, maps, KernelAddressHeuristicFinder.get_PAGE_OFFSET,
             )
             self.resolve_and_print_kernel(
-                "VMALLOC_START", None, maps, KernelAddressHeuristicFinder.get_vmalloc_start,
+                "PAGE_OFFSET_END", None, maps, KernelAddressHeuristicFinder.get_PAGE_OFFSET_END,
             )
             self.resolve_and_print_kernel(
-                "VMEMMAP_START (struct page[])", None, maps, KernelAddressHeuristicFinder.get_vmemmap,
+                "VMALLOC_START", None, maps, KernelAddressHeuristicFinder.get_VMALLOC_START,
             )
             self.resolve_and_print_kernel(
-                "phys_base (for page<->phys)", text_base, maps, KernelAddressHeuristicFinder.get_phys_base,
+                "VMALLOC_END", None, maps, KernelAddressHeuristicFinder.get_VMALLOC_END,
             )
-        if is_x86_32() or is_arm32():
+            self.resolve_and_print_kernel(
+                "VMEMMAP_START (struct page[])", None, maps, KernelAddressHeuristicFinder.get_VMEMMAP_START,
+            )
+            self.resolve_and_print_kernel(
+                "VMEMMAP_END", None, maps, KernelAddressHeuristicFinder.get_VMEMMAP_END,
+            )
+            if is_x86_64():
+                self.resolve_and_print_kernel(
+                    "phys_base (kbase@phys)", text_base, maps, KernelAddressHeuristicFinder.get_phys_base,
+                )
+        elif is_x86_32():
             gef_print(titlify("Memory base"))
             self.resolve_and_print_kernel(
                 "mem_map (struct page[])", None, maps, KernelAddressHeuristicFinder.get_mem_map,
             )
-        if is_x86_32():
             self.resolve_and_print_kernel(
                 "mem_section", None, maps, KernelAddressHeuristicFinder.get_mem_section,
+            )
+        elif is_arm32():
+            gef_print(titlify("Memory base"))
+            self.resolve_and_print_kernel(
+                "mem_map (struct page[])", None, maps, KernelAddressHeuristicFinder.get_mem_map,
             )
         return
 
@@ -54134,7 +54148,7 @@ class KernelAddressHeuristicFinder:
 
     @staticmethod
     @switch_to_intel_syntax
-    def get_page_offset_base():
+    def get_PAGE_OFFSET_base():
         if not is_x86_64():
             return None
 
@@ -54157,52 +54171,123 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
+    def get_VA_BITS_arm64():
+        T1SZ = (get_register("$TCR_EL1") >> 16) & 0b111111
+        region_end = 2 ** 64
+        region_start = region_end - (2 ** (64 - T1SZ))
+        region_bits = GefUtil.log2(region_end - region_start)
+
+        ID_AA64MMFR2_EL1 = get_register("$ID_AA64MMFR2_EL1")
+        if ID_AA64MMFR2_EL1 is not None:
+            FEAT_LVA = ((ID_AA64MMFR2_EL1 >> 16) & 0b1111) == 0b0001
+        else:
+            FEAT_LVA = False
+        if FEAT_LVA:
+            CONFIG_ARM64_VA_BITS = min(52, region_bits)
+        else:
+            CONFIG_ARM64_VA_BITS = region_bits
+
+        VA_BITS = CONFIG_ARM64_VA_BITS
+        return VA_BITS
+
+    @staticmethod
     @switch_to_intel_syntax
-    def get_page_offset():
-        if not is_x86_64():
-            return None
+    def get_PAGE_OFFSET():
+        if is_x86_64():
+            # plan 1 (fixed address)
+            kversion = Kernel.kernel_version()
+            if kversion and kversion < "4.8":
+                # kASLR and Level5 pagetable is unsupported, so fixed address
+                return 0xffff_8800_0000_0000
 
-        # plan 1 (fixed address)
-        kversion = Kernel.kernel_version()
-        if kversion and kversion < "4.8":
-            # kASLR and Level5 pagetable is unsupported, so fixed address
-            return 0xffff_8800_0000_0000
+            # plan 2 (from get_PAGE_OFFSET_base)
+            page_offset_base = KernelAddressHeuristicFinder.get_PAGE_OFFSET_base()
+            if page_offset_base:
+                return read_int_from_memory(page_offset_base)
 
-        # plan 2 (from get_page_offset_base)
-        page_offset_base = KernelAddressHeuristicFinder.get_page_offset_base()
-        if page_offset_base:
-            return read_int_from_memory(page_offset_base)
+            # plan 3 (from pagewalk)
+            kinfo = Kernel.get_kernel_base()
+            if kinfo.maps and len(kinfo.maps) > 0:
+                page_offset_base_raw = kinfo.maps[0][0]
+                return page_offset_base_raw
 
-        # plan 3 (from pagewalk)
-        kinfo = Kernel.get_kernel_base()
-        if kinfo.maps and len(kinfo.maps) > 0:
-            page_offset_base_raw = kinfo.maps[0][0]
-            return page_offset_base_raw
+        elif is_arm64():
+            VA_BITS = KernelAddressHeuristicFinder.get_VA_BITS_arm64()
+            kversion = Kernel.kernel_version()
+            if kversion < "5.4":
+                PAGE_OFFSET = AddressUtil.align_address(0xffff_ffff_ffff_ffff - (1 << (VA_BITS - 1)) + 1)
+            elif kversion < "5.12":
+                PAGE_OFFSET = AddressUtil.align_address(-(1 << VA_BITS))
+            else: # v5.12~
+                PAGE_OFFSET = AddressUtil.align_address(-(1 << VA_BITS))
+            return PAGE_OFFSET
         return None
 
     @staticmethod
     @switch_to_intel_syntax
-    def get_vmalloc_start():
-        if not is_x86_64():
-            return None
+    def get_PAGE_OFFSET_END():
+        if is_x86_64():
+            PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+            if PAGE_OFFSET is None:
+                return None
+            VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
+            if VMALLOC_START is None:
+                return None
+            cr4 = get_register("cr4", use_monitor=True)
+            if (cr4 >> 12) & 1: # PML5T check
+                PHYSMEM_MAP_SIZE = 0x0080_0000_0000_0000 # 32PB
+            else:
+                PHYSMEM_MAP_SIZE = 0x0000_4000_0000_0000 # 64TB
+            PAGE_OFFSET_END = PAGE_OFFSET + PHYSMEM_MAP_SIZE
+            return min(PAGE_OFFSET_END, VMALLOC_START)
 
-        # plan 1 (fixed address)
-        kversion = Kernel.kernel_version()
-        if kversion and kversion < "4.8":
-            # kASLR and Level5 pagetable is unsupported, so fixed address
-            return 0xffff_c900_0000_0000
+        elif is_arm64():
+            kversion = Kernel.kernel_version()
+            if kversion is None:
+                return
+            PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+            if PAGE_OFFSET is None:
+                return
+            VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
+            if VMALLOC_START is None:
+                return None
+            VA_BITS = KernelAddressHeuristicFinder.get_VA_BITS_arm64()
+            if kversion < "5.11":
+                if VA_BITS > 48:
+                    PHYSMEM_MAP_SIZE = 0x0008_0000_0000_0000 # 2PB
+                else:
+                    PHYSMEM_MAP_SIZE = 0x0000_8000_0000_0000 # 128TB
+            else:
+                if VA_BITS > 48:
+                    PHYSMEM_MAP_SIZE = 0x0010_0000_0000_0000 # 4PB
+                else:
+                    PHYSMEM_MAP_SIZE = 0x0000_8000_0000_0000 # 128TB
+            PAGE_OFFSET_END = PAGE_OFFSET + PHYSMEM_MAP_SIZE
+            return min(PAGE_OFFSET_END, VMALLOC_START)
 
-        # plan 2 (directly)
+        return None
+
+    @staticmethod
+    @switch_to_intel_syntax
+    def get_VMALLOC_START():
+        # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             vmalloc_base = Symbol.get_ksymaddr("vmalloc_base")
             if vmalloc_base:
                 return read_int_from_memory(vmalloc_base)
 
-        # plan 3 (from get_page_offset_base)
-        page_offset_base = KernelAddressHeuristicFinder.get_page_offset_base()
-        if page_offset_base:
-            vmalloc_base = page_offset_base - current_arch.ptrsize
-            return read_int_from_memory(vmalloc_base)
+        kversion = Kernel.kernel_version()
+        if is_x86_64():
+            # plan 2 (fixed address)
+            if kversion and kversion < "4.8":
+                # kASLR and Level5 pagetable is unsupported, so fixed address
+                return 0xffff_c900_0000_0000
+
+            # plan 3 (from get_PAGE_OFFSET_base)
+            page_offset_base = KernelAddressHeuristicFinder.get_PAGE_OFFSET_base()
+            if page_offset_base:
+                vmalloc_base = page_offset_base - current_arch.ptrsize
+                return read_int_from_memory(vmalloc_base)
 
         # plan 4 (from vmalloc-dump)
         if kversion and kversion >= "5.2":
@@ -54223,145 +54308,181 @@ class KernelAddressHeuristicFinder:
                         return e
 
         # plan 5 (from vmalloc-dump and pagewalk)
-        res = gdb.execute("vmalloc-dump --quiet --no-pager --only-used", to_string=True)
-        """
-        [vmalloc-dump]
-        #    state  virtual address                       size               flags
-        0    in-use 0xffffa1c040000000-0xffffa1c040002000 0x2000             VM_IOREMAP
+        if kversion and kversion < "6.9":
+            res = gdb.execute("vmalloc-dump --quiet --no-pager --only-used", to_string=True)
+            """
+            [vmalloc-dump]
+            #    state  virtual address                       size               flags
+            0    in-use 0xffffa1c040000000-0xffffa1c040002000 0x2000             VM_IOREMAP
 
-        [pagewalk]
-        0xffff9927bfe00000-0xffff9927bffe0000 0x1e0000 0x1000 480 [RW- KERN ACCESSED DIRTY]
-        0xffffa1c040000000-0xffffa1c040001000 0x1000   0x1000 1   [RW- KERN ACCESSED DIRTY]
-        """
-        if res:
-            res = Color.remove_color(res)
-            lines = res.splitlines()
-            if len(lines) >= 2:
-                _, _, vrange, _, *_ = lines[1].split()
-                s, _ = vrange.split("-")
-                s = int(s, 16)
+            [pagewalk]
+            0xffff9927bfe00000-0xffff9927bffe0000 0x1e0000 0x1000 480 [RW- KERN ACCESSED DIRTY]
+            0xffffa1c040000000-0xffffa1c040001000 0x1000   0x1000 1   [RW- KERN ACCESSED DIRTY]
+            """
+            if res:
+                res = Color.remove_color(res)
+                lines = res.splitlines()
+                if len(lines) >= 2:
+                    _, _, vrange, _, *_ = lines[1].split()
+                    s, _ = vrange.split("-")
+                    s = int(s, 16)
 
-                kinfo = Kernel.get_kernel_base()
-                prev = None
-                for vstart, _, _ in kinfo.maps:
-                    if vstart == s:
-                        break
-                    prev = vstart
+                    kinfo = Kernel.get_kernel_base()
+                    prev = None
+                    for vstart, _, _ in kinfo.maps:
+                        if vstart == s:
+                            break
+                        prev = vstart
 
-                if prev is not None:
-                    mask = 0xffff_ff00_0000_0000
-                    if (prev & mask) != (s & mask):
-                        if (s & 0xfff_ffff) == 0:
-                            return s
+                    if prev is not None:
+                        mask = 0xffff_ff00_0000_0000
+                        if (prev & mask) != (s & mask):
+                            if (s & 0xfff_ffff) == 0:
+                                return s
         return None
 
     @staticmethod
     @switch_to_intel_syntax
-    def get_vmemmap():
-        if not is_x86_64():
+    def get_VMALLOC_END():
+        vmalloc_start = KernelAddressHeuristicFinder.get_VMALLOC_START()
+        if vmalloc_start is None:
             return None
 
-        # plan 1 (fixed address)
-        kversion = Kernel.kernel_version()
-        if kversion and kversion < "4.8":
-            # kASLR and Level5 pagetable is unsupported, so fixed address
-            return 0xffff_ea00_0000_0000
+        if is_x86_64():
+            cr4 = get_register("cr4", use_monitor=True)
+            if (cr4 >> 12) & 1: # PML5T check
+                return vmalloc_start + 0x0032_0000_0000_0000 # 12.5PB
+            else:
+                return vmalloc_start + 0x0000_2000_0000_0000 # 32TB
 
-        # plan 2 (directly)
-        if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            vmemmap_base = Symbol.get_ksymaddr("vmemmap_base")
-            if vmemmap_base:
-                return read_int_from_memory(vmemmap_base)
+        elif is_arm64():
+            kversion = Kernel.kernel_version()
+            if kversion is None:
+                return
+            VA_BITS = KernelAddressHeuristicFinder.get_VA_BITS_arm64()
+            if kversion < "5.11":
+                if VA_BITS > 48:
+                    return vmalloc_start + 0x0000_5800_0000_0000 # 88TB
+                else:
+                    return vmalloc_start + 0x0000_5d00_0000_0000 # 93TB
+            else:
+                return vmalloc_start + 0x0000_7c00_0000_0000 # 124TB
 
-        def get_min_page(r):
-            if r is None:
-                return None
-            min_page = None
-            for x in r:
-                x = int(x, 16)
-                if not is_valid_addr(x):
-                    continue
-                if min_page is None or x < min_page:
-                    min_page = x
-            return min_page
-
-        # plan 3 (from slub-dump / slub-tiny-dump)
-        allocator = KernelChecksecCommand.get_slab_type()
-        if allocator in ["SLUB", "SLUB_TINY"]:
-            command = {"SLUB": "slub-dump --node", "SLUB_TINY": "slub-tiny-dump"}[allocator]
-            for n in [8, 16, 32, 64, 96, 128, 192, 256, 512]:
-                ret = gdb.execute(
-                    "{:s} --simple --no-pager --quiet --skip-page2virt kmalloc-{:d}".format(command, n),
-                    to_string=True,
-                )
-                r = re.findall(r"(?:active|partial|node) page: (0x\S\S+)", Color.remove_color(ret))
-                min_page = get_min_page(r)
-                if min_page is not None:
-                    return min_page & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
-
-        # plan 4 (from slab-dump)
-        if allocator == "SLAB":
-            ret = gdb.execute("slab-dump --simple --no-pager --quiet kmalloc-256", to_string=True)
-            r = re.findall(r"node\[\d+\]\.slabs_(?:partial|full): (0x\S+)", Color.remove_color(ret))
-            min_page = get_min_page(r)
-            if min_page is not None:
-                return min_page & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
-
-        # plan 5 (from slob-dump)
-        if allocator == "SLOB":
-            ret = gdb.execute("slob-dump --simple --large --no-pager --quiet", to_string=True)
-            r = re.findall(r"page: (0x\S+)", Color.remove_color(ret))
-            min_page = get_min_page(r)
-            if min_page is not None:
-                return min_page & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
         return None
 
     @staticmethod
     @switch_to_intel_syntax
     def get_VMEMMAP_START():
-        if not is_arm64():
+        if is_x86_64():
+            # plan 1 (fixed address)
+            kversion = Kernel.kernel_version()
+            if kversion and kversion < "4.8":
+                # kASLR and Level5 pagetable is unsupported, so fixed address
+                return 0xffff_ea00_0000_0000
+
+            # plan 2 (directly)
+            if KernelAddressHeuristicFinder.USE_DIRECTLY:
+                vmemmap_base = Symbol.get_ksymaddr("vmemmap_base")
+                if vmemmap_base:
+                    return read_int_from_memory(vmemmap_base)
+
+            def get_min_page(r):
+                if r is None:
+                    return None
+                min_page = None
+                for x in r:
+                    x = int(x, 16)
+                    if not is_valid_addr(x):
+                        continue
+                    if min_page is None or x < min_page:
+                        min_page = x
+                return min_page
+
+            # plan 3 (from slub-dump / slub-tiny-dump)
+            allocator = KernelChecksecCommand.get_slab_type()
+            if allocator in ["SLUB", "SLUB_TINY"]:
+                command = {"SLUB": "slub-dump --node", "SLUB_TINY": "slub-tiny-dump"}[allocator]
+                for n in [8, 16, 32, 64, 96, 128, 192, 256, 512]:
+                    ret = gdb.execute(
+                        "{:s} --simple --no-pager --quiet --skip-page2virt kmalloc-{:d}".format(command, n),
+                        to_string=True,
+                    )
+                    r = re.findall(r"(?:active|partial|node) page: (0x\S\S+)", Color.remove_color(ret))
+                    min_page = get_min_page(r)
+                    if min_page is not None:
+                        return min_page & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
+
+            # plan 4 (from slab-dump)
+            if allocator == "SLAB":
+                ret = gdb.execute("slab-dump --simple --no-pager --quiet kmalloc-256", to_string=True)
+                r = re.findall(r"node\[\d+\]\.slabs_(?:partial|full): (0x\S+)", Color.remove_color(ret))
+                min_page = get_min_page(r)
+                if min_page is not None:
+                    return min_page & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
+
+            # plan 5 (from slob-dump)
+            if allocator == "SLOB":
+                ret = gdb.execute("slob-dump --simple --large --no-pager --quiet", to_string=True)
+                r = re.findall(r"page: (0x\S+)", Color.remove_color(ret))
+                min_page = get_min_page(r)
+                if min_page is not None:
+                    return min_page & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
+
+        elif is_arm64():
+            PAGE_SHIFT = 12
+            VA_BITS = KernelAddressHeuristicFinder.get_VA_BITS_arm64()
+            STRUCT_PAGE_MAX_SHIFT = 6
+            kversion = Kernel.kernel_version()
+            if kversion < "5.4":
+                PAGE_OFFSET = AddressUtil.align_address(0xffff_ffff_ffff_ffff - (1 << (VA_BITS - 1)) + 1)
+                VMEMMAP_SIZE = 1 << (VA_BITS - PAGE_SHIFT - 1 + STRUCT_PAGE_MAX_SHIFT)
+                VMEMMAP_START = PAGE_OFFSET - VMEMMAP_SIZE
+            elif kversion < "5.12":
+                PAGE_OFFSET = AddressUtil.align_address(-(1 << VA_BITS))
+                PAGE_END = lambda va: -(1 << ((va) - 1))
+                if VA_BITS > 48:
+                    VA_BITS_MIN = 48
+                else:
+                    VA_BITS_MIN = VA_BITS
+                VMEMMAP_SIZE = ((PAGE_END(VA_BITS_MIN) - PAGE_OFFSET) >> (PAGE_SHIFT - STRUCT_PAGE_MAX_SHIFT))
+                VMEMMAP_START = (-VMEMMAP_SIZE - 0x0020_0000) & 0xffff_ffff_ffff_ffff
+            else: # v5.12~
+                VMEMMAP_SHIFT = PAGE_SHIFT - STRUCT_PAGE_MAX_SHIFT
+                VMEMMAP_START = -(1 << (VA_BITS - VMEMMAP_SHIFT)) & 0xffff_ffff_ffff_ffff
+            return VMEMMAP_START
+
+        return None
+
+    @staticmethod
+    @switch_to_intel_syntax
+    def get_VMEMMAP_END():
+        vmemmap_start = KernelAddressHeuristicFinder.get_VMEMMAP_START()
+        if vmemmap_start is None:
             return None
 
-        PAGE_SHIFT = 12
-        T1SZ = (get_register("$TCR_EL1") >> 16) & 0b111111
-        region_end = 2 ** 64
-        region_start = region_end - (2 ** (64 - T1SZ))
-        region_bits = GefUtil.log2(region_end - region_start)
+        if is_x86_64():
+            cr4 = get_register("cr4", use_monitor=True)
+            if (cr4 >> 12) & 1: # PML5T check
+                return vmemmap_start + 0x0002_0000_0000_0000 # 0.5PB
+            else:
+                return vmemmap_start + 0x0000_0100_0000_0000 # 1TB
+        elif is_arm64():
+            kversion = Kernel.kernel_version()
+            if kversion is None:
+                return
+            VA_BITS = KernelAddressHeuristicFinder.get_VA_BITS_arm64()
+            if kversion < "5.11":
+                if VA_BITS > 48:
+                    return vmemmap_start + 0x0000_03e0_0000_0000 # 3968GB
+                else:
+                    return vmemmap_start + 0x0000_0200_0000_0000 # 2TB
+            else:
+                if VA_BITS > 48:
+                    return vmemmap_start + 0x0000_0400_0000_0000 # 4TB
+                else:
+                    return vmemmap_start + 0x0000_0200_0000_0000 # 2TB
 
-        ID_AA64MMFR2_EL1 = get_register("$ID_AA64MMFR2_EL1")
-        if ID_AA64MMFR2_EL1 is not None:
-            FEAT_LVA = ((ID_AA64MMFR2_EL1 >> 16) & 0b1111) == 0b0001
-        else:
-            FEAT_LVA = False
-        if FEAT_LVA:
-            CONFIG_ARM64_VA_BITS = min(52, region_bits)
-        else:
-            CONFIG_ARM64_VA_BITS = region_bits
-
-        VA_BITS = CONFIG_ARM64_VA_BITS
-        if VA_BITS > 48:
-            VA_BITS_MIN = 48
-        else:
-            VA_BITS_MIN = VA_BITS
-
-        STRUCT_PAGE_MAX_SHIFT = 6
-
-        # calc VMEMMAP_START
-        kversion = Kernel.kernel_version()
-        if kversion < "5.4":
-            PAGE_OFFSET = AddressUtil.align_address(0xffff_ffff_ffff_ffff - (1 << (VA_BITS - 1)) + 1)
-            VMEMMAP_SIZE = 1 << (VA_BITS - PAGE_SHIFT - 1 + STRUCT_PAGE_MAX_SHIFT)
-            VMEMMAP_START = PAGE_OFFSET - VMEMMAP_SIZE
-        elif kversion < "5.12":
-            PAGE_OFFSET = AddressUtil.align_address(-(1 << VA_BITS))
-            PAGE_END = lambda va: -(1 << ((va) - 1))
-            VMEMMAP_SIZE = ((PAGE_END(VA_BITS_MIN) - PAGE_OFFSET) >> (PAGE_SHIFT - STRUCT_PAGE_MAX_SHIFT))
-            VMEMMAP_START = (-VMEMMAP_SIZE - 0x0020_0000) & 0xffff_ffff_ffff_ffff
-        else: # v5.12~
-            PAGE_OFFSET = AddressUtil.align_address(-(1 << VA_BITS))
-            VMEMMAP_SHIFT = PAGE_SHIFT - STRUCT_PAGE_MAX_SHIFT
-            VMEMMAP_START = -(1 << (VA_BITS - VMEMMAP_SHIFT)) & 0xffff_ffff_ffff_ffff
-        return VMEMMAP_START, PAGE_OFFSET
+        return None
 
     @staticmethod
     @switch_to_intel_syntax
@@ -94814,24 +94935,18 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_direct_map(self):
-        return
-        # Under development
-
         self.quiet_info("resolve direct map")
 
-        if is_x86_64():
-            # try 5-level pagetables
-            r = self.insert_region_range(0xff11_0000_0000_0000, 0xff91_0000_0000_0000, "physmap")
-            if not r:
-                # 4-level pagetables
-                self.insert_region_range(0xffff_8880_0000_0000, 0xffff_c880_0000_0000, "physmap")
-        elif is_arm64():
-            # try 3-level pagetables
-            r = self.insert_region_range(0xfff0_0000_0000_0000, 0xff80_0000_0000_0000, "physmap")
-            if not r:
-                # 4-level pagetables
-                self.insert_region_range(0xffff_0000_0000_0000, 0xffff_8000_0000_0000, "physmap")
-        elif is_arm32() or is_x86_32():
+        if is_x86_64() or is_arm64():
+            PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+            if PAGE_OFFSET is None:
+                return
+            PAGE_OFFSET_END = KernelAddressHeuristicFinder.get_PAGE_OFFSET_END()
+            if PAGE_OFFSET_END is None:
+                return
+            self.insert_region_range(PAGE_OFFSET, PAGE_OFFSET_END, "physmap")
+
+        elif is_x86_32() or is_arm32():
             # get start address
             kern_min = Kernel.get_maps()[0][0]
             if kern_min < 0x8000_0000:
@@ -94855,38 +94970,19 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_vmalloc(self):
-        return
-        # Under development
-
         self.quiet_info("resolve vmalloc")
 
-        kversion = Kernel.kernel_version()
-        if is_x86_64():
-            # try 5-level pagetables
-            r = self.insert_region_range(0xffa0_0000_0000_0000, 0xffd2_0000_0000_0000, "vmalloc")
-            if not r:
-                # 4-level pagetables
-                self.insert_region_range(0xffff_c900_0000_0000, 0xffff_e900_0000_0000, "vmalloc")
-        elif is_arm64():
-            if kversion < "5.11":
-                # Without KASAN, the memory map may differ from the official documentation.
-                kasan = gdb.execute("ksymaddr-remote kasan_ --quiet --no-pager", to_string=True) # do not use --exact
-                is_52bit_range = is_valid_addr(0xfff0_0000_0000_0000)
-                if kasan:
-                    if is_52bit_range:
-                        self.insert_region_range(0xffff_a000_1000_0000, 0xffff_f81f_ffff_0000, "vmalloc")
-                    else:
-                        self.insert_region_range(0xffff_a000_1000_0000, 0xffff_fdff_bfff_0000, "vmalloc")
-                else:
-                    if is_52bit_range:
-                        self.insert_region_range(0xffff_8000_0000_0000, 0xffff_f81f_ffff_0000, "vmalloc")
-                    else:
-                        self.insert_region_range(0xffff_8000_0000_0000, 0xffff_fdff_bfff_0000, "vmalloc")
-            elif kversion < "6.5":
-                self.insert_region_range(0xffff_8000_0800_0000, 0xffff_fbff_f000_0000, "vmalloc")
-            else:
-                self.insert_region_range(0xffff_8000_8000_0000, 0xffff_fbff_f000_0000, "vmalloc")
-        else:
+        if is_x86_64() or is_arm64():
+            VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
+            if VMALLOC_START is None:
+                return
+            VMALLOC_END = KernelAddressHeuristicFinder.get_VMALLOC_END()
+            if VMALLOC_END is None:
+                return
+            self.insert_region_range(VMALLOC_START, VMALLOC_END, "vmalloc")
+
+        elif is_x86_32() or is_arm32():
+            kversion = Kernel.kernel_version()
             if kversion >= "5.2":
                 res = gdb.execute("vmalloc-dump --quiet --no-pager --only-freed", to_string=True)
                 lines = [Color.remove_color(line) for line in res.splitlines()]
@@ -94925,21 +95021,17 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_vmemmap(self):
-        return
-        # Under development
-
         self.quiet_info("resolve page")
 
-        if is_x86_64():
-            vmemmap = KernelAddressHeuristicFinder.get_vmemmap()
-            if vmemmap is None:
+        if is_x86_64() or is_arm64():
+            VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
+            if VMEMMAP_START is None:
                 return
-            # already there
-            if vmemmap in self.regions:
-                self.regions[vmemmap].add_description("vmemmap(=page[])")
+            VMEMMAP_END = KernelAddressHeuristicFinder.get_VMEMMAP_END()
+            if VMEMMAP_END is None:
                 return
-            # require division
-            pass
+            self.insert_region_range(VMEMMAP_START, VMEMMAP_END, "vmemmap(=page[])")
+
         elif is_x86_32() or is_arm32():
             mem_map = KernelAddressHeuristicFinder.get_mem_map()
             if mem_map is None:
@@ -94956,16 +95048,6 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
                     self.insert_region(mem_map, size, "mem_map(=page[])")
                     return
             # TODO support x86_32 mem_section
-        elif is_arm64():
-            kversion = Kernel.kernel_version()
-            if kversion < "5.11":
-                is_52bit_range = is_valid_addr(0xfff0_0000_0000_0000)
-                if is_52bit_range:
-                    self.insert_region_range(0xffff_fc1f_ffe0_0000, 0xffff_ffff_ffe0_0000, "vmemmap(=page[])")
-                else:
-                    self.insert_region_range(0xffff_fdff_ffe0_0000, 0xffff_ffff_ffe0_0000, "vmemmap(=page[])")
-            else:
-                self.insert_region_range(0xffff_fc00_0000_0000, 0xffff_fe00_0000_0000, "vmemmap(=page[])")
         return
 
     def resolve_cpu_entry(self):
@@ -95641,7 +95723,7 @@ class PageCommand(GenericCommand):
                 # this page2virt command is called from slub-dump itself.
                 # * slub-dump (not --skip-page2virt)
                 #   -> page2virt
-                #     -> get_vmemmap
+                #     -> get_VMEMMAP_START
                 #       -> slub-dump --skip-page2virt
                 #     -> calculates sizeof_struct_page
                 #       -> slub-dump --skip-page2virt
@@ -95694,12 +95776,12 @@ class PageCommand(GenericCommand):
         if is_x86_64():
             # CONFIG_SPARSEMEM_VMEMMAP
 
-            self.VMEMMAP_START = KernelAddressHeuristicFinder.get_vmemmap()
+            self.VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
             if self.VMEMMAP_START is None:
                 err("Not found VMEMMAP_START")
                 return False
 
-            self.PAGE_OFFSET = KernelAddressHeuristicFinder.get_page_offset()
+            self.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
             if self.PAGE_OFFSET is None:
                 err("Not found PAGE_OFFSET")
                 return False
@@ -95816,7 +95898,8 @@ class PageCommand(GenericCommand):
 
         elif is_arm64():
             # CONFIG_SPARSEMEM_VMEMMAP
-            self.VMEMMAP_START, self.PAGE_OFFSET = KernelAddressHeuristicFinder.get_VMEMMAP_START()
+            self.VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
+            self.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
 
             # calc sizeof(struct page)
             STRUCT_PAGE_MAX_SHIFT = 6
@@ -96328,8 +96411,8 @@ class SlabVirtualCommand(GenericCommand):
         # Step1: find `vmemmap_base`
         vmemmap_base = None
 
-        # Do NOT use `KF.get_vmemmap()` here.
-        # If CONFIG_KALLSYMS_ALL=n, `KF.get_vmemmap()` uses plan 3 and returns
+        # Do NOT use `KF.get_VMEMMAP_START()` here.
+        # If CONFIG_KALLSYMS_ALL=n, `KF.get_VMEMMAP_START()` uses plan 3 and returns
         # slab-virtual address (NOT page address).
         # The returned value may be the first entry address of slab-virtual.
         addr = Symbol.get_ksymaddr("vmemmap_base")
@@ -96383,7 +96466,7 @@ class SlabVirtualCommand(GenericCommand):
                     if not is_valid_addr(backing_folio):
                         continue
                     vmemmap_entries.append(backing_folio)
-                # The masked address of min page may be vmemmap_base(likely plan 3 of `KF.get_vmemmap()`)
+                # The masked address of min page may be vmemmap_base(likely plan 3 of `KF.get_VMEMMAP_START()`)
                 vmemmap_base = min(vmemmap_entries) & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
 
         self.quiet_info("vmemmap_base: {:#x}".format(vmemmap_base))
