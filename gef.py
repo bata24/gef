@@ -53163,11 +53163,620 @@ class KernelAddressHeuristicFinderUtil:
                     continue
 
 
+class KernelConstsBase:
+    SZ_64K = 0x0001_0000
+    SZ_2M = 0x0020_0000
+    SZ_4M = 0x0040_0000
+    SZ_8M = 0x0080_0000
+    SZ_16M = 0x0100_0000
+    SZ_32M = 0x0200_0000
+    SZ_64M = 0x0400_0000
+    SZ_128M = 0x0800_0000
+    SZ_256M = 0x1000_0000
+    SZ_1G = 0x4000_0000
+    SZ_2G = 0x8000_0000
+
+    def __init__(self, version=None):
+        if version:
+            vs = version.split(".")
+            if len(vs) == 2:
+                vs = [int(vs[0]), int(vs[1]), 0]
+            else:
+                vs = [int(vs[0]), int(vs[1]), int(vs[2])]
+            self.kversion = Kernel.KernelVersion(0, "",  *vs)
+        else:
+            self.kversion = Kernel.kernel_version()
+        return
+
+    @property
+    def CONFIG_KASAN(self):
+        if self.kasan is not None:
+            return bool(self.kasan)
+        res = gdb.execute("ksymaddr-remote --quiet kasan_", to_string=True)
+        self.kasan = bool(res)
+        return self.kasan
+
+    @property
+    def sizeof_struct_page(self):
+        return 0x40
+
+    def order_base_2(self, n):
+        if n > 1:
+            return GefUtil.log2(n)
+        return 0
+
+    def ALIGN(self, x, a):
+        mask = a - 1
+        return (x + mask) & ~mask
+
+    def test(self): # noqa
+        target = ["PAGE_OFFSET", "PAGE_OFFSET_END", "VMALLOC_START", "VMALLOC_END", "VMEMMAP_START", "VMEMMAP_END"]
+        for attr in target:
+            try:
+                v = getattr(self, attr)
+                if v:
+                    info("{:16s} = {:#x}".format(attr, v))
+                else:
+                    err("{:16s} = None".format(attr))
+            except Exception:
+                err("{:16s} = {}".format(attr, Color.colorify("ERROR", "red bold")))
+        return
+
+
+class KernelConstsArm64(KernelConstsBase):
+    def __init__(self, version=None, kasan=None):
+        super().__init__(version)
+        self.kasan = kasan
+        assert "3.7" <= self.kversion # arm64 support start version
+        return
+
+    @property
+    def PAGE_SHIFT(self):
+        tcr = get_register("$TCR_EL1")
+        if tcr is not None:
+            tg1 = (tcr >> 30) & 0b11
+            if tg1 == 0b01:
+                return 14
+            elif tg1 == 0b10:
+                return 12
+            elif tg1 == 0b11:
+                return 16
+        # fallback
+        return 12
+
+    @property
+    def PAGE_SIZE(self):
+        return 1 << self.PAGE_SHIFT
+
+    @property
+    def FEAT_LVA(self):
+        ID_AA64MMFR2_EL1 = get_register("$ID_AA64MMFR2_EL1")
+        if ID_AA64MMFR2_EL1 is not None:
+            FEAT_LVA = ((ID_AA64MMFR2_EL1 >> 16) & 0b1111) == 0b0001
+        else:
+            FEAT_LVA = False
+        return FEAT_LVA
+
+    @property
+    def CONFIG_KASAN_SW_TAGS(self):
+        if "5.4" <= self.kversion:
+            return False # change if needed
+        return None
+
+    @property
+    def CONFIG_ARM64_16K_PAGES(self):
+        if "6.9" <= self.kversion:
+            return False # change if needed
+        return None
+
+    @property
+    def CONFIG_ARM64_64K_PAGES(self):
+        if "3.7" <= self.kversion:
+            return False # change if needed
+        return None
+
+    @property
+    def CONFIG_ARM64_VA_BITS(self):
+        T1SZ = (get_register("$TCR_EL1") >> 16) & 0b111111
+        region_end = 2 ** 64
+        region_start = region_end - (2 ** (64 - T1SZ))
+        region_bits = GefUtil.log2(region_end - region_start)
+        if self.FEAT_LVA:
+            return min(52, region_bits)
+        return region_bits
+
+    @property
+    def PTDESC_ORDER(self):
+        if "6.15" <= self.kversion:
+            return 3
+        return None
+
+    @property
+    def PTDESC_TABLE_SHIFT(self):
+        if "6.15" <= self.kversion:
+            return self.PAGE_SHIFT - self.PTDESC_ORDER
+        return None
+
+    def ARM64_HW_PGTABLE_LEVEL_SHIFT(self, n):
+        if "4.4" <= self.kversion < "6.15":
+            return (self.PAGE_SHIFT - 3) * (4 - (n)) + 3
+        elif "6.15" <= self.kversion:
+            return self.PTDESC_TABLE_SHIFT * (4 - (n)) + self.PTDESC_ORDER
+        return None
+
+    @property
+    def PUD_SHIFT(self):
+        if "3.17" <= self.kversion < "4.4":
+            return (self.PAGE_SHIFT - 3) * 3 + 3
+        elif "4.4" <= self.kversion:
+            return self.ARM64_HW_PGTABLE_LEVEL_SHIFT(1)
+        return None
+
+    @property
+    def PUD_SIZE(self):
+        if "3.17" <= self.kversion:
+            return 1 << self.PUD_SHIFT
+        return None
+
+    def _PAGE_END(self, va):
+        if "5.4" <= self.kversion:
+            _page_end = -(1 << (va - 1))
+            return AddressUtil.align_address(_page_end)
+        return None
+
+    def _PAGE_OFFSET(self, va):
+        if "5.4" <= self.kversion:
+            _page_offset = -(1 << va)
+            return AddressUtil.align_address(_page_offset)
+        return None
+
+    @property
+    def KASAN_SHADOW_SCALE_SHIFT(self):
+        if "4.16" <= self.kversion < "5.0":
+            if self.CONFIG_KASAN:
+                return 3
+        elif "5.0" <= self.kversion < "5.11":
+            # arch/arm64/Makefile
+            if self.CONFIG_KASAN_SW_TAGS:
+                return 4
+            else:
+                return 3
+        elif "5.11" <= self.kversion:
+            # arch/arm64/Makefile
+            if self.CONFIG_KASAN_SW_TAGS:
+                return 4
+            elif self.CONFIG_KASAN:
+                return 3
+            return None
+        return None
+
+    def _KASAN_SHADOW_START(self, va):
+        if "5.4" <= self.kversion:
+            return self.KASAN_SHADOW_END - (1 << (va - self.KASAN_SHADOW_SCALE_SHIFT))
+        return None
+
+    @property
+    def KASAN_SHADOW_OFFSET(self):
+        if "5.4" <= self.kversion < "5.11":
+            if not self.CONFIG_KASAN_SW_TAGS:
+                if self.VA_BITS == 48 or self.VA_BITS == 52:
+                    return 0xdfff_a000_0000_0000
+                elif self.VA_BITS == 47:
+                    return 0xdfff_d000_0000_0000
+                elif self.VA_BITS == 42:
+                    return 0xdfff_fe80_0000_0000
+                elif self.VA_BITS == 39:
+                    return 0xdfff_ffd0_0000_0000
+                elif self.VA_BITS == 36:
+                    return 0xdfff_fffa_0000_0000
+            else:
+                if self.VA_BITS == 48 or self.VA_BITS == 52:
+                    return 0xefff_9000_0000_0000
+                elif self.VA_BITS == 47:
+                    return 0xefff_c800_0000_0000
+                elif self.VA_BITS == 42:
+                    return 0xefff_fe40_0000_0000
+                elif self.VA_BITS == 39:
+                    return 0xefff_ffc8_0000_0000
+                elif self.VA_BITS == 36:
+                    return 0xefff_fff9_0000_0000
+            return 0xffffffffffffffff
+        elif "5.11" <= self.kversion < "6.10":
+            if not self.CONFIG_KASAN_SW_TAGS:
+                if self.VA_BITS == 48 or self.VA_BITS == 52:
+                    return 0xdfff_8000_0000_0000
+                elif self.VA_BITS == 47:
+                    return 0xdfff_c000_0000_0000
+                elif self.VA_BITS == 42:
+                    return 0xdfff_fe00_0000_0000
+                elif self.VA_BITS == 39:
+                    return 0xdfff_ffc0_0000_0000
+                elif self.VA_BITS == 36:
+                    return 0xdfff_fff8_0000_0000
+            else:
+                if self.VA_BITS == 48 or self.VA_BITS == 52:
+                    return 0xefff_8000_0000_0000
+                elif self.VA_BITS == 47:
+                    return 0xefff_c000_0000_0000
+                elif self.VA_BITS == 42:
+                    return 0xefff_fe00_0000_0000
+                elif self.VA_BITS == 39:
+                    return 0xefff_ffc0_0000_0000
+                elif self.VA_BITS == 36:
+                    return 0xefff_fff8_0000_0000
+            return 0xffffffffffffffff
+        elif "6.10" <= self.kversion:
+            if not self.CONFIG_KASAN_SW_TAGS:
+                if self.VA_BITS == 48 or (self.VA_BITS == 52 and not self.CONFIG_ARM64_16K_PAGES):
+                    return 0xdfff_8000_0000_0000
+                elif (self.VA_BITS == 47 or self.VA_BITS == 52) and self.CONFIG_ARM64_16K_PAGES:
+                    return 0xdfff_c000_0000_0000
+                elif self.VA_BITS == 42:
+                    return 0xdfff_fe00_0000_0000
+                elif self.VA_BITS == 39:
+                    return 0xdfff_ffc0_0000_0000
+                elif self.VA_BITS == 36:
+                    return 0xdfff_fff8_0000_0000
+            else:
+                if self.VA_BITS == 48 or (self.VA_BITS == 52 and not self.CONFIG_ARM64_16K_PAGES):
+                    return 0xefff_8000_0000_0000
+                elif (self.VA_BITS == 47 or self.VA_BITS == 52) and self.CONFIG_ARM64_16K_PAGES:
+                    return 0xefff_c000_0000_0000
+                elif self.VA_BITS == 42:
+                    return 0xefff_fe00_0000_0000
+                elif self.VA_BITS == 39:
+                    return 0xefff_ffc0_0000_0000
+                elif self.VA_BITS == 36:
+                    return 0xefff_fff8_0000_0000
+            return 0xffffffffffffffff
+        return None
+
+    @property
+    def vabits_actual(self):
+        if "5.4" <= self.kversion < "6.0":
+            # stored at arch/arm64/kernel/head.S
+            if self.FEAT_LVA:
+                return 52
+            else:
+                return self.VA_BITS_MIN
+        elif "6.0" <= self.kversion < "6.9":
+            # stored at arch/arm64/kernel/head.S
+            if self.FEAT_LVA:
+                return self.VA_BITS
+            else:
+                return self.VA_BITS_MIN
+        elif "6.9" <= self.kversion:
+            if self.VA_BITS > 48:
+                tcr = get_register("$TCR_EL1")
+                return (64 - ((tcr >> 16) & 63))
+            else:
+                return self.VA_BITS
+        return None
+
+    @property
+    def KASAN_SHADOW_START(self):
+        if "4.4" <= self.kversion < "5.4":
+            return self.VA_START
+        elif "5.4" <= self.kversion:
+            return self._KASAN_SHADOW_START(self.vabits_actual)
+        return None
+
+    @property
+    def KASAN_SHADOW_END(self):
+        if "4.4" <= self.kversion < "4.6":
+            return self.KASAN_SHADOW_START + (1 << (self.VA_BITS - 3))
+        elif "4.6" <= self.kversion < "5.4":
+            return self.KASAN_SHADOW_START + self.KASAN_SHADOW_SIZE
+        elif "5.4" <= self.kversion < "5.11":
+            if self.CONFIG_KASAN:
+                return (1 << (64 - self.KASAN_SHADOW_SCALE_SHIFT)) + self.KASAN_SHADOW_OFFSET
+            else:
+                return self._PAGE_END(self.VA_BITS_MIN)
+        elif "5.11" <= self.kversion:
+            if self.CONFIG_KASAN or self.CONFIG_KASAN_SW_TAGS:
+                return (1 << (64 - self.KASAN_SHADOW_SCALE_SHIFT)) + self.KASAN_SHADOW_OFFSET
+        return None
+
+    @property
+    def KASAN_SHADOW_SIZE(self):
+        if "4.6" <= self.kversion < "4.16":
+            if self.CONFIG_KASAN:
+                return 1 << (self.VA_BITS - 3)
+            else:
+                return 0
+        elif "4.16" <= self.kversion < "5.4":
+            if self.CONFIG_KASAN:
+                return 1 << (self.VA_BITS - self.KASAN_SHADOW_SCALE_SHIFT)
+            else:
+                return 0
+        return None
+
+    @property
+    def STRUCT_PAGE_MAX_SHIFT(self):
+        if "4.7" <= self.kversion < "4.20":
+            return 6
+        elif "4.20" <= self.kversion:
+            return self.order_base_2(self.sizeof_struct_page)
+        return None
+
+    @property
+    def VMEMMAP_UNUSED_NPAGES(self):
+        if "6.9" <= self.kversion:
+            return (self._PAGE_OFFSET(self.vabits_actual) - self.PAGE_OFFSET) >> self.PAGE_SHIFT
+        return None
+
+    @property
+    def VMEMMAP_SHIFT(self):
+        if "5.11" <= self.kversion < "6.9":
+            return self.PAGE_SHIFT - self.STRUCT_PAGE_MAX_SHIFT
+        return None
+
+    @property
+    def VMEMMAP_RANGE(self):
+        if "6.9" <= self.kversion:
+            return self._PAGE_END(self.VA_BITS_MIN) - self.PAGE_OFFSET
+        return None
+
+    @property
+    def VMEMMAP_SIZE(self):
+        if "3.17" <= self.kversion < "4.7":
+            return self.ALIGN((1 << (self.VA_BITS - self.PAGE_SHIFT)) * self.sizeof_struct_page, self.PUD_SIZE)
+        elif "4.7" <= self.kversion < "5.4":
+            return 1 << (self.VA_BITS - self.PAGE_SHIFT - 1 + self.STRUCT_PAGE_MAX_SHIFT)
+        elif "5.4" <= self.kversion < "5.11":
+            return (self._PAGE_END(self.VA_BITS_MIN) - self.PAGE_OFFSET) >> (self.PAGE_SHIFT - self.STRUCT_PAGE_MAX_SHIFT)
+        elif "5.11" <= self.kversion < "6.9":
+            return (self._PAGE_END(self.VA_BITS_MIN) - self.PAGE_OFFSET) >> self.VMEMMAP_SHIFT
+        elif "6.9" <= self.kversion:
+            return (self.VMEMMAP_RANGE >> self.VMEMMAP_SHIFT) * self.sizeof_struct_page
+        return None
+
+    @property
+    def VA_BITS(self):
+        if "3.7" <= self.kversion < "3.12":
+            return 39
+        elif "3.12" <= self.kversion < "3.17":
+            if self.CONFIG_ARM64_64K_PAGES:
+                return 42
+            else:
+                return 39
+        elif "3.17" <= self.kversion:
+            return self.CONFIG_ARM64_VA_BITS
+        return None
+
+    @property
+    def VA_START(self):
+        if "4.4" <= self.kversion < "4.5":
+            return 0xffff_ffff_ffff_ffff - (1 << self.VA_BITS) + 1
+        elif "4.5" <= self.kversion < "4.9":
+            va_start = 0xffff_ffff_ffff_ffff << self.VA_BITS
+            return AddressUtil.align_address(va_start)
+        elif "4.9" <= self.kversion < "4.10":
+            return 0xffff_ffff_ffff_ffff - (1 << self.VA_BITS) + 1
+        elif "4.10" <= self.kversion < "4.13":
+            va_start = 0xffff_ffff_ffff_ffff << self.VA_BITS
+            return AddressUtil.align_address(va_start)
+        elif "4.13" <= self.kversion < "5.4":
+            return 0xffff_ffff_ffff_ffff - (1 << self.VA_BITS) + 1
+        return None
+
+    @property
+    def PAGE_OFFSET(self):
+        if "3.17" <= self.kversion < "4.4":
+            page_offset = 0xffff_ffff_ffff_ffff << (self.VA_BITS - 1)
+            return AddressUtil.align_address(page_offset)
+        elif "4.4" <= self.kversion < "4.5":
+            return 0xffff_ffff_ffff_ffff - (1 << (self.VA_BITS - 1)) + 1
+        elif "4.5" <= self.kversion < "4.9":
+            page_offset = 0xffff_ffff_ffff_ffff << (self.VA_BITS - 1)
+            return AddressUtil.align_address(page_offset)
+        elif "4.9" <= self.kversion < "4.10":
+            return 0xffff_ffff_ffff_ffff - (1 << (self.VA_BITS - 1)) + 1
+        elif "4.10" <= self.kversion < "4.13":
+            page_offset = 0xffff_ffff_ffff_ffff << (self.VA_BITS - 1)
+            return AddressUtil.align_address(page_offset)
+        elif "4.13" <= self.kversion < "5.4":
+            return 0xffff_ffff_ffff_ffff - (1 << (self.VA_BITS - 1)) + 1
+        elif "5.4" <= self.kversion:
+            return self._PAGE_OFFSET(self.VA_BITS)
+        return None
+
+    @property
+    def PAGE_OFFSET_END(self):
+        if "3.17" <= self.kversion:
+            return self.PAGE_OFFSET + 2 ** (self.VA_BITS - 1) # no need to align
+        return None
+
+    @property # noqa
+    def KIMAGE_VADDR(self):
+        if "4.6" <= self.kversion:
+            return self.MODULES_END
+        return None
+
+    @property
+    def BPF_JIT_REGION_START(self):
+        if "5.0" <= self.kversion < "5.4":
+            return self.VA_START + self.KASAN_SHADOW_SIZE
+        elif "5.4" <= self.kversion < "5.11":
+            return self.KASAN_SHADOW_END
+        elif "5.11" <= self.kversion < "5.15":
+            return self._PAGE_END(self.VA_BITS_MIN)
+        return None
+
+    @property
+    def BPF_JIT_REGION_SIZE(self):
+        if "5.0" <= self.kversion < "5.15":
+            return self.SZ_128M
+        return None
+
+    @property
+    def BPF_JIT_REGION_END(self):
+        if "5.0" <= self.kversion < "5.15":
+            return self.BPF_JIT_REGION_START + self.BPF_JIT_REGION_SIZE
+        return None
+
+    @property
+    def MODULES_END(self):
+        if "3.7" <= self.kversion < "4.6":
+            return self.PAGE_OFFSET
+        elif "4.6" <= self.kversion:
+            return self.MODULES_VADDR + self.MODULES_VSIZE
+        return None
+
+    @property
+    def MODULES_VADDR(self):
+        if "3.7" <= self.kversion < "4.6":
+            return self.MODULES_END - self.SZ_64M
+        elif "4.6" <= self.kversion < "5.0":
+            return self.VA_START + self.KASAN_SHADOW_SIZE
+        elif "5.0" <= self.kversion < "5.15":
+            return self.BPF_JIT_REGION_END
+        elif "5.15" <= self.kversion:
+            return self._PAGE_END(self.VA_BITS_MIN)
+        return None
+
+    @property
+    def MODULES_VSIZE(self):
+        if "4.6" <= self.kversion < "6.5":
+            return self.SZ_128M
+        elif "6.5" <= self.kversion:
+            return self.SZ_2G
+        return None
+
+    @property
+    def VMEMMAP_START(self):
+        if "3.17" <= self.kversion < "4.7":
+            return self.VMALLOC_END + self.SZ_64K
+        elif "4.7" <= self.kversion < "5.4":
+            return self.PAGE_OFFSET - self.VMEMMAP_SIZE
+        elif "5.4" <= self.kversion < "5.11":
+            vmemmap_start = -self.VMEMMAP_SIZE - self.SZ_2M
+            return AddressUtil.align_address(vmemmap_start)
+        elif "5.11" <= self.kversion < "6.9":
+            vmemmap_start = -(1 << (self.VA_BITS - self.VMEMMAP_SHIFT))
+            return AddressUtil.align_address(vmemmap_start)
+        elif "6.9" <= self.kversion:
+            return self.VMEMMAP_END - self.VMEMMAP_SIZE
+        return None
+
+    @property
+    def VMEMMAP_END(self):
+        if "3.17" <= self.kversion < "6.9":
+            return self.VMEMMAP_START + self.VMEMMAP_SIZE
+        elif "6.9" <= self.kversion:
+            vmemmap_end = -self.SZ_1G
+            return AddressUtil.align_address(vmemmap_end)
+        return None
+
+    @property
+    def PCI_IO_SIZE(self):
+        if "4.0" <= self.kversion:
+            return self.SZ_16M
+        return None
+
+    @property
+    def PCI_IO_START(self):
+        if "4.0" <= self.kversion < "6.9":
+            return self.PCI_IO_END - self.PCI_IO_SIZE
+        elif "6.9" <= self.kversion:
+            return self.VMEMMAP_END + self.SZ_8M
+        return None
+
+    @property
+    def PCI_IO_END(self):
+        if "4.0" <= self.kversion < "4.6":
+            return self.MODULES_VADDR - self.SZ_2M
+        elif "4.6" <= self.kversion < "4.7":
+            return self.PAGE_OFFSET - self.SZ_2M
+        elif "4.7" <= self.kversion < "5.10":
+            return self.VMEMMAP_START - self.SZ_2M
+        elif "5.10" <= self.kversion < "6.9":
+            return self.VMEMMAP_START - self.SZ_8M
+        elif "6.9" <= self.kversion:
+            return self.PCI_IO_START + self.PCI_IO_SIZE
+        return None
+
+    @property # noqa
+    def FIXADDR_TOP(self):
+        if "3.15" <= self.kversion < "4.0":
+            return self.MODULES_VADDR - self.SZ_2M - self.PAGE_SIZE
+        elif "4.0" <= self.kversion < "5.10":
+            return self.PCI_IO_START - self.SZ_2M
+        elif "5.10" <= self.kversion < "6.9":
+            return self.VMEMMAP_START - self.SZ_32M
+        elif "6.9" <= self.kversion:
+            fixaddr_top = -self.SZ_8M
+            return AddressUtil.align_address(fixaddr_top)
+        return None
+
+    @property # noqa
+    def EARLYCON_IOBASE(self):
+        if "3.7" <= self.kversion < "3.15":
+            return self.MODULES_VADDR - self.SZ_4M
+        return None
+
+    @property
+    def VA_BITS_MIN(self):
+        if "5.4" <= self.kversion < "6.9":
+            if self.VA_BITS > 48:
+                return 48
+            else:
+                return self.VA_BITS
+        elif "6.9" <= self.kversion:
+            if self.VA_BITS > 48:
+                if self.CONFIG_ARM64_16K_PAGES:
+                    return 47
+                else:
+                    return 48
+            else:
+                return self.VA_BITS
+        return None
+
+    @property
+    def VMALLOC_START(self):
+        if "3.17" <= self.kversion < "4.4":
+            vmalloc_start = 0xffff_ffff_ffff_ffff << self.VA_BITS
+            return AddressUtil.align_address(vmalloc_start)
+        elif "4.4" <= self.kversion < "4.6":
+            if not self.CONFIG_KASAN:
+                return self.VA_START
+            else:
+                return self.KASAN_SHADOW_END + self.SZ_64K
+        elif "4.6" <= self.kversion:
+            return self.MODULES_END
+        return None
+
+    @property
+    def VMALLOC_END(self):
+        if "3.17" <= self.kversion < "5.4":
+            return self.PAGE_OFFSET - self.PUD_SIZE - self.VMEMMAP_SIZE - self.SZ_64K
+        elif "5.4" <= self.kversion < "5.11":
+            vmalloc_end = -self.PUD_SIZE - self.VMEMMAP_SIZE - self.SZ_64K
+            return AddressUtil.align_address(vmalloc_end)
+        elif "5.11" <= self.kversion < "6.9":
+            return self.VMEMMAP_START - self.SZ_256M
+        elif "6.9" <= self.kversion:
+            if self.VA_BITS == self.VA_BITS_MIN:
+                return self.VMEMMAP_START - self.SZ_8M
+            else:
+                return self.VMEMMAP_START + self.VMEMMAP_UNUSED_NPAGES * self.sizeof_struct_page - self.SZ_8M
+        return None
+
+
 class KernelAddressHeuristicFinder:
     """A class that heuristically finds a specific symbol in the kernel."""
 
     USE_DIRECTLY = True # for debug
     USE_KSYSCTL = True # for debug
+    CONSTS = {}
+
+    @staticmethod
+    def consts_arm64():
+        r = KernelAddressHeuristicFinder.CONSTS.get("arm64", None)
+        if r:
+            return r
+        KernelAddressHeuristicFinder.CONSTS["arm64"] = KernelConstsArm64()
+        return KernelAddressHeuristicFinder.CONSTS["arm64"]
 
     @staticmethod
     @switch_to_intel_syntax
@@ -54189,26 +54798,6 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    def get_VA_BITS_arm64():
-        T1SZ = (get_register("$TCR_EL1") >> 16) & 0b111111
-        region_end = 2 ** 64
-        region_start = region_end - (2 ** (64 - T1SZ))
-        region_bits = GefUtil.log2(region_end - region_start)
-
-        ID_AA64MMFR2_EL1 = get_register("$ID_AA64MMFR2_EL1")
-        if ID_AA64MMFR2_EL1 is not None:
-            FEAT_LVA = ((ID_AA64MMFR2_EL1 >> 16) & 0b1111) == 0b0001
-        else:
-            FEAT_LVA = False
-        if FEAT_LVA:
-            CONFIG_ARM64_VA_BITS = min(52, region_bits)
-        else:
-            CONFIG_ARM64_VA_BITS = region_bits
-
-        VA_BITS = CONFIG_ARM64_VA_BITS
-        return VA_BITS
-
-    @staticmethod
     @switch_to_intel_syntax
     def get_PAGE_OFFSET():
         if is_x86_64():
@@ -54230,15 +54819,8 @@ class KernelAddressHeuristicFinder:
                 return page_offset_base_raw
 
         elif is_arm64():
-            VA_BITS = KernelAddressHeuristicFinder.get_VA_BITS_arm64()
-            kversion = Kernel.kernel_version()
-            if kversion < "5.4":
-                PAGE_OFFSET = AddressUtil.align_address(0xffff_ffff_ffff_ffff - (1 << (VA_BITS - 1)) + 1)
-            elif kversion < "5.12":
-                PAGE_OFFSET = AddressUtil.align_address(-(1 << VA_BITS))
-            else: # v5.12~
-                PAGE_OFFSET = AddressUtil.align_address(-(1 << VA_BITS))
-            return PAGE_OFFSET
+            return KernelAddressHeuristicFinder.consts_arm64().PAGE_OFFSET
+
         return None
 
     @staticmethod
@@ -54248,9 +54830,11 @@ class KernelAddressHeuristicFinder:
             PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
             if PAGE_OFFSET is None:
                 return None
+
             VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
             if VMALLOC_START is None:
                 return None
+
             cr4 = get_register("cr4", use_monitor=True)
             if (cr4 >> 12) & 1: # PML5T check
                 PHYSMEM_MAP_SIZE = 0x0080_0000_0000_0000 # 32PB
@@ -54260,28 +54844,7 @@ class KernelAddressHeuristicFinder:
             return min(PAGE_OFFSET_END, VMALLOC_START)
 
         elif is_arm64():
-            kversion = Kernel.kernel_version()
-            if kversion is None:
-                return
-            PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
-            if PAGE_OFFSET is None:
-                return
-            VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
-            if VMALLOC_START is None:
-                return None
-            VA_BITS = KernelAddressHeuristicFinder.get_VA_BITS_arm64()
-            if kversion < "5.11":
-                if VA_BITS > 48:
-                    PHYSMEM_MAP_SIZE = 0x0008_0000_0000_0000 # 2PB
-                else:
-                    PHYSMEM_MAP_SIZE = 0x0000_8000_0000_0000 # 128TB
-            else:
-                if VA_BITS > 48:
-                    PHYSMEM_MAP_SIZE = 0x0010_0000_0000_0000 # 4PB
-                else:
-                    PHYSMEM_MAP_SIZE = 0x0000_8000_0000_0000 # 128TB
-            PAGE_OFFSET_END = PAGE_OFFSET + PHYSMEM_MAP_SIZE
-            return min(PAGE_OFFSET_END, VMALLOC_START)
+            return KernelAddressHeuristicFinder.consts_arm64().PAGE_OFFSET_END
 
         return None
 
@@ -54306,6 +54869,9 @@ class KernelAddressHeuristicFinder:
             if page_offset_base:
                 vmalloc_base = page_offset_base - current_arch.ptrsize
                 return read_int_from_memory(vmalloc_base)
+
+        if is_arm64():
+            return KernelAddressHeuristicFinder.consts_arm64().VMALLOC_START
 
         # plan 4 (from vmalloc-dump)
         if kversion and kversion >= "5.2":
@@ -54357,16 +54923,18 @@ class KernelAddressHeuristicFinder:
                         if (prev & mask) != (s & mask):
                             if (s & 0xfff_ffff) == 0:
                                 return s
+                    else:
+                        return s
         return None
 
     @staticmethod
     @switch_to_intel_syntax
     def get_VMALLOC_END():
-        vmalloc_start = KernelAddressHeuristicFinder.get_VMALLOC_START()
-        if vmalloc_start is None:
-            return None
-
         if is_x86_64():
+            vmalloc_start = KernelAddressHeuristicFinder.get_VMALLOC_START()
+            if vmalloc_start is None:
+                return None
+
             cr4 = get_register("cr4", use_monitor=True)
             if (cr4 >> 12) & 1: # PML5T check
                 return vmalloc_start + 0x0032_0000_0000_0000 # 12.5PB
@@ -54374,17 +54942,7 @@ class KernelAddressHeuristicFinder:
                 return vmalloc_start + 0x0000_2000_0000_0000 # 32TB
 
         elif is_arm64():
-            kversion = Kernel.kernel_version()
-            if kversion is None:
-                return
-            VA_BITS = KernelAddressHeuristicFinder.get_VA_BITS_arm64()
-            if kversion < "5.11":
-                if VA_BITS > 48:
-                    return vmalloc_start + 0x0000_5800_0000_0000 # 88TB
-                else:
-                    return vmalloc_start + 0x0000_5d00_0000_0000 # 93TB
-            else:
-                return vmalloc_start + 0x0000_7c00_0000_0000 # 124TB
+            return KernelAddressHeuristicFinder.consts_arm64().VMALLOC_END
 
         return None
 
@@ -54447,58 +55005,26 @@ class KernelAddressHeuristicFinder:
                     return min_page & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
 
         elif is_arm64():
-            PAGE_SHIFT = 12
-            VA_BITS = KernelAddressHeuristicFinder.get_VA_BITS_arm64()
-            STRUCT_PAGE_MAX_SHIFT = 6
-            kversion = Kernel.kernel_version()
-            if kversion < "5.4":
-                PAGE_OFFSET = AddressUtil.align_address(0xffff_ffff_ffff_ffff - (1 << (VA_BITS - 1)) + 1)
-                VMEMMAP_SIZE = 1 << (VA_BITS - PAGE_SHIFT - 1 + STRUCT_PAGE_MAX_SHIFT)
-                VMEMMAP_START = PAGE_OFFSET - VMEMMAP_SIZE
-            elif kversion < "5.12":
-                PAGE_OFFSET = AddressUtil.align_address(-(1 << VA_BITS))
-                PAGE_END = lambda va: -(1 << ((va) - 1))
-                if VA_BITS > 48:
-                    VA_BITS_MIN = 48
-                else:
-                    VA_BITS_MIN = VA_BITS
-                VMEMMAP_SIZE = ((PAGE_END(VA_BITS_MIN) - PAGE_OFFSET) >> (PAGE_SHIFT - STRUCT_PAGE_MAX_SHIFT))
-                VMEMMAP_START = (-VMEMMAP_SIZE - 0x0020_0000) & 0xffff_ffff_ffff_ffff
-            else: # v5.12~
-                VMEMMAP_SHIFT = PAGE_SHIFT - STRUCT_PAGE_MAX_SHIFT
-                VMEMMAP_START = -(1 << (VA_BITS - VMEMMAP_SHIFT)) & 0xffff_ffff_ffff_ffff
-            return VMEMMAP_START
+            return KernelAddressHeuristicFinder.consts_arm64().VMEMMAP_START
 
         return None
 
     @staticmethod
     @switch_to_intel_syntax
     def get_VMEMMAP_END():
-        vmemmap_start = KernelAddressHeuristicFinder.get_VMEMMAP_START()
-        if vmemmap_start is None:
-            return None
-
         if is_x86_64():
+            vmemmap_start = KernelAddressHeuristicFinder.get_VMEMMAP_START()
+            if vmemmap_start is None:
+                return None
+
             cr4 = get_register("cr4", use_monitor=True)
             if (cr4 >> 12) & 1: # PML5T check
                 return vmemmap_start + 0x0002_0000_0000_0000 # 0.5PB
             else:
                 return vmemmap_start + 0x0000_0100_0000_0000 # 1TB
+
         elif is_arm64():
-            kversion = Kernel.kernel_version()
-            if kversion is None:
-                return
-            VA_BITS = KernelAddressHeuristicFinder.get_VA_BITS_arm64()
-            if kversion < "5.11":
-                if VA_BITS > 48:
-                    return vmemmap_start + 0x0000_03e0_0000_0000 # 3968GB
-                else:
-                    return vmemmap_start + 0x0000_0200_0000_0000 # 2TB
-            else:
-                if VA_BITS > 48:
-                    return vmemmap_start + 0x0000_0400_0000_0000 # 4TB
-                else:
-                    return vmemmap_start + 0x0000_0200_0000_0000 # 2TB
+            return KernelAddressHeuristicFinder.consts_arm64().VMEMMAP_END
 
         return None
 
@@ -94961,12 +95487,9 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
 
         if is_x86_64() or is_arm64():
             PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
-            if PAGE_OFFSET is None:
-                return
             PAGE_OFFSET_END = KernelAddressHeuristicFinder.get_PAGE_OFFSET_END()
-            if PAGE_OFFSET_END is None:
-                return
-            self.insert_region_range(PAGE_OFFSET, PAGE_OFFSET_END, "physmap")
+            if PAGE_OFFSET and PAGE_OFFSET_END:
+                self.insert_region_range(PAGE_OFFSET, PAGE_OFFSET_END, "physmap")
 
         elif is_x86_32() or is_arm32():
             # get start address
@@ -94996,12 +95519,9 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
 
         if is_x86_64() or is_arm64():
             VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
-            if VMALLOC_START is None:
-                return
             VMALLOC_END = KernelAddressHeuristicFinder.get_VMALLOC_END()
-            if VMALLOC_END is None:
-                return
-            self.insert_region_range(VMALLOC_START, VMALLOC_END, "vmalloc")
+            if VMALLOC_END and VMALLOC_END:
+                self.insert_region_range(VMALLOC_START, VMALLOC_END, "vmalloc")
 
         elif is_x86_32() or is_arm32():
             kversion = Kernel.kernel_version()
@@ -95047,12 +95567,9 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
 
         if is_x86_64() or is_arm64():
             VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
-            if VMEMMAP_START is None:
-                return
             VMEMMAP_END = KernelAddressHeuristicFinder.get_VMEMMAP_END()
-            if VMEMMAP_END is None:
-                return
-            self.insert_region_range(VMEMMAP_START, VMEMMAP_END, "vmemmap(=page[])")
+            if VMEMMAP_START and VMEMMAP_END:
+                self.insert_region_range(VMEMMAP_START, VMEMMAP_END, "vmemmap(=page[])")
 
         elif is_x86_32() or is_arm32():
             mem_map = KernelAddressHeuristicFinder.get_mem_map()
@@ -95073,10 +95590,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_cpu_entry(self):
-        return
-        # Under development
-
-        if is_arm64() or is_arm32() or is_x86_32():
+        if is_x86_32() or is_arm64() or is_arm32():
             return
 
         self.quiet_info("resolve cpu entry")
@@ -95085,25 +95599,14 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_fixmap(self):
-        return
-        # Under development
-
-        if is_x86_32():
+        if is_x86_32() or is_arm64():
             return
 
         self.quiet_info("resolve fixmap")
+
         if is_x86_64():
             self.insert_region_range(0xffff_ffff_ff50_0000, 0xffff_ffff_ff60_0000, "fixmap")
-        elif is_arm64():
-            kversion = Kernel.kernel_version()
-            if kversion < "5.11":
-                is_52bit_range = is_valid_addr(0xfff0_0000_0000_0000)
-                if is_52bit_range:
-                    self.insert_region_range(0xffff_fc1f_fe59_0000, 0xffff_fc1f_fea0_0000, "fixmap")
-                else:
-                    self.insert_region_range(0xffff_fdff_fe5f_9000, 0xffff_fdff_fea0_0000, "fixmap")
-            else:
-                self.insert_region_range(0xffff_fbff_f000_0000, 0xffff_fbff_fe00_0000, "fixmap")
+
         elif is_arm32():
             kversion = Kernel.kernel_version()
             if kversion < "3.16":
@@ -95117,29 +95620,19 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_pci(self):
-        return
-        # Under development
-
         if is_x86_64() or is_x86_32():
             return
 
         self.quiet_info("resolve pci")
+
         if is_arm64():
-            kversion = Kernel.kernel_version()
-            if kversion < "5.11":
-                is_52bit_range = is_valid_addr(0xfff0_0000_0000_0000)
-                if is_52bit_range:
-                    self.insert_region_range(0xffff_fc1f_fec0_0000, 0xffff_fc1f_ffc0_0000, "pci")
-                else:
-                    self.insert_region_range(0xffff_fdff_fec0_0000, 0xffff_fdff_ffc0_0000, "pci")
-            else:
-                self.insert_region_range(0xffff_fbff_fe80_0000, 0xffff_fbff_ff80_0000, "pci")
+            PCI_IO_START = KernelAddressHeuristicFinder.consts_arm64().PCI_IO_START
+            PCI_IO_END = KernelAddressHeuristicFinder.consts_arm64().PCI_IO_END
+            if PCI_IO_START and PCI_IO_END:
+                self.insert_region_range(PCI_IO_START, PCI_IO_END, "pci")
+
         elif is_arm32():
-            kversion = Kernel.kernel_version()
-            if kversion < "3.7":
-                pass
-            else:
-                self.insert_region_range(0xfee0_0000, 0xff00_0000, "pci")
+            pass # TODO
         return
 
     def resolve_vector(self):
@@ -95147,6 +95640,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
             return
 
         self.quiet_info("resolve vector")
+
         if is_arm32():
             self.insert_region_range(0xffff_0000, 0xffff_1000, "vector")
         return
@@ -95155,6 +95649,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         if self.args.verbose < 1:
             self.quiet_warn("resolve buddy: skipped (args.verbose < 1)")
             return
+
         self.quiet_info("resolve buddy")
 
         try:
@@ -95265,10 +95760,9 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         if self.args.verbose < 2:
             self.quiet_warn("resolve full slub: skipped (args.verbose < 2)")
             return
-
         self.quiet_info("resolve full slub (skip if target region size >= 0x200000)")
-        old_regions = list(self.regions.items())[::]
 
+        old_regions = list(self.regions.items())[::]
         tqdm = GefUtil.get_tqdm()
         for _region_addr, region in tqdm(old_regions, leave=False):
             if "slab cache" in region.description:
@@ -95922,10 +96416,7 @@ class PageCommand(GenericCommand):
             # CONFIG_SPARSEMEM_VMEMMAP
             self.VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
             self.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
-
-            # calc sizeof(struct page)
-            STRUCT_PAGE_MAX_SHIFT = 6
-            self.sizeof_struct_page = 2 ** STRUCT_PAGE_MAX_SHIFT
+            self.sizeof_struct_page = KernelAddressHeuristicFinder.consts_arm64().sizeof_struct_page
 
         elif is_arm32():
             # calc PAGE_OFFSET
