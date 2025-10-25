@@ -57824,9 +57824,11 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         for i in range(0x400):
             found = False
             seen_pid = []
-            for task in task_addrs[1:]: # swapper/0 has pid 0. Don't use it as it will cause false positives.
+            for j, task in enumerate(task_addrs[1:]): # swapper/0 has pid 0. Don't use it as it will cause false positives.
                 v1 = read_int32_from_memory(task + (i + 0) * 4)
                 v2 = read_int32_from_memory(task + (i + 1) * 4)
+                if j == 0 and v1 != 1: # init process has always 1
+                    break
                 if v1 == 0 or pid_max < v1: # pid is 1 ~ pid_max
                     break
                 if v2 == 0 or pid_max < v2: # tgid is 1 ~ pid_max
