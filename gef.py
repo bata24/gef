@@ -74689,7 +74689,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             struct pglist_data *zone_pgdat;
             struct per_cpu_pageset __percpu *pageset; // ~v5.13
             struct per_cpu_pages __percpu *per_cpu_pageset; // v5.14~
-            struct per_cpu_zonestat	__percpu *per_cpu_zonestats; // v5.14~
+            struct per_cpu_zonestat __percpu *per_cpu_zonestats; // v5.14~
             ...
             const char *name;
         #ifdef CONFIG_MEMORY_ISOLATION
