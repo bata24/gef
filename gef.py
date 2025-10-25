@@ -53973,8 +53973,7 @@ class KernelAddressHeuristicFinder:
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_cmp_const(res)
                 elif is_arm64():
-                    # TODO
-                    g = []
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_add(res)
                 for x in g:
@@ -54051,6 +54050,25 @@ class KernelAddressHeuristicFinder:
                         v1 = read_int_from_memory(x)
                         v2 = read_int_from_memory(x + current_arch.ptrsize)
                         if is_valid_addr(v1) and is_valid_addr(v2):
+                            return x
+
+        # plan 8 (available v4.11 ~ v6.11)
+        if kversion and kversion >= "4.11" and kversion < "6.12":
+            addr = Symbol.get_ksymaddr("slab_caches_to_rcu_destroy_workfn")
+            if addr:
+                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                if is_x86_64():
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+                elif is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+                elif is_arm64():
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
+                elif is_arm32():
+                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                for slab_mutex in g:
+                    for i in range(16):
+                        x = slab_mutex + current_arch.ptrsize * i
+                        if is_double_link_list(x, min_len=10):
                             return x
         return None
 
@@ -56531,6 +56549,7 @@ class KernelAddressHeuristicFinder:
             for x in g:
                 return x
         return None
+
 
 KF = KernelAddressHeuristicFinder # for convenience using from python-interactive # noqa: F841
 KFU = KernelAddressHeuristicFinderUtil # for convenience using from python-interactive # noqa: F841
