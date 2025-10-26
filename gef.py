@@ -71675,7 +71675,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.page_offset_slab_cache = current_arch.ptrsize * 7
             elif kversion < "4.18":
                 self.page_offset_slab_cache = current_arch.ptrsize * 6
-            elif kversion <= "5.17":
+            elif kversion < "5.17":
                 self.page_offset_slab_cache = current_arch.ptrsize * 3
             elif kversion < "6.2":
                 self.page_offset_slab_cache = current_arch.ptrsize * 3
@@ -73497,7 +73497,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.page_offset_slab_cache = current_arch.ptrsize * 7
         elif kversion < "4.18":
             self.page_offset_slab_cache = current_arch.ptrsize * 6
-        elif kversion <= "5.17":
+        elif kversion < "5.17":
             self.page_offset_slab_cache = current_arch.ptrsize * 3
         elif kversion < "6.2":
             self.page_offset_slab_cache = current_arch.ptrsize * 3
