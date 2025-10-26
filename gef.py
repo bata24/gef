@@ -57460,7 +57460,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         """
         offset_mm = offset_tasks + 2 * current_arch.ptrsize
         r = read_int_from_memory(task_addr + offset_mm)
-        if 0 < r <= 0xffff_ffff:
+        if 0 < r <= 0xffff:
             # maybe prio, so CONFIG_SMP is y
             kversion = Kernel.kernel_version()
             if kversion >= "3.14":
@@ -58791,6 +58791,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         for i in range(50):
             found = True
             for task in task_addrs:
+                # skip kernel thread
                 mm = read_int_from_memory(task + offset_mm)
                 if mm == 0:
                     continue
