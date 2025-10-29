@@ -95492,6 +95492,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
                 self.insert_region_range(PAGE_OFFSET, PAGE_OFFSET_END, "physmap")
 
         elif is_x86_32() or is_arm32():
+            # TODO: FIX
             # get start address
             kern_min = Kernel.get_maps()[0][0]
             if kern_min < 0x8000_0000:
@@ -95524,6 +95525,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
                 self.insert_region_range(VMALLOC_START, VMALLOC_END, "vmalloc")
 
         elif is_x86_32() or is_arm32():
+            # TODO: FIX
             kversion = Kernel.kernel_version()
             if kversion >= "5.2":
                 res = gdb.execute("vmalloc-dump --quiet --no-pager --only-freed", to_string=True)
@@ -95572,6 +95574,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
                 self.insert_region_range(VMEMMAP_START, VMEMMAP_END, "vmemmap(=page[])")
 
         elif is_x86_32() or is_arm32():
+            # TODO: FIX
             mem_map = KernelAddressHeuristicFinder.get_mem_map()
             if mem_map is None:
                 return
@@ -95595,6 +95598,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
 
         self.quiet_info("resolve cpu entry")
         if is_x86_64():
+            # TODO: FIX
             self.insert_region_range(0xffff_fe00_0000_0000, 0xffff_fe80_0000_0000, "cpu_entry")
         return
 
@@ -95605,9 +95609,11 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         self.quiet_info("resolve fixmap")
 
         if is_x86_64():
+            # TODO: FIX
             self.insert_region_range(0xffff_ffff_ff50_0000, 0xffff_ffff_ff60_0000, "fixmap")
 
         elif is_arm32():
+            # TODO: FIX
             kversion = Kernel.kernel_version()
             if kversion < "3.16":
                 self.insert_region_range(0xfff0_0000, 0xfffe_0000, "fixmap")
@@ -95943,8 +95949,8 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
             self.resolve_slob()
         return
 
-    def resolve_module(self):
-        self.quiet_info("resolve module")
+    def resolve_each_module(self):
+        self.quiet_info("resolve each module")
 
         try:
             res = gdb.execute("kmod --quiet --no-pager", to_string=True)
@@ -96119,7 +96125,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         self.resolve_kstack()
         self.resolve_userland()
         self.resolve_each_slab()
-        self.resolve_module()
+        self.resolve_each_module()
         self.resolve_vdso()
         self.detect_zero_page()
 
