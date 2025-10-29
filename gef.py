@@ -97527,6 +97527,7 @@ class ExecUntilCommand(GenericCommand):
     subparsers.add_parser("user-code")
     subparsers.add_parser("libc-code")
     subparsers.add_parser("secure-world")
+    subparsers.add_parser("region-change")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -97542,6 +97543,7 @@ class ExecUntilCommand(GenericCommand):
         "{0:s} user-code                            # execute until user code",
         "{0:s} libc-code                            # execute until libc code",
         "{0:s} secure-world                         # execute until secure world (only ARM/ARM64)",
+        "{0:s} region-change                        # execute until different region (e.g., binary itself -> libc)",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -98220,6 +98222,50 @@ class ExecUntilSecureWorldCommand(ExecUntilCommand):
         if not is_support_secure_world():
             err("Not found secure-world")
             return
+
+        self.exec_next()
+        return
+
+
+@register_command
+class ExecUntilRegionChangeCommand(ExecUntilCommand):
+    """Execute until different region."""
+
+    _cmdline_ = "exec-until region-change"
+    _category_ = "01-d. Debugging Support - Execution"
+    _repeat_ = True
+    _aliases_ = ["next-region-change"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-I", "--print-insn", action="store_true", help="print each instruction during execution.")
+    parser.add_argument("-n", "--use-ni", action="store_true", help="use `ni` instead of `si`.")
+    parser.add_argument("-e", "--exclude", action="append", type=AddressUtil.parse_address, default=[],
+                        help="the address to exclude from breakpoints.")
+    _syntax_ = parser.format_help()
+    _example_ = None
+
+    def __init__(self):
+        super().__init__(prefix=False)
+        return
+
+    def is_target_insn(self, insn):
+        if self.initial_map_start <= insn.address < self.initial_map_end:
+            return False
+        return True
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
+    def do_invoke(self, args):
+        self.args.skip_lib = False
+
+        start_range = ProcessMap.lookup_address(current_arch.pc)
+        if not start_range.valid:
+            err("Invalid address")
+            return
+        self.initial_map_start = start_range.section.page_start
+        self.initial_map_end = start_range.section.page_end
 
         self.exec_next()
         return

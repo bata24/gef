@@ -609,6 +609,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - user-code
         - libc-code
         - secure-world
+        - region-change
     - ![](images/exec-until.png)
 - `call-trace`: traces call, ret, and syscall instructions.
     - ![](images/call-trace.png)
