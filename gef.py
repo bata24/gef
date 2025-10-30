@@ -25499,31 +25499,6 @@ class KernelChecksecCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @staticmethod
-    def get_slab_type():
-        # Cases where ksymaddr-remote is not working properly
-        if not Symbol.get_ksymaddr("commit_creds"):
-            return "Unknown"
-
-        if gdb.execute("ksymaddr-remote --quiet --no-pager slub_", to_string=True):
-            kversion = Kernel.kernel_version()
-            if kversion < "6.2":
-                return "SLUB"
-            else:
-                # care for both deactivate_slab and deactivate_slab.cold
-                if gdb.execute("ksymaddr-remote --quiet --no-pager deactivate_slab", to_string=True):
-                    return "SLUB"
-                else:
-                    return "SLUB_TINY"
-
-        # care for both cache_reap and cache_reap.cold
-        if gdb.execute("ksymaddr-remote --quiet --no-pager cache_reap", to_string=True):
-            return "SLAB"
-
-        if gdb.execute("ksymaddr-remote --quiet --no-pager slob_", to_string=True):
-            return "SLOB"
-        return "Unknown"
-
     def check_basic_information(self):
         kcmdline = Kernel.kernel_cmdline()
         if kcmdline is None or kcmdline.cmdline is None:
@@ -26658,7 +26633,7 @@ class KernelChecksecCommand(GenericCommand):
         self.check_secure_world()
 
         gef_print(titlify("Allocator"))
-        allocator = KernelChecksecCommand.get_slab_type()
+        allocator = Kernel.get_slab_type()
         gef_print("{:<40s}: {:s}".format("Allocator", allocator))
         if allocator == "SLUB":
             self.check_CONFIG_SLAB_FREELIST_HARDENED()
@@ -54975,7 +54950,7 @@ class KernelAddressHeuristicFinder:
                 return min_page
 
             # plan 3 (from slub-dump / slub-tiny-dump)
-            allocator = KernelChecksecCommand.get_slab_type()
+            allocator = Kernel.get_slab_type()
             if allocator in ["SLUB", "SLUB_TINY"]:
                 command = {"SLUB": "slub-dump --node", "SLUB_TINY": "slub-tiny-dump"}[allocator]
                 for n in [8, 16, 32, 64, 96, 128, 192, 256, 512]:
@@ -57486,6 +57461,88 @@ class Kernel:
             return int(res.split()[1], 16)
         except (gdb.error, IndexError, ValueError):
             return None
+
+    @staticmethod
+    @Cache.cache_this_session
+    def get_slab_type():
+        # Cases where ksymaddr-remote is not working properly
+        if not Symbol.get_ksymaddr("commit_creds"):
+            return "Unknown"
+
+        if gdb.execute("ksymaddr-remote --quiet --no-pager slub_", to_string=True):
+            kversion = Kernel.kernel_version()
+            if kversion < "6.2":
+                return "SLUB"
+            else:
+                # care for both deactivate_slab and deactivate_slab.cold
+                if gdb.execute("ksymaddr-remote --quiet --no-pager deactivate_slab", to_string=True):
+                    return "SLUB"
+                else:
+                    return "SLUB_TINY"
+
+        # care for both cache_reap and cache_reap.cold
+        if gdb.execute("ksymaddr-remote --quiet --no-pager cache_reap", to_string=True):
+            return "SLAB"
+
+        if gdb.execute("ksymaddr-remote --quiet --no-pager slob_", to_string=True):
+            return "SLOB"
+        return "Unknown"
+
+    @staticmethod
+    @Cache.cache_this_session
+    def get_page_virt_pair():
+        allocator = Kernel.get_slab_type()
+
+        if allocator in ["SLUB", "SLUB_TINY"]:
+            # get valid page and vaddr pair
+            command = {"SLUB": "slub-dump --node", "SLUB_TINY": "slub-tiny-dump"}[allocator]
+            for n in [256, 512, 128, 64, 32]: # 256 is most likely
+                # this function calls slub-dump, but it called from slub-dump itself.
+                # * get_page_virt_pair
+                #   -> slub-dump    <-- first
+                #     -> page2virt
+                #       -> get_VMEMMAP_START
+                #         -> get_page_virt_pair
+                #           -> slub-dump    <-- recursively
+                # To avoid infinite recursion, must add the `--skip-page2virt` option
+                # when calling slub-dump from page2virt.
+                ret = gdb.execute("{:s} --simple --no-pager --quiet --skip-page2virt kmalloc-{:d}".format(
+                    command, n,
+                ), to_string=True)
+                r1 = re.findall(r"(?:active|partial|node) page: (0x\S\S+)", Color.remove_color(ret))
+                r2 = re.findall(r"virtual address: (0x\S+|\?\?\?)", Color.remove_color(ret))
+                valid_pairs = [(p, v) for p, v in zip(r1, r2) if v != "???"]
+                if valid_pairs:
+                    page = int(valid_pairs[0][0], 16)
+                    vaddr = int(valid_pairs[0][1], 16)
+                    break
+            else:
+                return False
+
+        elif allocator == "SLAB":
+            # get valid page and vaddr pair
+            ret = gdb.execute("slab-dump --simple --cpu 0 --no-pager --quiet kmalloc-256", to_string=True)
+            r1 = re.search(r"node\[\d+\]\.slabs_(?:partial|full): (0x\S+)", Color.remove_color(ret))
+            r2 = re.search(r"virtual address \(s_mem & ~0xfff\): (0x\S+)", Color.remove_color(ret))
+            if not r1 or not r2:
+                return False
+            page = int(r1.group(1), 16)
+            vaddr = int(r2.group(1), 16)
+
+        elif allocator == "SLOB":
+            # get valid page and vaddr pair
+            ret = gdb.execute("slob-dump --simple --large --no-pager --quiet", to_string=True)
+            r1 = re.search(r"page: (0x\S+)", Color.remove_color(ret))
+            r2 = re.search(r"virtual address: (0x\S+)", Color.remove_color(ret))
+            if not r1 or not r2:
+                return False
+            page = int(r1.group(1), 16)
+            vaddr = int(r2.group(1), 16)
+
+        else:
+            return False
+
+        return page, vaddr
 
     @staticmethod
     @Cache.cache_until_next
@@ -61732,7 +61789,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         return
 
     def get_bdev_list(self):
-        allocator = KernelChecksecCommand.get_slab_type()
+        allocator = Kernel.get_slab_type()
         if allocator == "SLUB":
             ret = gdb.execute("slub-dump --quiet --no-pager -vv bdev_cache", to_string=True)
         elif allocator == "SLUB_TINY":
@@ -72962,7 +73019,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     # self.args will be overwritten. this is workaround.
                     self.args = args # revert
 
-        allocator = KernelChecksecCommand.get_slab_type()
+        allocator = Kernel.get_slab_type()
         if allocator != "SLUB":
             self.quiet_err("Unsupported SLAB, SLOB, SLUB_TINY")
             return
@@ -73675,7 +73732,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
                     # self.args will be overwritten. this is workaround.
                     self.args = args # revert
 
-        allocator = KernelChecksecCommand.get_slab_type()
+        allocator = Kernel.get_slab_type()
         if allocator != "SLUB_TINY":
             self.quiet_err("Unsupported SLUB, SLAB, SLOB")
             return
@@ -74493,7 +74550,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
-        allocator = KernelChecksecCommand.get_slab_type()
+        allocator = Kernel.get_slab_type()
         if allocator != "SLAB":
             self.quiet_err("Unsupported SLUB, SLOB, SLUB_TINY")
             return
@@ -74875,7 +74932,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
-        allocator = KernelChecksecCommand.get_slab_type()
+        allocator = Kernel.get_slab_type()
         if allocator != "SLOB":
             self.quiet_err("Unsupported SLUB, SLAB, SLUB_TINY")
             return
@@ -75068,7 +75125,7 @@ class SlabContainsCommand(GenericCommand):
             self.initialized = False
 
         if not hasattr(self, "allocator"):
-            self.allocator = KernelChecksecCommand.get_slab_type()
+            self.allocator = Kernel.get_slab_type()
 
         if self.allocator not in ["SLUB", "SLUB_TINY", "SLAB"]:
             self.quiet_err("Unsupported SLOB")
@@ -76263,7 +76320,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
-        allocator = KernelChecksecCommand.get_slab_type()
+        allocator = Kernel.get_slab_type()
         if allocator not in ["SLUB", "SLUB_TINY", "SLAB"]:
             err("Unsupported SLOB")
             return
@@ -95938,7 +95995,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_each_slab(self):
-        allocator = KernelChecksecCommand.get_slab_type()
+        allocator = Kernel.get_slab_type()
         if allocator == "SLUB":
             self.resolve_slub()
         elif allocator == "SLUB_TINY":
@@ -96235,60 +96292,6 @@ class PageCommand(GenericCommand):
         # finally, look for possible values for given prefix
         return [s for s in self.modes if s and s.startswith(text.strip())]
 
-    def get_page_virt_pair(self):
-        allocator = KernelChecksecCommand.get_slab_type()
-
-        if allocator in ["SLUB", "SLUB_TINY"]:
-            # get valid page and vaddr pair
-            command = {"SLUB": "slub-dump --node", "SLUB_TINY": "slub-tiny-dump"}[allocator]
-            for n in [8, 16, 32, 64, 96, 128, 192, 256, 512]:
-                # this page2virt command is called from slub-dump itself.
-                # * slub-dump (not --skip-page2virt)
-                #   -> page2virt
-                #     -> get_VMEMMAP_START
-                #       -> slub-dump --skip-page2virt
-                #     -> calculates sizeof_struct_page
-                #       -> slub-dump --skip-page2virt
-                # To avoid infinite recursion, must add the `--skip-page2virt` option
-                # when calling slub-dump from page2virt.
-                ret = gdb.execute("{:s} --simple --no-pager --quiet --skip-page2virt kmalloc-{:d}".format(
-                    command, n,
-                ), to_string=True)
-                r1 = re.findall(r"(?:active|partial|node) page: (0x\S\S+)", Color.remove_color(ret))
-                r2 = re.findall(r"virtual address: (0x\S+|\?\?\?)", Color.remove_color(ret))
-                valid_pairs = [(p, v) for p, v in zip(r1, r2) if v != "???"]
-                if valid_pairs:
-                    page = int(valid_pairs[0][0], 16)
-                    vaddr = int(valid_pairs[0][1], 16)
-                    break
-            else:
-                return False
-
-        elif allocator == "SLAB":
-            # get valid page and vaddr pair
-            ret = gdb.execute("slab-dump --simple --cpu 0 --no-pager --quiet kmalloc-256", to_string=True)
-            r1 = re.search(r"node\[\d+\]\.slabs_(?:partial|full): (0x\S+)", Color.remove_color(ret))
-            r2 = re.search(r"virtual address \(s_mem & ~0xfff\): (0x\S+)", Color.remove_color(ret))
-            if not r1 or not r2:
-                return False
-            page = int(r1.group(1), 16)
-            vaddr = int(r2.group(1), 16)
-
-        elif allocator == "SLOB":
-            # get valid page and vaddr pair
-            ret = gdb.execute("slob-dump --simple --large --no-pager --quiet", to_string=True)
-            r1 = re.search(r"page: (0x\S+)", Color.remove_color(ret))
-            r2 = re.search(r"virtual address: (0x\S+)", Color.remove_color(ret))
-            if not r1 or not r2:
-                return False
-            page = int(r1.group(1), 16)
-            vaddr = int(r2.group(1), 16)
-
-        else:
-            return False
-
-        return page, vaddr
-
     def initialize(self):
         if hasattr(self, "initialized") and self.initialized:
             return True
@@ -96315,7 +96318,7 @@ class PageCommand(GenericCommand):
 
             self.START_KERNEL_map = 0xffff_ffff_8000_0000
 
-            ret = self.get_page_virt_pair()
+            ret = Kernel.get_page_virt_pair()
             if not ret:
                 err("Not found valid page/vaddr pair")
                 return False
@@ -96356,7 +96359,7 @@ class PageCommand(GenericCommand):
                 self.mode = "FLATMEM"
 
                 # calc sizeof(struct page)
-                ret = self.get_page_virt_pair()
+                ret = Kernel.get_page_virt_pair()
                 if not ret:
                     err("Not found valid page/vaddr pair")
                     return False
@@ -96399,7 +96402,7 @@ class PageCommand(GenericCommand):
                     self.sizeof_mem_section = current_arch.ptrsize * 2 # CONFIG_PAGE_EXTENSION=n
 
                 # calc sizeof(struct page)
-                ret = self.get_page_virt_pair()
+                ret = Kernel.get_page_virt_pair()
                 if not ret:
                     err("Not found valid page/vaddr pair")
                     return False
@@ -96448,7 +96451,7 @@ class PageCommand(GenericCommand):
                 return False
 
             # calc sizeof(struct page)
-            ret = self.get_page_virt_pair()
+            ret = Kernel.get_page_virt_pair()
             if not ret:
                 err("Not found valid page/vaddr pair")
                 return False
@@ -99113,7 +99116,7 @@ class KmallocTracerCommand(GenericCommand):
             err("Unsupported before v3.0")
             return
 
-        allocator = KernelChecksecCommand.get_slab_type()
+        allocator = Kernel.get_slab_type()
         if allocator != "SLUB":
             warn("Unsupported viewing detailed information for SLAB, SLOB, SLUB_TINY")
             # fall through
@@ -100513,7 +100516,7 @@ class KmallocAllocatedByCommand(GenericCommand):
             err("Unsupported before v3.0")
             return
 
-        allocator = KernelChecksecCommand.get_slab_type()
+        allocator = Kernel.get_slab_type()
         if allocator != "SLUB":
             warn("Unsupported viewing detailed information for SLAB, SLOB, SLUB_TINY")
             # fall through
