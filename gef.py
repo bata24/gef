@@ -53768,15 +53768,15 @@ class KernelAddressHeuristicFinder:
 
     USE_DIRECTLY = True # for debug
     USE_KSYSCTL = True # for debug
-    CONSTS = {}
+    CONSTS = None
 
     @staticmethod
-    def consts_arm64():
-        r = KernelAddressHeuristicFinder.CONSTS.get("arm64", None)
-        if r:
-            return r
-        KernelAddressHeuristicFinder.CONSTS["arm64"] = KernelConstsArm64()
-        return KernelAddressHeuristicFinder.CONSTS["arm64"]
+    def consts():
+        if KernelAddressHeuristicFinder.CONSTS:
+            return KernelAddressHeuristicFinder.CONSTS
+        if is_arm64():
+            KernelAddressHeuristicFinder.CONSTS = KernelConstsArm64()
+        return KernelAddressHeuristicFinder.CONSTS
 
     @staticmethod
     @switch_to_intel_syntax
@@ -54819,7 +54819,7 @@ class KernelAddressHeuristicFinder:
                 return page_offset_base_raw
 
         elif is_arm64():
-            return KernelAddressHeuristicFinder.consts_arm64().PAGE_OFFSET
+            return KernelAddressHeuristicFinder.consts().PAGE_OFFSET
 
         return None
 
@@ -54844,7 +54844,7 @@ class KernelAddressHeuristicFinder:
             return min(PAGE_OFFSET_END, VMALLOC_START)
 
         elif is_arm64():
-            return KernelAddressHeuristicFinder.consts_arm64().PAGE_OFFSET_END
+            return KernelAddressHeuristicFinder.consts().PAGE_OFFSET_END
 
         return None
 
@@ -54871,7 +54871,7 @@ class KernelAddressHeuristicFinder:
                 return read_int_from_memory(vmalloc_base)
 
         if is_arm64():
-            return KernelAddressHeuristicFinder.consts_arm64().VMALLOC_START
+            return KernelAddressHeuristicFinder.consts().VMALLOC_START
 
         # plan 4 (from vmalloc-dump)
         if kversion and kversion >= "5.2":
@@ -54942,7 +54942,7 @@ class KernelAddressHeuristicFinder:
                 return vmalloc_start + 0x0000_2000_0000_0000 # 32TB
 
         elif is_arm64():
-            return KernelAddressHeuristicFinder.consts_arm64().VMALLOC_END
+            return KernelAddressHeuristicFinder.consts().VMALLOC_END
 
         return None
 
@@ -55005,7 +55005,7 @@ class KernelAddressHeuristicFinder:
                     return min_page & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
 
         elif is_arm64():
-            return KernelAddressHeuristicFinder.consts_arm64().VMEMMAP_START
+            return KernelAddressHeuristicFinder.consts().VMEMMAP_START
 
         return None
 
@@ -55024,7 +55024,7 @@ class KernelAddressHeuristicFinder:
                 return vmemmap_start + 0x0000_0100_0000_0000 # 1TB
 
         elif is_arm64():
-            return KernelAddressHeuristicFinder.consts_arm64().VMEMMAP_END
+            return KernelAddressHeuristicFinder.consts().VMEMMAP_END
 
         return None
 
@@ -95632,8 +95632,8 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         self.quiet_info("resolve pci")
 
         if is_arm64():
-            PCI_IO_START = KernelAddressHeuristicFinder.consts_arm64().PCI_IO_START
-            PCI_IO_END = KernelAddressHeuristicFinder.consts_arm64().PCI_IO_END
+            PCI_IO_START = KernelAddressHeuristicFinder.consts().PCI_IO_START
+            PCI_IO_END = KernelAddressHeuristicFinder.consts().PCI_IO_END
             if PCI_IO_START and PCI_IO_END:
                 self.insert_region_range(PCI_IO_START, PCI_IO_END, "pci")
 
@@ -96422,7 +96422,7 @@ class PageCommand(GenericCommand):
             # CONFIG_SPARSEMEM_VMEMMAP
             self.VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
             self.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
-            self.sizeof_struct_page = KernelAddressHeuristicFinder.consts_arm64().sizeof_struct_page
+            self.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
 
         elif is_arm32():
             # calc PAGE_OFFSET
