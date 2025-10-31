@@ -57879,6 +57879,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                         help="print namespaces for each user process.")
     parser.add_argument("-u", "--user-process-only", action="store_true",
                         help="display user-land process (+ thread) only.")
+    parser.add_argument("--init-task", type=AddressUtil.parse_address,
+                        help="specifies the address of init_task.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
@@ -60024,7 +60026,10 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         kversion = Kernel.kernel_version()
 
         # init_task
-        init_task = KernelAddressHeuristicFinder.get_init_task()
+        if self.args.init_task is not None:
+            init_task = self.args.init_task
+        else:
+            init_task = KernelAddressHeuristicFinder.get_init_task()
         if init_task is None:
             self.quiet_err("Not found init_task")
             return False
