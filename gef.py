@@ -56243,11 +56243,49 @@ class KernelAddressHeuristicFinder:
                     # TODO
                     g = []
                 for x in g:
+                    """
+                    node_data[]: 0xffffdfab1c1be0b8
+
+                    gef> telescope 0xffffdfab1c1be0b8
+                    0xffffdfab1c1be0b8|+0x0000|+000: 0xffff00007fbf09c0  ->  0x0000000000001600
+                    0xffffdfab1c1be0c0|+0x0008|+001: 0x0000000000000000
+                    0xffffdfab1c1be0c8|+0x0010|+002: 0x0000000000000000
+
+                    gef> telescope 0xffff00007fbf09c0
+                    0xffff00007fbf09c0|+0x0000|+000: 0x0000000000001600
+                    0xffff00007fbf09c8|+0x0008|+001: 0x0000000000001b80
+                    0xffff00007fbf09d0|+0x0010|+002: 0x0000000000002100
+                    0xffff00007fbf09d8|+0x0018|+003: 0x0000000000002680
+                    0xffff00007fbf09e0|+0x0020|+004: 0x0000000000000000
+                    0xffff00007fbf09e8|+0x0028|+005: 0x0000000000000000
+                    0xffff00007fbf09f0|+0x0030|+006: 0x0000000000000000
+                    0xffff00007fbf09f8|+0x0038|+007: 0x0000000000000000
+                    0xffff00007fbf0a00|+0x0040|+008: 0x0000000000000000
+                    0xffff00007fbf0a08|+0x0048|+009: 0x0000000000000000
+                    0xffff00007fbf0a10|+0x0050|+010: 0x0000000000000000
+                    0xffff00007fbf0a18|+0x0058|+011: 0xffff00007fbf09c0  ->  0x0000000000001600
+                    0xffff00007fbf0a20|+0x0060|+012: 0xffffdfab1ba8a540
+                    0xffff00007fbf0a28|+0x0068|+013: 0xffffdfab1ba8a4e0
+                    0xffff00007fbf0a30|+0x0070|+014: 0x0000003f000006e0
+                    0xffff00007fbf0a38|+0x0078|+015: 0x0000000000040000
+                    0xffff00007fbf0a40|+0x0080|+016: 0x0000000000077153
+                    0xffff00007fbf0a48|+0x0088|+017: 0x0000000000080000
+                    0xffff00007fbf0a50|+0x0090|+018: 0x0000000000080000
+                    0xffff00007fbf0a58|+0x0098|+019: 0x0000000000080000
+                    0xffff00007fbf0a60|+0x00a0|+020: 0x0000000000002000
+                    0xffff00007fbf0a68|+0x00a8|+021: 0xffffdfab1b792690  ->  0x0000000000414d44 ('DMA'?)
+                    """
                     v = read_int_from_memory(x)
-                    if v and not is_valid_addr(v):
+                    if not v or not is_valid_addr(v):
                         continue
-                    if x in [v, v + current_arch.ptrsize]:
+                    # avoid false positive
+                    if is_double_link_list(x):
                         continue
+                    # avoid false positive
+                    water_mark0 = read_int_from_memory(v)
+                    if water_mark0 > 0x0000_1000_0000_0000:
+                        continue
+                    # ok
                     return x
         return None
 
@@ -56271,7 +56309,10 @@ class KernelAddressHeuristicFinder:
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
-                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)
+                    )
                 for x in g:
                     v = read_int_from_memory(x)
                     if v and is_valid_addr(v):
@@ -75273,8 +75314,18 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             ...
         };
 
-        struct zone { // v3.12~
-            ...
+        struct zone { // v3.12, v3.14~
+            unsigned long _watermark[NR_WMARK]; // v5.0~
+            unsigned long watermark_boost; // v5.0~
+            unsigned long watermark[NR_WMARK]; // ~v4.20
+            unsigned long nr_reserved_highatomic; // v4.4~
+            unsigned long nr_free_highatomic; // v6.12~
+            long lowmem_reserve[MAX_NR_ZONES];
+        #ifdef CONFIG_NEED_MULTIPLE_NODES // v5.10
+        #ifdef CONFIG_NUMA // ~v5.9, v5.11~
+            int node;
+        #endif
+            unsigned int inactive_ratio; // ~v4.7
             struct pglist_data *zone_pgdat;
             struct per_cpu_pageset __percpu *pageset; // ~v5.13
             struct per_cpu_pages __percpu *per_cpu_pageset; // v5.14~
@@ -75297,7 +75348,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             ...
         };
 
-        struct zone { // ~v3.11
+        struct zone { // ~v3.11, v3.13
             unsigned long watermark[NR_WMARK];
             unsigned long percpu_drift_mark;
             unsigned long lowmem_reserve[MAX_NR_ZONES];
