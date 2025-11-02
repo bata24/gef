@@ -53299,17 +53299,17 @@ class KernelConstsX86(KernelConstsBase):
 
     @property
     def high_memory(self):
-        if hasattr(self, "hm"):
-            return self.hm
+        if hasattr(self, "cached_high_memory"):
+            return self.cached_high_memory
 
         max_hm = AddressUtil.align_address(-128 << 20)
         vmalloc_start = KernelAddressHeuristicFinder._get_VMALLOC_START()
         if vmalloc_start is None:
-            self.hm = max_hm
+            self.cached_high_memory = max_hm
         else:
             real_hm = vmalloc_start - self.VMALLOC_OFFSET
-            self.hm = min(real_hm, max_hm)
-        return self.hm
+            self.cached_high_memory = min(real_hm, max_hm)
+        return self.cached_high_memory
 
     @property
     def __FIXADDR_TOP(self):
