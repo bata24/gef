@@ -318,6 +318,24 @@ class DisplayHook:
             f += "\n" + I1(idt) + "})"
             return f
 
+        elif name == "Kinfo":
+            f = "Kinfo(\n"
+            f += I1(idt + 1) + "text_base=" + DisplayHook.pp(o.text_base, 0) + ", "
+            f += "text_size=" + DisplayHook.pp(o.text_size, 0) + ", "
+            f += "text_end=" + DisplayHook.pp(o.text_end, 0) + ",\n"
+            f += I1(idt + 1) + "ro_base=" + DisplayHook.pp(o.ro_base, 0) + ", "
+            f += "ro_size=" + DisplayHook.pp(o.ro_size, 0) + ", "
+            f += "ro_end=" + DisplayHook.pp(o.ro_end, 0) + ",\n"
+            f += I1(idt + 1) + "rw_base=" + DisplayHook.pp(o.rw_base, 0) + ", "
+            f += "rw_size=" + DisplayHook.pp(o.rw_size, 0) + ", "
+            f += "rw_end=" + DisplayHook.pp(o.rw_end, 0) + ",\n"
+            f += I1(idt + 1) + "rwx=" + DisplayHook.pp(o.rwx, 0) + ", "
+            f += "has_none=" + DisplayHook.pp(o.has_none, 0) + ", "
+            f += "maps=[\n"
+            f += "\n".join(R2(o.maps, idt + 1))
+            f += "\n" + I1(idt + 1) + "]\n" + I1(idt) + ")"
+            return f
+
         elif name == "Entry":
             f = "Entry(\n"
             f += I2(idt) + "nr={:#x},\n".format(o.nr)
