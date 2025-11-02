@@ -55752,13 +55752,21 @@ class KernelAddressHeuristicFinder:
         if kversion and kversion < "6.9":
             res = gdb.execute("vmalloc-dump --quiet --no-pager --only-used", to_string=True)
             """
-            [vmalloc-dump]
+            [vmalloc-dump; x64]
             #    state  virtual address                       size               flags
             0    in-use 0xffffa1c040000000-0xffffa1c040002000 0x2000             VM_IOREMAP
 
-            [pagewalk]
+            [pagewalk; x64]
             0xffff9927bfe00000-0xffff9927bffe0000 0x1e0000 0x1000 480 [RW- KERN ACCESSED DIRTY]
             0xffffa1c040000000-0xffffa1c040001000 0x1000   0x1000 1   [RW- KERN ACCESSED DIRTY]
+
+            [vmalloc-dump; x86]
+            #    state  virtual address                       size               flags
+            0    in-use 0x00000000e07e0000-0x00000000e07e2000 0x2000             VM_IOREMAP
+
+            [pagewalk; x86]
+            0x00000000c1b83000-0x00000000dffe0000 - 0x1e45d000 - - [RWX KERN]
+            0x00000000e07e0000-0x00000000e07e1000 - 0x1000     - - [RWX KERN]
             """
             if res:
                 res = Color.remove_color(res)
@@ -55768,6 +55776,7 @@ class KernelAddressHeuristicFinder:
                     s, _ = vrange.split("-")
                     s = int(s, 16)
 
+                    # continuity check
                     kinfo = Kernel.get_kernel_base()
                     prev = None
                     for vstart, _, _ in kinfo.maps:
@@ -55776,10 +55785,16 @@ class KernelAddressHeuristicFinder:
                         prev = vstart
 
                     if prev is not None:
-                        mask = 0xffff_ff00_0000_0000
-                        if (prev & mask) != (s & mask):
-                            if (s & 0xfff_ffff) == 0:
-                                return s
+                        if is_64bit():
+                            mask = 0xffff_ff00_0000_0000
+                            if (prev & mask) != (s & mask):
+                                if (s & 0x0fff_ffff) == 0:
+                                    return s
+                        else:
+                            mask = 0xff00_0000
+                            if (prev & mask) != (s & mask):
+                                if (s & 0x0fff) == 0:
+                                    return s
                     else:
                         return s
         return None
@@ -57304,11 +57319,11 @@ class KernelAddressHeuristicFinder:
                     """
                     x86 or x64
 
-                    [~v5.1]
+                    [~v5.1] mm/vmalloc.c
                     vmap_notify_list     # rarely leads to long lists
                     vmap_area_list       <- here
 
-                    [v5.2~v6.8]
+                    [v5.2~v6.8] mm/vmalloc.c
                     vmap_notify_list     # rarely leads to long lists
                     free_vmap_area_list  <- here (false positive)
                     vmap_area_list       <- here
@@ -57320,7 +57335,7 @@ class KernelAddressHeuristicFinder:
                     """
                     arm32 or arm64
 
-                    [~v6.8]
+                    [~v6.8] mm/vmalloc.c
                     vmap_notify_list     # rarely leads to long lists
                     vmap_area_list       <- here
                     free_vmap_area_list
@@ -57337,7 +57352,7 @@ class KernelAddressHeuristicFinder:
                         count = 1
                     for i in range(16):
                         a = x + current_arch.ptrsize * i
-                        if is_double_link_list(a, min_len=10):
+                        if is_double_link_list(a, min_len=5):
                             count -= 1
                         if count == 0:
                             return a
@@ -57423,12 +57438,12 @@ class KernelAddressHeuristicFinder:
                 """
                 x86 or x64
 
-                [v5.2~v6.8]
+                [v5.2~v6.8] mm/vmalloc.c
                 vmap_notify_list     # rarely leads to long lists
                 free_vmap_area_list  <- here
                 vmap_area_list
 
-                [v6.9~]
+                [v6.9~] mm/vmalloc.c
                 vmap_notify_list     # rarely leads to long lists
                 free_vmap_area_list  <- here
                 """
@@ -57439,12 +57454,12 @@ class KernelAddressHeuristicFinder:
                 """
                 arm32 or arm64
 
-                [v5.2~v6.8]
+                [v5.2~v6.8] mm/vmalloc.c
                 vmap_notify_list     # rarely leads to long lists
                 vmap_area_list       <- here (false positive)
                 free_vmap_area_list  <- here
 
-                [v6.9~]
+                [v6.9~] mm/vmalloc.c
                 vmap_notify_list     # rarely leads to long lists
                 free_vmap_area_list  <- here
                 """
@@ -57460,7 +57475,7 @@ class KernelAddressHeuristicFinder:
                     count = 1
                 for i in range(16):
                     a = x + current_arch.ptrsize * i
-                    if is_double_link_list(a, min_len=10):
+                    if is_double_link_list(a, min_len=3):
                         count -= 1
                     if count == 0:
                         return a
