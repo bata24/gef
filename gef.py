@@ -50427,42 +50427,37 @@ class KernelMagicCommand(GenericCommand):
             self.resolve_and_print_kernel(
                 "TSS base (fixed address?)", None, maps, KernelAddressHeuristicFinder.get_tss_base,
             )
-        if is_x86_64() or is_x86_32() or is_arm64():
-            gef_print(titlify("Memory base"))
+        gef_print(titlify("Memory base"))
+        self.resolve_and_print_kernel(
+            "PAGE_OFFSET (physmem direct map)", None, maps, KernelAddressHeuristicFinder.get_PAGE_OFFSET,
+        )
+        self.resolve_and_print_kernel(
+            "PAGE_OFFSET_END", None, maps, KernelAddressHeuristicFinder.get_PAGE_OFFSET_END,
+        )
+        self.resolve_and_print_kernel(
+            "VMALLOC_START", None, maps, KernelAddressHeuristicFinder.get_VMALLOC_START,
+        )
+        self.resolve_and_print_kernel(
+            "VMALLOC_END", None, maps, KernelAddressHeuristicFinder.get_VMALLOC_END,
+        )
+        if is_x86_64() or is_arm64():
             self.resolve_and_print_kernel(
-                "PAGE_OFFSET (physmem direct map)", None, maps, KernelAddressHeuristicFinder.get_PAGE_OFFSET,
+                "VMEMMAP_START (struct page[])", None, maps, KernelAddressHeuristicFinder.get_VMEMMAP_START,
             )
             self.resolve_and_print_kernel(
-                "PAGE_OFFSET_END", None, maps, KernelAddressHeuristicFinder.get_PAGE_OFFSET_END,
+                "VMEMMAP_END", None, maps, KernelAddressHeuristicFinder.get_VMEMMAP_END,
             )
+        if is_x86_64():
             self.resolve_and_print_kernel(
-                "VMALLOC_START", None, maps, KernelAddressHeuristicFinder.get_VMALLOC_START,
+                "phys_base (kbase@phys)", text_base, maps, KernelAddressHeuristicFinder.get_phys_base,
             )
-            self.resolve_and_print_kernel(
-                "VMALLOC_END", None, maps, KernelAddressHeuristicFinder.get_VMALLOC_END,
-            )
-            if is_x86_64() or is_arm64():
-                self.resolve_and_print_kernel(
-                    "VMEMMAP_START (struct page[])", None, maps, KernelAddressHeuristicFinder.get_VMEMMAP_START,
-                )
-                self.resolve_and_print_kernel(
-                    "VMEMMAP_END", None, maps, KernelAddressHeuristicFinder.get_VMEMMAP_END,
-                )
-            if is_x86_64():
-                self.resolve_and_print_kernel(
-                    "phys_base (kbase@phys)", text_base, maps, KernelAddressHeuristicFinder.get_phys_base,
-                )
-            if is_x86_32():
-                self.resolve_and_print_kernel(
-                    "mem_map (struct page[])", None, maps, KernelAddressHeuristicFinder.get_mem_map,
-                )
-                self.resolve_and_print_kernel(
-                    "mem_section", None, maps, KernelAddressHeuristicFinder.get_mem_section,
-                )
-        elif is_arm32():
-            gef_print(titlify("Memory base"))
+        if is_x86_32() or is_arm32():
             self.resolve_and_print_kernel(
                 "mem_map (struct page[])", None, maps, KernelAddressHeuristicFinder.get_mem_map,
+            )
+        if is_x86_32():
+            self.resolve_and_print_kernel(
+                "mem_section", None, maps, KernelAddressHeuristicFinder.get_mem_section,
             )
         return
 
@@ -53271,22 +53266,20 @@ class KernelConstsX86(KernelConstsBase):
 
     @property
     def CONFIG_PAGE_OFFSET(self):
-        if hasattr(self, "page_offset"):
-            return self.page_offset
+        if hasattr(self, "cached_PAGE_OFFSET"):
+            return self.cached_PAGE_OFFSET
         kern_min = Kernel.get_maps()[0][0]
         if 0xc000_0000 <= kern_min:
-            self.page_offset = 0xc000_0000 # VMSPLIT_3G
+            self.cached_PAGE_OFFSET = 0xc000_0000 # VMSPLIT_3G
         elif 0xb000_0000 <= kern_min:
-            self.page_offset = 0xb000_0000 # VMSPLIT_3G_OPT
+            self.cached_PAGE_OFFSET = 0xb000_0000 # VMSPLIT_3G_OPT
         elif 0x8000_0000 <= kern_min:
-            self.page_offset = 0x8000_0000 # VMSPLIT_2G
+            self.cached_PAGE_OFFSET = 0x8000_0000 # VMSPLIT_2G
         elif 0x7800_0000 <= kern_min:
-            self.page_offset = 0x7800_0000 # VMSPLIT_2G_OPT
+            self.cached_PAGE_OFFSET = 0x7800_0000 # VMSPLIT_2G_OPT
         elif 0x4000_0000 <= kern_min:
-            self.page_offset = 0x4000_0000 # VMSPLIT_1G
-        else:
-            raise
-        return self.page_offset
+            self.cached_PAGE_OFFSET = 0x4000_0000 # VMSPLIT_1G
+        return self.cached_PAGE_OFFSET
 
     @property
     def __PAGE_OFFSET(self):
@@ -53404,12 +53397,12 @@ class KernelConstsX86(KernelConstsBase):
     @property
     def CPU_ENTRY_AREA_SIZE(self):
         if "4.14" <= self.kversion:
-            if hasattr(self, "cpu_entry_area_size"):
-                return self.cpu_entry_area_size
+            if hasattr(self, "cached_CPU_ENTRY_AREA_SIZE"):
+                return self.cached_CPU_ENTRY_AREA_SIZE
 
             cpu_entry_area_size = KernelAddressHeuristicFinder.get_sizeof_cpu_entry_area()
             if cpu_entry_area_size:
-                self.cpu_entry_area_size = cpu_entry_area_size
+                self.cached_CPU_ENTRY_AREA_SIZE = cpu_entry_area_size
             return cpu_entry_area_size
         return None
 
@@ -54070,6 +54063,196 @@ class KernelConstsX64(KernelConstsBase):
         return None
 
 
+class KernelConstsArm32(KernelConstsBase):
+    """A class that manages arm32 constants by version."""
+
+    def __init__(self, version=None):
+        super().__init__(version)
+        return
+
+    @property
+    def CONFIG_PAGE_OFFSET(self):
+        if hasattr(self, "cached_PAGE_OFFSET"):
+            return self.cached_PAGE_OFFSET
+        kern_min = Kernel.get_maps()[0][0]
+        if 0xc000_0000 - 0x0100_0000 <= kern_min:
+            # 0xbf000000-0xc0000000 is kernel module area.
+            # Even if it is VMSPLIT_3G, this is used.
+            self.cached_PAGE_OFFSET = 0xc000_0000 # VMSPLIT_3G
+        elif 0xb000_0000 - 0x0100_0000 <= kern_min:
+            self.cached_PAGE_OFFSET = 0xb000_0000 # VMSPLIT_3G_OPT
+        elif 0x8000_0000 - 0x0100_0000 <= kern_min:
+            self.cached_PAGE_OFFSET = 0x8000_0000 # VMSPLIT_2G
+        elif 0x4000_0000 - 0x0100_0000 <= kern_min:
+            self.cached_PAGE_OFFSET = 0x4000_0000 # VMSPLIT_1G
+        return self.cached_PAGE_OFFSET
+
+    @property
+    def CONFIG_HIGHMEM(self):
+        addr = Symbol.get_ksymaddr("nr_free_highpages")
+        return bool(addr)
+
+    @property
+    def CONFIG_THUMB2_KERNEL(self):
+        if hasattr(self, "cached_CONFIG_THUMB2_KERNEL"):
+            return self.cached_CONFIG_THUMB2_KERNEL
+        if is_in_kernel():
+            self.cached_CONFIG_THUMB2_KERNEL = current_arch.is_thumb()
+            return self.cached_CONFIG_THUMB2_KERNEL
+        return None
+
+    @property
+    def sizeof_struct_page(self):
+        if hasattr(self, "cached_sizeof_struct_page"):
+            return self.cached_sizeof_struct_page
+
+        ret = Kernel.get_page_virt_pair()
+        if not ret:
+            return None
+        page, vaddr = ret
+        pfn = (vaddr - self.PAGE_OFFSET) >> self.PAGE_SHIFT
+        sizeof_struct_page_value = (page - self.mem_map) // pfn
+        if sizeof_struct_page_value == 0x3f: # occasionally the calculation may be off by one (why?)
+            sizeof_struct_page_value = 0x40
+        if sizeof_struct_page_value:
+            self.cached_sizeof_struct_page = sizeof_struct_page_value
+        return sizeof_struct_page_value
+
+    @property
+    def PMD_SHIFT(self):
+        return 21
+
+    @property
+    def PMD_SIZE(self):
+        return 1 << self.PMD_SHIFT
+
+    @property
+    def PAGE_OFFSET(self):
+        return self.CONFIG_PAGE_OFFSET
+
+    @property
+    def PAGE_OFFSET_END(self):
+        return self.high_memory
+
+    @property
+    def high_memory(self):
+        if hasattr(self, "cached_high_memory"):
+            return self.cached_high_memory
+
+        res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --disable-color")
+        res = sorted(set(res.splitlines()))
+        res = list(filter(lambda line: line.endswith("]"), res))
+        res = list(filter(lambda line: "[+]" not in line, res))
+        res = list(filter(lambda line: "*" not in line, res))
+
+        maps = []
+        for line in res:
+            line = line.split()
+            vaddr_start = int(line[0].split("-")[0], 16)
+            if vaddr_start < self.PAGE_OFFSET:
+                continue
+            dic = {
+                "vaddr_start": vaddr_start,
+                "vaddr_end": int(line[0].split("-")[1], 16),
+                "paddr_start": int(line[1].split("-")[0], 16),
+                "paddr_end": int(line[1].split("-")[1], 16),
+            }
+            Maps = collections.namedtuple("Maps", dic.keys())
+            maps.append(Maps(*dic.values()))
+
+        physmap = maps[0]
+        for m in maps[1:]:
+            if physmap.vaddr_end != m.vaddr_start:
+                break
+            if physmap.paddr_end != m.paddr_start:
+                break
+            physmap = m
+
+        self.cached_high_memory = physmap.vaddr_end
+        return self.cached_high_memory
+
+    @property
+    def MODULES_VADDR(self):
+        if "3.0" <= self.kversion < "3.8":
+            if not self.CONFIG_THUMB2_KERNEL:
+                return self.PAGE_OFFSET - 16 * 1024 * 1024
+            else:
+                return self.PAGE_OFFSET - 8 * 1024 * 1024
+        elif "3.8" <= self.kversion:
+            if not self.CONFIG_THUMB2_KERNEL:
+                return self.PAGE_OFFSET - self.SZ_16M
+            else:
+                return self.PAGE_OFFSET - self.SZ_8M
+        return None
+
+    @property
+    def MODULES_END(self):
+        if self.CONFIG_HIGHMEM:
+            return self.PAGE_OFFSET - self.PMD_SIZE
+        else:
+            return self.PAGE_OFFSET
+
+    @property
+    def VMALLOC_OFFSET(self):
+        return 8 * 1024 * 1024
+
+    @property
+    def VMALLOC_START(self):
+        return (self.high_memory + self.VMALLOC_OFFSET) & ~(self.VMALLOC_OFFSET - 1)
+
+    @property
+    def VMALLOC_END(self):
+        if "3.0" <= self.kversion < "3.3":
+            return self.FIXADDR_START
+        elif "3.3" <= self.kversion < "4.4":
+            return 0xff00_0000
+        elif "4.4" <= self.kversion:
+            return 0xff80_0000
+        return None
+
+    @property
+    def DTB_START(self):
+        if "5.10" <= self.kversion:
+            return 0xff80_0000
+        return None
+
+    @property
+    def DTB_END(self):
+        if "5.10" <= self.kversion:
+            return 0xffc0_0000
+        return None
+
+    @property
+    def FIXADDR_START(self):
+        if self.kversion < "3.16":
+            return 0xfff0_0000
+        elif self.kversion < "5.4":
+            return 0xffc0_0000
+        else:
+            return 0xffc8_0000
+
+    @property
+    def FIXADDR_TOP(self):
+        if self.kversion < "3.16":
+            return 0xfffe_0000
+        elif self.kversion < "3.19":
+            return 0xffe0_0000
+        else:
+            return 0xfff0_0000
+
+    @property
+    def FIXADDR_SIZE(self):
+        return self.FIXADDR_TOP - self.FIXADDR_START
+
+    @property
+    def RESERVED_START(self):
+        return 0xffff_1000
+
+    @property
+    def RESERVED_END(self):
+        return 0xffff_8000
+
+
 class KernelConstsArm64(KernelConstsBase):
     """A class that manages arm64 constants by version."""
 
@@ -54629,6 +54812,8 @@ class KernelAddressHeuristicFinder:
             KernelAddressHeuristicFinder.CONSTS = KernelConstsX86()
         elif is_arm64():
             KernelAddressHeuristicFinder.CONSTS = KernelConstsArm64()
+        elif is_arm32():
+            KernelAddressHeuristicFinder.CONSTS = KernelConstsArm32()
         return KernelAddressHeuristicFinder.CONSTS
 
     @staticmethod
@@ -55653,9 +55838,7 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @switch_to_intel_syntax
     def get_PAGE_OFFSET():
-        if is_x86_64() or is_x86_32() or is_arm64():
-            return KernelAddressHeuristicFinder.consts().PAGE_OFFSET
-        return None
+        return KernelAddressHeuristicFinder.consts().PAGE_OFFSET
 
     @staticmethod
     @switch_to_intel_syntax
@@ -55682,18 +55865,12 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @switch_to_intel_syntax
     def get_PAGE_OFFSET_END():
-        if is_x86_64() or is_x86_32() or is_arm64():
-            return KernelAddressHeuristicFinder.consts().PAGE_OFFSET_END
-        return None
+        return KernelAddressHeuristicFinder.consts().PAGE_OFFSET_END
 
     @staticmethod
     @switch_to_intel_syntax
     def get_VMALLOC_START():
-        if is_x86_64() or is_x86_32() or is_arm64():
-            return KernelAddressHeuristicFinder.consts().VMALLOC_START
-        elif is_arm32():
-            return KernelAddressHeuristicFinder._get_VMALLOC_START()
-        return None
+        return KernelAddressHeuristicFinder.consts().VMALLOC_START
 
     @staticmethod
     @switch_to_intel_syntax
@@ -55781,7 +55958,7 @@ class KernelAddressHeuristicFinder:
                     s, _ = vrange.split("-")
                     s = int(s, 16)
 
-                    # continuity check
+                    # incontinuity check
                     kinfo = Kernel.get_kernel_base()
                     prev = None
                     for vstart, _, _ in kinfo.maps:
@@ -55807,9 +55984,7 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @switch_to_intel_syntax
     def get_VMALLOC_END():
-        if is_x86_64() or is_x86_32() or is_arm64():
-            return KernelAddressHeuristicFinder.consts().VMALLOC_END
-        return None
+        return KernelAddressHeuristicFinder.consts().VMALLOC_END
 
     @staticmethod
     @switch_to_intel_syntax
@@ -58038,9 +58213,9 @@ class Kernel:
         elif is_arm32():
             for line in res:
                 line = line.split()
-                if line[5] != "[PL0/---":
-                    continue
                 vaddr = int(line[0].split("-")[0], 16)
+                if line[5] != "[PL0/---" and vaddr != 0xffff_0000:
+                    continue
                 size = int(line[2], 16)
                 perm = line[6][4:7] # PL1/xxx
                 maps.append([vaddr, size, perm])
@@ -96613,8 +96788,10 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         def is_userland(line, addr_start):
             if is_x86():
                 return "USER" in line
-            elif is_arm32() or is_arm64():
-                 # TODO: more suitable check for kernel address
+            elif is_arm32():
+                if "[PL0/---" not in line and addr_start != 0xffff_0000:
+                    return True
+            elif is_arm64():
                 return not AddressUtil.is_msb_on(addr_start)
             return False
 
@@ -96693,95 +96870,31 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
     def resolve_direct_map(self):
         self.quiet_info("resolve direct map")
 
-        if is_x86_64() or is_x86_32() or is_arm64():
-            PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
-            PAGE_OFFSET_END = KernelAddressHeuristicFinder.get_PAGE_OFFSET_END()
-            if PAGE_OFFSET and PAGE_OFFSET_END:
-                self.insert_region_range(PAGE_OFFSET, PAGE_OFFSET_END, "physmap")
-
-        elif is_arm32():
-            # TODO: FIX
-            # get start address
-            kern_min = Kernel.get_maps()[0][0]
-            if kern_min < 0x8000_0000:
-                PAGE_OFFSET = 0x4000_0000 # VMSPLIT_1G
-            elif kern_min < 0xb000_0000:
-                PAGE_OFFSET = 0x8000_0000 # VMSPLIT_2G
-            elif kern_min < 0xbf00_0000:
-                # 0xbf000000-0xc0000000 is kernel module area.
-                # Even if it is VMSPLIT_3G, this is used.
-                PAGE_OFFSET = 0xb000_0000 # VMSPLIT_3G_OPT
-            else:
-                PAGE_OFFSET = 0xc000_0000 # VMSPLIT_3G
-
-            # get end address
-            mem_map = KernelAddressHeuristicFinder.get_mem_map()
-            if mem_map is None:
-                return
-            mem_map &= gef_getpagesize_mask_high()
-            dir_map_end = mem_map - 8 * 1024 * 1024 # 8MB guard
-            self.insert_region_range(PAGE_OFFSET, dir_map_end, "physmap")
+        PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+        PAGE_OFFSET_END = KernelAddressHeuristicFinder.get_PAGE_OFFSET_END()
+        if PAGE_OFFSET and PAGE_OFFSET_END:
+            self.insert_region_range(PAGE_OFFSET, PAGE_OFFSET_END, "physmap")
         return
 
     def resolve_vmalloc(self):
         self.quiet_info("resolve vmalloc")
 
-        if is_x86_64() or is_x86_32() or is_arm64():
-            VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
-            VMALLOC_END = KernelAddressHeuristicFinder.get_VMALLOC_END()
-            if VMALLOC_END and VMALLOC_END:
-                self.insert_region_range(VMALLOC_START, VMALLOC_END, "vmalloc")
-
-        elif is_arm32():
-            # TODO: FIX
-            kversion = Kernel.kernel_version()
-            if kversion >= "5.2":
-                res = gdb.execute("vmalloc-dump --quiet --no-pager --only-freed", to_string=True)
-                lines = [Color.remove_color(line) for line in res.splitlines()]
-                if len(lines) > 3:
-                    """
-                    gef> vmalloc-dump --quiet --no-pager --only-freed
-                    #    state  virtual address                       size               flags
-                    0    freed  0x0000000000000001-0x00000000f77fe000 0xf77fdfff
-                    1    freed  0x00000000f7828000-0x00000000f782a000 0x2000
-                    2    freed  0x00000000f7834000-0x00000000f7835000 0x1000
-                    3    freed  0x00000000f783b000-0x00000000fefdf000 0x77a4000
-                    4    freed  0x00000000feffe000-0x00000000ffffffff 0x1001fff
-                    gef>
-                    """
-                    _, _, vrange, _, *_ = lines[1].split()
-                    vmalloc_start = int(vrange.split("-")[1], 16)
-                    _, _, vrange, _, *_ = lines[-1].split()
-                    vmalloc_end = int(vrange.split("-")[0], 16)
-                    self.insert_region_range(vmalloc_start, vmalloc_end, "vmalloc")
-            else:
-                res = gdb.execute("vmalloc-dump --quiet --no-pager --only-used", to_string=True)
-                lines = [Color.remove_color(line) for line in res.splitlines()]
-                if len(lines) > 3:
-                    """
-                    gef> vmalloc-dump --quiet --no-pager --only-used
-                    #    state  virtual address                       size               flags
-                    0    in-use 0x00000000bf000000-0x00000000bf003000 0x3000             VM_ALLOC
-                    39   in-use 0x00000000f6000000-0x00000000fa000000 0x4000000          VM_IOREMAP
-                    gef>
-                    """
-                    _, _, vrange, _, *_ = lines[1].split()
-                    vmalloc_start = int(vrange.split("-")[0], 16)
-                    _, _, vrange, _, *_ = lines[-1].split()
-                    vmalloc_end = int(vrange.split("-")[1], 16)
-                    self.insert_region_range(vmalloc_start, vmalloc_end, "vmalloc")
+        VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
+        VMALLOC_END = KernelAddressHeuristicFinder.get_VMALLOC_END()
+        if VMALLOC_END and VMALLOC_END:
+            self.insert_region_range(VMALLOC_START, VMALLOC_END, "vmalloc")
         return
 
     def resolve_vmemmap(self):
-        self.quiet_info("resolve page")
-
         if is_x86_64() or is_arm64():
+            self.quiet_info("resolve vmemmap")
             VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
             VMEMMAP_END = KernelAddressHeuristicFinder.get_VMEMMAP_END()
             if VMEMMAP_START and VMEMMAP_END:
                 self.insert_region_range(VMEMMAP_START, VMEMMAP_END, "vmemmap(=page[])")
 
         elif is_x86_32() or is_arm32():
+            self.quiet_info("resolve mem_map")
             # TODO: FIX
             mem_map = KernelAddressHeuristicFinder.get_mem_map()
             if mem_map is None:
@@ -96801,7 +96914,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_ldt(self):
-        if is_arm64() or is_arm32():
+        if not is_x86():
             return
 
         self.quiet_info("resolve ldt")
@@ -96809,23 +96922,19 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
             LDT_BASE_ADDR = KernelAddressHeuristicFinder.consts().LDT_BASE_ADDR
             LDT_END_ADDR = KernelAddressHeuristicFinder.consts().LDT_END_ADDR
             if LDT_BASE_ADDR and LDT_END_ADDR:
-                self.insert_region_range(LDT_BASE_ADDR, LDT_END_ADDR, "LDT")
+                self.insert_region_range(LDT_BASE_ADDR, LDT_END_ADDR, "ldt")
         return
 
     def resolve_module(self):
-        if is_arm64() or is_arm32():
-            return
-
         self.quiet_info("resolve module")
-        if is_x86_64() or is_x86_32():
-            MODULES_VADDR = KernelAddressHeuristicFinder.consts().MODULES_VADDR
-            MODULES_END = KernelAddressHeuristicFinder.consts().MODULES_END
-            if MODULES_VADDR and MODULES_END:
-                self.insert_region_range(MODULES_VADDR, MODULES_END, "modules")
+        MODULES_VADDR = KernelAddressHeuristicFinder.consts().MODULES_VADDR
+        MODULES_END = KernelAddressHeuristicFinder.consts().MODULES_END
+        if MODULES_VADDR and MODULES_END:
+            self.insert_region_range(MODULES_VADDR, MODULES_END, "modules")
         return
 
     def resolve_espfix(self):
-        if is_x86_32() or is_arm64() or is_arm32():
+        if not is_x86_64():
             return
 
         self.quiet_info("resolve espfix")
@@ -96837,7 +96946,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_cpu_entry(self):
-        if is_arm64() or is_arm32():
+        if not is_x86():
             return
 
         self.quiet_info("resolve cpu entry")
@@ -96849,7 +96958,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_efi(self):
-        if is_x86_32() or is_arm64() or is_arm32():
+        if not is_x86_64():
             return
 
         self.quiet_info("resolve efi")
@@ -96857,7 +96966,31 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
             EFI_VA_START = KernelAddressHeuristicFinder.consts().EFI_VA_START
             EFI_VA_END = KernelAddressHeuristicFinder.consts().EFI_VA_END
             if EFI_VA_START and EFI_VA_END:
-                self.insert_region_range(EFI_VA_START, EFI_VA_END, "EFI")
+                self.insert_region_range(EFI_VA_START, EFI_VA_END, "efi")
+        return
+
+    def resolve_dtb(self):
+        if not is_arm32():
+            return
+
+        self.quiet_info("resolve device tree blob")
+        if is_arm32():
+            DTB_START = KernelAddressHeuristicFinder.consts().DTB_START
+            DTB_END = KernelAddressHeuristicFinder.consts().DTB_END
+            if DTB_START and DTB_END:
+                self.insert_region_range(DTB_START, DTB_END, "dtb")
+        return
+
+    def resolve_reserved(self):
+        if not is_arm32():
+            return
+
+        self.quiet_info("resolve reserved")
+        if is_arm32():
+            RESERVED_START = KernelAddressHeuristicFinder.consts().RESERVED_START
+            RESERVED_END = KernelAddressHeuristicFinder.consts().RESERVED_END
+            if RESERVED_START and RESERVED_END:
+                self.insert_region_range(RESERVED_START, RESERVED_END, "reserved")
         return
 
     def resolve_fixmap(self):
@@ -96869,27 +97002,15 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         elif is_arm64():
             self.insert_region_range(0xffff_fbff_f000_0000, 0xffff_fbff_fe00_0000, "fixmap")
 
-        elif is_x86_32():
+        elif is_x86_32() or is_arm32():
             FIXADDR_START = KernelAddressHeuristicFinder.consts().FIXADDR_START
             FIXADDR_TOP = KernelAddressHeuristicFinder.consts().FIXADDR_TOP
             if FIXADDR_START and FIXADDR_TOP:
                 self.insert_region_range(FIXADDR_START, FIXADDR_TOP, "fixmap")
-
-        elif is_arm32():
-            # TODO: FIX
-            kversion = Kernel.kernel_version()
-            if kversion < "3.16":
-                self.insert_region_range(0xfff0_0000, 0xfffe_0000, "fixmap")
-            elif kversion < "3.19":
-                self.insert_region_range(0xffc0_0000, 0xffe0_0000, "fixmap")
-            elif kversion < "5.4":
-                self.insert_region_range(0xffc0_0000, 0xfff0_0000, "fixmap")
-            else:
-                self.insert_region_range(0xffc8_0000, 0xfff0_0000, "fixmap")
         return
 
     def resolve_vsyscall(self):
-        if is_x86_32() or is_arm64() or is_arm32():
+        if not is_x86_64():
             return
 
         self.quiet_info("resolve vsyscall")
@@ -96901,27 +97022,22 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_pci(self):
-        if is_x86_64() or is_x86_32():
+        if not is_arm64():
             return
 
         self.quiet_info("resolve pci")
-
         if is_arm64():
             PCI_IO_START = KernelAddressHeuristicFinder.consts().PCI_IO_START
             PCI_IO_END = KernelAddressHeuristicFinder.consts().PCI_IO_END
             if PCI_IO_START and PCI_IO_END:
                 self.insert_region_range(PCI_IO_START, PCI_IO_END, "pci")
-
-        elif is_arm32():
-            pass # TODO
         return
 
     def resolve_vector(self):
-        if is_x86_64() or is_x86_32() or is_arm64():
+        if not is_arm32():
             return
 
         self.quiet_info("resolve vector")
-
         if is_arm32():
             self.insert_region_range(0xffff_0000, 0xffff_1000, "vector")
         return
@@ -97398,6 +97514,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         self.resolve_cpu_entry()
         self.resolve_espfix()
         self.resolve_efi()
+        self.resolve_dtb()
         self.resolve_kbase()
         self.resolve_kstack()
         self.resolve_module()
@@ -97405,6 +97522,7 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         self.resolve_vsyscall()
         self.resolve_pci()
         self.resolve_vector()
+        self.resolve_reserved()
 
         self.resolve_device_physmem()
         self.resolve_buddy()
@@ -97637,40 +97755,35 @@ class PageCommand(GenericCommand):
         elif is_arm64():
             # CONFIG_SPARSEMEM_VMEMMAP
             self.VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
+            if self.VMEMMAP_START is None:
+                err("Not found VMEMMAP_START")
+                return False
+
             self.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+            if self.PAGE_OFFSET is None:
+                err("Not found PAGE_OFFSET")
+                return False
+
             self.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
+            if self.sizeof_struct_page is None:
+                err("Not found sizeof(struct page)")
+                return False
 
         elif is_arm32():
-            # calc PAGE_OFFSET
-            maps = Kernel.get_maps()
-            if not maps:
-                err("Not found maps")
+            self.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+            if self.PAGE_OFFSET is None:
+                err("Not found PAGE_OFFSET")
                 return False
-            kern_min = maps[0][0]
-            if kern_min < 0x8000_0000:
-                self.PAGE_OFFSET = 0x4000_0000 # VMSPLIT_1G
-            elif kern_min < 0xb000_0000:
-                self.PAGE_OFFSET = 0x8000_0000 # VMSPLIT_2G
-            elif kern_min < 0xbf00_0000:
-                # 0xbf000000-0xc0000000 is kernel module area.
-                # Even if it is VMSPLIT_3G, this is used.
-                self.PAGE_OFFSET = 0xb000_0000 # VMSPLIT_3G_OPT
-            else:
-                self.PAGE_OFFSET = 0xc000_0000 # VMSPLIT_3G
 
             self.mem_map = KernelAddressHeuristicFinder.get_mem_map()
             if self.mem_map is None:
                 err("Not found mem_map")
                 return False
 
-            # calc sizeof(struct page)
-            ret = Kernel.get_page_virt_pair()
-            if not ret:
-                err("Not found valid page/vaddr pair")
+            self.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
+            if self.sizeof_struct_page is None:
+                err("Not found sizeof(struct page)")
                 return False
-            page, vaddr = ret
-            pfn = (vaddr - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-            self.sizeof_struct_page = (page - self.mem_map) // pfn
 
         self.initialized = True
         return True
