@@ -53521,6 +53521,8 @@ class KernelConstsX64(KernelConstsBase):
         page, vaddr = ret
         pfn = (vaddr - self.PAGE_OFFSET) >> self.PAGE_SHIFT
         sizeof_struct_page_value = (page - self.VMEMMAP_START) // pfn
+        if sizeof_struct_page_value == 0x3f: # occasionally the calculation may be off by one (why?)
+            sizeof_struct_page_value = 0x40
         if sizeof_struct_page_value:
             self.cached_sizeof_struct_page = sizeof_struct_page_value
         return sizeof_struct_page_value
@@ -55845,7 +55847,7 @@ class KernelAddressHeuristicFinder:
             allocator = Kernel.get_slab_type()
             if allocator in ["SLUB", "SLUB_TINY"]:
                 command = {"SLUB": "slub-dump --node", "SLUB_TINY": "slub-tiny-dump"}[allocator]
-                for n in [256, 512, 128, 64, 32]: # 256 is most likely
+                for n in [8, 16, 32, 64, 128, 192, 256, 512]:
                     ret = gdb.execute(
                         "{:s} --simple --no-pager --quiet --skip-page2virt kmalloc-{:d}".format(command, n),
                         to_string=True,
@@ -58447,7 +58449,7 @@ class Kernel:
         if allocator in ["SLUB", "SLUB_TINY"]:
             # get valid page and vaddr pair
             command = {"SLUB": "slub-dump --node", "SLUB_TINY": "slub-tiny-dump"}[allocator]
-            for n in [256, 512, 128, 64, 32]: # 256 is most likely
+            for n in [8, 16, 32, 64, 128, 192, 256, 512]:
                 # this function calls slub-dump, but it called from slub-dump itself.
                 # * get_page_virt_pair
                 #   -> slub-dump    <-- first
@@ -58457,9 +58459,10 @@ class Kernel:
                 #           -> slub-dump    <-- recursively
                 # To avoid infinite recursion, must add the `--skip-page2virt` option
                 # when calling slub-dump from page2virt.
-                ret = gdb.execute("{:s} --simple --no-pager --quiet --skip-page2virt kmalloc-{:d}".format(
-                    command, n,
-                ), to_string=True)
+                ret = gdb.execute(
+                    "{:s} --simple --no-pager --quiet --skip-page2virt kmalloc-{:d}".format(command, n),
+                    to_string=True,
+                )
                 r1 = re.findall(r"(?:active|partial|node) page: (0x\S\S+)", Color.remove_color(ret))
                 r2 = re.findall(r"virtual address: (0x\S+|\?\?\?)", Color.remove_color(ret))
                 valid_pairs = [(p, v) for p, v in zip(r1, r2) if v != "???"]
@@ -75955,6 +75958,14 @@ class SlabContainsCommand(GenericCommand):
         if self.args.verbose:
             info("offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size))
 
+        if self.allocator in ["SLUB", "SLUB_TINY"]:
+            r = re.search(r"offsetof\(kmem_cache, red_left_pad\): (0x\S+)", res)
+            if not r:
+                return False
+            self.kmem_cache_offset_red_left_pad = int(r.group(1), 16)
+            if self.args.verbose:
+                info("offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad))
+
         if is_x86_64():
             r = re.search(r"offsetof\(kmem_cache, freed_slabs_min\): (0x\S+)", res)
             if r:
@@ -76023,7 +76034,7 @@ class SlabContainsCommand(GenericCommand):
 
                 kmem_cache = read_int_from_memory(page + self.page_offset_slab_cache)
                 if kmem_cache == 0:
-                    self.quiet_err("This address is not managed by slab")
+                    self.quiet_err("This address is not managed by slab (kmem_cache=0)")
                     return
 
                 self.quiet_print("kmem_cache: {:#x}".format(kmem_cache))
@@ -76044,21 +76055,23 @@ class SlabContainsCommand(GenericCommand):
             slab_cache_name_ptr = read_int_from_memory(kmem_cache + self.kmem_cache_offset_name)
             slab_cache_name = read_cstring_from_memory(slab_cache_name_ptr)
             if slab_cache_name is None:
-                self.quiet_err("This address is not managed by slab")
+                self.quiet_err("This address is not managed by slab (slab_cache_name=\"\")")
                 return
             slab_cache_name_c = Color.colorify(slab_cache_name, chunk_label_color)
             slab_cache_size = read_int32_from_memory(kmem_cache + self.kmem_cache_offset_size)
 
             if self.allocator in ["SLUB", "SLUB_TINY"]:
+                red_left_pad = read_int_from_memory(kmem_cache + self.kmem_cache_offset_red_left_pad)
                 x = read_int_from_memory(page + self.page_offset_inuse_objects_frozen)
                 objects = (x >> 16) & 0x7fff
                 num_pages = (slab_cache_size * objects + gef_getpagesize_mask_low()) // gef_getpagesize()
             else:
+                red_left_pad = 0
                 gfporder = read_int32_from_memory(kmem_cache + self.kmem_cache_offset_gfporder)
                 num_pages = 1 << gfporder
 
             msg = ("name: {:s}  size: {:#x}  num_pages: {:#x}".format(slab_cache_name_c, slab_cache_size, num_pages))
-            if (self.args.address - current) % slab_cache_size != 0:
+            if (self.args.address - red_left_pad - current) % slab_cache_size != 0:
                 msg += " " + Color.redify("(unaligned?)")
             gef_print(msg)
 
