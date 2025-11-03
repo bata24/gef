@@ -11626,10 +11626,7 @@ def parse_args(f):
             args = self.parser.parse_args(argv)
         except GefUtil.ArgparseExitProxyException as e:
             if not e.args[0]: # when --help or -h
-                if hasattr(self, "_example_") and self._example_:
-                    gef_print("\nexample:\n" + "  " + self._example_.strip().replace("\n", "\n  "))
-                if hasattr(self, "_note_") and self._note_:
-                    gef_print("\nnote:\n" + "  " + self._note_.strip().replace("\n", "\n  "))
+                self.usage()
             return
         except Exception as e:
             err("Invalid argument: {}".format(e))
@@ -14178,21 +14175,27 @@ class GenericCommand(gdb.Command):
         return
 
     def usage(self, simple=False):
+        def tab(lines):
+            return "\n".join(["  " + line for line in lines.splitlines()])
+
         gef_print(Color.colorify("Syntax:", "bold yellow"))
         gef_print(self._syntax_.strip())
 
         if self._example_:
             gef_print("")
             gef_print(Color.colorify("Example:", "bold yellow"))
-            gef_print(self._example_.strip())
-
-        if simple:
-            return
+            gef_print(tab(self._example_.strip()))
 
         if self._note_:
+            if not simple:
+                gef_print("")
+                gef_print(Color.colorify("Note:", "bold yellow"))
+                gef_print(tab(self._note_.strip()))
+
+        if self._aliases_:
             gef_print("")
-            gef_print(Color.colorify("Note:", "bold yellow"))
-            gef_print(self._note_.strip())
+            gef_print(Color.colorify("Aliases:", "bold yellow"))
+            gef_print("  " + str(self._aliases_))
         return
 
     def add_setting(self, name, value, description=""):
