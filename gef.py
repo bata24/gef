@@ -79879,6 +79879,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-s", "--smart", action="store_true", help="filter __pfx_*, __ksymtab_*, etc.")
     parser.add_argument("--vmlinux-file", help="force use your vmlinux file which includes symbols.")
+    parser.add_argument("--print-saved-config", action="store_true", help="print saved (cached) config contents.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
@@ -79888,6 +79889,15 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         "{0:s} commit_creds prepare_kernel_cred  # OR search",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "GEF caches offset information for parsing kallsyms to speed up this command.",
+        "Each cache is used based on kernel version strings.",
+        "In other words, in cases where the kernel version is exactly the same and",
+        "the CONFIG is slightly different, the offset will be applied incorrectly.",
+        "In this case, rescan with `ks -rv` or clear the cache with `gef reset-cache --hard`.",
+    ]
+    _note_ = "\n".join(_note_)
 
     def __init__(self, *args, **kwargs):
         super().__init__()
@@ -80135,6 +80145,26 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             param_value = int(config["parameters"][param_name])
             setattr(self, param_name, param_value)
         return True
+
+    def print_saved_config(self):
+        if hasattr(self, "version_string"):
+            cfg_file_name = self.get_cfg_name()
+            info("path: {:s}".format(cfg_file_name))
+            if os.path.exists(cfg_file_name):
+                gef_print(titlify("content (hexlified)"))
+                config = configparser.ConfigParser()
+                config.read(cfg_file_name)
+                for param_name in config["parameters"]:
+                    param_value = config["parameters"][param_name]
+                    try:
+                        param_value = int(param_value)
+                        gef_print("{:s} = {:#x}".format(param_name, param_value))
+                    except ValueError:
+                        gef_print("{:s} = {:s}".format(param_name, param_value))
+                return
+
+        err("Not found cached config (Run the `ksymaddr-remote` command at least once)")
+        return
 
     def find_kallsyms_token_table(self):
         ret = self.get_saved_config(["offset_kallsyms_token_table"])
@@ -81141,6 +81171,10 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, args):
+        if args.print_saved_config:
+            self.print_saved_config()
+            return
+
         if args.vmlinux_file:
             self.parse_vmlinux()
             self.print_kallsyms(args.keyword, args.type, args.smart)
