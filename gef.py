@@ -97291,6 +97291,9 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
         return
 
     def detect_zero_page(self):
+        if self.args.verbose < 1:
+            self.quiet_warn("resolve zero page: skipped (args.verbose < 1)")
+            return
         self.quiet_info("detect zero page")
 
         page_size = gef_getpagesize()
