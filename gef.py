@@ -77271,13 +77271,19 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                     continue
                 if not is_valid_addr_addr(inode + current_arch.ptrsize * (j + 2)): # i_pipe
                     continue
+                if is_double_link_list(inode + current_arch.ptrsize * (j + 2)): # i_pipe
+                    continue
                 i_pipe = read_int_from_memory(inode + current_arch.ptrsize * (j + 2))
-                # count 0x10 value
+                # count 0x10 and 0x01 value
                 count_0x10 = 0
+                count_0x01 = 0
                 for k in range(0x20):
-                    if read_int_from_memory(i_pipe + current_arch.ptrsize * k) == 0x10:
+                    v = read_int32_from_memory(i_pipe + 4 * k)
+                    if v == 0x01:
+                        count_0x01 += 1
+                    if v == 0x10:
                         count_0x10 += 1
-                    if count_0x10 > 1:
+                    if count_0x10 > 1 or count_0x01 > 3:
                         return current_arch.ptrsize * (j + 2)
 
         # plan 2
