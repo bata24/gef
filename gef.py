@@ -60772,10 +60772,13 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
     def get_offset_d_parent(self, dentry, offset_d_iname):
         offset_dname_name = offset_d_iname - current_arch.ptrsize * 2
-        if read_int_from_memory(dentry + offset_dname_name) == 0: # skip if padding
+        # skip if padding
+        while read_int_from_memory(dentry + offset_dname_name) != dentry + offset_d_iname:
             offset_dname_name -= current_arch.ptrsize
-        offset_d_parent = offset_dname_name - 0x8 - current_arch.ptrsize
-        if read_int_from_memory(dentry + offset_d_parent) == 0: # skip if padding
+
+        offset_d_parent = offset_dname_name - 8 - current_arch.ptrsize
+        # skip if padding
+        while not is_valid_addr_addr(dentry + offset_d_parent):
             offset_d_parent -= current_arch.ptrsize
         return offset_d_parent
 
