@@ -77250,9 +77250,32 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         };
         """
 
-        inode = pipe_files[0][1]
-
         # plan 1
+        inode = pipe_files[0][1]
+        for i in range(0x100):
+            # search three list_head
+            if not is_double_link_list(inode + current_arch.ptrsize * (i + 0)):
+                continue
+            if not is_double_link_list(inode + current_arch.ptrsize * (i + 2)):
+                continue
+            if not is_double_link_list(inode + current_arch.ptrsize * (i + 4)):
+                continue
+            # search i_pipe
+            for j in range(i + 6, 0x100):
+                if not is_double_link_list(inode + current_arch.ptrsize * (j + 0)): # i_devices
+                    continue
+                if not is_valid_addr_addr(inode + current_arch.ptrsize * (j + 2)): # i_pipe
+                    continue
+                i_pipe = read_int_from_memory(inode + current_arch.ptrsize * (j + 2))
+                # count 0x10 value
+                count_0x10 = 0
+                for k in range(0x20):
+                    if read_int_from_memory(i_pipe + current_arch.ptrsize * k) == 0x10:
+                        count_0x10 += 1
+                    if count_0x10 > 1:
+                        return current_arch.ptrsize * (j + 2)
+
+        # plan 2
         for i in range(0x100):
             v = read_int_from_memory(inode + current_arch.ptrsize * i)
             # i_pipe is valid addr
@@ -77269,78 +77292,6 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             if re.search(r"kmalloc(-cg)?-(64|96|128|192|256|512)", ret):
                 return current_arch.ptrsize * i
 
-        # plan 2
-        """
-        ...
-        0xf34206d4|+0x00b4|+045: i_lru, list_head.next                         : 0xf34206d4
-        0xf34206d8|+0x00b8|+046: i_lru, list_head.prev                         : 0xf34206d4
-        0xf34206dc|+0x00bc|+047: i_sb_list, list_head.next                     : 0xf34206dc
-        0xf34206e0|+0x00c0|+048: i_sb_list, list_head.prev                     : 0xf34206dc
-        0xf34206e4|+0x00c4|+049: i_wb_list, list_head.next                     : 0xf34206e4
-        0xf34206e8|+0x00c8|+050: i_wb_list, list_head.prev                     : 0xf34206e4
-        0xf34206ec|+0x00cc|+051: i_dentry                                      : 0xf3422778
-        0xf34206f0|+0x00d0|+052: i_dentry                                      : 0x00000000
-        0xf34206f4|+0x00d4|+053: i_version                                     : 0x00000000
-        0xf34206f8|+0x00d8|+054: i_version                                     : 0x00000000
-        0xf34206fc|+0x00dc|+055: i_sequence                                    : 0x00000000
-        0xf3420700|+0x00e0|+056: i_sequence                                    : 0x00000000
-        0xf3420704|+0x00e4|+057: i_count                                       : 0x00000000
-        0xf3420708|+0x00e8|+058: i_dio_count                                   : 0x00000001
-        0xf342070c|+0x00ec|+059: i_writecount                                  : 0x00000000
-        0xf3420710|+0x00f0|+060: i_readcount                                   : 0x00000000
-        0xf3420714|+0x00f4|+061: i_fop                                         : 0xcc6b6580
-        0xf3420718|+0x00f8|+062: i_flctx                                       : 0x00000000
-        0xf342071c|+0x00fc|+063: i_data.i_host                                 : 0xf3420620
-        0xf3420720|+0x0100|+064: i_data.i_pages.xa_lock                        : 0x00000000
-        0xf3420724|+0x0104|+065: i_data.i_pages.gfp_mask                       : 0x00580020
-        0xf3420728|+0x0108|+066: i_data.i_pages.rnode                          : 0x00000000
-        0xf342072c|+0x010c|+067: i_data.i_mmap_writable                        : 0x00000000
-        0xf3420730|+0x0110|+068: i_data.i_mmap.rb_root.rb_node                 : 0x00000000
-        0xf3420734|+0x0114|+069: i_data.i_mmap.rb_leftmost                     : 0x00000000
-        0xf3420738|+0x0118|+070: i_data.i_mmap_rwsem.count                     : 0x00000000
-        0xf342073c|+0x011c|+071: i_data.i_mmap_rwsem.wait_list, list_head.next : 0xf342073c
-        0xf3420740|+0x0120|+072: i_data.i_mmap_rwsem.wait_list, list_head.prev : 0xf342073c
-        0xf3420744|+0x0124|+073: i_data.i_mmap_rwsem.wait_lock                 : 0x00000000  <-- not pointer
-        0xf3420748|+0x0128|+074: i_data.i_mmap_rwsem.osq.tail                  : 0x00000000
-        0xf342074c|+0x012c|+075: i_data.i_mmap_rwsem.owner                     : 0x00000000
-        0xf3420750|+0x0130|+076: i_data.nrpages                                : 0x00000000
-        0xf3420754|+0x0134|+077: i_data.nrexceptional                          : 0x00000000
-        0xf3420758|+0x0138|+078: i_data.writeback_index                        : 0x00000000
-        0xf342075c|+0x013c|+079: i_data.a_ops                                  : 0xcc6b6900
-        0xf3420760|+0x0140|+080: i_data.flags                                  : 0x00000000
-        0xf3420764|+0x0144|+081: i_data.private_lock                           : 0x00000000
-        0xf3420768|+0x0148|+082: i_data.gfp_mask                               : 0x006200ca
-        0xf342076c|+0x014c|+083: i_data.private_list, list_head.next           : 0xf342076c
-        0xf3420770|+0x0150|+084: i_data.private_list, list_head.prev           : 0xf342076c
-        0xf3420774|+0x0154|+085: i_data.private_data                           : 0x00000000  <-- maybe zero
-        0xf3420778|+0x0158|+086: i_data.wb_err                                 : 0x00000000
-        0xf342077c|+0x015c|+087: i_devices, list_head.next                     : 0xf342077c
-        0xf3420780|+0x0160|+088: i_devices, list_head.prev                     : 0xf342077c
-        0xf3420784|+0x0164|+089: i_pipe                                        : 0xf30de540  <-- here
-        0xf3420788|+0x0168|+090:                                               : 0x00000000
-        0xf342078c|+0x016c|+091:                                               : 0x00000000
-        """
-        kversion = Kernel.kernel_version()
-        if kversion < "6.9":
-            for i in range(0x100):
-                # search three list_head
-                if not is_double_link_list(inode + current_arch.ptrsize * (i + 0)):
-                    continue
-                if not is_double_link_list(inode + current_arch.ptrsize * (i + 2)):
-                    continue
-                if not is_double_link_list(inode + current_arch.ptrsize * (i + 4)):
-                    continue
-                for j in range(i + 6, 0x100):
-                    # search i_data.private_list
-                    if is_double_link_list(inode + current_arch.ptrsize * (j + 0)):
-                        if ("3.0" <= kversion < "3.8") or ("4.13" <= kversion < "4.20"):
-                            if is_double_link_list(inode + current_arch.ptrsize * (j + 4)):
-                                if is_valid_addr_addr(inode + current_arch.ptrsize * (j + 6)):
-                                    return current_arch.ptrsize * (j + 6)
-                        if "4.20" <= kversion < "6.9":
-                            if is_double_link_list(inode + current_arch.ptrsize * (j + 3)):
-                                if is_valid_addr_addr(inode + current_arch.ptrsize * (j + 5)):
-                                    return current_arch.ptrsize * (j + 5)
         return None
 
     def get_offset_bufs(self, pipe_files):
@@ -77392,13 +77343,64 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             struct pipe_buffer *bufs; <-- here
             struct user_struct *user; // v3.10, v3.12, v3.14, v3.16, v3.18, v4.1, v4.4~
         };
+
+        struct pipe_buffer {
+            struct page *page;
+            unsigned int offset, len;
+            const struct pipe_buf_operations *ops;
+            unsigned int flags;
+            unsigned long private;
+        };
         """
 
+        # plan 1
+        seen = []
+        for _file, inode in pipe_files:
+            if inode in seen:
+                continue
+            seen.append(inode)
+            pipe_inode_info = read_int_from_memory(inode + self.offset_i_pipe)
+            for i in range(0x40):
+                offset_bufs = current_arch.ptrsize * i
+                if not is_valid_addr_addr(pipe_inode_info + offset_bufs):
+                    continue
+                if is_double_link_list(pipe_inode_info + offset_bufs):
+                    continue
+                if is_double_link_list(pipe_inode_info + offset_bufs - current_arch.ptrsize):
+                    continue
+                # bufs
+                bufs = read_int_from_memory(pipe_inode_info + offset_bufs)
+                if is_32bit():
+                    if not is_valid_addr_addr(bufs + current_arch.ptrsize * 0): # page
+                        continue
+                    if is_valid_addr_addr(bufs + current_arch.ptrsize * 1): # offset
+                        continue
+                    if is_valid_addr_addr(bufs + current_arch.ptrsize * 2): # len
+                        continue
+                    if not is_valid_addr_addr(bufs + current_arch.ptrsize * 3): # ops
+                        continue
+                    if is_valid_addr_addr(bufs + current_arch.ptrsize * 4): # flags
+                        continue
+                    if is_valid_addr_addr(bufs + current_arch.ptrsize * 5): # private
+                        continue
+                else:
+                    if not is_valid_addr_addr(bufs + current_arch.ptrsize * 0): # page
+                        continue
+                    if is_valid_addr_addr(bufs + current_arch.ptrsize * 1): # offset||len
+                        continue
+                    if not is_valid_addr_addr(bufs + current_arch.ptrsize * 2): # ops
+                        continue
+                    if is_valid_addr_addr(bufs + current_arch.ptrsize * 3): # flags
+                        continue
+                    if is_valid_addr_addr(bufs + current_arch.ptrsize * 4): # private
+                        continue
+                # found
+                return offset_bufs
+
+        # plan 2
         kversion = Kernel.kernel_version()
         inode = pipe_files[0][1]
         pipe_inode_info = read_int_from_memory(inode + self.offset_i_pipe)
-
-        # plan 1
         for i in range(0x80):
             v = read_int_from_memory(pipe_inode_info + current_arch.ptrsize * i)
             # bufs is valid addr
@@ -77417,47 +77419,6 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             # before v5.5, pipe_buffer is allocated not from slub, but `user` is allocated from slub.
             if kversion < "5.5" and "uid_cache" in ret:
                 return current_arch.ptrsize * (i - 1)
-
-        # plan 2
-        """
-        0xf30de540|+0x0000|+000: mutex.owner                    : 0x8e972c19
-        0xf30de544|+0x0004|+001: mutex.wait_lock                : 0x00000000
-        0xf30de548|+0x0008|+002: mutex.osq.tail                 : 0x00000000
-        0xf30de54c|+0x000c|+003: mutex.wait_list, list_head.next: 0xf30de54c  ->  [loop detected]
-        0xf30de550|+0x0010|+004: mutex.wait_list, list_head.prev: 0xf30de54c  ->  [loop detected]
-        0xf30de554|+0x0014|+005: wait.lock                      : 0x00000000
-        0xf30de558|+0x0018|+006: wait.head, list_head.next      : 0xf30de558  ->  [loop detected]
-        0xf30de55c|+0x001c|+007: wait.head, list_head.prev      : 0xf30de558  ->  [loop detected]
-        0xf30de560|+0x0020|+008: nrbufs                         : 0x00000010
-        0xf30de564|+0x0024|+009: curbufs                        : 0x00000002
-        0xf30de568|+0x0028|+010: buffers                        : 0x00000010
-        0xf30de56c|+0x002c|+011: readers                        : 0x00000000
-        0xf30de570|+0x0030|+012: writers                        : 0x00000000
-        0xf30de574|+0x0034|+013: files                          : 0x00000000
-        0xf30de578|+0x0038|+014: waiting_writers                : 0x00000000
-        0xf30de57c|+0x003c|+015: r_counter                      : 0x00000001
-        0xf30de580|+0x0040|+016: w_counter                      : 0x00000001
-        0xf30de584|+0x0044|+017: tmp_page                       : 0xf5aba230  ->  0x80000000
-        0xf30de588|+0x0048|+018: fasync_readers                 : 0x00000000
-        0xf30de58c|+0x004c|+019: fasync_writers                 : 0x00000000
-        0xf30de590|+0x0050|+020: bufs                           : 0xf30d4a00  ->  0x8119033b
-        """
-        # plan 2
-        if kversion < "5.5" and is_32bit():
-            for i in range(0x80):
-                if not is_double_link_list(pipe_inode_info + current_arch.ptrsize * i):
-                    continue
-                if is_valid_addr_addr(pipe_inode_info + current_arch.ptrsize * (i + 2)): # nrbufs
-                    continue
-                if is_valid_addr_addr(pipe_inode_info + current_arch.ptrsize * (i + 3)): # curbufs
-                    continue
-                if is_valid_addr_addr(pipe_inode_info + current_arch.ptrsize * (i + 4)): # buffers
-                    continue
-                if is_valid_addr_addr(pipe_inode_info + current_arch.ptrsize * (i + 5)): # readers
-                    continue
-                if is_valid_addr_addr(pipe_inode_info + current_arch.ptrsize * (i + 6)): # writers
-                    continue
-                return current_arch.ptrsize * (i + 14)
         return None
 
     def get_offset_head_or_nrbuf(self, pipe_files):
