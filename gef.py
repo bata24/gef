@@ -33902,13 +33902,17 @@ class VMMapCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         if is_qemu_system() or is_vmware():
             if is_arm32_cortex_m():
-                info("Redirect to xfiles (args are ignored)")
+                info("Redirect to `xfiles` (args are ignored)")
                 gdb.execute("xfiles")
                 return
-
-            info("Redirect to pagewalk (args are ignored)")
-            gdb.execute("pagewalk --quiet")
-            return
+            elif is_in_kernel():
+                info("Redirect to `kvmmap` (args are ignored; use `pagewalk` to show phys addr)")
+                gdb.execute("kvmmap")
+                return
+            else:
+                info("Redirect to `pagewalk` (args are ignored)")
+                gdb.execute("pagewalk --quiet")
+                return
 
         if args.outer and not is_qemu_user():
             err("Unsupported `--outer` option in this gdb mode")
