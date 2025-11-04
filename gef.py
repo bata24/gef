@@ -54917,28 +54917,13 @@ class KernelAddressHeuristicFinder:
             # plan 2 (from stack top)
             # We need to consider the case where Linux and RTOS are running on different CPUs at the same time.
             # If the stack is not the address the kernel expects to use, it should not be interpreted as a task.
-            maps = Kernel.get_maps()
-            if not maps:
-                return None
-            kern_min = maps[0][0]
-            if kern_min < 0x8000_0000:
-                PAGE_OFFSET = 0x4000_0000 # VMSPLIT_1G
-            elif kern_min < 0xb000_0000:
-                PAGE_OFFSET = 0x8000_0000 # VMSPLIT_2G
-            elif kern_min < 0xbf00_0000:
-                # 0xbf000000-0xc0000000 is kernel module area.
-                # Even if it is VMSPLIT_3G, this is used.
-                PAGE_OFFSET = 0xb000_0000 # VMSPLIT_3G_OPT
-            else:
-                PAGE_OFFSET = 0xc000_0000 # VMSPLIT_3G
 
             # check if valid kernel address or not
             current_thread_info = current_arch.sp & ~0x1fff
-            if current_thread_info < PAGE_OFFSET:
+            if current_thread_info < KernelAddressHeuristicFinder.get_PAGE_OFFSET():
                 return None
 
             kversion = Kernel.kernel_version()
-
             try:
                 """
                 struct thread_info {
