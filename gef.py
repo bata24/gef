@@ -54875,10 +54875,14 @@ class KernelAddressHeuristicFinder:
                 for x in g:
                     if x < 0x100:
                         continue
-                    if is_x86_64() and (x & 0x7):
-                        continue
-                    elif is_x86_32() and (x & 0x3):
-                        continue
+                    if is_x86_64():
+                        if x & 0x7:
+                            continue
+                        if not AddressUtil.is_msb_on(x) and x > 0x10_0000:
+                            continue
+                    elif is_x86_32():
+                        if x & 0x3:
+                            continue
                     return x
 
         # plan 3 (available v2.5.33 or later)
@@ -54900,10 +54904,12 @@ class KernelAddressHeuristicFinder:
                 for x in g:
                     if x < 0x100:
                         continue
-                    if is_x86_64() and (x & 0x7):
-                        continue
-                    elif is_x86_32() and (x & 0x3):
-                        continue
+                    if is_x86_64():
+                        if x & 0x7:
+                            continue
+                    elif is_x86_32():
+                        if x & 0x3:
+                            continue
                     return x
         return None
 
