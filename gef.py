@@ -54070,6 +54070,9 @@ class KernelConstsX64(KernelConstsBase):
 class KernelConstsArm32(KernelConstsBase):
     """A class that manages arm32 constants by version."""
 
+    PAGE_SHIFT = 12
+    PAGE_SIZE = 1 << PAGE_SHIFT
+
     def __init__(self, version=None):
         super().__init__(version)
         return
@@ -54104,6 +54107,13 @@ class KernelConstsArm32(KernelConstsBase):
             self.cached_CONFIG_THUMB2_KERNEL = current_arch.is_thumb()
             return self.cached_CONFIG_THUMB2_KERNEL
         return None
+
+    @property
+    def mem_map(self):
+        if hasattr(self, "cached_mem_map"):
+            return self.cached_mem_map
+        self.cached_mem_map = KernelAddressHeuristicFinder.get_mem_map()
+        return self.cached_mem_map
 
     @property
     def sizeof_struct_page(self):
