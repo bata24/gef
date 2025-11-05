@@ -53197,10 +53197,6 @@ class KernelConstsBase:
             self.kversion = Kernel.kernel_version()
         return
 
-    @property
-    def sizeof_struct_page(self):
-        return 0x40
-
     def order_base_2(self, n):
         if n > 1:
             return GefUtil.log2(n)
@@ -54577,6 +54573,10 @@ class KernelConstsArm64(KernelConstsBase):
             else:
                 return 0
         return None
+
+    @property
+    def sizeof_struct_page(self):
+        return 0x40
 
     @property
     def STRUCT_PAGE_MAX_SHIFT(self):
@@ -96973,6 +96973,72 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             self.insert_region_range(VMALLOC_START, VMALLOC_END, "vmalloc")
         return
 
+    def resolve_mem_map(self):
+        if not is_x86_32() and not is_arm32():
+            return
+
+        self.quiet_info("resolve mem_map")
+        mem_map = KernelAddressHeuristicFinder.get_mem_map()
+        if not mem_map:
+            if is_x86_32():
+                self.resolve_mem_section() # try mem_section
+            return
+
+        mem_map &= gef_getpagesize_mask_high()
+        # already there
+        if mem_map in self.regions:
+            self.regions[mem_map].add_description("mem_map(=page[])")
+            return
+        # require division
+        for _key, r in sorted(self.regions.items()):
+            if r.addr_start <= mem_map < r.addr_end:
+                size = r.addr_end - mem_map
+                self.insert_region(mem_map, size, "mem_map(=page[])")
+                return
+        return
+
+    def resolve_mem_section(self):
+        self.quiet_info("resolve mem_section")
+        mem_section = KernelAddressHeuristicFinder.get_mem_section()
+        if not mem_section:
+            return
+
+        # calc NR_MEM_SECTIONS
+        cr4 = get_register("cr4", use_monitor=True)
+        if (cr4 >> 5) & 1: # PAE
+            MAX_PHYSMEM_BITS = 36
+            SECTION_SIZE_BITS = 29
+        else:
+            MAX_PHYSMEM_BITS = 32
+            SECTION_SIZE_BITS = 26
+        SECTIONS_SHIFT = MAX_PHYSMEM_BITS - SECTION_SIZE_BITS
+        NR_MEM_SECTIONS = 1 << SECTIONS_SHIFT
+
+        # calc sizeof(mem_section)
+        v = read_int_from_memory(mem_section + current_arch.ptrsize * 3)
+        if v == 0: # pad check
+            sizeof_mem_section = current_arch.ptrsize * 4 # CONFIG_PAGE_EXTENSION=y
+        else:
+            sizeof_mem_section = current_arch.ptrsize * 2 # CONFIG_PAGE_EXTENSION=n
+
+        # parse mem_section
+        for i in range(NR_MEM_SECTIONS):
+            section_mem_map = read_int_from_memory(mem_section + sizeof_mem_section * i)
+            section_mem_map &= gef_getpagesize_mask_high()
+            if not is_valid_addr(section_mem_map):
+                continue
+            # already there
+            if section_mem_map in self.regions:
+                self.regions[section_mem_map].add_description("section_mem_map(=page[])")
+                continue
+            # require division
+            for _key, r in sorted(self.regions.items()):
+                if r.addr_start <= section_mem_map < r.addr_end:
+                    size = r.addr_end - section_mem_map
+                    self.insert_region(section_mem_map, size, "section_mem_map(=page[])")
+                    break
+        return
+
     def resolve_vmemmap(self):
         if is_x86_64() or is_arm64():
             self.quiet_info("resolve vmemmap")
@@ -96980,25 +97046,8 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             VMEMMAP_END = KernelAddressHeuristicFinder.get_VMEMMAP_END()
             if VMEMMAP_START and VMEMMAP_END:
                 self.insert_region_range(VMEMMAP_START, VMEMMAP_END, "vmemmap(=page[])")
-
         elif is_x86_32() or is_arm32():
-            self.quiet_info("resolve mem_map")
-            # TODO: FIX
-            mem_map = KernelAddressHeuristicFinder.get_mem_map()
-            if mem_map is None:
-                return
-            mem_map &= gef_getpagesize_mask_high()
-            # already there
-            if mem_map in self.regions:
-                self.regions[mem_map].add_description("mem_map(=page[])")
-                return
-            # require division
-            for _key, r in sorted(self.regions.items()):
-                if r.addr_start <= mem_map < r.addr_end:
-                    size = r.addr_end - mem_map
-                    self.insert_region(mem_map, size, "mem_map(=page[])")
-                    return
-            # TODO support x86_32 mem_section
+            self.resolve_mem_map()
         return
 
     def resolve_ldt(self):
