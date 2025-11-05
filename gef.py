@@ -56253,7 +56253,7 @@ class KernelAddressHeuristicFinder:
         if kversion and kversion >= "2.4":
             addr = Symbol.get_ksymaddr("free_pages")
             if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
                 if is_x86_32():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.x86_dword_ptr_ds(res),
