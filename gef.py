@@ -97774,7 +97774,6 @@ class PageCommand(GenericCommand):
 
         if is_x86_64():
             # CONFIG_SPARSEMEM_VMEMMAP
-
             self.VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
             if self.VMEMMAP_START is None:
                 err("Not found VMEMMAP_START")
@@ -97805,6 +97804,18 @@ class PageCommand(GenericCommand):
             if self.PAGE_OFFSET is None:
                 err("Not found PAGE_OFFSET")
                 return False
+
+            self.VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
+            if self.VMALLOC_START is None:
+                err("Not found VMALLOC_START")
+                return False
+
+            self.VMALLOC_END = KernelAddressHeuristicFinder.get_VMALLOC_END()
+            if self.VMALLOC_END is None:
+                err("Not found VMALLOC_END")
+                return False
+
+            self.LOWMEM_LIMIT = (self.VMALLOC_START - self.PAGE_OFFSET) >> self.PAGE_SHIFT
 
             # Determine whether it is CONFIG_FLATMEM or CONFIG_SPARSEMEM.
             self.mem_map = KernelAddressHeuristicFinder.get_mem_map()
@@ -97904,6 +97915,16 @@ class PageCommand(GenericCommand):
                 err("Not found PAGE_OFFSET")
                 return False
 
+            self.VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
+            if self.VMALLOC_START is None:
+                err("Not found VMALLOC_START")
+                return False
+
+            self.VMALLOC_END = KernelAddressHeuristicFinder.get_VMALLOC_END()
+            if self.VMALLOC_END is None:
+                err("Not found VMALLOC_END")
+                return False
+
             self.mem_map = KernelAddressHeuristicFinder.get_mem_map()
             if self.mem_map is None:
                 err("Not found mem_map")
@@ -97914,8 +97935,30 @@ class PageCommand(GenericCommand):
                 err("Not found sizeof(struct page)")
                 return False
 
+            self.LOWMEM_LIMIT = (self.VMALLOC_START - self.PAGE_OFFSET) >> self.PAGE_SHIFT
+
         self.initialized = True
         return True
+
+    def is_vmalloc_addr(self, virt):
+        return self.VMALLOC_START <= virt < self.VMALLOC_END
+
+    def pfn2kmap(self, pfn):
+        paddr = pfn << self.PAGE_SHIFT
+        cand = Kernel.p2v(paddr)
+        if not cand:
+            return None
+
+        PKMAP_BASE = self.VMALLOC_END + (2 * (1 << self.PAGE_SHIFT))
+        pkmap_like = [v for v in cand if v >= PKMAP_BASE]
+        if pkmap_like:
+            return AddressUtil.align_address(max(pkmap_like))
+
+        vmalloc_like = [v for v in cand if self.is_vmalloc_addr(v)]
+        if vmalloc_like:
+            return AddressUtil.align_address(vmalloc_like[0])
+
+        return AddressUtil.align_address(max(cand))
 
     def page2virt(self, page):
         if not is_valid_addr(page):
@@ -97934,11 +97977,6 @@ class PageCommand(GenericCommand):
             if self.mode == "FLATMEM":
                 # page -> pfn
                 pfn = (page - self.mem_map) // self.sizeof_struct_page
-                if pfn < 0:
-                    return None
-                # pfn -> virt
-                virt = (pfn << self.PAGE_SHIFT) + self.PAGE_OFFSET
-
             elif self.mode == "SPARSEMEM":
                 # page -> section_id
                 flags = read_int_from_memory(page)
@@ -97956,10 +97994,14 @@ class PageCommand(GenericCommand):
                 mem_map = section_mem_map & self.SECTION_MAP_MASK
                 # page -> pfn
                 pfn = (page - mem_map) // self.sizeof_struct_page
-                if pfn < 0:
-                    return None
-                # pfn -> virt
+
+            if pfn < 0:
+                return None
+            # pfn -> virt
+            if pfn < self.LOWMEM_LIMIT:
                 virt = (pfn << self.PAGE_SHIFT) + self.PAGE_OFFSET
+            else:
+                virt = self.pfn2kmap(pfn)
 
         elif is_arm64():
             # page -> pfn
@@ -97975,7 +98017,14 @@ class PageCommand(GenericCommand):
             if pfn < 0:
                 return None
             # pfn -> virt
-            virt = (pfn << self.PAGE_SHIFT) + self.PAGE_OFFSET
+            if pfn < self.LOWMEM_LIMIT:
+                virt = (pfn << self.PAGE_SHIFT) + self.PAGE_OFFSET
+            else:
+                virt = self.pfn2kmap(pfn)
+
+        if virt is None:
+            err("Address in invalid range")
+            return None
 
         virt = AddressUtil.align_address(virt)
         if not is_valid_addr(virt):
@@ -98000,19 +98049,23 @@ class PageCommand(GenericCommand):
             page = self.VMEMMAP_START + (pfn * self.sizeof_struct_page)
 
         elif is_x86_32():
-            if self.mode == "FLATMEM":
-                # virt -> pfn
-                pfn = (virt - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-                if pfn < 0:
+            # virt -> pfn
+            if self.is_vmalloc_addr(virt):
+                # for high_memory
+                phys = Kernel.v2p(virt)
+                if phys is None:
+                    err("Address in invalid range")
                     return None
+                pfn = phys >> self.PAGE_SHIFT
+            else:
+                pfn = (virt - self.PAGE_OFFSET) >> self.PAGE_SHIFT
+            if pfn < 0:
+                return None
+
+            if self.mode == "FLATMEM":
                 # pfn -> page
                 page = self.mem_map + (pfn * self.sizeof_struct_page)
-
             elif self.mode == "SPARSEMEM":
-                # virt -> pfn
-                pfn = (virt - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-                if pfn < 0:
-                    return None
                 # pfn -> section_id
                 section_id = pfn >> self.PFN_SECTION_SHIFT
                 # section_id -> mem_section
@@ -98039,7 +98092,15 @@ class PageCommand(GenericCommand):
 
         elif is_arm32():
             # virt -> pfn
-            pfn = (virt - self.PAGE_OFFSET) >> self.PAGE_SHIFT
+            if self.is_vmalloc_addr(virt):
+                # for high_memory
+                phys = Kernel.v2p(virt)
+                if phys is None:
+                    err("Address in invalid range")
+                    return None
+                pfn = phys >> self.PAGE_SHIFT
+            else:
+                pfn = (virt - self.PAGE_OFFSET) >> self.PAGE_SHIFT
             if pfn < 0:
                 return None
             # pfn -> page
