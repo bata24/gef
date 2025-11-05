@@ -103,8 +103,6 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - ![](images/pagewalk-arm.png)
         - Secure memory scanning is also supported, and you don't have to break in the secure world (unlike ARM64).
         - ![](images/pagewalk-arm-secure.png)
-- `pagewalk-with-hints`: prints pagetables with description.
-    - ![](images/pagewalk-with-hints.png)
 - `v2p`/`p2v`: displays the transformation between virtual addresses and physical addresses.
     - ![](images/v2p-p2v.png)
 - `xp`: is a shortcut for physical memory dump.
@@ -127,6 +125,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `kcmdline`: displays the kernel cmdline used at boot time.
 - `kcurrent`: displays current task address.
     - ![](images/kbase-kversion-kcmdline-kcurrent.png)
+- `kvmmap`: prints kernel memory map.
+    - ![](images/kvmmap.png)
 - `ksymaddr-remote`: displays kallsyms information from scanning kernel memory.
     - Supported kernel versions: 3.x to 6.17.x.
     - ![](images/ksymaddr-remote.png)

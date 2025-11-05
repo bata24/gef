@@ -52897,6 +52897,11 @@ class KernelAddressHeuristicFinderUtil:
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
 
     @staticmethod
+    def aarch64_cmp_const(res, reg=r"\w+", skip=0, skip_msb_check=False, read_valid=False):
+        regexp = r"cmp\s+" + reg + r"\s*,\s*#(0x\w+)"
+        return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
+
+    @staticmethod
     def aarch64_adrp_ldr(res, skip=0, skip_msb_check=False, read_valid=False):
         bases = {}
         for line in res.splitlines():
@@ -53167,6 +53172,7 @@ class KernelConstsBase:
     """A class that manages constants by version."""
 
     SZ_64K = 0x0001_0000
+    SZ_256K = 0x0004_0000
     SZ_2M = 0x0020_0000
     SZ_4M = 0x0040_0000
     SZ_8M = 0x0080_0000
@@ -53190,14 +53196,6 @@ class KernelConstsBase:
         else:
             self.kversion = Kernel.kernel_version()
         return
-
-    @property
-    def CONFIG_KASAN(self):
-        if self.kasan is not None:
-            return bool(self.kasan)
-        res = gdb.execute("ksymaddr-remote --quiet kasan_", to_string=True)
-        self.kasan = bool(res)
-        return self.kasan
 
     @property
     def sizeof_struct_page(self):
@@ -53338,6 +53336,8 @@ class KernelConstsX86(KernelConstsBase):
 
     @property
     def FIXADDR_SIZE(self):
+        if self.__end_of_permanent_fixed_addresses is None:
+            return None
         return self.__end_of_permanent_fixed_addresses << self.PAGE_SHIFT
 
     @property
@@ -53576,6 +53576,11 @@ class KernelConstsX64(KernelConstsBase):
         if "6.1" <= self.kversion:
             return False # change if needed
         return None
+
+    @property
+    def CONFIG_INTEL_TXT(self):
+        addr = Symbol.get_ksymaddr("tboot_probe")
+        return bool(addr)
 
     @property
     def KERNEL_IMAGE_SIZE_DEFAULT(self):
@@ -53948,8 +53953,35 @@ class KernelConstsX64(KernelConstsBase):
         return self.FIXADDR_TOP - (x << self.PAGE_SHIFT)
 
     @property
+    def __end_of_permanent_fixed_addresses(self):
+        end = self.__end_of_fixed_addresses
+        if end is None:
+            return None
+        if "3.0" <= self.kversion < "3.10":
+            # (FIX_TBOOT_BASE), FIX_BTMAP_BEGIN ~ FIX_BTMAP_END
+            return end - int(self.CONFIG_INTEL_TXT) - 256
+        elif "3.10" <= self.kversion:
+            # (FIX_TBOOT_BASE), FIX_BTMAP_BEGIN ~ FIX_BTMAP_END
+            return end - int(self.CONFIG_INTEL_TXT) - 512
+        return None
+
+    @property
     def __end_of_fixed_addresses(self):
         return KernelAddressHeuristicFinder.get_end_of_fixed_addresses()
+
+    @property
+    def FIXADDR_SIZE(self):
+        if self.__end_of_permanent_fixed_addresses is None:
+            return None
+        return self.__end_of_permanent_fixed_addresses << self.PAGE_SHIFT
+
+    @property
+    def FIXADDR_START(self):
+        if self.FIXADDR_TOP is None:
+            return None
+        if self.FIXADDR_SIZE is None:
+            return None
+        return self.FIXADDR_TOP - self.FIXADDR_SIZE
 
     @property
     def MODULES_END(self):
@@ -54188,12 +54220,16 @@ class KernelConstsArm32(KernelConstsBase):
     @property
     def MODULES_VADDR(self):
         if "3.0" <= self.kversion < "3.8":
-            if not self.CONFIG_THUMB2_KERNEL:
+            if self.CONFIG_THUMB2_KERNEL is None:
+                return None
+            elif self.CONFIG_THUMB2_KERNEL is False:
                 return self.PAGE_OFFSET - 16 * 1024 * 1024
             else:
                 return self.PAGE_OFFSET - 8 * 1024 * 1024
         elif "3.8" <= self.kversion:
-            if not self.CONFIG_THUMB2_KERNEL:
+            if self.CONFIG_THUMB2_KERNEL is None:
+                return None
+            elif self.CONFIG_THUMB2_KERNEL is False:
                 return self.PAGE_OFFSET - self.SZ_16M
             else:
                 return self.PAGE_OFFSET - self.SZ_8M
@@ -54302,6 +54338,14 @@ class KernelConstsArm64(KernelConstsBase):
         else:
             FEAT_LVA = False
         return FEAT_LVA
+
+    @property
+    def CONFIG_KASAN(self):
+        if self.kasan is not None:
+            return bool(self.kasan)
+        res = gdb.execute("ksymaddr-remote --quiet kasan_", to_string=True)
+        self.kasan = bool(res)
+        return self.kasan
 
     @property
     def CONFIG_KASAN_SW_TAGS(self):
@@ -54426,7 +54470,6 @@ class KernelConstsArm64(KernelConstsBase):
                     return 0xefff_ffc8_0000_0000
                 elif self.VA_BITS == 36:
                     return 0xefff_fff9_0000_0000
-            return 0xffffffffffffffff
         elif "5.11" <= self.kversion < "6.10":
             if not self.CONFIG_KASAN_SW_TAGS:
                 if self.VA_BITS == 48 or self.VA_BITS == 52:
@@ -54450,7 +54493,6 @@ class KernelConstsArm64(KernelConstsBase):
                     return 0xefff_ffc0_0000_0000
                 elif self.VA_BITS == 36:
                     return 0xefff_fff8_0000_0000
-            return 0xffffffffffffffff
         elif "6.10" <= self.kversion:
             if not self.CONFIG_KASAN_SW_TAGS:
                 if self.VA_BITS == 48 or (self.VA_BITS == 52 and not self.CONFIG_ARM64_16K_PAGES):
@@ -54474,7 +54516,6 @@ class KernelConstsArm64(KernelConstsBase):
                     return 0xefff_ffc0_0000_0000
                 elif self.VA_BITS == 36:
                     return 0xefff_fff8_0000_0000
-            return 0xffffffffffffffff
         return None
 
     @property
@@ -54754,6 +54795,65 @@ class KernelConstsArm64(KernelConstsBase):
             fixaddr_top = -self.SZ_8M
             return AddressUtil.align_address(fixaddr_top)
         return None
+
+    @property
+    def NR_FIX_BTMAPS(self):
+        if "3.7" <= self.kversion < "4.4":
+            if self.CONFIG_ARM64_64K_PAGES:
+                return 4
+            else:
+                return 64
+        elif "4.4" <= self.kversion:
+            return self.SZ_256K // self.PAGE_SIZE
+        return None
+
+    @property
+    def FIX_BTMAPS_SLOTS(self):
+        return 7
+
+    @property
+    def TOTAL_FIX_BTMAPS(self):
+        return self.NR_FIX_BTMAPS * self.FIX_BTMAPS_SLOTS
+
+    @property
+    def __end_of_permanent_fixed_addresses(self):
+        end = self.__end_of_fixed_addresses
+        if end is None:
+            return None
+        if "3.14" <= self.kversion < "4.0":
+            # FIX_BTMAP_BEGIN ~ FIX_BTMAP_END
+            return end - self.TOTAL_FIX_BTMAPS
+        elif "4.0" <= self.kversion < "4.1":
+            # FIX_BTMAP_BEGIN ~ FIX_BTMAP_END, FIX_TEXT_POKE0
+            return end - self.TOTAL_FIX_BTMAPS - 1
+        elif "4.1" <= self.kversion < "4.6":
+            # FIX_BTMAP_BEGIN ~ FIX_BTMAP_END
+            return end - self.TOTAL_FIX_BTMAPS
+        elif "4.6" <= self.kversion < "6.9":
+            # FIX_BTMAP_BEGIN ~ FIX_BTMAP_END, FIX_PTE ~ FIXPGD
+            return end - self.TOTAL_FIX_BTMAPS - 4
+        elif "6.9" <= self.kversion:
+            # FIX_BTMAP_BEGIN ~ FIX_BTMAP_END, FIX_PTE ~ FIXPGD
+            return end - self.TOTAL_FIX_BTMAPS - 5
+        return None
+
+    @property
+    def __end_of_fixed_addresses(self):
+        return KernelAddressHeuristicFinder.get_end_of_fixed_addresses()
+
+    @property
+    def FIXADDR_SIZE(self):
+        if self.__end_of_permanent_fixed_addresses is None:
+            return None
+        return self.__end_of_permanent_fixed_addresses << self.PAGE_SHIFT
+
+    @property
+    def FIXADDR_START(self):
+        if self.FIXADDR_TOP is None:
+            return None
+        if self.FIXADDR_SIZE is None:
+            return None
+        return self.FIXADDR_TOP - self.FIXADDR_SIZE
 
     @property # noqa
     def EARLYCON_IOBASE(self):
@@ -56067,19 +56167,32 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @switch_to_intel_syntax
     def get_end_of_fixed_addresses():
-        if not is_x86_64() and not is_x86_32():
+        if not is_x86() and not is_arm64():
             return
 
         kversion = Kernel.kernel_version()
 
         # plan 1 (available v2.6.27 ~)
-        if kversion and kversion >= "2.6.27":
-            addr = Symbol.get_ksymaddr("__native_set_fixmap")
-            if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
-                g = KernelAddressHeuristicFinderUtil.x64_x86_cmp_const(res, skip_msb_check=True)
-                for x in g:
-                    return x
+        if is_x86():
+            if kversion and kversion >= "2.6.27":
+                addr = Symbol.get_ksymaddr("__native_set_fixmap")
+                if addr:
+                    res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_cmp_const(res, skip_msb_check=True)
+                    for x in g:
+                        return x
+
+        # plan 2 (available v3.19 ~)
+        if is_arm64():
+            if kversion and kversion >= "3.19":
+                addr = Symbol.get_ksymaddr("__set_fixmap")
+                if addr:
+                    res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                    g = KernelAddressHeuristicFinderUtil.aarch64_cmp_const(res, skip_msb_check=True)
+                    for x in g:
+                        if x <= 1:
+                            continue
+                        return x
         return None
 
     @staticmethod
@@ -72449,7 +72562,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         "* `struct page` has been split into `struct page` and `struct slab` since kernel 5.17. The structure name used for",
         "  SLUB has been changed to `struct slab`. However, GEF displays it as `struct page` both before and after 5.17.",
         "* If all chunks in certain page (or slab) are in use, they will not be displayed this command. This because they cannot",
-        "  be reached by parsing from `slab_caches`. So use `slab-contains` (if you know the address) or `pagewalk-with-hints`",
+        "  be reached by parsing from `slab_caches`. So use `slab-contains` (if you know the address) or `kvmmap`",
         "  (if you'd to know the whole even if it takes time).",
         "",
         "* To see the CONFIG_SLAB_VIRTUAL ascii diagram, execute `slub-dump --help-for-slab-virtual`.",
@@ -76376,7 +76489,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         "  | ...                                      |",
         "  +------------------------------------------+",
         "",
-        "You can combine this result with information of in-use space. Try using `pagewalk-with-hints` command.",
+        "You can combine this result with information of in-use space. Try using `kvmmap` command.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -96566,12 +96679,12 @@ class SwitchELCommand(GenericCommand):
 
 
 @register_command
-class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
-    """Add hint to the result of pagewalk."""
+class KernelVMMapCommand(GenericCommand, BufferingOutput):
+    """Prints kernel memory map."""
 
-    _cmdline_ = "pagewalk-with-hints"
+    _cmdline_ = "kvmmap"
     _category_ = "08-a. Qemu-system Cooperation - Memory Map"
-    _aliases_ = ["kvmmap"]
+    _aliases_ = ["pagewalk-with-hints"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-U", "--exclude-user", action="store_true", help="exclude userland memory.")
@@ -96970,18 +97083,10 @@ class PagewalkWithHintsCommand(GenericCommand, BufferingOutput):
 
     def resolve_fixmap(self):
         self.quiet_info("resolve fixmap")
-
-        if is_x86_64():
-            self.insert_region_range(0xffff_ffff_ff50_0000, 0xffff_ffff_ff60_0000, "fixmap")
-
-        elif is_arm64():
-            self.insert_region_range(0xffff_fbff_f000_0000, 0xffff_fbff_fe00_0000, "fixmap")
-
-        elif is_x86_32() or is_arm32():
-            FIXADDR_START = KernelAddressHeuristicFinder.consts().FIXADDR_START
-            FIXADDR_TOP = KernelAddressHeuristicFinder.consts().FIXADDR_TOP
-            if FIXADDR_START and FIXADDR_TOP:
-                self.insert_region_range(FIXADDR_START, FIXADDR_TOP, "fixmap")
+        FIXADDR_START = KernelAddressHeuristicFinder.consts().FIXADDR_START
+        FIXADDR_TOP = KernelAddressHeuristicFinder.consts().FIXADDR_TOP
+        if FIXADDR_START and FIXADDR_TOP:
+            self.insert_region_range(FIXADDR_START, FIXADDR_TOP, "fixmap")
         return
 
     def resolve_vsyscall(self):
