@@ -72688,6 +72688,15 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         """
         struct kmem_cache {
             struct kmem_cache_cpu *cpu_slab;         // In fact, the offset value, not the pointer
+            struct lock_class_key {                            // CONFIG_LOCKDEP=y && v6.18~
+                union {                                        // CONFIG_LOCKDEP=y && v6.18~
+                    struct hlist_node hash_entry;              // CONFIG_LOCKDEP=y && v6.18~
+                    struct lockdep_subclass_key {              // CONFIG_LOCKDEP=y && v6.18~
+                        char __one_byte;                       // CONFIG_LOCKDEP=y && v6.18~
+                    } __attribute__ ((__packed__)) subkeys[8]; // CONFIG_LOCKDEP=y && v6.18~
+                };                                             // CONFIG_LOCKDEP=y && v6.18~
+            } lock_key;                                        // CONFIG_LOCKDEP=y && v6.18~
+            struct slub_percpu_sheaves __percpu *cpu_sheaves;  // v6.18~
             slab_flags_t flags;                      // unsigned int (+ padding 4 byte)
             unsigned long min_partial;
             unsigned int size;
@@ -73218,6 +73227,15 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     """
     struct kmem_cache {
         struct kmem_cache_cpu *cpu_slab;         // In fact, the offset value, not the pointer
+        struct lock_class_key {                            // CONFIG_LOCKDEP=y && v6.18~
+            union {                                        // CONFIG_LOCKDEP=y && v6.18~
+                struct hlist_node hash_entry;              // CONFIG_LOCKDEP=y && v6.18~
+                struct lockdep_subclass_key {              // CONFIG_LOCKDEP=y && v6.18~
+                    char __one_byte;                       // CONFIG_LOCKDEP=y && v6.18~
+                } __attribute__ ((__packed__)) subkeys[8]; // CONFIG_LOCKDEP=y && v6.18~
+            };                                             // CONFIG_LOCKDEP=y && v6.18~
+        } lock_key;                                        // CONFIG_LOCKDEP=y && v6.18~
+        struct slub_percpu_sheaves __percpu *cpu_sheaves;  // v6.18~
         slab_flags_t flags;                      // unsigned int (+ padding 4 byte)
         unsigned long min_partial;
         unsigned int size;
@@ -73420,17 +73438,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.kmem_cache_offset_name = self.kmem_cache_offset_list - current_arch.ptrsize
         self.quiet_info("offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name))
 
-        # offsetof(kmem_cache, offset)
-        top = kmem_caches[0] - self.kmem_cache_offset_list
-        object_size = read_int32_from_memory(top + current_arch.ptrsize * 3 + 4)
-        maybe_recip = read_int32_from_memory(top + current_arch.ptrsize * 3 + 4 + 4)
-        if object_size < maybe_recip or (maybe_recip % 8) != 0:
-            self.kmem_cache_offset_offset = current_arch.ptrsize * 3 + 4 + 4 + 8
-        else:
-            self.kmem_cache_offset_offset = current_arch.ptrsize * 3 + 4 + 4
-        self.quiet_info("offsetof(kmem_cache, offset): {:#x}".format(self.kmem_cache_offset_offset))
-
         # for CONFIG_SLAB_VIRTUAL
+        top = kmem_caches[0] - self.kmem_cache_offset_list
         self.resolve_for_CONFIG_SLAB_VIRTUAL(top)
 
         # offsetof(kmem_cache, cpu_slab)
@@ -73438,16 +73447,30 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(kmem_cache, cpu_slab): {:#x}".format(self.kmem_cache_offset_cpu_slab))
 
         # offsetof(kmem_cache, flags)
-        self.kmem_cache_offset_flags = current_arch.ptrsize
+        if kversion < "6.18":
+            CONFIG_LOCKDEP = Symbol.get_ksymaddr("fs_reclaim_acquire")
+            if CONFIG_LOCKDEP:
+                self.kmem_cache_offset_flags = current_arch.ptrsize * 3
+            else:
+                self.kmem_cache_offset_flags = current_arch.ptrsize
+        else:
+            self.kmem_cache_offset_flags = current_arch.ptrsize * 2
         self.quiet_info("offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags))
 
         # offsetof(kmem_cache, size)
-        self.kmem_cache_offset_size = current_arch.ptrsize * 3
+        self.kmem_cache_offset_size = self.kmem_cache_offset_flags + current_arch.ptrsize * 2
         self.quiet_info("offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size))
 
         # offsetof(kmem_cache, object_size)
-        self.kmem_cache_offset_object_size = current_arch.ptrsize * 3 + 4
+        self.kmem_cache_offset_object_size = self.kmem_cache_offset_size + 4
         self.quiet_info("offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size))
+
+        # offsetof(kmem_cache, offset)
+        if kversion < "5.9":
+            self.kmem_cache_offset_offset = self.kmem_cache_offset_object_size + 4
+        else:
+            self.kmem_cache_offset_offset = self.kmem_cache_offset_object_size + 4 + 8
+        self.quiet_info("offsetof(kmem_cache, offset): {:#x}".format(self.kmem_cache_offset_offset))
 
         # offsetof(kmem_cache, red_left_pad)
         self.kmem_cache_offset_red_left_pad = self.kmem_cache_offset_name - current_arch.ptrsize
@@ -74445,6 +74468,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
     """
     struct kmem_cache {
+        struct slub_percpu_sheaves __percpu *cpu_sheaves; // v6.18~
         slab_flags_t flags;                      // unsigned int (+ padding 4 byte)
         unsigned long min_partial;
         unsigned int size;
@@ -74517,6 +74541,11 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             if not self.args.meta and not self.args.rescan:
                 return True
 
+        kversion = Kernel.kernel_version()
+        if not kversion:
+            self.quiet_err("Failed to resolve kernel version")
+            return False
+
         # resolve slab_caches
         self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
         if self.slab_caches is None:
@@ -74554,21 +74583,24 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         self.kmem_cache_offset_name = self.kmem_cache_offset_list - current_arch.ptrsize
         self.quiet_info("offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name))
 
-        # offsetof(kmem_cache, offset)
-        self.kmem_cache_offset_offset = current_arch.ptrsize * 2 + 4 + 4 + 8
-        self.quiet_info("offsetof(kmem_cache, offset): {:#x}".format(self.kmem_cache_offset_offset))
-
         # offsetof(kmem_cache, flags)
-        self.kmem_cache_offset_flags = 0
+        if kversion < "6.18":
+            self.kmem_cache_offset_flags = 0
+        else:
+            self.kmem_cache_offset_flags = current_arch.ptrsize
         self.quiet_info("offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags))
 
         # offsetof(kmem_cache, size)
-        self.kmem_cache_offset_size = current_arch.ptrsize * 2
+        self.kmem_cache_offset_size = self.kmem_cache_offset_flags + current_arch.ptrsize * 2
         self.quiet_info("offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size))
 
         # offsetof(kmem_cache, object_size)
-        self.kmem_cache_offset_object_size = current_arch.ptrsize * 2 + 4
+        self.kmem_cache_offset_object_size = self.kmem_cache_offset_size + 4
         self.quiet_info("offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size))
+
+        # offsetof(kmem_cache, offset)
+        self.kmem_cache_offset_offset = self.kmem_cache_offset_object_size + 4 + 8
+        self.quiet_info("offsetof(kmem_cache, offset): {:#x}".format(self.kmem_cache_offset_offset))
 
         # offsetof(kmem_cache, red_left_pad)
         self.kmem_cache_offset_red_left_pad = self.kmem_cache_offset_name - current_arch.ptrsize
