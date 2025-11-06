@@ -74273,6 +74273,19 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         self.quiet_info("Wait for memory scan")
 
+        allocator = Kernel.get_slab_type()
+        if allocator == "SLUB":
+            pass
+        elif allocator == "SLUB-TINY":
+            self.quiet_err("Unsupported; You should use `slub-tiny-dump`")
+            return
+        elif allocator == "SLAB":
+            self.quiet_err("Unsupported; You should use `slab-dump`")
+            return
+        elif allocator == "SLOB":
+            self.quiet_err("Unsupported; You should use `slob-dump`")
+            return
+
         # The slub-dump command is used by page2virt and kmagic to find vmemmap and sizeof(struct page).
         # Therefore, slub-dump itself may be called recursively (up to once) from slub-dump.
         # If a recursive call is made, various parameters held by self will be destroyed.
@@ -74285,11 +74298,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     gdb.execute("page2virt 0", to_string=True)
                     # self.args will be overwritten. this is workaround.
                     self.args = args # revert
-
-        allocator = Kernel.get_slab_type()
-        if allocator != "SLUB":
-            self.quiet_err("Unsupported SLAB, SLOB, SLUB_TINY")
-            return
 
         if args.no_byte_swap is None:
             self.swap = None
@@ -74986,6 +74994,19 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
+        allocator = Kernel.get_slab_type()
+        if allocator == "SLUB":
+            self.quiet_err("Unsupported; You should use `slub-dump`")
+            return
+        elif allocator == "SLUB-TINY":
+            pass
+        elif allocator == "SLAB":
+            self.quiet_err("Unsupported; You should use `slab-dump`")
+            return
+        elif allocator == "SLOB":
+            self.quiet_err("Unsupported; You should use `slob-dump`")
+            return
+
         # The slub-tiny-dump command is used by page2virt and kmagic to find vmemmap and sizeof(struct page).
         # Therefore, slub-tiny-dump itself may be called recursively (up to once) from slub-tiny-dump.
         # If a recursive call is made, various parameters held by self will be destroyed.
@@ -74998,11 +75019,6 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
                     gdb.execute("page2virt 0", to_string=True)
                     # self.args will be overwritten. this is workaround.
                     self.args = args # revert
-
-        allocator = Kernel.get_slab_type()
-        if allocator != "SLUB_TINY":
-            self.quiet_err("Unsupported SLUB, SLAB, SLOB")
-            return
 
         self.maps = None
         self.out = []
@@ -75818,8 +75834,16 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("Wait for memory scan")
 
         allocator = Kernel.get_slab_type()
-        if allocator != "SLAB":
-            self.quiet_err("Unsupported SLUB, SLOB, SLUB_TINY")
+        if allocator == "SLUB":
+            self.quiet_err("Unsupported; You should use `slub-dump`")
+            return
+        elif allocator == "SLUB-TINY":
+            self.quiet_err("Unsupported; You should use `slub-tiny-dump`")
+            return
+        elif allocator == "SLAB":
+            pass
+        elif allocator == "SLOB":
+            self.quiet_err("Unsupported; You should use `slob-dump`")
             return
 
         self.maps = None
@@ -76200,9 +76224,17 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("Wait for memory scan")
 
         allocator = Kernel.get_slab_type()
-        if allocator != "SLOB":
-            self.quiet_err("Unsupported SLUB, SLAB, SLUB_TINY")
+        if allocator == "SLUB":
+            self.quiet_err("Unsupported; You should use `slub-dump`")
             return
+        elif allocator == "SLUB-TINY":
+            self.quiet_err("Unsupported; You should use `slub-tiny-dump`")
+            return
+        elif allocator == "SLAB":
+            self.quiet_err("Unsupported; You should use `slab-dump`")
+            return
+        elif allocator == "SLOB":
+            pass
 
         if (args.large, args.medium, args.small) == (False, False, False):
             self.args.large = True
