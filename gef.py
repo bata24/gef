@@ -38580,6 +38580,7 @@ asmlinkage long sys_lsm_set_self_attr(unsigned int attr, struct lsm_ctx __user *
 asmlinkage long sys_lsm_list_modules(u64 __user *ids, u32 __user *size, u32 flags);
 asmlinkage long sys_ioperm(unsigned long from, unsigned long num, int on);
 asmlinkage long sys_uretprobe(void);
+asmlinkage long sys_uprobe(void);
 asmlinkage long sys_pciconfig_read(unsigned long bus, unsigned long dfn, unsigned long off, unsigned long len, void __user *buf);
 asmlinkage long sys_pciconfig_write(unsigned long bus, unsigned long dfn, unsigned long off, unsigned long len, void __user *buf);
 asmlinkage long sys_pciconfig_iobase(long which, unsigned long bus, unsigned long devfn);
@@ -39131,6 +39132,7 @@ x64_syscall_tbl = """
 333     common  io_pgetevents           sys_io_pgetevents
 334     common  rseq                    sys_rseq
 335     common  uretprobe               sys_uretprobe
+336     common  uprobe                  sys_uprobe
 424     common  pidfd_send_signal       sys_pidfd_send_signal
 425     common  io_uring_setup          sys_io_uring_setup
 426     common  io_uring_enter          sys_io_uring_enter
@@ -64870,28 +64872,29 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
         self.members["address_space_operations"] = adapt_to_kernel_version(address_space_operations)
 
         vm_operations_struct = [
-            # type       name                                       minver     maxver
-            ["func_ptr", "open",                                    None,      None],
-            ["func_ptr", "close",                                   None,      None],
-            ["func_ptr", "may_split",                               "5.11.0",  None],
-            ["func_ptr", "split",                                   "4.14.0",  "5.10.186"],
-            ["func_ptr", "mremap",                                  "4.3.9",   None],
-            ["func_ptr", "mprotect",                                "5.11.0",  None],
-            ["func_ptr", "fault",                                   None,      None],
-            ["func_ptr", "huge_fault",                              "4.11.0",  None],
-            ["func_ptr", "pmd_fault",                               "4.3.0",   "4.10.17"],
-            ["func_ptr", "map_pages",                               "3.15.0",  None],
-            ["func_ptr", "pagesize",                                "4.17.0",  None],
-            ["func_ptr", "page_mkwrite",                            None,      None],
-            ["func_ptr", "pfn_mkwrite",                             "4.1.0",   None],
-            ["func_ptr", "access",                                  None,      None],
-            ["func_ptr", "name",                                    "3.16.0",  None],
-            ["func_ptr", "set_policy (CONFIG_NUMA=y)",              None,      None],
-            ["func_ptr", "get_policy (CONFIG_NUMA=y)",              None,      None],
-            ["func_ptr", "migrate (CONFIG_NUMA=y)",                 None,      "3.18.140"],
-            ["func_ptr", "find_special_page",                       "4.0.0",   None],
-            ["func_ptr", "remap_pages",                             "3.17.0",  "3.19.8"],
-            ["func_ptr", "remap_pages",                             "3.7.0",   "3.16.58"],
+            # type       name                                            minver     maxver
+            ["func_ptr", "open",                                         None,      None],
+            ["func_ptr", "close",                                        None,      None],
+            ["func_ptr", "may_split",                                    "5.11.0",  None],
+            ["func_ptr", "split",                                        "4.14.0",  "5.10.186"],
+            ["func_ptr", "mremap",                                       "4.3.9",   None],
+            ["func_ptr", "mprotect",                                     "5.11.0",  None],
+            ["func_ptr", "fault",                                        None,      None],
+            ["func_ptr", "huge_fault",                                   "4.11.0",  None],
+            ["func_ptr", "pmd_fault",                                    "4.3.0",   "4.10.17"],
+            ["func_ptr", "map_pages",                                    "3.15.0",  None],
+            ["func_ptr", "pagesize",                                     "4.17.0",  None],
+            ["func_ptr", "page_mkwrite",                                 None,      None],
+            ["func_ptr", "pfn_mkwrite",                                  "4.1.0",   None],
+            ["func_ptr", "access",                                       None,      None],
+            ["func_ptr", "name",                                         "3.16.0",  None],
+            ["func_ptr", "set_policy (CONFIG_NUMA=y)",                   None,      None],
+            ["func_ptr", "get_policy (CONFIG_NUMA=y)",                   None,      None],
+            ["func_ptr", "migrate (CONFIG_NUMA=y)",                      None,      "3.18.140"],
+            ["func_ptr", "find_special_page",                            "4.0.0",   "6.17.7"],
+            ["func_ptr", "find_normal_page (CONFIG_FIND_NORMAL_PAGE=y)", "6.18.0",  None],
+            ["func_ptr", "remap_pages",                                  "3.17.0",  "3.19.8"],
+            ["func_ptr", "remap_pages",                                  "3.7.0",   "3.16.58"],
         ]
         self.members["vm_operations_struct"] = adapt_to_kernel_version(vm_operations_struct)
 
@@ -65262,7 +65265,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             # type       name                                       minver     maxver
             ["char*",    "name",                                    None,      None],
             ["char*",    "real_ns_name",                            "4.12.0",  None],
-            ["int",      "type",                                    None,      None],
+            ["int",      "type",                                    None,      "6.17.7"],
             ["func_ptr", "get",                                     None,      None],
             ["func_ptr", "put",                                     None,      None],
             ["func_ptr", "install",                                 None,      None],
@@ -100554,7 +100557,7 @@ class KmallocTracerCommand(GenericCommand):
         EXPORT_SYMBOL(kmem_cache_alloc_node_noprof);
         EXPORT_SYMBOL(kmem_cache_alloc_noprof);
         EXPORT_SYMBOL(krealloc_noprof);
-        [6.11~6.16-rc7]
+        [6.11~6.17]
         EXPORT_SYMBOL(__kmalloc_cache_node_noprof);
         EXPORT_SYMBOL(__kmalloc_cache_noprof);
         EXPORT_SYMBOL(__kmalloc_large_node_noprof);
@@ -100567,6 +100570,21 @@ class KmallocTracerCommand(GenericCommand):
         EXPORT_SYMBOL(kmem_cache_alloc_node_noprof);
         EXPORT_SYMBOL(kmem_cache_alloc_noprof);
         EXPORT_SYMBOL(krealloc_noprof);
+        [6.18~]
+        EXPORT_SYMBOL(__kmalloc_cache_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_cache_noprof);
+        EXPORT_SYMBOL(__kmalloc_large_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_large_noprof);
+        EXPORT_SYMBOL(__kmalloc_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_node_track_caller_noprof);
+        EXPORT_SYMBOL(__kmalloc_noprof);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmem_cache_alloc_lru_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_node_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_noprof);
+        EXPORT_SYMBOL(krealloc_node_align_noprof);
+        EXPORT_SYMBOL_GPL(kfree_nolock);
+        EXPORT_SYMBOL_GPL(kmalloc_nolock_noprof);
         """
 
         # This list may be incomplete.
@@ -100659,7 +100677,7 @@ class KmallocTracerCommand(GenericCommand):
                 ["kmem_cache_alloc_noprof", -1],
                 ["krealloc_noprof", 1],
             ]
-        elif kversion >= "6.11": # v6.11 ~ v6.16-rc7
+        elif kversion < "6.18":
             kmalloc_syms = [
                 ["__kmalloc_cache_node_noprof", 3],
                 ["__kmalloc_cache_noprof", 2],
@@ -100673,10 +100691,31 @@ class KmallocTracerCommand(GenericCommand):
                 ["kmem_cache_alloc_noprof", -1],
                 ["krealloc_noprof", 1],
             ]
+        else:
+            kmalloc_syms = [
+                ["__kmalloc_cache_node_noprof", 3],
+                ["__kmalloc_cache_noprof", 2],
+                ["__kmalloc_large_node_noprof", 0],
+                ["__kmalloc_large_noprof", 0],
+                ["__kmalloc_node_noprof", 0],
+                ["__kmalloc_node_track_caller_noprof", 0],
+                ["__kmalloc_noprof", 0],
+                ["kmem_cache_alloc_lru_noprof", -1],
+                ["kmem_cache_alloc_node_noprof", -1],
+                ["kmem_cache_alloc_noprof", -1],
+                ["krealloc_node_align_noprof", 1],
+                ["kmalloc_nolock_noprof", 0],
+            ]
 
-        kfree_syms = [
-            ["kfree", 0],
-        ]
+        if kversion < "6.18":
+            kfree_syms = [
+                ["kfree", 0],
+            ]
+        else:
+            kfree_syms = [
+                ["kfree", 0],
+                ["kfree_nolock", 0],
+            ]
 
         breakpoints = []
         for sym, index_of_size_arg in kmalloc_syms:

@@ -317,7 +317,7 @@ Fetch and place the `glibc` sources locally as shown below.
 # About the Guest (Debugged) Environment
 
 ## What Linux kernel versions does GEF support as guests in qemu-system?
-Most commands have been validated on kernels from 3.x up to 6.17.x. Newer kernels may work but are not fully validated.
+Most commands have been validated on kernels from 3.x up to 6.18.x. Newer kernels may work but are not fully validated.
 
 However, I have not verified every kernel version.
 For example, certain symbols in some versions may not be supported by heuristic symbol detection.
