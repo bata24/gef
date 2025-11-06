@@ -14307,10 +14307,19 @@ class BufferingOutput:
         if not self.out:
             return
         if check_terminal_size:
-            if len(self.out) > GefUtil.get_terminal_size()[0]:
+            t_height, t_width = GefUtil.get_terminal_size()
+            if len(self.out) > t_height:
                 less = not self.args.no_pager
             else:
-                less = False
+                h = 0
+                for line in "\n".join(self.out).splitlines():
+                    line = Color.remove_color(line)
+                    h += (len(line) // t_width) + 1
+                    if h > t_height:
+                        less = not self.args.no_pager
+                        break
+                else:
+                    less = False
         else:
             less = not self.args.no_pager
         gef_print("\n".join(self.out), less=less, skip_color=skip_color)
