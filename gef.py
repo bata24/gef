@@ -1041,16 +1041,31 @@ class Color:
     def cyanify(msg):
         return Color.colorify(msg, "cyan")
 
+    NO_COLOR = None
+
+    @staticmethod
+    def disable_color():
+        if Config.get_gef_setting("gef.disable_color") is True:
+            return True
+        if Color.NO_COLOR is None:
+            if os.environ.get("NO_COLOR", None):
+                Color.NO_COLOR = True
+            else:
+                Color.NO_COLOR = False
+        if Color.NO_COLOR:
+            return True
+        return False
+
     @staticmethod
     def colorify(text, attrs):
         """Color text according to the given attributes."""
-        if Config.get_gef_setting("gef.disable_color") is True:
-            return text
+        if Color.disable_color():
+            return str(text)
 
         colors = Color.colors
         escapes = [colors[attr] for attr in attrs.split() if attr in colors]
         if len(escapes) == 0:
-            return text
+            return str(text)
 
         out = "".join(escapes) + str(text) + colors["normal"]
         return out
@@ -21444,9 +21459,10 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
         self.parse_heap_info(arena)
 
         # colorize
-        for i in range(len(self.out)):
-            self.out[i] = re.sub("  ([a-zA-Z_]+) =", "  \033[36m\\1\033[0m =", self.out[i])
-            self.out[i] = re.sub(" = (0x[0-9a-f]+)", " = \033[34m\\1\033[0m", self.out[i])
+        if not Color.disable_color():
+            for i in range(len(self.out)):
+                self.out[i] = re.sub("  ([a-zA-Z_]+) =", "  \033[36m\\1\033[0m =", self.out[i])
+                self.out[i] = re.sub(" = (0x[0-9a-f]+)", " = \033[34m\\1\033[0m", self.out[i])
 
         self.print_output()
         return
@@ -106792,7 +106808,7 @@ class Gef:
         """GEF custom prompt function."""
         if Config.get_gef_setting("gef.readline_compat") is True:
             return "gef> "
-        if Config.get_gef_setting("gef.disable_color") is True:
+        if Color.disable_color():
             return "gef> "
         if is_alive():
             return "\001\033[1;32m\002gef> \001\033[0m\002"
