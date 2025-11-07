@@ -66879,7 +66879,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                     struct rb_root head;             // ~v5.3
                     struct timerqueue_node *next;    // ~v5.3
                 } active;
-                ktime_t (*get_time)(void);
+                ktime_t (*get_time)(void); // ~v6.17
                 ktime_t offset;
             } __hrtimer_clock_base_align clock_base[HRTIMER_MAX_CLOCK_BASES];
         } ____cacheline_aligned;
@@ -67126,6 +67126,11 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         kversion = Kernel.kernel_version()
         if kversion < "4.8":
             err("Unsupported before v4.8")
+            return
+        if kversion >= "6.18":
+            # Read-write function pointers have been removed,
+            # so there is no longer any point in displaying them with this command.
+            err("Unsupported after v6.18")
             return
 
         self.quiet_info("Wait for memory scan")
