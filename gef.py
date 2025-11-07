@@ -85242,12 +85242,21 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
     def get_roots(self, force_heuristic):
         def get_root(root_string):
+            # newer version
+            try:
+                root_addr = AddressUtil.parse_address("&'blink::Partitions::{:s}'".format(root_string))
+                Root = collections.namedtuple("Root", ["name", "address"])
+                return [Root(root_string, root_addr)]
+            except gdb.error:
+                pass
+            # older version
             try:
                 root_addr = AddressUtil.parse_address("&'WTF::Partitions::{:s}'".format(root_string))
                 Root = collections.namedtuple("Root", ["name", "address"])
                 return [Root(root_string, root_addr)]
             except gdb.error:
-                return []
+                pass
+            return []
 
         roots = []
         # user specific
@@ -85316,14 +85325,13 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 internal::ReservationOffsetTable reservation_offset_table;
                 bool eventually_zero_freed_memory = false;
                 internal::SchedulerLoopQuarantineConfig scheduler_loop_quarantine;
-                bool fewer_memory_regions = false;
                 bool memory_tagging_enabled_ = false;
                 bool use_random_memory_tagging_enabled_ = false;
                 TagViolationReportingMode memory_tagging_reporting_mode_ = TagViolationReportingMode::kUndefined;
                 ThreadIsolationOption thread_isolation;
                 uint32_t extras_size = 0;
                 std::ptrdiff_t shadow_pool_offset_ = 0;
-            } settings; // 64 bytes or 128 bytes
+            } settings; // 0x40 bytes or 0x80 bytes or 0xc0 bytes
             internal::Lock lock_;  // 8 bytes
             Bucket buckets[BucketIndexLookup::kNumBuckets] = {};
             Bucket sentinel_bucket{};
@@ -85360,13 +85368,18 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             size_t scheduler_loop_quarantine_branch_capacity_in_bytes = 0;
             internal::SchedulerLoopQuarantineRoot scheduler_loop_quarantine_root;
             internal::GlobalSchedulerLoopQuarantineBranch scheduler_loop_quarantine;
+            internal::GlobalSchedulerLoopQuarantineBranch scheduler_loop_quarantine_for_advanced_memory_safety_checks;
         };
         """
         x = read_int_from_memory(current + 0x40 + 8) # sizeof(struct Settings) + sizeof(lock_)
         if is_valid_addr(x): # buckets[0]->active_slot_spans_head
             current += 0x40 # sizeof(struct Settings) is 1 cache line
         else:
-            current += 0x80 # sizeof(struct Settings) is 2 cache lines
+            x = read_int_from_memory(current + 0x80 + 8) # sizeof(struct Settings) + sizeof(lock_)
+            if is_valid_addr(x): # buckets[0]->active_slot_spans_head
+                current += 0x80 # sizeof(struct Settings) is 2 cache lines
+            else:
+                current += 0xc0 # sizeof(struct Settings) is 3 cache lines
 
         root["lock_"] = read_int64_from_memory(current)
         current += 8
@@ -85459,6 +85472,8 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         root["scheduler_loop_quarantine_root"] = read_int_from_memory(current)
         current += ptrsize
         root["scheduler_loop_quarantine"] = read_int_from_memory(current)
+        current += ptrsize
+        root["scheduler_loop_quarantine_for_advanced_memory_safety_checks"] = read_int_from_memory(current)
         current += ptrsize
 
         Root = collections.namedtuple("Root", root.keys())
@@ -85768,6 +85783,10 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             root.scheduler_loop_quarantine_root,
         ))
         self.out.append("internal::GlobalSchedulerLoopQuarantineBranch scheduler_loop_quarantine: {:#x}".format(
+            root.scheduler_loop_quarantine,
+        ))
+        self.out.append("internal::GlobalSchedulerLoopQuarantineBranch "
+                        "scheduler_loop_quarantine_for_advanced_memory_safety_checks: {:#x}".format(
             root.scheduler_loop_quarantine,
         ))
         return
