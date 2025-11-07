@@ -14308,22 +14308,20 @@ class BufferingOutput:
             return
 
         def do_check_term_size(lines):
-            less = False
-            t_height, t_width = GefUtil.get_terminal_size()
             # rough check
-            if len(self.out) > t_height:
-                less = not self.args.no_pager
-            else:
-                # detailed check
-                h = 0
-                for element in lines:
-                    for line in element.splitlines():
-                        line = Color.remove_color(line)
-                        h += (len(line) // t_width) + 1
-                        if h > t_height:
-                            less = not self.args.no_pager
-                            return less
-            return less
+            t_height, t_width = GefUtil.get_terminal_size()
+            if len(lines) > t_height:
+                return not self.args.no_pager
+
+            # detailed check
+            h = 0
+            for element in lines:
+                for line in element.splitlines():
+                    line = Color.remove_color(line)
+                    h += (len(line) // t_width) + 1
+                    if h > t_height:
+                        return not self.args.no_pager
+            return False
 
         if not check_terminal_size:
             less = not self.args.no_pager
