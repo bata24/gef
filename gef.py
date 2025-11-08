@@ -17959,8 +17959,8 @@ class SearchPatternCommand(GenericCommand):
             step = 0x10 * gef_getpagesize()
         else:
             step = 0x400 * gef_getpagesize()
-        locations = []
 
+        locations = []
         tqdm = GefUtil.get_tqdm(self.args.verbose)
         old_mem_target = b""
         for chunk_addr in tqdm(range(start_address, end_address, step), leave=False):
@@ -18048,16 +18048,17 @@ class SearchPatternCommand(GenericCommand):
 
     def process_by_address(self, patterns, start, end):
         extra = " (phys)" if self.args.phys else ""
-
         for pattern in patterns:
-            if pattern:
-                info("Searching for '{:s}' in {:#x}-{:#x}{:s}".format(
-                    Color.yellowify(pattern), start, end, extra,
-                ))
+            if not pattern:
+                continue
 
-                ret = self.search_pattern_by_address(pattern, start, end)
-                for found_loc in ret:
-                    self.print_loc(found_loc)
+            info("Searching for '{:s}' in {:#x}-{:#x}{:s}".format(
+                Color.yellowify(pattern), start, end, extra,
+            ))
+
+            ret = self.search_pattern_by_address(pattern, start, end)
+            for found_loc in ret:
+                self.print_loc(found_loc)
         return
 
     def get_process_maps_qemu_system(self):
@@ -18130,22 +18131,23 @@ class SearchPatternCommand(GenericCommand):
             if section_name and section_name not in section.path:
                 continue
 
-            # verbose print
+            # verbose: always print section before search
             if self.args.verbose:
-                self.print_section(section) # verbose: always print section before search
+                self.print_section(section)
 
             # search
-            start = section.page_start
-            end = section.page_end
-            ret = self.search_pattern_by_address(pattern, start, end) # search
+            ret = self.search_pattern_by_address(pattern, section.page_start, section.page_end)
 
-            if ret:
-                if not self.args.verbose:
-                    self.print_section(section) # default: print section if found
+            # default: print section if only found
+            if not self.args.verbose:
+                if ret:
+                    self.print_section(section)
 
+            # print
             for loc in ret:
                 self.print_loc(loc)
 
+            # loop check
             if not is_alive():
                 err("The process is dead")
                 break
@@ -18156,26 +18158,25 @@ class SearchPatternCommand(GenericCommand):
 
     def process_by_section(self, patterns, section_name=None):
         extra = " (phys)" if self.args.phys else ""
-
         for pattern in patterns:
-            if pattern:
-                if section_name is None:
-                    info("Searching for '{:s}' in {:s}{:s}".format(
-                        Color.yellowify(pattern), "whole memory", extra,
-                    ))
-                else:
-                    info("Searching for '{:s}' in {:s}{:s}".format(
-                        Color.yellowify(pattern), section_name, extra,
-                    ))
+            if not pattern:
+                continue
 
-                self.search_pattern_by_section(pattern, section_name)
+            if section_name is None:
+                area = "whole memory"
+            else:
+                area = section_name
+
+            info("Searching for '{:s}' in {:s}{:s}".format(
+                Color.yellowify(pattern), area, extra,
+            ))
+            self.search_pattern_by_section(pattern, section_name)
         return
 
     def create_patterns(self):
         if self.args.hex_regex:
             pattern = self.args.pattern.lower()
-            pattern_utf16 = None
-            return pattern, pattern_utf16
+            return (pattern,)
 
         # create normal pattern
         if self.args.hex: # "41414141" -> "\x41\x41\x41\x41"
@@ -18201,7 +18202,7 @@ class SearchPatternCommand(GenericCommand):
         if not self.args.disable_utf16:
             if isascii(pattern) and "\\" not in pattern:
                 pattern_utf16 = "".join([x + "\\x00" for x in pattern])
-        return pattern, pattern_utf16
+        return (pattern, pattern_utf16)
 
     @parse_args
     @only_if_gdb_running
@@ -18211,21 +18212,33 @@ class SearchPatternCommand(GenericCommand):
                 err("Unsupported")
                 return
 
-        # permission check
-        if len(args.perm) != 3:
-            err("Invalid permission length")
-            return
-        if args.perm[0] not in "rR":
-            err("Permission needs to start by `r`")
-            return
-        if args.perm[1] not in "wW-_?" or args.perm[2] not in "xX-_?":
-            err("Invalid permission")
-            return
+        # check permission
         if args.phys:
             info("Permission is ignored")
-            # fall through
+        else:
+            if len(args.perm) != 3:
+                err("Invalid permission length")
+                return
+            if args.perm[0] not in "rR":
+                err("Permission needs to start by `r`")
+                return
+            if args.perm[1] not in "wW-_?" or args.perm[2] not in "xX-_?":
+                err("Invalid permission")
+                return
 
-        patterns = self.create_patterns() # (pattern, pattern_utf16)
+        # check parameters
+        if args.interval and args.interval <= 0:
+            err("Invalid interval value")
+            return
+        if args.limit and args.limit <= 0:
+            err("Invalid limit value")
+            return
+        if args.max_region_size < 0x1000:
+            err("Invalid max-region-size")
+            return
+
+        # prepare pattern
+        patterns = self.create_patterns()
         if patterns is None:
             return
 
@@ -18266,8 +18279,7 @@ class SearchPatternCommand(GenericCommand):
                 self.process_by_section(patterns, section_name)
 
             else:
-                # search from whole memory
-                section_name = args.section
+                # search whole memory
                 self.process_by_section(patterns)
         return
 
