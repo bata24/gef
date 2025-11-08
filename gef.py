@@ -16116,6 +16116,9 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
             self.out.extend(hex_data_merged)
 
         # print
+        if not self.out:
+            err("Not found io_uring region")
+            return
         self.print_output(check_terminal_size=True)
         return
 
