@@ -17681,20 +17681,15 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
     def print_section(self, section):
         if isinstance(section, Address):
             section = section.section
-
         if section is None:
             return
-
         title = "In "
-
         if section.path:
             title += "'{}' ".format(Color.blueify(section.path))
-
-        title += "({:#x}-{:#x} [{}] ({:#x} bytes)".format(
+        title += "{:#x}-{:#x} [{}] ({:#x} bytes)".format(
             section.page_start, section.page_end,
             section.permission, section.page_end - section.page_start,
         )
-
         self.info_add_out(title)
         return
 
@@ -17772,7 +17767,7 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
         return
 
     def process_by_section(self, pattern, section_name=None):
-        """Search for a pattern within the whole userland memory."""
+        """Search for a pattern within selected (or whole) memory."""
 
         if section_name is None:
             self.info_add_out("Searching for '{:s}' in {:s}".format(Color.yellowify(pattern), "whole memory"))
@@ -17934,20 +17929,15 @@ class SearchPatternCommand(GenericCommand):
     def print_section(self, section):
         if isinstance(section, Address):
             section = section.section
-
         if section is None:
             return
-
         title = "In "
-
         if section.path:
             title += "'{}' ".format(Color.blueify(section.path))
-
-        title += "({:#x}-{:#x} [{}] ({:#x} bytes)".format(
+        title += "{:#x}-{:#x} [{}] ({:#x} bytes)".format(
             section.page_start, section.page_end, section.permission,
             section.page_end - section.page_start,
         )
-
         ok(title)
         return
 
@@ -18095,9 +18085,10 @@ class SearchPatternCommand(GenericCommand):
                 perm = line.split("/")[-1][:3]
                 perm = Permission.from_process_maps(perm.lower())
             yield Section(page_start=addr_start, page_end=addr_end, permission=perm)
+        return None
 
     def search_pattern_by_section(self, pattern, section_name=None):
-        """Search for a pattern within the whole userland memory."""
+        """Search for a pattern within selected (or whole) memory."""
         if is_qemu_system():
             maps_generator = self.get_process_maps_qemu_system()
         else:
