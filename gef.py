@@ -11641,7 +11641,7 @@ def parse_args(f):
             args = self.parser.parse_args(argv)
         except GefUtil.ArgparseExitProxyException as e:
             if not e.args[0]: # when --help or -h
-                self.usage()
+                self.usage(after_syntax_only=True)
             return
         except Exception as e:
             err("Invalid argument: {}".format(e))
@@ -14189,12 +14189,13 @@ class GenericCommand(gdb.Command):
             GefUtil.show_last_exception()
         return
 
-    def usage(self, simple=False):
+    def usage(self, simple=False, after_syntax_only=False):
         def tab(lines):
             return "\n".join(["  " + line for line in lines.splitlines()])
 
-        gef_print(Color.colorify("Syntax:", "bold yellow"))
-        gef_print(self._syntax_.strip())
+        if not after_syntax_only:
+            gef_print(Color.colorify("Syntax:", "bold yellow"))
+            gef_print(self._syntax_.strip())
 
         if self._example_:
             gef_print("")
