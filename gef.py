@@ -16227,7 +16227,10 @@ class ProcInfoCommand(GenericCommand):
             stat = open("/proc/{:d}/stat".format(pid), "r").read()
         except (FileNotFoundError, OSError):
             return []
-        name = re.search(r"\((.+)\)", stat)
+        try:
+            name = re.search(r"\((.+)\)", stat).group(1)
+        except IndexError:
+            name = "???"
         other = re.sub(r"\(.+\) ", "", stat).split()
         res = [int(other[0]), name, other[1]] + [int(x) for x in other[2:]]
         return res
@@ -16357,25 +16360,26 @@ class ProcInfoCommand(GenericCommand):
         gef_print(titlify("Process Information Additional"))
 
         pid = Pid.get_pid()
-        pgid = self.get_stat_of(pid)[4]
+        stat = self.get_stat_of(pid)
+        pgid = stat[4]
         pgid_exec = self.get_process_path_of(pgid)
         pgid_cmdline = self.get_cmdline_of(pgid)
         gef_print("{:30s}  ->  {:d}".format("Process Group ID", pgid))
         gef_print("{:30s}  ->  {!r}".format("  Executable", pgid_exec))
         gef_print("{:30s}  ->  {!r}".format("  Command Line", pgid_cmdline))
-        sid = self.get_stat_of(pid)[5]
+        sid = stat[5]
         sid_exec = self.get_process_path_of(sid)
         sid_cmdline = self.get_cmdline_of(sid)
         gef_print("{:30s}  ->  {:d}".format("Session ID", sid))
         gef_print("{:30s}  ->  {!r}".format("  Executable", sid_exec))
         gef_print("{:30s}  ->  {!r}".format("  Command Line", sid_cmdline))
-        tpgid = self.get_stat_of(pid)[7]
+        tpgid = stat[7]
         tpgid_exec = self.get_process_path_of(tpgid)
         tpgid_cmdline = self.get_cmdline_of(tpgid)
         gef_print("{:30s}  ->  {:d}".format("TTY Process Group ID", tpgid))
         gef_print("{:30s}  ->  {!r}".format("  Executable", tpgid_exec))
         gef_print("{:30s}  ->  {!r}".format("  Command Line", tpgid_cmdline))
-        ttynr = self.get_stat_of(pid)[6]
+        ttynr = stat[6]
         major, minor = (ttynr >> 8) & 0xff, ((ttynr >> 20) << 8) | (ttynr & 0xff)
         ttystr = self.get_tty_str(major, minor)
         gef_print("{:30s}  ->  {:d} ({!r})".format("  TTY Device Number", ttynr, ttystr))
