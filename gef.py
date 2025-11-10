@@ -98827,6 +98827,85 @@ class SlabVirtualCommand(GenericCommand):
 
 
 @register_command
+class HighMemDumpCommand(GenericCommand, BufferingOutput):
+    """Dump HighMem mappings."""
+
+    _cmdline_ = "highmem-dump"
+    _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("-s", "--sort-by-virt", action="store_true", help="sort by virtual address.")
+    group.add_argument("-S", "--sort-by-page", action="store_true", help="sort by page address.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    def dump_entry(self, page, virt):
+        heap_page_address_color = Config.get_gef_setting("theme.heap_page_address")
+        virt_str = Color.colorify_hex(virt, heap_page_address_color)
+        self.out.append("page:{:#010x}  virt:{:s}".format(page, virt_str))
+        return
+
+    def dump_slot(self, page_slot):
+        seen = [page_slot]
+        current = read_int_from_memory(page_slot)
+        while current not in seen:
+            seen.append(current)
+            if not is_valid_addr(current):
+                break
+            try:
+                page = read_int_from_memory(current - current_arch.ptrsize * 2)
+                virt = read_int_from_memory(current - current_arch.ptrsize * 1)
+            except gdb.MemoryError:
+                self.err_add_out("Corrupted? ({:#x})".format(current))
+                break
+            self.dump_entry(page, virt)
+            current = read_int_from_memory(current)
+        return
+
+    def dump_table(self, page_address_htable):
+        PA_HASH_ORDER = 7
+        sizeof_cache_align = 0x40
+        found = False
+        for i in range(2 ** PA_HASH_ORDER):
+            page_slot = page_address_htable + sizeof_cache_align * i
+            if not is_double_link_list(page_slot, min_len=1):
+                continue
+            self.quiet_add_out(titlify("slot[{:d}] @ {:#x}".format(i, page_slot)))
+            self.dump_slot(page_slot)
+            found = True
+
+        if not found:
+            self.info_add_out("Nothing to dump")
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_arch(arch=("x86_32", "ARM32"))
+    @only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.quiet_info("Wait for memory scan")
+
+        page_address_htable = KernelAddressHeuristicFinder.get_page_address_htable()
+        if page_address_htable is None:
+            err("Not found page_address_htable")
+            return
+
+        self.out = []
+        self.dump_table(page_address_htable)
+
+        if self.args.sort_by_page:
+            self.out = sorted(x for x in self.out if x.startswith("page:"))
+        elif self.args.sort_by_virt:
+            self.out = sorted([x for x in self.out if x.startswith("page:")], key=lambda x:x.split()[1])
+
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
 class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
     """Dump device information for qemu-escape."""
 
