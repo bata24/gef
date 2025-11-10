@@ -79800,6 +79800,10 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("--only-used", action="store_true", help="display only used area.")
     parser.add_argument("--only-freed", action="store_true", help="display only freed area.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("--hexdump-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
+                        help="hexdump `used chunks` if layout is resolved.")
+    parser.add_argument("--telescope-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
+                        help="telescope `used chunks` if layout is resolved.")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
@@ -80005,6 +80009,24 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
                 state = "freed"
                 flags_str = "-"
             self.out.append("{:<4d} {:6s} {:s} {:s} {:s}".format(idx, state, virt_str, size_str, flags_str))
+
+            # dump chunks
+            if self.args.hexdump_used and used:
+                try:
+                    peeked_data = read_memory(va_start, self.args.hexdump_used)
+                    h = hexdump(peeked_data, 0x10, base=va_start, unit=current_arch.ptrsize)
+                    self.out.append(h)
+                except Exception:
+                    pass
+
+            if self.args.telescope_used and used:
+                n = self.args.telescope_used // current_arch.ptrsize
+                for i in range(n):
+                    try:
+                        line = DereferenceCommand.pprint_dereferenced(va_start, i)
+                        self.out.append(line)
+                    except Exception:
+                        pass
         return
 
     @parse_args
