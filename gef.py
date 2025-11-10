@@ -19173,13 +19173,22 @@ class MprotectCommand(GenericCommand):
                         help="the address to change the permission.")
     parser.add_argument("permission", metavar="PERMISSION", nargs="?", default="rwx",
                         help="the permission you set to the LOCATION. (default: %(default)s)")
+    parser.add_argument("-s", "--size", type=AddressUtil.parse_address,
+                        help="the size to change the permission (0x1000 align).")
     _syntax_ = parser.format_help()
 
     _example_ = [
         "{0:s} $sp rwx",
-        "{0:s} 0x7ffff7e1b000 ___  # '_' means '-'",
+        "{0:s} 0x7ffff7e1b000 ___           # '_' means '-'",
+        "{0:s} 0x7ffff7e1b000 ___ -s 0x1000 # change only first 0x1000 bytes",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "By default, the permissions will be changed for the entire map including the specified address.",
+        "If a size is specified, the permissions will only be changed for the range of the specified address up to the size.",
+    ]
+    _note_ = "\n".join(_note_)
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -19199,8 +19208,22 @@ class MprotectCommand(GenericCommand):
         if sect is None:
             err("Unmapped address")
             return
-        location = sect.page_start
-        size = sect.page_end - sect.page_start
+
+        # size
+        if args.size is not None:
+            if args.location % 0x1000 != 0 or args.location <= 0:
+                err("Invalid location (must be a multiple of 0x1000)")
+                return
+            if args.size % 0x1000 != 0 or args.size <= 0:
+                err("Invalid size (must be a multiple of 0x1000)")
+                return
+            # not estimation
+            location = args.location
+            size = args.size
+        else:
+            # use estimation
+            location = sect.page_start
+            size = sect.page_end - sect.page_start
 
         # permission
         if re.match(r"[-_r][-_w][-_x]", args.permission):
