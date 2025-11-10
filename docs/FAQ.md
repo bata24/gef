@@ -466,13 +466,6 @@ Currently, at least the following commands do not work:
 If it does not work properly even though `CONFIG_RANDSTRUCT=n`, GEF may be failing to parse due to a change in `struct task_struct` or similar.
 If you think there is a problem with GEF, please report it on the issues page.
 
-## The `vmmap` command does not recognize options.
-Try the `pagewalk` command.
-
-When connected to qemu-system or VMware's GDB stub, the `vmmap` command is simply redirected to the `pagewalk` command.
-All options are ignored in this case.
-If you want to use options, please use the `pagewalk` command instead of the `vmmap` command.
-
 ## The `vmlinux-to-elf-apply` command causes an error when creating an ELF file.
 Please update `vmlinux-to-elf` to the latest version.
 
