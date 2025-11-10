@@ -56267,6 +56267,34 @@ class KernelAddressHeuristicFinder:
 
     @staticmethod
     @switch_to_intel_syntax
+    def get_page_address_htable():
+        if not is_x86_32() and not is_arm32():
+            return None
+
+        # plan 1 (directly)
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            x = Symbol.get_ksymaddr("page_address_htable")
+            if x:
+                return x
+
+        kversion = Kernel.kernel_version()
+
+        # plan 2 (available v2.5.41 or later)
+        if kversion and kversion >= "2.5.41":
+            addr = Symbol.get_ksymaddr("set_page_address")
+            if addr:
+                res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
+                if is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x64_lea_reg_const(res)
+                elif is_arm32():
+                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                for x in g:
+                    if is_double_link_list(x):
+                        return x
+        return None
+
+    @staticmethod
+    @switch_to_intel_syntax
     def get_clocksource_tsc():
         if not is_x86():
             return None
@@ -97924,6 +97952,7 @@ class PageCommand(GenericCommand):
                 return False
 
             self.LOWMEM_LIMIT = (self.VMALLOC_START - self.PAGE_OFFSET) >> self.PAGE_SHIFT
+            self.page_address_htable = KernelAddressHeuristicFinder.get_page_address_htable() # allow None
 
             # Determine whether it is CONFIG_FLATMEM or CONFIG_SPARSEMEM.
             self.mem_map = KernelAddressHeuristicFinder.get_mem_map()
@@ -98044,6 +98073,7 @@ class PageCommand(GenericCommand):
                 return False
 
             self.LOWMEM_LIMIT = (self.VMALLOC_START - self.PAGE_OFFSET) >> self.PAGE_SHIFT
+            self.page_address_htable = KernelAddressHeuristicFinder.get_page_address_htable() # allow None
 
         self.initialized = True
         return True
@@ -98051,22 +98081,47 @@ class PageCommand(GenericCommand):
     def is_vmalloc_addr(self, virt):
         return self.VMALLOC_START <= virt < self.VMALLOC_END
 
-    def pfn2kmap(self, pfn):
-        paddr = pfn << self.PAGE_SHIFT
-        cand = Kernel.p2v(paddr)
-        if not cand:
+    def page2address(self, page):
+        # for highmem
+        if self.page_address_htable is None:
             return None
 
-        PKMAP_BASE = self.VMALLOC_END + (2 * (1 << self.PAGE_SHIFT))
-        pkmap_like = [v for v in cand if v >= PKMAP_BASE]
-        if pkmap_like:
-            return AddressUtil.align_address(max(pkmap_like))
+        GOLDEN_RATIO_32 = 0x61C88647
+        hash7bits = (((page * GOLDEN_RATIO_32) & 0xffff_ffff) >> (32 - 7))
+        sizeof_cache_align = 0x40
+        page_slot = self.page_address_htable + hash7bits * sizeof_cache_align
+        if not is_double_link_list(page_slot, min_len=1):
+            return None
 
-        vmalloc_like = [v for v in cand if self.is_vmalloc_addr(v)]
-        if vmalloc_like:
-            return AddressUtil.align_address(vmalloc_like[0])
+        """
+        struct page_address_map {
+            struct page *page;
+            void *virtual;
+            struct list_head list;
+        };
 
-        return AddressUtil.align_address(max(cand))
+        #define PA_HASH_ORDER 7
+        static struct page_address_slot {
+            struct list_head lh; /* List of page_address_maps */
+            spinlock_t lock; /* Protect this bucket's list */
+        } ____cacheline_aligned_in_smp page_address_htable[1<<PA_HASH_ORDER];
+        """
+        info("page_slot: {:#x}".format(page_slot))
+        current = read_int_from_memory(page_slot)
+        while current != page_slot:
+            page_value = read_int_from_memory(current - current_arch.ptrsize * 2)
+            if page_value == page:
+                virt_value = read_int_from_memory(current - current_arch.ptrsize)
+                # found, but...
+                if is_valid_addr(virt_value):
+                    # entry is ok
+                    return virt_value
+                else:
+                    # entry is dead
+                    err("Found but invalid: {:#x}".format(virt_value))
+                    return None
+            current = read_int_from_memory(current)
+        return None
 
     def page2virt(self, page):
         if not is_valid_addr(page):
@@ -98109,7 +98164,8 @@ class PageCommand(GenericCommand):
             if pfn < self.LOWMEM_LIMIT:
                 virt = (pfn << self.PAGE_SHIFT) + self.PAGE_OFFSET
             else:
-                virt = self.pfn2kmap(pfn)
+                info("Search as HIGHMEM")
+                virt = self.page2address(page)
 
         elif is_arm64():
             # page -> pfn
@@ -98128,7 +98184,8 @@ class PageCommand(GenericCommand):
             if pfn < self.LOWMEM_LIMIT:
                 virt = (pfn << self.PAGE_SHIFT) + self.PAGE_OFFSET
             else:
-                virt = self.pfn2kmap(pfn)
+                info("Search as HIGHMEM")
+                virt = self.page2address(page)
 
         if virt is None:
             err("Address in invalid range")
