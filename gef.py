@@ -17719,42 +17719,46 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
             self.out.append("")
         return
 
+    def read_data(self, chunk_addr, size, end_address):
+        read_size = min(size, end_address - chunk_addr)
+        try:
+            if self.args.phys:
+                mem = read_physmem(chunk_addr, read_size)
+            else:
+                mem = read_memory(chunk_addr, read_size)
+        except (gdb.MemoryError, ValueError, OverflowError):
+            # cannot access memory this range. It doesn't make sense to try any more
+            self.err_add_out("skip due to memory access error")
+            return None
+        return mem
+
     def search_pattern_by_address(self, pattern, start_address, end_address):
         """Search for a pattern within a range defined by arguments."""
         step = 0x400 * gef_getpagesize()
         locations = []
 
+        old_mem = b""
         tqdm = GefUtil.get_tqdm()
-        old_mem_target = b""
         for chunk_addr in tqdm(range(start_address, end_address, step), leave=False):
-            # get read size
-            if chunk_addr + step > end_address:
-                chunk_size = end_address - chunk_addr
-            else:
-                chunk_size = step
-
-            # read memory
-            try:
-                mem_target = read_memory(chunk_addr, chunk_size)
-            except (gdb.MemoryError, ValueError, OverflowError):
-                # cannot access memory this range. It doesn't make sense to try any more
-                self.err_add_out("skip due to memory access error")
+            # read
+            mem = self.read_data(chunk_addr, step, end_address)
+            if mem is None:
                 break
 
             # cases where step boundaries are crossed
-            if old_mem_target and mem_target:
+            if old_mem and mem:
                 ofs = len(pattern) - 1
-                tmp_target = old_mem_target[-ofs:] + mem_target[:ofs]
-                r = tmp_target.find(pattern)
+                tmp = old_mem[-ofs:] + mem[:ofs]
+                r = tmp.find(pattern)
                 if r >= 0:
                     locations.append(chunk_addr - ofs + r)
 
             # normal case
-            for match in re.finditer(pattern, mem_target):
+            for match in re.finditer(pattern, mem):
                 start = chunk_addr + match.start()
                 locations.append(start)
 
-            old_mem_target = mem_target
+            old_mem = mem
         return locations
 
     def process_by_address(self, pattern, start_address, end_address):
@@ -17850,7 +17854,7 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
             self.process_by_section(pattern, section_name)
 
         else:
-            # search from whole memory
+            # search whole memory
             self.process_by_section(pattern)
 
         self.print_output(check_terminal_size=True)
@@ -17926,6 +17930,28 @@ class SearchPatternCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
+    def is_aligned(self, addr):
+        a = self.args.aligned or 1
+        return (a <= 1) or (addr % a == 0)
+
+    def accept_match(self, start_addr, locations):
+        # alignment
+        if not self.is_aligned(start_addr):
+            return False
+        # interval
+        if self.args.interval:
+            if locations:
+                last_loc = locations[-1]
+                if start_addr < last_loc[0] + self.args.interval:
+                    return False
+        return True
+
+    def check_limit(self):
+        if self.args.limit:
+            if self.args.limit <= self.found_count:
+                return True
+        return False
+
     def print_section(self, section):
         if isinstance(section, Address):
             section = section.section
@@ -17948,6 +17974,20 @@ class SearchPatternCommand(GenericCommand):
         gef_print("  {:s}".format(h))
         return
 
+    def read_data(self, chunk_addr, size, end_address):
+        read_size = min(size, end_address - chunk_addr)
+        try:
+            if self.args.phys:
+                mem = read_physmem(chunk_addr, read_size)
+            else:
+                mem = read_memory(chunk_addr, read_size)
+        except (gdb.MemoryError, ValueError, OverflowError):
+            # cannot access memory this range. It doesn't make sense to try any more
+            if self.args.verbose:
+                err("skip due to memory access error")
+            return None
+        return mem
+
     def search_pattern_by_address(self, pattern, start_address, end_address):
         """Search for a pattern within a range defined by arguments."""
         if not self.args.hex_regex:
@@ -17961,55 +18001,51 @@ class SearchPatternCommand(GenericCommand):
             step = 0x400 * gef_getpagesize()
 
         locations = []
+        old_mem = b""
         tqdm = GefUtil.get_tqdm(self.args.verbose)
-        old_mem_target = b""
         for chunk_addr in tqdm(range(start_address, end_address, step), leave=False):
-            # get read size
-            if chunk_addr + step > end_address:
-                chunk_size = end_address - chunk_addr
-            else:
-                chunk_size = step
-
-            # read memory
-            try:
-                if self.args.phys:
-                    mem = read_physmem(chunk_addr, chunk_size)
-                else:
-                    mem = read_memory(chunk_addr, chunk_size)
-            except (gdb.MemoryError, ValueError, OverflowError):
-                # cannot access memory this range. It doesn't make sense to try any more
-                if self.args.verbose:
-                    err("skip due to memory access error")
+            # read
+            mem = self.read_data(chunk_addr, step, end_address)
+            if mem is None:
                 break
 
             # for regex
             if self.args.hex_regex:
-                mem_target = mem.hex()
-            else:
-                mem_target = mem
+                mem = mem.hex()
 
             # cases where step boundaries are crossed
-            if not self.args.hex_regex and old_mem_target and mem_target:
+            if not self.args.hex_regex and old_mem and mem:
+                # Considering cases where the step size boundary is crossed,
+                # the check is performed within the range of -ofs to ofs size.
+                """
+                pattern "ABCD"
+                ofs = len(pattern) - 1 = 3
+
+                The scope of consideration is limited to this range.
+                 <-- step --> <-- step -->
+                | ...   xxxA | BCDxxx ... |
+                | ...  xxxAB | CDxxx  ... |
+                | ... xxxABC | Dxxx   ... |
+                         <------->
+                       -ofs     ofs
+                """
                 ofs = len(pattern) - 1
-                tmp_target = old_mem_target[-ofs:] + mem_target[:ofs]
-                r = tmp_target.find(pattern)
+                tmp_mem = old_mem[-ofs:] + mem[:ofs]
+                r = tmp_mem.find(pattern)
                 if r >= 0:
-                    to_add = True
-                    # check interval
-                    if self.args.interval:
-                        if len(locations) > 0:
-                            if chunk_addr - ofs + r < locations[-1][0] + self.args.interval:
-                                to_add = False
-                    if to_add:
-                        data = (old_mem_target[-ofs:] + mem_target)[r:][:0x10]
+                    if self.accept_match(chunk_addr - ofs + r, locations):
+                        # read dump data
+                        data = (old_mem[-ofs:] + mem)[r:][:0x10]
+                        # add
                         locations.append((chunk_addr - ofs + r, data))
-                        # check limit
                         self.found_count += 1
-                        if self.args.limit and self.args.limit <= self.found_count:
+                        # loop check
+                        if self.check_limit():
                             return locations
+                # fall through
 
             # normal case
-            for match in re.finditer(pattern, mem_target):
+            for match in re.finditer(pattern, mem):
                 if self.args.hex_regex:
                     if match.start() % 2:
                         continue
@@ -18017,32 +18053,23 @@ class SearchPatternCommand(GenericCommand):
                 else:
                     start_pos = match.start()
                 start = chunk_addr + start_pos
-
-                # check interval
-                if self.args.interval:
-                    if len(locations) > 0:
-                        if start < locations[-1][0] + self.args.interval:
-                            continue
-
+                # check filter
+                if not self.accept_match(start, locations):
+                    continue
                 # read dump data
                 data = mem[start_pos:][:0x10]
                 if len(data) < 0x10:
-                    try:
-                        if self.args.phys:
-                            data += read_physmem(chunk_addr + chunk_size, 0x10 - len(data))
-                        else:
-                            data += read_memory(chunk_addr + chunk_size, 0x10 - len(data))
-                    except (gdb.MemoryError, ValueError, OverflowError):
-                        pass
-
+                    lack = self.read_data(chunk_addr + step, 0x10 - len(data), end_address)
+                    if lack:
+                        data += lack
+                # add
                 locations.append((start, data))
-
-                # check limit
                 self.found_count += 1
-                if self.args.limit and self.args.limit <= self.found_count:
+                # loop check
+                if self.check_limit():
                     return locations
 
-            old_mem_target = mem_target
+            old_mem = mem
 
         return locations
 
@@ -18056,6 +18083,7 @@ class SearchPatternCommand(GenericCommand):
                 Color.yellowify(pattern), start, end, extra,
             ))
 
+            self.found_count = 0
             ret = self.search_pattern_by_address(pattern, start, end)
             for found_loc in ret:
                 self.print_loc(found_loc)
@@ -18134,10 +18162,8 @@ class SearchPatternCommand(GenericCommand):
             # verbose: always print section before search
             if self.args.verbose:
                 self.print_section(section)
-
             # search
             ret = self.search_pattern_by_address(pattern, section.page_start, section.page_end)
-
             # default: print section if only found
             if not self.args.verbose:
                 if ret:
@@ -18151,8 +18177,7 @@ class SearchPatternCommand(GenericCommand):
             if not is_alive():
                 err("The process is dead")
                 break
-
-            if self.args.limit and self.args.limit <= self.found_count:
+            if self.check_limit():
                 break
         return
 
@@ -18170,6 +18195,7 @@ class SearchPatternCommand(GenericCommand):
             info("Searching for '{:s}' in {:s}{:s}".format(
                 Color.yellowify(pattern), area, extra,
             ))
+            self.found_count = 0
             self.search_pattern_by_section(pattern, section_name)
         return
 
@@ -18209,7 +18235,7 @@ class SearchPatternCommand(GenericCommand):
     def do_invoke(self, args):
         if args.kernel_only or args.user_only:
             if not is_qemu_system():
-                err("Unsupported")
+                err("Unsupported in this gdb mode (qemu-system only)")
                 return
 
         # check permission
@@ -18242,7 +18268,6 @@ class SearchPatternCommand(GenericCommand):
         if patterns is None:
             return
 
-        self.found_count = 0
         if args.section and args.size:
             # the case `find AAAA 0x400000 0x4000`
             try:
