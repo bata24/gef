@@ -674,6 +674,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `call-syscall`: calls system call with specified values.
     - ![](images/call-syscall.png)
 - `mmap`: allocates a new memory by `call-syscall`.
+- `munmap`: unmaps a memory by `call-syscall`.
 - `killthreads`: kills specific or all threads (for `pthread`).
 - `constgrep`: invokes `grep` under `/usr/include/`.
     - ![](images/constgrep.png)

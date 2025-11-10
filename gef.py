@@ -19162,6 +19162,74 @@ class MmapMemoryCommand(GenericCommand):
 
 
 @register_command
+class MunmapMemoryCommand(GenericCommand):
+    """Unmap a mapped memory."""
+
+    _cmdline_ = "munmap"
+    _category_ = "05-a. Syscall - Invoke"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
+                        help="the address to unmap.")
+    parser.add_argument("size", metavar="SIZE", nargs="?", type=AddressUtil.parse_address,
+                        help="the size to unmap.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} $sp                    # unmap whole stack area",
+        "{0:s} 0x7ffffffde000 0x1000  # unmap specified area",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "By default, the entire map containing the specified address is freed.",
+        "If a size is specified, the area from the specified address to that size will be unmapped.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def __init__(self):
+        super().__init__(complete=gdb.COMPLETE_LOCATION)
+        return
+
+    # On the CRIS architecture, setting a value to a register using the gdb `set` command will cause strange behavior.
+    # So even if the assembly code is correct, it should not use this command.
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
+    @exclude_specific_arch(arch=("CRIS",))
+    @require_arch_set
+    def do_invoke(self, args):
+        # location
+        sect = ProcessMap.process_lookup_address(args.location)
+        if sect is None:
+            err("Unmapped address")
+            return
+
+        # size
+        if args.size is not None:
+            if args.location % gef_getpagesize() or args.location <= 0:
+                err("Address is not a multiple of {:#x}".format(gef_getpagesize()))
+                return
+            if args.size % gef_getpagesize() or args.size <= 0:
+                err("Size is not a multiple of {:#x}".format(gef_getpagesize()))
+                return
+            # not estimation
+            location = args.location
+            size = args.size
+        else:
+            # use estimation
+            location = sect.page_start
+            size = sect.page_end - sect.page_start
+
+        # doit
+        cmd = "call-syscall munmap {:#x} {:#x}".format(location, size)
+        gdb.execute(cmd)
+        Cache.reset_gef_caches()
+        return
+
+
+@register_command
 class MprotectCommand(GenericCommand):
     """Change a page permission (default: RWX)."""
 
