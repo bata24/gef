@@ -19211,11 +19211,11 @@ class MprotectCommand(GenericCommand):
 
         # size
         if args.size is not None:
-            if args.location % 0x1000 != 0 or args.location <= 0:
-                err("Invalid location (must be a multiple of 0x1000)")
+            if args.location % gef_getpagesize() or args.location <= 0:
+                err("Address is not a multiple of {:#x}".format(gef_getpagesize()))
                 return
-            if args.size % 0x1000 != 0 or args.size <= 0:
-                err("Invalid size (must be a multiple of 0x1000)")
+            if args.size % gef_getpagesize() or args.size <= 0:
+                err("Size is not a multiple of {:#x}".format(gef_getpagesize()))
                 return
             # not estimation
             location = args.location
@@ -19239,9 +19239,7 @@ class MprotectCommand(GenericCommand):
             return
 
         # doit
-        cmd = "call-syscall mprotect {:#x} {:#x} {:#x}".format(
-            location, size, perm,
-        )
+        cmd = "call-syscall mprotect {:#x} {:#x} {:#x}".format(location, size, perm)
         gdb.execute(cmd)
         Cache.reset_gef_caches()
         return
