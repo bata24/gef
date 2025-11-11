@@ -62,7 +62,7 @@ sed -i -e '/from gef import/d' /root/.gdbinit
 ```
 
 ### Dependencies
-Please refer to [install.sh](install.sh) or [install-minimal.sh](install-minimal.sh) for installation requirements.
+Please refer to [install-uv.sh](install-uv.sh) for installation requirements.
 
 ## Added / Improved Features
 
