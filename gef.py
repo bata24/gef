@@ -12531,6 +12531,8 @@ class ProcessMap:
                 return []
             lines = data.splitlines()
         else:
+            if not os.path.exists(proc_map_file):
+                return []
             lines = open(proc_map_file, "r").readlines()
 
         # tls and $sp of each threads
@@ -12975,7 +12977,7 @@ class ProcessMap:
                     ProcessMap.__gef_use_info_proc_mappings__ = False
                 elif "Perms" not in res: # xtensa-linux-gdb
                     ProcessMap.__gef_use_info_proc_mappings__ = False
-                else:
+                else: # for core files
                     ProcessMap.__gef_use_info_proc_mappings__ = True
             except gdb.error:
                 ProcessMap.__gef_use_info_proc_mappings__ = False
@@ -13036,7 +13038,9 @@ class ProcessMap:
         else: # normal pattern
             pid = Pid.get_pid()
             if pid:
-                return ProcessMap.get_process_maps_linux(pid)
+                r = ProcessMap.get_process_maps_linux(pid)
+                if r:
+                    return r
 
         return ProcessMap.get_process_maps_heuristic()
 
