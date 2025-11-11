@@ -9510,12 +9510,12 @@ class HPPA64(HPPA):
     arch = "HPPA"
     mode = "64"
 
+    # qemu does not support hppa64, so I could not test
+
     load_condition = [
     ]
 
     bit_length = 64
-
-    # qemu does not support hppa64, so I could not test
 
 
 class OR1K(Architecture):
