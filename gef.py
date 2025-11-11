@@ -17910,7 +17910,7 @@ class SearchPatternCommand(GenericCommand):
         '{0:s} "\\\\x41\\\\x42\\\\x43\\\\x44"      # double-escaped string is also valid',
         '{0:s} --hex "41 42 43 44"         # another valid format',
         '{0:s} --hex-regex "4[0-9]424344"  # hex regex search',
-        "{0:s} 0x41424344                  # search for 0x41424344 (='DCBA') from whole memory",
+        "{0:s} 0x44434241                  # search for 0x44434241 (='ABCD') from whole memory",
         "{0:s} 0x555555554000 stack        # search for 0x555555554000 (6byte) from stack",
         "{0:s} 0x0000555555554000 stack    # search for 0x0000555555554000 (8byte) from stack",
         "{0:s} AAAA binary                 # 'binary' means the area executable itself (only usermode)",
@@ -17938,6 +17938,7 @@ class SearchPatternCommand(GenericCommand):
         # alignment
         if not self.is_aligned(start_addr):
             return False
+
         # interval
         if self.args.interval:
             if locations:
@@ -17990,7 +17991,7 @@ class SearchPatternCommand(GenericCommand):
 
     def search_pattern_by_address(self, pattern, start_address, end_address):
         """Search for a pattern within a range defined by arguments."""
-        if not self.args.hex_regex:
+        if isinstance(pattern, str):
             pattern = String.str2bytes(pattern)
 
         if self.args.hex_regex:
@@ -18011,7 +18012,7 @@ class SearchPatternCommand(GenericCommand):
 
             # for regex
             if self.args.hex_regex:
-                mem = mem.hex()
+                mem = mem.hex().encode()
 
             # cases where step boundaries are crossed
             if not self.args.hex_regex and old_mem and mem:
@@ -18036,9 +18037,11 @@ class SearchPatternCommand(GenericCommand):
                     if self.accept_match(chunk_addr - ofs + r, locations):
                         # read dump data
                         data = (old_mem[-ofs:] + mem)[r:][:0x10]
+
                         # add
                         locations.append((chunk_addr - ofs + r, data))
                         self.found_count += 1
+
                         # loop check
                         if self.check_limit():
                             return locations
@@ -18053,18 +18056,25 @@ class SearchPatternCommand(GenericCommand):
                 else:
                     start_pos = match.start()
                 start = chunk_addr + start_pos
+
                 # check filter
                 if not self.accept_match(start, locations):
                     continue
+
                 # read dump data
-                data = mem[start_pos:][:0x10]
+                if self.args.hex_regex:
+                    data = bytes.fromhex(mem.decode())[start_pos:][:0x10]
+                else:
+                    data = mem[start_pos:][:0x10]
                 if len(data) < 0x10:
                     lack = self.read_data(chunk_addr + step, 0x10 - len(data), end_address)
                     if lack:
                         data += lack
+
                 # add
                 locations.append((start, data))
                 self.found_count += 1
+
                 # loop check
                 if self.check_limit():
                     return locations
@@ -18098,12 +18108,15 @@ class SearchPatternCommand(GenericCommand):
         for line in res:
             if is_x86() and "ACCESSED" not in line:
                 continue
+
             # extract
             lines = line.split()
             addr_start, addr_end = [int(x, 16) for x in lines[0].split("-")]
+
             # non valid addr
             if not is_valid_addr(addr_start):
                 continue
+
             # parse
             if is_x86():
                 perm = Permission.from_process_maps(lines[5][1:].lower())
