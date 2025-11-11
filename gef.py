@@ -104292,19 +104292,36 @@ class FreqencyAnalysisCommand(GenericCommand, BufferingOutput):
                         help="start address to analyze.")
     parser.add_argument("size", metavar="SIZE", nargs="?", type=AddressUtil.parse_address,
                         help="the size to analyze; if omitted, calculated from the end of the area.")
-    parser.add_argument("--topn", type=AddressUtil.parse_address, default=16,
+    parser.add_argument("-e", "--exclude", action="append", default=[], type=lambda x: int(x, 16),
+                        help="exclude character in hex.")
+    parser.add_argument("-a", "--ascii-gradation", action="store_true",
+                        help="show heatmap with ascii range word.")
+    parser.add_argument("-t", "--topn", type=AddressUtil.parse_address, default=16,
                         help="outputs the top N numbers. (default: %(default)s)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     _syntax_ = parser.format_help()
 
+    _example_ = [
+        "{0:s} $rax 0x1000               # ragne: $rax ~ $rax + 0x1000",
+        "{0:s} $rax                      # range: $rax ~ end of the region to which $rax belongs",
+        "{0:s} $rax 0x1000 -a            # use ascii compatible result",
+        "{0:s} $rax 0x1000 -e 00 -e 01   # exclude some characters",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
     def hist256(self, data):
         h = [0] * 256
         for b in data:
+            if b in self.args.exclude:
+                continue
             h[b] += 1
         return h
 
     def print_heatmap(self, h):
-        GRAD = ".:-=+*$#%@"
+        if self.args.ascii_gradation:
+            GRAD = ".:-=+*$#%@"
+        else:
+            GRAD = u" _\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
 
         def scale_to_grad(value, vmax):
             if vmax <= 0:
