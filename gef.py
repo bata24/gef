@@ -103991,8 +103991,9 @@ class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     _example_ = [
-        "{0:s} AAAAAAAA",
-        "{0:s} 0x555555554000 15",
+        "{0:s} AAAA 2                    # search string with depth level 2",
+        '{0:s} "\\\\x41\\\\x41\\\\x41\\\\x41" 2  # use double-escape string',
+        "{0:s} 0x555555554000 2          # search value",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
