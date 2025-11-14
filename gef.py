@@ -61815,7 +61815,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # task parse
         tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for task in tqdm(task_addrs, leave=False):
+        for task in tqdm(task_addrs, leave=False, desc="task"):
             comm_string = read_cstring_from_memory(task + self.offset_comm)
             if self.args.filter:
                 if not any(re_pattern.search(comm_string) for re_pattern in self.args.filter):
@@ -62006,7 +62006,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     filter_current = read_int_from_memory(seccomp + 4 * 2)
                     self.out.append("{:#018x} {:25s} {:<12d} {:#018x}".format(seccomp, mode_str, filter_count, filter_current))
 
-                    for i in tqdm(range(filter_count), leave=False):
+                    for i in tqdm(range(filter_count), leave=False, desc="filter"):
                         if not filter_current:
                             break
                         prog = read_int_from_memory(filter_current + self.offset_prog)
@@ -77322,17 +77322,17 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     def make_output(self, node_entries):
         tqdm = GefUtil.get_tqdm(not self.args.quiet)
 
-        for node_title, zone_entries in tqdm(node_entries, leave=False):
+        for node_title, zone_entries in tqdm(node_entries, leave=False, desc="node"):
             self.out.append(titlify(node_title))
 
-            for zone_title, zone_entry in tqdm(zone_entries, leave=False):
+            for zone_title, zone_entry in tqdm(zone_entries, leave=False, desc="zone"):
                 self.out.append(titlify(zone_title))
 
                 if "per_cpu_pageset" in zone_entry:
                     self.out.append(titlify("per_cpu_pageset"))
-                    for cpu_num, pcp_all_entries in tqdm(zone_entry["per_cpu_pageset"].items(), leave=False):
+                    for cpu_num, pcp_all_entries in tqdm(zone_entry["per_cpu_pageset"].items(), leave=False, desc="cpu"):
                         self.out.append("cpu: {:d}".format(cpu_num))
-                        for pcp_title, pcp_entries, has_any in tqdm(pcp_all_entries, leave=False):
+                        for pcp_title, pcp_entries, has_any in tqdm(pcp_all_entries, leave=False, desc="pcplist"):
                             if not has_any and not self.args.vverbose:
                                 continue
                             self.out.append(pcp_title)
@@ -77344,11 +77344,11 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
                 if "free_area" in zone_entry:
                     self.out.append(titlify("free_area"))
-                    for order_title, free_lists, has_any in tqdm(zone_entry["free_area"], leave=False):
+                    for order_title, free_lists, has_any in tqdm(zone_entry["free_area"], leave=False, desc="order"):
                         if not has_any and not self.args.vverbose:
                             continue
                         self.out.append(order_title)
-                        for mtype_title, free_list, has_any2 in tqdm(free_lists, leave=False):
+                        for mtype_title, free_list, has_any2 in tqdm(free_lists, leave=False, desc="mtype"):
                             if not has_any2 and not self.args.vverbose:
                                 continue
                             self.out.append(mtype_title)
@@ -106717,7 +106717,7 @@ class GefUtil:
     def get_tqdm(use_tqdm=True):
         """Returns the tqdm progress bar if available and enabled;
         otherwise returns a passthrough function."""
-        tqdm = lambda x, leave=None, total=None: x # noqa: F841
+        tqdm = lambda x, leave=None, total=None, desc=None: x # noqa: F841
         if not use_tqdm:
             return tqdm
         try:
