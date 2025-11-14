@@ -100459,12 +100459,16 @@ class KmallocBreakpoint(gdb.Breakpoint):
         Cache.reset_gef_caches()
 
         # fast return if nested break
-        task_addr, _ = KmallocTracerCommand.get_task()
+        task_addr, task_name = KmallocTracerCommand.get_task()
         if self.check_nested(task_addr):
             return False
 
         # filtering by task addr
         if self.option.target_task and task_addr != self.option.target_task:
+            return False
+
+        # filtering by task name
+        if self.option.task_name and task_name not in self.option.task_name:
             return False
 
         # get size from arguments
@@ -100567,6 +100571,10 @@ class KfreeBreakpoint(gdb.Breakpoint):
         if self.option.target_task and task_addr != self.option.target_task:
             return False
 
+        # filtering by task name
+        if self.option.task_name and task_name not in self.option.task_name:
+            return False
+
         task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
         to_free_s = Color.colorify_hex(to_free, Config.get_gef_setting("theme.heap_chunk_address_freed"))
 
@@ -100604,7 +100612,8 @@ class KmallocTracerCommand(GenericCommand):
     _category_ = "08-i. Qemu-system Cooperation - Linux Dynamic Inspection"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-f", "--filter", default=[], help="filter specified name (e.g., kmalloc-XX)")
+    parser.add_argument("-f", "--filter", action="append", default=[], help="filter specified slab name (e.g., kmalloc-XX)")
+    parser.add_argument("-T", "--task-name", action="append", default=[], help="filter specified task name (e.g., sh)")
     parser.add_argument("-N", "--print-null", action="store_true", help="display free(NULL).")
     parser.add_argument("-t", "--backtrace", action="store_true", help="display backtrace.")
     parser.add_argument("-d", "--dump-chunk", action="store_true", help="dump the first 0x40 bytes of each chunk.")
@@ -100631,6 +100640,7 @@ class KmallocTracerCommand(GenericCommand):
             "backtrace": args.backtrace,
             "filter": args.filter,
             "dump_chunk": args.dump_chunk,
+            "task_name": getattr(args, "task_name", []),
             "target_task": target_task,
         }
         OptionInfo = collections.namedtuple("OptionInfo", dic.keys())
@@ -101074,7 +101084,7 @@ class KmallocAllocatedByCommand(GenericCommand):
     _category_ = "08-i. Qemu-system Cooperation - Linux Dynamic Inspection"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-f", "--filter", default=[], help="filter specified name (e.g., kmalloc-XX)")
+    parser.add_argument("-f", "--filter", action="append", default=[], help="filter specified name (e.g., kmalloc-XX)")
     parser.add_argument("-N", "--print-null", action="store_true", help="display free(NULL).")
     parser.add_argument("-t", "--backtrace", action="store_true", help="display backtrace.")
     parser.add_argument("-d", "--dump-chunk", action="store_true", help="dump the first 0x40 bytes of each chunk.")
