@@ -17726,10 +17726,7 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
     def read_data(self, chunk_addr, size, end_address):
         read_size = min(size, end_address - chunk_addr)
         try:
-            if self.args.phys:
-                mem = read_physmem(chunk_addr, read_size)
-            else:
-                mem = read_memory(chunk_addr, read_size)
+            mem = read_memory(chunk_addr, read_size)
         except (gdb.MemoryError, ValueError, OverflowError):
             # cannot access memory this range. It doesn't make sense to try any more
             self.err_add_out("skip due to memory access error")
