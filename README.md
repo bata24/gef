@@ -161,6 +161,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/slab-contains.png)
     - For `SLUB`/`SLUB-TINY`, if all chunks belonging to a certain `page` are in use, they will not be displayed by `slub-dump`/`slub-tiny-dump` command.
     - Even with such an address (object), this command may be able to resolve `kmem_cache`.
+- `kmem-cache-alias`: dumps `kmem_cache` alias name.
+    - ![](images/kmem-cache-alias.png)
 - `buddy-dump`: dumps the zone of the page allocator (buddy allocator) free-list.
     - ![](images/buddy-dump.png)
 - `vmalloc-dump`: dumps `vmalloc` used-list and freed-list.

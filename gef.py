@@ -55926,6 +55926,41 @@ class KernelAddressHeuristicFinder:
 
     @staticmethod
     @switch_to_intel_syntax
+    def get_slab_kset():
+        # plan 1 (directly)
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            x = Symbol.get_ksymaddr("slab_kset")
+            if x:
+                return x
+
+        # plan 2
+        addr = Symbol.get_ksymaddr("sysfs_slab_add")
+        if addr:
+            res = gdb.execute("x/100i {:#x}".format(addr), to_string=True)
+            if is_x86_64():
+                g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
+            elif is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x86_dword_ptr_ds(res)
+            elif is_arm64():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res),
+                )
+            elif is_arm32():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                    KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
+                    KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                )
+            for x in g:
+                if is_valid_addr(x):
+                    y = read_int_from_memory(x)
+                    if is_double_link_list(y):
+                        return x
+        return None
+
+    @staticmethod
+    @switch_to_intel_syntax
     def get_modprobe_path():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -74363,17 +74398,19 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_names(self, parsed_caches):
+        name_width = max(len(k["name"]) for k in parsed_caches[1:])
+
         if not self.args.quiet:
-            fmt = "{:<16s} {:<16s} {:30s} {:20s}"
+            fmt = "{:<16s} {:<16s} {:" + str(name_width) + "s} {:20s}"
             legend = ["Object Size", "Chunk Size", "Name", "kmem_cache"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        for kmem_cache in sorted(parsed_caches[1:], key=lambda x: x["object_size"]):
+        for kmem_cache in sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"])):
             objsz = "{0:d} ({0:#x})".format(kmem_cache["object_size"])
             chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
             chunk_name = kmem_cache["name"]
             address = kmem_cache["address"]
-            self.out.append("{:16s} {:16s} {:30s} {:#x}".format(objsz, chunksz, chunk_name, address))
+            self.out.append("{:16s} {:16s} {:{:d}s} {:#x}".format(objsz, chunksz, chunk_name, name_width, address))
         return
 
     def slubwalk(self, target_names, cpu):
@@ -75113,17 +75150,19 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_names(self, parsed_caches):
+        name_width = max(len(k["name"]) for k in parsed_caches[1:])
+
         if not self.args.quiet:
-            fmt = "{:<16s} {:<16s} {:30s} {:20s}"
+            fmt = "{:<16s} {:<16s} {:" + str(name_width) + "s} {:20s}"
             legend = ["Object Size", "Chunk Size", "Name", "kmem_cache"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        for kmem_cache in sorted(parsed_caches[1:], key=lambda x: x["object_size"]):
+        for kmem_cache in sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"])):
             objsz = "{0:d} ({0:#x})".format(kmem_cache["object_size"])
             chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
             chunk_name = kmem_cache["name"]
             address = kmem_cache["address"]
-            self.out.append("{:16s} {:16s} {:30s} {:#x}".format(objsz, chunksz, chunk_name, address))
+            self.out.append("{:16s} {:16s} {:{:d}s} {:#x}".format(objsz, chunksz, chunk_name, name_width, address))
         return
 
     def slub_tiny_walk(self, target_names):
@@ -75944,17 +75983,19 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_names(self, parsed_caches):
-        if not self.quiet:
-            fmt = "{:<16s} {:<16s} {:30s} {:20s}"
+        name_width = max(len(k["name"]) for k in parsed_caches[1:])
+
+        if not self.args.quiet:
+            fmt = "{:<16s} {:<16s} {:" + str(name_width) + "s} {:20s}"
             legend = ["Object Size", "Chunk Size", "Name", "kmem_cache"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        for kmem_cache in sorted(parsed_caches[1:], key=lambda x: x["object_size"]):
+        for kmem_cache in sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"])):
             objsz = "{0:d} ({0:#x})".format(kmem_cache["object_size"])
             chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
             chunk_name = kmem_cache["name"]
             address = kmem_cache["address"]
-            self.out.append("{:16s} {:16s} {:30s} {:#x}".format(objsz, chunksz, chunk_name, address))
+            self.out.append("{:16s} {:16s} {:{:d}s} {:#x}".format(objsz, chunksz, chunk_name, name_width, address))
         return
 
     def slabwalk(self, target_names, cpu):
@@ -76342,17 +76383,19 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_names(self, parsed_caches):
+        name_width = max(len(k["name"]) for k in parsed_caches[1:])
+
         if not self.args.quiet:
-            fmt = "{:<16s} {:<16s} {:30s} {:20s}"
+            fmt = "{:<16s} {:<16s} {:" + str(name_width) + "s} {:20s}"
             legend = ["Object Size", "Chunk Size", "Name", "kmem_cache"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        for kmem_cache in sorted(parsed_caches[1:], key=lambda x: x["object_size"]):
+        for kmem_cache in sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"])):
             objsz = "{0:d} ({0:#x})".format(kmem_cache["object_size"])
             chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
             chunk_name = kmem_cache["name"]
             address = kmem_cache["address"]
-            self.out.append("{:16s} {:16s} {:30s} {:#x}".format(objsz, chunksz, chunk_name, address))
+            self.out.append("{:16s} {:16s} {:{:d}s} {:#x}".format(objsz, chunksz, chunk_name, name_width, address))
         return
 
     def slobwalk(self, target_names):
@@ -76603,6 +76646,264 @@ class SlabContainsCommand(GenericCommand):
             return
 
         self.slab_contains()
+        return
+
+
+@register_command
+class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
+    """Resolve the slab cache (kmem_cache) alias."""
+
+    _cmdline_ = "kmem-cache-alias"
+    _category_ = "08-h. Qemu-system Cooperation - Linux Allocator"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-s", "--sort-by-size", action="store_true", help="sort by object size.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _note_ = [
+        "This command needs CONFIG_SYSFS=y.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def parse_rb_node(self, rb_node):
+        if not rb_node or not is_valid_addr(rb_node):
+            return []
+
+        right = read_int_from_memory(rb_node + current_arch.ptrsize * 1) & ~1 # remove RB_BLACK
+        left = read_int_from_memory(rb_node + current_arch.ptrsize * 2) & ~1 # remove RB_BLACK
+
+        ret = [rb_node]
+        if right:
+            ret += self.parse_rb_node(right)
+        if left:
+            ret += self.parse_rb_node(left)
+        return ret
+
+    def initialize(self):
+        if hasattr(self, "initialized") and self.initialized:
+            return True
+
+        self.slab_kset = KernelAddressHeuristicFinder.get_slab_kset()
+        if self.slab_kset is None:
+            self.quiet_err("Not found slab_kset")
+            return False
+
+        """
+        struct kset {
+            struct list_head list;
+            spinlock_t list_lock;
+            struct kobject {
+                const char *name; // -> "slab"
+                struct list_head entry;
+                struct kobject *parent;
+                struct kset *kset;
+                const struct kobj_type *ktype;
+                struct kernfs_node *sd;
+                ...
+            } kobj;
+            const struct kset_uevent_ops *uevent_ops;
+        } __randomize_layout;
+        """
+        kset = read_int_from_memory(self.slab_kset)
+        for i in range(0x10):
+            if not is_valid_addr(kset + current_arch.ptrsize * i):
+                continue
+            name_ptr = read_int_from_memory(kset + current_arch.ptrsize * i)
+            name = read_cstring_from_memory(name_ptr)
+            if name != "slab":
+                continue
+            if not is_double_link_list(kset + current_arch.ptrsize * (i + 1)):
+                continue
+            # found
+            self.offset_kobj_sd = current_arch.ptrsize * (i + 6)
+            self.quiet_info("offsetof(kset, kobj.sd): {:#x}".format(self.offset_kobj_sd))
+            break
+        else:
+            self.quiet_err("Not found offsetof(kset, kobj.sd)")
+            return False
+
+        """
+        struct kernfs_node {
+            atomic_t count;
+            atomic_t active;
+        #ifdef CONFIG_DEBUG_LOCK_ALLOC
+            struct lockdep_map dep_map;
+        #endif
+            struct kernfs_node __rcu *__parent;
+            const char __rcu *name;
+            struct rb_node {
+                unsigned long __rb_parent_color;
+                struct rb_node *rb_right;
+                struct rb_node *rb_left;
+            } __attribute__((aligned(sizeof(long)))) rb;
+            const void *ns;
+            unsigned int hash;
+            unsigned short flags; // v6.9~
+            umode_t mode; // unsigned short, v6.9~
+            union {
+                struct kernfs_elem_dir {
+                    unsigned long subdirs;
+                    struct rb_root children;
+                    struct kernfs_root *root;
+                } dir;
+                struct kernfs_elem_symlink {
+                    struct kernfs_node *target_kn;
+                } symlink;
+                struct kernfs_elem_attr attr;
+            };
+            u64 id;
+            void *priv;
+            struct kernfs_iattrs *iattr;
+            struct rcu_head rcu;
+        };
+        """
+
+        sd = read_int_from_memory(kset + self.offset_kobj_sd)
+        for i in range(0x20):
+            if not is_valid_addr(sd + current_arch.ptrsize * i):
+                continue
+            name_ptr = read_int_from_memory(sd + current_arch.ptrsize * i)
+            name = read_cstring_from_memory(name_ptr)
+            if name != "slab":
+                continue
+            # found
+            self.offset_name = current_arch.ptrsize * i
+            self.offset_rb = self.offset_name + current_arch.ptrsize
+            self.offset_union = self.offset_rb + current_arch.ptrsize * 5
+            subdirs = read_int_from_memory(sd + self.offset_union)
+            if subdirs == 0 or subdirs > 0x1000:
+                # subdirs should be small positive number (~0x200),
+                # so there exists padding or flags||mode if not.
+                self.offset_union += current_arch.ptrsize
+            self.offset_dir_children = self.offset_union + current_arch.ptrsize
+            self.offset_symlink_target_kn = self.offset_union
+            self.quiet_info("offsetof(kernfs_node, name): {:#x}".format(self.offset_name))
+            self.quiet_info("offsetof(kernfs_node, rb): {:#x}".format(self.offset_rb))
+            self.quiet_info("offsetof(kernfs_node, dir.children): {:#x}".format(self.offset_dir_children))
+            self.quiet_info("offsetof(kernfs_node, symlink.target_kn): {:#x}".format(self.offset_symlink_target_kn))
+            break
+        else:
+            self.quiet_err("Not found offsetof(kernfs_node, name)")
+            return False
+
+        self.initialized = True
+        return True
+
+    def dump_kmem_cache_alias(self):
+        # get children_root
+        kset = read_int_from_memory(self.slab_kset)
+        sd = read_int_from_memory(kset + self.offset_kobj_sd)
+        children_root = read_int_from_memory(sd + self.offset_dir_children)
+
+        # parse
+        alias_groups = {}
+        nodes = self.parse_rb_node(children_root)
+        for node in nodes:
+            node = node - self.offset_rb
+            name_ptr = read_int_from_memory(node + self.offset_name)
+            name = read_cstring_from_memory(name_ptr)
+
+            target_kn = read_int_from_memory(node + self.offset_symlink_target_kn)
+            alias = "-"
+            if is_valid_addr(target_kn):
+                alias_ptr = read_int_from_memory(target_kn + self.offset_name)
+                alias = read_cstring_from_memory(alias_ptr)
+            alias_groups[name] = {"alias": alias, "slab_cache_name": None, "object_size": 0, "chunk_size": 0}
+
+        # parse slub-dump
+        cmd = {"SLUB": "slub-dump", "SLAB": "slab-dump", "SLUB_TINY": "slub-tiny-dump"}[self.allocator]
+        res = gdb.execute("{:s} --list --no-pager --quiet".format(cmd), to_string=True)
+        used_names = []
+        for line in res.splitlines():
+            r = re.search(r"(\d+)\s+\(0x\S+\)\s+(\d+)\s+\(0x\S+\)\s+(\S+)\s+0x\S+$", line)
+            object_size = int(r.group(1))
+            chunk_size = int(r.group(2))
+            name = r.group(3)
+            used_names.append([object_size, chunk_size, name])
+
+        # identify the actual slab_cache name in use
+        for object_size, chunk_size, slab_cache_name in used_names:
+            # In older kernels, the slab_cache name may include the process name,
+            # such as "kmalloc-512(342:serial-getty@ttyAMA0.service)".
+            # To support this, anything after the parentheses is ignored.
+            if slab_cache_name not in alias_groups:
+                if "(" in slab_cache_name:
+                    slab_cache_name = slab_cache_name[:slab_cache_name.find("(")]
+
+            for k in alias_groups.keys():
+                # already resolved
+                if alias_groups[k]["slab_cache_name"]:
+                    continue
+
+                if alias_groups[k]["alias"] == "-":
+                    if k == alias_groups[slab_cache_name]["alias"]:
+                        alias_groups[k]["slab_cache_name"] = slab_cache_name
+                        alias_groups[k]["object_size"] = object_size
+                        alias_groups[k]["chunk_size"] = chunk_size
+                    elif k == slab_cache_name:
+                        alias_groups[k]["slab_cache_name"] = slab_cache_name
+                        alias_groups[k]["object_size"] = object_size
+                        alias_groups[k]["chunk_size"] = chunk_size
+                else:
+                    if alias_groups[k]["alias"] == alias_groups[slab_cache_name]["alias"]:
+                        alias_groups[k]["slab_cache_name"] = slab_cache_name
+                        alias_groups[k]["object_size"] = object_size
+                        alias_groups[k]["chunk_size"] = chunk_size
+
+        # dump
+        fmt = "{:16s} {:16s} {:30s} {:12s} {:30s}"
+        legend = ["Object Size", "Chunk Size", "Name", "Alias", "slab_cache name"]
+        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+        if self.args.sort_by_size:
+            sorted_alias_groups = sorted(alias_groups.items(), key=lambda x: (x[1]["object_size"], x[1]["chunk_size"]))
+        else:
+            sorted_alias_groups = sorted(alias_groups.items())
+        for name, v in sorted_alias_groups:
+            if v["object_size"] == 0:
+                self.out.append("{:16s} {:16s} {:30s} {:12s} {:30s}".format(
+                    "-", "-", name, alias, "<UNUSED>",
+                ))
+            else:
+                object_size = "{0:d} ({0:#x})".format(v["object_size"])
+                chunk_size = "{0:d} ({0:#x})".format(v["chunk_size"])
+                alias = v["alias"]
+                slab_cache_name = v["slab_cache_name"]
+                self.out.append("{:16s} {:16s} {:30s} {:12s} {:30s}".format(
+                    object_size, chunk_size, name, alias, slab_cache_name,
+                ))
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.quiet_info("Wait for memory scan")
+
+        kversion = Kernel.kernel_version()
+        if kversion < "3.14":
+            self.quiet_err("Unsupported before v3.14")
+            return
+
+        if not hasattr(self, "allocator"):
+            self.allocator = Kernel.get_slab_type()
+
+        if self.allocator not in ["SLUB", "SLUB_TINY", "SLAB"]:
+            self.quiet_err("Unsupported SLOB")
+            return
+
+        ret = self.initialize()
+        if not ret:
+            self.quiet_err("Failed to initialize")
+            return
+
+        self.out = []
+        self.dump_kmem_cache_alias()
+        self.print_output()
         return
 
 
