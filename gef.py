@@ -80056,12 +80056,18 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                 desc, action, handler, name = entries[i]
                 if action:
                     symbol = Symbol.get_symbol_string(handler, nosymbol_string=" <NO_SYMBOL>")
-                    self.out.append("{:3d} {:#018x} {:#018x} {:24s} {:#018x}{:s}".format(i, desc, action, name, handler, symbol))
+                    self.out.append("{:3d} {:#018x} {:#018x} {:24s} {:#018x}{:s}".format(
+                        i, desc, action, name, handler, symbol,
+                    ).rstrip())
                 else:
-                    self.out.append("{:3d} {:#018x} {:18s} {:24s} {:18s}".format(i, desc, "unused", "-", "-"))
+                    self.out.append("{:3d} {:#018x} {:18s} {:24s} {:18s}".format(
+                        i, desc, "unused", "-", "-",
+                    ).rstrip())
             else:
                 if self.args.verbose:
-                    self.out.append("{:3d} {:18s} {:18s} {:24s} {:18s}".format(i, "unused", "unused", "-", "-"))
+                    self.out.append("{:3d} {:18s} {:18s} {:24s} {:18s}".format(
+                        i, "unused", "unused", "-", "-",
+                    ).rstrip())
         return
 
     @parse_args
