@@ -67182,7 +67182,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                     clockid_dict.get(clockid, "UNKNOWN"),
                     get_time,
                     Symbol.get_symbol_string(get_time, nosymbol_string=" <NO_SYMBOL>"),
-                )))
+                ).rstrip()))
 
                 # print legend
                 if not self.args.quiet:
@@ -67202,7 +67202,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                         "? (too hard to calc)",
                         function,
                         Symbol.get_symbol_string(function, nosymbol_string=" <NO_SYMBOL>"),
-                    ))
+                    ).rstrip())
         return
 
     def dump_timer(self):
@@ -67263,7 +67263,9 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                     function = read_int_from_memory(timer_list + current_arch.ptrsize * 3)
                     sym = Symbol.get_symbol_string(function, nosymbol_string=" <NO_SYMBOL>")
                     tte = expires - jiffies
-                    self.out.append("{:#018x}  {:#018x}  {:#018x} tick  {:#018x}{:s}".format(v, expires, tte, function, sym))
+                    self.out.append("{:#018x}  {:#018x}  {:#018x} tick  {:#018x}{:s}".format(
+                        v, expires, tte, function, sym,
+                    ).rstrip())
                     i += 1
         return
 
