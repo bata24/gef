@@ -76664,9 +76664,10 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-s", "--sort-by-size", action="store_true", help="sort by object size.")
+    parser.add_argument("-m", "--merged-only", action="store_true",
+                        help="show only merged caches grouped by physical cache.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
-    parser.add_argument("-m", "--merged", action="store_true", help="show only merged caches grouped by physical cache.")
     _syntax_ = parser.format_help()
 
     _note_ = [
@@ -76798,7 +76799,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         self.initialized = True
         return True
 
-    def dump_kmem_cache_alias(self):
+    def parse_kmem_cache_alias(self):
         # get children_root
         kset = read_int_from_memory(self.slab_kset)
         sd = read_int_from_memory(kset + self.offset_kobj_sd)
@@ -76858,104 +76859,108 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                         alias_groups[k]["slab_cache_name"] = slab_cache_name
                         alias_groups[k]["object_size"] = object_size
                         alias_groups[k]["chunk_size"] = chunk_size
+        return alias_groups
 
-        # show only merged caches
-        if self.args.merged:
-            # group entries by their Physical Cache Name
-            merged_groups = {} 
-            for name, info in alias_groups.items():
-                if not info["slab_cache_name"]: continue
-                
-                phys_name = info["slab_cache_name"]
-                if phys_name not in merged_groups:
-                    merged_groups[phys_name] = []
-                
-                entry = info.copy()
-                entry['logical_name'] = name
-                merged_groups[phys_name].append(entry)
+    def make_output_merged(self, alias_groups):
+        chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
+        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
 
-            # sort by keys
-            if self.args.sort_by_size:
-                sorted_phys_names = sorted(merged_groups.keys(), 
-                    key=lambda k: (merged_groups[k][0]["object_size"] if merged_groups[k] else 0))
-            else:
-                sorted_phys_names = sorted(merged_groups.keys())
+        # group entries by their Physical Cache Name
+        merged_groups = {}
+        for name, info in alias_groups.items():
+            if not info["slab_cache_name"]:
+                continue
 
-            self.out.append(titlify("Merged Slab Caches"))
-            found_merge = False
-            
-            for phys_name in sorted_phys_names:
-                children = merged_groups[phys_name]
-                
-                # FILTER LOGIC:
-                # We want to hide groups that are just [PhysicalOwner, SysfsID]
-                # We count how many "real" aliases exist.
-                # A "real" alias is one that is NOT the physical owner AND NOT the sysfs group ID (alias == "-")
-                
-                real_aliases = 0
-                for child in children:
-                    name = child['logical_name']
-                    alias = child['alias']
-                    # If alias is "-" it's the sysfs group ID (e.g. :0000064)
-                    # If logical_name == phys_name, it's the physical owner
-                    if alias != "-" and name != phys_name:
-                        real_aliases += 1
-                
-                if real_aliases == 0:
-                    continue
-                
-                found_merge = True
-                
-                obj_size = children[0]["object_size"]
-                chunk_size = children[0]["chunk_size"]
-                
-                header = f"{Color.colorify(phys_name, 'bold cyan')} (Size: {obj_size}, Chunk: {chunk_size})"
-                self.out.append(header)
-                
-                children.sort(key=lambda x: x['logical_name'])
-                
-                last_idx = len(children) - 1
-                for i, child in enumerate(children):
-                    is_last = (i == last_idx)
-                    tree_char = "└── " if is_last else "├── "
-                    
-                    name_str = child['logical_name']
-                    
-                    if name_str == phys_name:
-                        line = f"{tree_char}{Color.colorify(name_str, 'green')} (Physical Owner)"
-                    elif child['alias'] == "-":
-                        line = f"{tree_char}{Color.colorify(name_str, 'gray')} (Sysfs Group)"
-                    else:
-                        line = f"{tree_char}{name_str}"
-                        
-                    self.out.append(line)
-                self.out.append("") 
+            phys_name = info["slab_cache_name"]
+            if phys_name not in merged_groups:
+                merged_groups[phys_name] = []
 
-            if not found_merge:
-                self.out.append("No interesting merges found (only 1:1 mappings).")
-            return
+            entry = info.copy()
+            entry['logical_name'] = name
+            merged_groups[phys_name].append(entry)
 
-        # dump
+        # sort by keys
+        if self.args.sort_by_size:
+            sorted_phys_names = sorted(merged_groups.keys(),
+                key=lambda k: (merged_groups[k][0]["object_size"] if merged_groups[k] else 0))
+        else:
+            sorted_phys_names = sorted(merged_groups.keys())
+
+        self.out.append(titlify("Merged Slab Caches"))
+
+        found_merge = False
+
+        for phys_name in sorted_phys_names:
+            children = merged_groups[phys_name]
+
+            # FILTER LOGIC:
+            # We want to hide groups that are just [PhysicalOwner, SysfsID]
+            # We count how many "real" aliases exist.
+            # A "real" alias is one that is NOT the physical owner AND NOT the sysfs group ID (alias == "-")
+
+            real_aliases = 0
+            for child in children:
+                name = child['logical_name']
+                alias = child['alias']
+                # If alias is "-" it's the sysfs group ID (e.g. :0000064)
+                # If logical_name == phys_name, it's the physical owner
+                if alias != "-" and name != phys_name:
+                    real_aliases += 1
+
+            if real_aliases == 0:
+                continue
+
+            found_merge = True
+
+            header = "{:s} (Object size: {:s}, Chunk size: {:#x})".format(
+                Color.colorify(phys_name, chunk_label_color),
+                Color.colorify_hex(children[0]["object_size"], chunk_size_color),
+                children[0]["chunk_size"],
+            )
+            self.out.append(header)
+
+            children.sort(key=lambda x: x['logical_name'])
+
+            for i, child in enumerate(children):
+                if i == len(children) - 1:
+                    tree_char = "└── "
+                else:
+                    tree_char = "├── "
+
+                name_str = child['logical_name']
+                if name_str == phys_name:
+                    line = tree_char + Color.colorify(name_str, 'green') + " (Physical Owner)"
+                elif child['alias'] == "-":
+                    line = tree_char + Color.colorify(name_str, 'gray') + " (Sysfs Group)"
+                else:
+                    line = tree_char + name_str
+                self.out.append(line)
+            self.out.append("")
+
+        if not found_merge:
+            self.out.append("No interesting merges found (only 1:1 mappings).")
+        return
+
+    def make_output(self, alias_groups):
         fmt = "{:16s} {:16s} {:30s} {:12s} {:30s}"
         legend = ["Object Size", "Chunk Size", "Name", "Alias", "slab_cache name"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         if self.args.sort_by_size:
-            sorted_alias_groups = sorted(alias_groups.items(), key=lambda x: (x[1]["object_size"], x[1]["chunk_size"]))
+            sorted_alias_groups = sorted(alias_groups.items(),
+                key=lambda x: (x[1]["object_size"], x[1]["chunk_size"]))
         else:
             sorted_alias_groups = sorted(alias_groups.items())
         for name, v in sorted_alias_groups:
             if v["object_size"] == 0:
                 self.out.append("{:16s} {:16s} {:30s} {:12s} {:30s}".format(
-                    "-", "-", name, alias, "<UNUSED>",
+                    "-", "-", name, v["alias"], "<UNUSED>",
                 ))
             else:
                 object_size = "{0:d} ({0:#x})".format(v["object_size"])
                 chunk_size = "{0:d} ({0:#x})".format(v["chunk_size"])
-                alias = v["alias"]
-                slab_cache_name = v["slab_cache_name"]
                 self.out.append("{:16s} {:16s} {:30s} {:12s} {:30s}".format(
-                    object_size, chunk_size, name, alias, slab_cache_name,
+                    object_size, chunk_size, name, v["alias"], v["slab_cache_name"],
                 ))
         return
 
@@ -76985,7 +76990,11 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             return
 
         self.out = []
-        self.dump_kmem_cache_alias()
+        alias_groups = self.parse_kmem_cache_alias()
+        if self.args.merged_only:
+            self.make_output_merged(alias_groups)
+        else:
+            self.make_output(alias_groups)
         self.print_output()
         return
 
