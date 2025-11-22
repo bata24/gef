@@ -62216,6 +62216,10 @@ class KernelLoadCommand(GenericCommand):
     parser.add_argument("path", metavar="VMLINUX_PATH", type=str, help="path of the vmlinux.")
     _syntax_ = parser.format_help()
 
+    def __init__(self):
+        super().__init__(complete=gdb.COMPLETE_FILENAME)
+        return
+
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
