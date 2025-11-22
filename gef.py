@@ -76817,7 +76817,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             alias_groups[name] = {"alias": alias, "slab_cache_name": None, "object_size": 0, "chunk_size": 0}
 
         # parse slub-dump
-        cmd = {"SLUB": "slub-dump", "SLAB": "slab-dump", "SLUB_TINY": "slub-tiny-dump"}[self.allocator]
+        cmd = {"SLUB": "slub-dump", "SLUB_TINY": "slub-tiny-dump"}[self.allocator]
         res = gdb.execute("{:s} --list --no-pager --quiet".format(cmd), to_string=True)
         used_names = []
         for line in res.splitlines():
@@ -76896,8 +76896,8 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         if not hasattr(self, "allocator"):
             self.allocator = Kernel.get_slab_type()
 
-        if self.allocator not in ["SLUB", "SLUB_TINY", "SLAB"]:
-            self.quiet_err("Unsupported SLOB")
+        if self.allocator not in ["SLUB", "SLUB_TINY"]:
+            self.quiet_err("Unsupported SLAB, SLOB")
             return
 
         ret = self.initialize()
