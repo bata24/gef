@@ -73608,13 +73608,13 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # offsetof(kmem_cache, flags)
         if kversion < "6.18":
+            self.kmem_cache_offset_flags = current_arch.ptrsize
+        else:
             CONFIG_LOCKDEP = Symbol.get_ksymaddr("fs_reclaim_acquire")
             if CONFIG_LOCKDEP:
                 self.kmem_cache_offset_flags = current_arch.ptrsize * 3
             else:
                 self.kmem_cache_offset_flags = current_arch.ptrsize
-        else:
-            self.kmem_cache_offset_flags = current_arch.ptrsize * 2
         self.quiet_info("offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags))
 
         # offsetof(kmem_cache, size)
