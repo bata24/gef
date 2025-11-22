@@ -76664,6 +76664,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-s", "--sort-by-size", action="store_true", help="sort by object size.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    parser.add_argument("-m", "--merged", action="store_true", help="show only merged caches grouped by physical cache.")
     _syntax_ = parser.format_help()
 
     _note_ = [
@@ -76855,6 +76856,82 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                         alias_groups[k]["slab_cache_name"] = slab_cache_name
                         alias_groups[k]["object_size"] = object_size
                         alias_groups[k]["chunk_size"] = chunk_size
+
+        # show only merged caches
+        if self.args.merged:
+            # group entries by their Physical Cache Name
+            merged_groups = {} 
+            for name, info in alias_groups.items():
+                if not info["slab_cache_name"]: continue
+                
+                phys_name = info["slab_cache_name"]
+                if phys_name not in merged_groups:
+                    merged_groups[phys_name] = []
+                
+                entry = info.copy()
+                entry['logical_name'] = name
+                merged_groups[phys_name].append(entry)
+
+            # sort by keys
+            if self.args.sort_by_size:
+                sorted_phys_names = sorted(merged_groups.keys(), 
+                    key=lambda k: (merged_groups[k][0]["object_size"] if merged_groups[k] else 0))
+            else:
+                sorted_phys_names = sorted(merged_groups.keys())
+
+            self.out.append(titlify("Merged Slab Caches"))
+            found_merge = False
+            
+            for phys_name in sorted_phys_names:
+                children = merged_groups[phys_name]
+                
+                # FILTER LOGIC:
+                # We want to hide groups that are just [PhysicalOwner, SysfsID]
+                # We count how many "real" aliases exist.
+                # A "real" alias is one that is NOT the physical owner AND NOT the sysfs group ID (alias == "-")
+                
+                real_aliases = 0
+                for child in children:
+                    name = child['logical_name']
+                    alias = child['alias']
+                    # If alias is "-" it's the sysfs group ID (e.g. :0000064)
+                    # If logical_name == phys_name, it's the physical owner
+                    if alias != "-" and name != phys_name:
+                        real_aliases += 1
+                
+                if real_aliases == 0:
+                    continue
+                
+                found_merge = True
+                
+                obj_size = children[0]["object_size"]
+                chunk_size = children[0]["chunk_size"]
+                
+                header = f"{Color.colorify(phys_name, 'bold cyan')} (Size: {obj_size}, Chunk: {chunk_size})"
+                self.out.append(header)
+                
+                children.sort(key=lambda x: x['logical_name'])
+                
+                last_idx = len(children) - 1
+                for i, child in enumerate(children):
+                    is_last = (i == last_idx)
+                    tree_char = "└── " if is_last else "├── "
+                    
+                    name_str = child['logical_name']
+                    
+                    if name_str == phys_name:
+                        line = f"{tree_char}{Color.colorify(name_str, 'green')} (Physical Owner)"
+                    elif child['alias'] == "-":
+                        line = f"{tree_char}{Color.colorify(name_str, 'gray')} (Sysfs Group)"
+                    else:
+                        line = f"{tree_char}{name_str}"
+                        
+                    self.out.append(line)
+                self.out.append("") 
+
+            if not found_merge:
+                self.out.append("No interesting merges found (only 1:1 mappings).")
+            return
 
         # dump
         fmt = "{:16s} {:16s} {:30s} {:12s} {:30s}"
