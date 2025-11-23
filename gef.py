@@ -79059,6 +79059,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         else:
             self.quiet_err("Not found ipc_namespace->ids[0].ipcs_idr.idr_rt.xa_head")
             self.quiet_err("Not recognized sizeof(struct ipc_ids)")
+            self.quiet_err("maybe CONFIG_SYSVIPC=n")
             return False
         self.quiet_info("offsetof(ipc_ids, ipcs_idr.idr_rt.xa_head): {:#x}".format(self.offset_xa_head))
         self.quiet_info("sizeof(struct ipc_ids): {:#x}".format(self.sizeof_ipc_ids))
@@ -79216,7 +79217,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         };
         """
         self.out.append(titlify("Message Queues"))
-        fmt = "{:18s} {:5s} {:10s} {:4s} {:4s} {:5s} {:10s} {:8s}"
+        fmt = "{:18s} {:5s} {:10s} {:4s} {:4s} {:5s} {:10s} {:s}"
         legend = ["msg_queue", "msqid", "key", "uid", "gid", "perms", "used-bytes", "messages"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
@@ -79244,11 +79245,11 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             if hasattr(self, "offset_q_cbytes"):
                 q_cbytes = read_int_from_memory(e + self.offset_q_cbytes)
                 q_qnum = read_int_from_memory(e + self.offset_q_qnum)
-                self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:<#10x} {:<8d}".format(
+                self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:<#10x} {:<d}".format(
                     e, msqid, key, uid, gid, mode, q_cbytes, q_qnum,
                 ))
             else:
-                self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:10s} {:8s}".format(
+                self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:10s} {:s}".format(
                     e, msqid, key, uid, gid, mode, "?", "?",
                 ))
 
@@ -79277,7 +79278,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         } __randomize_layout;
         """
         self.out.append(titlify("Shared Memory Segments"))
-        fmt = "{:18s} {:5s} {:10s} {:4s} {:4s} {:5s} {:10s} {:6s}"
+        fmt = "{:18s} {:5s} {:10s} {:4s} {:4s} {:5s} {:10s} {:s}"
         legend = ["shmid_kernel", "shmid", "key", "uid", "gid", "perms", "bytes", "nattch"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
@@ -79303,11 +79304,11 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             if hasattr(self, "offset_shm_nattch"):
                 nattch = read_int_from_memory(e + self.offset_shm_nattch)
                 segsz = read_int_from_memory(e + self.offset_shm_segsz)
-                self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:<#10x} {:<6d}".format(
+                self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:<#10x} {:<d}".format(
                     e, shmid, key, uid, gid, mode, segsz, nattch,
                 ))
             else:
-                self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:10s} {:6s}".format(
+                self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:10s} {:s}".format(
                     e, shmid, key, uid, gid, mode, "?", "?",
                 ))
         return
