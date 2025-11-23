@@ -17879,7 +17879,7 @@ class SearchPatternCommand(GenericCommand):
                         help="interpret PATTERN as big endian if PATTERN is 0xXXXXXXXX style.")
     parser.add_argument("--phys", action="store_true",
                         help="treat START_ADDR as a physical address (only qemu-system).")
-    parser.add_argument("-a", "--aligned", type=int, default=1,
+    parser.add_argument("-a", "--aligned", type=AddressUtil.parse_address, default=1,
                         help="alignment unit. (default: %(default)s)")
     parser.add_argument("-p", "--perm", default="r??",
                         help="the filter by permission. (default: %(default)s)")
