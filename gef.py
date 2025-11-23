@@ -78111,7 +78111,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         struct pipe_buffer {
             struct page *page;
             unsigned int offset, len;
-            const struct pipe_buf_operations *ops;
+            const struct pipe_buf_operations *ops; // allow NULL
             unsigned int flags;
             unsigned long private;
         };
@@ -78134,31 +78134,36 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                     continue
                 # bufs
                 bufs = read_int_from_memory(pipe_inode_info + offset_bufs)
-                if is_32bit():
+                if is_64bit():
                     if not is_valid_addr_addr(bufs + current_arch.ptrsize * 0): # page
                         continue
-                    if is_valid_addr_addr(bufs + current_arch.ptrsize * 1): # offset
+                    len_ = read_int32_from_memory(bufs + current_arch.ptrsize * 1 + 4) # len
+                    if len_ == 0 or is_valid_addr_addr(bufs + current_arch.ptrsize * 1): # offset||len
                         continue
-                    if is_valid_addr_addr(bufs + current_arch.ptrsize * 2): # len
-                        continue
-                    if not is_valid_addr_addr(bufs + current_arch.ptrsize * 3): # ops
-                        continue
-                    if is_valid_addr_addr(bufs + current_arch.ptrsize * 4): # flags
-                        continue
-                    if is_valid_addr_addr(bufs + current_arch.ptrsize * 5): # private
-                        continue
-                else:
-                    if not is_valid_addr_addr(bufs + current_arch.ptrsize * 0): # page
-                        continue
-                    if is_valid_addr_addr(bufs + current_arch.ptrsize * 1): # offset||len
-                        continue
-                    if not is_valid_addr_addr(bufs + current_arch.ptrsize * 2): # ops
+                    ops = read_int_from_memory(bufs + current_arch.ptrsize * 2) # ops
+                    if ops != 0 and not is_valid_addr(ops):
                         continue
                     if is_valid_addr_addr(bufs + current_arch.ptrsize * 3): # flags
                         continue
                     if is_valid_addr_addr(bufs + current_arch.ptrsize * 4): # private
                         continue
+                else:
+                    if not is_valid_addr_addr(bufs + current_arch.ptrsize * 0): # page
+                        continue
+                    if is_valid_addr_addr(bufs + current_arch.ptrsize * 1): # offset
+                        continue
+                    len_ = read_int_from_memory(bufs + current_arch.ptrsize * 2) # len
+                    if len_ == 0 or is_valid_addr_addr(len_):
+                        continue
+                    ops = read_int_from_memory(bufs + current_arch.ptrsize * 3) # ops
+                    if ops != 0 and not is_valid_addr(ops):
+                        continue
+                    if is_valid_addr_addr(bufs + current_arch.ptrsize * 4): # flags
+                        continue
+                    if is_valid_addr_addr(bufs + current_arch.ptrsize * 5): # private
+                        continue
                 # found
+                self.quiet_info("offset of bufs is found by heuristic way1")
                 return offset_bufs
 
         # plan 2
@@ -78179,9 +78184,11 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 continue
             # pipe_inode_info is allocated from kmalloc-1k (x64) or kmalloc-512 (x86)
             if re.search(r"kmalloc(-cg)?-(1k|1024|512)", ret):
+                self.quiet_info("offset of bufs is found by heuristic way2-1")
                 return current_arch.ptrsize * i
             # before v5.5, pipe_buffer is allocated not from slub, but `user` is allocated from slub.
             if kversion < "5.5" and "uid_cache" in ret:
+                self.quiet_info("offset of bufs is found by heuristic way2-2")
                 return current_arch.ptrsize * (i - 1)
         return None
 
@@ -78190,23 +78197,42 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         pipe_inode_info = read_int_from_memory(inode + self.offset_i_pipe)
 
         for i in range(3, 0x40):
-            # head/nrbuf is not address
-            v1 = read_int_from_memory(pipe_inode_info + current_arch.ptrsize * i)
-            if is_valid_addr(v1):
-                continue
-            # head/nrbuf is too large
-            v1_4 = read_int32_from_memory(pipe_inode_info + current_arch.ptrsize * i)
-            if v1_4 > 0x100:
-                continue
-            # max_usage/buffers is not address
-            v2 = read_int_from_memory(pipe_inode_info + current_arch.ptrsize * (i + 1))
-            if is_valid_addr(v2):
-                continue
-            # max_usage/buffers is too large or zero
-            v2_4 = read_int32_from_memory(pipe_inode_info + current_arch.ptrsize * (i + 1))
-            if v2_4 > 0x100 or v2_4 == 0:
-                continue
-            return current_arch.ptrsize * i
+            if is_64bit():
+                # head||tail/nrbuf||curbuf is not address
+                v1 = read_int_from_memory(pipe_inode_info + current_arch.ptrsize * i)
+                if is_valid_addr(v1):
+                    continue
+                # head/nrbuf is too large
+                v1_32 = read_int32_from_memory(pipe_inode_info + current_arch.ptrsize * i)
+                if v1_32 > 0x100:
+                    continue
+                # max_usage||ring_size/buffers||readers is not address
+                v2 = read_int_from_memory(pipe_inode_info + current_arch.ptrsize * (i + 1))
+                if is_valid_addr(v2):
+                    continue
+                # max_usage/buffers is too large or zero
+                v2_32 = read_int32_from_memory(pipe_inode_info + current_arch.ptrsize * (i + 1))
+                if v2_32 > 0x100 or v2_32 == 0:
+                    continue
+                return current_arch.ptrsize * i
+            else:
+                # head/nrbuf is not address
+                v1 = read_int_from_memory(pipe_inode_info + current_arch.ptrsize * i)
+                if is_valid_addr(v1):
+                    continue
+                # head/nrbuf is too large
+                v1_32 = read_int32_from_memory(pipe_inode_info + current_arch.ptrsize * i)
+                if v1_32 > 0x100:
+                    continue
+                # max_usage/buffers is not address
+                v2 = read_int_from_memory(pipe_inode_info + current_arch.ptrsize * (i + 2))
+                if is_valid_addr(v2):
+                    continue
+                # max_usage/buffers is too large or zero
+                v2_32 = read_int32_from_memory(pipe_inode_info + current_arch.ptrsize * (i + 2))
+                if v2_32 > 0x100 or v2_32 == 0:
+                    continue
+                return current_arch.ptrsize * i
         return None
 
     def get_pipe_files(self):
