@@ -98452,6 +98452,11 @@ class PageCommand(GenericCommand):
                 err("Not found PAGE_OFFSET")
                 return False
 
+            self.PAGE_OFFSET_END = KernelAddressHeuristicFinder.get_PAGE_OFFSET_END()
+            if self.PAGE_OFFSET_END is None:
+                err("Not found PAGE_OFFSET_END")
+                return False
+
             self.VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
             if self.VMALLOC_START is None:
                 err("Not found VMALLOC_START")
@@ -98462,7 +98467,7 @@ class PageCommand(GenericCommand):
                 err("Not found VMALLOC_END")
                 return False
 
-            self.LOWMEM_LIMIT = (self.VMALLOC_START - self.PAGE_OFFSET) >> self.PAGE_SHIFT
+            self.LOWMEM_LIMIT = (self.PAGE_OFFSET_END - self.PAGE_OFFSET) >> self.PAGE_SHIFT
             self.page_address_htable = KernelAddressHeuristicFinder.get_page_address_htable() # allow None
 
             # Determine whether it is CONFIG_FLATMEM or CONFIG_SPARSEMEM.
@@ -98563,6 +98568,11 @@ class PageCommand(GenericCommand):
                 err("Not found PAGE_OFFSET")
                 return False
 
+            self.PAGE_OFFSET_END = KernelAddressHeuristicFinder.get_PAGE_OFFSET_END()
+            if self.PAGE_OFFSET_END is None:
+                err("Not found PAGE_OFFSET_END")
+                return False
+
             self.VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
             if self.VMALLOC_START is None:
                 err("Not found VMALLOC_START")
@@ -98583,7 +98593,17 @@ class PageCommand(GenericCommand):
                 err("Not found sizeof(struct page)")
                 return False
 
-            self.LOWMEM_LIMIT = (self.VMALLOC_START - self.PAGE_OFFSET) >> self.PAGE_SHIFT
+            self.FIXADDR_START = KernelAddressHeuristicFinder.consts().FIXADDR_START
+            if self.FIXADDR_START is None:
+                err("Not found FIXADDR_START")
+                return False
+
+            self.FIXADDR_TOP = KernelAddressHeuristicFinder.consts().FIXADDR_TOP
+            if self.FIXADDR_TOP is None:
+                err("Not found FIXADDR_TOP")
+                return False
+
+            self.LOWMEM_LIMIT = (self.PAGE_OFFSET_END - self.PAGE_OFFSET) >> self.PAGE_SHIFT
             self.page_address_htable = KernelAddressHeuristicFinder.get_page_address_htable() # allow None
 
         self.initialized = True
@@ -98591,6 +98611,9 @@ class PageCommand(GenericCommand):
 
     def is_vmalloc_addr(self, virt):
         return self.VMALLOC_START <= virt < self.VMALLOC_END
+
+    def is_fixmap_addr(self, virt):
+        return self.FIXADDR_START <= virt < self.FIXADDR_TOP
 
     def page2address(self, page):
         # for highmem
@@ -98632,6 +98655,21 @@ class PageCommand(GenericCommand):
                     err("Found but invalid: {:#x}".format(virt_value))
                     return None
             current = read_int_from_memory(current)
+        return None
+
+    def search_fixmap(self, target_pfn):
+        maps = Kernel.get_maps() # [vaddr, size, perm]
+        if maps is None:
+            return None
+
+        for vaddr, size, _perm in maps:
+            if not self.is_fixmap_addr(vaddr):
+                continue
+            for v in range(vaddr, vaddr + size, 1 << self.PAGE_SHIFT):
+                p = Kernel.v2p(v)
+                pfn = p >> self.PAGE_SHIFT
+                if (pfn - target_pfn) % 0x10000 == 0:
+                    return v
         return None
 
     def page2virt(self, page):
@@ -98697,6 +98735,9 @@ class PageCommand(GenericCommand):
             else:
                 info("Search as HIGHMEM")
                 virt = self.page2address(page)
+                if virt is None:
+                    info("Search as FIXMAP")
+                    virt = self.search_fixmap(pfn)
 
         if virt is None:
             err("Address in invalid range")
