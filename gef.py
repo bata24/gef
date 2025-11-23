@@ -67310,6 +67310,42 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
+    _note_ = [
+        "Simplified pcidev structure:",
+        "",
+        "+----------------+   +-pci_bus--------+",
+        "| pci_root_buses |-->| node.next      |-->...",
+        "+----------------+   | node.prev      |",
+        "                     | parent         |    +-pci_dev----------+",
+        "                     | children.next  | +->| bus_list.next    |-->...",
+        "                     | children.prev  | |  | bus_list.prev    |",
+        "                     | devices.next   |-+  | ...              |",
+        "                     | devices.prev   |    | vendor           |",
+        "                     | ...            |    | device           |",
+        "                     | dev            |    | subsystem_vendor |",
+        "                     |   kobj         |    | subsystem_device |",
+        "                     |     name       |    | class            |",
+        "                     | ...            |    | revision         |",
+        "                     +----------------+    | dev              |",
+        "                                           |   kobj           |",
+        "                                           |     name         |",
+        "                                           | ...              |",
+        "                                           | +-resource[0]-+  |",
+        "                                           | | start       |  |",
+        "                                           | | end         |  |",
+        "                                           | | name        |  |",
+        "                                           | | flags       |  |",
+        "                                           | | ...         |  |",
+        "                                           | +-resource[1]-+  |",
+        "                                           | | ...         |  |",
+        "                                           | +-------------+  |",
+        "                                           | | ...         |  |",
+        "                                           | +-------------+  |",
+        "                                           | ...              |",
+        "                                           +------------------+",
+    ]
+    _note_ = "\n".join(_note_)
+
     def initialize(self):
         if hasattr(self, "initialized") and self.initialized:
             return True
@@ -67323,7 +67359,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
 
         first_root_bus = read_int_from_memory(self.pci_root_buses)
         if self.pci_root_buses == first_root_bus:
-            warn("Nothing to dump")
+            warn("No PCI devices found")
             return False
 
         # pci_bus->{node,children,devices}
@@ -67503,7 +67539,8 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
                 if line.startswith("\t") and not line.startswith("\t\t"):
                     device, *desc = line[1:].split("  ")
                     device = int(device, 16)
-                    dic[vendor, device] = " ".join(desc) # Use the previous value for `vendor`.
+                    # Use the previous value for `vendor`.
+                    dic[vendor, device] = " ".join(desc)
                     continue
 
                 if line.startswith("\t\t"):
@@ -67511,7 +67548,8 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
                     subv, subd = subsystem.split()
                     subv = int(subv, 16)
                     subd = int(subd, 16)
-                    dic[vendor, device, subv, subd] = " ".join(desc) # Use the previous value for `vendor` and `device`.
+                    # Use the previous value for `vendor` and `device`.
+                    dic[vendor, device, subv, subd] = " ".join(desc)
                     continue
 
             else:
@@ -67525,13 +67563,15 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
                 if line.startswith("\t") and not line.startswith("\t\t"):
                     sub_class, *desc = line[1:].split("  ")
                     sub_class = int(sub_class, 16)
-                    dic["C", base_class, sub_class] = " ".join(desc) # Use the previous value for `base_class`.
+                    # Use the previous value for `base_class`.
+                    dic["C", base_class, sub_class] = " ".join(desc)
                     continue
 
                 if line.startswith("\t\t"):
                     prgif, *desc = line[2:].split("  ")
                     prgif = int(prgif, 16)
-                    dic["C", base_class, sub_class, prgif] = " ".join(desc) # Use the previous value for `base_class` and `sub_class`.
+                    # Use the previous value for `base_class` and `sub_class`.
+                    dic["C", base_class, sub_class, prgif] = " ".join(desc)
                     continue
         return dic
 
