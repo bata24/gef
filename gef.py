@@ -59801,8 +59801,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         """
         struct task_struct {
             ...
-            pid_t pid;
-            pid_t tgid;
+            pid_t pid; // int
+            pid_t tgid; // int
             ...
         };
 
@@ -59822,7 +59822,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         for i in range(0x400):
             found = False
             seen_pid = []
-            for j, task in enumerate(task_addrs[1:]): # swapper/0 has pid 0. Don't use it as it will cause false positives.
+            # swapper/0 has pid 0. Don't use it as it will cause false positives.
+            for j, task in enumerate(task_addrs[1:]):
                 v1 = read_int32_from_memory(task + (i + 0) * 4)
                 v2 = read_int32_from_memory(task + (i + 1) * 4)
                 if j == 0 and v1 != 1: # init process has always 1
@@ -60240,9 +60241,12 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     def get_offset_fdt(self, task_addrs, offset_files):
         """
         struct files_struct {
-            atomic_t count;
-            bool resize_in_progress;
-            wait_queue_head_t resize_wait;
+            atomic_t count; // int
+            bool resize_in_progress;   // v4.2~
+            wait_queue_head_t {        // v4.2~
+                spinlock_t lock;       // v4.2~
+                struct list_head head; // v4.2~
+            } resize_wait;             // v4.2~
             struct fdtable __rcu *fdt; <-- here
             struct fdtable {
                 unsigned int max_fds;
@@ -60257,7 +60261,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         """
         MAX_FDS_DEFAULT = AddressUtil.get_memory_alignment(in_bits=True)
         files = read_int_from_memory(task_addrs[0] + offset_files)
-        for i in range(0x100):
+        for i in range(1, 0x100):
             v = read_int_from_memory(files + current_arch.ptrsize * i)
             if v != MAX_FDS_DEFAULT:
                 continue
@@ -60544,7 +60548,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 raise
 
             self.ma_root_raw = read_int_from_memory(mm + offset_ma_root)
-            self.ma_flags = read_int_from_memory(mm + offset_ma_flags)
+            self.ma_flags = read_int32_from_memory(mm + offset_ma_flags)
             self.max_depth = (self.ma_flags & self.MT_FLAGS_HEIGHT_MASK) >> self.MT_FLAGS_HEIGHT_OFFSET
 
             if is_64bit():
@@ -60794,6 +60798,76 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 if mm == 0:
                     continue
 
+                """
+                normal case:
+                [x64 5.10.127; corjail; sh]
+                0xffff9df049f75cc0|+0x0000|+000: 0x0000564e44351000 // vm_start
+                0xffff9df049f75cc8|+0x0008|+001: 0x0000564e4437f000 // vm_end
+                0xffff9df049f75cd0|+0x0010|+002: 0xffff9df049f75000 // vm_next
+                0xffff9df049f75cd8|+0x0018|+003: 0x0000000000000000 // vm_prev
+                0xffff9df049f75ce0|+0x0020|+004: 0xffff9df049f75021 // vm_rb.__rb_parent_color
+                0xffff9df049f75ce8|+0x0028|+005: 0x0000000000000000 // vm_rb.rb_right
+                0xffff9df049f75cf0|+0x0030|+006: 0x0000000000000000 // vm_rb.rb_left
+                0xffff9df049f75cf8|+0x0038|+007: 0x0000564e44351000 // rb_subtree_gap
+                0xffff9df049f75d00|+0x0040|+008: 0xffff9df0426c8800 // vm_mm
+                0xffff9df049f75d08|+0x0048|+009: 0x8000000000000025 // vm_page_prot
+                0xffff9df049f75d10|+0x0050|+010: 0x0000000008000871 // vm_flags
+                0xffff9df049f75d18|+0x0058|+011: 0xffff9df049f75059 // shared.rb.__rb_parent_color
+                0xffff9df049f75d20|+0x0060|+012: 0x0000000000000000 // shared.rb.rb_right
+                0xffff9df049f75d28|+0x0068|+013: 0x0000000000000000 // shared.rb.rb_left
+                0xffff9df049f75d30|+0x0070|+014: 0x000000000000002d // shared.rb_subtree_last
+                0xffff9df049f75d38|+0x0078|+015: 0xffff9df049f75d38 // anon_vma_chain.next
+                0xffff9df049f75d40|+0x0080|+016: 0xffff9df049f75d38 // anon_vma_chain.prev
+                0xffff9df049f75d48|+0x0088|+017: 0x0000000000000000 // anon_vma
+                0xffff9df049f75d50|+0x0090|+018: 0xffffffff9b034380 // vm_ops
+                0xffff9df049f75d58|+0x0098|+019: 0x0000000000000000 // vm_pgoff
+                0xffff9df049f75d60|+0x00a0|+020: 0xffff9df0427a5800 // vm_file
+
+                rare case: both vm_ops and vm_file are NULL
+                [x64; 5.10.127; corjail; dockerd]
+                0xffff9df04678aa80|+0x0000|+000: 0x000000c000000000 // vm_start
+                0xffff9df04678aa88|+0x0008|+001: 0x000000c000400000 // vm_end
+                0xffff9df04678aa90|+0x0010|+002: 0xffff9df04670d9c0 // vm_next
+                0xffff9df04678aa98|+0x0018|+003: 0x0000000000000000 // vm_prev
+                0xffff9df04678aaa0|+0x0020|+004: 0xffff9df04670d9e1 // vm_rb.__rb_parent_color
+                0xffff9df04678aaa8|+0x0028|+005: 0x0000000000000000 // vm_rb.rb_right
+                0xffff9df04678aab0|+0x0030|+006: 0x0000000000000000 // vm_rb.rb_left
+                0xffff9df04678aab8|+0x0038|+007: 0x000000c000000000 // rb_subtree_gap
+                0xffff9df04678aac0|+0x0040|+008: 0xffff9df0426ca800 // vm_mm
+                0xffff9df04678aac8|+0x0048|+009: 0x8000000000000025 // vm_page_prot
+                0xffff9df04678aad0|+0x0050|+010: 0x0000000008100073 // vm_flags
+                0xffff9df04678aad8|+0x0058|+011: 0x0000000000000000 // shared.rb.__rb_parent_color
+                0xffff9df04678aae0|+0x0060|+012: 0x0000000000000000 // shared.rb.rb_right
+                0xffff9df04678aae8|+0x0068|+013: 0x0000000000000000 // shared.rb.rb_left
+                0xffff9df04678aaf0|+0x0070|+014: 0x0000000000000000 // shared.rb_subtree_last
+                0xffff9df04678aaf8|+0x0078|+015: 0xffff9df04676ea90 // anon_vma_chain.next
+                0xffff9df04678ab00|+0x0080|+016: 0xffff9df04676ea90 // anon_vma_chain.prev
+                0xffff9df04678ab08|+0x0088|+017: 0xffff9df04279e318 // anon_vma
+                0xffff9df04678ab10|+0x0090|+018: 0x0000000000000000 // vm_ops
+                0xffff9df04678ab18|+0x0098|+019: 0x000000000c000000 // vm_pgoff
+                0xffff9df04678ab20|+0x00a0|+020: 0x0000000000000000 // vm_file
+
+                normal case:
+                [x64 6.6.0; trust_storage; init]
+                0xffff000001ee6630|+0x0000|+000: 0x0000aaaac690d000 // vm_start
+                0xffff000001ee6638|+0x0008|+001: 0x0000aaaac69d4000 // vm_end
+                0xffff000001ee6640|+0x0010|+002: 0xffff0000010a84c0 // vm_mm
+                0xffff000001ee6648|+0x0018|+003: 0x0020000000000fc3 // vm_page_prot
+                0xffff000001ee6650|+0x0020|+004: 0x0000000000000075 // vm_flags
+                0xffff000001ee6658|+0x0028|+005: 0x0000000000000003 // vm_lock_seq
+                0xffff000001ee6660|+0x0030|+006: 0xffff000001ee7168 // vm_lock
+                0xffff000001ee6668|+0x0038|+007: 0x0000000000000000 // detached
+                0xffff000001ee6670|+0x0040|+008: 0xffff000005f831a1 // shared.rb.__rb_parent_color
+                0xffff000001ee6678|+0x0048|+009: 0x0000000000000000 // shared.rb.rb_right
+                0xffff000001ee6680|+0x0050|+010: 0x0000000000000000 // shared.rb.rb_left
+                0xffff000001ee6688|+0x0058|+011: 0x00000000000000c6 // shared.rb_subtree_last
+                0xffff000001ee6690|+0x0060|+012: 0xffff000001ee6690 // anon_vma_chain.next
+                0xffff000001ee6698|+0x0068|+013: 0xffff000001ee6690 // anon_vma_chain.prev
+                0xffff000001ee66a0|+0x0070|+014: 0x0000000000000000 // anon_vma
+                0xffff000001ee66a8|+0x0078|+015: 0xffffa4277c4d80c8 // vm_ops
+                0xffff000001ee66b0|+0x0080|+016: 0x0000000000000000 // vm_pgoff
+                0xffff000001ee66b8|+0x0088|+017: 0xffff00000025d400 // vm_file
+                """
                 vm_area_struct, _ = self.get_vm_area_struct(mm)
                 ptr_anon_vma_chain = vm_area_struct + offset_vm_flags + current_arch.ptrsize * i
                 if not is_double_link_list(ptr_anon_vma_chain):
@@ -60806,12 +60880,12 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     break
                 ptr_vm_ops = vm_area_struct + offset_vm_flags + current_arch.ptrsize * (i + 3)
                 vm_ops = read_int_from_memory(ptr_vm_ops)
-                if not is_valid_addr(vm_ops):
+                if vm_ops != 0 and not is_valid_addr(vm_ops): # allow NULL
                     found = False
                     break
                 ptr_vm_file = vm_area_struct + offset_vm_flags + current_arch.ptrsize * (i + 5)
                 vm_file = read_int_from_memory(ptr_vm_file)
-                if not is_valid_addr(vm_file):
+                if vm_file != 0 and not is_valid_addr(vm_file): # allow NULL
                     found = False
                     break
             if found:
@@ -60869,7 +60943,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     void (*func)(struct callback_head *head);
                 } f_task_work; // v6.8~;
                 struct llist_node f_llist;
-                struct rcu_head f_rcuhead; // ~v6.7
+                struct rcu_head f_rcuhead; // ~v6.7 (=callback_head)
                 unsigned int f_iocb_flags;
             };
             spinlock_t f_lock;
@@ -61455,7 +61529,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         if self.offset_tasks is None:
             self.offset_tasks = self.get_offset_tasks(init_task)
         if self.offset_tasks is None:
-            self.quiet_err("Not found init_task->tasks")
+            self.quiet_err("Not found task_struct->tasks")
             return False
         self.quiet_info("offsetof(task_struct, tasks): {:#x}".format(self.offset_tasks))
 
@@ -61475,7 +61549,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         if self.offset_stack is None:
             self.offset_stack = self.get_offset_stack(task_addrs)
         if self.offset_stack is None:
-            self.quiet_err("Not found task->stack")
+            self.quiet_err("Not found task_struct->stack")
             return False
         self.quiet_info("offsetof(task_struct, stack): {:#x}".format(self.offset_stack))
 
@@ -61483,7 +61557,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         if self.offset_pid is None:
             self.offset_pid = self.get_offset_pid(task_addrs)
         if self.offset_pid is None:
-            self.quiet_err("Not found task->pid")
+            self.quiet_err("Not found task_struct->pid")
             return False
         self.quiet_info("offsetof(task_struct, pid): {:#x}".format(self.offset_pid))
 
@@ -61499,7 +61573,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         if self.offset_comm is None:
             self.offset_comm = self.get_offset_comm(task_addrs)
         if self.offset_comm is None:
-            self.quiet_err("Not found task->comm[TASK_CMM_LEN]")
+            self.quiet_err("Not found task_struct->comm[TASK_CMM_LEN]")
             return False
         self.quiet_info("offsetof(task_struct, comm): {:#x}".format(self.offset_comm))
 
@@ -61507,7 +61581,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         if self.offset_cred is None:
             self.offset_cred = self.get_offset_cred(task_addrs, self.offset_comm)
         if self.offset_cred is None:
-            self.quiet_err("Not found task->cred")
+            self.quiet_err("Not found task_struct->cred")
             return False
         self.quiet_info("offsetof(task_struct, cred): {:#x}".format(self.offset_cred))
 
@@ -61583,7 +61657,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
             if self.offset_d_inode is None:
                 self.offset_d_inode = self.get_offset_d_inode(self.offset_d_iname)
-            self.quiet_info("offsetof(file, d_inode): {:#x}".format(self.offset_d_inode))
+            self.quiet_info("offsetof(dentry, d_inode): {:#x}".format(self.offset_d_inode))
 
             if self.offset_d_parent is None:
                 dentry = read_int_from_memory(vm_file + self.offset_dentry)
@@ -61602,7 +61676,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             if self.offset_files is None:
                 self.offset_files = self.get_offset_files(task_addrs, self.offset_comm)
             if self.offset_files is None:
-                self.quiet_err("Not found task->files")
+                self.quiet_err("Not found task_struct->files")
                 return False
             self.quiet_info("offsetof(task_struct, files): {:#x}".format(self.offset_files))
 
