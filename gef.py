@@ -79555,6 +79555,7 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
             struct file *file;
             struct list_head attachments;
             const struct dma_buf_ops *ops;
+            struct mutex lock; // ~v6.2
             unsigned vmapping_counter;
             struct iosys_map {
                 union {
@@ -79576,7 +79577,7 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
 
         [v6.4 x64 example]
         0xffff8880135f8a00|+0x0000|+000: 0x0000000000001000  // size
-        0xffff8880135f8a08|+0x0008|+001: 0xffff888000f85800  ->  0x0000000000000000 //file
+        0xffff8880135f8a08|+0x0008|+001: 0xffff888000f85800  ->  0x0000000000000000 // file
         0xffff8880135f8a10|+0x0010|+002: 0xffff8880135f8a10  ->  [loop detected] // attachments
         0xffff8880135f8a18|+0x0018|+003: 0xffff8880135f8a10  ->  [loop detected]
         0xffff8880135f8a20|+0x0020|+004: 0xffffffff83e79d00 <system_heap_buf_ops>  ->  0x0000000000000000 // ops
@@ -79603,20 +79604,19 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
         0xffff8880135f8ac8|+0x00c8|+025: 0xffffffffffffffff
         """
         for i in range(1, 50):
-            a = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 4))
-            b = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 3))
-            c = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 2))
-            d = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 1))
-            e = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 0))
+            a = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 4)) # size
+            b = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 3)) # file
+            c = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 2)) # attachments
+            e = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 0)) # ops
 
             # size check
-            if is_valid_addr(a):
+            if a == 0 or (is_valid_addr(a) and AddressUtil.is_msb_on(a)):
                 continue
             # file check
             if not is_valid_addr(b):
                 continue
             # attachments check
-            if not is_valid_addr(c) or not is_valid_addr(d):
+            if not is_double_link_list(c):
                 continue
             # ops check
             if not is_valid_addr(e):
@@ -79798,6 +79798,11 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
         kversion = Kernel.kernel_version()
         if kversion < "5.11":
             err("Unsupported before v5.11")
+            return
+
+        ret = gdb.execute("ksymaddr-remote --quiet --no-pager dma_heap", to_string=True)
+        if not ret:
+            err("This kernel does not support DMA-BUF")
             return
 
         ret = self.initialize()
