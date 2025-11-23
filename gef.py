@@ -99299,7 +99299,7 @@ class HighMemDumpCommand(GenericCommand, BufferingOutput):
             found = True
 
         if not found:
-            self.info_add_out("Nothing to dump")
+            self.info_add_out("No highmem entries were found.")
         return
 
     @parse_args
