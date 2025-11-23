@@ -76697,6 +76697,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         if self.slab_kset is None:
             self.quiet_err("Not found slab_kset")
             return False
+        self.quiet_info("slab_kset: {:#x}".format(self.slab_kset))
 
         """
         struct kset {
@@ -76818,6 +76819,9 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             if is_valid_addr(target_kn):
                 alias_ptr = read_int_from_memory(target_kn + self.offset_name)
                 alias = read_cstring_from_memory(alias_ptr)
+            # rare case: L2TP!IPv6 -> L2TP/IPv6
+            if "!" in name:
+                name = name.replace("!", "/")
             alias_groups[name] = {"alias": alias, "slab_cache_name": None, "object_size": 0, "chunk_size": 0}
 
         # parse slub-dump
@@ -76833,12 +76837,17 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
 
         # identify the actual slab_cache name in use
         for object_size, chunk_size, slab_cache_name in used_names:
+            original_slab_cache_name = slab_cache_name
             # In older kernels, the slab_cache name may include the process name,
             # such as "kmalloc-512(342:serial-getty@ttyAMA0.service)".
             # To support this, anything after the parentheses is ignored.
             if slab_cache_name not in alias_groups:
                 if "(" in slab_cache_name:
                     slab_cache_name = slab_cache_name[:slab_cache_name.find("(")]
+            # skip if not found
+            if slab_cache_name not in alias_groups:
+                self.quiet_err("Not found key: {:s}".format(original_slab_cache_name))
+                continue
 
             for k in alias_groups.keys():
                 # already resolved
@@ -76942,7 +76951,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         return
 
     def make_output(self, alias_groups):
-        fmt = "{:16s} {:16s} {:30s} {:12s} {:30s}"
+        fmt = "{:16s} {:16s} {:30s} {:12s} {:s}"
         legend = ["Object Size", "Chunk Size", "Name", "Alias", "slab_cache name"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
@@ -76953,13 +76962,13 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             sorted_alias_groups = sorted(alias_groups.items())
         for name, v in sorted_alias_groups:
             if v["object_size"] == 0:
-                self.out.append("{:16s} {:16s} {:30s} {:12s} {:30s}".format(
+                self.out.append("{:16s} {:16s} {:30s} {:12s} {:s}".format(
                     "-", "-", name, v["alias"], "<UNUSED>",
                 ))
             else:
                 object_size = "{0:d} ({0:#x})".format(v["object_size"])
                 chunk_size = "{0:d} ({0:#x})".format(v["chunk_size"])
-                self.out.append("{:16s} {:16s} {:30s} {:12s} {:30s}".format(
+                self.out.append("{:16s} {:16s} {:30s} {:12s} {:s}".format(
                     object_size, chunk_size, name, v["alias"], v["slab_cache_name"],
                 ))
         return
