@@ -76777,7 +76777,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
     _category_ = "08-h. Qemu-system Cooperation - Linux Allocator"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("names", nargs="*", help="Filter by specific cache name(s) (substring match).")
+    parser.add_argument("names", nargs="*", help="filter by specific cache name(s) (substring match).")
     parser.add_argument("-s", "--sort-by-size", action="store_true", help="sort by object size.")
     parser.add_argument("-m", "--merged-only", action="store_true",
                         help="show only merged caches grouped by physical cache.")
@@ -76898,7 +76898,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             self.offset_union = self.offset_rb + current_arch.ptrsize * 5
             subdirs = read_int_from_memory(sd + self.offset_union)
             if subdirs == 0 or subdirs > 0x1000:
-                # subdirs should be small positive number (~0x200),
+                # subdirs should be small positive number (~0x200), at most, it should not be 0x1000.
                 # so there exists padding or flags||mode if not.
                 self.offset_union += current_arch.ptrsize
             self.offset_dir_children = self.offset_union + current_arch.ptrsize
@@ -76953,12 +76953,14 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         # identify the actual slab_cache name in use
         for object_size, chunk_size, slab_cache_name in used_names:
             original_slab_cache_name = slab_cache_name
+
             # In older kernels, the slab_cache name may include the process name,
             # such as "kmalloc-512(342:serial-getty@ttyAMA0.service)".
             # To support this, anything after the parentheses is ignored.
             if slab_cache_name not in alias_groups:
                 if "(" in slab_cache_name:
                     slab_cache_name = slab_cache_name[:slab_cache_name.find("(")]
+
             # skip if not found
             if slab_cache_name not in alias_groups:
                 self.quiet_err("Not found key: {:s}".format(original_slab_cache_name))
@@ -76971,15 +76973,21 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
 
                 if alias_groups[k]["alias"] == "-":
                     if k == alias_groups[slab_cache_name]["alias"]:
+                        # k: ":0000256" -> "-"
+                        # slab_cache_name: "key_jar" -> ":0000256"
                         alias_groups[k]["slab_cache_name"] = slab_cache_name
                         alias_groups[k]["object_size"] = object_size
                         alias_groups[k]["chunk_size"] = chunk_size
                     elif k == slab_cache_name:
+                        # k: "kmalloc-256" -> "-"
+                        # slab_cache_name: "kmalloc-256" -> "-"
                         alias_groups[k]["slab_cache_name"] = slab_cache_name
                         alias_groups[k]["object_size"] = object_size
                         alias_groups[k]["chunk_size"] = chunk_size
                 else:
                     if alias_groups[k]["alias"] == alias_groups[slab_cache_name]["alias"]:
+                        # k: "key_jar" -> ":0000256"
+                        # slab_cache_name: "key_jar" -> ":0000256"
                         alias_groups[k]["slab_cache_name"] = slab_cache_name
                         alias_groups[k]["object_size"] = object_size
                         alias_groups[k]["chunk_size"] = chunk_size
@@ -77000,13 +77008,13 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                 merged_groups[phys_name] = []
 
             entry = info.copy()
-            entry['logical_name'] = name
+            entry["logical_name"] = name
             merged_groups[phys_name].append(entry)
 
-        keys_to_process = []
+        # list keys
         if self.args.names:
             target_phys_groups = set()
-            
+
             # Check every physical group
             for phys_name, children in merged_groups.items():
                 matched_group = False
@@ -77029,7 +77037,6 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         else:
             keys_to_process = list(merged_groups.keys())
 
-
         # sort by keys
         if self.args.sort_by_size:
             sorted_phys_names = sorted(keys_to_process,
@@ -77037,38 +77044,35 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         else:
             sorted_phys_names = sorted(keys_to_process)
 
+        # print
         self.out.append(titlify("Merged Slab Caches"))
-
         found_merge = False
-
         for phys_name in sorted_phys_names:
             children = merged_groups[phys_name]
-        
+
             # MERGE-ONLY LOGIC:
             # We want to hide groups that are just [PhysicalOwner, SysfsID]
             # We count how many "real" aliases exist.
             # A "real" alias is one that is NOT the physical owner AND NOT the sysfs group ID (alias == "-")
-
             real_aliases = 0
             keep_this_group = False
             for child in children:
-                name = child['logical_name']
-                alias = child['alias']
                 # If alias is "-" it's the sysfs group ID (e.g. :0000064)
                 # If logical_name == phys_name, it's the physical owner
-                if alias != "-" and name != phys_name:
+                if child["alias"] != "-" and child["logical_name"] != phys_name:
                     real_aliases += 1
 
+                # filtering by name
                 if self.args.names:
-                    for filter in self.args.names:
-                        if(name in filter):
+                    for filter_name in self.args.names:
+                        if child["logical_name"] in filter_name:
                             keep_this_group = True
                             break
             if real_aliases == 0 and not keep_this_group:
                 continue
-
             found_merge = True
 
+            # print header
             header = "{:s} (Object size: {:s}, Chunk size: {:#x})".format(
                 Color.colorify(phys_name, chunk_label_color),
                 Color.colorify_hex(children[0]["object_size"], chunk_size_color),
@@ -77076,15 +77080,16 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             )
             self.out.append(header)
 
-            children.sort(key=lambda x: x['logical_name'])
-            
+            # print as tree
+            children.sort(key=lambda x: x["logical_name"])
             for i, child in enumerate(children):
                 if i == len(children) - 1:
                     tree_char = "└── "
                 else:
                     tree_char = "├── "
 
-                name_str = child['logical_name']
+                # coloring
+                name_str = child["logical_name"]
                 already_colored = False
                 # Highlight the specific match if filtering is active
                 if self.args.names:
@@ -77093,13 +77098,13 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                             name_str = Color.colorify(name_str, "bold underline orange")
                             already_colored = True
                             break
-                    
+
                 if name_str == phys_name:
-                    if(not already_colored):
-                        name_str = Color.colorify(name_str, 'green')  
+                    if not already_colored:
+                        name_str = Color.colorify(name_str, "green")
                     line = tree_char + name_str + " (Physical Owner)"
-                elif child['alias'] == "-":
-                    line = tree_char + Color.colorify(name_str, 'gray') + " (Sysfs Group)"
+                elif child["alias"] == "-":
+                    line = tree_char + Color.colorify(name_str, "gray") + " (Sysfs Group)"
                 else:
                     line = tree_char + name_str
                 self.out.append(line)
@@ -77114,23 +77119,28 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         legend = ["Object Size", "Chunk Size", "Name", "Alias", "slab_cache name"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
+        # sort by keys
         if self.args.sort_by_size:
             sorted_alias_groups = sorted(alias_groups.items(),
                 key=lambda x: (x[1]["object_size"], x[1]["chunk_size"]))
         else:
             sorted_alias_groups = sorted(alias_groups.items())
 
+        # print
         for name, v in sorted_alias_groups:
-            
+            # filtering by name
             if self.args.names:
-                matched = False
                 for filter_name in self.args.names:
                     if filter_name in name:
-                        matched = True
                         break
-                if not matched:
+                    if filter_name in v["alias"]:
+                        break
+                    if filter_name in v["slab_cache_name"]:
+                        break
+                else:
                     continue
 
+            # print flat
             found = True
             if v["object_size"] == 0:
                 self.out.append("{:16s} {:16s} {:30s} {:12s} {:s}".format(
@@ -77142,6 +77152,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                 self.out.append("{:16s} {:16s} {:30s} {:12s} {:s}".format(
                     object_size, chunk_size, name, v["alias"], v["slab_cache_name"],
                 ))
+
         if self.args.names and not found:
             self.out.append("No caches found matching filters")
         return
