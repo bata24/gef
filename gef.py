@@ -54155,7 +54155,7 @@ class KernelConstsX64(KernelConstsBase):
             return AddressUtil.align_address(espfix_base_addr)
         return None
 
-    @property
+    @property # noqa
     def ESPFIX_END(self):
         if "3.0" <= self.kversion:
             return self.ESPFIX_BASE_ADDR + 0x0000_0080_0000_0000
@@ -97555,26 +97555,25 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                         help="include `%%esp fixup stacks` area (sometimes heavy memory use; x64 only).")
     parser.add_argument("-v", "--verbose", action="count", default=0,
                         help="increase output verbosity. (-v, -vv, -vvv)")
+    parser.add_argument("address_filter", metavar="ADDRESS", nargs="*", type=AddressUtil.parse_address,
+                        help="filtering by specified address.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
     class Region:
-        def __init__(self, addr_start, addr_end, perm, description="", merge=True):
-            if isinstance(addr_start, str):
-                self.addr_start = int(addr_start.replace("*", "0"), 16)
-                self.addr_end = int(addr_end.replace("*", "0"), 16)
-                self.espfix = True
-                self.addr_start_str = addr_start
-                self.addr_end_str = addr_end
-            else:
-                self.addr_start = addr_start
-                self.addr_end = addr_end
-                self.espfix = False
-            self.size = self.addr_end - self.addr_start
+        def __init__(self, addr_start, addr_end, perm, description="", merge=True,
+                     addr_start_str=None, addr_end_str=None, size_str=None):
+            self.addr_start = addr_start
+            self.addr_end = addr_end
             self.perm = perm
+
             self.description = description
             self.merge = merge
+
+            self.addr_start_str = addr_start_str
+            self.addr_end_str = addr_end_str
+            self.size_str = size_str
             return
 
         def add_description(self, description):
@@ -97585,6 +97584,31 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                 return
             self.description = "{:s}, {:s}".format(self.description, description)
             return
+
+        @property
+        def size(self):
+            return self.addr_end - self.addr_start
+
+        def __str__(self):
+            line = "{:18s}-{:18s} {:18s} [{:s}] {:s}".format(
+                self.addr_start_str if self.addr_start_str else "{:018x}".format(self.addr_start),
+                self.addr_end_str if self.addr_end_str else "{:018x}".format(self.addr_end),
+                self.size_str if self.size_str else "{:018x}".format(self.size),
+                self.perm, self.description,
+            ).rstrip()
+
+            # coloring
+            if self.perm == "r--":
+                line_color = Config.get_gef_setting("theme.address_readonly")
+            elif self.perm == "rw-":
+                line_color = Config.get_gef_setting("theme.address_writable")
+            elif self.perm.endswith("x"):
+                line_color = Config.get_gef_setting("theme.address_code")
+            else:
+                line_color = ""
+            if self.perm == "rwx":
+                line_color += " " + Config.get_gef_setting("theme.address_rwx")
+            return Color.colorify(line, line_color)
 
     def page_start_align(self, x):
         return x & gef_getpagesize_mask_high()
@@ -97716,12 +97740,25 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                 continue
 
             # match, so let's merge
-            prev_r.size += r.size
             prev_r.addr_end += r.size
 
         # add last element
         if prev_key is not None:
             new_regions[prev_key] = prev_r
+
+        # replace
+        self.regions = new_regions
+        return
+
+    def filter_region(self):
+        if not self.args.address_filter:
+            return
+
+        # filtering
+        new_regions = {}
+        for key, r in self.regions.items():
+            if any(r.addr_start <= a < r.addr_end for a in self.args.address_filter):
+                new_regions[key] = r
 
         # replace
         self.regions = new_regions
@@ -97746,33 +97783,42 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                 return not AddressUtil.is_msb_on(addr_start)
             return False
 
-        regions = {}
+        regions = {} # {addr_start: Region(), ...}
         for line in res:
-            # esp_fixup special handling
-            if is_x86_64() and "*" in line:
-                line = line.split()
-                addr_start_str, addr_end_str = line[0].split("-")
-                perm = Permission.from_process_maps(line[5][1:4].lower())
-                addr_start = int(addr_start_str.replace("*", "0"), 16)
-                regions[addr_start] = self.Region(addr_start_str, addr_end_str, str(perm), "esp_fixup", merge=False)
-                continue
-
-            # parse entry
             line = line.split()
-            addr_start, addr_end = [int(x, 16) for x in line[0].split("-")]
+
+            # parse address
+            addr_start_str, addr_end_str = line[0].split("-")
+            # Note that for espfix it looks like `0xffffff5b****e000-0xffffff5b****f000`
+            addr_start = int(addr_start_str.replace("*", "0"), 16)
+            addr_end = int(addr_end_str.replace("*", "f"), 16)
+
+            # userland filter
             if self.args.exclude_user:
                 if is_userland(line, addr_start):
                     continue
+
+            # parse permission
             if is_x86():
                 perm = Permission.from_process_maps(line[5][1:4].lower())
             elif is_arm64() or is_arm32():
                 perm = Permission.from_process_maps(line[6][4:7].lower())
 
             # add region
-            if is_userland(line, addr_start):
-                regions[addr_start] = self.Region(addr_start, addr_end, str(perm), "userland")
+            if "*" in addr_start_str:
+                regions[addr_start] = self.Region(
+                    addr_start, addr_end, str(perm), merge=False,
+                    description="esp_fixup (=0x1000*N)",
+                    addr_start_str=addr_start_str, addr_end_str=addr_end_str, size_str="0x0000000000001000",
+                )
+            elif is_userland(line, addr_start):
+                regions[addr_start] = self.Region(
+                    addr_start, addr_end, str(perm), description="userland",
+                )
             else:
-                regions[addr_start] = self.Region(addr_start, addr_end, str(perm))
+                regions[addr_start] = self.Region(
+                    addr_start, addr_end, str(perm),
+                )
         return regions
 
     def resolve_kbase(self):
@@ -97931,18 +97977,6 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         MODULES_END = KernelAddressHeuristicFinder.consts().MODULES_END
         if MODULES_VADDR and MODULES_END:
             self.insert_region_range(MODULES_VADDR, MODULES_END, "modules")
-        return
-
-    def resolve_espfix(self):
-        if not is_x86_64():
-            return
-
-        self.quiet_info("resolve espfix")
-        if is_x86_64():
-            ESPFIX_BASE_ADDR = KernelAddressHeuristicFinder.consts().ESPFIX_BASE_ADDR
-            ESPFIX_END = KernelAddressHeuristicFinder.consts().ESPFIX_END
-            if ESPFIX_BASE_ADDR and ESPFIX_END:
-                self.insert_region_range(ESPFIX_BASE_ADDR, ESPFIX_END, "espfix")
         return
 
     def resolve_cpu_entry(self):
@@ -98504,7 +98538,6 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         self.resolve_vmalloc()
         self.resolve_vmemmap()
         self.resolve_cpu_entry()
-        self.resolve_espfix()
         self.resolve_efi()
         self.resolve_dtb()
         self.resolve_kbase()
@@ -98523,34 +98556,12 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         self.resolve_vdso()
         self.detect_zero_page()
 
-        # make output
         self.merge_region()
+        self.filter_region()
+
+        # make output
         for _, r in sorted(self.regions.items()):
-            # make line
-            if r.espfix:
-                line = "{:18s}-{:18s} {:#018x} [{:s}] {:s}".format(
-                    r.addr_start_str, r.addr_end_str, r.size, r.perm, r.description,
-                ).rstrip()
-            else:
-                line = "{:#018x}-{:#018x} {:#018x} [{:s}] {:s}".format(
-                    r.addr_start, r.addr_end, r.size, r.perm, r.description,
-                ).rstrip()
-
-            # coloring
-            if r.perm == "r--":
-                line_color = Config.get_gef_setting("theme.address_readonly")
-            elif r.perm == "rw-":
-                line_color = Config.get_gef_setting("theme.address_writable")
-            elif r.perm.endswith("x"):
-                line_color = Config.get_gef_setting("theme.address_code")
-            else:
-                line_color = ""
-
-            if r.perm == "rwx":
-                line_color += " " + Config.get_gef_setting("theme.address_rwx")
-
-            self.out.append(Color.colorify(line, line_color))
-
+            self.out.append(str(r))
         self.print_output()
         return
 
