@@ -76777,6 +76777,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
     _category_ = "08-h. Qemu-system Cooperation - Linux Allocator"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("names", nargs="*", help="Filter by specific cache name(s) (substring match).")
     parser.add_argument("-s", "--sort-by-size", action="store_true", help="sort by object size.")
     parser.add_argument("-m", "--merged-only", action="store_true",
                         help="show only merged caches grouped by physical cache.")
@@ -77002,12 +77003,39 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             entry['logical_name'] = name
             merged_groups[phys_name].append(entry)
 
+        keys_to_process = []
+        if self.args.names:
+            target_phys_groups = set()
+            
+            # Check every physical group
+            for phys_name, children in merged_groups.items():
+                matched_group = False
+                for child in children:
+                    child_name = child["logical_name"]
+                    for filter_name in self.args.names:
+                        if filter_name in child_name:
+                            target_phys_groups.add(phys_name)
+                            matched_group = True
+                            break
+
+                    if matched_group:
+                        break # found a match in this group, move to next one
+            if not target_phys_groups:
+                self.out.append("No caches found matching filter '{}'.".format(", ".join(self.args.names)))
+                return
+
+            # Only process the unique set of matching groups
+            keys_to_process = [k for k in merged_groups.keys() if k in target_phys_groups]
+        else:
+            keys_to_process = list(merged_groups.keys())
+
+
         # sort by keys
         if self.args.sort_by_size:
-            sorted_phys_names = sorted(merged_groups.keys(),
+            sorted_phys_names = sorted(keys_to_process,
                 key=lambda k: (merged_groups[k][0]["object_size"] if merged_groups[k] else 0))
         else:
-            sorted_phys_names = sorted(merged_groups.keys())
+            sorted_phys_names = sorted(keys_to_process)
 
         self.out.append(titlify("Merged Slab Caches"))
 
@@ -77015,13 +77043,14 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
 
         for phys_name in sorted_phys_names:
             children = merged_groups[phys_name]
-
-            # FILTER LOGIC:
+        
+            # MERGE-ONLY LOGIC:
             # We want to hide groups that are just [PhysicalOwner, SysfsID]
             # We count how many "real" aliases exist.
             # A "real" alias is one that is NOT the physical owner AND NOT the sysfs group ID (alias == "-")
 
             real_aliases = 0
+            keep_this_group = False
             for child in children:
                 name = child['logical_name']
                 alias = child['alias']
@@ -77030,7 +77059,12 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                 if alias != "-" and name != phys_name:
                     real_aliases += 1
 
-            if real_aliases == 0:
+                if self.args.names:
+                    for filter in self.args.names:
+                        if(name in filter):
+                            keep_this_group = True
+                            break
+            if real_aliases == 0 and not keep_this_group:
                 continue
 
             found_merge = True
@@ -77043,7 +77077,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             self.out.append(header)
 
             children.sort(key=lambda x: x['logical_name'])
-
+            
             for i, child in enumerate(children):
                 if i == len(children) - 1:
                     tree_char = "└── "
@@ -77051,8 +77085,19 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                     tree_char = "├── "
 
                 name_str = child['logical_name']
+                already_colored = False
+                # Highlight the specific match if filtering is active
+                if self.args.names:
+                    for filter_name in self.args.names:
+                        if filter_name in name_str:
+                            name_str = Color.colorify(name_str, "bold underline orange")
+                            already_colored = True
+                            break
+                    
                 if name_str == phys_name:
-                    line = tree_char + Color.colorify(name_str, 'green') + " (Physical Owner)"
+                    if(not already_colored):
+                        name_str = Color.colorify(name_str, 'green')  
+                    line = tree_char + name_str + " (Physical Owner)"
                 elif child['alias'] == "-":
                     line = tree_char + Color.colorify(name_str, 'gray') + " (Sysfs Group)"
                 else:
@@ -77074,7 +77119,19 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                 key=lambda x: (x[1]["object_size"], x[1]["chunk_size"]))
         else:
             sorted_alias_groups = sorted(alias_groups.items())
+
         for name, v in sorted_alias_groups:
+            
+            if self.args.names:
+                matched = False
+                for filter_name in self.args.names:
+                    if filter_name in name:
+                        matched = True
+                        break
+                if not matched:
+                    continue
+
+            found = True
             if v["object_size"] == 0:
                 self.out.append("{:16s} {:16s} {:30s} {:12s} {:s}".format(
                     "-", "-", name, v["alias"], "<UNUSED>",
@@ -77085,6 +77142,8 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                 self.out.append("{:16s} {:16s} {:30s} {:12s} {:s}".format(
                     object_size, chunk_size, name, v["alias"], v["slab_cache_name"],
                 ))
+        if self.args.names and not found:
+            self.out.append("No caches found matching filters")
         return
 
     @parse_args
