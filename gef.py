@@ -59295,6 +59295,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     parser.add_argument("--init-task", type=AddressUtil.parse_address,
                         help="specifies the address of init_task.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("--all", action="store_true", help="enable all option.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use less.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
@@ -62156,6 +62157,16 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
+
+        if self.args.all:
+            self.args.print_maps = True
+            self.args.print_regs = True
+            self.args.print_all_id = True
+            self.args.print_thread = True
+            self.args.print_fd = True
+            self.args.print_sighand = True
+            self.args.print_seccomp = True
+            self.args.print_namespace = True
 
         # initialize
         self.filepath_cache = {}
