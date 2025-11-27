@@ -1331,6 +1331,11 @@ class AddressUtil:
         return 1 << AddressUtil.get_memory_alignment(in_bits=True)
 
     @staticmethod
+    @Cache.cache_until_next
+    def get_vmem_end_mask():
+        return AddressUtil.get_vmem_end() - 1
+
+    @staticmethod
     def parse_address(addr):
         """Parse an address and return it as an Integer."""
         try:
@@ -11308,17 +11313,7 @@ def is_valid_addr(addr):
     if addr < 0:
         return False
 
-    if is_x86_16():
-        if current_arch.A20:
-            shift = 21
-        else:
-            shift = 20
-    elif is_64bit():
-        shift = 64
-    elif is_32bit():
-        shift = 32
-
-    if (1 << shift) - 1 < addr:
+    if AddressUtil.get_vmem_end() <= addr:
         return False
 
     if is_qemu_system():
@@ -36232,7 +36227,7 @@ class DestructorDumpCommand(GenericCommand):
                 return
 
             entries = []
-            vend = (1 << AddressUtil.get_memory_alignment(in_bits=True)) - 1
+            vend = AddressUtil.get_vmem_end() - 1
             for i in range(shdr.sh_size // current_arch.ptrsize):
                 addr = shdr.sh_addr + current_arch.ptrsize * i
                 func = read_int_from_memory(addr)
@@ -86227,7 +86222,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         current += ptrsize
 
         root["global_empty_slot_span_ring"] = []
-        inv = root["addr"] ^ ((1 << (current_arch.ptrsize * 8)) - 1)
+        inv = root["addr"] ^ AddressUtil.get_vmem_end_mask()
         while True:
             if read_int_from_memory(current + ptrsize) == inv: # search for `inverted_self`
                 break
@@ -86548,7 +86543,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         self.out.append("uint16_t purge_next_bucket_index:                      {:#x}".format(
             root.purge_next_bucket_index,
         ))
-        inv_inv = root.inverted_self ^ ((1 << (current_arch.ptrsize * 8)) - 1)
+        inv_inv = root.inverted_self ^ AddressUtil.get_vmem_end_mask()
         self.out.append("uintptr_t inverted_self:                               {:#x} (=~{!s})".format(
             root.inverted_self, ProcessMap.lookup_address(inv_inv),
         ))
