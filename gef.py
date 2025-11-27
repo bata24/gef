@@ -3746,9 +3746,10 @@ class GlibcHeap:
                 continue
 
             candidate_arena = GlibcHeap.MallocStateStruct(candidate_arena_addr)
-            system_mem = candidate_arena.system_mem
-            if system_mem < gef_getpagesize():
+            if candidate_arena.system_mem < gef_getpagesize():
                 continue
+            # Statically built binaries have an unaligned system_mem,
+            # so alignment should not be used to determine the validity of system_mem.
 
             top = candidate_arena.top
             if not is_valid_addr(top):
@@ -49818,8 +49819,8 @@ class HeapbaseCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     @staticmethod
-    def heap_base():
-        if Cache.cached_heap_base:
+    def heap_base(force_slowpath=False):
+        if Cache.cached_heap_base and not force_slowpath:
             return Cache.cached_heap_base
 
         # fast path
@@ -49827,7 +49828,7 @@ class HeapbaseCommand(GenericCommand):
         # However, for architectures that have TLS in the bss area (such as ARM or ARM64),
         # the start position of the heap seems to shift by the amount of the area used as the TLS variable.
         # This method should not be used on ARM or ARM64, as there seems to be no way to predetermine the TLS size.
-        if is_x86():
+        if is_x86() and not force_slowpath:
             try:
                 # symbol and type are defined
                 Cache.cached_heap_base = AddressUtil.parse_address("mp_->sbrk_base")
@@ -49844,12 +49845,15 @@ class HeapbaseCommand(GenericCommand):
                 # get first_chunk (=tcache_perthread_struct*)
                 first_chunk_p = None
                 if is_x86() or is_sparc64() or is_alpha() or is_mips32() or is_mips64() or is_mipsn32() or \
-                   is_nios2() or is_microblaze() or is_arc32() or is_ppc32() or is_ppc64() or \
+                   is_nios2() or is_microblaze() or is_arc32() or is_arc64() or is_ppc32() or is_ppc64() or \
                    is_hppa32() or is_sh4():
                     first_chunk_p = main_arena_ptr - current_arch.ptrsize * 2
                 elif is_arm32() or is_arm64() or is_riscv32() or is_riscv64() or \
-                   is_loongarch64() or is_or1k() or is_s390x():
+                   is_loongarch64() or is_or1k() or is_s390x() or is_csky():
                     first_chunk_p = main_arena_ptr + current_arch.ptrsize
+                    # The order of variables in TLS appears to have changed recently.
+                    if not is_valid_addr_addr(first_chunk_p):
+                        first_chunk_p = main_arena_ptr - current_arch.ptrsize
 
                 if first_chunk_p:
                     first_chunk = read_int_from_memory(first_chunk_p)
@@ -49866,8 +49870,12 @@ class HeapbaseCommand(GenericCommand):
                     return Cache.cached_heap_base
 
         # fall through
-        Cache.cached_heap_base = ProcessMap.get_section_base_address("[heap]")
-        return Cache.cached_heap_base
+        heap_base = ProcessMap.get_section_base_address("[heap]")
+        if heap_base:
+            Cache.cached_heap_base = heap_base
+            return Cache.cached_heap_base
+
+        return None
 
     @parse_args
     @only_if_gdb_running
