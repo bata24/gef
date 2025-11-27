@@ -1326,6 +1326,11 @@ class AddressUtil:
         return AddressUtil.align_address_to_size(addr, current_arch.ptrsize)
 
     @staticmethod
+    @Cache.cache_until_next
+    def get_vmem_end():
+        return 1 << AddressUtil.get_memory_alignment(in_bits=True)
+
+    @staticmethod
     def parse_address(addr):
         """Parse an address and return it as an Integer."""
         try:
@@ -19142,11 +19147,17 @@ class MmapMemoryCommand(GenericCommand):
             return
 
         # size
+        if args.size < 0 or AddressUtil.get_vmem_end() <= args.size:
+            err("Invalid size")
+            return
         if args.size % gef_getpagesize():
             err("Size is not a multiple of {:#x}".format(gef_getpagesize()))
             return
 
         # permission
+        if len(args.permission) != 3:
+            err("Invalid permission")
+            return
         if re.match(r"[-_r][-_w][-_x]", args.permission):
             perm = Permission.NONE
             if args.permission[0] == "r":
