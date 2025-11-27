@@ -264,6 +264,7 @@ This can happen if you are not using the GDB provided by Ubuntu's `apt` package 
 
 Consider rebuilding GDB from the latest tarball or from the Git repository.
 
+## How to build GDB?
 - From the latest tarball:
     - Download latest tarball from https://ftp.gnu.org/gnu/gdb/
     ```
