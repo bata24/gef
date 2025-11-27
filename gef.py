@@ -3726,14 +3726,12 @@ class GlibcHeap:
         main_thread = [th for th in threads if th.num == 1][0]
         main_thread.switch()
 
-        if is_x86() or is_sparc64() or is_s390x():
-            direction = -1
-        else:
-            direction = 1
-
         tls = current_arch.get_tls()
         if tls is None:
             return None
+
+        direction = TlsCommand.get_direction()
+
         for i in range(1, 500):
             addr = tls + (current_arch.ptrsize * i) * direction
 
@@ -35841,10 +35839,7 @@ class DestructorDumpCommand(GenericCommand):
         if self.codebase is None:
             return None
 
-        if is_x86() or is_sparc64() or is_s390x():
-            direction = -1
-        else:
-            direction = 1
+        direction = TlsCommand.get_direction()
 
         """
         --- TLS-0x80 ---
@@ -35894,10 +35889,7 @@ class DestructorDumpCommand(GenericCommand):
         return None
 
     def get_dtor_list_from_heuristic(self):
-        if is_x86() or is_sparc64() or is_s390x():
-            direction = -1
-        else:
-            direction = 1
+        direction = TlsCommand.get_direction()
 
         """
         --- TLS-0x80 ---
@@ -69084,6 +69076,14 @@ class TlsCommand(GenericCommand, BufferingOutput):
         "{0:s} -vvv  # repeat `-v` to display more lines",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
+
+    @staticmethod
+    def get_direction():
+        if is_x86() or is_sparc64() or is_s390x():
+            direction = -1
+        else:
+            direction = 1
+        return direction
 
     def print_all_tls(self):
         selected_thread = gdb.selected_thread()
