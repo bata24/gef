@@ -53344,7 +53344,7 @@ class KernelConstsBase:
                 else:
                     err("{:16s} = None".format(attr))
             except Exception:
-                err("{:16s} = {}".format(attr, Color.colorify("ERROR", "red bold")))
+                err("{:16s} = {}".format(attr, Color.colorify("ERROR", "bold red")))
         return
 
 
@@ -106649,11 +106649,11 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
             return
         if avail:
             self.out.append("{:<30s}: {:s}".format(
-                cmdline, Color.colorify("Available", "green bold"),
+                cmdline, Color.colorify("Available", "bold green"),
             ))
         else:
             self.out.append("{:<30s}: {:s} ({:s})".format(
-                cmdline, Color.colorify("Unavailable", "red bold"), msg,
+                cmdline, Color.colorify("Unavailable", "bold red"), msg,
             ))
         return
 
@@ -107660,12 +107660,12 @@ class GefUtil:
             return "{:5.1f} MB".format(size / 1024 / 1024)
         elif 100 * (1024 ** 2) <= size < 1024 ** 3: # 100MB~1GB
             if enable_color:
-                return Color.colorify("{:5.1f} MB".format(size / 1024 / 1024), "yellow bold")
+                return Color.colorify("{:5.1f} MB".format(size / 1024 / 1024), "bold yellow")
             else:
                 return "{:5.1f} MB".format(size / 1024 / 1024)
         elif 1024 ** 3 <= size:
             if enable_color:
-                return Color.colorify("{:5.1f} GB".format(size / 1024 / 1024 / 1024), "red bold")
+                return Color.colorify("{:5.1f} GB".format(size / 1024 / 1024 / 1024), "bold red")
             else:
                 return "{:5.1f} GB".format(size / 1024 / 1024 / 1024)
         return "???"
