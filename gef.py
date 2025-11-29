@@ -17306,6 +17306,8 @@ class SmartMemoryDumpCommand(GenericCommand):
     def smart_memory_dump(self, maps, prefix, suffix):
         dirpath = os.path.join(GEF_TEMP_DIR, "mem-dump-" + GefUtil.now_str())
         width = current_arch.ptrsize * 2
+        total_size = 0
+
         for entry in maps:
             if isinstance(entry, list):
                 start = entry[0]
@@ -17316,6 +17318,7 @@ class SmartMemoryDumpCommand(GenericCommand):
             else:
                 start = entry.page_start
                 end = entry.page_end
+                size = end - start
                 perm = str(entry.permission)
 
                 if not entry.path.startswith(("[", "<")):
@@ -17339,6 +17342,9 @@ class SmartMemoryDumpCommand(GenericCommand):
 
             # dump
             self.do_dump(filepath, start, size)
+            total_size += size
+
+        info("Total size: {:s}".format(GefUtil.get_size_str(total_size)))
 
         if not self.args.commit:
             info("The directory name is replaced with the latest timestamp")
