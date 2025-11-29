@@ -52387,6 +52387,9 @@ class AddressifyCommand(GenericCommand):
             for c in value.lower():
                 if c in "0123456789abcdef":
                     hex_value += c
+        if hex_value == "":
+            err("no hex digits found in input")
+            return
         if len(hex_value) % 2 != 0:
             err("hex value length is odd")
             return
