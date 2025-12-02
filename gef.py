@@ -21782,6 +21782,7 @@ class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
 
     def make_line(self, arena, chunk):
         width = 14 if is_64bit() else 10
+        prev_width = 20 if is_64bit() else 12
 
         info = arena.get_bins_info(chunk)
         hint = ", ".join(info)
@@ -21811,7 +21812,7 @@ class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
         return "{:s}  {:<{:d}s}  {:<#{:d}x}  {:s}  {:s}  {:s}  {:s}".format(
             chunk_base_addr_str,
             prev_size_str,
-            width,
+            prev_width,
             chunk.size,
             width,
             used_str,
@@ -21836,8 +21837,9 @@ class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
             self.warn_add_out("arena.last_remainder is corrupted")
 
         width = 14 if is_64bit() else 10
+        prev_width = 20 if is_64bit() else 12
         fmt = "{:{:d}s}  {:{:d}s}  {:{:d}s}  {:{:d}s}  {:{:d}s}  {:{:d}s}  {:s}"
-        legend = ["addr", width, "prev_size", width, "size", width, "status", width, "fd", width, "bk", width, "hint"]
+        legend = ["addr", width, "prev_size", prev_width, "size", width, "status", width, "fd", width, "bk", width, "hint"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         current_chunk = GlibcHeap.GlibcChunk(arena, dump_start, from_base=True)
