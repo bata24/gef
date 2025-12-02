@@ -77167,6 +77167,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         else:
             sorted_alias_groups = sorted(alias_groups.items())
 
+        found = False
         # print
         for name, v in sorted_alias_groups:
             # filtering by name
