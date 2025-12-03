@@ -57,10 +57,10 @@ It will be created automatically the next time GEF starts.
 The variable `GEF_TEMP_DIR` is defined in `gef.py` and can be changed if necessary.
 
 ## What is `install-uv.sh`?
-This is the new installer that creates and uses a Python virtual environment (`venv`).
+This is the new installer that creates and uses a Python virtual environment (`venv`) with `uv`.
 
 It installs the same packages as `install.sh`.
-The key difference is that Python packages are installed into the virtual environment (`venv`).
+The key difference is that Python packages are installed into the virtual environment.
 
 By default, it installs into `/root/.gef/.venv-gef`.
 External tools such as `rp++`(`rp-lin`), `seccomp-tools`, etc. are also installed under this directory (`/root/.gef/.venv-gef/bin`).
@@ -129,15 +129,15 @@ There are three installers.
     - This is the installation method provided by `install-uv.sh`.
     - This uses `uv` to install Python packages into an isolated environment.
     - This is a full installation, so you can use all the features that GEF provides.
-    - This is the currently recommended installer for GEF, because it is faster than the other methods.
+    - This is the currently recommended installer for GEF.
 - Minimal install
     - This is the installation method provided by `install-minimal.sh`.
     - Simply download `gef.py` and place it in the appropriate location.
     - Because this method is very simple, it can also be performed manually.
 - Normal install
     - This is the installation method provided by `install.sh`.
-    - This is a full installation, so you can use all the features that GEF provides.
     - This uses `python3-pip` to install Python packages globally.
+    - This is a full installation, so you can use all the features that GEF provides.
     - This installer is not currently recommended, but it still works.
     - This method was used before the `uv`-based installation became available.
 
@@ -253,7 +253,6 @@ Make sure you only load one of them.
 ## GDB will not load GEF.
 Start GDB as the `root` user or with `sudo`.
 By default, GEF is installed under `/root/.gef`, so non-`root` sessions will not find it unless you change the install paths or update your `.gdbinit` to point to the actual location.
-
 
 ## GDB still does not load GEF, even as the `root` user.
 It is likely that your GDB does not support integration with `python3`.
