@@ -78416,6 +78416,8 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         inode = pipe_files[0][1]
         pipe_inode_info = read_int_from_memory(inode + self.offset_i_pipe)
         for i in range(0x80):
+            if not is_valid_addr(pipe_inode_info + current_arch.ptrsize * i):
+                break
             v = read_int_from_memory(pipe_inode_info + current_arch.ptrsize * i)
             # bufs is valid addr
             if v < 0x10000 or not is_valid_addr(v):
