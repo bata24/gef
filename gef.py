@@ -81441,21 +81441,38 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         self.verbose_info("unique_bytes: {:#x}".format(self.ro_base + position))
 
         # second, backward search for the top
-        prev_x = None
-        while True:
-            position -= 1
-            if position < 0:
-                self.verbose_err("Could not find kallsyms_token_table (failed to get top)")
+        position -= 1
+        if position < 0:
+            self.verbose_err("Could not find kallsyms_token_table (failed to get top: before '0')")
+            return False
+        if self.kernel_img[position] != 0:
+            self.verbose_err("Unexpected byte before '0' entry in kallsyms_token_table")
+            return False
+
+        num_tokens_back = ord('0') # 48
+        max_token_len = 50
+
+        # find the beginning of a kallsyms_token_table
+        for _ in range(num_tokens_back):
+            # find the beginning of a token
+            for _ in range(max_token_len):
+                position -= 1
+                if position < 0:
+                    self.verbose_err("Could not find kallsyms_token_table (out of range while walking tokens)")
+                    return False
+
+                b = self.kernel_img[position]
+                if b == 0 or b > ord('z'):
+                    break
+
+            else:
+                # max_token_len exceeded
+                self.verbose_err("This structure is not a kallsyms_token_table (token too long)")
                 return False
-            x = self.kernel_img[position:position + 1]
-            if x not in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.$@\0":
-                break
-            if x == prev_x == b"\0": # \0\0 is inappropriate
-                break
-            prev_x = x
 
         position += 1
         position += -position % 4
+
         self.offset_kallsyms_token_table = position
         self.save_config("offset_kallsyms_token_table")
         self.verbose_info("kallsyms_token_table: {:#x}".format(self.ro_base + self.offset_kallsyms_token_table))
