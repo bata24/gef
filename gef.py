@@ -72771,7 +72771,7 @@ class ConstGrepCommand(GenericCommand):
 
 @register_command
 class SlubDumpCommand(GenericCommand, BufferingOutput):
-    """Dump slub free-list."""
+    """Dump SLUB free-list."""
 
     _cmdline_ = "slub-dump"
     _category_ = "08-h. Qemu-system Cooperation - Linux Allocator"
@@ -72813,9 +72813,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("--no-byte-swap", action="store_true", default=None,
                         help="[FOR DEVELOPER] skip byteswap to chunk->next when `kmem_cache.random` is falsely detected.")
     parser.add_argument("--offset-random", type=AddressUtil.parse_address,
-                        help="[FOR DEVELOPER] specified offsetof(kmem_cache, random) when `kmem_cache.random` is falsely detected.")
+                        help="[FOR DEVELOPER] user-specified offsetof(kmem_cache, random) when `kmem_cache.random` is falsely detected.")
     parser.add_argument("--offset-node", type=AddressUtil.parse_address,
-                        help="[FOR DEVELOPER] specified offsetof(kmem_cache, node) when `kmem_cache.node` is falsely detected.")
+                        help="[FOR DEVELOPER] user-specified offsetof(kmem_cache, node) when `kmem_cache.node` is falsely detected.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -72902,16 +72902,16 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         "                          ...",
         "* `struct page` has been split into `struct page` and `struct slab` since kernel 5.17.",
         "  The structure name used for SLUB has been changed to `struct slab`.",
-        "* If all chunks in certain page (or slab) are in use, they will not be displayed this command.",
-        "  This because they cannot be reached by parsing from `slab_caches`.",
-        "  So use `slab-contains` (if you know the address) or `kvmmap` (if you'd to know the whole even if it takes time).",
-        "* To see the CONFIG_SLAB_VIRTUAL ascii diagram, execute `slub-dump --help-for-slab-virtual`.",
+        "* If all chunks in certain page (or slab) are in use, they will not be displayed by this command.",
+        "  This is because they cannot be reached by parsing from `slab_caches`.",
+        "  So use `slab-contains` (if you know the address) or `kvmmap` (if you want to see all slabs even if it takes time).",
+        "* To see the CONFIG_SLAB_VIRTUAL ASCII diagram, execute `slub-dump --help-for-slab-virtual`.",
     ]
     _note_ = "\n".join(_note_)
 
     _note2_ = [
-        "* A mitigation called CONFIG_SLAB_VIRTUAL was proposed in September 2023 to prevent cross-cache attack.",
-        "  This config is not merged into mainline as of May 2025, but used in KernelCTF@Google Security Research.",
+        "* A mitigation called CONFIG_SLAB_VIRTUAL was proposed in September 2023 to prevent cross-cache attacks.",
+        "  This config is not merged into mainline as of May 2025, but is used in KernelCTF@Google Security Research.",
         "* A unique feature of CONFIG_SLAB_VIRTUAL is that in addition to the existing SLUB structure,",
         "  it also has a structure for managing released slab structures.",
         "",
@@ -73329,7 +73329,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         return
 
         # heuristic way 3 (relationship of user_offset, user_size, and object_size)
-        # This method valid for kernel < 6.2, or (CONFIG_HARDENED_USERCOPY=y and kernel >= 6.2).
+        # This method is valid for kernel < 6.2, or (CONFIG_HARDENED_USERCOPY=y and kernel >= 6.2).
         start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
         search_range = 0x100 if kversion >= "5.9" else 0x200
         for candidate_offset in range(start_offset, start_offset + search_range, current_arch.ptrsize):
@@ -73465,7 +73465,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     def resolve_for_CONFIG_SLAB_VIRTUAL(self, top):
         kversion = Kernel.kernel_version()
 
-        # Feat. CONFIG_SLAB_VIRUTAL (this patchset is supported only in x86-64).
+        # Feature: CONFIG_SLAB_VIRTUAL (this patchset is supported only in x86-64).
         # See https://lwn.net/Articles/944647/.
         if not is_x86_64():
             self.slab_virtual_enabled = False
@@ -73554,7 +73554,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.kmem_cache_node_offset_partial = None
         return
 
-    # CONFIG_SLAB=VIRTUAL=n
+    # CONFIG_SLAB_VIRTUAL=n
     """
     struct kmem_cache {
         struct kmem_cache_cpu *cpu_slab;         // In fact, the offset value, not the pointer
@@ -73883,9 +73883,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.page_offset_freelist = current_arch.ptrsize * 10
             elif kversion < "6.12":
                 self.page_offset_freelist = current_arch.ptrsize * 4
-            else:
+            else: # 6.12
                 self.page_offset_freelist = current_arch.ptrsize * 10
-        else: # 6.12
+        else:
             if kversion < "4.18":
                 self.page_offset_freelist = current_arch.ptrsize * 2
             elif kversion < "5.17":
@@ -74499,7 +74499,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("")
             self.out.append("  slab: {:#x}".format(slab_addr))
             self.out.append("    kmem_cache: {:s}".format(Color.colorify(slab["slab_cache_name"], chunk_label_color)))
-            # Virt is not mapping, here
+            # virtual address is not mapped here
             virt = "{:#x}".format(self.page2virt_for_slab_virtual(slab_addr))
             self.out.append("    virt: {:s}".format(Color.colorify(virt, not_mapped_virt)))
         return
@@ -74623,7 +74623,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
     def slubwalk(self, target_names, cpu):
         if self.initialize() is False:
-            self.quiet_err("Initialize failed")
+            self.quiet_err("Initialization failed")
             return
 
         if self.args.meta:
@@ -74724,7 +74724,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
-    """Dump slub-tiny free-list."""
+    """Dump SLUB-TINY free-list."""
 
     _cmdline_ = "slub-tiny-dump"
     _category_ = "08-h. Qemu-system Cooperation - Linux Allocator"
@@ -75375,7 +75375,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
     def slub_tiny_walk(self, target_names):
         if self.initialize() is False:
-            self.quiet_err("Initialize failed")
+            self.quiet_err("Initialization failed")
             return
 
         if self.args.meta:
@@ -75433,7 +75433,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class SlabDumpCommand(GenericCommand, BufferingOutput):
-    """Dump slab free-list."""
+    """Dump SLAB free-list."""
 
     _cmdline_ = "slab-dump"
     _category_ = "08-h. Qemu-system Cooperation - Linux Allocator"
@@ -76210,7 +76210,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
 
     def slabwalk(self, target_names, cpu):
         if self.initialize() is False:
-            self.quiet_err("Initialize failed")
+            self.quiet_err("Initialization failed")
             return
 
         if self.args.meta:
@@ -76263,7 +76263,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class SlobDumpCommand(GenericCommand, BufferingOutput):
-    """Dump slob free-list."""
+    """Dump SLOB free-list."""
 
     _cmdline_ = "slob-dump"
     _category_ = "08-h. Qemu-system Cooperation - Linux Allocator"
@@ -76612,7 +76612,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
 
     def slobwalk(self, target_names):
         if self.initialize() is False:
-            self.quiet_err("Initialize failed")
+            self.quiet_err("Initialization failed")
             return
 
         if self.args.meta:
