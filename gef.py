@@ -81414,10 +81414,14 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         if self.kernel_img[position] != 0:
             self.verbose_err("Unexpected byte before '0' entry in kallsyms_token_table")
             return False
-        num_tokens_back = ord('0')  # 48
+
+        num_tokens_back = ord('0') # 48
         max_token_len = 50
+
+        # find the beginning of a kallsyms_token_table
         for _ in range(num_tokens_back):
-            for chars_in_token_backwards in range(max_token_len):
+            # find the beginning of a token
+            for _ in range(max_token_len):
                 position -= 1
                 if position < 0:
                     self.verbose_err("Could not find kallsyms_token_table (out of range while walking tokens)")
@@ -81427,11 +81431,13 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
                 if b == 0 or b > ord('z'):
                     break
 
-                if chars_in_token_backwards >= max_token_len - 1:
-                    self.verbose_err("This structure is not a kallsyms_token_table (token too long)")
-                    return False
+            else:
+                # max_token_len exceeded
+                self.verbose_err("This structure is not a kallsyms_token_table (token too long)")
+                return False
+
         position += 1
-        position += -position % 4 
+        position += -position % 4
 
         self.offset_kallsyms_token_table = position
         self.save_config("offset_kallsyms_token_table")
