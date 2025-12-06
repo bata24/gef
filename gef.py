@@ -58926,6 +58926,15 @@ class Kernel:
 
     @staticmethod
     @Cache.cache_this_session
+    def slab_page_str():
+        kversion = Kernel.kernel_version()
+        if kversion < "5.17":
+            return "page"
+        else:
+            return "slab"
+
+    @staticmethod
+    @Cache.cache_this_session
     def get_page_virt_pair():
         allocator = Kernel.get_slab_type()
 
@@ -72839,64 +72848,63 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         "    |   |",
         "    |   |          +-__per_cpu_offset-+",
         "    |   +----------| cpu0_offset      |",
-        "    |   |          | cpu1_offset      |                [active page freelist (fast path)]",
-        "    |   |          | cpu2_offset      |                   +-chunk---+  +-chunk---+",
-        "    |   |          | ...              |                  | ^       |  | ^       |",
-        "    |   |          +------------------+                  | |offset |  | |offset |",
-        "    |   |                                                | v       |  | v       |",
-        "    |   |                  +---------------------------->| next    |->| next    |->NULL",
-        "    |   v                  |                             +---------+  +---------+",
+        "    |   |          | cpu1_offset      |                    [active page freelist (fast path)]",
+        "    |   |          | cpu2_offset      |                      +-chunk---+  +-chunk---+",
+        "    |   |          | ...              |                      | ^       |  | ^       |",
+        "    |   |          +------------------+                      | |offset |  | |offset |",
+        "    |   |                                                    | v       |  | v       |",
+        "    |   |                  +-------------------------------->| next    |->| next    |->NULL",
+        "    |   v                  |                                 +---------+  +---------+",
         "    |  +-kmem_cache_cpu-+  |",
-        "    |  | freelist       |--+                           [active page freelist (slow path)]",
-        "    |  | page           |---->+-page(active)---+         +-chunk---+  +-chunk---+",
-        "    |  | partial        |--+  | freelist       |----+    | ^       |  | ^       |",
-        "    |  +----------------+  |  |                |    |    | |offset |  | |offset |",
-        "    |                      |  +----------------+    |    | v       |  | v       |",
-        "    |                      |                        +--->| next    |->| next    |->NULL",
-        "    |                      |                             +---------+  +---------+",
+        "    |  | freelist       |--+                               [active page freelist (slow path)]",
+        "    |  | page/slab      |---->+-page/slab(active)--+         +-chunk---+  +-chunk---+",
+        "    |  | partial        |--+  | freelist           |----+    | ^       |  | ^       |",
+        "    |  +----------------+  |  |                    |    |    | |offset |  | |offset |",
+        "    |                      |  +------------------ -+    |    | v       |  | v       |",
+        "    |                      |                            +--->| next    |->| next    |->NULL",
+        "    |                      |                                 +---------+  +---------+",
         "    |                      |",
-        "    |                      |                           [partial page freelist]",
-        "    |                      +->+-page(partial)--+         +-chunk---+  +-chunk---+",
-        "    |                         | freelist       |----+    | ^       |  | ^       |",
-        "    |                         | next           |--+ |    | |offset |  | |offset |",
-        "    |                         +----------------+  | |    | v       |  | v       |",
-        "    |                                             | +--->| next    |->| next    |->NULL",
-        "    |                           +-----------------+      +---------+  +---------+",
+        "    |                      |                               [partial page freelist]",
+        "    |                      +->+-page/slab(partial)-+         +-chunk---+  +-chunk---+",
+        "    |                         | freelist           |----+    | ^       |  | ^       |",
+        "    |                         | next               |--+ |    | |offset |  | |offset |",
+        "    |                         +--------------------+  | |    | v       |  | v       |",
+        "    |                                                 | +--->| next    |->| next    |->NULL",
+        "    |                           +---------------------+      +---------+  +---------+",
         "    |                           |",
-        "    |                           v                      [partial page freelist]",
-        "    |                         +-page(partial)--+         +-chunk---+  +-chunk---+",
-        "    |                         | freelist       |----+    | ^       |  | ^       |",
-        "    |                         | next           |--+ |    | |offset |  | |offset |",
-        "    |                         +----------------+  | |    | v       |  | v       |",
-        "    |                                             | +--->| next    |->| next    |->NULL",
-        "    |                           +-----------------+      +---------+  +---------+",
+        "    |                           v                          [partial page freelist]",
+        "    |                         +-page/slab(partial)-+         +-chunk---+  +-chunk---+",
+        "    |                         | freelist           |----+    | ^       |  | ^       |",
+        "    |                         | next               |--+ |    | |offset |  | |offset |",
+        "    |                         +--------------------+  | |    | v       |  | v       |",
+        "    |                                                 | +--->| next    |->| next    |->NULL",
+        "    |                           +---------------------+      +---------+  +---------+",
         "    |                           |",
         "    |                           v",
         "    +--+                       ...",
-        "       |                                               [numa node partial page freelist]",
-        "       v                      +-page(numa-node)+         +-chunk---+  +-chunk---+",
-        "      +-kmem_cache_node-+     | freelist       |----+    | ^       |  | ^       |",
-        "      | partial         |---->| next           |--+ |    | |offset |  | |offset |",
-        "      | (full)          |     +----------------+  | |    | v       |  | v       |",
-        "      +-----------------+                         | +--->| next    |->| next    |->NULL",
-        "      | ...             |  +----------------------+      +---------+  +---------+",
+        "       |                                                    [numa node partial page freelist]",
+        "       v                      +-page/slab(numa-node)+         +-chunk---+  +-chunk---+",
+        "      +-kmem_cache_node-+     | freelist            |----+    | ^       |  | ^       |",
+        "      | partial         |---->| next                |--+ |    | |offset |  | |offset |",
+        "      | (full)          |     +---------------------+  | |    | v       |  | v       |",
+        "      +-----------------+                              | +--->| next    |->| next    |->NULL",
+        "      | ...             |  +---------------------------+      +---------+  +---------+",
         "      |                 |  |",
-        "      +-----------------+  |                           [numa node partial page freelist]",
-        "                           |  +-page(numa-node)+         +-chunk---+  +-chunk---+",
-        "                           |  | freelist       |----+    | ^       |  | ^       |",
-        "                           +->| next           |--+ |    | |offset |  | |offset |",
-        "                              +----------------+  | |    | v       |  | v       |",
-        "                                                  | +--->| next    |->| next    |->NULL",
-        "                           +----------------------+      +---------+  +---------+",
+        "      +-----------------+  |                                [numa node partial page freelist]",
+        "                           |  +-page/slab(numa-node)+         +-chunk---+  +-chunk---+",
+        "                           |  | freelist            |----+    | ^       |  | ^       |",
+        "                           +->| next                |--+ |    | |offset |  | |offset |",
+        "                              +---------------------+  | |    | v       |  | v       |",
+        "                                                       | +--->| next    |->| next    |->NULL",
+        "                           +---------------------------+      +---------+  +---------+",
         "                           |",
         "                           v",
         "                          ...",
-        "* `struct page` has been split into `struct page` and `struct slab` since kernel 5.17. The structure name used for",
-        "  SLUB has been changed to `struct slab`. However, GEF displays it as `struct page` both before and after 5.17.",
-        "* If all chunks in certain page (or slab) are in use, they will not be displayed this command. This because they cannot",
-        "  be reached by parsing from `slab_caches`. So use `slab-contains` (if you know the address) or `kvmmap`",
-        "  (if you'd to know the whole even if it takes time).",
-        "",
+        "* `struct page` has been split into `struct page` and `struct slab` since kernel 5.17.",
+        "  The structure name used for SLUB has been changed to `struct slab`.",
+        "* If all chunks in certain page (or slab) are in use, they will not be displayed this command.",
+        "  This because they cannot be reached by parsing from `slab_caches`.",
+        "  So use `slab-contains` (if you know the address) or `kvmmap` (if you'd to know the whole even if it takes time).",
         "* To see the CONFIG_SLAB_VIRTUAL ascii diagram, execute `slub-dump --help-for-slab-virtual`.",
     ]
     _note_ = "\n".join(_note_)
@@ -73547,6 +73555,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.kmem_cache_node_offset_partial = None
         return
 
+    # CONFIG_SLAB=VIRTUAL=n
     """
     struct kmem_cache {
         struct kmem_cache_cpu *cpu_slab;         // In fact, the offset value, not the pointer
@@ -73599,27 +73608,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         struct kmem_cache_node *node[MAX_NUMNODES];
     };
 
-    struct kmem_cache {                          // if CONFIG_SLAB_VIRTUAL=y
-        ...
-        struct kmem_cache_order_objects min;     // [ANNOTATION]
-        struct kmem_cache_order_objects oo;      //    In kernel < 6.1.55, `min` and `oo` are swapped.
-        struct kmem_cache_virtual {              // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.1.55
-            spinlock_t freed_slabs_lock;
-            struct list_head freed_slabs;
-            struct list_head freed_slabs_min;
-            unsigned long nr_freed_pages;
-        } virtual;
-        unsigned long nr_freed_pages;            // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.55
-        struct list_head freed_slabs_normal;     // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.55
-        struct list_head freed_slabs_min;        // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.55
-        spinlock_t freed_slabs_lock;             // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.55
-        gfp_t allocflags;
-        ...
-        const char * name;
-        struct list_head list; <-----> struct list_head <-----> struct list_head <-----> ...
-        ...
-    };
-
     struct kmem_cache_cpu {
         void **freelist;
         unsigned long tid;
@@ -73666,6 +73654,39 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         ...
     };
 
+    struct kmem_cache_node {
+        spinlock_t list_lock;
+        unsigned long nr_partial;
+        struct list_head partial;
+        atomic_long_t nr_slabs;                  // CONFIG_SLUB_DEBUG=y
+        atomic_long_t total_objects;             // CONFIG_SLUB_DEBUG=y
+        struct list_head full;                   // CONFIG_SLUB_DEBUG=y
+    };
+    """
+
+    # CONFIG_SLAB_VIRTUAL=y
+    """
+    struct kmem_cache {                          // if CONFIG_SLAB_VIRTUAL=y
+        ...
+        struct kmem_cache_order_objects min;     // [ANNOTATION]
+        struct kmem_cache_order_objects oo;      //    In kernel < 6.1.55, `min` and `oo` are swapped.
+        struct kmem_cache_virtual {              // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.1.55
+            spinlock_t freed_slabs_lock;
+            struct list_head freed_slabs;
+            struct list_head freed_slabs_min;
+            unsigned long nr_freed_pages;
+        } virtual;
+        unsigned long nr_freed_pages;            // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.55
+        struct list_head freed_slabs_normal;     // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.55
+        struct list_head freed_slabs_min;        // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.55
+        spinlock_t freed_slabs_lock;             // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.55
+        gfp_t allocflags;
+        ...
+        const char * name;
+        struct list_head list; <-----> struct list_head <-----> struct list_head <-----> ...
+        ...
+    };
+
     struct slab {                                // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.6
         struct slab *compound_slab_head;
         struct folio *backing_folio;
@@ -73699,15 +73720,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         struct slab slab;
         struct virtual_slab *compound_slab_head;
         unsigned long align_mask;
-    };
-
-    struct kmem_cache_node {
-        spinlock_t list_lock;
-        unsigned long nr_partial;
-        struct list_head partial;
-        atomic_long_t nr_slabs;                  // CONFIG_SLUB_DEBUG=y
-        atomic_long_t total_objects;             // CONFIG_SLUB_DEBUG=y
-        struct list_head full;                   // CONFIG_SLUB_DEBUG=y
     };
     """
 
@@ -73819,13 +73831,15 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # offsetof(kmem_cache_cpu, page or slab)
         self.kmem_cache_cpu_offset_page = current_arch.ptrsize * 2
-        self.quiet_info("offsetof(kmem_cache_cpu, page): {:#x}".format(self.kmem_cache_cpu_offset_page))
+        self.quiet_info("offsetof(kmem_cache_cpu, {:s}): {:#x}".format(
+            Kernel.slab_page_str(), self.kmem_cache_cpu_offset_page,
+        ))
 
         # offsetof(kmem_cache_cpu, partial)
         self.kmem_cache_cpu_offset_partial = current_arch.ptrsize * 3
         self.quiet_info("offsetof(kmem_cache_cpu, partial): {:#x}".format(self.kmem_cache_cpu_offset_partial))
 
-        # offsetof(page, next)
+        # offsetof(page, next) / offsetof(slab, next)
         if self.slab_virtual_enabled:
             if kversion < "6.6":
                 self.page_offset_next = current_arch.ptrsize * 7 # TODO: CONFIG_MEMCG
@@ -73842,9 +73856,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.page_offset_next = current_arch.ptrsize
             else:
                 self.page_offset_next = current_arch.ptrsize * 2
-        self.quiet_info("offsetof(page, next): {:#x}".format(self.page_offset_next))
+        self.quiet_info("offsetof({:s}, next): {:#x}".format(
+            Kernel.slab_page_str(), self.page_offset_next,
+        ))
 
-        # offsetof(page, freelist)
+        # offsetof(page, freelist) / offsetof(slab, freelist)
         if self.slab_virtual_enabled:
             if kversion < "6.6":
                 self.page_offset_freelist = current_arch.ptrsize * 10 # TODO: CONFIG_MEMCG
@@ -73859,9 +73875,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.page_offset_freelist = current_arch.ptrsize * 4
             else:
                 self.page_offset_freelist = current_arch.ptrsize * 4
-        self.quiet_info("offsetof(page, freelist): {:#x}".format(self.page_offset_freelist))
+        self.quiet_info("offsetof({:s}, freelist): {:#x}".format(
+            Kernel.slab_page_str(), self.page_offset_freelist,
+        ))
 
-        # offsetof(page, slab_cache)
+        # offsetof(page, slab_cache) / offsetof(slab, slab_cache)
         if self.slab_virtual_enabled:
             if kversion < "6.6":
                 self.page_offset_slab_cache = current_arch.ptrsize * 9 # TODO: CONFIG_MEMCG
@@ -73878,11 +73896,15 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.page_offset_slab_cache = current_arch.ptrsize * 3
             else:
                 self.page_offset_slab_cache = current_arch.ptrsize
-        self.quiet_info("offsetof(page, slab_cache): {:#x}".format(self.page_offset_slab_cache))
+        self.quiet_info("offsetof({:s}, slab_cache): {:#x}".format(
+            Kernel.slab_page_str(), self.page_offset_slab_cache,
+        ))
 
-        # offsetof(page, inuse_objects_frozen)
+        # offsetof(page, inuse_objects_frozen) / offsetof(slab, inuse_objects_frozen)
         self.page_offset_inuse_objects_frozen = self.page_offset_freelist + current_arch.ptrsize
-        self.quiet_info("offsetof(page, inuse_objects_frozen): {:#x}".format(self.page_offset_inuse_objects_frozen))
+        self.quiet_info("offsetof({:s}, inuse_objects_frozen): {:#x}".format(
+            Kernel.slab_page_str(), self.page_offset_inuse_objects_frozen,
+        ))
 
         # parse extra members of `struct slab` for CONFIG_SLAB_VIRTUAL=y
         if self.slab_virtual_enabled:
@@ -73895,7 +73917,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.page_offset_flush_list_elem = current_arch.ptrsize * 3
             else:
                 self.page_offset_flush_list_elem = current_arch.ptrsize * 2
-            self.quiet_info("offsetof(page, flush_list_elem): {:#x}".format(self.page_offset_flush_list_elem))
+            self.quiet_info("offsetof(slab, flush_list_elem): {:#x}".format(self.page_offset_flush_list_elem))
 
         # offsetof(kmem_cache_node, partial)
         self.resolve_kmem_cache_node_offset_partial(top)
@@ -74938,21 +74960,21 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         else:
             self.quiet_info("offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node))
 
-        # offsetof(page, next)
-        self.page_offset_next = current_arch.ptrsize * 2
-        self.quiet_info("offsetof(page, next): {:#x}".format(self.page_offset_next))
+        # offsetof(slab, next)
+        self.slab_offset_next = current_arch.ptrsize * 2
+        self.quiet_info("offsetof(slab, next): {:#x}".format(self.slab_offset_next))
 
-        # offsetof(page, freelist)
-        self.page_offset_freelist = current_arch.ptrsize * 4
-        self.quiet_info("offsetof(page, freelist): {:#x}".format(self.page_offset_freelist))
+        # offsetof(slab, freelist)
+        self.slab_offset_freelist = current_arch.ptrsize * 4
+        self.quiet_info("offsetof(slab, freelist): {:#x}".format(self.slab_offset_freelist))
 
-        # offsetof(page, slab_cache)
-        self.page_offset_slab_cache = current_arch.ptrsize
-        self.quiet_info("offsetof(page, slab_cache): {:#x}".format(self.page_offset_slab_cache))
+        # offsetof(slab, slab_cache)
+        self.slab_offset_slab_cache = current_arch.ptrsize
+        self.quiet_info("offsetof(slab, slab_cache): {:#x}".format(self.slab_offset_slab_cache))
 
-        # offsetof(page, inuse_objects_frozen)
-        self.page_offset_inuse_objects_frozen = self.page_offset_freelist + current_arch.ptrsize
-        self.quiet_info("offsetof(page, inuse_objects_frozen): {:#x}".format(self.page_offset_inuse_objects_frozen))
+        # offsetof(slab, inuse_objects_frozen)
+        self.slab_offset_inuse_objects_frozen = self.slab_offset_freelist + current_arch.ptrsize
+        self.quiet_info("offsetof(slab, inuse_objects_frozen): {:#x}".format(self.slab_offset_inuse_objects_frozen))
 
         # offsetof(kmem_cache_node, partial)
         node = read_int_from_memory(kmem_caches[0] - self.kmem_cache_offset_list + self.kmem_cache_offset_node)
@@ -75083,24 +75105,24 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             current_node_page = read_int_from_memory(node_page_head)
             while current_node_page != node_page_head:
                 node_page = {}
-                node_page["address"] = current_node_page - self.page_offset_next
+                node_page["address"] = current_node_page - self.slab_offset_next
                 if not is_valid_addr(node_page["address"]):
                     node_page_list.append(node_page)
                     break
-                x = read_int_from_memory(node_page["address"] + self.page_offset_inuse_objects_frozen)
+                x = read_int_from_memory(node_page["address"] + self.slab_offset_inuse_objects_frozen)
                 node_page["inuse"] = x & 0xffff
                 node_page["objects"] = (x >> 16) & 0x7fff
                 if node_page["objects"] == 0 or node_page["inuse"] > node_page["objects"]:
                     break # something is wrong
                 node_page["frozen"] = (x >> 31) & 1
-                node_chunk = read_int_from_memory(node_page["address"] + self.page_offset_freelist)
+                node_chunk = read_int_from_memory(node_page["address"] + self.slab_offset_freelist)
                 node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache)
                 node_page["num_pages"] = (
                     kmem_cache["size"] * node_page["objects"] + gef_getpagesize_mask_low()
                 ) // gef_getpagesize()
                 node_page["virt_addr"] = self.page2virt(node_page, kmem_cache)
                 node_page_list.append(node_page)
-                current_node_page = read_int_from_memory(node_page["address"] + self.page_offset_next)
+                current_node_page = read_int_from_memory(node_page["address"] + self.slab_offset_next)
             kmem_cache["nodes"].append(node_page_list)
             current_kmem_cache_node_ptr += current_arch.ptrsize
         return
@@ -75441,7 +75463,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         "    +-__per_cpu_offset-+                   |  |",
         "    | cpu0_offset      |--+----------------+  |",
         "    | cpu1_offset      |  |                   |",
-        "    | cpu2_offset      |  |                   v                  +-page------+    +-page------+",
+        "    | cpu2_offset      |  |                   v                  +-page/slab-+    +-page/slab-+",
         "    | ...              |  |       +-kmem_cache_node-+      +---->| slab_list |--->| slab_list |-->...",
         "    +------------------+  |       | slabs_partial   |------+     | freelist  |    | freelist  |",
         "                          |       | slabs_full      |----->...   | s_mem     |-+  | s_mem     |-+",
@@ -75459,6 +75481,8 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         "    |   freed_chunk_ptr  |                            +--------->|        |       |        |",
         "    |   ...              |                                       +-...----+       +-...----+",
         "    +--------------------+",
+        "* `struct page` has been split into `struct page` and `struct slab` since kernel 5.17.",
+        "  The structure name used for SLAB has been changed to `struct slab`.",
         "* Chunks in array_cache are marked as in-use, even though they are actually reusable.",
         "* SLAB was removed in kernel 6.8.",
     ]
@@ -75694,7 +75718,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.kmem_cache_offset_array = self.kmem_cache_offset_node + current_arch.ptrsize
             self.quiet_info("offsetof(kmem_cache, array): {:#x}".format(self.kmem_cache_offset_array))
 
-        # offsetof(page, next)
+        # offsetof(page, next) / offsetof(slab, next)
         if kversion < "4.16":
             self.page_offset_next = current_arch.ptrsize * 3 + 4 * 2
         elif kversion < "4.18":
@@ -75705,9 +75729,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.page_offset_next = current_arch.ptrsize
         else:
             self.page_offset_next = current_arch.ptrsize * 2
-        self.quiet_info("offsetof(page, next): {:#x}".format(self.page_offset_next))
+        self.quiet_info("offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next))
 
-        # offsetof(page, freelist)
+        # offsetof(page, freelist) / offsetof(slab, freelist)
         if kversion < "4.18":
             self.page_offset_freelist = current_arch.ptrsize * 2
         elif kversion < "5.17":
@@ -75716,9 +75740,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.page_offset_freelist = current_arch.ptrsize * 4
         else:
             self.page_offset_freelist = current_arch.ptrsize * 4
-        self.quiet_info("offsetof(page, freelist): {:#x}".format(self.page_offset_freelist))
+        self.quiet_info("offsetof({:s}, freelist): {:#x}".format(Kernel.slab_page_str(), self.page_offset_freelist))
 
-        # offsetof(page, slab_cache)
+        # offsetof(page, slab_cache) / offsetof(slab, slab_cache)
         if kversion < "4.16" and is_32bit():
             self.page_offset_slab_cache = current_arch.ptrsize * 7
         elif kversion < "4.18":
@@ -75729,9 +75753,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.page_offset_slab_cache = current_arch.ptrsize * 3
         else:
             self.page_offset_slab_cache = current_arch.ptrsize
-        self.quiet_info("offsetof(page, slab_cache): {:#x}".format(self.page_offset_slab_cache))
+        self.quiet_info("offsetof({:s}, slab_cache): {:#x}".format(Kernel.slab_page_str(), self.page_offset_slab_cache))
 
-        # offsetof(page, s_mem)
+        # offsetof(page, s_mem) / offsetof(slab, s_mem)
         if kversion < "4.18":
             self.page_offset_s_mem = current_arch.ptrsize
         elif kversion < "5.17":
@@ -75740,9 +75764,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.page_offset_s_mem = 8 + current_arch.ptrsize * 5
         else:
             self.page_offset_s_mem = 8 + current_arch.ptrsize * 5
-        self.quiet_info("offsetof(page, s_mem): {:#x}".format(self.page_offset_s_mem))
+        self.quiet_info("offsetof({:s}, s_mem): {:#x}".format(Kernel.slab_page_str(), self.page_offset_s_mem))
 
-        # offsetof(page, active)
+        # offsetof(page, active) / offsetof(slab, active)
         if kversion < "4.18":
             self.page_offset_active = current_arch.ptrsize * 3
         elif kversion < "5.17":
@@ -75751,7 +75775,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.page_offset_active = current_arch.ptrsize * 6
         else:
             self.page_offset_active = current_arch.ptrsize * 6
-        self.quiet_info("offsetof(page, active): {:#x}".format(self.page_offset_active))
+        self.quiet_info("offsetof({:s}, active): {:#x}".format(Kernel.slab_page_str(), self.page_offset_active))
 
         # offsetof(kmem_cache_node, slabs_partial)
         # sizeof(raw_spinlock_t) can take many different values and must be determined heuristically.
@@ -76255,7 +76279,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         "       +-------------+   +-------------+   +-------------+   +-------------+",
         "* slab_caches is not used when traversing the freelist",
         "",
-        "   +-free_slob_large--+              +-page----------+           +-page----------+",
+        "   +-free_slob_large--+              +-page/slab-----+           +-page/slab-----+",
         "   | list_head        |<---------+   | freelist      |-----+     | freelist      |",
         "   +-free_slob_medium-+          |   | units (total) |     |     | units (total) |",
         "   | list_head        |-->...    +-->| list_head     |<----|---->| list_head     |<->...",
@@ -76268,6 +76292,8 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         "* size is only judged when first inserted,       | offset    |   +-----------+",
         "  so divided remainder is stay on.               +-----------+   (when units=1, stored negative offset)",
         "",
+        "* `struct page` has been split into `struct page` and `struct slab` since kernel 5.17.",
+        "  The structure name used for SLOB has been changed to `struct slab`.",
         "* SLOB was removed in kernel 6.4.",
     ]
     _note_ = "\n".join(_note_)
@@ -76379,7 +76405,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         self.kmem_cache_offset_flags = 4 * 3
         self.quiet_info("offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags))
 
-        # offsetof(page, next)
+        # offsetof(page, next) / offsetof(slab, next)
         if kversion < "4.16":
             self.page_offset_next = current_arch.ptrsize * 3 + 4 * 2
         elif kversion < "4.18":
@@ -76388,25 +76414,25 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             self.page_offset_next = current_arch.ptrsize
         else:
             self.page_offset_next = current_arch.ptrsize
-        self.quiet_info("offsetof(page, next): {:#x}".format(self.page_offset_next))
+        self.quiet_info("offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next))
 
-        # offsetof(page, freelist)
+        # offsetof(page, freelist) / offsetof(slab, freelist)
         if kversion < "4.18":
             self.page_offset_freelist = current_arch.ptrsize * 2
         elif kversion < "5.17":
             self.page_offset_freelist = current_arch.ptrsize * 4
         else:
             self.page_offset_freelist = current_arch.ptrsize * 4
-        self.quiet_info("offsetof(page, freelist): {:#x}".format(self.page_offset_freelist))
+        self.quiet_info("offsetof({:s}, freelist): {:#x}".format(Kernel.slab_page_str(), self.page_offset_freelist))
 
-        # offsetof(page, units)
+        # offsetof(page, units) / offsetof(slab, units)
         if kversion < "4.18":
             self.page_offset_units = current_arch.ptrsize * 3
         elif kversion < "5.17":
             self.page_offset_freelist = current_arch.ptrsize * 6
         else:
             self.page_offset_freelist = current_arch.ptrsize * 5
-        self.quiet_info("offsetof(page, units): {:#x}".format(self.page_offset_units))
+        self.quiet_info("offsetof({:s}, units): {:#x}".format(Kernel.slab_page_str(), self.page_offset_units))
 
         self.initialized = True
         return True
@@ -76633,19 +76659,19 @@ class SlabContainsCommand(GenericCommand):
         cmd = {"SLUB": "slub-dump", "SLAB": "slab-dump", "SLUB_TINY": "slub-tiny-dump"}[self.allocator]
         res = gdb.execute("{:s} --meta".format(cmd), to_string=True)
 
-        r = re.search(r"offsetof\(page, slab_cache\): (0x\S+)", res)
+        r = re.search(r"offsetof\((?:page|slab), slab_cache\): (0x\S+)", res)
         if not r:
             return False
         self.page_offset_slab_cache = int(r.group(1), 16)
         if self.args.verbose:
-            info("offsetof(page, slab_cache): {:#x}".format(self.page_offset_slab_cache))
+            info("offsetof({:s}, slab_cache): {:#x}".format(Kernel.slab_page_str(), self.page_offset_slab_cache))
 
-        r = re.search(r"offsetof\(page, next\): (0x\S+)", res)
+        r = re.search(r"offsetof\((?:page|slab), next\): (0x\S+)", res)
         if not r:
             return False
         self.page_offset_next = int(r.group(1), 16)
         if self.args.verbose:
-            info("offsetof(page, next): {:#x}".format(self.page_offset_next))
+            info("offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next))
 
         r = re.search(r"offsetof\(kmem_cache, name\): (0x\S+)", res)
         if not r:
@@ -76682,12 +76708,14 @@ class SlabContainsCommand(GenericCommand):
 
         # for num of pages
         if self.allocator in ["SLUB", "SLUB_TINY"]:
-            r = re.search(r"offsetof\(page, inuse_objects_frozen\): (0x\S+)", res)
+            r = re.search(r"offsetof\((?:page|slab), inuse_objects_frozen\): (0x\S+)", res)
             if not r:
                 return False
             self.page_offset_inuse_objects_frozen = int(r.group(1), 16)
             if self.args.verbose:
-                info("offsetof(page, inuse_objects_frozen): {:#x}".format(self.page_offset_inuse_objects_frozen))
+                info("offsetof({:s}, inuse_objects_frozen): {:#x}".format(
+                    Kernel.slab_page_str(), self.page_offset_inuse_objects_frozen,
+                ))
 
         elif self.allocator == "SLAB":
             r = re.search(r"offsetof\(kmem_cache, gfporder\): (0x\S+)", res)
@@ -101394,12 +101422,12 @@ class KmallocTracerCommand(GenericCommand):
 
         res = gdb.execute("slub-dump --meta", to_string=True)
 
-        r = re.search(r"offsetof\(page, slab_cache\): (0x\S+)", res)
+        r = re.search(r"offsetof\((?:page|slab), slab_cache\): (0x\S+)", res)
         if not r:
             return False
         page_offset_slab_cache = int(r.group(1), 16)
         if verbose:
-            info("offsetof(page, slab_cache): {:#x}".format(page_offset_slab_cache))
+            info("offsetof({:s}, slab_cache): {:#x}".format(Kernel.slab_page_str(), page_offset_slab_cache))
 
         r = re.search(r"offsetof\(kmem_cache, name\): (0x\S+)", res)
         if not r:
@@ -101766,7 +101794,7 @@ class KmallocTracerCommand(GenericCommand):
             self.extra_info = ret # allow None
         else:
             if args.verbose and self.extra_info:
-                info("offsetof(page, slab_cache): {:#x}".format(self.extra_info.page_offset_slab_cache))
+                info("offsetof({:s}, slab_cache): {:#x}".format(Kernel.slab_page_str(), self.extra_info.page_offset_slab_cache))
                 info("offsetof(kmem_cache, name): {:#x}".format(self.extra_info.kmem_cache_offset_name))
                 info("offsetof(kmem_cache, size): {:#x}".format(self.extra_info.kmem_cache_offset_size))
 
@@ -103166,7 +103194,7 @@ class KmallocAllocatedByCommand(GenericCommand):
             self.extra_info = ret # allow None
         else:
             if args.verbose and self.extra_info:
-                info("offsetof(page, slab_cache): {:#x}".format(self.extra_info.page_offset_slab_cache))
+                info("offsetof({:s}, slab_cache): {:#x}".format(Kernel.slab_page_str(), self.extra_info.page_offset_slab_cache))
                 info("offsetof(kmem_cache, name): {:#x}".format(self.extra_info.kmem_cache_offset_name))
                 info("offsetof(kmem_cache, size): {:#x}".format(self.extra_info.kmem_cache_offset_size))
 
