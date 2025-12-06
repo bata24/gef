@@ -76980,7 +76980,13 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             # rare case: L2TP!IPv6 -> L2TP/IPv6
             if "!" in name:
                 name = name.replace("!", "/")
-            alias_groups[name] = {"alias": alias, "slab_cache_name": None, "object_size": 0, "chunk_size": 0}
+            alias_groups[name] = {
+                "alias": alias,
+                "slab_cache_name": None,
+                "name": name,
+                "object_size": 0,
+                "chunk_size": 0,
+            }
 
         # parse slub-dump
         cmd = {"SLUB": "slub-dump", "SLUB_TINY": "slub-tiny-dump"}[self.allocator]
@@ -77165,7 +77171,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         # sort by keys
         if self.args.sort_by_size:
             sorted_alias_groups = sorted(alias_groups.items(),
-                key=lambda x: (x[1]["object_size"], x[1]["chunk_size"]))
+                key=lambda x: (x[1]["object_size"], x[1]["chunk_size"], x[1]["name"]))
         else:
             sorted_alias_groups = sorted(alias_groups.items())
 
