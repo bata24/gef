@@ -72916,7 +72916,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         "  it also has a structure for managing released slab structures.",
         "",
         "Structures in `CONFIG_SLAB_VIRTUAL=y`",
-        "- Ver6.1-based",
+        "- v6.1-based, v6.12-based",
         "                                 +---slab----------+    +---slab----------+   +---slab----------+",
         "       (Temporary Lists)         | backing_folio   |    | backing_folio   |   | backing_folio   |",
         "       +-slub_tlbflush_queue-+   | oo              |    | oo              |   | oo              |",
@@ -72962,7 +72962,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         "    +-----------------+",
         "",
         "",
-        "- Ver6.6-based",
+        "- v6.6-based",
         "                                 +-virtual_slab-+     +-virtual_slab-+   +-virtual_slab-+",
         "       (Temporary Lists)         | ...          |     | ...          |   | ...          |",
         "       +-slub_tlbflush_queue-+   | slab_cache   |--+  | slab_cache   |   | slab_cache   |",
@@ -73004,7 +73004,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         "    |    +----------------+                               | oo           |   | oo           |",
         "    v                                                     | ...          |   | ...          |",
         "    +-kmem_cache_node-+                                   +--------------+   +--------------+",
-        "    | ...             |"
+        "    | ...             |",
         "    +-----------------+",
         "",
         "* The freed slab structure is initially connected to `slub_tlbflush_queue`.",
@@ -73476,13 +73476,12 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         else:
             # Heuristic detection that CONFIG_SLAB_VIRTUAL is enabled or not from `struct kmem_cache`.
             # If enabled, `struct kmem_cache` has 2 doubly-link-lists above `kmem_cache->name`.
-            #     - kmem_cache->freed_slabs_normal (kernel >= 6.1.55)
-            #     - kmem_cache->freed_slabs (kernel < 6.1.55)
+            #     - kmem_cache->freed_slabs_normal (kernel >= 6.1.56)
+            #     - kmem_cache->freed_slabs (kernel < 6.1.56)
             #     - kmem_cache->freed_slabs_min
             def has_freed_slabs_lists(freed_slabs_normal, freed_slabs_min):
                 return is_double_link_list(freed_slabs_normal) and is_double_link_list(freed_slabs_min)
 
-            # TODO: CONFIG_MEMCG
             offset_freed_slabs_normal = current_arch.ptrsize * 9
             offset_freed_slabs_min = current_arch.ptrsize * 11
             self.slab_virtual_enabled = has_freed_slabs_lists(
@@ -73508,12 +73507,12 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.quiet_info("slub_tlbflush_queue: {:#x}".format(self.slub_tlbflush_queue))
 
             # 2. parse extra members of kmem_cache
-            #   - kmem_cache->nr_freed_pages (kernel < 6.6) or kmem_cache->virtual.nr_freed_pages (kernel >= 6.6)
-            #   - kmem_cache->freed_slabs_normal (kernel < 6.6) or kmem_cache->virtual.freed_slabs (kernel >= 6.6)
-            #   - kmem_cache->freed_slabs_min (kernel < 6.6) or kmem_cache->virtual.freed_slabs_min (kernel >= 6.6)
+            #   - kmem_cache->nr_freed_pages (6.1-based, 6.12-based) or kmem_cache->virtual.nr_freed_pages (6.6-based)
+            #   - kmem_cache->freed_slabs_normal (6.1-based, 6.12-based) or kmem_cache->virtual.freed_slabs (6.6-based)
+            #   - kmem_cache->freed_slabs_min (6.1-based, 6.12-based) or kmem_cache->virtual.freed_slabs_min (6.6-based)
 
             # offsetof(kmem_cache, nr_freed_pages)
-            if kversion < "6.1.55":
+            if kversion < "6.1.56":
                 self.kmem_cache_offset_nr_freed_pages = offset_freed_slabs_normal - current_arch.ptrsize * 1
             else:
                 self.kmem_cache_offset_nr_freed_pages = offset_freed_slabs_min + current_arch.ptrsize * 2
@@ -73669,17 +73668,17 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     struct kmem_cache {                          // if CONFIG_SLAB_VIRTUAL=y
         ...
         struct kmem_cache_order_objects min;     // [ANNOTATION]
-        struct kmem_cache_order_objects oo;      //    In kernel < 6.1.55, `min` and `oo` are swapped.
-        struct kmem_cache_virtual {              // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.1.55
-            spinlock_t freed_slabs_lock;
-            struct list_head freed_slabs;
-            struct list_head freed_slabs_min;
-            unsigned long nr_freed_pages;
-        } virtual;
-        unsigned long nr_freed_pages;            // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.55
-        struct list_head freed_slabs_normal;     // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.55
-        struct list_head freed_slabs_min;        // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.55
-        spinlock_t freed_slabs_lock;             // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.55
+        struct kmem_cache_order_objects oo;      //    In kernel < 6.1.56, `min` and `oo` are swapped.
+        struct kmem_cache_virtual {              // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.1.56
+            spinlock_t freed_slabs_lock;         // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.1.56
+            struct list_head freed_slabs;        // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.1.56
+            struct list_head freed_slabs_min;    // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.1.56
+            unsigned long nr_freed_pages;        // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.1.56
+        } virtual;                               // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.1.56
+        unsigned long nr_freed_pages;            // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.56
+        struct list_head freed_slabs_normal;     // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.56
+        struct list_head freed_slabs_min;        // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.56
+        spinlock_t freed_slabs_lock;             // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.56
         gfp_t allocflags;
         ...
         const char * name;
@@ -73704,7 +73703,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         unsigned long memcg_data;                // if CONFIG_MEMCG=y
     };
 
-    struct slab {                                // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.6
+    struct slab {                                // if CONFIG_SLAB_VIRTUAL=y && 6.6 <= kernel < 6.12
         struct folio *backing_folio;
         struct kmem_cache *slab_cache;
         struct slab *next;
@@ -73716,10 +73715,26 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         unsigned long memcg_data;                // if CONFIG_MEMCG=y
     }
 
-    struct virtual_slab {                        // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.6
+    struct virtual_slab {                        // if CONFIG_SLAB_VIRTUAL=y && 6.6 <= kernel < 6.12
         struct slab slab;
         struct virtual_slab *compound_slab_head;
         unsigned long align_mask;
+    };
+
+    struct slab {                                // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.12
+        struct slab *compound_slab_head;
+        struct folio *backing_folio;
+        struct kmem_cache_order_objects oo;
+        struct list_head flush_list_elem;
+        unsigned long align_mask;
+        spinlock_t slab_lock;
+        struct kmem_cache *slab_cache;
+        struct slab *next;
+        int slabs;
+        void *freelist;
+        unsigned inuse:16, objects:15, frozen:1;
+        unsigned int __unused;
+        unsigned long memcg_data;                // if CONFIG_MEMCG=y
     };
     """
 
@@ -73842,9 +73857,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         # offsetof(page, next) / offsetof(slab, next)
         if self.slab_virtual_enabled:
             if kversion < "6.6":
-                self.page_offset_next = current_arch.ptrsize * 7 # TODO: CONFIG_MEMCG
-            else:
+                self.page_offset_next = current_arch.ptrsize * 7
+            elif kversion < "6.12":
                 self.page_offset_next = current_arch.ptrsize * 2
+            else: # 6.12
+                self.page_offset_next = current_arch.ptrsize * 8
         else:
             if kversion < "4.16" and is_32bit():
                 self.page_offset_next = current_arch.ptrsize * 5
@@ -73863,10 +73880,12 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         # offsetof(page, freelist) / offsetof(slab, freelist)
         if self.slab_virtual_enabled:
             if kversion < "6.6":
-                self.page_offset_freelist = current_arch.ptrsize * 10 # TODO: CONFIG_MEMCG
-            else:
+                self.page_offset_freelist = current_arch.ptrsize * 10
+            elif kversion < "6.12":
                 self.page_offset_freelist = current_arch.ptrsize * 4
-        else:
+            else:
+                self.page_offset_freelist = current_arch.ptrsize * 10
+        else: # 6.12
             if kversion < "4.18":
                 self.page_offset_freelist = current_arch.ptrsize * 2
             elif kversion < "5.17":
@@ -73882,9 +73901,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         # offsetof(page, slab_cache) / offsetof(slab, slab_cache)
         if self.slab_virtual_enabled:
             if kversion < "6.6":
-                self.page_offset_slab_cache = current_arch.ptrsize * 9 # TODO: CONFIG_MEMCG
-            else:
+                self.page_offset_slab_cache = current_arch.ptrsize * 9
+            elif kversion < "6.12":
                 self.page_offset_slab_cache = current_arch.ptrsize
+            else: # 6.12
+                self.page_offset_slab_cache = current_arch.ptrsize * 7
         else:
             if kversion < "4.16" and is_32bit():
                 self.page_offset_slab_cache = current_arch.ptrsize * 7
@@ -73915,8 +73936,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             #   So, when CONFIG_SLAB_VIRTUAL=y and 6.6 or later, `flush_list_elem` means `next`.
             if kversion < "6.6":
                 self.page_offset_flush_list_elem = current_arch.ptrsize * 3
-            else:
+            elif kversion < "6.12":
                 self.page_offset_flush_list_elem = current_arch.ptrsize * 2
+            else: # 6.12
+                self.page_offset_flush_list_elem = current_arch.ptrsize * 3
             self.quiet_info("offsetof(slab, flush_list_elem): {:#x}".format(self.page_offset_flush_list_elem))
 
         # offsetof(kmem_cache_node, partial)
@@ -99347,6 +99370,7 @@ class SlabVirtualCommand(GenericCommand):
     _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ascii diagram.")
     modes = ["to_virt", "to_page", "from_virt", "from_page"]
     parser.add_argument("mode", choices=modes, help="conversion mode.")
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address, help="the address to convert.")
@@ -99355,8 +99379,56 @@ class SlabVirtualCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     _note_ = [
-        "This command works only in CONFIG_SLAB_VIRTUAL=y.",
-        "If disabled, use `page` command.",
+        "This command works only in CONFIG_SLAB_VIRTUAL=y (implemented at https://github.com/thejh/linux).",
+        "Used in the Google Kernel CTF mitigation instance.",
+        "",
+        "CONFIG_SLAB_VIRTUAL=n (normal kernel):",
+        "  Both `struct slab` and `struct page` directly manage physmap area.",
+        "",
+        "  [physmap area]",
+        "                     +------------+",
+        "                     | virt       | <-- size: 0x1000",
+        "                     +------------+",
+        "                     | ...        |",
+        "                     +------------+",
+        "  [vmemmap area]",
+        "                     +------------+",
+        "                     | page/slab  | <-- size: sizeof(page) or sizeof(slab)",
+        "                     +------------+",
+        "                     | ...        |",
+        "                     +------------+",
+        "",
+        "CONFIG_SLAB_VIRTUAL=y (mitigated kernel):",
+        "  `struct slab` no longer manages physmap area. Instead, `struct slab` manages the slab_data area.",
+        "",
+        "  [physmap area]",
+        "                     +------------+",
+        "                     | virt       | <-- size: 0x1000",
+        "                     +------------+",
+        "                     | ...        |",
+        "                     +------------+",
+        "  [vmemmap area]",
+        "                     +------------+",
+        "                     | page       | <-- size: sizeof(page)",
+        "                     +------------+",
+        "                     | ...        |",
+        "                     +------------+",
+        "  [slab_meta area]",
+        "           ^         +------------+ SLAB_BASE_ADDR (=0xfffffe8000000000)",
+        "           |         | slab       |",
+        "           |         +------------+",
+        "    SLAB_META_SIZE   | slab       | <-- meta entry size: STRUCT_SLAB_SIZE               # v6.1~v6.1.55",
+        "           |         +------------+                      or sizeof(struct slab)         # v6.1.56~v6.6, v6.12~",
+        "           |         | ...        |                      or sizeof(struct virtual_slab) # v6.6~v6.12",
+        "           v         +------------+ ",
+        "  [slab_data area]",
+        "                     +------------+ SLAB_DATA_BASE_ADDR (=0xfffffe8800000000)",
+        "                     | virt       | ",
+        "                     +------------+",
+        "                     | virt       | <-- size: 0x1000",
+        "                     +------------+",
+        "                     | ...        |",
+        "                     +------------+ SLAB_END_ADDR (=0xffffff0000000000)",
     ]
     _note_ = "\n".join(_note_)
 
@@ -99365,53 +99437,122 @@ class SlabVirtualCommand(GenericCommand):
             return True
 
         self.PAGE_SHIFT = 12
-        self.PGDIR_SHIFT = 39 # noqa
-        self.P4D_SHIFT = 39
+        P4D_SHIFT = 39
 
-        self.SLAB_BASE_ADDR = (-3 << self.P4D_SHIFT) & 0xffff_ffff_ffff_ffff
+        self.SLAB_BASE_ADDR = (-3 << P4D_SHIFT) & 0xffff_ffff_ffff_ffff
         self.quiet_info("SLAB_BASE_ADDR: {:#x}".format(self.SLAB_BASE_ADDR))
 
-        self.SLAB_END_ADDR = self.SLAB_BASE_ADDR + (1 << self.P4D_SHIFT)
+        self.SLAB_END_ADDR = self.SLAB_BASE_ADDR + (1 << P4D_SHIFT)
         self.quiet_info("SLAB_END_ADDR: {:#x}".format(self.SLAB_END_ADDR))
 
-        self.SLAB_VPAGES = (self.SLAB_END_ADDR - self.SLAB_BASE_ADDR) >> self.PAGE_SHIFT
-        self.quiet_info("SLAB_VPAGES: {:#x}".format(self.SLAB_VPAGES))
+        SLAB_VPAGES = (self.SLAB_END_ADDR - self.SLAB_BASE_ADDR) >> self.PAGE_SHIFT
+        self.quiet_info("SLAB_VPAGES: {:#x}".format(SLAB_VPAGES))
 
-        self.kversion = Kernel.kernel_version()
+        self.sizeof_struct_page = 0x40
+        self.quiet_info("sizeof(sturct page): {:#x}".format(self.sizeof_struct_page))
 
-        # set size of a single slab meta unit
-        # TODO: CONFIG_MEMCG
-        if self.kversion < "6.1.55":
-            self.slab_meta_entry_size = 0xc0 # STRUCT_SLAB_SIZE
-        elif self.kversion < "6.6":
-            self.slab_meta_entry_size = 0x70 # sizeof(struct slab)
-        else:
-            self.slab_meta_entry_size = 0x50 # sizeof(struct virtual_slab)
-        self.quiet_info("single slab meta size: {:#x}".format(self.slab_meta_entry_size))
-
-        # set size of SLAB_META_SIZE
-        # TODO: CONFIG_MEMCG
-        if self.kversion < "6.1.55":
-            x = self.SLAB_VPAGES * 0xc0 # STRUCT_SLAB_SIZE
-        else:
-            x = self.SLAB_VPAGES * 0x100 # STRUCT_SLAB_SIZE or STRUCT_VIRTUAL_SLAB_SIZE
+        kversion = Kernel.kernel_version()
 
         def align_kernel(x, alignment_size):
             mask = alignment_size - 1
             return (x + mask) & (mask ^ 0xffff_ffff_ffff_ffff)
 
-        self.SLAB_META_SIZE = align_kernel(x, 1 << self.PAGE_SHIFT)
-        self.quiet_info("SLAB_META_SIZE: {:#x}".format(self.SLAB_META_SIZE))
+        # size of a single slab meta unit, SLAB_META_SIZE
+        if kversion < "6.1.56":
+            # branch: slub-virtual-v6.1, slub-virtual-v6.1-lts
+            # include/linux/slab.h
+            STRUCT_SLAB_SIZE = 24 * current_arch.ptrsize
+            self.SLAB_META_SIZE = align_kernel(SLAB_VPAGES * STRUCT_SLAB_SIZE, 1 << self.PAGE_SHIFT)
+            # mm/slub.c
+            self.slab_meta_entry_size = STRUCT_SLAB_SIZE
+        elif "6.1.56" <= kversion < "6.6":
+            # branch: mitigations-v6.1.56
+            # arch/x86/include/asm/pgtable_64_types.h
+            STRUCT_SLAB_SIZE = 32 * current_arch.ptrsize
+            self.SLAB_META_SIZE = align_kernel(SLAB_VPAGES * STRUCT_SLAB_SIZE, 1 << self.PAGE_SHIFT)
+            # mm/slab.h
+            """
+            gef> dt slab
+            struct slab {
+                /* offset | size   */
+                /* 0x0000 | 0x0008 */    struct slab * compound_slab_head;
+                /* 0x0008 | 0x0008 */    struct folio * backing_folio;
+                /* 0x0010 | 0x0004 */    struct kmem_cache_order_objects oo;
+                /* 0x0014 | 0x0004 */    spinlock_t slab_lists_lock;
+                /* 0x0018 | 0x0010 */    struct list_head flush_list_elem;
+                /* 0x0028 | 0x0008 */    unsigned long align_mask;
+                /* 0x0030 | 0x0004 */    atomic_t pinstate;
+                /* 0x0038 | 0x0010 */    union {...} ;
+                /* 0x0048 | 0x0008 */    struct kmem_cache * slab_cache;
+                /* 0x0050 | 0x0010 */    struct {...} ;
+                /* 0x0060 | 0x0004 */    unsigned int __unused;
+                /* 0x0068 | 0x0008 */    unsigned long memcg_data;
+            } // total: 0x70 bytes
+            gef>
+            """
+            self.slab_meta_entry_size = 0x70 # sizeof(struct slab)
+        elif "6.6" <= kversion < "6.12":
+            # branch: slub-virtual-v6.6
+            # arch/x86/include/asm/pgtable_64_types.h
+            STRUCT_VIRTUAL_SLAB_SIZE = 32 * current_arch.ptrsize
+            self.SLAB_META_SIZE = align_kernel(SLAB_VPAGES * STRUCT_VIRTUAL_SLAB_SIZE, 1 << self.PAGE_SHIFT)
+            # mm/slab.h
+            """
+            gef> dt slab
+            struct slab {
+                /* offset | size   */
+                /* 0x0000 | 0x0008 */    union {...} ;
+                /* 0x0008 | 0x0008 */    struct kmem_cache * slab_cache;
+                /* 0x0010 | 0x0020 */    union {...} ;
+                /* 0x0030 | 0x0004 */    struct kmem_cache_order_objects oo;
+                /* 0x0034 | 0x0004 */    union {...} ;
+                /* 0x0038 | 0x0008 */    unsigned long memcg_data;
+            } // total: 0x40 bytes
+            gef> dt virtual_slab
+            struct virtual_slab {
+                /* offset | size   */
+                /* 0x0000 | 0x0040 */    struct slab slab;
+                /* 0x0040 | 0x0008 */    struct virtual_slab * compound_slab_head;
+                /* 0x0048 | 0x0008 */    unsigned long align_mask;
+            } // total: 0x50 bytes
+            gef>
+            """
+            self.slab_meta_entry_size = 0x50 # sizeof(struct virtual_slab)
+        else: # 6.12~
+            # branch: mitigations-next (linux-6.12 base)
+            # arch/x86/include/asm/pgtable_64_types.h
+            STRUCT_SLAB_SIZE = 32 * current_arch.ptrsize
+            self.SLAB_META_SIZE = align_kernel(SLAB_VPAGES * STRUCT_SLAB_SIZE, 1 << self.PAGE_SHIFT)
+            # mm/slab.h
+            """
+            gef> dt slab
+            struct slab {
+                /* offset | size   */
+                /* 0x0000 | 0x0008 */    struct slab * compound_slab_head;
+                /* 0x0008 | 0x0008 */    struct folio * backing_folio;
+                /* 0x0010 | 0x0004 */    struct kmem_cache_order_objects oo;
+                /* 0x0018 | 0x0010 */    struct list_head flush_list_elem;
+                /* 0x0028 | 0x0008 */    unsigned long align_mask;
+                /* 0x0030 | 0x0004 */    spinlock_t slab_lock;
+                /* 0x0038 | 0x0008 */    struct kmem_cache * slab_cache;
+                /* 0x0040 | 0x0020 */    union {...} ;
+                /* 0x0060 | 0x0008 */    unsigned long obj_exts;
+            } // total: 0x70 bytes
+            gef>
+            """
+            self.slab_meta_entry_size = 0x70 # sizeof(struct slab)
 
-        # offsetof(slab, compound_slab_head)         if kernel < 6.6
-        # offsetof(virtual_slab, compound_slab_head) if kernel >= 6.6
+        self.quiet_info("SLAB_META_SIZE: {:#x}".format(self.SLAB_META_SIZE))
+        self.quiet_info("single slab meta size: {:#x}".format(self.slab_meta_entry_size))
+
+        # offsetof(slab, compound_slab_head)         if kernel != 6.6
+        # offsetof(virtual_slab, compound_slab_head) if kernel == 6.6
         # offsetof(slab, backing_folio)
-        # TODO: CONFIG_MEMCG
-        if self.kversion < "6.6":
+        if kversion < "6.6" or "6.12" <= kversion:
             self.slab_offset_compound_slab_head = 0
             self.quiet_info("offsetof(slab, compound_slab_head): {:#x}".format(self.slab_offset_compound_slab_head))
             self.slab_offset_backing_folio = current_arch.ptrsize
-        else:
+        else: # 6.6
             self.slab_offset_compound_slab_head = current_arch.ptrsize * 8
             self.quiet_info("offsetof(virtual_slab, compound_slab_head): {:#x}".format(self.slab_offset_compound_slab_head))
             self.slab_offset_backing_folio = 0
@@ -99439,7 +99580,8 @@ class SlabVirtualCommand(GenericCommand):
             err("Address is not in valid range")
             return None
 
-        if self.kversion < "6.1.55":
+        kversion = Kernel.kernel_version()
+        if kversion < "6.1.56":
             slab_base = slab_data_base = self.SLAB_BASE_ADDR
         else:
             slab_base = self.SLAB_BASE_ADDR
@@ -99463,7 +99605,8 @@ class SlabVirtualCommand(GenericCommand):
         if virt & 0xfff:
             warn("Address is NOT aligned")
 
-        if self.kversion < "6.1.55":
+        kversion = Kernel.kernel_version()
+        if kversion < "6.1.56":
             slab_base = slab_data_base = self.SLAB_BASE_ADDR
         else:
             slab_base = self.SLAB_BASE_ADDR
@@ -99480,76 +99623,81 @@ class SlabVirtualCommand(GenericCommand):
             return None
         return read_int_from_memory(slab + self.slab_offset_backing_folio)
 
+    def get_vmemmap_base(self):
+        # Do NOT use `KF.get_VMEMMAP_START()` here.
+        # If CONFIG_KALLSYMS_ALL=n, `KF.get_VMEMMAP_START()` uses plan 3 and returns
+        # slab-virtual address (NOT page address).
+        # The returned value may be the first entry address of slab-virtual.
+
+        # plan 1 (directly)
+        addr = Symbol.get_ksymaddr("vmemmap_base")
+        if addr:
+            return read_int_from_memory(addr)
+
+        # plan 2 (from `slab_virt_to_phys`)
+        addr = Symbol.get_ksymaddr("slab_virt_to_phys")
+        if addr:
+            res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
+            g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res, read_valid=True)
+            for x in g:
+                return read_int_from_memory(x)
+
+        kversion = Kernel.kernel_version()
+
+        # plan 3 (available in 6.6-based only from `slub_addr_base` and `slub_addr_current`)
+        # In 6.6-based, `slub_addr_base` is fixed after setup KASLR, and uses
+        # `slub_addr_current` as watermark of once-allocated slabs.
+        # Active range of slab-data area is [slub_addr_base, slub_addr_current).
+        # So, slab-meta area in
+        #    virt_to_slab(slub_addr_base) ~ virt_to_slab(slub_addr_current - 1)
+        # points vmemmmap area via member `backing_folio` in struct `slab`/`slab_virtual`.
+        if "6.6" <= kversion < "6.12":
+            addr = KernelAddressHeuristicFinder.get_slub_addr_base()
+            if not addr:
+                return None
+            self.quiet_info("slub_addr_base @ {:#x}".format(addr))
+            slub_addr_base = read_int_from_memory(addr)
+
+            slab_of_slub_addr_base = self.virt_to_slab(slub_addr_base)
+            addr = KernelAddressHeuristicFinder.get_slub_addr_current()
+            if not addr:
+                return None
+            self.quiet_info("slub_addr_current @ {:#x}".format(addr))
+
+            slub_addr_current = read_int_from_memory(addr)
+            slab_of_slub_addr_current = self.virt_to_slab(slub_addr_current - 1)
+
+            # Scan backing_folio referenced from slab-virtual area (so slow)
+            vmemmap_entries = []
+            tqdm = GefUtil.get_tqdm(not self.args.quiet)
+            self.quiet_info("Wait for memory scan")
+            for slab in tqdm(range(
+                    slab_of_slub_addr_base, slab_of_slub_addr_current, self.slab_meta_entry_size,
+                ), leave=False):
+                backing_folio = read_int_from_memory(slab + self.slab_offset_backing_folio)
+                if not is_valid_addr(backing_folio):
+                    continue
+                vmemmap_entries.append(backing_folio)
+            # The masked address of min page may be vmemmap_base(likely plan 3 of `KF.get_VMEMMAP_START()`)
+            vmemmap_base = min(vmemmap_entries) & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
+            return vmemmap_base
+
+        return None
+
     def page_to_slab(self, page):
         """Converts page (aka backing_folio) into slab (aka slab-meta/slab-virtual)."""
         if not is_valid_addr(page):
             err("Memory error")
             return None
+
         # Step1: find `vmemmap_base`
-        vmemmap_base = None
-
-        # Do NOT use `KF.get_VMEMMAP_START()` here.
-        # If CONFIG_KALLSYMS_ALL=n, `KF.get_VMEMMAP_START()` uses plan 3 and returns
-        # slab-virtual address (NOT page address).
-        # The returned value may be the first entry address of slab-virtual.
-        addr = Symbol.get_ksymaddr("vmemmap_base")
-        if addr:
-            # If symbol is available, use directly
-            vmemmap_base = read_int_from_memory(addr)
-        else:
-            # plan 2 available from `slab_virt_to_phys`
-            addr = Symbol.get_ksymaddr("slab_virt_to_phys") # exported
-            if addr:
-                res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
-                g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res, read_valid=True)
-                for x in g:
-                    vmemmap_base = read_int_from_memory(x)
-                    break
-
-            if vmemmap_base is None:
-                if self.kversion < "6.6":
-                    return None
-
-                # plan 3 (available in 6.6-based only from `slub_addr_base` and `slub_addr_current`)
-                # In 6.6-based, `slub_addr_base` is fixed after setup KASLR, and uses
-                # `slub_addr_current` as watermark of once-allocated slabs.
-                # Active range of slab-data area is [slub_addr_base, slub_addr_current).
-                # So, slab-meta area in
-                #    virt_to_slab(slub_addr_base) ~ virt_to_slab(slub_addr_current - 1)
-                # points vmemmmap area via member `backing_folio` in struct `slab`/`slab_virtual`.
-                addr = KernelAddressHeuristicFinder.get_slub_addr_base()
-                if not addr:
-                    return None
-                self.quiet_info("slub_addr_base @ {:#x}".format(addr))
-                slub_addr_base = read_int_from_memory(addr)
-
-                slab_of_slub_addr_base = self.virt_to_slab(slub_addr_base)
-                addr = KernelAddressHeuristicFinder.get_slub_addr_current()
-                if not addr:
-                    return None
-                self.quiet_info("slub_addr_current @ {:#x}".format(addr))
-
-                slub_addr_current = read_int_from_memory(addr)
-                slab_of_slub_addr_current = self.virt_to_slab(slub_addr_current - 1)
-
-                # Scan backing_folio referenced from slab-virtual area (so slow)
-                vmemmap_entries = []
-                tqdm = GefUtil.get_tqdm(not self.args.quiet)
-                self.quiet_info("Wait for memory scan")
-                for slab in tqdm(range(
-                        slab_of_slub_addr_base, slab_of_slub_addr_current, self.slab_meta_entry_size,
-                    ), leave=False):
-                    backing_folio = read_int_from_memory(slab + self.slab_offset_backing_folio)
-                    if not is_valid_addr(backing_folio):
-                        continue
-                    vmemmap_entries.append(backing_folio)
-                # The masked address of min page may be vmemmap_base(likely plan 3 of `KF.get_VMEMMAP_START()`)
-                vmemmap_base = min(vmemmap_entries) & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
-
+        vmemmap_base = self.get_vmemmap_base()
+        if vmemmap_base is None:
+            return None
         self.quiet_info("vmemmap_base: {:#x}".format(vmemmap_base))
 
         # Step2: get physical addr and mapped virtual address
-        pfn = (page - vmemmap_base) // 0x40
+        pfn = (page - vmemmap_base) // self.sizeof_struct_page
         phys_addr = pfn << self.PAGE_SHIFT
 
         # `p2v` returns 2 results (direct mapping area and slab data)
