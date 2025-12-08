@@ -49984,6 +49984,7 @@ class LibcCommand(GenericCommand):
             gef_print("GEF recognized: {}".format(v))
         except Exception:
             gef_print("GEF recognized: None")
+        info("If version detection is failing, you can fix it with: `gef config libc.assume_version (2,39)`")
         return
 
     @parse_args
