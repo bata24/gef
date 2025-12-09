@@ -11695,7 +11695,7 @@ def only_if_gdb_target_local(f):
         if not is_remote_debug():
             return f(*args, **kwargs)
         else:
-            warn("This command cannot work for remote sessions")
+            warn("This command is not supported for remote sessions")
             return
 
     return wrapper
@@ -11801,7 +11801,7 @@ def only_if_specific_gdb_mode(mode=()):
             for m in mode:
                 if dic.get(m, lambda: False)():
                     return f(*args, **kwargs)
-            warn("This command cannot work under this gdb mode")
+            warn("This command is not supported in this gdb mode")
             return
 
         return inner_f
@@ -11827,7 +11827,7 @@ def exclude_specific_gdb_mode(mode=()):
             }
             for m in mode:
                 if dic.get(m, lambda: False)():
-                    warn("This command cannot work under this gdb mode")
+                    warn("This command is not supported in this gdb mode")
                     return
             return f(*args, **kwargs)
 
@@ -11878,7 +11878,7 @@ def only_if_specific_arch(arch=()):
             for a in arch:
                 if dic.get(a, lambda: False)():
                     return f(*args, **kwargs)
-            warn("This command cannot work under this architecture")
+            warn("This command is not supported on this architecture")
             return
 
         return inner_f
@@ -11927,7 +11927,7 @@ def exclude_specific_arch(arch=()):
             }
             for a in arch:
                 if dic.get(a, lambda: False)():
-                    warn("This command cannot work under this architecture")
+                    warn("This command is not supported on this architecture")
                     return
             return f(*args, **kwargs)
 
@@ -18946,7 +18946,7 @@ class EditFlagsCommand(GenericCommand):
     @require_arch_set
     def do_invoke(self, args):
         if current_arch.flag_register is None:
-            warn("This command cannot work under this architecture")
+            warn("This command is not supported on this architecture")
             return
 
         self.edit_flags(args.flagname)
@@ -20818,7 +20818,7 @@ class UnicornEmulateCommand(GenericCommand):
     @require_arch_set
     def do_invoke(self, args):
         if current_arch.unicorn_support is False:
-            warn("This command cannot work under this architecture")
+            warn("This command is not supported on this architecture")
             return
 
         # start_insn
@@ -31753,7 +31753,7 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system() and not is_vmware() and not is_kgdb():
-                err("Unsupported. Check qemu version (at least: 4.1.0~, recommend: 5.x~)")
+                err("Unsupported in this gdb mode.")
                 return
 
         from_idx = args.count * self.repeat_count
@@ -31939,7 +31939,7 @@ class HexdumpFlexibleCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system() and not is_vmware() and not is_kgdb():
-                err("Unsupported. Check qemu version (at least: 4.1.0~, recommend: 5.x~)")
+                err("Unsupported in this gdb mode.")
                 return
 
         fmt = args.format
@@ -32236,7 +32236,7 @@ class PatchCommand(GenericCommand):
 
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported. Check qemu version (at least: 4.1.0~, recommend: 5.x~)")
+                err("Unsupported in this gdb mode.")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -32395,10 +32395,10 @@ class PatchStringCommand(PatchCommand):
                         help="treat LOCATION as a physical address (only qemu-system).")
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the memory address to patch.")
-    parser.add_argument("vstr", metavar='"double backslash-escaped string"', type=lambda x: codecs.escape_decode(x)[0],
-                        help="the string to patch.")
+    parser.add_argument("vstr", metavar='"double backslash-escaped string"',
+                        type=lambda x: codecs.escape_decode(x)[0], help="the string to write to memory.")
     parser.add_argument("length", metavar="LENGTH", nargs="?", type=AddressUtil.parse_address,
-                        help="the length of repeat. (default: %(default)s)")
+                        help="the number of bytes to patch. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -32417,7 +32417,7 @@ class PatchStringCommand(PatchCommand):
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported. Check qemu version (at least: 4.1.0~, recommend: 5.x~)")
+                err("Unsupported in this gdb mode.")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -32451,9 +32451,9 @@ class PatchHexCommand(PatchCommand):
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the memory address to patch.")
     parser.add_argument("hstr", metavar='"hex-string"', type=lambda x: bytes.fromhex(x),
-                        help="the string to patch.")
+                        help="the string to write to memory.")
     parser.add_argument("length", metavar="LENGTH", nargs="?", type=AddressUtil.parse_address,
-                        help="the length of repeat. (default: %(default)s)")
+                        help="the number of bytes to patch. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -32471,7 +32471,7 @@ class PatchHexCommand(PatchCommand):
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported. Check qemu version (at least: 4.1.0~, recommend: 5.x~)")
+                err("Unsupported in this gdb mode.")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -32502,12 +32502,13 @@ class PatchPatternCommand(PatchCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--phys", action="store_true",
                         help="treat LOCATION as a physical address (only qemu-system).")
-    parser.add_argument("-c", "--charset", help="the charset of pattern. (default: abc..z)")
-    parser.add_argument("-d", "--dry-run", action="store_true", help="only generates patterns.")
+    parser.add_argument("-c", "--charset", help="the charset of the pattern. (default: abc..z)")
+    parser.add_argument("-d", "--dry-run", action="store_true",
+                        help="only generate patterns (do not patch memory).")
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the memory address to patch.")
     parser.add_argument("length", metavar="LENGTH", type=AddressUtil.parse_address,
-                        help="the length of repeat. (default: %(default)s)")
+                        help="the number of bytes to patch. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -32525,7 +32526,7 @@ class PatchPatternCommand(PatchCommand):
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported. Check qemu version (at least: 4.1.0~, recommend: 5.x~)")
+                err("Unsupported in this gdb mode.")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -32547,7 +32548,7 @@ class PatchPatternCommand(PatchCommand):
 
 @register_command
 class PatchNopCommand(PatchCommand):
-    """Patch the instruction(s) pointed by parameters with NOP."""
+    """Patch the instruction(s) at the given address with NOP."""
 
     _cmdline_ = "patch nop"
     _category_ = "03-d. Memory - Patch"
@@ -32560,9 +32561,9 @@ class PatchNopCommand(PatchCommand):
                         help="the memory address to patch. (default: current_arch.pc)")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("-b", dest="byte_length", type=AddressUtil.parse_address,
-                       help="the patch length of byte. (default: %(default)s)")
+                       help="the patch length in bytes. (default: %(default)s)")
     group.add_argument("-i", dest="inst_count", type=AddressUtil.parse_address, default=1,
-                       help="the patch length of instruction. (default: %(default)s)")
+                       help="the number of instructions to patch. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -32589,7 +32590,9 @@ class PatchNopCommand(PatchCommand):
         nop_op_len = len(current_arch.nop_insn)
 
         if nop_op_len > num_bytes:
-            err("Cannot patch instruction at {:#x} (nop_size is:{:d},insn_size is:{:d})".format(addr, nop_op_len, num_bytes))
+            err("Cannot patch instruction at {:#x} (nop_size is {:d}, insn_size is {:d})".format(
+                addr, nop_op_len, num_bytes,
+            ))
             return
 
         count = num_bytes // nop_op_len
@@ -32613,12 +32616,12 @@ class PatchNopCommand(PatchCommand):
     @require_arch_set
     def do_invoke(self, args):
         if current_arch.nop_insn is None:
-            err("This command cannot work under this architecture")
+            err("This command is not supported on this architecture")
             return
 
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported, try check qemu version (at least: 4.1.0~, recommend: 5.x~)")
+                err("Unsupported in this gdb mode.")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -32655,7 +32658,7 @@ class PatchNopCommand(PatchCommand):
 
 @register_command
 class PatchInfloopCommand(PatchCommand):
-    """Patch the instruction(s) pointed by parameters with infinity loop."""
+    """Patch the instruction(s) at the given address with an infinite loop."""
 
     _cmdline_ = "patch inf"
     _category_ = "03-d. Memory - Patch"
@@ -32702,12 +32705,12 @@ class PatchInfloopCommand(PatchCommand):
     @require_arch_set
     def do_invoke(self, args):
         if current_arch.infloop_insn is None:
-            err("This command cannot work under this architecture")
+            err("This command is not supported on this architecture")
             return
 
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported, try check qemu version (at least: 4.1.0~, recommend: 5.x~)")
+                err("Unsupported in this gdb mode.")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -32732,7 +32735,7 @@ class PatchInfloopCommand(PatchCommand):
 
 @register_command
 class PatchTrapCommand(PatchCommand):
-    """Patch the instruction(s) pointed by parameters with breakpoint or trap (if available)."""
+    """Patch the instruction(s) at the given address with breakpoint or trap (if available)."""
 
     _cmdline_ = "patch trap"
     _category_ = "03-d. Memory - Patch"
@@ -32775,12 +32778,12 @@ class PatchTrapCommand(PatchCommand):
     @require_arch_set
     def do_invoke(self, args):
         if current_arch.trap_insn is None:
-            err("This command cannot work under this architecture")
+            err("This command is not supported on this architecture")
             return
 
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported, try check qemu version (at least: 4.1.0~, recommend: 5.x~)")
+                err("Unsupported in this gdb mode.")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -32805,7 +32808,7 @@ class PatchTrapCommand(PatchCommand):
 
 @register_command
 class PatchRetCommand(PatchCommand):
-    """Patch the instruction(s) pointed by parameters with return."""
+    """Patch the instruction(s) at the given address with return."""
 
     _cmdline_ = "patch ret"
     _category_ = "03-d. Memory - Patch"
@@ -32848,12 +32851,12 @@ class PatchRetCommand(PatchCommand):
     @require_arch_set
     def do_invoke(self, args):
         if current_arch.ret_insn is None:
-            err("This command cannot work under this architecture")
+            err("This command is not supported on this architecture")
             return
 
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported, try check qemu version (at least: 4.1.0~, recommend: 5.x~)")
+                err("Unsupported in this gdb mode.")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -32878,7 +32881,7 @@ class PatchRetCommand(PatchCommand):
 
 @register_command
 class PatchSyscallCommand(PatchCommand):
-    """Patch the instruction(s) pointed by parameters with syscall."""
+    """Patch the instruction(s) at the given address with syscall instruction."""
 
     _cmdline_ = "patch syscall"
     _category_ = "03-d. Memory - Patch"
@@ -32921,12 +32924,12 @@ class PatchSyscallCommand(PatchCommand):
     @require_arch_set
     def do_invoke(self, args):
         if current_arch.syscall_insn is None:
-            err("This command cannot work under this architecture")
+            err("This command is not supported on this architecture")
             return
 
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported, try check qemu version (at least: 4.1.0~, recommend: 5.x~)")
+                err("Unsupported in this gdb mode.")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -32990,7 +32993,7 @@ class PatchHistoryCommand(PatchCommand):
 
 @register_command
 class PatchRevertCommand(PatchCommand):
-    """Revert patch from the patch history stack."""
+    """Revert patches recorded in the patch history stack."""
 
     _cmdline_ = "patch revert"
     _category_ = "03-d. Memory - Patch"
@@ -33062,7 +33065,7 @@ class PatchRevertCommand(PatchCommand):
 
 @register_command
 class PatchRangeReplaceCommand(PatchCommand):
-    """Replace all specific byte sequence within the specified range with another byte sequence."""
+    """Replace all occurrences of a specific byte sequence in the specified range with another byte sequence."""
 
     _cmdline_ = "patch range-replace"
     _category_ = "03-d. Memory - Patch"
@@ -33075,9 +33078,9 @@ class PatchRangeReplaceCommand(PatchCommand):
     parser.add_argument("range_end", metavar="END_ADDR", type=AddressUtil.parse_address,
                         help="end address to search.")
     parser.add_argument("hstr_from", metavar="HEX_STR_FROM", type=lambda x: bytes.fromhex(x),
-                        help="the hex string replace from.")
+                        help="the hex string to search for (source pattern).")
     parser.add_argument("hstr_to", metavar="HEX_STR_TO", type=lambda x: bytes.fromhex(x),
-                        help="the hex string replace to.")
+                        help="the hex string to replace it with (replacement pattern).")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -33111,7 +33114,7 @@ class PatchRangeReplaceCommand(PatchCommand):
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system():
-                err("Unsupported, try check qemu version (at least: 4.1.0~, recommend: 5.x~)")
+                err("Unsupported in this gdb mode.")
                 return
             orig_mode = QemuMonitor.get_current_mmu_mode()
 
@@ -69187,7 +69190,7 @@ class TlsCommand(GenericCommand, BufferingOutput):
     @require_arch_set
     def do_invoke(self, args):
         if not current_arch.tls_supported:
-            warn("This command cannot work under this architecture")
+            warn("This command is not supported on this architecture")
             return
 
         if args.all:
