@@ -25996,7 +25996,7 @@ class KernelChecksecCommand(GenericCommand):
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enforcing", "bold green"), additional))
             return
 
-        # kernel >= 4.17
+        # 4.17 <= kernel
         """
         struct selinux_state {
         #ifdef CONFIG_SECURITY_SELINUX_DISABLE
@@ -73023,15 +73023,15 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         """
         struct kmem_cache {
             struct kmem_cache_cpu *cpu_slab;         // In fact, the offset value, not the pointer
-            struct lock_class_key {                            // CONFIG_LOCKDEP=y && v6.18~
-                union {                                        // CONFIG_LOCKDEP=y && v6.18~
-                    struct hlist_node hash_entry;              // CONFIG_LOCKDEP=y && v6.18~
-                    struct lockdep_subclass_key {              // CONFIG_LOCKDEP=y && v6.18~
-                        char __one_byte;                       // CONFIG_LOCKDEP=y && v6.18~
-                    } __attribute__ ((__packed__)) subkeys[8]; // CONFIG_LOCKDEP=y && v6.18~
-                };                                             // CONFIG_LOCKDEP=y && v6.18~
-            } lock_key;                                        // CONFIG_LOCKDEP=y && v6.18~
-            struct slub_percpu_sheaves __percpu *cpu_sheaves;  // v6.18~
+            struct lock_class_key {                            // CONFIG_LOCKDEP=y && 6.18 <= kernel
+                union {                                        // CONFIG_LOCKDEP=y && 6.18 <= kernel
+                    struct hlist_node hash_entry;              // CONFIG_LOCKDEP=y && 6.18 <= kernel
+                    struct lockdep_subclass_key {              // CONFIG_LOCKDEP=y && 6.18 <= kernel
+                        char __one_byte;                       // CONFIG_LOCKDEP=y && 6.18 <= kernel
+                    } __attribute__ ((__packed__)) subkeys[8]; // CONFIG_LOCKDEP=y && 6.18 <= kernel
+                };                                             // CONFIG_LOCKDEP=y && 6.18 <= kernel
+            } lock_key;                                        // CONFIG_LOCKDEP=y && 6.18 <= kernel
+            struct slub_percpu_sheaves __percpu *cpu_sheaves;  // 6.18 <= kernel
             slab_flags_t flags;                      // unsigned int (+ padding 4 byte)
             unsigned long min_partial;
             unsigned int size;
@@ -73039,10 +73039,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             struct reciprocal_value {                //
                 u32 m;                               //
                 u8 sh1, sh2;                         // (+ padding 2 byte)
-            } reciprocal_size;                       // if kernel >= 5.9
+            } reciprocal_size;                       // if 5.9 <= kernel
             unsigned int offset;
             unsigned int cpu_partial;                // if CONFIG_SLUB_CPU_PARTIAL=y
-            unsigned int cpu_partial_slabs;          // if CONFIG_SLUB_CPU_PARTIAL=y && kernel >= 5.16
+            unsigned int cpu_partial_slabs;          // if CONFIG_SLUB_CPU_PARTIAL=y && 5.16 <= kernel
             struct kmem_cache_order_objects oo;
             struct kmem_cache_order_objects max;     // if kernel < 5.19
             struct kmem_cache_order_objects min;
@@ -73333,7 +73333,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         return
 
         # heuristic way 3 (relationship of user_offset, user_size, and object_size)
-        # This method is valid for kernel < 6.2, or (CONFIG_HARDENED_USERCOPY=y and kernel >= 6.2).
+        # This method is valid for kernel < 6.2, or (CONFIG_HARDENED_USERCOPY=y and 6.2 <= kernel).
         start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
         search_range = 0x100 if kversion >= "5.9" else 0x200
         for candidate_offset in range(start_offset, start_offset + search_range, current_arch.ptrsize):
@@ -73480,7 +73480,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         else:
             # Heuristic detection that CONFIG_SLAB_VIRTUAL is enabled or not from `struct kmem_cache`.
             # If enabled, `struct kmem_cache` has 2 doubly-link-lists above `kmem_cache->name`.
-            #     - kmem_cache->freed_slabs_normal (kernel >= 6.1.56)
+            #     - kmem_cache->freed_slabs_normal (6.1.56 <= kernel)
             #     - kmem_cache->freed_slabs (kernel < 6.1.56)
             #     - kmem_cache->freed_slabs_min
             def has_freed_slabs_lists(freed_slabs_normal, freed_slabs_min):
@@ -73562,15 +73562,15 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     """
     struct kmem_cache {
         struct kmem_cache_cpu *cpu_slab;         // In fact, the offset value, not the pointer
-        struct lock_class_key {                            // CONFIG_LOCKDEP=y && v6.18~
-            union {                                        // CONFIG_LOCKDEP=y && v6.18~
-                struct hlist_node hash_entry;              // CONFIG_LOCKDEP=y && v6.18~
-                struct lockdep_subclass_key {              // CONFIG_LOCKDEP=y && v6.18~
-                    char __one_byte;                       // CONFIG_LOCKDEP=y && v6.18~
-                } __attribute__ ((__packed__)) subkeys[8]; // CONFIG_LOCKDEP=y && v6.18~
-            };                                             // CONFIG_LOCKDEP=y && v6.18~
-        } lock_key;                                        // CONFIG_LOCKDEP=y && v6.18~
-        struct slub_percpu_sheaves __percpu *cpu_sheaves;  // v6.18~
+        struct lock_class_key {                            // if CONFIG_LOCKDEP=y && 6.18 <= kernel
+            union {                                        // if CONFIG_LOCKDEP=y && 6.18 <= kernel
+                struct hlist_node hash_entry;              // if CONFIG_LOCKDEP=y && 6.18 <= kernel
+                struct lockdep_subclass_key {              // if CONFIG_LOCKDEP=y && 6.18 <= kernel
+                    char __one_byte;                       // if CONFIG_LOCKDEP=y && 6.18 <= kernel
+                } __attribute__ ((__packed__)) subkeys[8]; // if CONFIG_LOCKDEP=y && 6.18 <= kernel
+            };                                             // if CONFIG_LOCKDEP=y && 6.18 <= kernel
+        } lock_key;                                        // if CONFIG_LOCKDEP=y && 6.18 <= kernel
+        struct slub_percpu_sheaves __percpu *cpu_sheaves;  // if 6.18 <= kernel
         slab_flags_t flags;                      // unsigned int (+ padding 4 byte)
         unsigned long min_partial;
         unsigned int size;
@@ -73578,10 +73578,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         struct reciprocal_value {                //
             u32 m;                               //
             u8 sh1, sh2;                         // (+ padding 2 byte)
-        } reciprocal_size;                       // if kernel >= 5.9
+        } reciprocal_size;                       // if 5.9 <= kernel
         unsigned int offset;
         unsigned int cpu_partial;                // if CONFIG_SLUB_CPU_PARTIAL=y
-        unsigned int cpu_partial_slabs;          // if CONFIG_SLUB_CPU_PARTIAL=y && kernel >= 5.16
+        unsigned int cpu_partial_slabs;          // if CONFIG_SLUB_CPU_PARTIAL=y && 5.16 <= kernel
         struct kmem_cache_order_objects oo;
         struct kmem_cache_order_objects max;     // if kernel < 5.19
         struct kmem_cache_order_objects min;
@@ -73614,11 +73614,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     struct kmem_cache_cpu {
         void **freelist;
         unsigned long tid;
-        struct slab *slab;                       // if kernel >= 5.17
         struct page *page;                       // if kernel < 5.17
-        struct slab *partial;                    // if kernel >= 5.17 && CONFIG_SLUB_CPU_PARTIAL=y
         struct page *partial;                    // if kernel < 5.17 && CONFIG_SLUB_CPU_PARTIAL=y
-        local_lock_t lock;                       // if kernel >= 5.15
+        struct slab *slab;                       // if 5.17 <= kernel
+        struct slab *partial;                    // if 5.17 <= kernel && CONFIG_SLUB_CPU_PARTIAL=y
+        local_lock_t lock;                       // if 5.15 <= kernel
         unsigned stat[NR_SLUB_STAT_ITEMS];       // if CONFIG_SLUB_STATS=y
     };
 
@@ -73627,12 +73627,15 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         union { };                               // long
         void *freelist;
         unsigned inuse:16, objects:15, frozen:1;
-        atomic_t refcount;                       // if kernel < 4.16
+        atomic_t _refcount;                      // if kernel < 4.16
         struct page *next;
         int pages;                               // if 64bit else `short pages`
         int pobjects;                            // if 64bit else `short pobjects`
         struct kmem_cache *slab_cache;
-        ...
+        struct mem_cgroup *mem_cgroup;           // if CONFIG_MEMCG=y
+        void *virtual;                           // if CONFIG_WANT_PAGE_VIRTUAL=y
+        void *shadow;                            // if CONFIG_KMEMCHECK=y && kernel < 4.14
+        int _last_cpuid;                         // if CONFIG_LAST_CPUPID_NOT_IN_PAGE_FLAGS=y
     };
 
     struct page {                                // if 4.18 <= kernel < 5.17
@@ -73643,27 +73646,58 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         struct kmem_cache *slab_cache;
         void *freelist;
         unsigned inuse:16, objects:15, frozen:1;
-        ...
+        union {};                                // unsigned int
+        atomic_t _refcount;
+        unsigned long memcg_data;                // if CONFIG_MEMCG=y && 5.10 <= kernel
+        struct mem_cgroup *mem_cgroup;           // if CONFIG_MEMCG=y && kernel < 5.10
+        void *virtual;                           // if CONFIG_WANT_PAGE_VIRTUAL=y
+        int _last_cpuid;                         // if CONFIG_LAST_CPUPID_NOT_IN_PAGE_FLAGS=y
     };
 
-    struct slab {                                // if CONFIG_SLAB_VIRTUAL=n && kernel >= 5.17
+    struct slab {                                // if CONFIG_SLAB_VIRTUAL=n && 5.17 <= kernel < 6.2
         unsigned long __page_flags;
-        struct kmem_cache *slab_cache;           // if kernel >= 6.2
         struct slab *next;
         int slabs;
-        struct kmem_cache *slab_cache;           // if kernel < 6.2
+        struct kmem_cache *slab_cache;
         void *freelist;
         unsigned inuse:16, objects:15, frozen:1;
-        ...
+        unsigned int __unused;
+        atomic_t __page_refcount;
+        unsigned long memcg_data;                // if CONFIG_MEMCG=y
+    };
+
+    struct slab {                                // if CONFIG_SLAB_VIRTUAL=n && 6.2 <= kernel < 6.10
+        unsigned long __page_flags;
+        struct kmem_cache *slab_cache;
+        struct slab *next;
+        int slabs;
+        void *freelist;
+        unsigned inuse:16, objects:15, frozen:1;
+        unsigned int __unused;
+        atomic_t __page_refcount;
+        unsigned long memcg_data;                // if CONFIG_MEMCG=y
+    };
+
+    struct slab {                                // if CONFIG_SLAB_VIRTUAL=n && 6.10 <= kernel
+        unsigned long __page_flags;              // if kernel < 6.18
+        memdesc_flags_t flags;                   // if 6.18 <= kernel
+        struct kmem_cache *slab_cache;
+        struct slab *next;
+        int slabs;
+        void *freelist;
+        unsigned inuse:16, objects:15, frozen:1;
+        unsigned int __page_type;
+        atomic_t __page_refcount;
+        unsigned long obj_exts;                  // if CONFIG_SLAB_OBJ_EXT=y
     };
 
     struct kmem_cache_node {
         spinlock_t list_lock;
         unsigned long nr_partial;
         struct list_head partial;
-        atomic_long_t nr_slabs;                  // CONFIG_SLUB_DEBUG=y
-        atomic_long_t total_objects;             // CONFIG_SLUB_DEBUG=y
-        struct list_head full;                   // CONFIG_SLUB_DEBUG=y
+        atomic_long_t nr_slabs;                  // if CONFIG_SLUB_DEBUG=y
+        atomic_long_t total_objects;             // if CONFIG_SLUB_DEBUG=y
+        struct list_head full;                   // if CONFIG_SLUB_DEBUG=y
     };
     """
 
@@ -73673,16 +73707,16 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         ...
         struct kmem_cache_order_objects min;     // [ANNOTATION]
         struct kmem_cache_order_objects oo;      //    In kernel < 6.1.56, `min` and `oo` are swapped.
-        struct kmem_cache_virtual {              // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.1.56
-            spinlock_t freed_slabs_lock;         // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.1.56
-            struct list_head freed_slabs;        // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.1.56
-            struct list_head freed_slabs_min;    // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.1.56
-            unsigned long nr_freed_pages;        // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.1.56
-        } virtual;                               // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.1.56
         unsigned long nr_freed_pages;            // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.56
         struct list_head freed_slabs_normal;     // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.56
         struct list_head freed_slabs_min;        // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.56
         spinlock_t freed_slabs_lock;             // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.56
+        struct kmem_cache_virtual {              // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
+            spinlock_t freed_slabs_lock;         // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
+            struct list_head freed_slabs;        // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
+            struct list_head freed_slabs_min;    // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
+            unsigned long nr_freed_pages;        // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
+        } virtual;                               // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
         gfp_t allocflags;
         ...
         const char * name;
@@ -73725,7 +73759,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         unsigned long align_mask;
     };
 
-    struct slab {                                // if CONFIG_SLAB_VIRTUAL=y && kernel >= 6.12
+    struct slab {                                // if CONFIG_SLAB_VIRTUAL=y && 6.12 <= kernel
         struct slab *compound_slab_head;
         struct folio *backing_folio;
         struct kmem_cache_order_objects oo;
@@ -73737,8 +73771,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         int slabs;
         void *freelist;
         unsigned inuse:16, objects:15, frozen:1;
-        unsigned int __unused;
-        unsigned long memcg_data;                // if CONFIG_MEMCG=y
+        unsigned long obj_exts                   // if CONFIG_SLAB_OBJ_EXT=y
     };
     """
 
@@ -74842,7 +74875,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
     """
     struct kmem_cache {
-        struct slub_percpu_sheaves __percpu *cpu_sheaves; // v6.18~
+        struct slub_percpu_sheaves __percpu *cpu_sheaves; // 6.18 <= kernel
         slab_flags_t flags;                      // unsigned int (+ padding 4 byte)
         unsigned long min_partial;
         unsigned int size;
@@ -74904,9 +74937,9 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         spinlock_t list_lock;
         unsigned long nr_partial;
         struct list_head partial;
-        atomic_long_t nr_slabs;                  // CONFIG_SLUB_DEBUG=y
-        atomic_long_t total_objects;             // CONFIG_SLUB_DEBUG=y
-        struct list_head full;                   // CONFIG_SLUB_DEBUG=y
+        atomic_long_t nr_slabs;                  // if CONFIG_SLUB_DEBUG=y
+        atomic_long_t total_objects;             // if CONFIG_SLUB_DEBUG=y
+        struct list_head full;                   // if CONFIG_SLUB_DEBUG=y
     };
     """
 
@@ -75613,9 +75646,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         ...
     };
 
-    struct slab {                                // if kernel >= 5.17
+    struct slab {                                // if 5.17 <= kernel
         unsigned long __page_flags;
-        struct kmem_cache *slab_cache;           // if kernel >= 6.2
+        struct kmem_cache *slab_cache;           // if 6.2 <= kernel
         struct list_head slab_list;
         struct kmem_cache *slab_cache;           // if kernel < 6.2
         void *freelist;
@@ -76359,7 +76392,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         ...
     };
 
-    struct slab {                                // if kernel >= 5.17
+    struct slab {                                // if 5.17 <= kernel
         unsigned long __page_flags;
         struct list_head slab_list;
         void *__unused_1;
