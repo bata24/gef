@@ -1,5 +1,5 @@
 # Qemu-user supported architectures
-I also list the tools I used in my Ubuntu 24.04 environment.
+I also list the tools I used in my Ubuntu 25.10 environment.
 
 ## x86
 - toolchain: `gcc` via apt with `-m32` option.
@@ -33,16 +33,19 @@ I also list the tools I used in my Ubuntu 24.04 environment.
 
 ## mips32
 - toolchain: `gcc-mips{,el}-linux-gnu` via apt.
+- toolchain (Ubuntu 25.10): `mips32{,el}--glibc--stable-2025.08-1` from https://toolchains.bootlin.com/
 - qemu: `qemu-mips{,el}` via apt.
 - gdb: `gdb-multiarch` via apt.
 
 ## mips64
 - toolchain: `gcc-mips64{,el}-linux-gnuabi64` via apt.
+- toolchain (Ubuntu 25.10): not found.
 - qemu: `qemu-mips64{,el}` via apt.
 - gdb: `gdb-multiarch` via apt.
 
 ## mipsn32
 - toolchain: `gcc-multilib-mips{,el}-linux-gnu` or `gcc-multilib-mips64{,el}-linux-gnuabi64` via apt with `-mabi=n32` option.
+- toolchain (Ubuntu 25.10): `mips64{,el}-n32--glibc--stable-2025.08-1` from https://toolchains.bootlin.com/
 - qemu: `qemu-mipsn32{,el}` via apt.
 - gdb: `gdb-multiarch` via apt.
 
