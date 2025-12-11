@@ -33160,6 +33160,8 @@ class DereferenceCommand(GenericCommand):
                         help="the slide offset of all tag positions.")
     parser.add_argument("-r", "--reverse", action="store_true",
                         help="display in reverse order line by line.")
+    parser.add_argument("-f", "--frame-split", action="store_true",
+                        help="display with frame split lines (heuristics).")
     parser.add_argument("-u", "--uniq", action="store_true",
                         help="display with uniq.")
     parser.add_argument("-i", "--interval", type=AddressUtil.parse_address, default=1,
@@ -33259,6 +33261,9 @@ class DereferenceCommand(GenericCommand):
 
     @staticmethod
     def pprint_dereferenced(addr, idx, tag=None, phys=False, quiet=False, quiet_offset=False):
+        """Format and display a single dereferenced memory entry, including pointer
+        chains and optional annotations such as retaddr, canary, cookie, or registers.
+        """
         base_address_color = Config.get_gef_setting("theme.dereference_base_address")
         registers_color = Config.get_gef_setting("theme.dereference_register_value")
         memalign = current_arch.ptrsize
@@ -33447,6 +33452,7 @@ class DereferenceCommand(GenericCommand):
                     tag=tag, phys=self.args.phys, quiet=self.args.quiet, quiet_offset=self.args.quiet_offset,
                 )
 
+                # most left registers info
                 if not self.args.quiet:
                     # register info
                     regs_info = []
@@ -33459,7 +33465,14 @@ class DereferenceCommand(GenericCommand):
                         regs_info_str, current_arch.get_registers_name_max(), regs_info_ex, line,
                     )
 
+                # add line
                 out.append(line)
+
+                # horizontal line
+                if self.args.frame_split:
+                    if "<-  retaddr[" in line:
+                        out.append(titlify(""))
+
             except (RuntimeError, gdb.MemoryError):
                 # e.g., nop DWORD PTR [rax+rax*1+0x0]
                 msg = "Cannot access memory at address {:#x}".format(current_address)
@@ -33496,6 +33509,7 @@ class DereferenceCommand(GenericCommand):
             err("Unsupported option pairs")
             return
 
+        # tags
         self.tags_dict = {}
         self.max_tag_width = 0
         if args.tag:
@@ -33508,17 +33522,20 @@ class DereferenceCommand(GenericCommand):
                 self.tags_dict[tag_idx] = tag
                 self.max_tag_width = max(self.max_tag_width, len(tag))
 
+        # read memory function
         if args.phys:
             unpack = u32 if is_32bit() else u64
             self.read_int_from_memory = lambda x: unpack(read_physmem(x, current_arch.ptrsize))
         else:
             self.read_int_from_memory = read_int_from_memory
 
+        # start address
         if args.location is None:
             start_address = current_arch.sp
         else:
             start_address = args.location
 
+        # line numbers
         nb_lines = args.nb_lines or Config.get_gef_setting("dereference.nb_lines")
         from_idx = nb_lines * self.repeat_count
         to_idx = nb_lines * (self.repeat_count + 1)
@@ -33531,7 +33548,10 @@ class DereferenceCommand(GenericCommand):
                 err("Unsupported using together -NB_LINES and -d DEPTH")
                 return
 
+        # doit
         out = self.dereference_line_by_line(start_address, from_idx, to_idx, step)
+
+        # Because there is a special configuration, the BufferingOutput class is not inherited
         no_pager = args.no_pager | Config.get_gef_setting("dereference.no_pager")
         gef_print("\n".join(out), less=not no_pager)
         return
