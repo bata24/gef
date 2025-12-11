@@ -69,8 +69,10 @@
 #
 #######################################################################################
 # Use this command when check by `ruff`.
-# ruff check gef.py --select B,C4,E,F --ignore E402,E501,E731
+# ruff check gef.py --select B,C4,E,F --ignore B905,E402,E501,E731
 #
+# B905: `zip()` without an explicit `strict=` parameter
+#   -> The strict argument of zip() is from python3.10. Too new to apply.
 # E402: module level import not at top of file
 #   -> For faster startup, less frequently used modules should be loaded on demand.
 # E501: line too long (> 79 characters)
