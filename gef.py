@@ -99521,7 +99521,7 @@ class SlabVirtualCommand(GenericCommand):
         self.quiet_info("SLAB_VPAGES: {:#x}".format(SLAB_VPAGES))
 
         self.sizeof_struct_page = 0x40
-        self.quiet_info("sizeof(sturct page): {:#x}".format(self.sizeof_struct_page))
+        self.quiet_info("sizeof(struct page): {:#x}".format(self.sizeof_struct_page))
 
         kversion = Kernel.kernel_version()
 
