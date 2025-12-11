@@ -25781,7 +25781,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Unsupported", "bold red")))
             return
 
-        if kversion >= "6.14":
+        if "6.14" <= kversion:
             # As of 6.14, following detection logic is no longer available.
             # It has not yet been incorporated into the mainline, and samples are not available,
             # so I will disable this check.
@@ -25830,7 +25830,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_kpti(self):
         kversion = Kernel.kernel_version()
-        if kversion >= "6.9":
+        if "6.9" <= kversion:
             cfg = "CONFIG_MITIGATION_PAGE_TABLE_ISOLATION (KPTI)"
         else:
             cfg = "CONFIG_PAGE_TABLE_ISOLATION (KPTI)"
@@ -26752,7 +26752,7 @@ class KernelChecksecCommand(GenericCommand):
         if kversion is None:
             err("Linux kernel is not found")
             return
-        gef_print("{:<40s}: {:d}.{:d}.{:d}".format("Kernel version", kversion.major, kversion.minor, kversion.patch))
+        gef_print("{:<40s}: {:d}.{:d}.{:d}".format("Kernel version", *kversion.version_tuple))
         self.check_basic_information()
 
         gef_print(titlify("Register settings"))
@@ -50483,7 +50483,7 @@ class KernelMagicCommand(GenericCommand):
         gef_print(titlify("Dynamic resolver"))
         self.resolve_and_print_kernel("kallsyms_lookup_name", text_base, maps)
         if is_x86_64():
-            if kversion >= "3.16":
+            if "3.16" <= kversion:
                 gef_print(titlify("vDSO"))
                 self.resolve_and_print_kernel(
                     "vdso_image_64", text_base, maps, KernelAddressHeuristicFinder.get_vdso_image_64,
@@ -50495,13 +50495,13 @@ class KernelMagicCommand(GenericCommand):
                     "vdso_image_x32", text_base, maps, KernelAddressHeuristicFinder.get_vdso_image_x32,
                 )
         elif is_x86_32():
-            if kversion >= "3.16":
+            if "3.16" <= kversion:
                 gef_print(titlify("vDSO"))
                 self.resolve_and_print_kernel(
                     "vdso_image_32", text_base, maps, KernelAddressHeuristicFinder.get_vdso_image_32,
                 )
         elif is_arm64():
-            if kversion >= "5.8":
+            if "5.8" <= kversion:
                 gef_print(titlify("vDSO"))
                 self.resolve_and_print_kernel(
                     "vdso_info", text_base, maps, KernelAddressHeuristicFinder.get_vdso_info,
@@ -50512,7 +50512,7 @@ class KernelMagicCommand(GenericCommand):
                 self.resolve_and_print_kernel(
                     "vdso32_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso32_start,
                 )
-            elif kversion >= "5.3":
+            elif "5.3" <= kversion:
                 gef_print(titlify("vDSO"))
                 self.resolve_and_print_kernel(
                     "vdso_lookup", text_base, maps, KernelAddressHeuristicFinder.get_vdso_lookup,
@@ -50523,13 +50523,13 @@ class KernelMagicCommand(GenericCommand):
                 self.resolve_and_print_kernel(
                     "vdso32_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso32_start,
                 )
-            elif kversion >= "3.7":
+            elif "3.7" <= kversion:
                 gef_print(titlify("vDSO"))
                 self.resolve_and_print_kernel(
                     "vdso_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso_start,
                 )
         elif is_arm32():
-            if kversion >= "4.1":
+            if "4.1" <= kversion:
                 gef_print(titlify("vDSO"))
                 self.resolve_and_print_kernel(
                     "vdso_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso_start,
@@ -55067,7 +55067,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 1 (available v2.6.28 or later)
-        if kversion and kversion >= "2.6.28":
+        if kversion and "2.6.28" <= kversion:
             # This is OK since we are not looking for `saved_command_line` directly.
             addr = Symbol.get_ksymaddr("cmdline_proc_show")
             if addr:
@@ -55102,7 +55102,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v4.1 or later)
-        if kversion and kversion >= "4.1":
+        if kversion and "4.1" <= kversion:
             addr = Symbol.get_ksymaddr("common_cpu_up")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
@@ -55124,7 +55124,7 @@ class KernelAddressHeuristicFinder:
                     return x
 
         # plan 3 (available v2.5.33 or later)
-        if kversion and kversion >= "2.5.33":
+        if kversion and "2.5.33" <= kversion:
             addr = Symbol.get_ksymaddr("setup_arg_pages")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -55215,7 +55215,7 @@ class KernelAddressHeuristicFinder:
         # However, there seem to be cases where it is not found.
 
         # plan 2 (available v3.4 or later)
-        if kversion and kversion >= "3.4":
+        if kversion and "3.4" <= kversion:
             if is_x86_64() or is_x86_32():
                 addr = Symbol.get_ksymaddr("do_exit")
                 if addr:
@@ -55333,7 +55333,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v2.6.35 or later)
-        if kversion and kversion >= "2.6.35":
+        if kversion and "2.6.35" <= kversion:
             addr = Symbol.get_ksymaddr("net_initial_ns")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -55349,7 +55349,7 @@ class KernelAddressHeuristicFinder:
                     return x
 
         # plan 3 (available v2.6.24 or later)
-        if kversion and kversion >= "2.6.24":
+        if kversion and "2.6.24" <= kversion:
             addr = Symbol.get_ksymaddr("netdev_boot_base")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -55381,7 +55381,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v2.6.39 or later)
-        if kversion and kversion >= "2.6.39":
+        if kversion and "2.6.39" <= kversion:
             addr = Symbol.get_ksymaddr("has_capability")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -55409,7 +55409,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v3.7.5 or later)
-        if kversion and kversion >= "3.7.5":
+        if kversion and "3.7.5" <= kversion:
             addr = Symbol.get_ksymaddr("find_module_all")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -55440,7 +55440,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v2.6.16.12 or later)
-        if kversion and kversion >= "2.6.17":
+        if kversion and "2.6.17" <= kversion:
             addr = Symbol.get_ksymaddr("chrdev_show")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
@@ -55480,7 +55480,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v2.5.70 or later)
-        if kversion and kversion >= "2.5.70":
+        if kversion and "2.5.70" <= kversion:
             addr = Symbol.get_ksymaddr("cdev_del")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
@@ -55513,14 +55513,14 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.kernel_version()
 
-        if kversion and kversion >= "6.6.26":
+        if kversion and "6.6.26" <= kversion:
             # On x64, each entry is embedded in `x64_sys_call` as call instruction.
             # So sys_call_table is no longer in use, but it still remains.
             # We won't return yet because we may be able to detect this in plan 5.
             pass
 
         # plan 2 (available v4.6 ~ v6.6.26)
-        if kversion and kversion >= "4.6" and kversion < "6.6.26":
+        if kversion and "4.6" <= kversion < "6.6.26":
             addr = Symbol.get_ksymaddr("do_syscall_64")
             if addr:
                 res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
@@ -55529,7 +55529,7 @@ class KernelAddressHeuristicFinder:
                     return x
 
         # plan 3 (available v4.2 ~ v4.13)
-        if kversion and kversion >= "4.2" and kversion < "4.14":
+        if kversion and "4.2" <= kversion < "4.14":
             addr = Symbol.get_ksymaddr("entry_SYSCALL_64_fastpath")
             if addr:
                 res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
@@ -55538,7 +55538,7 @@ class KernelAddressHeuristicFinder:
                     return x
 
         # plan 4 (available v2.6.27 ~ v4.1)
-        if kversion and kversion >= "2.6.27" and kversion < "4.2":
+        if kversion and "2.6.27" <= kversion < "4.2":
             addr = Symbol.get_ksymaddr("system_call_fastpath")
             if addr:
                 res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
@@ -55578,13 +55578,13 @@ class KernelAddressHeuristicFinder:
             # Not introduced
             return None
 
-        if kversion and kversion >= "6.6.26":
+        if kversion and "6.6.26" <= kversion:
             # On x64, each entry is embedded in `x32_sys_call` as call instruction.
             # So x32_sys_call_table is no longer in use, and removed from 6.6.26.
             return None
 
         # plan 2 (available v5.4 or later)
-        if kversion and kversion >= "5.4":
+        if kversion and "5.4" <= kversion:
             addr = Symbol.get_ksymaddr("do_syscall_64")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
@@ -55610,7 +55610,7 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.kernel_version()
 
-        if kversion and kversion >= "6.6.26":
+        if kversion and "6.6.26" <= kversion:
             if is_x86_64():
                 # On x64, ia32_sys_call_table is removed from 6.6.26.
                 return None
@@ -55621,20 +55621,20 @@ class KernelAddressHeuristicFinder:
                 pass
 
         # plan 2 (available v2.6.24 ~ v6.6.26)
-        if kversion and kversion >= "6.6.7" and kversion < "6.6.26":
+        if kversion and "6.6.7" <= kversion < "6.6.26":
             if is_x86_64():
                 # ia32_sys_call_table is still used, but no detection logic.
                 addr = None
             else:
                 addr = Symbol.get_ksymaddr("do_int80_syscall_32")
-        elif kversion and kversion >= "4.6" and kversion < "6.6.7":
+        elif kversion and "4.6" <= kversion < "6.6.7":
             addr = Symbol.get_ksymaddr("do_int80_syscall_32")
-        elif kversion and kversion >= "4.4" and kversion < "4.6":
+        elif kversion and "4.4" <= kversion < "4.6":
             if is_x86_64():
                 addr = Symbol.get_ksymaddr("do_syscall_32_irqs_off")
             else:
                 addr = Symbol.get_ksymaddr("do_syscall_32_irqs_on")
-        elif kversion and kversion >= "2.6.24" and kversion < "4.4":
+        elif kversion and "2.6.24" <= kversion < "4.4":
             addr = Symbol.get_ksymaddr("syscall_call")
         else:
             addr = None
@@ -55706,11 +55706,11 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v3.7 or later)
-        if kversion and kversion >= "5.6":
+        if kversion and "5.6" <= kversion:
             addr = Symbol.get_ksymaddr("do_el0_svc")
-        elif kversion and kversion >= "4.18" and kversion < "5.6":
+        elif kversion and "4.18" <= kversion < "5.6":
             addr = Symbol.get_ksymaddr("el0_svc_handler")
-        elif kversion and kversion >= "3.7" and kversion < "4.18":
+        elif kversion and "3.7" <= kversion < "4.18":
             addr = Symbol.get_ksymaddr("el0_svc")
         else:
             addr = None
@@ -55749,11 +55749,11 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v3.7 or later)
-        if kversion and kversion >= "5.6":
+        if kversion and "5.6" <= kversion:
             addr = Symbol.get_ksymaddr("do_el0_svc_compat")
-        elif kversion and kversion >= "4.18" and kversion < "5.6":
+        elif kversion and "4.18" <= kversion < "5.6":
             addr = Symbol.get_ksymaddr("el0_svc_compat_handler")
-        elif kversion and kversion >= "3.7" and kversion < "4.18":
+        elif kversion and "3.7" <= kversion < "4.18":
             addr = Symbol.get_ksymaddr("el0_svc_compat")
         else:
             addr = None
@@ -55792,7 +55792,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v3.3 or later)
-        if kversion and kversion >= "3.3":
+        if kversion and "3.3" <= kversion:
             addr = Symbol.get_ksymaddr("nr_iowait_cpu")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -55828,7 +55828,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v4.9 or later)
-        if kversion and kversion >= "4.9":
+        if kversion and "4.9" <= kversion:
             addr = Symbol.get_ksymaddr("slub_cpu_dead")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -55844,7 +55844,7 @@ class KernelAddressHeuristicFinder:
                     return x
 
         # plan 3 (available v5.9 or later)
-        if kversion and kversion >= "5.9":
+        if kversion and "5.9" <= kversion:
             addr = Symbol.get_ksymaddr("find_mergeable")
             if addr:
                 res = gdb.execute("x/50i {:#x}".format(addr), to_string=True)
@@ -55876,7 +55876,7 @@ class KernelAddressHeuristicFinder:
                     return x
 
         # plan 5 (available v3.11 ~ v4.10 and CONFIG_SLABINFO=y)
-        if kversion and kversion >= "3.11" and kversion < "4.11":
+        if kversion and "3.11" <= kversion < "4.11":
             addr = Symbol.get_ksymaddr("slab_next")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -55911,7 +55911,7 @@ class KernelAddressHeuristicFinder:
                 return x
 
         # plan 7 (available v2.6.24 ~ v3.10 and CONFIG_SLABINFO=y)
-        if kversion and kversion >= "2.6.24" and kversion < "3.11":
+        if kversion and "2.6.24" <= kversion < "3.11":
             addrs = Symbol.get_ksymaddr_multiple("s_next")
             if addrs:
                 for s_next in addrs:
@@ -55933,7 +55933,7 @@ class KernelAddressHeuristicFinder:
                             return x
 
         # plan 8 (available v4.11 ~ v6.11)
-        if kversion and kversion >= "4.11" and kversion < "6.12":
+        if kversion and "4.11" <= kversion < "6.12":
             addr = Symbol.get_ksymaddr("slab_caches_to_rcu_destroy_workfn")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -56050,7 +56050,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v2.6.24 or later)
-        if kversion and kversion >= "2.6.24":
+        if kversion and "2.6.24" <= kversion:
             addr = Symbol.get_ksymaddr("secondary_startup_64")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -56059,7 +56059,7 @@ class KernelAddressHeuristicFinder:
                     return read_int_from_memory(x)
 
         # plan 3 (available v2.6.25 ~ v5.5)
-        if kversion and kversion >= "2.6.25" and kversion < "5.5":
+        if kversion and "2.6.25" <= kversion < "5.5":
             addr = Symbol.get_ksymaddr("arch_crash_save_vmcoreinfo")
             if addr:
                 res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
@@ -56070,7 +56070,7 @@ class KernelAddressHeuristicFinder:
                         return read_int_from_memory(x)
 
         # plan 4 (available v3.9 or later)
-        if kversion and kversion >= "3.9":
+        if kversion and "3.9" <= kversion:
             addr = Symbol.get_ksymaddr("__virt_addr_valid")
             if addr:
                 res = gdb.execute("x/50i {:#x}".format(addr), to_string=True)
@@ -56181,7 +56181,7 @@ class KernelAddressHeuristicFinder:
                     return page_offset_base_a
 
         # plan 4 (from vmalloc-dump)
-        if kversion and kversion >= "5.2":
+        if kversion and "5.2" <= kversion:
             res = gdb.execute("vmalloc-dump --quiet --no-pager --only-freed", to_string=True)
             """
             #    state  virtual address                       size               flags
@@ -56337,7 +56337,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (available v2.6.27 ~)
         if is_x86():
-            if kversion and kversion >= "2.6.27":
+            if kversion and "2.6.27" <= kversion:
                 addr = Symbol.get_ksymaddr("__native_set_fixmap")
                 if addr:
                     res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -56347,7 +56347,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v3.19 ~)
         if is_arm64():
-            if kversion and kversion >= "3.19":
+            if kversion and "3.19" <= kversion:
                 addr = Symbol.get_ksymaddr("__set_fixmap")
                 if addr:
                     res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -56365,7 +56365,7 @@ class KernelAddressHeuristicFinder:
             return None
 
         kversion = Kernel.kernel_version()
-        if kversion and kversion >= "4.14":
+        if kversion and "4.14" <= kversion:
             addr = Symbol.get_ksymaddr("get_cpu_entry_area")
             if addr:
                 res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
@@ -56389,7 +56389,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v4.8 ~ v5.15)
-        if kversion and kversion >= "4.8" and kversion < "5.15":
+        if kversion and "4.8" <= kversion < "5.15":
             addr = Symbol.get_ksymaddr("__section_nr")
             if addr:
                 res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
@@ -56413,7 +56413,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v2.4.0 or later)
-        if kversion and kversion >= "2.4":
+        if kversion and "2.4" <= kversion:
             addr = Symbol.get_ksymaddr("free_pages")
             if addr:
                 res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
@@ -56446,7 +56446,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v2.5.41 or later)
-        if kversion and kversion >= "2.5.41":
+        if kversion and "2.5.41" <= kversion:
             addr = Symbol.get_ksymaddr("set_page_address")
             if addr:
                 res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
@@ -56474,7 +56474,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v4.16.8 or later)
-        if kversion and kversion >= "4.16.8":
+        if kversion and "4.16.8" <= kversion:
             addr = Symbol.get_ksymaddr("mark_tsc_unstable.part.0") or Symbol.get_ksymaddr("mark_tsc_unstable.cold")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -56498,7 +56498,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v2.6.21 or later / v2.6.32 or later)
-        if kversion and kversion >= "2.6.21":
+        if kversion and "2.6.21" <= kversion:
             addr = Symbol.get_ksymaddr("clocksource_enqueue") or Symbol.get_ksymaddr("clocksource_resume")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -56541,7 +56541,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v4.6 or later)
-        if kversion and kversion >= "4.6":
+        if kversion and "4.6" <= kversion:
             addr = Symbol.get_ksymaddr("n_tty_inherit_ops")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -56572,7 +56572,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v2.6.37 or later)
-        if kversion and kversion >= "2.6.37":
+        if kversion and "2.6.37" <= kversion:
             addr = Symbol.get_ksymaddr("tty_register_ldisc")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -56617,7 +56617,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v3.4 or later)
-        if kversion and kversion >= "3.4":
+        if kversion and "3.4" <= kversion:
             addr = Symbol.get_ksymaddr("register_sysctl") or Symbol.get_ksymaddr("register_sysctl_sz")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -56648,7 +56648,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v5.0 ~ v6.3)
-        if kversion and kversion >= "5.0" and kversion < "6.4":
+        if kversion and "5.0" <= kversion < "6.4":
             addr = Symbol.get_ksymaddr("show_sid")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -56676,7 +56676,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v4.12 or later)
-        if kversion and kversion >= "4.12":
+        if kversion and "4.12" <= kversion:
             addr = Symbol.get_ksymaddr("param_get_aauint")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -56704,7 +56704,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v4.12 or later)
-        if kversion and kversion >= "4.12":
+        if kversion and "4.12" <= kversion:
             addr = Symbol.get_ksymaddr("param_get_aauint")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -56750,7 +56750,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 3 (available v4.19.27 or later)
-        if kversion and kversion >= "4.19.27":
+        if kversion and "4.19.27" <= kversion:
             addr = Symbol.get_ksymaddr("expand_downwards")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -56800,7 +56800,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 3 (available v4.9.91 ~ v5.18.19)
-        if kversion and kversion >= "4.9.91" and kversion < "5.19":
+        if kversion and "4.9.91" <= kversion < "5.19":
             addr = Symbol.get_ksymaddr("__do_sys_bpf")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -56834,7 +56834,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 3 (available v4.15 or later)
-        if kversion and kversion >= "4.15":
+        if kversion and "4.15" <= kversion:
             addr = Symbol.get_ksymaddr("kallsyms_show_value")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -56868,7 +56868,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 3 (available v4.15 or later)
-        if kversion and kversion >= "4.15":
+        if kversion and "4.15" <= kversion:
             addr = Symbol.get_ksymaddr("kallsyms_show_value")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -56902,7 +56902,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 3 (available v3.11 or later)
-        if kversion and kversion >= "3.11":
+        if kversion and "3.11" <= kversion:
             addr = Symbol.get_ksymaddr("check_syslog_permissions")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -56985,7 +56985,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v4.2 or later)
-        if kversion and kversion >= "4.2":
+        if kversion and "4.2" <= kversion:
             addr = Symbol.get_ksymaddr("arch_setup_additional_pages")
             if addr:
                 res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
@@ -57026,7 +57026,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v4.2 or later)
-        if kversion and kversion >= "4.2":
+        if kversion and "4.2" <= kversion:
             addr = Symbol.get_ksymaddr("compat_arch_setup_additional_pages")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -57052,7 +57052,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v4.2 or later)
-        if kversion and kversion >= "4.2":
+        if kversion and "4.2" <= kversion:
             if is_x86_64():
                 addr = Symbol.get_ksymaddr("compat_arch_setup_additional_pages")
                 if addr:
@@ -57100,7 +57100,7 @@ class KernelAddressHeuristicFinder:
             return None
 
         # plan 2 (available v5.8 or later)
-        if kversion and kversion >= "5.8":
+        if kversion and "5.8" <= kversion:
             addr = Symbol.get_ksymaddr("__vdso_init")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -57166,11 +57166,11 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # vdso_info is introduced until v5.8
-        if kversion and (kversion >= "5.8" or kversion < "5.3"):
+        if kversion and (kversion < "5.3" or "5.8" <= kversion):
             return None
 
         # plan 2 (available v5.3 or later)
-        if kversion and kversion >= "5.3":
+        if kversion and "5.3" <= kversion:
             addr = Symbol.get_ksymaddr("__vdso_init")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -57237,7 +57237,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (from vdso_info or vdso_lookup)
         if kversion and is_arm64():
-            if kversion >= "5.8":
+            if "5.8" <= kversion:
                 vdso_info = KernelAddressHeuristicFinder.get_vdso_info()
             else:
                 vdso_info = KernelAddressHeuristicFinder.get_vdso_lookup()
@@ -57277,7 +57277,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (from vdso_info or vdso_lookup)
         if kversion:
-            if kversion >= "5.8":
+            if "5.8" <= kversion:
                 vdso_info = KernelAddressHeuristicFinder.get_vdso_info()
             else:
                 vdso_info = KernelAddressHeuristicFinder.get_vdso_lookup()
@@ -57303,7 +57303,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v2.5.7 or later)
-        if kversion and kversion >= "2.5.7":
+        if kversion and "2.5.7" <= kversion:
             addr = Symbol.get_ksymaddr("unregister_filesystem")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -57337,7 +57337,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v5.13 or later)
-        if kversion and kversion >= "5.13":
+        if kversion and "5.13" <= kversion:
             addr = Symbol.get_ksymaddr("kmsg_dump_rewind")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
@@ -57353,7 +57353,7 @@ class KernelAddressHeuristicFinder:
                     return read_int_from_memory(x)
 
         # plan 3 (available v5.10 or later)
-        if kversion and kversion >= "5.10":
+        if kversion and "5.10" <= kversion:
             addr = Symbol.get_ksymaddr("kmsg_dump_rewind_nolock")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
@@ -57381,11 +57381,11 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # this is old dmesg structure
-        if kversion and kversion >= "5.10":
+        if kversion and "5.10" <= kversion:
             return False
 
         # plan 2 (available v3.5 or later)
-        if kversion and kversion >= "3.5":
+        if kversion and "3.5" <= kversion:
             addr = Symbol.get_ksymaddr("devkmsg_open")
             if addr:
                 res = gdb.execute("x/50i {:#x}".format(addr), to_string=True)
@@ -57419,11 +57419,11 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # this is old dmesg structure
-        if kversion and kversion >= "5.10":
+        if kversion and "5.10" <= kversion:
             return False
 
         # plan 2 (available v3.5 or later)
-        if kversion and kversion >= "3.5":
+        if kversion and "3.5" <= kversion:
             addr = Symbol.get_ksymaddr("kmsg_dump_rewind_nolock")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -57458,11 +57458,11 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # this is old dmesg structure
-        if kversion and kversion >= "5.10":
+        if kversion and "5.10" <= kversion:
             return False
 
         # plan 2 (available v3.5 or later)
-        if kversion and kversion >= "3.5":
+        if kversion and "3.5" <= kversion:
             log_buf_len = KernelAddressHeuristicFinder.get_log_buf_len()
             if log_buf_len:
                 # static char *log_buf = __log_buf;
@@ -57508,11 +57508,11 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # this is old dmesg structure
-        if kversion and kversion >= "5.10":
+        if kversion and "5.10" <= kversion:
             return False
 
         # plan 2 (available v3.17 or later)
-        if kversion and kversion >= "3.17":
+        if kversion and "3.17" <= kversion:
             addr = Symbol.get_ksymaddr("log_buf_len_get")
             if addr:
                 res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
@@ -57533,7 +57533,7 @@ class KernelAddressHeuristicFinder:
                         return x
 
         # plan 3 (available v3.5 or later)
-        if kversion and kversion >= "3.5":
+        if kversion and "3.5" <= kversion:
             addr = Symbol.get_ksymaddr("do_syslog")
             if addr:
                 res = gdb.execute("x/300i {:#x}".format(addr), to_string=True)
@@ -57624,7 +57624,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v2.6.17 or later)
-        if kversion and kversion >= "2.6.17":
+        if kversion and "2.6.17" <= kversion:
             addr = Symbol.get_ksymaddr("first_online_pgdat")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -57697,7 +57697,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 1 (available v2.6.17 or later)
-        if kversion and kversion >= "2.6.17":
+        if kversion and "2.6.17" <= kversion:
             addr = Symbol.get_ksymaddr("first_online_pgdat")
             if addr:
                 res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
@@ -57736,7 +57736,7 @@ class KernelAddressHeuristicFinder:
         # However, `prog_idr` and `prog_idr_lock` are placed consecutively.
         # Even if there is a slight deviation, there is no problem because the member
         # identification logic of the caller (`kbpf` command) works.
-        if kversion and kversion >= "4.13":
+        if kversion and "4.13" <= kversion:
             addr = Symbol.get_ksymaddr("bpf_prog_free_id.part.0") or Symbol.get_ksymaddr("bpf_prog_free_id")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -57769,7 +57769,7 @@ class KernelAddressHeuristicFinder:
         # However, `map_idr` and `map_idr_lock` are placed consecutively.
         # Even if there is a slight deviation, there is no problem because the member
         # identification logic of the caller (`kbpf` command) works.
-        if kversion and kversion >= "4.13":
+        if kversion and "4.13" <= kversion:
             addr = Symbol.get_ksymaddr("bpf_map_free_id")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -57795,11 +57795,11 @@ class KernelAddressHeuristicFinder:
                 return x
 
         kversion = Kernel.kernel_version()
-        if kversion >= "6.9":
+        if "6.9" <= kversion:
             return None
 
         # plan 2 (available v4.7~)
-        if kversion and kversion >= "4.7":
+        if kversion and "4.7" <= kversion:
             addr = Symbol.get_ksymaddr("register_vmap_purge_notifier")
             if addr:
                 res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
@@ -57847,7 +57847,7 @@ class KernelAddressHeuristicFinder:
                             return a
 
         # plan 3 (available v3.10 ~ v6.3: vread, v6.4~: vread_iter)
-        if kversion and kversion >= "3.17":
+        if kversion and "3.17" <= kversion:
             addr = Symbol.get_ksymaddr("vread") or Symbol.get_ksymaddr("vread_iter")
             if addr:
                 res = gdb.execute("x/100i {:#x}".format(addr), to_string=True)
@@ -57867,7 +57867,7 @@ class KernelAddressHeuristicFinder:
                         return x
 
         # plan 4 (available v4.10~)
-        if kversion and kversion >= "4.10":
+        if kversion and "4.10" <= kversion:
             addrs = Symbol.get_ksymaddr_multiple("s_next")
             if addrs:
                 for s_next in addrs:
@@ -57885,7 +57885,7 @@ class KernelAddressHeuristicFinder:
                             return x
 
         # plan 5 (available v2.6.28 ~ v5.1)
-        if kversion and kversion >= "2.6.28" and kversion < "5.2":
+        if kversion and "2.6.28" <= kversion < "5.2":
             addr = Symbol.get_ksymaddr("__insert_vmap_area")
             if addr:
                 res = gdb.execute("x/100i {:#x}".format(addr), to_string=True)
@@ -57982,7 +57982,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v4.8 or later)
-        if kversion and kversion >= "4.8":
+        if kversion and "4.8" <= kversion:
             addr = Symbol.get_ksymaddr("run_timer_softirq")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -58036,7 +58036,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v4.8 or later)
-        if kversion and kversion >= "4.8":
+        if kversion and "4.8" <= kversion:
             addr = Symbol.get_ksymaddr("hrtimer_run_queues")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -58093,7 +58093,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v2.6.18 or later)
-        if kversion and kversion >= "2.6.18":
+        if kversion and "2.6.18" <= kversion:
             addr = Symbol.get_ksymaddr("jiffies_read")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -58121,7 +58121,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v2.5.71 or later)
-        if kversion and kversion >= "2.5.71":
+        if kversion and "2.5.71" <= kversion:
             addr = Symbol.get_ksymaddr("pci_find_next_bus")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
@@ -58149,7 +58149,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v3.3 or later)
-        if kversion and kversion >= "3.3":
+        if kversion and "3.3" <= kversion:
             addr = Symbol.get_ksymaddr("pci_scan_bus")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
@@ -58261,7 +58261,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v5.10 or later)
-        if kversion and kversion >= "5.10":
+        if kversion and "5.10" <= kversion:
             addr = Symbol.get_ksymaddr("dma_buf_file_release")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
@@ -58280,7 +58280,7 @@ class KernelAddressHeuristicFinder:
                         return v
 
         # plan 3 (available v3.17 ~ v5.9)
-        if kversion and kversion >= "3.17" and kversion < "5.10":
+        if kversion and "3.17" <= kversion < "5.10":
             addr = Symbol.get_ksymaddr("dma_buf_release")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
@@ -58310,11 +58310,11 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.kernel_version()
 
-        if kversion and kversion >= "6.5":
+        if kversion and "6.5" <= kversion:
             return False
 
         # plan 2 (available v2.6.37 ~ v6.4)
-        if kversion and kversion >= "2.6.37" and kversion < "6.5":
+        if kversion and "2.6.37" <= kversion < "6.5":
             addr = Symbol.get_ksymaddr("irq_to_desc")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -58345,7 +58345,7 @@ class KernelAddressHeuristicFinder:
             return False
 
         # plan 2 (available v6.5 or later)
-        if kversion and kversion >= "6.5":
+        if kversion and "6.5" <= kversion:
             addr = Symbol.get_ksymaddr("irq_to_desc")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -59499,7 +59499,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         if 0 < r <= 0xffff:
             # maybe prio, so CONFIG_SMP is y
             kversion = Kernel.kernel_version()
-            if kversion >= "3.14":
+            if "3.14" <= kversion:
                 offset_mm = offset_tasks + 10 * current_arch.ptrsize
             else:
                 offset_mm = offset_tasks + 7 * current_arch.ptrsize
@@ -59613,45 +59613,45 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             return None
         kversion = Kernel.kernel_version()
         if is_x86():
-            if kversion >= "5.11":
+            if "5.11" <= kversion:
                 syscall_work = read_int_from_memory(thread_info + current_arch.ptrsize)
                 return bool(syscall_work & (1 << 0)) # SYSCALL_WORK_SECCOMP
-            elif kversion >= "4.9":
+            elif "4.9" <= kversion:
                 flags = read_int_from_memory(thread_info)
                 return bool(flags & (1 << 8)) # TIF_SECCOMP
-            elif kversion >= "4.1":
+            elif "4.1" <= kversion:
                 flags = read_int32_from_memory(thread_info + current_arch.ptrsize)
                 return bool(flags & (1 << 8)) # TIF_SECCOMP
             else:
                 flags = read_int32_from_memory(thread_info + current_arch.ptrsize * 2)
                 return bool(flags & (1 << 8)) # TIF_SECCOMP
         elif is_arm32():
-            if kversion >= "6.0":
+            if "6.0" <= kversion:
                 flags = read_int_from_memory(thread_info)
                 return bool(flags & (1 << 23)) # TIF_SECCOMP
-            elif kversion >= "5.16":
+            elif "5.16" <= kversion:
                 flags = read_int_from_memory(thread_info)
                 return bool(flags & (1 << 7)) # TIF_SECCOMP
-            elif kversion >= "5.15":
+            elif "5.15" <= kversion:
                 flags = read_int_from_memory(thread_info)
                 return bool(flags & (1 << 23)) # TIF_SECCOMP
-            elif kversion >= "5.11":
+            elif "5.11" <= kversion:
                 flags = read_int_from_memory(thread_info)
                 return bool(flags & (1 << 7)) # TIF_SECCOMP
-            elif kversion >= "5.10":
+            elif "5.10" <= kversion:
                 flags = read_int_from_memory(thread_info)
                 return bool(flags & (1 << 23)) # TIF_SECCOMP
-            elif kversion >= "4.3":
+            elif "4.3" <= kversion:
                 flags = read_int_from_memory(thread_info)
                 return bool(flags & (1 << 7)) # TIF_SECCOMP
-            elif kversion >= "3.8":
+            elif "3.8" <= kversion:
                 flags = read_int_from_memory(thread_info)
                 return bool(flags & (1 << 11)) # TIF_SECCOMP
             else:
                 flags = read_int_from_memory(thread_info)
                 return bool(flags & (1 << 21)) # TIF_SECCOMP
         elif is_arm64():
-            if kversion >= "3.16":
+            if "3.16" <= kversion:
                 flags = read_int_from_memory(thread_info)
                 return bool(flags & (1 << 11)) # TIF_SECCOMP
             else:
@@ -59908,7 +59908,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 found = False
                 break
 
-            if kversion and kversion >= "4.13":
+            if kversion and "4.13" <= kversion:
                 if is_64bit() and (v1 & 0xff) != 0: # 32-bit canary does not have 0xXXXXXX00
                     found = False
                     break
@@ -59956,7 +59956,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         };
         """
         kversion = Kernel.kernel_version()
-        if kversion >= "4.19":
+        if "4.19" <= kversion:
             offset_thread_group = offset_group_leader + current_arch.ptrsize * (1 + 2 + 2 + 1 + (2 * 4))
         else:
             offset_thread_group = offset_group_leader + current_arch.ptrsize * (1 + 2 + 2 + (3 * 3))
@@ -60196,13 +60196,13 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             return None
 
         kversion = Kernel.kernel_version()
-        if kversion >= "5.12":
+        if "5.12" <= kversion:
             return offset_bpf_func + current_arch.ptrsize * 2
-        elif kversion >= "4.1":
+        elif "4.1" <= kversion:
             return offset_bpf_func - current_arch.ptrsize
-        elif kversion >= "3.18":
+        elif "3.18" <= kversion:
             return offset_bpf_func - current_arch.ptrsize * 2
-        elif kversion >= "3.16":
+        elif "3.16" <= kversion:
             return offset_bpf_func - current_arch.ptrsize
         return None
 
@@ -60253,7 +60253,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         base = offset_comm + 16 # comm
         base += current_arch.ptrsize # nameidata
         kversion = Kernel.kernel_version()
-        if kversion >= "4.2":
+        if "4.2" <= kversion:
             repeat_times = 6
         else:
             # sizeof(struct thread_struct) is very large, need more exproring
@@ -60478,7 +60478,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # uid_t:4byte. len([uid,gid,suid,sgid,euid,egid,fsuid,fsgid]) == 8
         uid_gid_size = 4 * 8
         sizeof_securebits = 4
-        if kversion >= "4.3":
+        if "4.3" <= kversion:
             # cap_t:8byte. len([cap_inheritable,cap_permitted,cap_effective,cap_bset,cap_ambient]) == 5
             cap_size = 8 * 5
         else:
@@ -60694,7 +60694,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             def get_next_vma_area_struct(current):
                 return read_int_from_memory(current + current_arch.ptrsize * 2)
 
-        else: # kversion >= "6.1"
+        else: # "6.1" <= kversion
             """
             struct mm_struct {
                 struct {
@@ -61043,7 +61043,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         if kversion < "6.5":
             offset_mnt = current_arch.ptrsize * 2
 
-        elif kversion >= "6.5" and kversion < "6.12":
+        elif "6.5" <= kversion < "6.12":
             # plan 1
             """
             gef> slab-contains 0xffff9f49811d33e0
@@ -61088,7 +61088,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                         break
                 else:
                     raise
-        elif kversion >= "6.12":
+        elif "6.12" <= kversion:
             if is_64bit():
                 offset_mnt = 64
             else:
@@ -61415,7 +61415,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         """
         kversion = Kernel.kernel_version()
 
-        if kversion >= "5.3":
+        if "5.3" <= kversion:
             # search for signalfd_wqh.list_head
             found = False
             for i in range(1, 30):
@@ -61710,7 +61710,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # task_struct->files
         if self.args.print_fd or self.args.print_sighand or self.args.print_namespace or \
-            (kversion >= "6.7" and self.args.print_thread) or self.args.print_seccomp:
+            ("6.7" <= kversion and self.args.print_thread) or self.args.print_seccomp:
             if self.offset_files is None:
                 self.offset_files = self.get_offset_files(task_addrs, self.offset_comm)
             if self.offset_files is None:
@@ -61729,7 +61729,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # cred->user_ns
         # task_struct->nsproxy
-        if self.args.print_namespace or (kversion >= "6.7" and self.args.print_thread) or self.args.print_seccomp:
+        if self.args.print_namespace or ("6.7" <= kversion and self.args.print_thread) or self.args.print_seccomp:
             if self.offset_user_ns is None:
                 init_cred = read_int_from_memory(task_addrs[0] + self.offset_cred)
                 self.offset_user_ns = self.get_offset_user_ns(init_cred, self.offset_uid)
@@ -61756,12 +61756,12 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
             if self.offset_thread_group is None:
                 self.offset_thread_group = self.get_offset_thread_group(self.offset_group_leader)
-            if kversion >= "6.7":
+            if "6.7" <= kversion:
                 self.quiet_info("offsetof(task_struct, thread_node): {:#x}".format(self.offset_thread_group))
             else:
                 self.quiet_info("offsetof(task_struct, thread_group): {:#x}".format(self.offset_thread_group))
 
-            if kversion >= "6.7":
+            if "6.7" <= kversion:
                 if self.offset_signal is None:
                     self.offset_signal = self.get_offset_signal(self.offset_nsproxy)
                 self.quiet_info("offsetof(task_struct, signal): {:#x}".format(self.offset_signal))
@@ -61951,9 +61951,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         if self.args.print_namespace:
             kversion = Kernel.kernel_version()
             nsproxy_members = ["count", "uts_ns", "ipc_ns", "mnt_ns", "pid_ns_for_children", "net_ns"]
-            if kversion >= "5.6":
+            if "5.6" <= kversion:
                 nsproxy_members += ["time_ns", "time_ns_for_children"]
-            if kversion >= "4.6":
+            if "4.6" <= kversion:
                 nsproxy_members += ["cgroup_ns"]
             if task_addrs:
                 init_cred = read_int_from_memory(task_addrs[0] + self.offset_cred)
@@ -62858,7 +62858,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                 if not is_valid_addr(cand_strtab):
                     valid = False
                     break
-                if kversion >= "5.2":
+                if "5.2" <= kversion:
                     cand_typetab = read_int_from_memory(cand_kallsyms + current_arch.ptrsize * 3)
                     if not is_valid_addr(cand_typetab):
                         valid = False
@@ -62878,14 +62878,14 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         num_symtab = read_int_from_memory(kallsyms + current_arch.ptrsize * 1)
         strtab = read_int_from_memory(kallsyms + current_arch.ptrsize * 2)
         strtab_pos = 0
-        if kversion >= "5.2":
+        if "5.2" <= kversion:
             typetab = read_int_from_memory(kallsyms + current_arch.ptrsize * 3)
 
         #gef_print("symtab: {:#x}".format(symtab))
         #gef_print("sizeof_symtab_entry: {:#x}".format(sizeof_symtab_entry))
         #gef_print("num_symab: {:#x}".format(num_symtab))
         #gef_print("strtab: {:#x}".format(strtab))
-        #if kversion >= "5.2":
+        #if "5.2" <= kversion:
         #    gef_print("typetab: {:#x}".format(typetab))
 
         entries = []
@@ -62895,9 +62895,9 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             sym_name = read_cstring_from_memory(strtab + strtab_pos)
             strtab_pos += len(sym_name) + 1
 
-            if kversion >= "5.2":
+            if "5.2" <= kversion:
                 sym_type = chr(read_int8_from_memory(typetab + i))
-            elif kversion >= "5.0":
+            elif "5.0" <= kversion:
                 # st_size
                 if is_64bit():
                     sym_type = chr(read_int8_from_memory(symtab + sizeof_symtab_entry * i + 16))
@@ -62997,15 +62997,15 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             return
 
         kversion = Kernel.kernel_version()
-        if kversion >= "6.4":
+        if "6.4" <= kversion:
             offset_mem, offset_mem_size = self.get_offset_mem(module_addrs)
             if offset_mem is None:
                 return
-        elif kversion >= "4.5":
+        elif "4.5" <= kversion:
             offset_layout = self.get_offset_layout(module_addrs)
             if offset_layout is None:
                 return
-        else: # ~v4.4
+        else: # kversion < v4.5
             offset_module_core = self.get_offset_module_core(module_addrs)
             if offset_module_core is None:
                 return
@@ -63030,13 +63030,13 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                 if not any(re_pattern.search(name_string) for re_pattern in args.filter):
                     continue
 
-            if kversion >= "6.4":
+            if "6.4" <= kversion:
                 base = read_int_from_memory(module + offset_mem)
                 size = read_int32_from_memory(module + offset_mem_size)
-            elif kversion >= "4.5":
+            elif "4.5" <= kversion:
                 base = read_int_from_memory(module + offset_layout)
                 size = read_int32_from_memory(module + offset_layout + current_arch.ptrsize)
-            else: # ~v4.4
+            else: # kversion < "4.5"
                 base = read_int_from_memory(module + offset_module_core)
                 size = read_int32_from_memory(module + offset_module_core + current_arch.ptrsize + 4)
 
@@ -64919,7 +64919,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
 
                 if minver and kversion < minver:
                     continue
-                if maxver and kversion > maxver:
+                if maxver and maxver <= kversion:
                     continue
                 out.append((typ, name))
             return out
@@ -64931,28 +64931,28 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "llseek",                                  None,      None],
             ["func_ptr", "read",                                    None,      None],
             ["func_ptr", "write",                                   None,      None],
-            ["func_ptr", "aio_read",                                None,      "4.0.9"],
-            ["func_ptr", "aio_write",                               None,      "4.0.9"],
+            ["func_ptr", "aio_read",                                None,      "4.1.0"],
+            ["func_ptr", "aio_write",                               None,      "4.1.0"],
             ["func_ptr", "read_iter",                               "3.16.0",  None],
             ["func_ptr", "write_iter",                              "3.16.0",  None],
-            ["func_ptr", "readdir",                                 None,      "3.10.108"],
+            ["func_ptr", "readdir",                                 None,      "3.11.0"],
             ["func_ptr", "iopoll",                                  "5.1.0",   None],
-            ["func_ptr", "iterate",                                 "3.11.0",  "6.4.16"],
+            ["func_ptr", "iterate",                                 "3.11.0",  "6.5.0"],
             ["func_ptr", "iterate_shared",                          "4.7.0",   None],
             ["func_ptr", "poll",                                    None,      None],
             ["func_ptr", "unlocked_ioctl",                          None,      None],
             ["func_ptr", "compat_ioctl",                            None,      None],
             ["func_ptr", "mmap",                                    None,      None],
-            ["func_ptr", "mremap",                                  "3.19.0",  "4.2.8"],
-            ["ulong",    "mmap_supported_flags",                    "4.15.0",  "6.9.12"],
+            ["func_ptr", "mremap",                                  "3.19.0",  "4.3.0"],
+            ["ulong",    "mmap_supported_flags",                    "4.15.0",  "6.10.0"],
             ["func_ptr", "open",                                    None,      None],
             ["func_ptr", "flush",                                   None,      None],
             ["func_ptr", "release",                                 None,      None],
             ["func_ptr", "fsync",                                   None,      None],
-            ["func_ptr", "aio_fsync",                               None,      "4.8.17"],
+            ["func_ptr", "aio_fsync",                               None,      "4.9.0"],
             ["func_ptr", "fasync",                                  None,      None],
             ["func_ptr", "lock",                                    None,      None],
-            ["func_ptr", "sendpage",                                None,      "6.4.16"],
+            ["func_ptr", "sendpage",                                None,      "6.5.0"],
             ["func_ptr", "get_unmapped_area",                       None,      None],
             ["func_ptr", "check_flags",                             None,      None],
             ["func_ptr", "flock",                                   None,      None],
@@ -64963,8 +64963,8 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "fallocate",                               None,      None],
             ["func_ptr", "show_fdinfo",                             "3.8.0",   None],
             ["func_ptr", "copy_file_range",                         "4.5.0",   None],
-            ["func_ptr", "clone_file_range",                        None,      "4.19.288"],
-            ["func_ptr", "dedupe_file_range",                       None,      "4.19.288"],
+            ["func_ptr", "clone_file_range",                        None,      "4.19.289"],
+            ["func_ptr", "dedupe_file_range",                       None,      "4.19.289"],
             ["func_ptr", "remap_file_range",                        "4.20.0",  None],
             ["func_ptr", "fadvise",                                 "4.19.0",  None],
             ["func_ptr", "uring_cmd",                               "5.19.0",  None],
@@ -65004,7 +65004,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "tiocmget",                                None,      None],
             ["func_ptr", "tiocmset",                                None,      None],
             ["func_ptr", "resize",                                  None,      None],
-            ["func_ptr", "set_termiox",                             None,      "5.9.16"],
+            ["func_ptr", "set_termiox",                             None,      "5.10.0"],
             ["func_ptr", "get_icount",                              None,      None],
             ["func_ptr", "get_serial",                              "4.19.0",  None],
             ["func_ptr", "set_serial",                              "4.19.0",  None],
@@ -65013,18 +65013,18 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "poll_get_char (CONFIG_CONSOLE_POLL=y)",   None,      None],
             ["func_ptr", "poll_put_char (CONFIG_CONSOLE_POLL=y)",   None,      None],
             ["func_ptr", "proc_show",                               "4.18.0",  None],
-            ["ptr",      "proc_fops",                               None,      "4.17.19"],
+            ["ptr",      "proc_fops",                               None,      "4.18.0"],
         ]
         self.members["tty_operations"] = adapt_to_kernel_version(tty_operations)
 
         tty_ldisc_ops = [
             # type       name                                       minver     maxver      additinoal_flag
-            ["int",      "magic",                                   None,      "5.12.19"],
+            ["int",      "magic",                                   None,      "5.13.0"],
             ["char*",    "name",                                    None,      None],
             ["int",      "num",                                     "5.16.0",  None],
-            ["int",      "num",                                     None,      "5.15.120", is_32bit()],
-            ["int",      "flags",                                   None,      "5.15.120", is_32bit()],
-            ["int, int", "flags, num",                              None,      "5.15.120", is_64bit()],
+            ["int",      "num",                                     None,      "5.15.121", is_32bit()],
+            ["int",      "flags",                                   None,      "5.15.121", is_32bit()],
+            ["int, int", "flags, num",                              None,      "5.15.121", is_64bit()],
             ["func_ptr", "open",                                    None,      None],
             ["func_ptr", "close",                                   None,      None],
             ["func_ptr", "flush_buffer",                            None,      None],
@@ -65038,11 +65038,11 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "receive_buf",                             None,      None],
             ["func_ptr", "write_wakeup",                            None,      None],
             ["func_ptr", "dcd_change",                              None,      None],
-            ["func_ptr", "fasync",                                  "3.11.0",  "4.5.7"],
+            ["func_ptr", "fasync",                                  "3.11.0",  "4.6.0"],
             ["func_ptr", "receive_buf2",                            "3.12.0",  None],
             ["func_ptr", "lookahead_buf",                           "5.16.0",  None],
             ["ptr",      "owner",                                   None,      None],
-            ["int",      "refcount",                                None,      "5.13.19"],
+            ["int",      "refcount",                                None,      "5.14.0"],
         ]
         self.members["tty_ldisc_ops"] = adapt_to_kernel_version(tty_ldisc_ops)
 
@@ -65059,13 +65059,13 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             # type       name                                       minver     maxver
             ["func_ptr", "lookup",                                  None,      None],
             ["func_ptr", "get_link",                                "4.5.0",   None],
-            ["func_ptr", "follow_link",                             None,      "4.4.302"],
+            ["func_ptr", "follow_link",                             None,      "4.5.0"],
             ["func_ptr", "permission",                              None,      None],
             ["func_ptr", "get_inode_acl",                           "6.2.0",   None],
-            ["func_ptr", "get_acl",                                 "3.1.0",   "6.1.38"],
-            ["func_ptr", "check_acl",                               None,      "3.0.101"],
+            ["func_ptr", "get_acl",                                 "3.1.0",   "6.1.39"],
+            ["func_ptr", "check_acl",                               None,      "3.1.0"],
             ["func_ptr", "readlink",                                None,      None],
-            ["func_ptr", "put_link",                                None,      "4.4.302"],
+            ["func_ptr", "put_link",                                None,      "4.5.0"],
             ["func_ptr", "create",                                  None,      None],
             ["func_ptr", "link",                                    None,      None],
             ["func_ptr", "unlink",                                  None,      None],
@@ -65074,21 +65074,21 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "rmdir",                                   None,      None],
             ["func_ptr", "mknod",                                   None,      None],
             ["func_ptr", "rename",                                  None,      None],
-            ["func_ptr", "truncate",                                None,      "3.7.10"],
-            ["func_ptr", "rename2",                                 "3.15.0",  "4.8.17"],
+            ["func_ptr", "truncate",                                None,      "3.8.0"],
+            ["func_ptr", "rename2",                                 "3.15.0",  "4.9.0"],
             ["func_ptr", "setattr",                                 None,      None],
             ["func_ptr", "getattr",                                 None,      None],
-            ["func_ptr", "setxattr",                                None,      "4.8.17"],
-            ["func_ptr", "getxattr",                                None,      "4.8.17"],
+            ["func_ptr", "setxattr",                                None,      "4.9.0"],
+            ["func_ptr", "getxattr",                                None,      "4.9.0"],
             ["func_ptr", "listxattr",                               None,      None],
-            ["func_ptr", "removexattr",                             None,      "4.8.17"],
+            ["func_ptr", "removexattr",                             None,      "4.9.0"],
             ["func_ptr", "fiemap",                                  None,      None],
             ["func_ptr", "update_time",                             "3.5.0",   None],
             ["func_ptr", "atomic_open",                             "3.6.0",   None],
             ["func_ptr", "tmpfile",                                 "3.11.0",  None],
             ["func_ptr", "get_acl",                                 "6.2.0",   None],
             ["func_ptr", "set_acl",                                 "3.14.0",  None],
-            ["func_ptr", "dentry_open",                             None,      "4.1.52"],
+            ["func_ptr", "dentry_open",                             None,      "4.2.0"],
             ["func_ptr", "fileattr_set",                            "5.13.0",  None],
             ["func_ptr", "fileattr_get",                            "5.13.0",  None],
             ["func_ptr", "get_offset_ctx",                          "6.6.0",   None],
@@ -65103,7 +65103,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "pre_exit",                                "5.3.0",   None],
             ["func_ptr", "exit",                                    None,      None],
             ["func_ptr", "exit_batch",                              None,      None],
-            ["func_ptr", "exit_batch_rtnl",                         "6.9.0",   "6.15.8"],
+            ["func_ptr", "exit_batch_rtnl",                         "6.9.0",   "6.15.9"],
             ["func_ptr", "exit_rtnl",                               "6.16.0",  None],
             ["ptr",      "id",                                      None,      None],
             ["long",     "size",                                    None,      None],
@@ -65112,34 +65112,34 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
 
         address_space_operations = [
             # type       name                                       minver     maxver
-            ["func_ptr", "writepage",                               None,      "6.15.8"],
+            ["func_ptr", "writepage",                               None,      "6.15.9"],
             ["func_ptr", "read_folio",                              "5.19.0",  None],
-            ["func_ptr", "readpage",                                None,      "5.18.19"],
+            ["func_ptr", "readpage",                                None,      "5.19.0"],
             ["func_ptr", "writepages",                              None,      None],
             ["func_ptr", "dirty_folio",                             "5.18.0",  None],
-            ["func_ptr", "set_page_dirty",                          None,      "5.17.15"],
-            ["func_ptr", "readpages",                               None,      "5.17.15"],
+            ["func_ptr", "set_page_dirty",                          None,      "5.18.0"],
+            ["func_ptr", "readpages",                               None,      "5.18.0"],
             ["func_ptr", "readahead",                               "5.8.0",   None],
             ["func_ptr", "write_begin",                             None,      None],
             ["func_ptr", "write_end",                               None,      None],
             ["func_ptr", "bmap",                                    None,      None],
             ["func_ptr", "invalidate_folio",                        "5.18.0",  None],
-            ["func_ptr", "invalidatepage",                          None,      "5.17.15"],
+            ["func_ptr", "invalidatepage",                          None,      "5.18.0"],
             ["func_ptr", "release_folio",                           "5.19.0",  None],
-            ["func_ptr", "releasepage",                             None,      "5.18.19"],
+            ["func_ptr", "releasepage",                             None,      "5.19.0"],
             ["func_ptr", "free_folio",                              "5.19.0",  None],
-            ["func_ptr", "freepage",                                None,      "5.18.19"],
+            ["func_ptr", "freepage",                                None,      "5.19.0"],
             ["func_ptr", "direct_IO",                               None,      None],
-            ["func_ptr", "get_xip_mem",                             None,      "3.19.8"],
+            ["func_ptr", "get_xip_mem",                             None,      "4.0.0"],
             ["func_ptr", "migrate_folio",                           "6.0.0",   None],
-            ["func_ptr", "migratepage",                             None,      "5.19.17"],
-            ["func_ptr", "isolate_page",                            "4.8.0",   "5.19.17"],
-            ["func_ptr", "putback_page",                            "4.8.0",   "5.19.17"],
+            ["func_ptr", "migratepage",                             None,      "5.20.0"],
+            ["func_ptr", "isolate_page",                            "4.8.0",   "5.20.0"],
+            ["func_ptr", "putback_page",                            "4.8.0",   "5.20.0"],
             ["func_ptr", "launder_folio",                           "5.18.0",  None],
-            ["func_ptr", "launder_page",                            None,      "5.17.15"],
+            ["func_ptr", "launder_page",                            None,      "5.18.0"],
             ["func_ptr", "is_partially_uptodate",                   None,      None],
             ["func_ptr", "is_dirty_writeback",                      "3.11.0",  None],
-            ["func_ptr", "error_remove_page",                       None,      "6.7.12"],
+            ["func_ptr", "error_remove_page",                       None,      "6.8.0"],
             ["func_ptr", "error_remove_folio",                      "6.8.0",   None],
             ["func_ptr", "swap_activate",                           "3.6.0",   None],
             ["func_ptr", "swap_deactivate",                         "3.6.0",   None],
@@ -65152,12 +65152,12 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "open",                                         None,      None],
             ["func_ptr", "close",                                        None,      None],
             ["func_ptr", "may_split",                                    "5.11.0",  None],
-            ["func_ptr", "split",                                        "4.14.0",  "5.10.186"],
+            ["func_ptr", "split",                                        "4.14.0",  "5.10.187"],
             ["func_ptr", "mremap",                                       "4.3.9",   None],
             ["func_ptr", "mprotect",                                     "5.11.0",  None],
             ["func_ptr", "fault",                                        None,      None],
             ["func_ptr", "huge_fault",                                   "4.11.0",  None],
-            ["func_ptr", "pmd_fault",                                    "4.3.0",   "4.10.17"],
+            ["func_ptr", "pmd_fault",                                    "4.3.0",   "4.11.0"],
             ["func_ptr", "map_pages",                                    "3.15.0",  None],
             ["func_ptr", "pagesize",                                     "4.17.0",  None],
             ["func_ptr", "page_mkwrite",                                 None,      None],
@@ -65166,11 +65166,11 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "name",                                         "3.16.0",  None],
             ["func_ptr", "set_policy (CONFIG_NUMA=y)",                   None,      None],
             ["func_ptr", "get_policy (CONFIG_NUMA=y)",                   None,      None],
-            ["func_ptr", "migrate (CONFIG_NUMA=y)",                      None,      "3.18.140"],
-            ["func_ptr", "find_special_page",                            "4.0.0",   "6.17.7"],
+            ["func_ptr", "migrate (CONFIG_NUMA=y)",                      None,      "3.19.0"],
+            ["func_ptr", "find_special_page",                            "4.0.0",   "6.17.8"],
             ["func_ptr", "find_normal_page (CONFIG_FIND_NORMAL_PAGE=y)", "6.18.0",  None],
-            ["func_ptr", "remap_pages",                                  "3.17.0",  "3.19.8"],
-            ["func_ptr", "remap_pages",                                  "3.7.0",   "3.16.58"],
+            ["func_ptr", "remap_pages",                                  "3.17.0",  "4.0.0"],
+            ["func_ptr", "remap_pages",                                  "3.7.0",   "3.16.59"],
         ]
         self.members["vm_operations_struct"] = adapt_to_kernel_version(vm_operations_struct)
 
@@ -65184,7 +65184,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "drop_inode",                              None,      None],
             ["func_ptr", "evict_inode",                             None,      None],
             ["func_ptr", "put_super",                               None,      None],
-            ["func_ptr", "write_super",                             None,      "3.5.7"],
+            ["func_ptr", "write_super",                             None,      "3.6.0"],
             ["func_ptr", "sync_fs",                                 None,      None],
             ["func_ptr", "freeze_super",                            "3.19.0",  None],
             ["func_ptr", "freeze_fs",                               None,      None],
@@ -65200,7 +65200,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "quota_read (CONFIG_QUOTA=y)",             None,      None],
             ["func_ptr", "quota_write (CONFIG_QUOTA=y)",            None,      None],
             ["func_ptr", "get_dquots (CONFIG_QUOTA=y)",             "3.19.0",  None],
-            ["func_ptr", "bdev_try_to_free_page",                   None,      "5.13.19"],
+            ["func_ptr", "bdev_try_to_free_page",                   None,      "5.14.0"],
             ["func_ptr", "nr_cached_objects",                       "3.1.0",   None],
             ["func_ptr", "free_cached_objects",                     "3.1.0",   None],
             ["func_ptr", "remove_bdev",                             "6.17.0",  None],
@@ -65222,9 +65222,9 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "d_dname",                                 None,      None],
             ["func_ptr", "d_automount",                             None,      None],
             ["func_ptr", "d_manage",                                None,      None],
-            ["func_ptr", "d_select_inode",                          "4.1.0",   "4.7.10"],
+            ["func_ptr", "d_select_inode",                          "4.1.0",   "4.8.0"],
             ["func_ptr", "d_real",                                  "4.4.0",   None],
-            ["func_ptr", "d_select_inode",                          "3.18.23", "3.18.140"],
+            ["func_ptr", "d_select_inode",                          "3.18.23", "3.19.0"],
             ["func_ptr", "d_unalias_trylock",                       "6.14.0",  None],
             ["func_ptr", "d_unalias_unlock",                        "6.14.0",  None],
         ]
@@ -65236,14 +65236,14 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "poll_bio",                                "5.18.0",  None],
             ["func_ptr", "open",                                    None,      None],
             ["func_ptr", "release",                                 None,      None],
-            ["func_ptr", "rw_page",                                 None,      "6.2.16"],
+            ["func_ptr", "rw_page",                                 None,      "6.3.0"],
             ["func_ptr", "ioctl",                                   None,      None],
             ["func_ptr", "compat_ioctl",                            None,      None],
-            ["func_ptr", "direct_access",                           None,      "4.11.12"],
+            ["func_ptr", "direct_access",                           None,      "4.12.0"],
             ["func_ptr", "check_events",                            None,      None],
-            ["func_ptr", "media_changed",                           None,      "5.8.18"],
+            ["func_ptr", "media_changed",                           None,      "5.9.0"],
             ["func_ptr", "unlock_native_capacity",                  None,      None],
-            ["func_ptr", "revalidate_disk",                         None,      "5.12.19"],
+            ["func_ptr", "revalidate_disk",                         None,      "5.13.0"],
             ["func_ptr", "getgeo",                                  None,      None],
             ["func_ptr", "set_read_only",                           "5.11.0",  None],
             ["func_ptr", "free_disk",                               "5.18.0",  None],
@@ -65259,9 +65259,9 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
 
         pipe_buf_operations = [
             # type       name                                       minver     maxver
-            ["int",      "can_merge",                               None,      "5.0.21"],
-            ["func_ptr", "map",                                     None,      "3.14.79"],
-            ["func_ptr", "unmap",                                   None,      "3.14.79"],
+            ["int",      "can_merge",                               None,      "5.1.0"],
+            ["func_ptr", "map",                                     None,      "3.15.0"],
+            ["func_ptr", "unmap",                                   None,      "3.15.0"],
             ["func_ptr", "confirm",                                 None,      None],
             ["func_ptr", "release",                                 None,      None],
             ["func_ptr", "try_steal",                               None,      None],
@@ -65284,9 +65284,9 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
 
         dma_buf_ops = [
             # type         name                                     minver     maxver
-            ["bool",       "cache_sgt_mapping",                     "5.7.0",   "6.15.8"],
-            ["bool, bool", "cache_sgt_mapping, dynamic_mapping",    "5.5.0",   "5.6.19"],
-            ["bool",       "cache_sgt_mapping",                     "5.3.0",   "5.4.264"],
+            ["bool",       "cache_sgt_mapping",                     "5.7.0",   "6.15.9"],
+            ["bool, bool", "cache_sgt_mapping, dynamic_mapping",    "5.5.0",   "5.7.0"],
+            ["bool",       "cache_sgt_mapping",                     "5.3.0",   "5.4.265"],
             ["func_ptr",   "attach",                                "3.2.0",   None],
             ["func_ptr",   "detach",                                "3.2.0",   None],
             ["func_ptr",   "pin",                                   "5.7.0",   None],
@@ -65297,15 +65297,15 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr",   "begin_cpu_access",                      "3.4.0",   None],
             ["func_ptr",   "end_cpu_access",                        "3.4.0",   None],
             ["func_ptr",   "mmap",                                  "5.3.0",   None],
-            ["func_ptr",   "map_atomic",                            "4.12.0",  "4.18.20"],
-            ["func_ptr",   "unmap_atomic",                          "4.12.0",  "4.18.20"],
-            ["func_ptr",   "kmap_atomic",                           "3.4.0",   "4.11.12"],
-            ["func_ptr",   "kunmap_atomic",                         "3.4.0",   "4.11.12"],
-            ["func_ptr",   "map",                                   "4.12.0",  "5.5.19"],
-            ["func_ptr",   "unmap",                                 "4.12.0",  "5.5.19"],
-            ["func_ptr",   "kmap",                                  "3.4.0",   "4.11.12"],
-            ["func_ptr",   "kunmap",                                "3.4.0",   "4.11.12"],
-            ["func_ptr",   "mmap",                                  "3.5.0",   "5.2.21"],
+            ["func_ptr",   "map_atomic",                            "4.12.0",  "4.19.0"],
+            ["func_ptr",   "unmap_atomic",                          "4.12.0",  "4.19.0"],
+            ["func_ptr",   "kmap_atomic",                           "3.4.0",   "4.12.0"],
+            ["func_ptr",   "kunmap_atomic",                         "3.4.0",   "4.12.0"],
+            ["func_ptr",   "map",                                   "4.12.0",  "5.6.0"],
+            ["func_ptr",   "unmap",                                 "4.12.0",  "5.6.0"],
+            ["func_ptr",   "kmap",                                  "3.4.0",   "4.12.0"],
+            ["func_ptr",   "kunmap",                                "3.4.0",   "4.12.0"],
+            ["func_ptr",   "mmap",                                  "3.5.0",   "5.3.0"],
             ["func_ptr",   "vmap",                                  "3.5.0",   None],
             ["func_ptr",   "vunmap",                                "3.5.0",   None],
         ]
@@ -65328,18 +65328,18 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "dev_config",                              None,      None],
             ["func_ptr", "freeze",                                  None,      None],
             ["func_ptr", "thaw",                                    None,      None],
-            ["func_ptr", "prereset",                                None,      "6.16.4"],
-            ["func_ptr", "softreset",                               None,      "6.16.4"],
-            ["func_ptr", "hardreset",                               None,      "6.16.4"],
-            ["func_ptr", "postreset",                               None,      "6.16.4"],
+            ["func_ptr", "prereset",                                None,      "6.16.5"],
+            ["func_ptr", "softreset",                               None,      "6.16.5"],
+            ["func_ptr", "hardreset",                               None,      "6.16.5"],
+            ["func_ptr", "postreset",                               None,      "6.16.5"],
             ["func_ptr", "reset.prereset",                          "6.17.0",  None],
             ["func_ptr", "reset.softreset",                         "6.17.0",  None],
             ["func_ptr", "reset.hardreset",                         "6.17.0",  None],
             ["func_ptr", "reset.postreset",                         "6.17.0",  None],
-            ["func_ptr", "pmp_prereset",                            None,      "6.16.4"],
-            ["func_ptr", "pmp_softreset",                           None,      "6.16.4"],
-            ["func_ptr", "pmp_hardreset",                           None,      "6.16.4"],
-            ["func_ptr", "pmp_postreset",                           None,      "6.16.4"],
+            ["func_ptr", "pmp_prereset",                            None,      "6.16.5"],
+            ["func_ptr", "pmp_softreset",                           None,      "6.16.5"],
+            ["func_ptr", "pmp_hardreset",                           None,      "6.16.5"],
+            ["func_ptr", "pmp_postreset",                           None,      "6.16.5"],
             ["func_ptr", "pmp_reset.pmp_prereset",                  "6.17.0",  None],
             ["func_ptr", "pmp_reset.pmp_softreset",                 "6.17.0",  None],
             ["func_ptr", "pmp_reset.pmp_hardreset",                 "6.17.0",  None],
@@ -65380,8 +65380,8 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "sw_activity_show",                        None,      None],
             ["func_ptr", "sw_activity_store",                       None,      None],
             ["func_ptr", "transmit_led_message",                    "3.11.0",  None],
-            ["func_ptr", "phy_reset",                               None,      "6.5.13"],
-            ["func_ptr", "eng_timeout",                             None,      "6.5.13"],
+            ["func_ptr", "phy_reset",                               None,      "6.6.0"],
+            ["func_ptr", "eng_timeout",                             None,      "6.6.0"],
             ["ptr",      "inherits",                                None,      None],
         ]
         self.members["ata_port_operations"] = adapt_to_kernel_version(ata_port_operations)
@@ -65398,8 +65398,8 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
         configfs_item_operations = [
             # type       name                                       minver     maxver
             ["func_ptr", "release",                                 None,      None],
-            ["func_ptr", "show_attribute",                          None,      "4.3.6"],
-            ["func_ptr", "store_attribute",                         None,      "4.3.6"],
+            ["func_ptr", "show_attribute",                          None,      "4.4.0"],
+            ["func_ptr", "store_attribute",                         None,      "4.4.0"],
             ["func_ptr", "allow_link",                              None,      None],
             ["func_ptr", "drop_link",                               None,      None],
         ]
@@ -65409,7 +65409,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             # type       name                                       minver     maxver
             ["func_ptr", "make_item",                               None,      None],
             ["func_ptr", "make_group",                              None,      None],
-            ["func_ptr", "commit_item",                             None,      "6.1.112"],
+            ["func_ptr", "commit_item",                             None,      "6.1.113"],
             ["func_ptr", "disconnect_notify",                       None,      None],
             ["func_ptr", "drop_item",                               None,      None],
             ["func_ptr", "is_visible",                              "6.11.0",  None],
@@ -65439,7 +65439,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "get_uuid",                                "4.0.0",   None],
             ["func_ptr", "map_blocks",                              "4.0.0",   None],
             ["func_ptr", "commit_blocks",                           "4.0.0",   None],
-            ["func_ptr", "fetch_iversion",                          "5.10.0",  "6.2.16"],
+            ["func_ptr", "fetch_iversion",                          "5.10.0",  "6.3.0"],
             ["func_ptr", "permission",                              "6.14.0",  None],
             ["func_ptr", "open",                                    "6.14.0",  None],
             ["long",     "flags",                                   "5.10.0",  None],
@@ -65480,7 +65480,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "unprepare",                               "3.4.0",   None],
             ["func_ptr", "is_prepared",                             "3.10.0",  None],
             ["func_ptr", "unprepare_unused",                        "3.10.0",  None],
-            ["func_ptr", "init (CONFIG_SH_CLK_CPG_LEGACY=y)",       None,      "3.3.8"],
+            ["func_ptr", "init (CONFIG_SH_CLK_CPG_LEGACY=y)",       None,      "3.4.0"],
             ["func_ptr", "enable",                                  None,      None],
             ["func_ptr", "disable",                                 None,      None],
             ["func_ptr", "is_enabled",                              "3.4.0",   None],
@@ -65488,15 +65488,15 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "save_context",                            "4.20.0",  None],
             ["func_ptr", "restore_context",                         "4.20.0",  None],
             ["func_ptr", "recalc_rate",                             "3.4.0",   None],
-            ["func_ptr", "recalc",                                  None,      "3.3.8"],
+            ["func_ptr", "recalc",                                  None,      "3.4.0"],
             ["func_ptr", "round_rate",                              "3.4.0",   None],
             ["func_ptr", "determine_rate",                          "3.12.0",  None],
             ["func_ptr", "set_parent",                              "3.4.0",   None],
             ["func_ptr", "get_parent",                              "3.4.0",   None],
             ["func_ptr", "set_rate",                                None,      None],
             ["func_ptr", "set_rate_and_parent",                     "3.14.0",  None],
-            ["func_ptr", "set_parent",                              None,      "3.3.8"],
-            ["func_ptr", "round_rate",                              None,      "3.3.8"],
+            ["func_ptr", "set_parent",                              None,      "3.4.0"],
+            ["func_ptr", "round_rate",                              None,      "3.4.0"],
             ["func_ptr", "recalc_accuracy",                         "3.14.0",  None],
             ["func_ptr", "get_phase",                               "3.18.0",  None],
             ["func_ptr", "set_phase",                               "3.18.0",  None],
@@ -65541,13 +65541,13 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             # type       name                                       minver     maxver
             ["char*",    "name",                                    None,      None],
             ["char*",    "real_ns_name",                            "4.12.0",  None],
-            ["int",      "type",                                    None,      "6.17.7"],
+            ["int",      "type",                                    None,      "6.17.8"],
             ["func_ptr", "get",                                     None,      None],
             ["func_ptr", "put",                                     None,      None],
             ["func_ptr", "install",                                 None,      None],
             ["func_ptr", "owner",                                   "4.9.0",   None],
             ["func_ptr", "get_parent",                              "4.9.0",   None],
-            ["func_ptr", "inum",                                    "3.8.0",   "3.18.140"],
+            ["func_ptr", "inum",                                    "3.8.0",   "3.19.0"],
         ]
         self.members["proc_ns_operations"] = adapt_to_kernel_version(proc_ns_operations)
 
@@ -65562,7 +65562,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "ndo_select_queue",                                    None,      None],
             ["func_ptr", "ndo_change_rx_flags",                                 None,      None],
             ["func_ptr", "ndo_set_rx_mode",                                     None,      None],
-            ["func_ptr", "ndo_set_multicast_list",                              None,      "3.1.10"],
+            ["func_ptr", "ndo_set_multicast_list",                              None,      "3.2.0"],
             ["func_ptr", "ndo_set_mac_address",                                 None,      None],
             ["func_ptr", "ndo_validate_addr",                                   None,      None],
             ["func_ptr", "ndo_do_ioctl",                                        None,      None],
@@ -65578,17 +65578,17 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "ndo_has_offload_stats",                               "4.9.0",   None],
             ["func_ptr", "ndo_get_offload_stats",                               "4.9.0",   None],
             ["func_ptr", "ndo_get_stats",                                       None,      None],
-            ["func_ptr", "ndo_vlan_rx_register",                                None,      "3.0.101"],
+            ["func_ptr", "ndo_vlan_rx_register",                                None,      "3.1.0"],
             ["func_ptr", "ndo_vlan_rx_add_vid",                                 None,      None],
             ["func_ptr", "ndo_vlan_rx_kill_vid",                                None,      None],
             ["func_ptr", "ndo_poll_controller (CONFIG_NET_POLL_CONTROLLER=y)",  None,      None],
             ["func_ptr", "ndo_netpoll_setup (CONFIG_NET_POLL_CONTROLLER=y)",    None,      None],
             ["func_ptr", "ndo_netpoll_cleanup (CONFIG_NET_POLL_CONTROLLER=y)",  None,      None],
-            ["func_ptr", "ndo_busy_poll (CONFIG_NET_RX_BUSY_POLL=y)",           "3.11.0",  "4.10.17"],
+            ["func_ptr", "ndo_busy_poll (CONFIG_NET_RX_BUSY_POLL=y)",           "3.11.0",  "4.11.0"],
             ["func_ptr", "ndo_set_vf_mac",                                      None,      None],
             ["func_ptr", "ndo_set_vf_vlan",                                     None,      None],
             ["func_ptr", "ndo_set_vf_rate",                                     "3.16.0",  None],
-            ["func_ptr", "ndo_set_vf_tx_rate",                                  None,      "3.15.10"],
+            ["func_ptr", "ndo_set_vf_tx_rate",                                  None,      "3.16.0"],
             ["func_ptr", "ndo_set_vf_spoofchk",                                 "3.2.0",   None],
             ["func_ptr", "ndo_set_vf_trust",                                    "4.4.0",   None],
             ["func_ptr", "ndo_get_vf_config",                                   None,      None],
@@ -65596,7 +65596,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "ndo_get_vf_stats",                                    "4.2.0",   None],
             ["func_ptr", "ndo_set_vf_port",                                     None,      None],
             ["func_ptr", "ndo_get_vf_port",                                     None,      None],
-            ["func_ptr", "ndo_set_vf_rss_query_en",                             "3.18.21", "3.18.140"],
+            ["func_ptr", "ndo_set_vf_rss_query_en",                             "3.18.21", "3.19.0"],
             ["func_ptr", "ndo_get_vf_guid",                                     "5.5.0",   None],
             ["func_ptr", "ndo_set_vf_guid",                                     "4.6.0",   None],
             ["func_ptr", "ndo_set_vf_rss_query_en",                             "4.1.0",   None],
@@ -65608,7 +65608,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "ndo_fcoe_ddp_target CONFIG_FCOE=y)",                  None,      None],
             ["func_ptr", "ndo_fcoe_get_hbainfo (CONFIG_FCOE=y)",                "3.3.0",   None],
             ["func_ptr", "ndo_fcoe_get_wwn (CONFIG_LIBFCOE=y)",                 "3.2.0",   None],
-            ["func_ptr", "ndo_fcoe_get_wwn (CONFIG_FCOE=y)",                    None,      "3.1.10"],
+            ["func_ptr", "ndo_fcoe_get_wwn (CONFIG_FCOE=y)",                    None,      "3.2.0"],
             ["func_ptr", "ndo_rx_flow_steer (CONFIG_RFS_ACCEL=y)",              None,      None],
             ["func_ptr", "ndo_add_slave",                                       None,      None],
             ["func_ptr", "ndo_del_slave",                                       None,      None],
@@ -65635,34 +65635,34 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "ndo_get_phys_port_id",                                "3.12.0",  None],
             ["func_ptr", "ndo_get_port_parent_id",                              "5.1.0",   None],
             ["func_ptr", "ndo_get_phys_port_name",                              "4.1.0",   None],
-            ["func_ptr", "ndo_udp_tunnel_add",                                  "4.8.0",   "5.11.22"],
-            ["func_ptr", "ndo_udp_tunnel_del",                                  "4.8.0",   "5.11.22"],
-            ["func_ptr", "ndo_add_vxlan_port",                                  "3.12.0",  "4.7.10"],
-            ["func_ptr", "ndo_del_vxlan_port",                                  "3.12.0",  "4.7.10"],
-            ["func_ptr", "ndo_add_geneve_port",                                 "4.5.0",   "4.7.10"],
-            ["func_ptr", "ndo_del_geneve_port",                                 "4.5.0",   "4.7.10"],
+            ["func_ptr", "ndo_udp_tunnel_add",                                  "4.8.0",   "5.12.0"],
+            ["func_ptr", "ndo_udp_tunnel_del",                                  "4.8.0",   "5.12.0"],
+            ["func_ptr", "ndo_add_vxlan_port",                                  "3.12.0",  "4.8.0"],
+            ["func_ptr", "ndo_del_vxlan_port",                                  "3.12.0",  "4.8.0"],
+            ["func_ptr", "ndo_add_geneve_port",                                 "4.5.0",   "4.8.0"],
+            ["func_ptr", "ndo_del_geneve_port",                                 "4.5.0",   "4.8.0"],
             ["func_ptr", "ndo_dfwd_add_station",                                "3.13.0",  None],
             ["func_ptr", "ndo_dfwd_del_station",                                "3.13.0",  None],
-            ["func_ptr", "ndo_dfwd_start_xmit",                                 "3.13.0",  "4.12.14"],
-            ["func_ptr", "ndo_get_lock_subclass",                               "3.14.5",  "5.3.18"],
-            ["func_ptr", "ndo_features_check",                                  "3.18.4",  "4.4.302"],
-            ["func_ptr", "ndo_gso_check",                                       "3.18.0",  "3.18.3"],
+            ["func_ptr", "ndo_dfwd_start_xmit",                                 "3.13.0",  "4.13.0"],
+            ["func_ptr", "ndo_get_lock_subclass",                               "3.14.5",  "5.4.0"],
+            ["func_ptr", "ndo_features_check",                                  "3.18.4",  "4.5.0"],
+            ["func_ptr", "ndo_gso_check",                                       "3.18.0",  "3.18.4"],
             ["func_ptr", "ndo_set_tx_maxrate",                                  "4.1.0",   None],
             ["func_ptr", "ndo_get_iflink",                                      "4.1.0",   None],
-            ["func_ptr", "ndo_switch_parent_id_get (CONFIG_NET_SWITCHDEV=y)",   "3.19.0",  "4.0.9"],
-            ["func_ptr", "ndo_switch_port_stp_update (CONFIG_NET_SWITCHDEV=y)", "3.19.0",  "4.0.9"],
-            ["func_ptr", "ndo_change_proto_down",                               "4.3.0",   "5.16.20"],
+            ["func_ptr", "ndo_switch_parent_id_get (CONFIG_NET_SWITCHDEV=y)",   "3.19.0",  "4.1.0"],
+            ["func_ptr", "ndo_switch_port_stp_update (CONFIG_NET_SWITCHDEV=y)", "3.19.0",  "4.1.0"],
+            ["func_ptr", "ndo_change_proto_down",                               "4.3.0",   "5.17.0"],
             ["func_ptr", "ndo_fill_metadata_dst",                               "4.3.0",   None],
             ["func_ptr", "ndo_set_rx_headroom",                                 "4.6.0",   None],
             ["func_ptr", "ndo_bpf",                                             "4.15.0",  None],
-            ["func_ptr", "ndo_xdp",                                             "4.8.0",   "4.14.336"],
+            ["func_ptr", "ndo_xdp",                                             "4.8.0",   "4.15.0"],
             ["func_ptr", "ndo_xdp_xmit",                                        "4.14.0",  None],
             ["func_ptr", "ndo_xdp_get_xmit_slave",                              "5.15.0",  None],
             ["func_ptr", "ndo_xsk_wakeup",                                      "5.4.0",   None],
-            ["func_ptr", "ndo_xsk_async_xmit",                                  "4.18.0",  "5.3.18"],
-            ["func_ptr", "ndo_xdp_flush",                                       "4.14.0",  "4.17.19"],
-            ["func_ptr", "ndo_get_devlink_port",                                "5.2.0",   "6.1.114"],
-            ["func_ptr", "ndo_get_devlink",                                     "5.1.0",   "5.1.21"],
+            ["func_ptr", "ndo_xsk_async_xmit",                                  "4.18.0",  "5.4.0"],
+            ["func_ptr", "ndo_xdp_flush",                                       "4.14.0",  "4.18.0"],
+            ["func_ptr", "ndo_get_devlink_port",                                "5.2.0",   "6.1.115"],
+            ["func_ptr", "ndo_get_devlink",                                     "5.1.0",   "5.2.0"],
             ["func_ptr", "ndo_tunnel_ctl",                                      "5.8.0",   None],
             ["func_ptr", "ndo_get_peer_dev",                                    "5.10.0",  None],
             ["func_ptr", "ndo_fill_forward_path",                               "5.13.0",  None],
@@ -65691,9 +65691,9 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "read_message_in",                         "6.11.0",  None],
             ["func_ptr", "sync_control",                            "6.11.0",  None],
             ["func_ptr", "async_control",                           "6.11.0",  None],
-            ["func_ptr", "read",                                    "5.4.0",   "6.10.14"],
-            ["func_ptr", "sync_write",                              "5.4.0",   "6.10.14"],
-            ["func_ptr", "async_write",                             "5.4.0",   "6.10.14"],
+            ["func_ptr", "read",                                    "5.4.0",   "6.11.0"],
+            ["func_ptr", "sync_write",                              "5.4.0",   "6.11.0"],
+            ["func_ptr", "async_write",                             "5.4.0",   "6.11.0"],
             ["func_ptr", "update_altmodes",                         "5.6.0",   None],
             ["func_ptr", "update_connector",                        "6.10.0",  None],
             ["func_ptr", "connector_status",                        "6.10.0",  None],
@@ -65715,7 +65715,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "update",                                  "5.18.0",  None],
             ["func_ptr", "prepare_access_checks",                   "5.18.0",  None],
             ["func_ptr", "check_accesses",                          "5.18.0",  None],
-            ["func_ptr", "reset_aggregated",                        "5.18.0",  "6.14.11"],
+            ["func_ptr", "reset_aggregated",                        "5.18.0",  "6.15.0"],
             ["func_ptr", "get_scheme_score",                        "5.18.0",  None],
             ["func_ptr", "apply_scheme",                            "5.18.0",  None],
             ["func_ptr", "target_valid",                            "5.18.0",  None],
@@ -65778,7 +65778,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "set_suspend_disable",                     None,      None],
             ["func_ptr", "set_suspend_mode",                        None,      None],
             ["func_ptr", "resume",                                  "4.19.0",  None],
-            ["func_ptr", "resume_early",                            "4.16.0",  "4.18.20"],
+            ["func_ptr", "resume_early",                            "4.16.0",  "4.19.0"],
             ["func_ptr", "set_pull_down",                           "4.2.0",   None],
         ]
         self.members["regulator_ops"] = adapt_to_kernel_version(regulator_ops)
@@ -65812,7 +65812,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "check_kflag_member",                      "5.0.0",   None],
             ["func_ptr", "log_details",                             "4.18.0",  None],
             ["func_ptr", "show",                                    "5.10.0",  None],
-            ["func_ptr", "seq_show",                                "4.18.0",  "5.9.16"],
+            ["func_ptr", "seq_show",                                "4.18.0",  "5.10.0"],
         ]
         self.members["btf_kind_operations"] = adapt_to_kernel_version(btf_kind_operations)
 
@@ -66215,9 +66215,9 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
 
         if is_64bit():
             # struct ctl_dir
-            if kversion >= "6.10":
+            if "6.10" <= kversion:
                 self.offset_rb_node = 0x58
-            elif kversion >= "4.9.120" and kversion < "4.10":
+            elif "4.9.120" <= kversion < "4.10":
                 self.offset_rb_node = 0x50
             elif kversion < "4.11":
                 self.offset_rb_node = 0x48
@@ -66229,7 +66229,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             # struct ctl_table
             self.offset_maxlen = 0x10
             self.offset_mode = 0x14
-            if kversion >= "6.10":
+            if "6.10" <= kversion:
                 self.offset_handler = 0x18
                 self.sizeof_ctl_table = 0x38
             else:
@@ -66237,9 +66237,9 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                 self.sizeof_ctl_table = 0x40
         else:
             # struct ctl_dir
-            if kversion >= "6.10":
+            if "6.10" <= kversion:
                 self.offset_rb_node = 0x30
-            elif kversion >= "4.9.120" and kversion < "4.10":
+            elif "4.9.120" <= kversion < "4.10":
                 self.offset_rb_node = 0x2c
             elif kversion < "4.11":
                 self.offset_rb_node = 0x28
@@ -66251,7 +66251,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             # struct ctl_table
             self.offset_maxlen = 0x8
             self.offset_mode = 0xc
-            if kversion >= "6.10":
+            if "6.10" <= kversion:
                 self.offset_handler = 0x10
                 self.sizeof_ctl_table = 0x20
             else:
@@ -67401,7 +67401,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         if kversion < "4.8":
             err("Unsupported before v4.8")
             return
-        if kversion >= "6.18":
+        if "6.18" <= kversion:
             # Read-write function pointers have been removed,
             # so there is no longer any point in displaying them with this command.
             err("Unsupported after v6.18")
@@ -68461,7 +68461,7 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
         self.out = []
         kversion = Kernel.kernel_version()
 
-        if kversion >= "5.10":
+        if "5.10" <= kversion:
             # new structure
             printk_rb_static = KernelAddressHeuristicFinder.get_printk_rb_static()
             if printk_rb_static is None:
@@ -73219,7 +73219,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         if is_64bit():
             # kmem_cache_node[0]->list_lock has SPINLOCK_MAGIC when CONFIG_DEBUG_SPINLOCK=y
             start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
-            search_range = 0x100 if kversion >= "5.9" else 0x200
+            search_range = 0x100 if "5.9" <= kversion else 0x200
             for candidate_offset in range(start_offset, start_offset + search_range, current_arch.ptrsize):
                 kmem_cache_top = kmem_caches[0] - self.kmem_cache_offset_list
 
@@ -73292,7 +73292,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             # The first valid pointer encountered after that is either random_seq or node[0].
             # We look at the contents to determine whether the pointer is random_seq.
             start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
-            search_range = 0x100 if kversion >= "5.9" else 0x200
+            search_range = 0x100 if "5.9" <= kversion else 0x200
             for candidate_offset in range(start_offset, start_offset + search_range, current_arch.ptrsize):
                 # First, we search remote_node_defrag_ratio.
                 remote_node_defrag_ratio_1000_count = 0
@@ -73335,7 +73335,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         # heuristic way 3 (relationship of user_offset, user_size, and object_size)
         # This method is valid for kernel < 6.2, or (CONFIG_HARDENED_USERCOPY=y and 6.2 <= kernel).
         start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
-        search_range = 0x100 if kversion >= "5.9" else 0x200
+        search_range = 0x100 if "5.9" <= kversion else 0x200
         for candidate_offset in range(start_offset, start_offset + search_range, current_arch.ptrsize):
             found = True
             user_offset_user_size_non_zero_flag = False
@@ -75711,7 +75711,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name))
 
         # offsetof(kmem_cache, size)
-        if kversion >= "3.18":
+        if "3.18" <= kversion:
             self.kmem_cache_offset_size = current_arch.ptrsize + 4 * 3
         else:
             self.kmem_cache_offset_size = 4 * 3
@@ -75770,7 +75770,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                 self.quiet_info("offsetof(kmem_cache, node): Not found")
                 self.kmem_cache_offset_node = None
 
-        if kversion >= "3.18":
+        if "3.18" <= kversion:
             # offsetof(kmem_cache, cpu_cache)
             self.kmem_cache_offset_cpu_cache = 0
             self.quiet_info("offsetof(kmem_cache, cpu_cache): {:#x}".format(self.kmem_cache_offset_cpu_cache))
@@ -75843,7 +75843,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             found = True
             for _kmem_cache in kmem_caches:
                 kmem_cache = _kmem_cache - self.kmem_cache_offset_list
-                if kversion >= "3.18":
+                if "3.18" <= kversion:
                     kmem_cache_node_array = kmem_cache + self.kmem_cache_offset_node
                 else:
                     kmem_cache_node_array = read_int_from_memory(kmem_cache + self.kmem_cache_offset_node)
@@ -75889,7 +75889,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(array_cache, limit): {:#x}".format(self.array_cache_offset_limit))
 
         # offsetof(array_cache, entry)
-        if kversion >= "3.17":
+        if "3.17" <= kversion:
             self.array_cache_offset_entry = 4 * 4
         else:
             sizeof_raw_spinlock_t = self.kmem_cache_node_offset_slabs_partial
@@ -75910,7 +75910,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
 
     def get_array_cache_cpu(self, addr, cpu):
         kversion = Kernel.kernel_version()
-        if kversion >= "3.18":
+        if "3.18" <= kversion:
             cpu_cache = read_int_from_memory(addr + self.kmem_cache_offset_cpu_cache)
             if len(self.cpu_offset) > 0:
                 # __percpu
@@ -75953,7 +75953,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                 freelist_addr = read_int_from_memory(node_page["address"] + self.page_offset_freelist)
                 if is_valid_addr(freelist_addr):
                     active = read_int32_from_memory(node_page["address"] + self.page_offset_active)
-                    if kversion >= "3.15":
+                    if "3.15" <= kversion:
                         freelist_byteseq = read_memory(freelist_addr, kmem_cache["objperslab"])
                         node_page["freelist"] = list(freelist_byteseq[active:])
                     else:
@@ -76013,7 +76013,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
 
             # parse node
             kmem_cache["nodes"] = []
-            if kversion >= "3.18":
+            if "3.18" <= kversion:
                 kmem_cache_node_array = kmem_cache["address"] + self.kmem_cache_offset_node
             else:
                 kmem_cache_node_array = read_int_from_memory(kmem_cache["address"] + self.kmem_cache_offset_node)
@@ -76812,7 +76812,7 @@ class SlabContainsCommand(GenericCommand):
                     self.quiet_err("Invalid address")
                     return
 
-                if kversion >= "5.17":
+                if "5.17" <= kversion:
                     self.quiet_print("slab: {:#x}".format(page))
                 else:
                     self.quiet_print("page: {:#x}".format(page))
@@ -77554,7 +77554,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
         # zone->per_cpu_pageset
         kversion = Kernel.kernel_version()
-        if kversion >= "3.12":
+        if "3.12" <= kversion:
             current = self.nodes[0]
             while current < self.nodes[0] + self.offset_name:
                 val = read_int_from_memory(current)
@@ -77655,7 +77655,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         };
         """
         # zone->free_area
-        if kversion >= "3.12":
+        if "3.12" <= kversion:
             current = self.nodes[0] + self.offset_name + current_arch.ptrsize
         else:
             current = self.nodes[0]
@@ -77694,7 +77694,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("MIGRATE_TYPES: {:d}".format(self.MIGRATE_TYPES))
 
         if self.MIGRATE_TYPES == 4:
-            if kversion >= "4.4":
+            if "4.4" <= kversion:
                 self.migrate_types = [
                     "Unmovable",
                     "Movable",
@@ -77709,7 +77709,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
                     "Reserve",
                 ]
         elif self.MIGRATE_TYPES == 5:
-            if kversion >= "4.4":
+            if "4.4" <= kversion:
                 self.migrate_types = [
                     "Unmovable",
                     "Movable",
@@ -77726,7 +77726,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
                     "Isolate",
                 ]
         elif self.MIGRATE_TYPES == 6:
-            if kversion >= "4.4":
+            if "4.4" <= kversion:
                 self.migrate_types = [
                     "Unmovable",
                     "Movable",
@@ -77795,7 +77795,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         };
         """
         # page->lru
-        if kversion >= "4.18":
+        if "4.18" <= kversion:
             self.offset_lru = current_arch.ptrsize
         else:
             self.offset_lru = current_arch.ptrsize * 3 + 8
@@ -78202,7 +78202,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(pipe_inode_info, bufs): {:#x}".format(self.offset_bufs))
 
         kversion = Kernel.kernel_version()
-        if kversion >= "5.5":
+        if "5.5" <= kversion:
             # pipe_inode_info->{head,tail,max_usage,ring_size}
             ret = self.get_offset_head_or_nrbuf(pipe_files)
             if ret is None:
@@ -78580,7 +78580,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             pipe_buffer = read_int_from_memory(pipe_inode_info + self.offset_bufs)
             self.out.append("    pipe_buffer: {:#x}".format(pipe_buffer))
 
-            if kversion >= "5.5":
+            if "5.5" <= kversion:
                 head = read_int32_from_memory(pipe_inode_info + self.offset_head)
                 tail = read_int32_from_memory(pipe_inode_info + self.offset_tail)
                 max_usage = read_int32_from_memory(pipe_inode_info + self.offset_max_usage)
@@ -78876,7 +78876,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
         self.offset_len = self.offset_expected_attach_type + 4
         self.offset_jited_len = self.offset_len + 4
         self.offset_tag = self.offset_jited_len + 4
-        if kversion >= "5.12":
+        if "5.12" <= kversion:
             self.offset_aux = AddressUtil.align_address_to_ptrsize(self.offset_tag + 8) + current_arch.ptrsize * 3
             self.offset_bpf_func = self.offset_aux - current_arch.ptrsize
         else:
@@ -79251,7 +79251,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             ...
         """
         kversion = Kernel.kernel_version()
-        if kversion >= "5.11":
+        if "5.11" <= kversion:
             self.offset_ids = 0
         else:
             self.offset_ids = current_arch.ptrsize
@@ -79724,7 +79724,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
         ret = [(addr, start, end, name, flags)]
 
         kversion = Kernel.kernel_version()
-        if kversion > "4.5":
+        if "4.5" <= kversion:
             parent = read_int_from_memory(addr + self.sizeof_resource_size_t * 2 + current_arch.ptrsize * 3)
             ret += self.dump_resource(parent)
             sibling = read_int_from_memory(addr + self.sizeof_resource_size_t * 2 + current_arch.ptrsize * 4)
@@ -80353,7 +80353,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
             descs = self.parse_xarray(self.irq_desc_tree, root=True)
 
         else:
-            # kversion >= 6.5
+            # "6.5" <= kversion
             self.sparse_irqs = KernelAddressHeuristicFinder.get_sparse_irqs()
             if self.sparse_irqs is None:
                 self.quiet_err("Not found sparse_irqs")
@@ -80660,7 +80660,7 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
             self.out.append("{:#018x} {:s}".format(netdev, name))
 
         kversion = Kernel.kernel_version()
-        if kversion >= "6.8":
+        if "6.8" <= kversion:
             info("In kernel 6.8 and later, the order of the members of `struct net_device` has changed significantly")
             info("Please note that the address detected as `net_device` is precisely the address of &net_device.name")
         return
@@ -80788,7 +80788,7 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
         else:
             self.vmap_area_list = None
 
-        if kversion and kversion >= "5.2":
+        if kversion and "5.2" <= kversion:
             self.free_vmap_area_list = KernelAddressHeuristicFinder.get_free_vmap_area_list()
             if not self.free_vmap_area_list:
                 self.quiet_err("Not found free_vmap_area_list")
@@ -80801,18 +80801,18 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             return False
 
         # vmap_area->list
-        if kversion and kversion >= "5.4":
+        if kversion and "5.4" <= kversion:
             self.offset_list = current_arch.ptrsize * 5
-        elif kversion and kversion >= "5.2":
+        elif kversion and "5.2" <= kversion:
             self.offset_list = current_arch.ptrsize * 7
         else:
             self.offset_list = current_arch.ptrsize * 6
         self.quiet_info("offsetof(vmap_area, list): {:#x}".format(self.offset_list))
 
         # vmap_area->vm
-        if kversion and kversion >= "5.4":
+        if kversion and "5.4" <= kversion:
             self.offset_vm = self.offset_list + current_arch.ptrsize * 2
-        elif kversion and kversion >= "4.7":
+        elif kversion and "4.7" <= kversion:
             self.offset_vm = self.offset_list + current_arch.ptrsize * 3
         else:
             self.offset_vm = self.offset_list + current_arch.ptrsize * 4
@@ -80951,7 +80951,7 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
 
         # parse freed list
         if not args.only_used:
-            if kversion and kversion >= "5.2":
+            if kversion and "5.2" <= kversion:
                 areas += self.parse_vmap_area_list(self.free_vmap_area_list, used=False)
 
         areas = sorted(areas, key=lambda x:x[1])
