@@ -34303,7 +34303,7 @@ class XorMemoryCommand(GenericCommand):
 
 
 @register_command
-class XorMemoryDisplayCommand(GenericCommand):
+class XorMemoryDisplayCommand(GenericCommand, BufferingOutput):
     """Display a block of memory by xor-ing each byte with specified key."""
 
     _cmdline_ = "xor-memory display"
@@ -34316,6 +34316,7 @@ class XorMemoryDisplayCommand(GenericCommand):
                         help="the size of data to xor.")
     parser.add_argument("key", metavar="KEY", type=lambda x: bytes.fromhex(x),
                         help="the data to xor as key.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -34330,6 +34331,8 @@ class XorMemoryDisplayCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
+        self.out = []
+
         start_addr = args.location
         end_addr = args.location + args.size
         try:
@@ -34337,14 +34340,17 @@ class XorMemoryDisplayCommand(GenericCommand):
         except gdb.MemoryError:
             err("Failed to read memory")
             return
-        info("Displaying XOR-ing {:#x}-{:#x} with {:s}".format(start_addr, end_addr, repr(args.key)))
 
-        gef_print(titlify("Original block"))
-        gef_print(hexdump(block, base=start_addr))
+        self.info_add_out("Displaying XOR-ing {:#x}-{:#x} with {:s}".format(start_addr, end_addr, repr(args.key)))
 
-        gef_print(titlify("XOR-ed block"))
+        self.out.append(titlify("Original block"))
+        self.out.append(hexdump(block, base=start_addr))
+
+        self.out.append(titlify("XOR-ed block"))
         xored_block = xor(block, args.key)
-        gef_print(hexdump(xored_block, base=start_addr))
+        self.out.append(hexdump(xored_block, base=start_addr))
+
+        self.print_output(check_terminal_size=True)
         return
 
 
