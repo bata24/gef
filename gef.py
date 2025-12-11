@@ -34123,7 +34123,7 @@ class VMMapCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class XFilesCommand(GenericCommand):
+class XFilesCommand(GenericCommand, BufferingOutput):
     """Display all libraries (and sections) loaded by binary."""
 
     _cmdline_ = "xfiles"
@@ -34131,6 +34131,7 @@ class XFilesCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("filter", metavar="FILTER", nargs="*", help="regex filter string.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -34143,10 +34144,12 @@ class XFilesCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
+        self.out = []
+
         fmt = "{:{:d}s} {:{:d}s} {:<21s} {:s}"
         width = AddressUtil.get_format_address_width()
         legend = ["Start", width, "End", width, "Name", "File"]
-        gef_print(GefUtil.make_legend(fmt.format(*legend)))
+        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         for xfile in ProcessMap.get_info_files():
             lines = []
@@ -34157,13 +34160,15 @@ class XFilesCommand(GenericCommand):
             line = " ".join(lines)
 
             if not args.filter:
-                gef_print(line)
+                self.out.append(line)
                 continue
 
             for filt in args.filter:
                 if re.search(filt, line):
-                    gef_print(line)
+                    self.out.append(line)
                     break
+
+        self.print_output(check_terminal_size=True)
         return
 
 
