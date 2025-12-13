@@ -181,6 +181,11 @@ GEF_FILEPATH                = os.path.expanduser(http_get.__code__.co_filename) 
                             # note: __file__ will no longer be available from gdb 15
 
 
+def get_current_arch(): # noqa
+    global current_arch
+    return current_arch
+
+
 def perf(f): # noqa
     """Decorator wrapper to perf."""
 
