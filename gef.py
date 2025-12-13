@@ -81120,9 +81120,13 @@ class KtypesLoadCommand(KtypesCommand):
         open(source_path, "wb").write(open(header_path, "rb").read())
 
         # build with debug types
-        os.system("{!r} -g -O0 -g -fno-eliminate-unused-debug-types -c {!r} -o {!r}".format(
+        os.system("{!r} -std=c11 -g -O0 -fno-eliminate-unused-debug-types -c {!r} -o {!r}".format(
             GefUtil.which("gcc"), source_path, obj_path,
         ))
+
+        if not os.path.exists(obj_path):
+            return None
+
         return obj_path
 
     @parse_args
@@ -81135,10 +81139,12 @@ class KtypesLoadCommand(KtypesCommand):
 
         header_path = self.build_header_file()
         if header_path is None:
+            warn("This kernel may be CONFIG_DEBUG_INFO_BTF=n")
             return
 
         obj_path = self.build_obj_file(header_path)
         if obj_path is None:
+            err("Failed to build")
             return
 
         gdb.execute("file {:s}".format(obj_path), to_string=True)
