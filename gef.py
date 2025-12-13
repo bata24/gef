@@ -56333,7 +56333,7 @@ class KernelAddressHeuristicFinder:
                 command = {"SLUB": "slub-dump --node", "SLUB_TINY": "slub-tiny-dump"}[allocator]
                 for n in [8, 16, 32, 64, 128, 192, 256, 512]:
                     ret = gdb.execute(
-                        "{:s} --simple --no-pager --quiet --skip-page2virt kmalloc-{:d}".format(command, n),
+                        "{:s} --simple --no-pager --quiet kmalloc-{:d}".format(command, n),
                         to_string=True,
                     )
                     r = re.findall(r"(?:active|partial|node) page: (0x\S\S+)", Color.remove_color(ret))
