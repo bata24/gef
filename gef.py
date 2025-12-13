@@ -97787,9 +97787,9 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
 
         def __str__(self):
             line = "{:18s}-{:18s} {:18s} [{:s}] {:s}".format(
-                self.addr_start_str if self.addr_start_str else "{:018x}".format(self.addr_start),
-                self.addr_end_str if self.addr_end_str else "{:018x}".format(self.addr_end),
-                self.size_str if self.size_str else "{:018x}".format(self.size),
+                self.addr_start_str if self.addr_start_str else "{:#018x}".format(self.addr_start),
+                self.addr_end_str if self.addr_end_str else "{:#018x}".format(self.addr_end),
+                self.size_str if self.size_str else "{:#018x}".format(self.size),
                 self.perm, self.description,
             ).rstrip()
 
