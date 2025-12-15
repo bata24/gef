@@ -9,7 +9,7 @@
 #######################################################################################
 # This GEF solely supports GDB compiled with Python3 and running on Linux.
 #
-# Supported architecture is following (some architectures require qemu).
+# Supported architectures are the following (some require qemu).
 #   * x86-32 & x86-64
 #   * arm v5,v6,v7
 #   * aarch64 (armv8)
@@ -64,12 +64,12 @@
 # SOFTWARE.
 #
 #######################################################################################
-# Use this command when check by `vulture`.
-# vulture gef.py --ignore-names="*Command"
+# Use this command when checking with `vulture`:
+#   $ vulture gef.py --ignore-names="*Command"
 #
 #######################################################################################
-# Use this command when check by `ruff`.
-# ruff check gef.py --select B,C4,E,F --ignore B905,E402,E501,E731
+# Use this command when checking with `ruff`:
+#   $ ruff check gef.py --select B,C4,E,F --ignore B905,E402,E501,E731
 #
 # B905: `zip()` without an explicit `strict=` parameter
 #   -> The strict argument of zip() is from python3.10. Too new to apply.
@@ -81,12 +81,12 @@
 #   -> It can be written more cleanly using lambdas.
 #
 #######################################################################################
-# Use this command when check by `codespell`.
-# codespell gef.py
+# Use this command when checking with `codespell`:
+#   $ codespell gef.py
 #
 #######################################################################################
-# Use this command to measure the time it takes GEF to load modules at startup.
-# PYTHONPROFILEIMPORTTIME=1 gdb
+# Use this command to measure the time:
+#   $ PYTHONPROFILEIMPORTTIME=1 gdb
 #
 
 
@@ -187,7 +187,7 @@ def get_current_arch(): # noqa
 
 
 def perf(f): # noqa
-    """Decorator wrapper to perf."""
+    """Decorator wrapper to measure performance."""
 
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
@@ -207,7 +207,7 @@ def perf(f): # noqa
 
 
 def cperf(f): # noqa
-    """Decorator wrapper to perf."""
+    """Decorator wrapper to measure performance."""
 
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
@@ -235,35 +235,35 @@ class DisplayHook:
 
     @staticmethod
     def pp(o, idt):
-        """Makes a string for pretty print by recursively."""
+        """Create a string for pretty print recursively."""
 
         def I1(idt):
-            """Makes an indent for current level."""
+            """Create an indent for current level."""
             return "  " * idt
 
         def I2(idt):
-            """Makes an indent for next level."""
+            """Create an indent for next level."""
             return "  " * (idt + 1)
 
         def R(o, idt):
             return [DisplayHook.pp(x, idt + 1) for x in o]
 
         def R1(o, idt):
-            """Returns a string of the elements concatenated with comma (for list, tuple, set, ...)."""
+            """Return a string of the elements concatenated with commas (for list, tuple, set, ...)."""
             return ", ".join(R(o, idt))
 
         def R2(o, idt):
-            """Returns a list of the elements with indent and comma (for list, tuple, set, ...)."""
+            """Return a list of the elements with indentation and commas (for list, tuple, set, ...)."""
             return [I2(idt) + x + "," for x in R(o, idt)]
 
         def Z(s, e, o, idt):
-            """Returns a string of the elements concatenated with commas (for list, tuple, set, ...),
+            """Return a string of the elements concatenated with commas (for list, tuple, set, ...),
             taking into account the width of the screen."""
-            # Creates a string without newlines and returns it if it's short enough.
+            # Create a string without newlines and return it if it's short enough.
             f = s + R1(o, idt) + e
             if len(f) < width:
                 return f
-            # Returns a string with a newline for each element.
+            # Return a string with a newline for each element.
             f = [s] + R2(o, idt) + [I1(idt) + e]
             return "\n".join(f)
 
@@ -271,21 +271,21 @@ class DisplayHook:
             return [DisplayHook.pp(k, idt + 1) + ": " + DisplayHook.pp(v, idt + 1) for k, v in o]
 
         def RD1(o, idt):
-            """Returns a string of the elements concatenated with comma (for dict, ...)."""
+            """Return a string of the elements concatenated with commas (for dict, ...)."""
             return ", ".join(RD(o, idt))
 
         def RD2(o, idt):
-            """Returns a list of the elements with indent and comma (for dict, ...)."""
+            """Return a list of the elements with indentation and commas (for dict, ...)."""
             return [I2(idt) + x + "," for x in RD(o, idt)]
 
         def ZD(s, e, o, idt):
-            """Returns a string of the elements concatenated with comma (for dict, ...),
+            """Return a string of the elements concatenated with commas (for dict, ...),
             taking into account the width of the screen."""
-            # Creates a string without newlines and returns it if it's short enough.
+            # Create a string without newlines and return it if it's short enough.
             f = s + RD1(o, idt) + e
             if len(f) < width:
                 return f
-            # Returns a string with a newline for each element.
+            # Return a string with a newline for each element.
             f = [s] + RD2(o, idt) + [I1(idt) + e]
             return "\n".join(f)
 
@@ -369,19 +369,19 @@ class DisplayHook:
 
 
 def hexon(): # noqa
-    """Replaces the print function that is implicitly called when running "python-interactive 1" etc."""
+    """Replace the print function that is implicitly called when running "python-interactive 1" etc."""
     sys.displayhook = DisplayHook.displayhook # noqa
     return
 
 
 def hexoff(): # noqa
-    """Reverts the print function that is implicitly called when running "python-interactive 1" etc."""
+    """Revert the print function that is implicitly called when running "python-interactive 1" etc."""
     sys.displayhook = sys.__displayhook__ # noqa
     return
 
 
 class Cache:
-    """Manages the gef cache. The cache has 2 types: "until_next" and "this_session".
+    """Manage the gef cache. The cache has 2 types: "until_next" and "this_session".
     "until_next": Cached for a very short period of time. Cleared every time an instruction is stepped, etc.
     "this_session": Cached until gdb exits.
     Note: each command may have its own cache outside this mechanism. Not all caches are centralized here."""
@@ -441,7 +441,7 @@ class Cache:
 
     @staticmethod
     def reset_gef_caches(all=False):
-        """Clears the cache of GEF.
+        """Clear the cache of GEF.
         By default, it only clears caches of `until_next` type."""
 
         Cache.__gef_caches__["until_next"] = {}
@@ -458,7 +458,7 @@ class Cache:
 
 
 class Config:
-    """Manages gef configurations. Most configs are tied to specific commands.
+    """Manage gef configurations. Most configs are tied to specific commands.
     They are defined in the form `command_name.config_name`.
     Internally it is stored as a triple (value, type, description)."""
 
@@ -510,7 +510,7 @@ def gef_print(x="", less=False, redirect=None, skip_color=False, *args, **kwargs
             less = False
 
     if not less:
-        # if x is blank, prints a blank line.
+        # if x is blank, print a blank line.
         print(x, *args, **kwargs)
         return
 
@@ -1220,7 +1220,7 @@ class AddressUtil:
     @staticmethod
     @Cache.cache_this_session
     def ptr_width():
-        """Determines whether the environment is 32-bit or 64-bit and returns the result."""
+        """Determine whether the environment is 32-bit or 64-bit."""
         void = GefUtil.cached_lookup_type("void")
         if void is None:
             uintptr_t = GefUtil.cached_lookup_type("uintptr_t")
@@ -1262,7 +1262,7 @@ class AddressUtil:
 
     @staticmethod
     def get_format_address_width(memalign_size=None):
-        """Returns the display width."""
+        """Return the width for compactly displaying the pointer."""
         if not is_alive():
             return 18
         if is_32bit() or memalign_size == 4:
@@ -1358,7 +1358,7 @@ class AddressUtil:
 
     @staticmethod
     def parse_string_range(s):
-        """Parses an address range (e.g., 0x400000-0x401000)"""
+        """Parse an address range (e.g., 0x400000-0x401000)"""
         addrs = s.split("-")
         return [int(x, 16) for x in addrs]
 
@@ -1415,7 +1415,7 @@ class AddressUtil:
     @staticmethod
     @Cache.cache_this_session
     def get_recursive_dereference_blacklist():
-        """Returns the blacklist of addresses (for caching purposes after eval())."""
+        """Return the blacklist of addresses (for caching purposes after eval())."""
         blacklist = eval(Config.get_gef_setting("dereference.blacklist"))
         for range_list in blacklist:
             assert isinstance(range_list, list)
@@ -1484,7 +1484,7 @@ class AddressUtil:
         # dereference
         addrs, error = AddressUtil.recursive_dereference(value, phys=phys)
 
-        # if addrs has one element and it is address with error (e.g., address_A -> [loop detected]),
+        # if addrs has one element and it is address with an error (e.g., address_A -> [loop detected]),
         # don't skip the element even if skip_idx=1
         if skip_idx == 1:
             if len(addrs) == 1:
@@ -2820,6 +2820,7 @@ class Instruction:
 
     @property
     def is_branch(self):
+        """Return whether it is a branch instruction. Cache the results."""
         if hasattr(self, "__is_branch"):
             return self.__is_branch
 
@@ -2838,18 +2839,20 @@ class Instruction:
         return self.__is_branch
 
     def get_color(self, highlight, config_name):
+        """A wrapper to easily retrieve color-related configurations."""
         if highlight:
             return Config.get_gef_setting(config_name + "_highlight")
         else:
             return Config.get_gef_setting(config_name)
 
     def get_string_if_valid_addr(self, operands):
+        """If the last operand is an address and is valid, read and return the string."""
         if not operands:
             return None
         last_operand = operands[-1]
         if " " in last_operand:
             last_operand = last_operand.split()[-1]
-        if len(last_operand) < 10: # 0xXXXXXXXX or 0xXXXXXXXXXXXXXXXX
+        if len(last_operand) < 10: # len("0xXXXXXXXX") or len("0xXXXXXXXXXXXXXXXX")
             return None
         try:
             v = int(last_operand, 0)
@@ -2861,6 +2864,7 @@ class Instruction:
         return s
 
     def split_last_operands(self, operands):
+        """Separate `operands` into real operands and comment for each architecture."""
         if len(operands) == 0:
             return [], ""
 
@@ -2895,6 +2899,7 @@ class Instruction:
         return operands, comment
 
     def colored_operands_text(self, highlight, operands):
+        """Parse the operands, color each element, and return it as a string."""
         color_operands_normal = self.get_color(highlight, "theme.disassemble_operands_normal")
         color_operands_const = self.get_color(highlight, "theme.disassemble_operands_const")
         color_operands_symbol = self.get_color(highlight, "theme.disassemble_operands_symbol")
@@ -2947,6 +2952,7 @@ class Instruction:
         return "{:s}<{:s}>{:s}".format(r1.group(1), sym_x, r1.group(3))
 
     def colored_text(self, opcodes_len=0, highlight=False, disable_color=False):
+        """Color the entire instruction, format it as a string and return it."""
         if opcodes_len == 0:
             return str(self)
 
@@ -3044,7 +3050,7 @@ class Instruction:
 
     @staticmethod
     def smartify_text(text):
-        """Simplifies and shortens C++ function/type names for improved readability."""
+        """Simplify and shorten C++ function/type names for improved readability."""
         smart_cpp_function_name = Config.get_gef_setting("context.smart_cpp_function_name")
         if not smart_cpp_function_name:
             return text
@@ -3141,7 +3147,7 @@ class GenericType:
 
 
 class GlibcHeap:
-    """Manages glibc heap-specific settings."""
+    """Manage glibc heap-specific settings."""
 
     class HeapInfo(GenericType):
         """GEF representation of heap_info."""
@@ -3777,7 +3783,7 @@ class GlibcHeap:
 
     @staticmethod
     def search_for_main_arena():
-        """Searches for the address of main_arena using multiple strategies and caches the result."""
+        """Search for the address of main_arena using multiple strategies and caches the result."""
         if Cache.cached_main_arena:
             return Cache.cached_main_arena
 
@@ -3839,7 +3845,7 @@ class GlibcHeap:
         def __init__(self, arena_addr=None):
             # Manually calling a command like `call malloc(0x10)` alters the heap's internal structure.
             # However, the call command does not notify the `memory_changed` event.
-            # Therefore, the GEF cache is not cleared to result wrong output.
+            # Therefore, the GEF cache is not cleared, resulting in wrong output.
             #   gef> bs
             #   gef> call malloc(0x10)
             #   gef> bs <-- wrong result
@@ -4045,14 +4051,14 @@ class GlibcHeap:
             return GlibcHeap.GlibcChunk(self, addr + 2 * current_arch.ptrsize)
 
         def get_bins_i(self, i):
-            """Returns the forward and backward pointers for the specified bin index."""
+            """Return the forward and backward pointers for the specified bin index."""
             idx = i * 2
             fd = int(self.bins[idx])
             bw = int(self.bins[idx + 1])
             return fd, bw
 
         def get_next(self):
-            """Returns the next arena object if available; otherwise returns None."""
+            """Return the next arena object if available; otherwise returns None."""
             try:
                 addr_next = int(self.next)
                 if addr_next == 0:
@@ -4066,7 +4072,7 @@ class GlibcHeap:
                 return None
 
         def __str__(self):
-            """Returns a formatted string representation of the arena and its key attributes."""
+            """Return a formatted string representation of the arena and its key attributes."""
             arena = Color.colorify("Arena", Config.get_gef_setting("theme.heap_arena_label"))
             if self.heap_base is None:
                 heap_base = "uninitialized"
@@ -4095,7 +4101,7 @@ class GlibcHeap:
             return fmt.format(*args)
 
         def get_tcache_list(self):
-            """Returns a dictionary mapping tcache bin indices to lists of chunk addresses,
+            """Return a dictionary mapping tcache bin indices to lists of chunk addresses,
             handling loops and corruption."""
             if get_libc_version() < (2, 26):
                 info("No tcache in this version of libc")
@@ -4133,7 +4139,7 @@ class GlibcHeap:
             return chunks_all
 
         def get_fastbins_list(self):
-            """Returns a dictionary of fastbin indices mapped to lists of chunk addresses,
+            """Return a dictionary of fastbin indices mapped to lists of chunk addresses,
             handling loops and corruption."""
             def fastbin_index(sz):
                 return (sz >> 4) - 2 if SIZE_SZ == 8 else (sz >> 3) - 2
@@ -4170,7 +4176,7 @@ class GlibcHeap:
             return chunks_all
 
         def get_bins_list(self, index):
-            """Returns a list of chunk addresses in the specified bin, handling loops and corruption."""
+            """Return a list of chunk addresses in the specified bin, handling loops and corruption."""
             try:
                 fw, bk = self.get_bins_i(index)
             except gdb.MemoryError:
@@ -4229,27 +4235,27 @@ class GlibcHeap:
             return chunks
 
         def get_unsortedbin_list(self):
-            """Returns a dictionary containing the list of chunks in the unsorted bin."""
+            """Return a dictionary containing the list of chunks in the unsorted bin."""
             chunks_all = {}
             chunks_all[0] = self.get_bins_list(0)
             return chunks_all
 
         def get_smallbins_list(self):
-            """Returns a dictionary mapping small bin indices to lists of chunk addresses."""
+            """Return a dictionary mapping small bin indices to lists of chunk addresses."""
             chunks_all = {}
             for i in range(1, 63):
                 chunks_all[i] = self.get_bins_list(i)
             return chunks_all
 
         def get_largebins_list(self):
-            """Returns a dictionary mapping large bin indices to lists of chunk addresses."""
+            """Return a dictionary mapping large bin indices to lists of chunk addresses."""
             chunks_all = {}
             for i in range(63, 126):
                 chunks_all[i] = self.get_bins_list(i)
             return chunks_all
 
         def reset_cache(self):
-            """make some caches.
+            """Make some caches.
                 - cached_XXX_list
                 - cached_XXX_addr_list
                 - bins_dict_for_address
@@ -4352,7 +4358,7 @@ class GlibcHeap:
             return False
 
         def get_bins_info(self, address_or_chunk, skip_top=False):
-            """Returns a list of bin information for the given address or chunk,
+            """Return a list of bin information for the given address or chunk,
             optionally including the "top" marker."""
             if isinstance(address_or_chunk, GlibcHeap.GlibcChunk):
                 address = address_or_chunk.address
@@ -4377,7 +4383,7 @@ class GlibcHeap:
 
     @staticmethod
     def get_arena(address=None):
-        """Returns the arena object for the given address or arena index, or None if not found."""
+        """Return the arena object for the given address or arena index, or None if not found."""
         if address is None or is_valid_addr(address):
             try:
                 arena = GlibcHeap.GlibcArena(address)
@@ -4609,7 +4615,7 @@ class GlibcHeap:
             return "|".join(flags)
 
         def __str__(self):
-            """Returns a formatted string representation of the chunk and its key attributes,
+            """Return a formatted string representation of the chunk and its key attributes,
             including color and symbol information."""
 
             def get_sym(addr):
@@ -4701,7 +4707,7 @@ class GlibcHeap:
             return msg
 
         def psprint(self):
-            """Returns a detailed, multi-line string representation of the chunk,
+            """Return a detailed, multi-line string representation of the chunk,
             showing both its summary and allocation state."""
             msg = []
             msg.append(str(self))
@@ -4714,7 +4720,7 @@ class GlibcHeap:
     @staticmethod
     @Cache.cache_this_session
     def get_binsize_table():
-        """Returns a dictionary containing size information for tcache, fastbins, unsorted bin,
+        """Return a dictionary containing size information for tcache, fastbins, unsorted bin,
         small bins, and large bins, based on architecture and libc version."""
         table = {
             "tcache": {},
@@ -4915,7 +4921,7 @@ class GlibcHeap:
 
 
 def get_libc_version(verbose=False):
-    """Detects and returns the glibc version as a tuple, using cache, configuration,
+    """Detect and return the glibc version as a tuple, using cache, configuration,
     process maps, or system fallback."""
 
     RE_LIBC_PATH = re.compile(r"libc6?[-_](\d+)\.(\d+)\.so")
@@ -5198,7 +5204,7 @@ class String:
 
     @staticmethod
     def morse_decode(a):
-        """Decodes a bytes or string sequence from Morse code to text."""
+        """Decode a bytes or string sequence from Morse code to text."""
         if isinstance(a, str):
             a = String.str2bytes(a)
 
@@ -5209,7 +5215,7 @@ class String:
 
     @staticmethod
     def morse_encode(a):
-        """Encodes a bytes or string sequence from text to Morse code."""
+        """Encode a bytes or string sequence from text to Morse code."""
         if isinstance(a, str):
             a = String.str2bytes(a)
 
@@ -5894,7 +5900,7 @@ def get_insn_prev(addr=None):
 
 
 class Checksec:
-    """Manages checksec related functions."""
+    """Manage checksec related functions."""
 
     @staticmethod
     @Cache.cache_until_next
@@ -6011,7 +6017,7 @@ class Checksec:
 
 
 class Endian:
-    """Manages endianness related functions."""
+    """Manage endianness related functions."""
 
     @staticmethod
     @Cache.cache_this_session
@@ -13150,7 +13156,7 @@ class ProcessMap:
     @Cache.cache_until_next
     def process_lookup_path(names, perm_mask=Permission.ALL):
         """Look up for paths in the process memory mapping.
-        Return a Section object of load base if found, None otherwise."""
+        Return a Section object of the load base address if found, None otherwise."""
         if not is_alive():
             err("Process is not running")
             return None
@@ -13325,7 +13331,7 @@ class UnicornKeystoneCapstone:
 
     @staticmethod
     def get_generic_arch(module, prefix, arch, mode, big_endian, to_string):
-        """Retrieves architecture and mode from the arguments for use for the holy
+        """Retrieve architecture and mode from the arguments for use for the holy
         capstone/keystone/unicorn trinity."""
         if isinstance(mode, tuple):
             modes = list(mode)
@@ -13788,7 +13794,7 @@ def get_arch():
 
 
 def set_arch(arch_str=None):
-    """Sets the current architecture.
+    """Set the current architecture.
     If an arch is explicitly specified, use that one, otherwise try to parse it out of the current target.
     If that fails, and default is specified, select and set that arch.
     Return the selected arch, or raise an OSError."""
@@ -13929,8 +13935,8 @@ class Auxv:
     @staticmethod
     @Cache.cache_this_session
     def get_auxiliary_values(force_heuristic=False):
-        """Retrieves the auxiliary values of the current execution.
-        Returns None if not running, or a dict() of values."""
+        """Retrieve the auxiliary values of the current execution.
+        Return None if not running, or a dict() of values."""
 
         if Config.get_gef_setting("context.disable_auxv"):
             return None
@@ -14918,13 +14924,13 @@ class ContCommand(GenericCommand):
 
     def __init__(self):
         super().__init__()
-        # The previous old implementation is to monitor by thread. It is quite stable.
+        # In the previous old implementation, Ctrl+C signal was monitored by thread. It was quite stable.
         # However, if you use this method before libc.so is loaded, gdb will crash on non-x86 architectures.
         # This is because the code executes gdb.execute("continue") in a non-main thread.
         # However, signals can only be monitored in the main thread, so there was no way to avoid this.
-        # The new implementation is to monitor by forked child process.
+        # In the new implementation, Ctrl+C signal is monitored by forked child process.
         # It seems to work well so far, but there may be cases where it doesn't work properly.
-        self.add_setting("use_fork", True, "Ctrl+C will be monitored by fork. If False, it will be monitored by thread.")
+        self.add_setting("use_fork", True, "Ctrl+C is monitored by forked process. If False, monitored by thread.")
         return
 
     def continue_for_qemu_thread(self):
@@ -15182,7 +15188,7 @@ class HistoryCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class DisplayTypeCommand(GenericCommand, BufferingOutput):
-    """Makes it easier to use `ptype /ox TYPE` and `p ((TYPE*) ADDRESS)[0]`."""
+    """Make it easier to use `ptype /ox TYPE` and `p ((TYPE*) ADDRESS)[0]`."""
 
     _cmdline_ = "dt"
     _category_ = "02-h. Process Information - Type"
@@ -21405,7 +21411,7 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     def parse_arena(self, arena):
-        """Parses and appends a formatted representation of the given arena's structure
+        """Parse and append a formatted representation of the given arena's structure
         to the output list."""
         try:
             cmd = "p ((struct malloc_state*) {:#x})[0]".format(arena.addr)
@@ -21444,7 +21450,7 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
         return
 
     def parse_mp(self):
-        """Parses and appends a formatted representation of the malloc_par (mp_) structure
+        """Parse and append a formatted representation of the malloc_par (mp_) structure
         to the output list."""
         try:
             mp = AddressUtil.parse_address("&mp_")
@@ -21496,7 +21502,7 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
         return
 
     def parse_heap_info(self, arena):
-        """Parses and appends a formatted representation of the _heap_info structure
+        """Parse and append a formatted representation of the _heap_info structure
         for the given arena to the output list."""
         if arena.is_main_arena:
             self.out.append(titlify("[heap_info]"))
@@ -47534,7 +47540,7 @@ class Syscall:
     @staticmethod
     @Cache.cache_this_session
     def parse_common_syscall_defs():
-        """Parses and returns a common definition of a syscall, common to all architectures."""
+        """Parse and return a common definition of a syscall, common to all architectures."""
         sc_defs = [
             syscall_defs,
             syscall_defs_compat,
@@ -47563,7 +47569,7 @@ class Syscall:
 
     @staticmethod
     def parse_syscall_table_defs(table_defs):
-        """Parses and returns syscall table defines for specified architecture."""
+        """Parse and return syscall table defines for specified architecture."""
         table = []
         for line in table_defs.splitlines():
             if line == "":
@@ -73276,7 +73282,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         # helper functions (for way2, way4)
 
         def get_next_valid_ptr_offset(addr, in_range=5):
-            """Returns the nearest valid pointer within a specified range."""
+            """Return the nearest valid pointer within a specified range."""
             # Depending on the configuration, the offset where the address exists will vary,
             # so we need to find the closest valid address.
             for i in range(in_range):
@@ -84315,7 +84321,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return from_exp_mant(cl, self.INTERMEDIATE_BITS, self.MIN_ALLOC_BITS)
 
     def parse_single_link_list(self, head):
-        """Returns the single linked list (including the head) and error message."""
+        """Return the single linked list (including the head) and error message."""
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
 
         # travase next
@@ -84336,7 +84342,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return seen, None
 
     def parse_double_link_list(self, head):
-        """Returns the double linked list (excluding the head) and error message."""
+        """Return the double linked list (excluding the head) and error message."""
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
 
         # travarse next
@@ -86072,7 +86078,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
     @Cache.cache_this_session
     def get_roots_heuristic(self):
-        """searches for fast_malloc_root, array_buffer_root_ and buffer_root_"""
+        """Search for fast_malloc_root, array_buffer_root_ and buffer_root_"""
 
         # the pointers to each root are in the RW area.
         # first, we list the RW area.
@@ -87701,7 +87707,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
 
 
 class uClibcNgHeap:
-    """Manages uClibc heap-specific settings."""
+    """Manage uClibc heap-specific settings."""
 
     class uClibcChunk:
         """uClibc chunk class."""
@@ -89775,7 +89781,7 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
     _syntax_ = parser.format_help()
 
     _note_ = [
-        "Walks the global TEE context list (`tee_ctxes`) and prints `struct tee_ta_ctx` currently linked to it.",
+        "Walk the global TEE context list (`tee_ctxes`) and print `struct tee_ta_ctx` currently linked to it.",
         "- A context is added to this list the first time its TA is successfully loaded.",
         "  (that is: after `ldelf` has relocated the ELF and handed the entry point back to the OP-TEE core)",
         "- A TA that has never been loaded will therefore not appear here.",
@@ -92372,7 +92378,7 @@ class BitInfo:
 
 @register_command
 class QemuRegistersCommand(GenericCommand, BufferingOutput):
-    """Get registers via qemu-monitor and shows the detail of x64/x86 system registers."""
+    """Get registers via qemu-monitor and show the detail of x64/x86 system registers."""
 
     _cmdline_ = "qreg"
     _category_ = "08-b. Qemu-system Cooperation - Register"
@@ -97744,7 +97750,7 @@ class SwitchELCommand(GenericCommand):
 
 @register_command
 class KernelVMMapCommand(GenericCommand, BufferingOutput):
-    """Prints kernel memory map."""
+    """Print kernel memory map."""
 
     _cmdline_ = "kvmmap"
     _category_ = "08-a. Qemu-system Cooperation - Memory Map"
@@ -98769,7 +98775,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class PageCommand(GenericCommand):
-    """Converts between virtual addresses, physical addresses, and page addresses."""
+    """Convert between virtual addresses, physical addresses, and page addresses."""
 
     _cmdline_ = "page"
     _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
@@ -99447,7 +99453,7 @@ class Phys2PageCommand(GenericCommand):
 
 @register_command
 class SlabVirtualCommand(GenericCommand):
-    """Converts between slab-virtual addresses and page addresses."""
+    """Convert between slab-virtual addresses and page addresses."""
 
     _cmdline_ = "slab-virtual"
     _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
@@ -99654,7 +99660,7 @@ class SlabVirtualCommand(GenericCommand):
         return address in range(self.SLAB_DATA_BASE_ADDR, self.SLAB_END_ADDR)
 
     def slab_to_virt(self, slab):
-        """Converts slab-meta (aka slab-virtual) into virt (aka slab-data)."""
+        """Convert slab-meta (aka slab-virtual) into virt (aka slab-data)."""
         if not is_valid_addr(slab):
             err("Memory Error")
             return None
@@ -99676,7 +99682,7 @@ class SlabVirtualCommand(GenericCommand):
         return slab_data_base + (1 << self.PAGE_SHIFT) * slab_idx
 
     def virt_to_slab(self, virt):
-        """Converts virt (aka slab-data) into slab (aka slab-meta or slab-virtual)."""
+        """Convert virt (aka slab-data) into slab (aka slab-meta or slab-virtual)."""
         if not is_valid_addr(virt):
             err("Memory error")
             return None
@@ -99700,7 +99706,7 @@ class SlabVirtualCommand(GenericCommand):
         return read_int_from_memory(slab + self.slab_offset_compound_slab_head) # s->compound_head
 
     def slab_to_page(self, slab):
-        """Converts slab (aka slab-meta) into page (aka backing_folio)."""
+        """Convert slab (aka slab-meta) into page (aka backing_folio)."""
         if not is_valid_addr(slab):
             err("Memory error")
             return None
@@ -99768,7 +99774,7 @@ class SlabVirtualCommand(GenericCommand):
         return None
 
     def page_to_slab(self, page):
-        """Converts page (aka backing_folio) into slab (aka slab-meta/slab-virtual)."""
+        """Convert page (aka backing_folio) into slab (aka slab-meta/slab-virtual)."""
         if not is_valid_addr(page):
             err("Memory error")
             return None
@@ -99945,7 +99951,7 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
     _note_ = "\n".join(_note_)
 
     def get_device_name(self):
-        """Identifies the device from qemu's command line arguments,
+        """Identify the device from qemu's command line arguments,
         or can force the use of the user specified device."""
         # user specific
         if self.args.device:
@@ -100003,7 +100009,7 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_memmap(self, device_name):
-        """Displays information related to the target device from the memory managed by qemu."""
+        """Display information related to the target device from the memory managed by qemu."""
         # get physmem map / IO map
         res = gdb.execute("monitor info mtree", to_string=True)
         self.info_add_out("Related memory address:")
@@ -100014,7 +100020,7 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_symbol_related_device(self, device_name):
-        """Shows symbol information for the qemu-system related to the target device."""
+        """Show symbol information for the qemu-system related to the target device."""
         # get nm
         try:
             nm = GefUtil.which("nm")
@@ -102080,7 +102086,7 @@ class KmallocAllocatedBy_UserlandHardwareBreakpoint(gdb.Breakpoint):
 
 @register_command
 class KmallocAllocatedByCommand(GenericCommand):
-    """Call predefined system-calls and prints kmalloc-N chunks allocated and freed (only x64)."""
+    """Call predefined system-calls and print kmalloc-N chunks allocated and freed (only x64)."""
 
     _cmdline_ = "kmalloc-allocated-by"
     _category_ = "08-i. Qemu-system Cooperation - Linux Dynamic Inspection"
@@ -107719,7 +107725,7 @@ class GefUtil:
     @staticmethod
     @Cache.cache_until_next
     def cached_lookup_type(_type):
-        """Looks up a GDB type by name and strips typedefs, returning None on failure."""
+        """Look up a GDB type by name and strip typedefs, returning None on failure."""
         try:
             return gdb.lookup_type(_type).strip_typedefs()
         except RuntimeError:
@@ -107727,7 +107733,7 @@ class GefUtil:
 
     @staticmethod
     def get_tqdm(use_tqdm=True):
-        """Returns the tqdm progress bar if available and enabled;
+        """Return the tqdm progress bar if available and enabled;
         otherwise returns a passthrough function."""
         tqdm = lambda x, leave=None, total=None, desc=None: x # noqa: F841
         if not use_tqdm:
@@ -107742,7 +107748,7 @@ class GefUtil:
 
     @staticmethod
     def gef_convenience(value):
-        """Defines a new convenience value."""
+        """Define a new convenience value."""
         var_name = "$_gef{:d}".format(GefUtil.__gef_convenience_vars_index__)
         GefUtil.__gef_convenience_vars_index__ += 1
         gdb.execute('set {:s} = "{:s}"'.format(var_name, value))
@@ -107786,7 +107792,7 @@ class GefUtil:
 
     @staticmethod
     def fromhex_ignore_invalid(value, to_str=False):
-        """Converts a hex string to bytes or string, ignoring invalid characters."""
+        """Convert a hex string to bytes or string, ignoring invalid characters."""
         sanitized_value = ""
         for c in value.lower():
             if c in "0123456789abcdef":
@@ -107881,7 +107887,7 @@ class GefUtil:
 
     @staticmethod
     def walk(directory):
-        """Returns all file path excluding directories and symbolic links."""
+        """Return all file path excluding directories and symbolic links."""
         for root, _dirs, files in os.walk(directory):
             for f in sorted(files):
                 path = os.path.join(root, f)
@@ -108071,7 +108077,7 @@ class Gef:
 
     @staticmethod
     def fix_venv():
-        """Detects if you are in a venv environment and adjusts GEF settings."""
+        """Detect if you are in a venv environment and adjust GEF settings."""
 
         def fast_path():
             """If you installed it with the latest installer, there should be a gev.venv.conf file.
