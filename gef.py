@@ -2794,6 +2794,7 @@ class Instruction:
         #   location: "" or "<main+0>"
         #   mnemo: "lea"
         #   operands: "rcx, [rip+0x11ee5]        # 0x55555556c69a"
+        #     -> ["rcx", "[rip+0x11ee5]        # 0x55555556c69a"]
         #   opcodes: b'H\x8d\r\xe5\x1e\x01\x00'
         self.address = address
         self.location = location
@@ -2804,6 +2805,8 @@ class Instruction:
         if len(operands) > 1:
             operands, o = operands[:-1], operands[-1]
             while (o.count("<") - o.count("operator<<") * 2) != (o.count(">") - o.count("operator>>") * 2):
+                # The split location is incorrect, so fix it.
+                # This is because there are cases where symbols contain `,`, such as C++ binaries.
                 if len(operands) > 1:
                     operands, oo = operands[:-1], operands[-1]
                     o = oo + ", " + o
@@ -2951,6 +2954,15 @@ class Instruction:
             sym_x = self.smartify_text(r1.group(2))
         return "{:s}<{:s}>{:s}".format(r1.group(1), sym_x, r1.group(3))
 
+    def get_opcodes_hex(self, opcodes_len):
+        opcodes_hex = "".join("{:02x}".format(b) for b in self.opcodes) # e.g., "488d0de51e0100"
+        # e.g., len=4: opcodes:01020304   -> 01020304
+        # e.g., len=4: opcodes:0102030405 -> 010203..
+        if opcodes_len < len(self.opcodes):
+            opcodes_hex = opcodes_hex[:opcodes_len * 2 - 2] + ".."
+        opcodes_hex = "{:{:d}}".format(opcodes_hex, opcodes_len * 2)
+        return opcodes_hex
+
     def colored_text(self, opcodes_len=0, highlight=False, disable_color=False):
         """Color the entire instruction, format it as a string and return it."""
         if opcodes_len == 0:
@@ -2960,6 +2972,7 @@ class Instruction:
 
         # format address
         address_text = hex(self.address)
+
         # format location
         location_text = self.smartify_text(self.location)
 
@@ -2969,12 +2982,7 @@ class Instruction:
             location_text = Color.colorify(location_text, color_address)
 
         # format opcode
-        opcodes_hex = "".join("{:02x}".format(b) for b in self.opcodes) # e.g., "488d0de51e0100"
-        # e.g., len=4: opcodes:01020304   -> 01020304
-        # e.g., len=4: opcodes:0102030405 -> 010203..
-        if opcodes_len < len(self.opcodes):
-            opcodes_hex = opcodes_hex[:opcodes_len * 2 - 2] + ".."
-        opcodes_hex = "{:{:d}}".format(opcodes_hex, opcodes_len * 2)
+        opcodes_hex = self.get_opcodes_hex(opcodes_len)
 
         if enable_color:
             color_opcode = self.get_color(highlight, "theme.disassemble_opcode")
