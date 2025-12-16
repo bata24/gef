@@ -107780,7 +107780,8 @@ class GefUtil:
 
         TIOCGWINSZ = 0x5413
         try:
-            tty_rows, tty_columns = struct.unpack("hh", fcntl.ioctl(1, TIOCGWINSZ, "1234"))
+            _ws = struct.unpack("HHHH", fcntl.ioctl(1, TIOCGWINSZ, b"12345678"))
+            tty_rows, tty_columns = _ws[0], _ws[1]
             return tty_rows, tty_columns
         except OSError:
             return 600, 100
