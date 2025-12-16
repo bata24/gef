@@ -104,7 +104,6 @@ import collections
 import configparser
 import ctypes
 import datetime
-import fcntl
 import functools
 import hashlib
 import itertools
@@ -107778,9 +107777,8 @@ class GefUtil:
                 if tty == redirect:
                     return int(height), int(width)
 
-        TIOCGWINSZ = 0x5413
         try:
-            tty_rows, tty_columns = struct.unpack("hh", fcntl.ioctl(1, TIOCGWINSZ, "1234"))
+            tty_columns, tty_rows = os.get_terminal_size()
             return tty_rows, tty_columns
         except OSError:
             return 600, 100
