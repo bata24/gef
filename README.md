@@ -30,7 +30,7 @@ Numerous other commands have been added and enhanced. Enjoy!
 ## Setup
 
 ### Supported Environment
-- Verified on Ubuntu 24.04 and 25.04.
+- Verified on Ubuntu 24.04-25.10.
 - Expected to work on Ubuntu 22.04-23.10.
 - Might work on Ubuntu 20.04-21.10, though not recommended.
 
