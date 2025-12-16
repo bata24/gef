@@ -26545,6 +26545,8 @@ class KernelChecksecCommand(GenericCommand):
         if not ksysctl_ret:
             additional = "ksysctl was failed"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+            warn(Color.boldify("With `CONFIG_RANDSTRUCT=y`, identifying structure members may be unreliable."))
+            warn(Color.boldify("As a result, many GEF commands will not work correctly."))
         else:
             additional = "ksysctl was successful"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
