@@ -5646,23 +5646,65 @@ class Disasm:
         if end_pc is not None:
             kwargs["end_pc"] = end_pc
 
-        for insn in arch.disassemble(start_pc, **kwargs):
-            address = insn["addr"]
+        insn_list = list(arch.disassemble(start_pc, **kwargs))
+        if not insn_list:
+            return None
+
+        is_thumb = (is_arm32() or is_arm32_cortex_m())
+
+        def eff_addr(a):
+            return a - 1 if is_thumb and (a & 1) else a
+
+        def get_mnemo_operands(insn):
             asm = insn["asm"].rstrip().split(None, 1)
             if len(asm) > 1:
                 mnemo = asm[0]
                 operands = asm[1].replace("\t", " ")
             else:
                 mnemo, operands = asm[0], ""
+            return mnemo, operands
 
-            location = Symbol.get_symbol_string(address, nosymbol_string=" <NO_SYMBOL>")
+        try:
+            # fast path: read each instruction at once
 
-            if (is_arm32() or is_arm32_cortex_m()) and insn["addr"] & 1:
-                opcodes = read_memory(insn["addr"] - 1, insn["length"])
-            else:
-                opcodes = read_memory(insn["addr"], insn["length"])
+            # calc size
+            base = None
+            end = None
+            for insn in insn_list:
+                ea = eff_addr(insn["addr"])
+                if base is None or ea < base:
+                    base = ea
+                e = ea + insn["length"]
+                if end is None or e > end:
+                    end = e
 
-            yield Instruction(address, location, mnemo, operands, opcodes)
+            blob = read_memory(base, end - base)
+
+            for insn in insn_list:
+                address = insn["addr"]
+                location = Symbol.get_symbol_string(address, nosymbol_string=" <NO_SYMBOL>")
+                mnemo, operands = get_mnemo_operands(insn)
+
+                ea = eff_addr(address)
+                off = ea - base
+                opcodes = blob[off: off + insn["length"]]
+
+                yield Instruction(address, location, mnemo, operands, opcodes)
+
+        except gdb.MemoryError:
+            # slow path: read each instruction sequentially
+            for insn in insn_list:
+                address = insn["addr"]
+                location = Symbol.get_symbol_string(address, nosymbol_string=" <NO_SYMBOL>")
+                mnemo, operands = get_mnemo_operands(insn)
+
+                if is_thumb and (address & 1):
+                    opcodes = read_memory(address - 1, insn["length"])
+                else:
+                    opcodes = read_memory(address, insn["length"])
+
+                yield Instruction(address, location, mnemo, operands, opcodes)
+
         return None
 
     @staticmethod
