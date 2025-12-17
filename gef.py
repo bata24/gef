@@ -2787,16 +2787,14 @@ class Instruction:
     RE_SPLIT_SYMBOL = re.compile(r"(.*?)<(.+)>(.*)$")
     RE_SPLIT_SYMBOL_OFFSET = re.compile(r"(.+)\+(\d+)$")
 
-    def __init__(self, address, location, mnemo, operands, opcodes):
+    def __init__(self, address, mnemo, operands, opcodes):
         # example:
         #   address: 0x55555555a7d0
-        #   location: "" or "<main+0>"
         #   mnemo: "lea"
         #   operands: "rcx, [rip+0x11ee5]        # 0x55555556c69a"
         #     -> ["rcx", "[rip+0x11ee5]        # 0x55555556c69a"]
         #   opcodes: b'H\x8d\r\xe5\x1e\x01\x00'
         self.address = address
-        self.location = location
         self.mnemonic = mnemo
 
         # merge symbol includes ","; e.g., <... , ...>
@@ -2819,6 +2817,14 @@ class Instruction:
         self.opcodes = opcodes
         self.size = len(opcodes)
         return
+
+    @property
+    def location(self):
+        if hasattr(self, "__location"):
+            return self.__location
+        # evaluate when needed
+        self.__location = Symbol.get_symbol_string(self.address, nosymbol_string=" <NO_SYMBOL>")
+        return self.__location
 
     @property
     def is_branch(self):
@@ -3047,8 +3053,6 @@ class Instruction:
 
     def __str__(self):
         location = self.smartify_text(self.location)
-        if not location:
-            location = "<NO_SYMBOL>"
         operands = self.smartify_text(", ".join(self.operands))
         return "{:#10x} {:20s} {:6s} {:s}".format(self.address, location, self.mnemonic, operands)
 
@@ -5415,7 +5419,7 @@ class Symbol:
     @staticmethod
     @Cache.cache_this_session
     def get_symbol_string(addr, nosymbol_string=""):
-        """e.g., 0xffffffff9f6bd2a1 -> ' <commit_creds+0x1>'"""
+        """e.g., 0xffffffff9f6bd2a1 -> ' <commit_creds+0x1>'. Be careful to include leading spaces."""
         try:
             if isinstance(addr, str):
                 addr = Color.remove_color(addr)
@@ -5682,20 +5686,18 @@ class Disasm:
 
             for insn in insn_list:
                 address = insn["addr"]
-                location = Symbol.get_symbol_string(address, nosymbol_string=" <NO_SYMBOL>")
                 mnemo, operands = get_mnemo_operands(insn)
 
                 ea = eff_addr(address)
                 off = ea - base
                 opcodes = blob[off: off + insn["length"]]
 
-                yield Instruction(address, location, mnemo, operands, opcodes)
+                yield Instruction(address, mnemo, operands, opcodes)
 
         except gdb.MemoryError:
             # slow path: read each instruction sequentially
             for insn in insn_list:
                 address = insn["addr"]
-                location = Symbol.get_symbol_string(address, nosymbol_string=" <NO_SYMBOL>")
                 mnemo, operands = get_mnemo_operands(insn)
 
                 if is_thumb and (address & 1):
@@ -5703,7 +5705,7 @@ class Disasm:
                 else:
                     opcodes = read_memory(address, insn["length"])
 
-                yield Instruction(address, location, mnemo, operands, opcodes)
+                yield Instruction(address, mnemo, operands, opcodes)
 
         return None
 
@@ -5792,8 +5794,7 @@ class Disasm:
         This is the backend used by Disasm.gef_disassemble if specified in the config.
         It is also called directly from some commands such as Disasm.capstone_disassemble."""
         def cs_insn_to_gef_insn(cs_insn):
-            loc = Symbol.get_symbol_string(cs_insn.address, nosymbol_string=" <NO_SYMBOL>")
-            return Instruction(cs_insn.address, loc, cs_insn.mnemonic, cs_insn.op_str, cs_insn.bytes)
+            return Instruction(cs_insn.address, cs_insn.mnemonic, cs_insn.op_str, cs_insn.bytes)
 
         capstone = sys.modules["capstone"]
         arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
@@ -5863,7 +5864,7 @@ class Disasm:
                     break
 
                 # failure (maybe the code is invalid)
-                yield Instruction(location, "", "(bad)", "", code_remain[:arch_inst_length])
+                yield Instruction(location, "(bad)", "", code_remain[:arch_inst_length])
                 nb_insn -= 1
                 if nb_insn == 0:
                     return
