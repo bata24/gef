@@ -31549,7 +31549,10 @@ class ContextExtraCommand(GenericCommand):
 
         for command in self.context_extra_commands:
             gef_print(titlify(command), redirect)
-            ContextCommand.execute_command(command, redirect)
+            try:
+                ContextCommand.execute_command(command, redirect)
+            except Exception as e:
+                err(str(e), redirect=redirect)
         return
 
     @parse_args
