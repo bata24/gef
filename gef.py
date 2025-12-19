@@ -34317,7 +34317,7 @@ class XInfoCommand(GenericCommand):
 
         return
 
-    def xinfo_kernel(self, address):
+    def xinfo_kernel_pagewalk(self, address):
         ret = gdb.execute("pagewalk --vrange {:#x} --no-pager --quiet".format(address), to_string=True)
         ret = [x for x in ret.splitlines() if not Color.remove_color(x).startswith(("---", "[+]"))]
 
@@ -34336,6 +34336,16 @@ class XInfoCommand(GenericCommand):
             gef_print("Offset (from phys mapped):  {:#x} + {:#x}".format(pstart, offset))
         return
 
+    def xinfo_kernel_kvmmap(self, address):
+        ret = gdb.execute("kvmmap {:#x} --no-pager --quiet".format(address), to_string=True)
+        gef_print(ret.rstrip())
+        return
+
+    def xinfo_kernel_slab(self, address):
+        ret = gdb.execute("slab-contains {:#x}".format(address), to_string=True)
+        gef_print(ret.rstrip())
+        return
+
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("kgdb",))
@@ -34349,8 +34359,12 @@ class XInfoCommand(GenericCommand):
         # kernel xinfo
         if is_qemu_system() or is_vmware():
             for location in locations:
-                gef_print(titlify("xinfo: {:#x}".format(location)))
-                self.xinfo_kernel(location)
+                gef_print(titlify("xinfo (from pagewalk): {:#x}".format(location)))
+                self.xinfo_kernel_pagewalk(location)
+                gef_print(titlify("xinfo (from kvmmap): {:#x}".format(location)))
+                self.xinfo_kernel_kvmmap(location)
+                gef_print(titlify("xinfo (from slab-contains): {:#x}".format(location)))
+                self.xinfo_kernel_slab(location)
             return
 
         # userland xinfo
