@@ -276,7 +276,8 @@ Consider rebuilding GDB from the latest tarball or from the Git repository.
     apt install -y libdebuginfod-dev libreadline-dev
     git clone --depth 1 https://github.com/bminor/binutils-gdb && cd binutils-gdb
     ./configure --disable-{binutils,ld,gold,gas,sim,gprof,gprofng} --enable-targets=all \
-    --with-python=/usr/bin/python3 --with-debuginfod --with-system-{zlib,readline}
+    --with-python=/usr/bin/python3 --with-debuginfod --with-system-{zlib,readline} \
+    --disable-{dependency-tracking,gdbtk,unit-tests} --without-{tcl,tk,x,guile,babeltrace,intel-pt,xx-hash}
     make && make install
     ```
 
