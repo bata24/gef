@@ -20285,8 +20285,8 @@ class UnicornEmulateCommand(GenericCommand):
         content += "#\n"
         content += "# Powered by gef, unicorn-engine, and capstone-engine\n"
         content += "#\n"
-        content += "# original:  by @_hugsy_\n"
-        content += "# improvement: by @bata_24\n"
+        content += "# Original: by @_hugsy_\n"
+        content += "# Improvement: by @bata_24\n"
         content += "#\n"
 
         # imports
@@ -20341,7 +20341,7 @@ class UnicornEmulateCommand(GenericCommand):
         content += "def code_hook(emu, address, size, user_data):\n"
         content += "    global count\n"
         content += "    if not quiet:\n"
-        content += "        # unicorn passes 0xf1f1f1f1 as size if opcode is unsupported.\n"
+        content += "        # unicorn passes 0xf1f1_f1f1 as size if opcode is unsupported.\n"
         content += "        # this causes memory read error, so we need to fix the size.\n"
         content += "        if size >= 0x40:\n"
         content += "            size = 0x10\n"
@@ -20424,14 +20424,14 @@ class UnicornEmulateCommand(GenericCommand):
             content += "def emulate_mmap(emu, sysno):\n"
             content += "    if sysno != {:d}:\n".format(mmap_entry.nr)
             content += "        return False\n"
-            content += "    \n"
+            content += "\n"
             content += "    a1 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[0])
             content += "    if a1 != 0:\n"
             content += "        return False\n"
             content += "    a2 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[1])
             content += "    if a2 == 0 or (a2 & 0xfff) != 0:\n"
             content += "        return False\n"
-            content += "    if a2 > 0x10000000: # heuristic value (0x8000000 is used to create thread arena)\n"
+            content += "    if a2 > 0x1000_0000: # heuristic value (0x800_0000 is used to create thread arena)\n"
             content += "        return False\n"
             content += "    a3 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[2])
             content += "    a3 &= 7\n"
@@ -20442,10 +20442,13 @@ class UnicornEmulateCommand(GenericCommand):
             content += "    if a5 != 0xffff_ffff:\n"
             content += "        return False\n"
             content += "    a6 = emu.reg_read(registers['{:s}'])\n".format(mmap_entry.arg_regs[5])
-            content += "    \n"
+            content += "\n"
             content += "    regions = [(None, 0, None)] + list(emu.mem_regions())\n"
             content += "    regions = regions[::-1]\n"
             content += "    for (mr1, mr2) in zip(regions[:-1], regions[1:]):\n"
+            if is_64bit():
+                content += "        if mr1[0] >= 0x8000_0000_0000_0000: # avoid around [vsyscall]\n"
+                content += "            continue\n"
             content += "        if mr1[0] - mr2[1] >= a2:\n"
             content += "            map_start = mr1[0] - a2\n"
             content += "            break\n"
@@ -20465,12 +20468,12 @@ class UnicornEmulateCommand(GenericCommand):
             content += "def emulate_munmap(emu, sysno):\n"
             content += "    if sysno != {:d}:\n".format(munmap_entry.nr)
             content += "        return False\n"
-            content += "    \n"
+            content += "\n"
             content += "    a1 = emu.reg_read(registers['{:s}'])\n".format(munmap_entry.arg_regs[0])
             content += "    a2 = emu.reg_read(registers['{:s}'])\n".format(munmap_entry.arg_regs[1])
             content += "    if a2 == 0 or (a2 & 0xfff) != 0:\n"
             content += "        return False\n"
-            content += "    \n"
+            content += "\n"
             content += "    try:\n"
             content += "        emu.mem_unmap(a1, a2)\n"
             content += "        emu.reg_write(registers['{:s}'], 0)\n".format(munmap_entry.ret_regs[0])
@@ -20489,14 +20492,14 @@ class UnicornEmulateCommand(GenericCommand):
             content += "def emulate_brk(emu, sysno):\n"
             content += "    if sysno != {:d}:\n".format(brk_entry.nr)
             content += "        return False\n"
-            content += "    \n"
+            content += "\n"
             content += "    global current_brk\n"
             content += "    a1 = emu.reg_read(registers['{:s}'])\n".format(brk_entry.arg_regs[0])
-            content += "    \n"
+            content += "\n"
             content += "    if a1 == 0 or a1 == current_brk:\n"
             content += "        emu.reg_write(registers['{:s}'], current_brk)\n".format(brk_entry.ret_regs[0])
             content += "        return True\n"
-            content += "    \n"
+            content += "\n"
             content += "    if a1 > current_brk:\n"
             content += "        for r in emu.mem_regions(): # get the permission of current brk region\n"
             content += "            if r[1] + 1 == current_brk:\n"
@@ -20513,7 +20516,7 @@ class UnicornEmulateCommand(GenericCommand):
             content += "            emu.mem_unmap(a1, current_brk - a1)\n"
             content += "        except Exception:\n"
             content += "            return False\n"
-            content += "    \n"
+            content += "\n"
             content += "    emu.reg_write(registers['{:s}'], a1)\n".format(brk_entry.ret_regs[0])
             content += "    print('  --> syscall={:d} (emulated)'.format(sysno))\n"
             content += "    print(f'    --> {a1:#x} = brk({a1:#x})')\n"
@@ -22694,6 +22697,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         "  - Any interrupt was raised",
         "  - An instruction that unicorn does not support was executed",
         "I have emulated them as well as I can, but maybe it is not perfect.",
+        "  - The address returned by mmap can differ from the actual one; it's an emulation limitation.",
         "The failure message may not be detected because it is searched for heuristically.",
     ]
     _note_ = "\n".join(_note_)
