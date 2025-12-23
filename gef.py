@@ -99532,7 +99532,6 @@ class SlabVirtualCommand(GenericCommand):
     _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     modes = ["to_virt", "to_page", "from_virt", "from_page"]
     parser.add_argument("mode", choices=modes, help="conversion mode.")
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address, help="the address to convert.")
