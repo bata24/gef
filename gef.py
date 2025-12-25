@@ -17831,7 +17831,7 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
         return locations
 
     def process_by_address(self, pattern, start_address, end_address):
-        info("Searching for '{:s}' in {:#x}-{:#x}".format(
+        info("Searching for {:s} in {:#x}-{:#x}".format(
             Color.yellowify(pattern), start_address, end_address,
         ))
         ret = self.search_pattern_by_address(pattern, start_address, end_address)
@@ -17843,9 +17843,9 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
         """Search for a pattern within selected (or whole) memory."""
 
         if section_name is None:
-            self.info_add_out("Searching for '{:s}' in {:s}".format(Color.yellowify(pattern), "whole memory"))
+            self.info_add_out("Searching for {:s} in {:s}".format(Color.yellowify(pattern), "whole memory"))
         else:
-            self.info_add_out("Searching for '{:s}' in {:s}".format(Color.yellowify(pattern), section_name))
+            self.info_add_out("Searching for {:s} in {:s}".format(Color.yellowify(pattern), section_name))
 
         maps_generator = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
 
