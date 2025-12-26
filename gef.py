@@ -29588,9 +29588,16 @@ class ContextCommand(GenericCommand):
     ]
     parser.add_argument("commands", nargs="*", choices=commands, default=[],
                         metavar="{legend,regs,stack,code,mem_access,args,source,mem_watch,trace,threads,extra}|{on,off}",
-                        help="specifies which context to display.")
+                        help="invoke each pane individually, or temporarily control the output.")
     parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
     _syntax_ = parser.format_help()
+
+    _note_ = [
+        'If "on" or "off" is specified, that operation takes precedence.',
+        "`context XXX YYY` invokes the `context-XXX` command and then the `context-YYY` command, in that order.",
+        "There are various configuration options that modify the behavior of context. You can list them with gef config context.",
+    ]
+    _note_ = "\n".join(_note_)
 
     context_hidden = False
 
