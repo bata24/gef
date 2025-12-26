@@ -200,9 +200,10 @@ To use these commands fully, you need to manually install the necessary packages
 |`binwalk-memory`|`binwalk`|-|-|
 |`diffo colordiff`|`colordiff`|-|-|
 |`diffo git-diff`|`git`|-|-|
+|`tmux-setup`|`tmux`|-|-|
+|`vdump`|`imagemagick`|-|-|
 |`sixel-memory`|`imagemagick`|-|-|
 |`sixel-memory -b`|-|`pillow`, `pyzbar`|-|
-|`vdump`|`imagemagick`|-|-|
 |`ktask -S`|-|-|`seccomp-tools`|
 |`seccomp-tools`|-|-|`seccomp-tools`|
 |`onegadget`|-|-|`one_gadget`|
