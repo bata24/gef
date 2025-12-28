@@ -413,7 +413,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - ![](images/vmmap-pin.png)
     - It also supports `Intel SDE`.
         - ![](images/vmmap-sde.png)
-    - It is redirected to `pagewalk` when connecting to gdb stub of `qemu-system`.
+    - It is redirected to `kvmmap` when connecting to gdb stub of `qemu-system`.
     - It supports detection and coloring of `Writable`, `ReadOnly`, `None` and `RWX` regions.
     - It shows the area each register points to.
 - `registers`

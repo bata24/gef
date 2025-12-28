@@ -722,3 +722,5 @@ Yes, please follow the license terms and preserve copyright and attribution noti
     - [bata24/gefの機能紹介とか](https://hackmd.io/@bata24/SycIO4qPi)
 - The story behind each command, etc. 2024 Edition
     - [bata24/gefの機能紹介とか 2024](https://hackmd.io/@bata24/SJOzjzqQ1e)
+- The story behind each command, etc. 2025 Edition
+    - [bata24/gefの機能紹介とか 2025](https://hackmd.io/@bata24/rkut9rU7Zg)
