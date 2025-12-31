@@ -32260,43 +32260,102 @@ class PatchCommand(GenericCommand):
         self.format = None
         return
 
-    @staticmethod
-    def patch_insert(history_info):
-        assert isinstance(history_info, dict)
-        assert "addr" in history_info
-        assert "before_data" in history_info
-        assert "after_data" in history_info
-        if "physmode" not in history_info:
-            history_info["physmode"] = "virt"
-        elif isinstance(history_info["physmode"], bool):
-            if history_info["physmode"]:
-                history_info["physmode"] = "phys"
-            else:
-                history_info["physmode"] = "virt"
-        PatchCommand.patch_history.insert(0, history_info)
-        ok("Inserted to patch history")
-        return
+    class PatchInfo:
+        def __init__(self, tag, addr, data, length, phys=None):
+            self.tag = tag
+            self.addr = addr
+            self.data = data
+            self.length = length
+            self.phys = phys
+            return
 
-    def patch(self, addr, data, length):
-        try:
-            before_data = read_memory(addr, length)
-            write_memory(addr, data)
-            after_data = read_memory(addr, length)
-        except gdb.MemoryError:
-            err("Failed to access memory")
+        def __repr__(self):
+            return '<{:s}.{:s} object at {:#x}, addr={:#x}, data={}, length={:#x}, phys={}>'.format(
+                self.__module__, self.__class__.__name__, id(self),
+                self.addr, self.data, self.length, self.phys
+            )
+
+        def a(self):
+            a = " ".join(["{:02x}".format(x) for x in self.after_data[:0x10]])
+            if len(self.after_data) > 0x10:
+                a += " ..."
+            return a
+
+        def b(self):
+            b = " ".join(["{:02x}".format(x) for x in self.before_data[:0x10]])
+            if len(self.before_data) > 0x10:
+                b += " ..."
+            return b
+
+        def patch(self):
+            orig_mode = QemuMonitor.get_current_mmu_mode()
+            if orig_mode == "virt" and self.phys:
+                enable_phys()
+                self.before_data = read_memory(self.addr, self.length)
+                write_memory(self.addr, self.data)
+                self.after_data = read_memory(self.addr, self.length)
+                disable_phys()
+            elif orig_mode == "phys" and not self.phys:
+                disable_phys()
+                self.before_data = read_memory(self.addr, self.length)
+                write_memory(self.addr, self.data)
+                self.after_data = read_memory(self.addr, self.length)
+                enable_phys()
+            else:
+                self.before_data = read_memory(self.addr, self.length)
+                write_memory(self.addr, self.data)
+                self.after_data = read_memory(self.addr, self.length)
+
+            # print
+            ok("Patch success: {!s}{:s}: {:s} -> {:s}".format(
+                ProcessMap.lookup_address(self.addr), Symbol.get_symbol_string(self.addr),
+                self.b(), self.a(),
+            ))
+
+            # history
+            self.insert_history()
             return
-        except Exception as e:
-            err(e)
+
+        def insert_history(self):
+            for i in range(len(PatchCommand.patch_history)):
+                if PatchCommand.patch_history[i][0].tag == self.tag:
+                    PatchCommand.patch_history[i].append(self)
+                    break
+            else:
+                PatchCommand.patch_history.insert(0, [self])
             return
-        history_info = {
-            "addr": addr,
-            "before_data": before_data,
-            "after_data": after_data,
-            "physmode": QemuMonitor.get_current_mmu_mode(),
-        }
-        PatchCommand.patch_history.insert(0, history_info)
-        ok("Patching {:d} bytes from {!s}".format(length, ProcessMap.lookup_address(addr)))
-        return
+
+        def revert(self):
+            orig_mode = QemuMonitor.get_current_mmu_mode()
+            if orig_mode == "virt" and self.phys:
+                enable_phys()
+                write_memory(self.addr, self.before_data)
+                disable_phys()
+            elif orig_mode == "phys" and not self.phys:
+                disable_phys()
+                write_memory(self.addr, self.before_data)
+                enable_phys()
+            else:
+                write_memory(self.addr, self.before_data)
+
+            # print
+            ok("Revert success: {!s}{:s}: {:s} -> {:s}".format(
+                ProcessMap.lookup_address(self.addr), Symbol.get_symbol_string(self.addr),
+                self.a(), self.b(),
+            ))
+
+            # history
+            self.remove_history()
+            return
+
+        def remove_history(self):
+            for i in range(len(PatchCommand.patch_history)):
+                if PatchCommand.patch_history[i][0].tag == self.tag:
+                    PatchCommand.patch_history[i].remove(self)
+                    if PatchCommand.patch_history[i] == []:
+                        PatchCommand.patch_history.pop(i)
+                    break
+            return
 
     # for qword, dword, word, byte sub-commands
     @parse_args
@@ -32317,32 +32376,27 @@ class PatchCommand(GenericCommand):
             if not is_qemu_system():
                 err("Unsupported in this gdb mode.")
                 return
-            orig_mode = QemuMonitor.get_current_mmu_mode()
 
-            if orig_mode == "virt":
-                enable_phys()
+        addr = args.location
+        size, fcode = SUPPORTED_SIZES[self.format]
 
-        try:
-            addr = args.location
-            size, fcode = SUPPORTED_SIZES[self.format]
+        if args.endian_reverse is False:
+            d = "<" if Endian.is_little_endian() else ">"
+        else:
+            d = ">" if Endian.is_little_endian() else "<"
 
-            if args.endian_reverse is False:
-                d = "<" if Endian.is_little_endian() else ">"
-            else:
-                d = ">" if Endian.is_little_endian() else "<"
+        import random
+        tag = random.randint(1, 0xffff_ffff)
 
-            for value in args.values:
-                value = AddressUtil.parse_address(value) & ((1 << size * 8) - 1)
-                vstr = struct.pack(d + fcode, value)
-                self.patch(addr, vstr, size)
-                addr += size
-        except Exception:
-            self.usage()
-
-        finally:
-            if args.phys:
-                if orig_mode == "virt":
-                    disable_phys()
+        for value in args.values:
+            value = AddressUtil.parse_address(value) & ((1 << size * 8) - 1)
+            vstr = struct.pack(d + fcode, value)
+            try:
+                self.PatchInfo(tag, addr, vstr, size, args.phys).patch()
+            except Exception as e:
+                err(e)
+                return
+            addr += size
         return
 
 
@@ -32498,10 +32552,6 @@ class PatchStringCommand(PatchCommand):
             if not is_qemu_system():
                 err("Unsupported in this gdb mode.")
                 return
-            orig_mode = QemuMonitor.get_current_mmu_mode()
-
-            if orig_mode == "virt":
-                enable_phys()
 
         if args.length:
             vstr = args.vstr * (args.length // len(args.vstr) + 1)
@@ -32509,11 +32559,12 @@ class PatchStringCommand(PatchCommand):
         else:
             vstr = args.vstr
 
-        self.patch(args.location, vstr, len(vstr))
-
-        if args.phys:
-            if orig_mode == "virt":
-                disable_phys()
+        import random
+        tag = random.randint(1, 0xffff_ffff)
+        try:
+            self.PatchInfo(tag, args.location, vstr, len(vstr), args.phys).patch()
+        except Exception as e:
+            err(e)
         return
 
 
@@ -32552,10 +32603,6 @@ class PatchHexCommand(PatchCommand):
             if not is_qemu_system():
                 err("Unsupported in this gdb mode.")
                 return
-            orig_mode = QemuMonitor.get_current_mmu_mode()
-
-            if orig_mode == "virt":
-                enable_phys()
 
         if args.length:
             hstr = args.hstr * (args.length // len(args.hstr) + 1)
@@ -32563,11 +32610,12 @@ class PatchHexCommand(PatchCommand):
         else:
             hstr = args.hstr
 
-        self.patch(args.location, hstr, len(hstr))
-
-        if args.phys:
-            if orig_mode == "virt":
-                disable_phys()
+        import random
+        tag = random.randint(1, 0xffff_ffff)
+        try:
+            self.PatchInfo(tag, args.location, hstr, len(hstr), args.phys).patch()
+        except Exception as e:
+            err(e)
         return
 
 
@@ -32607,21 +32655,18 @@ class PatchPatternCommand(PatchCommand):
             if not is_qemu_system():
                 err("Unsupported in this gdb mode.")
                 return
-            orig_mode = QemuMonitor.get_current_mmu_mode()
-
-            if orig_mode == "virt":
-                enable_phys()
 
         pats = PatternCreateCommand.generate_cyclic_pattern(args.length, args.charset)
         if args.dry_run:
             info("Generated pattern: {}".format(pats))
             return
 
-        self.patch(args.location, pats, len(pats))
-
-        if args.phys:
-            if orig_mode == "virt":
-                disable_phys()
+        import random
+        tag = random.randint(1, 0xffff_ffff)
+        try:
+            self.PatchInfo(tag, args.location, pats, len(pats), args.phys).patch()
+        except Exception as e:
+            err(e)
         return
 
 
@@ -32686,7 +32731,9 @@ class PatchNopCommand(PatchCommand):
         else:
             insn = current_arch.nop_insn
 
-        self.patch(addr, insn * count, patch_bytes)
+        import random
+        tag = random.randint(1, 0xffff_ffff)
+        self.PatchInfo(tag, addr, insn * count, patch_bytes, self.args.phys).patch()
         return
 
     @parse_args
@@ -32702,10 +32749,6 @@ class PatchNopCommand(PatchCommand):
             if not is_qemu_system():
                 err("Unsupported in this gdb mode.")
                 return
-            orig_mode = QemuMonitor.get_current_mmu_mode()
-
-            if orig_mode == "virt":
-                enable_phys()
 
         if args.location is None:
             location = current_arch.pc
@@ -32719,19 +32762,12 @@ class PatchNopCommand(PatchCommand):
                 num_bytes = self.get_insns_size(location, args.inst_count)
         except Exception:
             err("Failed to get patch bytes")
-            if args.phys:
-                if orig_mode == "virt":
-                    disable_phys()
             return
 
         try:
             self.patch_nop(location, num_bytes)
-        except Exception:
-            err("Failed to patch")
-
-        if args.phys:
-            if orig_mode == "virt":
-                disable_phys()
+        except Exception as e:
+            err(e)
         return
 
 
@@ -32775,7 +32811,9 @@ class PatchInfloopCommand(PatchCommand):
                 if current_arch.has_delay_slot:
                     insn += current_arch.nop_insn
 
-        self.patch(addr, insn, len(insn))
+        import random
+        tag = random.randint(1, 0xffff_ffff)
+        self.PatchInfo(tag, addr, insn, len(insn), self.args.phys).patch()
         return
 
     @parse_args
@@ -32791,10 +32829,6 @@ class PatchInfloopCommand(PatchCommand):
             if not is_qemu_system():
                 err("Unsupported in this gdb mode.")
                 return
-            orig_mode = QemuMonitor.get_current_mmu_mode()
-
-            if orig_mode == "virt":
-                enable_phys()
 
         if args.location is None:
             location = current_arch.pc
@@ -32803,12 +32837,8 @@ class PatchInfloopCommand(PatchCommand):
 
         try:
             self.patch_infloop(location)
-        except Exception:
-            err("Failed to patch")
-
-        if args.phys:
-            if orig_mode == "virt":
-                disable_phys()
+        except Exception as e:
+            err(e)
         return
 
 
@@ -32848,7 +32878,9 @@ class PatchTrapCommand(PatchCommand):
             if current_arch.has_delay_slot:
                 insn += current_arch.nop_insn
 
-        self.patch(addr, insn, len(insn))
+        import random
+        tag = random.randint(1, 0xffff_ffff)
+        self.PatchInfo(tag, addr, insn, len(insn), self.args.phys).patch()
         return
 
     @parse_args
@@ -32864,10 +32896,6 @@ class PatchTrapCommand(PatchCommand):
             if not is_qemu_system():
                 err("Unsupported in this gdb mode.")
                 return
-            orig_mode = QemuMonitor.get_current_mmu_mode()
-
-            if orig_mode == "virt":
-                enable_phys()
 
         if args.location is None:
             location = current_arch.pc
@@ -32876,12 +32904,8 @@ class PatchTrapCommand(PatchCommand):
 
         try:
             self.patch_trap(location)
-        except Exception:
-            err("Failed to patch")
-
-        if args.phys:
-            if orig_mode == "virt":
-                disable_phys()
+        except Exception as e:
+            err(e)
         return
 
 
@@ -32921,7 +32945,9 @@ class PatchRetCommand(PatchCommand):
             if current_arch.has_delay_slot:
                 insn += current_arch.nop_insn
 
-        self.patch(addr, insn, len(insn))
+        import random
+        tag = random.randint(1, 0xffff_ffff)
+        self.PatchInfo(tag, addr, insn, len(insn), self.args.phys).patch()
         return
 
     @parse_args
@@ -32937,10 +32963,6 @@ class PatchRetCommand(PatchCommand):
             if not is_qemu_system():
                 err("Unsupported in this gdb mode.")
                 return
-            orig_mode = QemuMonitor.get_current_mmu_mode()
-
-            if orig_mode == "virt":
-                enable_phys()
 
         if args.location is None:
             location = current_arch.pc
@@ -32949,12 +32971,8 @@ class PatchRetCommand(PatchCommand):
 
         try:
             self.patch_ret(location)
-        except Exception:
-            err("Failed to patch")
-
-        if args.phys:
-            if orig_mode == "virt":
-                disable_phys()
+        except Exception as e:
+            err(e)
         return
 
 
@@ -32994,7 +33012,9 @@ class PatchSyscallCommand(PatchCommand):
             if current_arch.has_syscall_delay_slot:
                 insn += current_arch.nop_insn
 
-        self.patch(addr, insn, len(insn))
+        import random
+        tag = random.randint(1, 0xffff_ffff)
+        self.PatchInfo(tag, addr, insn, len(insn), self.args.phys).patch()
         return
 
     @parse_args
@@ -33010,10 +33030,6 @@ class PatchSyscallCommand(PatchCommand):
             if not is_qemu_system():
                 err("Unsupported in this gdb mode.")
                 return
-            orig_mode = QemuMonitor.get_current_mmu_mode()
-
-            if orig_mode == "virt":
-                enable_phys()
 
         if args.location is None:
             location = current_arch.pc
@@ -33022,17 +33038,13 @@ class PatchSyscallCommand(PatchCommand):
 
         try:
             self.patch_syscall(location)
-        except Exception:
-            err("Failed to patch")
-
-        if args.phys:
-            if orig_mode == "virt":
-                disable_phys()
+        except Exception as e:
+            err(e)
         return
 
 
 @register_command
-class PatchHistoryCommand(PatchCommand):
+class PatchHistoryCommand(PatchCommand, BufferingOutput):
     """Display the patch history stack."""
 
     _cmdline_ = "patch history"
@@ -33040,6 +33052,8 @@ class PatchHistoryCommand(PatchCommand):
     _aliases_ = ["patch list"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="verbose output.")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -33050,23 +33064,27 @@ class PatchHistoryCommand(PatchCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("rr",))
     def do_invoke(self, args):
+        self.out = []
+
         if PatchCommand.patch_history:
-            gef_print("[NEW]")
+            self.out.append(titlify("NEW"))
             for i, hist in enumerate(PatchCommand.patch_history):
-                b = " ".join(["{:02x}".format(x) for x in hist["before_data"][:0x10]])
-                if len(hist["before_data"]) > 0x10:
-                    b += " ..."
-                a = " ".join(["{:02x}".format(x) for x in hist["after_data"][:0x10]])
-                if len(hist["after_data"]) > 0x10:
-                    a += " ..."
-                sym = Symbol.get_symbol_string(hist["addr"])
-                i_str = Color.boldify("{:d}".format(i))
-                gef_print("[{:s}] {:#x}{:s}: {:s} -> {:s}".format(
-                    i_str, hist["addr"], sym, b, a,
-                ))
-            gef_print("[OLD]")
+                self.out.append("[{:s}]".format(Color.boldify("{:d}".format(i))))
+                for j, patch_info in enumerate(hist):
+                    if not self.args.verbose:
+                        if j > 8:
+                            self.out.append("    ...")
+                            break
+                    self.out.append("    {!s}{:s}: {:s} -> {:s}".format(
+                        ProcessMap.lookup_address(patch_info.addr),
+                        Symbol.get_symbol_string(patch_info.addr),
+                        patch_info.b(), patch_info.a(),
+                    ))
+            self.out.append(titlify("OLD"))
         else:
-            info("Patch history stack is empty")
+            self.info_add_out("Patch history stack is empty")
+
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -33114,30 +33132,12 @@ class PatchRevertCommand(PatchCommand):
 
         while PatchCommand.patch_history and revert_count > 0:
             hist = PatchCommand.patch_history.pop(0)
-            b = " ".join(["{:02x}".format(x) for x in hist["before_data"][:0x10]])
-            if len(hist["before_data"]) > 0x10:
-                b += " ..."
-            a = " ".join(["{:02x}".format(x) for x in hist["after_data"][:0x10]])
-            if len(hist["after_data"]) > 0x10:
-                a += " ..."
-            sym = Symbol.get_symbol_string(hist["addr"])
-            info("revert {:#x}{:s}: {:s} -> {:s}".format(hist["addr"], sym, a, b))
-
-            if is_supported_physmode():
-                orig_mode = QemuMonitor.get_current_mmu_mode()
-                if orig_mode == "virt" and hist["physmode"] == "phys":
-                    enable_phys()
-                elif orig_mode == "phys" and hist["physmode"] == "virt":
-                    disable_phys()
-
-            write_memory(hist["addr"], hist["before_data"])
-
-            if is_supported_physmode():
-                if orig_mode == "virt" and QemuMonitor.get_current_mmu_mode() == "phys":
-                    disable_phys()
-                elif orig_mode == "phys" and QemuMonitor.get_current_mmu_mode() == "virt":
-                    enable_phys()
-
+            for patch_info in hist:
+                try:
+                    patch_info.revert()
+                except Exception as e:
+                    err(e)
+                    return
             revert_count -= 1
         return
 
@@ -33178,12 +33178,15 @@ class PatchRangeReplaceCommand(PatchCommand):
             err("Read memory error")
             return
 
+        import random
+        tag = random.randint(1, 0xffff_ffff)
+
         pos = 0
         while True:
             found_pos = data.find(self.args.hstr_from, pos)
             if found_pos == -1:
                 break
-            self.patch(self.args.range_start + found_pos, self.args.hstr_to, len(self.args.hstr_to))
+            self.PatchInfo(tag, self.args.range_start + found_pos, self.args.hstr_to, len(self.args.hstr_to)).patch()
             pos = found_pos + len(self.args.hstr_from)
         return
 
@@ -33195,19 +33198,11 @@ class PatchRangeReplaceCommand(PatchCommand):
             if not is_qemu_system():
                 err("Unsupported in this gdb mode.")
                 return
-            orig_mode = QemuMonitor.get_current_mmu_mode()
-
-            if orig_mode == "virt":
-                enable_phys()
 
         try:
             self.patch_range_replace()
-        except Exception:
-            err("Failed to patch")
-
-        if args.phys:
-            if orig_mode == "virt":
-                disable_phys()
+        except Exception as e:
+            err(e)
         return
 
 
