@@ -70423,21 +70423,14 @@ class MemorySetCommand(GenericCommand):
 
     def memset(self, to_phys, to_addr, value, size):
         data = bytes([value]) * size
+
+        import random
+        tag = random.randint(1, 0xffff_ffff)
         try:
-            if to_phys:
-                before = read_physmem(to_addr, size)
-                written = write_physmem(to_addr, data)
-            else:
-                before = read_memory(to_addr, size)
-                written = write_memory(to_addr, data)
+            PatchCommand.PatchInfo(tag, to_addr, data, size, to_phys).patch()
         except (gdb.MemoryError, ValueError, OverflowError):
             err("Write error {:#x}".format(to_addr))
             return
-
-        info("Write count: {:#x}".format(written))
-
-        history_info = {"addr": to_addr, "before_data": before, "after_data": data, "physmode": to_phys}
-        PatchCommand.patch_insert(history_info)
         return
 
     @parse_args
@@ -70499,7 +70492,8 @@ class MemoryCopyCommand(GenericCommand):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
-    def memcpy(self, to_phys, to_addr, from_phys, from_addr, size):
+    @staticmethod
+    def get_data(from_phys, from_addr, size):
         try:
             if from_phys:
                 data = read_physmem(from_addr, size)
@@ -70507,25 +70501,23 @@ class MemoryCopyCommand(GenericCommand):
                 data = read_memory(from_addr, size)
         except (gdb.MemoryError, ValueError, OverflowError):
             err("Read error {:#x}".format(from_addr))
-            return
+            return None
 
         info("Read count: {:#x}".format(len(data)))
+        return data
 
+    def memcpy(self, to_phys, to_addr, from_phys, from_addr, size):
+        data = MemoryCopyCommand.get_data(from_phys, from_addr, size)
+        if data is None:
+            return
+
+        import random
+        tag = random.randint(1, 0xffff_ffff)
         try:
-            if to_phys:
-                before = read_physmem(to_addr, len(data))
-                written = write_physmem(to_addr, data)
-            else:
-                before = read_memory(to_addr, len(data))
-                written = write_memory(to_addr, data)
+            PatchCommand.PatchInfo(tag, to_addr, data, size, to_phys).patch()
         except (gdb.MemoryError, ValueError, OverflowError):
             err("Write error {:#x}".format(to_addr))
             return
-
-        info("Write count: {:#x}".format(written))
-
-        history_info = {"addr": to_addr, "before_data": before, "after_data": data, "physmode": to_phys}
-        PatchCommand.patch_insert(history_info)
         return
 
     @parse_args
@@ -70567,54 +70559,26 @@ class MemorySwapCommand(GenericCommand):
         return
 
     def memswap(self, phys1, addr1, phys2, addr2, size):
+        data1 = MemoryCopyCommand.get_data(phys1, addr1, size)
+        if data1 is None:
+            return
+        data2 = MemoryCopyCommand.get_data(phys2, addr2, size)
+        if data2 is None:
+            return
+
+        import random
+        tag = random.randint(1, 0xffff_ffff)
+
         try:
-            if phys1:
-                data1 = read_physmem(addr1, size)
-            else:
-                data1 = read_memory(addr1, size)
+            PatchCommand.PatchInfo(tag, addr1, data2, size, phys1).patch()
         except (gdb.MemoryError, ValueError, OverflowError):
-            err("Read error {:#x}".format(addr1))
-            return
-
-        info("Read count: {:#x}".format(len(data1)))
-
-        try:
-            if phys2:
-                data2 = read_physmem(addr2, size)
-            else:
-                data2 = read_memory(addr2, size)
-        except (gdb.MemoryError, ValueError, OverflowError):
-            err("Read error {:#x}".format(addr2))
-            return
-
-        info("Read count: {:#x}".format(len(data2)))
-
-        try:
-            if phys2:
-                written2 = write_physmem(addr2, data1)
-            else:
-                written2 = write_memory(addr2, data1)
-        except Exception:
-            err("Write error {:#x}".format(addr2))
-            return
-
-        info("Write count: {:#x}".format(written2))
-
-        try:
-            if phys1:
-                written1 = write_physmem(addr1, data2)
-            else:
-                written1 = write_memory(addr1, data2)
-        except Exception:
             err("Write error {:#x}".format(addr1))
             return
-
-        info("Write count: {:#x}".format(written1))
-
-        history_info = {"addr": addr2, "before_data": data2, "after_data": data1, "physmode": phys2}
-        PatchCommand.patch_insert(history_info)
-        history_info = {"addr": addr1, "before_data": data1, "after_data": data2, "physmode": phys1}
-        PatchCommand.patch_insert(history_info)
+        try:
+            PatchCommand.PatchInfo(tag, addr2, data1, size, phys2).patch()
+        except (gdb.MemoryError, ValueError, OverflowError):
+            err("Write error {:#x}".format(addr2))
+            return
         return
 
     @parse_args
@@ -70659,45 +70623,23 @@ class MemoryInsertCommand(GenericCommand):
         return
 
     def meminsert(self, phys1, addr1, size1, phys2, addr2, size2):
-        try:
-            if phys1:
-                before = read_physmem(addr1, size1 + size2)
-                data1 = before[:size1]
-            else:
-                before = read_memory(addr1, size1 + size2)
-                data1 = before[:size1]
-        except (gdb.MemoryError, ValueError, OverflowError):
-            err("Read error {:#x}".format(addr1))
+        data1 = MemoryCopyCommand.get_data(phys1, addr1, size1)
+        if data1 is None:
             return
-
-        info("Read count: {:#x}".format(len(data1)))
-
-        try:
-            if phys2:
-                data2 = read_physmem(addr2, size2)
-            else:
-                data2 = read_memory(addr2, size2)
-        except (gdb.MemoryError, ValueError, OverflowError):
-            err("Read error {:#x}".format(addr2))
+        data2 = MemoryCopyCommand.get_data(phys2, addr2, size2)
+        if data2 is None:
             return
-
-        info("Read count: {:#x}".format(len(data2)))
 
         to_write_data = data2 + data1
 
+        import random
+        tag = random.randint(1, 0xffff_ffff)
+
         try:
-            if phys1:
-                written = write_physmem(addr1, to_write_data)
-            else:
-                written = write_memory(addr1, to_write_data)
-        except Exception:
+            PatchCommand.PatchInfo(tag, addr1, to_write_data, len(to_write_data), phys1).patch()
+        except (gdb.MemoryError, ValueError, OverflowError):
             err("Write error {:#x}".format(addr1))
             return
-
-        info("Write count: {:#x}".format(written))
-
-        history_info = {"addr": addr1, "before_data": before, "after_data": to_write_data, "physmode": phys1}
-        PatchCommand.patch_insert(history_info)
         return
 
     @parse_args
