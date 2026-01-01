@@ -11072,19 +11072,19 @@ def write_memory(addr, data):
                     return None
             return None
 
-        # qemu-user (32bit) maps the memory at +0x10000 (fast path)
-        if is_qemu_user() and is_32bit():
+        # 1. qemu-user (32bit) maps the memory at +0x10000 (fast path)
+        if is_qemu_user() and is_32bit(): # not Intel Pin
             ret = write_with_check(pid, addr, data, length, offset=0x10000)
             if ret:
                 return ret
 
-        # we assume addr is same
+        # 2. we assume addr is same
         ret = write_with_check(pid, addr, data, length)
         if ret:
             return ret
 
-        # heuristic addr search and try use it
-        if is_qemu_user():
+        # 3. heuristic addr search and try use it
+        if is_qemu_user(): # not Intel Pin
             inner_section = ProcessMap.lookup_address(addr).section
             target_path = inner_section.path
 
