@@ -12418,8 +12418,17 @@ class Pid:
     @staticmethod
     def get_pid_from_name(filepath):
         candidate = []
+
+        # strict matching
         for process in Pid.get_all_process():
             if filepath in process["filepath"]:
+                candidate.append(process)
+        if len(candidate) == 1:
+            return candidate[0]["pid"]
+
+        # relax the restrictions
+        for process in Pid.get_all_process():
+            if process["filepath"].startswith(filepath):
                 candidate.append(process)
         if len(candidate) == 1:
             return candidate[0]["pid"]
