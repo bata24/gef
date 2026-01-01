@@ -12156,10 +12156,6 @@ def is_attach():
 @Cache.cache_this_session
 def is_container_attach():
     """GDB mode determination function for attaching another namespace."""
-    if is_remote_debug():
-        return False
-    if not is_attach():
-        return False
     filename = gdb.current_progspace().filename
     if filename and filename.startswith("target:"):
         return True
