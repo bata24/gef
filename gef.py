@@ -8972,6 +8972,8 @@ class SH4(Architecture):
         "SH4A",
         "SH4A-NOFPU",
         "SH2A-OR-SH4",
+        "SH2",
+        "SH3",
     ]
 
     # https://www.renesas.com/us/en/document/man/705261
