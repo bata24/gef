@@ -3936,8 +3936,16 @@ class GlibcHeap:
             else:
                 return self.addr + self.sizeof
 
+        @property
+        def tcache(self):
+            return self.addrof_tcachebins_base()
+
+        @property
+        def tcache_perthread_struct(self):
+            return self.addrof_tcachebins_base()
+
         @Cache.cache_until_next
-        def addrof_tcachebins_base(self):
+        def addrof_tcachebins_base(self, force_heuristic=False):
             if self.heap_base is None:
                 return None
 
@@ -3964,32 +3972,189 @@ class GlibcHeap:
                 orig_frame.select()
                 return tcache
 
-            # strict way (from symbol)
-            tcache = tcache_from_symbol()
-            if tcache is not None:
-                return tcache
+            def tcache_offset_heuristic():
+                # In a 64-bit environment, the first 8 bytes are zeros
+                """
+                [2.42; x64 main-heap]
+                gef> pi GlibcHeap.get_arena(0).heap_base
+                0x555555559000
+                gef> telescope -n 0x555555559000 3
+                      0x555555559000|+0x0000|+000: 0x0000000000000000 <----- here
+                      0x555555559008|+0x0008|+001: 0x0000000000000301
+                      0x555555559010|+0x0010|+002: 0x0007000700070000
+                gef>
+
+                [2.42; x64 non-main-heap]
+                gef> pi GlibcHeap.get_arena(1).heap_base
+                0x7fffe80008d0
+                gef> telescope -n 0x7fffe80008d0 3
+                      0x7fffe80008d0|+0x0000|+000: 0x0000000000000000 <----- here
+                      0x7fffe80008d8|+0x0008|+001: 0x0000000000000305
+                      0x7fffe80008e0|+0x0010|+002: 0x0007000700070000
+                gef>
+
+                [2.42; x64 static; main-heap]
+                gef> pi GlibcHeap.get_arena(0).heap_base
+                0x4e5d40
+                gef> telescope -n 0x4e5d40 3
+                      0x0000004e5d40|+0x0000|+000: 0x0000000000000000 <----- here
+                      0x0000004e5d48|+0x0008|+001: 0x0000000000000301
+                      0x0000004e5d50|+0x0010|+002: 0x0007000700070000
+                gef>
+                """
+
+                # On some 32-bit architectures, the first 8 bytes of main-heap are zeros.
+                """
+                [2.42; x86 main-heap]
+                gef> pi GlibcHeap.get_arena(0).heap_base
+                0x5655a000
+                gef> telescope -n 0x5655a000 6
+                      0x5655a000|+0x0000|+000: 0x00000000 <----- here
+                      0x5655a004|+0x0004|+001: 0x00000000 <----- here
+                      0x5655a008|+0x0008|+002: 0x00000000
+                      0x5655a00c|+0x000c|+003: 0x000001d1
+                      0x5655a010|+0x0010|+004: 0x00000007
+                      0x5655a014|+0x0014|+005: 0x00070007
+                gef>
+
+                [2.42; x86 non-main-heap]
+                gef> pi GlibcHeap.get_arena(1).heap_base
+                0xf6a00478
+                gef> telescope -n 0xf6a00478 4
+                      0xf6a00478|+0x0000|+000: 0x00000000
+                      0xf6a0047c|+0x0004|+001: 0x000001d5
+                      0xf6a00480|+0x0008|+002: 0x00000007
+                      0xf6a00484|+0x000c|+003: 0x00070007
+                gef>
+
+                [2.42; x86 static; main-heap]
+                gef> pi GlibcHeap.get_arena(0).heap_base
+                0x810c880
+                gef> telescope -n 0x810c880 6
+                      0x0810c880|+0x0000|+000: 0x00000000 <----- here
+                      0x0810c884|+0x0004|+001: 0x00000000 <----- here
+                      0x0810c888|+0x0008|+002: 0x00000000
+                      0x0810c88c|+0x000c|+003: 0x000001d1
+                      0x0810c890|+0x0010|+004: 0x00000007
+                      0x0810c894|+0x0014|+005: 0x00070007
+                gef>
+                """
+
+                # On most 32-bit architectures, the first 8 bytes are non-zeros
+                """
+                [2.42; arm32 main-heap]
+                gef> pi GlibcHeap.get_arena(0).heap_base
+                0x421000
+                gef> telescope -n 0x421000 4
+                      0x00421000|+0x0000|+000: 0x00000000
+                      0x00421004|+0x0004|+001: 0x000001d1
+                      0x00421008|+0x0008|+002: 0x00000007
+                      0x0042100c|+0x000c|+003: 0x00070007
+                gef>
+
+                [2.42; arm32 non-main-heap]
+                gef> pi GlibcHeap.get_arena(1).heap_base
+                0x41b00470
+                gef> telescope -n 0x41b00470 4
+                      0x41b00470|+0x0000|+000: 0x00000000
+                      0x41b00474|+0x0004|+001: 0x000001d5
+                      0x41b00478|+0x0008|+002: 0x00000007
+                      0x41b0047c|+0x000c|+003: 0x00070007
+                gef>
+
+                [2.42; arm32 static; main-heap]
+                gef> pi GlibcHeap.get_arena(0).heap_base
+                0x84880
+                gef> telescope -n 0x84880 4
+                      0x00084880|+0x0000|+000: 0x00000000
+                      0x00084884|+0x0004|+001: 0x000001d1
+                      0x00084888|+0x0008|+002: 0x00000007
+                      0x0008488c|+0x000c|+003: 0x00070007
+                gef>
+                """
+                first_8 = read_memory(self.heap_base, 8)
+                if first_8 == b"\0\0\0\0\0\0\0\0":
+                    return 0x10
+                else:
+                    return 0x8
+
+            if not force_heuristic:
+                # strict way (from symbol)
+                tcache = tcache_from_symbol()
+                if tcache is not None:
+                    return tcache
 
             # heuristic way
-            if (is_x86_32() or is_riscv32() or is_ppc32()) and not self.is_main_arena:
-                # This conditional branch is provided because the offsets for these three
-                # architectures may change in the future.
-                arch_offset = 0
-            elif is_32bit():
-                arch_offset = 0
-            else:
-                arch_offset = 0x10
-            return self.heap_base + arch_offset
+            tcache_offset = tcache_offset_heuristic()
+            return self.heap_base + tcache_offset
 
-        def addrof_tcachebins_i(self, i):
-            tcachebins_base = self.addrof_tcachebins_base()
-            if tcachebins_base is None:
+        def addrof_tcachebins_i_count(self, i):
+            """return &tcache_perthread_struct.counts[i]
+            or return &tcache_perthread_struct.num_slots[i]"""
+            tcache_perthread_struct = self.tcache_perthread_struct
+            if tcache_perthread_struct is None:
+                return None
+
+            """
+            [2.26~2.29]
+            # define TCACHE_MAX_BINS 64
+            typedef struct tcache_perthread_struct
+            {
+              char counts[TCACHE_MAX_BINS];
+              tcache_entry *entries[TCACHE_MAX_BINS];
+            } tcache_perthread_struct;
+
+            [2.30~2.41]
+            # define TCACHE_MAX_BINS 64
+            typedef struct tcache_perthread_struct
+            {
+              uint16_t counts[TCACHE_MAX_BINS];
+              tcache_entry *entries[TCACHE_MAX_BINS];
+            } tcache_perthread_struct;
+
+            [2.42~]
+            # define TCACHE_SMALL_BINS 64
+            # define TCACHE_LARGE_BINS 12
+            # define TCACHE_MAX_BINS (TCACHE_SMALL_BINS + TCACHE_LARGE_BINS)
+            typedef struct tcache_perthread_struct
+            {
+              uint16_t num_slots[TCACHE_MAX_BINS];
+              tcache_entry *entries[TCACHE_MAX_BINS];
+            } tcache_perthread_struct;
+            """
+            if get_libc_version() < (2, 30):
+                offset = i
+            else:
+                offset = i * 2
+            return tcache_perthread_struct + offset
+
+        def tcachebins_i_count(self, i):
+            """return tcache_perthread_struct.counts[i]"""
+            counts_i_addr = self.addrof_tcachebins_i_count(i)
+            if counts_i_addr is None:
                 return None
 
             if get_libc_version() < (2, 30):
-                offset = self.TCACHE_MAX_BINS + i * current_arch.ptrsize
+                count = read_int8_from_memory(counts_i_addr)
             else:
-                offset = 2 * self.TCACHE_MAX_BINS + i * current_arch.ptrsize
-            return tcachebins_base + offset
+                count = read_int16_from_memory(counts_i_addr)
+
+            if get_libc_version() >= (2, 42): # num_slot -> count
+                count = 7 - count
+            return count
+
+        def addrof_tcachebins_i(self, i):
+            """return &tcache_perthread_struct.entries[i]"""
+            tcache_perthread_struct = self.tcache_perthread_struct
+            if tcache_perthread_struct is None:
+                return None
+
+            if get_libc_version() < (2, 30):
+                sizeof_counts = self.TCACHE_MAX_BINS
+            else:
+                sizeof_counts = self.TCACHE_MAX_BINS * 2
+
+            return tcache_perthread_struct + sizeof_counts + current_arch.ptrsize * i
 
         def addrof_fastbins_i(self, i):
             if hasattr(self.__arena, "addrof_fastbins"):
@@ -4129,24 +4294,39 @@ class GlibcHeap:
                 try:
                     chunk = self.get_tcachebins_i(i)
                 except gdb.MemoryError:
-                    sz = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
-                    err("tcache[idx={:d}, sz={:#x}] is corrupted".format(i, sz))
+                    if "size" in GlibcHeap.get_binsize_table()["tcache"][i]:
+                        sz = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
+                        err("tcache[idx={:d}, sz={:#x}] is corrupted".format(i, sz))
+                    else:
+                        sz_min = GlibcHeap.get_binsize_table()["tcache"][i]["size_min"]
+                        sz_max = GlibcHeap.get_binsize_table()["tcache"][i]["size_max"]
+                        err("tcache[idx={:d}, sz={:#x}-{:#x}] is corrupted".format(i, sz_min, sz_max))
                     continue
                 chunks = []
                 while True:
                     if chunk is None:
                         break
                     if chunk.address in chunks:
-                        sz = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
-                        err("tcache[idx={:d}, sz={:#x}] has a loop".format(i, sz))
+                        if "size" in GlibcHeap.get_binsize_table()["tcache"][i]:
+                            sz = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
+                            err("tcache[idx={:d}, sz={:#x}] has a loop".format(i, sz))
+                        else:
+                            sz_min = GlibcHeap.get_binsize_table()["tcache"][i]["size_min"]
+                            sz_max = GlibcHeap.get_binsize_table()["tcache"][i]["size_max"]
+                            err("tcache[idx={:d}, sz={:#x}-{:#x}] has a loop".format(i, sz_min, sz_max))
                         break # loop detected
                     chunks.append(chunk.address)
                     next_chunk = chunk.get_fwd_ptr(True)
                     if next_chunk == 0:
                         break
                     if next_chunk is None:
-                        sz = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
-                        err("tcache[idx={:d}, sz={:#x}] is corrupted".format(i, sz))
+                        if "size" in GlibcHeap.get_binsize_table()["tcache"][i]:
+                            sz = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
+                            err("tcache[idx={:d}, sz={:#x}] is corrupted".format(i, sz))
+                        else:
+                            sz_min = GlibcHeap.get_binsize_table()["tcache"][i]["size_min"]
+                            sz_max = GlibcHeap.get_binsize_table()["tcache"][i]["size_max"]
+                            err("tcache[idx={:d}, sz={:#x}-{:#x}] is corrupted".format(i, sz_min, sz_max))
                         break
                     chunk = GlibcHeap.GlibcChunk(self, next_chunk)
                 chunks_all[i] = chunks
@@ -4294,8 +4474,15 @@ class GlibcHeap:
             for tcache_idx, tcache_list in self.cached_tcache_list.items():
                 for address in tcache_list:
                     pos = ",".join([str(i + 1) for i, x in enumerate(tcache_list) if x == address])
-                    sz = GlibcHeap.get_binsize_table()["tcache"][tcache_idx]["size"]
-                    m = "tcache[idx={:d},sz={:#x}][{:s}/{:d}]".format(tcache_idx, sz, pos, len(tcache_list))
+                    if "size" in  GlibcHeap.get_binsize_table()["tcache"][tcache_idx]:
+                        sz = GlibcHeap.get_binsize_table()["tcache"][tcache_idx]["size"]
+                        m = "tcache[idx={:d},sz={:#x}][{:s}/{:d}]".format(tcache_idx, sz, pos, len(tcache_list))
+                    else:
+                        sz_min = GlibcHeap.get_binsize_table()["tcache"][tcache_idx]["size_min"]
+                        sz_max = GlibcHeap.get_binsize_table()["tcache"][tcache_idx]["size_max"]
+                        m = "tcache[idx={:d},sz={:#x}-{:#x}][{:s}/{:d}]".format(
+                            tcache_idx, sz_min, sz_max, pos, len(tcache_list),
+                        )
                     new_list = self.bins_dict_for_address.get(address, []) + [m]
                     self.bins_dict_for_address[address] = new_list
             for fastbin_idx, fastbin_list in self.cached_fastbins_list.items():
@@ -4403,7 +4590,7 @@ class GlibcHeap:
                 arena = GlibcHeap.GlibcArena(address)
                 str(arena) # check memory error
                 return arena
-            except (OSError, AttributeError, gdb.MemoryError):
+            except (OSError, AttributeError, gdb.MemoryError, RuntimeError):
                 err("Failed to get the arena, heap commands may not work properly")
                 return None
 
@@ -4411,8 +4598,11 @@ class GlibcHeap:
         arena_number = address
 
         # main_arena
-        arenas = []
         arena = GlibcHeap.get_main_arena()
+        if arena is None:
+            return None
+
+        arenas = []
         while arena:
             arenas.append(arena)
             arena = arena.get_next()
@@ -4750,11 +4940,7 @@ class GlibcHeap:
             MIN_SIZE = 0x10
 
         # tcache
-        if get_libc_version() < (2, 42):
-            TCACHE_MAX_BINS = 0x40
-        else:
-            TCACHE_MAX_BINS = 0x40 + 12
-        for i in range(TCACHE_MAX_BINS):
+        for i in range(64):
             # MALLOC_ALIGNMENT is changed from libc 2.26.
             # for x86_32, tcache 0x8 align is no longer used.
             # but for ARM32, or maybe other arch, still 0x8 align is used.
@@ -4765,6 +4951,47 @@ class GlibcHeap:
             else:
                 size = MIN_SIZE + i * 0x8
             table["tcache"][i] = {"size": size}
+
+        if get_libc_version() >= (2, 42):
+            if is_64bit():
+                table["tcache"][64] = {"size_min": 0x420, "size_max": 0x800}
+                table["tcache"][65] = {"size_min": 0x800, "size_max": 0x1000}
+                table["tcache"][66] = {"size_min": 0x1000, "size_max": 0x2000}
+                table["tcache"][67] = {"size_min": 0x2000, "size_max": 0x4000}
+                table["tcache"][68] = {"size_min": 0x4000, "size_max": 0x8000}
+                table["tcache"][69] = {"size_min": 0x8000, "size_max": 0x10000}
+                table["tcache"][70] = {"size_min": 0x10000, "size_max": 0x20000}
+                table["tcache"][71] = {"size_min": 0x20000, "size_max": 0x40000}
+                table["tcache"][72] = {"size_min": 0x40000, "size_max": 0x80000}
+                table["tcache"][73] = {"size_min": 0x80000, "size_max": 0x100000}
+                table["tcache"][74] = {"size_min": 0x100000, "size_max": 0x200000}
+                table["tcache"][75] = {"size_min": 0x200000, "size_max": 0x400000}
+            elif is_x86_32() or is_riscv32() or is_ppc32():
+                table["tcache"][64] = {"size_min": 0x410, "size_max": 0x800}
+                table["tcache"][65] = {"size_min": 0x800, "size_max": 0x1000}
+                table["tcache"][66] = {"size_min": 0x1000, "size_max": 0x2000}
+                table["tcache"][67] = {"size_min": 0x2000, "size_max": 0x4000}
+                table["tcache"][68] = {"size_min": 0x4000, "size_max": 0x8000}
+                table["tcache"][69] = {"size_min": 0x8000, "size_max": 0x10000}
+                table["tcache"][70] = {"size_min": 0x10000, "size_max": 0x20000}
+                table["tcache"][71] = {"size_min": 0x20000, "size_max": 0x40000}
+                table["tcache"][72] = {"size_min": 0x40000, "size_max": 0x80000}
+                table["tcache"][73] = {"size_min": 0x80000, "size_max": 0x100000}
+                table["tcache"][74] = {"size_min": 0x100000, "size_max": 0x200000}
+                table["tcache"][75] = {"size_min": 0x200000, "size_max": 0x400000}
+            else: # arm32, m68k, sh4, etc
+                table["tcache"][64] = {"size_min": 0x210, "size_max": 0x400}
+                table["tcache"][65] = {"size_min": 0x400, "size_max": 0x800}
+                table["tcache"][66] = {"size_min": 0x800, "size_max": 0x1000}
+                table["tcache"][67] = {"size_min": 0x1000, "size_max": 0x2000}
+                table["tcache"][68] = {"size_min": 0x2000, "size_max": 0x4000}
+                table["tcache"][69] = {"size_min": 0x4000, "size_max": 0x8000}
+                table["tcache"][70] = {"size_min": 0x8000, "size_max": 0x10000}
+                table["tcache"][71] = {"size_min": 0x10000, "size_max": 0x20000}
+                table["tcache"][72] = {"size_min": 0x20000, "size_max": 0x40000}
+                table["tcache"][73] = {"size_min": 0x40000, "size_max": 0x80000}
+                table["tcache"][74] = {"size_min": 0x80000, "size_max": 0x100000}
+                table["tcache"][75] = {"size_min": 0x100000, "size_max": 0x200000}
 
         # fastbins
         if is_64bit():
@@ -22022,15 +22249,14 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
             for i, chunks in arena.get_tcache_list().items():
                 m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
                 if m or self.args.verbose:
-                    size = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
-                    tcache_perthread_struct = arena.heap_base + 0x10
-                    if get_libc_version() < (2, 30):
-                        count = read_int8_from_memory(tcache_perthread_struct + i)
+                    count = arena.tcachebins_i_count(i)
+                    if "size" in GlibcHeap.get_binsize_table()["tcache"][i]:
+                        size = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
+                        gef_print("{:#x} [{:d}] ({:d}): ".format(size, i, count) + " -> ".join(m))
                     else:
-                        count = read_int16_from_memory(tcache_perthread_struct + 2 * i)
-                        if get_libc_version() >= (2, 42):
-                            count = 7 - count
-                    gef_print("{:#x} [{:d}] ({:d}): ".format(size, i, count) + " -> ".join(m))
+                        size_min = GlibcHeap.get_binsize_table()["tcache"][i]["size_min"]
+                        size_max = GlibcHeap.get_binsize_table()["tcache"][i]["size_max"]
+                        gef_print("{:#x}-{:#x} [{:d}] ({:d}): ".format(size_min, size_max, i, count) + " -> ".join(m))
 
             gef_print(titlify("fastbins"))
             for i, chunks in arena.get_fastbins_list().items():
@@ -22310,9 +22536,6 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
         if get_libc_version() < (2, 26):
             return
 
-        # Get tcache_perthread_struct for this arena
-        tcache_perthread_struct = arena.heap_base + 0x10
-
         gef_print(titlify("Tcache Bins for arena '{:s}' (&tcache_perthread_struct->entries[0]: {:#x})".format(
             arena.name, arena.addrof_tcachebins_i(0),
         )))
@@ -22353,18 +22576,20 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
                     break
 
             if m or verbose:
-                if get_libc_version() < (2, 30):
-                    count = read_int8_from_memory(tcache_perthread_struct + i)
-                else:
-                    count = read_int16_from_memory(tcache_perthread_struct + 2 * i)
-                    if get_libc_version() >= (2, 42):
-                        count = 7 - count
-                size = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
+                count = arena.tcachebins_i_count(i)
                 bins_addr = ProcessMap.lookup_address(arena.addrof_tcachebins_i(i))
                 fd = ProcessMap.lookup_address(read_int_from_memory(bins_addr.value))
-                gef_print("tcachebins[idx={:d}, size={:#x}, @{!s}]: fd={!s} count={:d}".format(
-                    i, size, bins_addr, fd, count,
-                ))
+                if "size" in GlibcHeap.get_binsize_table()["tcache"][i]:
+                    size = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
+                    gef_print("tcachebins[idx={:d}, size={:#x}, @{!s}]: fd={!s} count={:d}".format(
+                        i, size, bins_addr, fd, count,
+                    ))
+                else:
+                    size_min = GlibcHeap.get_binsize_table()["tcache"][i]["size_min"]
+                    size_max = GlibcHeap.get_binsize_table()["tcache"][i]["size_max"]
+                    gef_print("tcachebins[idx={:d}, size={:#x}-{:#x}, @{!s}]: fd={!s} count={:d}".format(
+                        i, size_min, size_max, bins_addr, fd, count,
+                    ))
                 if m:
                     gef_print("\n".join(m))
 
@@ -23125,7 +23350,7 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
     parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
                         help="the address or number to interpret as an arena. (default: main_arena)")
     parser.add_argument("-i", "--index", type=AddressUtil.parse_address,
-                        help="the index of tcache entry (0 ~ 0x3f).")
+                        help="the index of tcache entry (0 ~ 63 (~glibc 2.41) or 75 (glibc 2.42~)).")
     parser.add_argument("-c", "--count-addr", type=AddressUtil.parse_address,
                         help="the address of &tcache.counts[i].")
     parser.add_argument("-e", "--entry-addr", type=AddressUtil.parse_address,
@@ -23141,13 +23366,16 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
             err("Invalid index (>= TCACHE_MAX_BINS)")
             return
 
-        tcache_perthread_struct = arena.heap_base + 0x10
-        if get_libc_version() < (2, 30):
-            count_addr = tcache_perthread_struct + index
+        # counts / num_slots
+        if get_libc_version() < (2, 42):
+            count_addr = arena.addrof_tcachebins_i_count(index)
+            info("&tcache.counts[{:d}] = {!s}".format(index, ProcessMap.lookup_address(count_addr)))
         else:
-            count_addr = tcache_perthread_struct + index * 2
+            num_slots_addr = arena.addrof_tcachebins_i_count(index)
+            info("&tcache.num_slots[{:d}] = {!s}".format(index, ProcessMap.lookup_address(num_slots_addr)))
+
+        # entries
         entry_addr = arena.addrof_tcachebins_i(index)
-        info("&tcache.counts[{:d}] = {!s}".format(index, ProcessMap.lookup_address(count_addr)))
         info("&tcache.entries[{:d}] = {!s}".format(index, ProcessMap.lookup_address(entry_addr)))
         return
 
@@ -23173,20 +23401,23 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
 
         # doit
         info("heap_base: {!s}".format(ProcessMap.lookup_address(arena.heap_base)))
-        info("tcache: {!s} (tcache_perthread_struct)".format(ProcessMap.lookup_address(arena.heap_base + 0x10)))
+        info("tcache: {!s} (tcache_perthread_struct)".format(ProcessMap.lookup_address(arena.tcache_perthread_struct)))
+
+        if (args.index, args.count_addr, args.entry_addr) == (None, None, None):
+            self.print_tcache_info(arena, 0)
+            return
 
         if args.index is not None:
             self.print_tcache_info(arena, args.index)
 
         if args.count_addr is not None:
-            tcache_perthread_struct = arena.heap_base + 0x10
             if get_libc_version() < (2, 30):
-                index = args.count_addr - tcache_perthread_struct
+                index = args.count_addr - arena.addrof_tcachebins_i_count(0)
             else:
                 if args.count_addr % 2 == 1:
                     err("Invalid address (count_addr % 2 == 1)")
                     return
-                index = (args.count_addr - tcache_perthread_struct) // 2
+                index = (args.count_addr - arena.addrof_tcachebins_i_count(0)) // 2
             self.print_tcache_info(arena, index)
 
         if args.entry_addr is not None:
