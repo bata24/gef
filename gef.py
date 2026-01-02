@@ -12274,8 +12274,7 @@ def timeout(duration):
 
 def to_unsigned_long(v):
     """Cast a gdb.Value to unsigned long."""
-    bits = AddressUtil.get_memory_alignment(in_bits=True)
-    mask = (1 << bits) - 1
+    mask = AddressUtil.get_vmem_end_mask()
     return int(v.cast(gdb.Value(mask).type)) & mask
 
 
@@ -104663,9 +104662,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
             return
 
         # check address validity
-        bits = AddressUtil.get_memory_alignment(in_bits=True)
-        max_address = (1 << bits) - 1
-
+        max_address = AddressUtil.get_vmem_end_mask()
         if args.function_start > max_address:
             self.quiet_err("function start address must be {:#x} or less".format(max_address))
             return
