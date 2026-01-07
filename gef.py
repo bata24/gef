@@ -3525,15 +3525,22 @@ class GlibcHeap:
         def __init__(self, addr):
             super().__init__(addr)
 
-            if (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
+            if get_libc_version() >= (2, 43):
+                self.num_fastbins = 0
+            elif (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
                 # MALLOC_ALIGNMENT is changed from libc 2.26.
                 # for x86_32, MALLOC_ALIGNMENT = 16, so NFASTBINS = 11.
                 self.num_fastbins = 11
             else:
                 self.num_fastbins = 10
 
-            self.num_bins = 254
-            self.num_binmap = 4
+            NBINS = 128
+            BINMAPSHIFT = 5
+            BITSPERMAP = 1 << BINMAPSHIFT
+            BINMAPSIZE = NBINS // BITSPERMAP
+
+            self.num_bins = NBINS * 2 - 2
+            self.num_binmap = BINMAPSIZE
             return
 
         # struct offsets
@@ -3547,14 +3554,18 @@ class GlibcHeap:
 
         @property
         def addrof_have_fastchunks(self):
-            if get_libc_version() >= (2, 27):
+            if get_libc_version() >= (2, 43):
+                return None
+            elif get_libc_version() >= (2, 27):
                 return self.addrof_flags + self.int_t.sizeof
             else:
                 return None
 
         @property
         def addrof_fastbins(self):
-            if get_libc_version() >= (2, 27):
+            if get_libc_version() >= (2, 43):
+                return None
+            elif get_libc_version() >= (2, 27):
                 fastbin_offset = AddressUtil.align_address_to_size(self.int_t.sizeof * 3, self.size_t.sizeof)
             else:
                 fastbin_offset = self.int_t.sizeof * 2
@@ -3562,7 +3573,10 @@ class GlibcHeap:
 
         @property
         def addrof_top(self):
-            return self.addrof_fastbins + self.size_t.sizeof * self.num_fastbins
+            if get_libc_version() >= (2, 43):
+                return self.addrof_flags + self.int_t.sizeof
+            else:
+                return self.addrof_fastbins + self.size_t.sizeof * self.num_fastbins
 
         @property
         def addrof_last_remainder(self):
@@ -3856,6 +3870,13 @@ class GlibcHeap:
             else:
                 return 0x40 + 12
 
+        @property
+        def TCACHE_FILL_COUNT(self):
+            if get_libc_version() >= (2, 43):
+                return 0x10
+            else:
+                return 7
+
         def __init__(self, arena_addr=None):
             # Manually calling a command like `call malloc(0x10)` alters the heap's internal structure.
             # However, the call command does not notify the `memory_changed` event.
@@ -4144,7 +4165,7 @@ class GlibcHeap:
                 count = read_int16_from_memory(counts_i_addr)
 
             if get_libc_version() >= (2, 42): # num_slot -> count
-                count = 7 - count
+                count = self.TCACHE_FILL_COUNT - count
             return count
 
         def addrof_tcachebins_i(self, i):
@@ -4287,7 +4308,6 @@ class GlibcHeap:
             """Return a dictionary mapping tcache bin indices to lists of chunk addresses,
             handling loops and corruption."""
             if get_libc_version() < (2, 26):
-                info("No tcache in this version of libc")
                 return {}
 
             if self.heap_base is None:
@@ -4339,6 +4359,9 @@ class GlibcHeap:
         def get_fastbins_list(self):
             """Return a dictionary of fastbin indices mapped to lists of chunk addresses,
             handling loops and corruption."""
+            if get_libc_version() >= (2, 43):
+                return {}
+
             def fastbin_index(sz):
                 return (sz >> 4) - 2 if SIZE_SZ == 8 else (sz >> 3) - 2
 
@@ -22251,24 +22274,30 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
             )
 
             gef_print(titlify("tcache"))
-            for i, chunks in arena.get_tcache_list().items():
-                m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
-                if m or self.args.verbose:
-                    count = arena.tcachebins_i_count(i)
-                    if "size" in GlibcHeap.get_binsize_table()["tcache"][i]:
-                        size = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
-                        gef_print("{:#x} [{:d}] ({:d}): ".format(size, i, count) + " -> ".join(m))
-                    else:
-                        size_min = GlibcHeap.get_binsize_table()["tcache"][i]["size_min"]
-                        size_max = GlibcHeap.get_binsize_table()["tcache"][i]["size_max"]
-                        gef_print("{:#x}-{:#x} [{:d}] ({:d}): ".format(size_min, size_max, i, count) + " -> ".join(m))
+            if get_libc_version() < (2, 26):
+                info("No tcache in this version of libc")
+            else:
+                for i, chunks in arena.get_tcache_list().items():
+                    m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
+                    if m or self.args.verbose:
+                        count = arena.tcachebins_i_count(i)
+                        if "size" in GlibcHeap.get_binsize_table()["tcache"][i]:
+                            size = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
+                            gef_print("{:#x} [{:d}] ({:d}): ".format(size, i, count) + " -> ".join(m))
+                        else:
+                            size_min = GlibcHeap.get_binsize_table()["tcache"][i]["size_min"]
+                            size_max = GlibcHeap.get_binsize_table()["tcache"][i]["size_max"]
+                            gef_print("{:#x}-{:#x} [{:d}] ({:d}): ".format(size_min, size_max, i, count) + " -> ".join(m))
 
             gef_print(titlify("fastbins"))
-            for i, chunks in arena.get_fastbins_list().items():
-                m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
-                if m or self.args.verbose:
-                    size = GlibcHeap.get_binsize_table()["fastbins"][i]["size"]
-                    gef_print("{:#x} [{:d}]: ".format(size, i) + " -> ".join(m))
+            if get_libc_version() < (2, 43):
+                for i, chunks in arena.get_fastbins_list().items():
+                    m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
+                    if m or self.args.verbose:
+                        size = GlibcHeap.get_binsize_table()["fastbins"][i]["size"]
+                        gef_print("{:#x} [{:d}]: ".format(size, i) + " -> ".join(m))
+            else:
+                info("No fastbins in this version of libc")
 
             gef_print(titlify("unsorted bin"))
             for _, chunks in arena.get_unsortedbin_list().items():
@@ -22477,6 +22506,10 @@ class GlibcHeapBinsCommand(GenericCommand):
 
         # doit
         for arena in arenas:
+            gef_print(titlify("arena: {:#x}{:s}".format(
+                arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
+            )
+
             # tcache
             GlibcHeapTcachebinsCommand.print_tcache(arena, args.verbose)
 
@@ -22484,12 +22517,12 @@ class GlibcHeapBinsCommand(GenericCommand):
             GlibcHeapFastbinsYCommand.print_fastbin(arena, args.verbose)
 
             # unsorted bin
-            gef_print(titlify("Unsorted Bin for arena '{:s}'".format(arena.name)))
+            gef_print(titlify("unsorted bin"))
             nb_chunk = GlibcHeapBinsCommand.pprint_bin(arena, 0, "unsorted_bin", args.verbose)
             info("Found {:d} valid chunks in unsorted bin (when traced from `bk`)".format(nb_chunk))
 
             # small bins
-            gef_print(titlify("Small Bins for arena '{:s}'".format(arena.name)))
+            gef_print(titlify("small bins"))
             bins = {}
             for i in range(1, 63):
                 nb_chunk = GlibcHeapBinsCommand.pprint_bin(arena, i, "small_bins", args.verbose)
@@ -22502,7 +22535,7 @@ class GlibcHeapBinsCommand(GenericCommand):
             ))
 
             # large bins
-            gef_print(titlify("Large Bins for arena '{:s}'".format(arena.name)))
+            gef_print(titlify("large bins"))
             bins = {}
             for i in range(63, 126):
                 nb_chunk = GlibcHeapBinsCommand.pprint_bin(arena, i, "large_bins", args.verbose)
@@ -22541,8 +22574,8 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
         if get_libc_version() < (2, 26):
             return
 
-        gef_print(titlify("Tcache Bins for arena '{:s}' (&tcache_perthread_struct->entries[0]: {:#x})".format(
-            arena.name, arena.addrof_tcachebins_i(0),
+        gef_print(titlify("tcache (&tcache_perthread_struct: {:#x})".format(
+            arena.tcache_perthread_struct,
         )))
 
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
@@ -22629,6 +22662,9 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
 
         # doit
         for arena in arenas:
+            gef_print(titlify("arena: {:#x}{:s}".format(
+                arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
+            )
             GlibcHeapTcachebinsCommand.print_tcache(arena, args.verbose)
         return
 
@@ -22655,6 +22691,8 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
     @staticmethod
     def print_fastbin(arena, verbose=False):
         """Pretty-print fastbin lists for the given arena, checking for loops and incorrect indices."""
+        if get_libc_version() >= (2, 43):
+            return
 
         def fastbin_index(sz):
             return (sz >> 4) - 2 if SIZE_SZ == 8 else (sz >> 3) - 2
@@ -22663,7 +22701,7 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
         MAX_FAST_SIZE = 80 * SIZE_SZ // 4
         NFASTBINS = fastbin_index(MAX_FAST_SIZE) - 1
 
-        gef_print(titlify("Fast Bins for arena '{:s}'".format(arena.name)))
+        gef_print(titlify("fastbins"))
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
 
         nb_chunk = 0
@@ -22741,6 +22779,9 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
 
         # doit
         for arena in arenas:
+            gef_print(titlify("arena: {:#x}{:s}".format(
+                arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
+            )
             GlibcHeapFastbinsYCommand.print_fastbin(arena, args.verbose)
         return
 
@@ -22787,7 +22828,10 @@ class GlibcHeapUnsortedBinsCommand(GenericCommand):
 
         # doit
         for arena in arenas:
-            gef_print(titlify("Unsorted Bin for arena '{:s}'".format(arena.name)))
+            gef_print(titlify("arena: {:#x}{:s}".format(
+                arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
+            )
+            gef_print(titlify("unsorted bin"))
             nb_chunk = GlibcHeapBinsCommand.pprint_bin(arena, 0, "unsorted_bin", args.verbose)
             info("Found {:d} valid chunks in unsorted bin (when traced from `bk`)".format(nb_chunk))
         return
@@ -22835,7 +22879,10 @@ class GlibcHeapSmallBinsCommand(GenericCommand):
 
         # doit
         for arena in arenas:
-            gef_print(titlify("Small Bins for arena '{:s}'".format(arena.name)))
+            gef_print(titlify("arena: {:#x}{:s}".format(
+                arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
+            )
+            gef_print(titlify("small bins"))
             bins = {}
             for i in range(1, 63):
                 nb_chunk = GlibcHeapBinsCommand.pprint_bin(arena, i, "small_bins", args.verbose)
@@ -22891,7 +22938,10 @@ class GlibcHeapLargeBinsCommand(GenericCommand):
 
         # doit
         for arena in arenas:
-            gef_print(titlify("Large Bins for arena '{:s}'".format(arena.name)))
+            gef_print(titlify("arena: {:#x}{:s}".format(
+                arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
+            )
+            gef_print(titlify("large bins"))
             bins = {}
             for i in range(63, 126):
                 nb_chunk = GlibcHeapBinsCommand.pprint_bin(arena, i, "large_bins", args.verbose)
