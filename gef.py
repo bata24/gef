@@ -12672,21 +12672,28 @@ class Pid:
 
     @staticmethod
     def get_pid_from_name(filepath):
-        candidate = []
+        all_process = Pid.get_all_process()
 
         # strict matching
-        for process in Pid.get_all_process():
-            if filepath in process["filepath"]:
-                candidate.append(process)
+        candidate = [process for process in all_process if process["filepath"] == filepath]
         if len(candidate) == 1:
             return candidate[0]["pid"]
+        if len(candidate) > 1: # If it cannot be uniquely identified, return None
+            return None
 
         # relax the restrictions
-        for process in Pid.get_all_process():
-            if process["filepath"].startswith(filepath):
-                candidate.append(process)
+        candidate = [process for process in all_process if process["filepath"].startswith(filepath)]
         if len(candidate) == 1:
             return candidate[0]["pid"]
+        if len(candidate) > 1: # If it cannot be uniquely identified, return None
+            return None
+
+        # more relax the restrictions
+        candidate = [process for process in all_process if filepath in process["filepath"]]
+        if len(candidate) == 1:
+            return candidate[0]["pid"]
+        if len(candidate) > 1: # If it cannot be uniquely identified, return None
+            return None
         return None
 
     @staticmethod
