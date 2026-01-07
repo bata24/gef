@@ -87,7 +87,7 @@ Entries = {
     "regulator_ops": ["include/linux/regulator/driver.h"],
     "seq_operations": ["include/linux/seq_file.h"],
     "smp_operations": ["arch/arm/include/asm/smp.h"],
-    "super_operations": ["include/linux/fs.h"],
+    "super_operations": ["include/linux/fs.h", "include/linux/fs/super_types.h"],
     "tty_ldisc_ops": ["include/linux/tty_ldisc.h"],
     "tty_operations": ["include/linux/tty_driver.h"],
     "tty_port_operations": ["include/linux/tty_port.h"],
@@ -104,6 +104,7 @@ def doit(args, version):
 
     ops = {}
     for struct_name, filenames in Entries.items():
+        found = False
         for filename in filenames:
             filepath = os.path.join(version.dirname, filename)
 
@@ -129,9 +130,11 @@ def doit(args, version):
                     struct_lines.append(line)
                     if line.startswith("}"):
                         ops[struct_name] = [filepath, struct_lines]
+                        found = True
                         break
                     continue
-            break
+            if found:
+                break
         else:
             ops[struct_name] = [filepath, ["Not found"]]
     return ops
