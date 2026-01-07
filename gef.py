@@ -3950,6 +3950,8 @@ class GlibcHeap:
                 return None
 
             def tcache_from_symbol():
+                if force_heuristic:
+                    return None
                 # tcache is per-thread, so the address obtained by a symbol is depending on the current thread.
                 # so we get all tcaches from all threads and take the address closest to self.heap_base.
                 orig_thread = gdb.selected_thread()
@@ -4078,13 +4080,15 @@ class GlibcHeap:
                 else:
                     return 0x8
 
-            if not force_heuristic:
-                # strict way (from symbol)
-                tcache = tcache_from_symbol()
-                if tcache is not None:
-                    return tcache
+            # strict way (from symbol)
+            tcache = tcache_from_symbol()
+            if is_valid_addr(tcache):
+                return tcache
 
             # heuristic way
+            # TODO: This technique fails glibc 2.43~.
+            # Because tcache_perthread_struct is not placed at the beginning of the heap (why?).
+            # Of course, if you have a symbol, you can solve it using the strict way flow.
             tcache_offset = tcache_offset_heuristic()
             return self.heap_base + tcache_offset
 
@@ -50146,62 +50150,74 @@ class HeapbaseCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     @staticmethod
-    def heap_base(force_slowpath=False):
-        if Cache.cached_heap_base and not force_slowpath:
+    def heap_base(force_heuristic=False):
+        # use cache
+        if Cache.cached_heap_base and not force_heuristic:
             return Cache.cached_heap_base
 
-        # fast path
-        # The value of mp_->sbrk_base is correct in x86 or x64.
-        # However, for architectures that have TLS in the bss area (such as ARM or ARM64),
-        # the start position of the heap seems to shift by the amount of the area used as the TLS variable.
-        # This method should not be used on ARM or ARM64, as there seems to be no way to predetermine the TLS size.
-        if is_x86() and not force_slowpath:
+        def strict_way():
+            # The value of mp_->sbrk_base is correct in x86 or x64.
+            # However, for architectures that have TLS in the bss area (such as ARM or ARM64),
+            # the start position of the heap seems to shift by the amount of the area used as the TLS variable.
+            # This method should not be used on ARM or ARM64, as there seems to be no way to predetermine the TLS size.
+            if not is_x86():
+                return None
+            if force_heuristic:
+                return None
             try:
                 # symbol and type are defined
-                Cache.cached_heap_base = AddressUtil.parse_address("mp_->sbrk_base")
-                return Cache.cached_heap_base
+                return AddressUtil.parse_address("mp_->sbrk_base")
             except gdb.error:
-                pass
+                return None
 
-        # slow path
-        # If glibc has tcache, there is tcache_perthread_struct* in TLS.
-        if get_libc_version() >= (2, 26) and current_arch.tls_supported:
+        def general_way():
+            if force_heuristic:
+                return None
+            return ProcessMap.get_section_base_address("[heap]")
+
+        def heuristic_way():
+            # If glibc has tcache, there is tcache_perthread_struct* in TLS.
+            # This path is used for qemu-user emulation, etc.
+            if get_libc_version() < (2, 26):
+                return None
+            if not current_arch.tls_supported:
+                return None
             main_arena_ptr = GlibcHeap.search_for_main_arena_from_tls()
+            if not main_arena_ptr:
+                return None
 
-            if main_arena_ptr:
-                # get first_chunk (=tcache_perthread_struct*)
-                first_chunk_p = None
-                if is_x86() or is_sparc64() or is_alpha() or is_mips32() or is_mips64() or is_mipsn32() or \
-                   is_nios2() or is_microblaze() or is_arc32() or is_arc64() or is_ppc32() or is_ppc64() or \
-                   is_hppa32() or is_sh4():
-                    first_chunk_p = main_arena_ptr - current_arch.ptrsize * 2
-                elif is_arm32() or is_arm64() or is_riscv32() or is_riscv64() or \
-                   is_loongarch64() or is_or1k() or is_s390x() or is_csky():
-                    first_chunk_p = main_arena_ptr + current_arch.ptrsize
-                    # The order of variables in TLS appears to have changed recently.
-                    if not is_valid_addr_addr(first_chunk_p):
-                        first_chunk_p = main_arena_ptr - current_arch.ptrsize
+            # get first_chunk (=tcache_perthread_struct*)
+            first_chunk_p = None
+            if is_x86() or is_sparc64() or is_alpha() or is_mips32() or is_mips64() or is_mipsn32() or \
+               is_nios2() or is_microblaze() or is_arc32() or is_arc64() or is_ppc32() or is_ppc64() or \
+               is_hppa32() or is_sh4():
+                first_chunk_p = main_arena_ptr - current_arch.ptrsize * 2
+            elif is_arm32() or is_arm64() or is_riscv32() or is_riscv64() or \
+               is_loongarch64() or is_or1k() or is_s390x() or is_csky():
+                first_chunk_p = main_arena_ptr + current_arch.ptrsize
+                # The order of variables in TLS appears to have changed recently.
+                if not is_valid_addr_addr(first_chunk_p):
+                    first_chunk_p = main_arena_ptr - current_arch.ptrsize
 
-                if first_chunk_p:
-                    first_chunk = read_int_from_memory(first_chunk_p)
+            if not first_chunk_p or not is_valid_addr(first_chunk_p):
+                return None
 
-                    # get heap_base
-                    if is_x86_32() or is_riscv32() or is_ppc32():
-                        first_chunk_offset = 0x10
-                    else:
-                        first_chunk_offset = current_arch.ptrsize * 2
-                    heap_base = first_chunk - first_chunk_offset
+            first_chunk = read_int_from_memory(first_chunk_p)
+            if not is_valid_addr(first_chunk):
+                return None
 
-                    # save cache
-                    Cache.cached_heap_base = heap_base
-                    return Cache.cached_heap_base
+            # get heap_base
+            if is_x86_32() or is_riscv32() or is_ppc32():
+                first_chunk_offset = 0x10
+            else:
+                first_chunk_offset = current_arch.ptrsize * 2
+            heap_base = first_chunk - first_chunk_offset
+            return heap_base
 
-        # fall through
-        heap_base = ProcessMap.get_section_base_address("[heap]")
-        if heap_base:
+        heap_base = strict_way() or general_way() or heuristic_way()
+        if is_valid_addr(heap_base):
             Cache.cached_heap_base = heap_base
-            return Cache.cached_heap_base
-
+            return heap_base
         return None
 
     @parse_args
