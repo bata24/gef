@@ -335,6 +335,8 @@ No filesystem image is provided. Please use one created with `buildroot` or one 
 
 Download the `linux-modules-*_amd64.deb` package for `System.map` and `config`.
 
+Another option is [COPR of Fedora](https://download.copr.fedorainfracloud.org/results/%40kernel-vanilla/fedora/fedora-rawhide-x86_64/).
+
 ## Will each GEF command be more accurate if I have `vmlinux` with debug symbols?
 Let's consider debug information and debug symbols separately.
 
