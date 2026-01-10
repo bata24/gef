@@ -66944,7 +66944,8 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
 
         struct super_block { // v3.12~
             ...
-            struct list_head s_mounts;
+            struct list_head s_mounts; // v3.12~v6.17
+            struct mount *s_mounts; // v6.18~
             struct block_device *s_bdev;
             struct bdev_handle *s_bdev_handle; // v6.6.47~v6.8
             struct file *s_bdev_file; // v6.9~
@@ -66970,12 +66971,14 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
                 current -= current_arch.ptrsize
         elif kversion < "6.6.47":
             self.offset_s_mounts = self.offset_s_instances - current_arch.ptrsize * 5
-        else:
+        elif kversion < "6.18":
             self.offset_s_mounts = self.offset_s_instances - current_arch.ptrsize * 6
+        else:
+            self.offset_s_mounts = self.offset_s_instances - current_arch.ptrsize * 5
         self.quiet_info("offsetof(super_block, s_mounts): {:#x}".format(self.offset_s_mounts))
 
         """
-        struct mount {
+        struct mount { // <-- s_mounts points here (v6.18~)
             struct hlist_node mnt_hash; // v3.13~ // ptrsize * 2
             struct list_node mnt_hash; // ~v3.12 // ptrsize * 2
             struct mount *mnt_parent;
@@ -67000,26 +67003,29 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         #endif
             struct list_head mnt_mounts;
             struct list_head mnt_child;
-            struct list_head mnt_instance; <-- s_mounts points here
+            struct list_head mnt_instance; // ~v6.17 // <-- s_mounts points here (~v6.17)
             const char *mnt_devname;
             ...
         } __randomize_layout;
         """
         # mount->mnt_instance
-        common1 = current_arch.ptrsize * 4 # mnt_hash ~ mnt_mount_point
-        if kversion < "5.12":
-            sizeof_vfsmount = current_arch.ptrsize * 3
+        if kversion < "6.18":
+            common1 = current_arch.ptrsize * 4 # mnt_hash ~ mnt_mount_point
+            if kversion < "5.12":
+                sizeof_vfsmount = current_arch.ptrsize * 3
+            else:
+                sizeof_vfsmount = current_arch.ptrsize * 4
+            if kversion < "3.13":
+                sizeof_union = 0
+            elif kversion < "6.12":
+                sizeof_union = current_arch.ptrsize * 2
+            else:
+                sizeof_union = current_arch.ptrsize * 3
+            sizeof_ifdef = current_arch.ptrsize # for x86/x64/ARM/ARM64, CONFIG_SMP is 'y' in almost all cases
+            common2 = current_arch.ptrsize * 4 # mnt_mounts ~ mnt_child
+            self.offset_mount_mnt_instance = common1 + sizeof_vfsmount + sizeof_union + sizeof_ifdef + common2
         else:
-            sizeof_vfsmount = current_arch.ptrsize * 4
-        if kversion < "3.13":
-            sizeof_union = 0
-        elif kversion < "6.12":
-            sizeof_union = current_arch.ptrsize * 2
-        else:
-            sizeof_union = current_arch.ptrsize * 3
-        sizeof_ifdef = current_arch.ptrsize # for x86/x64/ARM/ARM64, CONFIG_SMP is 'y' in almost all cases
-        common2 = current_arch.ptrsize * 4 # mnt_mounts ~ mnt_child
-        self.offset_mount_mnt_instance = common1 + sizeof_vfsmount + sizeof_union + sizeof_ifdef + common2
+            self.offset_mount_mnt_instance = 0
 
         # mount->{mnt_parent,mnt_mountpoint,mnt}
         self.offset_mount_mnt_parent = current_arch.ptrsize * 2
@@ -67031,6 +67037,11 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
 
         self.initialized = True
         return True
+
+    def get_fst_name(self, fst):
+        name_addr = read_int_from_memory(fst + self.offset_name)
+        name = read_cstring_from_memory(name_addr)
+        return name
 
     def get_dev_num(self, dev):
         major = dev >> 20
@@ -67163,7 +67174,66 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         devname = read_cstring_from_memory(devname_p)
         return devname
 
-    def parse_file_systems(self, skip_mount_path):
+    def parse_super_block(self, fst, super_block):
+        # name
+        name = self.get_fst_name(fst)
+
+        # dev
+        dev = read_int32_from_memory(super_block + self.offset_s_dev)
+        major, minor, devname = self.get_dev_num(dev)
+
+        # mount
+        s_mounts = read_int_from_memory(super_block + self.offset_s_mounts)
+        mount = self.get_mount(s_mounts)
+
+        # mount points
+        if self.args.skip_mount_path:
+            parsed_mount, mount_point = "-", "???"
+        else:
+            ret = self.get_mount_point(s_mounts)
+            if ret is None:
+                parsed_mount, mount_point = "-", "???"
+            else:
+                parsed_mount, mount_point = ret
+                if isinstance(parsed_mount, int):
+                    parsed_mount = "{:#018x}".format(parsed_mount)
+
+        # devname
+        if devname == "???":
+            devname = self.get_dev_name(s_mounts)
+        else:
+            devname += " (guessed)"
+
+        # dump
+        self.out.append("{:#018x} {:12s} {:#018x} {:20s} {:<6d} {:<6d} {:#018x} {:18s} {:s}".format(
+            fst, name, super_block, devname, major, minor, mount, parsed_mount, mount_point,
+        ))
+        return
+
+    def parse_file_system_type(self, fst):
+        # fs_supers
+        fs_supers = read_int_from_memory(fst + self.offset_fs_supers)
+
+        if fs_supers == 0:
+            # fast return
+            name = self.get_fst_name(fst)
+            self.out.append("{:#018x} {:12s} {:18s} {:20s} {:6s} {:6s} {:18s} {:18s} {:s}".format(
+                fst, name, "-", "-", "-", "-", "-", "-", "-",
+            ))
+            return
+
+        s_instances = fs_supers
+
+        # parse more
+        while s_instances:
+            super_block = s_instances - self.offset_s_instances
+            # parse super_block
+            self.parse_super_block(fst, super_block)
+            # go to next
+            s_instances = read_int_from_memory(s_instances)
+        return
+
+    def parse_file_systems(self):
         if not self.args.quiet:
             fmt = "{:18s} {:12s} {:18s} {:20s} {:6s} {:6s} {:18s} {:18s} {:s}"
             legend = [
@@ -67174,55 +67244,8 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
 
         fst = read_int_from_memory(self.file_systems)
         while fst != 0:
-            # parse name
-            name_addr = read_int_from_memory(fst + self.offset_name)
-            name = read_cstring_from_memory(name_addr)
-
-            # parse suber_block
-            fs_supers = read_int_from_memory(fst + self.offset_fs_supers)
-            if fs_supers == 0:
-                self.out.append("{:#018x} {:12s} {:18s} {:20s} {:6s} {:6s} {:18s} {:18s} {:s}".format(
-                    fst, name, "-", "-", "-", "-", "-", "-", "-",
-                ))
-
-            else:
-                s_instances = fs_supers
-                while s_instances:
-                    super_block = s_instances - self.offset_s_instances
-
-                    # dev
-                    dev = read_int32_from_memory(super_block + self.offset_s_dev)
-                    major, minor, devname = self.get_dev_num(dev)
-
-                    # mount
-                    s_mounts = read_int_from_memory(super_block + self.offset_s_mounts)
-                    mount = self.get_mount(s_mounts)
-
-                    # mount points
-                    if skip_mount_path:
-                        parsed_mount, mount_point = "-", "???"
-                    else:
-                        ret = self.get_mount_point(s_mounts)
-                        if ret is None:
-                            parsed_mount, mount_point = "-", "???"
-                        else:
-                            parsed_mount, mount_point = ret
-                            if isinstance(parsed_mount, int):
-                                parsed_mount = "{:#018x}".format(parsed_mount)
-
-                    # devname
-                    if devname == "???":
-                        devname = self.get_dev_name(s_mounts)
-                    else:
-                        devname += " (guessed)"
-
-                    # dump
-                    self.out.append("{:#018x} {:12s} {:#018x} {:20s} {:<6d} {:<6d} {:#018x} {:18s} {:s}".format(
-                        fst, name, super_block, devname, major, minor, mount, parsed_mount, mount_point,
-                    ))
-                    # go to next
-                    s_instances = read_int_from_memory(s_instances)
-
+            # parse file_system_type
+            self.parse_file_system_type(fst)
             # go to next
             fst = read_int_from_memory(fst + self.offset_next)
         return
@@ -67244,7 +67267,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             return
 
         self.out = []
-        self.parse_file_systems(args.skip_mount_path)
+        self.parse_file_systems()
         self.print_output(check_terminal_size=True)
         return
 
