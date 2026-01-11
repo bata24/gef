@@ -86338,31 +86338,34 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         "",
         "`extent`, `slot_span` and `slot` are in super_page.",
         "",
-        "      +-super_page-(2MB)----+",
-        " 4KB  | Guard Page          |",
-        "      +---------------------+",
-        " 4KB  | extent * 1          |",
-        "      | slot_span * 126     |",
-        "      | unused * 1          |",
-        "      +---------------------+",
-        " 8KB  | Guard Page          |",
-        "      +---------------------+",
-        " 16KB | Partition Page #1   |",
-        "      |   slot              |",
-        "      |   slot              |",
-        "      |   ...               |",
-        "      +---------------------+",
-        "      | ...                 |",
-        "      +---------------------+",
-        " 16KB | Partition Page #126 |",
-        "      |   slot              |",
-        "      |   slot              |",
-        "      |   ...               |",
-        "      +---------------------+",
-        " 12KB | Unused              |",
-        "      +---------------------+",
-        "  4KB | Guard Page          |",
-        "      +---------------------+",
+        "      [~v144.x]                    [v145.x~; PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)=y]",
+        "      +-super_page-(2MB)-----+      +-super_page(for meta)-+ +-super_page(for chunk)+",
+        " 4KB  | Guard Page           |      | Guard Page           | | Guard Page           |",
+        "      +----------------------+      +----------------------+ +----------------------+",
+        " 4KB  | extent * 1           |      | extend * 1           | | Unused               |",
+        "      | slot_span * 126      |      | slot_span * 126      | |                      |",
+        "      | unused * 1           |      | unused * 1           | |                      |",
+        "      +----------------------+      +----------------------+ +----------------------+",
+        " 8KB  | Guard Page           |      | Guard Page           | | Guard Page           |",
+        "      +----------------------+      +----------------------+ +----------------------+",
+        " 16KB | Partition Page #1    |      | ...                  | | Partition Page #1    |",
+        "      |   slot               |      |                      | |   slot               |",
+        "      |   slot               |      |                      | |   slot               |",
+        "      |   ...                |      |                      | |   ...                |",
+        "      +----------------------+      |                      | +----------------------+",
+        "      | ...                  |      |                      | | ...                  |",
+        "      +----------------------+      |                      | +----------------------|",
+        " 16KB | Partition Page #126  |      |                      | | Partition Page #126  |",
+        "      |   slot               |      |                      | |   slot               |",
+        "      |   slot               |      |                      | |   slot               |",
+        "      |   ...                |      |                      | |   ...                |",
+        "      +----------------------+      +----------------------+ +----------------------+",
+        " 12KB | Unused               |      | Unused               | | Unused               |",
+        "      +----------------------+      +----------------------+ +----------------------+",
+        "  4KB | Guard Page           |      | Guard Page           | | Guard Page           |",
+        "      +----------------------+      +----------------------+ +----------------------+",
+        "",
+        "                                    * super_page_for_meta - metadata_offset_ == super_page_for_chunk",
     ]
     _note_ = "\n".join(_note_)
 
@@ -86600,7 +86603,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 TagViolationReportingMode memory_tagging_reporting_mode_ = TagViolationReportingMode::kUndefined;
                 ThreadIsolationOption thread_isolation;
                 uint32_t extras_size = 0;
-                std::ptrdiff_t shadow_pool_offset_ = 0;
+                std::ptrdiff_t metadata_offset_ = 0;
+                bool enable_free_with_size = false;
+                bool enable_strict_free_size_check = true;
             } settings; // 0x40 bytes or 0x80 bytes or 0xc0 bytes
             internal::Lock lock_;  // 8 bytes
             Bucket buckets[BucketIndexLookup::kNumBuckets] = {};
@@ -86610,8 +86615,8 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             std::atomic<size_t> max_size_of_committed_pages{0};
             std::atomic<size_t> total_size_of_super_pages{0};
             std::atomic<size_t> total_size_of_direct_mapped_pages{0};
-            size_t total_size_of_allocated_bytes PA_GUARDED_BY(internal::PartitionRootLock(this)) = 0;
-            size_t max_size_of_allocated_bytes PA_GUARDED_BY(internal::PartitionRootLock(this)) = 0;
+            std::atomic<size_t> total_size_of_allocated_bytes{0};
+            std::atomic<size_t> max_size_of_allocated_bytes{0};
             std::atomic<uint64_t> syscall_count{};
             std::atomic<uint64_t> syscall_total_time_ns{};
             std::atomic<size_t> total_size_of_brp_quarantined_bytes{0};
@@ -86631,8 +86636,6 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             int16_t global_empty_slot_span_ring_index PA_GUARDED_BY(internal::PartitionRootLock(this)) = 0;
             int16_t global_empty_slot_span_ring_size PA_GUARDED_BY(internal::PartitionRootLock(this)) = \
                 internal::kDefaultEmptySlotSpanRingSize;
-            uint16_t purge_generation PA_GUARDED_BY(internal::PartitionRootLock(this)) = 0;
-            uint16_t purge_next_bucket_index PA_GUARDED_BY(internal::PartitionRootLock(this)) = 0;
             uintptr_t inverted_self = 0;
             internal::Lock thread_cache_construction_lock; // 8 bytes
             size_t scheduler_loop_quarantine_branch_capacity_in_bytes = 0;
@@ -86650,6 +86653,58 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 current += 0x80 # sizeof(struct Settings) is 2 cache lines
             else:
                 current += 0xc0 # sizeof(struct Settings) is 3 cache lines
+
+        def get_metadata_offset(root_addr, current_addr):
+            """
+            # v145.x~ has PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)
+            0x599a3e48af40|+0x0000|+000: settings (=&root)        : 0x0000000000010000
+            0x599a3e48af48|+0x0008|+001:                          : 0x0000000000000004
+            0x599a3e48af50|+0x0010|+002:                          : 0x0000000000000002
+            0x599a3e48af58|+0x0018|+003:                          : 0x000009f400000000
+            0x599a3e48af60|+0x0020|+004:                          : 0xfffffffc00000000
+            0x599a3e48af68|+0x0028|+005:                          : 0x0000599a3e1dc018
+            0x599a3e48af70|+0x0030|+006:                          : 0x000009f400000000
+            0x599a3e48af78|+0x0038|+007:                          : 0xfffffffc00000000
+            0x599a3e48af80|+0x0040|+008:                          : 0x0000000000000000
+            0x599a3e48af88|+0x0048|+009:                          : 0x0000000000000000
+            0x599a3e48af90|+0x0050|+010:                          : 0xaaaaaaaaaa000000
+            0x599a3e48af98|+0x0058|+011:                          : 0x00000000000f0000
+            0x599a3e48afa0|+0x0060|+012:                          : 0x0000000000000000
+            0x599a3e48afa8|+0x0068|+013:                          : 0x0000000000000000
+            0x599a3e48afb0|+0x0070|+014:                          : 0x0000000000000000
+            0x599a3e48afb8|+0x0078|+015:                          : 0x0000000000000000
+            0x599a3e48afc0|+0x0080|+016:                          : 0x00000000ffffffff
+            0x599a3e48afc8|+0x0088|+017:                          : 0x0000000000000004
+            0x599a3e48afd0|+0x0090|+018: settings.metadata_offset_: 0x00002e37f278b000 <-- here
+            0x599a3e48afd8|+0x0098|+019:                          : 0x0000000000000100
+            0x599a3e48afe0|+0x00a0|+020:                          : 0x0000000000000000
+            0x599a3e48afe8|+0x00a8|+021:                          : 0x0000000000000000
+            0x599a3e48aff0|+0x00b0|+022:                          : 0x0000000000000000
+            0x599a3e48aff8|+0x00b8|+023:                          : 0x0000000000000000
+            0x599a3e48b000|+0x00c0|+024: lock_                    : 0x0000000000000000
+            0x599a3e48b008|+0x00c8|+025: buckets[0]               : 0x0000382bf298b920
+            0x599a3e48b010|+0x00d0|+026: buckets[0]               : 0x0000000000000000
+            0x599a3e48b018|+0x00d8|+027: buckets[0]               : 0x0000000000000000
+            0x599a3e48b020|+0x00e0|+028: buckets[0]               : 0x0000000400000010
+            0x599a3e48b028|+0x00e8|+029: buckets[0]               : 0x0000004000000000
+            0x599a3e48b030|+0x00f0|+030: buckets[0]               : 0x0000000000000000
+            """
+            if current_addr - root_addr != 0xc0:
+                return gef_getpagesize()
+            data = read_memory(root_addr + 0x80, 0x40)
+            for x in slice_unpack(data, current_arch.ptrsize):
+                if x & 0xfff:
+                    continue
+                if x == 0:
+                    continue
+                if (root_addr & 0x0000_ffff_ff00_0000) == (x & 0x0000_ffff_ff00_0000):
+                    continue
+                if (x & 0xffff_ffff) == 0:
+                    continue
+                return x
+            return gef_getpagesize()
+
+        root["metadata_offset_"] = get_metadata_offset(root["addr"], current)
 
         root["lock_"] = read_int64_from_memory(current)
         current += 8
@@ -86729,10 +86784,8 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         current += 2
         root["global_empty_slot_span_ring_size"] = read_int16_from_memory(current)
         current += 2
-        root["purge_generation"] = read_int16_from_memory(current)
-        current += 2
-        root["purge_next_bucket_index"] = read_int16_from_memory(current)
-        current += ptrsize - 6 # with pad
+        if is_64bit():
+            current += 4 # pad
         root["inverted_self"] = read_int_from_memory(current)
         current += ptrsize
         root["thread_cache_construction_lock"] = read_int64_from_memory(current)
@@ -86865,7 +86918,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         ptrsize = current_arch.ptrsize
         slot_span = {}
         slot_span["addr"] = current = addr
-        slot_span["super_page_addr"] = (slot_span["addr"] & gef_getpagesize_mask_high()) - gef_getpagesize()
+        slot_span["super_page_addr"] = (slot_span["addr"] & gef_getpagesize_mask_high()) - self.root.metadata_offset_
         slot_span["partition_page_index"] = (slot_span["addr"] & gef_getpagesize_mask_low()) // 0x20
         super_page_addr_offset = slot_span["partition_page_index"] * gef_getpagesize() * 4
         slot_span["partition_page_start"] = slot_span["super_page_addr"] + super_page_addr_offset
@@ -86936,6 +86989,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
     def dump_root(self, root):
         self.out.append(titlify("*{} @ {:#x}".format(root.name, root.addr)))
         self.out.append("struct Settings settings:                              ...")
+        self.out.append("std::ptrdiff_t settings.metadata_offset_:              {:#x}".format(
+            root.metadata_offset_,
+        ))
         self.out.append("::partition_alloc::Lock lock_:                         {:#x}".format(
             root.lock_,
         ))
@@ -86962,10 +87018,10 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         self.out.append("std::atomic<size_t> total_size_of_direct_mapped_pages: {:#x}".format(
             root.total_size_of_direct_mapped_pages,
         ))
-        self.out.append("size_t total_size_of_allocated_bytes:                  {:#x}".format(
+        self.out.append("std::atomic<size_t> total_size_of_allocated_bytes:     {:#x}".format(
             root.total_size_of_allocated_bytes,
         ))
-        self.out.append("size_t max_size_of_allocated_bytes:                    {:#x}".format(
+        self.out.append("std::atomic<size_t> max_size_of_allocated_bytes:       {:#x}".format(
             root.max_size_of_allocated_bytes,
         ))
         self.out.append("std::atomic<uint64_t> syscall_count:                   {:#x}".format(
@@ -87032,12 +87088,6 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         ))
         self.out.append("int16_t global_empty_slot_span_ring_size:              {:#x}".format(
             root.global_empty_slot_span_ring_size,
-        ))
-        self.out.append("uint16_t purge_generation:                             {:#x}".format(
-            root.purge_generation,
-        ))
-        self.out.append("uint16_t purge_next_bucket_index:                      {:#x}".format(
-            root.purge_next_bucket_index,
         ))
         inv_inv = root.inverted_self ^ AddressUtil.get_vmem_end_mask()
         self.out.append("uintptr_t inverted_self:                               {:#x} (=~{!s})".format(
@@ -87205,7 +87255,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
         slot_size = bucket.slot_size
         page_start = slot_span.partition_page_start
-        page_end = slot_span.partition_page_start + bucket.num_system_pages_per_slot_span * gef_getpagesize()
+        page_end = page_start + bucket.num_system_pages_per_slot_span * gef_getpagesize()
 
         text = ""
         cnt = 0
@@ -87221,8 +87271,14 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 text += Color.colorify("-> {:#x} (loop) ".format(chunk), corrupted_msg_color)
                 break
 
-            if not ((page_start <= chunk < page_end) and ((chunk - page_start) % slot_size == 0)):
-                text += Color.colorify("-> {:#x} (corrupted) ".format(chunk), corrupted_msg_color)
+            if chunk < page_start or page_end <= chunk:
+                text += Color.colorify("-> {:#x} (corrupted: out of range {:#x}-{:#x}) ".format(
+                    chunk, page_start, page_end,
+                ), corrupted_msg_color)
+                break
+
+            if (chunk - page_start) % slot_size != 0:
+                text += Color.colorify("-> {:#x} (corrupted: not aligned) ".format(chunk), corrupted_msg_color)
                 break
 
             try:
@@ -87230,7 +87286,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 if is_64bit() and next_chunk:
                     next_chunk |= chunk & 0xffff_ffff_0000_0000
             except gdb.MemoryError:
-                text += Color.colorify("-> {:#x} (corrupted) ".format(chunk), corrupted_msg_color)
+                text += Color.colorify("-> {:#x} (corrupted: invalid address) ".format(chunk), corrupted_msg_color)
                 break
 
             text += "-> " + Color.colorify_hex(chunk, freed_address_color) + " "
