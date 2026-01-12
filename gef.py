@@ -83002,8 +83002,8 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     _example_ = [
-        "{0:s}          # print freelist of thread cache for all thread",
-        "{0:s} central  # print freelist of central cache",
+        "{0:s}            # print freelist of thread cache for all thread",
+        "{0:s} --central  # print freelist of central cache",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
