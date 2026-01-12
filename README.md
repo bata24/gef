@@ -335,10 +335,10 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
             - ![](images/heap-tracer.png)
 - uClibc heap commands are added.
     - `uclibc-ng-heap-dump`: dumps uClibc-ng heap chunks.
-        - Supported on x64 and x86, based on uClibc-ng v1.0.42 malloc-standard.
+        - Supported on x64 and x86, based on uClibc-ng malloc-standard.
         - ![](images/uclibc-ng-heap-dump.png)
         - How to test (x64):
-            - Download and extract `x86-64--uclibc--stable-2024.05-1.tar.bz2` from https://toolchains.bootlin.com/
+            - Download and extract `x86-64--uclibc--stable-2025.08-1.tar.bz2` from https://toolchains.bootlin.com/
             - Add `/PATH/TO/x86_64-buildroot-linux-uclibc/bin` to `$PATH`, then build as `x86_64-linux-gcc test.c`.
             - Fix interpreter by `patchelf --set-interpreter /PATH/TO/x86_64-buildroot-linux-uclibc/sysroot/lib/ld64-uClibc.so.0 a.out`.
     - `uclibc-ng-visual-heap`: is colorized heap viewer for uClibc-ng.

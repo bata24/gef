@@ -88180,7 +88180,7 @@ class uClibcNgHeap:
 
 @register_command
 class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
-    """uclibc-ng v1.0.42 (libc/stdlib/malloc-standard) heap reusable chunks viewer (only x64/x86)."""
+    """uclibc-ng (libc/stdlib/malloc-standard) heap reusable chunks viewer (only x64/x86)."""
 
     _cmdline_ = "uclibc-ng-heap-dump"
     _category_ = "06-b. Heap - Other"
@@ -88196,6 +88196,10 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
         "The main structural differences between uclibc-ng (malloc-standard) and glibc are:",
         "- No tcache. There are fastbins, unsorted bin, small bins and larege bins.",
         "- No thread arena. So the chunk has no NON_MAIN_ARENA flag.",
+        "The structure of malloc-standard has remained largely unchanged from 1.0 to the latest.",
+        "Therefore, it should probably be usable with any version.",
+        "Since the structure of the final version of uclibc (not uclibc-ng) is the same,",
+        "so I think it can be used with uclibc as well.",
     ]
     _note_ = "\n".join(_note_)
 
