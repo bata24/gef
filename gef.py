@@ -83979,7 +83979,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
-    """Hoard v3.13 heap free-list viewer (only x64)."""
+    """Hoard v3.2 (2025/12/31) heap free-list viewer (only x64)."""
 
     _cmdline_ = "hoard-heap-dump"
     _category_ = "06-b. Heap - Other"
@@ -83998,6 +83998,8 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
             if m.permission != Permission.READ | Permission.WRITE:
                 continue
             for p in range(m.page_start, m.page_end, gef_getpagesize()):
+                if not is_valid_addr(p):
+                    continue
                 v = read_int_from_memory(p)
                 # vtable check
                 if not is_valid_addr(v):
@@ -84009,16 +84011,16 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
                 super_blocks.append(p)
         return super_blocks
 
-    @staticmethod
     @Cache.cache_until_next
-    def get_all_freelist_head_from_tls():
+    def get_all_freelist_head_candidate_from_tls(self):
         selected_thread = gdb.selected_thread()
         threads = gdb.selected_inferior().threads()
         if not threads:
             return
 
-        offset_of_freelist_from_tls = -0x90
-        heads = []
+        direction = TlsCommand.get_direction()
+
+        head_candidates = []
         for thread in threads:
             try:
                 thread.switch()
@@ -84026,11 +84028,14 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
                 continue
             tls = current_arch.get_tls()
 
-            head = read_int_from_memory(tls + offset_of_freelist_from_tls)
-            if is_valid_addr(head):
-                heads.append(head)
+            for i in range(1, 0x20):
+                head_candidate_addr = tls + current_arch.ptrsize * i * direction
+                head_candidate = read_int_from_memory(head_candidate_addr)
+                if not is_single_link_list(head_candidate):
+                    continue
+                head_candidates.append(head_candidate)
         selected_thread.switch() # revert
-        return heads
+        return head_candidates
 
     def get_freelist_start(self, sb):
         # pattern1: HoardSuperblockHeaderHelper->_freeList
@@ -84046,11 +84051,9 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
         sb_start = sb + sizeof_super_block_header
         sb_end = sb_start + objectSize * totalObjects
 
-        heads = HoardHeapDumpCommand.get_all_freelist_head_from_tls()
+        heads = self.get_all_freelist_head_candidate_from_tls()
         candidates = [h for h in heads if sb_start <= h < sb_end]
-        if len(candidates) == 1:
-            return candidates[0]
-        return None
+        return candidates
 
     def dump_super_block(self, sb):
         """
@@ -84069,7 +84072,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
             /* 0x0044 | 0x0004 */    unsigned int _objectsFree;
             /* 0x0048 | 0x0008 */    const char * _start;
             /* 0x0050 | 0x0008 */    char * _position;
-            /* 0x0058 | 0x0008 */    class FreeSLList _freeList; // or TLS-0x90
+            /* 0x0058 | 0x0008 */    class FreeSLList _freeList; // or TLS
         } // total: 0x60 bytes (+ 0x10 bytes padding)
 
         struct FreeSLList::Entry {
@@ -84081,32 +84084,33 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
 
-        current = self.get_freelist_start(sb)
-        if current is None:
-            return
-
         sz = read_int_from_memory(sb + current_arch.ptrsize * 2)
         self.out.append(titlify("superblock @{:#x} (chunk_size={:#x})".format(sb, sz)))
-
         reap_count = read_int32_from_memory(sb + current_arch.ptrsize * 8)
-        if reap_count > 0:
-            self.out.append("Before allocating from freelist, you must use up all unused blocks")
-            self.out.append("There are {:s} unused blocks left".format(Color.colorify_hex(reap_count, "bold")))
+        free_count = read_int32_from_memory(sb + current_arch.ptrsize * 8 + 4)
 
-        self.out.append("freelist @{:#x}:".format(current))
-        seen = []
-        while True:
-            if current in seen:
-                self.out.append(Color.colorify(" -> {:#x} (loop) ".format(current), corrupted_msg_color))
-                break
-            seen.append(current)
-            if current and not is_valid_addr(current):
-                self.out.append(Color.colorify(" -> {:#x} (corrupted) ".format(current), corrupted_msg_color))
-                break
-            self.out.append(" -> {:s}".format(Color.colorify_hex(current, freed_address_color)))
-            if current == 0:
-                break
-            current = read_int_from_memory(current)
+        if reap_count == free_count == 0:
+            self.out.append("Uninitialized")
+            return
+
+        self.out.append("Before allocating from freelist, you must use up all unused blocks")
+        self.out.append("There are {:s} unused blocks left".format(Color.colorify_hex(reap_count, "bold")))
+
+        for current in self.get_freelist_start(sb):
+            self.out.append("freelist @{:#x}:".format(current))
+            seen = []
+            while True:
+                if current in seen:
+                    self.out.append(Color.colorify(" -> {:#x} (loop) ".format(current), corrupted_msg_color))
+                    break
+                seen.append(current)
+                if current and not is_valid_addr(current):
+                    self.out.append(Color.colorify(" -> {:#x} (corrupted) ".format(current), corrupted_msg_color))
+                    break
+                self.out.append(" -> {:s}".format(Color.colorify_hex(current, freed_address_color)))
+                if current == 0:
+                    break
+                current = read_int_from_memory(current)
         return
 
     @parse_args
