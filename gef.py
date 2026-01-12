@@ -83511,7 +83511,7 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class GoHeapDumpCommand(GenericCommand, BufferingOutput):
-    """go language v1.22.2 mheap dumper (only x64)."""
+    """go language v1.24.4 mheap dumper (only x64)."""
 
     _cmdline_ = "go-heap-dump"
     _category_ = "06-b. Heap - Other"
