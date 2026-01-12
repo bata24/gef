@@ -21626,6 +21626,27 @@ class GlibcHeapCommand(GenericCommand):
     subparsers.add_parser("parse")
     _syntax_ = parser.format_help()
 
+    _note_ = [
+        "Supports up to glibc 2.43.",
+        "- 2.15+: GEF treats malloc_par.pagesize as absent (always None).",
+        "- 2.19+: malloc_state.next_free is handled.",
+        "- 2.23+: malloc_state.attached_threads is handled.",
+        "- 2.24+: GEF treats malloc_par.max_total_mem as absent (always None).",
+        "- 2.26: tcache is introduced.",
+        "- 2.26+: MALLOC_ALIGNMENT changes for x86_32/riscv32/ppc32 affect NFASTBINS and bin-size tables.",
+        "- 2.27+: malloc_state layout handling changes (have_fastchunks/fastbins offsets).",
+        "- 2.30: tcache_perthread_struct.counts element size changes 1->2 bytes.",
+        "- 2.32: Safe-Linking (pointer mangling) for tcache/fastbins fd is supported.",
+        "- 2.34+: GEF no longer uses the __malloc_hook-based strategy to locate main_arena.",
+        "- 2.35: heap_info.pagesize is handled.",
+        "- 2.35: malloc_par.{thp_pagesize,hp_pagesize,hp_flags} are handled.",
+        "- 2.42: TCACHE_MAX_BINS 64->76 (+12 large bins, arch-dependent size ranges).",
+        "- 2.42: tcache_perthread_struct.counts changes to num_slots.",
+        "- 2.43: fastbins are removed.",
+        "- 2.43: TCACHE_FILL_COUNT 7->16.",
+    ]
+    _note_ = "\n".join(_note_)
+
     def __init__(self):
         super().__init__(prefix=True)
         return

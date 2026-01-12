@@ -297,7 +297,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - If you want to use native `c`, use the full form `continue`.
 
 ### Heap Dump Features
-- Glibc heap commands has been improved.
+- Glibc heap commands has been improved. Supports up to glibc 2.43.
     - It changes the color and prints a symbol if it exists.
         - ![](images/heap-bins.png)
     - They print bins information if the chunk is in free-list.
