@@ -3798,7 +3798,7 @@ class GlibcHeap:
                 continue
 
             candidate_arena = GlibcHeap.MallocStateStruct(candidate_arena_addr)
-            if candidate_arena.system_mem < gef_getpagesize():
+            if candidate_arena.system_mem < get_pagesize():
                 continue
             # Statically built binaries have an unaligned system_mem,
             # so alignment should not be used to determine the validity of system_mem.
@@ -6089,7 +6089,7 @@ class Disasm:
 
         # split reading by page_size
         read_addr = location
-        read_size = gef_getpagesize() - (location & gef_getpagesize_mask_low())
+        read_size = get_pagesize() - (location & get_pagesize_mask_low())
 
         # fix for arm thumb2 mode
         if (is_arm32() or is_arm32_cortex_m()) and read_addr & 1:
@@ -6104,7 +6104,7 @@ class Disasm:
 
         # A loop to read the required memory until the specified length is reached
         while True:
-            if not dont_read and len(code_remain) < gef_getpagesize():
+            if not dont_read and len(code_remain) < get_pagesize():
                 # not enough code to disassemble, so read the memory to pool
                 try:
                     read_data = read_memory(read_addr, read_size)
@@ -6145,7 +6145,7 @@ class Disasm:
             used_bytes = 0
 
             read_addr += read_size # 1st loop is the offset size. 2nd~ loops are the page size.
-            read_size = gef_getpagesize()
+            read_size = get_pagesize()
         return
 
     @staticmethod
@@ -11463,7 +11463,7 @@ def read_cstring_from_memory(addr, max_length=None):
         # read_memory when kgdb is very slow, this is dirty hack
         block_size = 1
     else:
-        block_size = gef_getpagesize()
+        block_size = get_pagesize()
 
     # first, read to page boundary
     length = block_size - (addr % block_size)
@@ -12960,11 +12960,11 @@ class ProcessMap:
                 return False
 
         def get_region_start_end(addr):
-            addr &= gef_getpagesize_mask_high()
+            addr &= get_pagesize_mask_high()
             if not is_valid_addr_fast(addr):
                 return None, None
             region_start = addr
-            region_end = addr + gef_getpagesize()
+            region_end = addr + get_pagesize()
 
             nonlocal regions
             end_addrs = [r.page_end for r in regions]
@@ -12977,9 +12977,9 @@ class ProcessMap:
                     break
                 if region_start in end_addrs:
                     break
-                if not is_valid_addr_fast(region_start - gef_getpagesize()):
+                if not is_valid_addr_fast(region_start - get_pagesize()):
                     break
-                region_start -= gef_getpagesize()
+                region_start -= get_pagesize()
 
             upper_bound = 1 << AddressUtil.get_memory_alignment(in_bits=True)
             # down search
@@ -12990,7 +12990,7 @@ class ProcessMap:
                     break
                 if not is_valid_addr_fast(region_end):
                     break
-                region_end += gef_getpagesize()
+                region_end += get_pagesize()
             return region_start, region_end
 
         def make_regions(addr, label, perm="rw-"):
@@ -13020,11 +13020,11 @@ class ProcessMap:
                     return None
                 if e_magic == b"\x7fELF":
                     return Elf.get_elf(addr)
-                addr -= gef_getpagesize()
+                addr -= get_pagesize()
             return None
 
         def parse_region_from_ehdr(addr, label):
-            elf = get_ehdr(addr & gef_getpagesize_mask_high())
+            elf = get_ehdr(addr & get_pagesize_mask_high())
             if elf is None:
                 return []
 
@@ -13042,12 +13042,12 @@ class ProcessMap:
                 flags = phdr.p_flags
 
                 # align
-                vaddr &= gef_getpagesize_mask_high()
-                offset &= gef_getpagesize_mask_high()
-                vaddr_end = (vaddr_end + gef_getpagesize_mask_low()) & gef_getpagesize_mask_high()
+                vaddr &= get_pagesize_mask_high()
+                offset &= get_pagesize_mask_high()
+                vaddr_end = (vaddr_end + get_pagesize_mask_low()) & get_pagesize_mask_high()
 
                 # add per pages
-                for page_addr in range(vaddr, vaddr_end, gef_getpagesize()):
+                for page_addr in range(vaddr, vaddr_end, get_pagesize()):
                     # check already exist
                     for i, page in enumerate(pages):
                         if page["vaddr"] == page_addr:
@@ -13060,7 +13060,7 @@ class ProcessMap:
                         # not found, so add new page
                         page = {
                             "vaddr": page_addr,
-                            "memsize": gef_getpagesize(),
+                            "memsize": get_pagesize(),
                             "flags": flags,
                             "offset": offset + (page_addr - vaddr),
                         }
@@ -13097,7 +13097,7 @@ class ProcessMap:
                 return None
 
             # get interp
-            elf = get_ehdr(addr & gef_getpagesize_mask_high())
+            elf = get_ehdr(addr & get_pagesize_mask_high())
             phdr = elf.get_phdr(Elf.Phdr.PT_INTERP)
             if phdr is None:
                 return None
@@ -13114,7 +13114,7 @@ class ProcessMap:
                 return None
 
             # get dynamic
-            elf = get_ehdr(addr & gef_getpagesize_mask_high())
+            elf = get_ehdr(addr & get_pagesize_mask_high())
             phdr = elf.get_phdr(Elf.Phdr.PT_DYNAMIC)
             if phdr is None:
                 return None
@@ -13203,7 +13203,7 @@ class ProcessMap:
             stack_permission = "rw-" # default
             auxv = Auxv.get_auxiliary_values()
             if auxv and "AT_PHDR" in auxv:
-                elf = get_ehdr(auxv["AT_PHDR"] & gef_getpagesize_mask_high())
+                elf = get_ehdr(auxv["AT_PHDR"] & get_pagesize_mask_high())
                 phdr = elf.get_phdr(Elf.Phdr.PT_GNU_STACK)
                 if phdr:
                     stack_permission = ElfInfoCommand.pflags[phdr.p_flags].lower()
@@ -13220,15 +13220,15 @@ class ProcessMap:
                 v = get_register(regname)
                 if v is None:
                     continue
-                queue.add(v & gef_getpagesize_mask_high())
+                queue.add(v & get_pagesize_mask_high())
 
             # walk value from stack top
             sp = current_arch.sp
             if sp is not None:
                 try:
-                    data = read_memory(sp & gef_getpagesize_mask_high(), gef_getpagesize())
+                    data = read_memory(sp & get_pagesize_mask_high(), get_pagesize())
                     data = slice_unpack(data, current_arch.ptrsize)
-                    queue |= {d & gef_getpagesize_mask_high() for d in set(data)}
+                    queue |= {d & get_pagesize_mask_high() for d in set(data)}
                 except gdb.MemoryError:
                     pass
 
@@ -13237,7 +13237,7 @@ class ProcessMap:
             for addr in sorted(queue):
                 if not is_valid_addr(addr):
                     continue
-                if addr - gef_getpagesize() in merged_queue:
+                if addr - get_pagesize() in merged_queue:
                     continue
                 merged_queue.append(addr)
 
@@ -14195,8 +14195,8 @@ class Auxv:
         if current_arch.sp is None:
             return None
 
-        # do not use gef_getpagesize(), gef_getpagesize_mask_high(), etc.
-        # because gef_getpagesize() -> Auxv.get_auxiliary_values() -> Auxv.get_auxiliary_walk()
+        # do not use get_pagesize(), get_pagesize_mask_high(), etc.
+        # because get_pagesize() -> Auxv.get_auxiliary_values() -> Auxv.get_auxiliary_walk()
         page_size = 0x1000
         addr = current_arch.sp & ~(page_size - 1)
 
@@ -14322,7 +14322,7 @@ class Auxv:
 
 
 @Cache.cache_this_session
-def gef_getpagesize():
+def get_pagesize():
     """Get the page size from auxiliary values."""
     auxval = Auxv.get_auxiliary_values()
     if not auxval or "AT_PAGESZ" not in auxval:
@@ -14331,7 +14331,7 @@ def gef_getpagesize():
 
 
 @Cache.cache_this_session
-def gef_getpagesize_mask_low():
+def get_pagesize_mask_low():
     """Get the page size mask from auxiliary values."""
     auxval = Auxv.get_auxiliary_values()
     if not auxval or "AT_PAGESZ" not in auxval:
@@ -14340,7 +14340,7 @@ def gef_getpagesize_mask_low():
 
 
 @Cache.cache_this_session
-def gef_getpagesize_mask_high():
+def get_pagesize_mask_high():
     """Get the page size mask from auxiliary values."""
     auxval = Auxv.get_auxiliary_values()
     if not auxval or "AT_PAGESZ" not in auxval:
@@ -16044,7 +16044,7 @@ class ArgvCommand(GenericCommand, BufferingOutput):
         ]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        max_size = gef_getpagesize() if self.args.increase_limit else 128
+        max_size = get_pagesize() if self.args.increase_limit else 128
 
         i = 0
         while True:
@@ -16056,7 +16056,7 @@ class ArgvCommand(GenericCommand, BufferingOutput):
                 self.out.append("...")
                 break
 
-            s = read_cstring_from_memory(addr, gef_getpagesize())
+            s = read_cstring_from_memory(addr, get_pagesize())
             s = Color.yellowify(repr(s))
             if len(s) > max_size:
                 s = s[:max_size] + "[...]"
@@ -16075,7 +16075,7 @@ class ArgvCommand(GenericCommand, BufferingOutput):
         legend = ["#", "String"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        max_size = gef_getpagesize() if self.args.increase_limit else 128
+        max_size = get_pagesize() if self.args.increase_limit else 128
 
         lines = open(filename, "rb").read()
         lines = String.bytes2str(lines)
@@ -16169,7 +16169,7 @@ class EnvpCommand(GenericCommand, BufferingOutput):
         ]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        max_size = gef_getpagesize() if self.args.increase_limit else 128
+        max_size = get_pagesize() if self.args.increase_limit else 128
 
         i = 0
         while True:
@@ -16181,7 +16181,7 @@ class EnvpCommand(GenericCommand, BufferingOutput):
                 self.out.append("...")
                 break
 
-            s = read_cstring_from_memory(addr, gef_getpagesize())
+            s = read_cstring_from_memory(addr, get_pagesize())
             s = Color.yellowify(repr(s))
             if len(s) > max_size:
                 s = s[:max_size] + "[...]"
@@ -16200,7 +16200,7 @@ class EnvpCommand(GenericCommand, BufferingOutput):
         legend = ["#", "Name=Value"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        max_size = gef_getpagesize() if self.args.increase_limit else 128
+        max_size = get_pagesize() if self.args.increase_limit else 128
 
         lines = open(filename, "rb").read()
         lines = String.bytes2str(lines)
@@ -18094,7 +18094,7 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
 
     def search_pattern_by_address(self, pattern, start_address, end_address):
         """Search for a pattern within a range defined by arguments."""
-        step = 0x400 * gef_getpagesize()
+        step = 0x400 * get_pagesize()
         locations = []
 
         old_mem = b""
@@ -18357,9 +18357,9 @@ class SearchPatternCommand(GenericCommand):
         if self.args.hex_regex:
             step = end_address - start_address
         elif is_qemu_system():
-            step = 0x10 * gef_getpagesize()
+            step = 0x10 * get_pagesize()
         else:
-            step = 0x400 * gef_getpagesize()
+            step = 0x400 * get_pagesize()
 
         locations = []
         old_mem = b""
@@ -18849,9 +18849,9 @@ class SearchMangledPtrCommand(GenericCommand):
     def search_mangled_ptr(self, start_address, end_address, cookie):
         """Search for a mangled pointer within a range defined by arguments."""
         if is_qemu_system():
-            step = gef_getpagesize()
+            step = get_pagesize()
         else:
-            step = 0x400 * gef_getpagesize()
+            step = 0x400 * get_pagesize()
         locations = []
 
         for chunk_addr in range(start_address, end_address, step):
@@ -19452,7 +19452,7 @@ class MmapMemoryCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address, default=0,
                         help="the address to allocate. (default: %(default)s)")
-    parser.add_argument("size", metavar="SIZE", nargs="?", type=AddressUtil.parse_address, default=gef_getpagesize(),
+    parser.add_argument("size", metavar="SIZE", nargs="?", type=AddressUtil.parse_address, default=get_pagesize(),
                         help="the size to allocate. (default: %(default)s)")
     parser.add_argument("permission", metavar="PERMISSION", nargs="?", default="rwx",
                         help="the permission to allocate. `_` is interpreted as `-`. (default: %(default)s)")
@@ -19496,16 +19496,16 @@ class MmapMemoryCommand(GenericCommand):
             return
 
         # location
-        if args.location % gef_getpagesize():
-            err("Address is not a multiple of {:#x}".format(gef_getpagesize()))
+        if args.location % get_pagesize():
+            err("Address is not a multiple of {:#x}".format(get_pagesize()))
             return
 
         # size
         if args.size < 0 or AddressUtil.get_vmem_end() <= args.size:
             err("Invalid size")
             return
-        if args.size % gef_getpagesize():
-            err("Size is not a multiple of {:#x}".format(gef_getpagesize()))
+        if args.size % get_pagesize():
+            err("Size is not a multiple of {:#x}".format(get_pagesize()))
             return
 
         # permission
@@ -19587,11 +19587,11 @@ class MunmapMemoryCommand(GenericCommand):
 
         # size
         if args.size is not None:
-            if args.location % gef_getpagesize() or args.location <= 0:
-                err("Address is not a multiple of {:#x}".format(gef_getpagesize()))
+            if args.location % get_pagesize() or args.location <= 0:
+                err("Address is not a multiple of {:#x}".format(get_pagesize()))
                 return
-            if args.size % gef_getpagesize() or args.size <= 0:
-                err("Size is not a multiple of {:#x}".format(gef_getpagesize()))
+            if args.size % get_pagesize() or args.size <= 0:
+                err("Size is not a multiple of {:#x}".format(get_pagesize()))
                 return
             # not estimation
             location = args.location
@@ -19658,11 +19658,11 @@ class MprotectCommand(GenericCommand):
 
         # size
         if args.size is not None:
-            if args.location % gef_getpagesize() or args.location <= 0:
-                err("Address is not a multiple of {:#x}".format(gef_getpagesize()))
+            if args.location % get_pagesize() or args.location <= 0:
+                err("Address is not a multiple of {:#x}".format(get_pagesize()))
                 return
-            if args.size % gef_getpagesize() or args.size <= 0:
-                err("Size is not a multiple of {:#x}".format(gef_getpagesize()))
+            if args.size % get_pagesize() or args.size <= 0:
+                err("Size is not a multiple of {:#x}".format(get_pagesize()))
                 return
             # not estimation
             location = args.location
@@ -21874,7 +21874,7 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
             self.out.append("Not thread arena")
             return
 
-        heap_info = arena.addr & gef_getpagesize_mask_high()
+        heap_info = arena.addr & get_pagesize_mask_high()
 
         try:
             cmd = "p ((struct _heap_info*) {:#x})[0]".format(heap_info)
@@ -23608,7 +23608,7 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
         else:
             unit = 0x1
 
-        ZERO_PAGE = b"\0" * gef_getpagesize()
+        ZERO_PAGE = b"\0" * get_pagesize()
         target_size &= mask
         vmmap = ProcessMap.get_process_maps_exclude_special_regions()
 
@@ -23636,10 +23636,10 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
             # Scanning page-by-page
             pos = 0
             while pos < m.size:
-                if (pos & gef_getpagesize_mask_low()) == 0:
+                if (pos & get_pagesize_mask_low()) == 0:
                     # fast check for all zero, because there may be huge mmap-ed memory
-                    if data[pos:pos + gef_getpagesize()] == ZERO_PAGE:
-                        pos += gef_getpagesize()
+                    if data[pos:pos + get_pagesize()] == ZERO_PAGE:
+                        pos += get_pagesize()
                         continue
 
                 pos_of_size_start = pos + current_arch.ptrsize
@@ -32157,7 +32157,7 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
         # If you get an error, you probably read outside a valid memory page.
         # Read in page size units.
         read_end = read_from + read_len
-        read_end &= gef_getpagesize_mask_high()
+        read_end &= get_pagesize_mask_high()
         while read_end - read_from > 0:
             try:
                 if self.args.phys:
@@ -32167,7 +32167,7 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
                 return mem
             except (gdb.MemoryError, ValueError, OverflowError):
                 pass
-            read_end -= gef_getpagesize()
+            read_end -= get_pagesize()
         return None
 
     @parse_args
@@ -32529,10 +32529,10 @@ class LoadFileMmapCommand(GenericCommand):
         # |             |               |
         # +-mmap_end----+               v
 
-        mmap_start = args.location & gef_getpagesize_mask_high()
+        mmap_start = args.location & get_pagesize_mask_high()
         data_start = args.location
         data_end = data_start + data_size
-        mmap_end = AddressUtil.align_address_to_size(data_end, gef_getpagesize())
+        mmap_end = AddressUtil.align_address_to_size(data_end, get_pagesize())
         mmap_size = mmap_end - mmap_start
 
         # mmap
@@ -57546,7 +57546,7 @@ class KernelAddressHeuristicFinder:
                 pos = ro_data.find(b"\x7fELF", pos + 1)
                 if pos == -1:
                     break
-                if pos % gef_getpagesize() != 0:
+                if pos % get_pagesize() != 0:
                     continue
 
                 # calc address of ELF header
@@ -57616,7 +57616,7 @@ class KernelAddressHeuristicFinder:
                 pos = ro_data.find(b"\x7fELF", pos + 1)
                 if pos == -1:
                     break
-                if pos % gef_getpagesize() != 0:
+                if pos % get_pagesize() != 0:
                     continue
 
                 # calc address of ELF header
@@ -57678,7 +57678,7 @@ class KernelAddressHeuristicFinder:
                 pos = ro_data.find(b"\x7fELF", pos + 1)
                 if pos == -1:
                     break
-                if pos % gef_getpagesize() == 0:
+                if pos % get_pagesize() == 0:
                     return kinfo.ro_base + pos
         return None
 
@@ -59045,7 +59045,7 @@ class Kernel:
             res = Color.remove_color(res)
             r = re.search(r"VBAR\s+=\s+(0x\S+)", res)
             vbar = int(r.group(1), 16)
-            vbar &= gef_getpagesize_mask_high()
+            vbar &= get_pagesize_mask_high()
 
             if vbar and is_valid_addr(vbar):
                 for i, (vaddr, size, _perm) in enumerate(dic["maps"]):
@@ -59062,7 +59062,7 @@ class Kernel:
             res = Color.remove_color(res)
             r = re.search(r"stvec\s+=\s+(0x\S+)", res)
             stvec = int(r.group(1), 16)
-            stvec &= gef_getpagesize_mask_high()
+            stvec &= get_pagesize_mask_high()
 
             if stvec and is_valid_addr(stvec):
                 for i, (vaddr, size, _perm) in enumerate(dic["maps"]):
@@ -59117,7 +59117,7 @@ class Kernel:
         for i, (vaddr, size, perm) in enumerate(dic["maps"][text_base_map_index + 1:]):
             if perm == "R--":
                 if dic["ro_base"] is None:
-                    data = read_memory(vaddr, gef_getpagesize())
+                    data = read_memory(vaddr, get_pagesize())
                     if b"Linux version" in data:
                         dic["ro_base"] = vaddr
                         dic["ro_size"] = size
@@ -59174,14 +59174,14 @@ class Kernel:
         #   [ .rodata ]
         if dic["ro_base"] is None:
             dic["rwx"] = True
-            start = dic["text_base"] + gef_getpagesize() * 8
+            start = dic["text_base"] + get_pagesize() * 8
             end = dic["text_base"] + dic["text_size"]
             block_size = 0x20
             zero_data = b"\0" * block_size
-            for addr in range(start, end, gef_getpagesize()):
+            for addr in range(start, end, get_pagesize()):
                 data_prev = read_memory(addr - block_size, block_size)
                 if data_prev == zero_data:
-                    data = read_memory(addr, gef_getpagesize())
+                    data = read_memory(addr, get_pagesize())
                     if b"Linux version" in data:
                         dic["ro_base"] = addr
                         dic["ro_size"] = end - addr
@@ -60093,7 +60093,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             diff = kstacks[i + 1] - kstacks[i]
             diffs.append(diff)
         if len(diffs) == 0:
-            kstack_size = gef_getpagesize() * 2
+            kstack_size = get_pagesize() * 2
         else:
             kstack_size = min(diffs)
 
@@ -63350,7 +63350,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             os.unlink(sym_elf_path)
 
         # make blank elf
-        text_base &= gef_getpagesize_mask_high()
+        text_base &= get_pagesize_mask_high()
         text_end = entries[-1][0]
         blank_elf = AddSymbolTemporaryCommand.create_blank_elf(text_base, text_end)
         if blank_elf is None:
@@ -69052,7 +69052,7 @@ class StringsCommand(GenericCommand, BufferingOutput):
             if loc.valid:
                 first_range = loc.section.page_end - args.location
             else:
-                first_range = gef_getpagesize()
+                first_range = get_pagesize()
 
         self.out = []
         queue = [(args.location, first_range, args.depth)]
@@ -71181,9 +71181,9 @@ class HashMemoryCommand(HashCommand):
         return
 
     def calc_hash(self, hfunc, start_address, end_address):
-        step = 0x400 * gef_getpagesize()
+        step = 0x400 * get_pagesize()
         if is_qemu_system():
-            step = gef_getpagesize()
+            step = get_pagesize()
 
         for chunk_addr in range(start_address, end_address, step):
             if chunk_addr + step > end_address:
@@ -71457,9 +71457,9 @@ class CrcMemoryCommand(CrcCommand):
         return
 
     def calc_crc(self, cfunc, start_address, end_address):
-        step = 0x400 * gef_getpagesize()
+        step = 0x400 * get_pagesize()
         if is_qemu_system():
-            step = gef_getpagesize()
+            step = get_pagesize()
 
         for chunk_addr in range(start_address, end_address, step):
             if chunk_addr + step > end_address:
@@ -72335,7 +72335,7 @@ class IsMemoryZeroCommand(GenericCommand):
         return
 
     def memcheck(self, phys_mode, addr, size):
-        page_size = gef_getpagesize()
+        page_size = get_pagesize()
         start = addr
         end = addr + size
         is_zero = True
@@ -72417,10 +72417,10 @@ class StringLengthCommand(GenericCommand):
         current = addr
         while True:
             # calc read_size
-            if current & gef_getpagesize_mask_low():
-                read_size = AddressUtil.align_address_to_size(current, gef_getpagesize()) - current
+            if current & get_pagesize_mask_low():
+                read_size = AddressUtil.align_address_to_size(current, get_pagesize()) - current
             else:
-                read_size = gef_getpagesize()
+                read_size = get_pagesize()
             # read
             try:
                 if phys_mode:
@@ -72481,12 +72481,12 @@ class SequenceLengthCommand(GenericCommand):
         current = addr
         while True:
             # calc read_size
-            if current & gef_getpagesize_mask_low():
-                read_size = AddressUtil.align_address_to_size(current, gef_getpagesize()) - current
+            if current & get_pagesize_mask_low():
+                read_size = AddressUtil.align_address_to_size(current, get_pagesize()) - current
             else:
-                read_size = gef_getpagesize()
+                read_size = get_pagesize()
             while read_size < unit:
-                read_size += gef_getpagesize()
+                read_size += get_pagesize()
             # read
             try:
                 if phys_mode:
@@ -74458,7 +74458,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # heuristic detection pattern 1
         # freed chunks are scattered and can be confirmed on each of the pages
-        page_heads = [x & gef_getpagesize_mask_high() for x in freelist]
+        page_heads = [x & get_pagesize_mask_high() for x in freelist]
         uniq_page_heads = list(set(page_heads))
         if page["num_pages"] == len(uniq_page_heads):
             return min(uniq_page_heads)
@@ -74475,12 +74475,12 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         # 0xXXXX6000                                                      |v pattern 2
         # 0xXXXX7000                                                      v pattern 1
         chunk_size = kmem_cache["size"]
-        min_page = min(freelist) & gef_getpagesize_mask_high()
-        max_page = max(freelist) & gef_getpagesize_mask_high()
-        known_num_pages = ((max_page - min_page) // gef_getpagesize()) + 1
+        min_page = min(freelist) & get_pagesize_mask_high()
+        max_page = max(freelist) & get_pagesize_mask_high()
+        known_num_pages = ((max_page - min_page) // get_pagesize()) + 1
         unknown_num_pages = page["num_pages"] - known_num_pages
-        most_top_page = min_page - (unknown_num_pages * gef_getpagesize())
-        candidate_top_pages = range(most_top_page, min_page + gef_getpagesize(), gef_getpagesize())
+        most_top_page = min_page - (unknown_num_pages * get_pagesize())
+        candidate_top_pages = range(most_top_page, min_page + get_pagesize(), get_pagesize())
         # alignment check for each candidate_top_pages
         valid_top_pages = []
         for cand_top in candidate_top_pages:
@@ -74573,8 +74573,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             active_chunk = read_int_from_memory(page + self.page_offset_freelist)
             active_page["freelist"] = self.walk_freelist(active_chunk, kmem_cache)
             active_page["num_pages"] = (
-                kmem_cache["size"] * active_page["objects"] + gef_getpagesize_mask_low()
-            ) // gef_getpagesize()
+                kmem_cache["size"] * active_page["objects"] + get_pagesize_mask_low()
+            ) // get_pagesize()
 
             active_page["virt_addr"] = self.page2virt(
                 active_page, kmem_cache, kmem_cache["kmem_cache_cpu"][cpu]["freelist"]
@@ -74603,8 +74603,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             partial_chunk = read_int_from_memory(current_partial_page + self.page_offset_freelist)
             partial_page["freelist"] = self.walk_freelist(partial_chunk, kmem_cache)
             partial_page["num_pages"] = (
-                kmem_cache["size"] * partial_page["objects"] + gef_getpagesize_mask_low()
-            ) // gef_getpagesize()
+                kmem_cache["size"] * partial_page["objects"] + get_pagesize_mask_low()
+            ) // get_pagesize()
             partial_page["virt_addr"] = self.page2virt(partial_page, kmem_cache)
             kmem_cache["kmem_cache_cpu"][cpu]["partial_pages"].append(partial_page)
             next_partial_page = read_int_from_memory(current_partial_page + self.page_offset_next)
@@ -74634,8 +74634,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             node_chunk = read_int_from_memory(node_page["address"] + self.page_offset_freelist)
             node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache)
             node_page["num_pages"] = (
-                kmem_cache["size"] * node_page["objects"] + gef_getpagesize_mask_low()
-            ) // gef_getpagesize()
+                kmem_cache["size"] * node_page["objects"] + get_pagesize_mask_low()
+            ) // get_pagesize()
             node_page["virt_addr"] = self.page2virt(node_page, kmem_cache)
             node_page_list.append(node_page)
             current_node_page = read_int_from_memory(node_page["address"] + self.page_offset_next)
@@ -74758,7 +74758,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("        layout: Failed to the get first page")
             return
 
-        end_virt = page["virt_addr"] + page["num_pages"] * gef_getpagesize()
+        end_virt = page["virt_addr"] + page["num_pages"] * get_pagesize()
         start_addr = page["virt_addr"] + kmem_cache["red_left_pad"]
 
         if kmem_cache["red_left_pad"]:
@@ -75460,7 +75460,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
         # heuristic detection pattern 1
         # freed chunks are scattered and can be confirmed on each of the pages
-        page_heads = [x & gef_getpagesize_mask_high() for x in freelist]
+        page_heads = [x & get_pagesize_mask_high() for x in freelist]
         uniq_page_heads = list(set(page_heads))
         if page["num_pages"] == len(uniq_page_heads):
             return min(uniq_page_heads)
@@ -75477,12 +75477,12 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         # 0xXXXX6000                                                      |v pattern 2
         # 0xXXXX7000                                                      v pattern 1
         chunk_size = kmem_cache["size"]
-        min_page = min(freelist) & gef_getpagesize_mask_high()
-        max_page = max(freelist) & gef_getpagesize_mask_high()
-        known_num_pages = ((max_page - min_page) // gef_getpagesize()) + 1
+        min_page = min(freelist) & get_pagesize_mask_high()
+        max_page = max(freelist) & get_pagesize_mask_high()
+        known_num_pages = ((max_page - min_page) // get_pagesize()) + 1
         unknown_num_pages = page["num_pages"] - known_num_pages
-        most_top_page = min_page - (unknown_num_pages * gef_getpagesize())
-        candidate_top_pages = range(most_top_page, min_page + gef_getpagesize(), gef_getpagesize())
+        most_top_page = min_page - (unknown_num_pages * get_pagesize())
+        candidate_top_pages = range(most_top_page, min_page + get_pagesize(), get_pagesize())
         # alignment check for each candidate_top_pages
         valid_top_pages = []
         for cand_top in candidate_top_pages:
@@ -75563,8 +75563,8 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
                 node_chunk = read_int_from_memory(node_page["address"] + self.slab_offset_freelist)
                 node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache)
                 node_page["num_pages"] = (
-                    kmem_cache["size"] * node_page["objects"] + gef_getpagesize_mask_low()
-                ) // gef_getpagesize()
+                    kmem_cache["size"] * node_page["objects"] + get_pagesize_mask_low()
+                ) // get_pagesize()
                 node_page["virt_addr"] = self.page2virt(node_page, kmem_cache)
                 node_page_list.append(node_page)
                 current_node_page = read_int_from_memory(node_page["address"] + self.slab_offset_next)
@@ -75615,7 +75615,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("        layout: Failed to the get first page")
             return
 
-        end_virt = page["virt_addr"] + page["num_pages"] * gef_getpagesize()
+        end_virt = page["virt_addr"] + page["num_pages"] * get_pagesize()
         start_addr = page["virt_addr"] + kmem_cache["red_left_pad"]
 
         if kmem_cache["red_left_pad"]:
@@ -76332,7 +76332,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                 node_page_list.append(node_page)
                 break
             node_page["s_mem"] = read_int_from_memory(node_page["address"] + self.page_offset_s_mem)
-            node_page["s_mem_base"] = node_page["s_mem"] & gef_getpagesize_mask_high()
+            node_page["s_mem_base"] = node_page["s_mem"] & get_pagesize_mask_high()
 
             if not self.args.simple:
                 freelist_addr = read_int_from_memory(node_page["address"] + self.page_offset_freelist)
@@ -76462,7 +76462,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
 
         # print layout
         freelist = page["freelist"]
-        end_virt = page["s_mem_base"] + kmem_cache["pagesperslab"] * gef_getpagesize()
+        end_virt = page["s_mem_base"] + kmem_cache["pagesperslab"] * get_pagesize()
 
         if colour_off:
             chunk_s = Color.colorify_hex(page["s_mem_base"], used_address_color)
@@ -76898,7 +76898,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         freelist = []
         current = head
         while True:
-            base = current & gef_getpagesize_mask_high()
+            base = current & get_pagesize_mask_high()
             units = struct.unpack("<h", read_memory(current, 2))[0]
             if units < 0:
                 next = -units
@@ -76921,7 +76921,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             page["address"] = current - self.page_offset_next
             page["units"] = read_int32_from_memory(page["address"] + self.page_offset_units)
             freelist_head = read_int_from_memory(page["address"] + self.page_offset_freelist)
-            page["virt_addr"] = freelist_head & gef_getpagesize_mask_high()
+            page["virt_addr"] = freelist_head & get_pagesize_mask_high()
             page["num_pages"] = 1
             page["freelist"] = self.walk_freelist(freelist_head, page)
             page["next"] = next = read_int_from_memory(current)
@@ -77186,7 +77186,7 @@ class SlabContainsCommand(GenericCommand):
         return None
 
     def slab_contains(self):
-        current = self.args.address & gef_getpagesize_mask_high()
+        current = self.args.address & get_pagesize_mask_high()
         chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
 
         kversion = Kernel.kernel_version()
@@ -77204,7 +77204,7 @@ class SlabContainsCommand(GenericCommand):
 
                 page_next = read_int_from_memory(page + self.page_offset_next)
                 if page_next & 1:
-                    current -= gef_getpagesize()
+                    current -= get_pagesize()
                     self.quiet_warn("Detected invalid value, continue exploring...")
                     continue
 
@@ -77215,13 +77215,13 @@ class SlabContainsCommand(GenericCommand):
 
                 self.quiet_print("kmem_cache: {:#x}".format(kmem_cache))
 
-                if (kmem_cache & gef_getpagesize_mask_high()) == 0xdead_0000_0000_0000:
-                    current -= gef_getpagesize()
+                if (kmem_cache & get_pagesize_mask_high()) == 0xdead_0000_0000_0000:
+                    current -= get_pagesize()
                     self.quiet_warn("Detected invalid value, continue exploring...")
                     continue
 
                 if kmem_cache & 1:
-                    current -= gef_getpagesize()
+                    current -= get_pagesize()
                     self.quiet_warn("Detected invalid value, continue exploring...")
                     continue
 
@@ -77240,7 +77240,7 @@ class SlabContainsCommand(GenericCommand):
                 red_left_pad = read_int_from_memory(kmem_cache + self.kmem_cache_offset_red_left_pad)
                 x = read_int_from_memory(page + self.page_offset_inuse_objects_frozen)
                 objects = (x >> 16) & 0x7fff
-                num_pages = (slab_cache_size * objects + gef_getpagesize_mask_low()) // gef_getpagesize()
+                num_pages = (slab_cache_size * objects + get_pagesize_mask_low()) // get_pagesize()
             else:
                 red_left_pad = 0
                 gfporder = read_int32_from_memory(kmem_cache + self.kmem_cache_offset_gfporder)
@@ -82540,7 +82540,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             # read from kallsyms_relative_base
             relative_base_address = int.from_bytes(self.kernel_img[position:position + address_byte_size], endian_str)
 
-            if relative_base_address and (relative_base_address & gef_getpagesize_mask_low()) == 0:
+            if relative_base_address and (relative_base_address & get_pagesize_mask_low()) == 0:
                 """
                 some environment has invalid address as relative_base_address.
                 so don't use the logic of is_valid_addr(relative_base_address).
@@ -82564,7 +82564,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             position_relative_base = AddressUtil.align_address_to_size(position + self.num_symbols * offset_byte_size, 8)
             relative_base_address_data = self.kernel_img[position_relative_base:position_relative_base + address_byte_size]
             relative_base_address = int.from_bytes(relative_base_address_data, endian_str)
-            if not (relative_base_address and (relative_base_address & gef_getpagesize_mask_low()) == 0):
+            if not (relative_base_address and (relative_base_address & get_pagesize_mask_low()) == 0):
                 return False
 
         # Getting here means that the relative_address and position have been detected correctly.
@@ -82730,7 +82730,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         while True:
             try:
                 # As kernel version string is near the top of ro_base, it is enough to check the first page.
-                candidate_rodata = read_memory(current, gef_getpagesize())
+                candidate_rodata = read_memory(current, get_pagesize())
             except gdb.MemoryError:
                 # reached to the end of ro_base
                 self.quiet_info("Use slow path")
@@ -83252,14 +83252,14 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
                 continue
             if m.permission != Permission.READ | Permission.WRITE:
                 continue
-            for current_page in range(m.page_start, m.page_end, gef_getpagesize()):
+            for current_page in range(m.page_start, m.page_end, get_pagesize()):
                 # fast check
-                x = read_memory(current_page, gef_getpagesize())
+                x = read_memory(current_page, get_pagesize())
                 if set(x) == {0}:
                     continue
 
                 # exact check
-                for current in range(current_page, current_page + gef_getpagesize(), current_arch.ptrsize):
+                for current in range(current_page, current_page + get_pagesize(), current_arch.ptrsize):
                     error = False
                     for i in range(self.CentralCache_array_count):
                         base = current + self.sizeof_CentralCache * i
@@ -84014,7 +84014,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
                 continue
             if m.permission != Permission.READ | Permission.WRITE:
                 continue
-            for p in range(m.page_start, m.page_end, gef_getpagesize()):
+            for p in range(m.page_start, m.page_end, get_pagesize()):
                 if not is_valid_addr(p):
                     continue
                 v = read_int_from_memory(p)
@@ -86732,7 +86732,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             0x599a3e48b030|+0x00f0|+030: buckets[0]               : 0x0000000000000000
             """
             if current_addr - root_addr != 0xc0:
-                return gef_getpagesize()
+                return get_pagesize()
             data = read_memory(root_addr + 0x80, 0x40)
             for x in slice_unpack(data, current_arch.ptrsize):
                 if x & 0xfff:
@@ -86744,7 +86744,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 if (x & 0xffff_ffff) == 0:
                     continue
                 return x
-            return gef_getpagesize()
+            return get_pagesize()
 
         root["metadata_offset_"] = get_metadata_offset(root["addr"], current)
 
@@ -86960,9 +86960,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         ptrsize = current_arch.ptrsize
         slot_span = {}
         slot_span["addr"] = current = addr
-        slot_span["super_page_addr"] = (slot_span["addr"] & gef_getpagesize_mask_high()) - self.root.metadata_offset_
-        slot_span["partition_page_index"] = (slot_span["addr"] & gef_getpagesize_mask_low()) // 0x20
-        super_page_addr_offset = slot_span["partition_page_index"] * gef_getpagesize() * 4
+        slot_span["super_page_addr"] = (slot_span["addr"] & get_pagesize_mask_high()) - self.root.metadata_offset_
+        slot_span["partition_page_index"] = (slot_span["addr"] & get_pagesize_mask_low()) // 0x20
+        super_page_addr_offset = slot_span["partition_page_index"] * get_pagesize() * 4
         slot_span["partition_page_start"] = slot_span["super_page_addr"] + super_page_addr_offset
         """
         https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/  \
@@ -87280,7 +87280,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             ))
             self.out.append("                   slot_span_area:{:s}-{:s} ".format(
                 self.P(slot_span.partition_page_start),
-                self.P(slot_span.partition_page_start + bucket.num_system_pages_per_slot_span * gef_getpagesize()),
+                self.P(slot_span.partition_page_start + bucket.num_system_pages_per_slot_span * get_pagesize()),
             ))
             self.out.append("                   num_allocated_slots:{:#x}".format(
                 slot_span.num_allocated_slots),
@@ -87297,7 +87297,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
         slot_size = bucket.slot_size
         page_start = slot_span.partition_page_start
-        page_end = page_start + bucket.num_system_pages_per_slot_span * gef_getpagesize()
+        page_end = page_start + bucket.num_system_pages_per_slot_span * get_pagesize()
 
         text = ""
         cnt = 0
@@ -87762,7 +87762,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                     self.info_add_out("__malloc_context.init_done: {:#x}".format(__malloc_context_init_done))
                     __malloc_context = __malloc_context_init_done - current_arch.ptrsize
                     x = read_int_from_memory(__malloc_context)
-                    if x == gef_getpagesize():
+                    if x == get_pagesize():
                         __malloc_context -= current_arch.ptrsize
                     self.info_add_out("__malloc_context: {:#x}".format(__malloc_context))
                     return __malloc_context
@@ -87828,7 +87828,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         ctx["secret"] = read_int64_from_memory(current)
         current += 8
         x = read_int_from_memory(current)
-        if x == gef_getpagesize():
+        if x == get_pagesize():
             ctx["pagesize"] = x
             current += ptrsize
         else:
@@ -88976,7 +88976,7 @@ class XStringCommand(GenericCommand, BufferingOutput):
 
             # read string
             current = address
-            size = gef_getpagesize() - (address & gef_getpagesize_mask_low())
+            size = get_pagesize() - (address & get_pagesize_mask_low())
             s = b""
             while True:
                 # check accessibility
@@ -88992,7 +88992,7 @@ class XStringCommand(GenericCommand, BufferingOutput):
 
                 # not found 0x0, read more
                 current += size
-                size = gef_getpagesize()
+                size = get_pagesize()
 
             # cut off
             if max_length and len(s) >= max_length:
@@ -90783,7 +90783,7 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
                     found = False
                     break
                 # check size + page_offset
-                if (size + page_offset) % gef_getpagesize():
+                if (size + page_offset) % get_pagesize():
                     found = False
                     break
                 # check refc
@@ -90804,9 +90804,9 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
                     break
                 # check pages
                 pages = []
-                for j in range((size + page_offset) // gef_getpagesize()):
+                for j in range((size + page_offset) // get_pagesize()):
                     p = read_int_from_memory(current + offsetof_pages + current_arch.ptrsize * j)
-                    if p & gef_getpagesize_mask_low():
+                    if p & get_pagesize_mask_low():
                         found = False
                         break
                     pages.append(p)
@@ -90848,12 +90848,12 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
                 if pages:
                     start = end = pages[0]
                     for addr in pages[1:]:
-                        if addr == end + gef_getpagesize():
+                        if addr == end + get_pagesize():
                             end = addr
                         else:
-                            pages_str.append("{:#x}-{:#x}".format(start, end + gef_getpagesize()))
+                            pages_str.append("{:#x}-{:#x}".format(start, end + get_pagesize()))
                             start = end = addr
-                    pages_str.append("{:#x}-{:#x}".format(start, end + gef_getpagesize()))
+                    pages_str.append("{:#x}-{:#x}".format(start, end + get_pagesize()))
 
                 self.out.append(
                     "{:#010x}    {:#010x}  {:#010x}  {:#010x}  {:#018x}  {:#010x}  {:#010x}   {:s}".format(
@@ -93895,13 +93895,13 @@ class PagewalkRiscvCommand(PagewalkCommand):
 
                 if ((entry >> 1) & 0b111) == 0:
                     # calc next table
-                    next_level_entry = ppn * gef_getpagesize()
+                    next_level_entry = ppn * get_pagesize()
                     L5E.append([new_va, next_level_entry, flags])
                     entry_type = "TABLE"
                 else:
                     # make entry
                     virt_addr = new_va
-                    phys_addr = ppn * gef_getpagesize()
+                    phys_addr = ppn * get_pagesize()
                     page_size = 256 * 1024 * 1024 * 1024 * 1024
                     page_count = 1
                     PTE.append([virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)])
@@ -93979,13 +93979,13 @@ class PagewalkRiscvCommand(PagewalkCommand):
 
                 if ((entry >> 1) & 0b111) == 0:
                     # calc next table
-                    next_level_entry = ppn * gef_getpagesize()
+                    next_level_entry = ppn * get_pagesize()
                     L4E.append([new_va, next_level_entry, flags])
                     entry_type = "TABLE"
                 else:
                     # make entry
                     virt_addr = new_va
-                    phys_addr = ppn * gef_getpagesize()
+                    phys_addr = ppn * get_pagesize()
                     page_size = 512 * 1024 * 1024 * 1024
                     page_count = 1
                     PTE.append([virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)])
@@ -94062,13 +94062,13 @@ class PagewalkRiscvCommand(PagewalkCommand):
 
                 if ((entry >> 1) & 0b111) == 0:
                     # calc next table
-                    next_level_entry = ppn * gef_getpagesize()
+                    next_level_entry = ppn * get_pagesize()
                     L3E.append([new_va, next_level_entry, flags])
                     entry_type = "TABLE"
                 else:
                     # make entry
                     virt_addr = new_va
-                    phys_addr = ppn * gef_getpagesize()
+                    phys_addr = ppn * get_pagesize()
                     page_size = 1 * 1024 * 1024 * 1024
                     page_count = 1
                     PTE.append([virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)])
@@ -94142,13 +94142,13 @@ class PagewalkRiscvCommand(PagewalkCommand):
 
                 if ((entry >> 1) & 0b111) == 0:
                     # calc next table
-                    next_level_entry = ppn * gef_getpagesize()
+                    next_level_entry = ppn * get_pagesize()
                     L2E.append([new_va, next_level_entry, flags])
                     entry_type = "TABLE"
                 else:
                     # make entry
                     virt_addr = new_va
-                    phys_addr = ppn * gef_getpagesize()
+                    phys_addr = ppn * get_pagesize()
                     page_size = 2 * 1024 * 1024
                     page_count = 1
                     PTE.append([virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)])
@@ -94218,7 +94218,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
 
                 # make entry
                 virt_addr = new_va
-                phys_addr = ppn * gef_getpagesize()
+                phys_addr = ppn * get_pagesize()
                 page_size = 4 * 1024
                 page_count = 1
                 PTE.append([virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)])
@@ -94264,10 +94264,10 @@ class PagewalkRiscvCommand(PagewalkCommand):
 
         if is_riscv64():
             mode = (satp >> 60) & 0b1111 # upper 4 bit
-            pagewalk_base = (satp & 0xfff_ffff_ffff) * gef_getpagesize() # lower 44 bit
+            pagewalk_base = (satp & 0xfff_ffff_ffff) * get_pagesize() # lower 44 bit
         else:
             mode = (satp >> 31) & 0b1 # upper 1 bit
-            pagewalk_base = (satp & 0x3f_ffff) * gef_getpagesize() # lower 22 bit
+            pagewalk_base = (satp & 0x3f_ffff) * get_pagesize() # lower 22 bit
         self.sstatus_sum = (sstatus >> 18) & 1
 
         # virtual address base
@@ -94914,7 +94914,7 @@ class PagewalkX64Command(PagewalkCommand):
         else:
             cr4 = get_register("cr4", use_monitor=True)
         if is_x86_64() and self.args.user_pt:
-            cr3 += gef_getpagesize()
+            cr3 += get_pagesize()
         self.quiet_info_add_out("cr3: {:#018x}".format(cr3))
         self.quiet_info_add_out("cr4: {:#018x}".format(cr4))
 
@@ -98226,11 +98226,11 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             return Color.colorify(line, line_color)
 
     def page_start_align(self, x):
-        return x & gef_getpagesize_mask_high()
+        return x & get_pagesize_mask_high()
 
     def page_end_align(self, x):
-        if x & gef_getpagesize_mask_low():
-            return (x & gef_getpagesize_mask_high()) + gef_getpagesize()
+        if x & get_pagesize_mask_low():
+            return (x & get_pagesize_mask_high()) + get_pagesize()
         else:
             return x
 
@@ -98508,7 +98508,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                 self.resolve_mem_section() # try mem_section
             return
 
-        mem_map &= gef_getpagesize_mask_high()
+        mem_map &= get_pagesize_mask_high()
         # already there
         if mem_map in self.regions:
             self.regions[mem_map].add_description("mem_map(=page[])")
@@ -98548,7 +98548,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         # parse mem_section
         for i in range(NR_MEM_SECTIONS):
             section_mem_map = read_int_from_memory(mem_section + sizeof_mem_section * i)
-            section_mem_map &= gef_getpagesize_mask_high()
+            section_mem_map &= get_pagesize_mask_high()
             if not is_valid_addr(section_mem_map):
                 continue
             # already there
@@ -98736,7 +98736,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             diff = kstacks[i + 1] - kstacks[i]
             diffs.append(diff)
         if len(diffs) == 0:
-            kstack_size = gef_getpagesize() *2
+            kstack_size = get_pagesize() *2
         else:
             kstack_size = min(diffs)
 
@@ -98816,28 +98816,28 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                 except gdb.error:
                     break
                 if not res:
-                    current += gef_getpagesize()
+                    current += get_pagesize()
                     continue
 
                 r = re.search(r"name: (\S+)  size: \S+  num_pages: (\S+)", res)
                 if not r:
-                    current += gef_getpagesize()
+                    current += get_pagesize()
                     continue
 
                 name = r.group(1)
                 # something is wrong
                 if name and not all(x in String.STRING_PRINTABLE for x in name):
-                    current += gef_getpagesize()
+                    current += get_pagesize()
                     continue
 
                 num_pages = int(r.group(2), 16)
                 # something is wrong
                 if num_pages == 0:
-                    current += gef_getpagesize()
+                    current += get_pagesize()
                     continue
 
                 description = "slab cache ({:s}; full)".format(name)
-                total_page_size = gef_getpagesize() * num_pages
+                total_page_size = get_pagesize() * num_pages
 
                 self.insert_region(current, total_page_size, description, merge=False)
                 current += total_page_size
@@ -98867,7 +98867,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                 continue
             r = re.search(r"num pages: (\d+)", line)
             if r:
-                size = int(r.group(1)) * gef_getpagesize()
+                size = int(r.group(1)) * get_pagesize()
                 description = "slab cache ({:s})".format(name)
                 if address:
                     self.insert_region(address, size, description, merge=False)
@@ -98901,7 +98901,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                 continue
             r = re.search(r"num pages: (\d+)", line)
             if r:
-                size = int(r.group(1)) * gef_getpagesize()
+                size = int(r.group(1)) * get_pagesize()
                 description = "slab cache ({:s})".format(name)
                 if address:
                     self.insert_region(address, size, description, merge=False)
@@ -98929,7 +98929,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                 continue
             r = re.search(r"num pages: (\d+)", line)
             if r:
-                size = int(r.group(1)) * gef_getpagesize()
+                size = int(r.group(1)) * get_pagesize()
                 description = "slab cache"
                 if address:
                     self.insert_region(address, size, description, merge=False)
@@ -98961,7 +98961,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                 continue
             r = re.search(r"num pages: (\d+)", line)
             if r:
-                size = int(r.group(1)) * gef_getpagesize()
+                size = int(r.group(1)) * get_pagesize()
                 description = "slab cache ({:s})".format(name)
                 if address:
                     self.insert_region(address, size, description, merge=False)
@@ -98995,7 +98995,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             line = line.split()
             module_name = line[1]
             module_base = int(line[2], 16)
-            module_size = AddressUtil.align_address_to_size(int(line[3], 16), gef_getpagesize())
+            module_size = AddressUtil.align_address_to_size(int(line[3], 16), get_pagesize())
             description = "kernel module ({:s})".format(module_name)
             self.insert_region(module_base, module_size, description)
         return
@@ -99030,13 +99030,13 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         if is_arm64() or is_arm32():
             vdso_start = KernelAddressHeuristicFinder.get_vdso_start()
             if vdso_start:
-                vdso_size = gef_getpagesize()
+                vdso_size = get_pagesize()
                 self.insert_region(vdso_start, vdso_size, "vdso_start")
 
         if is_arm64():
             vdso32_start = KernelAddressHeuristicFinder.get_vdso32_start()
             if vdso32_start:
-                vdso_size = gef_getpagesize()
+                vdso_size = get_pagesize()
                 self.insert_region(vdso32_start, vdso_size, "vdso32_start")
         return
 
@@ -99090,7 +99090,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             return
         self.quiet_info("detect zero page")
 
-        page_size = gef_getpagesize()
+        page_size = get_pagesize()
         z10 = b"\0" * 0x10
         cc10 = b"\xcc" * 0x10
         ff10 = b"\xff" * 0x10
@@ -99699,7 +99699,7 @@ class PageCommand(GenericCommand):
             vaddr = self.args.address
             if self.args.address & 0xfff:
                 warn("The address must be 0x1000 aligned, round down and then calculate")
-                vaddr = self.args.address & gef_getpagesize_mask_high()
+                vaddr = self.args.address & get_pagesize_mask_high()
 
             # A virtual address is always associated with one physical address.
             page = self.virt2page(vaddr)
@@ -99712,7 +99712,7 @@ class PageCommand(GenericCommand):
             paddr = self.args.address
             if self.args.address & 0xfff:
                 warn("The address must be 0x1000 aligned, round down and then calculate")
-                paddr = self.args.address & gef_getpagesize_mask_high()
+                paddr = self.args.address & get_pagesize_mask_high()
 
             r = Kernel.p2v(paddr)
             if not r:
@@ -102796,7 +102796,7 @@ class KmallocAllocatedByCommand(GenericCommand):
                 yield ("close(fd)", "close", [fd])
 
             yield "mmap -> mprotect -> mremap -> msync -> madvise -> munmap"
-            size = gef_getpagesize()
+            size = get_pagesize()
             yield (
                 "addr = mmap(NULL, 0x1000, RWX, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0)",
                 "mmap", [0, size, 7, 0x20 | 0x2, -1, 0],
@@ -102814,7 +102814,7 @@ class KmallocAllocatedByCommand(GenericCommand):
                     yield ("munmap(addr2, 0x2000)", "munmap", [addr2, size2])
 
             yield "mmap -> mincore -> mbind -> move_pages -> migrate_pages -> munmap"
-            size = gef_getpagesize()
+            size = get_pagesize()
             yield (
                 "addr = mmap(NULL, 0x1000, RWX, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0)",
                 "mmap", [0, size, 7, 0x20 | 0x2, -1, 0],
@@ -102838,7 +102838,7 @@ class KmallocAllocatedByCommand(GenericCommand):
 
             yield "brk -> userfaultfd -> ioctl -> close"
             yield ("addr = brk(0)", "brk", [0])
-            last_page = ret_history[-1] - gef_getpagesize()
+            last_page = ret_history[-1] - get_pagesize()
             yield ("fd = userfaultfd(O_CLOEXEC|O_NONBLOCK)", "userfaultfd", [0o2000000 | 0o4000])
             if u2i(ret_history[-1]) >= 0:
                 fd = ret_history[-1]
@@ -102847,7 +102847,7 @@ class KmallocAllocatedByCommand(GenericCommand):
                 uffdio_api += p64(0)   # ioctls
                 yield ("ioctl(fd, UFFDIO_API, &uffdio_api)", "ioctl", [fd, 0xc018aa3f, uffdio_api])
                 uffdio_register = p64(last_page)          # range.start
-                uffdio_register += p64(gef_getpagesize()) # range.len
+                uffdio_register += p64(get_pagesize()) # range.len
                 uffdio_register += p64(1)                 # mode: UFFDIO_REGISTER_MODE_MISSING
                 uffdio_register += p64(0)                 # ioctls
                 yield ("ioctl(fd, UFFDIO_REGISTER, &uffdio_register)", "ioctl", [fd, 0xc020aa00, uffdio_register])
@@ -103246,7 +103246,7 @@ class KmallocAllocatedByCommand(GenericCommand):
             yield ('fd = open("/tmp/xxx", 0_RDONLY)', "open", [TMP_XXX, 0o0])
             if u2i(ret_history[-1]) >= 0:
                 fd = ret_history[-1]
-                size = gef_getpagesize()
+                size = get_pagesize()
                 yield (
                     "addr = mmap(NULL, 0x1000, R--, MAP_ANONYMOUS|MAP_SHARED, -1, 0)",
                     "mmap", [0, size, 1, 0x20 | 0x1, fd, 0],
@@ -104065,7 +104065,7 @@ class KernelTraceCommand(GenericCommand):
     finish_breakpoints = []
 
     def is_valid_addr(self, addr):
-        page_start = addr & gef_getpagesize_mask_low()
+        page_start = addr & get_pagesize_mask_low()
 
         if page_start in self.addr_range_ok_cache:
             return True
@@ -104208,24 +104208,24 @@ class UefiOvmfInfoCommand(GenericCommand):
         # search backward for keyword from higher address (0x800_0000), it is more likely
         START_ADDR = 0x800_0000
         END_ADDR = 0x700_0000
-        current = START_ADDR - gef_getpagesize()
-        data = read_physmem(current, gef_getpagesize())
+        current = START_ADDR - get_pagesize()
+        data = read_physmem(current, get_pagesize())
         end = len(data)
 
         while True:
             pos = data.rfind(keyword, 0, end)
             if pos == -1:
-                current -= gef_getpagesize()
+                current -= get_pagesize()
                 if current < END_ADDR:
                     return None
 
                 if len(data) > len(keyword):
                     size_of_cut = len(data) - len(keyword)
-                    data = read_physmem(current, gef_getpagesize()) + data[:len(keyword)]
-                    end += gef_getpagesize() - size_of_cut
+                    data = read_physmem(current, get_pagesize()) + data[:len(keyword)]
+                    end += get_pagesize() - size_of_cut
                 else:
-                    data = read_physmem(current, gef_getpagesize()) + data
-                    end += gef_getpagesize()
+                    data = read_physmem(current, get_pagesize()) + data
+                    end += get_pagesize()
                 continue
             yield current + pos
             end = pos
@@ -104822,7 +104822,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
                 return
 
         # make blank elf
-        text_base = args.function_start & gef_getpagesize_mask_high()
+        text_base = args.function_start & get_pagesize_mask_high()
         sym_elf = self.create_blank_elf(text_base, args.function_end or args.function_start + 1)
         if sym_elf is None:
             err("Failed to create blank elf")
@@ -104870,7 +104870,7 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
         text_end = int(res.splitlines()[-1].split()[0], 16)
 
         # make blank elf
-        text_base &= gef_getpagesize_mask_high()
+        text_base &= get_pagesize_mask_high()
         blank_elf = AddSymbolTemporaryCommand.create_blank_elf(text_base, text_end)
         if blank_elf is None:
             err("Failed to create blank elf")
@@ -104945,7 +104945,7 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
                 return
 
         # add symbol to gdb
-        text_base = Symbol.get_ksymaddr("_stext") & gef_getpagesize_mask_high()
+        text_base = Symbol.get_ksymaddr("_stext") & get_pagesize_mask_high()
         cmd = "add-symbol-file {:s} {:#x}".format(sym_elf_path, text_base)
         self.quiet_warn("Execute `{:s}`".format(cmd))
         gdb.execute(cmd)
@@ -105077,7 +105077,7 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
         return
 
     def read_pagemap_with_virt_address(self, address, pid):
-        page_size = gef_getpagesize()
+        page_size = get_pagesize()
         file_offset = (address // page_size) * self.ENTRY_SIZE
         path = "/proc/{:d}/pagemap".format(pid)
 
@@ -105157,7 +105157,7 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
         return
 
     def handle_address_range(self, from_addr, to_addr, pid):
-        page_size = gef_getpagesize()
+        page_size = get_pagesize()
         start_page = from_addr // page_size
         end_page = to_addr // page_size
 
@@ -105601,12 +105601,12 @@ class SixelMemoryCommand(GenericCommand):
         header_size = pos - start_address
 
         # saerch EOI
-        if pos % gef_getpagesize():
-            read_size = gef_getpagesize() - (pos % gef_getpagesize())
+        if pos % get_pagesize():
+            read_size = get_pagesize() - (pos % get_pagesize())
         else:
-            read_size = gef_getpagesize()
+            read_size = get_pagesize()
 
-        MAX_FILE_SIZE = gef_getpagesize() * 4096 # 16MB
+        MAX_FILE_SIZE = get_pagesize() * 4096 # 16MB
         jpg_data = b"" # except header
         while len(jpg_data) < MAX_FILE_SIZE:
             try:
@@ -105617,18 +105617,18 @@ class SixelMemoryCommand(GenericCommand):
                 image_data_size = jpg_data.index(b"\xff\xd9") + 2
                 return header_size + image_data_size
             pos += read_size
-            read_size = gef_getpagesize()
+            read_size = get_pagesize()
         return None
 
     def get_png_size(self, start_address):
         pos = start_address
 
-        if start_address % gef_getpagesize():
-            read_size = gef_getpagesize() - (start_address % gef_getpagesize())
+        if start_address % get_pagesize():
+            read_size = get_pagesize() - (start_address % get_pagesize())
         else:
-            read_size = gef_getpagesize()
+            read_size = get_pagesize()
 
-        MAX_FILE_SIZE = gef_getpagesize() * 4096 # 16MB
+        MAX_FILE_SIZE = get_pagesize() * 4096 # 16MB
         png_data = b""
         while len(png_data) < MAX_FILE_SIZE:
             try:
@@ -105639,7 +105639,7 @@ class SixelMemoryCommand(GenericCommand):
                 image_data_size = png_data.index(b"IEND") + 4
                 return image_data_size + 4 # crc
             pos += read_size
-            read_size = gef_getpagesize()
+            read_size = get_pagesize()
         return None
 
     def decode_barcode(self, path):
