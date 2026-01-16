@@ -1092,17 +1092,20 @@ class Color:
 class Address:
     """GEF representation of memory addresses."""
 
-    def __init__(self, *args, **kwargs):
-        self.value = kwargs.get("value", 0)
-        self.section = kwargs.get("section", None)
-        self.info = kwargs.get("info", None)
-        self.valid = kwargs.get("valid", True)
+    def __init__(self, addr):
+        self.value = addr
+        self.section = ProcessMap.process_lookup_address(addr)
+        self.info = ProcessMap.file_lookup_address(addr)
         return
+
+    @property
+    def valid(self):
+        return is_valid_addr(self.value)
 
     def __repr__(self):
         return '<{:s}.{:s} object at {:#x}, addr={:#x}, section={}, info={}, valid={}>'.format(
             self.__module__, self.__class__.__name__, id(self),
-            self.value, bool(self.section), bool(self.section), bool(self.valid),
+            self.value, bool(self.section), bool(self.info), self.valid,
         )
 
     def __str__(self):
@@ -1168,7 +1171,7 @@ class Address:
     def is_in_text_segment(self):
         if self.section is None:
             return False
-        a = hasattr(self.info, "name") and ".text" in self.info.name
+        a = hasattr(self.info, "name") and isinstance(self.info.name, str) and ".text" in self.info.name
         e = hasattr(self.section, "is_executable") and self.section.is_executable()
         return a or e
 
@@ -1197,8 +1200,8 @@ class Address:
     def dereference(self):
         # Even if the valid flag is not set, it still dereferences.
         # This is because the valid flag is not set during kernel debugging.
-        addr = AddressUtil.align_address(int(self.value))
-        derefed = AddressUtil.dereference(addr)
+        value = AddressUtil.align_address(self.value)
+        derefed = AddressUtil.dereference(value)
         if derefed is None:
             return None
         return int(derefed)
@@ -13507,14 +13510,8 @@ class ProcessMap:
     @staticmethod
     @Cache.cache_until_next
     def lookup_address(addr):
-        """Try to find the address in the process address space.
-        Return an Address object, with validity flag set based on success."""
-        sect = ProcessMap.process_lookup_address(addr)
-        info = ProcessMap.file_lookup_address(addr)
-        if sect is None and info is None:
-            # i.e. there is no info on this address
-            return Address(value=addr, valid=False)
-        return Address(value=addr, section=sect, info=info)
+        """Try to find the address in the process address space. Return an Address object with caching."""
+        return Address(addr)
 
     @staticmethod
     @Cache.cache_until_next
@@ -22071,7 +22068,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
             next_chunk = current_chunk.get_next_chunk()
             if next_chunk is None:
                 break
-            if not Address(value=next_chunk.address).valid:
+            if not is_valid_addr(next_chunk.address):
                 self.err_add_out("Corrupted: next_chunk_address is invalid")
                 break
             current_chunk = next_chunk
@@ -22222,7 +22219,7 @@ class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
             next_chunk = current_chunk.get_next_chunk()
             if next_chunk is None:
                 break
-            if not Address(value=next_chunk.address).valid:
+            if not is_valid_addr(next_chunk.address):
                 self.err_add_out("Corrupted: next_chunk_address is invalid")
                 break
             current_chunk = next_chunk
