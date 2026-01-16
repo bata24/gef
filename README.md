@@ -361,14 +361,14 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - Get and extract the latest source from https://musl.libc.org/
         - Build with `./configure && make install`.
         - Build as `/usr/local/musl/bin/musl-gcc test.c`.
-- `go-heap-dump`: dumps Go Language v1.22.2 mheap (only x64).
+- `go-heap-dump`: dumps Go Language v1.24.4 mheap (only x64).
     - ![](images/go-heap-dump.png)
 - `tlsf-heap-dump`: dumps TLSF (Two-Level Segregated Fit) v2.4.6 free-list (only x64).
     - ![](images/tlsf-heap-dump.png)
     - How to test (x64):
         - Get and extract the latest source from http://www.gii.upv.es/tlsf/
         - Build with `cd TLSF-2.4.6/src && make && cd ../examples && make` then use `test1` etc.
-- `hoard-heap-dump`: dumps Hoard v3.13 free-list (only x64).
+- `hoard-heap-dump`: dumps Hoard v3.2 (2025/12/31) free-list (only x64).
     - ![](images/hoard-heap-dump.png)
     - How to test (x64):
         - Get and extract the latest source from https://github.com/emeryberger/Hoard
