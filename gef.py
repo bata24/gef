@@ -1227,11 +1227,14 @@ class AddressUtil:
     def ptr_width():
         """Determine whether the environment is 32-bit or 64-bit."""
         void = GefUtil.cached_lookup_type("void")
-        if void is None:
-            uintptr_t = GefUtil.cached_lookup_type("uintptr_t")
-            return uintptr_t.sizeof
-        else:
+        if void:
             return void.pointer().sizeof
+
+        uintptr_t = GefUtil.cached_lookup_type("uintptr_t")
+        if uintptr_t:
+            return uintptr_t.sizeof
+
+        raise EnvironmentError("GEF is running under an unsupported mode")
 
     @staticmethod
     @Cache.cache_this_session
@@ -1248,34 +1251,30 @@ class AddressUtil:
         elif is_64bit():
             return 8 if not in_bits else 64
 
-        res = GefUtil.cached_lookup_type("size_t")
-        if res is not None:
-            return res.sizeof if not in_bits else res.sizeof * 8
-
-        try:
-            return gdb.parse_and_eval("$pc").type.sizeof
-        except gdb.error:
-            pass
         raise EnvironmentError("GEF is running under an unsupported mode")
 
     @staticmethod
     def is_msb_on(addr):
         """Return whether provided address MSB is on."""
-        if AddressUtil.get_memory_alignment() == 4:
+        align = AddressUtil.get_memory_alignment()
+        if align == 8:
+            return bool(addr & 0x8000_0000_0000_0000)
+        elif align == 4:
             return bool(addr & 0x8000_0000)
-        return bool(addr & 0x8000_0000_0000_0000)
+        elif align == 2:
+            return bool(addr & 0x8000)
+        raise EnvironmentError("GEF is running under an unsupported mode")
 
     @staticmethod
     def get_format_address_width(memalign_size=None):
         """Return the width for compactly displaying the pointer."""
         if not is_alive():
-            return 18
+            return 16 + 2 # '0xAAABBBBCCCCDDDD' # assume 64bit
         if is_32bit() or memalign_size == 4:
-            return 10
+            return 8 + 2 # '0xAAAABBBB'
         if not is_in_kernel():
-            return 14
-        else:
-            return 18
+            return 12 + 2 # '0x7fffAAAABBBB'
+        return 16 + 2 # '0xAAABBBBCCCCDDDD'
 
     @staticmethod
     def format_address(addr, memalign_size=None, long_fmt=False):
@@ -1324,7 +1323,8 @@ class AddressUtil:
                 return addr & 0x1f_ffff
             else:
                 return addr & 0x0f_ffff
-        return None
+
+        raise EnvironmentError("GEF is running under an unsupported mode")
 
     @staticmethod
     def align_address_to_size(addr, align):
@@ -1400,22 +1400,28 @@ class AddressUtil:
                 return "u64"
             return "u16"
 
+        ulong_t = GefUtil.cached_lookup_type(use_stdtype())
+        if not ulong_t:
+            ulong_t = GefUtil.cached_lookup_type(use_default_type())
+        if not ulong_t:
+            ulong_t = GefUtil.cached_lookup_type(use_golang_type())
+        if not ulong_t:
+            ulong_t = GefUtil.cached_lookup_type(use_rust_type())
+        if not ulong_t:
+            return None
+
         try:
-            ulong_t = GefUtil.cached_lookup_type(use_stdtype())
-            if not ulong_t:
-                ulong_t = GefUtil.cached_lookup_type(use_default_type())
-                if not ulong_t:
-                    ulong_t = GefUtil.cached_lookup_type(use_golang_type())
-                    if not ulong_t:
-                        ulong_t = GefUtil.cached_lookup_type(use_rust_type())
             unsigned_long_type = ulong_t.pointer()
+        except (AttributeError, gdb.error):
+            return None
+
+        try:
             res = gdb.Value(addr).cast(unsigned_long_type).dereference()
             # GDB does lazy fetch by default so we need to force access to the value
             res.fetch_lazy()
             return res
-        except gdb.MemoryError:
-            pass
-        return None
+        except (gdb.MemoryError, gdb.error, ValueError, TypeError):
+            return None
 
     @staticmethod
     @Cache.cache_this_session
@@ -1503,6 +1509,8 @@ class AddressUtil:
 
         # replace to string if valid
         def to_ascii(v):
+            if not isinstance(v, int) or v < 0:
+                return ""
             s = ""
             while v & 0xff: # \0
                 if chr(v & 0xff) in String.STRING_PRINTABLE:
