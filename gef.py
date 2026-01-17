@@ -6709,7 +6709,7 @@ class RISCV(Architecture):
     def is_jump(self, insn):
         if self.is_conditional_branch(insn):
             return True
-        if insn.mnemonic in ["c.j", "c.jr"]:
+        if insn.mnemonic in ["c.j", "c.jr", "j", "jr"]:
             return True
         return False
 
@@ -6744,6 +6744,8 @@ class RISCV(Architecture):
             return v
 
         mnemo = insn.mnemonic
+        if mnemo.startswith("c."):
+            mnemo = mnemo[2:]
         condition = mnemo[1:]
 
         if condition.endswith("z"):
@@ -6782,12 +6784,12 @@ class RISCV(Architecture):
             else:
                 taken, reason = False, "{}>={}".format(rs1, rs2)
         elif condition == "ge":
-            if rs1 < rs2:
+            if rs1 >= rs2:
                 taken, reason = True, "{}>={}".format(rs1, rs2)
             else:
                 taken, reason = False, "{}<{}".format(rs1, rs2)
         else:
-            raise OSError("RISC-V: Conditional instruction `{:s}` not supported yet".format(insn))
+            raise OSError("RISC-V: Conditional instruction `{}` not supported yet".format(insn))
 
         return taken, reason
 
@@ -6852,30 +6854,30 @@ class ARM(Architecture):
         "ARMV7",
     ]
 
-    __mode = None
+    cached_is_cortex_m = None
 
     def is_cortex_m(self):
-        if self.__mode == "Cortex-A":
-            return False
-        if self.__mode == "Cortex-M":
-            return True
+        if self.cached_is_cortex_m in (True, False):
+            return self.cached_is_cortex_m
 
-        if self.__mode is None:
+        if self.cached_is_cortex_m is None:
             # is_alive and get_register are not yet defined here and cannot be used.
             try:
                 gdb.execute("info registers cpsr", to_string=True)
-                self.__mode = "Cortex-A"
-                return False
+                self.cached_is_cortex_m = False
+                return self.cached_is_cortex_m
             except gdb.error:
                 pass
             try:
                 gdb.execute("info registers xpsr", to_string=True)
-                self.__mode = "Cortex-M"
-                return True
+                self.cached_is_cortex_m = True
+                return self.cached_is_cortex_m
             except gdb.error:
                 pass
+
         # default is Cortex-A
-        return False
+        self.cached_is_cortex_m = False
+        return self.cached_is_cortex_m
 
     @property
     def all_registers(self):
@@ -6909,15 +6911,24 @@ class ARM(Architecture):
 
     @property
     def flags_table(self):
-        return {
-            31: "negative",
-            30: "zero",
-            29: "carry",
-            28: "overflow",
-            7: "interrupt",
-            6: "fast",
-            self.thumb_bit: "thumb",
-        }
+        if self.is_cortex_m():
+            return {
+                31: "negative",
+                30: "zero",
+                29: "carry",
+                28: "overflow",
+                self.thumb_bit: "thumb",
+            }
+        else:
+            return {
+                31: "negative",
+                30: "zero",
+                29: "carry",
+                28: "overflow",
+                7: "interrupt",
+                6: "fast",
+                self.thumb_bit: "thumb",
+            }
 
     alias_registers = {
         "$r11": "$fp", "$r12": "$ip",
@@ -7096,14 +7107,14 @@ class ARM(Architecture):
                     taken, reason = False, "{}!=0".format(reg)
             elif mnemo == "tbnz":
                 # operands[1] has a #, then the number
-                i = int(operands[1].lstrip("#"))
+                i = int(operands[1].lstrip("#"), 0)
                 if (op & (1 << i)) != 0:
                     taken, reason = True, "{}&1<<{}!=0".format(reg, i)
                 else:
                     taken, reason = False, "{}&1<<{}==0".format(reg, i)
             elif mnemo == "tbz":
                 # operands[1] has a #, then the number
-                i = int(operands[1].lstrip("#"))
+                i = int(operands[1].lstrip("#"), 0)
                 if (op & (1 << i)) == 0:
                     taken, reason = True, "{}&1<<{}==0".format(reg, i)
                 else:
@@ -7114,7 +7125,7 @@ class ARM(Architecture):
             taken, reason = not zero, "!Z"
         elif mnemo.endswith(("lt", "lt.n", "lt.w")):
             taken, reason = negative != overflow, "N!=V"
-        elif mnemo.endswith(("le", "lt.n", "le.w")):
+        elif mnemo.endswith(("le", "le.n", "le.w")):
             taken, reason = zero or negative != overflow, "Z || N!=V"
         elif mnemo.endswith(("gt", "gt.n", "gt.w")):
             taken, reason = not zero and negative == overflow, "!Z && N==V"
@@ -7167,22 +7178,28 @@ class ARM(Architecture):
             mode = " [Mode={:s}({:#07b},PL{:d})]".format(CurrentMode, key, CurrentPL)
         else:
             scr = get_register("$SCR")
-            secure_state = ["Secure", "Non-Secure"][scr & 1]
-            mode = " [Mode={:s}({:#07b},PL{:d}),{:s}]".format(CurrentMode, key, CurrentPL, secure_state)
+            if scr is None:
+                mode = " [Mode={:s}({:#07b},PL{:d})]".format(CurrentMode, key, CurrentPL)
+            else:
+                secure_state = ["Secure", "Non-Secure"][scr & 1]
+                mode = " [Mode={:s}({:#07b},PL{:d}),{:s}]".format(CurrentMode, key, CurrentPL, secure_state)
         return Architecture.flags_to_human(val, self.flags_table) + mode
 
     def get_ra(self, insn, frame):
         ra = None
         try:
             if self.is_ret(insn):
-                # If it's a pop, we have to peek into the stack, otherwise use lr
                 if insn.mnemonic == "pop":
+                    # If it's a pop, we have to peek into the stack.
                     ra_addr = current_arch.sp + (len(insn.operands) - 1) * AddressUtil.get_memory_alignment()
-                    ra = to_unsigned_long(AddressUtil.dereference(ra_addr))
-                elif insn.mnemonic == "ldr":
-                    return to_unsigned_long(AddressUtil.dereference(current_arch.sp))
-                else: # 'bx lr' or 'add pc, lr, #0'
-                    return get_register("$lr")
+                    ra = read_int32_from_memory(ra_addr)
+                elif insn.mnemonic.startswith("ldm"):
+                    # GDB seems to disassemble ldm* instructions as pop.
+                    # I'm not sure whether this branch will ever be hit, but I'll keep it here just in case.
+                    ra = frame.older().pc() if frame.older() else None
+                else:
+                    # 'bx lr' or 'add pc, lr, #0'
+                    ra = get_register("$lr")
             elif frame.older():
                 ra = frame.older().pc()
         except gdb.error:
@@ -7263,7 +7280,10 @@ class AARCH64(ARM):
         return get_register("$pc")
 
     def is_syscall(self, insn):
-        return insn.mnemonic == "svc" and insn.operands[0] == "#0x0"
+        try:
+            return insn.mnemonic == "svc" and int(insn.operands[0].lstrip("#"), 0) == 0
+        except Exception:
+            return False
 
     def is_call(self, insn):
         return insn.mnemonic in ["bl", "blr"]
@@ -7274,11 +7294,7 @@ class AARCH64(ARM):
         return insn.mnemonic in ["b", "br"]
 
     def is_ret(self, insn):
-        if insn.mnemonic in ["ret", "eret"]:
-            return True
-        if insn.mnemonic == "ldp" and "pc" in insn.operands:
-            return True
-        return False
+        return insn.mnemonic in ["ret", "eret"]
 
     def is_conditional_branch(self, insn):
         # https://www.element14.com/community/servlet/JiveServlet/previewBody/41836-102-1-229511/ARM.Reference_Manual.pdf
@@ -7301,9 +7317,23 @@ class AARCH64(ARM):
             mode = " [EL={:d},SP={:d}]".format((val >> 2) & 0b11, val & 0b11)
         else:
             scr = get_register("$SCR_EL3")
-            secure_state = ["Secure", "Non-Secure"][scr & 1]
-            mode = " [EL={:d},SP={:d},{:s}]".format((val >> 2) & 0b11, val & 0b11, secure_state)
+            if scr is None:
+                mode = " [EL={:d},SP={:d}]".format((val >> 2) & 0b11, val & 0b11)
+            else:
+                secure_state = ["Secure", "Non-Secure"][scr & 1]
+                mode = " [EL={:d},SP={:d},{:s}]".format((val >> 2) & 0b11, val & 0b11, secure_state)
         return Architecture.flags_to_human(val, self.flags_table) + mode
+
+    def get_ra(self, insn, frame):
+        try:
+            if insn.mnemonic == "ret":
+                reg = insn.operands[0] if insn.operands else "lr"
+                return get_register(reg)
+            if frame and frame.older():
+                return frame.older().pc()
+        except gdb.error:
+            pass
+        return None
 
     def get_tls(self):
         if is_in_kernel() or is_in_secure():
@@ -7400,9 +7430,10 @@ class X86(Architecture):
     def is_syscall(self, insn):
         if insn.mnemonic in ["sysenter", "syscall"]:
             return True
-        if insn.mnemonic == "int" and insn.operands[0] == "0x80":
-            return True
-        return False
+        try:
+            return insn.mnemonic == "int" and int(insn.operands[0].lstrip("$"), 0) == 0x80
+        except Exception:
+            return False
 
     def is_call(self, insn):
         return insn.mnemonic == "call"
@@ -7449,9 +7480,15 @@ class X86(Architecture):
             taken, reason = carry, "C"
         elif mnemo in ["jbe", "jna"]:
             taken, reason = carry or zero, "C || Z"
-        elif mnemo in ["jcxz", "jecxz", "jrcxz"]:
-            cx = get_register("$rcx") if self.mode == "64" else get_register("$ecx")
+        elif mnemo == "jcxz":
+            cx = get_register("$cx")
             taken, reason = cx == 0, "!$CX"
+        elif mnemo == "jecxz":
+            ecx = get_register("$ecx")
+            taken, reason = ecx == 0, "!$ECX"
+        elif mnemo == "jrcxz":
+            rcx = get_register("$rcx")
+            taken, reason = rcx == 0, "!$RCX"
         elif mnemo in ["je", "jz"]:
             taken, reason = zero, "Z"
         elif mnemo in ["jne", "jnz"]:
@@ -7490,8 +7527,9 @@ class X86(Architecture):
                     ra = get_register("$ecx")
                 elif insn.mnemonic in ["iret", "iretd", "iretw"]: # eip, cs, eflags, esp, ss
                     reg = to_unsigned_long(AddressUtil.dereference(current_arch.sp))
-                    seg = AddressUtil.dereference(current_arch.sp + current_arch.ptrsize) & 0xffff
-                    if get_register("$cs") == 0x08:
+                    eflags = AddressUtil.dereference(current_arch.sp + current_arch.ptrsize * 2)
+                    if eflags & (1 << 17): # eflags.vm
+                        seg = AddressUtil.dereference(current_arch.sp + current_arch.ptrsize) & 0xffff
                         return ((seg << 4) + reg) & (0x1f_ffff if X86_16.A20 else 0x0f_ffff)
                     return reg
             elif frame.older():
@@ -7796,7 +7834,10 @@ class X86_16(X86):
         return
 
     def is_syscall(self, insn):
-        return insn.mnemonic == "int" and insn.operands[0] == "0x21"
+        try:
+            return insn.mnemonic == "int" and int(insn.operands[0].lstrip("$"), 0) == 0x21
+        except Exception:
+            return False
 
     def is_jump(self, insn):
         return insn.mnemonic in ["jmp", "ljmp"] or self.is_conditional_branch(insn)
@@ -7876,15 +7917,46 @@ class PPC(Architecture):
     }
     flag_register = "$cr"
     flags_table = {
-        3: "negative[0]",
-        2: "positive[0]",
-        1: "equal[0]",
-        0: "overflow[0]",
+        # cr0
+        31: "lt0",
+        30: "gt0",
+        29: "eq0",
+        28: "so0",
+        # cr1
+        27: "lt1",
+        26: "gt1",
+        25: "eq1",
+        24: "so1",
+        # cr2
+        23: "lt2",
+        22: "gt2",
+        21: "eq2",
+        20: "so2",
+        # cr3
+        19: "lt3",
+        18: "gt3",
+        17: "eq3",
+        16: "so3",
+        # cr4
+        15: "lt4",
+        14: "gt4",
+        13: "eq4",
+        12: "so4",
+        # cr5
+        11: "lt5",
+        10: "gt5",
+        9: "eq5",
+        8: "so5",
+        # cr6
+        7: "lt6",
+        6: "gt6",
+        5: "eq6",
+        4: "so6",
         # cr7
-        31: "less[7]",
-        30: "greater[7]",
-        29: "equal[7]",
-        28: "overflow[7]",
+        3: "lt7",
+        2: "gt7",
+        1: "eq7",
+        0: "so7",
     }
     return_register = "$r3"
     function_parameters = ["$r3", "$r4", "$r5", "$r6", "$r7", "$r8", "$r9", "$r10"]
@@ -7912,7 +7984,7 @@ class PPC(Architecture):
 
     def flag_register_to_human(self, val=None):
         # http://www.cebix.net/downloads/bebox/pem32b.pdf (% 2.1.3)
-        if not val:
+        if val is None:
             reg = self.flag_register
             val = get_register(reg)
         return Architecture.flags_to_human(val, self.flags_table)
@@ -7925,22 +7997,23 @@ class PPC(Architecture):
             "", "lt", "le", "eq", "ge", "gt", "nl",
             "ne", "ng", "so", "ns", "un", "nu",
         ]
+        mnemo = insn.mnemonic.rstrip("+-")
         for cc in conditions:
-            if insn.mnemonic == f"b{cc}l":
+            if mnemo == f"b{cc}l":
                 return True
-            if insn.mnemonic == f"b{cc}la":
+            if mnemo == f"b{cc}la":
                 return True
-            if insn.mnemonic == f"b{cc}ctrl":
+            if mnemo == f"b{cc}ctrl":
                 return True
-            if insn.mnemonic == f"b{cc}lrl":
+            if mnemo == f"b{cc}lrl":
                 return True
         modes = ["dz", "dnzf", "dzt", "dzf", "dnzt", "dnz"]
         for m in modes:
-            if insn.mnemonic == f"b{m}l":
+            if mnemo == f"b{m}l":
                 return True
-            if insn.mnemonic == f"b{m}la":
+            if mnemo == f"b{m}la":
                 return True
-            if insn.mnemonic == f"b{m}lrl":
+            if mnemo == f"b{m}lrl":
                 return True
         return False
 
@@ -7949,18 +8022,19 @@ class PPC(Architecture):
             "", "lt", "le", "eq", "ge", "gt", "nl",
             "ne", "ng", "so", "ns", "un", "nu",
         ]
+        mnemo = insn.mnemonic.rstrip("+-")
         for cc in conditions:
-            if insn.mnemonic == f"b{cc}":
+            if mnemo == f"b{cc}":
                 return True
-            if insn.mnemonic == f"b{cc}a":
+            if mnemo == f"b{cc}a":
                 return True
-            if insn.mnemonic == f"b{cc}ctr":
+            if mnemo == f"b{cc}ctr":
                 return True
         modes = ["dz", "dnzf", "dzt", "dzf", "dnzt", "dnz"]
         for m in modes:
-            if insn.mnemonic == f"b{m}":
+            if mnemo == f"b{m}":
                 return True
-            if insn.mnemonic == f"b{m}a":
+            if mnemo == f"b{m}a":
                 return True
         return False
 
@@ -7969,48 +8043,58 @@ class PPC(Architecture):
             "", "lt", "le", "eq", "ge", "gt", "nl",
             "ne", "ng", "so", "ns", "un", "nu",
         ]
+        mnemo = insn.mnemonic.rstrip("+-")
         for cc in conditions:
-            if insn.mnemonic == f"b{cc}lr":
+            if mnemo == f"b{cc}lr":
                 return True
-            if insn.mnemonic == b"b{cc}lrl":
+            if mnemo == f"b{cc}lrl":
                 return True
         modes = ["dz", "dnzf", "dzt", "dzf", "dnzt", "dnz"]
         for m in modes:
-            if insn.mnemonic == f"b{m}lr":
+            if mnemo == f"b{m}lr":
                 return True
-            if insn.mnemonic == f"b{m}lrl":
+            if mnemo == f"b{m}lrl":
                 return True
         return False
 
     def is_conditional_branch(self, insn):
-        branch_mnemos = [
-            "beq", "bne", "ble", "blt", "bgt", "bge",
+        branch_mnemos = (
+            "beq", "bne", "ble", "blt", "bgt", "bge", "bso", "bns",
             "bdz", "bdnz", "bdzt", "bdnzt", "bdzf", "bdnzf",
-        ]
-        return insn.mnemonic in branch_mnemos
+        )
+        mnemo = insn.mnemonic.rstrip("+-")
+        return mnemo.startswith(branch_mnemos)
 
     def is_branch_taken(self, insn):
-        mnemo = insn.mnemonic
+        mnemo = insn.mnemonic.rstrip("+-")
         flags = {self.flags_table[k]: k for k in self.flags_table}
         val = get_register(self.flag_register)
         taken, reason = False, ""
 
-        equal = bool(val & (1 << flags["equal[7]"]))
-        less = bool(val & (1 << flags["less[7]"]))
-        greater = bool(val & (1 << flags["greater[7]"]))
+        m = re.search(r"\bcr([0-7])\b", insn.operands[0] if insn.operands else "")
+        cr_number = int(m.group(1)) if m else 0
 
-        if mnemo == "beq":
+        equal = bool(val & (1 << flags["eq{}".format(cr_number)]))
+        less = bool(val & (1 << flags["lt{}".format(cr_number)]))
+        greater = bool(val & (1 << flags["gt{}".format(cr_number)]))
+        overflow = bool(val & (1 << flags["so{}".format(cr_number)]))
+
+        if mnemo.startswith("beq"):
             taken, reason = equal, "E"
-        elif mnemo == "bne":
+        elif mnemo.startswith("bne"):
             taken, reason = not equal, "!E"
-        elif mnemo == "ble":
+        elif mnemo.startswith("ble"):
             taken, reason = equal or less, "E || L"
-        elif mnemo == "blt":
+        elif mnemo.startswith("blt"):
             taken, reason = less, "L"
-        elif mnemo == "bge":
+        elif mnemo.startswith("bge"):
             taken, reason = equal or greater, "E || G"
-        elif mnemo == "bgt":
+        elif mnemo.startswith("bgt"):
             taken, reason = greater, "G"
+        elif mnemo.startswith("bso"):
+            taken, reason = overflow, "V"
+        elif mnemo.startswith("bns"):
+            taken, reason = not overflow, "!V"
         # todo: bdn?z[tf]? are unsupported
         return taken, reason
 
@@ -8148,6 +8232,7 @@ class SPARC(Architecture):
     }
     return_register = "$o0"
     function_parameters = ["$o0", "$o1", "$o2", "$o3", "$o4", "$o5"]
+    function_parameters_infunc = ["$i0", "$i1", "$i2", "$i3", "$i4", "$i5"]
     syscall_register = "$g1"
     syscall_parameters = ["$o0", "$o1", "$o2", "$o3", "$o4", "$o5"]
 
@@ -8171,30 +8256,38 @@ class SPARC(Architecture):
     syscall_insn = b"\x10\x20\xd0\x91" # trap 0x10
 
     def flag_register_to_human(self, val=None):
-        # http://www.gaisler.com/doc/sparcv8.pdf
-        reg = self.flag_register
-        if not val:
-            val = get_register(reg)
+        # https://courses.grainger.illinois.edu/cs423/sp2011/lectures/sim_public/sparcv8.pdf
+        if val is None:
+            val = get_register(self.flag_register)
         return Architecture.flags_to_human(val, self.flags_table)
 
     def is_syscall(self, insn):
-        return insn.mnemonic == "ta" and insn.operands[0] == "0x10"
+        try:
+            return insn.mnemonic == "ta" and int(insn.operands[0], 0) == 0x10
+        except Exception:
+            return False
 
     def is_call(self, insn):
         return insn.mnemonic in ["jmpl", "call"]
 
     def is_jump(self, insn):
-        mnemo = insn.mnemonic
-        return (mnemo.startswith("b") and mnemo != "btst") or mnemo.startswith("fb") or mnemo == "jmpl"
+        mnemo = insn.mnemonic.split(",")[0]
+        if mnemo.startswith("b"):
+            return mnemo not in ["btst", "bset", "bclr", "btog"]
+        if mnemo.startswith("fb"):
+            return True
+        if mnemo == "jmpl":
+            return True
+        return False
 
     def is_ret(self, insn):
-        return insn.mnemonic in ["ret", "retl"]
+        return insn.mnemonic in ["ret", "retl", "return"]
 
     def is_conditional_branch(self, insn):
         branch_mnemos = [
             # http://moss.csc.ncsu.edu/~mueller/codeopt/codeopt00/notes/condbranch.html
             "be", "bne", "bg", "bge", "bgeu", "bgu", "bl", "ble", "blu", "bleu",
-            "bneg", "bpos", "bvs", "bvc", "bcs", "bcc"
+            "bneg", "bpos", "bvs", "bvc", "bcs", "bcc",
             # https://www.gaisler.com/doc/sparcv8.pdf
             "fbu", "fbg", "fbug", "fbl", "fbul", "fblg", "fbne", "fbe", "fbue", "fbge",
             "fbuge", "fble", "fbule", "fbo",
@@ -8204,10 +8297,12 @@ class SPARC(Architecture):
             "fbpu", "fbpg", "fbpug", "fbpl", "fbpul", "fbplg", "fbpne", "fbpe", "fbpue", "fbpge",
             "fbpuge", "fbple", "fbpule", "fbpo",
         ]
-        return insn.mnemonic in branch_mnemos
+        # e.g., bne,pn -> bne
+        mnemo = insn.mnemonic.split(",")[0]
+        return mnemo in branch_mnemos
 
     def is_branch_taken(self, insn):
-        mnemo = insn.mnemonic
+        mnemo = insn.mnemonic.split(",")[0]
         flags = {self.flags_table[k]: k for k in self.flags_table}
         val = get_register(self.flag_register)
         taken, reason = False, ""
@@ -8222,19 +8317,19 @@ class SPARC(Architecture):
         elif mnemo in ["bne", "bpne"]:
             taken, reason = not zero, "!Z"
         elif mnemo in ["bg", "bpg"]:
-            taken, reason = not zero and (not negative or not overflow), "!Z && (!N || !O)"
+            taken, reason = not zero and (negative == overflow), "!Z && (N == V)"
         elif mnemo in ["bge", "bpge"]:
-            taken, reason = not negative or not overflow, "!N || !O"
+            taken, reason = negative == overflow, "N == V"
         elif mnemo in ["bgu", "bpgu"]:
             taken, reason = not carry and not zero, "!C && !Z"
         elif mnemo in ["bgeu"]:
             taken, reason = not carry, "!C"
         elif mnemo in ["bl", "bpl"]:
-            taken, reason = negative and overflow, "N && O"
+            taken, reason = negative != overflow, "N != V"
         elif mnemo in ["blu"]:
             taken, reason = carry, "C"
         elif mnemo in ["ble", "bple"]:
-            taken, reason = zero or (negative or overflow), "Z || (N || O)"
+            taken, reason = zero or (negative != overflow), "Z || (N != V)"
         elif mnemo in ["bleu", "bpleu"]:
             taken, reason = carry or zero, "C || Z"
         elif mnemo in ["bneg", "bpneg"]:
@@ -8242,9 +8337,9 @@ class SPARC(Architecture):
         elif mnemo in ["bpos", "bppos"]:
             taken, reason = not negative, "!N"
         elif mnemo in ["bvs", "bpvs"]:
-            taken, reason = overflow, "O"
+            taken, reason = overflow, "V"
         elif mnemo in ["bvc", "bpvc"]:
-            taken, reason = not overflow, "!O"
+            taken, reason = not overflow, "!V"
         elif mnemo in ["bcs", "bpcs"]:
             taken, reason = carry, "C"
         elif mnemo in ["bcc", "bpcc"]:
@@ -8254,24 +8349,33 @@ class SPARC(Architecture):
 
     def get_ith_parameter(self, i, in_func=True):
         if i < len(self.function_parameters):
-            reg = self.function_parameters[i]
+            if in_func:
+                # TODO: Leaf functions use $o0...$o5 despite in_func=True
+                reg = self.function_parameters_infunc[i]
+            else:
+                reg = self.function_parameters[i]
             val = get_register(reg)
             key = reg
             return key, val
         else:
-            i += 17 # ???
-            sp = current_arch.sp
-            sz = current_arch.ptrsize
-            loc = sp + (i * sz)
-            val = read_int_from_memory(loc)
-            key = "[sp + {:#x}]".format(i * sz)
+            BIAS = 0
+            OUT_ARG_OVERFLOW = 0x5c
+            if in_func:
+                regname, base_addr = "fp", get_register("$fp")
+            else:
+                regname, base_addr = "sp", current_arch.sp
+            offset = BIAS + OUT_ARG_OVERFLOW + ((i - 6) * current_arch.ptrsize)
+            val = read_int_from_memory(base_addr + offset)
+            key = "[{:s} + {:#x}]".format(regname, offset)
             return key, val
 
     def get_ra(self, insn, frame):
         ra = None
         try:
-            if self.is_ret(insn):
+            if insn.mnemonic == "retl":
                 ra = get_register("$o7") + self.instruction_length * 2 # call, delay-slot
+            elif insn.mnemonic == "ret":
+                ra = get_register("$i7") + self.instruction_length * 2 # call, delay-slot
             elif frame.older():
                 ra = frame.older().pc()
         except gdb.error:
@@ -8340,7 +8444,7 @@ class SPARC64(SPARC):
         "$pc", "$npc", "$state", "$fsr", "$fprs", "$y", "$cwp",
         "$pstate", "$asi", "$ccr",
     ]
-    flag_register = "$state" # sparcv9.pdf, 5.1.5.1 (ccr)
+    flag_register = "$state" # sparcv9.pdf, 5.1.5.1 (ccr), because $state includes $ccr.
     flags_table = {
         35: "negative",
         34: "zero",
@@ -8353,21 +8457,31 @@ class SPARC64(SPARC):
     syscall_insn = b"\x6d\x20\xd0\x91" # trap 0x6d
 
     def is_syscall(self, insn):
-        return insn.mnemonic == "ta" and insn.operands[0] == "0x6d"
+        try:
+            return insn.mnemonic == "ta" and int(insn.operands[0], 0) == 0x6d
+        except Exception:
+            return False
 
     def get_ith_parameter(self, i, in_func=True):
         if i < len(self.function_parameters):
-            reg = self.function_parameters[i]
+            if in_func:
+                # TODO: Leaf functions use $o0...$o5 despite in_func=True
+                reg = self.function_parameters_infunc[i]
+            else:
+                reg = self.function_parameters[i]
             val = get_register(reg)
             key = reg
             return key, val
         else:
-            i += 272 # ???
-            sp = current_arch.sp
-            sz = current_arch.ptrsize
-            loc = sp + (i * sz) - 1
-            val = read_int_from_memory(loc)
-            key = "[sp + {:#x}]".format(i * sz - 1)
+            BIAS = 0x7ff
+            OUT_ARG_OVERFLOW = 0xb0
+            if in_func:
+                regname, base_addr = "fp", get_register("$fp")
+            else:
+                regname, base_addr = "sp", current_arch.sp
+            offset = BIAS + OUT_ARG_OVERFLOW + ((i - 6) * current_arch.ptrsize)
+            val = read_int_from_memory(base_addr + offset)
+            key = "[{:s} + {:#x}]".format(regname, offset)
             return key, val
 
 
@@ -8413,6 +8527,7 @@ class MIPS(Architecture):
     syscall_parameters = ["$a0", "$a1", "$a2", "$a3", "$sp+0x10", "$sp+0x14", "$sp+0x18", "$sp+0x1c"]
 
     bit_length = 32
+    bit_length_reg = 32
     endianness = "little / big"
     instruction_length = 4
     has_delay_slot = True
@@ -8477,9 +8592,12 @@ class MIPS(Architecture):
         mnemo, ops = insn.mnemonic, insn.operands
         taken, reason = False, ""
 
-        p = lambda a: struct.pack("<I", a & 0xffff_ffff)
-        ui = lambda a: struct.unpack("<i", a)[0]
-        u2i = lambda a: ui(p(a))
+        def u2i(x):
+            if self.bit_length_reg == 64:
+                trans = lambda a: struct.unpack("<q", struct.pack("<Q", a & 0xffff_ffff_ffff_ffff))[0]
+            else:
+                trans = lambda a: struct.unpack("<i", struct.pack("<I", a & 0xffff_ffff))[0]
+            return trans(x)
 
         if mnemo in ["beq", "beql", "beqc"]:
             taken, reason = get_register(ops[0]) == get_register(ops[1]), "{0[0]} == {0[1]}".format(ops)
@@ -8494,29 +8612,29 @@ class MIPS(Architecture):
         elif mnemo in ["bnez", "bnezc"]:
             taken, reason = get_register(ops[0]) != 0, "{0[0]} != 0".format(ops)
         elif mnemo in ["bgtz", "bgtzl"]:
-            taken, reason = get_register(ops[0]) > 0, "{0[0]} > 0".format(ops)
+            taken, reason = u2i(get_register(ops[0])) > 0, "{0[0]} > 0".format(ops)
         elif mnemo in ["bgez", "bgezl"]:
-            taken, reason = get_register(ops[0]) >= 0, "{0[0]} >= 0".format(ops)
+            taken, reason = u2i(get_register(ops[0])) >= 0, "{0[0]} >= 0".format(ops)
         elif mnemo in ["bltz", "bltzl"]:
-            taken, reason = get_register(ops[0]) < 0, "{0[0]} < 0".format(ops)
+            taken, reason = u2i(get_register(ops[0])) < 0, "{0[0]} < 0".format(ops)
         elif mnemo in ["blez", "blezl"]:
-            taken, reason = get_register(ops[0]) <= 0, "{0[0]} <= 0".format(ops)
+            taken, reason = u2i(get_register(ops[0])) <= 0, "{0[0]} <= 0".format(ops)
         elif mnemo in ["bbeqzc"]:
             taken, reason = (get_register(ops[0]) >> int(ops[1], 0) & 1) == 0, "(({0[0]} >> {0[1]}) & 1) == 0".format(ops)
         elif mnemo in ["bbnezc"]:
-            taken, reason = (get_register(ops[0]) >> int(ops[1], 0) & 1) == 0, "(({0[0]} >> {0[1]}) & 1) != 0".format(ops)
+            taken, reason = (get_register(ops[0]) >> int(ops[1], 0) & 1) != 0, "(({0[0]} >> {0[1]}) & 1) != 0".format(ops)
         elif mnemo in ["bgec"]:
-            taken, reason = get_register(ops[0]) >= u2i(get_register(ops[1])), "{0[0]} >= {0[1]}".format(ops)
+            taken, reason = u2i(get_register(ops[0])) >= u2i(get_register(ops[1])), "{0[0]} >= {0[1]}".format(ops)
         elif mnemo in ["bgeic"]:
-            taken, reason = get_register(ops[0]) >= u2i(int(ops[1], 0)), "{0[0]} >= {0[1]}".format(ops)
+            taken, reason = u2i(get_register(ops[0])) >= u2i(int(ops[1], 0)), "{0[0]} >= {0[1]}".format(ops)
         elif mnemo in ["bgeuc"]:
             taken, reason = get_register(ops[0]) >= get_register(ops[1]), "{0[0]} >= {0[1]}".format(ops)
         elif mnemo in ["bgeiuc"]:
             taken, reason = get_register(ops[0]) >= int(ops[1], 0), "{0[0]} >= {0[1]}".format(ops)
         elif mnemo in ["bltc"]:
-            taken, reason = get_register(ops[0]) < u2i(get_register(ops[1])), "{0[0]} < {0[1]}".format(ops)
+            taken, reason = u2i(get_register(ops[0])) < u2i(get_register(ops[1])), "{0[0]} < {0[1]}".format(ops)
         elif mnemo in ["bltic"]:
-            taken, reason = get_register(ops[0]) < u2i(int(ops[1], 0)), "{0[0]} < {0[1]}".format(ops)
+            taken, reason = u2i(get_register(ops[0])) < u2i(int(ops[1], 0)), "{0[0]} < {0[1]}".format(ops)
         elif mnemo in ["bltuc"]:
             taken, reason = get_register(ops[0]) < get_register(ops[1]), "{0[0]} < {0[1]}".format(ops)
         elif mnemo in ["bltiuc"]:
@@ -8604,6 +8722,7 @@ class MIPS64(MIPS):
     syscall_parameters = ["$a0", "$a1", "$a2", "$a3", "$a4", "$a5"]
 
     bit_length = 64
+    bit_length_reg = 64
 
     unicorn_support = False
 
@@ -8634,6 +8753,7 @@ class MIPSN32(MIPS64):
     ]
 
     bit_length = 32
+    bit_length_reg = 64
 
 
 class S390X(Architecture):
@@ -8883,17 +9003,39 @@ class S390X(Architecture):
             reg = insn.operands[0]
             return get_register(reg) != 1, "{:s}!=1".format(reg)
 
+        def get_cmp_regname(reg3):
+            m = re.search(r"(\d+)$", reg3)
+            if m is None:
+                return None
+            reg3_num = int(m.group(1), 10)
+            if reg3_num % 2 == 0:
+                cmp_reg = reg3_num + 1
+            else:
+                cmp_reg = reg3_num
+            return "%r{:d}".format(cmp_reg)
+
+        def u2i(x, mnemo):
+            if mnemo in ("bxhg", "brxhg", "bxleg", "brxlg"):
+                trans = lambda a: struct.unpack("<q", struct.pack("<Q", a & 0xffff_ffff_ffff_ffff))[0]
+            else:
+                trans = lambda a: struct.unpack("<i", struct.pack("<I", a & 0xffff_ffff))[0]
+            return trans(x)
+
         if insn.mnemonic in ["bxh", "bxhg", "brxh", "brxhg"]:
             reg1, reg3 = insn.operands[0], insn.operands[1]
-            taken = get_register(reg1) + get_register(reg3) > get_register(reg3) + 1
-            reason = "({:s}+{:s})>{:#x}".format(reg1, reg3, get_register(reg3) + 1)
-            return taken, reason
+            regC = get_cmp_regname(reg3)
+            if regC is not None:
+                taken = u2i(get_register(reg1) + get_register(reg3), insn.mnemonic) > u2i(get_register(regC), insn.mnemonic)
+                reason = "({:s}+{:s})>{:s}".format(reg1, reg3, regC)
+                return taken, reason
 
         if insn.mnemonic in ["bxle", "bxleg", "brxle", "brxlg"]:
             reg1, reg3 = insn.operands[0], insn.operands[1]
-            taken = get_register(reg1) + get_register(reg3) <= get_register(reg3) + 1
-            reason = "({:s}+{:s})<={:#x}".format(reg1, reg3, get_register(reg3) + 1)
-            return taken, reason
+            regC = get_cmp_regname(reg3)
+            if regC is not None:
+                taken = u2i(get_register(reg1) + get_register(reg3), insn.mnemonic) <= u2i(get_register(regC), insn.mnemonic)
+                reason = "({:s}+{:s})<={:s}".format(reg1, reg3, regC)
+                return taken, reason
 
         def for_compare(insn, signed, bit):
             if signed and bit == 32:
@@ -8915,7 +9057,7 @@ class S390X(Architecture):
             if reg2_or_imm.startswith("%"):
                 val2 = trans(get_register(reg2_or_imm))
             else:
-                val2 = int(reg2_or_imm, 0)
+                val2 = trans(int(reg2_or_imm, 0))
             if (mask & 0b1) and val1 == val2:
                 return True, "{:s}=={:s}".format(reg1, reg2_or_imm)
             if (mask & 0b10) and val1 < val2:
@@ -8936,13 +9078,13 @@ class S390X(Architecture):
         return taken, reason
 
     def flag_register_to_human(self, val=None):
-        if not val:
+        if val is None:
             reg = self.flag_register
             val = get_register(reg)
         flags = {self.flags_table[k]: k for k in self.flags_table}
 
         extra_msg = " ["
-        if get_register("$pswm"):
+        if get_register("$pswm") is not None:
             addressing0 = (get_register("$pswm") >> 31) & 1
             addressing1 = (get_register("$pswm") >> 32) & 1
             addressing_mode = {
@@ -9049,10 +9191,16 @@ class SH4(Architecture):
     infloop_insn = b"\xfe\xaf" # bra self
     trap_insn = None
     ret_insn = b"\x0b\x00" # rts
-    syscall_insn = b"\x13\xc3" # trapa #19
+    syscall_insn = b"\x1f\xc3" # trapa #31
 
     def is_syscall(self, insn):
-        return insn.mnemonic == "trapa" and insn.operands[0] == "#19"
+        if insn.mnemonic != "trapa":
+            return False
+        try:
+            imm = int(insn.operands[0].lstrip("#"), 0)
+            return (0x10 <= imm <= 0x17) or (imm == 0x1f)
+        except Exception:
+            return False
 
     def is_call(self, insn):
         return insn.mnemonic in ["bsr", "bsrf", "jsr"]
@@ -9083,7 +9231,7 @@ class SH4(Architecture):
         return taken, reason
 
     def flag_register_to_human(self, val=None):
-        if not val:
+        if val is None:
             reg = self.flag_register
             val = get_register(reg)
         return Architecture.flags_to_human(val, self.flags_table)
@@ -9170,7 +9318,10 @@ class M68K(Architecture):
     syscall_insn = b"\x40\x4e" # trap #0
 
     def is_syscall(self, insn):
-        return insn.mnemonic == "trap" and insn.operands[0] == "#0"
+        try:
+            return insn.mnemonic == "trap" and int(insn.operands[0].lstrip("#"), 0) == 0
+        except Exception:
+            return False
 
     def is_call(self, insn):
         return insn.mnemonic in ["bsrs", "bsrw", "bsrl", "jsr"]
@@ -9184,6 +9335,7 @@ class M68K(Architecture):
         return insn.mnemonic == "rts"
 
     # https://sourceware.org/binutils/docs/as/M68K_002dBranch.html
+    # https://web.njit.edu/~rosensta/classes/architecture/252software/code.pdf
     def is_conditional_branch(self, insn):
         conditions = [
             "hi", "ls", "cc", "cs", "ne", "eq", "vc",
@@ -9253,75 +9405,75 @@ class M68K(Architecture):
             taken, reason = zero or (negative and not overflow) or (not negative and overflow), "Z || (N && !V) || (!N && V)"
         elif mnemo in ["dbhiw", "dbhi"]:
             regname = insn.operands[0].replace("%", "$")
-            val = get_register(regname)
-            taken, reason = (carry or zero) and val != 0, "(C || Z) && {:s}==0".format(regname)
+            val = get_register(regname) & 0xffff
+            taken, reason = (carry or zero) and val != 0, "(C || Z) && {:s}!=0".format(regname)
         elif mnemo in ["dblsw", "dbls"]:
             regname = insn.operands[0].replace("%", "$")
-            val = get_register(regname)
-            taken, reason = not carry and not zero and val != 0, "!C && !Z && {:s}==0".format(regname)
+            val = get_register(regname) & 0xffff
+            taken, reason = not carry and not zero and val != 0, "!C && !Z && {:s}!=0".format(regname)
         elif mnemo in ["dbccw", "dbcc"]:
             regname = insn.operands[0].replace("%", "$")
-            val = get_register(regname)
-            taken, reason = carry and val != 0, "C && {:s}==0".format(regname)
+            val = get_register(regname) & 0xffff
+            taken, reason = carry and val != 0, "C && {:s}!=0".format(regname)
         elif mnemo in ["dbcsw", "dbcs"]:
             regname = insn.operands[0].replace("%", "$")
-            val = get_register(regname)
-            taken, reason = not carry and val != 0, "!C && {:s}==0".format(regname)
+            val = get_register(regname) & 0xffff
+            taken, reason = not carry and val != 0, "!C && {:s}!=0".format(regname)
         elif mnemo in ["dbnew", "dbne"]:
             regname = insn.operands[0].replace("%", "$")
-            val = get_register(regname)
-            taken, reason = zero and val != 0, "Z && {:s}==0".format(regname)
+            val = get_register(regname) & 0xffff
+            taken, reason = zero and val != 0, "Z && {:s}!=0".format(regname)
         elif mnemo in ["dbeqw", "dbeq"]:
             regname = insn.operands[0].replace("%", "$")
-            val = get_register(regname)
-            taken, reason = not zero and val != 0, "!Z && {:s}==0".format(regname)
+            val = get_register(regname) & 0xffff
+            taken, reason = not zero and val != 0, "!Z && {:s}!=0".format(regname)
         elif mnemo in ["dbvcw", "dbvc"]:
             regname = insn.operands[0].replace("%", "$")
-            val = get_register(regname)
-            taken, reason = overflow and val != 0, "V && {:s}==0".format(regname)
+            val = get_register(regname) & 0xffff
+            taken, reason = overflow and val != 0, "V && {:s}!=0".format(regname)
         elif mnemo in ["dbvsw", "dbvs"]:
             regname = insn.operands[0].replace("%", "$")
-            val = get_register(regname)
-            taken, reason = not overflow and val != 0, "!V && {:s}==0".format(regname)
+            val = get_register(regname) & 0xffff
+            taken, reason = not overflow and val != 0, "!V && {:s}!=0".format(regname)
         elif mnemo in ["dbplw", "dbpl"]:
             regname = insn.operands[0].replace("%", "$")
-            val = get_register(regname)
-            taken, reason = negative and val != 0, "N && {:s}==0".format(regname)
+            val = get_register(regname) & 0xffff
+            taken, reason = negative and val != 0, "N && {:s}!=0".format(regname)
         elif mnemo in ["dbmiw", "dbmi"]:
             regname = insn.operands[0].replace("%", "$")
-            val = get_register(regname)
-            taken, reason = not negative and val != 0, "!N && {:s}==0".format(regname)
+            val = get_register(regname) & 0xffff
+            taken, reason = not negative and val != 0, "!N && {:s}!=0".format(regname)
         elif mnemo in ["dbgew", "dbge"]:
             regname = insn.operands[0].replace("%", "$")
-            val = get_register(regname)
+            val = get_register(regname) & 0xffff
             taken = ((negative and not overflow) or (not negative and overflow)) and val != 0
-            reason = "((N && !V) || (!N && V)) && {:s}==0".format(regname)
+            reason = "((N && !V) || (!N && V)) && {:s}!=0".format(regname)
         elif mnemo in ["dbltw", "dblt"]:
             regname = insn.operands[0].replace("%", "$")
-            val = get_register(regname)
+            val = get_register(regname) & 0xffff
             taken = ((negative and overflow) or (not negative and not overflow)) and val != 0
-            reason = "((N && V) || (!N && !V)) && {:s}==0".format(regname)
+            reason = "((N && V) || (!N && !V)) && {:s}!=0".format(regname)
         elif mnemo in ["dbgtw", "dbgt"]:
             regname = insn.operands[0].replace("%", "$")
-            val = get_register(regname)
+            val = get_register(regname) & 0xffff
             taken = (zero or (negative and not overflow) or (not negative and overflow)) and val != 0
-            reason = "(Z || (N && !V) || (!N && V)) && {:s}==0".format(regname)
+            reason = "(Z || (N && !V) || (!N && V)) && {:s}!=0".format(regname)
         elif mnemo in ["dblew", "dble"]:
             regname = insn.operands[0].replace("%", "$")
-            val = get_register(regname)
+            val = get_register(regname) & 0xffff
             taken = ((negative and overflow and not zero) or (not negative and not overflow and not zero)) and val != 0
-            reason = "((N && V && !Z) || (!N && !V && !Z)) && {:s}==0".format(regname)
+            reason = "((N && V && !Z) || (!N && !V && !Z)) && {:s}!=0".format(regname)
         elif mnemo in ["dbtw", "dbt"]: # branch never taken
             taken, reason = False, ""
         elif mnemo in ["dbfw", "dbf"]:
             regname = insn.operands[0].replace("%", "$")
-            val = get_register(regname)
-            taken, reason = val != 0, "{:s}==0".format(regname)
+            val = get_register(regname) & 0xffff
+            taken, reason = val != 0, "{:s}!=0".format(regname)
         # TODO: fbXXw, fbXXl
         return taken, reason
 
     def flag_register_to_human(self, val=None):
-        if not val:
+        if val is None:
             reg = self.flag_register
             val = get_register(reg)
         return Architecture.flags_to_human(val, self.flags_table)
@@ -9331,7 +9483,7 @@ class M68K(Architecture):
         try:
             if self.is_ret(insn):
                 ra = to_unsigned_long(AddressUtil.dereference(current_arch.sp))
-            if frame.older():
+            elif frame.older():
                 ra = frame.older().pc()
         except gdb.error:
             pass
@@ -9453,6 +9605,11 @@ class ALPHA(Architecture):
         regval = get_register(regname)
         if regval is None:
             return taken, reason
+
+        pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
+        uq = lambda a: struct.unpack("<q", a)[0]
+        u2i = lambda a: uq(pQ(a))
+        regval = u2i(regval)
 
         if mnemo == "beq":
             taken, reason = regval == 0, "{:s} == 0".format(regname)
@@ -9883,7 +10040,7 @@ class OR1K(Architecture):
         "$ppc", "$npc", "$sr",
     ]
     alias_registers = {
-        "$r1": "$sp", "$r9": "$lr",
+        "$r1": "$sp", "$r2": "$fp", "$r9": "$lr",
     }
     flag_register = "$sr"
     flags_table = {
@@ -9916,10 +10073,13 @@ class OR1K(Architecture):
     syscall_insn = b"\x01\x00\x00\x20" # l.sys 0x1
 
     def is_syscall(self, insn):
-        return insn.mnemonic == "l.sys" and insn.operands[0] == "0x1"
+        try:
+            return insn.mnemonic == "l.sys" and int(insn.operands[0], 0) == 0x1
+        except Exception:
+            return False
 
     def is_call(self, insn):
-        return insn.mnemonic in ["l.bal", "l.jal", "ljalr"]
+        return insn.mnemonic in ["l.bal", "l.jal", "l.jalr"]
 
     def is_jump(self, insn):
         if self.is_conditional_branch(insn):
@@ -9951,7 +10111,7 @@ class OR1K(Architecture):
         return taken, reason
 
     def flag_register_to_human(self, val=None):
-        if not val:
+        if val is None:
             reg = self.flag_register
             val = get_register(reg)
         return Architecture.flags_to_human(val, self.flags_table)
@@ -9959,7 +10119,7 @@ class OR1K(Architecture):
     def get_ra(self, insn, frame):
         ra = None
         try:
-            if self.is_ret(insn):
+            if insn.mnemonic == "l.jr" and insn.operands[0] == "r9":
                 ra = get_register("$r9")
             elif frame.older():
                 ra = frame.older().pc()
@@ -10030,7 +10190,10 @@ class NIOS2(Architecture):
     syscall_insn = b"\x3a\x68\x3b\x00" # trap 0
 
     def is_syscall(self, insn):
-        return insn.mnemonic == "trap" and insn.operands[0] == "0"
+        try:
+            return insn.mnemonic == "trap" and int(insn.operands[0], 0) == 0
+        except Exception:
+            return False
 
     def is_call(self, insn):
         return insn.mnemonic in ["call", "callr"]
@@ -10505,7 +10668,10 @@ class CRIS(Architecture):
     syscall_insn = b"\x3d\xe9" # break 13
 
     def is_syscall(self, insn):
-        return insn.mnemonic == "break" and insn.operands[0] == "13"
+        try:
+            return insn.mnemonic == "break" and int(insn.operands[0], 0) == 13
+        except Exception:
+            return False
 
     def is_call(self, insn):
         return insn.mnemonic in ["jsr", "jsrc"]
@@ -10574,7 +10740,7 @@ class CRIS(Architecture):
         return taken, reason
 
     def flag_register_to_human(self, val=None):
-        if not val:
+        if val is None:
             reg = self.flag_register
             val = get_register(reg)
         return Architecture.flags_to_human(val, self.flags_table)
@@ -10795,11 +10961,12 @@ class ARC(Architecture):
     syscall_insn = b"\x1e\x78" # trap_s 0
 
     def is_syscall(self, insn):
-        if insn.mnemonic == "trap_s" and insn.operands == ["0"]:
-            return True
         if insn.mnemonic == "trap0":
             return True
-        return False
+        try:
+            return insn.mnemonic == "trap_s" and int(insn.operands[0], 0) == 0
+        except Exception:
+            return False
 
     def is_call(self, insn):
         if insn.mnemonic in ["bl", "bl.d", "bl_s", "jl", "jl.d", "jl_s", "jl_s.d"]:
@@ -10979,7 +11146,7 @@ class ARC(Architecture):
         return taken, reason
 
     def flag_register_to_human(self, val=None):
-        if not val:
+        if val is None:
             reg = self.flag_register
             val = get_register(reg)
         return Architecture.flags_to_human(val, self.flags_table)
@@ -11107,7 +11274,10 @@ class CSKY(Architecture):
     syscall_insn = b"\x00\xc0\x20\x20" # trap 0
 
     def is_syscall(self, insn):
-        return insn.mnemonic == "trap" and insn.operands[0] == "0"
+        try:
+            return insn.mnemonic == "trap" and int(insn.operands[0], 0) == 0
+        except Exception:
+            return False
 
     def is_call(self, insn):
         return insn.mnemonic in ["bsr", "jsri", "jsr"]
@@ -11160,7 +11330,7 @@ class CSKY(Architecture):
         return taken, reason
 
     def flag_register_to_human(self, val=None):
-        if not val:
+        if val is None:
             reg = self.flag_register
             val = get_register(reg)
         return Architecture.flags_to_human(val, self.flags_table)
@@ -11261,7 +11431,7 @@ class CSKY(Architecture):
 #    #    return taken, reason
 #
 #    #def flag_register_to_human(self, val=None):
-#    #    if not val:
+#    #    if val is None:
 #    #        reg = self.flag_register
 #    #        val = get_register(reg)
 #    #    return Architecture.flags_to_human(val, self.flags_table)
@@ -24126,6 +24296,11 @@ class RegistersCommand(GenericCommand):
                     derefs = AddressUtil.recursive_dereference_to_string(value, skip_idx=1)
                     if derefs:
                         line += "  ->  {:s}".format(derefs)
+                elif is_mipsn32():
+                    line += AddressUtil.format_address(value, memalign_size=8, long_fmt=True)
+                    derefs = AddressUtil.recursive_dereference_to_string(value, skip_idx=1)
+                    if derefs:
+                        line += "  ->  {:s}".format(derefs)
                 else:
                     line += AddressUtil.recursive_dereference_to_string(value)
 
@@ -30733,6 +30908,18 @@ class ContextCodeCommand(GenericCommand):
                     return "{:#x}".format(ptr)
                 else:
                     return ptr
+
+        # bctr?
+        #   ppc: bctr
+        if is_ppc32() or is_ppc64():
+            if insn.mnemonic == "bctr":
+                addr = get_register("ctr")
+                if addr is None:
+                    return None
+                if to_str:
+                    return "{:#x}".format(addr)
+                else:
+                    return addr
 
         return None
 
@@ -107513,7 +107700,7 @@ class GefStatusCommand(GenericCommand):
         gef_print("{:30s}  ->  {!s}".format("current_arch.arch", current_arch.arch))
         gef_print("{:30s}  ->  {!s}".format("current_arch.mode", current_arch.mode))
         if is_arm32() or is_arm32_cortex_m():
-            gef_print("{:30s}  ->  {!s}".format("current_arch.__mode", current_arch._ARM__mode))
+            gef_print("{:30s}  ->  {!s}".format("current_arch.is_cortex_m()", current_arch.is_cortex_m()))
         gef_print("{:30s}  ->  {!s}".format("current_arch.ptrsize", current_arch.ptrsize))
 
         if current_arch.instruction_length is None:
