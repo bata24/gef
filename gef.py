@@ -6715,11 +6715,9 @@ class RISCV(Architecture):
 
     def is_ret(self, insn):
         mnemo = insn.mnemonic
-        if mnemo == "ret":
+        if mnemo == "ret": # gdb interpret "jalr zero, ra, 0" as "ret"
             return True
-        elif mnemo == "jalr":
-            return insn.operands[:3] == ["zero", "ra", "0"]
-        elif mnemo == "c.jalr":
+        if mnemo == "c.jalr":
             return insn.operands[0] == "ra"
         return False
 
@@ -7027,8 +7025,9 @@ class ARM(Architecture):
             "", "eq", "ne", "lt", "le", "gt", "ge", "vs", "vc",
             "mi", "pl", "hi", "ls", "cs", "cc", "hs", "lo", "al",
         ]
+        mnemo = insn.mnemonic
         for cc in conditions:
-            if insn.mnemonic in [f"bl{cc}", f"bl{cc}.n", f"bl{cc}.w", f"blx{cc}", f"blx{cc}.n", f"blx{cc}.w"]:
+            if mnemo in [f"bl{cc}", f"bl{cc}.n", f"bl{cc}.w", f"blx{cc}", f"blx{cc}.n", f"blx{cc}.w"]:
                 return True
         return False
 
@@ -7037,9 +7036,10 @@ class ARM(Architecture):
             return False
         if self.is_conditional_branch(insn):
             return True
-        if insn.mnemonic in ["b", "b.n", "b.w", "bx", "bx.n", "bx.w"]:
+        mnemo = insn.mnemonic
+        if mnemo in ["b", "b.n", "b.w", "bx", "bx.n", "bx.w"]:
             return True
-        if insn.mnemonic in ["mov", "mov.n", "mov.w", "ldr", "ldr.n", "ldr.w", "add", "add.n", "add.w"]:
+        if mnemo in ["mov", "mov.n", "mov.w", "ldr", "ldr.n", "ldr.w", "add", "add.n", "add.w"]:
             return insn.operands[0] == "pc"
         return False
 
@@ -7052,13 +7052,16 @@ class ARM(Architecture):
             "ldm.w", "ldmea.w", "ldmed.w", "ldmfa.w",
             "ldmfd.w", "ldmia.w", "ldmib.w", "ldmda.w", "ldmdb.w",
         ]
-        if insn.mnemonic in load_mnemos:
+        mnemo = insn.mnemonic
+        if mnemo in load_mnemos:
             return "pc}" in "".join(insn.operands)
-        if insn.mnemonic in ["b", "b.n", "b.w", "bx", "bx.n", "bx.w"]:
+        if mnemo in ["b", "b.n", "b.w", "bx", "bx.n", "bx.w"]:
             return insn.operands[0] == "lr"
-        if insn.mnemonic in ["mov", "mov.n", "mov.w"]:
+        if mnemo in ["mov", "mov.n", "mov.w"]:
             return insn.operands[:2] == ["pc", "lr"]
-        if insn.mnemonic == "rfe":
+        if mnemo == "add" and len(insn.operands) >= 3:
+            return insn.operands[:2] == ["pc", "lr"] and int(insn.operands[2].lstrip("#"), 0) == 0
+        if mnemo == "rfe":
             return True
         return False
 
@@ -7297,11 +7300,12 @@ class AARCH64(ARM):
         return insn.mnemonic in ["ret", "eret"]
 
     def is_conditional_branch(self, insn):
+        mnemo = insn.mnemonic
         # https://www.element14.com/community/servlet/JiveServlet/previewBody/41836-102-1-229511/ARM.Reference_Manual.pdf
         # sect. 5.1.1
-        if insn.mnemonic in ["cbnz", "cbz", "tbnz", "tbz"]:
+        if mnemo in ["cbnz", "cbz", "tbnz", "tbz"]:
             return True
-        if insn.mnemonic.startswith("b."):
+        if mnemo.startswith("b."):
             return True
         return False
 
@@ -7614,9 +7618,9 @@ class X86(Architecture):
     def read28(self, addr):
         codes = [
             b"\x8b\x00", # mov eax, dword ptr [eax]
+            b"\x8b\x1b", # mov ebx, dword ptr [ebx]
             b"\x8b\x09", # mov ecx, dword ptr [ecx]
             b"\x8b\x12", # mov edx, dword ptr [edx]
-            b"\x8b\x1b", # mov ebx, dword ptr [ebx]
             b"\x8b\x24\x24", # mov esp, dword ptr [esp]
             # If I rewrite ebp, an error message will be displayed and it will be annoying, so I will skip it.
             #b"\x8b\x6d\x00", # mov ebp, dword ptr [ebp]
@@ -8106,7 +8110,7 @@ class PPC(Architecture):
             return key, val
         else:
             i -= len(self.function_parameters)
-            i += 2 # ???
+            i += 2 # for EABI, not SysV
             sp = current_arch.sp
             sz = current_arch.ptrsize
             loc = sp + (i * sz)
@@ -9038,6 +9042,9 @@ class S390X(Architecture):
                 return taken, reason
 
         def for_compare(insn, signed, bit):
+            if len(insn.opcodes) < 5:
+                return False, ""
+
             if signed and bit == 32:
                 trans = lambda a: struct.unpack("<i", struct.pack("<I", a & 0xffff_ffff))[0]
             elif signed and bit == 64:
@@ -9108,12 +9115,11 @@ class S390X(Architecture):
             key = reg
             return key, val
         else:
-            i += 15 # ???
-            sp = current_arch.sp
-            sz = current_arch.ptrsize
-            loc = sp + (i * sz)
-            val = read_int_from_memory(loc)
-            key = "[sp + {:#x}]".format(i * sz)
+            STACK_ARG_BASE = 0xa0
+            n_reg_args = len(self.function_parameters)
+            offset = STACK_ARG_BASE + ((i - n_reg_args) * current_arch.ptrsize)
+            val = read_int_from_memory(current_arch.sp + offset)
+            key = "[sp + {:#x}]".format(offset)
             return key, val
 
     def get_ra(self, insn, frame):
@@ -9671,7 +9677,7 @@ class HPPA(Architecture):
         "HPPA1.1",
     ]
 
-    # https://parisc.wiki.kernel.org/images-parisc/6/68/Pa11_acd.pdf
+    # http://ftp.parisc-linux.org/docs/arch/pa11_acd.pdf
     all_registers = [
         "$r1", "$rp", "$r3", "$r4", "$r5", "$r6", "$r7", "$r8",
         "$r9", "$r10", "$r11", "$r12", "$r13", "$r14", "$r15", "$r16",
@@ -9741,174 +9747,164 @@ class HPPA(Architecture):
     def is_conditional_branch(self, insn):
         if insn.mnemonic.startswith(("movb", "movib")): # alias for MOVB,cond,n / MOVIB,cond,n
             return True
-        if insn.mnemonic.startswith(("cmpb", "cmpib")): # alias for COMB[TF},cond,n / COMIB[TF],cond,n
+        if insn.mnemonic.startswith(("cmpb", "cmpib")): # alias for COMB[TF],cond,n / COMIB[TF],cond,n
             return True
         if insn.mnemonic.startswith(("addb", "addib")): # alias for ADDB[TF],cond,n / ADDIB[TF],cond,n
             return True
-        if insn.mnemonic.startswith("bb,"): # alias for BVB,cond,n / BB,cond,n
+        if insn.mnemonic.startswith("bb,"): # alias for BB,cond,n / BVB,cond,n
             return True
         return False
 
     def is_branch_taken(self, insn):
 
+        def get_masked(x):
+            bits = 64 if is_64bit() else 32
+            return x & ((1 << bits) - 1)
+
+        def get_sign(x):
+            bits = 64 if is_64bit() else 32
+            return (x >> (bits - 1)) & 1
+
+        def to_signed(x):
+            bits = 64 if is_64bit() else 32
+            x &= ((1 << bits) - 1)
+            sign = 1 << (bits - 1)
+            # if sign bit set, subtract 2^bits
+            return x - (1 << bits) if (x & sign) else x
+
         def check_cond_mov(c, name, val):
+            v = get_masked(val)
+
             if c == 0: # never
                 taken, reason = False, ""
             elif c == 1: # =
-                taken, reason = val == 0, "{:s}==0".format(name)
+                taken, reason = v == 0, "{:s}==0".format(name)
             elif c == 2: # <
-                taken, reason = (val >> [31, 63][is_64bit()]) == 1, "MSB({:s})==1".format(name)
+                taken, reason = get_sign(v) == 1, "MSB({:s})==1".format(name)
             elif c == 3: # OD
-                taken, reason = (val & 1) == 1, "LSB({:s})==1".format(name)
+                taken, reason = (v & 1) == 1, "LSB({:s})==1".format(name)
             elif c == 4: # TR
                 taken, reason = True, "Always True"
             elif c == 5: # <>
-                taken, reason = val != 0, "{:s}!=0".format(name)
+                taken, reason = v != 0, "{:s}!=0".format(name)
             elif c == 6: # EV
-                taken, reason = (val & 1) == 0, "LSB({:s})==0".format(name)
+                taken, reason = (v & 1) == 0, "LSB({:s})==0".format(name)
+            else:
+                taken, reason = False, ""
             return taken, reason
 
-        def check_cond_cmp(c, f, name1, val1, name2, val2):
+        def check_cond_cmp(c, neg, name1, val1, name2, val2):
+            v1 = get_masked(val1)
+            v2 = get_masked(val2)
+            s1 = to_signed(v1)
+            s2 = to_signed(v2)
+            res = get_masked(v1 - v2)
+
             if c == 0: # never
-                if not f:
+                if not neg:
                     taken, reason = False, ""
                 else:
                     taken, reason = True, "Always True"
             elif c == 1: # =
-                if not f:
-                    taken, reason = val1 == val2, "{:s}=={:s}".format(name1, name2)
+                if not neg:
+                    taken, reason = v1 == v2, "{:s}=={:s}".format(name1, name2)
                 else:
-                    taken, reason = val1 != val2, "{:s}!={:s}".format(name1, name2)
+                    taken, reason = v1 != v2, "{:s}!={:s}".format(name1, name2)
             elif c == 2: # < (signed)
-                if not f:
-                    taken, reason = val1 < val2, "{:s}<{:s}".format(name1, name2)
+                if not neg:
+                    taken, reason = s1 < s2, "{:s}<{:s}".format(name1, name2)
                 else:
-                    taken, reason = val1 >= val2, "{:s}>={:s}".format(name1, name2)
+                    taken, reason = s1 >= s2, "{:s}>={:s}".format(name1, name2)
             elif c == 3: # <= (signed)
-                if not f:
-                    taken, reason = val1 <= val2, "{:s}<={:s}".format(name1, name2)
+                if not neg:
+                    taken, reason = s1 <= s2, "{:s}<={:s}".format(name1, name2)
                 else:
-                    taken, reason = val1 > val2, "{:s}>{:s}".format(name1, name2)
+                    taken, reason = s1 > s2, "{:s}>{:s}".format(name1, name2)
             elif c == 4: # < (unsigned)
-                if is_64bit():
-                    shift = 64
+                if not neg:
+                    taken, reason = v1 < v2, "{:s}<{:s} (unsigned)".format(name1, name2)
                 else:
-                    shift = 32
-                val1 &= (1 << shift) - 1
-                val2 &= (1 << shift) - 1
-                if not f:
-                    taken, reason = val1 < val2, "{:s}<{:s} (unsigned)".format(name1, name2)
-                else:
-                    taken, reason = val1 >= val2, "{:s}>={:s} (unsigned)".format(name1, name2)
+                    taken, reason = v1 >= v2, "{:s}>={:s} (unsigned)".format(name1, name2)
             elif c == 5: # <= (unsigned)
-                if is_64bit():
-                    shift = 64
+                if not neg:
+                    taken, reason = v1 <= v2, "{:s}<={:s} (unsigned)".format(name1, name2)
                 else:
-                    shift = 32
-                val1 &= (1 << shift) - 1
-                val2 &= (1 << shift) - 1
-                if not f:
-                    taken, reason = val1 <= val2, "{:s}<={:s} (unsigned)".format(name1, name2)
-                else:
-                    taken, reason = val1 > val2, "{:s}>{:s} (unsigned)".format(name1, name2)
+                    taken, reason = v1 > v2, "{:s}>{:s} (unsigned)".format(name1, name2)
             elif c == 6: # SV
-                if is_64bit():
-                    shift = 63
-                else:
-                    shift = 31
-                val1_sign = (val1 >> shift) & 1
-                val2_sign = (val2 >> shift) & 1
-                ans_sign = ((val1 - val2) >> shift) & 1
-                overflow = (val1_sign != val2_sign) and (val1_sign != ans_sign) # subtract overflow
-                if not f:
+                overflow = (get_sign(v1) != get_sign(v2)) and (get_sign(v1) != get_sign(res)) # subtract overflow
+                if not neg:
                     taken, reason = overflow, "{:s}-{:s} overflows".format(name1, name2)
                 else:
-                    taken, reason = overflow, "{:s}-{:s} does not overflow".format(name1, name2)
+                    taken, reason = not overflow, "{:s}-{:s} does not overflow".format(name1, name2)
             elif c == 7: # OD
-                if not f:
-                    taken, reason = ((val1 - val2) & 1) == 1, "LSB({:s}-{:s})==1".format(name1, name2)
+                if not neg:
+                    taken, reason = (res & 1) == 1, "LSB({:s}-{:s})==1".format(name1, name2)
                 else:
-                    taken, reason = ((val1 - val2) & 1) == 0, "LSB({:s}-{:s})==0".format(name1, name2)
+                    taken, reason = (res & 1) == 0, "LSB({:s}-{:s})==0".format(name1, name2)
             return taken, reason
 
-        def check_cond_add(c, f, name1, val1, name2, val2):
+        def check_cond_add(c, neg, name1, val1, name2, val2):
+            v1 = get_masked(val1)
+            v2 = get_masked(val2)
+            res = get_masked(v1 + v2)
+
             if c == 0: # never
-                if not f:
+                if not neg:
                     taken, reason = False, ""
                 else:
                     taken, reason = True, "Always True"
             elif c == 1: # =
-                if not f:
-                    taken, reason = val1 == -val2, "{:s}==-{:s}".format(name1, name2)
+                if not neg:
+                    taken, reason = res == 0, "{:s}==-{:s}".format(name1, name2)
                 else:
-                    taken, reason = val1 != -val2, "{:s}!=-{:s}".format(name1, name2)
+                    taken, reason = res != 0, "{:s}!=-{:s}".format(name1, name2)
             elif c == 2: # < (signed)
-                if not f:
-                    taken, reason = val1 < -val2, "{:s}<-{:s} (signed)".format(name1, name2)
+                sres = to_signed(res)
+                if not neg:
+                    taken, reason = sres < 0, "{:s}<-{:s} (signed)".format(name1, name2)
                 else:
-                    taken, reason = val1 >= -val2, "{:s}>=-{:s} (signed)".format(name1, name2)
+                    taken, reason = sres >= 0, "{:s}>=-{:s} (signed)".format(name1, name2)
             elif c == 3: # <= (signed)
-                if not f:
-                    taken, reason = val1 <= -val2, "{:s}<=-{:s} (signed)".format(name1, name2)
+                sres = to_signed(res)
+                if not neg:
+                    taken, reason = sres <= 0, "{:s}<=-{:s} (signed)".format(name1, name2)
                 else:
-                    taken, reason = val1 > -val2, "{:s}>-{:s} (signed)".format(name1, name2)
+                    taken, reason = sres > 0, "{:s}>-{:s} (signed)".format(name1, name2)
             elif c == 4: # NUV (unsigned)
-                if is_64bit():
-                    shift = 63
+                full = v1 + v2 # addition overflow
+                carry = (full >> (64 if is_64bit() else 32)) & 1
+                if not neg:
+                    taken, reason = not carry, "{:s}+{:s} does not overflow (unsigned)".format(name1, name2)
                 else:
-                    shift = 31
-                val1 &= (1 << (shift + 1)) - 1
-                val2 &= (1 << (shift + 1)) - 1
-                val1_sign = (val1 >> shift) & 1
-                val2_sign = (val2 >> shift) & 1
-                ans_sign = ((val1 + val2) >> shift) & 1
-                overflow = (val1_sign == val2_sign) and (val1_sign != ans_sign) # addition overflow
-                if not f:
-                    taken, reason = not overflow, "{:s}+{:s} does not overflow (unsigned)".format(name1, name2)
-                else:
-                    taken, reason = overflow, "{:s}+{:s} overflows (unsigned)".format(name1, name2)
+                    taken, reason = carry, "{:s}+{:s} overflows (unsigned)".format(name1, name2)
             elif c == 5: # ZNV (unsigned)
-                if is_64bit():
-                    shift = 63
+                full = v1 + v2 # addition overflow
+                carry = (full >> (64 if is_64bit() else 32)) & 1
+                zero = (res == 0)
+                if not neg:
+                    taken, reason = zero or not carry, "{:s}+{:s} is zero or no overflow (unsigned)".format(name1, name2)
                 else:
-                    shift = 31
-                val1 &= (1 << (shift + 1)) - 1
-                val2 &= (1 << (shift + 1)) - 1
-                val1_sign = (val1 >> shift) & 1
-                val2_sign = (val2 >> shift) & 1
-                ans_sign = ((val1 + val2) >> shift) & 1
-                overflow = (val1_sign == val2_sign) and (val1_sign != ans_sign) # addition overflow
-                zero = (val1 + val2) == 0
-                if not f:
-                    taken, reason = zero or not overflow, "{:s}+{:s} is zero or no overflow (unsigned)".format(name1, name2)
-                else:
-                    taken, reason = not zero and overflow, "{:s}+{:s} is nonzero and overflows (unsigned)".format(name1, name2)
+                    taken, reason = not zero and carry, "{:s}+{:s} is nonzero and overflows (unsigned)".format(name1, name2)
             elif c == 6: # SV (signed)
-                if is_64bit():
-                    shift = 63
-                else:
-                    shift = 31
-                val1_sign = (val1 >> shift) & 1
-                val2_sign = (val2 >> shift) & 1
-                ans_sign = ((val1 + val2) >> shift) & 1
-                overflow = (val1_sign == val2_sign) and (val1_sign != ans_sign) # addition overflow
-                if not f:
+                overflow = (get_sign(v1) == get_sign(v2)) and (get_sign(v1) != get_sign(res)) # addition overflow
+                if not neg:
                     taken, reason = overflow, "{:s}+{:s} overflows (signed)".format(name1, name2)
                 else:
                     taken, reason = not overflow, "{:s}+{:s} does not overflow (signed)".format(name1, name2)
             elif c == 7: # OD
-                if not f:
-                    taken, reason = ((val1 + val2) & 1) == 1, "LSB({:s}-{:s})==1".format(name1, name2)
+                if not neg:
+                    taken, reason = (res & 1) == 1, "LSB({:s}+{:s})==1".format(name1, name2)
                 else:
-                    taken, reason = ((val1 + val2) & 1) == 0, "LSB({:s}-{:s})==0".format(name1, name2)
+                    taken, reason = (res & 1) == 0, "LSB({:s}+{:s})==0".format(name1, name2)
             return taken, reason
 
         def check_cond_bit(c, name1, val1, name2, val2):
-            if is_64bit():
-                shift = 63
-            else:
-                shift = 31
-            bit_on = ((val1 >> (shift - val2)) & 1) == 1
+            bits = (64 if is_64bit() else 32) - 1
+            if val2 < 0 or val2 > bits:
+                return False, ""
+            v1 = get_masked(val1)
+            bit_on = ((v1 >> (bits - val2)) & 1) == 1
+
             if c == 2: # <
                 taken, reason = bit_on, "{:s}.bit({:s})==1".format(name1, name2)
             elif c == 6: # >=
@@ -9918,39 +9914,39 @@ class HPPA(Architecture):
             return taken, reason
 
         taken, reason = False, ""
-        if insn.mnemonic.startswith("movb"):
+        if insn.mnemonic.startswith("movb"): # alias for MOVB,cond,n
             c = (insn.opcodes[2] >> 5) & 0b111
             v1 = insn.operands[0] # source
             taken, reason = check_cond_mov(c, v1, get_register(v1))
-        elif insn.mnemonic.startswith("movib"):
+        elif insn.mnemonic.startswith("movib"): # alias for MOVIB,cond,n
             c = (insn.opcodes[2] >> 5) & 0b111
             v1 = insn.operands[0] # source
             taken, reason = check_cond_mov(c, v1, int(v1, 16))
-        elif insn.mnemonic.startswith("cmpb"):
+        elif insn.mnemonic.startswith("cmpb"): # alias for COMB[TF],cond,n
             c = (insn.opcodes[2] >> 5) & 0b111
-            f = (insn.opcodes[0] >> 3) & 1
+            f = (insn.opcodes[0] >> 3) & 1 # True or False
             v1 = insn.operands[0] # source1
             v2 = insn.operands[1] # source2
             taken, reason = check_cond_cmp(c, f, v1, get_register(v1), v2, get_register(v2))
-        elif insn.mnemonic.startswith("cmpib"):
+        elif insn.mnemonic.startswith("cmpib"): # alias for COMIB[TF],cond,n
             c = (insn.opcodes[2] >> 5) & 0b111
-            f = (insn.opcodes[0] >> 3) & 1
+            f = (insn.opcodes[0] >> 3) & 1 # True or False
             v1 = insn.operands[0] # source1
             v2 = insn.operands[1] # source2
             taken, reason = check_cond_cmp(c, f, v1, int(v1, 16), v2, get_register(v2))
-        elif insn.mnemonic.startswith("addb"):
+        elif insn.mnemonic.startswith("addb"): # alias for ADDB[TF],cond,n
             c = (insn.opcodes[2] >> 5) & 0b111
-            f = (insn.opcodes[0] >> 3) & 1
+            f = (insn.opcodes[0] >> 3) & 1 # True or False
             v1 = insn.operands[0] # source1
             v2 = insn.operands[1] # source2
             taken, reason = check_cond_add(c, f, v1, get_register(v1), v2, get_register(v2))
-        elif insn.mnemonic.startswith("addib"):
+        elif insn.mnemonic.startswith("addib"): # alias for ADDIB[TF],cond,n
             c = (insn.opcodes[2] >> 5) & 0b111
-            f = (insn.opcodes[0] >> 3) & 1
+            f = (insn.opcodes[0] >> 3) & 1 # True or False
             v1 = insn.operands[0] # source1
             v2 = insn.operands[1] # source2
             taken, reason = check_cond_add(c, f, v1, int(v1, 16), v2, get_register(v2))
-        elif insn.mnemonic.startswith("bb,"): # bb and bvb
+        elif insn.mnemonic.startswith("bb,"): # alias for BVB,cond,n / BB,cond,n
             c = (insn.opcodes[2] >> 5) & 0b111
             v1 = insn.operands[0] # source1
             v2 = insn.operands[1] # source2
@@ -10819,15 +10815,25 @@ class LOONGARCH64(Architecture):
         return insn.mnemonic in ["syscall"]
 
     def is_call(self, insn):
-        return insn.mnemonic in ["bl"]
+        mnemo = insn.mnemonic
+        if mnemo == "bl":
+            return True
+        if mnemo == "jirl":
+            return len(insn.operands) >= 1 and insn.operands[0] != "$zero"
+        return False
 
     def is_jump(self, insn):
         if self.is_conditional_branch(insn):
             return True
-        return insn.mnemonic in ["b"]
+        mnemo = insn.mnemonic
+        if mnemo == "b":
+            return True
+        if mnemo == "jirl":
+            return len(insn.operands) >= 1 and insn.operands[0] == "$zero"
+        return False
 
     def is_ret(self, insn):
-        return insn.mnemonic in ["jirl"]
+        return insn.mnemonic == "ret" # gdb interpret "jalr $zero, $ra, 0" as "ret"
 
     def is_conditional_branch(self, insn):
         return insn.mnemonic in ["beq", "bne", "bge", "bgeu", "blt", "bltu", "beqz", "bnez"]
@@ -10844,10 +10850,14 @@ class LOONGARCH64(Architecture):
         u2i = lambda a: uq(pQ(a))
 
         v0 = get_register(alias_inverse.get(ops[0], ops[0]))
+        if v0 is None:
+            return False
         v0s = u2i(v0)
 
         if mnemo not in ["beqz", "bnez"]:
             v1 = get_register(alias_inverse.get(ops[1], ops[1]))
+            if v1 is None:
+                return False
             v1s = u2i(v1)
 
         taken, reason = False, ""
@@ -30920,6 +30930,19 @@ class ContextCodeCommand(GenericCommand):
                     return "{:#x}".format(addr)
                 else:
                     return addr
+
+        # jirl?
+        #   jirl: jirl $ra, $ra, 0
+        if is_loongarch64():
+            if insn.mnemonic == "jirl":
+                if len(insn.operands) >= 3:
+                    reg = insn.operands[1]
+                    off = int(insn.operands[2], 0)
+                    addr = get_register(reg) + off
+                    if to_str:
+                        return "{:#x}".format(addr)
+                    else:
+                        return addr
 
         return None
 
