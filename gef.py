@@ -50612,6 +50612,7 @@ class LibcCommand(GenericCommand):
         return
 
     def show_libc_assume_version(self):
+        self.quiet_print(titlify("GEF libc info"))
         try:
             v = get_libc_version(verbose=True)
             gef_print("GEF recognized: {}".format(v))
@@ -50634,6 +50635,8 @@ class LibcCommand(GenericCommand):
         libc = ProcessMap.get_section_base_address_by_list(libc_targets)
         if libc is None:
             err("libc is not found")
+            if not args.quiet:
+                self.show_libc_assume_version()
             return
 
         self.quiet_print(titlify("libc info"))
@@ -50642,9 +50645,6 @@ class LibcCommand(GenericCommand):
 
         if not args.quiet:
             self.libc_calc_hash(libc_targets)
-
-        self.quiet_print(titlify("GEF libc info"))
-        if not args.quiet:
             self.show_libc_assume_version()
         return
 
