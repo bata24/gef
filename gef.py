@@ -69758,6 +69758,7 @@ class TlsCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-a", "--all", action="store_true", help="show all TLS address.")
+    parser.add_argument("-i", "--thread-id", type=AddressUtil.parse_address, help="show specific TLS address.")
     parser.add_argument("-s", "--symbol-hint", action="store_true", help="show hints if symbol is available (only x64/x86).")
     parser.add_argument("-v", "--verbose", action="count", default=1, help="show more entries (+16).")
     parser.add_argument("-V", "--more-verbose", action="count", default=0, help="show more entries (+256).")
@@ -69777,8 +69778,29 @@ class TlsCommand(GenericCommand, BufferingOutput):
             direction = 1
         return direction
 
+    def get_specific_tls(self, thread_id):
+        orig_thread = gdb.selected_thread()
+        orig_frame = gdb.selected_frame()
+        threads = gdb.selected_inferior().threads()
+        threads = [th for th in threads if th.num == thread_id]
+
+        if len(threads) != 1:
+            err("Not found target thread")
+            return
+
+        try:
+            threads[0].switch()
+            tls = current_arch.get_tls()
+        except Exception:
+            tls = None
+
+        orig_thread.switch() # revert
+        orig_frame.select()
+        return tls
+
     def print_all_tls(self):
-        selected_thread = gdb.selected_thread()
+        orig_thread = gdb.selected_thread()
+        orig_frame = gdb.selected_frame()
         threads = gdb.selected_inferior().threads()
         threads = sorted(threads, key=lambda th: th.num)
 
@@ -69797,7 +69819,8 @@ class TlsCommand(GenericCommand, BufferingOutput):
             msg += " - {:#x}".format(tls)
             gef_print(msg)
 
-        selected_thread.switch() # revert
+        orig_thread.switch() # revert
+        orig_frame.select()
         return
 
     def get_varnames(self):
@@ -69850,7 +69873,10 @@ class TlsCommand(GenericCommand, BufferingOutput):
             self.print_all_tls()
             return
 
-        tls = current_arch.get_tls()
+        if args.thread_id:
+            tls = self.get_specific_tls(args.thread_id)
+        else:
+            tls = current_arch.get_tls()
         if tls is None:
             err("Failed to get TLS address")
             return
