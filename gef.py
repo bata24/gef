@@ -3285,8 +3285,17 @@ class GlibcHeap:
             return self.addrof_arena_test + self.size_t.sizeof
 
         @property
+        def addrof_thp_mode(self):
+            if get_libc_version() >= (2, 43):
+                return self.addrof_arena_max + self.size_t.sizeof
+            else:
+                return None
+
+        @property
         def addrof_thp_pagesize(self):
-            if get_libc_version() >= (2, 35):
+            if get_libc_version() >= (2, 43):
+                return self.addrof_thp_mode + self.size_t.sizeof
+            elif get_libc_version() >= (2, 35):
                 return self.addrof_arena_max + self.size_t.sizeof
             else:
                 return None
@@ -3649,14 +3658,19 @@ class GlibcHeap:
 
         @property
         def have_fastchunks(self):
-            if get_libc_version() >= (2, 27):
+            if get_libc_version() >= (2, 43):
+                return None
+            elif get_libc_version() >= (2, 27):
                 return self.get_int_t(self.addrof_have_fastchunks)
             else:
                 return None
 
         @property
         def fastbinsY(self):
-            return self.get_size_t_array(self.addrof_fastbins, self.num_fastbins)
+            if get_libc_version() >= (2, 43):
+                return None
+            else:
+                return self.get_size_t_array(self.addrof_fastbins, self.num_fastbins)
 
         @property
         def top(self):
