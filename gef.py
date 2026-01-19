@@ -3177,16 +3177,18 @@ class GlibcHeap:
     class HeapInfo(GenericType):
         """GEF representation of heap_info."""
 
+        @staticmethod
+        def MALLOC_ALIGNMENT():
+            if is_64bit():
+                return 0x10
+            elif (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
+                return 0x10
+            else:
+                return 0x8
+
         def __init__(self, addr):
             super().__init__(addr)
-
-            if is_64bit():
-                MALLOC_ALIGNMENT = 0x10
-            elif (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
-                MALLOC_ALIGNMENT = 0x10
-            else:
-                MALLOC_ALIGNMENT = 0x8
-            self.MALLOC_ALIGN_MASK = MALLOC_ALIGNMENT - 1
+            self.MALLOC_ALIGN_MASK = GlibcHeap.HeapInfo.MALLOC_ALIGNMENT() - 1
             return
 
         # struct offsets
@@ -3956,19 +3958,14 @@ class GlibcHeap:
                             return tls_addr_i
             return None
 
-        def get_TCACHE_MAX_BINS():
-            if get_libc_version() < (2, 42):
-                return 0x40
-            else:
-                return 0x40 + 12
-
         def get_tcache_perthread_struct_size():
+            TCACHE_MAX_BINS = GlibcHeap.GlibcArena.TCACHE_MAX_BINS()
             if get_libc_version() < (2, 30):
-                tcache_perthread_struct_size_real = get_TCACHE_MAX_BINS() * (1 + current_arch.ptrsize)
+                tcache_perthread_struct_size_real = TCACHE_MAX_BINS * (1 + current_arch.ptrsize)
             else:
-                tcache_perthread_struct_size_real = get_TCACHE_MAX_BINS ()* (2 + current_arch.ptrsize)
+                tcache_perthread_struct_size_real = TCACHE_MAX_BINS * (2 + current_arch.ptrsize)
 
-            for k, v in GlibcHeap.get_binsize_table()["tcache"].items():
+            for _k, v in GlibcHeap.get_binsize_table()["tcache"].items():
                 if v.get("size", 0) > tcache_perthread_struct_size_real:
                     return v["size"]
             return None
@@ -4001,15 +3998,15 @@ class GlibcHeap:
     class GlibcArena:
         """Glibc arena class."""
 
-        @property
-        def TCACHE_MAX_BINS(self):
+        @staticmethod
+        def TCACHE_MAX_BINS():
             if get_libc_version() < (2, 42):
                 return 0x40
             else:
                 return 0x40 + 12
 
-        @property
-        def TCACHE_FILL_COUNT(self):
+        @staticmethod
+        def TCACHE_FILL_COUNT():
             if get_libc_version() >= (2, 43):
                 return 0x10
             else:
@@ -4316,7 +4313,7 @@ class GlibcHeap:
                 count = read_int16_from_memory(counts_i_addr)
 
             if get_libc_version() >= (2, 42): # num_slot -> count
-                count = self.TCACHE_FILL_COUNT - count
+                count = self.TCACHE_FILL_COUNT() - count
             return count
 
         def addrof_tcachebins_i(self, i):
@@ -4326,9 +4323,9 @@ class GlibcHeap:
                 return None
 
             if get_libc_version() < (2, 30):
-                sizeof_counts = self.TCACHE_MAX_BINS
+                sizeof_counts = self.TCACHE_MAX_BINS()
             else:
-                sizeof_counts = self.TCACHE_MAX_BINS * 2
+                sizeof_counts = self.TCACHE_MAX_BINS() * 2
 
             return tcache_perthread_struct + sizeof_counts + current_arch.ptrsize * i
 
@@ -4465,7 +4462,7 @@ class GlibcHeap:
                 return {}
 
             chunks_all = {}
-            for i in range(self.TCACHE_MAX_BINS):
+            for i in range(self.TCACHE_MAX_BINS()):
                 try:
                     chunk = self.get_tcachebins_i(i)
                 except gdb.MemoryError:
@@ -5117,18 +5114,14 @@ class GlibcHeap:
         else:
             MIN_SIZE = 0x10
 
+        MALLOC_ALIGNMENT = GlibcHeap.HeapInfo.MALLOC_ALIGNMENT()
+
         # tcache
         for i in range(64):
             # MALLOC_ALIGNMENT is changed from libc 2.26.
             # for x86_32, tcache 0x8 align is no longer used.
             # but for ARM32, or maybe other arch, still 0x8 align is used.
-            if is_64bit():
-                size = MIN_SIZE + i * 0x10
-            elif (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
-                size = MIN_SIZE + i * 0x10
-            else:
-                size = MIN_SIZE + i * 0x8
-            table["tcache"][i] = {"size": size}
+            table["tcache"][i] = {"size": MIN_SIZE + MALLOC_ALIGNMENT * i}
 
         if get_libc_version() >= (2, 42):
             if is_64bit():
@@ -22945,7 +22938,7 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
 
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
         nb_chunk = 0
-        for i in range(arena.TCACHE_MAX_BINS):
+        for i in range(arena.TCACHE_MAX_BINS()):
             chunk = arena.get_tcachebins_i(i)
             chunks = []
             m = []
@@ -23782,7 +23775,7 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
         if index < 0:
             err("Invalid index (< 0)")
             return
-        if index >= arena.TCACHE_MAX_BINS:
+        if index >= arena.TCACHE_MAX_BINS():
             err("Invalid index (>= TCACHE_MAX_BINS)")
             return
 
