@@ -31072,7 +31072,7 @@ class ContextCodeCommand(GenericCommand):
                     return addr
 
         # jirl?
-        #   jirl: jirl $ra, $ra, 0
+        #   loongarch64: jirl $ra, $ra, 0
         if is_loongarch64():
             if insn.mnemonic == "jirl":
                 if len(insn.operands) >= 3:
