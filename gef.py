@@ -3789,7 +3789,8 @@ class GlibcHeap:
         0x000000499838|+0x0078|015: 0x0000000000000000
         """
 
-        selected_thread = gdb.selected_thread()
+        orig_thread = gdb.selected_thread()
+        orig_frame = gdb.selected_frame()
         threads = gdb.selected_inferior().threads()
         main_thread = [th for th in threads if th.num == 1][0]
         main_thread.switch()
@@ -3828,12 +3829,14 @@ class GlibcHeap:
                 if not is_valid_addr(next_addr):
                     break
                 if candidate_arena_addr == next_addr:
-                    selected_thread.switch() # revert thread
+                    orig_thread.switch() # revert thread
+                    orig_frame.select()
                     return addr
                 next_addr = to_unsigned_long(GlibcHeap.MallocStateStruct(next_addr).next)
 
         # not found
-        selected_thread.switch() # revert thread
+        orig_thread.switch() # revert thread
+        orig_frame.select()
         return None
 
     @staticmethod
@@ -3927,7 +3930,8 @@ class GlibcHeap:
         ----- TLS
         """
         def get_all_tls():
-            selected_thread = gdb.selected_thread()
+            orig_thread = gdb.selected_thread()
+            orig_frame = gdb.selected_frame()
             threads = gdb.selected_inferior().threads()
             threads = sorted(threads, key=lambda th: th.num)
             tls_list = []
@@ -3940,7 +3944,8 @@ class GlibcHeap:
                     continue
                 tls = current_arch.get_tls()
                 tls_list.append(tls)
-            selected_thread.switch() # revert
+            orig_thread.switch() # revert thread
+            orig_frame.select()
             return tls_list
 
         def get_suitable_tls_addr(arena_addr):
@@ -19661,6 +19666,7 @@ class KillThreadsCommand(GenericCommand):
 
         # list target thread id
         orig_thread = gdb.selected_thread()
+        orig_frame = gdb.selected_frame()
         target_threads = []
         for th in gdb.selected_inferior().threads():
             if th.num == orig_thread.num:
@@ -19685,6 +19691,7 @@ class KillThreadsCommand(GenericCommand):
                     pass
             # restore
             orig_thread.switch()
+            orig_frame.select()
             gdb.execute("set scheduler-locking {:s}".format(sched_lock), to_string=True)
         else:
             warn('This dry run mode skips killing; add "--commit" to proceed')
@@ -36648,12 +36655,14 @@ class DestructorDumpCommand(GenericCommand):
         main_thread_tls_dtor_list = main_thread_tbss_base + tls_dtor_list_offset
 
         # TLS address of main thread
-        selected_thread = gdb.selected_thread()
+        orig_thread = gdb.selected_thread()
+        orig_frame = gdb.selected_frame()
         threads = gdb.selected_inferior().threads()
         main_thread = [th for th in threads if th.num == 1][0]
         main_thread.switch() # switch temporarily
         main_tls = current_arch.get_tls()
-        selected_thread.switch() # revert thread
+        orig_thread.switch() # revert thread
+        orig_frame.select()
 
         # tls_dotr_list of current thread
         tls_dtor_list = main_thread_tls_dtor_list - main_tls + current_arch.get_tls()
@@ -84471,7 +84480,8 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
 
     @Cache.cache_until_next
     def get_all_freelist_head_candidate_from_tls(self):
-        selected_thread = gdb.selected_thread()
+        orig_thread = gdb.selected_thread()
+        orig_frame = gdb.selected_frame()
         threads = gdb.selected_inferior().threads()
         if not threads:
             return
@@ -84492,7 +84502,8 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
                 if not is_single_link_list(head_candidate):
                     continue
                 head_candidates.append(head_candidate)
-        selected_thread.switch() # revert
+        orig_thread.switch() # revert thread
+        orig_frame.select()
         return head_candidates
 
     def get_freelist_start(self, sb):
