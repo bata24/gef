@@ -3885,6 +3885,119 @@ class GlibcHeap:
 
         raise OSError("Cannot find main_arena for {}".format(current_arch.arch))
 
+    # It must be a static method because it is also used to calculate the Heapbase.
+    @staticmethod
+    def search_for_tcache_from_tls(arena_addr):
+        if get_libc_version() < (2, 26):
+            return None
+        if not current_arch.tls_supported:
+            return None
+
+        """
+        [2.42; x86_64 main-heap]
+        gef> tls
+        ...
+              0x7af8dd82b700|+0x0040|+008: 0x000055555555b010 <----- here
+              0x7af8dd82b708|+0x0048|+009: 0x0000000000000000
+              0x7af8dd82b710|+0x0050|+010: 0x00007af8d4034ac0 <main_arena>
+              0x7af8dd82b718|+0x0058|+011: 0x0000000000000000
+              0x7af8dd82b720|+0x0060|+012: 0x0000000000000000
+              0x7af8dd82b728|+0x0068|+013: 0x0000000000000000
+              0x7af8dd82b730|+0x0070|+014: 0x0000000000000000
+              0x7af8dd82b738|+0x0078|+015: 0x0000000000000000
+        ----- TLS
+
+        [2.42.9000; x86_64 main-heap]
+        gef> tls
+        ...
+              0x7d630b7a16e0|+0x0020|+004: 0x00005eafad721d20 <----- here
+              0x7d630b7a16e8|+0x0028|+005: 0x00007d630b995740 <res>
+              0x7d630b7a16f0|+0x0030|+006: 0x0000000000000000
+              0x7d630b7a16f8|+0x0038|+007: 0x0000000000000000
+              0x7d630b7a1700|+0x0040|+008: 0x0000000000000000
+              0x7d630b7a1708|+0x0048|+009: 0x0000000000000000
+              0x7d630b7a1710|+0x0050|+010: 0x00007d630b98dac0 <main_arena>
+              0x7d630b7a1718|+0x0058|+011: 0x0000000000000000
+              0x7d630b7a1720|+0x0060|+012: 0x0000000000000000
+              0x7d630b7a1728|+0x0068|+013: 0x0000000000000000
+              0x7d630b7a1730|+0x0070|+014: 0x0000000000000000
+              0x7d630b7a1738|+0x0078|+015: 0x0000000000000000
+        ----- TLS
+        """
+        def get_all_tls():
+            selected_thread = gdb.selected_thread()
+            threads = gdb.selected_inferior().threads()
+            threads = sorted(threads, key=lambda th: th.num)
+            tls_list = []
+            if not threads:
+                return None
+            for thread in threads:
+                try:
+                    thread.switch()
+                except gdb.error:
+                    continue
+                tls = current_arch.get_tls()
+                tls_list.append(tls)
+            selected_thread.switch() # revert
+            return tls_list
+
+        def get_suitable_tls_addr(arena_addr):
+            tls_list = get_all_tls()
+            if not tls_list:
+                return None
+            for i in range(1, 500):
+                for direction in [1, -1]:
+                    for tls in tls_list:
+                        tls_addr_i = tls + (current_arch.ptrsize * i) * direction
+                        if not is_valid_addr(tls_addr_i):
+                            continue
+                        x = read_int_from_memory(tls_addr_i)
+                        if is_valid_addr(x) and x == arena_addr:
+                            return tls_addr_i
+            return None
+
+        def get_TCACHE_MAX_BINS():
+            if get_libc_version() < (2, 42):
+                return 0x40
+            else:
+                return 0x40 + 12
+
+        def get_tcache_perthread_struct_size():
+            if get_libc_version() < (2, 30):
+                tcache_perthread_struct_size_real = get_TCACHE_MAX_BINS() * (1 + current_arch.ptrsize)
+            else:
+                tcache_perthread_struct_size_real = get_TCACHE_MAX_BINS ()* (2 + current_arch.ptrsize)
+
+            for k, v in GlibcHeap.get_binsize_table()["tcache"].items():
+                if v.get("size", 0) > tcache_perthread_struct_size_real:
+                    return v["size"]
+            return None
+
+        def search_tcache_perthread_struct(arena, tls):
+            tcache_perthread_struct_size = get_tcache_perthread_struct_size()
+            if tcache_perthread_struct_size is None:
+                return None
+            for i in range(1, 20): # "20" has no special meaning
+                for direction in [1, -1]:
+                    tls_addr_i = tls + (current_arch.ptrsize * i) * direction
+                    if not is_valid_addr(tls_addr_i):
+                        continue
+                    x = read_int_from_memory(tls_addr_i)
+                    if not is_valid_addr(x):
+                        continue
+                    chunk = GlibcHeap.GlibcChunk(arena, x)
+                    try:
+                        if chunk.size == tcache_perthread_struct_size:
+                            return x
+                    except gdb.MemoryError:
+                        continue
+            return None
+
+        tls = get_suitable_tls_addr(arena_addr)
+        if tls is None:
+            return None
+        return search_tcache_perthread_struct(arena_addr, tls)
+
     class GlibcArena:
         """Glibc arena class."""
 
@@ -4020,7 +4133,15 @@ class GlibcHeap:
                 orig_frame.select()
                 return tcache
 
-            def tcache_offset_heuristic():
+            def tcache_from_heuristic_offset():
+                # In 2.42 and later, tcache_perthread_struct is not necessarily the first chunk,
+                # so this detection method does not work.
+                if get_libc_version() >= (2, 42):
+                    return None
+
+                # There is no problem if you allocate a small chunk (in the size range of tcache)
+                # at the beginning after executing the binary. Here is an example.
+
                 # In a 64-bit environment, the first 8 bytes are zeros
                 """
                 [2.42; x64 main-heap]
@@ -4122,21 +4243,26 @@ class GlibcHeap:
                 """
                 first_8 = read_memory(self.heap_base, 8)
                 if first_8 == b"\0\0\0\0\0\0\0\0":
-                    return 0x10
+                    return self.heap_base + 0x10
                 else:
-                    return 0x8
+                    return self.heap_base + 0x8
 
             # strict way (from symbol)
             tcache = tcache_from_symbol()
             if is_valid_addr(tcache):
                 return tcache
 
-            # heuristic way
-            # TODO: This technique fails glibc 2.43~.
-            # Because tcache_perthread_struct is not placed at the beginning of the heap (why?).
-            # Of course, if you have a symbol, you can solve it using the strict way flow.
-            tcache_offset = tcache_offset_heuristic()
-            return self.heap_base + tcache_offset
+            # heuristic way 1
+            tcache = tcache_from_heuristic_offset()
+            if tcache:
+                return tcache
+
+            # heuristic way 2
+            tcache = GlibcHeap.search_for_tcache_from_tls(self.addr)
+            if tcache:
+                return tcache
+
+            return None
 
         def addrof_tcachebins_i_count(self, i):
             """return &tcache_perthread_struct.counts[i]
@@ -50469,71 +50595,143 @@ class HeapbaseCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     @staticmethod
+    def heap_base_from_symbol(force_heuristic):
+        # The value of mp_->sbrk_base is correct in x86 or x64.
+        # However, for architectures that have TLS in the bss area (such as ARM or ARM64),
+        # the start position of the heap seems to shift by the amount of the area used as the TLS variable.
+        # This method should not be used on ARM or ARM64, as there seems to be no way to predetermine the TLS size.
+        if not is_x86():
+            return None
+        if force_heuristic:
+            return None
+        try:
+            # symbol and type are defined
+            return AddressUtil.parse_address("mp_->sbrk_base")
+        except gdb.error:
+            return None
+
+    @staticmethod
+    def heap_base_from_info_proc_map(force_heuristic):
+        # For non-static binaries, this is mostly sufficient.
+        if force_heuristic:
+            return None
+
+        try:
+            codebase = ProcessMap.get_codebase()
+            elf = Elf(codebase)
+        except Exception:
+            return None
+
+        if elf.is_static():
+            return None
+
+        return ProcessMap.get_section_base_address("[heap]")
+
+    @staticmethod
+    def heap_base_from_tcache():
+        # If glibc has tcache, there is tcache_perthread_struct* in TLS.
+        # This structure is always allocated in the first chunk,
+        # and can be used to find the starting address of the heap.
+        # This path is useful for old qemu-user emulation, etc.
+
+        if get_libc_version() < (2, 26):
+            return None
+
+        # In 2.42 and later, tcache_perthread_struct is not necessarily the first chunk,
+        # so this detection method does not work.
+        # However, glibc 2.42 is used in an Ubuntu 25.10 environment, and in this environment qemu-user is 10.1.
+        # This version of qemu-user can obtain the exact heap base address via `info proc map`,
+        # so the heuristic method should not be necessary.
+        if get_libc_version() >= (2, 42):
+            return None
+
+        if not current_arch.tls_supported:
+            return None
+
+        main_arena_addr = GlibcHeap.search_for_main_arena()
+        if main_arena_addr is None:
+            return None
+
+        tcache_perthread_struct = GlibcHeap.search_for_tcache_from_tls(main_arena_addr)
+        if tcache_perthread_struct is None:
+            return None
+
+        if is_x86_32() or is_riscv32() or is_ppc32():
+            chunk_offset = 0x10
+        else:
+            chunk_offset = current_arch.ptrsize * 2
+        heap_base = tcache_perthread_struct - chunk_offset
+        return heap_base
+
+    @staticmethod
+    def heap_base_from_mp():
+        # However, in the case of qemu-user runs static binary, the heapbase cannot be obtained even with
+        # `info proc map`, and this way may be necessary.
+        main_arena_addr = GlibcHeap.search_for_main_arena()
+        if main_arena_addr is None:
+            return None
+
+        try:
+            codebase = ProcessMap.get_codebase()
+            elf = Elf(codebase)
+        except Exception:
+            return None
+
+        if not elf.is_static():
+            return None
+
+        """
+        0x0000004dd160|+0x0000|+000: trim_threshold         : 0x0000000000020000
+        0x0000004dd168|+0x0008|+001: top_pad                : 0x0000000000020000
+        0x0000004dd170|+0x0010|+002: mmap_threshold         : 0x0000000000020000
+        0x0000004dd178|+0x0018|+003: arena_test             : 0x0000000000000008
+        0x0000004dd180|+0x0020|+004: arena_max              : 0x0000000000000000
+        0x0000004dd188|+0x0028|+005: thp_pagesize           : 0x0000000000000000
+        0x0000004dd190|+0x0030|+006: hp_pagesize            : 0x0000000000000000
+        0x0000004dd198|+0x0038|+007: n_mmaps+hp_flags       : 0x0000000000000000
+        0x0000004dd1a0|+0x0040|+008: max_n_mmaps+n_mmaps_max: 0x0000000000010000
+        0x0000004dd1a8|+0x0048|+009: no_dyn_threshold       : 0x0000000000000000
+        0x0000004dd1b0|+0x0050|+010: mmaped_mem             : 0x0000000000000000
+        0x0000004dd1b8|+0x0058|+011: max_mmaped_mem         : 0x0000000000000000
+        0x0000004dd1c0|+0x0060|+012: sbrk_base              : 0x00000000004e5d40 <----- here
+        0x0000004dd1c8|+0x0068|+013: tcache_small_bins      : 0x0000000000000040
+        0x0000004dd1d0|+0x0070|+014: tcache_max_bytes       : 0x0000000000000411
+        0x0000004dd1d8|+0x0078|+015: tcache_count           : 0x0000000000000007
+        0x0000004dd1e0|+0x0080|+016: tcache_unsorted_limit  : 0x0000000000000000
+        0x0000004dd1e8|+0x0088|+017:                        : 0x0000000000000000
+        0x0000004dd1f0|+0x0090|+018:                        : 0x0000000000000000
+        0x0000004dd1f8|+0x0098|+019:                        : 0x0000000000000000
+        0x0000004dd200|+0x00a0|+020: main_arena             : 0x0000000000000000
+        0x0000004dd208|+0x00a8|+021:                        : 0x0000000000000001
+        0x0000004dd210|+0x00b0|+022:                        : 0x00000000005165e0
+        0x0000004dd218|+0x00b8|+023:                        : 0x0000000000000000
+        0x0000004dd220|+0x00c0|+024:                        : 0x0000000000000000
+        0x0000004dd228|+0x00c8|+025:                        : 0x0000000000000000
+        """
+        for i in range(1, 20):
+            x = main_arena_addr - current_arch.ptrsize * i
+            if not is_valid_addr(x):
+                break
+            y = read_int_from_memory(x)
+            if is_valid_addr(y):
+                return y
+        return None
+
+    @staticmethod
     def heap_base(force_heuristic=False):
         # use cache
         if Cache.cached_heap_base and not force_heuristic:
             return Cache.cached_heap_base
 
-        def strict_way():
-            # The value of mp_->sbrk_base is correct in x86 or x64.
-            # However, for architectures that have TLS in the bss area (such as ARM or ARM64),
-            # the start position of the heap seems to shift by the amount of the area used as the TLS variable.
-            # This method should not be used on ARM or ARM64, as there seems to be no way to predetermine the TLS size.
-            if not is_x86():
-                return None
-            if force_heuristic:
-                return None
-            try:
-                # symbol and type are defined
-                return AddressUtil.parse_address("mp_->sbrk_base")
-            except gdb.error:
-                return None
+        # use 4 ways
+        heap_base = HeapbaseCommand.heap_base_from_symbol(force_heuristic)
+        if heap_base is None:
+            heap_base = HeapbaseCommand.heap_base_from_info_proc_map(force_heuristic)
+        if heap_base is None:
+            heap_base = HeapbaseCommand.heap_base_from_tcache()
+        if heap_base is None:
+            heap_base = HeapbaseCommand.heap_base_from_mp()
 
-        def general_way():
-            if force_heuristic:
-                return None
-            return ProcessMap.get_section_base_address("[heap]")
-
-        def heuristic_way():
-            # If glibc has tcache, there is tcache_perthread_struct* in TLS.
-            # This path is used for qemu-user emulation, etc.
-            if get_libc_version() < (2, 26):
-                return None
-            if not current_arch.tls_supported:
-                return None
-            main_arena_ptr = GlibcHeap.search_for_main_arena_from_tls()
-            if not main_arena_ptr:
-                return None
-
-            # get first_chunk (=tcache_perthread_struct*)
-            first_chunk_p = None
-            if is_x86() or is_sparc64() or is_alpha() or is_mips32() or is_mips64() or is_mipsn32() or \
-               is_nios2() or is_microblaze() or is_arc32() or is_arc64() or is_ppc32() or is_ppc64() or \
-               is_hppa32() or is_sh4():
-                first_chunk_p = main_arena_ptr - current_arch.ptrsize * 2
-            elif is_arm32() or is_arm64() or is_riscv32() or is_riscv64() or \
-               is_loongarch64() or is_or1k() or is_s390x() or is_csky():
-                first_chunk_p = main_arena_ptr + current_arch.ptrsize
-                # The order of variables in TLS appears to have changed recently.
-                if not is_valid_addr_addr(first_chunk_p):
-                    first_chunk_p = main_arena_ptr - current_arch.ptrsize
-
-            if not first_chunk_p or not is_valid_addr(first_chunk_p):
-                return None
-
-            first_chunk = read_int_from_memory(first_chunk_p)
-            if not is_valid_addr(first_chunk):
-                return None
-
-            # get heap_base
-            if is_x86_32() or is_riscv32() or is_ppc32():
-                first_chunk_offset = 0x10
-            else:
-                first_chunk_offset = current_arch.ptrsize * 2
-            heap_base = first_chunk - first_chunk_offset
-            return heap_base
-
-        heap_base = strict_way() or general_way() or heuristic_way()
         if is_valid_addr(heap_base):
             Cache.cached_heap_base = heap_base
             return heap_base
