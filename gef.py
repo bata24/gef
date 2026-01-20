@@ -7350,6 +7350,11 @@ class ARM(Architecture):
     def get_tls(self):
         if is_in_kernel() or is_in_secure():
             return None
+
+        tls = get_register("$TPIDRURO") # qemu-user + gdb-multiarch
+        if tls is not None:
+            return tls
+
         if is_rr(): # unsupported ExecAsm when rr
             return None
         if self.is_thumb():
