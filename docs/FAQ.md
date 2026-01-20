@@ -11,7 +11,7 @@
 - [About the Python Interface](#about-the-python-interface)
 - [About the Development Schedule](#about-the-development-schedule)
 - [About Reporting, etc.](#about-reporting-etc)
-- [Other Memo (Japanese)](#other-memo-japanese)
+- [About Orynth](#about-orynth)
 
 
 # About GEF's Files or Directories
@@ -717,12 +717,17 @@ Please provide a screenshot or a copy of the terminal output when the issue occu
 Yes, please follow the license terms and preserve copyright and attribution notices.
 
 
-# Other Memo (Japanese)
-- Why I decided to make this
-    - [gefを改造した話](https://hackmd.io/@bata24/rJVtBJsrP)
-- The story behind each command, etc.
-    - [bata24/gefの機能紹介とか](https://hackmd.io/@bata24/SycIO4qPi)
-- The story behind each command, etc. 2024 Edition
-    - [bata24/gefの機能紹介とか 2024](https://hackmd.io/@bata24/SJOzjzqQ1e)
-- The story behind each command, etc. 2025 Edition
-    - [bata24/gefの機能紹介とか 2025](https://hackmd.io/@bata24/rkut9rU7Zg)
+# About Orynth
+
+## Is this project listed on Orynth?
+Yes. This project is listed on Orynth for discovery: https://www.orynth.dev/projects/bata24-gef-8901
+
+## What is `B24G`?
+`B24G` is the market token symbol shown on the Orynth project page.
+- Using this project does NOT require Orynth.
+- Orynth markets are optional and do not represent equity/ownership/rights.
+
+## Official token address
+- Symbol: B24G
+- Address: cox9QpSKymFq1oQc8Pm1KZpAcK82RMQNvu846WSYory
+- Security note: Beware of scam/impersonation tokens. Only trust the address above.

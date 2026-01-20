@@ -20,6 +20,7 @@
     - [Added Features](#added-features)
     - [Other](#other)
 - [FAQ](#faq)
+- [Links](#links)
 
 ## What Is This?
 This is a fork of [GEF](https://github.com/hugsy/gef) that includes three major improvements:
@@ -824,3 +825,16 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 
 ## FAQ
 - See [docs/FAQ.md](docs/FAQ.md).
+
+## Links
+- Why I decided to make this
+    - [gefを改造した話](https://hackmd.io/@bata24/rJVtBJsrP)
+- The story behind each command, etc.
+    - [bata24/gefの機能紹介とか](https://hackmd.io/@bata24/SycIO4qPi)
+- The story behind each command, etc. 2024 Edition
+    - [bata24/gefの機能紹介とか 2024](https://hackmd.io/@bata24/SJOzjzqQ1e)
+- The story behind each command, etc. 2025 Edition
+    - [bata24/gefの機能紹介とか 2025](https://hackmd.io/@bata24/rkut9rU7Zg)
+- Orynth project page
+    - https://www.orynth.dev/projects/bata24-gef-8901
+    - Market token symbol: `B24G` (details in [docs/FAQ.md](docs/FAQ.md))
