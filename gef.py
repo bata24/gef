@@ -12748,7 +12748,10 @@ def is_container_attach():
     filename = gdb.current_progspace().filename
     if filename and filename.startswith("target:"):
         return True
-    path = "/proc/{:d}/status".format(Pid.get_pid())
+    pid = Pid.get_pid()
+    if pid is None:
+        return False
+    path = "/proc/{:d}/status".format(pid)
     if os.path.exists(path):
         content = open(path, "rb").read()
         r = re.search(rb"\nNSpid:\s+(\d+)\s+(\d+)", content)
