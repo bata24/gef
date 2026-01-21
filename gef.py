@@ -73911,6 +73911,17 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             struct list_head list; <-----> struct list_head <-----> struct list_head <-----> ...
         """
 
+        # fast path
+        try:
+            self.kmem_cache_offset_list = to_unsigned_long(
+                gdb.parse_and_eval("&((struct kmem_cache*)0).list")
+            )
+            return True
+        except gdb.error:
+            pass
+
+        # slow path
+
         # This value should be at most 0x70 by default. However, I found a case where offset 0x98 is used.
         # This is because CONFIG_SLAB_VIRTUAL=y, that is not in main line (but some kernel introduces).
         # However, I decided to expand this search range.
@@ -73941,6 +73952,23 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return False
 
     def resolve_kmem_cache_offset_random(self, kmem_caches):
+        # fast path
+        try:
+            # find kmem_cache.random
+            self.kmem_cache_offset_random = to_unsigned_long(
+                gdb.parse_and_eval("&((struct kmem_cache*)0).random")
+            )
+            return
+        except gdb.error:
+            try:
+                # kmem_cache exists but has no random member
+                gdb.parse_and_eval("(struct kmem_cache*)0")
+                self.kmem_cache_offset_random = None
+                return
+            except gdb.error:
+                pass
+
+        # slow path
         if self.args.no_xor:
             self.kmem_cache_offset_random = None
             return
@@ -74038,6 +74066,16 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_kmem_cache_offset_node(self, kmem_caches):
+        # fast path
+        try:
+            self.kmem_cache_offset_node = to_unsigned_long(
+                gdb.parse_and_eval("&((struct kmem_cache*)0).node")
+            )
+            return
+        except gdb.error:
+            pass
+
+        # slow path
         if self.args.offset_node is not None:
             self.kmem_cache_offset_node = self.args.offset_node
             return
@@ -74396,6 +74434,16 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_kmem_cache_node_offset_partial(self, top):
+        # fast path
+        try:
+            self.kmem_cache_node_offset_partial = to_unsigned_long(
+                gdb.parse_and_eval("&((struct kmem_cache_node*)0).partial")
+            )
+            return
+        except gdb.error:
+            pass
+
+        # slow path
         if self.kmem_cache_offset_node is None:
             self.quiet_info("offsetof(kmem_cache_node, partial): Not found")
             self.kmem_cache_node_offset_partial = None
@@ -74406,11 +74454,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             offset_partial = current_arch.ptrsize * i
             if is_double_link_list(node + offset_partial):
                 self.kmem_cache_node_offset_partial = offset_partial
-                self.quiet_info("offsetof(kmem_cache_node, partial): {:#x}".format(self.kmem_cache_node_offset_partial))
-                break
-        else:
-            self.quiet_info("offsetof(kmem_cache_node, partial): Not found")
-            self.kmem_cache_node_offset_partial = None
+                return
+
+        self.kmem_cache_node_offset_partial = None
         return
 
     # CONFIG_SLAB_VIRTUAL=n
@@ -74836,6 +74882,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # offsetof(kmem_cache_node, partial)
         self.resolve_kmem_cache_node_offset_partial(top)
+        if self.kmem_cache_node_offset_partial:
+            self.quiet_info("offsetof(kmem_cache_node, partial): {:#x}".format(self.kmem_cache_node_offset_partial))
+        else:
+            self.quiet_info("offsetof(kmem_cache_node, partial): Not found")
 
         # offsetof(kmem_cache_node, full)
         if self.kmem_cache_node_offset_partial:
