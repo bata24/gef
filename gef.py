@@ -2184,7 +2184,7 @@ class Elf:
 
     def has_canary_heuristic(self):
         try:
-            objdump_command = GefUtil.which("objdump")
+            objdump_command = GefUtil.which(Config.get_gef_setting("gef.objdump_command"))
         except FileNotFoundError:
             return None # it means unknown
 
@@ -2277,7 +2277,7 @@ class Elf:
         ]
 
         try:
-            objdump_command = GefUtil.which("objdump")
+            objdump_command = GefUtil.which(Config.get_gef_setting("gef.objdump_command"))
         except FileNotFoundError:
             return None # it means unknown
 
@@ -24676,7 +24676,7 @@ class RpCommand(GenericCommand, BufferingOutput):
 
         if args.kernel:
             try:
-                nm = GefUtil.which("nm")
+                nm = GefUtil.which(Config.get_gef_setting("gef.nm_command"))
                 grep = GefUtil.which("grep")
             except FileNotFoundError as e:
                 err("{}".format(e))
@@ -25928,7 +25928,7 @@ class ElfInfoCommand(GenericCommand):
         # readelf pattern
         if args.use_readelf:
             try:
-                readelf = GefUtil.which("readelf")
+                readelf = GefUtil.which(Config.get_gef_setting("gef.readelf_command"))
             except FileNotFoundError:
                 err("Not found readelf")
                 return
@@ -37553,7 +37553,7 @@ class GotCommand(GenericCommand, BufferingOutput):
 
     def get_jmp_slots(self):
         try:
-            readelf = GefUtil.which("readelf")
+            readelf = GefUtil.which(Config.get_gef_setting("gef.readelf_command"))
             cmd = [readelf, "--relocs", "--wide", self.filename]
             lines = GefUtil.gef_execute_external(cmd, as_list=True)
         except (FileNotFoundError, subprocess.CalledProcessError):
@@ -37623,7 +37623,7 @@ class GotCommand(GenericCommand, BufferingOutput):
 
     def get_jmp_slots_arch_specific(self):
         try:
-            readelf = GefUtil.which("readelf")
+            readelf = GefUtil.which(Config.get_gef_setting("gef.readelf_command"))
             cmd = [readelf, "--arch-specific", "--wide", self.filename]
             lines = GefUtil.gef_execute_external(cmd, as_list=True)
         except (FileNotFoundError, subprocess.CalledProcessError):
@@ -37662,7 +37662,7 @@ class GotCommand(GenericCommand, BufferingOutput):
 
     def get_plt_addresses(self):
         try:
-            objdump = GefUtil.which("objdump")
+            objdump = GefUtil.which(Config.get_gef_setting("gef.objdump_command"))
             cmd = [objdump, "-j", ".plt", "-j", ".plt.sec", "-j", ".plt.got", "-d", self.filename]
             lines = GefUtil.gef_execute_external(cmd, as_list=True)
         except (FileNotFoundError, subprocess.CalledProcessError):
@@ -37691,7 +37691,7 @@ class GotCommand(GenericCommand, BufferingOutput):
 
     def get_plt_addresses_arch_specific(self):
         try:
-            readelf = GefUtil.which("readelf")
+            readelf = GefUtil.which(Config.get_gef_setting("gef.readelf_command"))
             cmd = [readelf, "--arch-specific", "--wide", self.filename]
             lines = GefUtil.gef_execute_external(cmd, as_list=True)
         except (FileNotFoundError, subprocess.CalledProcessError):
@@ -37857,7 +37857,8 @@ class GotCommand(GenericCommand, BufferingOutput):
             # c++filt
             if self.args.cppfilt:
                 if name.startswith("_Z"):
-                    res = GefUtil.gef_execute_external([GefUtil.which("c++filt"), name], as_list=True)
+                    cppfilt_command = GefUtil.which(Config.get_gef_setting("gef.cppfilt_command"))
+                    res = GefUtil.gef_execute_external([cppfilt_command, name], as_list=True)
                     if len(res) == 1:
                         name = res[0]
 
@@ -38007,10 +38008,10 @@ class GotCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         try:
-            GefUtil.which("objdump")
-            GefUtil.which("readelf")
+            GefUtil.which(Config.get_gef_setting("gef.objdump_command"))
+            GefUtil.which(Config.get_gef_setting("gef.readelf_command"))
             if args.cppfilt:
-                GefUtil.which("c++filt")
+                GefUtil.which(Config.get_gef_setting("gef.cppfilt_command"))
         except FileNotFoundError as e:
             self.quiet_err("{}".format(e))
             return
@@ -63825,7 +63826,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             ))
 
         # embedding symbols
-        objcopy = GefUtil.which("objcopy")
+        objcopy = GefUtil.which(Config.get_gef_setting("gef.objcopy_command"))
         processed_count = 0
         for cmd_string_arr_sliced in slicer(cmd_string_arr, 10000 * 2):
             subprocess.check_output([objcopy] + cmd_string_arr_sliced + [blank_elf])
@@ -82032,7 +82033,8 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
 
         # check `nm` and `file`
         try:
-            GefUtil.which("nm") # Check it first for later use (in parse_vmlinux)
+            # Check it first for later use (in parse_vmlinux)
+            GefUtil.which(Config.get_gef_setting("gef.nm_command"))
         except FileNotFoundError as e:
             self.quiet_err("{}".format(e))
             return None
@@ -82062,7 +82064,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
 
     def parse_vmlinux(self, filename):
         try:
-            nm = GefUtil.which("nm")
+            nm = GefUtil.which(Config.get_gef_setting("gef.nm_command"))
         except FileNotFoundError as e:
             self.quiet_err("{}".format(e))
             return
@@ -100951,7 +100953,7 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
         """Show symbol information for the qemu-system related to the target device."""
         # get nm
         try:
-            nm = GefUtil.which("nm")
+            nm = GefUtil.which(Config.get_gef_setting("gef.nm_command"))
         except FileNotFoundError as e:
             self.err_add_out("{}".format(e))
             return
@@ -105205,7 +105207,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
     @staticmethod
     def create_blank_elf(text_base, text_end):
         try:
-            objcopy = GefUtil.which("objcopy")
+            objcopy = GefUtil.which(Config.get_gef_setting("gef.objcopy_command"))
         except FileNotFoundError as e:
             err("{}".format(e))
             return None
@@ -105324,7 +105326,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
     @only_if_gdb_running
     def do_invoke(self, args):
         try:
-            objcopy = GefUtil.which("objcopy")
+            objcopy = GefUtil.which(Config.get_gef_setting("gef.objcopy_command"))
         except FileNotFoundError as e:
             err("{}".format(e))
             return
@@ -105424,7 +105426,7 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
         self.quiet_info("{:d} entries will be added".format(len(cmd_string_arr) // 2))
 
         # embedding symbols
-        objcopy = GefUtil.which("objcopy")
+        objcopy = GefUtil.which(Config.get_gef_setting("gef.objcopy_command"))
         processed_count = 0
         for cmd_string_arr_sliced in slicer(cmd_string_arr, 10000 * 2):
             subprocess.check_output([objcopy] + cmd_string_arr_sliced + [blank_elf])
@@ -105445,7 +105447,7 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
     @only_if_in_kernel
     def do_invoke(self, args):
         try:
-            GefUtil.which("objcopy")
+            GefUtil.which(Config.get_gef_setting("gef.objcopy_command"))
         except FileNotFoundError as e:
             err("{}".format(e))
             return
@@ -107026,12 +107028,19 @@ class GefCommand(GenericCommand):
     def __init__(self):
         super().__init__(prefix=True)
         self.add_setting("follow_child", False, "Automatically set GDB to follow child when forking")
-        self.add_setting("readline_compat", False, "Workaround for readline SOH/ETX issue (SEGV)")
         self.add_setting("disable_color", False, "Disable all colors in GEF")
         self.add_setting("always_no_pager", False, "Always disable pager in gef_print()")
         self.add_setting("pager_min_lines", 11, "Show pager only if output is longer than this value")
         self.add_setting("keep_pager_result", False, "Leaves temporary files in gef_print()")
         self.add_setting("less_option", "-Rf -j.5", "LESS command option used in gef_print()")
+        # binutils for cross-arch
+        self.add_setting("nm_command", "nm", "nm command (executable name or path)")
+        self.add_setting("objcopy_command", "objcopy", "objcopy command (executable name or path)")
+        self.add_setting("objdump_command", "objdump", "objdump command (executable name or path)")
+        self.add_setting("readelf_command", "readelf", "readelf command (executable name or path)")
+        self.add_setting("cppfilt_command", "c++filt", "c++filt command (executable name or path)")
+        # workarounds
+        self.add_setting("readline_compat", False, "Workaround for readline SOH/ETX issue (SEGV)")
         self.add_setting("read_memory_work_around_for_aarch64_secure_memory", False,
                          "Workaround for AArch64 secure memory read_memory failures")
         self.add_setting("physmap_base_for_read_physmem_kgdb_work_around", None,
@@ -108233,7 +108242,7 @@ class GefVersionCommand(GenericCommand):
 
     def readelf_version(self):
         try:
-            readelf_command = GefUtil.which("readelf")
+            readelf_command = GefUtil.which(Config.get_gef_setting("gef.readelf_command"))
         except FileNotFoundError:
             return "Not found"
         res = GefUtil.gef_execute_external([readelf_command, "-v"], as_list=True)
@@ -108241,7 +108250,7 @@ class GefVersionCommand(GenericCommand):
 
     def objdump_version(self):
         try:
-            objdump_command = GefUtil.which("objdump")
+            objdump_command = GefUtil.which(Config.get_gef_setting("gef.objdump_command"))
         except FileNotFoundError:
             return "Not found"
         res = GefUtil.gef_execute_external([objdump_command, "-v"], as_list=True)
@@ -108740,6 +108749,9 @@ class GefUtil:
         """Locate a command on the filesystem."""
         def is_exe(fpath):
             return os.path.isfile(fpath) and os.access(fpath, os.X_OK)
+
+        if not program:
+            raise FileNotFoundError("Missing program name")
 
         if os.path.split(program)[0]: # check dirname
             if is_exe(program):
