@@ -81981,6 +81981,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-s", "--smart", action="store_true", help="filter __pfx_*, __ksymtab_*, etc.")
     parser.add_argument("--vmlinux-file", help="force use your vmlinux file which includes symbols.")
+    parser.add_argument("-I", "--ignore-loaded-vmlinux", action="store_true", help="force skip parsing loaded vmlinux.")
     parser.add_argument("--print-saved-config", action="store_true", help="print saved (cached) config contents.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
@@ -82014,15 +82015,41 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         self.kallsyms = []
         return
 
-    def parse_vmlinux(self):
-        # first, clear
-        self.kallsyms = []
+    def get_loaded_vmlinux_path(self):
+        if self.args.ignore_loaded_vmlinux:
+            return None
 
-        # check files and `nm`
-        if not os.path.exists(self.args.vmlinux_file):
-            self.quiet_err("Not found vmlinux file")
-            return
+        # check `nm` and `file`
+        try:
+            GefUtil.which("nm") # Check it first for later use (in parse_vmlinux)
+        except FileNotFoundError as e:
+            self.quiet_err("{}".format(e))
+            return None
 
+        # check vmlinux
+        for inf in gdb.inferiors():
+            if not hasattr(inf, "progspace"):
+                continue
+            if not hasattr(inf.progspace, "filename"):
+                continue
+
+            filename = str(inf.progspace.filename)
+            if not os.path.exists(filename):
+                continue
+
+            # Currently, the filename in vmlinux is hard-coded.
+            if "vmlinux" not in os.path.basename(filename):
+                continue
+
+            try:
+                elf = Elf(filename)
+                if elf.get_shdr(".symtab"):
+                    return filename
+            except Exception:
+                continue
+        return None
+
+    def parse_vmlinux(self, filename):
         try:
             nm = GefUtil.which("nm")
         except FileNotFoundError as e:
@@ -82030,10 +82057,13 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             return
 
         # parse symbols
-        result = GefUtil.gef_execute_external([nm, self.args.vmlinux_file], as_list=True)
+        result = GefUtil.gef_execute_external([nm, filename], as_list=True)
         kallsyms = []
         for line in result:
-            addr, typ, name = line.split()
+            try:
+                addr, typ, name = line.split()
+            except ValueError:
+                continue
             addr = int(addr, 16)
             typ = typ.strip()
             name = name.strip()
@@ -83231,9 +83261,6 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         return True
 
     def parse_kallsyms(self):
-        if self.args.rescan:
-            self.kallsyms = [] # clear cache
-
         if self.kallsyms:
             return True # use cache
 
@@ -83285,6 +83312,43 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         self.read_kallsyms()
         return True
 
+    def parse_main(self):
+        if self.kallsyms:
+            return True
+
+        # specified vmlinux parse
+        if self.args.vmlinux_file:
+            if not os.path.exists(self.args.vmlinux_file):
+                self.quiet_err("Not found vmlinux file")
+                return False
+            self.quiet_info("Parse from file: {!s}".format(self.args.vmlinux_file))
+            self.parse_vmlinux(self.args.vmlinux_file)
+            return True
+
+        # loaded vmlinux parse
+        loaded_vmlinux = self.get_loaded_vmlinux_path()
+        if loaded_vmlinux:
+            self.quiet_info("Parse from file: {!s}".format(loaded_vmlinux))
+            self.parse_vmlinux(loaded_vmlinux)
+            return True
+
+        # normal parse
+        self.quiet_info("Wait for memory scan")
+        ret = self.parse_kallsyms()
+        if ret:
+            return True
+
+        # failed, but if args.rescan was not specified originally
+        if not self.args.rescan:
+            self.quiet_info("Try to rescan (ignore cached config)")
+            self.kallsyms = []
+            ret = self.parse_kallsyms()
+            if ret:
+                return True
+
+        self.quiet_err("Failed to parse")
+        return False
+
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
@@ -83294,25 +83358,11 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             self.print_saved_config()
             return
 
-        if args.vmlinux_file:
-            self.parse_vmlinux()
-            self.print_kallsyms(args.keyword, args.type, args.smart)
-            self.print_output(check_terminal_size=True)
-            return
+        if self.args.rescan:
+            self.kallsyms = []
 
-        self.quiet_info("Wait for memory scan")
-
-        # fast path
-        ret = self.parse_kallsyms()
+        ret = self.parse_main()
         if not ret:
-            # failed, but if args.rescan was not specified originally
-            if not args.rescan:
-                # slow path
-                self.quiet_info("Try to rescan (ignore cached config)")
-                self.args.rescan = True
-                ret = self.parse_kallsyms()
-        if not ret:
-            self.quiet_err("Failed to parse")
             return
 
         self.print_kallsyms(args.keyword, args.type, args.smart)
