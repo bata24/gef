@@ -78381,6 +78381,207 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
+    def resolve_zone_per_cpu_pageset(self):
+        # fast path
+        kversion = Kernel.kernel_version()
+        try:
+            if kversion < "5.14":
+                self.offset_per_cpu_pageset = to_unsigned_long(gdb.parse_and_eval("&((struct zone*)0).pageset"))
+            else:
+                self.offset_per_cpu_pageset = to_unsigned_long(gdb.parse_and_eval("&((struct zone*)0).per_cpu_pageset"))
+            return
+        except gdb.error:
+            pass
+
+        # slow path
+        if "3.12" <= kversion:
+            current = self.nodes[0]
+            while current < self.nodes[0] + self.offset_name:
+                val = read_int_from_memory(current)
+                if is_valid_addr(val):
+                    offset_zone_pgdat = current - self.nodes[0]
+                    self.offset_per_cpu_pageset = offset_zone_pgdat + current_arch.ptrsize
+                    return
+                current += current_arch.ptrsize
+            self.offset_per_cpu_pageset = None
+            return
+
+        for i in range(1, 100):
+            candidate_offset = current_arch.ptrsize * i
+            val = read_int_from_memory(self.nodes[0] + candidate_offset)
+
+            if val == 0 or val < 0x100:
+                continue
+
+            if self.cpu_offset is None:
+                if not is_valid_addr(val):
+                    continue
+                # found
+                self.offset_per_cpu_pageset = candidate_offset
+                return
+            else:
+                if not is_valid_addr(self.cpu_offset[0] + val):
+                    continue
+                x = read_memory(self.cpu_offset[0] + val, 0x40)
+                if set(x) == {0}:
+                    continue
+                # found
+                self.offset_per_cpu_pageset = candidate_offset
+                return
+
+        self.offset_per_cpu_pageset = None
+        return
+
+    def resolve_per_cpu_pages_lists(self, per_cpu_pageset):
+        """
+        struct per_cpu_pageset { // ~v5.13
+            struct per_cpu_pages pcp;
+            ...
+        }
+
+        struct per_cpu_pages {
+            spinlock_t lock; // v5.14~
+            int count;
+            int high;
+            int batch;
+            short free_factor; // v5.14~
+        #ifdef CONFIG_NUMA
+            short expire; // v5.14~
+        #endif
+            struct list_head lists[NR_PCP_LISTS]; // v5.14~
+            struct list_head lists[MIGRATE_PCPTYPES]; // ~v5.13
+        } ____cacheline_aligned_in_smp;
+        """
+
+        # fast path
+        try:
+            self.offset_lists = to_unsigned_long(gdb.parse_and_eval("&((struct per_cpu_pages*)0).lists"))
+            return
+        except gdb.error:
+            pass
+
+        # slow path
+        current = AddressUtil.align_address_to_ptrsize(per_cpu_pageset + 4 * 3) # count, high, batch
+        while not is_double_link_list(current): # search for list_head
+            current += current_arch.ptrsize
+        self.offset_lists = current - per_cpu_pageset
+        return
+
+    def resolve_NR_PCP_LISTS(self, per_cpu_pageset):
+        # GEF detects MIGRATE_PCPTYPES and NR_PCP_LISTS using the same logic.
+        # It will retain them as NR_PCP_LISTS regardless of version.
+
+        # fast path
+        try:
+            self.NR_PCP_LISTS = to_unsigned_long(gdb.parse_and_eval(
+                "sizeof(((struct per_cpu_pages*)0).lists) / sizeof(((struct per_cpu_pages*)0).lists[0])",
+            ))
+            return
+        except gdb.error:
+            pass
+
+        # slow path
+        current = per_cpu_pageset + self.offset_lists
+        while is_double_link_list(current): # search for not list_head
+            current += current_arch.ptrsize * 2
+        self.NR_PCP_LISTS = ((current - per_cpu_pageset) - self.offset_lists) // (current_arch.ptrsize * 2)
+        return
+
+    def resolve_MAX_NR_ZONES(self):
+        # fast path
+        try:
+            self.MAX_NR_ZONES = to_unsigned_long(gdb.parse_and_eval(
+                "sizeof(((struct zone*)0).lowmem_reserve) / sizeof(((struct zone*)0).lowmem_reserve[0])",
+            ))
+            return
+        except gdb.error:
+            pass
+
+        # slow path
+        self.MAX_NR_ZONES = 0
+        for i in range(6):
+            zone = self.nodes[0] + self.sizeof_zone * i
+            name_ptr = read_int_from_memory(zone + self.offset_name)
+            name = read_cstring_from_memory(name_ptr)
+            if not name:
+                break
+            self.MAX_NR_ZONES += 1
+        return
+
+    def resolve_zone_free_area(self):
+        """
+        struct free_area {
+            struct list_head free_list[MIGRATE_TYPES];
+            unsigned long nr_free;
+        };
+        """
+        # fast path
+        try:
+            self.offset_free_area = to_unsigned_long(gdb.parse_and_eval("&((struct zone*)0).free_area"))
+            return
+        except gdb.error:
+            pass
+
+        # slow path
+        kversion = Kernel.kernel_version()
+        if "3.12" <= kversion:
+            current = self.nodes[0] + self.offset_name + current_arch.ptrsize
+        else:
+            current = self.nodes[0]
+        while True:
+            # search for list_head
+            if is_double_link_list(current):
+                break
+            current += current_arch.ptrsize
+        self.offset_free_area = current - self.nodes[0]
+        return
+
+    def resolve_MIGRATE_TYPES(self):
+        # fast path
+        try:
+            self.MIGRATE_TYPES = to_unsigned_long(gdb.parse_and_eval(
+                "sizeof(((struct free_area*)0).free_list) / sizeof(((struct free_area*)0).free_list[0])",
+            ))
+            return
+        except gdb.error:
+            pass
+
+        # slow path
+        current = free_area = self.nodes[0] + self.offset_free_area
+        while True:
+            val = read_int_from_memory(current)
+            if not is_valid_addr(val):
+                break
+            current += current_arch.ptrsize
+        offset_nr_free = current - free_area
+        sizeof_list_head = current_arch.ptrsize * 2
+        self.MIGRATE_TYPES = offset_nr_free // sizeof_list_head
+        return
+
+    def resolve_MAX_ORDER(self):
+        # fast path
+        try:
+            self.MAX_ORDER = to_unsigned_long(gdb.parse_and_eval(
+                "sizeof(((struct zone*)0).free_area) / sizeof(((struct zone*)0).free_area[0])",
+            ))
+            return
+        except gdb.error:
+            pass
+
+        # slow path
+        current = free_area = self.nodes[0] + self.offset_free_area
+        while True:
+            ok = True
+            for i in range(self.MIGRATE_TYPES):
+                if not is_double_link_list(current + current_arch.ptrsize * (i * 2)):
+                    ok = False
+                    break
+            if not ok:
+                break
+            current += self.sizeof_free_area
+        self.MAX_ORDER = (current - free_area) // self.sizeof_free_area
+        return
+
     def initialize(self):
         if hasattr(self, "initialized") and self.initialized:
             return True
@@ -78519,84 +78720,24 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(zone, name): {:#x}".format(self.offset_name))
 
         # zone->per_cpu_pageset
-        kversion = Kernel.kernel_version()
-        if "3.12" <= kversion:
-            current = self.nodes[0]
-            while current < self.nodes[0] + self.offset_name:
-                val = read_int_from_memory(current)
-                if is_valid_addr(val):
-                    offset_zone_pgdat = current - self.nodes[0]
-                    self.offset_per_cpu_pageset = offset_zone_pgdat + current_arch.ptrsize
-                    break
-                current += current_arch.ptrsize
-            if current == self.offset_name:
-                self.quiet_err("Failed to resolve per_cpu_pageset")
-                return False
+        self.resolve_zone_per_cpu_pageset()
+        if self.offset_per_cpu_pageset is None:
+            self.quiet_err("Failed to resolve per_cpu_pageset")
+            return False
         else:
-            for i in range(1, 100):
-                candidate_offset = current_arch.ptrsize * i
-                val = read_int_from_memory(self.nodes[0] + candidate_offset)
+            self.quiet_info("offsetof(zone, per_cpu_pageset): {:#x}".format(self.offset_per_cpu_pageset))
 
-                if val == 0 or val < 0x100:
-                    continue
-
-                if self.cpu_offset is None:
-                    if not is_valid_addr(val):
-                        continue
-                    # found
-                    self.offset_per_cpu_pageset = candidate_offset
-                    break
-                else:
-                    if not is_valid_addr(self.cpu_offset[0] + val):
-                        continue
-                    x = read_memory(self.cpu_offset[0] + val, 0x40)
-                    if set(x) == {0}:
-                        continue
-                    # found
-                    self.offset_per_cpu_pageset = candidate_offset
-                    break
-            else:
-                self.quiet_err("Failed to resolve per_cpu_pageset")
-                return False
-        self.quiet_info("offsetof(zone, per_cpu_pageset): {:#x}".format(self.offset_per_cpu_pageset))
-
-        """
-        struct per_cpu_pageset { // ~v5.13
-            struct per_cpu_pages pcp;
-            ...
-        }
-
-        struct per_cpu_pages {
-            spinlock_t lock; // v5.14~
-            int count;
-            int high;
-            int batch;
-            short free_factor; // v5.14~
-        #ifdef CONFIG_NUMA
-            short expire; // v5.14~
-        #endif
-            struct list_head lists[NR_PCP_LISTS]; // v5.14~
-            struct list_head lists[MIGRATE_PCPTYPES]; // ~v5.13
-        } ____cacheline_aligned_in_smp;
-        """
         # per_cpu_pageset->lists
         if __per_cpu_offset is None:
             per_cpu_pageset = read_int_from_memory(self.nodes[0] + self.offset_per_cpu_pageset)
         else:
             per_cpu_pageset = read_int_from_memory(self.nodes[0] + self.offset_per_cpu_pageset) + self.cpu_offset[0]
             per_cpu_pageset = AddressUtil.align_address(per_cpu_pageset)
-
-        current = AddressUtil.align_address_to_ptrsize(per_cpu_pageset + 4 * 3) # count, high, batch
-        while not is_double_link_list(current): # search for list_head
-            current += current_arch.ptrsize
-        self.offset_lists = current - per_cpu_pageset
-        self.quiet_info("offsetof(per_cpu_pageset, lists): {:#x}".format(self.offset_lists))
+        self.resolve_per_cpu_pages_lists(per_cpu_pageset)
+        self.quiet_info("offsetof(per_cpu_pages, lists): {:#x}".format(self.offset_lists))
 
         # NR_PCP_LISTS
-        current = per_cpu_pageset + self.offset_lists
-        while is_double_link_list(current): # search for not list_head
-            current += current_arch.ptrsize * 2
-        self.NR_PCP_LISTS = ((current - per_cpu_pageset) - self.offset_lists) // (current_arch.ptrsize * 2)
+        self.resolve_NR_PCP_LISTS(per_cpu_pageset)
         self.quiet_info("NR_PCP_LISTS: {:d}".format(self.NR_PCP_LISTS))
 
         # sizeof(zone)
@@ -78604,34 +78745,16 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("sizeof(zone): {:#x}".format(self.sizeof_zone))
 
         # MAX_NR_ZONES
-        self.MAX_NR_ZONES = 0
-        for i in range(6):
-            zone = self.nodes[0] + self.sizeof_zone * i
-            name_ptr = read_int_from_memory(zone + self.offset_name)
-            name = read_cstring_from_memory(name_ptr)
-            if not name:
-                break
-            self.MAX_NR_ZONES += 1
+        self.resolve_MAX_NR_ZONES()
         self.quiet_info("MAX_NR_ZONES: {:d}".format(self.MAX_NR_ZONES))
 
-        """
-        struct free_area {
-            struct list_head free_list[MIGRATE_TYPES];
-            unsigned long nr_free;
-        };
-        """
         # zone->free_area
-        if "3.12" <= kversion:
-            current = self.nodes[0] + self.offset_name + current_arch.ptrsize
-        else:
-            current = self.nodes[0]
-        while True:
-            # search for list_head
-            if is_double_link_list(current):
-                break
-            current += current_arch.ptrsize
-        self.offset_free_area = current - self.nodes[0]
+        self.resolve_zone_free_area()
         self.quiet_info("offsetof(zone, free_area): {:#x}".format(self.offset_free_area))
+
+        # MIGRATE_TYPES
+        self.resolve_MIGRATE_TYPES()
+        self.quiet_info("MIGRATE_TYPES: {:d}".format(self.MIGRATE_TYPES))
 
         """
         const char * const migratetype_names[MIGRATE_TYPES] = {
@@ -78647,18 +78770,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         #endif
         };
         """
-        # MIGRATE_TYPES
-        current = free_area = self.nodes[0] + self.offset_free_area
-        while True:
-            val = read_int_from_memory(current)
-            if not is_valid_addr(val):
-                break
-            current += current_arch.ptrsize
-        offset_nr_free = current - free_area
-        sizeof_list_head = current_arch.ptrsize * 2
-        self.MIGRATE_TYPES = offset_nr_free // sizeof_list_head
-        self.quiet_info("MIGRATE_TYPES: {:d}".format(self.MIGRATE_TYPES))
-
+        kversion = Kernel.kernel_version()
         if self.MIGRATE_TYPES == 4:
             if "4.4" <= kversion:
                 self.migrate_types = [
@@ -78715,21 +78827,12 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             raise
 
         # sizeof(free_area)
-        self.sizeof_free_area = offset_nr_free + current_arch.ptrsize
+        sizeof_list_head =  current_arch.ptrsize * 2
+        self.sizeof_free_area = sizeof_list_head * self.MIGRATE_TYPES + current_arch.ptrsize
         self.quiet_info("sizeof(free_area): {:#x}".format(self.sizeof_free_area))
 
         # MAX_ORDER
-        current = free_area
-        while True:
-            ok = True
-            for i in range(self.MIGRATE_TYPES):
-                if not is_double_link_list(current + current_arch.ptrsize * (i * 2)):
-                    ok = False
-                    break
-            if not ok:
-                break
-            current += self.sizeof_free_area
-        self.MAX_ORDER = (current - free_area) // self.sizeof_free_area
+        self.resolve_MAX_ORDER()
         self.quiet_info("MAX_ORDER: {:d}".format(self.MAX_ORDER))
 
         """
