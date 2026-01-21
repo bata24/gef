@@ -76588,6 +76588,95 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     };
     """
 
+    def resolve_kmem_cache_offset_node(self, kmem_caches):
+        # fast path
+        try:
+            self.kmem_cache_offset_node = to_unsigned_long(
+                gdb.parse_and_eval("&((struct kmem_cache*)0).node")
+            )
+            return
+        except gdb.error:
+            pass
+
+        # slow path
+        kversion = Kernel.kernel_version()
+        if kversion < "4.16":
+            self.kmem_cache_offset_node = self.kmem_cache_offset_object_size + 4 * 2 # heuristic could not use, so hard-coded
+            return
+
+        # Search heuristically using useroffset and usersize as markers
+        start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2
+        for candidate_offset in range(start_offset, start_offset + 0x100, 4):
+            found = True
+            for kmem_cache in kmem_caches:
+                kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
+                user_offset = read_int32_from_memory(kmem_cache_top + candidate_offset)
+                user_size = read_int32_from_memory(kmem_cache_top + candidate_offset + 4)
+                object_size = read_int32_from_memory(kmem_cache_top + self.kmem_cache_offset_object_size)
+                if user_offset == user_size == 0:
+                    continue
+                if user_offset != 0 and user_size == 0:
+                    found = False
+                    break
+                if object_size < user_size:
+                    found = False
+                    break
+                node_addr_ptr = kmem_cache_top + candidate_offset + 4 + 4
+                node_addr_ptr = AddressUtil.align_address_to_ptrsize(node_addr_ptr)
+                node_addr = read_int_from_memory(node_addr_ptr)
+                if not is_valid_addr(node_addr):
+                    found = False
+                    break
+
+            if found:
+                self.kmem_cache_offset_node = AddressUtil.align_address_to_ptrsize(candidate_offset + 4 * 2)
+                return
+
+        self.kmem_cache_offset_node = None
+        return
+
+    def resolve_kmem_cache_node_offset_slabs_partial(self, kmem_caches):
+        # fast path
+        try:
+            self.kmem_cache_node_offset_slabs_partial = to_unsigned_long(
+                gdb.parse_and_eval("&((struct kmem_cache_node*)0).slabs_partial")
+            )
+            return
+        except gdb.error:
+            pass
+
+        # slow path
+        kversion = Kernel.kernel_version()
+
+        # sizeof(raw_spinlock_t) can take many different values and must be determined heuristically.
+        for candidate_offset in range(0, 0x80, current_arch.ptrsize):
+            found = True
+            for _kmem_cache in kmem_caches:
+                kmem_cache = _kmem_cache - self.kmem_cache_offset_list
+                if "3.18" <= kversion:
+                    kmem_cache_node_array = kmem_cache + self.kmem_cache_offset_node
+                else:
+                    kmem_cache_node_array = read_int_from_memory(kmem_cache + self.kmem_cache_offset_node)
+                kmem_cache_node_0 = read_int_from_memory(kmem_cache_node_array)
+
+                # slabs_partial
+                if not is_double_link_list(kmem_cache_node_0 + candidate_offset + current_arch.ptrsize * 0):
+                    found = False
+                    break
+                # slabs_full
+                if not is_double_link_list(kmem_cache_node_0 + candidate_offset + current_arch.ptrsize * 2):
+                    found = False
+                    break
+                # slabs_free
+                if not is_double_link_list(kmem_cache_node_0 + candidate_offset + current_arch.ptrsize * 4):
+                    found = False
+                    break
+
+            if found:
+                self.kmem_cache_node_offset_slabs_partial = candidate_offset
+                return
+        return
+
     def initialize(self):
         if hasattr(self, "initialized") and self.initialized:
             if not self.args.meta and not self.args.rescan:
@@ -76664,44 +76753,15 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size))
 
         # offsetof(kmem_cache, node)
-        if kversion < "4.16":
-            self.kmem_cache_offset_node = self.kmem_cache_offset_object_size + 4 * 2 # heuristic could not use, so hard-coded
-            self.quiet_info("offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node))
+        self.resolve_kmem_cache_offset_node(kmem_caches)
+        if self.kmem_cache_offset_node is None:
+            self.quiet_info("offsetof(kmem_cache, node): Not found")
+            return False
         else:
-            # Search heuristically using useroffset and usersize as markers
-            start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2
-            for candidate_offset in range(start_offset, start_offset + 0x100, 4):
-                found = True
-                for kmem_cache in kmem_caches:
-                    kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
-                    user_offset = read_int32_from_memory(kmem_cache_top + candidate_offset)
-                    user_size = read_int32_from_memory(kmem_cache_top + candidate_offset + 4)
-                    object_size = read_int32_from_memory(kmem_cache_top + self.kmem_cache_offset_object_size)
-                    if user_offset == user_size == 0:
-                        continue
-                    if user_offset != 0 and user_size == 0:
-                        found = False
-                        break
-                    if object_size < user_size:
-                        found = False
-                        break
-                    node_addr_ptr = kmem_cache_top + candidate_offset + 4 + 4
-                    node_addr_ptr = AddressUtil.align_address_to_ptrsize(node_addr_ptr)
-                    node_addr = read_int_from_memory(node_addr_ptr)
-                    if not is_valid_addr(node_addr):
-                        found = False
-                        break
+            self.quiet_info("offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node))
 
-                if found:
-                    self.kmem_cache_offset_node = AddressUtil.align_address_to_ptrsize(candidate_offset + 4 * 2)
-                    self.quiet_info("offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node))
-                    break
-            else:
-                self.quiet_info("offsetof(kmem_cache, node): Not found")
-                self.kmem_cache_offset_node = None
-
+        # offsetof(kmem_cache, cpu_cache) / offsetof(kmem_cache, array)
         if "3.18" <= kversion:
-            # offsetof(kmem_cache, cpu_cache)
             self.kmem_cache_offset_cpu_cache = 0
             self.quiet_info("offsetof(kmem_cache, cpu_cache): {:#x}".format(self.kmem_cache_offset_cpu_cache))
         else:
@@ -76768,39 +76828,12 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof({:s}, active): {:#x}".format(Kernel.slab_page_str(), self.page_offset_active))
 
         # offsetof(kmem_cache_node, slabs_partial)
-        # sizeof(raw_spinlock_t) can take many different values and must be determined heuristically.
-        for candidate_offset in range(0, 0x80, current_arch.ptrsize):
-            found = True
-            for _kmem_cache in kmem_caches:
-                kmem_cache = _kmem_cache - self.kmem_cache_offset_list
-                if "3.18" <= kversion:
-                    kmem_cache_node_array = kmem_cache + self.kmem_cache_offset_node
-                else:
-                    kmem_cache_node_array = read_int_from_memory(kmem_cache + self.kmem_cache_offset_node)
-                kmem_cache_node_0 = read_int_from_memory(kmem_cache_node_array)
-
-                # slabs_partial
-                if not is_double_link_list(kmem_cache_node_0 + candidate_offset + current_arch.ptrsize * 0):
-                    found = False
-                    break
-                # slabs_full
-                if not is_double_link_list(kmem_cache_node_0 + candidate_offset + current_arch.ptrsize * 2):
-                    found = False
-                    break
-                # slabs_free
-                if not is_double_link_list(kmem_cache_node_0 + candidate_offset + current_arch.ptrsize * 4):
-                    found = False
-                    break
-
-            if found:
-                self.kmem_cache_node_offset_slabs_partial = candidate_offset
-                self.quiet_info("offsetof(kmem_cache_node, slabs_partial): {:#x}".format(
-                    self.kmem_cache_node_offset_slabs_partial,
-                ))
-                break
-        else:
+        self.resolve_kmem_cache_node_offset_slabs_partial(kmem_caches)
+        if self.kmem_cache_node_offset_slabs_partial is None:
             self.quiet_info("offsetof(kmem_cache_node, slabs_partial): Not found")
             return False
+        else:
+            self.quiet_info("offsetof(kmem_cache_node, slabs_partial): {:#x}".format(self.kmem_cache_node_offset_slabs_partial))
 
         # offsetof(kmem_cache_node, slabs_full)
         self.kmem_cache_node_offset_slabs_full = self.kmem_cache_node_offset_slabs_partial + current_arch.ptrsize * 2
