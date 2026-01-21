@@ -11872,8 +11872,18 @@ def read_physmem(paddr, size):
             out += bytes([int(x, 16) for x in data])
         return out
 
-    def kgdb_use_mdp(paddr, size):
-        # for kgdb
+    def kgdb_use_physmap(paddr, size):
+        physmap = Config.get_gef_setting("gef.physmap_base_for_read_physmem_kgdb_work_around")
+        if physmap is None:
+            return None
+        vaddr = physmap + paddr
+        try:
+            return read_memory(vaddr, size)
+        except gdb.MemoryError:
+            return None
+
+    def kdb_use_mdp(paddr, size):
+        # for KDB; not supported by KGDB
         # Note: `mdp` command can only handle aligned addresses.
         paddr_aligned = paddr & ~0xf
         read_n_line = (size + (paddr - paddr_aligned) + 15) // 16
@@ -11903,9 +11913,6 @@ def read_physmem(paddr, size):
     if size == 0:
         return b""
 
-    if not is_qemu_system() and not is_vmware() and not is_kgdb():
-        return None
-
     if is_qemu_system():
         out = qemu_system_proc_mem(paddr, size)
         if out:
@@ -11923,7 +11930,11 @@ def read_physmem(paddr, size):
         return transparent_read(paddr, size)
 
     if is_kgdb():
-        return kgdb_use_mdp(paddr, size)
+        out = kgdb_use_physmap(paddr, size) # fast path
+        if out:
+            return out
+        return kdb_use_mdp(paddr, size) # slow path
+
     return None
 
 
@@ -107023,6 +107034,8 @@ class GefCommand(GenericCommand):
         self.add_setting("less_option", "-Rf -j.5", "LESS command option used in gef_print()")
         self.add_setting("read_memory_work_around_for_aarch64_secure_memory", False,
                          "Workaround for AArch64 secure memory read_memory failures")
+        self.add_setting("physmap_base_for_read_physmem_kgdb_work_around", None,
+                         "Use this address as physmap_base to read physmem if read_physmem is slow in KGDB")
         return
 
     @parse_args
