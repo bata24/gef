@@ -11874,7 +11874,7 @@ def read_physmem(paddr, size):
 
     def kgdb_use_physmap(paddr, size):
         physmap = Config.get_gef_setting("gef.physmap_base_for_read_physmem_kgdb_work_around")
-        if physmap is None:
+        if physmap == 0:
             return None
         vaddr = physmap + paddr
         try:
@@ -107254,7 +107254,7 @@ class GefCommand(GenericCommand):
         self.add_setting("readline_compat", False, "Workaround for readline SOH/ETX issue (SEGV)")
         self.add_setting("read_memory_work_around_for_aarch64_secure_memory", False,
                          "Workaround for AArch64 secure memory read_memory failures")
-        self.add_setting("physmap_base_for_read_physmem_kgdb_work_around", None,
+        self.add_setting("physmap_base_for_read_physmem_kgdb_work_around", 0,
                          "Use this address as physmap_base to read physmem if read_physmem is slow in KGDB")
         return
 
