@@ -11784,7 +11784,7 @@ def read_cstring_from_memory(addr, max_length=None):
 
     if is_kgdb():
         # read_memory when kgdb is very slow, this is dirty hack
-        block_size = 1
+        block_size = 64
     else:
         block_size = get_pagesize()
 
