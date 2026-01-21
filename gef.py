@@ -75735,6 +75735,16 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     _note_ = "\n".join(_note_)
 
     def resolve_kmem_cache_offset_node(self, kmem_caches):
+        # fast path
+        try:
+            self.kmem_cache_offset_node = to_unsigned_long(
+                gdb.parse_and_eval("&((struct kmem_cache*)0).node")
+            )
+            return
+        except gdb.error:
+            pass
+
+        # slow path
         self.kmem_cache_offset_node = None
         start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
         for candidate_offset in range(start_offset, start_offset + 0x100, current_arch.ptrsize):
@@ -75775,6 +75785,25 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
             if found:
                 self.kmem_cache_offset_node = candidate_offset
+                return
+        return
+
+    def resolve_kmem_cache_node_offset_partial(self, kmem_caches):
+        # fast path
+        try:
+            self.kmem_cache_node_offset_partial = to_unsigned_long(
+                gdb.parse_and_eval("&((struct kmem_cache_node*)0).partial")
+            )
+            return
+        except gdb.error:
+            pass
+
+        # slow path
+        node = read_int_from_memory(kmem_caches[0] - self.kmem_cache_offset_list + self.kmem_cache_offset_node)
+        for i in range(2, 16):
+            offset_partial = current_arch.ptrsize * i
+            if is_double_link_list(node + offset_partial):
+                self.kmem_cache_node_offset_partial = offset_partial
                 return
         return
 
@@ -75942,16 +75971,12 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(slab, inuse_objects_frozen): {:#x}".format(self.slab_offset_inuse_objects_frozen))
 
         # offsetof(kmem_cache_node, partial)
-        node = read_int_from_memory(kmem_caches[0] - self.kmem_cache_offset_list + self.kmem_cache_offset_node)
-        for i in range(2, 16):
-            offset_partial = current_arch.ptrsize * i
-            if is_double_link_list(node + offset_partial):
-                self.kmem_cache_node_offset_partial = offset_partial
-                self.quiet_info("offsetof(kmem_cache_node, partial): {:#x}".format(self.kmem_cache_node_offset_partial))
-                break
-        else:
+        self.resolve_kmem_cache_node_offset_partial(kmem_caches)
+        if self.kmem_cache_node_offset_partial:
             self.quiet_info("offsetof(kmem_cache_node, partial): Not found")
             return False
+        else:
+            self.quiet_info("offsetof(kmem_cache_node, partial): {:#x}".format(self.kmem_cache_node_offset_partial))
 
         self.initialized = True
         return True
