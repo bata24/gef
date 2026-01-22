@@ -13923,13 +13923,15 @@ class EventHandler:
                         bp.delete()
             EventHandler.__gef_check_disabled_bp__ = False
 
-        # when kgdb, assume x86-64 or ARM
+        # when kgdb, assume x86-64 if /dev/ttyS
         if EventHandler.__gef_check_once__:
             if is_over_serial():
                 dev = gdb.selected_inferior().connection.details
                 if dev.startswith("/dev/ttyS"):
                     gdb.execute("set architecture i386:x86-64:intel", to_string=True)
                 else:
+                    # In the case of /dev/ttyAMA, it is not clear whether it is ARM64 or ARM32.
+                    # In some cases, /dev/ttyUSB is used.
                     pass
                 Cache.reset_gef_caches()
 
