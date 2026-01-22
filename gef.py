@@ -59433,7 +59433,10 @@ class Kernel:
     def get_kernel_base_hint():
         if is_x86():
             if is_qemu_system():
-                # 0   #DE: Divide-by-zero 0x00000000ffffffffbd008e0000100870 0xe 0x0 0x0 0x1 0x0010:0xffffffffbd000870 <NO_SYMBOL>
+                # [5.8~]
+                # 0   #DE: Divide-by-zero ... 0x0010:0xffffffff82c01030 <asm_exc_divide_error>
+                # [~5.7]
+                # 0   #DE: Divide-by-zero ... 0x0010:0xffffffff8178cfc0 <divide_error>
                 res = gdb.execute("idtinfo -n", to_string=True)
                 r = re.search(r"Divide-by-zero.+\S+:(\S+)\s+<", res)
                 if r:
@@ -59457,19 +59460,14 @@ class Kernel:
         elif is_arm64():
             # `VBAR` register has interrupt vector address
             vbar = get_register("$VBAR") or get_register("$VBAR_EL1")
-            if vbar is not None:
-                if is_valid_addr(vbar):
-                    return vbar
+            if is_valid_addr(vbar):
+                return vbar
 
         elif is_riscv32() or is_riscv64():
             # `stvec` register has interrupt vector address
-            res = gdb.execute("sysreg --exact stvec", to_string=True)
-            res = Color.remove_color(res)
-            r = re.search(r"stvec\s+=\s+(0x\S+)", res)
-            if r:
-                stvec = int(r.group(1), 16)
-                if is_valid_addr(stvec):
-                    return stvec
+            stvec = get_register("stvec")
+            if is_valid_addr(stvec):
+                return stvec
 
         return None
 
@@ -59673,6 +59671,19 @@ class Kernel:
 
         dic["has_none"] = None in dic.values()
         return Kinfo(*dic.values())
+
+    @staticmethod
+    @Cache.cache_this_session
+    def get_kernel_base():
+        # fast path
+        try:
+            return to_unsigned_long(gdb.parse_and_eval("_stext"))
+        except gdb.error:
+            pass
+
+        # slow path
+        kinfo = Kernel.get_kernel_layout()
+        return kinfo.text_base
 
     class KernelVersion:
         def __init__(self, address, version_string, major, minor, patch):
@@ -82357,37 +82368,66 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             self.quiet_err("{}".format(e))
             return
 
-        # parse symbols
+        # read symbols
         result = GefUtil.gef_execute_external([nm, filename], as_list=True)
-        kallsyms = []
+
+        if is_x86():
+            target = [
+                "_stext",
+                "asm_exc_divide_error", # 5.8~
+                "divide_error", # 3.0 ~ 5.7
+            ]
+        elif is_arm64() or is_arm32():
+            target = [
+                "_stext",
+                "vectors", # 3.7~
+            ]
+        elif is_riscv64() or is_riscv32():
+            target = [
+                "_stext",
+                "handle_exception", # 4.19~
+            ]
+        else:
+            raise
+
+        # parse symbol
+        tmp_kallsyms = []
+        target_found = {}
         for line in result:
             try:
                 addr, typ, name = line.split()
+                addr = int(addr, 16)
+                typ = typ.strip()
+                name = name.strip()
             except ValueError:
                 continue
-            addr = int(addr, 16)
-            typ = typ.strip()
-            name = name.strip()
-            kallsyms.append([addr, name, typ])
+            tmp_kallsyms.append([addr, name, typ])
+
+            if name in target:
+                if name == "_stext":
+                    target_found["_stext"] = addr
+                else:
+                    target_found["handler"] = addr
 
         # rebase
-        kinfo = Kernel.get_kernel_layout()
+        text_base_hint = Kernel.get_kernel_base_hint()
+        if text_base_hint:
+            if len(target_found) == 2:
+                diff = text_base_hint - target_found["handler"]
+                stext = target_found["_stext"]
 
-        stext = None
-        for addr, name, _ in kallsyms:
-            if name == "_stext":
-                stext = addr
-                break
+                if diff & get_pagesize_mask_low() == 0:
+                    self.kallsyms = []
+                    for addr, name, typ in tmp_kallsyms:
+                        # don't rebase per-cpu offset
+                        if addr >= 0x4000_0000:
+                            # This value is the lowest boundary between the 32-bit kernel and userland.
+                            addr += diff
+                        self.kallsyms.append([addr, name, typ])
+                    return
 
-        if kinfo.text_base and stext:
-            diff = kinfo.text_base - stext
-            self.kallsyms = []
-            for addr, name, typ in kallsyms:
-                if addr > stext:
-                    addr += diff
-                self.kallsyms.append([addr, name, typ])
-        else:
-            self.kallsyms = kallsyms
+        # fail, use as is
+        self.kallsyms = tmp_kallsyms
         return
 
     def get_token_table(self):
