@@ -75266,7 +75266,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             current_kmem_cache = kmem_cache["next"]
 
             # fast break
-            if target_names != [] and (self.args.list or self.args.list_no_sort):
+            if target_names != [] and not (self.args.list or self.args.list_no_sort):
                 parsed_names = [x["name"] for x in parsed_caches]
                 if all(t in parsed_names for t in target_names):
                     break
@@ -76178,7 +76178,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             # goto next
             current_kmem_cache = kmem_cache["next"]
             # fast break
-            if target_names != [] and (self.args.list or self.args.list_no_sort):
+            if target_names != [] and not (self.args.list or self.args.list_no_sort):
                 parsed_names = [x["name"] for x in parsed_caches]
                 if all(t in parsed_names for t in target_names):
                     break
@@ -77007,7 +77007,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             # goto next
             current_kmem_cache = kmem_cache["next"]
             # fast break
-            if target_names != [] and (self.args.list or self.args.list_no_sort):
+            if target_names != [] and not (self.args.list or self.args.list_no_sort):
                 parsed_names = [x["name"] for x in parsed_caches]
                 if all(t in parsed_names for t in target_names):
                     break
@@ -77597,7 +77597,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             # goto next
             current_kmem_cache = kmem_cache["next"]
             # fast break
-            if target_names != [] and (self.args.list or self.args.list_no_sort):
+            if target_names != [] and not (self.args.list or self.args.list_no_sort):
                 parsed_names = [x["name"] for x in parsed_caches]
                 if all(t in parsed_names for t in target_names):
                     break
