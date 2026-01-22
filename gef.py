@@ -82334,9 +82334,8 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         if self.args.ignore_loaded_vmlinux:
             return None
 
-        # check `nm` and `file`
+        # Check `nm` first for later use (in parse_vmlinux)
         try:
-            # Check it first for later use (in parse_vmlinux)
             GefUtil.which(Config.get_gef_setting("gef.nm_command"))
         except FileNotFoundError as e:
             self.quiet_err("{}".format(e))
@@ -82353,10 +82352,11 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             if not os.path.exists(filename):
                 continue
 
-            # Currently, the filename in vmlinux is hard-coded.
-            if "vmlinux" not in os.path.basename(filename):
+            # Currently, the filename in vmlinux is hard-coded
+            if "vmlinux" not in os.path.basename(filename).lower():
                 continue
 
+            # it has symbol?
             try:
                 elf = Elf(filename)
                 if elf.get_shdr(".symtab"):
@@ -82366,29 +82366,26 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         return None
 
     def parse_vmlinux(self, filename):
+        # read symbols
         try:
             nm = GefUtil.which(Config.get_gef_setting("gef.nm_command"))
         except FileNotFoundError as e:
             self.quiet_err("{}".format(e))
             return
-
-        # read symbols
         result = GefUtil.gef_execute_external([nm, filename], as_list=True)
 
+        # distinctive addresses to use for rebasing
         if is_x86():
             target = [
-                "_stext",
                 "asm_exc_divide_error", # 5.8~
                 "divide_error", # 3.0 ~ 5.7
             ]
         elif is_arm64() or is_arm32():
             target = [
-                "_stext",
                 "vectors", # 3.7~
             ]
         elif is_riscv64() or is_riscv32():
             target = [
-                "_stext",
                 "handle_exception", # 4.19~
             ]
         else:
@@ -82408,24 +82405,19 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             tmp_kallsyms.append([addr, name, typ])
 
             if name in target:
-                if name == "_stext":
-                    target_found["_stext"] = addr
-                else:
-                    target_found["handler"] = addr
+                target_found["handler"] = addr
 
         # rebase
-        text_base_hint = Kernel.get_kernel_base_hint()
-        if text_base_hint:
-            if len(target_found) == 2:
+        if target_found:
+            text_base_hint = Kernel.get_kernel_base_hint()
+            if text_base_hint:
                 diff = text_base_hint - target_found["handler"]
-                stext = target_found["_stext"]
-
                 if diff & get_pagesize_mask_low() == 0:
                     self.kallsyms = []
                     for addr, name, typ in tmp_kallsyms:
                         # don't rebase per-cpu offset
                         if addr >= 0x4000_0000:
-                            # This value is the lowest boundary between the 32-bit kernel and userland.
+                            # This value is the lowest boundary between ARM32 kernel and userland.
                             addr += diff
                         self.kallsyms.append([addr, name, typ])
                     return
