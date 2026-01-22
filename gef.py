@@ -59674,6 +59674,23 @@ class Kernel:
         dic["has_none"] = None in dic.values()
         return Kinfo(*dic.values())
 
+    @staticmethod
+    @Cache.cache_this_session
+    def get_kernel_base():
+        # fast path
+        if is_64bit():
+            if Config.get_gef_setting("gef.enable_fast_resolve_kbase"):
+                kbase_hint = Kernel.get_kernel_base_hint()
+                if kbase_hint:
+                    kbase_hint &= get_pagesize_mask_high() # kbase_hint must be valid addr
+                    while is_valid_addr(kbase_hint):
+                        kbase_hint -= get_pagesize()
+                    return kbase_hint + get_pagesize()
+
+        # slow path
+        kinfo = Kernel.get_kernel_layout()
+        return kinfo.text_base
+
     class KernelVersion:
         def __init__(self, address, version_string, major, minor, patch):
             self.address = address
@@ -107333,6 +107350,8 @@ class GefCommand(GenericCommand):
                          "Workaround for AArch64 secure memory read_memory failures")
         self.add_setting("physmap_base_for_read_physmem_kgdb_work_around", 0,
                          "Use this address as physmap_base to read physmem if read_physmem is slow in KGDB")
+        # other
+        self.add_setting("enable_fast_resolve_kbase", True, "Enables fast kbase calculations for 64bit OS")
         return
 
     @parse_args
