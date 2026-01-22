@@ -26403,11 +26403,11 @@ class KernelChecksecCommand(GenericCommand):
         else:
             gef_print("{:<40s}: {:s}".format("Kernel cmdline", kcmdline.cmdline.strip()))
 
-        kinfo = Kernel.get_kernel_layout()
-        if kinfo.text_base is None:
+        text_base = Kernel.get_kernel_base()
+        if text_base is None:
             gef_print("{:<40s}: {:s}".format("Kernel base (heuristic)", "Not found"))
         else:
-            gef_print("{:<40s}: {:#x}".format("Kernel base (heuristic)", kinfo.text_base))
+            gef_print("{:<40s}: {:#x}".format("Kernel base (heuristic)", text_base))
 
         stext = Symbol.get_ksymaddr("_stext")
         if stext is None:
@@ -59679,11 +59679,31 @@ class Kernel:
     @staticmethod
     @Cache.cache_this_session
     def get_kernel_base():
+
+        def resolve_syms_safely(syms):
+            for sym in syms:
+                try:
+                    return to_unsigned_long(gdb.parse_and_eval(sym))
+                except gdb.error:
+                    pass
+            return None
+
         # fast path
-        try:
-            return to_unsigned_long(gdb.parse_and_eval("_stext"))
-        except gdb.error:
-            pass
+        hint = Kernel.get_kernel_base_hint()
+        if hint: # invalid if arm32
+            stext = resolve_syms_safely(["_stext"])
+            if stext:
+                handler = None
+                if is_x86():
+                    handler = resolve_syms_safely(["asm_exc_divide_error", "divide_error"])
+                elif is_arm64():
+                    handler = resolve_syms_safely(["vectors"])
+                elif is_riscv32() or is_riscv64():
+                    handler = resolve_syms_safely(["handle_exception"])
+                if handler:
+                    diff = hint - handler
+                    if diff & get_pagesize_mask_low() == 0:
+                        return stext - diff
 
         # slow path
         kinfo = Kernel.get_kernel_layout()
@@ -63244,12 +63264,12 @@ class KernelLoadCommand(GenericCommand):
             return
 
         info("Wait for memory scan")
-        kinfo = Kernel.get_kernel_layout()
-        if kinfo.text_base is None:
+        text_base = Kernel.get_kernel_base()
+        if text_base is None:
             err("kernel base is unknown")
             return
 
-        gdb.execute("add-symbol-file {!r} {:#x}".format(args.path, kinfo.text_base))
+        gdb.execute("add-symbol-file {!r} {:#x}".format(args.path, text_base))
         return
 
 
@@ -83825,8 +83845,8 @@ class VmlinuxToElfApplyCommand(GenericCommand):
     def do_invoke(self, args):
         info("Wait for memory scan")
 
-        kinfo = Kernel.get_kernel_layout()
-        if kinfo.text_base is None:
+        text_base = Kernel.get_kernel_base()
+        if text_base is None:
             err("Failed to resolve kbase")
             return
 
@@ -83842,7 +83862,7 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         #   gdb 8.x: Usage: add-symbol-file FILE ADDR [-readnow | -readnever | -s SECT-NAME SECT-ADDR]...
         # But the created ELF has no .text, only a .kernel
         # Applying an empty symbol has no effect, so tentatively specify the same address as the .kernel.
-        cmd = "add-symbol-file {!r} {:#x} -s .kernel {:#x}".format(symboled_vmlinux_file, kinfo.text_base, kinfo.text_base)
+        cmd = "add-symbol-file {!r} {:#x} -s .kernel {:#x}".format(symboled_vmlinux_file, text_base, text_base)
         warn("Execute `{:s}`".format(cmd))
         gdb.execute(cmd)
         return
