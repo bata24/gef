@@ -12828,7 +12828,7 @@ def is_over_serial():
         return False
     try:
         dev = gdb.selected_inferior().connection.details
-        return dev.startswith(("/dev/ttyS", "/dev/ttyAMA"))
+        return dev.startswith(("/dev/ttyS", "/dev/ttyAMA", "/dev/ttyUSB"))
     except AttributeError:
         # before gdb 11.x: AttributeError: 'gdb.Inferior' object has no attribute 'connection'
         return False
@@ -13929,10 +13929,8 @@ class EventHandler:
                 dev = gdb.selected_inferior().connection.details
                 if dev.startswith("/dev/ttyS"):
                     gdb.execute("set architecture i386:x86-64:intel", to_string=True)
-                elif dev.startswith("/dev/ttyAMA"):
-                    gdb.execute("set architecture armv7", to_string=True)
                 else:
-                    raise
+                    pass
                 Cache.reset_gef_caches()
 
         # GEF will resolve the architecture if it is unknown.
@@ -108355,6 +108353,7 @@ class GefStatusCommand(GenericCommand):
         gef_print("{:30s}  ->  {!s}".format("is_qemu_system()", is_qemu_system()))
         gef_print("{:30s}  ->  {!s}".format("is_qemu_user()", is_qemu_user()))
         gef_print("{:30s}  ->  {!s}".format("is_pin()", is_pin()))
+        gef_print("{:30s}  ->  {!s}".format("is_over_serial()", is_over_serial()))
         kgdb_forced = " (forced)" if Config.get_gef_setting("gef.force_kgdb") is True else ""
         gef_print("{:30s}  ->  {!s}{:s}".format("is_kgdb()", is_kgdb(), kgdb_forced))
         gef_print("{:30s}  ->  {!s}".format("is_qiling()", is_qiling()))
