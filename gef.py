@@ -93397,7 +93397,7 @@ class VBARCommand(GenericCommand, BufferingOutput):
             # address check
             if not is_valid_addr(vbar):
                 if vbar is None:
-                    self.err.add_out("Invalid VBAR address: None")
+                    self.err_add_out("Invalid VBAR address: None")
                 else:
                     self.err_add_out("Invalid VBAR address: {:#x}".format(vbar))
                 continue
