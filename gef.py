@@ -26399,7 +26399,7 @@ class KernelChecksecCommand(GenericCommand):
         else:
             gef_print("{:<40s}: {:s}".format("Kernel cmdline", kcmdline.cmdline.strip()))
 
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
         if kinfo.text_base is None:
             gef_print("{:<40s}: {:s}".format("Kernel base (heuristic)", "Not found"))
         else:
@@ -26648,7 +26648,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_rwx_page(self):
         cfg = "RWX kernel page"
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
         for m in kinfo.maps:
             if m[2] == "RWX":
                 gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Found", "bold red")))
@@ -51254,7 +51254,7 @@ class KernelMagicCommand(GenericCommand):
         info("Wait for memory scan")
         kversion = Kernel.kernel_version()
 
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
         maps = kinfo.maps
         text_base = kinfo.text_base
         text_size = kinfo.text_size
@@ -56143,7 +56143,7 @@ class KernelAddressHeuristicFinder:
             offset_tasks = get_offset_tasks(current)
             if offset_tasks:
                 task_list = get_task_list(current, offset_tasks)
-                kinfo = Kernel.get_kernel_base()
+                kinfo = Kernel.get_kernel_layout()
                 min_distance_task = (None, 0xffff_ffff_ffff_ffff)
                 for task in task_list:
                     distance = abs((kinfo.rw_base or kinfo.text_base) - task)
@@ -56416,7 +56416,7 @@ class KernelAddressHeuristicFinder:
         sys_open = Symbol.get_ksymaddr("__x64_sys_open")
         sys_close = Symbol.get_ksymaddr("__x64_sys_close")
         seq_to_find = p64(sys_read) + p64(sys_write) + p64(sys_open) + p64(sys_close)
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
         if kinfo and kinfo.ro_base:
             ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
             sys_call_table_offset = ro_data.find(seq_to_find)
@@ -56521,7 +56521,7 @@ class KernelAddressHeuristicFinder:
                 seq_to_find = p64(sys_restart_syscall) + p64(sys_exit) + p64(sys_fork) + p64(sys_read)
             else:
                 seq_to_find = p32(sys_restart_syscall) + p32(sys_exit) + p32(sys_fork) + p32(sys_read)
-            kinfo = Kernel.get_kernel_base()
+            kinfo = Kernel.get_kernel_layout()
             if kinfo and kinfo.ro_base:
                 ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
                 sys_call_table_offset = ro_data.find(seq_to_find)
@@ -56547,7 +56547,7 @@ class KernelAddressHeuristicFinder:
         sys_read = Symbol.get_ksymaddr("sys_read")
         if None not in [sys_restart_syscall, sys_exit, sys_fork, sys_read]:
             seq_to_find = p32(sys_restart_syscall) + p32(sys_exit) + p32(sys_fork) + p32(sys_read)
-            kinfo = Kernel.get_kernel_base()
+            kinfo = Kernel.get_kernel_layout()
             # `sys_call_table` is embedded in the .text area even if `CONFIG_KALLSYMS_ALL=n`
             if kinfo and kinfo.text_base:
                 text_data = read_memory(kinfo.text_base, kinfo.text_size)
@@ -56591,7 +56591,7 @@ class KernelAddressHeuristicFinder:
         sys_io_cancel = Symbol.get_ksymaddr("__arm64_sys_io_cancel")
         if None not in [sys_io_setup, sys_io_destroy, sys_io_submit, sys_io_cancel]:
             seq_to_find = p64(sys_io_setup) + p64(sys_io_destroy) + p64(sys_io_submit) + p64(sys_io_cancel)
-            kinfo = Kernel.get_kernel_base()
+            kinfo = Kernel.get_kernel_layout()
             if kinfo and kinfo.ro_base:
                 ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
                 sys_call_table_offset = ro_data.find(seq_to_find)
@@ -56636,7 +56636,7 @@ class KernelAddressHeuristicFinder:
         sys_open = Symbol.get_ksymaddr("__arm64_compat_sys_open")
         if None not in [sys_restart_syscall, sys_exit, sys_fork, sys_read, sys_write, sys_open]:
             seq_to_find = p64(sys_restart_syscall) + p64(sys_exit) + p64(sys_fork) + p64(sys_read) + p64(sys_write) + p64(sys_open)
-            kinfo = Kernel.get_kernel_base()
+            kinfo = Kernel.get_kernel_layout()
             if kinfo and kinfo.ro_base:
                 ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
                 sys_call_table_offset = ro_data.find(seq_to_find)
@@ -56956,7 +56956,7 @@ class KernelAddressHeuristicFinder:
                 return x
 
         # plan 2 (from pagewalk)
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
         page_offset_base_raw = kinfo.maps[0][0]
         ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
         ro_data = slice_unpack(ro_data, current_arch.ptrsize)
@@ -56988,7 +56988,7 @@ class KernelAddressHeuristicFinder:
                 return read_int_from_memory(page_offset_base)
 
             # plan 3 (from pagewalk)
-            kinfo = Kernel.get_kernel_base()
+            kinfo = Kernel.get_kernel_layout()
             if kinfo.maps and len(kinfo.maps) > 0:
                 page_offset_base_raw = kinfo.maps[0][0]
                 return page_offset_base_raw
@@ -57091,7 +57091,7 @@ class KernelAddressHeuristicFinder:
                     s = int(s, 16)
 
                     # incontinuity check
-                    kinfo = Kernel.get_kernel_base()
+                    kinfo = Kernel.get_kernel_layout()
                     prev = None
                     for vstart, _, _ in kinfo.maps:
                         if vstart == s:
@@ -57981,7 +57981,7 @@ class KernelAddressHeuristicFinder:
                 .vdso_code_end = vdso_end,
             },
         """
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
         if kinfo.ro_base and kinfo.ro_size:
             ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
             pos = -1
@@ -58051,7 +58051,7 @@ class KernelAddressHeuristicFinder:
                 .vdso_code_end = vdso_end,
             },
         """
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
         if kinfo.ro_base and kinfo.ro_size:
             ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
             pos = -1
@@ -58113,7 +58113,7 @@ class KernelAddressHeuristicFinder:
                         return x
 
         # plan 3 (from .rodata)
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
         if kinfo.ro_base and kinfo.ro_size:
             ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
             pos = -1
@@ -59038,7 +59038,7 @@ class KernelAddressHeuristicFinder:
                             return x
 
         # plan 3 (from .rodata)
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
         if kinfo.ro_base and kinfo.ro_size:
             ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
             if kinfo.rw_base and kinfo.rw_size:
@@ -59428,9 +59428,54 @@ class Kernel:
         else:
             return maps
 
+    # No caching intentionally
+    @staticmethod
+    def get_kernel_base_hint():
+        if is_x86():
+            if is_qemu_system():
+                # 0   #DE: Divide-by-zero 0x00000000ffffffffbd008e0000100870 0xe 0x0 0x0 0x1 0x0010:0xffffffffbd000870 <NO_SYMBOL>
+                res = gdb.execute("idtinfo -n", to_string=True)
+                r = re.search(r"Divide-by-zero.+\S+:(\S+)\s+<", res)
+                if r:
+                    div0_handler = int(r.group(1), 16)
+                    if is_valid_addr(div0_handler):
+                        return div0_handler
+
+            elif is_vmware():
+                res = gdb.execute("monitor r idtr", to_string=True)
+                r = re.search(r"idtr base=(\S+) limit=(\S+)", res)
+                if r:
+                    base = int(r.group(1), 16)
+                    limit = int(r.group(2), 16)
+                    idt_data = read_memory(base, min(limit + 1, current_arch.ptrsize * 2 * 256))
+                    entries = slice_unpack(idt_data, current_arch.ptrsize * 2)
+                    idt0 = IdtInfoCommand.idt_unpack(entries[0])
+                    div0_handler = idt0.offset
+                    if is_valid_addr(div0_handler):
+                        return div0_handler
+
+        elif is_arm64():
+            # `VBAR` register has interrupt vector address
+            vbar = get_register("$VBAR") or get_register("$VBAR_EL1")
+            if vbar is not None:
+                if is_valid_addr(vbar):
+                    return vbar
+
+        elif is_riscv32() or is_riscv64():
+            # `stvec` register has interrupt vector address
+            res = gdb.execute("sysreg --exact stvec", to_string=True)
+            res = Color.remove_color(res)
+            r = re.search(r"stvec\s+=\s+(0x\S+)", res)
+            if r:
+                stvec = int(r.group(1), 16)
+                if is_valid_addr(stvec):
+                    return stvec
+
+        return None
+
     @staticmethod
     @Cache.cache_this_session
-    def get_kernel_base():
+    def get_kernel_layout():
         dic = {
             "maps": Kernel.get_maps(),
             "text_base": None,
@@ -59454,27 +59499,8 @@ class Kernel:
 
         # 1a. search for the kernel base exact way
         if is_x86():
-            div0_handler = None
-
-            if is_qemu_system():
-                # 0   #DE: Divide-by-zero 0x00000000ffffffffbd008e0000100870 0xe 0x0 0x0 0x1 0x0010:0xffffffffbd000870 <NO_SYMBOL>
-                res = gdb.execute("idtinfo -n", to_string=True)
-                r = re.search(r"Divide-by-zero.+\S+:(\S+)\s+<", res)
-                if r:
-                    div0_handler = int(r.group(1), 16)
-
-            elif is_vmware():
-                res = gdb.execute("monitor r idtr", to_string=True)
-                r = re.search(r"idtr base=(\S+) limit=(\S+)", res)
-                if r:
-                    base = int(r.group(1), 16)
-                    limit = int(r.group(2), 16)
-                    idt_data = read_memory(base, min(limit + 1, current_arch.ptrsize * 2 * 256))
-                    entries = slice_unpack(idt_data, current_arch.ptrsize * 2)
-                    idt0 = IdtInfoCommand.idt_unpack(entries[0])
-                    div0_handler = idt0.offset
-
-            if div0_handler and is_valid_addr(div0_handler):
+            div0_handler = Kernel.get_kernel_base_hint()
+            if div0_handler is not None:
                 for i, (vaddr, size, _perm) in enumerate(dic["maps"]):
                     if vaddr <= div0_handler < vaddr + size:
                         dic["text_base"] = vaddr
@@ -59484,14 +59510,8 @@ class Kernel:
                         break
 
         elif is_arm64():
-            # `VBAR` register has interrupt vector address
-            res = gdb.execute("sysreg --exact VBAR", to_string=True)
-            res = Color.remove_color(res)
-            r = re.search(r"VBAR\s+=\s+(0x\S+)", res)
-            vbar = int(r.group(1), 16)
-            vbar &= get_pagesize_mask_high()
-
-            if vbar and is_valid_addr(vbar):
+            vbar = Kernel.get_kernel_base_hint()
+            if vbar is not None:
                 for i, (vaddr, size, _perm) in enumerate(dic["maps"]):
                     if vaddr <= vbar < vaddr + size:
                         dic["text_base"] = vaddr
@@ -59501,14 +59521,8 @@ class Kernel:
                         break
 
         elif is_riscv64() or is_riscv32():
-            # `stvec` register has interrupt vector address
-            res = gdb.execute("sysreg --exact stvec", to_string=True)
-            res = Color.remove_color(res)
-            r = re.search(r"stvec\s+=\s+(0x\S+)", res)
-            stvec = int(r.group(1), 16)
-            stvec &= get_pagesize_mask_high()
-
-            if stvec and is_valid_addr(stvec):
+            stvec = Kernel.get_kernel_base_hint()
+            if stvec is not None:
                 for i, (vaddr, size, _perm) in enumerate(dic["maps"]):
                     if vaddr <= stvec < vaddr + size:
                         dic["text_base"] = vaddr
@@ -59712,7 +59726,7 @@ class Kernel:
                 return Kernel.KernelVersion(linux_banner, version_string, major, minor, patch)
 
         # slow path
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
         if kinfo.has_none:
             return None
         area = []
@@ -59926,7 +59940,7 @@ class KernelbaseCommand(GenericCommand):
 
         # resolve text_base, ro_base
         self.quiet_info("Wait for memory scan")
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
 
         self.out = []
         if kinfo.text_base:
@@ -63215,7 +63229,7 @@ class KernelLoadCommand(GenericCommand):
             return
 
         info("Wait for memory scan")
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
         if kinfo.text_base is None:
             err("kernel base is unknown")
             return
@@ -66718,7 +66732,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
         if args.address:
             # show permission
             if not args.quiet:
-                kinfo = Kernel.get_kernel_base()
+                kinfo = Kernel.get_kernel_layout()
                 for vaddr, size, perm in kinfo.maps:
                     if vaddr <= args.address and args.address < vaddr + size:
                         perm_str = perm
@@ -68824,7 +68838,7 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     def get_config(self):
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
         if kinfo.ro_base is None:
             err("Not recognized .rodata")
             return False
@@ -68972,7 +68986,7 @@ class KernelSearchCodePtrCommand(GenericCommand):
 
         info("Wait for memory scan")
 
-        self.kinfo = Kernel.get_kernel_base()
+        self.kinfo = Kernel.get_kernel_layout()
         if self.kinfo.has_none or self.kinfo.rwx:
             err("Unsupported environment which has RWX data area")
             return
@@ -79781,7 +79795,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             return
 
         # init
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
         if kinfo.has_none:
             self.quiet_err("The kernel .text area could not be determined correctly")
             return
@@ -82357,7 +82371,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             kallsyms.append([addr, name, typ])
 
         # rebase
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
 
         stext = None
         for addr, name, _ in kallsyms:
@@ -83559,7 +83573,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
 
         # Slow path
         try:
-            kinfo = Kernel.get_kernel_base()
+            kinfo = Kernel.get_kernel_layout()
             if kinfo.has_none:
                 return False
         except gdb.MemoryError:
@@ -83691,7 +83705,7 @@ class VmlinuxToElfApplyCommand(GenericCommand):
             return symboled_vmlinux_file
 
         # resolve text_base, ro_base
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
         if None in (kinfo.text_base, kinfo.text_size, kinfo.ro_base, kinfo.ro_size):
             err("Failed to resolve")
             return None
@@ -83775,7 +83789,7 @@ class VmlinuxToElfApplyCommand(GenericCommand):
     def do_invoke(self, args):
         info("Wait for memory scan")
 
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
         if kinfo.text_base is None:
             err("Failed to resolve kbase")
             return
@@ -99236,7 +99250,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
     def resolve_kbase(self):
         self.quiet_info("resolve kbase")
 
-        kinfo = Kernel.get_kernel_base()
+        kinfo = Kernel.get_kernel_layout()
 
         # .text
         stext = Symbol.get_ksymaddr("_stext")
