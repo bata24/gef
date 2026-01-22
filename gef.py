@@ -73916,7 +73916,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.kmem_cache_offset_list = to_unsigned_long(
                 gdb.parse_and_eval("&((struct kmem_cache*)0).list")
             )
-            return True
+            return
         except gdb.error:
             pass
 
@@ -73948,8 +73948,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
             if found:
                 self.kmem_cache_offset_list = candidate_offset
-                return True
-        return False
+                return
+        return
 
     def resolve_kmem_cache_offset_random(self, kmem_caches):
         # fast path
@@ -74716,8 +74716,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.ncpus = len(self.cpu_offset)
 
         # offsetof(kmem_cache, list)
-        ret = self.resolve_kmem_cache_offset_list(kmem_caches)
-        if not ret:
+        self.resolve_kmem_cache_offset_list(kmem_caches)
+        if not self.kmem_cache_offset_list:
             self.quiet_info("offsetof(kmem_cache, list): Not found")
             return False
         self.quiet_info("offsetof(kmem_cache, list): {:#x}".format(self.kmem_cache_offset_list))
@@ -75197,6 +75197,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             current_kmem_cache_node_ptr += current_arch.ptrsize
         return
 
+    # for CONFIG_SLAB_VIRTUAL
     def walk_slab_list(self, list_head, offset_next):
         slab_list = []
         current_slab = read_int_from_memory(list_head) - offset_next
@@ -78381,7 +78382,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def resolve_zone_per_cpu_pageset(self):
+    def resolve_zone_offset_per_cpu_pageset(self):
         # fast path
         kversion = Kernel.kernel_version()
         try:
@@ -78432,7 +78433,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         self.offset_per_cpu_pageset = None
         return
 
-    def resolve_per_cpu_pages_lists(self, per_cpu_pageset):
+    def resolve_per_cpu_pages_offset_lists(self, per_cpu_pageset):
         """
         struct per_cpu_pageset { // ~v5.13
             struct per_cpu_pages pcp;
@@ -78508,7 +78509,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             self.MAX_NR_ZONES += 1
         return
 
-    def resolve_zone_free_area(self):
+    def resolve_zone_offset_free_area(self):
         """
         struct free_area {
             struct list_head free_list[MIGRATE_TYPES];
@@ -78720,7 +78721,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(zone, name): {:#x}".format(self.offset_name))
 
         # zone->per_cpu_pageset
-        self.resolve_zone_per_cpu_pageset()
+        self.resolve_zone_offset_per_cpu_pageset()
         if self.offset_per_cpu_pageset is None:
             self.quiet_err("Failed to resolve per_cpu_pageset")
             return False
@@ -78733,7 +78734,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         else:
             per_cpu_pageset = read_int_from_memory(self.nodes[0] + self.offset_per_cpu_pageset) + self.cpu_offset[0]
             per_cpu_pageset = AddressUtil.align_address(per_cpu_pageset)
-        self.resolve_per_cpu_pages_lists(per_cpu_pageset)
+        self.resolve_per_cpu_pages_offset_lists(per_cpu_pageset)
         self.quiet_info("offsetof(per_cpu_pages, lists): {:#x}".format(self.offset_lists))
 
         # NR_PCP_LISTS
@@ -78749,7 +78750,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("MAX_NR_ZONES: {:d}".format(self.MAX_NR_ZONES))
 
         # zone->free_area
-        self.resolve_zone_free_area()
+        self.resolve_zone_offset_free_area()
         self.quiet_info("offsetof(zone, free_area): {:#x}".format(self.offset_free_area))
 
         # MIGRATE_TYPES
