@@ -12836,7 +12836,11 @@ def is_over_serial():
 
 def is_kgdb():
     """GDB mode determination function for KGDB."""
-    return bool(is_x86_64() and is_over_serial())
+    # Forcing KGDB mode is useful when KGDB is being used via agent-proxy
+    # and thus GDB cannot see the serial device name.
+    if Config.get_gef_setting("gef.force_kgdb") is True:
+        return True
+    return bool((is_x86_64() or is_arm64()) and is_over_serial())
 
 
 @Cache.cache_this_session
@@ -12846,7 +12850,7 @@ def is_vmware():
         return False
     # The `monitor help` command takes a very long time in kgdb mode.
     # We can speed it up by making sure we're not in kgdb mode beforehand.
-    if is_over_serial():
+    if is_over_serial() or is_kgdb():
         return False
     # https://xuanxuanblingbling.github.io/ctf/tools/2021/10/22/vmware/
     try:
@@ -107373,6 +107377,8 @@ class GefCommand(GenericCommand):
                          "Workaround for AArch64 secure memory read_memory failures")
         self.add_setting("physmap_base_for_read_physmem_kgdb_work_around", 0,
                          "Use this address as physmap_base to read physmem if read_physmem is slow in KGDB")
+        # other
+        self.add_setting("force_kgdb", False, "Force-enable KGDB mode (for agent-proxy)")
         return
 
     @parse_args
@@ -108349,7 +108355,8 @@ class GefStatusCommand(GenericCommand):
         gef_print("{:30s}  ->  {!s}".format("is_qemu_system()", is_qemu_system()))
         gef_print("{:30s}  ->  {!s}".format("is_qemu_user()", is_qemu_user()))
         gef_print("{:30s}  ->  {!s}".format("is_pin()", is_pin()))
-        gef_print("{:30s}  ->  {!s}".format("is_kgdb()", is_kgdb()))
+        kgdb_forced = " (forced)" if Config.get_gef_setting("gef.force_kgdb") is True else ""
+        gef_print("{:30s}  ->  {!s}{:s}".format("is_kgdb()", is_kgdb(), kgdb_forced))
         gef_print("{:30s}  ->  {!s}".format("is_qiling()", is_qiling()))
         gef_print("{:30s}  ->  {!s}".format("is_vmware()", is_vmware()))
         gef_print("{:30s}  ->  {!s}".format("is_in_kernel()", is_in_kernel()))
