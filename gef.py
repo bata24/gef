@@ -73641,9 +73641,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         help="show ASCII diagram for CONFIG_SLAB_VIRTUAL=y.")
     parser.add_argument("cache_name", metavar="SLUB_CACHE_NAME", nargs="*",
                         help="filter by specific slub cache name.")
-    parser.add_argument("--list", action="store_true", help="list all slub cache names.")
+    parser.add_argument("-l", "--list", action="store_true", help="list all slub cache names.")
+    parser.add_argument("-L", "--list-no-sort", action="store_true", help="list all slub cache names without sort.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("--cpu", type=int, help="filter by specific cpu.")
+    parser.add_argument("-R", "--reverse-walk", action="store_true", help="reverse order walk for slab_caches->list_head.")
     parser.add_argument("-s", "--simple", action="store_true", help="skip displaying layout and freelist.")
     parser.add_argument("-v", "--verbose", "--partial", action="store_true", help="dump with partial pages.")
     parser.add_argument("-vv", "--vverbose", "--node", action="store_true", help="dump with partial pages and node pages.")
@@ -74937,7 +74939,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     def get_next_kmem_cache(self, addr, point_to_base=True):
         if point_to_base:
             addr += self.kmem_cache_offset_list
-        return read_int_from_memory(addr) - self.kmem_cache_offset_list
+        if self.args.reverse_walk:
+            return read_int_from_memory(addr) - self.kmem_cache_offset_list
+        else:
+            return read_int_from_memory(addr + current_arch.ptrsize) - self.kmem_cache_offset_list
 
     def get_name(self, addr):
         name_addr = read_int_from_memory(addr + self.kmem_cache_offset_name)
@@ -75242,10 +75247,17 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     current_kmem_cache + self.kmem_cache_offset_freed_slabs_min, self.page_offset_next,
                 )
             parsed_caches.append(kmem_cache)
+
             # goto next
             current_kmem_cache = kmem_cache["next"]
 
-        if self.args.list:
+            # fast break
+            if target_names != [] and (self.args.list or self.args.list_no_sort):
+                parsed_names = [x["name"] for x in parsed_caches]
+                if all(t in parsed_names for t in target_names):
+                    break
+
+        if self.args.list or self.args.list_no_sort:
             return parsed_caches # fast return
 
         # second, parse kmem_cache_cpu
@@ -75556,7 +75568,12 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             legend = ["Object Size", "Chunk Size", "Name", "kmem_cache"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        for kmem_cache in sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"])):
+        if self.args.list_no_sort:
+            target_caches = parsed_caches[1:]
+        else:
+            target_caches = sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"], x["name"]))
+
+        for kmem_cache in target_caches:
             objsz = "{0:d} ({0:#x})".format(kmem_cache["object_size"])
             chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
             chunk_name = kmem_cache["name"]
@@ -75572,7 +75589,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         if self.args.meta:
             return
 
-        if self.args.list:
+        if self.args.list or self.args.list_no_sort:
             parsed_caches = self.walk_caches(target_names, cpus=None)
             self.dump_names(parsed_caches)
             return
@@ -75675,8 +75692,10 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("cache_name", metavar="SLUB_CACHE_NAME", nargs="*", help="filter by specific slub cache name.")
-    parser.add_argument("--list", action="store_true", help="list all slub cache names.")
+    parser.add_argument("-l", "--list", action="store_true", help="list all slub cache names.")
+    parser.add_argument("-L", "--list-no-sort", action="store_true", help="list all slub cache names without sort.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-R", "--reverse-walk", action="store_true", help="reverse order walk for slab_caches->list_head.")
     parser.add_argument("-s", "--simple", action="store_true", help="skip displaying layout and freelist.")
     parser.add_argument("--hexdump-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
                         help="hexdump `used chunks` if layout is resolved.")
@@ -75985,7 +76004,10 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     def get_next_kmem_cache(self, addr, point_to_base=True):
         if point_to_base:
             addr += self.kmem_cache_offset_list
-        return read_int_from_memory(addr) - self.kmem_cache_offset_list
+        if self.args.reverse_walk:
+            return read_int_from_memory(addr) - self.kmem_cache_offset_list
+        else:
+            return read_int_from_memory(addr + current_arch.ptrsize) - self.kmem_cache_offset_list
 
     def get_name(self, addr):
         name_addr = read_int_from_memory(addr + self.kmem_cache_offset_name)
@@ -76141,8 +76163,13 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             parsed_caches.append(kmem_cache)
             # goto next
             current_kmem_cache = kmem_cache["next"]
+            # fast break
+            if target_names != [] and (self.args.list or self.args.list_no_sort):
+                parsed_names = [x["name"] for x in parsed_caches]
+                if all(t in parsed_names for t in target_names):
+                    break
 
-        if self.args.list:
+        if self.args.list or self.args.list_no_sort:
             return parsed_caches # fast return
 
         # second, parse node then update
@@ -76333,7 +76360,12 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             legend = ["Object Size", "Chunk Size", "Name", "kmem_cache"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        for kmem_cache in sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"])):
+        if self.args.list_no_sort:
+            target_caches = parsed_caches[1:]
+        else:
+            target_caches = sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"], x["name"]))
+
+        for kmem_cache in target_caches:
             objsz = "{0:d} ({0:#x})".format(kmem_cache["object_size"])
             chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
             chunk_name = kmem_cache["name"]
@@ -76349,7 +76381,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         if self.args.meta:
             return
 
-        if self.args.list:
+        if self.args.list or self.args.list_no_sort:
             parsed_caches = self.walk_caches(target_names)
             self.dump_names(parsed_caches)
             return
@@ -76409,9 +76441,11 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("cache_name", metavar="SLAB_CACHE_NAME", nargs="*", help="filter by specific slab cache name.")
-    parser.add_argument("--list", action="store_true", help="list all slab cache names.")
+    parser.add_argument("-l", "--list", action="store_true", help="list all slab cache names.")
+    parser.add_argument("-L", "--list-no-sort", action="store_true", help="list all slab cache names without sort.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("--cpu", type=int, help="filter by specific cpu.")
+    parser.add_argument("-R", "--reverse-walk", action="store_true", help="reverse order walk for slab_caches->list_head.")
     parser.add_argument("-s", "--simple", action="store_true", help="skip displaying layout and freelist.")
     parser.add_argument("--skip-partial", action="store_true", help="skip displaying slabs_partial.")
     parser.add_argument("--skip-full", action="store_true", help="skip displaying slabs_full.")
@@ -76866,7 +76900,10 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     def get_next_kmem_cache(self, addr, point_to_base=True):
         if point_to_base:
             addr += self.kmem_cache_offset_list
-        return read_int_from_memory(addr) - self.kmem_cache_offset_list
+        if self.args.reverse_walk:
+            return read_int_from_memory(addr) - self.kmem_cache_offset_list
+        else:
+            return read_int_from_memory(addr + current_arch.ptrsize) - self.kmem_cache_offset_list
 
     def get_name(self, addr):
         name_addr = read_int_from_memory(addr + self.kmem_cache_offset_name)
@@ -76955,8 +76992,13 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             parsed_caches.append(kmem_cache)
             # goto next
             current_kmem_cache = kmem_cache["next"]
+            # fast break
+            if target_names != [] and (self.args.list or self.args.list_no_sort):
+                parsed_names = [x["name"] for x in parsed_caches]
+                if all(t in parsed_names for t in target_names):
+                    break
 
-        if self.args.list:
+        if self.args.list or self.args.list_no_sort:
             return parsed_caches
 
         # second, parse array_cache and node
@@ -77201,7 +77243,12 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             legend = ["Object Size", "Chunk Size", "Name", "kmem_cache"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        for kmem_cache in sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"])):
+        if self.args.list_no_sort:
+            target_caches = parsed_caches[1:]
+        else:
+            target_caches = sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"], x["name"]))
+
+        for kmem_cache in target_caches:
             objsz = "{0:d} ({0:#x})".format(kmem_cache["object_size"])
             chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
             chunk_name = kmem_cache["name"]
@@ -77217,7 +77264,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         if self.args.meta:
             return
 
-        if self.args.list:
+        if self.args.list or self.args.list_no_sort:
             parsed_caches = self.walk_caches(target_names, cpus=None)
             self.dump_names(parsed_caches)
             return
@@ -77273,8 +77320,10 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("cache_name", metavar="SLOB_CACHE_NAME", nargs="*",
                         help="filter by specific slob cache name (need -v option).")
-    parser.add_argument("--list", action="store_true", help="list all slob cache names.")
+    parser.add_argument("-l", "--list", action="store_true", help="list all slob cache names.")
+    parser.add_argument("-L", "--list-no-sort", action="store_true", help="list all slob cache names without sort.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-R", "--reverse-walk", action="store_true", help="reverse order walk for slab_caches->list_head.")
     parser.add_argument("-s", "--simple", action="store_true", help="skip showing freelist.")
     parser.add_argument("--large", action="store_true", help="display only free_slob_large.")
     parser.add_argument("--medium", action="store_true", help="display only free_slob_medium.")
@@ -77464,7 +77513,10 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
     def get_next_kmem_cache(self, addr, point_to_base=True):
         if point_to_base:
             addr += self.kmem_cache_offset_list
-        return read_int_from_memory(addr) - self.kmem_cache_offset_list
+        if self.args.reverse_walk:
+            return read_int_from_memory(addr) - self.kmem_cache_offset_list
+        else:
+            return read_int_from_memory(addr + current_arch.ptrsize) - self.kmem_cache_offset_list
 
     def get_name(self, addr):
         name_addr = read_int_from_memory(addr + self.kmem_cache_offset_name)
@@ -77530,8 +77582,13 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             parsed_caches.append(kmem_cache)
             # goto next
             current_kmem_cache = kmem_cache["next"]
+            # fast break
+            if target_names != [] and (self.args.list or self.args.list_no_sort):
+                parsed_names = [x["name"] for x in parsed_caches]
+                if all(t in parsed_names for t in target_names):
+                    break
 
-        if self.args.list:
+        if self.args.list or self.args.list_no_sort:
             return parsed_caches, None
 
         parsed_freelist = {}
@@ -77603,7 +77660,12 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             legend = ["Object Size", "Chunk Size", "Name", "kmem_cache"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        for kmem_cache in sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"])):
+        if self.args.list_no_sort:
+            target_caches = parsed_caches[1:]
+        else:
+            target_caches = sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"], x["name"]))
+
+        for kmem_cache in target_caches:
             objsz = "{0:d} ({0:#x})".format(kmem_cache["object_size"])
             chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
             chunk_name = kmem_cache["name"]
@@ -77619,7 +77681,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         if self.args.meta:
             return
 
-        if self.args.list:
+        if self.args.list or self.args.list_nosort:
             parsed_caches, _ = self.walk_caches(target_names)
             self.dump_names(parsed_caches)
             return
