@@ -11873,9 +11873,20 @@ def read_physmem(paddr, size):
         return out
 
     def kgdb_use_physmap(paddr, size):
+        # Use workaround value if provided. Useful if KGDB does not expose system registers.
         physmap = Config.get_gef_setting("gef.physmap_base_for_read_physmem_kgdb_work_around")
         if physmap == 0:
-            return None
+            if is_arm64():
+                # On arm64, calculate physmap address based on PAGE_OFFSET and memstart_addr.
+                # This requires access to TCR_EL1 register to calculate PAGE_OFFSET.
+                physmap = KernelAddressHeuristicFinder.consts().physmap_base
+            elif is_x86_64():
+                physmap = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+            else:
+                return None
+            if physmap is None:
+                return None
+
         vaddr = physmap + paddr
         try:
             return read_memory(vaddr, size)
@@ -55925,6 +55936,30 @@ class KernelConstsArm64(KernelConstsBase):
             else:
                 return self.VMEMMAP_START + self.VMEMMAP_UNUSED_NPAGES * self.sizeof_struct_page - self.SZ_8M
         return None
+
+    @property
+    def physmap_base(self):
+        if hasattr(self, "cached_physmap_base"):
+            return self.cached_physmap_base
+
+        if self.PAGE_OFFSET is None:
+            self.cached_physmap_base = None
+            return None
+
+        # Prevent recursion:
+        #   read_physmem -> kgdb_use_physmap -> get_ksymaddr -> pagewalk -> read_physmem -> ...
+        if not __gef_command_instances__["ksymaddr-remote"].kallsyms:
+            # None does not cache, because kallsyms may be resolved later
+            return None
+
+        memstart_addr = Symbol.get_ksymaddr("memstart_addr")
+        if memstart_addr is None:
+            self.cached_physmap_base = None
+            return None
+
+        PHYS_OFFSET = read_int_from_memory(memstart_addr)
+        self.cached_physmap_base = AddressUtil.align_address(self.PAGE_OFFSET - PHYS_OFFSET)
+        return self.cached_physmap_base
 
 
 class KernelAddressHeuristicFinder:
