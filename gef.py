@@ -12834,11 +12834,12 @@ def is_over_serial():
         return False
 
 
+@Cache.cache_this_session
 def is_kgdb():
     """GDB mode determination function for KGDB."""
     # Forcing KGDB mode is useful when KGDB is being used via agent-proxy
     # and thus GDB cannot see the serial device name.
-    if Config.get_gef_setting("gef.force_kgdb") is True:
+    if Config.get_gef_setting("gef.kgdb_force") is True:
         return True
     return bool((is_x86_64() or is_arm64()) and is_over_serial())
 
@@ -107390,7 +107391,7 @@ class GefCommand(GenericCommand):
         self.add_setting("physmap_base_for_read_physmem_kgdb_work_around", 0,
                          "Use this address as physmap_base to read physmem if read_physmem is slow in KGDB")
         # other
-        self.add_setting("force_kgdb", False, "Force-enable KGDB mode (for agent-proxy)")
+        self.add_setting("kgdb_force", False, "Force-enable KGDB mode (for agent-proxy)")
         return
 
     @parse_args
@@ -108368,7 +108369,7 @@ class GefStatusCommand(GenericCommand):
         gef_print("{:30s}  ->  {!s}".format("is_qemu_user()", is_qemu_user()))
         gef_print("{:30s}  ->  {!s}".format("is_pin()", is_pin()))
         gef_print("{:30s}  ->  {!s}".format("is_over_serial()", is_over_serial()))
-        kgdb_forced = " (forced)" if Config.get_gef_setting("gef.force_kgdb") is True else ""
+        kgdb_forced = " (forced)" if Config.get_gef_setting("gef.kgdb_force") is True else ""
         gef_print("{:30s}  ->  {!s}{:s}".format("is_kgdb()", is_kgdb(), kgdb_forced))
         gef_print("{:30s}  ->  {!s}".format("is_qiling()", is_qiling()))
         gef_print("{:30s}  ->  {!s}".format("is_vmware()", is_vmware()))
