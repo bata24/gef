@@ -97093,6 +97093,8 @@ class PagewalkArm64Command(PagewalkCommand):
     parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="show all level pagetables only associated specified address.")
     parser.add_argument("--optee", action="store_true", help="show the secure world memory maps if used OP-TEE.")
+    parser.add_argument("-0", "--only-TTBR0_EL1", action="store_true", help="Display only TTBR0_EL1 (if target==EL1)")
+    parser.add_argument("-1", "--only-TTBR1_EL1", action="store_true", help="display only TTBR1_EL1 (if target==EL1)")
     parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
     parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
@@ -98858,8 +98860,13 @@ class PagewalkArm64Command(PagewalkCommand):
                     self.el2_mappings = self.mappings.copy()
                     self.mappings = None
                 self.silent = False
-            self.pagewalk_TTBR0_EL1()
-            self.pagewalk_TTBR1_EL1()
+            if self.args.only_TTBR0_EL1:
+                self.pagewalk_TTBR0_EL1()
+            elif self.args.only_TTBR1_EL1:
+                self.pagewalk_TTBR1_EL1()
+            else:
+                self.pagewalk_TTBR0_EL1()
+                self.pagewalk_TTBR1_EL1()
         if self.TargetEL == 1 and not self.EL1_M:
             self.quiet_info_add_out("EL1/0 translation is unused")
         if self.TargetEL == 2 and self.EL2_VM:
@@ -98952,6 +98959,10 @@ class PagewalkArm64Command(PagewalkCommand):
     def do_invoke(self, args):
         if args.optee:
             self.aarch64_optee_pseudo_pagewalk()
+            return
+
+        if args.only_TTBR0_EL1 and args.only_TTBR1_EL1:
+            err("Unsupported combination (-0 and -1)")
             return
 
         if self.args.trace:
