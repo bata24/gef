@@ -12834,13 +12834,19 @@ def is_over_serial():
         return False
 
 
+@Cache.cache_this_session
 def is_kgdb():
     """GDB mode determination function for KGDB."""
     # Forcing KGDB mode is useful when KGDB is being used via agent-proxy
     # and thus GDB cannot see the serial device name.
-    if Config.get_gef_setting("gef.force_kgdb") is True:
+    if Config.get_gef_setting("gef.kgdb_force") is True:
         return True
     return bool((is_x86_64() or is_arm64()) and is_over_serial())
+
+
+@Cache.cache_this_session
+def kgdb_has_system_registers():
+    return Config.get_gef_setting("gef.kgdb_system_registers") is True
 
 
 @Cache.cache_this_session
@@ -51710,9 +51716,11 @@ class SysregCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("kgdb",))
     @require_arch_set
     def do_invoke(self, args):
+        if is_kgdb() and not kgdb_has_system_registers():
+            err("Unsupported in kgdb mode without access to system registers")
+            return
         self.print_sysreg_compact()
         return
 
@@ -83708,9 +83716,13 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
 
     @parse_args
     @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, args):
+        if is_kgdb() and not kgdb_has_system_registers():
+            err("Unsupported in kgdb mode without access to system registers")
+            return
+
         if args.print_saved_config:
             self.print_saved_config()
             return
@@ -107390,7 +107402,8 @@ class GefCommand(GenericCommand):
         self.add_setting("physmap_base_for_read_physmem_kgdb_work_around", 0,
                          "Use this address as physmap_base to read physmem if read_physmem is slow in KGDB")
         # other
-        self.add_setting("force_kgdb", False, "Force-enable KGDB mode (for agent-proxy)")
+        self.add_setting("kgdb_force", False, "Force-enable KGDB mode (for agent-proxy)")
+        self.add_setting("kgdb_system_registers", False, "Whether KGDB provides access to system registers")
         return
 
     @parse_args
@@ -108368,7 +108381,7 @@ class GefStatusCommand(GenericCommand):
         gef_print("{:30s}  ->  {!s}".format("is_qemu_user()", is_qemu_user()))
         gef_print("{:30s}  ->  {!s}".format("is_pin()", is_pin()))
         gef_print("{:30s}  ->  {!s}".format("is_over_serial()", is_over_serial()))
-        kgdb_forced = " (forced)" if Config.get_gef_setting("gef.force_kgdb") is True else ""
+        kgdb_forced = " (forced)" if Config.get_gef_setting("gef.kgdb_force") is True else ""
         gef_print("{:30s}  ->  {!s}{:s}".format("is_kgdb()", is_kgdb(), kgdb_forced))
         gef_print("{:30s}  ->  {!s}".format("is_qiling()", is_qiling()))
         gef_print("{:30s}  ->  {!s}".format("is_vmware()", is_vmware()))
