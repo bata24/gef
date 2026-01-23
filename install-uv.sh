@@ -30,9 +30,17 @@ fi
 echo "[+] apt"
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata
-apt-get install -y gdb-multiarch wget
-apt-get install -y binutils python3-dev gcc make ruby-dev git file colordiff imagemagick bpftool
-apt-get install -y binwalk
+apt-get install -y gdb-multiarch wget unzip
+apt-get install -y binutils python3-dev gcc make ruby-dev git file colordiff imagemagick
+
+# Since installing bpftool fails inside a container, it is excluded.
+if [ ! -f /.dockerenv ]; then
+    apt-get install -y bpftool
+fi
+
+# Installing binwalk requires a large number of packages and takes a significant amount of time,
+# so please enable it only when necessary.
+#apt-get install -y binwalk
 
 echo "[+] Install uv"
 if [ -z "$(command -v uv)" ]; then
@@ -62,7 +70,7 @@ fi
 echo "[+] Install rp++"
 if [ "$(uname -m)" = "x86_64" ]; then
     if [ -z "$(command -v rp-lin)" ]; then
-        wget -q https://github.com/0vercl0k/rp/releases/download/v2.1.4/rp-lin-clang.zip -P /tmp
+        wget -q https://github.com/0vercl0k/rp/releases/download/v2.1.5/rp-lin-clang.zip -P /tmp
         unzip /tmp/rp-lin-clang.zip -d "${GEF_VENV_BIN_PATH}"
         rm /tmp/rp-lin-clang.zip
     fi
@@ -70,8 +78,7 @@ fi
 
 echo "[+] Install vmlinux-to-elf"
 if [ -z "$(command -v vmlinux-to-elf)" ]; then
-    uv pip install --upgrade lz4 zstandard git+https://github.com/clubby789/python-lzo@b4e39df
-    uv pip install --upgrade git+https://github.com/marin-m/vmlinux-to-elf
+    uv tool install git+https://github.com/marin-m/vmlinux-to-elf
 fi
 
 echo "[+] Download gef"

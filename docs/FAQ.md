@@ -228,10 +228,6 @@ To use these commands fully, you need to manually install the necessary packages
 |`ropper`|-|`ropper`|-|
 |`vmlinux-to-elf-apply`|-|`vmlinux-to-elf`|-|
 
-## Why are there so many packages installed when running `apt-get install` in the installer?
-Because the `binwalk` package has a large number of dependencies.
-
-If you do not use the `binwalk-memory` command, you do not need to install `binwalk` (please modify the installer manually).
 
 # About the Host Environment
 
