@@ -341,12 +341,18 @@ Another option is [COPR of Fedora](https://download.copr.fedorainfracloud.org/re
 Let's consider debug information and debug symbols separately.
 
 - Debug information
-    - No, the presence or absence of debug information in `vmlinux` does not impact GEF's functionality or behavior.
+    - Partially no, partially yes.
+        - Mostly, the presence or absence of debug information in `vmlinux` does not impact GEF's functionality or behavior.
         - GEF performs its own heuristic structure member detection in each command.
+        - However, the `slub-dump` and `buddy-dump` commands use type information, if available, to speed up calculations of some offsets.
 - Debug symbols
-    - Yes, you can use `ksymaddr-remote --vmlinux-file <vmlinux_path>`.
-        - GEF internally uses the addresses resolved with `ksymaddr-remote`, and these results are cached.
-        - Therefore, by specifying the `vmlinux` file, the results of `ksymaddr-remote` can be replaced with accurate values and cached.
+    - Yes.
+        - If symbols are not yet loaded:
+            - You can use `ksymaddr-remote --vmlinux-file <vmlinux_path>`.
+            - GEF internally uses the addresses resolved with `ksymaddr-remote`, and these results are cached.
+            - Therefore, by specifying the `vmlinux` file, the results of `ksymaddr-remote` can be replaced with accurate values and cached.
+        - If symbols are loaded:
+            - The `ksymaddr-remtote` command will automatically use offsets read from the `vmlinux` file (with rebasing).
 
 ## Does GEF support i386 16-bit mode (real mode)?
 Yes, GEF supports real mode experimentally.
@@ -479,14 +485,13 @@ If it still does not work, please report it on the issue page.
 
 ## If I have a `vmlinux` with debuginfo, how can I use `ks-apply`?
 The `ks-apply` command is unnecessary. Run `kload <vmlinux_path>`.
-Optionally, also run `ksymaddr-remote --vmlinux-file <vmlinux_path>`.
 
 Below is a summary of each.
 |Component|How GDB uses it|How GEF uses it|
 |:---|:---|:---|
-|`vmlinux` debuginfo|- Loaded via `add-symbol-file`<br>- Or `kload` (easy wrapper with `kbase`)<br>- Essential for source-level debugging|- Unused<br>- Can be viewed with `dt`|
-|`vmlinux` symbols|- Loaded via `add-symbol-file`<br>- Or `kload` (easy wrapper with `kbase`)<br>- Provides kernel symbol resolution|- Accessible via `ksymaddr-remote --vmlinux-file <path>`<br>- This overrides the result of parsing `kallsyms` in memory<br>- Addresses will be automatically rebased|
-|Memory-resident `debuginfo`<br>(if `CONFIG_DEBUG_INFO_BTF=y`)|- Not available by default<br>- Accessible via `ktypes-load`|- Unused<br>- Can be viewed with `dt`|
+|`vmlinux` debuginfo|- Loaded via `add-symbol-file`<br>- Or `kload` (easy wrapper with `kbase`)<br>- Essential for source-level debugging|- Used by some commands if available<br>- Can be viewed with `dt`|
+|`vmlinux` symbols|- Loaded via `add-symbol-file`<br>- Or `kload` (easy wrapper with `kbase`)<br>- Provides kernel symbol resolution|- Accessible after `ksymaddr-remote`<br>- Addresses will be automatically rebased|
+|Memory-resident `debuginfo`<br>(if `CONFIG_DEBUG_INFO_BTF=y`)|- Not available by default<br>- Accessible via `ktypes-load`|- Used by some commands if available after `ktypes-load`<br>- Can be viewed with `dt`|
 |Memory-resident `kallsyms`<br>(if `CONFIG_KALLSYMS=y`)|- Not available by default<br>- Accessible via `ks-apply`|- Accessible after `ksymaddr-remote`<br>- Used by various GEF commands internally|
 
 ## The kernel-related commands are unstable; sometimes they work fine, sometimes they don’t. / The output of `ksymaddr-remote` seems odd.
