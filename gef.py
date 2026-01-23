@@ -55389,9 +55389,23 @@ class KernelConstsArm64(KernelConstsBase):
 
     def ARM64_HW_PGTABLE_LEVEL_SHIFT(self, n):
         if "4.4" <= self.kversion < "6.15":
-            return (self.PAGE_SHIFT - 3) * (4 - (n)) + 3
+            return (self.PAGE_SHIFT - 3) * (4 - n) + 3
         elif "6.15" <= self.kversion:
-            return self.PTDESC_TABLE_SHIFT * (4 - (n)) + self.PTDESC_ORDER
+            return self.PTDESC_TABLE_SHIFT * (4 - n) + self.PTDESC_ORDER
+        return None
+
+    @property
+    def PMD_SHIFT(self):
+        if "3.17" <= self.kversion < "4.4":
+            return (self.PAGE_SHIFT - 3) * 2 + 3
+        elif "4.4" <= self.kversion:
+            return self.ARM64_HW_PGTABLE_LEVEL_SHIFT(2)
+        return None
+
+    @property
+    def PMD_SIZE(self):
+        if "3.17" <= self.kversion:
+            return 1 << self.PMD_SHIFT
         return None
 
     @property
@@ -79084,7 +79098,8 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         mtype = i % MIGRATE_PCPTYPES
 
         # size info
-        size = 0x1000 * (2 ** order)
+        PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        size = PAGE_SIZE * (2 ** order)
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
         size_str = Color.colorify("{:#08x}".format(size), chunk_size_color)
 
@@ -79158,7 +79173,8 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
     def dump_free_area(self, free_area, order, is_highmem):
         # size info
-        size = 0x1000 * (2 ** order)
+        PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        size = PAGE_SIZE * (2 ** order)
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
         size_str = Color.colorify_hex(size, chunk_size_color)
         order_title = "order: {:d} ({:s} bytes)".format(order, size_str)
@@ -100186,7 +100202,7 @@ class PageCommand(GenericCommand):
         if hasattr(self, "initialized") and self.initialized:
             return True
 
-        self.PAGE_SHIFT = 12
+        self.PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
 
         if is_x86_64():
             # CONFIG_SPARSEMEM_VMEMMAP
