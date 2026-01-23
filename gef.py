@@ -73933,7 +73933,19 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note2_ = "\n".join(_note2_)
 
-    def resolve_kmem_cache_offset_list(self, kmem_caches):
+    @Cache.cache_until_next
+    def parse_kmem_caches_for_initialize(self):
+        seen = [self.slab_caches]
+        current = self.slab_caches
+        while True:
+            current = read_int_from_memory(current)
+            if current in seen:
+                break
+            seen.append(current)
+        kmem_caches = seen[1:] # skip slab_caches itself
+        return kmem_caches
+
+    def resolve_kmem_cache_offset_list(self):
         """
         struct kmem_cache {
             struct kmem_cache_cpu *cpu_slab;         // In fact, the offset value, not the pointer
@@ -73980,7 +73992,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             pass
 
         # slow path
-
+        self.kmem_cache_offset_list = None
+        kmem_caches = self.parse_kmem_caches_for_initialize()
         # This value should be at most 0x70 by default. However, I found a case where offset 0x98 is used.
         # This is because CONFIG_SLAB_VIRTUAL=y, that is not in main line (but some kernel introduces).
         # However, I decided to expand this search range.
@@ -74010,7 +74023,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 return
         return
 
-    def resolve_kmem_cache_offset_random(self, kmem_caches):
+    def resolve_kmem_cache_offset_random(self):
         # fast path
         try:
             # find kmem_cache.random
@@ -74061,6 +74074,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         };
         """
 
+        kmem_caches = self.parse_kmem_caches_for_initialize()
         for i in range(2, 0x40):
             candidate_offset = current_arch.ptrsize * i
             found = True
@@ -74124,7 +74138,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 return
         return
 
-    def resolve_kmem_cache_offset_node(self, kmem_caches):
+    def resolve_kmem_cache_offset_node(self):
         # fast path
         try:
             self.kmem_cache_offset_node = to_unsigned_long(
@@ -74166,6 +74180,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             struct kmem_cache_node *node[MAX_NUMNODES]; <-- this includes SPINLOCK_MAGIC if CONFIG_DEBUG_SPINLOCK=y
         }
         """
+
+        kmem_caches = self.parse_kmem_caches_for_initialize()
 
         # heuristic way 1 (SPINLOCK_MAGIC)
         if is_64bit():
@@ -74418,8 +74434,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     return
         return
 
-    def resolve_for_CONFIG_SLAB_VIRTUAL(self, top):
+    def resolve_for_CONFIG_SLAB_VIRTUAL(self):
         kversion = Kernel.kernel_version()
+
+        kmem_caches = self.parse_kmem_caches_for_initialize()
+        top = kmem_caches[0] - self.kmem_cache_offset_list
 
         # Feature: CONFIG_SLAB_VIRTUAL (this patchset is supported only in x86-64).
         # See https://lwn.net/Articles/944647/.
@@ -74492,7 +74511,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 warn("CONFIG_SLAB_VIRTUAL is not enabled (maybe), option `--tlbflush-queue` is ignored.")
         return
 
-    def resolve_kmem_cache_node_offset_partial(self, top):
+    def resolve_kmem_cache_node_offset_partial(self):
         # fast path
         try:
             self.kmem_cache_node_offset_partial = to_unsigned_long(
@@ -74508,14 +74527,16 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.kmem_cache_node_offset_partial = None
             return
 
+        self.kmem_cache_node_offset_partial = None
+        kmem_caches = self.parse_kmem_caches_for_initialize()
+        top = kmem_caches[0] - self.kmem_cache_offset_list
+
         node = read_int_from_memory(top + self.kmem_cache_offset_node)
         for i in range(1, 16):
             offset_partial = current_arch.ptrsize * i
             if is_double_link_list(node + offset_partial):
                 self.kmem_cache_node_offset_partial = offset_partial
                 return
-
-        self.kmem_cache_node_offset_partial = None
         return
 
     # CONFIG_SLAB_VIRTUAL=n
@@ -74753,16 +74774,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         else:
             self.quiet_info("slab_caches: {:#x}".format(self.slab_caches))
 
-        # parse kmem_caches
-        seen = [self.slab_caches]
-        current = self.slab_caches
-        while True:
-            current = read_int_from_memory(current)
-            if current in seen:
-                break
-            seen.append(current)
-        kmem_caches = seen[1:]
-
         # resolve __per_cpu_offset
         __per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
         if __per_cpu_offset is None:
@@ -74775,7 +74786,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.ncpus = len(self.cpu_offset)
 
         # offsetof(kmem_cache, list)
-        self.resolve_kmem_cache_offset_list(kmem_caches)
+        self.resolve_kmem_cache_offset_list()
         if not self.kmem_cache_offset_list:
             self.quiet_info("offsetof(kmem_cache, list): Not found")
             return False
@@ -74786,8 +74797,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name))
 
         # for CONFIG_SLAB_VIRTUAL
-        top = kmem_caches[0] - self.kmem_cache_offset_list
-        self.resolve_for_CONFIG_SLAB_VIRTUAL(top)
+        self.resolve_for_CONFIG_SLAB_VIRTUAL()
 
         # offsetof(kmem_cache, cpu_slab)
         self.kmem_cache_offset_cpu_slab = 0
@@ -74824,14 +74834,14 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad))
 
         # offsetof(kmem_cache, random)
-        self.resolve_kmem_cache_offset_random(kmem_caches)
+        self.resolve_kmem_cache_offset_random()
         if self.kmem_cache_offset_random is None:
             self.quiet_info("offsetof(kmem_cache, random): Not found")
         else:
             self.quiet_info("offsetof(kmem_cache, random): {:#x}".format(self.kmem_cache_offset_random))
 
         # offsetof(kmem_cache, node)
-        self.resolve_kmem_cache_offset_node(kmem_caches)
+        self.resolve_kmem_cache_offset_node()
         if self.kmem_cache_offset_node is None:
             self.quiet_info("offsetof(kmem_cache, node): Not found")
         else:
@@ -74940,7 +74950,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.quiet_info("offsetof(slab, flush_list_elem): {:#x}".format(self.page_offset_flush_list_elem))
 
         # offsetof(kmem_cache_node, partial)
-        self.resolve_kmem_cache_node_offset_partial(top)
+        self.resolve_kmem_cache_node_offset_partial()
         if self.kmem_cache_node_offset_partial:
             self.quiet_info("offsetof(kmem_cache_node, partial): {:#x}".format(self.kmem_cache_node_offset_partial))
         else:
@@ -75621,7 +75631,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         name_width = max(len(k["name"]) for k in parsed_caches[1:])
 
         if not self.args.quiet:
-            fmt = "{:<16s} {:<16s} {:" + str(name_width) + "s} {:20s}"
+            fmt = "{:<18s} {:<18s} {:" + str(name_width) + "s} {:20s}"
             legend = ["Object Size", "Chunk Size", "Name", "kmem_cache"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
@@ -75635,7 +75645,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
             chunk_name = kmem_cache["name"]
             address = kmem_cache["address"]
-            self.out.append("{:16s} {:16s} {:{:d}s} {:#x}".format(objsz, chunksz, chunk_name, name_width, address))
+            self.out.append("{:18s} {:18s} {:{:d}s} {:#x}".format(objsz, chunksz, chunk_name, name_width, address))
         return
 
     def slubwalk(self, target_names, cpu):
@@ -75816,7 +75826,45 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def resolve_kmem_cache_offset_node(self, kmem_caches):
+    @Cache.cache_until_next
+    def parse_kmem_caches_for_initialize(self):
+        seen = [self.slab_caches]
+        current = self.slab_caches
+        while True:
+            current = read_int_from_memory(current)
+            if current in seen:
+                break
+            seen.append(current)
+        kmem_caches = seen[1:] # skip slab_caches itself
+        return kmem_caches
+
+    def resolve_kmem_cache_offset_list(self):
+        # fast path
+        try:
+            self.kmem_cache_offset_list = to_unsigned_long(
+                gdb.parse_and_eval("&((struct kmem_cache*)0).list")
+            )
+            return
+        except gdb.error:
+            pass
+
+        # slow path
+        kmem_caches = self.parse_kmem_caches_for_initialize()
+        candidate = (0, -1) # (count, candidate_offset)
+        for candidate_offset in range(current_arch.ptrsize * 2, 0x70, current_arch.ptrsize):
+            # backward search for the start of `struct kmem_cache`
+            count = 0
+            for kmem_cache in kmem_caches:
+                val = read_int_from_memory(kmem_cache - candidate_offset)
+                if val & 0x4000_0000: # __CMPXCHG_DOUBLE
+                    count += 1
+            if candidate[0] < count:
+                candidate = (count, candidate_offset)
+
+        self.kmem_cache_offset_list = candidate[1]
+        return
+
+    def resolve_kmem_cache_offset_node(self):
         # fast path
         try:
             self.kmem_cache_offset_node = to_unsigned_long(
@@ -75828,6 +75876,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
         # slow path
         self.kmem_cache_offset_node = None
+        kmem_caches = self.parse_kmem_caches_for_initialize()
         start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
         for candidate_offset in range(start_offset, start_offset + 0x100, current_arch.ptrsize):
             # walk from list for heuristic search
@@ -75870,7 +75919,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
                 return
         return
 
-    def resolve_kmem_cache_node_offset_partial(self, kmem_caches):
+    def resolve_kmem_cache_node_offset_partial(self):
         # fast path
         try:
             self.kmem_cache_node_offset_partial = to_unsigned_long(
@@ -75881,6 +75930,8 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             pass
 
         # slow path
+        self.kmem_cache_node_offset_partial = None
+        kmem_caches = self.parse_kmem_caches_for_initialize()
         node = read_int_from_memory(kmem_caches[0] - self.kmem_cache_offset_list + self.kmem_cache_offset_node)
         for i in range(2, 16):
             offset_partial = current_arch.ptrsize * i
@@ -75977,29 +76028,8 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         else:
             self.quiet_info("slab_caches: {:#x}".format(self.slab_caches))
 
-        # parse kmem_caches
-        seen = [self.slab_caches]
-        current = self.slab_caches
-        while True:
-            current = read_int_from_memory(current)
-            if current in seen:
-                break
-            seen.append(current)
-        kmem_caches = seen[1:]
-
         # offsetof(kmem_cache, list)
-        candidate = (0, -1) # (count, candidate_offset)
-        for candidate_offset in range(current_arch.ptrsize * 2, 0x70, current_arch.ptrsize):
-            # backward search for the start of `struct kmem_cache`
-            count = 0
-            for kmem_cache in kmem_caches:
-                val = read_int_from_memory(kmem_cache - candidate_offset)
-                if val & 0x4000_0000: # __CMPXCHG_DOUBLE
-                    count += 1
-            if candidate[0] < count:
-                candidate = (count, candidate_offset)
-
-        self.kmem_cache_offset_list = candidate[1]
+        self.resolve_kmem_cache_offset_list()
         self.quiet_info("offsetof(kmem_cache, list): {:#x}".format(self.kmem_cache_offset_list))
 
         # offsetof(kmem_cache, name)
@@ -76030,7 +76060,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad))
 
         # offsetof(kmem_cache, node)
-        self.resolve_kmem_cache_offset_node(kmem_caches)
+        self.resolve_kmem_cache_offset_node()
         if self.kmem_cache_offset_node is None:
             self.quiet_info("offsetof(kmem_cache, node): Not found")
         else:
@@ -76053,8 +76083,8 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(slab, inuse_objects_frozen): {:#x}".format(self.slab_offset_inuse_objects_frozen))
 
         # offsetof(kmem_cache_node, partial)
-        self.resolve_kmem_cache_node_offset_partial(kmem_caches)
-        if self.kmem_cache_node_offset_partial:
+        self.resolve_kmem_cache_node_offset_partial()
+        if self.kmem_cache_node_offset_partial is None:
             self.quiet_info("offsetof(kmem_cache_node, partial): Not found")
             return False
         else:
@@ -76418,7 +76448,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         name_width = max(len(k["name"]) for k in parsed_caches[1:])
 
         if not self.args.quiet:
-            fmt = "{:<16s} {:<16s} {:" + str(name_width) + "s} {:20s}"
+            fmt = "{:<18s} {:<18s} {:" + str(name_width) + "s} {:20s}"
             legend = ["Object Size", "Chunk Size", "Name", "kmem_cache"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
@@ -76432,7 +76462,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
             chunk_name = kmem_cache["name"]
             address = kmem_cache["address"]
-            self.out.append("{:16s} {:16s} {:{:d}s} {:#x}".format(objsz, chunksz, chunk_name, name_width, address))
+            self.out.append("{:18s} {:18s} {:{:d}s} {:#x}".format(objsz, chunksz, chunk_name, name_width, address))
         return
 
     def slub_tiny_walk(self, target_names):
@@ -76685,7 +76715,19 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     };
     """
 
-    def resolve_kmem_cache_offset_node(self, kmem_caches):
+    @Cache.cache_until_next
+    def parse_kmem_caches_for_initialize(self):
+        seen = [self.slab_caches]
+        current = self.slab_caches
+        while True:
+            current = read_int_from_memory(current)
+            if current in seen:
+                break
+            seen.append(current)
+        kmem_caches = seen[1:] # skip slab_caches itself
+        return kmem_caches
+
+    def resolve_kmem_cache_offset_node(self):
         # fast path
         try:
             self.kmem_cache_offset_node = to_unsigned_long(
@@ -76701,6 +76743,8 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.kmem_cache_offset_node = self.kmem_cache_offset_object_size + 4 * 2 # heuristic could not use, so hard-coded
             return
 
+        self.kmem_cache_offset_node = None
+        kmem_caches = self.parse_kmem_caches_for_initialize()
         # Search heuristically using useroffset and usersize as markers
         start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2
         for candidate_offset in range(start_offset, start_offset + 0x100, 4):
@@ -76728,11 +76772,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             if found:
                 self.kmem_cache_offset_node = AddressUtil.align_address_to_ptrsize(candidate_offset + 4 * 2)
                 return
-
-        self.kmem_cache_offset_node = None
         return
 
-    def resolve_kmem_cache_node_offset_slabs_partial(self, kmem_caches):
+    def resolve_kmem_cache_node_offset_slabs_partial(self):
         # fast path
         try:
             self.kmem_cache_node_offset_slabs_partial = to_unsigned_long(
@@ -76744,7 +76786,8 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
 
         # slow path
         kversion = Kernel.kernel_version()
-
+        self.kmem_cache_node_offset_slabs_partial = None
+        kmem_caches = self.parse_kmem_caches_for_initialize()
         # sizeof(raw_spinlock_t) can take many different values and must be determined heuristically.
         for candidate_offset in range(0, 0x80, current_arch.ptrsize):
             found = True
@@ -76791,16 +76834,6 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             return False
         else:
             self.quiet_info("slab_caches: {:#x}".format(self.slab_caches))
-
-        # parse kmem_caches
-        seen = [self.slab_caches]
-        current = self.slab_caches
-        while True:
-            current = read_int_from_memory(current)
-            if current in seen:
-                break
-            seen.append(current)
-        kmem_caches = seen[1:]
 
         # resolve __per_cpu_offset
         __per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
@@ -76850,7 +76883,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size))
 
         # offsetof(kmem_cache, node)
-        self.resolve_kmem_cache_offset_node(kmem_caches)
+        self.resolve_kmem_cache_offset_node()
         if self.kmem_cache_offset_node is None:
             self.quiet_info("offsetof(kmem_cache, node): Not found")
             return False
@@ -76925,7 +76958,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof({:s}, active): {:#x}".format(Kernel.slab_page_str(), self.page_offset_active))
 
         # offsetof(kmem_cache_node, slabs_partial)
-        self.resolve_kmem_cache_node_offset_slabs_partial(kmem_caches)
+        self.resolve_kmem_cache_node_offset_slabs_partial()
         if self.kmem_cache_node_offset_slabs_partial is None:
             self.quiet_info("offsetof(kmem_cache_node, slabs_partial): Not found")
             return False
@@ -77301,7 +77334,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         name_width = max(len(k["name"]) for k in parsed_caches[1:])
 
         if not self.args.quiet:
-            fmt = "{:<16s} {:<16s} {:" + str(name_width) + "s} {:20s}"
+            fmt = "{:<18s} {:<18s} {:" + str(name_width) + "s} {:20s}"
             legend = ["Object Size", "Chunk Size", "Name", "kmem_cache"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
@@ -77315,7 +77348,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
             chunk_name = kmem_cache["name"]
             address = kmem_cache["address"]
-            self.out.append("{:16s} {:16s} {:{:d}s} {:#x}".format(objsz, chunksz, chunk_name, name_width, address))
+            self.out.append("{:18s} {:18s} {:{:d}s} {:#x}".format(objsz, chunksz, chunk_name, name_width, address))
         return
 
     def slabwalk(self, target_names, cpu):
@@ -77718,7 +77751,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         name_width = max(len(k["name"]) for k in parsed_caches[1:])
 
         if not self.args.quiet:
-            fmt = "{:<16s} {:<16s} {:" + str(name_width) + "s} {:20s}"
+            fmt = "{:<18s} {:<18s} {:" + str(name_width) + "s} {:20s}"
             legend = ["Object Size", "Chunk Size", "Name", "kmem_cache"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
@@ -77732,7 +77765,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
             chunk_name = kmem_cache["name"]
             address = kmem_cache["address"]
-            self.out.append("{:16s} {:16s} {:{:d}s} {:#x}".format(objsz, chunksz, chunk_name, name_width, address))
+            self.out.append("{:18s} {:18s} {:{:d}s} {:#x}".format(objsz, chunksz, chunk_name, name_width, address))
         return
 
     def slobwalk(self, target_names):
