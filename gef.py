@@ -79092,10 +79092,90 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
                 )
             return msg
 
+    @Cache.cache_this_session
+    def get_pageblock_order(self): # for 5.14 ~ 6.10
+        kversion = Kernel.kernel_version()
+        if not ("5.14" <= kversion < "6.10"):
+            return None
+
+        PMD_SHIFT = KernelAddressHeuristicFinder.consts().PMD_SHIFT
+        PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
+        HPAGE_SHIFT = PMD_SHIFT
+        HUGETLB_PAGE_ORDER = HPAGE_SHIFT - PAGE_SHIFT
+
+        CONFIG_HUGETLB_PAGE = bool(
+            Symbol.get_ksymaddr("hugetlb_fault") or Symbol.get_ksymaddr("hugetlbfs_read_iter")
+        )
+        # CONFIG_HUGETLB_PAGE_SIZE_VARIABLE is ia64 or ppc only, so ignored
+
+        if "5.14" <= kversion < "5.18":
+            if CONFIG_HUGETLB_PAGE:
+                return HUGETLB_PAGE_ORDER
+            else:
+                return self.MAX_ORDER - 1
+        elif "5.18" <= kversion < "6.8":
+            if CONFIG_HUGETLB_PAGE:
+                return min(HUGETLB_PAGE_ORDER, self.MAX_ORDER - 1)
+            else:
+                return self.MAX_ORDER - 1
+        else: # 6.8 <= kversion < "6.10"
+            MAX_PAGE_ORDER = self.MAX_ORDER - 1
+            if CONFIG_HUGETLB_PAGE:
+                return min(HUGETLB_PAGE_ORDER, MAX_PAGE_ORDER)
+            else:
+                return MAX_PAGE_ORDER
+
     def dump_pcp_entry(self, list_i, i, cpu_num, is_highmem):
         MIGRATE_PCPTYPES = 3
-        order = i // MIGRATE_PCPTYPES
-        mtype = i % MIGRATE_PCPTYPES
+        PAGE_ALLOC_COSTLY_ORDER = 3
+        NR_LOWORDER_PCP_LISTS = (MIGRATE_PCPTYPES * (PAGE_ALLOC_COSTLY_ORDER + 1))
+
+        if i < NR_LOWORDER_PCP_LISTS:
+            # for normal case
+            order = i // MIGRATE_PCPTYPES
+            mtype = i % MIGRATE_PCPTYPES
+            mtype_str = self.migrate_types[mtype]
+        else:
+            # for CONFIG_TRANSPARENT_HUGEPAGE
+            kversion = Kernel.kernel_version()
+
+            if kversion < "5.14":
+                raise
+            elif "5.14" <= kversion < "6.0":
+                # indices 12..14 are "base=4 + migratetype"
+                base = PAGE_ALLOC_COSTLY_ORDER + 1
+                mtype = i - MIGRATE_PCPTYPES * base # 0,1,2
+                if not (0 <= mtype < MIGRATE_PCPTYPES):
+                    raise
+                mtype_str = self.migrate_types[mtype]
+                order = self.get_pageblock_order()
+            elif ("6.0" <= kversion < "6.1") or ("6.2" <= kversion < "6.9"):
+                # 1 slot
+                if i != NR_LOWORDER_PCP_LISTS:
+                    raise
+                mtype = 0
+                mtype_str = "THP"
+                order = self.get_pageblock_order()
+            elif ("6.1" <= kversion < "6.2") or ("6.9" <= kversion < "6.10"):
+                # 2 slots
+                thp_i = i - NR_LOWORDER_PCP_LISTS
+                if not (0 <= thp_i < 2):
+                    raise
+                mtype = thp_i
+                mtype_str = "THP_MOVABLE" if thp_i == 1 else "THP_OTHER"
+                order = self.get_pageblock_order()
+            else: # 6.10~
+                # 2 slots
+                thp_i = i - NR_LOWORDER_PCP_LISTS
+                if not (0 <= thp_i < 2):
+                    raise
+                mtype = thp_i
+                mtype_str = "THP_MOVABLE" if thp_i == 1 else "THP_OTHER"
+
+                HPAGE_PMD_SHIFT = KernelAddressHeuristicFinder.consts().PMD_SHIFT
+                PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
+                HPAGE_PMD_ORDER = HPAGE_PMD_SHIFT - PAGE_SHIFT
+                order = HPAGE_PMD_ORDER
 
         # size info
         PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
@@ -79105,7 +79185,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
         # make title
         pcp_title = "  pcp_index: {:d}, order: {:d} ({:s} bytes), mtype: {:d} (={:s})".format(
-            i, order, size_str, mtype, self.migrate_types[mtype],
+            i, order, size_str, mtype, mtype_str,
         )
         entries = []
 
