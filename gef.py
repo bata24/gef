@@ -78141,7 +78141,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         if self.args.meta:
             return
 
-        if self.args.list or self.args.list_nosort:
+        if self.args.list or self.args.list_no_sort:
             parsed_caches, _ = self.walk_caches(target_names)
             self.dump_names(parsed_caches)
             return
