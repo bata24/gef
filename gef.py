@@ -74486,9 +74486,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     def resolve_for_CONFIG_SLAB_VIRTUAL(self):
         kversion = Kernel.kernel_version()
 
-        kmem_caches = self.parse_kmem_caches_for_initialize()
-        top = kmem_caches[0] - self.kmem_cache_offset_list
-
         # Feature: CONFIG_SLAB_VIRTUAL (this patchset is supported only in x86-64).
         # See https://lwn.net/Articles/944647/.
         if not is_x86_64():
@@ -74505,6 +74502,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             #     - kmem_cache->freed_slabs_min
             def has_freed_slabs_lists(freed_slabs_normal, freed_slabs_min):
                 return is_double_link_list(freed_slabs_normal) and is_double_link_list(freed_slabs_min)
+
+            kmem_caches = self.parse_kmem_caches_for_initialize()
+            top = kmem_caches[0] - self.kmem_cache_offset_list
 
             offset_freed_slabs_normal = current_arch.ptrsize * 9
             offset_freed_slabs_min = current_arch.ptrsize * 11
