@@ -78532,6 +78532,8 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-Q", "--skip-phys", action="store_true", help="skip virt -> phys translation.")
     parser.add_argument("-M", "--use-physmap", action="store_true",
                         help="use physmap for virt -> phys translation to speed up (when kGDB mode, x64/arm64 only).")
+    parser.add_argument("--MIGRATE_PCPTYPES", type=int, choices=[3, 4], default=3,
+                        help="use specify value; linux: 3, android: 4 (2023~).")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show all entries for non-sort mode.")
     parser.add_argument("-vv", "--vverbose", action="store_true", help="show empty entries too for non-sort mode.")
@@ -78792,78 +78794,124 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_migratetype_names(self):
-        # sufficient for a typical Linux kernel
-        """
-        const char * const migratetype_names[MIGRATE_TYPES] = {
-            "Unmovable",
-            "Movable",
-            "Reclaimable",
-            "HighAtomic",
-        #ifdef CONFIG_CMA
-            "CMA",
-        #endif
-        #ifdef CONFIG_MEMORY_ISOLATION
-            "Isolate",
-        #endif
-        };
-        """
-        kversion = Kernel.kernel_version()
-        if self.MIGRATE_TYPES == 4:
-            if "4.4" <= kversion:
-                self.migrate_types = [
-                    "Unmovable",
-                    "Movable",
-                    "Reclaimable",
-                    "HighAtomic",
-                ]
+        if self.args.MIGRATE_PCPTYPES == 3:
+            """
+            const char * const migratetype_names[MIGRATE_TYPES] = {
+                "Unmovable",
+                "Movable",
+                "Reclaimable",
+                "HighAtomic",
+            #ifdef CONFIG_CMA
+                "CMA",
+            #endif
+            #ifdef CONFIG_MEMORY_ISOLATION
+                "Isolate",
+            #endif
+            };
+            """
+            kversion = Kernel.kernel_version()
+            if self.MIGRATE_TYPES == 4:
+                if "4.4" <= kversion:
+                    self.migrate_types = [
+                        "Unmovable",
+                        "Movable",
+                        "Reclaimable",
+                        "HighAtomic",
+                    ]
+                else:
+                    self.migrate_types = [
+                        "Unmovable",
+                        "Reclaimable",
+                        "Movable",
+                        "Reserve",
+                    ]
+            elif self.MIGRATE_TYPES == 5:
+                if "4.4" <= kversion:
+                    self.migrate_types = [
+                        "Unmovable",
+                        "Movable",
+                        "Reclaimable",
+                        "HighAtomic",
+                        "Isolate",
+                    ]
+                else:
+                    self.migrate_types = [
+                        "Unmovable",
+                        "Reclaimable",
+                        "Movable",
+                        "Reserve",
+                        "Isolate",
+                    ]
+            elif self.MIGRATE_TYPES == 6:
+                if "4.4" <= kversion:
+                    self.migrate_types = [
+                        "Unmovable",
+                        "Movable",
+                        "Reclaimable",
+                        "HighAtomic",
+                        "Contiguous", # CONFIG_CMA needs CONFIG_MEMORY_ISOLATION, so there is only this pattern
+                        "Isolate",
+                    ]
+                else:
+                    self.migrate_types = [
+                        "Unmovable",
+                        "Reclaimable",
+                        "Movable",
+                        "Reserve",
+                        "Contiguous", # CONFIG_CMA needs CONFIG_MEMORY_ISOLATION, so there is only this pattern
+                        "Isolate",
+                    ]
             else:
-                self.migrate_types = [
-                    "Unmovable",
-                    "Reclaimable",
-                    "Movable",
-                    "Reserve",
-                ]
-        elif self.MIGRATE_TYPES == 5:
-            if "4.4" <= kversion:
-                self.migrate_types = [
-                    "Unmovable",
-                    "Movable",
-                    "Reclaimable",
-                    "HighAtomic",
-                    "Isolate",
-                ]
-            else:
-                self.migrate_types = [
-                    "Unmovable",
-                    "Reclaimable",
-                    "Movable",
-                    "Reserve",
-                    "Isolate",
-                ]
-        elif self.MIGRATE_TYPES == 6:
-            if "4.4" <= kversion:
-                self.migrate_types = [
-                    "Unmovable",
-                    "Movable",
-                    "Reclaimable",
-                    "HighAtomic",
-                    "Contiguous", # CONFIG_CMA needs CONFIG_MEMORY_ISOLATION, so there is only this pattern
-                    "Isolate",
-                ]
-            else:
-                self.migrate_types = [
-                    "Unmovable",
-                    "Reclaimable",
-                    "Movable",
-                    "Reserve",
-                    "Contiguous", # CONFIG_CMA needs CONFIG_MEMORY_ISOLATION, so there is only this pattern
-                    "Isolate",
-                ]
-        else:
-            err("MIGRATE_TYPES: {:#x}".format(self.MIGRATE_TYPES))
-            raise
+                err("MIGRATE_TYPES: {:#x}".format(self.MIGRATE_TYPES))
+                raise
 
-        self.MIGRATE_PCPTYPES = 3
+            self.MIGRATE_PCPTYPES = 3
+
+        elif self.args.MIGRATE_PCPTYPES == 4:
+            # https://android.googlesource.com/kernel/common/+/433445e9a160%5E%21/#F1
+            """
+            const char * const migratetype_names[MIGRATE_TYPES] = {
+                "Unmovable",
+                "Movable",
+                "Reclaimable",
+            #ifdef CONFIG_CMA
+                "CMA",
+            #endif
+                "HighAtomic",
+            #ifdef CONFIG_MEMORY_ISOLATION
+                "Isolate",
+            #endif
+            };
+            """
+
+            if self.MIGRATE_TYPES == 4:
+                self.migrate_types = [
+                    "Unmovable",
+                    "Movable",
+                    "Reclaimable",
+                    "HighAtomic",
+                ]
+            elif self.MIGRATE_TYPES == 5:
+                self.migrate_types = [
+                    "Unmovable",
+                    "Movable",
+                    "Reclaimable",
+                    "HighAtomic",
+                    "Isolate",
+                ]
+            elif self.MIGRATE_TYPES == 6:
+                self.migrate_types = [
+                    "Unmovable",
+                    "Movable",
+                    "Reclaimable",
+                    "Contiguous", # CONFIG_CMA needs CONFIG_MEMORY_ISOLATION, so there is only this pattern
+                    "HighAtomic",
+                    "Isolate",
+                ]
+            else:
+                err("MIGRATE_TYPES: {:#x}".format(self.MIGRATE_TYPES))
+                raise
+            self.MIGRATE_PCPTYPES = 4
         return
 
     def resolve_MAX_ORDER(self):
