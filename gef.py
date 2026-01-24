@@ -78788,6 +78788,81 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         self.MIGRATE_TYPES = offset_nr_free // sizeof_list_head
         return
 
+    def resolve_migratetype_names(self):
+        # sufficient for a typical Linux kernel
+        """
+        const char * const migratetype_names[MIGRATE_TYPES] = {
+            "Unmovable",
+            "Movable",
+            "Reclaimable",
+            "HighAtomic",
+        #ifdef CONFIG_CMA
+            "CMA",
+        #endif
+        #ifdef CONFIG_MEMORY_ISOLATION
+            "Isolate",
+        #endif
+        };
+        """
+        kversion = Kernel.kernel_version()
+        if self.MIGRATE_TYPES == 4:
+            if "4.4" <= kversion:
+                self.migrate_types = [
+                    "Unmovable",
+                    "Movable",
+                    "Reclaimable",
+                    "HighAtomic",
+                ]
+            else:
+                self.migrate_types = [
+                    "Unmovable",
+                    "Reclaimable",
+                    "Movable",
+                    "Reserve",
+                ]
+        elif self.MIGRATE_TYPES == 5:
+            if "4.4" <= kversion:
+                self.migrate_types = [
+                    "Unmovable",
+                    "Movable",
+                    "Reclaimable",
+                    "HighAtomic",
+                    "Isolate",
+                ]
+            else:
+                self.migrate_types = [
+                    "Unmovable",
+                    "Reclaimable",
+                    "Movable",
+                    "Reserve",
+                    "Isolate",
+                ]
+        elif self.MIGRATE_TYPES == 6:
+            if "4.4" <= kversion:
+                self.migrate_types = [
+                    "Unmovable",
+                    "Movable",
+                    "Reclaimable",
+                    "HighAtomic",
+                    "Contiguous", # CONFIG_CMA needs CONFIG_MEMORY_ISOLATION, so there is only this pattern
+                    "Isolate",
+                ]
+            else:
+                self.migrate_types = [
+                    "Unmovable",
+                    "Reclaimable",
+                    "Movable",
+                    "Reserve",
+                    "Contiguous", # CONFIG_CMA needs CONFIG_MEMORY_ISOLATION, so there is only this pattern
+                    "Isolate",
+                ]
+        else:
+            err("MIGRATE_TYPES: {:#x}".format(self.MIGRATE_TYPES))
+            raise
+
+        self.MIGRATE_PCPTYPES = 3
+        return
+
     def resolve_MAX_ORDER(self):
         # fast path
         try:
@@ -78974,75 +79049,8 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         self.resolve_MIGRATE_TYPES()
         self.quiet_info("MIGRATE_TYPES: {:d}".format(self.MIGRATE_TYPES))
 
-        """
-        const char * const migratetype_names[MIGRATE_TYPES] = {
-            "Unmovable",
-            "Movable",
-            "Reclaimable",
-            "HighAtomic",
-        #ifdef CONFIG_CMA
-            "CMA",
-        #endif
-        #ifdef CONFIG_MEMORY_ISOLATION
-            "Isolate",
-        #endif
-        };
-        """
-        kversion = Kernel.kernel_version()
-        if self.MIGRATE_TYPES == 4:
-            if "4.4" <= kversion:
-                self.migrate_types = [
-                    "Unmovable",
-                    "Movable",
-                    "Reclaimable",
-                    "HighAtomic",
-                ]
-            else:
-                self.migrate_types = [
-                    "Unmovable",
-                    "Reclaimable",
-                    "Movable",
-                    "Reserve",
-                ]
-        elif self.MIGRATE_TYPES == 5:
-            if "4.4" <= kversion:
-                self.migrate_types = [
-                    "Unmovable",
-                    "Movable",
-                    "Reclaimable",
-                    "HighAtomic",
-                    "Isolate",
-                ]
-            else:
-                self.migrate_types = [
-                    "Unmovable",
-                    "Reclaimable",
-                    "Movable",
-                    "Reserve",
-                    "Isolate",
-                ]
-        elif self.MIGRATE_TYPES == 6:
-            if "4.4" <= kversion:
-                self.migrate_types = [
-                    "Unmovable",
-                    "Movable",
-                    "Reclaimable",
-                    "HighAtomic",
-                    "Contiguous", # CONFIG_CMA needs CONFIG_MEMORY_ISOLATION, so there is only this pattern
-                    "Isolate",
-                ]
-            else:
-                self.migrate_types = [
-                    "Unmovable",
-                    "Reclaimable",
-                    "Movable",
-                    "Reserve",
-                    "Contiguous", # CONFIG_CMA needs CONFIG_MEMORY_ISOLATION, so there is only this pattern
-                    "Isolate",
-                ]
-        else:
-            err("MIGRATE_TYPES: {:#x}".format(self.MIGRATE_TYPES))
-            raise
+        # migratetype_names
+        self.resolve_migratetype_names()
 
         # sizeof(free_area)
         sizeof_list_head =  current_arch.ptrsize * 2
@@ -79082,6 +79090,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         };
         """
         # page->lru
+        kversion = Kernel.kernel_version()
         if "4.18" <= kversion:
             self.offset_lru = current_arch.ptrsize
         else:
@@ -79172,14 +79181,13 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
                 return MAX_PAGE_ORDER
 
     def dump_pcp_entry(self, list_i, i, cpu_num, is_highmem):
-        MIGRATE_PCPTYPES = 3
         PAGE_ALLOC_COSTLY_ORDER = 3
-        NR_LOWORDER_PCP_LISTS = (MIGRATE_PCPTYPES * (PAGE_ALLOC_COSTLY_ORDER + 1))
+        NR_LOWORDER_PCP_LISTS = (self.MIGRATE_PCPTYPES * (PAGE_ALLOC_COSTLY_ORDER + 1))
 
         if i < NR_LOWORDER_PCP_LISTS:
             # for normal case
-            order = i // MIGRATE_PCPTYPES
-            mtype = i % MIGRATE_PCPTYPES
+            order = i // self.MIGRATE_PCPTYPES
+            mtype = i % self.MIGRATE_PCPTYPES
             mtype_str = self.migrate_types[mtype]
         else:
             # for CONFIG_TRANSPARENT_HUGEPAGE
@@ -79190,8 +79198,8 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             elif "5.14" <= kversion < "6.0":
                 # indices 12..14 are "base=4 + migratetype"
                 base = PAGE_ALLOC_COSTLY_ORDER + 1
-                mtype = i - MIGRATE_PCPTYPES * base # 0,1,2
-                if not (0 <= mtype < MIGRATE_PCPTYPES):
+                mtype = i - self.MIGRATE_PCPTYPES * base # 0,1,2
+                if not (0 <= mtype < self.MIGRATE_PCPTYPES):
                     raise
                 mtype_str = self.migrate_types[mtype]
                 order = self.get_pageblock_order()
