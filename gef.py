@@ -78530,6 +78530,8 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-S", "--sort-verbose", action="store_true",
                         help="enable --sort and add used area. filtered areas are treated as used.")
     parser.add_argument("-Q", "--skip-phys", action="store_true", help="skip virt -> phys translation.")
+    parser.add_argument("-M", "--use-physmap", action="store_true",
+                        help="use physmap for virt -> phys translation to speed up (when kGDB mode, x64/arm64 only).")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show all entries for non-sort mode.")
     parser.add_argument("-vv", "--vverbose", action="store_true", help="show empty entries too for non-sort mode.")
@@ -79101,11 +79103,11 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         return True
 
     class Entry:
-        def __init__(self, page, size, is_highmem, skip_phys, cpu_num=None):
+        def __init__(self, page, size, is_highmem, args, cpu_num=None):
             self.page = page
             self.size = size
             self.is_highmem = is_highmem
-            self.skip_phys = skip_phys
+            self.args = args
             self.cpu_num = cpu_num
             return
 
@@ -79121,11 +79123,24 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
             virt = Kernel.page2virt(self.page)
             phys = None
-            if virt and not self.skip_phys:
-                phys = PageMap.v2p_from_map(virt, BuddyDumpCommand.maps)
+
+            if virt:
+                if self.args.skip_phys:
+                    pass
+                elif self.args.use_physmap:
+                    if is_x86_64():
+                        physmap = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+                    elif is_arm64():
+                        physmap = KernelAddressHeuristicFinder.consts().physmap_base
+                    if physmap is not None:
+                        phys = virt - physmap
+                else:
+                    phys = PageMap.v2p_from_map(virt, BuddyDumpCommand.maps)
+
             if virt is not None:
                 virt_str = "{:#0{:d}x}-{:#0{:d}x}".format(virt, align, virt + self.size, align)
                 virt_str = Color.colorify(virt_str, heap_page_color)
+
             if phys is not None:
                 phys_str = "{:#0{:d}x}-{:#0{:d}x}".format(phys, align, phys + self.size, align)
             return virt_str, phys_str
@@ -79259,7 +79274,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         # parse pcp entries
         while current != list_i:
             page = current - self.offset_lru
-            entry = self.Entry(page, size, is_highmem, self.args.skip_phys, cpu_num=cpu_num)
+            entry = self.Entry(page, size, is_highmem, self.args, cpu_num=cpu_num)
             entries.append(entry)
             current = read_int_from_memory(current)
         return pcp_title, entries, bool(len(entries))
@@ -79302,7 +79317,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         # parse free list
         while current != free_list:
             page = current - self.offset_lru
-            entry = self.Entry(page, size, is_highmem, self.args.skip_phys)
+            entry = self.Entry(page, size, is_highmem, self.args)
             entries.append(entry)
             current = read_int_from_memory(current)
         return mtype_title, entries, bool(len(entries))
@@ -79473,6 +79488,11 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             self.quiet_err("Unsupported before v3.1")
             return
 
+        if self.args.use_physmap:
+            if not (is_x86_64() or is_arm64()):
+                self.quiet_err("Unsupported architecture")
+                return
+
         # parse args
         if args.rescan:
             self.initialized = False
@@ -79485,7 +79505,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             return
 
         # do not use cache
-        if not self.args.skip_phys:
+        if not self.args.skip_phys and not self.args.use_physmap:
             BuddyDumpCommand.maps = PageMap.get_page_maps(None)
             if BuddyDumpCommand.maps is None:
                 self.quiet_err("Failed to resolve maps")
