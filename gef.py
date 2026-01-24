@@ -60421,6 +60421,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return
 
     def get_offset_tasks(self, init_task):
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct task_struct*)0).tasks")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         # search for init_task->tasks
         for i in range(0x200):
             offset_tasks = current_arch.ptrsize * i
@@ -60464,6 +60473,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct task_struct*)0).mm")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         offset_mm = offset_tasks + 2 * current_arch.ptrsize
         r = read_int_from_memory(task_addr + offset_mm)
         if 0 < r <= 0xffff:
@@ -60476,6 +60494,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return offset_mm
 
     def get_offset_comm(self, task_addrs):
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct task_struct*)0).comm")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         for i in range(0x300):
             offset_comm = i * current_arch.ptrsize
             valid = True
@@ -60507,6 +60534,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct task_struct*)0).cred")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         # backward search from `comm`
         for i in range(0x2):
             offset_cred = offset_comm - ((i + 1) * current_arch.ptrsize)
@@ -60529,6 +60565,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct task_struct*)0).stack")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         for i in range(0x100):
             found = False
             zcount = 0
@@ -60561,6 +60606,18 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return None
 
     def get_thread_info(self, task_addr, offset_stack):
+        # fast path
+        try:
+            return task_addr + gdb.parse_and_eval("&((struct task_struct*)0).thread_info")
+        except gdb.error:
+            try:
+                # task_struct exists but has no thread_info member
+                gdb.parse_and_eval("(struct task_struct*)0")
+                return read_int_from_memory(task_addr + offset_stack)
+            except gdb.error:
+                pass
+
+        # slow path
         kstack = read_int_from_memory(task_addr + offset_stack)
         if not is_valid_addr(kstack):
             return None
@@ -60826,6 +60883,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         0xc6d1e918:     0x00000000      0x00000000      0x00000000      0x00000000
         0xc6d1e928:     0x00000031*     0x00000031      0xc7834000      0xc7834000
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct task_struct*)0).pid")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         pid_max = 0x400000 if is_64bit() else 0x8000
         for i in range(0x400):
             found = False
@@ -60867,6 +60933,20 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct task_struct*)0).stack_canary")
+            )
+        except gdb.error:
+            try:
+                # task_struct exists but has no stack_canary member
+                gdb.parse_and_eval("(struct task_struct*)0")
+                return None
+            except gdb.error:
+                pass
+
+        # slow path
         kversion = Kernel.kernel_version()
         offset_stack_canary = AddressUtil.align_address_to_ptrsize(offset_pid + 4 + 4)
         found = True
@@ -60904,6 +60984,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct task_struct*)0).group_leader")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         if offset_kcanary is None:
             offset_real_parent = AddressUtil.align_address_to_ptrsize(offset_pid + 4 + 4)
         else:
@@ -60925,6 +61014,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct task_struct*)0).thread_group")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         kversion = Kernel.kernel_version()
         if "4.19" <= kversion:
             offset_thread_group = offset_group_leader + current_arch.ptrsize * (1 + 2 + 2 + 1 + (2 * 4))
@@ -60941,6 +61039,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct task_struct*)0).signal")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         return offset_nsproxy + current_arch.ptrsize
 
     def get_offset_seccomp(self, task_addrs, offset_signal):
@@ -60975,7 +61082,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         }
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct task_struct*)0).seccomp")
+            )
+        except gdb.error:
+            pass
 
+        # slow path
         # search for seccomped process
         for task in task_addrs:
             if self.has_seccomp(task):
@@ -61038,9 +61153,6 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return None
 
     def get_offset_prev(self, task_addrs, offset_seccomp):
-        if offset_seccomp is None:
-            return None
-
         """
         struct seccomp_filter {
             refcount_t refs; // v5.9~
@@ -61094,6 +61206,17 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         0xffff8c1f827f39f8|+0x0038|+007: 0xffff8c1f827f39f8  ->  [loop detected]
         0xffff8c1f827f3a00|+0x0040|+008: 0xffff8c1f827f39f8  ->  [loop detected]
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct seccomp_filter*)0).prev")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
+        if offset_seccomp is None:
+            return None
 
         for task in task_addrs:
             if not self.has_seccomp(task):
@@ -61125,6 +61248,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return None
 
     def get_offset_prog(self, offset_prev):
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct seccomp_filter*)0).prog")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         if offset_prev is None:
             return None
 
@@ -61135,6 +61267,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return offset_prev + current_arch.ptrsize
 
     def get_offset_bpf_func(self, task_addrs, offset_seccomp, offset_prog):
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct bpf_prog*)0).bpf_func")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         if offset_seccomp is None:
             return None
         if offset_prog is None:
@@ -61162,6 +61303,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return None
 
     def get_offset_orig_prog(self, offset_bpf_func):
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct bpf_prog*)0).orig_prog")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         if offset_bpf_func is None:
             return None
 
@@ -61187,6 +61337,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct signal_struct*)0).thread_head")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         signal = read_int_from_memory(task_addr + offset_signal)
         for i in range(10):
             x = read_int_from_memory(signal + current_arch.ptrsize * i)
@@ -61220,6 +61379,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct task_struct*)0).files")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         base = offset_comm + 16 # comm
         base += current_arch.ptrsize # nameidata
         kversion = Kernel.kernel_version()
@@ -61267,6 +61435,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct files_struct*)0).fdt")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         MAX_FDS_DEFAULT = AddressUtil.get_memory_alignment(in_bits=True)
         files = read_int_from_memory(task_addrs[0] + offset_files)
         for i in range(1, 0x100):
@@ -61312,6 +61489,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             0xffffffff82046100:     0x0000003fffffffff      0x0000000000000000
             0xffffffff82046110:     0x0000000000000000      0x0000000000000000
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct cred*)0).uid")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
 
         kversion = Kernel.kernel_version()
         if kversion < "6.1.69":
@@ -61444,6 +61630,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         0xc1aabc48|+0x0068|+026: 0xc1aa6b80  ->  0x00000068 // user
         0xc1aabc4c|+0x006c|+027: 0xc1aa6be0  ->  0x00000001 // user_ns
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct cred*)0).user_ns")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         kversion = Kernel.kernel_version()
         # uid_t:4byte. len([uid,gid,suid,sgid,euid,egid,fsuid,fsgid]) == 8
         uid_gid_size = 4 * 8
@@ -61764,6 +61959,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return vm_area_struct, get_next_vma_area_struct
 
     def get_offset_vm_mm(self, task_addrs, offset_mm):
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct vm_area_struct*)0).vm_mm")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         for task in task_addrs:
             mm = read_int_from_memory(task + offset_mm)
             if mm == 0:
@@ -61781,6 +61985,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return None
 
     def get_offset_vm_flags(self, offset_vm_mm):
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct vm_area_struct*)0).vm_flags")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         if is_64bit():
             offset_vm_flags = offset_vm_mm + 8 * 2
         elif is_x86_32():
@@ -61798,6 +62011,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return offset_vm_flags
 
     def get_offset_vm_file(self, task_addrs, offset_mm, offset_vm_flags):
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct vm_area_struct*)0).vm_file")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         for i in range(50):
             found = True
             for task in task_addrs:
@@ -61920,9 +62142,6 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return vm_areas
 
     def get_offset_mnt(self, file):
-        if not is_valid_addr(file):
-            return None
-
         """
         [~v6.4]
         struct file {
@@ -62008,6 +62227,20 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             loff_t f_pos;
             ...
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct file*)0).f_path")
+            ) + to_unsigned_long(
+                gdb.parse_and_eval("&((struct path*)0).mnt")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
+        if not is_valid_addr(file):
+            return None
+
         kversion = Kernel.kernel_version()
 
         if kversion < "6.5":
@@ -62098,6 +62331,17 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return offset_mnt
 
     def get_offset_dentry(self, offset_mnt):
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct file*)0).f_path")
+            ) + to_unsigned_long(
+                gdb.parse_and_eval("&((struct path*)0).dentry")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         return offset_mnt + current_arch.ptrsize
 
     def get_offset_d_iname(self, dentry):
@@ -62121,6 +62365,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct dentry*)0).d_iname")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         current = dentry
         while True:
             name = read_int_from_memory(current)
@@ -62131,9 +62384,27 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return offset_d_iname
 
     def get_offset_d_inode(self, offset_d_iname):
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct dentry*)0).d_inode")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         return offset_d_iname - current_arch.ptrsize
 
     def get_offset_d_parent(self, dentry, offset_d_iname):
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct dentry*)0).d_parent")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         offset_dname_name = offset_d_iname - current_arch.ptrsize * 2
         # skip if padding
         while read_int_from_memory(dentry + offset_dname_name) != dentry + offset_d_iname:
@@ -62167,6 +62438,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct inode*)0).i_no")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         current = inode + 2 + 2 + 4 + 4 + 4
 
         # now, `current` points i_acl or i_op
@@ -62316,6 +62596,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct task_struct*)0).nsproxy")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         offset_nsproxy = offset_files + current_arch.ptrsize
         if not is_valid_addr(read_int_from_memory(task_addr + offset_nsproxy + current_arch.ptrsize * 3)): # blocked
             # CONFIG_IO_URING=n
@@ -62338,6 +62627,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct task_struct*)0).sighand")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         offset_sighand = offset_files + current_arch.ptrsize * 3
         if not is_valid_addr(read_int_from_memory(task_addr + offset_sighand + current_arch.ptrsize)): # blocked
             # CONFIG_IO_URING=n
@@ -62383,6 +62681,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             wait_queue_head_t signalfd_wqh;
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("&((struct sighand_struct*)0).action")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         kversion = Kernel.kernel_version()
 
         if "5.3" <= kversion:
@@ -62466,6 +62773,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         0xffff000003080098|+0x0098|+019: 0x0000000000000000
         ...
         """
+        # fast path
+        try:
+            return to_unsigned_long(
+                gdb.parse_and_eval("sizeof(struct k_sigaction)")
+            )
+        except gdb.error:
+            pass
+
+        # slow path
         if is_32bit():
             possible_sizes = [0x10, 0x14, 0x18]
         else:
