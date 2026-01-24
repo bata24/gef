@@ -78588,6 +78588,29 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
+    def resolve_zone_offset_name(self):
+        # fast path
+        try:
+            self.offset_name = to_unsigned_long(gdb.parse_and_eval("&((struct zone*)0).name"))
+            self.sizeof_zone = to_unsigned_long(gdb.parse_and_eval("sizeof(struct zone)"))
+            return
+        except gdb.error:
+            pass
+
+        # slow path
+        current = self.nodes[0]
+        name_offsets = []
+        while len(name_offsets) < 2:
+            val = read_int_from_memory(current)
+            name = read_cstring_from_memory(val)
+            if name in ["DMA", "DMA32", "Normal", "HighMem", "Movable", "Device"]:
+                offset = current - self.nodes[0]
+                name_offsets.append(offset)
+            current += current_arch.ptrsize
+        self.offset_name = name_offsets[0]
+        self.sizeof_zone = name_offsets[1] - name_offsets[0]
+        return
+
     def resolve_zone_offset_per_cpu_pageset(self):
         # fast path
         kversion = Kernel.kernel_version()
@@ -78913,18 +78936,10 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         };
         """
 
-        # zone->name
-        current = self.nodes[0]
-        name_offsets = []
-        while len(name_offsets) < 2:
-            val = read_int_from_memory(current)
-            name = read_cstring_from_memory(val)
-            if name in ["DMA", "DMA32", "Normal", "HighMem", "Movable", "Device"]:
-                offset = current - self.nodes[0]
-                name_offsets.append(offset)
-            current += current_arch.ptrsize
-        self.offset_name = name_offsets[0]
+        # zone->name, sizeof(struct zone)
+        self.resolve_zone_offset_name()
         self.quiet_info("offsetof(zone, name): {:#x}".format(self.offset_name))
+        self.quiet_info("sizeof(zone): {:#x}".format(self.sizeof_zone))
 
         # zone->per_cpu_pageset
         self.resolve_zone_offset_per_cpu_pageset()
@@ -78946,10 +78961,6 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         # NR_PCP_LISTS
         self.resolve_NR_PCP_LISTS(per_cpu_pageset)
         self.quiet_info("NR_PCP_LISTS: {:d}".format(self.NR_PCP_LISTS))
-
-        # sizeof(zone)
-        self.sizeof_zone = name_offsets[1] - name_offsets[0]
-        self.quiet_info("sizeof(zone): {:#x}".format(self.sizeof_zone))
 
         # MAX_NR_ZONES
         self.resolve_MAX_NR_ZONES()
