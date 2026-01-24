@@ -79586,14 +79586,14 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
                     raise
                 mtype_str = self.migrate_types[mtype]
                 order = self.get_pageblock_order()
-            elif ("6.0" <= kversion < "6.1") or ("6.2" <= kversion < "6.9"):
+            elif ("6.0" <= kversion < "6.1") or ("6.2" <= kversion < "6.6.37") or ("6.7" <= kversion < "6.9"):
                 # 1 slot
                 if i != NR_LOWORDER_PCP_LISTS:
                     raise
                 mtype = 0
                 mtype_str = "THP"
                 order = self.get_pageblock_order()
-            elif ("6.1" <= kversion < "6.2") or ("6.9" <= kversion < "6.10"):
+            elif ("6.1" <= kversion < "6.2") or ("6.6.37" <= kversion < "6.7") or ("6.9" <= kversion < "6.10"):
                 # 2 slots
                 thp_i = i - NR_LOWORDER_PCP_LISTS
                 if not (0 <= thp_i < 2):
