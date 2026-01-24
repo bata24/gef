@@ -79100,7 +79100,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             virt = Kernel.page2virt(self.page)
             phys = None
             if virt:
-                phys = virt - KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+                phys = PageMap.v2p_from_map(virt, BuddyDumpCommand.maps)
             if virt is not None:
                 virt_str = "{:#0{:d}x}-{:#0{:d}x}".format(virt, align, virt + self.size, align)
                 virt_str = Color.colorify(virt_str, heap_page_color)
@@ -79384,7 +79384,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             virt = Kernel.page2virt(entry.page)
             if first:
                 if virt is not None:
-                    phys = virt - KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+                    phys = PageMap.v2p_from_map(virt, BuddyDumpCommand.maps)
                     if phys is not None:
                         self.out.append("    used:{:{:d}s}  size:{:#08x}".format("", align, phys))
                 first = False
@@ -79463,9 +79463,10 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         if not self.initialize():
             return
 
-        # check if PAGE_OFFSET is available
-        if KernelAddressHeuristicFinder.get_PAGE_OFFSET() is None:
-            self.quiet_err("Failed to resolve PAGE_OFFSET")
+        # do not use cache
+        BuddyDumpCommand.maps = PageMap.get_page_maps(None)
+        if BuddyDumpCommand.maps is None:
+            self.quiet_err("Failed to resolve maps")
             return
 
         # dump
