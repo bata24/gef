@@ -78529,6 +78529,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
                         help="sort by page address instead of link list order of each size.")
     parser.add_argument("-S", "--sort-verbose", action="store_true",
                         help="enable --sort and add used area. filtered areas are treated as used.")
+    parser.add_argument("-Q", "--skip-phys", action="store_true", help="skip virt -> phys translation.")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show all entries for non-sort mode.")
     parser.add_argument("-vv", "--vverbose", action="store_true", help="show empty entries too for non-sort mode.")
@@ -79100,10 +79101,11 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         return True
 
     class Entry:
-        def __init__(self, page, size, is_highmem, cpu_num=None):
+        def __init__(self, page, size, is_highmem, skip_phys, cpu_num=None):
             self.page = page
             self.size = size
             self.is_highmem = is_highmem
+            self.skip_phys = skip_phys
             self.cpu_num = cpu_num
             return
 
@@ -79119,7 +79121,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
             virt = Kernel.page2virt(self.page)
             phys = None
-            if virt:
+            if virt and not self.skip_phys:
                 phys = PageMap.v2p_from_map(virt, BuddyDumpCommand.maps)
             if virt is not None:
                 virt_str = "{:#0{:d}x}-{:#0{:d}x}".format(virt, align, virt + self.size, align)
@@ -79257,7 +79259,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         # parse pcp entries
         while current != list_i:
             page = current - self.offset_lru
-            entry = self.Entry(page, size, is_highmem, cpu_num=cpu_num)
+            entry = self.Entry(page, size, is_highmem, self.args.skip_phys, cpu_num=cpu_num)
             entries.append(entry)
             current = read_int_from_memory(current)
         return pcp_title, entries, bool(len(entries))
@@ -79300,7 +79302,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         # parse free list
         while current != free_list:
             page = current - self.offset_lru
-            entry = self.Entry(page, size, is_highmem)
+            entry = self.Entry(page, size, is_highmem, self.args.skip_phys)
             entries.append(entry)
             current = read_int_from_memory(current)
         return mtype_title, entries, bool(len(entries))
@@ -79483,10 +79485,11 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             return
 
         # do not use cache
-        BuddyDumpCommand.maps = PageMap.get_page_maps(None)
-        if BuddyDumpCommand.maps is None:
-            self.quiet_err("Failed to resolve maps")
-            return
+        if not self.args.skip_phys:
+            BuddyDumpCommand.maps = PageMap.get_page_maps(None)
+            if BuddyDumpCommand.maps is None:
+                self.quiet_err("Failed to resolve maps")
+                return
 
         # dump
         node_entries = []
