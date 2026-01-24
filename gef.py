@@ -100798,9 +100798,11 @@ class PageCommand(GenericCommand):
         if is_kgdb():
             if self.args.mode == "to_phys" or self.args.mode == "from_phys":
                 err("Unsupported in kgdb mode")
-            elif self.args.mode == "to_virt" or self.args.mode == "from_virt" and \
+                return
+            elif (self.args.mode == "to_virt" or self.args.mode == "from_virt") and \
                     not kgdb_has_system_registers():
                 err("Unsupported in kgdb mode without access to system registers")
+                return
 
         if not hasattr(self, "initialized"):
             self.initialized = False
