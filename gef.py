@@ -60608,7 +60608,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     def get_thread_info(self, task_addr, offset_stack):
         # fast path
         try:
-            return task_addr + gdb.parse_and_eval("&((struct task_struct*)0).thread_info")
+            return task_addr + to_unsigned_long(
+                gdb.parse_and_eval("&((struct task_struct*)0).thread_info")
+            )
         except gdb.error:
             try:
                 # task_struct exists but has no thread_info member
