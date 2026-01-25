@@ -80088,9 +80088,22 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             virt = Kernel.page2virt(entry.page)
             if first:
                 if virt is not None:
-                    phys = PageMap.v2p_from_map(virt, BuddyDumpCommand.maps)
+                    phys = None
+                    if self.args.skip_phys:
+                        pass
+                    elif self.args.use_physmap:
+                        if is_x86_64():
+                            physmap = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+                        elif is_arm64():
+                            physmap = KernelAddressHeuristicFinder.consts().physmap_base
+                        if physmap is not None:
+                            phys = virt - physmap
+                    else:
+                        phys = PageMap.v2p_from_map(virt, BuddyDumpCommand.maps)
+
                     if phys is not None:
                         self.out.append("    used:{:{:d}s}  size:{:#08x}".format("", align, phys))
+
                 first = False
             else:
                 if isinstance(virt, int) and isinstance(prev_virt, int):
