@@ -94771,7 +94771,7 @@ class PageMap:
 
 @register_command
 class Virt2PhysCommand(GenericCommand):
-    """Transfer from virtual address to physical address."""
+    """Translate from virtual address to physical address."""
 
     _cmdline_ = "v2p"
     _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
@@ -94815,7 +94815,7 @@ class Virt2PhysCommand(GenericCommand):
 
 @register_command
 class Phys2VirtCommand(GenericCommand):
-    """Transfer from physical address to virtual address."""
+    """Translate from physical address to virtual address."""
 
     _cmdline_ = "p2v"
     _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
@@ -100659,18 +100659,21 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class PageCommand(GenericCommand):
-    """Convert between virtual addresses, physical addresses, and page addresses."""
+    """The base command to convert between virtual addresses, physical addresses, and page addresses."""
 
     _cmdline_ = "page"
     _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    modes = ["to_virt", "to_phys", "from_virt", "from_phys"]
-    parser.add_argument("mode", choices=modes, help="conversion mode.")
-    parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
-                        help="the address to convert.")
-    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
+    if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
+        subparsers = parser.add_subparsers(title="command", required=False)
+    else:
+        subparsers = parser.add_subparsers(title="command")
+    subparsers.add_parser("to_virt")
+    subparsers.add_parser("to_phys")
+    subparsers.add_parser("from_virt")
+    subparsers.add_parser("from_phys")
     _syntax_ = parser.format_help()
 
     _note_ = [
@@ -100716,81 +100719,73 @@ class PageCommand(GenericCommand):
     _note_ = "\n".join(_note_)
 
     def __init__(self, *args, **kwargs):
-        super().__init__(complete="use_user_complete")
+        prefix = kwargs.get("prefix", True)
+        complete = kwargs.get("complete", gdb.COMPLETE_NONE)
+        super().__init__(prefix=prefix, complete=complete)
         return
 
-    def complete(self, text, word): # noqa
-        if text.strip() in self.modes:
-            # already matched
-            return []
-
-        if text == "":
-            # no prefix
-            return [s for s in self.modes if ((word is None) or (s and word in s))]
-
-        # finally, look for possible values for given prefix
-        return [s for s in self.modes if s and s.startswith(text.strip())]
-
     def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
+        if hasattr(PageCommand, "initialized") and PageCommand.initialized:
             return True
 
-        self.PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
+        info("Wait for memory scan")
+
+        PageCommand.PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
 
         if is_x86_64():
             # CONFIG_SPARSEMEM_VMEMMAP
-            self.VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
+            PageCommand.VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
             if self.VMEMMAP_START is None:
                 err("Not found VMEMMAP_START")
                 return False
 
-            self.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+            PageCommand.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
             if self.PAGE_OFFSET is None:
                 err("Not found PAGE_OFFSET")
                 return False
 
-            self.phys_base = KernelAddressHeuristicFinder.get_phys_base()
+            PageCommand.phys_base = KernelAddressHeuristicFinder.get_phys_base()
             if self.phys_base is None:
                 err("Not found phys_base")
                 return False
 
-            self.START_KERNEL_map = KernelAddressHeuristicFinder.consts().START_KERNEL_map
+            PageCommand.START_KERNEL_map = KernelAddressHeuristicFinder.consts().START_KERNEL_map
             if self.START_KERNEL_map is None:
                 err("Not found __START_KERNEL_map")
                 return False
 
-            self.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
+            PageCommand.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
             if self.sizeof_struct_page is None:
                 err("Not found sizeof(struct page)")
                 return False
 
         elif is_x86_32():
-            self.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+            PageCommand.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
             if self.PAGE_OFFSET is None:
                 err("Not found PAGE_OFFSET")
                 return False
 
-            self.PAGE_OFFSET_END = KernelAddressHeuristicFinder.get_PAGE_OFFSET_END()
+            PageCommand.PAGE_OFFSET_END = KernelAddressHeuristicFinder.get_PAGE_OFFSET_END()
             if self.PAGE_OFFSET_END is None:
                 err("Not found PAGE_OFFSET_END")
                 return False
 
-            self.VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
+            PageCommand.VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
             if self.VMALLOC_START is None:
                 err("Not found VMALLOC_START")
                 return False
 
-            self.VMALLOC_END = KernelAddressHeuristicFinder.get_VMALLOC_END()
+            PageCommand.VMALLOC_END = KernelAddressHeuristicFinder.get_VMALLOC_END()
             if self.VMALLOC_END is None:
                 err("Not found VMALLOC_END")
                 return False
 
-            self.LOWMEM_LIMIT = (self.PAGE_OFFSET_END - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-            self.page_address_htable = KernelAddressHeuristicFinder.get_page_address_htable() # allow None
+            PageCommand.LOWMEM_LIMIT = (self.PAGE_OFFSET_END - self.PAGE_OFFSET) >> self.PAGE_SHIFT
+            PageCommand.page_address_htable = KernelAddressHeuristicFinder.get_page_address_htable() # allow None
 
             # Determine whether it is CONFIG_FLATMEM or CONFIG_SPARSEMEM.
-            self.mem_map = KernelAddressHeuristicFinder.get_mem_map()
-            self.mem_section = KernelAddressHeuristicFinder.get_mem_section()
+            PageCommand.mem_map = KernelAddressHeuristicFinder.get_mem_map()
+            PageCommand.mem_section = KernelAddressHeuristicFinder.get_mem_section()
 
             if self.mem_map is None and self.mem_section is None:
                 err("Not found mem_map and mem_section")
@@ -100798,7 +100793,7 @@ class PageCommand(GenericCommand):
 
             if self.mem_map:
                 # CONFIG_FLATMEM (when CONFIG_NUMA=n)
-                self.mode = "FLATMEM"
+                PageCommand.mode = "FLATMEM"
 
                 # calc sizeof(struct page)
                 ret = Kernel.get_page_virt_pair()
@@ -100807,11 +100802,11 @@ class PageCommand(GenericCommand):
                     return False
                 page, vaddr = ret
                 pfn = (vaddr - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-                self.sizeof_struct_page = (page - self.mem_map) // pfn
+                PageCommand.sizeof_struct_page = (page - self.mem_map) // pfn
 
             elif self.mem_section:
                 # CONFIG_SPARSEMEM (when CONFIG_NUMA=y)
-                self.mode = "SPARSEMEM"
+                PageCommand.mode = "SPARSEMEM"
 
                 # PAE check
                 cr4 = get_register("cr4", use_monitor=True)
@@ -100824,24 +100819,24 @@ class PageCommand(GenericCommand):
                 SECTIONS_SHIFT = MAX_PHYSMEM_BITS - SECTION_SIZE_BITS
                 SECTIONS_WIDTH = SECTIONS_SHIFT
                 SECTIONS_PGOFF = 32 - SECTIONS_WIDTH
-                self.SECTIONS_PGSHIFT = SECTIONS_PGOFF
-                self.SECTIONS_MASK = (1 << SECTIONS_WIDTH) - 1
+                PageCommand.SECTIONS_PGSHIFT = SECTIONS_PGOFF
+                PageCommand.SECTIONS_MASK = (1 << SECTIONS_WIDTH) - 1
 
                 # SECTIONS_PER_ROOT = 1
                 # NR_MEM_SECTIONS = 1 << SECTIONS_SHIFT
                 # NR_SECTION_ROOTS = NR_MEM_SECTIONS // SECTIONS_PER_ROOT
 
-                self.PFN_SECTION_SHIFT = SECTION_SIZE_BITS - self.PAGE_SHIFT
+                PageCommand.PFN_SECTION_SHIFT = SECTION_SIZE_BITS - self.PAGE_SHIFT
 
                 SECTION_MAP_LAST_BIT = 1 << 3
-                self.SECTION_MAP_MASK = ~(SECTION_MAP_LAST_BIT - 1) & 0xffff_ffff
+                PageCommand.SECTION_MAP_MASK = ~(SECTION_MAP_LAST_BIT - 1) & 0xffff_ffff
 
                 # calc sizeof(mem_section)
                 v = read_int_from_memory(self.mem_section + current_arch.ptrsize * 3)
                 if v == 0: # pad check
-                    self.sizeof_mem_section = current_arch.ptrsize * 4 # CONFIG_PAGE_EXTENSION=y
+                    PageCommand.sizeof_mem_section = current_arch.ptrsize * 4 # CONFIG_PAGE_EXTENSION=y
                 else:
-                    self.sizeof_mem_section = current_arch.ptrsize * 2 # CONFIG_PAGE_EXTENSION=n
+                    PageCommand.sizeof_mem_section = current_arch.ptrsize * 2 # CONFIG_PAGE_EXTENSION=n
 
                 # calc sizeof(struct page)
                 ret = Kernel.get_page_virt_pair()
@@ -100861,70 +100856,70 @@ class PageCommand(GenericCommand):
                     return False
                 mem_map = section_mem_map & self.SECTION_MAP_MASK
                 pfn = (vaddr - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-                self.sizeof_struct_page = (page - mem_map) // pfn
+                PageCommand.sizeof_struct_page = (page - mem_map) // pfn
 
         elif is_arm64():
             # CONFIG_SPARSEMEM_VMEMMAP
-            self.VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
+            PageCommand.VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
             if self.VMEMMAP_START is None:
                 err("Not found VMEMMAP_START")
                 return False
 
-            self.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+            PageCommand.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
             if self.PAGE_OFFSET is None:
                 err("Not found PAGE_OFFSET")
                 return False
 
-            self.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
+            PageCommand.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
             if self.sizeof_struct_page is None:
                 err("Not found sizeof(struct page)")
                 return False
 
         elif is_arm32():
-            self.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+            PageCommand.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
             if self.PAGE_OFFSET is None:
                 err("Not found PAGE_OFFSET")
                 return False
 
-            self.PAGE_OFFSET_END = KernelAddressHeuristicFinder.get_PAGE_OFFSET_END()
+            PageCommand.PAGE_OFFSET_END = KernelAddressHeuristicFinder.get_PAGE_OFFSET_END()
             if self.PAGE_OFFSET_END is None:
                 err("Not found PAGE_OFFSET_END")
                 return False
 
-            self.VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
+            PageCommand.VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
             if self.VMALLOC_START is None:
                 err("Not found VMALLOC_START")
                 return False
 
-            self.VMALLOC_END = KernelAddressHeuristicFinder.get_VMALLOC_END()
+            PageCommand.VMALLOC_END = KernelAddressHeuristicFinder.get_VMALLOC_END()
             if self.VMALLOC_END is None:
                 err("Not found VMALLOC_END")
                 return False
 
-            self.mem_map = KernelAddressHeuristicFinder.get_mem_map()
+            PageCommand.mem_map = KernelAddressHeuristicFinder.get_mem_map()
             if self.mem_map is None:
                 err("Not found mem_map")
                 return False
 
-            self.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
+            PageCommand.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
             if self.sizeof_struct_page is None:
                 err("Not found sizeof(struct page)")
                 return False
 
-            self.FIXADDR_START = KernelAddressHeuristicFinder.consts().FIXADDR_START
+            PageCommand.FIXADDR_START = KernelAddressHeuristicFinder.consts().FIXADDR_START
             if self.FIXADDR_START is None:
                 err("Not found FIXADDR_START")
                 return False
 
-            self.FIXADDR_TOP = KernelAddressHeuristicFinder.consts().FIXADDR_TOP
+            PageCommand.FIXADDR_TOP = KernelAddressHeuristicFinder.consts().FIXADDR_TOP
             if self.FIXADDR_TOP is None:
                 err("Not found FIXADDR_TOP")
                 return False
 
-            self.LOWMEM_LIMIT = (self.PAGE_OFFSET_END - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-            self.page_address_htable = KernelAddressHeuristicFinder.get_page_address_htable() # allow None
+            PageCommand.LOWMEM_LIMIT = (self.PAGE_OFFSET_END - self.PAGE_OFFSET) >> self.PAGE_SHIFT
+            PageCommand.page_address_htable = KernelAddressHeuristicFinder.get_page_address_htable() # allow None
 
-        self.initialized = True
+        PageCommand.initialized = True
         return True
 
     def is_vmalloc_addr(self, virt):
@@ -101147,65 +101142,35 @@ class PageCommand(GenericCommand):
             return None
         return page
 
-    def page_translation(self):
-        out = []
-        if self.args.mode == "to_virt":
-            # A page may be associated with multiple virtual addresses.
-            vaddr = self.page2virt(self.args.address)
-            if vaddr is None:
-                err("Failed to resolve")
-                return None
-            out.append("Page: {:#x} -> Virt: {:#x}".format(self.args.address, vaddr))
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
+    @only_if_in_kernel
+    def do_invoke(self, args):
+        self.usage(simple=True)
+        return
 
-        elif self.args.mode == "to_phys":
-            # A page may be associated with multiple virtual addresses.
-            vaddr = self.page2virt(self.args.address)
-            if vaddr is None:
-                err("Failed to resolve")
-                return None
 
-            # Get the physical addresses pointed to by those virtual addresses.
-            paddr = Kernel.v2p(vaddr)
-            if not paddr:
-                err("Failed to resolve")
-                return None
-            out.append("Page: {:#x} -> Phys: {:#x}".format(self.args.address, paddr))
+@register_command
+class PageToVirtCommand(PageCommand, BufferingOutput):
+    """Translate from page to virtual address."""
 
-        elif self.args.mode == "from_virt":
-            vaddr = self.args.address
-            if self.args.address & 0xfff:
-                warn("The address must be 0x1000 aligned, round down and then calculate")
-                vaddr = self.args.address & get_pagesize_mask_high()
+    _cmdline_ = "page to_virt"
+    _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
+    _aliases_ = ["page2virt"]
 
-            # A virtual address is always associated with one physical address.
-            page = self.virt2page(vaddr)
-            if page is None:
-                err("Failed to resolve")
-                return None
-            out.append("Virt: {:#x} -> Page: {:#x}".format(vaddr, page))
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("page", metavar="ADDRESS", type=AddressUtil.parse_address,
+                        help="the page address to translate.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
+    _syntax_ = parser.format_help()
 
-        elif self.args.mode == "from_phys":
-            paddr = self.args.address
-            if self.args.address & 0xfff:
-                warn("The address must be 0x1000 aligned, round down and then calculate")
-                paddr = self.args.address & get_pagesize_mask_high()
+    _note_ = None
 
-            r = Kernel.p2v(paddr)
-            if not r:
-                err("Failed to resolve")
-                return None
-
-            for vaddr in r:
-                # A virtual address is always associated with one page.
-                page = self.virt2page(vaddr)
-                if page is None:
-                    err("Failed to resolve")
-                    return None
-                # Assuming there should be one, all different values will be displayed for certainty.
-                msg = "Phys: {:#x} -> Page: {:#x}".format(paddr, page)
-                if msg not in out:
-                    out.append(msg)
-        return out
+    def __init__(self):
+        super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
+        return
 
     @parse_args
     @only_if_gdb_running
@@ -101213,20 +101178,12 @@ class PageCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     @only_if_in_kernel
     def do_invoke(self, args):
-        if is_kgdb():
-            if self.args.mode == "to_phys" or self.args.mode == "from_phys":
-                err("Unsupported in kgdb mode")
-                return
-            elif (self.args.mode == "to_virt" or self.args.mode == "from_virt") and \
-                    not kgdb_has_system_registers():
-                err("Unsupported in kgdb mode without access to system registers")
-                return
-
-        if not hasattr(self, "initialized"):
-            self.initialized = False
+        if is_kgdb() and not kgdb_has_system_registers():
+            err("Unsupported in kgdb mode without access to system registers")
+            return
 
         if args.rescan:
-            self.initialized = False
+            PageCommand.initialized = False
 
         if is_arm64():
             kversion = Kernel.kernel_version()
@@ -101234,53 +101191,31 @@ class PageCommand(GenericCommand):
                 err("Unsupported before v4.7")
                 return
 
-        info("Wait for memory scan")
-
         ret = self.initialize()
         if ret is False:
             err("Failed to initialize")
             return
 
-        out = self.page_translation()
-        if out is None:
+        self.out = []
+
+        # A page may be associated with multiple virtual addresses.
+        vaddr = self.page2virt(args.page)
+        if vaddr is None:
+            err("Failed to resolve")
             return
-        gef_print("\n".join(out))
+        self.out.append("Page: {:#x} -> Virt: {:#x}".format(args.page, vaddr))
+
+        self.print_output(check_terminal_size=True)
         return
 
 
 @register_command
-class Page2VirtCommand(GenericCommand):
-    """Transfer from page to virtual address (shortcut for `page to_virt ...`)."""
+class PageFromVirtCommand(PageCommand, BufferingOutput):
+    """Translate from virtual address to page."""
 
-    _cmdline_ = "page2virt"
+    _cmdline_ = "page from_virt"
     _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("page", metavar="ADDRESS", type=AddressUtil.parse_address,
-                        help="the page address to translate.")
-    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
-    _syntax_ = parser.format_help()
-
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
-    @only_if_in_kernel
-    def do_invoke(self, args):
-        if is_kgdb() and not kgdb_has_system_registers():
-            err("Unsupported in kgdb mode without access to system registers")
-            return
-        rstr = "-r" if args.rescan else ""
-        gdb.execute("page to_virt {:s} {:#x}".format(rstr, args.page))
-        return
-
-
-@register_command
-class Virt2PageCommand(GenericCommand):
-    """Transfer from virtual address to page (shortcut for `page from_virt ...`)."""
-
-    _cmdline_ = "virt2page"
-    _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
+    _aliases_ = ["virt2page"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("virt", metavar="ADDRESS", type=AddressUtil.parse_address,
@@ -101288,6 +101223,12 @@ class Virt2PageCommand(GenericCommand):
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     _syntax_ = parser.format_help()
 
+    _note_ = None
+
+    def __init__(self):
+        super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
+        return
+
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
@@ -101297,17 +101238,46 @@ class Virt2PageCommand(GenericCommand):
         if is_kgdb() and not kgdb_has_system_registers():
             err("Unsupported in kgdb mode without access to system registers")
             return
-        rstr = "-r" if args.rescan else ""
-        gdb.execute("page from_virt {:s} {:#x}".format(rstr, args.virt))
+
+        if args.rescan:
+            PageCommand.initialized = False
+
+        if is_arm64():
+            kversion = Kernel.kernel_version()
+            if kversion < "4.7":
+                err("Unsupported before v4.7")
+                return
+
+        ret = self.initialize()
+        if ret is False:
+            err("Failed to initialize")
+            return
+
+        self.out = []
+
+        vaddr = args.virt
+        if vaddr & 0xfff:
+            warn("The address must be 0x1000 aligned, round down and then calculate")
+            vaddr &= get_pagesize_mask_high()
+
+        # A virtual address is always associated with one physical address.
+        page = self.virt2page(vaddr)
+        if page is None:
+            err("Failed to resolve")
+            return
+        self.out.append("Virt: {:#x} -> Page: {:#x}".format(vaddr, page))
+
+        self.print_output(check_terminal_size=True)
         return
 
 
 @register_command
-class Page2PhysCommand(GenericCommand):
-    """Transfer from page to physical address (shortcut for `page to_phys ...`)."""
+class PageToPhysCommand(PageCommand, BufferingOutput):
+    """Translate from page to physical address."""
 
-    _cmdline_ = "page2phys"
+    _cmdline_ = "page to_phys"
     _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
+    _aliases_ = ["page2phys"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("page", metavar="ADDRESS", type=AddressUtil.parse_address,
@@ -101315,23 +101285,58 @@ class Page2PhysCommand(GenericCommand):
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     _syntax_ = parser.format_help()
 
+    _note_ = None
+
+    def __init__(self):
+        super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
+        return
+
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     @only_if_in_kernel
     def do_invoke(self, args):
-        rstr = "-r" if args.rescan else ""
-        gdb.execute("page to_phys {:s} {:#x}".format(rstr, args.page))
+        if args.rescan:
+            PageCommand.initialized = False
+
+        if is_arm64():
+            kversion = Kernel.kernel_version()
+            if kversion < "4.7":
+                err("Unsupported before v4.7")
+                return
+
+        ret = self.initialize()
+        if ret is False:
+            err("Failed to initialize")
+            return
+
+        self.out = []
+
+        # A page may be associated with multiple virtual addresses.
+        vaddr = self.page2virt(args.page)
+        if vaddr is None:
+            err("Failed to resolve")
+            return
+
+        # Get the physical addresses pointed to by those virtual addresses.
+        paddr = Kernel.v2p(vaddr)
+        if not paddr:
+            err("Failed to resolve")
+            return
+        self.out.append("Page: {:#x} -> Phys: {:#x}".format(args.page, paddr))
+
+        self.print_output(check_terminal_size=True)
         return
 
 
 @register_command
-class Phys2PageCommand(GenericCommand):
-    """Transfer from physical address to page (shortcut for `page from_phys ...`)."""
+class PhysToPageCommand(PageCommand, BufferingOutput):
+    """Translate from physical address to page."""
 
-    _cmdline_ = "phys2page"
+    _cmdline_ = "page from_phys"
     _category_ = "08-d. Qemu-system Cooperation - Virt/Phys/Page"
+    _aliases_ = ["phys2page"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("phys", metavar="ADDRESS", type=AddressUtil.parse_address,
@@ -101339,14 +101344,56 @@ class Phys2PageCommand(GenericCommand):
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     _syntax_ = parser.format_help()
 
+    _note_ = None
+
+    def __init__(self):
+        super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
+        return
+
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     @only_if_in_kernel
     def do_invoke(self, args):
-        rstr = "-r" if args.rescan else ""
-        gdb.execute("page from_phys {:s} {:#x}".format(rstr, args.phys))
+        if args.rescan:
+            PageCommand.initialized = False
+
+        if is_arm64():
+            kversion = Kernel.kernel_version()
+            if kversion < "4.7":
+                err("Unsupported before v4.7")
+                return
+
+        ret = self.initialize()
+        if ret is False:
+            err("Failed to initialize")
+            return
+
+        self.out = []
+
+        paddr = args.phys
+        if paddr & 0xfff:
+            warn("The address must be 0x1000 aligned, round down and then calculate")
+            paddr &= get_pagesize_mask_high()
+
+        r = Kernel.p2v(paddr)
+        if not r:
+            err("Failed to resolve")
+            return
+
+        for vaddr in r:
+            # A virtual address is always associated with one page.
+            page = self.virt2page(vaddr)
+            if page is None:
+                err("Failed to resolve")
+                return
+            # Assuming there should be one, all different values will be displayed for certainty.
+            msg = "Phys: {:#x} -> Page: {:#x}".format(paddr, page)
+            if msg not in self.out:
+                self.out.append(msg)
+
+        self.print_output(check_terminal_size=True)
         return
 
 
