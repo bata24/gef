@@ -60275,10 +60275,13 @@ class Kernel:
     def v2p(vaddr):
         # v2p is slow since it needs maps parsing for each time.
         # more faster using gva2gpa if available.
-        ret = gdb.execute("monitor gva2gpa {:#x}".format(vaddr), to_string=True)
-        r = re.search(r"gpa: (0x\S+)", ret)
-        if r:
-            return int(r.group(1), 16)
+        try:
+            ret = gdb.execute("monitor gva2gpa {:#x}".format(vaddr), to_string=True)
+            r = re.search(r"gpa: (0x\S+)", ret)
+            if r:
+                return int(r.group(1), 16)
+        except gdb.error:
+            pass
 
         ret = gdb.execute("v2p {:#x}".format(vaddr), to_string=True)
         r = re.search(r"Virt: 0x\S+ -> Phys: (0x\S+)", ret)
@@ -101620,10 +101623,15 @@ class PageToPhysCommand(PageCommand, BufferingOutput):
 
     @parse_args
     @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     @only_if_in_kernel
     def do_invoke(self, args):
+        # This command depends on pagewalk, which requires access to system registers.
+        if is_kgdb() and not kgdb_has_system_registers():
+            err("Unsupported in kgdb mode without access to system registers")
+            return
+
         if args.rescan:
             PageCommand.initialized = False
 
@@ -101679,10 +101687,15 @@ class PhysToPageCommand(PageCommand, BufferingOutput):
 
     @parse_args
     @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     @only_if_in_kernel
     def do_invoke(self, args):
+        # This command depends on pagewalk, which requires access to system registers.
+        if is_kgdb() and not kgdb_has_system_registers():
+            err("Unsupported in kgdb mode without access to system registers")
+            return
+
         if args.rescan:
             PageCommand.initialized = False
 
