@@ -4923,6 +4923,17 @@ class GlibcHeap:
                         return False
                 raise gdb.MemoryError from e
 
+        def is_real_used(self):
+            # Even if a chunk has been freed, if it is in tcache or fastbin,
+            # the PREV_IN_USE bit of the chunk directly below it will be set.
+            # This bit will be ignored and we will determine whether it is on the free list.
+            if self.arena.top == self.chunk_base_address:
+                return False
+            return not self.arena.is_chunk_in_freelists(self)
+
+        def is_top(self):
+            return self.arena.top == self.chunk_base_address
+
         def str_chunk_size_flag(self):
             msg = []
             if self.has_p_bit():
@@ -22023,6 +22034,7 @@ class GlibcHeapCommand(GenericCommand):
     subparsers.add_parser("extract-heap-addr")
     subparsers.add_parser("calc-protected-fd")
     subparsers.add_parser("visual-heap")
+    subparsers.add_parser("composition")
     subparsers.add_parser("tracer")
     subparsers.add_parser("parse")
     _syntax_ = parser.format_help()
@@ -24349,6 +24361,235 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
         self.out = []
         self.generate_visual_heap(arena, dump_start, args.max_count)
         self.print_output()
+        return
+
+
+@register_command
+class GlibcHeapCompositionCommand(GenericCommand):
+    """Visualize chunks on a heap as composition image."""
+
+    _cmdline_ = "heap composition"
+    _category_ = "06-a. Heap - Glibc"
+    _aliases_ = ["composition"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
+                        help="the address interpreted as the beginning of a contiguous chunk. (default: arena.heap_base)")
+    parser.add_argument("-a", dest="arena_addr", type=AddressUtil.parse_address,
+                        help="the address or number to interpret as an arena. (default: main_arena)")
+    parser.add_argument("-c", dest="max_count", type=AddressUtil.parse_address,
+                        help="maximum number of chunks to parse; use when the number of chunks is very large.")
+    parser.add_argument("-t", "--include-top", action="store_true", help="include top chunk.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    _note_ = [
+        Color.colorify("In-use chunks", "underline") + " are displayed alternately in " + \
+        Color.colorify("dark gray", "gray") + " and " + Color.colorify("light gray", "cloud") + ".",
+        Color.colorify("Freed chunks", "underline") + " are displayed alternately in " + \
+        Color.colorify("muted red", "orange") + " and " + Color.colorify("muted yellow", "lemon_yellow") + ".",
+        "In both cases, the color is determined by whether the chunk’s position from the beginning",
+        "is odd-numbered or even-numbered.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def __init__(self):
+        super().__init__(complete=gdb.COMPLETE_LOCATION)
+        return
+
+    def collect_chunks(self, arena, dump_start, max_count):
+        sect = ProcessMap.process_lookup_address(dump_start)
+        if sect:
+            end = sect.page_end
+        else:
+            # If qemu-user 8.1 or higher, the `process_lookup_address` to obtain the section list
+            # uses `info proc mappings` internally.
+            # This is fast, but does not return an accurate list in some cases.
+            # For example, sparc64 may not include the heap area.
+            # So it detects the end of the page from arena.top.
+            end = arena.top + GlibcHeap.GlibcChunk(arena, arena.top, from_base=True).size
+
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            tqdm = None
+        if tqdm:
+            pbar = tqdm(total=end - dump_start, leave=False)
+
+        chunks = []
+        err_msg = None
+        addr = dump_start
+        i = 0
+        while addr < end:
+            chunk = GlibcHeap.GlibcChunk(arena, addr + current_arch.ptrsize * 2)
+            # corrupt check
+            if chunk.size == 0:
+                err_msg = "{} Corrupted (chunk.size == 0)".format(Color.colorify("[!]", "bold red"))
+                chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
+                chunks.append(chunk)
+                break
+            elif addr != arena.top and addr + chunk.size > arena.top:
+                err_msg = "{} Corrupted (addr + chunk.size > arena.top)".format(Color.colorify("[!]", "bold red"))
+                chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
+                chunks.append(chunk)
+                break
+            elif addr + chunk.size > end:
+                err_msg = "{} Corrupted (addr + chunk.size > sect.page_end)".format(Color.colorify("[!]", "bold red"))
+                chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
+                chunks.append(chunk)
+                break
+            # maybe not corrupted
+            try:
+                chunk.data = read_memory(addr, chunk.size)
+            except gdb.MemoryError:
+                break
+
+            if chunk.is_top():
+                if not self.args.include_top:
+                    break
+            chunks.append(chunk)
+            addr += chunk.size
+            i += 1
+
+            if tqdm:
+                pbar.update(chunk.size)
+
+            if max_count and max_count <= i:
+                break
+
+        if tqdm:
+            pbar.close()
+        return chunks, err_msg
+
+    def generate_image(self, chunks):
+        MIN_SIZE = GlibcHeap.HeapInfo.MIN_SIZE()
+        MALLOC_ALIGNMENT = GlibcHeap.HeapInfo.MALLOC_ALIGNMENT()
+
+        def chunk_size_to_line_number(chunk):
+            line_num = ((chunk.size - MIN_SIZE) // MALLOC_ALIGNMENT) + 1
+            return max(line_num, 1)
+
+        line_nums = [chunk_size_to_line_number(c) for c in chunks]
+        used_or_freed = [c.is_real_used() for c in chunks]
+
+        total = sum(line_nums)
+        if total <= 0:
+            return None
+
+        used_cols = [
+            b"\xb3\xb3\xb3",  # 70% gray (179)
+            b"\x4d\x4d\x4d",  # 30% gray (77)
+        ]
+
+        freed_cols = [
+            b"\xc6\x6b\x5b",  # muted red
+            b"\xd8\xb4\x5a",  # muted yellow
+        ]
+
+        target_h = 30000 # limit of convert command
+        target_w = 1
+
+        # assign to target_h by ratio (rounding error is absorbed by accumulator)
+        data_parts = []
+        acc = 0 # error accumulation (molecule side)
+        for i, (h, u) in enumerate(zip(line_nums, used_or_freed)):
+            if u:
+                color = used_cols[i & 1]
+            else:
+                color = freed_cols[i & 1]
+
+            acc += h * target_h
+            px = acc // total
+            acc = acc % total
+
+            px = int(px)
+            if px <= 0:
+                continue
+
+            data_parts.append(color * (px * target_w))
+
+        data = b"".join(data_parts)
+
+        tmp_fd, tmp_path = GefUtil.mkstemp(prefix="heap-composition", suffix=".raw")
+        os.fdopen(tmp_fd, "wb").write(data)
+        return tmp_path
+
+    def make_command_line(self, image_path):
+        img_height = os.path.getsize(image_path) // 3 # RGB
+        img_width = 1
+
+        command_options = [
+            "-size {:d}x{:d}".format(img_width, img_height),
+            "-depth 8",
+        ]
+
+        # terminal size (number of characters)
+        term_height, term_width = GefUtil.get_terminal_size()
+        # it's too tight, so make it slightly smaller.
+        term_width = int(term_width * 0.95)
+        term_height = int(term_height * 0.95)
+        # number of pixels per character
+        font_width_px = 6
+        font_height_px = int(12 * 1.5)
+        # pixel dimensions of the terminal
+        term_width_px = term_width * font_width_px
+        term_height_px = term_height * font_height_px
+        # convert option
+        command_options.extend([
+            "-filter Box",
+            "-resize {:d}x{:d}!".format(term_width_px, term_height_px),
+        ])
+
+        cmd = "{!r} {:s} rgb:{!r} sixel:-".format(
+            GefUtil.which("convert"),
+            " ".join(command_options),
+            image_path,
+        )
+        return cmd
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
+    def do_invoke(self, args):
+        try:
+            GefUtil.which("convert") # imagemagick
+        except FileNotFoundError as e:
+            err("{}".format(e))
+            return
+
+        # parse arena
+        arena = GlibcHeap.get_arena(args.arena_addr)
+
+        if arena is None:
+            err("No valid arena")
+            return
+
+        if arena.heap_base is None or not is_valid_addr(arena.heap_base):
+            err("Heap is not initialized")
+            return
+
+        if args.location is None:
+            dump_start = arena.heap_base
+            # specific pattern
+            if arena.is_main_arena:
+                if (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
+                    dump_start += 8
+        else:
+            dump_start = args.location
+
+        # parse chunks
+        chunks, err_msg = self.collect_chunks(arena, dump_start, args.max_count)
+
+        # make image
+        image_path = self.generate_image(chunks)
+        if not image_path:
+            return
+
+        # show
+        cmd = self.make_command_line(image_path)
+        os.system(cmd)
+        os.unlink(image_path)
         return
 
 
