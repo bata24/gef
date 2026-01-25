@@ -3184,6 +3184,13 @@ class GlibcHeap:
             else:
                 return 0x8
 
+        @staticmethod
+        def MIN_SIZE():
+            if is_64bit():
+                return 0x20
+            else:
+                return 0x10
+
         def __init__(self, addr):
             super().__init__(addr)
             self.MALLOC_ALIGN_MASK = GlibcHeap.HeapInfo.MALLOC_ALIGNMENT() - 1
@@ -5112,11 +5119,7 @@ class GlibcHeap:
             "large_bins": {},
         }
 
-        if is_64bit():
-            MIN_SIZE = 0x20
-        else:
-            MIN_SIZE = 0x10
-
+        MIN_SIZE = GlibcHeap.HeapInfo.MIN_SIZE()
         MALLOC_ALIGNMENT = GlibcHeap.HeapInfo.MALLOC_ALIGNMENT()
 
         # tcache
@@ -23908,7 +23911,7 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
 
 
 @register_command
-class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
+class GlibcHeapFindFakeFastCommand(GenericCommand, BufferingOutput):
     """Find candidate fake fast chunks from RW memory."""
 
     _cmdline_ = "heap find-fake-fast"
@@ -24047,11 +24050,7 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @require_arch_set
     def do_invoke(self, args):
-        if is_64bit():
-            MIN_SIZE = 0x20
-        else:
-            MIN_SIZE = 0x10
-
+        MIN_SIZE = GlibcHeap.HeapInfo.MIN_SIZE()
         if args.size < MIN_SIZE:
             err("Wrong size")
             return
@@ -24063,7 +24062,7 @@ class GlibcFindFakeFastCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class GlibcExtractHeapAddrCommand(GenericCommand):
+class GlibcHeapExtractHeapAddrCommand(GenericCommand):
     """Extract heap address from protected `fd` pointer of single linked-list (glibc 2.32~)."""
 
     _cmdline_ = "heap extract-heap-addr"
@@ -24097,7 +24096,7 @@ class GlibcExtractHeapAddrCommand(GenericCommand):
     @require_arch_set
     def do_invoke(self, args):
         if args.source:
-            s = GefUtil.get_source(GlibcExtractHeapAddrCommand.reveal)
+            s = GefUtil.get_source(GlibcHeapExtractHeapAddrCommand.reveal)
             gef_print(s)
             return
 
@@ -24109,7 +24108,7 @@ class GlibcExtractHeapAddrCommand(GenericCommand):
 
 
 @register_command
-class GlibcCalcProtectedFdCommand(GenericCommand):
+class GlibcHeapCalcProtectedFdCommand(GenericCommand):
     """Calculate a valid value as protected `fd` pointer of single linked-list (glibc 2.32~)."""
 
     _cmdline_ = "heap calc-protected-fd"
@@ -24143,7 +24142,7 @@ class GlibcCalcProtectedFdCommand(GenericCommand):
 
 
 @register_command
-class GlibcVisualHeapCommand(GenericCommand, BufferingOutput):
+class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
     """Visualize chunks on a heap."""
 
     _cmdline_ = "heap visual-heap"
