@@ -15086,7 +15086,7 @@ class BufferingOutput:
 
 
 @register_priority_command
-class GefThemeCommand(GenericCommand):
+class GefThemeCommand(GenericCommand, BufferingOutput):
     """Customize GEF appearance."""
 
     _cmdline_ = "theme"
@@ -15095,7 +15095,8 @@ class GefThemeCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("key", metavar="KEY", nargs="?", help="color theme key.")
     parser.add_argument("value", metavar="VALUE", nargs="*", help="color theme value.")
-    parser.add_argument("--color-sample", action="store_true", help="print available name of colors.")
+    parser.add_argument("-c", "--color-sample", action="store_true", help="print available name of colors.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -15104,6 +15105,11 @@ class GefThemeCommand(GenericCommand):
         "{0:s} address_code bold cyan  # set new theme",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        'GDB 17 and later do not allow multiple color specifications (such as "bold red").',
+    ]
+    _note_ = "\n".join(_note_)
 
     def __init__(self, *args, **kwargs):
         super().__init__()
@@ -15165,7 +15171,7 @@ class GefThemeCommand(GenericCommand):
         return
 
     def show_all_config(self):
-        gef_print(titlify("settings"))
+        self.out.append(titlify("settings"))
 
         settings = []
         for x in Config.__gef_config__:
@@ -15176,38 +15182,54 @@ class GefThemeCommand(GenericCommand):
             value = Config.get_gef_setting("theme.{:s}".format(setting))
             if value:
                 value = Color.colorify(value, value)
-                gef_print("{:40s}: {:s}".format(setting, value))
+                self.out.append("{:40s}: {:s}".format(setting, value))
             else:
-                gef_print("{:40s}: {:s}".format(setting, "None"))
+                self.out.append("{:40s}: {:s}".format(setting, "None"))
         return
 
     def show_color_sample(self):
-        gef_print(titlify("defined colors"))
-        i = 0
-        for k, v in Color.colors.items():
-            if k.endswith("_off") or k == "normal":
-                continue
-            gef_print("{}{:20s}{}  ".format(v, k, Color.colors["normal"]), end="")
 
-            if k in ["blink", "cyan", "bright_white", "_black"]: # group terminators
-                gef_print("")
-                i = 0
-                continue
+        def list_all_color_sample(mod):
+            i = 0
+            line = ""
+            for k, v in Color.colors.items():
+                if k.endswith("_off") or k == "normal":
+                    continue
+                line += ("{}{:20s}{}  ".format(mod + v, k, Color.colors["normal"]))
 
-            if i % 5 == 4:
-                gef_print("")
-            i += 1
+                if k in ["blink", "cyan", "bright_white", "_black"]: # group terminators
+                    self.out.append(line)
+                    line = ""
+                    i = 0
+                    continue
+
+                if i % 5 == 4:
+                    self.out.append(line)
+                    line = ""
+                i += 1
+
+        self.out.append(titlify("defined colors"))
+        list_all_color_sample("")
+
+        self.out.append(titlify("defined colors (bold)"))
+        list_all_color_sample(Color.colors["bold"])
+
+        self.out.append(titlify("defined colors (highlight)"))
+        list_all_color_sample(Color.colors["highlight"])
         return
 
     @parse_args
     def do_invoke(self, args):
+        self.out = []
+
         # show all
         if args.key is None:
             self.show_all_config()
             if args.color_sample:
                 self.show_color_sample()
             else:
-                gef_print("* use --color-sample to see available color name")
+                self.out.append("* use --color-sample to see available color name")
+            self.print_output(check_terminal_size=True)
             return
 
         # show one
