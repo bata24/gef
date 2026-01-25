@@ -56166,9 +56166,18 @@ class KernelAddressHeuristicFinder:
 
         def get_offset_tasks(current_task):
             # search for init_task->tasks
+            # On CPU1, the task list is doubly linked, but on others it is not.
+            # For example:
+            #   CPU1: cpu1_current_task <-> task1 <->task2 <-> ... <-> cpu1_current_task
+            #   CPU2: cpu2_current_task  -> task1 <->task2 <-> ... <-> cpu1_current_task
+            # Therefore, we should read one element at a time and verify the linkage.
             for i in range(0x200):
                 offset_tasks = current_arch.ptrsize * i
-                if is_double_link_list(current_task + offset_tasks, min_len=5):
+                current_task_tasks = current_task + offset_tasks
+                if not is_valid_addr(current_task_tasks):
+                    return None
+                task1 = read_int_from_memory(current_task_tasks)
+                if is_double_link_list(task1, min_len=5):
                     return offset_tasks
             return None
 
