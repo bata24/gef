@@ -334,8 +334,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
             - ![](images/heap-visual-heap.png)
         - `heap tracer`: has been integrated from `heap-analysis-helper` and rewritten.
             - ![](images/heap-tracer.png)
-        - `heap composition`: visualizes chunks on a heap as composition image.
-            - ![](images/heap-composition.png)
+        - `heap dump-image`: visualizes chunks on a heap as composition image.
+            - ![](images/heap-dump-image.png)
 - uClibc heap commands are added.
     - `uclibc-ng-heap-dump`: dumps uClibc-ng heap chunks.
         - Supported on x64 and x86, based on uClibc-ng malloc-standard.

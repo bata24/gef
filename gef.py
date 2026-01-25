@@ -22034,7 +22034,7 @@ class GlibcHeapCommand(GenericCommand):
     subparsers.add_parser("extract-heap-addr")
     subparsers.add_parser("calc-protected-fd")
     subparsers.add_parser("visual-heap")
-    subparsers.add_parser("composition")
+    subparsers.add_parser("dump-image")
     subparsers.add_parser("tracer")
     subparsers.add_parser("parse")
     _syntax_ = parser.format_help()
@@ -24365,12 +24365,12 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class GlibcHeapCompositionCommand(GenericCommand):
+class GlibcHeapDumpImageCommand(GenericCommand):
     """Visualize chunks on a heap as composition image."""
 
-    _cmdline_ = "heap composition"
+    _cmdline_ = "heap dump-image"
     _category_ = "06-a. Heap - Glibc"
-    _aliases_ = ["composition"]
+    _aliases_ = ["dump-image"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
@@ -24380,6 +24380,7 @@ class GlibcHeapCompositionCommand(GenericCommand):
     parser.add_argument("-c", dest="max_count", type=AddressUtil.parse_address,
                         help="maximum number of chunks to parse; use when the number of chunks is very large.")
     parser.add_argument("-t", "--include-top", action="store_true", help="include top chunk.")
+    parser.add_argument("-s", "--save-as-png", action="store_true", help="save as png.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
@@ -24390,6 +24391,8 @@ class GlibcHeapCompositionCommand(GenericCommand):
         Color.colorify("muted red", "orange") + " and " + Color.colorify("muted yellow", "lemon_yellow") + ".",
         "In both cases, the color is determined by whether the chunk’s position from the beginning",
         "is odd-numbered or even-numbered.",
+        "",
+        "The `convert` command limits height to 32000px; output may shrink based on heap size.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -24540,11 +24543,18 @@ class GlibcHeapCompositionCommand(GenericCommand):
             "-resize {:d}x{:d}!".format(term_width_px, term_height_px),
         ])
 
-        cmd = "{!r} {:s} rgb:{!r} sixel:-".format(
-            GefUtil.which("convert"),
-            " ".join(command_options),
-            image_path,
-        )
+        if self.args.save_as_png:
+            cmd = "{!r} {:s} rgb:{!r} PNG:{!r}".format(
+                GefUtil.which("convert"),
+                " ".join(command_options),
+                image_path, image_path[:-4] + ".png"
+            )
+        else:
+            cmd = "{!r} {:s} rgb:{!r} sixel:-".format(
+                GefUtil.which("convert"),
+                " ".join(command_options),
+                image_path,
+            )
         return cmd
 
     @parse_args
@@ -24590,6 +24600,9 @@ class GlibcHeapCompositionCommand(GenericCommand):
         cmd = self.make_command_line(image_path)
         os.system(cmd)
         os.unlink(image_path)
+
+        if args.save_as_png:
+            info("Saved as {!r}".format(image_path[:-4] + ".png"))
         return
 
 
