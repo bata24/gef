@@ -62619,7 +62619,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # slow path
         offset_nsproxy = offset_files + current_arch.ptrsize
-        if not is_valid_addr(read_int_from_memory(task_addr + offset_nsproxy + current_arch.ptrsize * 3)): # blocked
+        v = read_int_from_memory(task_addr + offset_nsproxy + current_arch.ptrsize * 3) # blocked
+        if not is_valid_addr(v):
             # CONFIG_IO_URING=n
             return offset_nsproxy
         # CONFIG_IO_URING=y
@@ -63087,7 +63088,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             self.quiet_info("offsetof(sighand_struct, action): {:#x}".format(self.offset_action))
 
             if self.sizeof_action is None:
-                self.sizeof_action = self.get_sizeof_action(task_addrs, self.offset_sighand, self.offset_action, self.offset_mm)
+                self.sizeof_action = self.get_sizeof_action(
+                    task_addrs, self.offset_sighand, self.offset_action, self.offset_mm,
+                )
             if self.sizeof_action is None:
                 self.quiet_err("Not found sizeof(action[0])")
                 return False
@@ -63244,7 +63247,10 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 ids_str = ["uid", "gid"]
                 uids_fmt = "{:>5s} {:>5s}"
             uids_str = uids_fmt.format(*ids_str)
-            legend = ["task", "current", "K/U", "lwpid", "task->comm", "task->cred", uids_str, "seccomp", "kstack", "kcanary"]
+            legend = [
+                "task", "current", "K/U", "lwpid", "task->comm", "task->cred",
+                uids_str, "seccomp", "kstack", "kcanary",
+            ]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         if self.args.print_namespace:
@@ -63335,7 +63341,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 if mms:
                     self.out.append(titlify("memory map of `{:s}`".format(comm_string)))
                     for mm in mms:
-                        self.out.append("{:#018x}-{:#018x} {:s} {:s}".format(mm.start, mm.end, mm.flags, mm.file).rstrip())
+                        self.out.append("{:#018x}-{:#018x} {:s} {:s}".format(
+                            mm.start, mm.end, mm.flags, mm.file,
+                        ).rstrip())
 
             # additional information (regs)
             if proctype == "U" and self.args.print_regs:
@@ -63377,7 +63385,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                         dentry = read_int_from_memory(file + self.offset_dentry)
                         inode = read_int_from_memory(dentry + self.offset_d_inode)
                         filepath = self.get_filepath(file)
-                        self.out.append("{:<3d} {:#018x} {:#018x} {:#018x} {:s}".format(i, file, dentry, inode, filepath))
+                        self.out.append("{:<3d} {:#018x} {:#018x} {:#018x} {:s}".format(
+                            i, file, dentry, inode, filepath,
+                        ))
 
             # additional information (sighands)
             if proctype == "U" and self.args.print_sighand:
@@ -63402,7 +63412,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     else:
                         handler = "{:#018x}".format(handler)
                     flags = read_int_from_memory(sigaction + current_arch.ptrsize * 1)
-                    self.out.append("{:<2d} {:11s} {:#018x} {:18s} {:#018x}".format(i + 1, signame, sigaction, handler, flags))
+                    self.out.append("{:<2d} {:11s} {:#018x} {:18s} {:#018x}".format(
+                        i + 1, signame, sigaction, handler, flags,
+                    ))
 
             # additional information (namespace)
             if proctype == "U" and self.args.print_namespace:
@@ -63450,7 +63462,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     mode_str = "{:d} ({:s})".format(mode, mode_define)
                     filter_count = read_int32_from_memory(seccomp + 4)
                     filter_current = read_int_from_memory(seccomp + 4 * 2)
-                    self.out.append("{:#018x} {:25s} {:<12d} {:#018x}".format(seccomp, mode_str, filter_count, filter_current))
+                    self.out.append("{:#018x} {:25s} {:<12d} {:#018x}".format(
+                        seccomp, mode_str, filter_count, filter_current,
+                    ))
 
                     for i in tqdm(range(filter_count), leave=False, desc="filter"):
                         if not filter_current:
@@ -63471,7 +63485,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                             data = read_memory(prog, cnt * 8)
                             tmp_fd, tmp_path = GefUtil.mkstemp(prefix="ktask")
                             os.fdopen(tmp_fd, "wb").write(data)
-                            ret = GefUtil.gef_execute_external([self.seccomp_tools_command, "disasm", tmp_path], as_list=True)
+                            ret = GefUtil.gef_execute_external(
+                                [self.seccomp_tools_command, "disasm", tmp_path], as_list=True,
+                            )
                             self.out.extend(ret)
                             os.unlink(tmp_path)
                         else:
@@ -107244,7 +107260,7 @@ class SixelMemoryCommand(GenericCommand):
 
 
 @register_command
-class FreqencyAnalysisCommand(GenericCommand, BufferingOutput):
+class FrequencyAnalysisCommand(GenericCommand, BufferingOutput):
     """Visualize the frequency of occurrence of each byte."""
 
     _cmdline_ = "freq-analysis"
