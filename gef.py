@@ -64,10 +64,6 @@
 # SOFTWARE.
 #
 #######################################################################################
-# Use this command when checking with `vulture`:
-#   $ vulture gef.py --ignore-names="*Command"
-#
-#######################################################################################
 # Use this command when checking with `ruff`:
 #   $ ruff check gef.py --select B,C4,E,F --ignore B905,E402,E501,E731
 #
@@ -76,9 +72,13 @@
 # E402: module level import not at top of file
 #   -> For faster startup, less frequently used modules should be loaded on demand.
 # E501: line too long (> 79 characters)
-#   -> I think this rule is nonsense in the modern environment.
+#   -> This rule does not seem to make sense in a modern environment.
 # E731: do not assign a lambda expression, use a def
 #   -> It can be written more cleanly using lambdas.
+#
+#######################################################################################
+# Use this command when checking with `vulture`:
+#   $ vulture gef.py --ignore-names="*Command"
 #
 #######################################################################################
 # Use this command when checking with `codespell`:
@@ -90,8 +90,6 @@
 #
 
 
-# In low-spec environments, importing can take some time.
-# To see how long it takes for GEF to start up, GEF displays a message before importing.
 print("Loading GEF...")
 
 
@@ -3621,8 +3619,8 @@ class GlibcHeap:
             if get_libc_version() >= (2, 19):
                 return self.addrof_next + self.size_t.sizeof
             else:
-                # before glibc 2.19, the existence of next_free depends on the environment.
-                # however, it seems that it is more likely that it does not exist, so I return None.
+                # Before glibc 2.19, the presence of next_free depends on the environment.
+                # However, it appears to be more likely absent, so None is returned.
                 return None
 
         @property
@@ -4774,7 +4772,7 @@ class GlibcHeap:
                 err("Failed to get the arena, heap commands may not work properly")
                 return None
 
-        # interpret `address` as the number following next from main_arena, not the address of arena.
+        # interpret `address` as the number, not the address of arena.
         arena_number = address
 
         # main_arena
@@ -5793,7 +5791,7 @@ class Symbol:
     # Moreover, AddressUtil.recursive_dereference causes each address to be resolved every time.
     # Cache.cache_until_next is ineffective due to frequent resets (each time the `stepi` runs).
     # Fortunately, symbol information rarely changes.
-    # I decided to keep the cache until it is explicitly cleared.
+    # The cache is retained until explicitly cleared.
     @staticmethod
     @Cache.cache_this_session
     def gdb_get_location(address):
@@ -5893,7 +5891,7 @@ def load_capstone(f):
                 HPPA64.capstone_support = True
             return f(*args, **kwargs)
         except ImportError as err:
-            msg = "Missing `capstone` package for Python, try install with `pip install capstone`"
+            msg = "Missing `capstone` package for Python, try installing with `pip install capstone`"
             raise ImportWarning(msg) from err
 
     return wrapper
@@ -5927,7 +5925,7 @@ def load_unicorn(f):
 
             return f(*args, **kwargs)
         except ImportError as err:
-            msg = "Missing `unicorn` package for Python, try install with `pip install unicorn`"
+            msg = "Missing `unicorn` package for Python, try installing with `pip install unicorn`"
             raise ImportWarning(msg) from err
 
     return wrapper
@@ -5942,7 +5940,7 @@ def load_keystone(f):
             __import__("keystone")
             return f(*args, **kwargs)
         except ImportError as err:
-            msg = "Missing `keystone-engine` package for Python, try install with `pip install keystone-engine`"
+            msg = "Missing `keystone-engine` package for Python, try installing with `pip install keystone-engine`"
             raise ImportWarning(msg) from err
 
     return wrapper
@@ -5957,7 +5955,7 @@ def load_ropper(f):
             __import__("ropper")
             return f(*args, **kwargs)
         except ImportError as err:
-            msg = "Missing `ropper` package for Python, try install with `pip install ropper`"
+            msg = "Missing `ropper` package for Python, try installing with `pip install ropper`"
             raise ImportWarning(msg) from err
 
     return wrapper
@@ -5972,7 +5970,7 @@ def load_binwalk(f):
             __import__("binwalk")
             return f(*args, **kwargs)
         except ImportError as err:
-            msg = "Missing `binwalk` package for Python, try install with `apt install binwalk`"
+            msg = "Missing `binwalk` package for Python, try installing with `apt install binwalk`"
             raise ImportWarning(msg) from err
 
     return wrapper
@@ -5987,7 +5985,7 @@ def load_crccheck(f):
             __import__("crccheck")
             return f(*args, **kwargs)
         except ImportError as err:
-            msg = "Missing `crccheck` package for Python, try install with `pip install crccheck`"
+            msg = "Missing `crccheck` package for Python, try installing with `pip install crccheck`"
             raise ImportWarning(msg) from err
 
     return wrapper
@@ -6002,7 +6000,7 @@ def load_codext(f):
             __import__("codext")
             return f(*args, **kwargs)
         except ImportError as err:
-            msg = "Missing `codext` package for Python, try install with `pip install codext`"
+            msg = "Missing `codext` package for Python, try installing with `pip install codext`"
             raise ImportWarning(msg) from err
 
     return wrapper
@@ -6022,7 +6020,7 @@ def load_angr(f):
             sys.modules["readline"] = readline
             return f(*args, **kwargs)
         except ImportError as err:
-            msg = "Missing `angr` package for Python, try install with `pip install angr`"
+            msg = "Missing `angr` package for Python, try installing with `pip install angr`"
             raise ImportWarning(msg) from err
 
     return wrapper
@@ -6251,8 +6249,8 @@ class Disasm:
                     return
                 code_remain += read_data
 
-            # cs.disasm will terminate disassemble if an invalid instruction is detected.
-            # This is a loop to display (bad) and increment and reinterpret code.
+            # cs.disasm will terminate disassembling if an invalid instruction is detected.
+            # This is a loop to display "(bad)" and increment PC and reinterpret code.
             while True:
                 # disasm
                 for insn in cs.disasm(code_remain, location):
@@ -7336,7 +7334,7 @@ class ARM(Architecture):
                     ra = read_int32_from_memory(ra_addr)
                 elif insn.mnemonic.startswith("ldm"):
                     # GDB seems to disassemble ldm* instructions as pop.
-                    # I'm not sure whether this branch will ever be hit, but I'll keep it here just in case.
+                    # This branch may never be hit, but is kept just in case.
                     ra = frame.older().pc() if frame.older() else None
                 else:
                     # 'bx lr' or 'add pc, lr, #0'
@@ -7765,7 +7763,7 @@ class X86(Architecture):
             b"\x8b\x09", # mov ecx, dword ptr [ecx]
             b"\x8b\x12", # mov edx, dword ptr [edx]
             b"\x8b\x24\x24", # mov esp, dword ptr [esp]
-            # If I rewrite ebp, an error message will be displayed and it will be annoying, so I will skip it.
+            # Rewriting EBP triggers an error message, which is noisy, so it is skipped.
             #b"\x8b\x6d\x00", # mov ebp, dword ptr [ebp]
             b"\x8b\x36", # mov esi, dword ptr [esi]
             b"\x8b\x3f", # mov edi, dword ptr [edi]
@@ -10148,7 +10146,7 @@ class HPPA64(HPPA):
     arch = "HPPA"
     mode = "64"
 
-    # qemu does not support hppa64, so I could not test
+    # qemu does not support hppa64, so this could not be tested.
 
     load_condition = [
     ]
@@ -13298,7 +13296,7 @@ class ProcessMap:
     # Because it repeats read_memory many times to find the upper and lower bounds of the page.
     # Cache.cache_until_next is ineffective due to frequent resets (each time the `stepi` runs).
     # Fortunately, memory maps rarely change.
-    # I decided to clear and recheck the cache when the `vmmap` command is called explicitly.
+    # The cache is cleared and rechecked when the `vmmap` command is called explicitly.
     @staticmethod
     @Cache.cache_this_session
     def get_explored_regions():
@@ -13723,10 +13721,10 @@ class ProcessMap:
             return []
 
         elif is_wine():
-            # wine loads the EXE at wine's own virtual address.
-            # Due to pwner's use case, wine itself and its libraries should also be displayed.
-            # However, wine's `monitor mem` does not display them, so I did not adopt them.
-            # It's more reliable to resolve wine's PID and get its maps.
+            # Wine loads the EXE at Wine's own virtual address space.
+            # For typical pwner use cases, Wine itself and its libraries should also be displayed.
+            # However, Wine's `monitor mem` does not show them, so this approach is not used.
+            # Resolving Wine's PID and retrieving its memory maps is more reliable.
             pid = Pid.get_pid()
             if pid:
                 return ProcessMap.get_process_maps_linux(pid)
@@ -13795,7 +13793,7 @@ class ProcessMap:
     # Moreover, AddressUtil.recursive_dereference causes each address to be resolved every time.
     # Cache.cache_until_next is ineffective due to frequent resets (each time the `stepi` runs).
     # Fortunately, zone information rarely changes.
-    # I decided to keep the cache until it is explicitly cleared.
+    # The cache is retained until explicitly cleared.
     @staticmethod
     @Cache.cache_this_session
     def get_info_files():
@@ -13930,9 +13928,9 @@ class EventHandler:
         """GDB event handler for stop cases."""
         Cache.reset_gef_caches()
 
-        # There seems to be a bug in some architecture (e.g., i386) where temporary breakpoints are
-        # not deleted even if they are hit. I don't know the conditions under which this happens,
-        # but if remains, gef would manually remove them.
+        # There appears to be a bug on some architectures (e.g., i386) where temporary breakpoints
+        # are not deleted even after being hit. The conditions under which this occurs are unknown,
+        # so any remaining breakpoints are removed manually by GEF.
         if EventHandler.__gef_check_disabled_bp__:
             for bp in gdb.breakpoints():
                 if not bp.visible and bp.temporary:
@@ -14630,7 +14628,7 @@ class Auxv:
     # Because it may call Auxv.get_auxiliary_walk that repeats read_memory many times to find the auxv value.
     # Cache.cache_until_next is ineffective due to frequent resets (each time the `stepi` runs).
     # Fortunately, auxv rarely changes.
-    # I decided to keep the cache until it is explicitly cleared.
+    # The cache is retained until explicitly cleared.
     @staticmethod
     @Cache.cache_this_session
     def get_auxiliary_values(force_heuristic=False):
@@ -18238,10 +18236,11 @@ class HijackFdCommand(GenericCommand):
     @exclude_specific_arch(arch=("CRIS",))
     @require_arch_set
     def do_invoke(self, args):
-        # In one version of qemu, the fd was sometimes slightly off in case of i386
-        # (fd returned by syscall == real opened fd + 80). I have been hard-coding it so far,
-        # but it seems to be fixed, so please specify it with a command argument.
-        # currently supported: dup3, connect
+        # In one version of qemu, the file descriptor was sometimes shifted by a
+        # constant value on i386 (fd returned by the syscall == actual opened fd + 80).
+        # This had been hard-coded as a workaround, but the issue appears to be fixed,
+        # so it should now be specified via a command argument.
+        # Currently supported: dup3, connect
 
         self.AF_INET = 2
         self.SOCK_STREAM = 1
@@ -20818,8 +20817,8 @@ class ReadSystemRegisterCommand(GenericCommand):
         ret = ExecAsm(codes).exec_code()
         after_pc = ret["reg"]["$pc"]
 
-        # It jumps to the undefined exception vector if an attempt is made to a register that does not exist.
-        # Even though I just stepped through it, the PC register values are very different.
+        # It jumps to the undefined exception vector when an access is made to a non-existent register.
+        # Even when execution is single-stepped, the PC register values can differ significantly.
         if abs(after_pc - before_pc) > 0x10:
             err("Undefined register, it probably crashes the kernel")
             return None
@@ -23393,8 +23392,8 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         "  - Any system call was called",
         "  - Any interrupt was raised",
         "  - An instruction that unicorn does not support was executed",
-        "I have emulated them as well as I can, but maybe it is not perfect.",
-        "  - The address returned by mmap can differ from the actual one; it's an emulation limitation.",
+        "They are emulated to the best extent possible, but the emulation may be incomplete.",
+        "  - The address returned by mmap can differ from the actual one; this is an emulation limitation.",
         "The failure message may not be detected because it is searched for heuristically.",
     ]
     _note_ = "\n".join(_note_)
@@ -25982,7 +25981,7 @@ class ElfInfoCommand(GenericCommand):
 
 @register_command
 class ChecksecCommand(GenericCommand):
-    """Checksec the security properties of the current executable or passed as argument."""
+    """Check the security properties of the current executable or passed as argument."""
 
     _cmdline_ = "checksec"
     _category_ = "02-f. Process Information - Security"
@@ -26405,7 +26404,7 @@ class ChecksecCommand(GenericCommand):
 
 @register_command
 class KernelChecksecCommand(GenericCommand):
-    """Checksec the security properties of the current kernel."""
+    """Check the security properties of the current kernel."""
 
     _cmdline_ = "kchecksec"
     _category_ = "08-c. Qemu-system Cooperation - Linux Basic"
@@ -26557,9 +26556,9 @@ class KernelChecksecCommand(GenericCommand):
             return
 
         if "6.14" <= kversion:
-            # As of 6.14, following detection logic is no longer available.
-            # It has not yet been incorporated into the mainline, and samples are not available,
-            # so I will disable this check.
+            # As of 6.14, the following detection logic is no longer available.
+            # It has not yet been incorporated into the mainline, and no samples are available.
+            # Therefore, this check is disabled.
             gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
             cfg = "CONFIG_MODULE_FG_KASLR (FGKASLR)"
             gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
@@ -26593,7 +26592,7 @@ class KernelChecksecCommand(GenericCommand):
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
             # Could not build detection logic for CONFIG_MODULE_FG_KASLR.
             # But there is no way to disable it except at build time.
-            # It's included in the patch that introduces FGKASLR, so I'm assuming it's always enabled.
+            # It's included in the patch that introduces FGKASLR, so it is assumed to be always enabled.
             cfg = "CONFIG_MODULE_FG_KASLR (FGKASLR)"
             gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Enabled (maybe)", "bold green")))
         else:
@@ -26749,7 +26748,7 @@ class KernelChecksecCommand(GenericCommand):
             selinux_enabled_addr = Symbol.get_ksymaddr("selinux_enabled")
             selinux_enforcing_addr = Symbol.get_ksymaddr("selinux_enforcing")
             if selinux_enabled_addr is None:
-                additional = "selinux_init: Found, seliux_enabled: Not detected"
+                additional = "selinux_init: Found, selinux_enabled: Not detected"
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
                 return
 
@@ -31999,7 +31998,7 @@ class ContextTraceCommand(GenericCommand):
 
             # frame name
             """
-            Frame names (= current_frmae.name()) and symbols (= Symbol.get_symbol_string(current_frame.pc()))
+            Frame names (=current_frmae.name()) and symbols (=Symbol.get_symbol_string(current_frame.pc()))
             usually match, but sometimes they don't. This is an example.
 
             gef> bt
@@ -32016,8 +32015,8 @@ class ContextTraceCommand(GenericCommand):
             [#3] 0x7f0635e93f1b <pthread_cond_timedwait+0x23b>
             [#4] 0x7f0635e93f1b <pthread_cond_timedwait+0x23b>
 
-            This probably happens in cases where each symbol exists, but is inlined by optimization into a single function.
-            Therefore, I will display the frame name too if different.
+            This likely occurs when each symbol exists but is inlined into a single function by optimization.
+            Therefore, the frame name is also displayed if it differs.
             """
             try:
                 ret = Symbol.gdb_get_location(pc)
@@ -35956,8 +35955,8 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
 
         if self.verbose:
             # elf/elf.h
-            # I assume that the glibc version can be identified.
-            # Note that there is no link-map in static binaries, so there is no need to consider it.
+            # The glibc version is assumed to be identifiable.
+            # Note that static binaries do not have a link-map, so it does not need to be considered.
             if get_libc_version() >= (2, 36):
                 DT_NUM = 38
             else:
@@ -56135,9 +56134,9 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # Detecting `init_task` is very difficult.
-        # This is because `init_task` itself is rarely used, and `init_task.tasks` is most often used.
-        # On x86/x64 I've found the only case where it can be detected stably.
-        # However, there seem to be cases where it is not found.
+        # This is because `init_task` itself is rarely used, while `init_task.tasks` is used in most cases.
+        # On x86/x64, only one case has been found where detection is stable.
+        # However, there appear to be cases where it cannot be detected.
 
         # plan 2 (available v3.4 or later)
         if kversion and "3.4" <= kversion:
@@ -56156,20 +56155,22 @@ class KernelAddressHeuristicFinder:
                             continue
                         return x
 
-        # On arm32/arm64, I couldn't find that pattern.
-        # But there is a method that find `current_task` with 100% stability on arm32/arm64 (from spectial register).
-        # Additionally, `init_task` is always in kernel .data area.
-        # So I have implemented a method following.
-        # 1. Find the linked list `current_task.tasks` from `current_task`, and gathering all address of task.
-        # 2. Just choose the one with the smallest distance from kernel .data.
-        # This method can also be applied to x86/x64 as long as the `current_task` is got.
+        # On arm32/arm64, that pattern could not be found.
+        # However, there is a method to locate `current_task` with 100% stability on arm32/arm64
+        # using a special register.
+        # In addition, `init_task` is always located in the kernel .data section.
+        # Therefore, the following method is implemented:
+        # 1. Traverse the linked list `current_task.tasks` starting from `current_task`
+        #    and collect all task addresses.
+        # 2. Select the task with the smallest distance from the kernel .data section.
+        # This method can also be applied to x86/x64 as long as `current_task` can be obtained.
 
         def get_offset_tasks(current_task):
             # search for init_task->tasks
             # On CPU1, the task list is doubly linked, but on others it is not.
             # For example:
-            #   CPU1: cpu1_current_task <-> task1 <->task2 <-> ... <-> cpu1_current_task
-            #   CPU2: cpu2_current_task  -> task1 <->task2 <-> ... <-> cpu1_current_task
+            #   CPU1: cpu1_current_task <-> task1 <-> task2 <-> ... <-> cpu1_current_task
+            #   CPU2: cpu2_current_task  -> task1 <-> task2 <-> ... <-> cpu1_current_task
             # Therefore, we should read one element at a time and verify the linkage.
             for i in range(0x200):
                 offset_tasks = current_arch.ptrsize * i
@@ -59636,10 +59637,11 @@ class Kernel:
         #   [ ??? (r--) ]
         #   [ .rodata   ] <- near the top of this area has "Linux version"
         #   [ .rodata   ]
-        # In other words, .rodata may not exist immediately after .text.
-        # I have seen this on qemu with debian11 x86_64 installed.
-        # Therefore, detecting by location will not return correct results.
-        # So I decided to also detect by the existence "Linux version" near the top of the .rodata page.
+        # In other words, .rodata may not be located immediately after .text.
+        # This has been observed on qemu with Debian 11 on x86_64.
+        # Therefore, detection based solely on location may produce incorrect results.
+        # As a result, detection also checks for the presence of the string "Linux version"
+        # near the beginning of the .rodata page.
         for i, (vaddr, size, perm) in enumerate(dic["maps"][text_base_map_index + 1:]):
             if perm == "R--":
                 if dic["ro_base"] is None:
@@ -59713,8 +59715,8 @@ class Kernel:
                         dic["ro_size"] = end - addr
                         dic["ro_end"] = end
                         dic["text_size"] -= dic["ro_size"]
-                        # In this case, I chose not to detect rw_base.
-                        # Because ksymaddr-remote seems to give better results.
+                        # In this case, rw_base is not detected.
+                        # This is because ksymaddr-remote appears to provide better results.
                         dic["rw_base"] = 0
                         dic["rw_size"] = 0
                         dic["rw_end"] = 0
@@ -59725,9 +59727,9 @@ class Kernel:
                 return Kinfo(*dic.values())
 
         else:
-            # 3. search for the kernel RW base
-            # If ro_base can be detected, detect the RW area from after ro_base.
-            # TODO: I used specified the size, but there may be more good algorithms.
+            # 3. Search for the kernel RW base.
+            # If ro_base can be detected, the RW area is searched starting after ro_base.
+            # TODO: A fixed size is currently used, but better algorithms may exist.
             RW_REGION_MIN_SIZE = 0x20000
             if dic["ro_base"] is not None:
                 for vaddr, size, perm in dic["maps"][ro_base_map_index + 1:]:
@@ -60322,7 +60324,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command needs CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n.",
         "",
         "Simplified task_struct structure:",
         "",
@@ -60598,12 +60600,12 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             else:
                 found = True
 
-            # I don't know why, but it seems that sometimes you have a process that has no stack.
+            # For unknown reasons, processes without a stack are sometimes observed.
             # 0xffffa122c17db000 U   106     chal.sh ... 0xffffa43100218000 0xd16ef01535a35500
             # 0xffffa122c17da000 U   108     socat   ... 0xffffa43100278000 0x3d378b9e6f59bf00
             # 0xffffa122c17dc000 U   109     chal    ... 0xffffa431002d4000 0x277c67d5e5854500
             # 0xffffa122c17dd000 K   110     3       ... 0x0000000000000000 0x22a999743f180500 <-- here
-            # So I decided to allow a few NULL pointer.
+            # Therefore, a small number of NULL pointers are allowed.
             if zcount > len(task_addrs) // 10:
                 found = False
 
@@ -60753,10 +60755,10 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ptregs_size = current_arch.ptrsize * 21
 
             # Sometimes register values are stored a short distance away from the bottom of the kstack.
-            # I'm not sure if this depends on the kernel version.
+            # It is unclear whether this depends on the kernel version.
             # In 6.10.11 it was at offset 0, and in 6.10.0-rc2 it was at offset 16.
-            # For this reason I decided to do it dynamically.
-            # TODO: Perhaps dynamic detection is also necessary for x86, ARM, and ARM64.
+            # For this reason, dynamic detection is used.
+            # TODO: Dynamic detection may also be necessary for x86, ARM, and ARM64.
             for i in range(8):
                 init_process_kstack = read_int_from_memory(task_addrs[1] + offset_stack)
                 init_process_kstack_end = init_process_kstack + kstack_size
@@ -63216,7 +63218,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         current_tasks = {}
         for k, v in tmp_current_tasks.items():
             if len(v) > 1:
-                # I don't know if it's possible
+                # It is unclear whether this case can occur.
                 current_tasks[k] = "cpu{:d},..".format(min(v))
             else:
                 current_tasks[k] = "cpu{:d}".format(v[0])
@@ -63683,7 +63685,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command needs CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n.",
         "",
         "Simplified module structure:",
         "",
@@ -64374,7 +64376,7 @@ class KernelModuleLoadCommand(GenericCommand):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command needs CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n.",
         "It is useful if you have a kernel module with debuginfo at hand.",
     ]
     _note_ = "\n".join(_note_)
@@ -64620,10 +64622,10 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command needs CONFIG_RANDSTRUCT=n.",
-        "If there are too many block devices, detection will not be successful.",
-        "This is because block devices are not managed in one place,",
-        "so I use the list of bdev_cache obtained from the slub-dump results.",
+        "This command requires CONFIG_RANDSTRUCT=n.",
+        "If there are too many block devices, detection may fail.",
+        "This is because block devices are not managed in a single location,",
+        "so the list of bdev_cache obtained from the slub-dump results is used.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -64992,7 +64994,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     _note_ = [
-        "This command needs CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n.",
         "",
         "Simplified cdev structure:",
         "",
@@ -66171,7 +66173,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command needs CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n.",
         "",
         "Currently it supports from 3.0 to 6.16.",
         "",
@@ -66315,7 +66317,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
         self.members["tty_operations"] = adapt_to_kernel_version(tty_operations)
 
         tty_ldisc_ops = [
-            # type       name                                       minver     maxver      additinoal_flag
+            # type       name                                       minver     maxver      additional_flag
             ["int",      "magic",                                   None,      "5.13.0"],
             ["char*",    "name",                                    None,      None],
             ["int",      "num",                                     "5.16.0",  None],
@@ -67223,7 +67225,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command needs CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n.",
         "",
         "Simplified sysctl_table structure:",
         "",
@@ -67688,7 +67690,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     _note_ = [
-        "This command needs CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n.",
         "",
         "Simplified file_systems structure:",
         "",
@@ -68068,7 +68070,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
 
         filepath = os.path.join(*filepath[::-1])
 
-        # I don't know why but it works
+        # The reason is unclear, but this works.
         if switched is False and filepath == "/":
             next_mnt_instance = read_int_from_memory(mnt_instance)
             if next_mnt_instance:
@@ -69019,7 +69021,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
 
     def get_description(self, base_class, sub_class, prgif, vendor, device, subv, subd):
         # The information provided by the programming interface (prgif) is too detailed,
-        # so I decided not to use it.
+        # so it is not used.
         class_str = self.pci_ids.get(("C", base_class, sub_class), None)
         if class_str is None:
             class_str = self.pci_ids.get(("C", base_class), None)
@@ -74370,9 +74372,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         # slow path
         self.kmem_cache_offset_list = None
         kmem_caches = self.parse_kmem_caches_for_initialize()
-        # This value should be at most 0x70 by default. However, I found a case where offset 0x98 is used.
-        # This is because CONFIG_SLAB_VIRTUAL=y, that is not in main line (but some kernel introduces).
-        # However, I decided to expand this search range.
+        # This value should be at most 0x70 by default. However, cases using offset 0x98 have been observed.
+        # This occurs when CONFIG_SLAB_VIRTUAL=y, which is not in the mainline but is introduced by some kernels.
+        # Therefore, the search range is expanded.
         max_offset = 0x100
         for candidate_offset in range(current_arch.ptrsize * 2, max_offset, current_arch.ptrsize):
             # backward search for the start of `struct kmem_cache`
@@ -78414,7 +78416,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     _note_ = [
-        "This command needs CONFIG_SYSFS=y.",
+        "This command requires CONFIG_SYSFS=y.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -79927,7 +79929,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command needs CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n.",
         "",
         "Simplified pipe structure:",
         "",
@@ -80467,7 +80469,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command needs CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n.",
         "",
         "Simplified bpf structure:",
         "",
@@ -80936,7 +80938,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     _note_ = [
-        "This command needs CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n.",
         "",
         "Simplified ipc structure:",
         "",
@@ -82749,7 +82751,7 @@ class KtypesCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     _note_ = [
-        "This command needs CONFIG_DEBUG_INFO_BTF=y.",
+        "This command requires CONFIG_DEBUG_INFO_BTF=y.",
         "CONFIG_KALLSYMS_ALL=y is not required.",
     ]
     _note_ = "\n".join(_note_)
@@ -83722,7 +83724,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
 
         position = self.offset_kallsyms_names
         # kallsyms_names should be aligned.
-        # This is an optimization based on my experience, but I will implement it for now.
+        # This optimization is based on experience and is applied for now.
         position += -position % current_arch.ptrsize
 
         while True:
@@ -84058,7 +84060,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         - kallsyms_seqs_of_names (v6.1.42~v6.8)
         - kallsyms_token_table
         - kallsyms_token_index
-        - kallsyms_addresses (v6.4~?, CONFIG_KALLSYMS_BASE_RELATIVE=n) # unimplemented yet because I have never seen this pattern.
+        - kallsyms_addresses (v6.4~?, CONFIG_KALLSYMS_BASE_RELATIVE=n) # Unimplemented, as this pattern has not been observed yet.
         - kallsyms_seqs_of_names (v6.9~)
         - ...
 
@@ -87492,7 +87494,7 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             length >>= 1
             return 0x14, length * 4
         elif instance_name == "SCOPE_INFO_TYPE":
-            # It's very complicated, so I'll use the v8 command.
+            # The logic is very complicated, so the v8 command is used instead.
             self.redirect_stdout()
             gdb.execute("v8 {:#x}".format(addr | 1), to_string=True)
             self.revert_stdout()
@@ -89680,12 +89682,12 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
 
     _note_ = [
         "The main structural differences between uclibc-ng (malloc-standard) and glibc are:",
-        "- No tcache. There are fastbins, unsorted bin, small bins and larege bins.",
-        "- No thread arena. So the chunk has no NON_MAIN_ARENA flag.",
-        "The structure of malloc-standard has remained largely unchanged from 1.0 to the latest.",
-        "Therefore, it should probably be usable with any version.",
-        "Since the structure of the final version of uclibc (not uclibc-ng) is the same,",
-        "so I think it can be used with uclibc as well.",
+        "- No tcache. There are fastbins, an unsorted bin, small bins, and large bins.",
+        "- No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.",
+        "The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.",
+        "As a result, it should be usable with any version.",
+        "Since the final version of uclibc (not uclibc-ng) uses the same structure,",
+        "this command should also be usable with uclibc.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -90643,7 +90645,7 @@ class XphysAddrCommand(GenericCommand):
 
         if dump_type == "i":
             if is_x86():
-                # I don't know the length, but I'll read it 10 bytes at a time.
+                # The length is unknown, so it is read in 10-byte chunks.
                 dump_size = dump_count * 10
                 return dump_size, target
 
@@ -90884,9 +90886,9 @@ class TemporaryDummyBreakpoint(gdb.Breakpoint):
     """Create a breakpoint to avoid gdb cache problem."""
 
     # The wsm command directly modifies /proc/<PID>/mem of qemu-system.
-    # However, even though the memory change was successful, it may not be reflected in the behavior of the code.
-    # I don't know the cause, but I'm guessing it's because qemu has an internal cache.
-    # Apparently setting a breakpoint ignores this cache, so setting a temporary breakpoint avoids this problem.
+    # However, even when the memory modification succeeds, the change may not be reflected in code behavior.
+    # The cause is unknown; one possible explanation is qemu's internal caching.
+    # Setting a breakpoint appears to bypass this cache, so a temporary breakpoint is used as a workaround.
 
     def __init__(self):
         super().__init__("*{:#x}".format(0x0), type=gdb.BP_BREAKPOINT, internal=True, temporary=True)
@@ -97327,7 +97329,8 @@ class PagewalkArmCommand(PagewalkCommand):
             return
 
         if self.suffix:
-            pl1_vabase = 0 # I don't know why, but vabase of PL1 seems to be 0x0 when using TTBR1_EL1_S.
+            # The reason is unclear, but the vabase of PL1 appears to be 0x0 when TTBR1_EL1_S is used.
+            pl1_vabase = 0
         else:
             pl1_vabase = {
                 0: None,
@@ -97340,7 +97343,8 @@ class PagewalkArmCommand(PagewalkCommand):
                 7: 0x0200_0000,
             }[self.N]
         pl1_base = ((TTBR1_EL1 & 0xffff_ffff) >> x) << x
-        self.N = 0 # Whenever TTBCR.N is nonzero, the size of the translation table addressed by TTBR1 is 16KB (N=0).
+        # Whenever TTBCR.N is nonzero, the size of the translation table addressed by TTBR1 is 16KB (N=0).
+        self.N = 0
         if pl1_vabase is not None:
             self.quiet_info_add_out("$TTBR1_EL1{}: {:#x}".format(self.suffix, TTBR1_EL1))
             self.quiet_info_add_out("$TTBCR{}: {:#x}".format(self.suffix, TTBCR))
@@ -103582,7 +103586,7 @@ class KmallocTracerCommand(GenericCommand):
     _note_ = [
         "Disable `-enable-kvm` option for qemu-system (#PF may occur).",
         "Append `tsc=unstable` option for kernel cmdline.",
-        "This command needs CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -104054,7 +104058,7 @@ class KmallocAllocatedByCommand(GenericCommand):
         "Disable `-enable-kvm` option for qemu-system (#PF may occur).",
         "Disable `-smp N` option for qemu-system (write memory error may occur).",
         "Append `tsc=unstable` option for kernel cmdline.",
-        "This command needs CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -104589,7 +104593,7 @@ class KmallocAllocatedByCommand(GenericCommand):
             buf += p64(0) # ru_msgrcv
             buf += p64(0) # ru_nsignals
             buf += p64(0) # ru_nvcsw
-            buf += p64(0) # ru*nivcsw
+            buf += p64(0) # ru_nivcsw
             yield ("getrusage(RUSAGE_SELF, &buf)", "getrusage", [0, buf])
 
             yield "personality"
@@ -108577,7 +108581,7 @@ class GefArchListCommand(GenericCommand, BufferingOutput):
         registers, and feature support."""
         if arch.arch == "HPPA" and arch.mode == "64":
             # Currently, HPPA-64 is unsupported.
-            # I made a definition for displaying syscalls, but it's just provisional.
+            # A definition for displaying syscalls is provided, but it is provisional.
             return
 
         # title
@@ -110070,8 +110074,8 @@ class Gef:
             return False
 
         def create_skip_config():
-            # If .venv-gef is in the default location, it is likely that user simply forgot to activate venv.
-            # Therefore, for convenience, I will not create skip-venv-check.
+            # If .venv-gef is in the default location, it is likely that the user simply forgot to activate the venv.
+            # Therefore, for convenience, skip-venv-check is not created.
             default_venv = os.path.join(os.path.dirname(GEF_FILEPATH), ".venv-gef")
             if os.path.exists(default_venv):
                 return
@@ -110190,7 +110194,7 @@ class Gef:
         gdb.execute("set backtrace past-main on")
         gdb.execute("set print frame-arguments all")
 
-        # load all commands that has @register_command decolator.
+        # load all commands that has @register_command decorator.
         Gef.load_commands()
 
         # load the saved settings
