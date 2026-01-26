@@ -64772,13 +64772,14 @@ class KernelModuleLoadCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    def get_modules_list(self):
-        modules = KernelAddressHeuristicFinder.get_modules()
-        if modules is None:
-            self.quiet_err("Not found modules (maybe, CONFIG_MODULES is not set)")
-            return None
+    def get_modules_list(self, modules):
+        # use cache
+        if self.module_addrs:
+            return self.module_addrs
 
-        self.quiet_info("modules: {:#x}".format(modules))
+        # slow path
+        if modules is None:
+            return None
 
         module_addrs = []
         current = modules
@@ -64794,6 +64795,13 @@ class KernelModuleLoadCommand(GenericCommand):
         return module_addrs
 
     def get_offset_name(self, module_addrs):
+        # fast path
+        try:
+            return to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).name"))
+        except gdb.error:
+            pass
+
+        # slow_path
         for i in range(0x100):
             offset_name = i * current_arch.ptrsize
             valid = True
@@ -64806,10 +64814,8 @@ class KernelModuleLoadCommand(GenericCommand):
                     valid = False
                     break
             if valid:
-                self.quiet_info("offsetof(module, name): {:#x}".format(offset_name))
                 return offset_name
 
-        self.quiet_err("Not found module->name[MODULE_NAME_LEN]")
         return None
 
     def get_offset_sect_attrs(self, module_addrs):
@@ -64865,6 +64871,13 @@ class KernelModuleLoadCommand(GenericCommand):
             } attrs[];
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).sect_attrs"))
+        except gdb.error:
+            pass
+
+        # slow_path
         for i in range(300):
             offset_sect_attrs = current_arch.ptrsize * i
             valid = True
@@ -64892,23 +64905,45 @@ class KernelModuleLoadCommand(GenericCommand):
                     valid = False
                     break
             if valid:
-                self.quiet_info("offsetof(module, sect_attrs): {:#x}".format(offset_sect_attrs))
                 return offset_sect_attrs
-
-        self.quiet_err("Not found module->sect_attrs")
         return None
 
     def initialize(self):
-        self.module_addrs = self.get_modules_list()
-        if self.module_addrs is None:
-            return False
-
-        self.offset_name = self.get_offset_name(self.module_addrs)
-        if self.offset_name is None:
-            return False
+        if hasattr(self, "initialized"):
+            return True
 
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            self.quiet_err("Failed to resolve kernel version")
+            return False
 
+        if kversion < "3.0":
+            self.quiet_err("Unsupported before v3.0")
+            return False
+
+        # modules
+        self.modules = KernelAddressHeuristicFinder.get_modules()
+        if self.modules is None:
+            self.quiet_err("Not found modules (maybe, CONFIG_MODULES is not set)")
+            return False
+        self.quiet_info("modules: {:#x}".format(self.modules))
+
+        # modules list
+        self.module_addrs = self.get_modules_list(self.modules)
+        if self.module_addrs is None:
+            return False
+        if self.module_addrs == []:
+            self.quiet_err("Not found any modules")
+            return False
+
+        # module->name
+        self.offset_name = self.get_offset_name(self.module_addrs)
+        if self.offset_name is None:
+            self.quiet_err("Not found module->name[MODULE_NAME_LEN]")
+            return False
+        self.quiet_info("offsetof(module, name): {:#x}".format(self.offset_name))
+
+        # module->{nsections,firstname}
         if kversion < "3.11":
             self.offset_nsections = current_arch.ptrsize * 3
             self.offset_firstname = current_arch.ptrsize * 4
@@ -64922,6 +64957,7 @@ class KernelModuleLoadCommand(GenericCommand):
             self.offset_nsections = current_arch.ptrsize * 6
             self.offset_firstname = current_arch.ptrsize * 7
 
+        # module->{address,module_sect_attr}
         if kversion < "5.7":
             self.offset_address = self.offset_firstname + current_arch.ptrsize * 8
             self.sizeof_module_sect_attr = current_arch.ptrsize * 9
@@ -64938,35 +64974,20 @@ class KernelModuleLoadCommand(GenericCommand):
             self.offset_address = self.offset_firstname + current_arch.ptrsize * 11
             self.sizeof_module_sect_attr = current_arch.ptrsize * 12
 
+        # module->sect_attrs
         self.offset_sect_attrs = self.get_offset_sect_attrs(self.module_addrs)
         if self.offset_sect_attrs is None:
+            self.quiet_err("Not found module->sect_attrs")
             return False
+        self.quiet_info("offsetof(module, sect_attrs): {:#x}".format(self.offset_sect_attrs))
 
+        self.initialized = True
         return True
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
-    def do_invoke(self, args):
-        if not os.path.exists(args.path):
-            self.quiet_err("Not found {:s}".format(args.path))
-            return
-
-        kversion = Kernel.kernel_version()
-        if kversion < "3.0":
-            self.quiet_err("Unsupported before v3.0")
-            return
-
-        ret = self.initialize()
-        if not ret:
-            self.quiet_err("Failed to initialize")
-            return
-
+    def kmod_load(self):
         for module in self.module_addrs:
             name_string = read_cstring_from_memory(module + self.offset_name)
-            if name_string != args.name:
+            if name_string != self.args.name:
                 continue
 
             # get nsections
@@ -64988,10 +65009,41 @@ class KernelModuleLoadCommand(GenericCommand):
 
             # load
             command = " ".join(['-s {:s} {:#x}'.format(name, addr) for (name, addr) in sections])
-            gdb.execute("add-symbol-file {!r} {:s}".format(args.path, command))
+            gdb.execute("add-symbol-file {!r} {:s}".format(self.args.path, command))
             break
         else:
-            self.quiet_err("Not found {:s}".format(args.name))
+            self.quiet_err("Not found {:s}".format(self.args.name))
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        if not os.path.exists(args.path):
+            self.quiet_err("Not found {:s}".format(args.path))
+            return
+
+        # initialize
+        self.module_addrs = None
+        ret = self.initialize()
+        if not ret:
+            self.quiet_err("Failed to initialize")
+            return
+
+        # get module addrs
+        if not self.module_addrs:
+            self.module_addrs = self.get_modules_list(self.modules)
+        if self.module_addrs is None:
+            return
+        if self.module_addrs == []:
+            self.quiet_err("Not found any modules")
+            return
+        self.quiet_info("Num of modules: {:#x}".format(len(self.module_addrs)))
+
+        # doit
+        self.kmod_load()
         return
 
 
