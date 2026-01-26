@@ -201,6 +201,7 @@ To use these commands fully, you need to manually install the necessary packages
 |`diffo colordiff`|`colordiff`|-|-|
 |`diffo git-diff`|`git`|-|-|
 |`tmux-setup`|`tmux`|-|-|
+|`heap dump-image`|`imagemagick`|-|-|
 |`vdump`|`imagemagick`|-|-|
 |`sixel-memory`|`imagemagick`|-|-|
 |`sixel-memory -b`|-|`pillow`, `pyzbar`|-|
@@ -337,18 +338,18 @@ Another option is [COPR of Fedora](https://download.copr.fedorainfracloud.org/re
 Let's consider debug information and debug symbols separately.
 
 - Debug information
-    - Partially no, partially yes.
-        - Mostly, the presence or absence of debug information in `vmlinux` does not impact GEF's functionality or behavior.
-        - GEF performs its own heuristic structure member detection in each command.
-        - However, the `slub-dump` and `buddy-dump` commands use type information, if available, to speed up calculations of some offsets.
+    - Partially yes, partially no.
+        - Some commands (e.g.; `slub-dump`, `buddy-dump`, `ktask`, `kmod`, etc.) use type information, if available, to speed up offset calculation.
+        - However, there are still not many commands that implement this kind of optimization.
 - Debug symbols
     - Yes.
-        - If symbols are not yet loaded:
-            - You can use `ksymaddr-remote --vmlinux-file <vmlinux_path>`.
-            - GEF internally uses the addresses resolved with `ksymaddr-remote`, and these results are cached.
-            - Therefore, by specifying the `vmlinux` file, the results of `ksymaddr-remote` can be replaced with accurate values and cached.
-        - If symbols are loaded:
+        - If the symbols are already loaded:
             - The `ksymaddr-remtote` command will automatically use offsets read from the `vmlinux` file (with rebasing).
+        - If the symbols are not loaded yet:
+            - First, load the `vmlinux` symbols using the `file` command.
+    - Note:
+        - GEF internally uses the addresses resolved with `ksymaddr-remote`, and these results are cached.
+        - If `vmlinux` file is already loaded, the results of `ksymaddr-remote` can be replaced with accurate values (with rebasing) and cached.
 
 ## Does GEF support i386 16-bit mode (real mode)?
 Yes, GEF supports real mode experimentally.
