@@ -147,12 +147,12 @@
                     - Configure as `This end is the server.` and `The other end is an application.`
     - Debuggee
         - Build the kernel with configurations such as `CONFIG_KGDB=y`. Ubuntu supports this by default.
-        - Edit `/etc/default/grub` and append `kgdbwait kgdboc=ttyS0,115200 console=ttyS1,115200` to the end of `GRUB_CMDLINE_LINUX_DEFAULT`.
+        - Edit `/etc/default/grub` and append `kgdbwait kgdboc=ttyS0,115200 console=ttyS1,115200 nokaslr` to the end of `GRUB_CMDLINE_LINUX_DEFAULT`.
         - Then run `update-grub && reboot`.
         - See [official documentation](https://www.kernel.org/doc/html/latest/dev-tools/kgdb.html) for more information.
     - Debugger
         - Attach using `gdb-multiarch -ex 'target remote /dev/ttyS0'`.
-        - Connect with `screen /dev/ttyS1` for console access.
+        - Connect with `screen /dev/ttyS1 115200` for console access.
 - Supported architectures
     - Debugger (GDB) host
         - x64
