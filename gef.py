@@ -94961,6 +94961,8 @@ class PageMap:
     @staticmethod
     @Cache.cache_until_next
     def get_page_maps_by_pagewalk(command):
+        if is_kgdb():
+            info("pagewalk start")
         res = gdb.execute(command, to_string=True)
         if 'Exception raised' in res:
             gef_print(res)
