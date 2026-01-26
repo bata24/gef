@@ -79918,32 +79918,36 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
                 # indices 12..14 are "base=4 + migratetype"
                 base = PAGE_ALLOC_COSTLY_ORDER + 1
                 mtype = i - self.MIGRATE_PCPTYPES * base # 0,1,2
-                if not (0 <= mtype < self.MIGRATE_PCPTYPES):
-                    raise
-                mtype_str = self.migrate_types[mtype]
+                if 0 <= mtype < self.MIGRATE_PCPTYPES:
+                    mtype_str = self.migrate_types[mtype]
+                else:
+                    mtype_str = "THP_UNKNOWN"
                 order = self.get_pageblock_order()
             elif ("6.0" <= kversion < "6.1") or ("6.2" <= kversion < "6.6.37") or ("6.7" <= kversion < "6.9"):
                 # 1 slot
-                if i != NR_LOWORDER_PCP_LISTS:
-                    raise
-                mtype = 0
-                mtype_str = "THP"
+                mtype = i - NR_LOWORDER_PCP_LISTS
+                if i == NR_LOWORDER_PCP_LISTS:
+                    mtype_str = "THP"
+                else:
+                    mtype_str = "THP_UNKNOWN"
                 order = self.get_pageblock_order()
             elif ("6.1" <= kversion < "6.2") or ("6.6.37" <= kversion < "6.7") or ("6.9" <= kversion < "6.10"):
                 # 2 slots
                 thp_i = i - NR_LOWORDER_PCP_LISTS
-                if not (0 <= thp_i < 2):
-                    raise
                 mtype = thp_i
-                mtype_str = "THP_MOVABLE" if thp_i == 1 else "THP_OTHER"
+                if 0 <= thp_i < 2:
+                    mtype_str = "THP_MOVABLE" if thp_i == 1 else "THP_OTHER"
+                else:
+                    mtype_str = "THP_UNKNOWN"
                 order = self.get_pageblock_order()
             else: # 6.10~
                 # 2 slots
                 thp_i = i - NR_LOWORDER_PCP_LISTS
-                if not (0 <= thp_i < 2):
-                    raise
                 mtype = thp_i
-                mtype_str = "THP_MOVABLE" if thp_i == 1 else "THP_OTHER"
+                if 0 <= thp_i < 2:
+                    mtype_str = "THP_MOVABLE" if thp_i == 1 else "THP_OTHER"
+                else:
+                    mtype_str = "THP_UNKNOWN"
 
                 HPAGE_PMD_SHIFT = KernelAddressHeuristicFinder.consts().PMD_SHIFT
                 PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
@@ -79990,14 +79994,15 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             per_cpu_pageset = [AddressUtil.align_address(cpuoff + per_cpu_pageset) for cpuoff in self.cpu_offset]
 
         # parse each cpu
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         sizeof_list_head = current_arch.ptrsize * 2
         pcp_all_entries = {}
-        for cpu_num, pcp in enumerate(per_cpu_pageset):
+        for cpu_num, pcp in tqdm(enumerate(per_cpu_pageset), leave=False, desc="cpu", total=len(per_cpu_pageset)):
             if self.args.cpu and cpu_num not in self.args.cpu:
                 continue
             # parse each pcp list
             pcp_entries = []
-            for i in range(self.NR_PCP_LISTS):
+            for i in tqdm(range(self.NR_PCP_LISTS), leave=False, desc="pcplist"):
                 if self.args.pcp_index_filter and i not in self.args.pcp_index_filter:
                     continue
                 lists_i = pcp + self.offset_lists + sizeof_list_head * i
@@ -80033,10 +80038,11 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         order_title = "order: {:d} ({:s} bytes)".format(order, size_str)
 
         # prase free area
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         sizeof_list_head = current_arch.ptrsize * 2
         free_lists = []
         has_any = False
-        for mtype in range(self.MIGRATE_TYPES):
+        for mtype in tqdm(range(self.MIGRATE_TYPES), leave=False, desc="mtype"):
             if self.args.mtype_filter and mtype not in self.args.mtype_filter:
                 continue
             free_list = free_area + sizeof_list_head * mtype
@@ -80053,9 +80059,10 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             zone_entry["per_cpu_pageset"] = self.dump_pcp(zone, is_highmem)
 
         # parse free_area
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         if not self.args.only_pcp:
             free_area_entries = []
-            for order in range(self.MAX_ORDER):
+            for order in tqdm(range(self.MAX_ORDER), leave=False, desc="order"):
                 if self.args.order_filter and order not in self.args.order_filter:
                     continue
                 free_area_i = zone + self.offset_free_area + self.sizeof_free_area * order
@@ -80065,8 +80072,9 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         return zone_entry
 
     def dump_node(self, node):
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         zone_entries = []
-        for i in range(self.MAX_NR_ZONES):
+        for i in tqdm(range(self.MAX_NR_ZONES), leave=False, desc="zone"):
             zone = node + self.sizeof_zone * i
             name_ptr = read_int_from_memory(zone + self.offset_name)
             name = read_cstring_from_memory(name_ptr)
@@ -80233,7 +80241,8 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
         # dump
         node_entries = []
-        for i, node in enumerate(self.nodes):
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
+        for i, node in tqdm(enumerate(self.nodes), leave=False, total=len(self.nodes), desc="node"):
             title = "node[{:d}] @ {:#x}".format(i, node)
             res = self.dump_node(node)
             node_entries.append([title, res])
