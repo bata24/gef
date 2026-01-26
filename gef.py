@@ -59836,6 +59836,27 @@ class Kernel:
         }
         Kinfo = collections.namedtuple("Kinfo", dic.keys())
 
+        # use symbol
+        if is_kgdb():
+            dic["text_base"] = Symbol.get_ksymaddr("_stext")
+            dic["text_end"] = Symbol.get_ksymaddr("_etext")
+            if dic["text_base"] and dic["text_end"]:
+                dic["text_size"] = dic["text_end"] - dic["text_base"]
+
+            dic["rw_base"] = Symbol.get_ksymaddr("_stext")
+            dic["rw_end"] = Symbol.get_ksymaddr("_etext")
+            if dic["rw_base"] and dic["rw_end"]:
+                dic["rw_size"] = dic["rw_end"] - dic["rw_base"]
+
+            dic["ro_base"] = Symbol.get_ksymaddr("__start_rodata")
+            dic["ro_end"] = Symbol.get_ksymaddr("__end_rodata_aligned") or Symbol.get_ksymaddr("__end_rodata")
+            if dic["ro_base"] and dic["ro_end"]:
+                dic["ro_size"] = dic["ro_end"] - dic["ro_base"]
+
+            dic["has_none"] = None in dic.values()
+            return Kinfo(*dic.values())
+            return
+
         # maps is not found, so fast return
         if dic["maps"] is None:
             dic["has_none"] = None in dic.values()
@@ -60312,7 +60333,7 @@ class KernelbaseCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
@@ -60358,7 +60379,7 @@ class KernelVersionCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
@@ -60392,7 +60413,7 @@ class KernelCmdlineCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
