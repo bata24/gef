@@ -59855,7 +59855,6 @@ class Kernel:
 
             dic["has_none"] = None in dic.values()
             return Kinfo(*dic.values())
-            return
 
         # maps is not found, so fast return
         if dic["maps"] is None:
