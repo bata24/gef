@@ -72342,6 +72342,7 @@ class HashCommand(GenericCommand):
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("memory")
     subparsers.add_parser("value")
+    subparsers.add_parser("known-collision")
     _syntax_ = parser.format_help()
 
     _note_ = [
@@ -72608,6 +72609,486 @@ class HashValueCommand(HashCommand):
             hfunc.update(value)
             h = hfunc.hexdigest()
             gef_print("{:12s}: {:s} ({:d}-bit)".format(hname, h, len(h) * 4))
+        return
+
+
+@register_command
+class HashKnownCollisionCommand(HashCommand, BufferingOutput):
+    """Show hash collision example."""
+
+    _cmdline_ = "hash known-collision"
+    _category_ = "03-e. Memory - Calculation"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    _example_ = None
+
+    def __init__(self):
+        super().__init__(prefix=False, complete=gdb.COMPLETE_NONE)
+        return
+
+    def make_cmp(self, data1, data2, show_full=True):
+        diff_found = False
+        asterisk = True
+
+        hex_pad_len = {
+            1: 37,
+            2: 35,
+            3: 32,
+            4: 30,
+            5: 27,
+            6: 25,
+            7: 22,
+            8: 20,
+            9: 17,
+            10: 15,
+            11: 12,
+            12: 9,
+            13: 7,
+            14: 5,
+            15: 2,
+            16: 0,
+        }
+
+        for pos in range(0, len(data1), 16):
+            # determining continuity
+            f1_bin = data1[pos : pos + 16]
+            f2_bin = data2[pos : pos + 16]
+            if not show_full:
+                if f1_bin == f2_bin:
+                    if asterisk is False:
+                        self.out.append("*")
+                        asterisk = True
+                    continue
+
+            diff_found = True
+            asterisk = False
+
+            # coloring
+            f1_hex = []
+            f2_hex = []
+            f1_ascii = []
+            f2_ascii = []
+            for i in range(min(len(f1_bin), 16)):
+                if f1_bin[i] == f2_bin[i]:
+                    color_func = lambda x: x
+                else:
+                    color_func = Color.boldify
+                f1_hex.append(color_func("{:02x}".format(f1_bin[i])))
+                f2_hex.append(color_func("{:02x}".format(f2_bin[i])))
+                f1_ascii.append(color_func(chr(f1_bin[i]) if 0x20 <= f1_bin[i] < 0x7f else "."))
+                f2_ascii.append(color_func(chr(f2_bin[i]) if 0x20 <= f2_bin[i] < 0x7f else "."))
+
+            # formatting
+            # ["00", "00", "00" "00", ...] -> ["0000", "0000", ...]
+            f1_hex2 = ["".join(x) for x in slicer(f1_hex, 2)]
+            f2_hex2 = ["".join(x) for x in slicer(f2_hex, 2)]
+
+            # padding
+            # ["0000", "0000", ...] -> "0000 0000 ..."
+            f1_hex_s = " ".join(f1_hex2) + " " * hex_pad_len[len(f1_hex)]
+            f2_hex_s = " ".join(f2_hex2) + " " * hex_pad_len[len(f2_hex)]
+            # [".", ".", ...] -> "................"
+            f1_ascii_s = "".join(f1_ascii) + " " * (16 - len(f1_ascii))
+            f2_ascii_s = "".join(f2_ascii) + " " * (16 - len(f2_ascii))
+
+            # make line
+            self.out.append("{:#06x}: {:s} |{:s}| {:s} |{:s}|".format(
+                pos, f1_hex_s, f1_ascii_s, f2_hex_s, f2_ascii_s,
+            ))
+
+        if diff_found is False:
+            self.info_add_out("Not found diff")
+        return
+
+    def get_hex_colored(self, data1, data2):
+        data1_hex_colored = ""
+        data2_hex_colored = ""
+        for d1, d2 in zip(data1, data2):
+            if d1 == d2:
+                data1_hex_colored += "{:02x}".format(d1)
+                data2_hex_colored += "{:02x}".format(d2)
+            else:
+                data1_hex_colored += Color.boldify("{:02x}".format(d1))
+                data2_hex_colored += Color.boldify("{:02x}".format(d2))
+        return data1_hex_colored, data2_hex_colored
+
+    def show_hash_info(self, data1, data2, hash_name):
+        if hash_name == "md5":
+            hash_func = hashlib.md5
+        elif hash_name == "sha1":
+            hash_func = hashlib.sha1
+
+        self.make_cmp(data1, data2)
+
+        data1_hex_colored, data2_hex_colored = self.get_hex_colored(data1, data2)
+        self.out.append("data1: {:s}".format(data1_hex_colored))
+        self.out.append("data2: {:s}".format(data2_hex_colored))
+
+        bold_yellow = lambda x: Color.colorify(x, "bold yellow")
+        self.out.append("{:13s}: {:s}".format(hash_name + "(data1)", bold_yellow(hash_func(data1).hexdigest())))
+        self.out.append("{:13s}: {:s}".format(hash_name + "(data2)", bold_yellow(hash_func(data2).hexdigest())))
+        self.out.append("sha256(data1): {:s}".format(hashlib.sha256(data1).hexdigest()))
+        self.out.append("2ha256(data2): {:s}".format(hashlib.sha256(data2).hexdigest()))
+        return
+
+    def show_md5_hash_collision(self):
+        self.out.append(titlify("MD5 (md5-1block-collision-attack)"))
+        self.out.append(
+            "https://marc-stevens.nl/research/md5-1block-collision/message1.bin "
+            "(https://github.com/corkami/collisions/blob/master/examples/single-ipc1.bin)"
+        )
+        self.out.append(
+            "https://marc-stevens.nl/research/md5-1block-collision/message2.bin "
+            "(https://github.com/corkami/collisions/blob/master/examples/single-ipc2.bin)"
+        )
+        md5_1 = bytes.fromhex(
+            "4D C9 68 FF 0E E3 5C 20 95 72 D4 77 7B 72 15 87"
+            "D3 6F A7 B2 1B DC 56 B7 4A 3D C0 78 3E 7B 95 18"
+            "AF BF A2 00 A8 28 4B F3 6E 8E 4B 55 B3 5F 42 75"
+            "93 D8 49 67 6D A0 D1 55 5D 83 60 FB 5F 07 FE A2"
+        )
+        md5_2 = bytes.fromhex(
+            "4D C9 68 FF 0E E3 5C 20 95 72 D4 77 7B 72 15 87"
+            "D3 6F A7 B2 1B DC 56 B7 4A 3D C0 78 3E 7B 95 18"
+            "AF BF A2 02 A8 28 4B F3 6E 8E 4B 55 B3 5F 42 75"
+            "93 D8 49 67 6D A0 D1 D5 5D 83 60 FB 5F 07 FE A2"
+        )
+        self.show_hash_info(md5_1, md5_2, "md5")
+
+        self.out.append(titlify("MD5 (HashClash)"))
+        self.out.append(
+            "https://marc-stevens.nl/research/hashclash/SingleBlock/downloads/sbcpc1.bin "
+            "(https://github.com/corkami/collisions/blob/master/examples/single-cpc1.bin)"
+        )
+        self.out.append(
+            "https://marc-stevens.nl/research/hashclash/SingleBlock/downloads/sbcpc2.bin "
+            "(https://github.com/corkami/collisions/blob/master/examples/single-cpc2.bin)"
+        )
+        md5_1 = bytes.fromhex(
+            "4F 64 65 64 20 47 6F 6C 64 72 65 69 63 68 0A 4F"
+            "64 65 64 20 47 6F 6C 64 72 65 69 63 68 0A 4F 64"
+            "65 64 20 47 6F 6C 64 72 65 69 63 68 0A 4F 64 65"
+            "64 20 47 6F D8 05 0D 00 19 BB 93 18 92 4C AA 96"
+            "DC E3 5C B8 35 B3 49 E1 44 E9 8C 50 C2 2C F4 61"
+            "24 4A 40 64 BF 1A FA EC C5 82 0D 42 8A D3 8D 6B"
+            "EC 89 A5 AD 51 E2 90 63 DD 79 B1 6C F6 7C 12 97"
+            "86 47 F5 AF 12 3D E3 AC F8 44 08 5C D0 25 B9 56"
+        )
+        md5_2 = bytes.fromhex(
+            "4E 65 61 6C 20 4B 6F 62 6C 69 74 7A 0A 4E 65 61"
+            "6C 20 4B 6F 62 6C 69 74 7A 0A 4E 65 61 6C 20 4B"
+            "6F 62 6C 69 74 7A 0A 4E 65 61 6C 20 4B 6F 62 6C"
+            "69 74 7A 0A 75 B8 0E 00 35 F3 D2 C9 09 AF 1B AD"
+            "DC E3 5C B8 35 B3 49 E1 44 E8 8C 50 C2 2C F4 61"
+            "24 4A 40 E4 BF 1A FA EC C5 82 0D 42 8A D3 8D 6B"
+            "EC 89 A5 AD 51 E2 90 63 DD 79 B1 6C F6 FC 11 97"
+            "86 47 F5 AF 12 3D E3 AC F8 44 08 DC D0 25 B9 56"
+        )
+        self.show_hash_info(md5_1, md5_2, "md5")
+
+        self.out.append(titlify("MD5 (FastColl)"))
+        self.out.append("https://github.com/corkami/collisions/README.md")
+        md5_1 = bytes.fromhex(
+            "37 75 C1 F1 C4 A7 5A E7 9C E0 DE 7A 5B 10 80 26"
+            "02 AB D9 39 C9 6C 5F 02 12 C2 7F DA CD 0D A3 B0"
+            "8C ED FA F3 E1 A3 FD B4 EF 09 E7 FB B1 C3 99 1D"
+            "CD 91 C8 45 E6 6E FD 3D C7 BB 61 52 3E F4 E0 38"
+            "49 11 85 69 EB CC 17 9C 93 4F 40 EB 33 02 AD 20"
+            "A4 09 2D FB 15 FA 20 1D D1 DB 17 CD DD 29 59 1E"
+            "39 89 9E F6 79 46 9F E6 8B 85 C5 EF DE 42 4F 46"
+            "C2 78 75 9D 8B 65 F4 50 EA 21 C5 59 18 62 FF 7B"
+        )
+        md5_2 = bytes.fromhex(
+            "37 75 C1 F1 C4 A7 5A E7 9C E0 DE 7A 5B 10 80 26"
+            "02 AB D9 B9 C9 6C 5F 02 12 C2 7F DA CD 0D A3 B0"
+            "8C ED FA F3 E1 A3 FD B4 EF 09 E7 FB B1 43 9A 1D"
+            "CD 91 C8 45 E6 6E FD 3D C7 BB 61 D2 3E F4 E0 38"
+            "49 11 85 69 EB CC 17 9C 93 4F 40 EB 33 02 AD 20"
+            "A4 09 2D 7B 15 FA 20 1D D1 DB 17 CD DD 29 59 1E"
+            "39 89 9E F6 79 46 9F E6 8B 85 C5 EF DE C2 4E 46"
+            "C2 78 75 9D 8B 65 F4 50 EA 21 C5 D9 18 62 FF 7B"
+        )
+        self.show_hash_info(md5_1, md5_2, "md5")
+
+        self.out.append(titlify("MD5 (FastColl)"))
+        self.out.append("https://github.com/corkami/collisions/blob/master/examples/fastcoll1.bin")
+        self.out.append("https://github.com/corkami/collisions/blob/master/examples/fastcoll2.bin")
+        md5_1 = bytes.fromhex(
+            "2F 3D 2D 3D 2D 3D 2D 3D 2D 3D 2D 3D 2D 3D 2D 5C"
+            "7C 20 20 20 49 64 65 6E 74 69 63 61 6C 00 00 7C"
+            "7C 20 20 20 20 50 72 65 66 69 78 20 00 00 20 7C"
+            "5C 3D 2D 3D 2D 3D 2D 3D 2D 3D 2D 3D 2D 3D 2D 2F"
+            "37 9A E6 C3 DC 19 ED F5 72 5B B4 E4 73 DF 31 BC"
+            "C6 31 6C 9E DF AF 6C 7C 51 CE 44 4A C6 B3 A7 D4"
+            "6D A2 FB E6 EA 6E 46 A5 4B 2A 5A 3C 8A 6B 6C BE"
+            "21 7F 84 D2 AE 75 06 11 DA DC 4C 56 87 F3 78 B6"
+            "64 C4 15 0A C4 B2 D1 C2 AA C9 57 3D 6F 35 7E 48"
+            "28 6E 79 3B 25 C6 3E 27 C9 1A 76 39 EC 46 02 66"
+            "1E 64 A6 57 04 D0 FA 4E 88 83 44 B7 F1 DC C2 EC"
+            "E6 95 A7 9E 6D 52 BF 6B BA 60 99 02 A8 9E C3 9E"
+        )
+        md5_2 = bytes.fromhex(
+            "2F 3D 2D 3D 2D 3D 2D 3D 2D 3D 2D 3D 2D 3D 2D 5C"
+            "7C 20 20 20 49 64 65 6E 74 69 63 61 6C 00 00 7C"
+            "7C 20 20 20 20 50 72 65 66 69 78 20 00 00 20 7C"
+            "5C 3D 2D 3D 2D 3D 2D 3D 2D 3D 2D 3D 2D 3D 2D 2F"
+            "37 9A E6 C3 DC 19 ED F5 72 5B B4 E4 73 DF 31 BC"
+            "C6 31 6C 1E DF AF 6C 7C 51 CE 44 4A C6 B3 A7 D4"
+            "6D A2 FB E6 EA 6E 46 A5 4B 2A 5A 3C 8A EB 6C BE"
+            "21 7F 84 D2 AE 75 06 11 DA DC 4C D6 87 F3 78 B6"
+            "64 C4 15 0A C4 B2 D1 C2 AA C9 57 3D 6F 35 7E 48"
+            "28 6E 79 BB 25 C6 3E 27 C9 1A 76 39 EC 46 02 66"
+            "1E 64 A6 57 04 D0 FA 4E 88 83 44 B7 F1 5C C2 EC"
+            "E6 95 A7 9E 6D 52 BF 6B BA 60 99 82 A8 9E C3 9E"
+        )
+        self.show_hash_info(md5_1, md5_2, "md5")
+
+        self.out.append(titlify("MD5 (UniColl)"))
+        self.out.append("https://github.com/corkami/collisions/README.md")
+        md5_1 = bytes.fromhex(
+            "55 6E 69 43 6F 6C 6C 20 31 20 70 72 65 66 69 78"
+            "20 32 30 62 F5 48 34 B9 3B 1C 01 9F C8 6B E6 44"
+            "FE F6 31 3A 63 DB 99 3E 77 4D C7 5A 6E B0 A6 88"
+            "04 05 FB 39 33 21 64 BF 0D A4 FE E2 A6 9D 83 36"
+            "4B 14 D7 F2 47 53 84 BA 12 2D 4F BB 83 78 6C 70"
+            "C6 EB 21 F2 F6 59 9A 85 14 73 04 DD 57 5F 40 3C"
+            "E1 3F B0 DB E8 B4 AA B0 D5 56 22 AF B9 04 26 FC"
+            "9F D2 0C 00 86 C8 ED DE 85 7F 03 7B 05 28 D7 0F"
+        )
+        md5_2 = bytes.fromhex(
+            "55 6E 69 43 6F 6C 6C 20 31 21 70 72 65 66 69 78"
+            "20 32 30 62 F5 48 34 B9 3B 1C 01 9F C8 6B E6 44"
+            "FE F6 31 3A 63 DB 99 3E 77 4D C7 5A 6E B0 A6 88"
+            "04 05 FB 39 33 21 64 BF 0D A4 FE E2 A6 9D 83 36"
+            "4B 14 D7 F2 47 53 84 BA 12 2C 4F BB 83 78 6C 70"
+            "C6 EB 21 F2 F6 59 9A 85 14 73 04 DD 57 5F 40 3C"
+            "E1 3F B0 DB E8 B4 AA B0 D5 56 22 AF B9 04 26 FC"
+            "9F D2 0C 00 86 C8 ED DE 85 7F 03 7B 05 28 D7 0F"
+        )
+        self.show_hash_info(md5_1, md5_2, "md5")
+
+        self.out.append(titlify("MD5 (Hashclash)"))
+        self.out.append("https://github.com/corkami/collisions/README.md")
+        md5_1 = bytes.fromhex(
+            "79 65 73 0A 3D 62 84 11 01 75 D3 4D EB 80 93 DE"
+            "31 C1 D9 30 45 FB BE 1E 71 F0 0A 63 75 A8 30 AA"
+            "98 17 CA E3 A2 6B 8E 3D 44 A9 8F F2 0E 67 96 48"
+            "97 25 A6 FB 00 00 00 00 49 08 09 33 F0 62 C4 E8"
+            "D5 F1 54 CD CA A1 42 90 7F 9D 3D 9A 67 C4 1B 0F"
+            "04 9F 19 E8 92 C3 AA 19 43 31 1A DB DA 96 01 54"
+            "85 B5 9A 88 D8 A5 0E FB CD 66 9A DA 4F 20 8A AA"
+            "BA E3 9C F0 78 31 8F D1 14 5F 3E B9 0F 9F 3E 19"
+            "09 9C BB A9 45 89 BA A8 03 E6 C0 31 A0 54 D6 26"
+            "3F 80 4C 06 0F C7 D9 19 09 D3 DA 14 FD CB 39 84"
+            "1F 0D 77 5F 55 AA 7A 07 4C 24 8B 13 0A 54 A2 BC"
+            "C5 12 7D 4F E0 5E F2 23 C5 07 61 E4 80 91 B2 13"
+            "E7 79 07 2A CF 1B 66 39 8C F0 8E 7E 75 25 22 1D"
+            "A7 3B 49 4A 32 A4 3A 07 61 26 64 EA 6B 83 A2 8D"
+            "BE A3 FF BE 4E 71 AE 18 E2 D0 86 4F 20 00 30 26"
+            "0A 71 DE 1F 40 B4 F4 8F 9C 50 5C 78 DD CD 72 89"
+            "BA D1 BF F9 96 80 E3 06 96 F3 B9 7C 77 2D EB 25"
+            "1E 56 70 D7 14 1F 55 4D EC 11 58 59 92 45 E1 33"
+            "3E 0E A1 6E FF D9 90 AD F6 A0 AD 0E C6 D6 88 12"
+            "B8 74 F2 9E DD 53 F7 88 19 73 85 39 AA 9B E0 8D"
+            "82 BF 9C 5E 58 42 1E 3B 94 CF 5B 54 73 5F A8 4A"
+            "FD 5B 64 CF 59 D1 96 74 14 B3 0C AF 11 1C F9 47"
+            "C5 7A 2C F7 D5 24 F5 EB BE 54 3E 12 B0 24 67 3F"
+            "01 DD 95 76 8D 0D 58 FB 50 23 70 3A BD ED BE AC"
+            "B8 32 DB AE E8 DC 3A 83 7A C8 D5 0F 08 90 1D 99"
+            "2D 7D 17 34 4E A8 21 98 61 1A 65 DA FC 9B A4 BA"
+            "E1 42 2B 86 0C 94 2A F6 D6 A4 81 B5 2B 0B E9 37"
+            "44 D2 E4 23 14 7C 16 B8 84 90 8B E0 A1 A7 BD 27"
+            "C7 7E E6 17 1A 93 C5 EE 59 70 91 26 4E 9D C7 7C"
+            "1D 3D AB F1 B4 F4 F1 D9 86 48 75 77 6E FE 98 84"
+            "EF 3C 1C C7 16 5A 1F 83 60 EC 5C FE CA 17 0C 74"
+            "EB 8E 9D F6 90 A3 CD 08 65 D5 5A 4C 2E C6 BE 54"
+        )
+        md5_2 = bytes.fromhex(
+            "6E 6F 0A E5 5F D0 83 01 9B 4D 55 06 61 AB 88 11"
+            "8A FA 4D 34 B3 75 59 46 56 97 EF 6C 4A 07 90 CC"
+            "FE 19 D7 CF 6F 92 03 9C 91 AA A5 DA 56 92 C1 04"
+            "E6 4C 08 A3 00 00 00 00 8D B6 4E 47 FF AF 7A 3C"
+            "D5 F1 54 CD CA A1 42 90 7F 9D 3D 9A 67 C4 1B 0F"
+            "04 9F 19 E8 92 C3 AA 19 43 31 1A DB DA 96 01 54"
+            "85 B5 9A 88 D8 A5 0E FB CD 66 9A DA 4F 20 8A A9"
+            "BA E3 9C F0 78 31 8F D1 14 5F 3E B9 0F 9F 3E 19"
+            "09 9C BB A9 45 89 BA A8 03 E6 C0 31 A0 54 D6 26"
+            "3F 80 4C 06 0F C7 D9 19 09 D3 DA 14 FD CB 39 84"
+            "1F 0D 77 5F 55 AA 7A 07 4C 24 8B 13 0A 54 B2 BC"
+            "C5 12 7D 4F E0 5E F2 23 C5 07 61 E4 80 91 B2 13"
+            "E7 79 07 2A CF 1B 66 39 8C F0 8E 7E 75 25 22 1D"
+            "A7 3B 49 4A 32 A4 3A 07 61 26 64 EA 6B 83 A2 8D"
+            "BE A3 FF BE 4E 71 AE 18 E2 D0 86 4F 20 00 30 22"
+            "0A 71 DE 1F 40 B4 F4 8F 9C 50 5C 78 DD CD 72 89"
+            "BA D1 BF F9 96 80 E3 06 96 F3 B9 7C 77 2D EB 25"
+            "1E 56 70 D7 14 1F 55 4D EC 11 58 59 92 45 E1 33"
+            "3E 0E A1 6E FF D9 90 AD F6 A0 AD 0E CA D6 88 12"
+            "B8 74 F2 9E DD 53 F7 88 19 73 85 39 AA 9B E0 8D"
+            "82 BF 9C 5E 58 42 1E 3B 94 CF 5B 54 73 5F A8 4A"
+            "FD 5B 64 CF 59 D1 96 74 14 B3 0C AF 11 1C F9 47"
+            "C5 7A 2C F7 D5 24 F5 EB BE 54 3E 12 70 24 67 3F"
+            "01 DD 95 76 8D 0D 58 FB 50 23 70 3A BD ED BE AC"
+            "B8 32 DB AE E8 DC 3A 83 7A C8 D5 0F 08 90 1D 99"
+            "2D 7D 17 34 4E A8 21 98 61 1A 65 DA FC 9B A4 BA"
+            "E1 42 2B 86 0C 94 2A F6 D6 A4 81 B5 2B 2B E9 37"
+            "44 D2 E4 23 14 7C 16 B8 84 90 8B E0 A1 A7 BD 27"
+            "C7 7E E6 17 1A 93 C5 EE 59 70 91 26 4E 9D C7 7C"
+            "1D 3D AB F1 B4 F4 F1 D9 86 48 75 77 6E FE 98 84"
+            "EF 3C 1C C7 16 5A 1F 83 60 EC 5C FE CA 17 0C 54"
+            "EB 8E 9D F6 90 A3 CD 08 65 D5 5A 4C 2E C6 BE 54"
+        )
+        self.show_hash_info(md5_1, md5_2, "md5")
+        return
+
+    def show_sha1_hash_collision(self):
+        self.out.append(titlify("SHA-1 (SHAttered)"))
+        self.out.append("https://shattered.io/static/shattered-1.pdf (The first 320 bytes of 422435 bytes)")
+        self.out.append("https://shattered.io/static/shattered-2.pdf (The first 320 bytes of 422435 bytes)")
+        sha1_1 = bytes.fromhex(
+            "2550 4446 2d31 2e33 0a25 e2e3 cfd3 0a0a"
+            "0a31 2030 206f 626a 0a3c 3c2f 5769 6474"
+            "6820 3220 3020 522f 4865 6967 6874 2033"
+            "2030 2052 2f54 7970 6520 3420 3020 522f"
+            "5375 6274 7970 6520 3520 3020 522f 4669"
+            "6c74 6572 2036 2030 2052 2f43 6f6c 6f72"
+            "5370 6163 6520 3720 3020 522f 4c65 6e67"
+            "7468 2038 2030 2052 2f42 6974 7350 6572"
+            "436f 6d70 6f6e 656e 7420 383e 3e0a 7374"
+            "7265 616d 0aff d8ff fe00 2453 4841 2d31"
+            "2069 7320 6465 6164 2121 2121 2185 2fec"
+            "0923 3975 9c39 b1a1 c63c 4c97 e1ff fe01"
+            "7346 dc91 66b6 7e11 8f02 9ab6 21b2 560f"
+            "f9ca 67cc a8c7 f85b a84c 7903 0c2b 3de2"
+            "18f8 6db3 a909 01d5 df45 c14f 26fe dfb3"
+            "dc38 e96a c22f e7bd 728f 0e45 bce0 46d2"
+            "3c57 0feb 1413 98bb 552e f5a0 a82b e331"
+            "fea4 8037 b8b5 d71f 0e33 2edf 93ac 3500"
+            "eb4d dc0d ecc1 a864 790c 782c 7621 5660"
+            "dd30 9791 d06b d0af 3f98 cda4 bc46 29b1"
+        )
+        sha1_2 = bytes.fromhex(
+            "2550 4446 2d31 2e33 0a25 e2e3 cfd3 0a0a"
+            "0a31 2030 206f 626a 0a3c 3c2f 5769 6474"
+            "6820 3220 3020 522f 4865 6967 6874 2033"
+            "2030 2052 2f54 7970 6520 3420 3020 522f"
+            "5375 6274 7970 6520 3520 3020 522f 4669"
+            "6c74 6572 2036 2030 2052 2f43 6f6c 6f72"
+            "5370 6163 6520 3720 3020 522f 4c65 6e67"
+            "7468 2038 2030 2052 2f42 6974 7350 6572"
+            "436f 6d70 6f6e 656e 7420 383e 3e0a 7374"
+            "7265 616d 0aff d8ff fe00 2453 4841 2d31"
+            "2069 7320 6465 6164 2121 2121 2185 2fec"
+            "0923 3975 9c39 b1a1 c63c 4c97 e1ff fe01"
+            "7f46 dc93 a6b6 7e01 3b02 9aaa 1db2 560b"
+            "45ca 67d6 88c7 f84b 8c4c 791f e02b 3df6"
+            "14f8 6db1 6909 01c5 6b45 c153 0afe dfb7"
+            "6038 e972 722f e7ad 728f 0e49 04e0 46c2"
+            "3057 0fe9 d413 98ab e12e f5bc 942b e335"
+            "42a4 802d 98b5 d70f 2a33 2ec3 7fac 3514"
+            "e74d dc0f 2cc1 a874 cd0c 7830 5a21 5664"
+            "6130 9789 606b d0bf 3f98 cda8 0446 29a1"
+        )
+        self.show_hash_info(sha1_1, sha1_2, "sha1")
+
+        self.out.append(titlify("SHA-1 (Shambles)"))
+        self.out.append("https://sha-mbles.github.io/messageA")
+        self.out.append("https://sha-mbles.github.io/messageB")
+        sha1_1 = bytes.fromhex(
+            "99 04 0D 04 7F E8 17 80 01 20 00 FF 4B 65 79 20"
+            "69 73 20 70 61 72 74 20 6F 66 20 61 20 63 6F 6C"
+            "6C 69 73 69 6F 6E 21 20 49 74 27 73 20 61 20 74"
+            "72 61 70 21 79 C6 1A F0 AF CC 05 45 15 D9 27 4E"
+            "73 07 62 4B 1D C7 FB 23 98 8B B8 DE 8B 57 5D BA"
+            "7B 9E AB 31 C1 67 4B 6D 97 43 78 A8 27 73 2F F5"
+            "85 1C 76 A2 E6 07 72 B5 A4 7C E1 EA C4 0B B9 93"
+            "C1 2D 8C 70 E2 4A 4F 8D 5F CD ED C1 B3 2C 9C F1"
+            "9E 31 AF 24 29 75 9D 42 E4 DF DB 31 71 9F 58 76"
+            "23 EE 55 29 39 B6 DC DC 45 9F CA 53 55 3B 70 F8"
+            "7E DE 30 A2 47 EA 3A F6 C7 59 A2 F2 0B 32 0D 76"
+            "0D B6 4F F4 79 08 4F D3 CC B3 CD D4 83 62 D9 6A"
+            "9C 43 06 17 CA FF 6C 36 C6 37 E5 3F DE 28 41 7F"
+            "62 6F EC 54 ED 79 43 A4 6E 5F 57 30 F2 BB 38 FB"
+            "1D F6 E0 09 00 10 D0 0E 24 AD 78 BF 92 64 19 93"
+            "60 8E 8D 15 8A 78 9F 34 C4 6F E1 E6 02 7F 35 A4"
+            "CB FB 82 70 76 C5 0E CA 0E 8B 7C CA 69 BB 2C 2B"
+            "79 02 59 F9 BF 95 70 DD 8D 44 37 A3 11 5F AF F7"
+            "C3 CA C0 9A D2 52 66 05 5C 27 10 47 55 17 8E AE"
+            "FF 82 5A 2C AA 2A CF B5 DE 64 CE 76 41 DC 59 A5"
+            "41 A9 FC 9C 75 67 56 E2 E2 3D C7 13 C8 C2 4C 97"
+            "90 AA 6B 0E 38 A7 F5 5F 14 45 2A 1C A2 85 0D DD"
+            "95 62 FD 9A 18 AD 42 49 6A A9 70 08 F7 46 72 F6"
+            "8E F4 61 EB 88 B0 99 33 D6 26 B4 F9 18 74 9C C0"
+            "27 FD DD 6C 42 5F C4 21 68 35 D0 13 4D 15 28 5B"
+            "AB 2C B7 84 A4 F7 CB B4 FB 51 4D 4B F0 F6 23 7C"
+            "F0 0A 9E 9F 13 2B 9A 06 6E 6F D1 7F 6C 42 98 74"
+            "78 58 6F F6 51 AF 96 74 7F B4 26 B9 87 2B 9A 88"
+            "E4 06 3F 59 BB 33 4C C0 06 50 F8 3A 80 C4 27 51"
+            "B7 19 74 D3 00 FC 28 19 A2 E8 F1 E3 2C 1B 51 CB"
+            "18 E6 BF C4 DB 9B AE F6 75 D4 AA F5 B1 57 4A 04"
+            "7F 8F 6D D2 EC 15 3A 93 41 22 93 97 4D 92 8F 88"
+            "CE D9 36 3C FE F9 7C E2 E7 42 BF 34 C9 6B 8E F3"
+            "87 56 76 FE A5 CC A8 E5 F7 DE A0 BA B2 41 3D 4D"
+            "E0 0E E7 1E E0 1F 16 2B DB 6D 1E AF D9 25 E6 AE"
+            "BA AE 6A 35 4E F1 7C F2 05 A4 04 FB DB 12 FC 45"
+            "4D 41 FD D9 5C F2 45 96 64 A2 AD 03 2D 1D A6 0A"
+            "73 26 40 75 D7 F1 E0 D6 C1 40 3A E7 A0 D8 61 DF"
+            "3F E5 70 71 88 DD 5E 07 D1 58 9B 9F 8B 66 30 55"
+            "3F 8F C3 52 B3 E0 C2 7D A8 0B DD BA 4C 64 02 0D"
+        )
+        sha1_2 = bytes.fromhex(
+            "99 03 0D 04 7F E8 17 80 01 18 00 FF 50 72 61 63"
+            "74 69 63 61 6C 20 53 48 41 2D 31 20 63 68 6F 73"
+            "65 6E 2D 70 72 65 66 69 78 20 63 6F 6C 6C 69 73"
+            "69 6F 6E 21 1D 27 6C 6B A6 61 E1 04 0E 1F 7D 76"
+            "7F 07 62 49 DD C7 FB 33 2C 8B B8 C2 B7 57 5D BE"
+            "C7 9E AB 2B E1 67 4B 7D B3 43 78 B4 CB 73 2F E1"
+            "89 1C 76 A0 26 07 72 A5 10 7C E1 F6 E8 0B B9 97"
+            "7D 2D 8C 68 52 4A 4F 9D 5F CD ED CD 0B 2C 9C E1"
+            "92 31 AF 26 E9 75 9D 52 50 DF DB 2D 4D 9F 58 72"
+            "9F EE 55 33 19 B6 DC CC 61 9F CA 4F B9 3B 70 EC"
+            "72 DE 30 A0 87 EA 3A E6 73 59 A2 EE 27 32 0D 72"
+            "B1 B6 4F EC C9 08 4F C3 CC B3 CD D8 3B 62 D9 7A"
+            "90 43 06 15 0A FF 6C 26 72 37 E5 23 E2 28 41 7B"
+            "DE 6F EC 4E CD 79 43 B4 4A 5F 57 2C 1E BB 38 EF"
+            "11 F6 E0 0B C0 10 D0 1E 90 AD 78 A3 BE 64 19 97"
+            "DC 8E 8D 0D 3A 78 9F 24 C4 6F E1 EA BA 7F 35 B4"
+            "C7 FB 82 72 B6 C5 0E DA BA 8B 7C D6 55 BB 2C 2F"
+            "C5 02 59 E3 9F 95 70 CD A9 44 37 BF FD 5F AF E3"
+            "CF CA C0 98 12 52 66 15 E8 27 10 5B 79 17 8E AA"
+            "43 82 5A 34 1A 2A CF A5 DE 64 CE 7A F9 DC 59 B5"
+            "4D A9 FC 9E B5 67 56 F2 56 3D C7 0F F4 C2 4C 93"
+            "2C AA 6B 14 18 A7 F5 4F 30 45 2A 00 4E 85 0D C9"
+            "99 62 FD 98 D8 AD 42 59 DE A9 70 14 DB 46 72 F2"
+            "32 F4 61 F3 38 B0 99 23 D6 26 B4 F5 A0 74 9C D0"
+            "2B FD DD 6E 82 5F C4 31 DC 35 D0 0F 71 15 28 5F"
+            "17 2C B7 9E 84 F7 CB A4 DF 51 4D 57 1C F6 23 68"
+            "FC 0A 9E 9D D3 2B 9A 16 DA 6F D1 63 40 42 98 70"
+            "C4 58 6F EE E1 AF 96 64 7F B4 26 B5 3F 2B 9A 98"
+            "E8 06 3F 5B 7B 33 4C D0 B2 50 F8 26 BC C4 27 55"
+            "0B 19 74 C9 20 FC 28 09 86 E8 F1 FF C0 1B 51 DF"
+            "14 E6 BF C6 1B 9B AE E6 C1 D4 AA E9 9D 57 4A 00"
+            "C3 8F 6D CA 5C 15 3A 83 41 22 93 9B F5 92 8F 98"
+            "C2 D9 36 3E 3E F9 7C F2 53 42 BF 28 F5 6B 8E F7"
+            "3B 56 76 E4 85 CC A8 F5 D3 DE A0 A6 5E 41 3D 59"
+            "EC 0E E7 1C 20 1F 16 3B 6F 6D 1E B3 F5 25 E6 AA"
+            "06 AE 6A 2D FE F1 7C E2 05 A4 04 F7 63 12 FC 55"
+            "41 41 FD DB 9C F2 45 86 D0 A2 AD 1F 11 1D A6 0E"
+            "CF 26 40 6F F7 F1 E0 C6 E5 40 3A FB 4C D8 61 CB"
+            "33 E5 70 73 48 DD 5E 17 65 58 9B 83 A7 66 30 51"
+            "83 8F C3 4A 03 E0 C2 6D A8 0B DD B6 F4 64 02 1D"
+        )
+        self.show_hash_info(sha1_1, sha1_2, "sha1")
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        self.out = []
+        self.show_md5_hash_collision()
+        self.show_sha1_hash_collision()
+        self.print_output(check_terminal_size=True)
         return
 
 

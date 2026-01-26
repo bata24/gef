@@ -640,7 +640,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/walk-link-list.png)
 - `hexdump-flexible`: displays the hexdump with user defined format.
     - ![](images/hexdump-flexible.png)
-- `hash`: calculates various hashes.
+- `hash`: calculates various hashes, or show known-collisions.
     - ![](images/hash.png)
 - `crc`: calculates various CRCs.
     - ![](images/crc.png)
