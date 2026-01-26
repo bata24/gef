@@ -97447,7 +97447,7 @@ class PagewalkArmCommand(PagewalkCommand):
         COUNT = 0
 
         tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for va_base, table_base, parent_flags in tqdm(LEVEL1, leave=False):
+        for va_base, table_base, parent_flags in tqdm(LEVEL1, leave=False, desc="LEVEL 2"):
             entries = self.read_physmem_cache(table_base, 4 * (2 ** 8))
             entries = slice_unpack(entries, 4)
             COUNT += len(entries)
@@ -97647,7 +97647,8 @@ class PagewalkArmCommand(PagewalkCommand):
         LEVEL2 = []
         MB = []
         COUNT = 0
-        for va_base, table_base, parent_flags in LEVEL1:
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
+        for va_base, table_base, parent_flags in tqdm(LEVEL1, leave=False, desc="LEVEL 2"):
             entries = self.read_physmem_cache(table_base, 8 * (2 ** 9))
             entries = slice_unpack(entries, 8)
             COUNT += len(entries)
@@ -97731,8 +97732,7 @@ class PagewalkArmCommand(PagewalkCommand):
         KB = []
         COUNT = 0
 
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for va_base, table_base, parent_flags in tqdm(LEVEL2, leave=False):
+        for va_base, table_base, parent_flags in tqdm(LEVEL2, leave=False, desc="LEVEL 3"):
             entries = self.read_physmem_cache(table_base, 8 * (2 ** 9))
             entries = slice_unpack(entries, 8)
             COUNT += len(entries)
@@ -98644,6 +98644,8 @@ class PagewalkArm64Command(PagewalkCommand):
         flags = []
         TABLE_BASE = [[region_start, table_base, flags]]
 
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
+
         # level -1 parse for 4KB granule
         if not self.silent:
             self.quiet_add_out(titlify("LEVEL -1"))
@@ -98653,7 +98655,7 @@ class PagewalkArm64Command(PagewalkCommand):
             )
             LEVELM1 = []
             COUNT = 0
-            for va_base, table_base, parent_flags in TABLE_BASE:
+            for va_base, table_base, parent_flags in tqdm(TABLE_BASE, leave=False, desc="LEVEL -1"):
                 entries = self.read_mem_wrapper(table_base, 8 * entries_per_table)
                 entries = slice_unpack(entries, 8)
                 COUNT += len(entries)
@@ -98743,7 +98745,7 @@ class PagewalkArm64Command(PagewalkCommand):
             LEVEL0 = []
             GB512 = []
             COUNT = 0
-            for va_base, table_base, parent_flags in LEVELM1:
+            for va_base, table_base, parent_flags in tqdm(LEVELM1, leave=False, desc="LEVEL 0"):
                 entries = self.read_mem_wrapper(table_base, 8 * entries_per_table)
                 entries = slice_unpack(entries, 8)
                 COUNT += len(entries)
@@ -98910,7 +98912,7 @@ class PagewalkArm64Command(PagewalkCommand):
             TB4 = []
             GB64 = []
             COUNT = 0
-            for va_base, table_base, parent_flags in LEVEL0:
+            for va_base, table_base, parent_flags in tqdm(LEVEL0, leave=False, desc="LEVEL 1"):
                 entries = self.read_mem_wrapper(table_base, 8 * entries_per_table)
                 entries = slice_unpack(entries, 8)
                 COUNT += len(entries)
@@ -99088,7 +99090,7 @@ class PagewalkArm64Command(PagewalkCommand):
             MB32 = []
             MB512 = []
             COUNT = 0
-            for va_base, table_base, parent_flags in LEVEL1:
+            for va_base, table_base, parent_flags in tqdm(LEVEL1, leave=False, desc="LEVEL 2"):
                 entries = self.read_mem_wrapper(table_base, 8 * entries_per_table)
                 entries = slice_unpack(entries, 8)
                 COUNT += len(entries)
@@ -99267,8 +99269,7 @@ class PagewalkArm64Command(PagewalkCommand):
             COUNT = 0
             flag_cache = {}
 
-            tqdm = GefUtil.get_tqdm(not self.args.quiet)
-            for va_base, table_base, parent_flags in tqdm(LEVEL2, leave=False):
+            for va_base, table_base, parent_flags in tqdm(LEVEL2, leave=False, desc="LEVEL 3"):
                 entries = self.read_mem_wrapper(table_base, 8 * entries_per_table)
                 entries = slice_unpack(entries, 8)
                 COUNT += len(entries)
@@ -99420,7 +99421,7 @@ class PagewalkArm64Command(PagewalkCommand):
             if not self.silent:
                 self.quiet_info_add_out("LEVEL 3 is skipped")
 
-        # Finalize
+        # finalize
         if not self.silent:
             self.quiet_add_out(titlify("Total"))
             self.quiet_info_add_out("PT Entry (Total): {:d}".format(len(self.mappings)))
