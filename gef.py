@@ -96427,7 +96427,8 @@ class PagewalkX64Command(PagewalkCommand):
             self.bits["PT_BITS"],
             self.bits["OFFSET"],
         ])
-        for va_base, table_base, parent_flags in self.TABLES:
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
+        for va_base, table_base, parent_flags in tqdm(self.TABLES, leave=False, desc="PML5E"):
             entries = self.read_physmem_cache(table_base, 2 ** self.bits["PML5T_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
@@ -96500,7 +96501,8 @@ class PagewalkX64Command(PagewalkCommand):
             self.bits["PT_BITS"],
             self.bits["OFFSET"],
         ])
-        for va_base, table_base, parent_flags in self.TABLES:
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
+        for va_base, table_base, parent_flags in tqdm(self.TABLES, leave=False, desc="PML4E"):
             entries = self.read_physmem_cache(table_base, 2 ** self.bits["PML4T_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
@@ -96581,7 +96583,8 @@ class PagewalkX64Command(PagewalkCommand):
             self.bits["PT_BITS"],
             self.bits["OFFSET"],
         ])
-        for va_base, table_base, parent_flags in self.TABLES:
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
+        for va_base, table_base, parent_flags in tqdm(self.TABLES, leave=False, desc="PDPE"):
             entries = self.read_physmem_cache(table_base, 2 ** self.bits["PDPT_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
@@ -96678,7 +96681,8 @@ class PagewalkX64Command(PagewalkCommand):
             self.bits["PT_BITS"],
             self.bits["OFFSET"],
         ])
-        for va_base, table_base, parent_flags in self.TABLES:
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
+        for va_base, table_base, parent_flags in tqdm(self.TABLES, leave=False, desc="PDE"):
             entries = self.read_physmem_cache(table_base, 2 ** self.bits["PDT_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
@@ -96780,7 +96784,7 @@ class PagewalkX64Command(PagewalkCommand):
         flag_cache = {}
 
         tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for va_base, table_base, parent_flags in tqdm(self.TABLES, leave=False):
+        for va_base, table_base, parent_flags in tqdm(self.TABLES, leave=False, desc="PTE"):
             entries = self.read_physmem_cache(table_base, 2 ** self.bits["PT_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
@@ -96874,11 +96878,19 @@ class PagewalkX64Command(PagewalkCommand):
         if self.args.user_specified_cr3 is not None:
             cr3 = self.args.user_specified_cr3
         else:
-            cr3 = get_register("cr3", use_monitor=True)
+            cr3 = get_register("cr3", use_monitor=True, use_mbed_exec=True)
+        if cr3 is None:
+            self.quiet_err("Failed to resolve cr3")
+            return
+
         if self.args.user_specified_cr4 is not None:
             cr4 = self.args.user_specified_cr4
         else:
-            cr4 = get_register("cr4", use_monitor=True)
+            cr4 = get_register("cr4", use_monitor=True, use_mbed_exec=True)
+        if cr4 is None:
+            self.quiet_err("Failed to resolve cr4")
+            return
+
         if is_x86_64() and self.args.user_pt:
             cr3 += get_pagesize()
         self.quiet_info_add_out("cr3: {:#018x}".format(cr3))
@@ -96981,7 +96993,7 @@ class PagewalkX64Command(PagewalkCommand):
 
     @parse_args
     @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16"))
     def do_invoke(self, args):
         if self.args.include_esp_fixup_stacks and not is_x86_64():
