@@ -83025,10 +83025,15 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
 
     @parse_args
     @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        # This command depends on ksymaddr-remote, which requires access to system registers.
+        if is_kgdb() and not kgdb_has_system_registers():
+            err("Unsupported in kgdb mode without access to system registers")
+            return
+
         self.quiet_info("Wait for memory scan")
 
         ret = self.initialize()
