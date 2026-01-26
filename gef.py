@@ -64038,13 +64038,14 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def get_modules_list(self):
-        modules = KernelAddressHeuristicFinder.get_modules()
-        if modules is None:
-            self.quiet_err("Not found modules (maybe, CONFIG_MODULES is not set)")
-            return None
+    def get_modules_list(self, modules):
+        # use cache
+        if self.module_addrs:
+            return self.module_addrs
 
-        self.quiet_info("modules: {:#x}".format(modules))
+        # slow path
+        if modules is None:
+            return None
 
         module_addrs = []
         current = modules
@@ -64060,6 +64061,13 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         return module_addrs
 
     def get_offset_name(self, module_addrs):
+        # fast path
+        try:
+            return to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).name"))
+        except gdb.error:
+            pass
+
+        # slow_path
         for i in range(0x100):
             offset_name = i * current_arch.ptrsize
             valid = True
@@ -64072,10 +64080,8 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                     valid = False
                     break
             if valid:
-                self.quiet_info("offsetof(module, name): {:#x}".format(offset_name))
                 return offset_name
 
-        self.quiet_err("Not found module->name[MODULE_NAME_LEN]")
         return None
 
     def get_offset_mem(self, module_addrs): # v6.4~
@@ -64150,6 +64156,15 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         #endif
         };
         """
+        # fast path
+        try:
+            offset_mem = to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).mem"))
+            offset_size = to_unsigned_long(gdb.parse_and_eval("&((struct module_memory*)0).size"))
+            return offset_mem, offset_mem + offset_size
+        except gdb.error:
+            pass
+
+        # slow_path
         MOD_TEXT = 0
         MOD_DATA = 1
         MOD_RODATA = 2
@@ -64185,14 +64200,10 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                             valid = False
                             break
                 if valid:
-                    self.quiet_info("offsetof(module, mem): {:#x}".format(offset_mem))
-                    self.quiet_info("offsetof(module_memory, size): {:#x}".format(offset_size))
-                    self.quiet_info("sizeof(module_memory): {:#x}".format(sizeof_module_memory))
                     return offset_mem, offset_mem + offset_size
-        self.quiet_err("Not found module->mem")
-        return None, None
+        return None
 
-    def get_offset_layout(self, module_addrs): # v4.5 ~ v6.4
+    def get_offset_init_layout(self, module_addrs): # v4.5 ~ v6.4
         """
         struct module { // kernel v4.5~
             enum module_state state;
@@ -64285,6 +64296,13 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             0xbf22b174:     0x00000000      0x00000000      0x00000000      0xbf225000 <- init_layout.base
             0xbf22b184:     0x00008000      0x00005000      0x00006000      0x00006000
         """
+        # fast path
+        try:
+            return to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).init_layout"))
+        except gdb.error:
+            pass
+
+        # slow_path
         for i in range(300):
             offset_init_layout = i * current_arch.ptrsize
             valid = True
@@ -64320,10 +64338,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                     valid = False
                     break
             if valid:
-                self.quiet_info("offsetof(module, init_layout): {:#x}".format(offset_init_layout))
                 return offset_init_layout
-
-        self.quiet_err("Not found module->init_layout")
         return None
 
     def get_offset_module_core(self, module_addrs): # ~v4.4
@@ -64394,6 +64409,13 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).module_core"))
+        except gdb.error:
+            pass
+
+        # slow_path
         for i in range(300):
             offset_module_core = i * current_arch.ptrsize
             valid = True
@@ -64429,10 +64451,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                     valid = False
                     break
             if valid:
-                self.quiet_info("offsetof(module, module_core): {:#x}".format(offset_module_core))
                 return offset_module_core
-
-        self.quiet_err("Not found module->module_core")
         return None
 
     def get_offset_kallsyms(self, module_addrs):
@@ -64444,6 +64463,13 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             char *typetab; // v5.2~
         };
         """
+        # fast path
+        try:
+            return to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).kallsyms"))
+        except gdb.error:
+            pass
+
+        # slow_path
         kversion = Kernel.kernel_version()
         for i in range(300):
             offset_kallsyms = i * current_arch.ptrsize
@@ -64478,11 +64504,71 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                         valid = False
                         break
             if valid:
-                self.quiet_info("offsetof(module, kallsyms): {:#x}".format(offset_kallsyms))
                 return offset_kallsyms
-
-        self.quiet_err("Not found module->kallsyms")
         return None
+
+    def initialize(self):
+        if hasattr(self, "initialized"):
+            return True
+
+        kversion = Kernel.kernel_version()
+        if kversion is None:
+            self.quiet_err("Failed to resolve kernel version")
+            return False
+
+        # modules
+        self.modules = KernelAddressHeuristicFinder.get_modules()
+        if self.modules is None:
+            self.quiet_err("Not found modules (maybe, CONFIG_MODULES is not set)")
+            return False
+        self.quiet_info("modules: {:#x}".format(self.modules))
+
+        # modules list
+        self.module_addrs = self.get_modules_list(self.modules)
+        if self.module_addrs is None:
+            return False
+        if self.module_addrs == []:
+            self.quiet_err("Not found any modules")
+            return False
+
+        # module->name
+        self.offset_name = self.get_offset_name(self.module_addrs)
+        if self.offset_name is None:
+            self.quiet_err("Not found module->name[MODULE_NAME_LEN]")
+            return False
+        self.quiet_info("offsetof(module, name): {:#x}".format(self.offset_name))
+
+        # modules->{mem,mem_size,module_core}
+        if "6.4" <= kversion:
+            ret = self.get_offset_mem(self.module_addrs)
+            if ret is None:
+                self.quiet_err("Not found module->mem")
+                return False
+            self.offset_mem, self.offset_mem_size = ret
+            self.quiet_info("offsetof(module, mem): {:#x}".format(self.offset_mem))
+            self.quiet_info("offsetof(module, mem.size): {:#x}".format(self.offset_mem_size))
+        elif "4.5" <= kversion:
+            self.offset_init_layout = self.get_offset_init_layout(self.module_addrs)
+            if self.offset_init_layout is None:
+                self.quiet_err("Not found module->init_layout")
+                return False
+            self.quiet_info("offsetof(module, init_layout): {:#x}".format(self.offset_init_layout))
+        else: # kversion < v4.5
+            self.offset_module_core = self.get_offset_module_core(self.module_addrs)
+            if self.offset_module_core is None:
+                self.quiet_err("Not found module->module_core")
+                return False
+            self.quiet_info("offsetof(module, module_core): {:#x}".format(self.offset_module_core))
+
+        # module->kallsyms
+        self.offset_kallsyms = self.get_offset_kallsyms(self.module_addrs)
+        if self.offset_kallsyms is None:
+            self.quiet_err("Not found module->kallsyms")
+            return False
+        self.quiet_info("offsetof(module, kallsyms): {:#x}".format(self.offset_kallsyms))
+
+        self.initialized = True
+        return True
 
     def parse_kallsyms(self, kallsyms):
         kversion = Kernel.kernel_version()
@@ -64590,83 +64676,73 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         gdb.execute(cmd, to_string=True)
         return
 
+    def parse_module(self):
+        if not self.args.apply_symbol:
+            if not self.args.quiet:
+                fmt = "{:<18s} {:<24s} {:<18s} {:<18s}"
+                legend = ["module", "module->name", "base", "size"]
+                self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+        kversion = Kernel.kernel_version()
+        tqdm = GefUtil.get_tqdm(not self.args.quiet and not self.args.apply_symbol)
+        for module in tqdm(self.module_addrs, leave=False):
+            name_string = read_cstring_from_memory(module + self.offset_name)
+            if self.args.filter:
+                if not any(re_pattern.search(name_string) for re_pattern in self.args.filter):
+                    continue
+
+            if "6.4" <= kversion:
+                base = read_int_from_memory(module + self.offset_mem)
+                size = read_int32_from_memory(module + self.offset_mem_size)
+            elif "4.5" <= kversion:
+                base = read_int_from_memory(module + self.offset_init_layout)
+                size = read_int32_from_memory(module + self.offset_init_layout + current_arch.ptrsize)
+            else: # kversion < "4.5"
+                base = read_int_from_memory(module + self.offset_module_core)
+                size = read_int32_from_memory(module + self.offset_module_core + current_arch.ptrsize + 4)
+
+            if not self.args.apply_symbol:
+                self.out.append("{:#018x} {:<24s} {:#018x} {:#018x}".format(module, name_string, base, size))
+
+            if self.args.resolve_symbol:
+                kallsyms = read_int_from_memory(module + self.offset_kallsyms)
+                entries = self.parse_kallsyms(kallsyms)
+                self.print_symbol(entries, self.args.symbol_unsort)
+
+            elif self.args.apply_symbol:
+                kallsyms = read_int_from_memory(module + self.offset_kallsyms)
+                entries = self.parse_kallsyms(kallsyms)
+                self.apply_symbol(name_string, base, entries)
+        return
+
     @parse_args
     @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
-        module_addrs = self.get_modules_list()
-        if module_addrs is None:
+        # initialize
+        self.module_addrs = None
+        ret = self.initialize()
+        if not ret:
+            self.quiet_err("Failed to initialize")
             return
 
-        if module_addrs == []:
+        # get module addrs
+        if not self.module_addrs:
+            self.module_addrs = self.get_modules_list(self.modules)
+        if self.module_addrs is None:
+            return
+        if self.module_addrs == []:
             self.quiet_err("Not found any modules")
             return
+        self.quiet_info("Num of modules: {:#x}".format(len(self.module_addrs)))
 
-        offset_name = self.get_offset_name(module_addrs)
-        if offset_name is None:
-            return
-
-        kversion = Kernel.kernel_version()
-        if "6.4" <= kversion:
-            offset_mem, offset_mem_size = self.get_offset_mem(module_addrs)
-            if offset_mem is None:
-                return
-        elif "4.5" <= kversion:
-            offset_layout = self.get_offset_layout(module_addrs)
-            if offset_layout is None:
-                return
-        else: # kversion < v4.5
-            offset_module_core = self.get_offset_module_core(module_addrs)
-            if offset_module_core is None:
-                return
-
-        if args.resolve_symbol or args.apply_symbol:
-            offset_kallsyms = self.get_offset_kallsyms(module_addrs)
-            if offset_kallsyms is None:
-                return
-
+        # parse modules
         self.out = []
-
-        if not args.apply_symbol:
-            if not args.quiet:
-                fmt = "{:<18s} {:<24s} {:<18s} {:<18s}"
-                legend = ["module", "module->name", "base", "size"]
-                self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
-        tqdm = GefUtil.get_tqdm(not args.quiet and not args.apply_symbol)
-        for module in tqdm(module_addrs, leave=False):
-            name_string = read_cstring_from_memory(module + offset_name)
-            if args.filter:
-                if not any(re_pattern.search(name_string) for re_pattern in args.filter):
-                    continue
-
-            if "6.4" <= kversion:
-                base = read_int_from_memory(module + offset_mem)
-                size = read_int32_from_memory(module + offset_mem_size)
-            elif "4.5" <= kversion:
-                base = read_int_from_memory(module + offset_layout)
-                size = read_int32_from_memory(module + offset_layout + current_arch.ptrsize)
-            else: # kversion < "4.5"
-                base = read_int_from_memory(module + offset_module_core)
-                size = read_int32_from_memory(module + offset_module_core + current_arch.ptrsize + 4)
-
-            if not args.apply_symbol:
-                self.out.append("{:#018x} {:<24s} {:#018x} {:#018x}".format(module, name_string, base, size))
-
-            if args.resolve_symbol:
-                kallsyms = read_int_from_memory(module + offset_kallsyms)
-                entries = self.parse_kallsyms(kallsyms)
-                self.print_symbol(entries, args.symbol_unsort)
-
-            elif args.apply_symbol:
-                kallsyms = read_int_from_memory(module + offset_kallsyms)
-                entries = self.parse_kallsyms(kallsyms)
-                self.apply_symbol(name_string, base, entries)
-
+        self.parse_module()
         self.print_output(check_terminal_size=True)
         return
 
