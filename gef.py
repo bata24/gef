@@ -5890,6 +5890,19 @@ class Symbol:
         except (gdb.error, IndexError):
             return None
 
+    @staticmethod
+    def get_symbol_by_monitor(symbol):
+        if not is_kdb():
+            return None
+        res = gdb.execute("monitor {:s}".format(symbol), to_string=True)
+        r = re.search(symbol + r" = 0x(\S+)", res)
+        if not r:
+            return None
+        v = int(r.group(1), 16)
+        if not is_valid_addr(v):
+            return None
+        return v
+
 
 def load_capstone(f):
     """Decorator wrapper to load capstone."""
@@ -11956,7 +11969,8 @@ def read_physmem(paddr, size):
         out = kgdb_use_physmap(paddr, size) # fast path
         if out:
             return out
-        return kdb_use_mdp(paddr, size) # slow path
+        if is_kdb():
+            return kdb_use_mdp(paddr, size) # slow path
 
     return None
 
@@ -12488,6 +12502,7 @@ def only_if_specific_gdb_mode(mode=()):
                 "qemu-user": is_qemu_user,
                 "vmware": is_vmware,
                 "kgdb": is_kgdb,
+                "kdb": is_kdb,
                 "qiling": is_qiling,
                 "rr": is_rr,
                 "wine": is_wine,
@@ -12515,6 +12530,7 @@ def exclude_specific_gdb_mode(mode=()):
                 "qemu-user": is_qemu_user,
                 "vmware": is_vmware,
                 "kgdb": is_kgdb,
+                "kdb": is_kdb,
                 "qiling": is_qiling,
                 "rr": is_rr,
                 "wine": is_wine,
@@ -12870,6 +12886,16 @@ def is_kgdb():
 @Cache.cache_this_session
 def kgdb_has_system_registers():
     return Config.get_gef_setting("gef.kgdb_system_registers") is True
+
+
+@Cache.cache_this_session
+def is_kdb():
+    """GDB mode determination function for KDB (over KGDB)."""
+    if not is_kgdb():
+        return False
+    res = gdb.execute("monitor _stext", to_string=True)
+    r = re.search(r"_stext = 0x(\S+)", res)
+    return bool(r)
 
 
 @Cache.cache_this_session
@@ -20089,7 +20115,7 @@ class MprotectCommand(GenericCommand):
 
 @register_command
 class ReadControlRegisterCommand(GenericCommand):
-    """Read control register for kgdb."""
+    """Read control register for kgdb / kdb."""
 
     _cmdline_ = "read-control-register"
     _category_ = "04-a. Register - View"
@@ -20122,6 +20148,16 @@ class ReadControlRegisterCommand(GenericCommand):
         return [s for s in self.registers if s and s.startswith(text.strip())]
 
     def get_getter_address(self, reg_name):
+        # In kgdb mode, direct modification (patching) of text memory is not permitted.
+        # Therefore, we instead utilize legitimate kernel-provided symbols and mechanisms
+        # to achieve the same goal.
+        # This implementation locates the address where the target instruction is used,
+        # executes that instruction exactly once, and captures the resulting value.
+
+        # TODO: Implement an alternative approach using the direct physical mapping (physmap)
+        # to allow patching via physical address, or execute hand-crafted assembly
+        # to obtain the value directly (without symbol).
+
         symbol = {
             "cr0": "native_read_cr0",
             "cr2": "pv_native_read_cr2",
@@ -20130,18 +20166,19 @@ class ReadControlRegisterCommand(GenericCommand):
         }[reg_name]
 
         byte_code = {
-            "cr0": b"\x0f\x20\xc0",
-            "cr2": b"\x0f\x20\xd0",
-            "cr3": b"\x0f\x20\xd8",
-            "cr4": b"\x0f\x20\xe0",
+            "cr0": b"\x0f\x20\xc0", # mov rax, cr0
+            "cr2": b"\x0f\x20\xd0", # mov rax, cr2
+            "cr3": b"\x0f\x20\xd8", # mov rax, cr3
+            "cr4": b"\x0f\x20\xe0", # mov rax, cr4
         }[reg_name]
 
         # resolve symbol
-        ret = gdb.execute("monitor {:s}".format(symbol), to_string=True)
-        r = re.search(r"(0x\S+)", ret)
-        if not r:
+        if is_kdb():
+            address = Symbol.get_symbol_by_monitor(symbol)
+        else:
+            address = Symbol.get_ksymaddr(symbol)
+        if address is None:
             return None
-        address = int(r.group(1), 16)
 
         # adjust offset
         data = read_memory(address, 20)
@@ -56260,8 +56297,8 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @switch_to_intel_syntax
     def get_saved_command_line():
-        # Do not use Symbol.get_ksymaddr directory since this function is used to discover KPTI.
-        # This is because Symbol.get_ksymaddr uses a cache.
+        # Do not use Symbol.get_ksymaddr since this function is used to discover KPTI,
+        # because Symbol.get_ksymaddr uses a cache.
 
         kversion = Kernel.kernel_version()
 
@@ -59777,6 +59814,10 @@ class Kernel:
     # No caching intentionally
     @staticmethod
     def get_kernel_base_hint():
+
+        # This function is designed for the case where the symbol is not available.
+        # Do not use Symbol.get_ksymaddr.
+
         if is_x86():
             if is_qemu_system():
                 # [5.8~]
@@ -59803,6 +59844,14 @@ class Kernel:
                     if is_valid_addr(div0_handler):
                         return div0_handler
 
+            elif is_kdb(): # not kgdb
+                r = Symbol.get_symbol_by_monitor("asm_exc_divide_error")
+                if r:
+                    return r
+                r = Symbol.get_symbol_by_monitor("divide_error")
+                if r:
+                    return r
+
         elif is_arm64():
             # `VBAR` register has interrupt vector address
             vbar = get_register("$VBAR") or get_register("$VBAR_EL1")
@@ -59821,7 +59870,7 @@ class Kernel:
     @Cache.cache_this_session
     def get_kernel_layout():
         dic = {
-            "maps": Kernel.get_maps(),
+            "maps": None,
             "text_base": None,
             "text_size": None,
             "text_end": None,
@@ -59836,8 +59885,29 @@ class Kernel:
         }
         Kinfo = collections.namedtuple("Kinfo", dic.keys())
 
-        # use symbol
+        if is_kdb():
+            # no-symbol, but monitor may be used
+            dic["text_base"] = Symbol.get_symbol_by_monitor("_stext")
+            dic["text_end"] = Symbol.get_symbol_by_monitor("_etext")
+            if dic["text_base"] and dic["text_end"]:
+                dic["text_size"] = dic["text_end"] - dic["text_base"]
+
+            dic["rw_base"] = Symbol.get_symbol_by_monitor("_stext")
+            dic["rw_end"] = Symbol.get_symbol_by_monitor("_etext")
+            if dic["rw_base"] and dic["rw_end"]:
+                dic["rw_size"] = dic["rw_end"] - dic["rw_base"]
+
+            dic["ro_base"] = Symbol.get_symbol_by_monitor("__start_rodata")
+            dic["ro_end"] = Symbol.get_symbol_by_monitor("__end_rodata_aligned") or \
+                            Symbol.get_symbol_by_monitor("__end_rodata")
+            if dic["ro_base"] and dic["ro_end"]:
+                dic["ro_size"] = dic["ro_end"] - dic["ro_base"]
+
+            dic["has_none"] = None in dic.values()
+            return Kinfo(*dic.values())
+
         if is_kgdb():
+            # use symbol
             dic["text_base"] = Symbol.get_ksymaddr("_stext")
             dic["text_end"] = Symbol.get_ksymaddr("_etext")
             if dic["text_base"] and dic["text_end"]:
@@ -59849,7 +59919,8 @@ class Kernel:
                 dic["rw_size"] = dic["rw_end"] - dic["rw_base"]
 
             dic["ro_base"] = Symbol.get_ksymaddr("__start_rodata")
-            dic["ro_end"] = Symbol.get_ksymaddr("__end_rodata_aligned") or Symbol.get_ksymaddr("__end_rodata")
+            dic["ro_end"] = Symbol.get_ksymaddr("__end_rodata_aligned") or \
+                            Symbol.get_ksymaddr("__end_rodata")
             if dic["ro_base"] and dic["ro_end"]:
                 dic["ro_size"] = dic["ro_end"] - dic["ro_base"]
 
@@ -59857,6 +59928,7 @@ class Kernel:
             return Kinfo(*dic.values())
 
         # maps is not found, so fast return
+        dic["maps"] = Kernel.get_maps()
         if dic["maps"] is None:
             dic["has_none"] = None in dic.values()
             return Kinfo(*dic.values())
@@ -60051,6 +60123,10 @@ class Kernel:
                     pass
             return None
 
+        # kdb specific
+        if is_kdb():
+            return Symbol.get_symbol_by_monitor("_stext")
+
         # fast path
         hint = Kernel.get_kernel_base_hint()
         if hint: # invalid if arm32
@@ -60067,6 +60143,10 @@ class Kernel:
                     diff = hint - handler
                     if diff & get_pagesize_mask_low() == 0:
                         return stext - diff
+
+        if is_kgdb():
+            # Kernel.get_kernel_layout is too slow, so return if not found with fast path
+            return None
 
         # slow path
         kinfo = Kernel.get_kernel_layout()
@@ -60115,7 +60195,11 @@ class Kernel:
     @Cache.cache_this_session
     def kernel_version():
         # fast path
-        linux_banner = Symbol.get_ksymaddr("linux_banner")
+        linux_banner = None
+        if is_kdb():
+            linux_banner = Symbol.get_symbol_by_monitor("linux_banner")
+        if linux_banner is None:
+            linux_banner = Symbol.get_ksymaddr("linux_banner")
         if linux_banner and is_valid_addr(linux_banner):
             version_string = read_cstring_from_memory(linux_banner, 0x200).rstrip()
             r = re.search(r"Linux version (\d)\.(\d+)\.(\d+)", version_string)
@@ -60158,7 +60242,11 @@ class Kernel:
     @staticmethod
     @Cache.cache_this_session
     def kernel_cmdline():
-        saved_command_line = KernelAddressHeuristicFinder.get_saved_command_line()
+        save_command_line = None
+        if is_kdb():
+            saved_command_line = Symbol.get_symbol_by_monitor("saved_command_line")
+        if saved_command_line is None:
+            saved_command_line = KernelAddressHeuristicFinder.get_saved_command_line()
         if saved_command_line is None:
             return None
         try:
@@ -110053,6 +110141,7 @@ class GefStatusCommand(GenericCommand):
         gef_print("{:30s}  ->  {!s}".format("is_over_serial()", is_over_serial()))
         kgdb_forced = " (forced)" if Config.get_gef_setting("gef.kgdb_force") is True else ""
         gef_print("{:30s}  ->  {!s}{:s}".format("is_kgdb()", is_kgdb(), kgdb_forced))
+        gef_print("{:30s}  ->  {!s}".format("is_kdb()", is_kdb()))
         gef_print("{:30s}  ->  {!s}".format("is_qiling()", is_qiling()))
         gef_print("{:30s}  ->  {!s}".format("is_vmware()", is_vmware()))
         gef_print("{:30s}  ->  {!s}".format("is_in_kernel()", is_in_kernel()))
