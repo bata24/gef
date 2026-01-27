@@ -60242,7 +60242,7 @@ class Kernel:
     @staticmethod
     @Cache.cache_this_session
     def kernel_cmdline():
-        save_command_line = None
+        saved_command_line = None
         if is_kdb():
             saved_command_line = Symbol.get_symbol_by_monitor("saved_command_line")
         if saved_command_line is None:
