@@ -65171,7 +65171,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         elif allocator == "SLUB_TINY":
             ret = gdb.execute("slub-tiny-dump --quiet --no-pager bdev_cache", to_string=True)
         else:
-            self.quiet_err("Unsupported SLAB, SLOB")
+            self.quiet_err("Unsupported: SLAB, SLOB, Unknown allocator")
             return None
 
         bdevs = []
@@ -77099,6 +77099,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         elif allocator == "SLOB":
             self.quiet_err("Unsupported; You should use `slob-dump`")
             return
+        else:
+            self.quiet_err("Unsupported: Unknown allocator")
+            return
 
         # The slub-dump command is used by page2virt and kmagic to find vmemmap and sizeof(struct page).
         # Therefore, slub-dump itself may be called recursively (up to once) from slub-dump.
@@ -77890,6 +77893,9 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             return
         elif allocator == "SLOB":
             self.quiet_err("Unsupported; You should use `slob-dump`")
+            return
+        else:
+            self.quiet_err("Unsupported: Unknown allocator")
             return
 
         # The slub-tiny-dump command is used by page2virt and kmagic to find vmemmap and sizeof(struct page).
@@ -78785,6 +78791,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         elif allocator == "SLOB":
             self.quiet_err("Unsupported; You should use `slob-dump`")
             return
+        else:
+            self.quiet_err("Unsupported: Unknown allocator")
+            return
 
         self.maps = None
         self.out = []
@@ -79194,6 +79203,9 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             return
         elif allocator == "SLOB":
             pass
+        else:
+            self.quiet_err("Unsupported: Unknown allocator")
+            return
 
         if (args.large, args.medium, args.small) == (False, False, False):
             self.args.large = True
@@ -79403,7 +79415,7 @@ class SlabContainsCommand(GenericCommand):
             self.allocator = Kernel.get_slab_type()
 
         if self.allocator not in ["SLUB", "SLUB_TINY", "SLAB"]:
-            self.quiet_err("Unsupported SLOB")
+            self.quiet_err("Unsupported: SLOB, Unknown allocator")
             return
 
         ret = self.initialize()
@@ -79835,7 +79847,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             self.allocator = Kernel.get_slab_type()
 
         if self.allocator not in ["SLUB", "SLUB_TINY"]:
-            self.quiet_err("Unsupported SLAB, SLOB")
+            self.quiet_err("Unsupported: SLAB, SLOB, Unknown allocator")
             return
 
         ret = self.initialize()
@@ -81470,7 +81482,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
 
         allocator = Kernel.get_slab_type()
         if allocator not in ["SLUB", "SLUB_TINY", "SLAB"]:
-            err("Unsupported SLOB")
+            err("Unsupported: SLOB, Unknown allocator")
             return
 
         # init
@@ -105078,6 +105090,9 @@ class KmallocTracerCommand(GenericCommand):
             return
 
         allocator = Kernel.get_slab_type()
+        if allocator == "Unknown":
+            err("Unsupported: Unknown allocator")
+            return
         if allocator != "SLUB":
             warn("Unsupported viewing detailed information for SLAB, SLOB, SLUB_TINY")
             # fall through
@@ -106478,6 +106493,9 @@ class KmallocAllocatedByCommand(GenericCommand):
             return
 
         allocator = Kernel.get_slab_type()
+        if allocator == "Unknown":
+            err("Unsupported: Unknown allocator")
+            return
         if allocator != "SLUB":
             warn("Unsupported viewing detailed information for SLAB, SLOB, SLUB_TINY")
             # fall through
