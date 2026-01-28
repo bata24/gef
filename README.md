@@ -336,6 +336,9 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
             - ![](images/heap-tracer.png)
         - `heap dump-image`: visualizes chunks on a heap as composition image.
             - ![](images/heap-dump-image.png)
+        - `heap snapshot`: takes a snapshot of the heap.
+        - `heap snapshot-compare`: compares current heap with a previously saved heap-snapshot.
+            - ![](images/heap-snapshot-compare.png)
 - uClibc heap commands are added.
     - `uclibc-ng-heap-dump`: dumps uClibc-ng heap chunks.
         - Supported on x64 and x86, based on uClibc-ng malloc-standard.

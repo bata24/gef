@@ -22084,6 +22084,8 @@ class GlibcHeapCommand(GenericCommand):
     subparsers.add_parser("dump-image")
     subparsers.add_parser("tracer")
     subparsers.add_parser("parse")
+    subparsers.add_parser("snapshot")
+    subparsers.add_parser("snapshot-compare")
     _syntax_ = parser.format_help()
 
     _note_ = [
@@ -24652,6 +24654,219 @@ class GlibcHeapDumpImageCommand(GenericCommand):
 
         if args.save_as_png:
             info("Saved as {!r}".format(image_path[:-4] + ".png"))
+        return
+
+
+@register_command
+class GlibcHeapSnapshotCommand(GenericCommand):
+    """Take a snapshot of heap."""
+
+    _cmdline_ = "heap snapshot"
+    _category_ = "06-a. Heap - Glibc"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
+                        help="the address or number to interpret as an arena. (default: main_arena)")
+    parser.add_argument("--all", action="store_true", help="dump all arenas.")
+    _syntax_ = parser.format_help()
+
+    def take_snap_shot(self, arena, arena_index):
+        try:
+            section = ProcessMap.lookup_address(arena.heap_base).section
+            page_start = section.page_start
+            region_size = section.size
+        except Exception:
+            err("Failed to get memory range")
+            return None
+
+        try:
+            data = read_memory(page_start, region_size)
+        except gdb.MemoryError:
+            err("Failed to dump memory")
+            return None
+
+        tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix="heap-snapshot-arena{:d}".format(arena_index), suffix=".raw")
+        os.fdopen(tmp_fd, "wb").write(data)
+        return tmp_filepath
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
+    def do_invoke(self, args):
+        # parse arena
+        arena = GlibcHeap.get_arena(args.arena_addr)
+
+        if arena is None:
+            err("No valid arena")
+            return
+
+        if arena.heap_base is None or not is_valid_addr(arena.heap_base):
+            err("Heap is not initialized")
+            return
+
+        if args.all:
+            arenas = GlibcHeap.get_all_arenas()
+        else:
+            arenas = [arena]
+
+        # doit
+        for i, arena in enumerate(arenas):
+            path = self.take_snap_shot(arena, i)
+            if path:
+                info("Snapshot successful: {:s}".format(path))
+        return
+
+
+@register_command
+class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
+    """Compare current heap with a previously saved heap-snapshot."""
+
+    _cmdline_ = "heap snapshot-compare"
+    _category_ = "06-a. Heap - Glibc"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
+                        help="the address or number to interpret as an arena. (default: main_arena)")
+    parser.add_argument("file_path", metavar="FILE_PATH", help="the filepath to compare.")
+    parser.add_argument("-f", "--full", action="store_true", help="display the same line without omitting.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    def read_heap_region(self, arena):
+        try:
+            section = ProcessMap.lookup_address(arena.heap_base).section
+            page_start = section.page_start
+            region_size = section.size
+        except Exception:
+            err("Failed to get memory range")
+            return None
+
+        try:
+            data = read_memory(page_start, region_size)
+        except gdb.MemoryError:
+            err("Failed to dump memory")
+            return None
+        return data, page_start
+
+    def compare(self, from1data, from2data, vaddr):
+        diff_found = False
+        asterisk = True
+
+        hex_pad_len = {
+            1: 37,
+            2: 35,
+            3: 32,
+            4: 30,
+            5: 27,
+            6: 25,
+            7: 22,
+            8: 20,
+            9: 17,
+            10: 15,
+            11: 12,
+            12: 9,
+            13: 7,
+            14: 5,
+            15: 2,
+            16: 0,
+        }
+
+        size = max(len(from1data), len(from2data))
+
+        for pos in range(0, size, 16):
+            # determining continuity
+            f1_bin = from1data[pos : pos + 16]
+            f2_bin = from2data[pos : pos + 16]
+            if not self.args.full:
+                if f1_bin == f2_bin:
+                    if asterisk is False:
+                        self.out.append("*")
+                        asterisk = True
+                    continue
+
+            diff_found = True
+            asterisk = False
+
+            # coloring
+            f1_hex = []
+            f2_hex = []
+            f1_ascii = []
+            f2_ascii = []
+            for i in range(min(max(len(f1_bin), len(f2_bin)), 16)):
+                f1_bin_i = f1_bin[i] if i < len(f1_bin) else None
+                f2_bin_i = f2_bin[i] if i < len(f2_bin) else None
+
+                if f1_bin_i == f2_bin_i:
+                    color_func = lambda x: x
+                else:
+                    color_func = Color.boldify
+
+                if f1_bin_i is None:
+                    f1_hex.append("  ")
+                    f1_ascii.append(" ")
+                else:
+                    f1_hex.append(color_func("{:02x}".format(f1_bin_i)))
+                    f1_ascii.append(color_func(chr(f1_bin_i) if 0x20 <= f1_bin_i < 0x7f else "."))
+
+                if f2_bin_i is None:
+                    f2_hex.append("  ")
+                    f2_ascii.append(" ")
+                else:
+                    f2_hex.append(color_func("{:02x}".format(f2_bin_i)))
+                    f2_ascii.append(color_func(chr(f2_bin_i) if 0x20 <= f2_bin_i < 0x7f else "."))
+
+            # formatting
+            # ["00", "00", "00" "00", ...] -> ["0000", "0000", ...]
+            f1_hex2 = ["".join(x) for x in slicer(f1_hex, 2)]
+            f2_hex2 = ["".join(x) for x in slicer(f2_hex, 2)]
+
+            # padding
+            # ["0000", "0000", ...] -> "0000 0000 ..."
+            f1_hex_s = " ".join(f1_hex2) + " " * hex_pad_len[len(f1_hex)]
+            f2_hex_s = " ".join(f2_hex2) + " " * hex_pad_len[len(f2_hex)]
+            # [".", ".", ...] -> "................"
+            f1_ascii_s = "".join(f1_ascii) + " " * (16 - len(f1_ascii))
+            f2_ascii_s = "".join(f2_ascii) + " " * (16 - len(f2_ascii))
+
+            # make line
+            pos_s = AddressUtil.format_address(pos)
+            vaddr_pos = ProcessMap.lookup_address(vaddr + pos)
+            self.out.append("{:s}: {:s} |{:s}| {!s}: {:s} |{:s}|".format(
+                pos_s, f1_hex_s, f1_ascii_s,
+                vaddr_pos, f2_hex_s, f2_ascii_s,
+            ))
+
+        if diff_found is False:
+            self.info_add_out("Not found diff")
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @require_arch_set
+    def do_invoke(self, args):
+        # parse arena
+        arena = GlibcHeap.get_arena(args.arena_addr)
+
+        if arena is None:
+            err("No valid arena")
+            return
+
+        if arena.heap_base is None or not is_valid_addr(arena.heap_base):
+            err("Heap is not initialized")
+            return
+
+        if not os.path.exists(self.args.file_path) or os.path.getsize(self.args.file_path) == 0:
+            err("Invalid file path")
+            return
+
+        # doit
+        self.out = []
+        data1 = open(self.args.file_path, "rb").read()
+        data2, vaddr = self.read_heap_region(arena)
+        self.compare(data1, data2, vaddr)
+        self.print_output(check_terminal_size=True)
         return
 
 
