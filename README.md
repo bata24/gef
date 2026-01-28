@@ -839,4 +839,4 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - [bata24/gefの機能紹介とか 2025](https://hackmd.io/@bata24/rkut9rU7Zg)
 - Orynth project page
     - https://www.orynth.dev/projects/bata24-gef-8901
-    - Market token symbol: `B24G` (details in [docs/FAQ.md](docs/FAQ.md))
+    - Fan token symbol: `B24G` (details in [docs/FAQ.md](docs/FAQ.md))
