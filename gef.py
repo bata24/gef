@@ -24418,6 +24418,7 @@ class GlibcHeapDumpImageCommand(GenericCommand):
                         help="maximum number of chunks to parse; use when the number of chunks is very large.")
     parser.add_argument("-t", "--include-top", action="store_true", help="include top chunk.")
     parser.add_argument("-s", "--save-as-png", action="store_true", help="save as png.")
+    parser.add_argument("-S", "--scale", type=float, default=1.0, help="magnification to enlarge or reduce the image.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
@@ -24566,14 +24567,14 @@ class GlibcHeapDumpImageCommand(GenericCommand):
         # terminal size (number of characters)
         term_height, term_width = GefUtil.get_terminal_size()
         # it's too tight, so make it slightly smaller.
-        term_width = int(term_width * 0.95)
-        term_height = int(term_height * 0.95)
+        term_width *= 0.95
+        term_height *= 0.95
         # number of pixels per character
         font_width_px = 6
-        font_height_px = int(12 * 1.5)
+        font_height_px = 12
         # pixel dimensions of the terminal
-        term_width_px = term_width * font_width_px
-        term_height_px = term_height * font_height_px
+        term_width_px = int(term_width * font_width_px * self.args.scale)
+        term_height_px = int(term_height * font_height_px * self.args.scale)
         # convert option
         command_options.extend([
             "-filter Box",
