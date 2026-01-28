@@ -5348,6 +5348,16 @@ class GlibcHeap:
         table["large_bins"][126] = {"size_min": 0x0, "size_max": 0x0} # maybe unused
         return table
 
+    # for convenience
+    H = HeapInfo # noqa
+    M = MallocPar # noqa
+    A = GlibcArena # noqa
+    C = GlibcChunk # noqa
+
+
+# for convenience
+GH = GlibcHeap # noqa
+
 
 def get_libc_version(verbose=False):
     """Detect and return the glibc version as a tuple, using cache, configuration,
@@ -22363,6 +22373,7 @@ class GlibcHeapChunkCommand(GenericCommand):
 
     _cmdline_ = "heap chunk"
     _category_ = "06-a. Heap - Glibc"
+    _aliases_ = ["chunk"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
