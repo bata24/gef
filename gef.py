@@ -24729,9 +24729,26 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
                         help="the address or number to interpret as an arena. (default: main_arena)")
     parser.add_argument("file_path", metavar="FILE_PATH", help="the filepath to compare.")
+    parser.add_argument("file_path2", metavar="FILE_PATH2", nargs="?", help="the filepath to compare.")
     parser.add_argument("-f", "--full", action="store_true", help="display the same line without omitting.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} /path/to/snapshot1                     # compare the current memory and file1",
+        "{0:s} /path/to/snapshot1 /path/to/snapshot2  # compare file1 and file2",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "Please specify the file obtained by the `heap snashot` command.",
+        "Usually, it is saved in /tmp/gef/heap-snashot-arenaN-...",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def __init__(self):
+        super().__init__(complete=gdb.COMPLETE_FILENAME)
+        return
 
     def read_heap_region(self, arena):
         try:
@@ -24749,37 +24766,18 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
             return None
         return data, page_start
 
-    def compare(self, from1data, from2data, vaddr):
+    def compare(self, data1, data2, data1_addr=None):
         diff_found = False
-        asterisk = True
+        asterisk = False
 
-        hex_pad_len = {
-            1: 37,
-            2: 35,
-            3: 32,
-            4: 30,
-            5: 27,
-            6: 25,
-            7: 22,
-            8: 20,
-            9: 17,
-            10: 15,
-            11: 12,
-            12: 9,
-            13: 7,
-            14: 5,
-            15: 2,
-            16: 0,
-        }
-
-        size = max(len(from1data), len(from2data))
+        size = max(len(data1), len(data2))
 
         for pos in range(0, size, 16):
             # determining continuity
-            f1_bin = from1data[pos : pos + 16]
-            f2_bin = from2data[pos : pos + 16]
+            bin16_1 = data1[pos : pos + 16]
+            bin16_2 = data2[pos : pos + 16]
             if not self.args.full:
-                if f1_bin == f2_bin:
+                if bin16_1 == bin16_2:
                     if asterisk is False:
                         self.out.append("*")
                         asterisk = True
@@ -24789,53 +24787,57 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
             asterisk = False
 
             # coloring
-            f1_hex = []
-            f2_hex = []
-            f1_ascii = []
-            f2_ascii = []
-            for i in range(min(max(len(f1_bin), len(f2_bin)), 16)):
-                f1_bin_i = f1_bin[i] if i < len(f1_bin) else None
-                f2_bin_i = f2_bin[i] if i < len(f2_bin) else None
+            hex_1 = []
+            hex_2 = []
+            ascii_1 = []
+            ascii_2 = []
+            for i in range(min(max(len(bin16_1), len(bin16_2)), 16)):
+                bin16_1_i = bin16_1[i] if i < len(bin16_1) else None
+                bin16_2_i = bin16_2[i] if i < len(bin16_2) else None
 
-                if f1_bin_i == f2_bin_i:
+                if bin16_1_i == bin16_2_i:
                     color_func = lambda x: x
                 else:
                     color_func = Color.boldify
 
-                if f1_bin_i is None:
-                    f1_hex.append("  ")
-                    f1_ascii.append(" ")
+                if bin16_1_i is None:
+                    hex_1.append("  ")
+                    ascii_1.append(" ")
                 else:
-                    f1_hex.append(color_func("{:02x}".format(f1_bin_i)))
-                    f1_ascii.append(color_func(chr(f1_bin_i) if 0x20 <= f1_bin_i < 0x7f else "."))
+                    hex_1.append(color_func("{:02x}".format(bin16_1_i)))
+                    ascii_1.append(color_func(chr(bin16_1_i) if 0x20 <= bin16_1_i < 0x7f else "."))
 
-                if f2_bin_i is None:
-                    f2_hex.append("  ")
-                    f2_ascii.append(" ")
+                if bin16_2_i is None:
+                    hex_2.append("  ")
+                    ascii_2.append(" ")
                 else:
-                    f2_hex.append(color_func("{:02x}".format(f2_bin_i)))
-                    f2_ascii.append(color_func(chr(f2_bin_i) if 0x20 <= f2_bin_i < 0x7f else "."))
+                    hex_2.append(color_func("{:02x}".format(bin16_2_i)))
+                    ascii_2.append(color_func(chr(bin16_2_i) if 0x20 <= bin16_2_i < 0x7f else "."))
 
             # formatting
-            # ["00", "00", "00" "00", ...] -> ["0000", "0000", ...]
-            f1_hex2 = ["".join(x) for x in slicer(f1_hex, 2)]
-            f2_hex2 = ["".join(x) for x in slicer(f2_hex, 2)]
-
-            # padding
-            # ["0000", "0000", ...] -> "0000 0000 ..."
-            f1_hex_s = " ".join(f1_hex2) + " " * hex_pad_len[len(f1_hex)]
-            f2_hex_s = " ".join(f2_hex2) + " " * hex_pad_len[len(f2_hex)]
+            # ["00", "11", ... "66" "77", ...] -> ["0x7766554433221100", ...]
+            hex_1_2 = ["0x" + "".join(x[::-1]) for x in slicer(hex_1, current_arch.ptrsize)]
+            hex_2_2 = ["0x" + "".join(x[::-1]) for x in slicer(hex_2, current_arch.ptrsize)]
+            hex_1_s = " ".join(hex_1_2)
+            hex_2_s = " ".join(hex_2_2)
             # [".", ".", ...] -> "................"
-            f1_ascii_s = "".join(f1_ascii) + " " * (16 - len(f1_ascii))
-            f2_ascii_s = "".join(f2_ascii) + " " * (16 - len(f2_ascii))
+            ascii_1_s = "".join(ascii_1) + " " * (16 - len(ascii_1))
+            ascii_2_s = "".join(ascii_2) + " " * (16 - len(ascii_2))
 
             # make line
-            pos_s = AddressUtil.format_address(pos)
-            vaddr_pos = ProcessMap.lookup_address(vaddr + pos)
-            self.out.append("{:s}: {:s} |{:s}| {!s}: {:s} |{:s}|".format(
-                pos_s, f1_hex_s, f1_ascii_s,
-                vaddr_pos, f2_hex_s, f2_ascii_s,
-            ))
+            if data1_addr is not None:
+                data1_addr_pos = ProcessMap.lookup_address(data1_addr + pos)
+                data2_addr_pos = AddressUtil.format_address(pos)
+                self.out.append("{!s}: {:s} |{:s}| {:s}: {:s} |{:s}|".format(
+                    data1_addr_pos, hex_1_s, ascii_1_s,
+                    data2_addr_pos, hex_2_s, ascii_2_s,
+                ))
+            else:
+                data_addr_pos = AddressUtil.format_address(pos)
+                self.out.append("{:s}: {:s} |{:s}| {:s}: {:s} |{:s}|".format(
+                    data_addr_pos, hex_1_s, ascii_1_s,
+                    data_addr_pos, hex_2_s, ascii_2_s,
+                ))
 
         if diff_found is False:
             self.info_add_out("Not found diff")
@@ -24846,26 +24848,39 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @require_arch_set
     def do_invoke(self, args):
-        # parse arena
-        arena = GlibcHeap.get_arena(args.arena_addr)
+        if args.file_path2 is None:
+            # parse arena
+            arena = GlibcHeap.get_arena(args.arena_addr)
 
-        if arena is None:
-            err("No valid arena")
-            return
+            if arena is None:
+                err("No valid arena")
+                return
 
-        if arena.heap_base is None or not is_valid_addr(arena.heap_base):
-            err("Heap is not initialized")
-            return
+            if arena.heap_base is None or not is_valid_addr(arena.heap_base):
+                err("Heap is not initialized")
+                return
 
-        if not os.path.exists(self.args.file_path) or os.path.getsize(self.args.file_path) == 0:
-            err("Invalid file path")
-            return
+            if not os.path.exists(self.args.file_path) or os.path.getsize(self.args.file_path) == 0:
+                err("Invalid file path")
+                return
+
+            data1, vaddr = self.read_heap_region(arena)
+            data2 = open(self.args.file_path, "rb").read()
+
+        else:
+            if not os.path.exists(self.args.file_path) or os.path.getsize(self.args.file_path) == 0:
+                err("Invalid file path")
+                return
+            if not os.path.exists(self.args.file_path2) or os.path.getsize(self.args.file_path2) == 0:
+                err("Invalid file path2")
+                return
+            data1 = open(self.args.file_path, "rb").read()
+            data2 = open(self.args.file_path2, "rb").read()
+            vaddr = None
 
         # doit
         self.out = []
-        data1 = open(self.args.file_path, "rb").read()
-        data2, vaddr = self.read_heap_region(arena)
-        self.compare(data1, data2, vaddr)
+        self.compare(data1, data2, data1_addr=vaddr)
         self.print_output(check_terminal_size=True)
         return
 
@@ -72241,7 +72256,7 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
     def memcmp_telescope_like(self, from1data, from2data):
         unpack = {2:u16, 4:u32, 8:u64}[current_arch.ptrsize]
         diff_found = False
-        asterisk = True
+        asterisk = False
 
         for pos in range(0, self.args.size, current_arch.ptrsize):
             f1_bin = from1data[pos : pos + current_arch.ptrsize]
@@ -72273,7 +72288,7 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
 
     def memcmp(self, from1data, from2data):
         diff_found = False
-        asterisk = True
+        asterisk = False
 
         hex_pad_len = {
             1: 37,
@@ -72946,7 +72961,7 @@ class HashKnownCollisionCommand(HashCommand, BufferingOutput):
 
     def make_cmp(self, data1, data2, show_full=True):
         diff_found = False
-        asterisk = True
+        asterisk = False
 
         hex_pad_len = {
             1: 37,
@@ -109026,7 +109041,7 @@ class BincompareCommand(GenericCommand, BufferingOutput):
 
     def compare(self, from1data, from2data, size):
         diff_found = False
-        asterisk = True
+        asterisk = False
 
         hex_pad_len = {
             1: 37,
