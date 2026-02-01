@@ -19881,7 +19881,7 @@ class MmapMemoryCommand(GenericCommand):
     _category_ = "05-a. Syscall - Invoke"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address, default=0,
+    parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address, default=None,
                         help="the address to allocate. (default: %(default)s)")
     parser.add_argument("size", metavar="SIZE", nargs="?", type=AddressUtil.parse_address, default=get_pagesize(),
                         help="the size to allocate. (default: %(default)s)")
@@ -19927,7 +19927,7 @@ class MmapMemoryCommand(GenericCommand):
             return
 
         # location
-        if args.location % get_pagesize():
+        if args.location and args.location % get_pagesize():
             err("Address is not a multiple of {:#x}".format(get_pagesize()))
             return
 
@@ -19957,14 +19957,14 @@ class MmapMemoryCommand(GenericCommand):
 
         # flags
         flags = 0x22 # MAP_ANONYMOUS | MAP_PRIVATE
-        if args.location != 0:
+        if args.location is not None:
             flags |= 0x10 # MAP_FIXED
         if is_mips32() or is_mips64() or is_mipsn32():
             flags |= 0x800 # MAP_DENYWRITE (why?)
 
         # doit
         cmd = "call-syscall {:s} {:#x} {:#x} {:#x} {:#x} -1 0".format(
-            mmap_syscall_name, args.location, args.size, perm, flags,
+            mmap_syscall_name, args.location or 0, args.size, perm, flags,
         )
         gdb.execute(cmd)
         Cache.reset_gef_caches()
@@ -20018,11 +20018,17 @@ class MunmapMemoryCommand(GenericCommand):
 
         # size
         if args.size is not None:
-            if args.location % get_pagesize() or args.location <= 0:
+            if args.location % get_pagesize():
                 err("Address is not a multiple of {:#x}".format(get_pagesize()))
                 return
-            if args.size % get_pagesize() or args.size <= 0:
+            if args.location < 0:
+                err("Invalid address")
+                return
+            if args.size % get_pagesize():
                 err("Size is not a multiple of {:#x}".format(get_pagesize()))
+                return
+            if args.size < 0 or AddressUtil.get_vmem_end() <= args.size:
+                err("Invalid size")
                 return
             # not estimation
             location = args.location
@@ -20089,11 +20095,17 @@ class MprotectCommand(GenericCommand):
 
         # size
         if args.size is not None:
-            if args.location % get_pagesize() or args.location <= 0:
+            if args.location % get_pagesize():
                 err("Address is not a multiple of {:#x}".format(get_pagesize()))
                 return
-            if args.size % get_pagesize() or args.size <= 0:
+            if args.location < 0:
+                err("Invalid address")
+                return
+            if args.size % get_pagesize():
                 err("Size is not a multiple of {:#x}".format(get_pagesize()))
+                return
+            if args.size < 0 or AddressUtil.get_vmem_end() <= args.size:
+                err("Invalid size")
                 return
             # not estimation
             location = args.location
