@@ -92,7 +92,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - ![](images/pagewalk-x64.png)
     - x86 (Supported: PAE/Non-PAE)
         - ![](images/pagewalk-x86.png)
-    - ARM64 (Supported: only Cortex-A, EL0-EL3, stage1-2)
+    - ARM64 (Supported: Cortex-A only, EL0-EL3, Stage1-2)
         - ARM v8.7 base. 32bit mode is NOT supported.
         - ![](images/pagewalk-arm64.png)
         - Here is a sample of each level pagewalk from HITCON CTF 2018 `super_hexagon`.
@@ -101,7 +101,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - ![](images/pagewalk-arm64-secure.png)
         - Pseudo memory map without detailed flags and permissions can be output even in the normal world (when OP-TEE).
         - ![](images/pagewalk-arm64-secure-pseudo.png)
-    - ARM (Supported: only Cortex-A, LPAE/Non-LPAE, PL0/PL1)
+    - ARM (Supported: Cortex-A only, LPAE/Non-LPAE, PL0/PL1)
         - ARM v7 base. PL2 is NOT supported.
         - ![](images/pagewalk-arm.png)
         - Secure memory scanning is also supported, and you don't have to break in the secure world (unlike ARM64).
@@ -139,7 +139,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - Once you get a symboled pseudo ELF file, you can reuse and apply it automatically even after rebooting qemu-system.
     - `vmlinux-to-elf-apply` and `ksymaddr-remote-apply` provide almost the same functionality.
         - `vmlinux-to-elf-apply`: Requires installation of external tools. Create `vmlinux` with symbols.
-        - `ksymaddr-remote-apply`: Requires no external tools. Create a blank ELF with only embedded symbols.
+        - `ksymaddr-remote-apply`: Requires no external tools. Create a blank ELF with embedded symbols only.
 - `ktypes`: displays kernel type information from scanning kernel memory.
     - ![](images/ktypes.png)
 - `ktypes-load`: loads kernel type information from scanning kernel memory.
@@ -147,7 +147,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `slub-dump`: dumps slub free-list.
     - Supported on x64/x86/ARM64/ARM + `SLUB` + no-symbol + kASLR.
     - Supported regardless of whether `CONFIG_SLAB_FREELIST_HARDENED` is `y` or `n`.
-    - Supported regardless of whether `CONFIG_SLAB_VIRTUAL` is `y` or `n` (x64-only).
+    - Supported regardless of whether `CONFIG_SLAB_VIRTUAL` is `y` or `n` (x64 only).
     - It supports dumping partial pages (`-v`) and NUMA node pages (`-vv`).
     - Since `page_to_virt` is difficult to implement, it will heuristically determine the virtual address from the free-list.
     - ![](images/slub-dump.png)
@@ -245,7 +245,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/knetdev.png)
 - `ksearch-code-ptr`: searches for the code pointer in kernel data area.
     - ![](images/ksearch-code-ptr.png)
-- `thunk-tracer`: collects and displays the thunk function addresses that are called automatically (only x64/x86).
+- `thunk-tracer`: collects and displays the thunk function addresses that are called automatically (x64/x86 only).
     - If this address comes from RW area, this is useful for getting RIP.
     - ![](images/thunk-tracer.png)
 - `usermodehelper-tracer`: collects and displays the information that is executed by `call_usermodehelper_setup`.
@@ -357,36 +357,36 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - It will try heuristic search if the binary has no symbol.
     - How to test:
         - See [dev/partition-alloc-dump/downloader.py](dev/partition-alloc-dump/downloader.py).
-- `tcmalloc-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list (only x64).
+- `tcmalloc-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list (x64 only).
     - ![](images/tcmalloc-dump.png)
     - How to test:
         - Execute as `LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc.so ./a.out`.
-- `musl-heap-dump`: dumps Musl-Libc v1.2.5 heap chunks (only x64/x86).
+- `musl-heap-dump`: dumps Musl-Libc v1.2.5 heap chunks (x64/x86 only).
     - ![](images/musl-heap-dump.png)
     - How to test:
         - Get and extract the latest source from https://musl.libc.org/
         - Build with `./configure && make install`.
         - Build as `/usr/local/musl/bin/musl-gcc test.c`.
-- `go-heap-dump`: dumps Go Language v1.24.4 mheap (only x64).
+- `go-heap-dump`: dumps Go Language v1.24.4 mheap (x64 only).
     - ![](images/go-heap-dump.png)
-- `tlsf-heap-dump`: dumps TLSF (Two-Level Segregated Fit) v2.4.6 free-list (only x64).
+- `tlsf-heap-dump`: dumps TLSF (Two-Level Segregated Fit) v2.4.6 free-list (x64 only).
     - ![](images/tlsf-heap-dump.png)
     - How to test (x64):
         - Get and extract the latest source from http://www.gii.upv.es/tlsf/
         - Build with `cd TLSF-2.4.6/src && make && cd ../examples && make` then use `test1` etc.
-- `hoard-heap-dump`: dumps Hoard v3.2 (2025/12/31) free-list (only x64).
+- `hoard-heap-dump`: dumps Hoard v3.2 (2025/12/31) free-list (x64 only).
     - ![](images/hoard-heap-dump.png)
     - How to test (x64):
         - Get and extract the latest source from https://github.com/emeryberger/Hoard
         - Build with `cd Hoard/src && make`.
         - Execute as `LD_PRELOAD=/PATH/TO/libhoard.so ./a.out`.
-- `mimalloc-heap-dump`: dumps mimalloc free-list (only x64).
+- `mimalloc-heap-dump`: dumps mimalloc free-list (x64 only).
     - ![](images/mimalloc-heap-dump.png)
     - How to test (x64):
         - Get and extract the latest source from https://github.com/microsoft/mimalloc
         - Build with `mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Debug .. && make`.
         - Execute as `LD_PRELOAD=/PATH/TO/libmimalloc.so ./a.out`.
-- `scalloc-heap-dump`: dumps scalloc free-list (only x64).
+- `scalloc-heap-dump`: dumps scalloc free-list (x64 only).
     - ![](images/scalloc-heap-dump.png)
     - How to test (x64):
         - Get and extract the latest source from https://github.com/cksystemsgroup/scalloc
@@ -394,7 +394,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - Build with `gyp --depth . scalloc.gyp && make`.
         - Enable overcommit with `echo 1 > /proc/sys/vm/overcommit_memory`.
         - Execute as `LD_PRELOAD=/PATH/TO/libscalloc.so ./a.out`.
-- `snmalloc-heap-dump`: dumps snmalloc free-list (only x64).
+- `snmalloc-heap-dump`: dumps snmalloc free-list (x64 only).
     * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/snmalloc-heap-dump.png)
     * How to test (x64):
         - Get and extract the latest source from https://github.com/microsoft/snmalloc
@@ -613,7 +613,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - jmp
         - syscall
         - ret
-        - indirect-branch (only x64/x86)
+        - indirect-branch (x64/x86 only)
         - all-branch (call || jmp || ret)
         - memory-access (detect just `[...]`)
         - specified-keyword-regex
@@ -707,7 +707,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/capability.png)
 - `dasm`: disassembles the code by capstone.
     - ![](images/dasm.png)
-- `asm-list`: lists instructions. (only x64/x86)
+- `asm-list`: lists instructions. (x64/x86 only)
     - ![](images/asm-list.png)
     - This command uses x86data.js from https://github.com/asmjit/asmdb
 - `syscall-search`: searches for system call by regex.
@@ -763,7 +763,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `mte-tags`: displays the MTE tags for the specified address.
     - Supported on ARM64.
     - ![](images/mte-tags.png)
-- `iouring-dump`: dumps the area of iouring (only x64).
+- `iouring-dump`: dumps the area of iouring (x64 only).
     - This area is mapped to userland, but cannot be accessed from gdb.
     - Therefore, it executes the assembly code and retrieves the contents.
     - ![](images/iouring-dump.png)
