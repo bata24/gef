@@ -40,7 +40,7 @@ fi
 #apt-get install -y binwalk
 
 echo "[+] pip3"
-pip3 install setuptools crccheck unicorn capstone ropper keystone-engine tqdm magika codext angr pycryptodome pillow pyzbar
+pip3 install setuptools crccheck unicorn capstone ropper keystone-engine tqdm magika codext angr pillow pyzbar
 
 echo "[+] Install seccomp-tools"
 if [ -z "$(command -v seccomp-tools)" ]; then

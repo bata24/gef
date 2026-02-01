@@ -72670,6 +72670,4899 @@ class MemoryInsertCommand(GenericCommand):
         return
 
 
+class Hash:
+    class SHA512TruncBase:
+        block_size = 128  # 1024 bits
+        digest_size = None  # bytes (subclass must set)
+
+        # SHA-512 round constants (80)
+        K = [
+            0x428a_2f98_d728_ae22, 0x7137_4491_23ef_65cd, 0xb5c0_fbcf_ec4d_3b2f, 0xe9b5_dba5_8189_dbbc,
+            0x3956_c25b_f348_b538, 0x59f1_11f1_b605_d019, 0x923f_82a4_af19_4f9b, 0xab1c_5ed5_da6d_8118,
+            0xd807_aa98_a303_0242, 0x1283_5b01_4570_6fbe, 0x2431_85be_4ee4_b28c, 0x550c_7dc3_d5ff_b4e2,
+            0x72be_5d74_f27b_896f, 0x80de_b1fe_3b16_96b1, 0x9bdc_06a7_25c7_1235, 0xc19b_f174_cf69_2694,
+            0xe49b_69c1_9ef1_4ad2, 0xefbe_4786_384f_25e3, 0x0fc1_9dc6_8b8c_d5b5, 0x240c_a1cc_77ac_9c65,
+            0x2de9_2c6f_592b_0275, 0x4a74_84aa_6ea6_e483, 0x5cb0_a9dc_bd41_fbd4, 0x76f9_88da_8311_53b5,
+            0x983e_5152_ee66_dfab, 0xa831_c66d_2db4_3210, 0xb003_27c8_98fb_213f, 0xbf59_7fc7_beef_0ee4,
+            0xc6e0_0bf3_3da8_8fc2, 0xd5a7_9147_930a_a725, 0x06ca_6351_e003_826f, 0x1429_2967_0a0e_6e70,
+            0x27b7_0a85_46d2_2ffc, 0x2e1b_2138_5c26_c926, 0x4d2c_6dfc_5ac4_2aed, 0x5338_0d13_9d95_b3df,
+            0x650a_7354_8baf_63de, 0x766a_0abb_3c77_b2a8, 0x81c2_c92e_47ed_aee6, 0x9272_2c85_1482_353b,
+            0xa2bf_e8a1_4cf1_0364, 0xa81a_664b_bc42_3001, 0xc24b_8b70_d0f8_9791, 0xc76c_51a3_0654_be30,
+            0xd192_e819_d6ef_5218, 0xd699_0624_5565_a910, 0xf40e_3585_5771_202a, 0x106a_a070_32bb_d1b8,
+            0x19a4_c116_b8d2_d0c8, 0x1e37_6c08_5141_ab53, 0x2748_774c_df8e_eb99, 0x34b0_bcb5_e19b_48a8,
+            0x391c_0cb3_c5c9_5a63, 0x4ed8_aa4a_e341_8acb, 0x5b9c_ca4f_7763_e373, 0x682e_6ff3_d6b2_b8a3,
+            0x748f_82ee_5def_b2fc, 0x78a5_636f_4317_2f60, 0x84c8_7814_a1f0_ab72, 0x8cc7_0208_1a64_39ec,
+            0x90be_fffa_2363_1e28, 0xa450_6ceb_de82_bde9, 0xbef9_a3f7_b2c6_7915, 0xc671_78f2_e372_532b,
+            0xca27_3ece_ea26_619c, 0xd186_b8c7_21c0_c207, 0xeada_7dd6_cde0_eb1e, 0xf57d_4f7f_ee6e_d178,
+            0x06f0_67aa_7217_6fba, 0x0a63_7dc5_a2c8_98a6, 0x113f_9804_bef9_0dae, 0x1b71_0b35_131c_471b,
+            0x28db_77f5_2304_7d84, 0x32ca_ab7b_40c7_2493, 0x3c9e_be0a_15c9_bebc, 0x431d_67c4_9c10_0d4c,
+            0x4cc5_d4be_cb3e_42b6, 0x597f_299c_fc65_7e2a, 0x5fcb_6fab_3ad6_faec, 0x6c44_198c_4a47_5817,
+        ]
+
+        def __init__(self, data=b""):
+            if self.digest_size is None:
+                raise ValueError("digest_size must be set in subclass")
+            self.buf = bytearray()
+            self.msg_len = 0  # in bytes
+
+            iv = self.initial_state()
+            self.h0 = iv[0]
+            self.h1 = iv[1]
+            self.h2 = iv[2]
+            self.h3 = iv[3]
+            self.h4 = iv[4]
+            self.h5 = iv[5]
+            self.h6 = iv[6]
+            self.h7 = iv[7]
+
+            if data:
+                self.update(data)
+            return
+
+        def initial_state(self):
+            raise NotImplementedError
+
+        def copy(self):
+            other = self.__class__()
+            other.h0 = self.h0
+            other.h1 = self.h1
+            other.h2 = self.h2
+            other.h3 = self.h3
+            other.h4 = self.h4
+            other.h5 = self.h5
+            other.h6 = self.h6
+            other.h7 = self.h7
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            while len(self.buf) >= 128:
+                block = bytes(self.buf[:128])
+                del self.buf[:128]
+                self.compress(block)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            full = struct.pack(">8Q", c.h0, c.h1, c.h2, c.h3, c.h4, c.h5, c.h6, c.h7)
+            return full[: self.digest_size]
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            # Padding: append 0x80, then 0x00* until length ≡ 112 (mod 128),
+            # then append message length in bits as 128-bit big-endian.
+            bit_len = self.msg_len * 8
+            self.buf.append(0x80)
+            while (len(self.buf) % 128) != 112:
+                self.buf.append(0x00)
+            self.buf.extend(struct.pack(">QQ", (bit_len >> 64) & 0xffff_ffff_ffff_ffff, bit_len & 0xffff_ffff_ffff_ffff))
+            while len(self.buf) >= 128:
+                block = bytes(self.buf[:128])
+                del self.buf[:128]
+                self.compress(block)
+            return
+
+        def rotr64(self, x, n):
+            x &= 0xffff_ffff_ffff_ffff
+            n &= 63
+            if n == 0:
+                return x
+            return ((x >> n) | (x << (64 - n))) & 0xffff_ffff_ffff_ffff
+
+        def shr64(self, x, n):
+            x &= 0xffff_ffff_ffff_ffff
+            return (x >> n) & 0xffff_ffff_ffff_ffff
+
+        def ch(self, x, y, z):
+            return (x & y) ^ ((~x) & z)
+
+        def maj(self, x, y, z):
+            return (x & y) ^ (x & z) ^ (y & z)
+
+        def big_sigma0(self, x):
+            return self.rotr64(x, 28) ^ self.rotr64(x, 34) ^ self.rotr64(x, 39)
+
+        def big_sigma1(self, x):
+            return self.rotr64(x, 14) ^ self.rotr64(x, 18) ^ self.rotr64(x, 41)
+
+        def small_sigma0(self, x):
+            return self.rotr64(x, 1) ^ self.rotr64(x, 8) ^ self.shr64(x, 7)
+
+        def small_sigma1(self, x):
+            return self.rotr64(x, 19) ^ self.rotr64(x, 61) ^ self.shr64(x, 6)
+
+        def compress(self, block):
+            w = list(struct.unpack(">16Q", block))
+            for i in range(16, 80):
+                v = (self.small_sigma1(w[i - 2]) + w[i - 7] + self.small_sigma0(w[i - 15]) + w[i - 16]) & 0xffff_ffff_ffff_ffff
+                w.append(v)
+
+            a = self.h0
+            b = self.h1
+            c = self.h2
+            d = self.h3
+            e = self.h4
+            f = self.h5
+            g = self.h6
+            h = self.h7
+
+            for i in range(80):
+                t1 = (h + self.big_sigma1(e) + self.ch(e, f, g) + self.K[i] + w[i]) & 0xffff_ffff_ffff_ffff
+                t2 = (self.big_sigma0(a) + self.maj(a, b, c)) & 0xffff_ffff_ffff_ffff
+                h = g
+                g = f
+                f = e
+                e = (d + t1) & 0xffff_ffff_ffff_ffff
+                d = c
+                c = b
+                b = a
+                a = (t1 + t2) & 0xffff_ffff_ffff_ffff
+
+            self.h0 = (self.h0 + a) & 0xffff_ffff_ffff_ffff
+            self.h1 = (self.h1 + b) & 0xffff_ffff_ffff_ffff
+            self.h2 = (self.h2 + c) & 0xffff_ffff_ffff_ffff
+            self.h3 = (self.h3 + d) & 0xffff_ffff_ffff_ffff
+            self.h4 = (self.h4 + e) & 0xffff_ffff_ffff_ffff
+            self.h5 = (self.h5 + f) & 0xffff_ffff_ffff_ffff
+            self.h6 = (self.h6 + g) & 0xffff_ffff_ffff_ffff
+            self.h7 = (self.h7 + h) & 0xffff_ffff_ffff_ffff
+            return
+
+    class SHA512_224(SHA512TruncBase):
+        digest_size = 28  # 224 bits # noqa
+
+        def initial_state(self):
+            return [
+                0x8c3d_37c8_1954_4da2,
+                0x73e1_9966_89dc_d4d6,
+                0x1dfa_b7ae_32ff_9c82,
+                0x679d_d514_582f_9fcf,
+                0x0f6d_2b69_7bd4_4da8,
+                0x77e3_6f73_04c4_8942,
+                0x3f9d_85a8_6a1d_36c8,
+                0x1112_e6ad_91d6_92a1,
+            ]
+
+    class SHA512_256(SHA512TruncBase):
+        digest_size = 32  # 256 bits # noqa
+
+        def initial_state(self):
+            return [
+                0x2231_2194_fc2b_f72c,
+                0x9f55_5fa3_c84c_64c2,
+                0x2393_b86b_6f53_b151,
+                0x9638_7719_5940_eabd,
+                0x9628_3ee2_a88e_ffe3,
+                0xbe5e_1e25_5386_3992,
+                0x2b01_99fc_2c85_b8aa,
+                0x0eb7_2ddc_81c5_2ca2,
+            ]
+
+    class KeccakBase:
+        # Keccak-f[1600] parameters
+        lanes = 25
+        rounds = 24
+
+        # Rho offsets (index = x + 5*y)
+        rho = [
+            0, 1, 62, 28, 27,
+            36, 44, 6, 55, 20,
+            3, 10, 43, 25, 39,
+            41, 45, 15, 21, 8,
+            18, 2, 61, 56, 14,
+        ]
+
+        # Round constants
+        rc = [
+            0x0000_0000_0000_0001, 0x0000_0000_0000_8082,
+            0x8000_0000_0000_808a, 0x8000_0000_8000_8000,
+            0x0000_0000_0000_808b, 0x0000_0000_8000_0001,
+            0x8000_0000_8000_8081, 0x8000_0000_0000_8009,
+            0x0000_0000_0000_008a, 0x0000_0000_0000_0088,
+            0x0000_0000_8000_8009, 0x0000_0000_8000_000a,
+            0x0000_0000_8000_808b, 0x8000_0000_0000_008b,
+            0x8000_0000_0000_8089, 0x8000_0000_0000_8003,
+            0x8000_0000_0000_8002, 0x8000_0000_0000_0080,
+            0x0000_0000_0000_800a, 0x8000_0000_8000_000a,
+            0x8000_0000_8000_8081, 0x8000_0000_0000_8080,
+            0x0000_0000_8000_0001, 0x8000_0000_8000_8008,
+        ]
+
+        # Subclasses must set: rate_bytes, digest_size
+        rate_bytes = None
+        digest_size = None
+        block_size = None
+
+        def __init__(self, data=b""):
+            if self.rate_bytes is None or self.digest_size is None:
+                raise ValueError("rate_bytes and digest_size must be set in subclass")
+            self.block_size = self.rate_bytes
+            self.state = [0x0000_0000_0000_0000] * 25
+            self.buf = bytearray()
+            self.msg_len = 0  # in bytes
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.state = list(self.state)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            self.msg_len += len(data)
+            self.buf.extend(data)
+
+            while len(self.buf) >= self.rate_bytes:
+                block = bytes(self.buf[:self.rate_bytes])
+                del self.buf[:self.rate_bytes]
+                self.absorb(block)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            out = c.squeeze(self.digest_size)
+            return out
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            # Keccak padding: pad10*1 with domain separation 0x01 (Keccak, not SHA3)
+            self.buf.append(0x01)
+            while (len(self.buf) % self.rate_bytes) != (self.rate_bytes - 1):
+                self.buf.append(0x00)
+            self.buf.append(0x80)
+
+            while len(self.buf) >= self.rate_bytes:
+                block = bytes(self.buf[:self.rate_bytes])
+                del self.buf[:self.rate_bytes]
+                self.absorb(block)
+            return
+
+        def rol64(self, x, n):
+            x &= 0xffff_ffff_ffff_ffff
+            n &= 63
+            if n == 0:
+                return x
+            return ((x << n) | (x >> (64 - n))) & 0xffff_ffff_ffff_ffff
+
+        def absorb(self, block):
+            # XOR block into the first rate_bytes of the state (little-endian lanes)
+            lanes = self.rate_bytes // 8
+            for i in range(lanes):
+                v = struct.unpack_from("<Q", block, i * 8)[0]
+                self.state[i] ^= v
+                self.state[i] &= 0xffff_ffff_ffff_ffff
+            self.permute()
+            return
+
+        def squeeze(self, out_len):
+            out = bytearray()
+            while len(out) < out_len:
+                block = self.state_bytes(self.rate_bytes)
+                need = out_len - len(out)
+                out.extend(block[:need])
+                if len(out) < out_len:
+                    self.permute()
+            return bytes(out)
+
+        def state_bytes(self, nbytes):
+            # Serialize the first nbytes of the state (little-endian lanes)
+            out = bytearray()
+            lanes = (nbytes + 7) // 8
+            for i in range(lanes):
+                out.extend(struct.pack("<Q", self.state[i] & 0xffff_ffff_ffff_ffff))
+            return bytes(out[:nbytes])
+
+        def permute(self):
+            a = self.state
+
+            for rnd in range(24):
+                # Theta
+                c = [0x0] * 5
+                for x in range(5):
+                    c[x] = a[x] ^ a[x + 5] ^ a[x + 10] ^ a[x + 15] ^ a[x + 20]
+                    c[x] &= 0xffff_ffff_ffff_ffff
+                d = [0x0] * 5
+                for x in range(5):
+                    d[x] = c[(x - 1) % 5] ^ self.rol64(c[(x + 1) % 5], 1)
+                    d[x] &= 0xffff_ffff_ffff_ffff
+                for y in range(5):
+                    for x in range(5):
+                        a[x + 5 * y] ^= d[x]
+                        a[x + 5 * y] &= 0xffff_ffff_ffff_ffff
+
+                # Rho + Pi
+                b = [0x0] * 25
+                for y in range(5):
+                    for x in range(5):
+                        idx = x + 5 * y
+                        rot = self.rho[idx]
+                        v = self.rol64(a[idx], rot)
+                        x2 = y
+                        y2 = (2 * x + 3 * y) % 5
+                        b[x2 + 5 * y2] = v
+
+                # Chi
+                for y in range(5):
+                    row = [b[x + 5 * y] for x in range(5)]
+                    for x in range(5):
+                        a[x + 5 * y] = row[x] ^ ((~row[(x + 1) % 5]) & row[(x + 2) % 5])
+                        a[x + 5 * y] &= 0xffff_ffff_ffff_ffff
+
+                # Iota
+                a[0] ^= self.rc[rnd]
+                a[0] &= 0xffff_ffff_ffff_ffff
+
+            self.state = a
+            return
+
+    class Keccak224(KeccakBase):
+        rate_bytes = 144  # 1152 bits
+        digest_size = 28  # 224 bits # noqa
+
+    class Keccak256(KeccakBase):
+        rate_bytes = 136  # 1088 bits
+        digest_size = 32  # 256 bits # noqa
+
+    class Keccak384(KeccakBase):
+        rate_bytes = 104  # 832 bits
+        digest_size = 48  # 384 bits # noqa
+
+    class Keccak512(KeccakBase):
+        rate_bytes = 72  # 576 bits
+        digest_size = 64  # 512 bits # noqa
+
+    class TurboShakeBase:
+        # Keccak-p[1600,12] with little-endian 64-bit lanes
+        rounds = 12
+
+        # Default domain separation byte for APIs without explicit domain parameter (RFC 9861)
+        domain = 0x1f
+
+        rho = [
+            0, 1, 62, 28, 27,
+            36, 44, 6, 55, 20,
+            3, 10, 43, 25, 39,
+            41, 45, 15, 21, 8,
+            18, 2, 61, 56, 14,
+        ]
+
+        # Keccak-f[1600] round constants; Keccak-p[1600,12] uses the last 12 of these.
+        rc_last12 = [
+            0x0000_0000_8000_808b,
+            0x8000_0000_0000_008b,
+            0x8000_0000_0000_8089,
+            0x8000_0000_0000_8003,
+            0x8000_0000_0000_8002,
+            0x8000_0000_0000_0080,
+            0x0000_0000_0000_800a,
+            0x8000_0000_8000_000a,
+            0x8000_0000_8000_8081,
+            0x8000_0000_0000_8080,
+            0x0000_0000_8000_0001,
+            0x8000_0000_8000_8008,
+        ]
+
+        # Subclasses must set these
+        rate_bytes = None
+        digest_size = None
+        block_size = None
+
+        def __init__(self, data=b"", digest_bits=128):
+            self.digest_size = digest_bits // 8
+            self.block_size = self.rate_bytes
+            self.state = [0x0000_0000_0000_0000] * 25
+            self.buf = bytearray()
+            self.msg_len = 0  # in bytes
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.state = list(self.state)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            self.msg_len += len(data)
+            self.buf.extend(data)
+
+            while len(self.buf) >= self.rate_bytes:
+                block = bytes(self.buf[:self.rate_bytes])
+                del self.buf[:self.rate_bytes]
+                self.absorb(block)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            out = c.squeeze(self.digest_size)
+            return out
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            # TurboSHAKE padding (RFC 9861):
+            # M' = M || D, then zero-pad to multiple of rate, then XOR 0x80 to last byte.
+            self.buf.append(self.domain)
+
+            rem = len(self.buf) % self.rate_bytes
+            if rem != 0:
+                self.buf.extend(b"\x00" * (self.rate_bytes - rem))
+
+            self.buf[-1] ^= 0x80
+
+            while len(self.buf) >= self.rate_bytes:
+                block = bytes(self.buf[:self.rate_bytes])
+                del self.buf[:self.rate_bytes]
+                self.absorb(block)
+            return
+
+        def absorb(self, block):
+            lanes = self.rate_bytes // 8
+            for i in range(lanes):
+                v = struct.unpack_from("<Q", block, i * 8)[0]
+                self.state[i] ^= v
+                self.state[i] &= 0xffff_ffff_ffff_ffff
+            self.keccak_p1600_12(self.state)
+            return
+
+        def squeeze(self, out_len):
+            out = bytearray()
+            while len(out) < out_len:
+                out.extend(self.state_bytes(self.rate_bytes))
+                if len(out) < out_len:
+                    self.keccak_p1600_12(self.state)
+            return bytes(out[:out_len])
+
+        def state_bytes(self, nbytes):
+            out = bytearray()
+            lanes = (nbytes + 7) // 8
+            for i in range(lanes):
+                out.extend(struct.pack("<Q", self.state[i] & 0xffff_ffff_ffff_ffff))
+            return bytes(out[:nbytes])
+
+        def rol64(self, x, n):
+            x &= 0xffff_ffff_ffff_ffff
+            n &= 63
+            if n == 0:
+                return x
+            return ((x << n) | (x >> (64 - n))) & 0xffff_ffff_ffff_ffff
+
+        def keccak_p1600_12(self, a):
+            for rnd in range(12):
+                # Theta
+                c = [0x0000_0000_0000_0000] * 5
+                for x in range(5):
+                    c[x] = a[x] ^ a[x + 5] ^ a[x + 10] ^ a[x + 15] ^ a[x + 20]
+                    c[x] &= 0xffff_ffff_ffff_ffff
+
+                d = [0x0000_0000_0000_0000] * 5
+                for x in range(5):
+                    d[x] = c[(x - 1) % 5] ^ self.rol64(c[(x + 1) % 5], 1)
+                    d[x] &= 0xffff_ffff_ffff_ffff
+
+                for y in range(5):
+                    for x in range(5):
+                        i = x + 5 * y
+                        a[i] ^= d[x]
+                        a[i] &= 0xffff_ffff_ffff_ffff
+
+                # Rho + Pi
+                b = [0x0000_0000_0000_0000] * 25
+                for y in range(5):
+                    for x in range(5):
+                        idx = x + 5 * y
+                        v = self.rol64(a[idx], self.rho[idx])
+                        x2 = y
+                        y2 = (2 * x + 3 * y) % 5
+                        b[x2 + 5 * y2] = v
+
+                # Chi
+                for y in range(5):
+                    row = [b[x + 5 * y] for x in range(5)]
+                    for x in range(5):
+                        a[x + 5 * y] = row[x] ^ ((~row[(x + 1) % 5]) & row[(x + 2) % 5])
+                        a[x + 5 * y] &= 0xffff_ffff_ffff_ffff
+
+                # Iota
+                a[0] ^= self.rc_last12[rnd]
+                a[0] &= 0xffff_ffff_ffff_ffff
+            return
+
+    class TurboShake128(TurboShakeBase):
+        rate_bytes = 168  # 1344 bits
+
+    class TurboShake256(TurboShakeBase):
+        rate_bytes = 136  # 1088 bits
+
+    class KangarooTwelveBase:
+        # Keccak-p[1600,12] parameters
+        rho = [
+            0, 1, 62, 28, 27,
+            36, 44, 6, 55, 20,
+            3, 10, 43, 25, 39,
+            41, 45, 15, 21, 8,
+            18, 2, 61, 56, 14,
+        ]
+
+        rc_last12 = [
+            0x0000_0000_8000_808b,
+            0x8000_0000_0000_008b,
+            0x8000_0000_0000_8089,
+            0x8000_0000_0000_8003,
+            0x8000_0000_0000_8002,
+            0x8000_0000_0000_0080,
+            0x0000_0000_0000_800a,
+            0x8000_0000_8000_000a,
+            0x8000_0000_8000_8081,
+            0x8000_0000_0000_8080,
+            0x0000_0000_8000_0001,
+            0x8000_0000_8000_8008,
+        ]
+
+        # K12 chunk size (bytes)
+        chunk_size = 8192
+
+        # Subclasses must set: rate_bytes, cv_len, digest_size
+        rate_bytes = None
+        cv_len = None
+        digest_size = None
+        block_size = None
+
+        def __init__(self, data=b"", custom=b"", digest_bits=128):
+            if self.rate_bytes is None or self.cv_len is None:
+                raise ValueError("rate_bytes, cv_len, digest_size must be set in subclass")
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            if not isinstance(custom, bytes):
+                raise TypeError("custom must be bytes")
+
+            self.digest_size = digest_bits // 8
+            self.block_size = self.chunk_size
+            self.buf = bytearray()
+            self.msg_len = 0  # in bytes
+            self.custom = custom
+
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__(b"", custom=self.custom, digest_bits=self.digest_size * 8)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.result
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            m = bytes(self.buf)
+            self.result = self.k12(m, self.custom, self.digest_size)
+            return
+
+        def k12(self, m, custom, out_len):
+            s = m + custom + self.length_encode(len(custom))
+
+            if len(s) <= self.chunk_size:
+                out = self.turbo_shake(s, 0x07, out_len)
+                return out
+
+            chunks = []
+            for i in range(0, len(s), self.chunk_size):
+                chunks.append(s[i:i + self.chunk_size])
+
+            n = len(chunks)
+
+            final_node = bytearray()
+            final_node.extend(chunks[0])
+            final_node.extend(b"\x03" + (b"\x00" * 7))
+
+            for i in range(1, n):
+                cv = self.turbo_shake(chunks[i], 0x0b, self.cv_len)
+                final_node.extend(cv)
+
+            final_node.extend(self.length_encode(n - 1))
+            final_node.extend(b"\xff\xff")
+
+            out = self.turbo_shake(bytes(final_node), 0x06, out_len)
+            return out
+
+        def length_encode(self, x):
+            if x < 0:
+                raise ValueError("x must be non-negative")
+            s = bytearray()
+            while x > 0:
+                s.insert(0, x & 0xff)
+                x //= 256
+            s.append(len(s) & 0xff)
+            return bytes(s)
+
+        def turbo_shake(self, m, d, out_len):
+            if not isinstance(m, (bytes, bytearray)):
+                raise TypeError("m must be bytes-like")
+            if not (0x01 <= d <= 0x7f):
+                raise ValueError("domain byte d must be in [0x01..0x7f]")
+            if out_len <= 0:
+                raise ValueError("out_len must be positive")
+
+            mp = bytearray(m)
+            mp.append(d)
+
+            rem = len(mp) % self.rate_bytes
+            if rem != 0:
+                mp.extend(b"\x00" * (self.rate_bytes - rem))
+
+            mp[-1] ^= 0x80
+
+            a = [0x0000_0000_0000_0000] * 25
+            lanes = self.rate_bytes // 8
+
+            for off in range(0, len(mp), self.rate_bytes):
+                block = mp[off:off + self.rate_bytes]
+                for i in range(lanes):
+                    v = struct.unpack_from("<Q", block, i * 8)[0]
+                    a[i] ^= v
+                    a[i] &= 0xffff_ffff_ffff_ffff
+                self.keccak_p1600_12(a)
+
+            out = bytearray()
+            while len(out) < out_len:
+                out.extend(self.state_bytes(a, self.rate_bytes))
+                if len(out) < out_len:
+                    self.keccak_p1600_12(a)
+
+            return bytes(out[:out_len])
+
+        def state_bytes(self, a, nbytes):
+            out = bytearray()
+            lanes = (nbytes + 7) // 8
+            for i in range(lanes):
+                out.extend(struct.pack("<Q", a[i] & 0xffff_ffff_ffff_ffff))
+            return bytes(out[:nbytes])
+
+        def rol64(self, x, n):
+            x &= 0xffff_ffff_ffff_ffff
+            n &= 63
+            if n == 0:
+                return x
+            return ((x << n) | (x >> (64 - n))) & 0xffff_ffff_ffff_ffff
+
+        def keccak_p1600_12(self, a):
+            for rnd in range(12):
+                c = [0x0000_0000_0000_0000] * 5
+                for x in range(5):
+                    c[x] = a[x] ^ a[x + 5] ^ a[x + 10] ^ a[x + 15] ^ a[x + 20]
+                    c[x] &= 0xffff_ffff_ffff_ffff
+
+                d = [0x0000_0000_0000_0000] * 5
+                for x in range(5):
+                    d[x] = c[(x - 1) % 5] ^ self.rol64(c[(x + 1) % 5], 1)
+                    d[x] &= 0xffff_ffff_ffff_ffff
+
+                for y in range(5):
+                    for x in range(5):
+                        i = x + 5 * y
+                        a[i] ^= d[x]
+                        a[i] &= 0xffff_ffff_ffff_ffff
+
+                b = [0x0000_0000_0000_0000] * 25
+                for y in range(5):
+                    for x in range(5):
+                        idx = x + 5 * y
+                        v = self.rol64(a[idx], self.rho[idx])
+                        x2 = y
+                        y2 = (2 * x + 3 * y) % 5
+                        b[x2 + 5 * y2] = v
+
+                for y in range(5):
+                    row = [b[x + 5 * y] for x in range(5)]
+                    for x in range(5):
+                        a[x + 5 * y] = row[x] ^ ((~row[(x + 1) % 5]) & row[(x + 2) % 5])
+                        a[x + 5 * y] &= 0xffff_ffff_ffff_ffff
+
+                a[0] ^= self.rc_last12[rnd]
+                a[0] &= 0xffff_ffff_ffff_ffff
+            return
+
+    class KangarooTwelve128(KangarooTwelveBase):
+        rate_bytes = 168  # TurboSHAKE128 rate
+        cv_len = 32  # KT128 chaining value length
+
+    class KangarooTwelve256(KangarooTwelveBase):
+        rate_bytes = 136  # TurboSHAKE256 rate
+        cv_len = 64  # KT256 chaining value length
+
+    class KMAC128:
+        block_size = 168 # rate for cshake_128/kmac_128
+        digest_size = 32 # 256 bits
+
+        def __init__(self, key=b"", data=b"", custom=b"", digest_bits=256):
+            if not isinstance(key, (bytes, bytearray)):
+                raise TypeError("key must be bytes-like")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            if not isinstance(custom, (bytes, bytearray)):
+                raise TypeError("custom must be bytes-like")
+            key = bytes(key)
+            data = bytes(data)
+            custom = bytes(custom)
+
+            digest_size = digest_bits // 8
+            if digest_size < 1:
+                raise ValueError("digest_size must be a positive integer")
+
+            self.key = key
+            self.custom = custom
+            self.digest_size = digest_size
+            self.buf = bytearray()
+            self.msg_len = 0  # in bytes
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__(self.key, b"", self.custom, self.digest_size * 8)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            return self
+
+        def finalize(self):
+            return
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.kmac(self.key, bytes(c.buf), c.digest_size * 0x0008, c.custom)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def left_encode(self, x):
+            if not isinstance(x, int) or x < 0:
+                raise ValueError("x must be a non-negative integer")
+            n = 0x0001
+            while (x >> (0x0008 * n)) != 0:
+                n += 0x0001
+            out = bytes([n]) + x.to_bytes(n, "big")
+            return out
+
+        def right_encode(self, x):
+            if not isinstance(x, int) or x < 0:
+                raise ValueError("x must be a non-negative integer")
+            n = 0x0001
+            while (x >> (0x0008 * n)) != 0:
+                n += 0x0001
+            out = x.to_bytes(n, "big") + bytes([n])
+            return out
+
+        def encode_string(self, s):
+            if not isinstance(s, (bytes, bytearray)):
+                raise TypeError("s must be bytes-like")
+            s = bytes(s)
+            out = self.left_encode(len(s) * 0x0008) + s
+            return out
+
+        def bytepad(self, x, w):
+            if not isinstance(x, (bytes, bytearray)):
+                raise TypeError("x must be bytes-like")
+            if not isinstance(w, int) or w <= 0:
+                raise ValueError("w must be a positive integer")
+            x = bytes(x)
+            z = self.left_encode(w) + x
+            pad_len = (-len(z)) % w
+            out = z + (b"\x00" * pad_len)
+            return out
+
+        def rotl64(self, x, n):
+            x &= 0xffff_ffff_ffff_ffff
+            n &= 0x003f
+            if n == 0x0000:
+                return x
+            out = ((x << n) | (x >> (0x0040 - n))) & 0xffff_ffff_ffff_ffff
+            return out
+
+        def keccak_f1600(self, s):
+            rc = [
+                0x0000_0000_0000_0001, 0x0000_0000_0000_8082,
+                0x8000_0000_0000_808a, 0x8000_0000_8000_8000,
+                0x0000_0000_0000_808b, 0x0000_0000_8000_0001,
+                0x8000_0000_8000_8081, 0x8000_0000_0000_8009,
+                0x0000_0000_0000_008a, 0x0000_0000_0000_0088,
+                0x0000_0000_8000_8009, 0x0000_0000_8000_000a,
+                0x0000_0000_8000_808b, 0x8000_0000_0000_008b,
+                0x8000_0000_0000_8089, 0x8000_0000_0000_8003,
+                0x8000_0000_0000_8002, 0x8000_0000_0000_0080,
+                0x0000_0000_0000_800a, 0x8000_0000_8000_000a,
+                0x8000_0000_8000_8081, 0x8000_0000_0000_8080,
+                0x0000_0000_8000_0001, 0x8000_0000_8000_8008,
+            ]
+            r = [
+                [0x00, 0x24, 0x03, 0x29, 0x12],
+                [0x01, 0x2c, 0x0a, 0x2d, 0x02],
+                [0x3e, 0x06, 0x2b, 0x0f, 0x3d],
+                [0x1c, 0x37, 0x19, 0x15, 0x38],
+                [0x1b, 0x14, 0x27, 0x08, 0x0e],
+            ]
+
+            for rnd in range(0x0018):
+                c = [0, 0, 0, 0, 0]
+                d = [0, 0, 0, 0, 0]
+
+                c[0] = s[0] ^ s[5] ^ s[10] ^ s[15] ^ s[20]
+                c[1] = s[1] ^ s[6] ^ s[11] ^ s[16] ^ s[21]
+                c[2] = s[2] ^ s[7] ^ s[12] ^ s[17] ^ s[22]
+                c[3] = s[3] ^ s[8] ^ s[13] ^ s[18] ^ s[23]
+                c[4] = s[4] ^ s[9] ^ s[14] ^ s[19] ^ s[24]
+
+                d[0] = c[4] ^ self.rotl64(c[1], 0x0001)
+                d[1] = c[0] ^ self.rotl64(c[2], 0x0001)
+                d[2] = c[1] ^ self.rotl64(c[3], 0x0001)
+                d[3] = c[2] ^ self.rotl64(c[4], 0x0001)
+                d[4] = c[3] ^ self.rotl64(c[0], 0x0001)
+
+                for x in range(0x0005):
+                    for y in range(0x0005):
+                        s[x + 0x0005 * y] ^= d[x]
+                        s[x + 0x0005 * y] &= 0xffff_ffff_ffff_ffff
+
+                b = [0] * 0x0019
+                for x in range(0x0005):
+                    for y in range(0x0005):
+                        idx = x + 0x0005 * y
+                        nx = y
+                        ny = (0x0002 * x + 0x0003 * y) % 0x0005
+                        b[nx + 0x0005 * ny] = self.rotl64(s[idx], r[x][y])
+
+                for y in range(0x0005):
+                    row = [b[0x0000 + 0x0005 * y], b[0x0001 + 0x0005 * y], b[0x0002 + 0x0005 * y],
+                           b[0x0003 + 0x0005 * y], b[0x0004 + 0x0005 * y]]
+                    for x in range(0x0005):
+                        s[x + 0x0005 * y] = row[x] ^ ((~row[(x + 0x0001) % 0x0005]) & row[(x + 0x0002) % 0x0005])
+                        s[x + 0x0005 * y] &= 0xffff_ffff_ffff_ffff
+
+                s[0] ^= rc[rnd]
+                s[0] &= 0xffff_ffff_ffff_ffff
+
+            return
+
+        def sponge(self, data, outlen, rate, suffix):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            if not isinstance(outlen, int) or outlen < 0:
+                raise ValueError("outlen must be a non-negative integer")
+            if not isinstance(rate, int) or rate <= 0:
+                raise ValueError("rate must be a positive integer")
+            if not isinstance(suffix, int) or not (0x0000 <= suffix <= 0x00ff):
+                raise ValueError("suffix must be a byte")
+
+            data = bytes(data)
+            msg = bytearray(data)
+            msg.append(suffix)
+            while (len(msg) % rate) != (rate - 0x0001):
+                msg.append(0x0000)
+            msg.append(0x0080)
+
+            s = [0x0000_0000_0000_0000] * 0x0019
+            rate_words = rate // 0x0008
+
+            off = 0
+            while off < len(msg):
+                block = msg[off:off + rate]
+                for i in range(rate_words):
+                    lane = int.from_bytes(block[i * 0x0008:(i + 0x0001) * 0x0008], "little")
+                    s[i] ^= lane
+                    s[i] &= 0xffff_ffff_ffff_ffff
+                self.keccak_f1600(s)
+                off += rate
+
+            out = bytearray()
+            while len(out) < outlen:
+                chunk = bytearray()
+                for i in range(rate_words):
+                    chunk.extend(s[i].to_bytes(0x0008, "little"))
+                take = min(outlen - len(out), rate)
+                out.extend(chunk[:take])
+                if len(out) < outlen:
+                    self.keccak_f1600(s)
+
+            return bytes(out)
+
+        def cshake(self, x, outlen_bytes, n, s):
+            if not isinstance(x, (bytes, bytearray)):
+                raise TypeError("x must be bytes-like")
+            if not isinstance(n, (bytes, bytearray)):
+                raise TypeError("n must be bytes-like")
+            if not isinstance(s, (bytes, bytearray)):
+                raise TypeError("s must be bytes-like")
+            x = bytes(x)
+            n = bytes(n)
+            s = bytes(s)
+
+            if n == b"" and s == b"":
+                return self.sponge(x, outlen_bytes, self.block_size, 0x001f)
+
+            prefix = self.bytepad(self.encode_string(n) + self.encode_string(s), self.block_size)
+            return self.sponge(prefix + x, outlen_bytes, self.block_size, 0x0004)
+
+        def kmac(self, key, x, l_bits, custom):
+            if not isinstance(key, (bytes, bytearray)):
+                raise TypeError("key must be bytes-like")
+            if not isinstance(x, (bytes, bytearray)):
+                raise TypeError("x must be bytes-like")
+            if not isinstance(custom, (bytes, bytearray)):
+                raise TypeError("custom must be bytes-like")
+            if not isinstance(l_bits, int) or l_bits < 0:
+                raise ValueError("l_bits must be a non-negative integer")
+            if (l_bits % 0x0008) != 0x0000:
+                raise ValueError("l_bits must be a multiple of 8")
+
+            key = bytes(key)
+            x = bytes(x)
+            custom = bytes(custom)
+
+            new_x = self.bytepad(self.encode_string(key), self.block_size) + x + self.right_encode(l_bits)
+            outlen_bytes = l_bits // 0x0008
+            return self.cshake(new_x, outlen_bytes, b"KMAC", custom)
+
+    class KMAC256:
+        block_size = 136 # rate for cshake_256/kmac_256
+        digest_size = 64 # 512 bits
+
+        def __init__(self, key=b"", data=b"", custom=b"", digest_bits=512):
+            if not isinstance(key, (bytes, bytearray)):
+                raise TypeError("key must be bytes-like")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            if not isinstance(custom, (bytes, bytearray)):
+                raise TypeError("custom must be bytes-like")
+            key = bytes(key)
+            data = bytes(data)
+            custom = bytes(custom)
+
+            digest_size = digest_bits // 8
+            if digest_size < 1:
+                raise ValueError("digest_size must be a positive integer")
+
+            self.key = key
+            self.custom = custom
+            self.digest_size = digest_size
+            self.buf = bytearray()
+            self.msg_len = 0  # in bytes
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__(self.key, b"", self.custom, self.digest_size * 8)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            return self
+
+        def finalize(self):
+            return
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.kmac(self.key, bytes(c.buf), c.digest_size * 0x0008, c.custom)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def left_encode(self, x):
+            if not isinstance(x, int) or x < 0:
+                raise ValueError("x must be a non-negative integer")
+            n = 0x0001
+            while (x >> (0x0008 * n)) != 0:
+                n += 0x0001
+            out = bytes([n]) + x.to_bytes(n, "big")
+            return out
+
+        def right_encode(self, x):
+            if not isinstance(x, int) or x < 0:
+                raise ValueError("x must be a non-negative integer")
+            n = 0x0001
+            while (x >> (0x0008 * n)) != 0:
+                n += 0x0001
+            out = x.to_bytes(n, "big") + bytes([n])
+            return out
+
+        def encode_string(self, s):
+            if not isinstance(s, (bytes, bytearray)):
+                raise TypeError("s must be bytes-like")
+            s = bytes(s)
+            out = self.left_encode(len(s) * 0x0008) + s
+            return out
+
+        def bytepad(self, x, w):
+            if not isinstance(x, (bytes, bytearray)):
+                raise TypeError("x must be bytes-like")
+            if not isinstance(w, int) or w <= 0:
+                raise ValueError("w must be a positive integer")
+            x = bytes(x)
+            z = self.left_encode(w) + x
+            pad_len = (-len(z)) % w
+            out = z + (b"\x00" * pad_len)
+            return out
+
+        def rotl64(self, x, n):
+            x &= 0xffff_ffff_ffff_ffff
+            n &= 0x003f
+            if n == 0x0000:
+                return x
+            out = ((x << n) | (x >> (0x0040 - n))) & 0xffff_ffff_ffff_ffff
+            return out
+
+        def keccak_f1600(self, s):
+            rc = [
+                0x0000_0000_0000_0001, 0x0000_0000_0000_8082,
+                0x8000_0000_0000_808a, 0x8000_0000_8000_8000,
+                0x0000_0000_0000_808b, 0x0000_0000_8000_0001,
+                0x8000_0000_8000_8081, 0x8000_0000_0000_8009,
+                0x0000_0000_0000_008a, 0x0000_0000_0000_0088,
+                0x0000_0000_8000_8009, 0x0000_0000_8000_000a,
+                0x0000_0000_8000_808b, 0x8000_0000_0000_008b,
+                0x8000_0000_0000_8089, 0x8000_0000_0000_8003,
+                0x8000_0000_0000_8002, 0x8000_0000_0000_0080,
+                0x0000_0000_0000_800a, 0x8000_0000_8000_000a,
+                0x8000_0000_8000_8081, 0x8000_0000_0000_8080,
+                0x0000_0000_8000_0001, 0x8000_0000_8000_8008,
+            ]
+            r = [
+                [0x00, 0x24, 0x03, 0x29, 0x12],
+                [0x01, 0x2c, 0x0a, 0x2d, 0x02],
+                [0x3e, 0x06, 0x2b, 0x0f, 0x3d],
+                [0x1c, 0x37, 0x19, 0x15, 0x38],
+                [0x1b, 0x14, 0x27, 0x08, 0x0e],
+            ]
+
+            for rnd in range(0x0018):
+                c = [0, 0, 0, 0, 0]
+                d = [0, 0, 0, 0, 0]
+
+                c[0] = s[0] ^ s[5] ^ s[10] ^ s[15] ^ s[20]
+                c[1] = s[1] ^ s[6] ^ s[11] ^ s[16] ^ s[21]
+                c[2] = s[2] ^ s[7] ^ s[12] ^ s[17] ^ s[22]
+                c[3] = s[3] ^ s[8] ^ s[13] ^ s[18] ^ s[23]
+                c[4] = s[4] ^ s[9] ^ s[14] ^ s[19] ^ s[24]
+
+                d[0] = c[4] ^ self.rotl64(c[1], 0x0001)
+                d[1] = c[0] ^ self.rotl64(c[2], 0x0001)
+                d[2] = c[1] ^ self.rotl64(c[3], 0x0001)
+                d[3] = c[2] ^ self.rotl64(c[4], 0x0001)
+                d[4] = c[3] ^ self.rotl64(c[0], 0x0001)
+
+                for x in range(0x0005):
+                    for y in range(0x0005):
+                        s[x + 0x0005 * y] ^= d[x]
+                        s[x + 0x0005 * y] &= 0xffff_ffff_ffff_ffff
+
+                b = [0] * 0x0019
+                for x in range(0x0005):
+                    for y in range(0x0005):
+                        idx = x + 0x0005 * y
+                        nx = y
+                        ny = (0x0002 * x + 0x0003 * y) % 0x0005
+                        b[nx + 0x0005 * ny] = self.rotl64(s[idx], r[x][y])
+
+                for y in range(0x0005):
+                    row = [b[0x0000 + 0x0005 * y], b[0x0001 + 0x0005 * y], b[0x0002 + 0x0005 * y],
+                           b[0x0003 + 0x0005 * y], b[0x0004 + 0x0005 * y]]
+                    for x in range(0x0005):
+                        s[x + 0x0005 * y] = row[x] ^ ((~row[(x + 0x0001) % 0x0005]) & row[(x + 0x0002) % 0x0005])
+                        s[x + 0x0005 * y] &= 0xffff_ffff_ffff_ffff
+
+                s[0] ^= rc[rnd]
+                s[0] &= 0xffff_ffff_ffff_ffff
+
+            return
+
+        def sponge(self, data, outlen, rate, suffix):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            if not isinstance(outlen, int) or outlen < 0:
+                raise ValueError("outlen must be a non-negative integer")
+            if not isinstance(rate, int) or rate <= 0:
+                raise ValueError("rate must be a positive integer")
+            if not isinstance(suffix, int) or not (0x0000 <= suffix <= 0x00ff):
+                raise ValueError("suffix must be a byte")
+
+            data = bytes(data)
+            msg = bytearray(data)
+            msg.append(suffix)
+            while (len(msg) % rate) != (rate - 0x0001):
+                msg.append(0x0000)
+            msg.append(0x0080)
+
+            s = [0x0000_0000_0000_0000] * 0x0019
+            rate_words = rate // 0x0008
+
+            off = 0
+            while off < len(msg):
+                block = msg[off:off + rate]
+                for i in range(rate_words):
+                    lane = int.from_bytes(block[i * 0x0008:(i + 0x0001) * 0x0008], "little")
+                    s[i] ^= lane
+                    s[i] &= 0xffff_ffff_ffff_ffff
+                self.keccak_f1600(s)
+                off += rate
+
+            out = bytearray()
+            while len(out) < outlen:
+                chunk = bytearray()
+                for i in range(rate_words):
+                    chunk.extend(s[i].to_bytes(0x0008, "little"))
+                take = min(outlen - len(out), rate)
+                out.extend(chunk[:take])
+                if len(out) < outlen:
+                    self.keccak_f1600(s)
+
+            return bytes(out)
+
+        def cshake(self, x, outlen_bytes, n, s):
+            if not isinstance(x, (bytes, bytearray)):
+                raise TypeError("x must be bytes-like")
+            if not isinstance(n, (bytes, bytearray)):
+                raise TypeError("n must be bytes-like")
+            if not isinstance(s, (bytes, bytearray)):
+                raise TypeError("s must be bytes-like")
+            x = bytes(x)
+            n = bytes(n)
+            s = bytes(s)
+
+            if n == b"" and s == b"":
+                return self.sponge(x, outlen_bytes, self.block_size, 0x001f)
+
+            prefix = self.bytepad(self.encode_string(n) + self.encode_string(s), self.block_size)
+            return self.sponge(prefix + x, outlen_bytes, self.block_size, 0x0004)
+
+        def kmac(self, key, x, l_bits, custom):
+            if not isinstance(key, (bytes, bytearray)):
+                raise TypeError("key must be bytes-like")
+            if not isinstance(x, (bytes, bytearray)):
+                raise TypeError("x must be bytes-like")
+            if not isinstance(custom, (bytes, bytearray)):
+                raise TypeError("custom must be bytes-like")
+            if not isinstance(l_bits, int) or l_bits < 0:
+                raise ValueError("l_bits must be a non-negative integer")
+            if (l_bits % 0x0008) != 0x0000:
+                raise ValueError("l_bits must be a multiple of 8")
+
+            key = bytes(key)
+            x = bytes(x)
+            custom = bytes(custom)
+
+            new_x = self.bytepad(self.encode_string(key), self.block_size) + x + self.right_encode(l_bits)
+            outlen_bytes = l_bits // 0x0008
+            return self.cshake(new_x, outlen_bytes, b"KMAC", custom)
+
+    class TupleHash128:
+        # TupleHash128 = cSHAKE128 with N="TupleHash"
+        block_size = 168  # rate in bytes (Keccak[1600], r=1344)
+        digest_size = 16  # 128 bits
+
+        # Keccak-f[1600] round constants
+        rc = [
+            0x0000_0000_0000_0001, 0x0000_0000_0000_8082,
+            0x8000_0000_0000_808a, 0x8000_0000_8000_8000,
+            0x0000_0000_0000_808b, 0x0000_0000_8000_0001,
+            0x8000_0000_8000_8081, 0x8000_0000_0000_8009,
+            0x0000_0000_0000_008a, 0x0000_0000_0000_0088,
+            0x0000_0000_8000_8009, 0x0000_0000_8000_000a,
+            0x0000_0000_8000_808b, 0x8000_0000_0000_008b,
+            0x8000_0000_0000_8089, 0x8000_0000_0000_8003,
+            0x8000_0000_0000_8002, 0x8000_0000_0000_0080,
+            0x0000_0000_0000_800a, 0x8000_0000_8000_000a,
+            0x8000_0000_8000_8081, 0x8000_0000_0000_8080,
+            0x0000_0000_8000_0001, 0x8000_0000_8000_8008,
+        ]
+
+        # Rotation offsets (Rho)
+        rotc = [
+            1,  3,  6, 10, 15, 21, 28, 36, 45, 55,  2, 14,
+            27, 41, 56,  8, 25, 43, 62, 18, 39, 61, 20, 44
+        ]
+
+        # Permutation index (Pi)
+        piln = [
+            10,  7, 11, 17, 18,  3,  5, 16,  8, 21, 24,  4,
+            15, 23, 19, 13, 12,  2, 20, 14, 22,  9,  6,  1
+        ]
+
+        def __init__(self, data=b"", custom=b"", digest_bits=128):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            if not isinstance(custom, (bytes, bytearray)):
+                raise TypeError("custom must be bytes-like")
+
+            self.rate = 168
+            self.suffix = 0x04  # cSHAKE domain separation suffix
+            self.output_bits = digest_bits
+            self.digest_size = digest_bits // 8
+
+            self.state = [0] * 25  # 25 lanes of 64-bit
+            self.buf = bytearray()
+            self.finalized = False
+
+            self.custom = bytes(custom)
+
+            # cSHAKE init: absorb bytepad(encode_string(N) || encode_string(S), rate)
+            n = b"TupleHash"
+            init = self.bytepad(self.encode_string(n) + self.encode_string(self.custom), self.rate)
+            self.absorb(init)
+
+            if data:
+                self.update(bytes(data))
+            return
+
+        def copy(self):
+            other = self.__class__(b"", self.custom)
+            other.rate = self.rate
+            other.suffix = self.suffix
+            other.output_bits = self.output_bits
+            other.state = list(self.state)
+            other.buf = bytearray(self.buf)
+            other.finalized = self.finalized
+            return other
+
+        def update(self, data):
+            if self.finalized:
+                raise ValueError("cannot update after finalize")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+
+            # TupleHash input is a tuple of strings: update(data) == append one element
+            self.absorb(self.encode_string(data))
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            out = c.squeeze(self.digest_size)
+            return out
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            if self.finalized:
+                return
+
+            # Append right_encode(L) where L is output length in bits
+            self.absorb(self.right_encode(self.output_bits))
+
+            # Apply cSHAKE padding and switch to squeezing
+            self.pad_and_permute()
+            self.finalized = True
+            return
+
+        def rotl64(self, x, n):
+            x &= 0xffff_ffff_ffff_ffff
+            n &= 63
+            return ((x << n) | (x >> (64 - n))) & 0xffff_ffff_ffff_ffff
+
+        def keccak_f(self):
+            st = self.state
+
+            for rnd in range(24):
+                # Theta
+                bc0 = st[0] ^ st[5] ^ st[10] ^ st[15] ^ st[20]
+                bc1 = st[1] ^ st[6] ^ st[11] ^ st[16] ^ st[21]
+                bc2 = st[2] ^ st[7] ^ st[12] ^ st[17] ^ st[22]
+                bc3 = st[3] ^ st[8] ^ st[13] ^ st[18] ^ st[23]
+                bc4 = st[4] ^ st[9] ^ st[14] ^ st[19] ^ st[24]
+
+                d0 = bc4 ^ self.rotl64(bc1, 1)
+                d1 = bc0 ^ self.rotl64(bc2, 1)
+                d2 = bc1 ^ self.rotl64(bc3, 1)
+                d3 = bc2 ^ self.rotl64(bc4, 1)
+                d4 = bc3 ^ self.rotl64(bc0, 1)
+
+                st[0] ^= d0; st[5] ^= d0; st[10] ^= d0; st[15] ^= d0; st[20] ^= d0 # noqa: E702
+                st[1] ^= d1; st[6] ^= d1; st[11] ^= d1; st[16] ^= d1; st[21] ^= d1 # noqa: E702
+                st[2] ^= d2; st[7] ^= d2; st[12] ^= d2; st[17] ^= d2; st[22] ^= d2 # noqa: E702
+                st[3] ^= d3; st[8] ^= d3; st[13] ^= d3; st[18] ^= d3; st[23] ^= d3 # noqa: E702
+                st[4] ^= d4; st[9] ^= d4; st[14] ^= d4; st[19] ^= d4; st[24] ^= d4 # noqa: E702
+
+                # Rho + Pi
+                t = st[1]
+                for i in range(24):
+                    j = self.piln[i]
+                    r = self.rotc[i]
+                    tmp = st[j]
+                    st[j] = self.rotl64(t, r)
+                    t = tmp
+
+                # Chi
+                for y in range(5):
+                    o = y * 5
+                    b0 = st[o + 0]
+                    b1 = st[o + 1]
+                    b2 = st[o + 2]
+                    b3 = st[o + 3]
+                    b4 = st[o + 4]
+                    st[o + 0] ^= (~b1) & b2
+                    st[o + 1] ^= (~b2) & b3
+                    st[o + 2] ^= (~b3) & b4
+                    st[o + 3] ^= (~b4) & b0
+                    st[o + 4] ^= (~b0) & b1
+
+                    st[o + 0] &= 0xffff_ffff_ffff_ffff
+                    st[o + 1] &= 0xffff_ffff_ffff_ffff
+                    st[o + 2] &= 0xffff_ffff_ffff_ffff
+                    st[o + 3] &= 0xffff_ffff_ffff_ffff
+                    st[o + 4] &= 0xffff_ffff_ffff_ffff
+
+                # Iota
+                st[0] ^= self.rc[rnd]
+                st[0] &= 0xffff_ffff_ffff_ffff
+
+            self.state = st
+            return
+
+        def absorb(self, data):
+            if self.finalized:
+                raise ValueError("cannot absorb after finalize")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+
+            self.buf.extend(data)
+            while len(self.buf) >= self.rate:
+                block = bytes(self.buf[:self.rate])
+                del self.buf[:self.rate]
+                self.xor_into_state(block)
+                self.keccak_f()
+            return
+
+        def xor_into_state(self, block):
+            # XOR block into state lanes (little-endian)
+            lanes = self.rate // 8
+            for i in range(lanes):
+                v = int.from_bytes(block[i * 8:(i + 1) * 8], "little")
+                self.state[i] ^= v
+                self.state[i] &= 0xffff_ffff_ffff_ffff
+            return
+
+        def pad_and_permute(self):
+            # pad10*1 with domain suffix (cSHAKE uses 0x04)
+            self.buf.append(self.suffix)
+
+            if len(self.buf) > self.rate:
+                # should not happen, but keep strict
+                raise ValueError("internal buffer overflow")
+
+            if len(self.buf) == self.rate:
+                # last byte already present; set MSB and absorb
+                self.buf[self.rate - 1] |= 0x80
+                block = bytes(self.buf)
+                self.buf.clear()
+                self.xor_into_state(block)
+                self.keccak_f()
+                return
+
+            while len(self.buf) < self.rate:
+                self.buf.append(0x00)
+
+            self.buf[self.rate - 1] |= 0x80
+            block = bytes(self.buf)
+            self.buf.clear()
+            self.xor_into_state(block)
+            self.keccak_f()
+            return
+
+        def squeezeblock(self):
+            # Extract rate bytes from state (little-endian)
+            out = bytearray()
+            lanes = self.rate // 8
+            for i in range(lanes):
+                out.extend(self.state[i].to_bytes(8, "little"))
+            return bytes(out)
+
+        def squeeze(self, outlen):
+            if not self.finalized:
+                raise ValueError("must finalize before squeeze")
+            if outlen < 0:
+                raise ValueError("outlen must be non-negative")
+
+            out = bytearray()
+            while len(out) < outlen:
+                block = self.squeezeblock()
+                take = min(outlen - len(out), self.rate)
+                out.extend(block[:take])
+                if len(out) < outlen:
+                    self.keccak_f()
+            return bytes(out)
+
+        def left_encode(self, x):
+            if x < 0:
+                raise ValueError("x must be non-negative")
+            n = 1
+            t = x
+            while t > 0xff:
+                n += 1
+                t >>= 8
+            return bytes([n]) + x.to_bytes(n, "big")
+
+        def right_encode(self, x):
+            if x < 0:
+                raise ValueError("x must be non-negative")
+            n = 1
+            t = x
+            while t > 0xff:
+                n += 1
+                t >>= 8
+            return x.to_bytes(n, "big") + bytes([n])
+
+        def encode_string(self, s):
+            if not isinstance(s, (bytes, bytearray)):
+                raise TypeError("s must be bytes-like")
+            s = bytes(s)
+            return self.left_encode(len(s) * 8) + s
+
+        def bytepad(self, x, w):
+            if w <= 0:
+                raise ValueError("w must be positive")
+            if not isinstance(x, (bytes, bytearray)):
+                raise TypeError("x must be bytes-like")
+            x = bytes(x)
+
+            z = bytearray()
+            z.extend(self.left_encode(w))
+            z.extend(x)
+            while (len(z) % w) != 0:
+                z.append(0x00)
+            return bytes(z)
+
+    class TupleHash256(TupleHash128):
+        # TupleHash256 = cSHAKE256 with N="TupleHash"
+        block_size = 136  # rate in bytes (Keccak[1600], r=1088)
+        digest_size = 32  # 256 bits
+
+        def __init__(self, data=b"", custom=b"", digest_bits=256):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            if not isinstance(custom, (bytes, bytearray)):
+                raise TypeError("custom must be bytes-like")
+
+            self.rate = 136
+            self.suffix = 0x04
+            self.output_bits = digest_bits
+            self.digest_size = digest_bits // 8
+
+            self.state = [0] * 25
+            self.buf = bytearray()
+            self.finalized = False
+
+            self.custom = bytes(custom)
+
+            n = b"TupleHash"
+            init = self.bytepad(self.encode_string(n) + self.encode_string(self.custom), self.rate)
+            self.absorb(init)
+
+            if data:
+                self.update(bytes(data))
+            return
+
+        def copy(self):
+            other = self.__class__(b"", self.custom)
+            other.rate = self.rate
+            other.suffix = self.suffix
+            other.output_bits = self.output_bits
+            other.state = list(self.state)
+            other.buf = bytearray(self.buf)
+            other.finalized = self.finalized
+            return other
+
+    class TIGER:
+        block_size = 64  # 512 bits
+
+        sbox1 = [
+            0x02aa_b17c_f7e9_0c5e, 0xac42_4b03_e243_a8ec, 0x72cd_5be3_0dd5_fcd3, 0x6d01_9b93_f6f9_7f3a,
+            0xcd99_78ff_d21f_9193, 0x7573_a1c9_7080_29e2, 0xb164_326b_922a_83c3, 0x4688_3eee_0491_5870,
+            0xeaac_e305_7103_ece6, 0xc541_69b8_08a3_535c, 0x4ce7_5491_8dde_c47c, 0x0aa2_f4df_dc0d_f40c,
+            0x10b7_6f18_a74d_befa, 0xc6cc_b623_5ad1_ab6a, 0x1372_6121_572f_e2ff, 0x1a48_8c6f_199d_921e,
+            0x4bc9_f9f4_da00_07ca, 0x26f5_e6f6_e852_41c7, 0x8590_79db_ea59_47b6, 0x4f18_85c5_c99e_8c92,
+            0xd78e_761e_a96f_864b, 0x8e36_428c_52b5_c17d, 0x69cf_6827_3730_63c1, 0xb607_c93d_9bb4_c56e,
+            0x7d82_0e76_0e76_b5ea, 0x645c_9cc6_f07f_dc42, 0xbf38_a078_2433_42e0, 0x5f6b_343c_9d2e_7d04,
+            0xf2c2_8aeb_600b_0ec6, 0x6c0e_d85f_7254_bcac, 0x7159_2281_a4db_4fe5, 0x1967_fa69_ce0f_ed9f,
+            0xfd52_93f8_b965_45db, 0xc879_e9d7_f2a7_600b, 0x8602_4892_0193_194e, 0xa4f9_533b_2d9c_c0b3,
+            0x9053_836c_1595_7613, 0xdb6d_cf8a_fc35_7bf1, 0x18be_ea7a_7a37_0f57, 0x0371_17ca_50b9_9066,
+            0x6ab3_0a97_7442_4a35, 0xf4e9_2f02_e325_249b, 0x7739_db07_061c_cae1, 0xd8f3_b49c_eca4_2a05,
+            0xbd56_be3f_5138_2f73, 0x45fa_ed58_43b0_bb28, 0x1c81_3d5c_11bf_1f83, 0x8af0_e4b6_d75f_a169,
+            0x33ee_18a4_87ad_9999, 0x3c26_e8ea_b1c9_4410, 0xb510_102b_c0a8_22f9, 0x141e_ef31_0ce6_123b,
+            0xfc65_b900_59dd_b154, 0xe015_8640_c5e0_e607, 0x884e_0798_26c3_a3cf, 0x930d_0d95_23c5_35fd,
+            0x3563_8d75_4e9a_2b00, 0x4085_fccf_4046_9dd5, 0xc4b1_7ad2_8be2_3a4c, 0xcab2_f0fc_6a3e_6a2e,
+            0x2860_971a_6b94_3fcd, 0x3dde_6ee2_12e3_0446, 0x6222_f32a_e017_65ae, 0x5d55_0bb5_4783_08fe,
+            0xa9ef_a98d_a0ed_a22a, 0xc351_a716_86c4_0da7, 0x1105_586d_9c86_7c84, 0xdcff_ee85_fda2_2853,
+            0xccfb_d026_2c5e_ef76, 0xbaf2_94cb_8990_d201, 0xe694_64f5_2afa_d975, 0x94b0_13af_df13_3e14,
+            0x06a7_d1a3_2823_c958, 0x6f95_fe51_30f6_1119, 0xd92a_b34e_462c_06c0, 0xed7b_de33_887c_71d2,
+            0x7974_6d6e_6518_393e, 0x5ba4_1938_5d71_3329, 0x7c1b_a6b9_48a9_7564, 0x3198_7c19_7bfd_ac67,
+            0xde6c_23c4_4b05_3d02, 0x581c_49fe_d002_d64d, 0xdd47_4d63_3826_1571, 0xaa45_46c3_e473_d062,
+            0x928f_ce34_9455_f860, 0x4816_1bba_caab_94d9, 0x6391_2430_770e_6f68, 0x6ec8_a5e6_02c6_641c,
+            0x8728_2515_337d_dd2b, 0x2cda_6b42_034b_701b, 0xb03d_37c1_81cb_096d, 0xe108_4382_66c7_1c6f,
+            0x2b31_80c7_eb51_b255, 0xdf92_b82f_96c0_8bbc, 0x5c68_c8c0_a632_f3ba, 0x5504_cc86_1c3d_0556,
+            0xabbf_a4e5_5fb2_6b8f, 0x4184_8b0a_b3ba_ceb4, 0xb334_a273_aa44_5d32, 0xbca6_96f0_a85a_d881,
+            0x24f6_ec65_b528_d56c, 0x0ce1_512e_90f4_524a, 0x4e9d_d79d_5506_d35a, 0x2589_05fa_c6ce_9779,
+            0x2019_295b_3e10_9b33, 0xf8a9_478b_73a0_54cc, 0x2924_f2f9_3441_7eb0, 0x3993_357d_536d_1bc4,
+            0x38a8_1ac2_1db6_ff8b, 0x47c4_fbf1_7d60_16bf, 0x1e0f_aadd_7667_e3f5, 0x7abc_ff62_938b_eb96,
+            0xa78d_ad94_8fc1_79c9, 0x8f1f_98b7_2911_e50d, 0x61e4_8eae_2712_1a91, 0x4d62_f7ad_3185_9808,
+            0xeceb_a345_ef5c_eaeb, 0xf5ce_b25e_bc96_84ce, 0xf633_e20c_b7f7_6221, 0xa32c_df06_ab82_93e4,
+            0x985a_202c_a5ee_2ca4, 0xcf0b_8447_cc8a_8fb1, 0x9f76_5244_9798_59a3, 0xa8d5_16b1_a124_0017,
+            0x0bd7_ba3e_bb5d_c726, 0xe54b_ca55_b86a_db39, 0x1d7a_3afd_6c47_8063, 0x519e_c608_e766_9edd,
+            0x0e57_15a2_d149_aa23, 0x177d_4571_848f_f194, 0xeeb5_5f32_4101_4c22, 0x0f5e_5ca1_3a6e_2ec2,
+            0x8029_927b_75f5_c361, 0xad13_9fab_c3d6_e436, 0x0d5d_f1a9_4ccf_402f, 0x3e8b_d948_bea5_dfc8,
+            0xa5a0_d357_bd3f_f77e, 0xa2d1_2e25_1f74_f645, 0x66fd_9e52_5e81_a082, 0x2e0c_90ce_7f68_7a49,
+            0xc2e8_bcbe_ba97_3bc5, 0x0000_01bc_e509_745f, 0x4237_77bb_e6da_b3d6, 0xd166_1c7e_aef0_6eb5,
+            0xa178_1f35_4daa_cfd8, 0x2d11_284a_2b16_affc, 0xf1fc_4f67_fa89_1d1f, 0x73ec_c25d_cb92_0ada,
+            0xae61_0c22_c2a1_2651, 0x96e0_a810_d356_b78a, 0x5a9a_381f_2fe7_870f, 0xd5ad_62ed_e94e_5530,
+            0xd225_e5e8_368d_1427, 0x6597_7b70_c7af_4631, 0x99f8_89b2_de39_d74f, 0x233f_30bf_54e1_d143,
+            0x9a96_75d3_d9a6_3c97, 0x5470_554f_f334_f9a8, 0x166a_cb74_4a4f_5688, 0x70c7_4caa_b2e4_aead,
+            0xf0d0_9164_6f29_4d12, 0x57b8_2a89_6840_31d1, 0xefd9_5a5a_61be_0b6b, 0x2fbd_12e9_69f2_f29a,
+            0x9bd3_7013_feff_9fe8, 0x3f9b_0404_d608_5a06, 0x4940_c1f3_166c_fe15, 0x0954_2c4d_cdf3_defb,
+            0xb4c5_2183_85cd_5ce3, 0xc935_b7dc_4462_a641, 0x3417_f8a6_8ed3_b63f, 0xb809_5929_5b21_5b40,
+            0xf99c_daef_3b8c_8572, 0x018c_0614_f8fc_b95d, 0x1b14_accd_1a3a_cdf3, 0x84d4_71f2_00bb_732d,
+            0xc1a3_110e_95e8_da16, 0x430a_7220_bf1a_82b8, 0xb77e_090d_39df_210e, 0x5ef4_bd9f_3cd0_5e9d,
+            0x9d4f_f6da_7e57_a444, 0xda1d_60e1_83d4_a5f8, 0xb287_c384_1799_8e47, 0xfe3e_dc12_1bb3_1886,
+            0xc7fe_3ccc_980c_cbef, 0xe46f_b590_189b_fd03, 0x3732_fd46_9a4c_57dc, 0x7ef7_00a0_7cf1_ad65,
+            0x59c6_4468_a31d_8859, 0x762f_b0b4_d45b_61f6, 0x155b_aed0_9904_7718, 0x6875_5e4c_3d50_baa6,
+            0xe921_4e7f_22d8_b4df, 0x2add_bf53_2eac_95f4, 0x32ae_3909_b4bd_0109, 0x834d_f537_b08e_3450,
+            0xfa20_9da8_4220_728d, 0x9e69_1d9b_9efe_23f7, 0x0446_d288_c4ae_8d7f, 0x7b4c_c524_e169_785b,
+            0x21d8_7f01_35ca_1385, 0xcebb_400f_137b_8aa5, 0x272e_2b66_5807_96be, 0x3612_2641_25c2_b0de,
+            0x0577_02bd_ad1e_fbb2, 0xd4ba_bb8e_acf8_4be9, 0x9158_3139_641b_c67b, 0x8bdc_2de0_8036_e024,
+            0x603c_8156_f49f_68ed, 0xf7d2_36f7_dbef_5111, 0x9727_c459_8ad2_1e80, 0xa08a_0896_670a_5fd7,
+            0xcb4a_8f43_09eb_a9cb, 0x81af_564b_0f70_36a1, 0xc0b9_9aa7_7819_9abd, 0x959f_1ec8_3fc8_e952,
+            0x8c50_5077_794a_81b9, 0x3aca_af8f_0563_38f0, 0x07b4_3f50_627a_6778, 0x4a44_ab49_f5ec_cc77,
+            0x3bc3_d6e4_b679_ee98, 0x9cc0_d4d1_cf14_108c, 0x4406_c00b_206b_c8a0, 0x82a1_8854_c8d7_2d89,
+            0x67e3_66b3_5c3c_432c, 0xb923_dd61_102b_37f2, 0x56ab_2779_d884_271d, 0xbe83_e1b0_ff15_25af,
+            0xfb7c_65d4_217e_49a9, 0x6bdb_e0e7_6d48_e7d4, 0x08df_8287_45d9_179e, 0x22ea_6a9a_dd53_bd34,
+            0xe36e_141c_5622_200a, 0x7f80_5d1b_8cb7_50ee, 0xafe5_c7a5_9f58_e837, 0xe27f_996a_4fb1_c23c,
+            0xd386_7dfb_0775_f0d0, 0xd0e6_73de_6e88_891a, 0x123a_eb9e_afb8_6c25, 0x30f1_d5d5_c145_b895,
+            0xbb43_4a2d_ee72_69e7, 0x78cb_67ec_f931_fa38, 0xf33b_0372_323b_bf9c, 0x52d6_6336_fb27_9c74,
+            0x505f_33ac_0afb_4eaa, 0xe8a5_cd99_a2cc_e187, 0x5349_7480_1e2d_30bb, 0x8d2d_5711_d587_6d90,
+            0x1f1a_4128_91bc_038e, 0xd6e2_e71d_82e5_6648, 0x7403_6c3a_4977_32b7, 0x89b6_7ed9_6361_f5ab,
+            0xffed_95d8_f1ea_02a2, 0xe72b_3bd6_1464_d43d, 0xa630_0f17_0bdc_4820, 0xebc1_8760_ed78_a77a,
+        ]
+        sbox2 = [
+            0xe6a6_be5a_05a1_2138, 0xb5a1_22a5_b4f8_7c98, 0x563c_6089_140b_6990, 0x4c46_cb2e_391f_5dd5,
+            0xd932_addb_c9b7_9434, 0x08ea_70e4_2015_aff5, 0xd765_a667_3e47_8cf1, 0xc4fb_757e_ab27_8d99,
+            0xdf11_c686_2d6e_0692, 0xddeb_84f1_0d7f_3b16, 0x6f2e_f604_a665_ea04, 0x4a8e_0f0f_f0e0_dfb3,
+            0xa5ed_eef8_3dbc_ba51, 0xfc4f_0a2a_0ea4_371e, 0xe83e_1da8_5cb3_8429, 0xdc8f_f882_ba1b_1ce2,
+            0xcd45_505e_8353_e80d, 0x18d1_9a00_d4db_0717, 0x34a0_cfed_a5f3_8101, 0x0be7_7e51_8887_caf2,
+            0x1e34_1438_b3c4_5136, 0xe057_97f4_9089_ccf9, 0xffd2_3f9d_f259_1d14, 0x543d_da22_8595_c5cd,
+            0x661f_81fd_9905_2a33, 0x8736_e641_db0f_7b76, 0x1522_7725_418e_5307, 0xe25f_7f46_162e_b2fa,
+            0x48a8_b212_6c13_d9fe, 0xafdc_5417_92e7_6eea, 0x03d9_12bf_c6d1_898f, 0x31b1_aafa_1b83_f51b,
+            0xf1ac_2796_e42a_b7d9, 0x40a3_a7d7_fcd2_ebac, 0x1056_136d_0afb_bcc5, 0x7889_e1dd_9a6d_0c85,
+            0xd335_2578_2a79_74aa, 0xa7e2_5d09_078a_c09b, 0xbd41_38b3_eac6_edd0, 0x920a_bfbe_71eb_9e70,
+            0xa2a5_d0f5_4fc2_625c, 0xc054_e36b_0b12_90a3, 0xf6dd_59ff_62fe_932b, 0x3537_3545_11a8_ac7d,
+            0xca84_5e91_72fa_dcd4, 0x84f8_2b60_329d_20dc, 0x79c6_2ce1_cd67_2f18, 0x8b09_a2ad_d124_642c,
+            0xd0c1_e96a_19d9_e726, 0x5a78_6a9b_4ba9_500c, 0x0e02_0336_634c_43f3, 0xc17b_474a_eb66_d822,
+            0x6a73_1ae3_ec9b_aac2, 0x8226_667a_e084_0258, 0x67d4_5676_91ca_eca5, 0x1d94_155c_4875_adb5,
+            0x6d00_fd98_5b81_3fdf, 0x5128_6efc_b774_cd06, 0x5e88_3447_1fa7_44af, 0xf72c_a0ae_e761_ae2e,
+            0xbe40_e4cd_aee8_e09a, 0xe997_0bbb_5118_f665, 0x726e_4beb_33df_1964, 0x703b_0007_2919_9762,
+            0x4631_d816_f5ef_30a7, 0xb880_b5b5_1504_a6be, 0x6417_93c3_7ed8_4b6c, 0x7b21_ed77_f6e9_7d96,
+            0x7763_0631_2ef9_6b73, 0xae52_8948_e86f_f3f4, 0x53db_d7f2_86a3_f8f8, 0x16ca_dce7_4cfc_1063,
+            0x005c_19bd_fa52_c6dd, 0x6886_8f5d_64d4_6ad3, 0x3a9d_512c_cf1e_186a, 0x367e_62c2_3856_60ae,
+            0xe359_e7ea_77dc_b1d7, 0x526c_0773_749a_be6e, 0x735a_e5f9_d09f_734b, 0x493f_c7cc_8a55_8ba8,
+            0xb0b9_c153_3041_ab45, 0x3219_58ba_470a_59bd, 0x852d_b00b_5f46_c393, 0x9120_9b2b_d336_b0e5,
+            0x6e60_4f7d_659e_f19f, 0xb99a_8ae2_782c_cb24, 0xccf5_2ab6_c814_c4c7, 0x4727_d9af_be11_727b,
+            0x7e95_0d0c_0121_b34d, 0x756f_4356_70ad_471f, 0xf5ad_d442_615a_6849, 0x4e87_e099_80b9_957a,
+            0x2acf_a1df_50ae_e355, 0xd898_263a_fd2f_d556, 0xc8f4_924d_d80c_8fd6, 0xcf99_ca3d_754a_173a,
+            0xfe47_7bac_af91_bf3c, 0xed53_71f6_d690_c12d, 0x831a_5c28_5e68_7094, 0xc5d3_c90a_3708_a0a4,
+            0x0f7f_9037_17d0_6580, 0x19f9_bb13_b8fd_f27f, 0xb1bd_6f1b_4d50_2843, 0x1c76_1ba3_8fff_4012,
+            0x0d15_30c4_e2e2_1f3b, 0x8943_ce69_a737_2c8a, 0xe518_4e11_feb5_ce66, 0x618b_db80_bd73_6621,
+            0x7d29_bad6_8b57_4d0b, 0x81bb_613e_25e6_fe5b, 0x071c_9c10_bc07_913f, 0xc7be_eb79_09ac_2d97,
+            0xc3e5_8d35_3bc5_d757, 0xeb01_7892_f38f_61e8, 0xd4ef_fb9c_9b1c_c21a, 0x9972_7d26_f494_f7ab,
+            0xa3e0_63a2_956b_3e03, 0x9d4a_8b9a_4aa0_9c30, 0x3f6a_b7d5_0009_0fb4, 0x9cc0_f2a0_5726_8ac0,
+            0x3dee_9d2d_edbf_42d1, 0x330f_49c8_7960_a972, 0xc6b2_7202_8742_1b41, 0x0ac5_9ec0_7c00_369c,
+            0xef4e_ac49_cb35_3425, 0xf450_244e_ef01_29d8, 0x8acc_46e5_caf4_deb6, 0x2ffe_ab63_9892_63f7,
+            0x8f7c_b9fe_5d7a_4578, 0x5bd8_f764_4e63_4635, 0x427a_7315_bf2d_c900, 0x17d0_c4aa_2125_261c,
+            0x3992_486c_9351_8e50, 0xb4cb_fee0_a2d7_d4c3, 0x7c75_d620_2c5d_dd8d, 0xdbc2_95d8_e35b_6c61,
+            0x60b3_69d3_0203_2b19, 0xce42_685f_dce4_4132, 0x06f3_ddb9_ddf6_5610, 0x8ea4_d21d_b5e1_48f0,
+            0x20b0_fce6_2fcd_496f, 0x2c1b_9123_58b0_ee31, 0xb283_17b8_18f5_a308, 0xa89c_1e18_9ca6_d2cf,
+            0x0c6b_1857_6aaa_dbc8, 0xb65d_eaa9_1299_fae3, 0xfb2b_794b_7f10_27e7, 0x04e4_317f_443b_5beb,
+            0x4b85_2d32_5939_d0a6, 0xd5ae_6bee_fb20_7ffc, 0x3096_82b2_81c7_d374, 0xbae3_09a1_94c3_b475,
+            0x8cc3_f97b_13b4_9f05, 0x98a9_422f_f829_3967, 0x244b_16b0_1076_ff7c, 0xf8bf_571c_663d_67ee,
+            0x1f0d_6758_eee3_0da1, 0xc9b6_11d9_7ade_b9b7, 0xb7af_d588_7b6c_57a2, 0x6290_ae84_6b98_4fe1,
+            0x94df_4cde_acc1_a5fd, 0x058a_5bd1_c548_3aff, 0x6316_6cc1_42ba_3c37, 0x8db8_526e_b2f7_6f40,
+            0xe108_8003_6f0d_6d4e, 0x9e05_23c9_971d_311d, 0x45ec_2824_cc7c_d691, 0x575b_8359_e623_82c9,
+            0xfa9e_400d_c488_9995, 0xd182_3ecb_4572_1568, 0xdafd_983b_8206_082f, 0xaa7d_2908_2386_a8cb,
+            0x269f_cd44_03b8_7588, 0x1b91_f5f7_28bd_d1e0, 0xe466_9f39_0402_01f6, 0x7a1d_7c21_8cf0_4ade,
+            0x6562_3c29_d79c_e5ce, 0x2368_4490_96c0_0bb1, 0xab9b_f187_9da5_03ba, 0xbc23_ecb1_a458_058e,
+            0x9a58_df01_bb40_1ecc, 0xa070_e868_a85f_143d, 0x4ff1_8830_7df2_239e, 0x14d5_65b4_1a64_1183,
+            0xee13_3374_5270_1602, 0x950e_3dcf_3f28_5e09, 0x5993_0254_b9c8_0953, 0x3bf2_9940_8930_da6d,
+            0xa955_943f_5369_1387, 0xa15e_deca_a9cb_8784, 0x2914_2127_352b_e9a0, 0x76f0_371f_ff4e_7afb,
+            0x0239_f450_274f_2228, 0xbb07_3af0_1d5e_868b, 0xbfc8_0571_c10e_96c1, 0xd267_0885_6822_2e23,
+            0x9671_a3d4_8e80_b5b0, 0x55b5_d38a_e193_bb81, 0x693a_e2d0_a18b_04b8, 0x5c48_b4ec_add5_335f,
+            0xfd74_3b19_4916_a1ca, 0x2577_0181_34be_98c4, 0xe779_87e8_3c54_a4ad, 0x28e1_1014_da33_e1b9,
+            0x270c_c59e_226a_a213, 0x7149_5f75_6d1a_5f60, 0x9be8_53fb_60af_ef77, 0xadc7_86a7_f744_3dbf,
+            0x0904_4561_73b2_9a82, 0x58bc_7a66_c232_bd5e, 0xf306_558c_673a_c8b2, 0x41f6_39c6_b6c9_772a,
+            0x216d_efe9_9fda_35da, 0x1164_0cc7_1c7b_e615, 0x93c4_3694_565c_5527, 0xea03_8e62_4677_7839,
+            0xf9ab_f3ce_5a3e_2469, 0x741e_768d_0fd3_12d2, 0x0144_b883_ced6_52c6, 0xc20b_5a5b_a33f_8552,
+            0x1ae6_9633_c343_5a9d, 0x97a2_8ca4_088c_fdec, 0x8824_a43c_1e96_f420, 0x3761_2fa6_6eee_a746,
+            0x6b4c_b165_f9cf_0e5a, 0x43aa_1c06_a0ab_fb4a, 0x7f4d_c26f_f162_796b, 0x6cba_cc8e_54ed_9b0f,
+            0xa6b7_ffef_d2bb_253e, 0x2e25_bc95_b0a2_9d4f, 0x86d6_a58b_def1_388c, 0xded7_4ac5_76b6_f054,
+            0x8030_bdbc_2b45_805d, 0x3c81_af70_e94d_9289, 0x3eff_6dda_9e31_00db, 0xb38d_c39f_dfcc_8847,
+            0x1238_8552_8d17_b87e, 0xf2da_0ed2_40b1_b642, 0x44ce_fadc_d54b_f9a9, 0x1312_200e_433c_7ee6,
+            0x9ffc_c84f_3a78_c748, 0xf0cd_1f72_2485_76bb, 0xec69_7405_3638_cfe4, 0x2ba7_b67c_0cec_4e4c,
+            0xac2f_4df3_e5ce_32ed, 0xcb33_d143_26ea_4c11, 0xa4e9_044c_c77e_58bc, 0x5f51_3293_d934_fcef,
+            0x5dc9_6455_06e5_5444, 0x50de_418f_317d_e40a, 0x388c_b31a_69dd_e259, 0x2db4_a834_5582_0a86,
+            0x9010_a91e_8471_1ae9, 0x4df7_f0b7_b149_8371, 0xd62a_2eab_c097_7179, 0x22fa_c097_aa8d_5c0e,
+        ]
+        sbox3 = [
+            0xf49f_cc2f_f1da_f39b, 0x487f_d5c6_6ff2_9281, 0xe8a3_0667_fcdc_a83f, 0x2c9b_4be3_d2fc_ce63,
+            0xda3f_f74b_93fb_bbc2, 0x2fa1_65d2_fe70_ba66, 0xa103_e279_970e_93d4, 0xbecd_ec77_b0e4_5e71,
+            0xcfb4_1e72_3985_e497, 0xb70a_aa02_5ef7_5017, 0xd423_09f0_3840_b8e0, 0x8efc_1ad0_3589_8579,
+            0x96c6_920b_e2b2_abc5, 0x66af_4163_375a_9172, 0x2174_abdc_ca71_27fb, 0xb33c_cea6_4a72_ff41,
+            0xf04a_4933_0830_66a5, 0x8d97_0acd_d728_9af5, 0x8f96_e8e0_31c8_c25e, 0xf3fe_c022_7687_5d47,
+            0xec7b_f310_0561_90dd, 0xf5ad_b0ae_bb0f_1491, 0x9b50_f885_0fd5_8892, 0x4975_4883_58b7_4de8,
+            0xa335_4ff6_9153_1c61, 0x0702_bbe4_81d2_c6ee, 0x89fb_2405_7ded_ed98, 0xac30_7513_8596_e902,
+            0x1d2d_3580_1727_72ed, 0xeb73_8fc2_8e6b_c30d, 0x5854_ef8f_6304_4326, 0x9e5c_5232_5add_3bbe,
+            0x90aa_53cf_325c_4623, 0xc1d2_4d51_349d_d067, 0x2051_cfee_a69e_a624, 0x1322_0f0a_862e_7e4f,
+            0xce39_3994_04e0_4864, 0xd9c4_2ca4_7086_fcb7, 0x685a_d223_8a03_e7cc, 0x0664_84b2_ab2f_f1db,
+            0xfe9d_5d70_efbf_79ec, 0x5b13_b9dd_9c48_1854, 0x15f0_d475_ed15_09ad, 0x0beb_cd06_0ec7_9851,
+            0xd58c_6791_183a_b7f8, 0xd118_7c50_52f3_eee4, 0xc95d_1192_e54e_82ff, 0x86ee_a14c_b9ac_6ca2,
+            0x3485_beb1_5367_7d5d, 0xdd19_1d78_1f8c_492a, 0xf608_66ba_a784_ebf9, 0x518f_643b_a2d0_8c74,
+            0x8852_e956_e108_7c22, 0xa768_cb8d_c410_ae8d, 0x3804_7726_bfec_8e1a, 0xa677_38b4_cd3b_45aa,
+            0xad16_691c_ec0d_de19, 0xc6d4_3193_8046_2e07, 0xc5a5_876d_0ba6_1938, 0x16b9_fa1f_a58f_d840,
+            0x188a_b117_3ca7_4f18, 0xabda_2f98_c99c_021f, 0x3e05_80ab_134a_e816, 0x5f3b_05b7_7364_5abb,
+            0x2501_a2be_5575_f2f6, 0x1b2f_7400_4e7e_8ba9, 0x1cd7_5803_71e8_d953, 0x7f6e_d895_6276_4e30,
+            0xb159_26ff_596f_003d, 0x9f65_293d_a8c5_d6b9, 0x6ece_f04d_d690_f84c, 0x4782_275f_ff33_af88,
+            0xe414_3308_3f82_0801, 0xfd0d_fe40_9a1a_f9b5, 0x4325_a334_2cdb_396b, 0x8ae7_7e62_b301_b252,
+            0xc36f_9e9f_6655_615a, 0x8545_5a2d_92d3_2c09, 0xf2c7_dea9_4947_7485, 0x63cf_b4c1_33a3_9eba,
+            0x83b0_40cc_6ebc_5462, 0x3b94_54c8_fdb3_26b0, 0x56f5_6a9e_87ff_d78c, 0x2dc2_940d_99f4_2bc6,
+            0x98f7_df09_6b09_6e2d, 0x19a6_e01e_3ad8_52bf, 0x42a9_9ccb_dbd4_b40b, 0xa599_98af_45e9_c559,
+            0x3662_95e8_07d9_3186, 0x6b48_181b_faa1_f773, 0x1fec_57e2_157a_0a1d, 0x4667_446a_f620_1ad5,
+            0xe615_ebca_cfb0_f075, 0xb8f3_1f4f_6829_0778, 0x2271_3ed6_ce22_d11e, 0x3057_c1a7_2ec3_c93b,
+            0xcb46_acc3_7c3f_1f2f, 0xdbb8_93fd_02aa_f50e, 0x331f_d92e_600b_9fcf, 0xa498_f961_48ea_3ad6,
+            0xa8d8_426e_8b6a_83ea, 0xa089_b274_b773_5cdc, 0x87f6_b373_1e52_4a11, 0x1188_08e5_cbc9_6749,
+            0x9906_e4c7_b19b_d394, 0xafed_7f7e_9b24_a20c, 0x6509_eade_eb36_44a7, 0x6c1e_f1d3_e8ef_0ede,
+            0xb9c9_7d43_e979_8fb4, 0xa2f2_d784_740c_28a3, 0x7b84_9647_6197_566f, 0x7a5b_e3e6_b65f_069d,
+            0xf963_30ed_78be_6f10, 0xeee6_0de7_7a07_6a15, 0x2b4b_ee4a_a08b_9bd0, 0x6a56_a63e_c7b8_894e,
+            0x0212_1359_ba34_fef4, 0x4cbf_99f8_2837_03fc, 0x3980_7135_0caf_30c8, 0xd0a7_7a89_f017_687a,
+            0xf1c1_a9eb_9e42_3569, 0x8c79_7628_2dee_8199, 0x5d17_37a5_dd1f_7abd, 0x4f53_433c_09a9_fa80,
+            0xfa8b_0c53_df7c_a1d9, 0x3fd9_dcbc_886c_cb77, 0xc040_917c_a91b_4720, 0x7dd0_0142_f9d1_dcdf,
+            0x8476_fc1d_4f38_7b58, 0x23f8_e7c5_f331_6503, 0x032a_2244_e7e3_7339, 0x5c87_a5d7_50f5_a74b,
+            0x082b_4cc4_3698_992e, 0xdf91_7bec_b858_f63c, 0x3270_b8fc_5bf8_6dda, 0x10ae_72bb_29b5_dd76,
+            0x576a_c94e_7700_362b, 0x1ad1_12da_c61e_fb8f, 0x691b_c30e_c5fa_a427, 0xff24_6311_cc32_7143,
+            0x3142_368e_30e5_3206, 0x7138_0e31_e02c_a396, 0x958d_5c96_0aad_76f1, 0xf8d6_f430_c16d_a536,
+            0xc8ff_d13f_1be7_e1d2, 0x7578_ae66_004d_dbe1, 0x0583_3f01_067b_e646, 0xbb34_b5ad_3bfe_586d,
+            0x095f_34c9_a12b_97f0, 0x247a_b645_25d6_0ca8, 0xdcdb_c6f3_0174_77d1, 0x4a2e_14d4_deca_d24d,
+            0xbdb5_e6d9_be0a_1eeb, 0x2a7e_70f7_7943_01ab, 0xdef4_2d8a_2705_40fd, 0x0107_8ec0_a34c_22c1,
+            0xe5de_511a_f4c1_6387, 0x7ebb_3a52_bd9a_330a, 0x7769_7857_aa7d_6435, 0x004e_8316_03ae_4c32,
+            0xe7a2_1020_ad78_e312, 0x9d41_a70c_6ab4_20f2, 0x28e0_6c18_ea11_41e6, 0xd2b2_8cbd_984f_6b28,
+            0x26b7_5f6c_446e_9d83, 0xba47_568c_4d41_8d7f, 0xd80b_adbf_e618_3d8e, 0x0e20_6d7f_5f16_6044,
+            0xe258_a439_11cb_ca3e, 0x723a_1746_b21d_c0bc, 0xc7ca_a854_f5d7_cdd3, 0x7cac_3288_3d26_1d9c,
+            0x7690_c264_23ba_942c, 0x17e5_5524_4780_42b8, 0xe0be_4776_56a2_389f, 0x4d28_9b5e_67ab_2da0,
+            0x4486_2b9c_8fbb_fd31, 0xb47c_c804_9d14_1365, 0x822c_1b36_2b91_c793, 0x4eb1_4655_fb13_dfd8,
+            0x1ecb_ba07_14e2_a97b, 0x6143_459d_5cde_5f14, 0x53a8_fbf1_d5f0_ac89, 0x97ea_04d8_1c5e_5b00,
+            0x6221_81a8_d4fd_b3f3, 0xe9bc_d341_572a_1208, 0x1411_2586_43cc_e58a, 0x9144_c5fe_a4c6_e0a4,
+            0x0d33_d065_65cf_620f, 0x54a4_8d48_9f21_9ca1, 0xc43e_5eac_6d63_c821, 0xa972_8b3a_7277_0daf,
+            0xd793_4e7b_20df_87ef, 0xe355_03b6_1a3e_86e5, 0xcae3_21fb_c819_d504, 0x129a_50b3_ac60_bfa6,
+            0xcd5e_68ea_7e9f_b6c3, 0xb01c_9019_9483_b1c7, 0x3de9_3cd5_c295_376c, 0xaed5_2edf_2ab9_ad13,
+            0x2e60_f512_c0a0_7884, 0xbc3d_86a3_e362_10c9, 0x3526_9d9b_1639_51ce, 0x0c7d_6e2a_d0cd_b5fa,
+            0x59e8_6297_d87f_5733, 0x298e_f221_898d_b0e7, 0x5500_0029_d1a5_aa7e, 0x8bc0_8ae1_b506_1b45,
+            0xc2c3_1c2b_6c92_703a, 0x94cc_596b_af25_ef42, 0x0a1d_73db_2254_0456, 0x04b6_a0f9_d9c4_179a,
+            0xeffd_afa2_ae3d_3c60, 0xf7c8_075b_b494_96c4, 0x9cc5_c714_1d1c_d4e3, 0x78bd_1638_218e_5534,
+            0xb2f1_1568_f850_246a, 0xedfa_bcfa_9502_bc29, 0x796c_e5f2_da23_051b, 0xaae1_28b0_dc93_537c,
+            0x3a49_3da0_ee4b_29ae, 0xb5df_6b2c_4168_95d7, 0xfcab_bd25_122d_7f37, 0x7081_0b58_105d_c4b1,
+            0xe10f_dd37_f788_2a90, 0x524d_cab5_518a_3f5c, 0x3c9e_8587_8451_255b, 0x4029_8281_19bd_34e2,
+            0x74a0_5b6f_5d3c_eccb, 0xb610_0215_42e1_3eca, 0x0ff9_79d1_2f59_e2ac, 0x6037_da27_e4f9_cc50,
+            0x5e92_975a_0df1_847d, 0xd66d_e190_d3e6_23fe, 0x5032_d6b8_7b56_8048, 0x9a36_b7ce_8235_216e,
+            0x8027_2a7a_24f6_4b4a, 0x93ef_ed8b_8c69_16f7, 0x37dd_bff4_4cce_1555, 0x4b95_db5d_4b99_bd25,
+            0x92d3_fda1_6981_2fc0, 0xfb1a_4a9a_9066_0bb6, 0x730c_1969_46a4_b9b2, 0x81e2_89aa_7f49_da68,
+            0x6466_9a0f_83b1_a05f, 0x27b3_ff7d_9644_f48b, 0xcc6b_615c_8db6_75b3, 0x674f_20b9_bceb_be95,
+            0x6f31_2382_7565_5982, 0x5ae4_8871_3e45_cf05, 0xbf61_9f99_54c2_1157, 0xeaba_c460_40a8_eae9,
+            0x454c_6fe9_f2c0_c1cd, 0x419c_f649_6412_691c, 0xd3dc_3bef_265b_0f70, 0x6d0e_60f5_c357_8a9e,
+        ]
+        sbox4 = [
+            0x5b0e_6085_2632_3c55, 0x1a46_c1a9_fa1b_59f5, 0xa9e2_45a1_7c4c_8ffa, 0x65ca_5159_db29_55d7,
+            0x05db_0a76_ce35_afc2, 0x81ea_c77e_a911_3d45, 0x528e_f88a_b6ac_0a0d, 0xa09e_a253_597b_e3ff,
+            0x430d_dfb3_ac48_cd56, 0xc4b3_a67a_f45c_e46f, 0x4ece_cfd8_fbe2_d05e, 0x3ef5_6f10_b399_35f0,
+            0x0b22_d682_9cd6_19c6, 0x17fd_460a_74df_2069, 0x6cf8_cc8e_8510_ed40, 0xd6c8_24bf_3a6e_caa7,
+            0x6124_3d58_1a81_7049, 0x048b_acb6_bbc1_63a2, 0xd9a3_8ac2_7d44_cc32, 0x7fdd_ff5b_aaf4_10ab,
+            0xad6d_495a_a804_824b, 0xe1a6_a74f_2d8c_9f94, 0xd4f7_8512_35de_e8e3, 0xfd4b_7f88_6540_d893,
+            0x247c_2004_2aa4_bfda, 0x096e_a1c5_17d1_327c, 0xd569_66b4_361a_6685, 0x277d_a5c3_1221_057d,
+            0x94d5_9893_a43a_cff7, 0x64f0_c51c_cdc0_2281, 0x3d33_bcc4_ff61_89db, 0xe005_cb18_4ce6_6af1,
+            0xff5c_cd1d_1db9_9bea, 0xb0b8_54a7_fe42_980f, 0x7bd4_6a6a_718d_4b9f, 0xd10f_a8cc_22a5_fd8c,
+            0xd314_8495_2be4_bd31, 0xc7fa_975f_cb24_3847, 0x4886_ed1e_5846_c407, 0x28cd_db79_1eb7_0b04,
+            0xc2b0_0be2_f573_417f, 0x5c95_9045_2180_f877, 0x7a6b_ddff_f370_eb00, 0xce50_9e38_d6d9_d6a4,
+            0xebeb_0f00_647f_a702, 0x1dcc_06cf_7660_6f06, 0xe4d9_f28b_a286_ff0a, 0xd85a_305d_c918_c262,
+            0x475b_1d87_3222_5f54, 0x2d4f_b516_68cc_b5fe, 0xa679_b9d9_d72b_ba20, 0x5384_1c0d_912d_43a5,
+            0x3b7e_aa48_bf12_a4e8, 0x781e_0e47_f22f_1ddf, 0xeff2_0ce6_0ab5_0973, 0x20d2_61d1_9dff_b742,
+            0x16a1_2b03_062a_2e39, 0x1960_eb22_3965_0495, 0x251c_16fe_d50e_b8b8, 0x9ac0_c330_f826_016e,
+            0xed15_2665_953e_7671, 0x02d6_3194_a636_9570, 0x5074_f083_94b1_c987, 0x70ba_598c_90b2_5ce1,
+            0x794a_1581_0b97_42f6, 0x0d59_25e9_fcaf_8c6c, 0x3067_716c_d868_744e, 0x910a_b077_e8d7_731b,
+            0x6a61_bbdb_5ac4_2f61, 0x9351_3efb_f085_1567, 0xf494_724b_9e83_e9d5, 0xe887_e198_5c09_648d,
+            0x34b1_d3c6_7537_0cfd, 0xdc35_e433_bc0d_255d, 0xd0aa_b842_3413_1be0, 0x0804_2a50_b48b_7eaf,
+            0x9997_c4ee_44a3_ab35, 0x829a_7b49_2017_99d0, 0x263b_8307_b7c5_4441, 0x752f_95f4_fd6a_6ca6,
+            0x9272_1740_2c08_c6e5, 0x2a8a_b754_a795_d9ee, 0xa442_f755_2f72_943d, 0x2c31_334e_1978_1208,
+            0x4fa9_8d7c_eaee_6291, 0x55c3_862f_665d_b309, 0xbd06_1017_5d53_b1f3, 0x46fe_6cb8_4041_3f27,
+            0x3fe0_3792_df0c_fa59, 0xcfe7_0037_2eb8_5e8f, 0xa7be_29e7_adbc_e118, 0xe544_ee5c_de84_31dd,
+            0x8a78_1b1b_41f1_873e, 0xa5c9_4c78_a0d2_f0e7, 0x3941_2e28_77b6_0728, 0xa126_5ef3_afc9_a62c,
+            0xbcc2_770c_6a25_06c5, 0x3ab6_6dd5_dce1_ce12, 0xe654_99d0_4a67_5b37, 0x7d8f_5234_81bf_d216,
+            0x0f6f_64fc_ec15_f389, 0x74ef_be61_8b5b_13c8, 0xacdc_82b7_1427_3e1d, 0xdd40_bfe0_0319_9d17,
+            0x37e9_9257_e7e0_61f8, 0xfa52_6269_0477_5aaa, 0x8bbb_f63a_463d_56f9, 0xf001_3f15_43a2_6e64,
+            0xa830_7e9f_879e_c898, 0xcc4c_27a4_1501_77cc, 0x1b43_2f2c_ca1d_3348, 0xde1d_1f8f_9f6f_a013,
+            0x6066_02a0_47a7_ddd6, 0xd237_ab64_cc1c_b2c7, 0x9b93_8e72_25fc_d1d3, 0xec4e_0370_8e0f_f476,
+            0xfeb2_fbda_3d03_c12d, 0xae0b_ced2_ee43_889a, 0x22cb_8923_ebfb_4f43, 0x6936_0d01_3cf7_396d,
+            0x855e_3602_d2d4_e022, 0x0738_05ba_d01f_784c, 0x33e1_7a13_3852_f546, 0xdf48_7405_8ac7_b638,
+            0xba92_b29c_678a_a14a, 0x0ce8_9fc7_6cfa_adcd, 0x5f9d_4e09_0833_9e34, 0xf1af_e929_1f59_23b9,
+            0x6e34_80f6_0f4a_265f, 0xeebf_3a2a_b29b_841c, 0xe219_38a8_8f91_b4ad, 0x57df_eff8_45c6_d3c3,
+            0x2f00_6b0b_f62c_aaf2, 0x62f4_79ef_6f75_ee78, 0x11a5_5ad4_1c89_16a9, 0xf229_d290_84fe_d453,
+            0x42f1_c27b_16b0_00e6, 0x2b1f_7674_9823_c074, 0x4b76_eca3_c274_5360, 0x8c98_f463_b916_91bd,
+            0x14bc_c93c_f1ad_e66a, 0x8885_213e_6d45_8397, 0x8e17_7df0_274d_4711, 0xb49b_73b5_503f_2951,
+            0x1016_8168_c3f9_6b6b, 0x0e3d_963b_63ca_b0ae, 0x8dfc_4b56_55a1_db14, 0xf789_f135_6e14_de5c,
+            0x683e_68af_4e51_dac1, 0xc9a8_4f9d_8d4b_0fd9, 0x3691_e03f_52a0_f9d1, 0x5ed8_6e46_e187_8e80,
+            0x3c71_1a0e_99d0_7150, 0x5a08_65b2_0c4e_9310, 0x56fb_fc1f_e4f0_682e, 0xea8d_5de3_105e_df9b,
+            0x71ab_fdb1_2379_187a, 0x2eb9_9de1_bee7_7b9c, 0x21ec_c0ea_33cf_4523, 0x59a4_d752_1805_c7a1,
+            0x3896_f5eb_56ae_7c72, 0xaa63_8f3d_b18f_75dc, 0x9f39_358d_abe9_808e, 0xb7de_fa91_c00b_72ac,
+            0x6b55_41fd_6249_2d92, 0x6dc6_dee8_f92e_4d5b, 0x353f_57ab_c4be_ea7e, 0x7357_69d6_da56_90ce,
+            0x0a23_4aa6_4239_1484, 0xf6f9_5080_28f8_0d9d, 0xb8e3_19a2_7ab3_f215, 0x31ad_9c11_5134_1a4d,
+            0x773c_22a5_7bef_5805, 0x45c7_561a_0796_8633, 0xf913_da9e_249d_be36, 0xda65_2d9b_78a6_4c68,
+            0x4c27_a97f_3bc3_34ef, 0x7662_1220_e66b_17f4, 0x9677_4389_9acd_7d0b, 0xf3ee_5bca_e0ed_6782,
+            0x409f_7536_00c8_79fc, 0x06d0_9a39_b592_6db6, 0x6f83_aeb0_317a_c588, 0x01e6_ca4a_8638_1f21,
+            0x66ff_3462_d19f_3025, 0x7220_7c24_ddfd_3bfb, 0x4af6_b6d3_e2ec_e2eb, 0x9c99_4dbe_c7ea_08de,
+            0x49ac_e597_b09a_8bc4, 0xb38c_4766_cf07_97ba, 0x131b_9373_c57c_2a75, 0xb182_2cce_6193_1e58,
+            0x9d75_55b9_09ba_1c0c, 0x127f_afdd_937d_11d2, 0x29da_3bad_c66d_92e4, 0xa2c1_d571_54c2_ecbc,
+            0x58c5_134d_82f6_fe24, 0x1c3a_e351_5b62_274f, 0xe907_c82e_01cb_8126, 0xf8ed_0919_13e3_7fcb,
+            0x3249_d8f9_c800_46c9, 0x80cf_9bed_e388_fb63, 0x1881_539a_116c_f19e, 0x5103_f3f7_6bd5_2457,
+            0x15b7_e6f5_ae47_f7a8, 0xdbd7_c6de_d47e_9ccf, 0x44e5_5c41_0228_bb1a, 0xb647_d425_5edb_4e99,
+            0x5d11_882b_b8aa_fc30, 0xf509_8bbb_29d3_212a, 0x8fb5_ea14_e902_96b3, 0x677b_9421_57dd_025a,
+            0xfb58_e7c0_a390_acb5, 0x89d3_674c_83bd_4a01, 0x9e2d_a4df_4bf3_b93b, 0xfcc4_1e32_8cab_4829,
+            0x03f3_8c96_ba58_2c52, 0xcad1_bdbd_7fd8_5db2, 0xbbb4_42c1_6082_ae83, 0xb95f_e86b_a5da_9ab0,
+            0xb22e_0467_3771_a93f, 0x8453_58c9_4931_52d8, 0xbe2a_4886_97b4_541e, 0x95a2_dc2d_d38e_6966,
+            0xc02c_11ac_923c_852b, 0x2388_b199_0df2_a87b, 0x7c80_08fa_1b4f_37be, 0x1f70_d0c8_4d54_e503,
+            0x5490_adec_7ece_57d4, 0x002b_3c27_d906_3a3a, 0x7eae_a384_8030_a2bf, 0xc602_326d_ed20_03c0,
+            0x83a7_287d_69a9_4086, 0xc57a_5fcb_30f5_7a8a, 0xb568_44e4_79eb_e779, 0xa373_b40f_05dc_bce9,
+            0xd71a_786e_8857_0ee2, 0x879c_bacd_bde8_f6a0, 0x976a_d1bc_c164_a32f, 0xab21_e25e_9666_d78b,
+            0x9010_63aa_e5e5_c33c, 0x9818_b344_4869_8d90, 0xe364_87ae_3e1e_8abb, 0xafbd_f931_893b_dcb4,
+            0x6345_a0dc_5fbb_d519, 0x8628_fe26_9b94_65ca, 0x1e5d_0160_3f9c_51ec, 0x4de4_4006_a150_49b7,
+            0xbf6c_70e5_f776_cbb1, 0x4112_18f2_ef55_2bed, 0xcb0c_0708_705a_36a3, 0xe74d_1475_4f98_6044,
+            0xcd56_d943_0ea8_280e, 0xc125_91d7_535f_5065, 0xc832_23f1_720a_ef96, 0xc3a0_396f_7363_a51f,
+        ]
+
+        def __init__(self, data=b"", digest_bits=128, passes=3):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            self.a = 0x0123_4567_89ab_cdef
+            self.b = 0xfedc_ba98_7654_3210
+            self.c = 0xf096_a5b4_c3b2_e187
+            self.digest_size = digest_bits // 8
+            self.passes = passes
+            self.buf = bytearray()
+            self.msg_len = 0  # in bytes
+            if data:
+                self.update(bytes(data))
+            return
+
+        def copy(self):
+            other = self.__class__(digest_bits=self.digest_size * 8, passes=self.passes)
+            other.a = self.a
+            other.b = self.b
+            other.c = self.c
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            while len(self.buf) >= 64:
+                block = bytes(self.buf[:64])
+                del self.buf[:64]
+                self.compress(block)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            out = struct.pack("<3Q", c.a, c.b, c.c)
+            return out[: self.digest_size]
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            bit_len = self.msg_len * 8
+            self.buf.append(0x01)
+            while (len(self.buf) % 64) != 56:
+                self.buf.append(0x00)
+            self.buf.extend(struct.pack("<Q", bit_len))
+            while len(self.buf) >= 64:
+                block = bytes(self.buf[:64])
+                del self.buf[:64]
+                self.compress(block)
+            return
+
+        def u64(self, x):
+            return x & 0xffff_ffff_ffff_ffff
+
+        def round(self, a, b, c, x, mul):
+            s1 = self.__class__.sbox1
+            s2 = self.__class__.sbox2
+            s3 = self.__class__.sbox3
+            s4 = self.__class__.sbox4
+            c = self.u64(c ^ x)
+            a = self.u64(a - (s1[(c >> 0) & 0xff] ^ s2[(c >> 16) & 0xff] ^ s3[(c >> 32) & 0xff] ^ s4[(c >> 48) & 0xff]))
+            b = self.u64(b + (s4[(c >> 8) & 0xff] ^ s3[(c >> 24) & 0xff] ^ s2[(c >> 40) & 0xff] ^ s1[(c >> 56) & 0xff]))
+            b = self.u64(b * mul)
+            return a, b, c
+
+        def key_schedule(self, x):
+            x[0] = self.u64(x[0] - (x[7] ^ 0xa5a5_a5a5_a5a5_a5a5))
+            x[1] = self.u64(x[1] ^ x[0])
+            x[2] = self.u64(x[2] + x[1])
+            x[3] = self.u64(x[3] - (x[2] ^ (self.u64(~x[1]) << 19)))
+            x[4] = self.u64(x[4] ^ x[3])
+            x[5] = self.u64(x[5] + x[4])
+            x[6] = self.u64(x[6] - (x[5] ^ (self.u64(~x[4]) >> 23)))
+            x[7] = self.u64(x[7] ^ x[6])
+            x[0] = self.u64(x[0] + x[7])
+            x[1] = self.u64(x[1] - (x[0] ^ (self.u64(~x[7]) << 19)))
+            x[2] = self.u64(x[2] ^ x[1])
+            x[3] = self.u64(x[3] + x[2])
+            x[4] = self.u64(x[4] - (x[3] ^ (self.u64(~x[2]) >> 23)))
+            x[5] = self.u64(x[5] ^ x[4])
+            x[6] = self.u64(x[6] + x[5])
+            x[7] = self.u64(x[7] - (x[6] ^ 0x0123_4567_89ab_cdef))
+            return
+
+        def do_pass(self, a, b, c, x, mul):
+            a, b, c = self.round(a, b, c, x[0], mul)
+            b, c, a = self.round(b, c, a, x[1], mul)
+            c, a, b = self.round(c, a, b, x[2], mul)
+            a, b, c = self.round(a, b, c, x[3], mul)
+            b, c, a = self.round(b, c, a, x[4], mul)
+            c, a, b = self.round(c, a, b, x[5], mul)
+            a, b, c = self.round(a, b, c, x[6], mul)
+            b, c, a = self.round(b, c, a, x[7], mul)
+            return a, b, c
+
+        def compress(self, block):
+            if not isinstance(block, (bytes, bytearray)) or len(block) != 64:
+                raise ValueError("block must be 64 bytes")
+
+            x = list(struct.unpack("<8Q", block))
+
+            aa = self.a
+            bb = self.b
+            cc = self.c
+
+            # passes: 3 or 4
+            if self.passes == 3:
+                # PASS(a,b,c,5); KS; PASS(c,a,b,7); KS; PASS(b,c,a,9)
+                a, b, c = self.do_pass(self.a, self.b, self.c, x, 5)
+                self.key_schedule(x)
+                c, a, b = self.do_pass(c, a, b, x, 7)
+                self.key_schedule(x)
+                b, c, a = self.do_pass(b, c, a, x, 9)
+                self.a, self.b, self.c = a, b, c
+            elif self.passes == 4:
+                a, b, c = self.do_pass(self.a, self.b, self.c, x, 5)
+                self.key_schedule(x)
+                c, a, b = self.do_pass(c, a, b, x, 7)
+                self.key_schedule(x)
+                b, c, a = self.do_pass(b, c, a, x, 9)
+                self.key_schedule(x)
+                b, c, a = self.do_pass(a, b, c, x, 9)
+                self.a, self.b, self.c = a, b, c
+            else:
+                raise ValueError("passes must be 3 or 4")
+
+            # feed-forward
+            self.a = self.u64(self.a ^ aa)
+            self.b = self.u64(self.b - bb)
+            self.c = self.u64(self.c + cc)
+            return
+
+    class SHA0:
+        block_size = 64 # 512 bits
+        digest_size = 20 # 160 bits # noqa
+
+        def __init__(self, data=b""):
+            # Initial values are the same as SHA-1
+            self.h0 = 0x674_52301
+            self.h1 = 0xefc_dab89
+            self.h2 = 0x98b_adcfe
+            self.h3 = 0x103_25476
+            self.h4 = 0xc3d_2e1f0
+            self.buf = bytearray()
+            self.msg_len = 0  # in bytes
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.h0 = self.h0
+            other.h1 = self.h1
+            other.h2 = self.h2
+            other.h3 = self.h3
+            other.h4 = self.h4
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            while len(self.buf) >= 64:
+                block = bytes(self.buf[:64])
+                del self.buf[:64]
+                self.compress(block)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return struct.pack(">5I", c.h0, c.h1, c.h2, c.h3, c.h4)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            # Padding: append 0x80, then 0x00* until length ≡ 56 (mod 64),
+            # then append message length in bits as 64-bit big-endian.
+            bit_len = self.msg_len * 8
+            self.buf.append(0x80)
+            while (len(self.buf) % 64) != 56:
+                self.buf.append(0x00)
+            self.buf.extend(struct.pack(">Q", bit_len))
+            while len(self.buf) >= 64:
+                block = bytes(self.buf[:64])
+                del self.buf[:64]
+                self.compress(block)
+            return
+
+        def rol32(self, x, n):
+            x &= 0xffff_ffff
+            return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
+
+        def compress(self, block):
+            # Prepare message schedule W[0..79]
+            W = list(struct.unpack(">16I", block))
+            for t in range(16, 80):
+                # SHA-0: no rotation here (this is the key difference from SHA-1)
+                W.append((W[t - 3] ^ W[t - 8] ^ W[t - 14] ^ W[t - 16]) & 0xffff_ffff)
+
+            a = self.h0
+            b = self.h1
+            c = self.h2
+            d = self.h3
+            e = self.h4
+
+            for t in range(80):
+                if 0 <= t <= 19:
+                    f = (b & c) | ((~b) & d)
+                    k = 0x5a82_7999
+                elif 20 <= t <= 39:
+                    f = b ^ c ^ d
+                    k = 0x6ed9_eba1
+                elif 40 <= t <= 59:
+                    f = (b & c) | (b & d) | (c & d)
+                    k = 0x8f1b_bcdc
+                else:
+                    f = b ^ c ^ d
+                    k = 0xca62_c1d6
+
+                temp = (self.rol32(a, 5) + f + e + k + W[t]) & 0xffff_ffff
+                e = d
+                d = c
+                c = self.rol32(b, 30)
+                b = a
+                a = temp
+
+            self.h0 = (self.h0 + a) & 0xffff_ffff
+            self.h1 = (self.h1 + b) & 0xffff_ffff
+            self.h2 = (self.h2 + c) & 0xffff_ffff
+            self.h3 = (self.h3 + d) & 0xffff_ffff
+            self.h4 = (self.h4 + e) & 0xffff_ffff
+            return
+
+    class Whirlpool:
+        block_size = 64 # 160 bits
+        digest_size = 64 # 160 bits # noqa
+
+        rc = [
+            0x1823_c6e8_87b8_014f,
+            0x36a6_d2f5_796f_9152,
+            0x60bc_9b8e_a30c_7b35,
+            0x1de0_d7c2_2e4b_fe57,
+            0x1577_37e5_9ff0_4ada,
+            0x58c9_290a_b1a0_6b85,
+            0xbd5d_10f4_cb3e_0567,
+            0xe427_418b_a77d_95d8,
+            0xfbee_7c66_dd17_479e,
+            0xca2d_bf07_ad5a_8333,
+        ]
+
+        t = [
+            0x1818_6018_c078_30d8, 0x2323_8c23_05af_4626, 0xc6c6_3fc6_7ef9_91b8, 0xe8e8_87e8_136f_cdfb,
+            0x8787_2687_4ca1_13cb, 0xb8b8_dab8_a962_6d11, 0x0101_0401_0805_0209, 0x4f4f_214f_426e_9e0d,
+            0x3636_d836_adee_6c9b, 0xa6a6_a2a6_5904_51ff, 0xd2d2_6fd2_debd_b90c, 0xf5f5_f3f5_fb06_f70e,
+            0x7979_f979_ef80_f296, 0x6f6f_a16f_5fce_de30, 0x9191_7e91_fcef_3f6d, 0x5252_5552_aa07_a4f8,
+            0x6060_9d60_27fd_c047, 0xbcbc_cabc_8976_6535, 0x9b9b_569b_accd_2b37, 0x8e8e_028e_048c_018a,
+            0xa3a3_b6a3_7115_5bd2, 0x0c0c_300c_603c_186c, 0x7b7b_f17b_ff8a_f684, 0x3535_d435_b5e1_6a80,
+            0x1d1d_741d_e869_3af5, 0xe0e0_a7e0_5347_ddb3, 0xd7d7_7bd7_f6ac_b321, 0xc2c2_2fc2_5eed_999c,
+            0x2e2e_b82e_6d96_5c43, 0x4b4b_314b_627a_9629, 0xfefe_dffe_a321_e15d, 0x5757_4157_8216_aed5,
+            0x1515_5415_a841_2abd, 0x7777_c177_9fb6_eee8, 0x3737_dc37_a5eb_6e92, 0xe5e5_b3e5_7b56_d79e,
+            0x9f9f_469f_8cd9_2313, 0xf0f0_e7f0_d317_fd23, 0x4a4a_354a_6a7f_9420, 0xdada_4fda_9e95_a944,
+            0x5858_7d58_fa25_b0a2, 0xc9c9_03c9_06ca_8fcf, 0x2929_a429_558d_527c, 0x0a0a_280a_5022_145a,
+            0xb1b1_feb1_e14f_7f50, 0xa0a0_baa0_691a_5dc9, 0x6b6b_b16b_7fda_d614, 0x8585_2e85_5cab_17d9,
+            0xbdbd_cebd_8173_673c, 0x5d5d_695d_d234_ba8f, 0x1010_4010_8050_2090, 0xf4f4_f7f4_f303_f507,
+            0xcbcb_0bcb_16c0_8bdd, 0x3e3e_f83e_edc6_7cd3, 0x0505_1405_2811_0a2d, 0x6767_8167_1fe6_ce78,
+            0xe4e4_b7e4_7353_d597, 0x2727_9c27_25bb_4e02, 0x4141_1941_3258_8273, 0x8b8b_168b_2c9d_0ba7,
+            0xa7a7_a6a7_5101_53f6, 0x7d7d_e97d_cf94_fab2, 0x9595_6e95_dcfb_3749, 0xd8d8_47d8_8e9f_ad56,
+            0xfbfb_cbfb_8b30_eb70, 0xeeee_9fee_2371_c1cd, 0x7c7c_ed7c_c791_f8bb, 0x6666_8566_17e3_cc71,
+            0xdddd_53dd_a68e_a77b, 0x1717_5c17_b84b_2eaf, 0x4747_0147_0246_8e45, 0x9e9e_429e_84dc_211a,
+            0xcaca_0fca_1ec5_89d4, 0x2d2d_b42d_7599_5a58, 0xbfbf_c6bf_9179_632e, 0x0707_1c07_381b_0e3f,
+            0xadad_8ead_0123_47ac, 0x5a5a_755a_ea2f_b4b0, 0x8383_3683_6cb5_1bef, 0x3333_cc33_85ff_66b6,
+            0x6363_9163_3ff2_c65c, 0x0202_0802_100a_0412, 0xaaaa_92aa_3938_4993, 0x7171_d971_afa8_e2de,
+            0xc8c8_07c8_0ecf_8dc6, 0x1919_6419_c87d_32d1, 0x4949_3949_7270_923b, 0xd9d9_43d9_869a_af5f,
+            0xf2f2_eff2_c31d_f931, 0xe3e3_abe3_4b48_dba8, 0x5b5b_715b_e22a_b6b9, 0x8888_1a88_3492_0dbc,
+            0x9a9a_529a_a4c8_293e, 0x2626_9826_2dbe_4c0b, 0x3232_c832_8dfa_64bf, 0xb0b0_fab0_e94a_7d59,
+            0xe9e9_83e9_1b6a_cff2, 0x0f0f_3c0f_7833_1e77, 0xd5d5_73d5_e6a6_b733, 0x8080_3a80_74ba_1df4,
+            0xbebe_c2be_997c_6127, 0xcdcd_13cd_26de_87eb, 0x3434_d034_bde4_6889, 0x4848_3d48_7a75_9032,
+            0xffff_dbff_ab24_e354, 0x7a7a_f57a_f78f_f48d, 0x9090_7a90_f4ea_3d64, 0x5f5f_615f_c23e_be9d,
+            0x2020_8020_1da0_403d, 0x6868_bd68_67d5_d00f, 0x1a1a_681a_d072_34ca, 0xaeae_82ae_192c_41b7,
+            0xb4b4_eab4_c95e_757d, 0x5454_4d54_9a19_a8ce, 0x9393_7693_ece5_3b7f, 0x2222_8822_0daa_442f,
+            0x6464_8d64_07e9_c863, 0xf1f1_e3f1_db12_ff2a, 0x7373_d173_bfa2_e6cc, 0x1212_4812_905a_2482,
+            0x4040_1d40_3a5d_807a, 0x0808_2008_4028_1048, 0xc3c3_2bc3_56e8_9b95, 0xecec_97ec_337b_c5df,
+            0xdbdb_4bdb_9690_ab4d, 0xa1a1_bea1_611f_5fc0, 0x8d8d_0e8d_1c83_0791, 0x3d3d_f43d_f5c9_7ac8,
+            0x9797_6697_ccf1_335b, 0x0000_0000_0000_0000, 0xcfcf_1bcf_36d4_83f9, 0x2b2b_ac2b_4587_566e,
+            0x7676_c576_97b3_ece1, 0x8282_3282_64b0_19e6, 0xd6d6_7fd6_fea9_b128, 0x1b1b_6c1b_d877_36c3,
+            0xb5b5_eeb5_c15b_7774, 0xafaf_86af_1129_43be, 0x6a6a_b56a_77df_d41d, 0x5050_5d50_ba0d_a0ea,
+            0x4545_0945_124c_8a57, 0xf3f3_ebf3_cb18_fb38, 0x3030_c030_9df0_60ad, 0xefef_9bef_2b74_c3c4,
+            0x3f3f_fc3f_e5c3_7eda, 0x5555_4955_921c_aac7, 0xa2a2_b2a2_7910_59db, 0xeaea_8fea_0365_c9e9,
+            0x6565_8965_0fec_ca6a, 0xbaba_d2ba_b968_6903, 0x2f2f_bc2f_6593_5e4a, 0xc0c0_27c0_4ee7_9d8e,
+            0xdede_5fde_be81_a160, 0x1c1c_701c_e06c_38fc, 0xfdfd_d3fd_bb2e_e746, 0x4d4d_294d_5264_9a1f,
+            0x9292_7292_e4e0_3976, 0x7575_c975_8fbc_eafa, 0x0606_1806_301e_0c36, 0x8a8a_128a_2498_09ae,
+            0xb2b2_f2b2_f940_794b, 0xe6e6_bfe6_6359_d185, 0x0e0e_380e_7036_1c7e, 0x1f1f_7c1f_f863_3ee7,
+            0x6262_9562_37f7_c455, 0xd4d4_77d4_eea3_b53a, 0xa8a8_9aa8_2932_4d81, 0x9696_6296_c4f4_3152,
+            0xf9f9_c3f9_9b3a_ef62, 0xc5c5_33c5_66f6_97a3, 0x2525_9425_35b1_4a10, 0x5959_7959_f220_b2ab,
+            0x8484_2a84_54ae_15d0, 0x7272_d572_b7a7_e4c5, 0x3939_e439_d5dd_72ec, 0x4c4c_2d4c_5a61_9816,
+            0x5e5e_655e_ca3b_bc94, 0x7878_fd78_e785_f09f, 0x3838_e038_ddd8_70e5, 0x8c8c_0a8c_1486_0598,
+            0xd1d1_63d1_c6b2_bf17, 0xa5a5_aea5_410b_57e4, 0xe2e2_afe2_434d_d9a1, 0x6161_9961_2ff8_c24e,
+            0xb3b3_f6b3_f145_7b42, 0x2121_8421_15a5_4234, 0x9c9c_4a9c_94d6_2508, 0x1e1e_781e_f066_3cee,
+            0x4343_1143_2252_8661, 0xc7c7_3bc7_76fc_93b1, 0xfcfc_d7fc_b32b_e54f, 0x0404_1004_2014_0824,
+            0x5151_5951_b208_a2e3, 0x9999_5e99_bcc7_2f25, 0x6d6d_a96d_4fc4_da22, 0x0d0d_340d_6839_1a65,
+            0xfafa_cffa_8335_e979, 0xdfdf_5bdf_b684_a369, 0x7e7e_e57e_d79b_fca9, 0x2424_9024_3db4_4819,
+            0x3b3b_ec3b_c5d7_76fe, 0xabab_96ab_313d_4b9a, 0xcece_1fce_3ed1_81f0, 0x1111_4411_8855_2299,
+            0x8f8f_068f_0c89_0383, 0x4e4e_254e_4a6b_9c04, 0xb7b7_e6b7_d151_7366, 0xebeb_8beb_0b60_cbe0,
+            0x3c3c_f03c_fdcc_78c1, 0x8181_3e81_7cbf_1ffd, 0x9494_6a94_d4fe_3540, 0xf7f7_fbf7_eb0c_f31c,
+            0xb9b9_deb9_a167_6f18, 0x1313_4c13_985f_268b, 0x2c2c_b02c_7d9c_5851, 0xd3d3_6bd3_d6b8_bb05,
+            0xe7e7_bbe7_6b5c_d38c, 0x6e6e_a56e_57cb_dc39, 0xc4c4_37c4_6ef3_95aa, 0x0303_0c03_180f_061b,
+            0x5656_4556_8a13_acdc, 0x4444_0d44_1a49_885e, 0x7f7f_e17f_df9e_fea0, 0xa9a9_9ea9_2137_4f88,
+            0x2a2a_a82a_4d82_5467, 0xbbbb_d6bb_b16d_6b0a, 0xc1c1_23c1_46e2_9f87, 0x5353_5153_a202_a6f1,
+            0xdcdc_57dc_ae8b_a572, 0x0b0b_2c0b_5827_1653, 0x9d9d_4e9d_9cd3_2701, 0x6c6c_ad6c_47c1_d82b,
+            0x3131_c431_95f5_62a4, 0x7474_cd74_87b9_e8f3, 0xf6f6_fff6_e309_f115, 0x4646_0546_0a43_8c4c,
+            0xacac_8aac_0926_45a5, 0x8989_1e89_3c97_0fb5, 0x1414_5014_a044_28b4, 0xe1e1_a3e1_5b42_dfba,
+            0x1616_5816_b04e_2ca6, 0x3a3a_e83a_cdd2_74f7, 0x6969_b969_6fd0_d206, 0x0909_2409_482d_1241,
+            0x7070_dd70_a7ad_e0d7, 0xb6b6_e2b6_d954_716f, 0xd0d0_67d0_ceb7_bd1e, 0xeded_93ed_3b7e_c7d6,
+            0xcccc_17cc_2edb_85e2, 0x4242_1542_2a57_8468, 0x9898_5a98_b4c2_2d2c, 0xa4a4_aaa4_490e_55ed,
+            0x2828_a028_5d88_5075, 0x5c5c_6d5c_da31_b886, 0xf8f8_c7f8_933f_ed6b, 0x8686_2286_44a4_11c2,
+        ]
+
+        def __init__(self, data=b""):
+            self.h = [0] * 8
+            self.buf = b""
+            self.count = 0  # total bytes processed (message length)
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.h = self.h[:]
+            other.buf = self.buf
+            other.count = self.count
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            self.count += len(data)
+            self.buf += data
+            while len(self.buf) >= 64:
+                block = self.buf[:64]
+                self.buf = self.buf[64:]
+                self.process_block(block)
+            return self
+
+        def ror64(self, x, n):
+            n &= 63
+            return ((x >> n) | ((x << (64 - n)) & 0xffff_ffff_ffff_ffff)) & 0xffff_ffff_ffff_ffff
+
+        def rho(self, a, n, c):
+            # a: list of 8 u64 words
+            # n: which output word
+            # c: round key xor
+            n0 = n & 7
+            b = self.t[(a[n0] >> 56) & 0xff]
+            b ^= self.ror64(self.t[(a[(n0 + 7) & 7] >> 48) & 0xff], 8)
+            b ^= self.ror64(self.t[(a[(n0 + 6) & 7] >> 40) & 0xff], 16)
+            b ^= self.ror64(self.t[(a[(n0 + 5) & 7] >> 32) & 0xff], 24)
+            b ^= self.ror64(self.t[(a[(n0 + 4) & 7] >> 24) & 0xff], 32)
+            b ^= self.ror64(self.t[(a[(n0 + 3) & 7] >> 16) & 0xff], 40)
+            b ^= self.ror64(self.t[(a[(n0 + 2) & 7] >> 8) & 0xff], 48)
+            b ^= self.ror64(self.t[(a[(n0 + 1) & 7] >> 0) & 0xff], 56)
+            return (b ^ c) & 0xffff_ffff_ffff_ffff
+
+        def process_block(self, block):
+            x = list(struct.unpack(">8Q", block))
+            state = [x[i] ^ self.h[i] for i in range(8)]
+            k = self.h[:]
+
+            for r in range(10):
+                l = [0] * 8 # noqa: E741
+                for i in range(8):
+                    l[i] = self.rho(k, i, 0)
+                l[0] ^= self.rc[r]
+                k = l
+
+                l2 = [0] * 8
+                for i in range(8):
+                    l2[i] = self.rho(state, i, k[i])
+                state = l2
+
+            for i in range(8):
+                self.h[i] ^= state[i] ^ x[i]
+            return
+
+        def digest(self):
+            tmp = self.copy()
+            tmp.finalize()
+            return b"".join(struct.pack(">Q", w & 0xffff_ffff_ffff_ffff) for w in tmp.h)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            bit_len = self.count * 8
+            if bit_len < 0 or bit_len >= (1 << 256):
+                raise ValueError("message too long")
+
+            buf = self.buf + b"\x80"
+            pad_len = (32 - (len(buf) % 64)) % 64
+            buf += b"\x00" * pad_len
+            buf += bit_len.to_bytes(32, "big")
+
+            for off in range(0, len(buf), 64):
+                self.process_block(buf[off:off + 64])
+            self.buf = b""
+            return
+
+    class HASHxN:
+        def __init__(self, name, N, data=b""):
+            self.name = name
+            self.N = N
+            self.hash = self.get_hash_func(name)
+            if data:
+                self.update(data)
+            return
+
+        def get_hash_func(self, name):
+            import hashlib
+            return hashlib.new(name)
+
+        def update(self, data):
+            self.hash.update(data)
+            return
+
+        def digest(self):
+            digest = self.hash.digest()
+            for _ in range(self.N - 1):
+                next_hash_obj = self.get_hash_func(self.name)
+                next_hash_obj.update(digest)
+                digest = next_hash_obj.digest()
+            return digest
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+    class MD2:
+        block_size = 16  # 128 bits
+        digest_size = 16  # 128 bits # noqa
+
+        def __init__(self, data=b""):
+            self.buf = bytearray()
+            self.msg_len = 0  # in bytes (kept for consistency)
+            self.state = [0x00] * 48
+            self.checksum = [0x00] * 16
+            self.S = [
+                0x29, 0x2e, 0x43, 0xc9, 0xa2, 0xd8, 0x7c, 0x01, 0x3d, 0x36, 0x54, 0xa1, 0xec, 0xf0, 0x06, 0x13,
+                0x62, 0xa7, 0x05, 0xf3, 0xc0, 0xc7, 0x73, 0x8c, 0x98, 0x93, 0x2b, 0xd9, 0xbc, 0x4c, 0x82, 0xca,
+                0x1e, 0x9b, 0x57, 0x3c, 0xfd, 0xd4, 0xe0, 0x16, 0x67, 0x42, 0x6f, 0x18, 0x8a, 0x17, 0xe5, 0x12,
+                0xbe, 0x4e, 0xc4, 0xd6, 0xda, 0x9e, 0xde, 0x49, 0xa0, 0xfb, 0xf5, 0x8e, 0xbb, 0x2f, 0xee, 0x7a,
+                0xa9, 0x68, 0x79, 0x91, 0x15, 0xb2, 0x07, 0x3f, 0x94, 0xc2, 0x10, 0x89, 0x0b, 0x22, 0x5f, 0x21,
+                0x80, 0x7f, 0x5d, 0x9a, 0x5a, 0x90, 0x32, 0x27, 0x35, 0x3e, 0xcc, 0xe7, 0xbf, 0xf7, 0x97, 0x03,
+                0xff, 0x19, 0x30, 0xb3, 0x48, 0xa5, 0xb5, 0xd1, 0xd7, 0x5e, 0x92, 0x2a, 0xac, 0x56, 0xaa, 0xc6,
+                0x4f, 0xb8, 0x38, 0xd2, 0x96, 0xa4, 0x7d, 0xb6, 0x76, 0xfc, 0x6b, 0xe2, 0x9c, 0x74, 0x04, 0xf1,
+                0x45, 0x9d, 0x70, 0x59, 0x64, 0x71, 0x87, 0x20, 0x86, 0x5b, 0xcf, 0x65, 0xe6, 0x2d, 0xa8, 0x02,
+                0x1b, 0x60, 0x25, 0xad, 0xae, 0xb0, 0xb9, 0xf6, 0x1c, 0x46, 0x61, 0x69, 0x34, 0x40, 0x7e, 0x0f,
+                0x55, 0x47, 0xa3, 0x23, 0xdd, 0x51, 0xaf, 0x3a, 0xc3, 0x5c, 0xf9, 0xce, 0xba, 0xc5, 0xea, 0x26,
+                0x2c, 0x53, 0x0d, 0x6e, 0x85, 0x28, 0x84, 0x09, 0xd3, 0xdf, 0xcd, 0xf4, 0x41, 0x81, 0x4d, 0x52,
+                0x6a, 0xdc, 0x37, 0xc8, 0x6c, 0xc1, 0xab, 0xfa, 0x24, 0xe1, 0x7b, 0x08, 0x0c, 0xbd, 0xb1, 0x4a,
+                0x78, 0x88, 0x95, 0x8b, 0xe3, 0x63, 0xe8, 0x6d, 0xe9, 0xcb, 0xd5, 0xfe, 0x3b, 0x00, 0x1d, 0x39,
+                0xf2, 0xef, 0xb7, 0x0e, 0x66, 0x58, 0xd0, 0xe4, 0xa6, 0x77, 0x72, 0xf8, 0xeb, 0x75, 0x4b, 0x0a,
+                0x31, 0x44, 0x50, 0xb4, 0x8f, 0xed, 0x1f, 0x1a, 0xdb, 0x99, 0x8d, 0x33, 0x9f, 0x11, 0x83, 0x14,
+            ]
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.state = list(self.state)
+            other.checksum = list(self.checksum)
+            other.S = list(self.S)
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            while len(self.buf) >= 16:
+                block = bytes(self.buf[:16])
+                del self.buf[:16]
+                self.compress(block)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            out = bytes(c.state[0:16])
+            return out
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            pad_len = 16 - (len(self.buf) % 16)
+            pad = bytes([pad_len]) * pad_len
+            padded = bytes(self.buf) + pad
+            self.buf.clear()
+            for i in range(0, len(padded), 16):
+                self.compress(padded[i:i + 16])
+            checksum_block = bytes(self.checksum)
+            self.compress(checksum_block)
+            return
+
+        def compress(self, block):
+            m = list(block)
+            for i in range(16):
+                self.state[16 + i] = m[i]
+                self.state[32 + i] = self.state[i] ^ m[i]
+            t = 0x00
+            for i in range(18):
+                for j in range(48):
+                    self.state[j] ^= self.S[t]
+                    t = self.state[j] & 0xff
+                t = (t + i) & 0xff
+            l = self.checksum[15] # noqa: E741
+            for i in range(16):
+                c = m[i]
+                self.checksum[i] ^= self.S[c ^ l]
+                l = self.checksum[i] & 0xff # noqa: E741
+            return
+
+    class MD4:
+        block_size = 64
+        digest_size = 16 # noqa
+
+        def __init__(self, data=b""):
+            self.a = 0x6745_2301
+            self.b = 0xefcd_ab89
+            self.c = 0x98ba_dcfe
+            self.d = 0x1032_5476
+            self.buf = bytearray()
+            self.msg_len = 0  # bytes processed
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            o = self.__class__()
+            o.a, o.b, o.c, o.d = self.a, self.b, self.c, self.d
+            o.buf = bytearray(self.buf)
+            o.msg_len = self.msg_len
+            return o
+
+        def rol32(self, x, n):
+            x &= 0xffff_ffff
+            return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
+
+        def f(self, x, y, z):
+            return (x & y) | (~x & z)
+
+        def g(self, x, y, z):
+            return (x & y) | (x & z) | (y & z)
+
+        def h(self, x, y, z):
+            return x ^ y ^ z
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            while len(self.buf) >= 64:
+                block = bytes(self.buf[:64])
+                del self.buf[:64]
+                self.compress(block)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            # MD4 output is little-endian A,B,C,D
+            return struct.pack("<4I", c.a, c.b, c.c, c.d)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            bit_len = self.msg_len * 8
+            self.buf.append(0x80)
+            while (len(self.buf) % 64) != 56:
+                self.buf.append(0x00)
+            self.buf.extend(struct.pack("<Q", bit_len))
+            while len(self.buf) >= 64:
+                block = bytes(self.buf[:64])
+                del self.buf[:64]
+                self.compress(block)
+            return
+
+        def compress(self, block):
+            x = list(struct.unpack("<16I", block))
+            a, b, c, d = self.a, self.b, self.c, self.d
+            m = 0xffff_ffff
+
+            # round 1
+            a = self.rol32((a + self.f(b, c, d) + x[0]) & m, 3)
+            d = self.rol32((d + self.f(a, b, c) + x[1]) & m, 7)
+            c = self.rol32((c + self.f(d, a, b) + x[2]) & m, 11)
+            b = self.rol32((b + self.f(c, d, a) + x[3]) & m, 19)
+
+            a = self.rol32((a + self.f(b, c, d) + x[4]) & m, 3)
+            d = self.rol32((d + self.f(a, b, c) + x[5]) & m, 7)
+            c = self.rol32((c + self.f(d, a, b) + x[6]) & m, 11)
+            b = self.rol32((b + self.f(c, d, a) + x[7]) & m, 19)
+
+            a = self.rol32((a + self.f(b, c, d) + x[8]) & m, 3)
+            d = self.rol32((d + self.f(a, b, c) + x[9]) & m, 7)
+            c = self.rol32((c + self.f(d, a, b) + x[10]) & m, 11)
+            b = self.rol32((b + self.f(c, d, a) + x[11]) & m, 19)
+
+            a = self.rol32((a + self.f(b, c, d) + x[12]) & m, 3)
+            d = self.rol32((d + self.f(a, b, c) + x[13]) & m, 7)
+            c = self.rol32((c + self.f(d, a, b) + x[14]) & m, 11)
+            b = self.rol32((b + self.f(c, d, a) + x[15]) & m, 19)
+
+            # round 2
+            k2 = 0x5a82_7999
+            a = self.rol32((a + self.g(b, c, d) + x[0] + k2) & m, 3)
+            d = self.rol32((d + self.g(a, b, c) + x[4] + k2) & m, 5)
+            c = self.rol32((c + self.g(d, a, b) + x[8] + k2) & m, 9)
+            b = self.rol32((b + self.g(c, d, a) + x[12] + k2) & m, 13)
+
+            a = self.rol32((a + self.g(b, c, d) + x[1] + k2) & m, 3)
+            d = self.rol32((d + self.g(a, b, c) + x[5] + k2) & m, 5)
+            c = self.rol32((c + self.g(d, a, b) + x[9] + k2) & m, 9)
+            b = self.rol32((b + self.g(c, d, a) + x[13] + k2) & m, 13)
+
+            a = self.rol32((a + self.g(b, c, d) + x[2] + k2) & m, 3)
+            d = self.rol32((d + self.g(a, b, c) + x[6] + k2) & m, 5)
+            c = self.rol32((c + self.g(d, a, b) + x[10] + k2) & m, 9)
+            b = self.rol32((b + self.g(c, d, a) + x[14] + k2) & m, 13)
+
+            a = self.rol32((a + self.g(b, c, d) + x[3] + k2) & m, 3)
+            d = self.rol32((d + self.g(a, b, c) + x[7] + k2) & m, 5)
+            c = self.rol32((c + self.g(d, a, b) + x[11] + k2) & m, 9)
+            b = self.rol32((b + self.g(c, d, a) + x[15] + k2) & m, 13)
+
+            # round 3
+            k3 = 0x6ed9_eba1
+            a = self.rol32((a + self.h(b, c, d) + x[0] + k3) & m, 3)
+            d = self.rol32((d + self.h(a, b, c) + x[8] + k3) & m, 9)
+            c = self.rol32((c + self.h(d, a, b) + x[4] + k3) & m, 11)
+            b = self.rol32((b + self.h(c, d, a) + x[12] + k3) & m, 15)
+
+            a = self.rol32((a + self.h(b, c, d) + x[2] + k3) & m, 3)
+            d = self.rol32((d + self.h(a, b, c) + x[10] + k3) & m, 9)
+            c = self.rol32((c + self.h(d, a, b) + x[6] + k3) & m, 11)
+            b = self.rol32((b + self.h(c, d, a) + x[14] + k3) & m, 15)
+
+            a = self.rol32((a + self.h(b, c, d) + x[1] + k3) & m, 3)
+            d = self.rol32((d + self.h(a, b, c) + x[9] + k3) & m, 9)
+            c = self.rol32((c + self.h(d, a, b) + x[5] + k3) & m, 11)
+            b = self.rol32((b + self.h(c, d, a) + x[13] + k3) & m, 15)
+
+            a = self.rol32((a + self.h(b, c, d) + x[3] + k3) & m, 3)
+            d = self.rol32((d + self.h(a, b, c) + x[11] + k3) & m, 9)
+            c = self.rol32((c + self.h(d, a, b) + x[7] + k3) & m, 11)
+            b = self.rol32((b + self.h(c, d, a) + x[15] + k3) & m, 15)
+
+            self.a = (self.a + a) & m
+            self.b = (self.b + b) & m
+            self.c = (self.c + c) & m
+            self.d = (self.d + d) & m
+            return
+
+    class NTLM:
+        # NT hash: MD4(UTF-16LE(password))
+
+        def __init__(self, data=b""):
+            self.md4 = Hash.MD4()
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            o = self.__class__()
+            o.md4 = self.md4.copy()
+            return o
+
+        def update(self, password, skip_utf16le=False):
+            if isinstance(password, str):
+                if skip_utf16le:
+                    data = password.encode()
+                else:
+                    data = password.encode("utf-16le")
+            elif isinstance(password, (bytes, bytearray)):
+                if skip_utf16le:
+                    data = bytes(password)
+                else:
+                    data = String.bytes2str(password).encode("utf-16le")
+            else:
+                raise TypeError("password must be str or bytes-like")
+            self.md4.update(data)
+            return self
+
+        def digest(self):
+            return self.md4.digest()
+
+        def hexdigest(self):
+            return self.md4.hexdigest()
+
+    class DES:
+        # DES tables (standard), all entries in hex
+        ip = [
+            0x3a, 0x32, 0x2a, 0x22, 0x1a, 0x12, 0x0a, 0x02,
+            0x3c, 0x34, 0x2c, 0x24, 0x1c, 0x14, 0x0c, 0x04,
+            0x3e, 0x36, 0x2e, 0x26, 0x1e, 0x16, 0x0e, 0x06,
+            0x40, 0x38, 0x30, 0x28, 0x20, 0x18, 0x10, 0x08,
+            0x39, 0x31, 0x29, 0x21, 0x19, 0x11, 0x09, 0x01,
+            0x3b, 0x33, 0x2b, 0x23, 0x1b, 0x13, 0x0b, 0x03,
+            0x3d, 0x35, 0x2d, 0x25, 0x1d, 0x15, 0x0d, 0x05,
+            0x3f, 0x37, 0x2f, 0x27, 0x1f, 0x17, 0x0f, 0x07
+        ]
+
+        fp = [
+            0x28, 0x08, 0x30, 0x10, 0x38, 0x18, 0x40, 0x20,
+            0x27, 0x07, 0x2f, 0x0f, 0x37, 0x17, 0x3f, 0x1f,
+            0x26, 0x06, 0x2e, 0x0e, 0x36, 0x16, 0x3e, 0x1e,
+            0x25, 0x05, 0x2d, 0x0d, 0x35, 0x15, 0x3d, 0x1d,
+            0x24, 0x04, 0x2c, 0x0c, 0x34, 0x14, 0x3c, 0x1c,
+            0x23, 0x03, 0x2b, 0x0b, 0x33, 0x13, 0x3b, 0x1b,
+            0x22, 0x02, 0x2a, 0x0a, 0x32, 0x12, 0x3a, 0x1a,
+            0x21, 0x01, 0x29, 0x09, 0x31, 0x11, 0x39, 0x19
+        ]
+
+        e = [
+            0x20, 0x01, 0x02, 0x03, 0x04, 0x05,
+            0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+            0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11,
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
+            0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+            0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x01
+        ]
+
+        p = [
+            0x10, 0x07, 0x14, 0x15,
+            0x1d, 0x0c, 0x1c, 0x11,
+            0x01, 0x0f, 0x17, 0x1a,
+            0x05, 0x12, 0x1f, 0x0a,
+            0x02, 0x08, 0x18, 0x0e,
+            0x20, 0x1b, 0x03, 0x09,
+            0x13, 0x0d, 0x1e, 0x06,
+            0x16, 0x0b, 0x04, 0x19
+        ]
+
+        pc1 = [
+            0x39, 0x31, 0x29, 0x21, 0x19, 0x11, 0x09,
+            0x01, 0x3a, 0x32, 0x2a, 0x22, 0x1a, 0x12,
+            0x0a, 0x02, 0x3b, 0x33, 0x2b, 0x23, 0x1b,
+            0x13, 0x0b, 0x03, 0x3c, 0x34, 0x2c, 0x24,
+            0x3f, 0x37, 0x2f, 0x27, 0x1f, 0x17, 0x0f,
+            0x07, 0x3e, 0x36, 0x2e, 0x26, 0x1e, 0x16,
+            0x0e, 0x06, 0x3d, 0x35, 0x2d, 0x25, 0x1d,
+            0x15, 0x0d, 0x05, 0x1c, 0x14, 0x0c, 0x04
+        ]
+
+        pc2 = [
+            0x0e, 0x11, 0x0b, 0x18, 0x01, 0x05,
+            0x03, 0x1c, 0x0f, 0x06, 0x15, 0x0a,
+            0x17, 0x13, 0x0c, 0x04, 0x1a, 0x08,
+            0x10, 0x07, 0x1b, 0x14, 0x0d, 0x02,
+            0x29, 0x34, 0x1f, 0x25, 0x2f, 0x37,
+            0x1e, 0x28, 0x33, 0x2d, 0x21, 0x30,
+            0x2c, 0x31, 0x27, 0x38, 0x22, 0x35,
+            0x2e, 0x2a, 0x32, 0x24, 0x1d, 0x20
+        ]
+
+        shifts = [0x01, 0x01, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x01, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x01]
+
+        sboxes = [
+            # S1
+            [
+                [0x0e, 0x04, 0x0d, 0x01, 0x02, 0x0f, 0x0b, 0x08, 0x03, 0x0a, 0x06, 0x0c, 0x05, 0x09, 0x00, 0x07],
+                [0x00, 0x0f, 0x07, 0x04, 0x0e, 0x02, 0x0d, 0x01, 0x0a, 0x06, 0x0c, 0x0b, 0x09, 0x05, 0x03, 0x08],
+                [0x04, 0x01, 0x0e, 0x08, 0x0d, 0x06, 0x02, 0x0b, 0x0f, 0x0c, 0x09, 0x07, 0x03, 0x0a, 0x05, 0x00],
+                [0x0f, 0x0c, 0x08, 0x02, 0x04, 0x09, 0x01, 0x07, 0x05, 0x0b, 0x03, 0x0e, 0x0a, 0x00, 0x06, 0x0d],
+            ],
+            # S2
+            [
+                [0x0f, 0x01, 0x08, 0x0e, 0x06, 0x0b, 0x03, 0x04, 0x09, 0x07, 0x02, 0x0d, 0x0c, 0x00, 0x05, 0x0a],
+                [0x03, 0x0d, 0x04, 0x07, 0x0f, 0x02, 0x08, 0x0e, 0x0c, 0x00, 0x01, 0x0a, 0x06, 0x09, 0x0b, 0x05],
+                [0x00, 0x0e, 0x07, 0x0b, 0x0a, 0x04, 0x0d, 0x01, 0x05, 0x08, 0x0c, 0x06, 0x09, 0x03, 0x02, 0x0f],
+                [0x0d, 0x08, 0x0a, 0x01, 0x03, 0x0f, 0x04, 0x02, 0x0b, 0x06, 0x07, 0x0c, 0x00, 0x05, 0x0e, 0x09],
+            ],
+            # S3
+            [
+                [0x0a, 0x00, 0x09, 0x0e, 0x06, 0x03, 0x0f, 0x05, 0x01, 0x0d, 0x0c, 0x07, 0x0b, 0x04, 0x02, 0x08],
+                [0x0d, 0x07, 0x00, 0x09, 0x03, 0x04, 0x06, 0x0a, 0x02, 0x08, 0x05, 0x0e, 0x0c, 0x0b, 0x0f, 0x01],
+                [0x0d, 0x06, 0x04, 0x09, 0x08, 0x0f, 0x03, 0x00, 0x0b, 0x01, 0x02, 0x0c, 0x05, 0x0a, 0x0e, 0x07],
+                [0x01, 0x0a, 0x0d, 0x00, 0x06, 0x09, 0x08, 0x07, 0x04, 0x0f, 0x0e, 0x03, 0x0b, 0x05, 0x02, 0x0c],
+            ],
+            # S4
+            [
+                [0x07, 0x0d, 0x0e, 0x03, 0x00, 0x06, 0x09, 0x0a, 0x01, 0x02, 0x08, 0x05, 0x0b, 0x0c, 0x04, 0x0f],
+                [0x0d, 0x08, 0x0b, 0x05, 0x06, 0x0f, 0x00, 0x03, 0x04, 0x07, 0x02, 0x0c, 0x01, 0x0a, 0x0e, 0x09],
+                [0x0a, 0x06, 0x09, 0x00, 0x0c, 0x0b, 0x07, 0x0d, 0x0f, 0x01, 0x03, 0x0e, 0x05, 0x02, 0x08, 0x04],
+                [0x03, 0x0f, 0x00, 0x06, 0x0a, 0x01, 0x0d, 0x08, 0x09, 0x04, 0x05, 0x0b, 0x0c, 0x07, 0x02, 0x0e],
+            ],
+            # S5
+            [
+                [0x02, 0x0c, 0x04, 0x01, 0x07, 0x0a, 0x0b, 0x06, 0x08, 0x05, 0x03, 0x0f, 0x0d, 0x00, 0x0e, 0x09],
+                [0x0e, 0x0b, 0x02, 0x0c, 0x04, 0x07, 0x0d, 0x01, 0x05, 0x00, 0x0f, 0x0a, 0x03, 0x09, 0x08, 0x06],
+                [0x04, 0x02, 0x01, 0x0b, 0x0a, 0x0d, 0x07, 0x08, 0x0f, 0x09, 0x0c, 0x05, 0x06, 0x03, 0x00, 0x0e],
+                [0x0b, 0x08, 0x0c, 0x07, 0x01, 0x0e, 0x02, 0x0d, 0x06, 0x0f, 0x00, 0x09, 0x0a, 0x04, 0x05, 0x03],
+            ],
+            # S6
+            [
+                [0x0c, 0x01, 0x0a, 0x0f, 0x09, 0x02, 0x06, 0x08, 0x00, 0x0d, 0x03, 0x04, 0x0e, 0x07, 0x05, 0x0b],
+                [0x0a, 0x0f, 0x04, 0x02, 0x07, 0x0c, 0x09, 0x05, 0x06, 0x01, 0x0d, 0x0e, 0x00, 0x0b, 0x03, 0x08],
+                [0x09, 0x0e, 0x0f, 0x05, 0x02, 0x08, 0x0c, 0x03, 0x07, 0x00, 0x04, 0x0a, 0x01, 0x0d, 0x0b, 0x06],
+                [0x04, 0x03, 0x02, 0x0c, 0x09, 0x05, 0x0f, 0x0a, 0x0b, 0x0e, 0x01, 0x07, 0x06, 0x00, 0x08, 0x0d],
+            ],
+            # S7
+            [
+                [0x04, 0x0b, 0x02, 0x0e, 0x0f, 0x00, 0x08, 0x0d, 0x03, 0x0c, 0x09, 0x07, 0x05, 0x0a, 0x06, 0x01],
+                [0x0d, 0x00, 0x0b, 0x07, 0x04, 0x09, 0x01, 0x0a, 0x0e, 0x03, 0x05, 0x0c, 0x02, 0x0f, 0x08, 0x06],
+                [0x01, 0x04, 0x0b, 0x0d, 0x0c, 0x03, 0x07, 0x0e, 0x0a, 0x0f, 0x06, 0x08, 0x00, 0x05, 0x09, 0x02],
+                [0x06, 0x0b, 0x0d, 0x08, 0x01, 0x04, 0x0a, 0x07, 0x09, 0x05, 0x00, 0x0f, 0x0e, 0x02, 0x03, 0x0c],
+            ],
+            # S8
+            [
+                [0x0d, 0x02, 0x08, 0x04, 0x06, 0x0f, 0x0b, 0x01, 0x0a, 0x09, 0x03, 0x0e, 0x05, 0x00, 0x0c, 0x07],
+                [0x01, 0x0f, 0x0d, 0x08, 0x0a, 0x03, 0x07, 0x04, 0x0c, 0x05, 0x06, 0x0b, 0x00, 0x0e, 0x09, 0x02],
+                [0x07, 0x0b, 0x04, 0x01, 0x09, 0x0c, 0x0e, 0x02, 0x00, 0x06, 0x0a, 0x0d, 0x0f, 0x03, 0x05, 0x08],
+                [0x02, 0x01, 0x0e, 0x07, 0x04, 0x0a, 0x08, 0x0d, 0x0f, 0x0c, 0x09, 0x00, 0x03, 0x05, 0x06, 0x0b],
+            ],
+        ]
+
+        def permute(self, x, inbits, table):
+            out = 0
+            for p in table:
+                out = (out << 1) | ((x >> (inbits - p)) & 1)
+            return out
+
+        def rol(self, x, n, bits):
+            mask = (1 << bits) - 1
+            x &= mask
+            return ((x << n) | (x >> (bits - n))) & mask
+
+        def subkeys(self, key8):
+            if not isinstance(key8, (bytes, bytearray)) or len(key8) != 8:
+                raise ValueError("key8 must be 8 bytes")
+            k64 = int.from_bytes(bytes(key8), "big")
+            k56 = self.permute(k64, 64, self.pc1)
+            c = (k56 >> 28) & 0x0fff_ffff
+            d = k56 & 0x0fff_ffff
+
+            keys = []
+            for s in self.shifts:
+                c = self.rol(c, s, 28)
+                d = self.rol(d, s, 28)
+                cd = (c << 28) | d
+                keys.append(self.permute(cd, 56, self.pc2))
+            return keys
+
+        def feistel(self, r32, k48):
+            e48 = self.permute(r32, 32, self.e) ^ k48
+
+            out32 = 0
+            for i in range(8):
+                shift = (7 - i) * 6
+                chunk = (e48 >> shift) & 0x3f
+                row = ((chunk >> 5) << 1) | (chunk & 1)
+                col = (chunk >> 1) & 0x0f
+                s = self.sboxes[i][row][col]
+                out32 = (out32 << 4) | s
+
+            return self.permute(out32, 32, self.p) & 0xffff_ffff
+
+        def encrypt_block(self, key8, block8):
+            if not isinstance(block8, (bytes, bytearray)) or len(block8) != 8:
+                raise ValueError("block8 must be 8 bytes")
+
+            ks = self.subkeys(key8)
+            b = int.from_bytes(bytes(block8), "big")
+            b = self.permute(b, 64, self.ip)
+
+            l = (b >> 32) & 0xffff_ffff # noqa: E741
+            r = b & 0xffff_ffff
+
+            for i in range(16):
+                l, r = r, (l ^ self.feistel(r, ks[i])) & 0xffff_ffff # noqa: E741
+
+            preout = ((r & 0xffff_ffff) << 32) | (l & 0xffff_ffff)
+            out = self.permute(preout, 64, self.fp)
+            return out.to_bytes(8, "big")
+
+    class LM:
+        block_size = 1
+        digest_size = 16
+
+        def __init__(self, data=b""):
+            self.des = Hash.DES()
+            self.buf = b""
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            o = self.__class__()
+            o.buf = self.buf
+            return o
+
+        def set_odd_parity(self, b):
+            b &= 0xff
+            ones = 0
+            x = b & 0xfe
+            for i in range(7):
+                ones ^= (x >> i) & 1
+            return x | (0 if ones == 1 else 1)
+
+        def make_des_key_from_7bytes(self, key7):
+            if not isinstance(key7, (bytes, bytearray)) or len(key7) != 7:
+                raise ValueError("key7 must be 7 bytes")
+            k = bytes(key7)
+            key8 = bytearray(8)
+
+            key8[0] = k[0] & 0xfe
+            key8[1] = ((k[0] << 7) | (k[1] >> 1)) & 0xfe
+            key8[2] = ((k[1] << 6) | (k[2] >> 2)) & 0xfe
+            key8[3] = ((k[2] << 5) | (k[3] >> 3)) & 0xfe
+            key8[4] = ((k[3] << 4) | (k[4] >> 4)) & 0xfe
+            key8[5] = ((k[4] << 3) | (k[5] >> 5)) & 0xfe
+            key8[6] = ((k[5] << 2) | (k[6] >> 6)) & 0xfe
+            key8[7] = (k[6] << 1) & 0xfe
+
+            for i in range(8):
+                key8[i] = self.set_odd_parity(key8[i])
+
+            return bytes(key8)
+
+        def update(self, password):
+            if isinstance(password, str):
+                data = password.encode("ascii", "ignore")
+            elif isinstance(password, (bytes, bytearray)):
+                data = bytes(password)
+            else:
+                raise TypeError("password must be str or bytes-like")
+
+            self.buf += data
+            return self
+
+        def digest(self):
+            pw = self.buf.upper()
+            pw14 = (pw[:14] + b"\x00" * 14)[:14]
+            left7 = pw14[:7]
+            right7 = pw14[7:]
+            key1 = self.make_des_key_from_7bytes(left7)
+            key2 = self.make_des_key_from_7bytes(right7)
+            magic = b"KGS!@#$%"
+            out1 = self.des.encrypt_block(key1, magic)
+            out2 = self.des.encrypt_block(key2, magic)
+            return out1 + out2
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+    class MD6:
+        def __init__(self, d=256, key=b"", L=64, r=None):
+            if not (1 <= int(d) <= 512):
+                raise ValueError("d must be in [1, 512]")
+            if not (0 <= len(key) <= 64):
+                raise ValueError("key length must be in [0, 64] bytes")
+            if int(L) < 0:
+                raise ValueError("L must be non-negative")
+
+            self.d = int(d)
+            self.key = bytes(key)
+            self.L = int(L)
+
+            if r is None:
+                base = 40 + ((self.d + 3) // 4)  # 40 + ceil(d/4)
+                if len(self.key) != 0:
+                    self.r = max(80, base)
+                else:
+                    self.r = base
+            else:
+                if int(r) < 0:
+                    raise ValueError("r must be non-negative")
+                self.r = int(r)
+
+            self.buffer = b""
+
+            # Constants (from MD6 spec)
+            self.w = 64
+            self.n = 89
+            self.c = 16
+            self.b = 64
+            self.mask64 = 0xffff_ffff_ffff_ffff
+
+            self.t0 = 0x11 # 17
+            self.t1 = 0x12 # 18
+            self.t2 = 0x15 # 21
+            self.t3 = 0x1f # 31
+            self.t4 = 0x43 # 67
+
+            self.rshift = [
+                0x0a, 0x05, 0x0d, 0x0a, 0x0b, 0x0c, 0x02, 0x07,
+                0x0e, 0x0f, 0x07, 0x0d, 0x0b, 0x07, 0x06, 0x0c,
+            ]
+            self.lshift = [
+                0x0b, 0x18, 0x09, 0x10, 0x0f, 0x09, 0x1b, 0x0f,
+                0x06, 0x02, 0x1d, 0x08, 0x0f, 0x05, 0x1f, 0x09,
+            ]
+
+            self.Q = [
+                0x7311_c281_2425_cfa0,
+                0x6432_2864_34aa_c8e7,
+                0xb604_50e9_ef68_b7c1,
+                0xe8fb_2390_8d9f_06f1,
+                0xdd2e_76cb_a691_e5bf,
+                0x0cd0_d63b_2c30_bc41,
+                0x1f8c_cf68_2305_8f8a,
+                0x54e5_ed5b_88e3_775d,
+                0x4ad1_2aae_0a6d_6031,
+                0x3e7f_16bb_8822_2e0d,
+                0x8af8_671d_3fb5_0c2c,
+                0x995a_d117_8bd2_5c31,
+                0xc878_c1dd_04c4_b633,
+                0x3b72_066c_7a15_52ac,
+                0x0d6f_3522_631e_ffcb,
+            ]
+
+            self.S0 = 0x0123_4567_89ab_cdef
+            self.Sstar = 0x7311_c281_2425_cfa0
+            return
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            self.buffer += bytes(data)
+            return self
+
+        def copy(self):
+            other = self.__class__(d=self.d, key=self.key, L=self.L, r=self.r)
+            other.buffer = self.buffer
+            return other
+
+        def digest(self):
+            return self.hash(self.buffer)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def rol64(self, x, n):
+            n &= 63
+            x &= self.mask64
+            return ((x << n) & self.mask64) | (x >> (64 - n))
+
+        def pack_control(self, r, L, z, p, keylen, d):
+            # Control word V layout (high-order 4 bits are zero):
+            # [0:4][r:12][L:8][z:4][p:16][keylen:8][d:12]
+            # r at bits 48..59, L at 40..47, z at 36..39, p at 20..35, keylen at 12..19, d at 0..11
+            r &= (1 << 12) - 1
+            L &= (1 << 8) - 1
+            z &= (1 << 4) - 1
+            p &= (1 << 16) - 1
+            keylen &= (1 << 8) - 1
+            d &= (1 << 12) - 1
+            return ((r << 48) | (L << 40) | (z << 36) | (p << 20) | (keylen << 12) | d) & self.mask64
+
+        def pack_node_id(self, ell, i):
+            # Unique node ID U layout:
+            # high-order byte is ell, remaining 7 bytes is index i
+            return (((ell & 0xff) << 56) | (i & ((1 << 56) - 1))) & self.mask64
+
+        def bytes_to_words_be(self, data, count):
+            out = []
+            need = count * 8
+            if len(data) < need:
+                data = data + b"\x00" * (need - len(data))
+            for j in range(count):
+                out.append(int.from_bytes(data[j * 8:(j + 1) * 8], "big"))
+            return out
+
+        def words_to_bytes_be(self, words):
+            return b"".join((w & self.mask64).to_bytes(8, "big") for w in words)
+
+        def make_key_words(self):
+            kp = self.key + b"\x00" * (64 - len(self.key))
+            return self.bytes_to_words_be(kp, 8)
+
+        def make_round_constants(self, r):
+            # S'_0 = S0
+            # S'_{j+1} = (S'_j <<< 1) xor (S'_j & S*)
+            # Use rotate-left by 1 (<<<).
+            S = []
+            x = self.S0 & self.mask64
+            for _ in range(r):
+                S.append(x)
+                x = self.rol64(x, 1) ^ (x & self.Sstar)
+                x &= self.mask64
+            return S
+
+        def compress(self, N_words, r):
+            # N_words length must be 89 (15 Q + 8 K + 1 U + 1 V + 64 B)
+            if len(N_words) != self.n:
+                raise ValueError("N_words must be length 89")
+
+            t = 16 * r
+            A = list(N_words)
+
+            Sround = self.make_round_constants(r)
+
+            for i in range(self.n, self.n + t):
+                step = i - self.n  # 0..t-1
+                ridx = step & 0x0f
+                round_idx = step >> 4
+
+                x = Sround[round_idx]
+                x ^= A[i - self.n]
+                x ^= A[i - self.t0]
+                x ^= (A[i - self.t1] & A[i - self.t2])
+                x ^= (A[i - self.t3] & A[i - self.t4])
+                x &= self.mask64
+
+                x ^= (x >> self.rshift[ridx])
+                x &= self.mask64
+
+                y = x ^ ((x << self.lshift[ridx]) & self.mask64)
+                y &= self.mask64
+
+                A.append(y)
+
+            # Output last 16 words
+            return A[-self.c:]
+
+        def par(self, M_bytes, ell):
+            # PAR operator (Figure 2.5): input message at level ell-1 -> output message at level ell
+            block_bytes = 512  # 64 words
+            m_bits = len(M_bytes) * 8
+
+            j = (len(M_bytes) + block_bytes - 1) // block_bytes
+            if j < 1:
+                j = 1
+
+            total_bytes = j * block_bytes
+            pad_bits = total_bytes * 8 - m_bits  # 0..4096*? (here <= 4096-8)
+            if pad_bits < 0:
+                raise RuntimeError("internal padding error")
+
+            Mp = M_bytes + b"\x00" * (total_bytes - len(M_bytes))
+
+            K_words = self.make_key_words()
+            keylen = len(self.key)
+            z_all = 1 if j == 1 else 0
+
+            out_chunks = []
+            for i in range(j):
+                Bi = Mp[i * block_bytes:(i + 1) * block_bytes]
+                B_words = self.bytes_to_words_be(Bi, 64)
+
+                p = pad_bits if (i == j - 1) else 0
+                V = self.pack_control(self.r, self.L, z_all, p, keylen, self.d)
+                U = self.pack_node_id(ell, i)
+
+                N = self.Q + K_words + [U, V] + B_words
+                Ci = self.compress(N, self.r)
+                out_chunks.append(Ci)
+
+            # Concatenate C0||C1||... as bytes
+            out_words = []
+            for Ci in out_chunks:
+                out_words.extend(Ci)
+            return self.words_to_bytes_be(out_words)
+
+        def seq(self, M_bytes):
+            # SEQ operator (Figure 2.6): sequential MD-like; returns d-bit hash
+            block_words = 48
+            block_bytes = block_words * 8  # 384 bytes
+
+            m_bits = len(M_bytes) * 8
+
+            j = (len(M_bytes) + block_bytes - 1) // block_bytes
+            if j < 1:
+                j = 1
+
+            total_bytes = j * block_bytes
+            pad_bits = total_bytes * 8 - m_bits  # 0..3072
+            Mp = M_bytes + b"\x00" * (total_bytes - len(M_bytes))
+
+            K_words = self.make_key_words()
+            keylen = len(self.key)
+
+            C_prev = [0x00] * self.c  # 16-word IV of zeros
+
+            ell = self.L + 1
+            for i in range(j):
+                Bi = Mp[i * block_bytes:(i + 1) * block_bytes]
+                Bi_words = self.bytes_to_words_be(Bi, block_words)
+
+                z = 1 if (i == j - 1) else 0
+                p = pad_bits if (i == j - 1) else 0
+
+                V = self.pack_control(self.r, self.L, z, p, keylen, self.d)
+                U = self.pack_node_id(ell, i)
+
+                # B is 64 words = C_{i-1} (16) || B_i (48)
+                B_words = list(C_prev) + Bi_words
+                N = self.Q + K_words + [U, V] + B_words
+                C_prev = self.compress(N, self.r)
+
+            # Return last d bits of C_{j-1}
+            full = self.words_to_bytes_be(C_prev)  # 128 bytes (1024 bits)
+            return self.last_bits(full, self.d)
+
+        def last_bits(self, data, d_bits):
+            # Return the last d_bits of data (data is a big-endian bitstring).
+            if d_bits == 0:
+                return b""
+            total_bits = len(data) * 8
+            if d_bits > total_bits:
+                raise ValueError("d_bits larger than available bits")
+
+            # Fast path for byte-aligned
+            if (d_bits & 7) == 0:
+                return data[-(d_bits // 8):]
+
+            # Bit-level extraction
+            keep_bytes = (d_bits + 7) // 8
+            tail = data[-keep_bytes:]
+            excess = (keep_bytes * 8) - d_bits  # 1..7
+            # We need the lowest (8-excess) bits of the first byte
+            first = tail[0] & ((1 << (8 - excess)) - 1)
+            return bytes([first]) + tail[1:]
+
+        def hash(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            M = bytes(data)
+
+            # Main level-by-level loop (Figure 2.4):
+            # ell starts at 0, then increments; if ell == L+1 -> SEQ on previous
+            ell = 0
+            M_ell_minus_1 = M
+
+            while True:
+                ell += 1
+                if ell == self.L + 1:
+                    return self.seq(M_ell_minus_1)
+
+                M_ell = self.par(M_ell_minus_1, ell)
+
+                # If M_ell is exactly c words (16 words) long, return last d bits of M_ell
+                if len(M_ell) == self.c * 8:
+                    return self.last_bits(M_ell, self.d)
+
+                M_ell_minus_1 = M_ell
+            raise
+
+    class RIPEMDBase:
+        block_size = 64
+        digest_size = None # bytes
+        init_state_words = None # little-endian words
+        rounds = None # 4 for 128/160/256, 5 for 320
+
+        # RIPEMD message word order and rotation amounts (base tables; 128/160/256 use first 64, 320 uses full 80)
+        r = [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+            0x07, 0x04, 0x0d, 0x01, 0x0a, 0x06, 0x0f, 0x03, 0x0c, 0x00, 0x09, 0x05, 0x02, 0x0e, 0x0b, 0x08,
+            0x03, 0x0a, 0x0e, 0x04, 0x09, 0x0f, 0x08, 0x01, 0x02, 0x07, 0x00, 0x06, 0x0d, 0x0b, 0x05, 0x0c,
+            0x01, 0x09, 0x0b, 0x0a, 0x00, 0x08, 0x0c, 0x04, 0x0d, 0x03, 0x07, 0x0f, 0x0e, 0x05, 0x06, 0x02,
+            0x04, 0x00, 0x05, 0x09, 0x07, 0x0c, 0x02, 0x0a, 0x0e, 0x01, 0x03, 0x08, 0x0b, 0x06, 0x0f, 0x0d,
+        ]
+        rp = [
+            0x05, 0x0e, 0x07, 0x00, 0x09, 0x02, 0x0b, 0x04, 0x0d, 0x06, 0x0f, 0x08, 0x01, 0x0a, 0x03, 0x0c,
+            0x06, 0x0b, 0x03, 0x07, 0x00, 0x0d, 0x05, 0x0a, 0x0e, 0x0f, 0x08, 0x0c, 0x04, 0x09, 0x01, 0x02,
+            0x0f, 0x05, 0x01, 0x03, 0x07, 0x0e, 0x06, 0x09, 0x0b, 0x08, 0x0c, 0x02, 0x0a, 0x00, 0x04, 0x0d,
+            0x08, 0x06, 0x04, 0x01, 0x03, 0x0b, 0x0f, 0x00, 0x05, 0x0c, 0x02, 0x0d, 0x09, 0x07, 0x0a, 0x0e,
+            0x0c, 0x0f, 0x0a, 0x04, 0x01, 0x05, 0x08, 0x07, 0x06, 0x02, 0x0d, 0x0e, 0x00, 0x03, 0x09, 0x0b,
+        ]
+        s = [
+            0x0b, 0x0e, 0x0f, 0x0c, 0x05, 0x08, 0x07, 0x09, 0x0b, 0x0d, 0x0e, 0x0f, 0x06, 0x07, 0x09, 0x08,
+            0x07, 0x06, 0x08, 0x0d, 0x0b, 0x09, 0x07, 0x0f, 0x07, 0x0c, 0x0f, 0x09, 0x0b, 0x07, 0x0d, 0x0c,
+            0x0b, 0x0d, 0x06, 0x07, 0x0e, 0x09, 0x0d, 0x0f, 0x0e, 0x08, 0x0d, 0x06, 0x05, 0x0c, 0x07, 0x05,
+            0x0b, 0x0c, 0x0e, 0x0f, 0x0e, 0x0f, 0x09, 0x08, 0x09, 0x0e, 0x05, 0x06, 0x08, 0x06, 0x05, 0x0c,
+            0x09, 0x0f, 0x05, 0x0b, 0x06, 0x08, 0x0d, 0x0c, 0x05, 0x0c, 0x0d, 0x0e, 0x0b, 0x08, 0x05, 0x06,
+        ]
+        sp = [
+            0x08, 0x09, 0x09, 0x0b, 0x0d, 0x0f, 0x0f, 0x05, 0x07, 0x07, 0x08, 0x0b, 0x0e, 0x0e, 0x0c, 0x06,
+            0x09, 0x0d, 0x0f, 0x07, 0x0c, 0x08, 0x09, 0x0b, 0x07, 0x07, 0x0c, 0x07, 0x06, 0x0f, 0x0d, 0x0b,
+            0x09, 0x07, 0x0f, 0x0b, 0x08, 0x06, 0x06, 0x0e, 0x0c, 0x0d, 0x05, 0x0e, 0x0d, 0x0d, 0x07, 0x05,
+            0x0f, 0x05, 0x08, 0x0b, 0x0e, 0x0e, 0x06, 0x0e, 0x06, 0x09, 0x0c, 0x09, 0x0c, 0x05, 0x0f, 0x08,
+            0x08, 0x05, 0x0c, 0x09, 0x0c, 0x05, 0x0e, 0x06, 0x08, 0x0d, 0x06, 0x05, 0x0f, 0x0d, 0x0b, 0x0b,
+        ]
+
+        # constants for rounds (left line / right line)
+        K4  = [0x0000_0000, 0x5a82_7999, 0x6ed9_eba1, 0x8f1b_bcdc]
+        K4p = [0x50a2_8be6, 0x5c4d_d124, 0x6d70_3ef3, 0x0000_0000]
+
+        K5  = [0x0000_0000, 0x5a82_7999, 0x6ed9_eba1, 0x8f1b_bcdc, 0xa953_fd4e]
+        K5p = [0x50a2_8be6, 0x5c4d_d124, 0x6d70_3ef3, 0x7a6d_76e9, 0x0000_0000]
+
+        def __init__(self, data=b""):
+            self.h = self.init_state_words[:]
+            self.buf = b""
+            self.total = 0
+            if data:
+                self.update(data)
+            return
+
+        def rol32(self, x, n):
+            x &= 0xffff_ffff
+            return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
+
+        def f(self, j, x, y, z):
+            # j: 0..4 (uses first 4 for 128/160/256)
+            if j == 0:
+                return x ^ y ^ z
+            if j == 1:
+                return (x & y) | ((~x) & z)
+            if j == 2:
+                return (x | (~y)) ^ z
+            if j == 3:
+                return (x & z) | (y & (~z))
+            return x ^ (y | (~z))
+
+        def fp(self, j, x, y, z):
+            # parallel line order: for 4-round: I,H,G,F
+            # for 5-round: J,I,H,G,F (i.e. f4,f3,f2,f1,f0)
+            if self.rounds == 4:
+                if j == 0:
+                    return (x & z) | (y & (~z))  # I
+                if j == 1:
+                    return (x | (~y)) ^ z        # H
+                if j == 2:
+                    return (x & y) | ((~x) & z)  # G
+                return x ^ y ^ z                 # F
+            else:
+                # 0..4 maps to f4,f3,f2,f1,f0
+                if j == 0:
+                    return x ^ (y | (~z))        # J
+                if j == 1:
+                    return (x & z) | (y & (~z))  # I
+                if j == 2:
+                    return (x | (~y)) ^ z        # H
+                if j == 3:
+                    return (x & y) | ((~x) & z)  # G
+                return x ^ y ^ z                 # F
+
+        def update(self, data):
+            if not data:
+                return self
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            self.total += len(data)
+            self.buf += bytes(data)
+            while len(self.buf) >= 64:
+                block = self.buf[:64]
+                self.buf = self.buf[64:]
+                self.transform(block)
+            return self
+
+        def pad(self):
+            bit_len = self.total * 8
+            pad = b"\x80"
+            pad_len = (56 - (self.total + 1) % 64) % 64
+            pad += b"\x00" * pad_len
+            pad += (bit_len & 0xffff_ffff_ffff_ffff).to_bytes(8, "little")
+            return pad
+
+        def digest(self):
+            clone = self.__class__()
+            clone.h = self.h[:]
+            clone.buf = self.buf
+            clone.total = self.total
+            clone.update(clone.pad())
+            out = b"".join((w & 0xffff_ffff).to_bytes(4, "little") for w in clone.h)
+            return out[: self.digest_size]
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+    class RIPEMD128(RIPEMDBase):
+        digest_size = 16
+        init_state_words = [
+            0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476,
+        ]
+        rounds = 4
+
+        def transform(self, block):
+            X = [int.from_bytes(block[i:i + 4], "little") for i in range(0, 64, 4)]
+            h0, h1, h2, h3 = self.h
+
+            a, b, c, d = h0, h1, h2, h3
+            aa, bb, cc, dd = h0, h1, h2, h3
+
+            for j in range(64):
+                rj = self.r[j]
+                sj = self.s[j]
+                round_idx = j // 16
+                t = (a + self.f(round_idx, b, c, d) + X[rj] + self.K4[round_idx]) & 0xffff_ffff
+                t = self.rol32(t, sj)
+                a, d, c, b = d, c, b, t
+
+                rpj = self.rp[j]
+                spj = self.sp[j]
+                pround = j // 16
+                tp = (aa + self.fp(pround, bb, cc, dd) + X[rpj] + self.K4p[pround]) & 0xffff_ffff
+                tp = self.rol32(tp, spj)
+                aa, dd, cc, bb = dd, cc, bb, tp
+
+            # combine (standard RIPEMD-128)
+            t = (h1 + c + dd) & 0xffff_ffff
+            h1 = (h2 + d + aa) & 0xffff_ffff
+            h2 = (h3 + a + bb) & 0xffff_ffff
+            h3 = (h0 + b + cc) & 0xffff_ffff
+            h0 = t
+
+            self.h = [h0, h1, h2, h3]
+            return
+
+    class RIPEMD160(RIPEMDBase):
+        digest_size = 20
+        init_state_words = [
+            0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476, 0xc3d2_e1f0,
+        ]
+        rounds = 5
+
+        def transform(self, block):
+            X = [int.from_bytes(block[i:i + 4], "little") for i in range(0, 64, 4)]
+            h0, h1, h2, h3, h4 = self.h
+
+            a, b, c, d, e = h0, h1, h2, h3, h4
+            aa, bb, cc, dd, ee = h0, h1, h2, h3, h4
+
+            for j in range(80):
+                round_idx = j // 16
+
+                t = (a + self.f(round_idx, b, c, d) + X[self.r[j]] + self.K5[round_idx]) & 0xffff_ffff
+                t = self.rol32(t, self.s[j])
+                t = (t + e) & 0xffff_ffff
+                a, e, d, c, b = e, d, self.rol32(c, 0x0a), b, t  # c <<< 10
+
+                tp = (aa + self.fp(round_idx, bb, cc, dd) + X[self.rp[j]] + self.K5p[round_idx]) & 0xffff_ffff
+                tp = self.rol32(tp, self.sp[j])
+                tp = (tp + ee) & 0xffff_ffff
+                aa, ee, dd, cc, bb = ee, dd, self.rol32(cc, 0x0a), bb, tp  # cc <<< 10
+
+            t = (h1 + c + dd) & 0xffff_ffff
+            h1 = (h2 + d + ee) & 0xffff_ffff
+            h2 = (h3 + e + aa) & 0xffff_ffff
+            h3 = (h4 + a + bb) & 0xffff_ffff
+            h4 = (h0 + b + cc) & 0xffff_ffff
+            h0 = t
+            self.h = [h0, h1, h2, h3, h4]
+            return
+
+    class RIPEMD256(RIPEMDBase):
+        digest_size = 32
+        init_state_words = [
+            0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476,
+            0x7654_3210, 0xfedc_ba98, 0x89ab_cdef, 0x0123_4567,
+        ]
+        rounds = 4
+
+        def transform(self, block):
+            X = [int.from_bytes(block[i:i + 4], "little") for i in range(0, 64, 4)]
+            h0, h1, h2, h3, h4, h5, h6, h7 = self.h
+
+            a, b, c, d = h0, h1, h2, h3
+            aa, bb, cc, dd = h4, h5, h6, h7
+
+            for j in range(64):
+                round_idx = j // 16
+
+                t = (a + self.f(round_idx, b, c, d) + X[self.r[j]] + self.K4[round_idx]) & 0xffff_ffff
+                t = self.rol32(t, self.s[j])
+                a, d, c, b = d, c, b, t
+
+                tp = (aa + self.fp(round_idx, bb, cc, dd) + X[self.rp[j]] + self.K4p[round_idx]) & 0xffff_ffff
+                tp = self.rol32(tp, self.sp[j])
+                aa, dd, cc, bb = dd, cc, bb, tp
+
+                # swaps after each 16-step round (RIPEMD-256)
+                if (j & 0x0f) == 0x0f:
+                    if round_idx == 0:
+                        a, aa = aa, a
+                    elif round_idx == 1:
+                        b, bb = bb, b
+                    elif round_idx == 2:
+                        c, cc = cc, c
+                    else:
+                        d, dd = dd, d
+
+            self.h = [
+                (h0 + a) & 0xffff_ffff,
+                (h1 + b) & 0xffff_ffff,
+                (h2 + c) & 0xffff_ffff,
+                (h3 + d) & 0xffff_ffff,
+                (h4 + aa) & 0xffff_ffff,
+                (h5 + bb) & 0xffff_ffff,
+                (h6 + cc) & 0xffff_ffff,
+                (h7 + dd) & 0xffff_ffff,
+            ]
+            return
+
+    class RIPEMD320(RIPEMDBase):
+        digest_size = 40
+        init_state_words = [
+            0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476, 0xc3d2_e1f0,
+            0x7654_3210, 0xfedc_ba98, 0x89ab_cdef, 0x0123_4567, 0x3c2d_1e0f,
+        ]
+        rounds = 5
+
+        def transform(self, block):
+            X = [int.from_bytes(block[i:i + 4], "little") for i in range(0, 64, 4)]
+            h = self.h[:]  # 10 words
+
+            a, b, c, d, e = h[0], h[1], h[2], h[3], h[4]
+            aa, bb, cc, dd, ee = h[5], h[6], h[7], h[8], h[9]
+
+            for j in range(80):
+                round_idx = j // 16
+
+                t = (a + self.f(round_idx, b, c, d) + X[self.r[j]] + self.K5[round_idx]) & 0xffff_ffff
+                t = self.rol32(t, self.s[j])
+                t = (t + e) & 0xffff_ffff
+                a, e, d, c, b = e, d, self.rol32(c, 0x0a), b, t  # rotate (c left by 10)
+
+                tp = (aa + self.fp(round_idx, bb, cc, dd) + X[self.rp[j]] + self.K5p[round_idx]) & 0xffff_ffff
+                tp = self.rol32(tp, self.sp[j])
+                tp = (tp + ee) & 0xffff_ffff
+                aa, ee, dd, cc, bb = ee, dd, self.rol32(cc, 0x0a), bb, tp
+
+                # swaps after each 16-step round (RIPEMD-320)
+                if (j & 0x0f) == 0x0f:
+                    if round_idx == 0:
+                        b, bb = bb, b
+                    elif round_idx == 1:
+                        d, dd = dd, d
+                    elif round_idx == 2:
+                        a, aa = aa, a
+                    elif round_idx == 3:
+                        c, cc = cc, c
+                    else:
+                        e, ee = ee, e
+
+            self.h = [
+                (h[0] + a) & 0xffff_ffff,
+                (h[1] + b) & 0xffff_ffff,
+                (h[2] + c) & 0xffff_ffff,
+                (h[3] + d) & 0xffff_ffff,
+                (h[4] + e) & 0xffff_ffff,
+                (h[5] + aa) & 0xffff_ffff,
+                (h[6] + bb) & 0xffff_ffff,
+                (h[7] + cc) & 0xffff_ffff,
+                (h[8] + dd) & 0xffff_ffff,
+                (h[9] + ee) & 0xffff_ffff,
+            ]
+            return
+
+    class BLAKEBase:
+        block_size = None
+        digest_size = None
+        word_bits = None
+        rounds = None
+        iv = None
+        c = None
+        sigma = None
+        pad_delim = None # 0x01 for 256/512, 0x00 for 224/384
+        length_bytes = None # 8 for 224/256, 16 for 384/512
+
+        sigma = [
+            [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f],
+            [0x0e, 0x0a, 0x04, 0x08, 0x09, 0x0f, 0x0d, 0x06, 0x01, 0x0c, 0x00, 0x02, 0x0b, 0x07, 0x05, 0x03],
+            [0x0b, 0x08, 0x0c, 0x00, 0x05, 0x02, 0x0f, 0x0d, 0x0a, 0x0e, 0x03, 0x06, 0x07, 0x01, 0x09, 0x04],
+            [0x07, 0x09, 0x03, 0x01, 0x0d, 0x0c, 0x0b, 0x0e, 0x02, 0x06, 0x05, 0x0a, 0x04, 0x00, 0x0f, 0x08],
+            [0x09, 0x00, 0x05, 0x07, 0x02, 0x04, 0x0a, 0x0f, 0x0e, 0x01, 0x0b, 0x0c, 0x06, 0x08, 0x03, 0x0d],
+            [0x02, 0x0c, 0x06, 0x0a, 0x00, 0x0b, 0x08, 0x03, 0x04, 0x0d, 0x07, 0x05, 0x0f, 0x0e, 0x01, 0x09],
+            [0x0c, 0x05, 0x01, 0x0f, 0x0e, 0x0d, 0x04, 0x0a, 0x00, 0x07, 0x06, 0x03, 0x09, 0x02, 0x08, 0x0b],
+            [0x0d, 0x0b, 0x07, 0x0e, 0x0c, 0x01, 0x03, 0x09, 0x05, 0x00, 0x0f, 0x04, 0x08, 0x06, 0x02, 0x0a],
+            [0x06, 0x0f, 0x0e, 0x09, 0x0b, 0x03, 0x00, 0x08, 0x0c, 0x02, 0x0d, 0x07, 0x01, 0x04, 0x0a, 0x05],
+            [0x0a, 0x02, 0x08, 0x04, 0x07, 0x06, 0x01, 0x05, 0x0f, 0x0b, 0x09, 0x0e, 0x03, 0x0c, 0x0d, 0x00],
+        ]
+
+        def __init__(self, data=b""):
+            self.h = self.iv[:]
+            self.buf = b""
+            self.total = 0 # total message bytes
+            self.processed = 0 # bytes processed as full blocks (message only)
+            if data:
+                self.update(data)
+
+        def rol(self, x, n):
+            mask = (1 << self.word_bits) - 1
+            x &= mask
+            return ((x << n) | (x >> (self.word_bits - n))) & mask
+
+        def ror(self, x, n):
+            mask = (1 << self.word_bits) - 1
+            x &= mask
+            return ((x >> n) | (x << (self.word_bits - n))) & mask
+
+        def add(self, x, y):
+            mask = (1 << self.word_bits) - 1
+            return (x + y) & mask
+
+        def parse_block_words(self, block):
+            word_bytes = self.word_bits // 8
+            return [int.from_bytes(block[i:i + word_bytes], "big") for i in range(0, self.block_size, word_bytes)]
+
+        def split_counter(self, counter_bits):
+            if self.word_bits == 32:
+                t = counter_bits & 0xffff_ffff_ffff_ffff
+                t0 = t & 0xffff_ffff
+                t1 = (t >> 32) & 0xffff_ffff
+                return t0, t1
+            else:
+                t = counter_bits & ((1 << 128) - 1)
+                t0 = t & 0xffff_ffff_ffff_ffff
+                t1 = (t >> 64) & 0xffff_ffff_ffff_ffff
+                return t0, t1
+
+        def g(self, v, a, b, c, d, m, r, i):
+            s = self.sigma[r % 10]
+            x = s[2 * i + 0]
+            y = s[2 * i + 1]
+            cx = self.c[x]
+            cy = self.c[y]
+
+            if self.word_bits == 32:
+                r0, r1, r2, r3 = 16, 12, 8, 7
+            else:
+                r0, r1, r2, r3 = 32, 25, 16, 11
+
+            v[a] = self.add(v[a], v[b])
+            v[a] = self.add(v[a], (m[x] ^ cy))
+            v[d] ^= v[a]
+            v[d] = self.ror(v[d], r0)
+
+            v[c] = self.add(v[c], v[d])
+            v[b] ^= v[c]
+            v[b] = self.ror(v[b], r1)
+
+            v[a] = self.add(v[a], v[b])
+            v[a] = self.add(v[a], (m[y] ^ cx))
+            v[d] ^= v[a]
+            v[d] = self.ror(v[d], r2)
+
+            v[c] = self.add(v[c], v[d])
+            v[b] ^= v[c]
+            v[b] = self.ror(v[b], r3)
+            return
+
+        def compress(self, block, counter_bits):
+            m = self.parse_block_words(block)
+            s0 = 0
+            s1 = 0
+            s2 = 0
+            s3 = 0
+            t0, t1 = self.split_counter(counter_bits)
+
+            v = [0] * 16
+            v[0:8] = self.h[:]
+            v[8] = s0 ^ self.c[0]
+            v[9] = s1 ^ self.c[1]
+            v[10] = s2 ^ self.c[2]
+            v[11] = s3 ^ self.c[3]
+            v[12] = t0 ^ self.c[4]
+            v[13] = t0 ^ self.c[5]
+            v[14] = t1 ^ self.c[6]
+            v[15] = t1 ^ self.c[7]
+
+            for r in range(self.rounds):
+                # column step
+                self.g(v, 0, 4, 8, 12, m, r, 0)
+                self.g(v, 1, 5, 9, 13, m, r, 1)
+                self.g(v, 2, 6, 10, 14, m, r, 2)
+                self.g(v, 3, 7, 11, 15, m, r, 3)
+                # diagonal step
+                self.g(v, 0, 5, 10, 15, m, r, 4)
+                self.g(v, 1, 6, 11, 12, m, r, 5)
+                self.g(v, 2, 7, 8, 13, m, r, 6)
+                self.g(v, 3, 4, 9, 14, m, r, 7)
+
+            h0, h1, h2, h3, h4, h5, h6, h7 = self.h
+            h0 = (h0 ^ s0 ^ v[0] ^ v[8]) & ((1 << self.word_bits) - 1)
+            h1 = (h1 ^ s1 ^ v[1] ^ v[9]) & ((1 << self.word_bits) - 1)
+            h2 = (h2 ^ s2 ^ v[2] ^ v[10]) & ((1 << self.word_bits) - 1)
+            h3 = (h3 ^ s3 ^ v[3] ^ v[11]) & ((1 << self.word_bits) - 1)
+            h4 = (h4 ^ s0 ^ v[4] ^ v[12]) & ((1 << self.word_bits) - 1)
+            h5 = (h5 ^ s1 ^ v[5] ^ v[13]) & ((1 << self.word_bits) - 1)
+            h6 = (h6 ^ s2 ^ v[6] ^ v[14]) & ((1 << self.word_bits) - 1)
+            h7 = (h7 ^ s3 ^ v[7] ^ v[15]) & ((1 << self.word_bits) - 1)
+            self.h = [h0, h1, h2, h3, h4, h5, h6, h7]
+            return
+
+        def update(self, data):
+            if not data:
+                return self
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+
+            data = bytes(data)
+            self.total += len(data)
+            self.buf += data
+
+            while len(self.buf) >= self.block_size:
+                block = self.buf[:self.block_size]
+                self.buf = self.buf[self.block_size:]
+                self.processed += self.block_size
+                counter_bits = self.processed * 8
+                self.compress(block, counter_bits)
+            return self
+
+        def make_padding(self):
+            msg_bits = self.total * 8
+            buf_len = len(self.buf)
+            pad_zero_len = (
+                self.block_size - ((buf_len + 1 + 1 + self.length_bytes) % self.block_size)
+            ) % self.block_size
+            pad = b"\x80" + (b"\x00" * pad_zero_len) + bytes([self.pad_delim]) + \
+                msg_bits.to_bytes(self.length_bytes, "big")
+            return pad
+
+        def finalize(self):
+            msg_bits = self.total * 8
+            pad = self.make_padding()
+            final_data = self.buf + pad
+            self.buf = b""
+
+            if len(final_data) % self.block_size != 0:
+                raise ValueError("internal padding error")
+
+            if len(final_data) == 0:
+                return
+
+            # counter rule:
+            # - first final block: msg_bits if it contains remaining message bytes, else 0
+            # - any subsequent final blocks are pure padding => counter 0
+            first_counter = msg_bits if (self.total % self.block_size) != 0 else 0
+
+            for off in range(0, len(final_data), self.block_size):
+                block = final_data[off:off + self.block_size]
+                counter_bits = first_counter if off == 0 else 0
+                self.compress(block, counter_bits)
+            return
+
+        def digest(self):
+            clone = self.__class__()
+            clone.h = self.h[:]
+            clone.buf = self.buf
+            clone.total = self.total
+            clone.processed = self.processed
+            clone.finalize()
+
+            word_bytes = self.word_bits // 8
+            out = b"".join((w & ((1 << self.word_bits) - 1)).to_bytes(word_bytes, "big") for w in clone.h)
+            return out[: self.digest_size]
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+    class BLAKE224(BLAKEBase):
+        block_size = 64
+        digest_size = 28
+        word_bits = 32
+        rounds = 14
+        pad_delim = 0x00
+        length_bytes = 8
+
+        iv = [
+            0xc105_9ed8, 0x367c_d507, 0x3070_dd17, 0xf70e_5939,
+            0xffc0_0b31, 0x6858_1511, 0x64f9_8fa7, 0xbefa_4fa4,
+        ]
+        c = [
+            0x243f_6a88, 0x85a3_08d3, 0x1319_8a2e, 0x0370_7344,
+            0xa409_3822, 0x299f_31d0, 0x082e_fa98, 0xec4e_6c89,
+            0x4528_21e6, 0x38d0_1377, 0xbe54_66cf, 0x34e9_0c6c,
+            0xc0ac_29b7, 0xc97c_50dd, 0x3f84_d5b5, 0xb547_0917,
+        ]
+
+    class BLAKE256(BLAKEBase):
+        block_size = 64
+        digest_size = 32
+        word_bits = 32
+        rounds = 14
+        pad_delim = 0x01
+        length_bytes = 8
+
+        iv = [
+            0x6a09_e667, 0xbb67_ae85, 0x3c6e_f372, 0xa54f_f53a,
+            0x510e_527f, 0x9b05_688c, 0x1f83_d9ab, 0x5be0_cd19,
+        ]
+        c = [
+            0x243f_6a88, 0x85a3_08d3, 0x1319_8a2e, 0x0370_7344,
+            0xa409_3822, 0x299f_31d0, 0x082e_fa98, 0xec4e_6c89,
+            0x4528_21e6, 0x38d0_1377, 0xbe54_66cf, 0x34e9_0c6c,
+            0xc0ac_29b7, 0xc97c_50dd, 0x3f84_d5b5, 0xb547_0917,
+        ]
+
+    class BLAKE384(BLAKEBase):
+        block_size = 128
+        digest_size = 48
+        word_bits = 64
+        rounds = 16
+        pad_delim = 0x00
+        length_bytes = 16
+
+        iv = [
+            0xcbbb_9d5d_c105_9ed8, 0x629a_292a_367c_d507, 0x9159_015a_3070_dd17, 0x152f_ecd8_f70e_5939,
+            0x6733_2667_ffc0_0b31, 0x8eb4_4a87_6858_1511, 0xdb0c_2e0d_64f9_8fa7, 0x47b5_481d_befa_4fa4,
+        ]
+        c = [
+            0x243f_6a88_85a3_08d3, 0x1319_8a2e_0370_7344, 0xa409_3822_299f_31d0, 0x082e_fa98_ec4e_6c89,
+            0x4528_21e6_38d0_1377, 0xbe54_66cf_34e9_0c6c, 0xc0ac_29b7_c97c_50dd, 0x3f84_d5b5_b547_0917,
+            0x9216_d5d9_8979_fb1b, 0xd131_0ba6_98df_b5ac, 0x2ffd_72db_d01a_dfb7, 0xb8e1_afed_6a26_7e96,
+            0xba7c_9045_f12c_7f99, 0x24a1_9947_b391_6cf7, 0x0801_f2e2_858e_fc16, 0x6369_20d8_7157_4e69,
+        ]
+
+    class BLAKE512(BLAKEBase):
+        block_size = 128
+        digest_size = 64
+        word_bits = 64
+        rounds = 16
+        pad_delim = 0x01
+        length_bytes = 16
+
+        iv = [
+            0x6a09_e667_f3bc_c908, 0xbb67_ae85_84ca_a73b, 0x3c6e_f372_fe94_f82b, 0xa54f_f53a_5f1d_36f1,
+            0x510e_527f_ade6_82d1, 0x9b05_688c_2b3e_6c1f, 0x1f83_d9ab_fb41_bd6b, 0x5be0_cd19_137e_2179,
+        ]
+        c = [
+            0x243f_6a88_85a3_08d3, 0x1319_8a2e_0370_7344, 0xa409_3822_299f_31d0, 0x082e_fa98_ec4e_6c89,
+            0x4528_21e6_38d0_1377, 0xbe54_66cf_34e9_0c6c, 0xc0ac_29b7_c97c_50dd, 0x3f84_d5b5_b547_0917,
+            0x9216_d5d9_8979_fb1b, 0xd131_0ba6_98df_b5ac, 0x2ffd_72db_d01a_dfb7, 0xb8e1_afed_6a26_7e96,
+            0xba7c_9045_f12c_7f99, 0x24a1_9947_b391_6cf7, 0x0801_f2e2_858e_fc16, 0x6369_20d8_7157_4e69,
+        ]
+
+    class BLAKE3:
+        # BLAKE3 (default, unkeyed) / 256-bit output by default
+        block_size = 64
+        digest_size = 32
+        block_len = 64
+        chunk_len = 1024
+
+        # flags
+        chunk_start = 0x0000_0001
+        chunk_end = 0x0000_0002
+        parent = 0x0000_0004
+        root = 0x0000_0008
+
+        # IV == BLAKE2s IV (BLAKE3 also uses this)
+        iv = [
+            0x6a09_e667, 0xbb67_ae85, 0x3c6e_f372, 0xa54f_f53a,
+            0x510e_527f, 0x9b05_688c, 0x1f83_d9ab, 0x5be0_cd19,
+        ]
+
+        msg_perm = [
+            0x02, 0x06, 0x03, 0x0a,
+            0x07, 0x00, 0x04, 0x0d,
+            0x01, 0x0b, 0x0c, 0x05,
+            0x09, 0x0e, 0x0f, 0x08,
+        ]
+
+        def __init__(self, data=b"", digest_bits=256):
+            self.key_words = self.iv[:] # default unkeyed hash uses IV as key
+            self.flags = 0x0000_0000
+            self.chunk_counter = 0
+            self.cv_stack = []  # list of chaining values (each is 8 words)
+            self.cs_cv = self.key_words[:]
+            self.cs_block = bytearray()
+            self.cs_blocks_compressed = 0 # number of full 64-byte blocks already compressed in this chunk (0..15)
+            self.digest_size = digest_bits // 8 # It can also be specified when issuing a digest
+            if data:
+                self.update(data)
+            return
+
+        @staticmethod
+        def rotr32(x, n):
+            x &= 0xffff_ffff
+            return ((x >> n) | ((x << (32 - n)) & 0xffff_ffff)) & 0xffff_ffff
+
+        @staticmethod
+        def to_words_le_16(block64):
+            # block64: bytes-like, length == 64
+            return [int.from_bytes(block64[i:i + 4], "little") for i in range(0, 64, 4)]
+
+        def g(self, v, a, b, c, d, x, y):
+            v[a] = (v[a] + v[b] + x) & 0xffff_ffff
+            v[d] = self.rotr32(v[d] ^ v[a], 16)
+            v[c] = (v[c] + v[d]) & 0xffff_ffff
+            v[b] = self.rotr32(v[b] ^ v[c], 12)
+            v[a] = (v[a] + v[b] + y) & 0xffff_ffff
+            v[d] = self.rotr32(v[d] ^ v[a], 8)
+            v[c] = (v[c] + v[d]) & 0xffff_ffff
+            v[b] = self.rotr32(v[b] ^ v[c], 7)
+            return
+
+        def compress(self, cv, block_words, counter, block_len, flags):
+            # cv: 8 words, block_words: 16 words
+            v = [0] * 16
+            v[0:8] = [w & 0xffff_ffff for w in cv]
+            v[8:16] = self.iv[:]
+
+            v[12] = counter & 0xffff_ffff
+            v[13] = (counter >> 32) & 0xffff_ffff
+            v[14] = block_len & 0xffff_ffff
+            v[15] = flags & 0xffff_ffff
+
+            m = [w & 0xffff_ffff for w in block_words]
+
+            for _round in range(7):
+                # columns
+                self.g(v, 0, 4, 8, 12, m[0], m[1])
+                self.g(v, 1, 5, 9, 13, m[2], m[3])
+                self.g(v, 2, 6, 10, 14, m[4], m[5])
+                self.g(v, 3, 7, 11, 15, m[6], m[7])
+                # diagonals
+                self.g(v, 0, 5, 10, 15, m[8], m[9])
+                self.g(v, 1, 6, 11, 12, m[10], m[11])
+                self.g(v, 2, 7, 8, 13, m[12], m[13])
+                self.g(v, 3, 4, 9, 14, m[14], m[15])
+
+                # permute message words for next round
+                mp = [0] * 16
+                for i in range(16):
+                    mp[i] = m[self.msg_perm[i]]
+                m = mp
+
+            out = [0] * 16
+            for i in range(8):
+                out[i] = (v[i] ^ v[i + 8]) & 0xffff_ffff
+            for i in range(8):
+                out[i + 8] = (v[i + 8] ^ (cv[i] & 0xffff_ffff)) & 0xffff_ffff
+            return out
+
+        def chunk_state_len(self):
+            return self.cs_blocks_compressed * self.block_len + len(self.cs_block)
+
+        def chunk_output(self):
+            # returns an "output descriptor": (cv, block_words16, counter, block_len, flags)
+            block_len = len(self.cs_block)
+            block = bytes(self.cs_block)
+            if block_len < self.block_len:
+                block = block + b"\x00" * (self.block_len - block_len)
+            block_words = self.to_words_le_16(block)
+            flags = self.flags | self.chunk_end
+            if self.cs_blocks_compressed == 0:
+                flags |= self.chunk_start
+            return (self.cs_cv[:], block_words, self.chunk_counter, block_len, flags)
+
+        def output_chaining_value(self, outdesc):
+            cv, block_words, counter, block_len, flags = outdesc
+            return self.compress(cv, block_words, counter, block_len, flags)[0:8]
+
+        def parent_outdesc(self, left_cv, right_cv):
+            block_words = [(w & 0xffff_ffff) for w in (left_cv + right_cv)]
+            return (self.key_words[:], block_words, 0, self.block_len, self.flags | self.parent)
+
+        def add_chunk_cv(self, chunk_cv):
+            # stack merge by chunk index (standard Merkle stacking)
+            i = self.chunk_counter  # current chunk index (0-based) just completed
+            cv = chunk_cv
+            while (i & 1) == 1:
+                left = self.cv_stack.pop()
+                cv = self.output_chaining_value(self.parent_outdesc(left, cv))
+                i >>= 1
+            self.cv_stack.append(cv)
+            return
+
+        def update(self, data):
+            if not data:
+                return self
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+
+            mv = memoryview(data)
+            off = 0
+            n = len(mv)
+
+            while off < n:
+                # fill current chunk up to 1024 bytes
+                chunk_pos = self.chunk_state_len()
+                want = self.chunk_len - chunk_pos
+                take = want if want < (n - off) else (n - off)
+
+                self.cs_block.extend(mv[off:off + take])
+                off += take
+
+                # compress full blocks except the last block of the chunk (block index 15)
+                while len(self.cs_block) == self.block_len and self.cs_blocks_compressed < 15:
+                    block_words = self.to_words_le_16(bytes(self.cs_block))
+                    flags = self.flags
+                    if self.cs_blocks_compressed == 0:
+                        flags |= self.chunk_start
+                    out = self.compress(self.cs_cv, block_words, self.chunk_counter, self.block_len, flags)
+                    self.cs_cv = out[0:8]
+                    self.cs_blocks_compressed += 1
+                    self.cs_block = bytearray()
+
+                # if we exactly filled the chunk (15 blocks compressed + 1 block buffered),
+                # only finalize it now if there is more input to process. If not, leave it for digest().
+                if self.cs_blocks_compressed == 15 and len(self.cs_block) == self.block_len and off < n:
+                    outdesc = self.chunk_output()
+                    chunk_cv = self.output_chaining_value(outdesc)
+                    self.add_chunk_cv(chunk_cv)
+
+                    # move to next chunk
+                    self.chunk_counter += 1
+                    self.cs_cv = self.key_words[:]
+                    self.cs_block = bytearray()
+                    self.cs_blocks_compressed = 0
+            return self
+
+        def final_root_outdesc(self):
+            # finalize current chunk, fold stack into parents, mark ROOT
+            outdesc = self.chunk_output()
+            cv = self.output_chaining_value(outdesc)
+
+            # fold stack from right to left: parent(left_subtree, current)
+            while self.cv_stack:
+                left = self.cv_stack.pop()
+                outdesc = self.parent_outdesc(left, cv)
+                cv = self.output_chaining_value(outdesc)
+
+            # mark root
+            cv0, bw, ctr, bl, fl = outdesc
+            outdesc = (cv0, bw, ctr, bl, fl | self.root)
+            return outdesc
+
+        def digest(self, length=None):
+            if length is None:
+                length = self.digest_size
+            if not isinstance(length, int) or length < 0:
+                raise ValueError("length must be a non-negative int")
+
+            # clone state
+            clone = self.__class__()
+            clone.key_words = self.key_words[:]
+            clone.flags = self.flags
+            clone.chunk_counter = self.chunk_counter
+            clone.cv_stack = [cv[:] for cv in self.cv_stack]
+            clone.cs_cv = self.cs_cv[:]
+            clone.cs_block = bytearray(self.cs_block)
+            clone.cs_blocks_compressed = self.cs_blocks_compressed
+
+            outdesc = clone.final_root_outdesc()
+            cv, block_words, counter, block_len, flags = outdesc
+
+            # XOF output: produce 64-byte output blocks indexed by output_counter
+            out = bytearray()
+            out_counter = 0
+            while len(out) < length:
+                words16 = clone.compress(cv, block_words, out_counter, block_len, flags)
+                block = b"".join((w & 0xffff_ffff).to_bytes(4, "little") for w in words16)
+                out.extend(block)
+                out_counter += 1
+            return bytes(out[:length])
+
+        def hexdigest(self, length=None):
+            return self.digest(length).hex()
+
+    class XXHashBase:
+        prime32_1 = 0x9e37_79b1
+        prime32_2 = 0x85eb_ca77
+        prime32_3 = 0xc2b2_ae3d
+        prime32_4 = 0x27d4_eb2f
+        prime32_5 = 0x1656_67b1
+
+        prime64_1 = 0x9e37_79b1_85eb_ca87
+        prime64_2 = 0xc2b2_ae3d_27d4_eb4f
+        prime64_3 = 0x1656_67b1_9e37_79f9
+        prime64_4 = 0x85eb_ca77_c2b2_ae63
+        prime64_5 = 0x27d4_eb2f_1656_67c5
+
+        prime_mx1 = 0x1656_6791_9e37_79f9
+        prime_mx2 = 0x9fb2_1c65_1e98_df25
+
+        default_secret = bytes([
+            0xb8, 0xfe, 0x6c, 0x39, 0x23, 0xa4, 0x4b, 0xbe,
+            0x7c, 0x01, 0x81, 0x2c, 0xf7, 0x21, 0xad, 0x1c,
+            0xde, 0xd4, 0x6d, 0xe9, 0x83, 0x90, 0x97, 0xdb,
+            0x72, 0x40, 0xa4, 0xa4, 0xb7, 0xb3, 0x67, 0x1f,
+            0xcb, 0x79, 0xe6, 0x4e, 0xcc, 0xc0, 0xe5, 0x78,
+            0x82, 0x5a, 0xd0, 0x7d, 0xcc, 0xff, 0x72, 0x21,
+            0xb8, 0x08, 0x46, 0x74, 0xf7, 0x43, 0x24, 0x8e,
+            0xe0, 0x35, 0x90, 0xe6, 0x81, 0x3a, 0x26, 0x4c,
+            0x3c, 0x28, 0x52, 0xbb, 0x91, 0xc3, 0x00, 0xcb,
+            0x88, 0xd0, 0x65, 0x8b, 0x1b, 0x53, 0x2e, 0xa3,
+            0x71, 0x64, 0x48, 0x97, 0xa2, 0x0d, 0xf9, 0x4e,
+            0x38, 0x19, 0xef, 0x46, 0xa9, 0xde, 0xac, 0xd8,
+            0xa8, 0xfa, 0x76, 0x3f, 0xe3, 0x9c, 0x34, 0x3f,
+            0xf9, 0xdc, 0xbb, 0xc7, 0xc7, 0x0b, 0x4f, 0x1d,
+            0x8a, 0x51, 0xe0, 0x4b, 0xcd, 0xb4, 0x59, 0x31,
+            0xc8, 0x9f, 0x7e, 0xc9, 0xd9, 0x78, 0x73, 0x64,
+            0xea, 0xc5, 0xac, 0x83, 0x34, 0xd3, 0xeb, 0xc3,
+            0xc5, 0x81, 0xa0, 0xff, 0xfa, 0x13, 0x63, 0xeb,
+            0x17, 0x0d, 0xdd, 0x51, 0xb7, 0xf0, 0xda, 0x49,
+            0xd3, 0x16, 0x55, 0x26, 0x29, 0xd4, 0x68, 0x9e,
+            0x2b, 0x16, 0xbe, 0x58, 0x7d, 0x47, 0xa1, 0xfc,
+            0x8f, 0xf8, 0xb8, 0xd1, 0x7a, 0xd0, 0x31, 0xce,
+            0x45, 0xcb, 0x3a, 0x8f, 0x95, 0x16, 0x04, 0x28,
+            0xaf, 0xd7, 0xfb, 0xca, 0xbb, 0x4b, 0x40, 0x7e,
+        ])
+
+        def __init__(self, seed=0):
+            self.seed = seed & 0xffff_ffff_ffff_ffff
+            self.buf = b""
+            self.total = 0
+            return
+
+        def update(self, data):
+            if not data:
+                return self
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            b = bytes(data)
+            self.buf += b
+            self.total += len(b)
+            return self
+
+        def digest(self):
+            raise NotImplementedError("digest must be implemented in subclass")
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def mask32(self, x):
+            return x & 0xffff_ffff
+
+        def mask64(self, x):
+            return x & 0xffff_ffff_ffff_ffff
+
+        def rol32(self, x, r):
+            x = self.mask32(x)
+            r &= 31
+            return self.mask32((x << r) | (x >> (32 - r)))
+
+        def rol64(self, x, r):
+            x = self.mask64(x)
+            r &= 63
+            return self.mask64((x << r) | (x >> (64 - r)))
+
+        def bswap32(self, x):
+            x = self.mask32(x)
+            return int.from_bytes(x.to_bytes(4, "little"), "big")
+
+        def bswap64(self, x):
+            x = self.mask64(x)
+            return int.from_bytes(x.to_bytes(8, "little"), "big")
+
+        def read32_le(self, b, off):
+            return int.from_bytes(b[off:off + 4], "little")
+
+        def read64_le(self, b, off):
+            return int.from_bytes(b[off:off + 8], "little")
+
+        def lower32(self, x):
+            return x & 0xffff_ffff
+
+        def higher32(self, x):
+            return (x >> 32) & 0xffff_ffff
+
+        def lower64(self, x):
+            return x & 0xffff_ffff_ffff_ffff
+
+        def higher64(self, x):
+            return (x >> 64) & 0xffff_ffff_ffff_ffff
+
+        def avalanche_xxh64(self, x):
+            x = self.mask64(x)
+            x ^= (x >> 33)
+            x = self.mask64(x * self.prime64_2)
+            x ^= (x >> 29)
+            x = self.mask64(x * self.prime64_3)
+            x ^= (x >> 32)
+            return self.mask64(x)
+
+        def avalanche_xxh3(self, x):
+            x = self.mask64(x)
+            x ^= (x >> 37)
+            x = self.mask64(x * self.prime_mx1)
+            x ^= (x >> 32)
+            return self.mask64(x)
+
+        def derive_secret(self, seed):
+            seed = seed & 0xffff_ffff_ffff_ffff
+            words = [self.read64_le(self.default_secret, i * 8) for i in range(24)]
+            for i in range(12):
+                words[i * 2] = self.mask64(words[i * 2] + seed)
+                words[i * 2 + 1] = self.mask64(words[i * 2 + 1] - seed)
+            out = b"".join(w.to_bytes(8, "little") for w in words)
+            return out
+
+    class XXH32(XXHashBase):
+        def round32(self, acc, lane):
+            acc = self.mask32(acc + self.mask32(lane * self.prime32_2))
+            acc = self.rol32(acc, 13)
+            acc = self.mask32(acc * self.prime32_1)
+            return acc
+
+        def avalanche32(self, h):
+            h = self.mask32(h)
+            h ^= (h >> 15)
+            h = self.mask32(h * self.prime32_2)
+            h ^= (h >> 13)
+            h = self.mask32(h * self.prime32_3)
+            h ^= (h >> 16)
+            return self.mask32(h)
+
+        def digest(self):
+            data = self.buf
+            seed32 = self.seed & 0xffff_ffff
+            n = len(data)
+            p = 0
+
+            if n >= 16:
+                acc1 = self.mask32(seed32 + self.prime32_1 + self.prime32_2)
+                acc2 = self.mask32(seed32 + self.prime32_2)
+                acc3 = self.mask32(seed32 + 0)
+                acc4 = self.mask32(seed32 - self.prime32_1)
+
+                limit = n - 16
+                while p <= limit:
+                    acc1 = self.round32(acc1, self.read32_le(data, p)); p += 4 # noqa: E702
+                    acc2 = self.round32(acc2, self.read32_le(data, p)); p += 4 # noqa: E702
+                    acc3 = self.round32(acc3, self.read32_le(data, p)); p += 4 # noqa: E702
+                    acc4 = self.round32(acc4, self.read32_le(data, p)); p += 4 # noqa: E702
+
+                h32 = self.mask32(
+                    self.rol32(acc1, 1) + self.rol32(acc2, 7) + self.rol32(acc3, 12) + self.rol32(acc4, 18)
+                )
+            else:
+                h32 = self.mask32(seed32 + self.prime32_5)
+
+            h32 = self.mask32(h32 + n)
+
+            while p + 4 <= n:
+                h32 = self.mask32(h32 + self.mask32(self.read32_le(data, p) * self.prime32_3))
+                h32 = self.rol32(h32, 17)
+                h32 = self.mask32(h32 * self.prime32_4)
+                p += 4
+
+            while p < n:
+                h32 = self.mask32(h32 + self.mask32(data[p] * self.prime32_5))
+                h32 = self.rol32(h32, 11)
+                h32 = self.mask32(h32 * self.prime32_1)
+                p += 1
+
+            h32 = self.avalanche32(h32)
+            return h32.to_bytes(4, "big")
+
+    class XXH64(XXHashBase):
+        def round64(self, acc, lane):
+            acc = self.mask64(acc + self.mask64(lane * self.prime64_2))
+            acc = self.rol64(acc, 31)
+            acc = self.mask64(acc * self.prime64_1)
+            return acc
+
+        def merge_round64(self, acc, val):
+            v = self.round64(0, val)
+            acc ^= v
+            acc = self.mask64(acc * self.prime64_1 + self.prime64_4)
+            return self.mask64(acc)
+
+        def digest(self):
+            data = self.buf
+            seed = self.seed
+            n = len(data)
+            p = 0
+
+            if n >= 32:
+                acc1 = self.mask64(seed + self.prime64_1 + self.prime64_2)
+                acc2 = self.mask64(seed + self.prime64_2)
+                acc3 = self.mask64(seed + 0)
+                acc4 = self.mask64(seed - self.prime64_1)
+
+                limit = n - 32
+                while p <= limit:
+                    acc1 = self.round64(acc1, self.read64_le(data, p)); p += 8 # noqa: E702
+                    acc2 = self.round64(acc2, self.read64_le(data, p)); p += 8 # noqa: E702
+                    acc3 = self.round64(acc3, self.read64_le(data, p)); p += 8 # noqa: E702
+                    acc4 = self.round64(acc4, self.read64_le(data, p)); p += 8 # noqa: E702
+
+                h64 = self.mask64(
+                    self.rol64(acc1, 1) + self.rol64(acc2, 7) + self.rol64(acc3, 12) + self.rol64(acc4, 18)
+                )
+                h64 = self.merge_round64(h64, acc1)
+                h64 = self.merge_round64(h64, acc2)
+                h64 = self.merge_round64(h64, acc3)
+                h64 = self.merge_round64(h64, acc4)
+            else:
+                h64 = self.mask64(seed + self.prime64_5)
+
+            h64 = self.mask64(h64 + n)
+
+            while p + 8 <= n:
+                k1 = self.round64(0, self.read64_le(data, p))
+                h64 ^= k1
+                h64 = self.mask64(self.rol64(h64, 27) * self.prime64_1 + self.prime64_4)
+                p += 8
+
+            if p + 4 <= n:
+                h64 ^= self.mask64(self.read32_le(data, p) * self.prime64_1)
+                h64 = self.mask64(self.rol64(h64, 23) * self.prime64_2 + self.prime64_3)
+                p += 4
+
+            while p < n:
+                h64 ^= self.mask64(data[p] * self.prime64_5)
+                h64 = self.mask64(self.rol64(h64, 11) * self.prime64_1)
+                p += 1
+
+            h64 = self.avalanche_xxh64(h64)
+            return h64.to_bytes(8, "big")
+
+    class XXH3Base(XXHashBase):
+        def secret_for_length(self, n):
+            if n > 240 and self.seed != 0:
+                return self.derive_secret(self.seed)
+            return self.default_secret
+
+        def mix_step(self, data16, secret, secret_offset, seed):
+            dw0 = int.from_bytes(data16[0:8], "little")
+            dw1 = int.from_bytes(data16[8:16], "little")
+            sw0 = int.from_bytes(secret[secret_offset:secret_offset + 8], "little")
+            sw1 = int.from_bytes(secret[secret_offset + 8:secret_offset + 16], "little")
+            mul = (dw0 ^ self.mask64(sw0 + seed)) * (dw1 ^ self.mask64(sw1 - seed))
+            return self.lower64(mul) ^ self.higher64(mul)
+
+        def accumulate_stripe(self, acc, stripe64bytes, secret, secret_offset):
+            secret_words = [
+                int.from_bytes(secret[secret_offset + i * 8:secret_offset + i * 8 + 8], "little") for i in range(8)
+            ]
+            stripe_words = [int.from_bytes(stripe64bytes[i * 8:i * 8 + 8], "little") for i in range(8)]
+            for i in range(8):
+                value = self.mask64(stripe_words[i] ^ secret_words[i])
+                acc[i ^ 1] = self.mask64(acc[i ^ 1] + stripe_words[i])
+                prod = self.lower32(value) * self.higher32(value)
+                acc[i] = self.mask64(acc[i] + prod)
+            return acc
+
+        def scramble_acc(self, acc, secret):
+            secret_len = len(secret)
+            tail = secret[secret_len - 64:secret_len]
+            secret_words = [int.from_bytes(tail[i * 8:i * 8 + 8], "little") for i in range(8)]
+            for i in range(8):
+                v = acc[i]
+                v ^= (v >> 47)
+                v ^= secret_words[i]
+                v = self.mask64(v * self.prime32_1)
+                acc[i] = v
+            return acc
+
+        def final_merge(self, acc, secret, init_value, secret_offset):
+            secret_words = [
+                int.from_bytes(secret[secret_offset + i * 8:secret_offset + i * 8 + 8], "little") for i in range(8)
+            ]
+            result = self.mask64(init_value)
+            for i in range(4):
+                a = acc[i * 2] ^ secret_words[i * 2]
+                b = acc[i * 2 + 1] ^ secret_words[i * 2 + 1]
+                mul = self.mask64(a) * self.mask64(b)
+                result = self.mask64(result + (self.lower64(mul) ^ self.higher64(mul)))
+            result = self.avalanche_xxh3(result)
+            return result
+
+    class XXH3_64(XXH3Base):
+        def digest(self):
+            data = self.buf
+            n = len(data)
+            seed = self.seed
+            secret = self.secret_for_length(n)
+
+            if n == 0:
+                sw0 = int.from_bytes(secret[56:64], "little")
+                sw1 = int.from_bytes(secret[64:72], "little")
+                out = self.avalanche_xxh64(seed ^ sw0 ^ sw1)
+                return out.to_bytes(8, "big")
+
+            if n <= 3:
+                combined = data[n - 1] | (n << 8) | (data[0] << 16) | (data[n >> 1] << 24)
+                s0 = int.from_bytes(secret[0:4], "little")
+                s1 = int.from_bytes(secret[4:8], "little")
+                value = self.mask64((s0 ^ s1) + seed) ^ combined
+                out = self.avalanche_xxh64(value)
+                return out.to_bytes(8, "big")
+
+            if n <= 8:
+                input_first = int.from_bytes(data[0:4], "little")
+                input_last = int.from_bytes(data[n - 4:n], "little")
+                modified_seed = seed ^ (self.bswap32(self.lower32(seed)) << 32)
+                sw0 = int.from_bytes(secret[8:16], "little")
+                sw1 = int.from_bytes(secret[16:24], "little")
+                combined = self.mask64(input_last | (input_first << 32))
+                value = self.mask64((sw0 ^ sw1) - modified_seed) ^ combined
+                value ^= self.rol64(value, 49) ^ self.rol64(value, 24)
+                value = self.mask64(value * self.prime_mx2)
+                value ^= self.mask64((value >> 35) + n)
+                value = self.mask64(value * self.prime_mx2)
+                value ^= (value >> 28)
+                return self.mask64(value).to_bytes(8, "big")
+
+            if n <= 16:
+                input_first = int.from_bytes(data[0:8], "little")
+                input_last = int.from_bytes(data[n - 8:n], "little")
+                sw0 = int.from_bytes(secret[24:32], "little")
+                sw1 = int.from_bytes(secret[32:40], "little")
+                sw2 = int.from_bytes(secret[40:48], "little")
+                sw3 = int.from_bytes(secret[48:56], "little")
+                low = self.mask64((sw0 ^ sw1) + seed) ^ input_first
+                high = self.mask64((sw2 ^ sw3) - seed) ^ input_last
+                mul = self.mask64(low) * self.mask64(high)
+                value = self.mask64(n + self.bswap64(low) + high + (self.lower64(mul) ^ self.higher64(mul)))
+                out = self.avalanche_xxh3(value)
+                return out.to_bytes(8, "big")
+
+            if n <= 128:
+                acc = self.mask64(n * self.prime64_1)
+                num_rounds = ((n - 1) >> 5) + 1
+                for i in range(num_rounds - 1, -1, -1):
+                    off_start = i * 16
+                    off_end = n - i * 16 - 16
+                    acc = self.mask64(acc + self.mix_step(data[off_start:off_start + 16], secret, i * 32, seed))
+                    acc = self.mask64(acc + self.mix_step(data[off_end:off_end + 16], secret, i * 32 + 16, seed))
+                out = self.avalanche_xxh3(acc)
+                return out.to_bytes(8, "big")
+
+            if n <= 240:
+                acc = self.mask64(n * self.prime64_1)
+                num_chunks = n >> 4
+                for i in range(8):
+                    acc = self.mask64(acc + self.mix_step(data[i * 16:i * 16 + 16], secret, i * 16, seed))
+                acc = self.avalanche_xxh3(acc)
+                for i in range(8, num_chunks):
+                    acc = self.mask64(acc + self.mix_step(data[i * 16:i * 16 + 16], secret, (i - 8) * 16 + 3, seed))
+                acc = self.mask64(acc + self.mix_step(data[n - 16:n], secret, 119, seed))
+                out = self.avalanche_xxh3(acc)
+                return out.to_bytes(8, "big")
+
+            # large
+            secret_len = len(secret)
+            stripes_per_block = (secret_len - 64) // 8
+            block_size = 64 * stripes_per_block
+
+            acc = [
+                self.prime32_3,
+                self.prime64_1,
+                self.prime64_2,
+                self.prime64_3,
+                self.prime64_4,
+                self.prime32_2,
+                self.prime64_5,
+                self.prime32_1,
+            ]
+            acc = [self.mask64(x) for x in acc]
+
+            p = 0
+            while n - p > block_size:
+                block = data[p:p + block_size]
+                for stripe_index in range(stripes_per_block):
+                    stripe = block[stripe_index * 64:stripe_index * 64 + 64]
+                    acc = self.accumulate_stripe(acc, stripe, secret, stripe_index * 8)
+                acc = self.scramble_acc(acc, secret)
+                p += block_size
+
+            # last round
+            last = data[p:]
+            last_len = len(last)
+            n_full = (last_len - 1) // 64
+            for stripe_index in range(n_full):
+                stripe = last[stripe_index * 64:stripe_index * 64 + 64]
+                acc = self.accumulate_stripe(acc, stripe, secret, stripe_index * 8)
+            last_stripe = data[n - 64:n]
+            acc = self.accumulate_stripe(acc, last_stripe, secret, secret_len - 71)
+
+            out = self.final_merge(acc, secret, self.mask64(n * self.prime64_1), 11)
+            return out.to_bytes(8, "big")
+
+    class XXH3_128(XXH3Base):
+        def digest(self):
+            data = self.buf
+            n = len(data)
+            seed = self.seed
+            secret = self.secret_for_length(n)
+
+            def pack128(low, high):
+                return self.mask64(high).to_bytes(8, "big") + self.mask64(low).to_bytes(8, "big")
+
+            if n == 0:
+                sw0 = int.from_bytes(secret[64:72], "little")
+                sw1 = int.from_bytes(secret[72:80], "little")
+                sw2 = int.from_bytes(secret[80:88], "little")
+                sw3 = int.from_bytes(secret[88:96], "little")
+                low = self.avalanche_xxh64(seed ^ sw0 ^ sw1)
+                high = self.avalanche_xxh64(seed ^ sw2 ^ sw3)
+                return pack128(low, high)
+
+            if n <= 3:
+                combined = data[n - 1] | (n << 8) | (data[0] << 16) | (data[n >> 1] << 24)
+                s0 = int.from_bytes(secret[0:4], "little")
+                s1 = int.from_bytes(secret[4:8], "little")
+                s2 = int.from_bytes(secret[8:12], "little")
+                s3 = int.from_bytes(secret[12:16], "little")
+                low = self.mask64((s0 ^ s1) + seed) ^ combined
+                rot = self.rol32(self.bswap32(combined), 13)
+                high = self.mask64((s2 ^ s3) - seed) ^ rot
+                low = self.avalanche_xxh64(low)
+                high = self.avalanche_xxh64(high)
+                return pack128(low, high)
+
+            if n <= 8:
+                input_first = int.from_bytes(data[0:4], "little")
+                input_last = int.from_bytes(data[n - 4:n], "little")
+                modified_seed = seed ^ (self.bswap32(self.lower32(seed)) << 32)
+                sw0 = int.from_bytes(secret[16:24], "little")
+                sw1 = int.from_bytes(secret[24:32], "little")
+                combined = self.mask64(input_first | (input_last << 32))
+                value = self.mask64((sw0 ^ sw1) + modified_seed) ^ combined
+                mul = self.mask64(value) * self.mask64(self.prime64_1 + (n << 2))
+                high = self.higher64(mul)
+                low = self.lower64(mul)
+                high = self.mask64(high + (low << 1))
+                low ^= (high >> 3)
+                low ^= (low >> 35)
+                low = self.mask64(low * self.prime_mx2)
+                low ^= (low >> 28)
+                high = self.avalanche_xxh3(high)
+                return pack128(low, high)
+
+            if n <= 16:
+                input_first = int.from_bytes(data[0:8], "little")
+                input_last = int.from_bytes(data[n - 8:n], "little")
+                sw0 = int.from_bytes(secret[32:40], "little")
+                sw1 = int.from_bytes(secret[40:48], "little")
+                sw2 = int.from_bytes(secret[48:56], "little")
+                sw3 = int.from_bytes(secret[56:64], "little")
+
+                val1 = self.mask64((sw0 ^ sw1) - seed) ^ input_first ^ input_last
+                val2 = self.mask64((sw2 ^ sw3) + seed) ^ input_last
+
+                mul1 = self.mask64(val1) * self.prime64_1
+                low = self.mask64(self.lower64(mul1) + ((n - 1) << 54))
+                high = self.mask64(
+                    self.higher64(mul1) + \
+                    (self.higher32(val2) << 32) + \
+                    self.lower32(val2) * self.prime32_2,
+                )
+
+                low ^= self.bswap64(high)
+
+                mul2 = self.mask64(low) * self.prime64_2
+                low2 = self.lower64(mul2)
+                high2 = self.mask64(self.higher64(mul2) + high * self.prime64_2)
+
+                low_out = self.avalanche_xxh3(low2)
+                high_out = self.avalanche_xxh3(high2)
+                return pack128(low_out, high_out)
+
+            # medium
+            if n <= 240:
+                acc0 = self.mask64(n * self.prime64_1)
+                acc1 = 0
+
+                if n <= 128:
+                    num_rounds = ((n - 1) >> 5) + 1
+                    for i in range(num_rounds - 1, -1, -1):
+                        off_start = i * 16
+                        off_end = n - i * 16 - 16
+                        d1 = data[off_start:off_start + 16]
+                        d2 = data[off_end:off_end + 16]
+                        acc0 = self.mask64(acc0 + self.mix_step(d1, secret, i * 32, seed))
+                        acc1 = self.mask64(acc1 + self.mix_step(d2, secret, i * 32 + 16, seed))
+                        dw1_0 = int.from_bytes(d1[0:8], "little")
+                        dw1_1 = int.from_bytes(d1[8:16], "little")
+                        dw2_0 = int.from_bytes(d2[0:8], "little")
+                        dw2_1 = int.from_bytes(d2[8:16], "little")
+                        acc0 ^= self.mask64(dw2_0 + dw2_1)
+                        acc1 ^= self.mask64(dw1_0 + dw1_1)
+                else:
+                    num_chunks = n >> 5
+                    for i in range(4):
+                        base = i * 32
+                        d1 = data[base:base + 16]
+                        d2 = data[base + 16:base + 32]
+                        acc0 = self.mask64(acc0 + self.mix_step(d1, secret, i * 32, seed))
+                        acc1 = self.mask64(acc1 + self.mix_step(d2, secret, i * 32 + 16, seed))
+                        dw1_0 = int.from_bytes(d1[0:8], "little")
+                        dw1_1 = int.from_bytes(d1[8:16], "little")
+                        dw2_0 = int.from_bytes(d2[0:8], "little")
+                        dw2_1 = int.from_bytes(d2[8:16], "little")
+                        acc0 ^= self.mask64(dw2_0 + dw2_1)
+                        acc1 ^= self.mask64(dw1_0 + dw1_1)
+
+                    acc0 = self.avalanche_xxh3(acc0)
+                    acc1 = self.avalanche_xxh3(acc1)
+
+                    for i in range(4, num_chunks):
+                        base = i * 32
+                        d1 = data[base:base + 16]
+                        d2 = data[base + 16:base + 32]
+                        off = (i - 4) * 32 + 3
+                        acc0 = self.mask64(acc0 + self.mix_step(d1, secret, off, seed))
+                        acc1 = self.mask64(acc1 + self.mix_step(d2, secret, off + 16, seed))
+                        dw1_0 = int.from_bytes(d1[0:8], "little")
+                        dw1_1 = int.from_bytes(d1[8:16], "little")
+                        dw2_0 = int.from_bytes(d2[0:8], "little")
+                        dw2_1 = int.from_bytes(d2[8:16], "little")
+                        acc0 ^= self.mask64(dw2_0 + dw2_1)
+                        acc1 ^= self.mask64(dw1_0 + dw1_1)
+
+                    # last mixed: note different half-order and seed negation
+                    d1 = data[n - 16:n]
+                    d2 = data[n - 32:n - 16]
+                    neg_seed = self.mask64(0 - seed)
+                    acc0 = self.mask64(acc0 + self.mix_step(d1, secret, 103, neg_seed))
+                    acc1 = self.mask64(acc1 + self.mix_step(d2, secret, 103 + 16, neg_seed))
+                    dw1_0 = int.from_bytes(d1[0:8], "little")
+                    dw1_1 = int.from_bytes(d1[8:16], "little")
+                    dw2_0 = int.from_bytes(d2[0:8], "little")
+                    dw2_1 = int.from_bytes(d2[8:16], "little")
+                    acc0 ^= self.mask64(dw2_0 + dw2_1)
+                    acc1 ^= self.mask64(dw1_0 + dw1_1)
+
+                low = self.mask64(acc0 + acc1)
+                high = self.mask64(
+                    (acc0 * self.prime64_1) + \
+                    (acc1 * self.prime64_4) + \
+                    (self.mask64(n - seed) * self.prime64_2),
+                )
+                low_out = self.avalanche_xxh3(low)
+                high_out = self.mask64(0 - self.avalanche_xxh3(high))
+                return pack128(low_out, high_out)
+
+            # large
+            secret_len = len(secret)
+            stripes_per_block = (secret_len - 64) // 8
+            block_size = 64 * stripes_per_block
+
+            acc = [
+                self.prime32_3,
+                self.prime64_1,
+                self.prime64_2,
+                self.prime64_3,
+                self.prime64_4,
+                self.prime32_2,
+                self.prime64_5,
+                self.prime32_1,
+            ]
+            acc = [self.mask64(x) for x in acc]
+
+            p = 0
+            while n - p > block_size:
+                block = data[p:p + block_size]
+                for stripe_index in range(stripes_per_block):
+                    stripe = block[stripe_index * 64:stripe_index * 64 + 64]
+                    acc = self.accumulate_stripe(acc, stripe, secret, stripe_index * 8)
+                acc = self.scramble_acc(acc, secret)
+                p += block_size
+
+            last = data[p:]
+            last_len = len(last)
+            n_full = (last_len - 1) // 64
+            for stripe_index in range(n_full):
+                stripe = last[stripe_index * 64:stripe_index * 64 + 64]
+                acc = self.accumulate_stripe(acc, stripe, secret, stripe_index * 8)
+
+            last_stripe = data[n - 64:n]
+            acc = self.accumulate_stripe(acc, last_stripe, secret, secret_len - 71)
+
+            low = self.final_merge(acc, secret, self.mask64(n * self.prime64_1), 11)
+            high = self.final_merge(acc, secret, self.mask64(~self.mask64(n * self.prime64_2)), secret_len - 75)
+            return pack128(low, high)
+
+    class FNVBase:
+        bits = None
+        fnv_prime = None
+        offset_basis = None
+        variant = None  # "fnv1" or "fnv1a"
+
+        def __init__(self, data=b"", basis=None, variant="fnv1"):
+            if self.bits is None or self.fnv_prime is None or self.offset_basis is None:
+                raise ValueError("FNVBase must be subclassed with constants")
+            self.variant = variant
+            self.mask = (1 << self.bits) - 1
+            if basis is None:
+                self.h = self.offset_basis & self.mask
+            else:
+                self.h = int(basis) & self.mask
+            if data:
+                self.update(data)
+            return
+
+        def update(self, data):
+            if not data:
+                return self
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            b = bytes(data)
+
+            if self.variant == "fnv1":
+                for byte in b:
+                    self.h = (self.h * self.fnv_prime) & self.mask
+                    self.h ^= byte
+            else:
+                # fnv1a
+                for byte in b:
+                    self.h ^= byte
+                    self.h = (self.h * self.fnv_prime) & self.mask
+
+            return self
+
+        def digest(self):
+            out_len = self.bits // 8
+            return int(self.h & self.mask).to_bytes(out_len, "big")
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+    class FNV1_32(FNVBase):
+        bits = 32
+        fnv_prime = 0x0100_0193
+        offset_basis = 0x811c_9dc5
+
+    class FNV1_64(FNVBase):
+        bits = 64
+        fnv_prime = 0x0000_0100_0000_01b3
+        offset_basis = 0xcbf2_9ce4_8422_2325
+
+    class FNV1_128(FNVBase):
+        bits = 128
+        fnv_prime = 0x0000_0000_0100_0000_0000_0000_0000_013b
+        offset_basis = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d
+
+    class FNV1_256(FNVBase):
+        bits = 256
+        fnv_prime = 0x0000_0000_0000_0000_0000_0100_0000_0000_0000_0000_0000_0000_0000_0000_0000_0163
+        offset_basis = 0xdd26_8dbc_aac5_5036_2d98_c384_c4e5_76cc_c8b1_5368_47b6_bbb3_1023_b4c8_caee_0535
+
+    class FNV1_512(FNVBase):
+        bits = 512
+        fnv_prime = (
+            (0x0000_0000_0000_0000_0000_0000_0000_0000 << (128 * 3)) | \
+            (0x0000_0000_0100_0000_0000_0000_0000_0000 << (128 * 2)) | \
+            (0x0000_0000_0000_0000_0000_0000_0000_0000 << (128 * 1)) | \
+            (0x0000_0000_0000_0000_0000_0000_0000_0157 << (128 * 0))
+        )
+        offset_basis = (
+            (0xb86d_b0b1_171f_4416_dca1_e50f_3099_90ac << (128 * 3)) | \
+            (0xac87_d059_c900_0000_0000_0000_0000_0d21 << (128 * 2)) | \
+            (0xe948_f68a_34c1_92f6_2ea7_9bc9_42db_e7ce << (128 * 1)) | \
+            (0x1820_3641_5f56_e34b_ac98_2aac_4afe_9fd9 << (128 * 0))
+        )
+
+    class FNV1_1024(FNVBase):
+        bits = 1024
+        fnv_prime = (
+            (0x0000_0000_0000_0000_0000_0000_0000_0000 << (128 * 7)) | \
+            (0x0000_0000_0000_0000_0000_0000_0000_0000 << (128 * 6)) | \
+            (0x0000_0000_0000_0000_0000_0100_0000_0000 << (128 * 5)) | \
+            (0x0000_0000_0000_0000_0000_0000_0000_0000 << (128 * 4)) | \
+            (0x0000_0000_0000_0000_0000_0000_0000_0000 << (128 * 3)) | \
+            (0x0000_0000_0000_0000_0000_0000_0000_0000 << (128 * 2)) | \
+            (0x0000_0000_0000_0000_0000_0000_0000_0000 << (128 * 1)) | \
+            (0x0000_0000_0000_0000_0000_0000_0000_018d << (128 * 0))
+        )
+        offset_basis = (
+            (0x0000_0000_0000_0000_005f_7a76_758e_cc4d << (128 * 7)) | \
+            (0x32e5_6d5a_5910_28b7_4b29_fc42_23fd_ada1 << (128 * 6)) | \
+            (0x6c3b_f34e_da36_74da_9a21_d900_0000_0000 << (128 * 5)) | \
+            (0x0000_0000_0000_0000_0000_0000_0000_0000 << (128 * 4)) | \
+            (0x0000_0000_0000_0000_0000_0000_0000_0000 << (128 * 3)) | \
+            (0x0000_0000_0000_0000_0000_0000_0004_c6d7 << (128 * 2)) | \
+            (0xeb6e_7380_2734_510a_555f_256c_c005_ae55 << (128 * 1)) | \
+            (0x6bde_8cc9_c6a9_3b21_aff4_b16c_71ee_90b3 << (128 * 0))
+        )
+
+    class HAVAL:
+        block_size = 128 # bytes (1024 bits)
+        version = 0x01
+        mask32 = 0xffff_ffff
+
+        # Table 1 word processing orders
+        ord1 = [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+            0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+        ]
+        ord2 = [
+            0x05, 0x0e, 0x1a, 0x12, 0x0b, 0x1c, 0x07, 0x10,
+            0x00, 0x17, 0x14, 0x16, 0x01, 0x0a, 0x04, 0x08,
+            0x1e, 0x03, 0x15, 0x09, 0x11, 0x18, 0x1d, 0x06,
+            0x13, 0x0c, 0x0f, 0x0d, 0x02, 0x19, 0x1f, 0x1b,
+        ]
+        ord3 = [
+            0x13, 0x09, 0x04, 0x14, 0x1c, 0x11, 0x08, 0x16,
+            0x1d, 0x0e, 0x19, 0x0c, 0x18, 0x1e, 0x10, 0x1a,
+            0x1f, 0x0f, 0x07, 0x03, 0x01, 0x00, 0x12, 0x1b,
+            0x0d, 0x06, 0x15, 0x0a, 0x17, 0x0b, 0x05, 0x02,
+        ]
+        ord4 = [
+            0x18, 0x04, 0x00, 0x0e, 0x02, 0x07, 0x1c, 0x17,
+            0x1a, 0x06, 0x1e, 0x14, 0x12, 0x19, 0x13, 0x03,
+            0x16, 0x0b, 0x1f, 0x15, 0x08, 0x1b, 0x0c, 0x09,
+            0x01, 0x1d, 0x05, 0x0f, 0x11, 0x0a, 0x10, 0x0d,
+        ]
+        ord5 = [
+            0x1b, 0x03, 0x15, 0x1a, 0x11, 0x0b, 0x14, 0x1d,
+            0x13, 0x00, 0x0c, 0x07, 0x0d, 0x08, 0x1f, 0x0a,
+            0x05, 0x09, 0x0e, 0x1e, 0x12, 0x06, 0x1c, 0x18,
+            0x02, 0x17, 0x10, 0x16, 0x04, 0x01, 0x19, 0x0f,
+        ]
+
+        # Table 2 permutations phi (indices into coords=[x6,x5,x4,x3,x2,x1,x0])
+        phi_3_1 = [0x05, 0x06, 0x03, 0x01, 0x00, 0x04, 0x02]
+        phi_3_2 = [0x02, 0x04, 0x05, 0x06, 0x01, 0x03, 0x00]
+        phi_3_3 = [0x00, 0x05, 0x04, 0x03, 0x02, 0x01, 0x06]
+
+        phi_4_1 = [0x04, 0x00, 0x05, 0x02, 0x01, 0x03, 0x06]
+        phi_4_2 = [0x03, 0x01, 0x04, 0x06, 0x05, 0x00, 0x02]
+        phi_4_3 = [0x05, 0x02, 0x03, 0x00, 0x06, 0x04, 0x01]
+        phi_4_4 = [0x00, 0x02, 0x06, 0x01, 0x04, 0x05, 0x03]
+
+        phi_5_1 = [0x03, 0x02, 0x05, 0x06, 0x01, 0x04, 0x00]
+        phi_5_2 = [0x00, 0x04, 0x05, 0x06, 0x03, 0x02, 0x01]
+        phi_5_3 = [0x04, 0x00, 0x06, 0x02, 0x03, 0x05, 0x01]
+        phi_5_4 = [0x05, 0x01, 0x03, 0x04, 0x06, 0x02, 0x00]
+        phi_5_5 = [0x04, 0x01, 0x06, 0x00, 0x02, 0x03, 0x05]
+
+        # Constants from pi (D0..D7, then K2, K3, K4, K5)
+        const = (
+            0x243f_6a88, 0x85a3_08d3, 0x1319_8a2e, 0x0370_7344, 0xa409_3822, 0x299f_31d0, 0x082e_fa98, 0xec4e_6c89,
+            0x4528_21e6, 0x38d0_1377, 0xbe54_66cf, 0x34e9_0c6c, 0xc0ac_29b7, 0xc97c_50dd, 0x3f84_d5b5, 0xb547_0917,
+            0x9216_d5d9, 0x8979_fb1b, 0xd131_0ba6, 0x98df_b5ac, 0x2ffd_72db, 0xd01a_dfb7, 0xb8e1_afed, 0x6a26_7e96,
+            0xba7c_9045, 0xf12c_7f99, 0x24a1_9947, 0xb391_6cf7, 0x0801_f2e2, 0x858e_fc16, 0x6369_20d8, 0x7157_4e69,
+            0xa458_fea3, 0xf493_3d7e, 0x0d95_748f, 0x728e_b658, 0x718b_cd58, 0x8215_4aee, 0x7b54_a41d, 0xc25a_59b5,
+            0x9c30_d539, 0x2af2_6013, 0xc5d1_b023, 0x2860_85f0, 0xca41_7918, 0xb8db_38ef, 0x8e79_dcb0, 0x603a_180e,
+            0x6c9e_0e8b, 0xb01e_8a3e, 0xd715_77c1, 0xbd31_4b27, 0x78af_2fda, 0x5560_5c60, 0xe655_25f3, 0xaa55_ab94,
+            0x5748_9862, 0x63e8_1440, 0x55ca_396a, 0x2aab_10b6, 0xb4cc_5c34, 0x1141_e8ce, 0xa154_86af, 0x7c72_e993,
+            0xb3ee_1411, 0x636f_bc2a, 0x2ba9_c55d, 0x7418_31f6, 0xce5c_3e16, 0x9b87_931e, 0xafd6_ba33, 0x6c24_cf5c,
+            0x7a32_5381, 0x2895_8677, 0x3b8f_4898, 0x6b4b_b9af, 0xc4bf_e81b, 0x6628_2193, 0x61d8_09cc, 0xfb21_a991,
+            0x487c_ac60, 0x5dec_8032, 0xef84_5d5d, 0xe985_75b1, 0xdc26_2302, 0xeb65_1b88, 0x2389_3e81, 0xd396_acc5,
+            0x0f6d_6ff3, 0x83f4_4239, 0x2e0b_4482, 0xa484_2004, 0x69c8_f04a, 0x9e1f_9b5e, 0x21c6_6842, 0xf6e9_6c9a,
+            0x670c_9c61, 0xabd3_88f0, 0x6a51_a0d2, 0xd854_2f68, 0x960f_a728, 0xab51_33a3, 0x6eef_0b6c, 0x137a_3be4,
+            0xba3b_f050, 0x7efb_2a98, 0xa1f1_651d, 0x39af_0176, 0x66ca_593e, 0x8243_0e88, 0x8cee_8619, 0x456f_9fb4,
+            0x7d84_a5c3, 0x3b8b_5ebe, 0xe06f_75d8, 0x85c1_2073, 0x401a_449f, 0x56c1_6aa6, 0x4ed3_aa62, 0x363f_7706,
+            0x1bfe_df72, 0x429b_023d, 0x37d0_d724, 0xd00a_1248, 0xdb0f_ead3, 0x49f1_c09b, 0x0753_72c9, 0x8099_1b7b,
+            0x25d4_79d8, 0xf6e8_def7, 0xe3fe_501a, 0xb679_4c3b, 0x976c_e0bd, 0x04c0_06ba, 0xc1a9_4fb6, 0x409f_60c4,
+        )
+
+        def __init__(self, data=b"", digest_bits=256, passes=5):
+            if digest_bits not in (128, 160, 192, 224, 256):
+                raise ValueError("digest_bits must be one of 128,160,192,224,256")
+            if passes not in (3, 4, 5):
+                raise ValueError("passes must be one of 3,4,5")
+            if not isinstance(data, (bytes,)):
+                raise TypeError("data must be bytes")
+            self.digest_bits = digest_bits
+            self.passes = passes
+            self.digest_size = digest_bits // 8
+            if len(self.const) != 136:
+                raise ValueError("constant table size mismatch")
+            self.iv = list(self.const[0:8])
+            self.k2 = list(self.const[8:40])
+            self.k3 = list(self.const[40:72])
+            self.k4 = list(self.const[72:104])
+            self.k5 = list(self.const[104:136])
+            self.h = self.iv[:]
+            self.buf = bytearray()
+            self.bitlen = 0  # in bits
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__(b"", self.digest_bits, self.passes)
+            other.h = self.h[:]
+            other.buf = bytearray(self.buf)
+            other.bitlen = self.bitlen
+            return other
+
+        def u32(self, x):
+            return x & self.mask32
+
+        def rotr32(self, x, r):
+            x = x & self.mask32
+            r = r & 31
+            return ((x >> r) | ((x << (32 - r)) & self.mask32)) & self.mask32
+
+        def le_u32(self, b, off):
+            return int.from_bytes(b[off:off + 4], "little")
+
+        # Boolean functions (arguments are x6..x0)
+        def f1(self, x6, x5, x4, x3, x2, x1, x0):
+            return (x1 & x4) ^ (x2 & x5) ^ (x3 & x6) ^ (x0 & x1) ^ x0
+
+        def f2(self, x6, x5, x4, x3, x2, x1, x0):
+            return (
+                (x1 & x2 & x3) ^ (x2 & x4 & x5) ^
+                (x1 & x2) ^ (x1 & x4) ^ (x2 & x6) ^
+                (x3 & x5) ^ (x4 & x5) ^ (x0 & x2) ^ x0
+            )
+
+        def f3(self, x6, x5, x4, x3, x2, x1, x0):
+            return (x1 & x2 & x3) ^ (x1 & x4) ^ (x2 & x5) ^ (x3 & x6) ^ (x0 & x3) ^ x0
+
+        def f4(self, x6, x5, x4, x3, x2, x1, x0):
+            return (
+                (x1 & x2 & x3) ^ (x2 & x4 & x5) ^ (x3 & x4 & x6) ^
+                (x1 & x4) ^ (x2 & x6) ^ (x3 & x4) ^ (x3 & x5) ^
+                (x3 & x6) ^ (x4 & x5) ^ (x4 & x6) ^ (x0 & x4) ^ x0
+            )
+
+        def f5(self, x6, x5, x4, x3, x2, x1, x0):
+            return (x1 & x4) ^ (x2 & x5) ^ (x3 & x6) ^ (x0 & x1 & x2 & x3) ^ (x0 & x5) ^ x0
+
+        def split_lsb(self, word, lens_lsb):
+            seg = []
+            w = word & self.mask32
+            for l in lens_lsb: # noqa: E741
+                seg.append(w & ((1 << l) - 1))
+                w >>= l
+            return seg
+
+        def concat(self, parts):
+            # parts: [(value, bitlen), ...] in msb->lsb order
+            out = 0
+            for v, bl in parts:
+                out = (out << bl) | (v & ((1 << bl) - 1))
+            return out
+
+        def tailor(self, state, out_bits):
+            # state: 8 words D0..D7
+            d = [x & self.mask32 for x in state]
+            if out_bits == 256:
+                return d[0:8]
+            if out_bits == 224:
+                seg7 = self.split_lsb(d[7], [4, 5, 4, 5, 4, 5, 5])  # x7,0..x7,6
+                y0 = self.u32(d[0] + seg7[6])
+                y1 = self.u32(d[1] + seg7[5])
+                y2 = self.u32(d[2] + seg7[4])
+                y3 = self.u32(d[3] + seg7[3])
+                y4 = self.u32(d[4] + seg7[2])
+                y5 = self.u32(d[5] + seg7[1])
+                y6 = self.u32(d[6] + seg7[0])
+                return [y0, y1, y2, y3, y4, y5, y6]
+            if out_bits == 192:
+                seg7 = self.split_lsb(d[7], [5, 5, 6, 5, 5, 6])  # x7,0..x7,5
+                seg6 = self.split_lsb(d[6], [5, 5, 6, 5, 5, 6])  # x6,0..x6,5
+                y0 = self.u32(d[0] + self.concat([(seg7[0], 5), (seg6[5], 6)]))
+                y1 = self.u32(d[1] + self.concat([(seg7[1], 5), (seg6[0], 5)]))
+                y2 = self.u32(d[2] + self.concat([(seg7[2], 6), (seg6[1], 5)]))
+                y3 = self.u32(d[3] + self.concat([(seg7[3], 5), (seg6[2], 6)]))
+                y4 = self.u32(d[4] + self.concat([(seg7[4], 5), (seg6[3], 5)]))
+                y5 = self.u32(d[5] + self.concat([(seg7[5], 6), (seg6[4], 5)]))
+                return [y0, y1, y2, y3, y4, y5]
+            if out_bits == 160:
+                seg7 = self.split_lsb(d[7], [6, 6, 7, 6, 7])  # x7,0..x7,4
+                seg6 = self.split_lsb(d[6], [6, 6, 7, 6, 7])  # x6,0..x6,4
+                seg5 = self.split_lsb(d[5], [6, 6, 7, 6, 7])  # x5,0..x5,4
+                y0 = self.u32(d[0] + self.concat([(seg7[0], 6), (seg6[4], 7), (seg5[3], 6)]))
+                y1 = self.u32(d[1] + self.concat([(seg7[1], 6), (seg6[0], 6), (seg5[4], 7)]))
+                y2 = self.u32(d[2] + self.concat([(seg7[2], 7), (seg6[1], 6), (seg5[0], 6)]))
+                y3 = self.u32(d[3] + self.concat([(seg7[3], 6), (seg6[2], 7), (seg5[1], 6)]))
+                y4 = self.u32(d[4] + self.concat([(seg7[4], 7), (seg6[3], 6), (seg5[2], 7)]))
+                return [y0, y1, y2, y3, y4]
+            if out_bits == 128:
+                seg7 = self.split_lsb(d[7], [8, 8, 8, 8])  # x7,0..x7,3
+                seg6 = self.split_lsb(d[6], [8, 8, 8, 8])  # x6,0..x6,3
+                seg5 = self.split_lsb(d[5], [8, 8, 8, 8])  # x5,0..x5,3
+                seg4 = self.split_lsb(d[4], [8, 8, 8, 8])  # x4,0..x4,3
+                y0 = self.u32(d[0] + self.concat([(seg7[0], 8), (seg6[3], 8), (seg5[2], 8), (seg4[1], 8)]))
+                y1 = self.u32(d[1] + self.concat([(seg7[1], 8), (seg6[0], 8), (seg5[3], 8), (seg4[2], 8)]))
+                y2 = self.u32(d[2] + self.concat([(seg7[2], 8), (seg6[1], 8), (seg5[0], 8), (seg4[3], 8)]))
+                y3 = self.u32(d[3] + self.concat([(seg7[3], 8), (seg6[2], 8), (seg5[1], 8), (seg4[0], 8)]))
+                return [y0, y1, y2, y3]
+            raise ValueError("invalid out_bits")
+
+        def do_pass(self, func, phi, order, kconst, t, w):
+            for i in range(32):
+                coords = [t[6], t[5], t[4], t[3], t[2], t[1], t[0]]  # x6..x0
+                a0 = coords[phi[0]]
+                a1 = coords[phi[1]]
+                a2 = coords[phi[2]]
+                a3 = coords[phi[3]]
+                a4 = coords[phi[4]]
+                a5 = coords[phi[5]]
+                a6 = coords[phi[6]]
+                p = func(a0, a1, a2, a3, a4, a5, a6)
+                r = self.u32(self.rotr32(p, 7) + self.rotr32(t[7], 11) + w[order[i]] + kconst[i])
+                t = [r, t[0], t[1], t[2], t[3], t[4], t[5], t[6]]
+            return t
+
+        def compress(self, block):
+            w = [self.le_u32(block, 4 * i) for i in range(32)]
+            t = self.h[:]
+            zero32 = [0] * 32
+            if self.passes == 3:
+                t = self.do_pass(self.f1, self.phi_3_1, self.ord1, zero32, t, w)
+                t = self.do_pass(self.f2, self.phi_3_2, self.ord2, self.k2, t, w)
+                t = self.do_pass(self.f3, self.phi_3_3, self.ord3, self.k3, t, w)
+            elif self.passes == 4:
+                t = self.do_pass(self.f1, self.phi_4_1, self.ord1, zero32, t, w)
+                t = self.do_pass(self.f2, self.phi_4_2, self.ord2, self.k2, t, w)
+                t = self.do_pass(self.f3, self.phi_4_3, self.ord3, self.k3, t, w)
+                t = self.do_pass(self.f4, self.phi_4_4, self.ord4, self.k4, t, w)
+            else:
+                t = self.do_pass(self.f1, self.phi_5_1, self.ord1, zero32, t, w)
+                t = self.do_pass(self.f2, self.phi_5_2, self.ord2, self.k2, t, w)
+                t = self.do_pass(self.f3, self.phi_5_3, self.ord3, self.k3, t, w)
+                t = self.do_pass(self.f4, self.phi_5_4, self.ord4, self.k4, t, w)
+                t = self.do_pass(self.f5, self.phi_5_5, self.ord5, self.k5, t, w)
+            for i in range(8):
+                self.h[i] = self.u32(self.h[i] + t[i])
+            return
+
+        def update(self, data):
+            if not isinstance(data, (bytes,)):
+                raise TypeError("data must be bytes")
+            self.buf.extend(data)
+            self.bitlen += len(data) * 8
+            while len(self.buf) >= 128:
+                block = bytes(self.buf[:128])
+                del self.buf[:128]
+                self.compress(block)
+            return self
+
+        def finalize(self):
+            # padding: 0x01, zeros, then 2 bytes (version/passes/outbits), then 8 bytes bitlen (LE)
+            msg = bytes(self.buf)
+            bitlen = self.bitlen
+            pad = bytearray()
+            pad.append(0x01)
+            while ((len(msg) + len(pad)) % 128) != 118:
+                pad.append(0x00)
+            # tail (2 bytes) + bitlen (8 bytes, little-endian)
+            b0 = (self.version & 0x07) | ((self.passes & 0x07) << 3) | ((self.digest_bits & 0x03) << 6)
+            b1 = (self.digest_bits >> 2) & 0xff
+            tail = bytes([b0, b1]) + bitlen.to_bytes(8, "little")
+
+            self.update(bytes(pad) + tail)
+            if len(self.buf) != 0:
+                raise RuntimeError("internal error: buffer not empty after finalize")
+            return
+
+        def output(self):
+            out_words = self.tailor(self.h, self.digest_bits)
+            out = bytearray()
+            for x in out_words:
+                out.extend(int(x & self.mask32).to_bytes(4, "little"))
+            return bytes(out[: self.digest_size])
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.output()
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+
 @register_command
 class HashCommand(GenericCommand):
     """The base command to calculate hash."""
@@ -72685,10 +77578,13 @@ class HashCommand(GenericCommand):
     subparsers.add_parser("memory")
     subparsers.add_parser("value")
     subparsers.add_parser("known-collision")
+    subparsers.add_parser("test")
     _syntax_ = parser.format_help()
 
     _note_ = [
-        'The salt for blake2s and blake2b is "\\0".',
+        "[128b/16B] means 128 bits (16 bytes).",
+        'The salt for BLAKE2s and BLAKE2b is "\\0".',
+        'The key for KMAC128 and KMAC256 is "".',
     ]
     _note_ = "\n".join(_note_)
 
@@ -72698,146 +77594,181 @@ class HashCommand(GenericCommand):
         super().__init__(prefix=prefix, complete=complete)
         return
 
-    def get_valid_hash_funcs(self):
-        # from hashlib
-        hashlib_hashes = [
-            "md5", "sha1",
-            "sha224", "sha256", "sha384", "sha512",
-            "sha3-224", "sha3-256", "sha3-384", "sha3-512",
-            "blake2s", "blake2b",
-        ]
-        for hname in hashlib_hashes:
-            if self.args.filter and not any(filt.search(hname) for filt in self.args.filter):
-                continue
+    def get_valid_hash_funcs_hashlib(self):
+        hashlib_hashes = {
+            "MD5": "md5",
+            "SHA1": "sha1",
+            "MD5-SHA1": "md5-sha1",
+            "SHA2-224": "sha224",
+            "SHA2-256": "sha256",
+            "SHA2-384": "sha384",
+            "SHA2-512": "sha512",
+            "SHA512/224": "sha512-224",
+            "SHA512/256": "sha512-256",
+            "SHA3-224": "sha3-224",
+            "SHA3-256": "sha3-256",
+            "SHA3-384": "sha3-384",
+            "SHA3-512": "sha3-512",
+            "BLAKE2s": "blake2s",
+            "BLAKE2b": "blake2b",
+            "SM3": "sm3",
+            "RIPEMD-160": "ripemd160",
+        }
+        for hname, hname_hashlib in hashlib_hashes.items():
             try:
-                hfunc = hashlib.new(hname)
+                hfunc = hashlib.new(hname_hashlib)
             except Exception:
                 continue
             yield (hname, hfunc)
 
-        # from pycryptodome
-        try:
-            hname = "sha512/224"
-            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
-                import Crypto.Hash.SHA512
-                hfunc = Crypto.Hash.SHA512.new(truncate="224")
-                yield (hname, hfunc)
-        except Exception:
-            pass
+        class ShakeWrapper:
+            def __init__(self, hname, bits):
+                self.hfunc = hashlib.new(hname)
+                self.bits = bits
+                return
 
-        try:
-            hname = "sha512/256"
-            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
-                import Crypto.Hash.SHA512
-                hfunc = Crypto.Hash.SHA512.new(truncate="256")
-                yield (hname, hfunc)
-        except Exception:
-            pass
+            def hexdigest(self):
+                return self.hfunc.hexdigest(self.bits // 8)
 
-        try:
-            hname = "shake-128"
-            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
-                import Crypto.Hash.cSHAKE128
-                hfunc = Crypto.Hash.cSHAKE128.new(custom=b"") # SHAKE128 is empty `custom`
-                hfunc.hexdigest = lambda: hfunc.read(32).hex()
-                yield (hname, hfunc)
-        except Exception:
-            pass
+            def __getattr__(self, name):
+                return getattr(self.hfunc, name)
 
-        try:
-            hname = "shake-256"
-            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
-                import Crypto.Hash.cSHAKE256
-                hfunc = Crypto.Hash.cSHAKE256.new(custom=b"") # SHAKE256 is empty `custom`
-                hfunc.hexdigest = lambda: hfunc.read(64).hex()
+        for hname_base in ["shake-128", "shake-256"]:
+            for bits in [128, 256, 512]:
+                hname = "{:s}-{:d}".format(hname_base.upper(), bits)
+                try:
+                    hfunc = ShakeWrapper(hname_base, bits)
+                except Exception:
+                    continue
                 yield (hname, hfunc)
-        except Exception:
-            pass
-
-        try:
-            hname = "keccak-224"
-            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
-                import Crypto.Hash.keccak
-                hfunc = Crypto.Hash.keccak.new(digest_bits=224)
-                yield (hname, hfunc)
-        except Exception:
-            pass
-
-        try:
-            hname = "keccak-256"
-            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
-                import Crypto.Hash.keccak
-                hfunc = Crypto.Hash.keccak.new(digest_bits=256)
-                yield (hname, hfunc)
-        except Exception:
-            pass
-
-        try:
-            hname = "keccak-384"
-            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
-                import Crypto.Hash.keccak
-                hfunc = Crypto.Hash.keccak.new(digest_bits=384)
-                yield (hname, hfunc)
-        except Exception:
-            pass
-
-        try:
-            hname = "keccak-512"
-            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
-                import Crypto.Hash.keccak
-                hfunc = Crypto.Hash.keccak.new(digest_bits=512)
-                yield (hname, hfunc)
-        except Exception:
-            pass
-
-        try:
-            hname = "k12-256"
-            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
-                import Crypto.Hash.KangarooTwelve
-                hfunc = Crypto.Hash.KangarooTwelve.new(custom=b"") # use empty `custom`
-                hfunc.hexdigest = lambda: hfunc.read(32).hex()
-                yield (hname, hfunc)
-        except Exception:
-            pass
-
-        try:
-            hname = "k12-512"
-            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
-                import Crypto.Hash.KangarooTwelve
-                hfunc = Crypto.Hash.KangarooTwelve.new(custom=b"") # use empty `custom`
-                hfunc.hexdigest = lambda: hfunc.read(64).hex()
-                yield (hname, hfunc)
-        except Exception:
-            pass
-
-        try:
-            hname = "md2"
-            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
-                import Crypto.Hash.MD2
-                hfunc = Crypto.Hash.MD2.new()
-                yield (hname, hfunc)
-        except Exception:
-            pass
-
-        try:
-            hname = "md4"
-            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
-                import Crypto.Hash.MD4
-                hfunc = Crypto.Hash.MD4.new()
-                yield (hname, hfunc)
-        except Exception:
-            pass
-
-        try:
-            hname = "ripemd-160"
-            if not self.args.filter or any(filt.search(hname) for filt in self.args.filter):
-                import Crypto.Hash.RIPEMD160
-                hfunc = Crypto.Hash.RIPEMD160.new()
-                yield (hname, hfunc)
-        except Exception:
-            pass
-
         return None
+
+    def get_valid_hash_funcs_other(self):
+        yield ("SHA512/224", Hash.SHA512_224())
+        yield ("SHA512/256", Hash.SHA512_256())
+        yield ("Keccak-224", Hash.Keccak224())
+        yield ("Keccak-256", Hash.Keccak256())
+        yield ("Keccak-384", Hash.Keccak384())
+        yield ("Keccak-512", Hash.Keccak512())
+        yield ("TurboSHAKE128-128", Hash.TurboShake128(digest_bits=128))
+        yield ("TurboSHAKE128-256", Hash.TurboShake128(digest_bits=256))
+        yield ("TurboSHAKE128-512", Hash.TurboShake128(digest_bits=512))
+        yield ("TurboSHAKE256-128", Hash.TurboShake256(digest_bits=128))
+        yield ("TurboSHAKE256-256", Hash.TurboShake256(digest_bits=256))
+        yield ("TurboSHAKE256-512", Hash.TurboShake256(digest_bits=512))
+        yield ("KT128-128", Hash.KangarooTwelve128(digest_bits=128))
+        yield ("KT128-256", Hash.KangarooTwelve128(digest_bits=256))
+        yield ("KT128-512", Hash.KangarooTwelve128(digest_bits=512))
+        yield ("KT256-128", Hash.KangarooTwelve256(digest_bits=128))
+        yield ("KT256-256", Hash.KangarooTwelve256(digest_bits=256))
+        yield ("KT256-512", Hash.KangarooTwelve256(digest_bits=512))
+        yield ("KMAC128-128", Hash.KMAC128(key=b"", digest_bits=128))
+        yield ("KMAC128-256", Hash.KMAC128(key=b"", digest_bits=256))
+        yield ("KMAC128-512", Hash.KMAC128(key=b"", digest_bits=512))
+        yield ("KMAC256-128", Hash.KMAC256(key=b"", digest_bits=128))
+        yield ("KMAC256-256", Hash.KMAC256(key=b"", digest_bits=256))
+        yield ("KMAC256-512", Hash.KMAC256(key=b"", digest_bits=512))
+        yield ("TupleHash128-128", Hash.TupleHash128(digest_bits=128))
+        yield ("TupleHash128-256", Hash.TupleHash128(digest_bits=256))
+        yield ("TupleHash128-512", Hash.TupleHash128(digest_bits=512))
+        yield ("TupleHash256-128", Hash.TupleHash256(digest_bits=128))
+        yield ("TupleHash256-256", Hash.TupleHash256(digest_bits=256))
+        yield ("TupleHash256-512", Hash.TupleHash256(digest_bits=512))
+        yield ("TIGER128-3", Hash.TIGER(digest_bits=128, passes=3))
+        yield ("TIGER160-3", Hash.TIGER(digest_bits=160, passes=3))
+        yield ("TIGER192-3", Hash.TIGER(digest_bits=192, passes=3))
+        yield ("TIGER128-4", Hash.TIGER(digest_bits=128, passes=4))
+        yield ("TIGER160-4", Hash.TIGER(digest_bits=160, passes=4))
+        yield ("TIGER192-4", Hash.TIGER(digest_bits=192, passes=4))
+        yield ("SHA-0", Hash.SHA0())
+        yield ("Whirlpool", Hash.Whirlpool())
+        yield ("MD5 x2", Hash.HASHxN("md5", 2))
+        yield ("MD5 x3", Hash.HASHxN("md5", 3))
+        yield ("MD5 x4", Hash.HASHxN("md5", 4))
+        yield ("MD5 x5", Hash.HASHxN("md5", 5))
+        yield ("SHA1 x2", Hash.HASHxN("sha1", 2))
+        yield ("SHA1 x3", Hash.HASHxN("sha1", 3))
+        yield ("SHA1 x4", Hash.HASHxN("sha1", 4))
+        yield ("SHA1 x5", Hash.HASHxN("sha1", 5))
+        yield ("SHA2-256 x2", Hash.HASHxN("sha256", 2))
+        yield ("SHA2-256 x3", Hash.HASHxN("sha256", 3))
+        yield ("SHA2-256 x4", Hash.HASHxN("sha256", 4))
+        yield ("SHA2-256 x5", Hash.HASHxN("sha256", 5))
+        yield ("MD2", Hash.MD2())
+        yield ("MD4", Hash.MD4())
+        yield ("NTLM hash", Hash.NTLM())
+        yield ("LM hash", Hash.LM())
+        yield ("MD6-128", Hash.MD6(d=128))
+        yield ("MD6-256", Hash.MD6(d=256))
+        yield ("MD6-512", Hash.MD6(d=512))
+        yield ("RIPEMD-128", Hash.RIPEMD128())
+        yield ("RIPEMD-160", Hash.RIPEMD160())
+        yield ("RIPEMD-256", Hash.RIPEMD256())
+        yield ("RIPEMD-320", Hash.RIPEMD320())
+        yield ("BLAKE-224", Hash.BLAKE224())
+        yield ("BLAKE-256", Hash.BLAKE256())
+        yield ("BLAKE-384", Hash.BLAKE384())
+        yield ("BLAKE-512", Hash.BLAKE512())
+        yield ("BLAKE3-128", Hash.BLAKE3(digest_bits=128))
+        yield ("BLAKE3-256", Hash.BLAKE3(digest_bits=256))
+        yield ("BLAKE3-512", Hash.BLAKE3(digest_bits=512))
+        yield ("xxHash32", Hash.XXH32())
+        yield ("xxHash64", Hash.XXH64())
+        yield ("xxHash3-64", Hash.XXH3_64())
+        yield ("xxHash3-128", Hash.XXH3_128())
+        yield ("FNV-1-32", Hash.FNV1_32())
+        yield ("FNV-1-64", Hash.FNV1_64())
+        yield ("FNV-1-128", Hash.FNV1_128())
+        yield ("FNV-1-256", Hash.FNV1_256())
+        yield ("FNV-1-512", Hash.FNV1_512())
+        yield ("FNV-1-1024", Hash.FNV1_1024())
+        yield ("FNV-1a-32", Hash.FNV1_32(variant="fnv1a"))
+        yield ("FNV-1a-64", Hash.FNV1_64(variant="fnv1a"))
+        yield ("FNV-1a-128", Hash.FNV1_128(variant="fnv1a"))
+        yield ("FNV-1a-256", Hash.FNV1_256(variant="fnv1a"))
+        yield ("FNV-1a-512", Hash.FNV1_512(variant="fnv1a"))
+        yield ("FNV-1a-1024", Hash.FNV1_1024(variant="fnv1a"))
+        yield ("HAVAL128-3", Hash.HAVAL(digest_bits=128, passes=3))
+        yield ("HAVAL128-4", Hash.HAVAL(digest_bits=128, passes=4))
+        yield ("HAVAL128-5", Hash.HAVAL(digest_bits=128, passes=5))
+        yield ("HAVAL160-3", Hash.HAVAL(digest_bits=160, passes=3))
+        yield ("HAVAL160-4", Hash.HAVAL(digest_bits=160, passes=4))
+        yield ("HAVAL160-5", Hash.HAVAL(digest_bits=160, passes=5))
+        yield ("HAVAL192-3", Hash.HAVAL(digest_bits=192, passes=3))
+        yield ("HAVAL192-4", Hash.HAVAL(digest_bits=192, passes=4))
+        yield ("HAVAL192-5", Hash.HAVAL(digest_bits=192, passes=5))
+        yield ("HAVAL224-3", Hash.HAVAL(digest_bits=224, passes=3))
+        yield ("HAVAL224-4", Hash.HAVAL(digest_bits=224, passes=4))
+        yield ("HAVAL224-5", Hash.HAVAL(digest_bits=224, passes=5))
+        yield ("HAVAL256-3", Hash.HAVAL(digest_bits=256, passes=3))
+        yield ("HAVAL256-4", Hash.HAVAL(digest_bits=256, passes=4))
+        yield ("HAVAL256-5", Hash.HAVAL(digest_bits=256, passes=5))
+        return None
+
+    def make_line(self, hname, h):
+        bit = len(h) * 4
+        byte = bit // 8
+        line = "{:18s}:[{:3d}b/{:2d}B] {:s}".format(hname, bit, byte, h)
+        return line
+
+    def should_be_displayed(self, hname):
+        if not self.args.filter:
+            return True
+
+        for filt in self.args.filter:
+            if filt.search(hname):
+                return True
+
+        def norm(x):
+            x = x.lower()
+            x = x.replace("/", "")
+            x = x.replace("-", "")
+            return x
+
+        for filt in self.args.filter:
+            if filt.search(norm(hname)):
+                return True
+        return False
 
     @parse_args
     def do_invoke(self, args):
@@ -72846,7 +77777,7 @@ class HashCommand(GenericCommand):
 
 
 @register_command
-class HashMemoryCommand(HashCommand):
+class HashMemoryCommand(HashCommand, BufferingOutput):
     """Calculate hash from memory values."""
 
     _cmdline_ = "hash memory"
@@ -72859,6 +77790,8 @@ class HashMemoryCommand(HashCommand):
                         help="the size for hash calculation.")
     parser.add_argument("-f", "--filter", metavar="REGEX", type=re.compile, default=[], action="append",
                         help="filter by REGEX pattern.")
+    parser.add_argument("-s", "--simple", action="store_true", help="show only major hashes supported by hashlib.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -72871,6 +77804,10 @@ class HashMemoryCommand(HashCommand):
         return
 
     def calc_hash(self, hfunc, start_address, end_address):
+        # When calculating the hash of a very large range,
+        # it is not practical to store the entire data in memory.
+        # It is preferable to calculate it in blocks.
+
         step = 0x400 * get_pagesize()
         if is_qemu_system():
             step = get_pagesize()
@@ -72892,26 +77829,51 @@ class HashMemoryCommand(HashCommand):
             except ValueError:
                 return None
             del mem
+
         return hfunc.hexdigest()
 
-    @parse_args
-    @only_if_gdb_running
-    def do_invoke(self, args):
-        gef_print("Address: {:#x}".format(args.location))
-        gef_print("Size: {:#x}".format(args.size))
-
-        for hname, hfunc in self.get_valid_hash_funcs():
-            h = self.calc_hash(hfunc, args.location, args.location + args.size)
+    def process(self):
+        self.out.append(titlify("hashlib"))
+        for hname, hfunc in self.get_valid_hash_funcs_hashlib():
+            if not self.should_be_displayed(hname):
+                continue
+            h = self.calc_hash(hfunc, self.args.location, self.args.location + self.args.size)
             if h is False:
                 return
             if h is None:
                 continue
-            gef_print("{:12s}: {:s} ({:d}-bit)".format(hname, h, len(h) * 4))
+            line = self.make_line(hname, h)
+            self.out.append(line)
+
+        if self.args.simple:
+            return
+
+        self.out.append(titlify("other"))
+        for hname, hfunc in self.get_valid_hash_funcs_other():
+            if not self.should_be_displayed(hname):
+                continue
+            h = self.calc_hash(hfunc, self.args.location, self.args.location + self.args.size)
+            if h is False:
+                return
+            if h is None:
+                continue
+            line = self.make_line(hname, h)
+            self.out.append(line)
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    def do_invoke(self, args):
+        self.out = []
+        self.out.append("Address: {:#x}".format(args.location))
+        self.out.append("Size: {:#x}".format(args.size))
+        self.process()
+        self.print_output(check_terminal_size=True)
         return
 
 
 @register_command
-class HashValueCommand(HashCommand):
+class HashValueCommand(HashCommand, BufferingOutput):
     """Calculate hash from specified values."""
 
     _cmdline_ = "hash value"
@@ -72922,6 +77884,8 @@ class HashValueCommand(HashCommand):
     parser.add_argument("--hex", action="store_true", help="interpret VALUE as hex. invalid character is ignored.")
     parser.add_argument("-f", "--filter", metavar="REGEX", type=re.compile, default=[], action="append",
                         help="filter by REGEX pattern.")
+    parser.add_argument("-s", "--simple", action="store_true", help="show only major hashes supported by hashlib.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -72932,6 +77896,29 @@ class HashValueCommand(HashCommand):
 
     def __init__(self):
         super().__init__(prefix=False)
+        return
+
+    def process(self, value):
+        self.out.append(titlify("hashlib"))
+        for hname, hfunc in self.get_valid_hash_funcs_hashlib():
+            if not self.should_be_displayed(hname):
+                continue
+            hfunc.update(value)
+            h = hfunc.hexdigest()
+            line = self.make_line(hname, h)
+            self.out.append(line)
+
+        if self.args.simple:
+            return
+
+        self.out.append(titlify("other"))
+        for hname, hfunc in self.get_valid_hash_funcs_other():
+            if not self.should_be_displayed(hname):
+               continue
+            hfunc.update(value)
+            h = hfunc.hexdigest()
+            line = self.make_line(hname, h)
+            self.out.append(line)
         return
 
     @parse_args
@@ -72947,10 +77934,9 @@ class HashValueCommand(HashCommand):
                 err('Could not decode "\\xXX" encoded string')
                 return
 
-        for hname, hfunc in self.get_valid_hash_funcs():
-            hfunc.update(value)
-            h = hfunc.hexdigest()
-            gef_print("{:12s}: {:s} ({:d}-bit)".format(hname, h, len(h) * 4))
+        self.out = []
+        self.process(value)
+        self.print_output(check_terminal_size=True)
         return
 
 
@@ -73073,7 +78059,7 @@ class HashKnownCollisionCommand(HashCommand, BufferingOutput):
         self.out.append("{:13s}: {:s}".format(hash_name + "(data1)", bold_yellow(hash_func(data1).hexdigest())))
         self.out.append("{:13s}: {:s}".format(hash_name + "(data2)", bold_yellow(hash_func(data2).hexdigest())))
         self.out.append("sha256(data1): {:s}".format(hashlib.sha256(data1).hexdigest()))
-        self.out.append("2ha256(data2): {:s}".format(hashlib.sha256(data2).hexdigest()))
+        self.out.append("sha256(data2): {:s}".format(hashlib.sha256(data2).hexdigest()))
         return
 
     def show_md5_hash_collision(self):
@@ -73283,6 +78269,12 @@ class HashKnownCollisionCommand(HashCommand, BufferingOutput):
             "EB 8E 9D F6 90 A3 CD 08 65 D5 5A 4C 2E C6 BE 54"
         )
         self.show_hash_info(md5_1, md5_2, "md5")
+
+        self.out.append(titlify("MD5 (TextColl)"))
+        self.out.append("https://github.com/cr-marcstevens/hashclash")
+        md5_1 = b"TEXTCOLLBYfGiJUETHQ4hAcKSMd5zYpgqf1YRDhkmxHkhPWptrkoyz28wnI9V0aHeAuaKnak"
+        md5_2 = b"TEXTCOLLBYfGiJUETHQ4hEcKSMd5zYpgqf1YRDhkmxHkhPWptrkoyz28wnI9V0aHeAuaKnak"
+        self.show_hash_info(md5_1, md5_2, "md5")
         return
 
     def show_sha1_hash_collision(self):
@@ -73435,6 +78427,241 @@ class HashKnownCollisionCommand(HashCommand, BufferingOutput):
 
 
 @register_command
+class HashTestCommand(HashCommand, BufferingOutput):
+    """Calculate and check hash from constant inputs."""
+
+    _cmdline_ = "hash test"
+    _category_ = "03-e. Memory - Calculation"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-f", "--filter", metavar="REGEX", type=re.compile, default=[], action="append",
+                        help="filter by REGEX pattern.")
+    parser.add_argument("-s", "--smart", action="store_true", help="show only failed.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    _note_ = None
+
+    def __init__(self):
+        super().__init__(prefix=False, complete=gdb.COMPLETE_NONE)
+        return
+
+    hash_dic = {
+        # hashlib
+        "MD5": "098890dde069e9abad63f19a0d9e1f32",
+        "SHA1": "e2512172abf8cc9f67fdd49eb6cacf2df71bbad3",
+        "MD5-SHA1": "098890dde069e9abad63f19a0d9e1f32e2512172abf8cc9f67fdd49eb6cacf2d" \
+                    "f71bbad3",
+        "SHA2-224": "5cdde10ca4df3e7e6e0e428f683e1c6ca0bfb917555ad94727a3f344",
+        "SHA2-256": "63c1dd951ffedf6f7fd968ad4efa39b8ed584f162f46e715114ee184f8de9201",
+        "SHA2-384": "d8bf1572ab3b9bc239325d2a657ad37cb8fa6cb32c2d83cddee33be1238eb7a4" \
+                    "0b33d1bc796b426b6c68c22e4769dea2",
+        "SHA2-512": "53b74be8b295b733fdfafbd7d2a22b1686733740de7fdc592b26cf3e1874cfce" \
+                    "158170ce9230e24696331a61829244e5d9f48abdacc9ffa8c4cb498724844cf8",
+        "SHA512/224": "42707cc06636e3a479f5bc19bbc3c31249805072993efb715e16f273",
+        "SHA512/256": "d01e3d10611ee4b5b1e570be2e8e9d76988781c40e1a3ecc930d5298fb541e27",
+        "SHA3-224": "5accd6cfeec028803453ddd46aed0f9281336fc2215484d0f9110336",
+        "SHA3-256": "5ba7fe44cc7b13be0a25d2caccd80443c79835c38aa6945c714ab689d2f10c13",
+        "SHA3-384": "78f27d6e5727ff2ce7bfba5d7aeed27def619abb73e779771130ad0851d748db" \
+                    "6327456280c3b5cfacad0d8ad84e108c",
+        "SHA3-512": "990fb60e8dbd852804795c671db3a97b8b37685976026672d8164b05be0e9a55" \
+                    "5ed0a9e30668abcfaed0a34d3610dbbbb9ac615a92545b4654f13a39cb7f07ba",
+        "BLAKE2s": "ad0b5f0ea7abe50530487c4d1f0de59699955eca58fa60372863927620bba191",
+        "BLAKE2b": "5448fb61bfeba39eb14a49f72310ab14653b230655b0adccadcb31148602317a" \
+                   "f3bcef80f09f0945f06607465a0e467ab8cf257a3088d25065aded9fc0963271",
+        "SM3": "2afccdaa7f803b0bc90b1b7f2ac18c03f0297b989d573e1514267dc73909e4e4",
+        "SHAKE-128-128": "547260c6330814b54770daad5b39c15a",
+        "SHAKE-128-256": "547260c6330814b54770daad5b39c15ad159de955afc13622d9fa7b7d1899536",
+        "SHAKE-128-512": "547260c6330814b54770daad5b39c15ad159de955afc13622d9fa7b7d1899536" \
+                         "74bb09f145b5979df9b9a05d214f9ae625e22bb9f72f319fae6d9877ee606335",
+        "SHAKE-256-128": "ded2952bb56c24ea5c198e9f6a641a70",
+        "SHAKE-256-256": "ded2952bb56c24ea5c198e9f6a641a70c4306ba75123e15c4f5e445013133d82",
+        "SHAKE-256-512": "ded2952bb56c24ea5c198e9f6a641a70c4306ba75123e15c4f5e445013133d82" \
+                         "4ca42c15720c7a8e9e8e0d2cce0ace4c82e80a579cfba4575cd59170fb3fd97c",
+        # pycryptodome
+        "Keccak-224": "6481454863fcf20ef04ec24dd2e70094aa62fa3be3038336d3fa5a76",
+        "Keccak-256": "e6b6ca9b98ea0c1b64bee9382438c8c99f35bc4d680bcca9f2db31a577915fe4",
+        "Keccak-384": "f1e59400c4f5e9db9bbc7246a2debcbcac52814d5440e050837f2cf8c844b210" \
+                      "1e4a0fe41a6ce30161235a3854a39573",
+        "Keccak-512": "271675245024e6db7c455a67cef6df927bb0cc50344976ca8741d5a81e812301" \
+                      "296f84dbd23b0639c4ecf318da8c284a00e7208cc73ff6de2b4252c4ce828787",
+        "TurboSHAKE128-128": "6a03eb22b6f9245cb048561ca750216b",
+        "TurboSHAKE128-256": "6a03eb22b6f9245cb048561ca750216b9637f3c4de590199cdf739277f117561",
+        "TurboSHAKE128-512": "6a03eb22b6f9245cb048561ca750216b9637f3c4de590199cdf739277f117561" \
+                            "242dfdc618f3039ac8ebd9e3deabe8e594bf9f02fc999c786db6035a0f89a0e6",
+        "TurboSHAKE256-128": "9ea8526cc9233c0d27a2a2039f096be0",
+        "TurboSHAKE256-256": "9ea8526cc9233c0d27a2a2039f096be04e92fd82eb39c69d81c1f2ee6b01060d",
+        "TurboSHAKE256-512": "9ea8526cc9233c0d27a2a2039f096be04e92fd82eb39c69d81c1f2ee6b01060d" \
+                             "76ce6c0b61cfeb164d31b0ba2f0abb4a6aa3ef25901f2ca13a3c556e442ccb6f",
+        "KT128-128": "15d4a67bd0f8e88ffbc6cd44eaf4c196",
+        "KT128-256": "15d4a67bd0f8e88ffbc6cd44eaf4c1964a5f87eefae90aebba9f0f123f62271b",
+        "KT128-512": "15d4a67bd0f8e88ffbc6cd44eaf4c1964a5f87eefae90aebba9f0f123f62271b" \
+                     "9cc48e4140bf92aca5dbf82d43e631fbef0df5fe511ee5810cddae79701a0a00",
+        "KMAC128-128": "ab430646fd5b4d845845eb9e58e5b5da",
+        "KMAC128-256": "22a26ebd5b727db05aecc0c8d43d38dd219e2114aaa21d3e7f0cbe475cea1b69",
+        "KMAC128-512": "68a0869543c57bb495d75257a625e054b8c85782838cb157ad5e5e1c306ac29a" \
+                       "79d1b54f84fba43a1973d60cccac8356b757b8c79523533f0d7395f238bfd4b5",
+        "KMAC256-128": "aa58df37139ee03fb259be20309011fe",
+        "KMAC256-256": "b493a1bf9da2ca2153a8b5cb3a3e17c30201e71b414e4428c550be1364dfa551",
+        "KMAC256-512": "d5b57d5716825a227c44114cd109b057fd0017c944373b1b69132da2b9df85b9" \
+                       "d5d77d1eb900eb1d765e0554744ccbca63403542478488dcc860262e7e8df9aa",
+        "TupleHash128-128": "fc7c5cdeb2236fa96533c8ef5dc224c8",
+        "TupleHash128-256": "4ecffd54182a733b743c567cceaa1885a3c91a0254bf501d5c52e7d436f5736a",
+        "TupleHash128-512": "4ce4199c3cc3510ea00d6cee71369e5736b5dc491e9965508c6e03add7d2ffad" \
+                            "3e51b198bcc32c0a2b5eb4bf3570418399a10f958226cd96cf47966fc8684f04",
+        "TupleHash256-128": "c3a2ea77db796e5f28eec65b0638e1eb",
+        "TupleHash256-256": "d434dd5b7208302f753591b9801169a687f5f1611a2132941e83a9ad7de9fe6a",
+        "TupleHash256-512": "47f7874de70ff2bec15a58dd721326bf14150467a27b0bc90c69df4fd322cf7a" \
+                            "db54f98257b71a88f5ce066d8bb8cd0e858cdc2fd82b083df8dbd10a7d19fa2b",
+        # https://marekknapek.github.io/hash/
+        "KT256-128": "551e1a849f04f415fdfc175ff014d27d",
+        "KT256-256": "551e1a849f04f415fdfc175ff014d27db1f6f21e7cb89f4260dc237f95c4accc",
+        "KT256-512": "551e1a849f04f415fdfc175ff014d27db1f6f21e7cb89f4260dc237f95c4accc" \
+                     "5f1ed07d7990a512bb18a7ff813c734a4a846502e4d74e286d2fa4f692c8abca",
+        "SHA-0": "4c472b324e6216a90dac5d070363fc3f7644f6f0",
+        "MD2": "3fc0aab8f5715786a02393555aa9393c",
+        "MD4": "90353ed2d3d2cd620347ff246e8fbab6",
+        "Whirlpool": "78541cfb65b3f1a3959bcc844273862857f76bd32765400070d1cc0c9956af63" \
+                     "c12a26a96aa0f4f7e62eb9e7f0f187f5a46b8f92e14f96f41b10168222be8b2f",
+        # https://crashdemons.github.io/BLAKE-wasm/
+        "BLAKE-224": "29a7331e595c8d88a40dae3ccebb1830a7462f7c8ca472dd0e0a39ec",
+        "BLAKE-256": "0dd4375066df0e5a2c95fbe58ec0ca260d7c84a1f5054ac8f1636611dcaefd52",
+        "BLAKE-384": "40c7a002d92c7722d21359fd49985be493e584353df3cda76b51ea7d8d0d10f7" \
+                     "305b6f0c5ac6dec3f276fadc6e7ee863",
+        "BLAKE-512": "3c4ce424bb86c770d5ecde021dcffcc17a18a6ee10bef69ac4e33d7f342ce867" \
+                     "d2f59873e3ac804f8610039b2d8ad3cdaaf1b3fc802e1de4bfbd2f3ae080f250",
+        # https://emn178.github.io/online-tools/blake3/
+        "BLAKE3-128": "26c7bb3daaaa0439eb3e5c5270e7c4db",
+        "BLAKE3-256": "26c7bb3daaaa0439eb3e5c5270e7c4db05218d8892a0258fbd4911cef5006d23",
+        "BLAKE3-512": "26c7bb3daaaa0439eb3e5c5270e7c4db05218d8892a0258fbd4911cef5006d23" \
+                      "77bc1f40685ce1ea35dfec340a0f2b" \
+                      "d050003eed06378b1d113d4ad18eb5de7a",
+        # https://www.browserling.com/tools/md6-hash
+        "MD6-128": "d92b75252b0b05b8e64db33361b73a03",
+        "MD6-256": "7235c21eafc0992b2cae6eec077a1b5854640e956e3f35a655ec6cc673967735",
+        "MD6-512": "9338e12bc2e524115044daf7ed9f042d47685805d30f8a520b7087e29c60c006" \
+                   "9f2b90a5ee1547e67952e4768e81c26aea30941838ff39a20d477b075ff44438",
+        # https://www.browserling.com/tools/ntlm-hash
+        "NTLM hash": "d7f46ed5fb59a15e1b6db14e813e2799",
+        # https://asecuritysite.com/security50.aspx
+        "LM hash": "dcf9caa6dbc2f2dfaad3b435b51404ee",
+        # https://www.coderstool.com/xxh-hash-generator
+        "xxHash32": "02b6a9f5",
+        "xxHash64": "cf40b5b72bc43e77",
+        "xxHash3-64": "ab12e0c62bf99c9d",
+        "xxHash3-128": "4a304154487284efd582166935acd8a2",
+        # https://fnvhash.github.io/fnv-calculator-online/
+        "FNV-1-32": "2abf8e21",
+        "FNV-1-64": "1946e07e5e301541",
+        "FNV-1-128": "66ac10a3c0757277b806e89cb5099d59",
+        "FNV-1-256": "e46ddd4ed460b0b348e441459f2a8e9d123f79d831721584cc463bb62ecb6471",
+        "FNV-1-512": "f9fe9eefe38ca43fcf36c8fbc0d25bef5457f8ac9f00000000002a5259a146c7" \
+                     "f24cae042d99828e5baba0a28b18bf530de9c3137ca2a36973f8d16ecfb745ed",
+        "FNV-1-1024": "00000000026f791f9147aedad1354bef7d238f3219005cbd6e8d664f6b4eefdb" \
+                      "e94929e41548be786c9c43000000000000000000000000000000000000000000" \
+                      "000000000000000000000000000000000000000000000000001ba08046e07e04" \
+                      "18fb7be0ec07b8ea87a61bb4f073e2bab740db8398ef60cb9b50bec99be18feb",
+        "FNV-1a-32": "0ff323f9",
+        "FNV-1a-64": "8943628b9f33b719",
+        "FNV-1a-128": "6883d8a760757277b806e92e125ae1b1",
+        "FNV-1a-256": "e46ddd4ed460b353546201459f2a8e9d123f79d831721584cc463c9f2c963e49",
+        "FNV-1a-512": "f9fe9eefe38ca43fcf36c8fbc0d25bef51e6a67f8f00000000002a5259a146c7" \
+                      "f24cae042d99828e5baba0a28b18bf530de9c3137ca2a36973f8d09d5c15a7e5",
+        "FNV-1a-1024": "00000000026f791f9147aedad1354bef7d238f3219005cbd6e8d664f6b4eefdb" \
+                       "e94929e41548c220b723b3000000000000000000000000000000000000000000" \
+                       "000000000000000000000000000000000000000000000000001ba08046e07e04" \
+                       "18fb7be0ec07b8ea87a61bb4f073e2bab740db8398ef60cb9b50c03425e2bfcb",
+        # https://www.webutils.pl/index.php?idx=ripemd
+        "RIPEMD-128": "cf40e861b1e917889720ce2ee335b4c1",
+        "RIPEMD-160": "5b481bd818e7863b580488f6174b2fdf48c211a2",
+        "RIPEMD-256": "87c1ac0a90061fc771e4f5403b830cbbd87b5f7fc5e1a8e836b822e89e39c34a",
+        "RIPEMD-320": "aa5516597409ecb2415a71251fe1a711f271f477d6428c72f02dcdfc985c8a2a" \
+                      "a4e930bbe83ac3c7",
+        # https://www.webutils.pl/index.php?idx=haval
+        "HAVAL128-3": "c0714c1b833e9a4ed44ed93b2cca88b6",
+        "HAVAL128-4": "b465b22fd9b6f436e5d90a8836a9c616",
+        "HAVAL128-5": "fb9a05afe6d19341182ea75d7874aeaa",
+        "HAVAL160-3": "9d2d2bb1b6be8d8f22d6e20f4c8f2ef4e025e269",
+        "HAVAL160-4": "35124a6218a70fa697aab04d918fa196dda63872",
+        "HAVAL160-5": "8fefc392e9e98e585b76feb9f8066c32e4d37672",
+        "HAVAL192-3": "ab18bffc90d9fb45420ea5ee8a3c7b465b6dccc1ba00b96c",
+        "HAVAL192-4": "eb490a5b80f93a42268a04d0f2f63a8787a81bb2dcebb0d6",
+        "HAVAL192-5": "5696c29456f9503df358ffd08bd018ad57834c0c43377cd1",
+        "HAVAL224-3": "821d27c7ebac996e15f8ff7566883b32f685728917d3ca66f3f21d69",
+        "HAVAL224-4": "cc91f9a6201475df6f07ed7f19a807494fd4b227cef5e73c8a46469b",
+        "HAVAL224-5": "faabba324382eddf559f79dd62088c38df9b66334089ab898c24e629",
+        "HAVAL256-3": "494445fabc7b3251026471b327b563333aadf434b15d6a1191a8cc7e2d8d2e1f",
+        "HAVAL256-4": "990c486c1d43b86b88b3aa8be2208095185501c36cd3c8e124f7b7e2b2f17e1b",
+        "HAVAL256-5": "df3b465b42f9adadeaf4e28a3f0792c7332ead5875a5cef12140d031924cd8e7",
+        # https://www.webutils.pl/index.php?idx=tiger
+        "TIGER128-3": "11084622b563ab8b87146e6143abdbcf",
+        "TIGER160-3": "11084622b563ab8b87146e6143abdbcf24b3362d",
+        "TIGER192-3": "11084622b563ab8b87146e6143abdbcf24b3362dcbffb26a",
+        "TIGER128-4": "4de9258c8efb8ea92170f381be19c354",
+        "TIGER160-4": "4de9258c8efb8ea92170f381be19c354373622d3",
+        "TIGER192-4": "4de9258c8efb8ea92170f381be19c354373622d349897286",
+        # self check
+        "MD5 x2": "e5c0442336da4b88d1bb70f1c00a8d81",
+        "MD5 x3": "455f9b73a7efe384e74d1ebab057af06",
+        "MD5 x4": "5f2f0e30010bccc4e18b9d3cb88c9acc",
+        "MD5 x5": "08baf4479c845a5117afe7e7e0e0bca6",
+        "SHA1 x2": "73a62eaf29047523804a1c4d73034eb847b186c2",
+        "SHA1 x3": "473c4c59c91fabd5ad9dc6f1a7006d0783e5351f",
+        "SHA1 x4": "312dc0119fe87d2fafb54453d8dd160dfe2e9a64",
+        "SHA1 x5": "29d206ef78d6f72b0de1410bfb103c6bf6bf930a",
+        "SHA2-256 x2": "fcdedab12f9eb01b4a8e47d2b0b7fe01aef336267e703b30c9953461f0779c67",
+        "SHA2-256 x3": "bfb3a50ba6a2feb2c0d8a6101f1ae6a8bb40a1947a4c68c45f05ceed859c271d",
+        "SHA2-256 x4": "3da31d9e1700e0e154283f650a638b618b7ee7cb7952291d61bb8dbc870e1bfe",
+        "SHA2-256 x5": "acf7b5dbb971d39af81dcc5e944c4bda6cf37bb8c0b3d79da0a4311b300497a4",
+    }
+
+    def hash_check_one(self, hname, h):
+        bit = len(h) * 4
+        byte = bit // 8
+
+        expected = self.hash_dic.get(hname, None)
+        if expected is None:
+            self.err_add_out("{:18s}:[{:3d}b/{:2d}B] {:s}".format(hname, bit, byte, "Failed"))
+            return
+
+        if expected != h:
+            self.err_add_out("{:18s}:[{:3d}b/{:2d}B] {:s}".format(hname, bit, byte, "Failed"))
+            return
+
+        if not self.args.smart:
+            self.info_add_out("{:18s}:[{:3d}b/{:2d}B] {:s}".format(hname, bit, byte, "Success"))
+        return
+
+    def hash_test(self):
+        value = b"AAAA"
+        self.out.append(titlify("Hash({!r})".format(value)))
+
+        self.out.append(titlify("hashlib"))
+        for hname, hfunc in self.get_valid_hash_funcs_hashlib():
+            if not self.should_be_displayed(hname):
+                continue
+            hfunc.update(value)
+            h = hfunc.hexdigest()
+            self.hash_check_one(hname, h)
+
+        self.out.append(titlify("other"))
+        for hname, hfunc in self.get_valid_hash_funcs_other():
+            if not self.should_be_displayed(hname):
+               continue
+            hfunc.update(value)
+            h = hfunc.hexdigest()
+            self.hash_check_one(hname, h)
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        self.out = []
+        self.hash_test()
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
 class JsonCommand(GenericCommand, BufferingOutput):
     """The base command to pretty print for JSON."""
 
@@ -73572,6 +78799,11 @@ class CrcCommand(GenericCommand, BufferingOutput):
     subparsers.add_parser("value")
     _syntax_ = parser.format_help()
 
+    _note_ = [
+        "[32b/04B] means 32 bits (4 bytes).",
+    ]
+    _note_ = "\n".join(_note_)
+
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
         complete = kwargs.get("complete", gdb.COMPLETE_NONE)
@@ -73592,7 +78824,97 @@ class CrcCommand(GenericCommand, BufferingOutput):
             except TypeError:
                 continue
             yield (cname, cfunc)
+
+        class Crc32kWrapper:
+            def __init__(self):
+                self.buf = b""
+                return
+
+            def cfunc(self, data):
+                # CRC-32K (Koopman) polynomial:
+                # normal:   0x741B8CD7
+                # reflected 0xEB31D82E  (LSB-first bit processing)
+                poly_reflected = 0xeb31_d82e
+                init = 0xffff_ffff
+                xorout = 0xffff_ffff
+
+                crc = init & 0xffff_ffff
+                for b in data:
+                    crc ^= b
+                    for _ in range(8):
+                        if crc & 1:
+                            crc = (crc >> 1) ^ poly_reflected
+                        else:
+                            crc >>= 1
+                        crc &= 0xffff_ffff
+
+                crc ^= xorout
+                return crc & 0xffff_ffff
+
+            def process(self, value):
+                self.buf += value
+                return
+
+            def calchex(self, value):
+                crc = self.cfunc(value)
+                return "{:08x}".format(crc)
+
+            def finalhex(self):
+                crc = self.cfunc(self.buf)
+                return "{:08x}".format(crc)
+
+            def width(self):
+                return 32
+
+            def bytewidth(self):
+                return 4
+
+        for cname in ["Crc32K", "Crc32Koopman"]:
+            if self.args.filter and not any(filt.search(cname) for filt in self.args.filter):
+                continue
+            yield (cname, Crc32kWrapper())
+
+        # Often confused to be a CRC, but actually a checksum.
+        # However, it is more convenient to display them together.
+        class Adler32Wrapper:
+            def __init__(self):
+                import zlib
+                self.cfunc = zlib.adler32
+                self.buf = b""
+                return
+
+            def process(self, value):
+                self.buf += value
+                return
+
+            def calchex(self, value):
+                crc = self.cfunc(value)
+                return "{:08x}".format(crc)
+
+            def finalhex(self):
+                crc = self.cfunc(self.buf)
+                return "{:08x}".format(crc)
+
+            def width(self):
+                return 32
+
+            def bytewidth(self):
+                return 4
+
+        for cname in ["Adler32"]:
+            if self.args.filter and not any(filt.search(cname) for filt in self.args.filter):
+                continue
+            try:
+                yield (cname, Adler32Wrapper())
+            except Exception:
+                continue
         return None
+
+    def make_line(self, cname, cfunc, crc):
+        bit = cfunc.width()
+        byte = cfunc.bytewidth()
+        line = "{:20s}:[{:2d}b/{:2d}B] {:s}".format(cname, bit, byte, crc)
+        return line
 
     @parse_args
     def do_invoke(self, args):
@@ -73627,6 +78949,10 @@ class CrcMemoryCommand(CrcCommand):
         return
 
     def calc_crc(self, cfunc, start_address, end_address):
+        # When calculating the crc of a very large range,
+        # it is not practical to store the entire data in memory.
+        # It is preferable to calculate it in blocks.
+
         step = 0x400 * get_pagesize()
         if is_qemu_system():
             step = get_pagesize()
@@ -73664,7 +78990,8 @@ class CrcMemoryCommand(CrcCommand):
                 return
             if crc is None:
                 continue
-            self.out.append("{:20s}: {:s} ({:d}-bit)".format(cname, crc, len(crc) * 4))
+            line = self.make_line(cname, cfunc, crc)
+            self.out.append(line)
         self.print_output(check_terminal_size=True)
         return
 
@@ -73714,7 +79041,8 @@ class CrcValueCommand(CrcCommand):
                 crc = cfunc.calchex(value)
             except ValueError:
                 continue
-            self.out.append("{:20s}: {:s} ({:d}-bit)".format(cname, crc, len(crc) * 4))
+            line = self.make_line(cname, cfunc, crc)
+            self.out.append(line)
         self.print_output(check_terminal_size=True)
         return
 
@@ -73749,6 +79077,7 @@ class Crc32revCommand(GenericCommand, BufferingOutput):
         "mef",
         "mpeg2", "ether",
         "xfer",
+        "koopman", "k",
     ], default="", help="quick parameter presets, explicit flags override preset values.")
     parser.add_argument("--list", action="store_true", help="print CRC presets.")
     parser.add_argument("wanted_crc", metavar="WANTED_CRC", nargs="?", type=lambda x: int(x, 16),
@@ -73800,6 +79129,8 @@ class Crc32revCommand(GenericCommand, BufferingOutput):
         "mpeg2":       (0x04c1_1db7, 0xffff_ffff, 0x0000_0000, False, False,  False),
         "ether":       (0x04c1_1db7, 0xffff_ffff, 0x0000_0000, False, False,  True),
         "xfer":        (0x0000_00af, 0x0000_0000, 0x0000_0000, False, False,  False),
+        "koopman":     (0x741b_8cd7, 0xffff_ffff, 0xffff_ffff, True,  True,   False),
+        "k":           (0x741b_8cd7, 0xffff_ffff, 0xffff_ffff, True,  True,   True),
     }
 
     def print_preset_dict(self):

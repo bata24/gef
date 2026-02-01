@@ -55,7 +55,7 @@ fi
 . "${GEF_VENV_PATH}/bin/activate"
 
 echo "[+] pip3"
-uv pip install setuptools crccheck unicorn capstone ropper keystone-engine tqdm magika codext angr pycryptodome pillow pyzbar
+uv pip install setuptools crccheck unicorn capstone ropper keystone-engine tqdm magika codext angr pillow pyzbar
 
 echo "[+] Install seccomp-tools"
 if [ -z "$(command -v seccomp-tools)" ]; then
