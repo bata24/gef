@@ -11722,7 +11722,7 @@ def write_memory(addr, data):
                 if ret:
                     return ret
 
-        raise Exception("Write memory error for qemu-user or Intel Pin")
+        raise Exception("Memory write error for qemu-user or Intel Pin")
 
     # ----
 
@@ -11743,7 +11743,7 @@ def write_memory(addr, data):
         if pid:
             return write_memory_qemu_user(pid, addr, data, length)
 
-    raise Exception("Write memory error")
+    raise Exception("Memory write error")
 
 
 def read_memory(addr, length):
@@ -34473,7 +34473,7 @@ class PatchRangeReplaceCommand(PatchCommand):
         try:
             data = read_memory(self.args.range_start, self.args.range_end - self.args.range_start)
         except gdb.MemoryError:
-            err("Read memory error")
+            err("Memory read error")
             return
 
         import random
@@ -38069,7 +38069,7 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
             struct_io_file_array = []
             for x in args.address:
                 if not is_valid_addr(x):
-                    err("Read memory error")
+                    err("Memory read error")
                     return
                 struct_io_file_array.append(x)
         else:
@@ -85548,7 +85548,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             if kinfo.has_none:
                 return False
         except gdb.MemoryError:
-            self.quiet_err("Read memory error")
+            self.quiet_err("Memory read error")
             return False
 
         if not kinfo.rwx:
@@ -92001,7 +92001,7 @@ class XphysAddrCommand(GenericCommand):
         # read
         data = read_physmem(target, dump_size)
         if data is None:
-            err("Read memory error")
+            err("Memory read error")
             return
 
         # print
@@ -92189,7 +92189,7 @@ class XSecureMemAddrCommand(GenericCommand):
         # read
         data = XSecureMemAddrCommand.read_secure_memory(sm, target_offset, dump_size, args.verbose)
         if data is None:
-            err("Read memory error")
+            err("Memory read error")
             return
 
         # print
@@ -92369,7 +92369,7 @@ class WSecureMemAddrCommand(GenericCommand):
         # write
         ret = WSecureMemAddrCommand.write_secure_memory(sm, target_offset, data, args.verbose)
         if ret is None:
-            err("Write memory error")
+            err("Memory write error")
         return
 
 
