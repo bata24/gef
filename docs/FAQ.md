@@ -105,7 +105,7 @@ Notes:
 - Because it does not install any Python packages, it does not create a `venv`.
 
 ## What is `gef.venv.conf`?
-This is a path information file required by GEF if you installed GEF using `install-uv.sh`.
+This is the path information file required by GEF that is automatically generated when you install GEF using `install-uv.sh`.
 It is not generated if you use `install.sh` or `install-minimal.sh`.
 Place this file in the same directory as `gef.py`.
 
@@ -143,8 +143,15 @@ There are three installers.
 
 For an explanation of each installer, see [About GEF's Files or Directories](#about-gefs-files-or-directories).
 
+## Why does GEF need to run with `root` privileges?
+This is because when working with qemu-system or qemu-user, memory may be read and written via /proc.
+
+If you absolutely do not want to run with `root` privileges, there are two options:
+- Install within Docker, etc.
+- Install with normal user privileges, using the steps below.
+
 ## How to change the location of GEF? / How can I run GEF as a non-`root` user?
-This is not officially supported; proceed at your own risk. Future updates may break this workflow.
+This is NOT officially supported; proceed at your own risk. Future updates may break this workflow.
 
 ```
 # First, download GEF install script
@@ -192,15 +199,20 @@ To use these commands fully, you need to manually install the necessary packages
 |`got --cppfilt`|`binutils` (`c++filt`)|-|-|
 |`add-symbol-temporary`|`binutils` (`objcopy`)|-|-|
 |`ksymaddr-remote-apply`|`binutils` (`objcopy`)|-|-|
+|`kmod -a`|`binutils` (`objcopy`)|-|-|
 |`ksymaddr-remote --vmlinux-file`|`binutils` (`nm`)|-|-|
 |`ktypes`|`bpftool`|-|-|
 |`ktypes-load`|`bpftool`,`gcc`|-|-|
 |`qemu-device-info`|`binutils` (`nm`)|-|-|
-|`rp`|`binutils` (`nm`)|-|`rp++`|
+|`rp`|-|-|`rp++`|
+|`rp --kernel`|`binutils` (`nm`), `grep`|-|`rp++`|
 |`binwalk-memory`|`binwalk`|-|-|
 |`diffo colordiff`|`colordiff`|-|-|
 |`diffo git-diff`|`git`|-|-|
 |`tmux-setup`|`tmux`|-|-|
+|`ps`|`procps`|-|-|
+|`proc-info`|`procps`|-|-|
+|`proc-dump`|`bsdextrautils` (`hexdump`, `column`)|-|-|
 |`heap dump-image`|`imagemagick`|-|-|
 |`vdump`|`imagemagick`|-|-|
 |`sixel-memory`|`imagemagick`|-|-|
@@ -223,11 +235,14 @@ To use these commands fully, you need to manually install the necessary packages
 |`base-n-decode`|-|`codext`|-|
 |`base-n-encode`|-|`codext`|-|
 |`crc`|-|`crccheck`|-|
-|`hash`|-|`pycryptodome`|-|
 |`uefi-ovmf-info`|-|`crccheck`|-|
 |`filetype-memory`|`file`|`magika`|-|
 |`ropper`|-|`ropper`|-|
 |`vmlinux-to-elf-apply`|-|`vmlinux-to-elf`|-|
+
+Notes:
+- To save installation time, the GEF installer does not install `binwalk` by default. This is because it has many package dependencies.
+- The GEF installer does not install `bpftool` when run inside a Docker container because `bpftool` is intended to run in the host.
 
 
 # About the Host Environment
