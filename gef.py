@@ -12903,7 +12903,10 @@ def is_kdb():
     """GDB mode determination function for KDB (over KGDB)."""
     if not is_kgdb():
         return False
-    res = gdb.execute("monitor _stext", to_string=True)
+    try:
+        res = gdb.execute("monitor _stext", to_string=True)
+    except gdb.error:
+        return False
     r = re.search(r"_stext = 0x(\S+)", res)
     return bool(r)
 
