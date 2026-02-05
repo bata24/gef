@@ -76385,6 +76385,142 @@ class Hash:
             0xba7c_9045_f12c_7f99, 0x24a1_9947_b391_6cf7, 0x0801_f2e2_858e_fc16, 0x6369_20d8_7157_4e69,
         ]
 
+    class BLAKE2pBase:
+        parallelism = 0x00
+        leaf_block_size = 0x00
+        block_size = 0x00
+        digest_size = 0x00
+        inner_size = 0x00
+        hash_name = ""
+
+        def __init__(self, data=b""):
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            self.buf = bytearray()
+            self.msg_len = 0x00
+            self.block_index = 0x00
+            self.finalized = False
+            self.final_digest = None
+            self.leaves = [self.create_leaf(i) for i in range(self.parallelism)]
+            if data:
+                self.update(data)
+            return
+
+        def create_leaf(self, node_offset):
+            if self.hash_name == "blake2s":
+                return hashlib.blake2s(
+                    digest_size=self.digest_size,
+                    fanout=self.parallelism,
+                    depth=0x02,
+                    leaf_size=0x0000_0000,
+                    node_offset=node_offset,
+                    node_depth=0x00,
+                    inner_size=self.inner_size,
+                    last_node=(node_offset == self.parallelism - 0x01),
+                )
+            return hashlib.blake2b(
+                digest_size=self.digest_size,
+                fanout=self.parallelism,
+                depth=0x02,
+                leaf_size=0x0000_0000,
+                node_offset=node_offset,
+                node_depth=0x00,
+                inner_size=self.inner_size,
+                last_node=(node_offset == self.parallelism - 0x01),
+            )
+
+        def create_root(self):
+            if self.hash_name == "blake2s":
+                return hashlib.blake2s(
+                    digest_size=self.digest_size,
+                    fanout=self.parallelism,
+                    depth=0x02,
+                    leaf_size=0x0000_0000,
+                    node_offset=0x00,
+                    node_depth=0x01,
+                    inner_size=self.inner_size,
+                    last_node=True,
+                )
+            return hashlib.blake2b(
+                digest_size=self.digest_size,
+                fanout=self.parallelism,
+                depth=0x02,
+                leaf_size=0x0000_0000,
+                node_offset=0x00,
+                node_depth=0x01,
+                inner_size=self.inner_size,
+                last_node=True,
+            )
+
+        def copy(self):
+            other = self.__class__()
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.block_index = self.block_index
+            other.finalized = self.finalized
+            other.final_digest = None if self.final_digest is None else bytes(self.final_digest)
+            other.leaves = [h.copy() for h in self.leaves]
+            return other
+
+        def update(self, data):
+            if self.finalized:
+                raise ValueError("hash object already finalized")
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            self.msg_len += len(data)
+            self.buf.extend(data)
+
+            bs = self.leaf_block_size
+            while len(self.buf) >= bs:
+                block = bytes(self.buf[:bs])
+                del self.buf[:bs]
+                lane = self.block_index % self.parallelism
+                self.leaves[lane].update(block)
+                self.block_index += 0x01
+            return self
+
+        def finalize(self):
+            if self.finalized:
+                return
+            if self.buf:
+                lane = self.block_index % self.parallelism
+                self.leaves[lane].update(bytes(self.buf))
+                self.buf.clear()
+
+            root = self.create_root()
+            for h in self.leaves:
+                root.update(h.digest())
+
+            self.final_digest = root.digest()
+            self.finalized = True
+            return
+
+        def digest(self):
+            if self.finalized:
+                return bytes(self.final_digest)
+            c = self.copy()
+            c.finalize()
+            return bytes(c.final_digest)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+    class BLAKE2sp(BLAKE2pBase):
+        parallelism = 0x08
+        leaf_block_size = 0x40
+        block_size = 0x0200
+        digest_size = 0x20
+        inner_size = 0x20
+        hash_name = "blake2s"
+
+    class BLAKE2bp(BLAKE2pBase):
+        parallelism = 0x04
+        leaf_block_size = 0x80
+        block_size = 0x0200
+        digest_size = 0x40
+        inner_size = 0x40
+        hash_name = "blake2b"
+
     class BLAKE3:
         # BLAKE3 (default, unkeyed) / 256-bit output by default
         block_size = 64
@@ -78667,10 +78803,10 @@ class Hash:
             m = list(struct.unpack(">16I", block))
 
             sigma = [
-                [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-                [14, 15, 11, 9, 8, 10, 3, 4, 2, 13, 0, 5, 6, 7, 12, 1],
-                [7, 6, 10, 14, 13, 2, 9, 12, 11, 4, 15, 8, 5, 0, 1, 3],
-                [5, 12, 1, 8, 15, 0, 13, 11, 3, 10, 9, 2, 7, 14, 4, 6],
+                [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F],
+                [0x0E, 0x0F, 0x0B, 0x09, 0x08, 0x0A, 0x03, 0x04, 0x02, 0x0D, 0x00, 0x05, 0x06, 0x07, 0x0C, 0x01],
+                [0x07, 0x06, 0x0A, 0x0E, 0x0D, 0x02, 0x09, 0x0C, 0x0B, 0x04, 0x0F, 0x08, 0x05, 0x00, 0x01, 0x03],
+                [0x05, 0x0C, 0x01, 0x08, 0x0F, 0x00, 0x0D, 0x0B, 0x03, 0x0A, 0x09, 0x02, 0x07, 0x0E, 0x04, 0x06],
             ]
 
             delta = [
@@ -78717,7 +78853,7 @@ class Hash:
             self.h0, self.h1, self.h2, self.h3, self.h4, self.h5, self.h6, self.h7 = new_cv
             return
 
-    class CityFarmCore:
+    class CityFarmBase:
         mask32 = 0xffff_ffff
         mask64 = 0xffff_ffff_ffff_ffff
 
@@ -79024,7 +79160,7 @@ class Hash:
                 return self.farmhashmk_len0to4(data, seed)
             raise NotImplementedError("farmhash32_with_seed for len(data) > 24 is not implemented in this snippet")
 
-    class CityHash32(CityFarmCore):
+    class CityHash32(CityFarmBase):
         def __init__(self, data=b"", seed=0):
             super().__init__(data=data, seed=seed)
             return
@@ -79034,7 +79170,7 @@ class Hash:
             value = self.cityhash32(self.data)
             return f"{value & self.mask32:08x}"
 
-    class CityHash64(CityFarmCore):
+    class CityHash64(CityFarmBase):
         def __init__(self, data=b"", seed=0):
             super().__init__(data=data, seed=seed)
             return
@@ -79047,7 +79183,7 @@ class Hash:
                 value = self.cityhash64(self.data)
             return f"{value & self.mask64:016x}"
 
-    class CityHash128(CityFarmCore):
+    class CityHash128(CityFarmBase):
         def __init__(self, data=b"", seed=0):
             super().__init__(data=data, seed=seed)
             return
@@ -79065,7 +79201,7 @@ class Hash:
             # CityHash128 prints as low64||high64 in this code.
             return f"{lo & self.mask64:016x}{hi & self.mask64:016x}"
 
-    class FarmHash(CityFarmCore):
+    class FarmHash(CityFarmBase):
         def __init__(self, data=b"", seed=0):
             super().__init__(data=data, seed=seed)
             return
@@ -79075,7 +79211,7 @@ class Hash:
             value64 = self.cityhash64(self.data)
             return f"{value64 & self.mask32:08x}"
 
-    class FarmHash32(CityFarmCore):
+    class FarmHash32(CityFarmBase):
         def __init__(self, data=b"", seed=0):
             super().__init__(data=data, seed=seed)
             return
@@ -79088,7 +79224,7 @@ class Hash:
                 value = self.cityhash32(self.data)
             return f"{value & self.mask32:08x}"
 
-    class FarmHash64(CityFarmCore):
+    class FarmHash64(CityFarmBase):
         def __init__(self, data=b"", seed=0):
             super().__init__(data=data, seed=seed)
             return
@@ -79101,7 +79237,7 @@ class Hash:
                 value = self.cityhash64(self.data)
             return f"{value & self.mask64:016x}"
 
-    class FarmHash128(CityFarmCore):
+    class FarmHash128(CityFarmBase):
         def __init__(self, data=b"", seed=0):
             super().__init__(data=data, seed=seed)
             return
@@ -79117,6 +79253,1093 @@ class Hash:
             else:
                 lo, hi = self.cityhash128(self.data)
             return f"{hi & self.mask64:016x}{lo & self.mask64:016x}"
+
+    class SipHashBase:
+        block_size = 8
+        key_size = 16
+        digest_size = 8
+        c_rounds = 2
+        d_rounds = 4
+
+        iv0 = 0x736f_6d65_7073_6575
+        iv1 = 0x646f_7261_6e64_6f6d
+        iv2 = 0x6c79_6765_6e65_7261
+        iv3 = 0x7465_6462_7974_6573
+
+        def __init__(self, key=b"\0" * 16, data=b""):
+            if not isinstance(key, bytes):
+                raise TypeError("key must be bytes")
+            if len(key) != self.key_size:
+                raise ValueError("key must be 16 bytes")
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+
+            self.key = key
+            self.buf = bytearray()
+            self.msg_len = 0
+
+            k0 = self.u8to64_le(key, 0)
+            k1 = self.u8to64_le(key, 8)
+
+            self.v0 = self.iv0 ^ k0
+            self.v1 = self.iv1 ^ k1
+            self.v2 = self.iv2 ^ k0
+            self.v3 = self.iv3 ^ k1
+
+            if self.digest_size == 16:
+                self.v1 ^= 0xee
+
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__(self.key)
+            other.v0 = self.v0
+            other.v1 = self.v1
+            other.v2 = self.v2
+            other.v3 = self.v3
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            if not data:
+                return self
+
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            while len(self.buf) >= self.block_size:
+                block = bytes(self.buf[:8])
+                del self.buf[:8]
+                self.compress(block)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.result
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            b = ((self.msg_len & 0xff) << 56) & 0xffff_ffff_ffff_ffff
+            left = len(self.buf)
+            for i in range(left):
+                b |= (self.buf[i] & 0xff) << (8 * i)
+            b &= 0xffff_ffff_ffff_ffff
+
+            self.v3 ^= b
+            for _ in range(self.c_rounds):
+                self.sipround()
+            self.v0 ^= b
+
+            if self.digest_size == 16:
+                self.v2 ^= 0xee
+            else:
+                self.v2 ^= 0xff
+
+            for _ in range(self.d_rounds):
+                self.sipround()
+
+            out0 = (self.v0 ^ self.v1 ^ self.v2 ^ self.v3) & 0xffff_ffff_ffff_ffff
+            if self.digest_size == 8:
+                self.result = struct.pack("<Q", out0)
+                return
+
+            self.v1 ^= 0xdd
+            for _ in range(self.d_rounds):
+                self.sipround()
+            out1 = (self.v0 ^ self.v1 ^ self.v2 ^ self.v3) & 0xffff_ffff_ffff_ffff
+            self.result = struct.pack("<QQ", out0, out1)
+            return
+
+        def compress(self, block):
+            m = self.u8to64_le(block, 0)
+            self.v3 ^= m
+            for _ in range(self.c_rounds):
+                self.sipround()
+            self.v0 ^= m
+            return
+
+        def sipround(self):
+            self.v0 = (self.v0 + self.v1) & 0xffff_ffff_ffff_ffff
+            self.v1 = self.rol64(self.v1, 13)
+            self.v1 ^= self.v0
+            self.v0 = self.rol64(self.v0, 32)
+
+            self.v2 = (self.v2 + self.v3) & 0xffff_ffff_ffff_ffff
+            self.v3 = self.rol64(self.v3, 16)
+            self.v3 ^= self.v2
+
+            self.v0 = (self.v0 + self.v3) & 0xffff_ffff_ffff_ffff
+            self.v3 = self.rol64(self.v3, 21)
+            self.v3 ^= self.v0
+
+            self.v2 = (self.v2 + self.v1) & 0xffff_ffff_ffff_ffff
+            self.v1 = self.rol64(self.v1, 17)
+            self.v1 ^= self.v2
+            self.v2 = self.rol64(self.v2, 32)
+            return
+
+        def rol64(self, x, n):
+            x &= 0xffff_ffff_ffff_ffff
+            return ((x << n) | (x >> (64 - n))) & 0xffff_ffff_ffff_ffff
+
+        def u8to64_le(self, b, off):
+            return struct.unpack_from("<Q", b, off)[0]
+
+    class SipHash64_2_4(SipHashBase):
+        digest_size = 8
+        c_rounds = 2
+        d_rounds = 4
+
+    class SipHash64_1_3(SipHashBase):
+        digest_size = 8
+        c_rounds = 1
+        d_rounds = 3
+
+    class SipHash64_4_8(SipHashBase):
+        digest_size = 8
+        c_rounds = 4
+        d_rounds = 8
+
+    class SipHash128_2_4(SipHashBase):
+        digest_size = 16
+        c_rounds = 2
+        d_rounds = 4
+
+    class SipHash128_4_8(SipHashBase):
+        digest_size = 16
+        c_rounds = 4
+        d_rounds = 8
+
+    class HalfSipHashBase:
+        block_size = 4
+        key_size = 8
+        digest_size = 4
+        c_rounds = 2
+        d_rounds = 4
+
+        iv2 = 0x6c79_6765
+        iv3 = 0x7465_6462
+
+        def __init__(self, key=b"\0" * 8, data=b""):
+            if not isinstance(key, bytes):
+                raise TypeError("key must be bytes")
+            if len(key) != self.key_size:
+                raise ValueError("key must be 8 bytes")
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+
+            self.key = key
+            self.buf = bytearray()
+            self.msg_len = 0
+
+            self.v0 = 0x0000_0000
+            self.v1 = 0x0000_0000
+            self.v2 = self.iv2
+            self.v3 = self.iv3
+
+            k0 = self.u8to32_le(key, 0)
+            k1 = self.u8to32_le(key, 4)
+
+            self.v3 ^= k1
+            self.v2 ^= k0
+            self.v1 ^= k1
+            self.v0 ^= k0
+
+            if self.digest_size == 8:
+                self.v1 ^= 0xee
+
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__(self.key)
+            other.v0 = self.v0
+            other.v1 = self.v1
+            other.v2 = self.v2
+            other.v3 = self.v3
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            if not data:
+                return self
+
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            while len(self.buf) >= self.block_size:
+                block = bytes(self.buf[:4])
+                del self.buf[:4]
+                self.compress(block)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.result
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            b = ((self.msg_len & 0xff_ff_ff_ff) << 24) & 0xffff_ffff
+            left = len(self.buf)
+            if left >= 1:
+                b |= (self.buf[0] & 0xff) << 0
+            if left >= 2:
+                b |= (self.buf[1] & 0xff) << 8
+            if left >= 3:
+                b |= (self.buf[2] & 0xff) << 16
+            b &= 0xffff_ffff
+
+            self.v3 ^= b
+            for _ in range(self.c_rounds):
+                self.sipround()
+            self.v0 ^= b
+
+            if self.digest_size == 8:
+                self.v2 ^= 0xee
+            else:
+                self.v2 ^= 0xff
+
+            for _ in range(self.d_rounds):
+                self.sipround()
+
+            out0 = (self.v1 ^ self.v3) & 0xffff_ffff
+            if self.digest_size == 4:
+                self.result = struct.pack("<I", out0)
+                return
+
+            self.v1 ^= 0xdd
+            for _ in range(self.d_rounds):
+                self.sipround()
+            out1 = (self.v1 ^ self.v3) & 0xffff_ffff
+
+            self.result = struct.pack("<II", out0, out1)
+            return
+
+        def compress(self, block):
+            m = self.u8to32_le(block, 0)
+            self.v3 ^= m
+            for _ in range(self.c_rounds):
+                self.sipround()
+            self.v0 ^= m
+            return
+
+        def sipround(self):
+            self.v0 = (self.v0 + self.v1) & 0xffff_ffff
+            self.v1 = self.rol32(self.v1, 5)
+            self.v1 ^= self.v0
+            self.v0 = self.rol32(self.v0, 16)
+
+            self.v2 = (self.v2 + self.v3) & 0xffff_ffff
+            self.v3 = self.rol32(self.v3, 8)
+            self.v3 ^= self.v2
+
+            self.v0 = (self.v0 + self.v3) & 0xffff_ffff
+            self.v3 = self.rol32(self.v3, 7)
+            self.v3 ^= self.v0
+
+            self.v2 = (self.v2 + self.v1) & 0xffff_ffff
+            self.v1 = self.rol32(self.v1, 13)
+            self.v1 ^= self.v2
+            self.v2 = self.rol32(self.v2, 16)
+            return
+
+        def rol32(self, x, n):
+            x &= 0xffff_ffff
+            return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
+
+        def u8to32_le(self, b, off):
+            return struct.unpack_from("<I", b, off)[0]
+
+    class HalfSipHash32_2_4(HalfSipHashBase):
+        digest_size = 4
+        c_rounds = 2
+        d_rounds = 4
+
+    class HalfSipHash64_2_4(HalfSipHashBase):
+        digest_size = 8
+        c_rounds = 2
+        d_rounds = 4
+
+    class SpookyHashBase:
+        block_size = 96
+        digest_size = 16
+
+        mask64 = 0xffff_ffff_ffff_ffff
+        sc_const = 0xdead_beef_dead_beef
+        sc_num_vars = 12
+        sc_block_size = sc_num_vars * 8
+        sc_buf_size = 2 * sc_block_size
+
+        def __init__(self, data=b"", seed=0):
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            self.seed = seed & self.mask64
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.hash1 = 0
+            self.hash2 = 0
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__(seed=self.seed)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.hash1 = self.hash1
+            other.hash2 = self.hash2
+            return other
+
+        def update(self, data):
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.format_digest(c.hash1, c.hash2)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            h1, h2 = self.hash128(bytes(self.buf), self.seed, self.seed)
+            self.hash1 = h1
+            self.hash2 = h2
+            return
+
+        def rot64(self, x, k):
+            x &= self.mask64
+            return ((x << k) | (x >> (64 - k))) & self.mask64
+
+        def mix(self, data, s):
+            s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11 = s
+
+            s0 = (s0 + data[0]) & self.mask64
+            s2 ^= s10
+            s2 &= self.mask64
+            s11 ^= s0
+            s11 &= self.mask64
+            s0 = self.rot64(s0, 11)
+            s11 = (s11 + s1) & self.mask64
+
+            s1 = (s1 + data[1]) & self.mask64
+            s3 ^= s11
+            s3 &= self.mask64
+            s0 ^= s1
+            s0 &= self.mask64
+            s1 = self.rot64(s1, 32)
+            s0 = (s0 + s2) & self.mask64
+
+            s2 = (s2 + data[2]) & self.mask64
+            s4 ^= s0
+            s4 &= self.mask64
+            s1 ^= s2
+            s1 &= self.mask64
+            s2 = self.rot64(s2, 43)
+            s1 = (s1 + s3) & self.mask64
+
+            s3 = (s3 + data[3]) & self.mask64
+            s5 ^= s1
+            s5 &= self.mask64
+            s2 ^= s3
+            s2 &= self.mask64
+            s3 = self.rot64(s3, 31)
+            s2 = (s2 + s4) & self.mask64
+
+            s4 = (s4 + data[4]) & self.mask64
+            s6 ^= s2
+            s6 &= self.mask64
+            s3 ^= s4
+            s3 &= self.mask64
+            s4 = self.rot64(s4, 17)
+            s3 = (s3 + s5) & self.mask64
+
+            s5 = (s5 + data[5]) & self.mask64
+            s7 ^= s3
+            s7 &= self.mask64
+            s4 ^= s5
+            s4 &= self.mask64
+            s5 = self.rot64(s5, 28)
+            s4 = (s4 + s6) & self.mask64
+
+            s6 = (s6 + data[6]) & self.mask64
+            s8 ^= s4
+            s8 &= self.mask64
+            s5 ^= s6
+            s5 &= self.mask64
+            s6 = self.rot64(s6, 39)
+            s5 = (s5 + s7) & self.mask64
+
+            s7 = (s7 + data[7]) & self.mask64
+            s9 ^= s5
+            s9 &= self.mask64
+            s6 ^= s7
+            s6 &= self.mask64
+            s7 = self.rot64(s7, 57)
+            s6 = (s6 + s8) & self.mask64
+
+            s8 = (s8 + data[8]) & self.mask64
+            s10 ^= s6
+            s10 &= self.mask64
+            s7 ^= s8
+            s7 &= self.mask64
+            s8 = self.rot64(s8, 55)
+            s7 = (s7 + s9) & self.mask64
+
+            s9 = (s9 + data[9]) & self.mask64
+            s11 ^= s7
+            s11 &= self.mask64
+            s8 ^= s9
+            s8 &= self.mask64
+            s9 = self.rot64(s9, 54)
+            s8 = (s8 + s10) & self.mask64
+
+            s10 = (s10 + data[10]) & self.mask64
+            s0 ^= s8
+            s0 &= self.mask64
+            s9 ^= s10
+            s9 &= self.mask64
+            s10 = self.rot64(s10, 22)
+            s9 = (s9 + s11) & self.mask64
+
+            s11 = (s11 + data[11]) & self.mask64
+            s1 ^= s9
+            s1 &= self.mask64
+            s10 ^= s11
+            s10 &= self.mask64
+            s11 = self.rot64(s11, 46)
+            s10 = (s10 + s0) & self.mask64
+
+            return [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11]
+
+        def end_partial(self, h):
+            h0, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11 = h
+
+            h11 = (h11 + h1) & self.mask64
+            h2 ^= h11
+            h2 &= self.mask64
+            h1 = self.rot64(h1, 44)
+
+            h0 = (h0 + h2) & self.mask64
+            h3 ^= h0
+            h3 &= self.mask64
+            h2 = self.rot64(h2, 15)
+
+            h1 = (h1 + h3) & self.mask64
+            h4 ^= h1
+            h4 &= self.mask64
+            h3 = self.rot64(h3, 34)
+
+            h2 = (h2 + h4) & self.mask64
+            h5 ^= h2
+            h5 &= self.mask64
+            h4 = self.rot64(h4, 21)
+
+            h3 = (h3 + h5) & self.mask64
+            h6 ^= h3
+            h6 &= self.mask64
+            h5 = self.rot64(h5, 38)
+
+            h4 = (h4 + h6) & self.mask64
+            h7 ^= h4
+            h7 &= self.mask64
+            h6 = self.rot64(h6, 33)
+
+            h5 = (h5 + h7) & self.mask64
+            h8 ^= h5
+            h8 &= self.mask64
+            h7 = self.rot64(h7, 10)
+
+            h6 = (h6 + h8) & self.mask64
+            h9 ^= h6
+            h9 &= self.mask64
+            h8 = self.rot64(h8, 13)
+
+            h7 = (h7 + h9) & self.mask64
+            h10 ^= h7
+            h10 &= self.mask64
+            h9 = self.rot64(h9, 38)
+
+            h8 = (h8 + h10) & self.mask64
+            h11 ^= h8
+            h11 &= self.mask64
+            h10 = self.rot64(h10, 53)
+
+            h9 = (h9 + h11) & self.mask64
+            h0 ^= h9
+            h0 &= self.mask64
+            h11 = self.rot64(h11, 42)
+
+            h10 = (h10 + h0) & self.mask64
+            h1 ^= h10
+            h1 &= self.mask64
+            h0 = self.rot64(h0, 54)
+
+            return [h0, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11]
+
+        def end(self, h):
+            h = self.end_partial(h)
+            h = self.end_partial(h)
+            h = self.end_partial(h)
+            return h
+
+        def end_data(self, data, h):
+            h0, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11 = h
+            h0 = (h0 + data[0]) & self.mask64
+            h1 = (h1 + data[1]) & self.mask64
+            h2 = (h2 + data[2]) & self.mask64
+            h3 = (h3 + data[3]) & self.mask64
+            h4 = (h4 + data[4]) & self.mask64
+            h5 = (h5 + data[5]) & self.mask64
+            h6 = (h6 + data[6]) & self.mask64
+            h7 = (h7 + data[7]) & self.mask64
+            h8 = (h8 + data[8]) & self.mask64
+            h9 = (h9 + data[9]) & self.mask64
+            h10 = (h10 + data[10]) & self.mask64
+            h11 = (h11 + data[11]) & self.mask64
+            h = self.end([h0, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11])
+            return h
+
+        def short_mix(self, h0, h1, h2, h3):
+            h2 = self.rot64(h2, 50)
+            h2 = (h2 + h3) & self.mask64
+            h0 ^= h2
+            h0 &= self.mask64
+
+            h3 = self.rot64(h3, 52)
+            h3 = (h3 + h0) & self.mask64
+            h1 ^= h3
+            h1 &= self.mask64
+
+            h0 = self.rot64(h0, 30)
+            h0 = (h0 + h1) & self.mask64
+            h2 ^= h0
+            h2 &= self.mask64
+
+            h1 = self.rot64(h1, 41)
+            h1 = (h1 + h2) & self.mask64
+            h3 ^= h1
+            h3 &= self.mask64
+
+            h2 = self.rot64(h2, 54)
+            h2 = (h2 + h3) & self.mask64
+            h0 ^= h2
+            h0 &= self.mask64
+
+            h3 = self.rot64(h3, 48)
+            h3 = (h3 + h0) & self.mask64
+            h1 ^= h3
+            h1 &= self.mask64
+
+            h0 = self.rot64(h0, 38)
+            h0 = (h0 + h1) & self.mask64
+            h2 ^= h0
+            h2 &= self.mask64
+
+            h1 = self.rot64(h1, 37)
+            h1 = (h1 + h2) & self.mask64
+            h3 ^= h1
+            h3 &= self.mask64
+
+            h2 = self.rot64(h2, 62)
+            h2 = (h2 + h3) & self.mask64
+            h0 ^= h2
+            h0 &= self.mask64
+
+            h3 = self.rot64(h3, 34)
+            h3 = (h3 + h0) & self.mask64
+            h1 ^= h3
+            h1 &= self.mask64
+
+            h0 = self.rot64(h0, 5)
+            h0 = (h0 + h1) & self.mask64
+            h2 ^= h0
+            h2 &= self.mask64
+
+            h1 = self.rot64(h1, 36)
+            h1 = (h1 + h2) & self.mask64
+            h3 ^= h1
+            h3 &= self.mask64
+
+            return h0, h1, h2, h3
+
+        def short_end(self, h0, h1, h2, h3):
+            h3 ^= h2
+            h3 &= self.mask64
+            h2 = self.rot64(h2, 15)
+            h3 = (h3 + h2) & self.mask64
+
+            h0 ^= h3
+            h0 &= self.mask64
+            h3 = self.rot64(h3, 52)
+            h0 = (h0 + h3) & self.mask64
+
+            h1 ^= h0
+            h1 &= self.mask64
+            h0 = self.rot64(h0, 26)
+            h1 = (h1 + h0) & self.mask64
+
+            h2 ^= h1
+            h2 &= self.mask64
+            h1 = self.rot64(h1, 51)
+            h2 = (h2 + h1) & self.mask64
+
+            h3 ^= h2
+            h3 &= self.mask64
+            h2 = self.rot64(h2, 28)
+            h3 = (h3 + h2) & self.mask64
+
+            h0 ^= h3
+            h0 &= self.mask64
+            h3 = self.rot64(h3, 9)
+            h0 = (h0 + h3) & self.mask64
+
+            h1 ^= h0
+            h1 &= self.mask64
+            h0 = self.rot64(h0, 47)
+            h1 = (h1 + h0) & self.mask64
+
+            h2 ^= h1
+            h2 &= self.mask64
+            h1 = self.rot64(h1, 54)
+            h2 = (h2 + h1) & self.mask64
+
+            h3 ^= h2
+            h3 &= self.mask64
+            h2 = self.rot64(h2, 32)
+            h3 = (h3 + h2) & self.mask64
+
+            h0 ^= h3
+            h0 &= self.mask64
+            h3 = self.rot64(h3, 25)
+            h0 = (h0 + h3) & self.mask64
+
+            h1 ^= h0
+            h1 &= self.mask64
+            h0 = self.rot64(h0, 63)
+            h1 = (h1 + h0) & self.mask64
+
+            return h0, h1, h2, h3
+
+        def u64le(self, data, offset):
+            return int.from_bytes(data[offset:offset + 8], "little")
+
+        def u32le(self, data, offset):
+            return int.from_bytes(data[offset:offset + 4], "little")
+
+        def short(self, message, hash1, hash2):
+            length = len(message)
+            remainder = length % 32
+
+            a = hash1 & self.mask64
+            b = hash2 & self.mask64
+            c = self.sc_const
+            d = self.sc_const
+
+            pos = 0
+            if length > 15:
+                end = (length // 32) * 32
+                while pos < end:
+                    c = (c + self.u64le(message, pos)) & self.mask64
+                    d = (d + self.u64le(message, pos + 8)) & self.mask64
+                    a, b, c, d = self.short_mix(a, b, c, d)
+                    a = (a + self.u64le(message, pos + 16)) & self.mask64
+                    b = (b + self.u64le(message, pos + 24)) & self.mask64
+                    pos += 32
+
+                if remainder >= 16:
+                    c = (c + self.u64le(message, pos)) & self.mask64
+                    d = (d + self.u64le(message, pos + 8)) & self.mask64
+                    a, b, c, d = self.short_mix(a, b, c, d)
+                    pos += 16
+                    remainder -= 16
+
+            tail = message[pos:pos + remainder]
+            d = (d + (((length & self.mask64) << 56) & self.mask64)) & self.mask64
+
+            if remainder == 15:
+                d = (d + (tail[14] << 48)) & self.mask64
+            if remainder >= 14:
+                d = (d + (tail[13] << 40)) & self.mask64
+            if remainder >= 13:
+                d = (d + (tail[12] << 32)) & self.mask64
+
+            if remainder >= 12:
+                d = (d + self.u32le(tail + b"\x00" * 4, 8)) & self.mask64
+                c = (c + self.u64le(tail + b"\x00" * 8, 0)) & self.mask64
+            elif remainder == 11:
+                d = (d + (tail[10] << 16)) & self.mask64
+                d = (d + (tail[9] << 8)) & self.mask64
+                d = (d + tail[8]) & self.mask64
+                c = (c + self.u64le(tail + b"\x00" * 8, 0)) & self.mask64
+            elif remainder == 10:
+                d = (d + (tail[9] << 8)) & self.mask64
+                d = (d + tail[8]) & self.mask64
+                c = (c + self.u64le(tail + b"\x00" * 8, 0)) & self.mask64
+            elif remainder == 9:
+                d = (d + tail[8]) & self.mask64
+                c = (c + self.u64le(tail + b"\x00" * 8, 0)) & self.mask64
+            elif remainder == 8:
+                c = (c + self.u64le(tail, 0)) & self.mask64
+            elif remainder == 7:
+                c = (c + (tail[6] << 48)) & self.mask64
+                c = (c + (tail[5] << 40)) & self.mask64
+                c = (c + (tail[4] << 32)) & self.mask64
+                c = (c + self.u32le(tail + b"\x00" * 4, 0)) & self.mask64
+            elif remainder == 6:
+                c = (c + (tail[5] << 40)) & self.mask64
+                c = (c + (tail[4] << 32)) & self.mask64
+                c = (c + self.u32le(tail + b"\x00" * 4, 0)) & self.mask64
+            elif remainder == 5:
+                c = (c + (tail[4] << 32)) & self.mask64
+                c = (c + self.u32le(tail + b"\x00" * 4, 0)) & self.mask64
+            elif remainder == 4:
+                c = (c + self.u32le(tail, 0)) & self.mask64
+            elif remainder == 3:
+                c = (c + (tail[2] << 16)) & self.mask64
+                c = (c + (tail[1] << 8)) & self.mask64
+                c = (c + tail[0]) & self.mask64
+            elif remainder == 2:
+                c = (c + (tail[1] << 8)) & self.mask64
+                c = (c + tail[0]) & self.mask64
+            elif remainder == 1:
+                c = (c + tail[0]) & self.mask64
+            elif remainder == 0:
+                c = (c + self.sc_const) & self.mask64
+                d = (d + self.sc_const) & self.mask64
+
+            a, b, c, d = self.short_end(a, b, c, d)
+            return a, b
+
+        def hash128(self, message, seed1, seed2):
+            length = len(message)
+            if length < self.sc_buf_size:
+                h1, h2 = self.short(message, seed1, seed2)
+                return h1, h2
+
+            h0 = h3 = h6 = h9 = seed1 & self.mask64
+            h1 = h4 = h7 = h10 = seed2 & self.mask64
+            h2 = h5 = h8 = h11 = self.sc_const
+
+            nblocks = length // self.sc_block_size
+            pos = 0
+            for _ in range(nblocks):
+                block = struct.unpack_from("<12Q", message, pos)
+                state = [h0, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11]
+                state = self.mix(block, state)
+                h0, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11 = state
+                pos += self.sc_block_size
+
+            remainder = length - pos
+            tail = message[pos:]
+
+            buf = bytearray(self.sc_block_size)
+            buf[:remainder] = tail
+            buf[-1] = remainder & 0xff
+            block = struct.unpack_from("<12Q", bytes(buf), 0)
+
+            state = self.end_data(block, [h0, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11])
+            return state[0], state[1]
+
+        def format_digest(self, hash1, hash2):
+            return struct.pack("<2Q", hash1 & self.mask64, hash2 & self.mask64)
+
+    class SpookyHash32(SpookyHashBase):
+        digest_size = 4
+
+        def format_digest(self, hash1, hash2):
+            return struct.pack("<I", hash1 & 0xffff_ffff)
+
+    class SpookyHash64(SpookyHashBase):
+        digest_size = 8
+
+        def format_digest(self, hash1, hash2):
+            return struct.pack("<Q", hash1 & self.mask64)
+
+    class SpookyHash128(SpookyHashBase):
+        digest_size = 16
+
+        def format_digest(self, hash1, hash2):
+            return struct.pack("<2Q", hash1 & self.mask64, hash2 & self.mask64)
+
+    class MetroHashBase:
+        block_size = 32
+
+        def __init__(self, data=b"", seed=0):
+            if not isinstance(data, (bytes,)):
+                raise TypeError("data must be bytes")
+            if not isinstance(seed, (int,)):
+                raise TypeError("seed must be int")
+
+            self.seed = seed & 0xffff_ffff_ffff_ffff
+            self.state = [0, 0, 0, 0]
+            self.input = bytearray(32)
+            self.bytes = 0
+            self.result = b""
+
+            self.initialize(self.seed)
+
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__(seed=self.seed)
+            other.state = list(self.state)
+            other.input = bytearray(self.input)
+            other.bytes = self.bytes
+            if hasattr(self, "vseed"):
+                other.vseed = self.vseed
+            other.result = self.result
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes,)):
+                raise TypeError("data must be bytes")
+
+            ptr = 0
+            end = len(data)
+
+            if self.bytes % 32:
+                fill = 32 - (self.bytes % 32)
+                if fill > end:
+                    fill = end
+
+                off = self.bytes % 32
+                self.input[off:off + fill] = data[ptr:ptr + fill]
+                ptr += fill
+                self.bytes += fill
+
+                if (self.bytes % 32) != 0:
+                    return self
+
+                self.process_block(self.input, 0)
+
+            self.bytes += (end - ptr)
+            while ptr <= (end - 32):
+                self.process_block(data, ptr)
+                ptr += 32
+
+            if ptr < end:
+                rem = end - ptr
+                self.input[0:rem] = data[ptr:end]
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.result
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def mask64(self, x):
+            return x & 0xffff_ffff_ffff_ffff
+
+        def rotate_right(self, x, r):
+            x &= 0xffff_ffff_ffff_ffff
+            return ((x >> r) | ((x << (64 - r)) & 0xffff_ffff_ffff_ffff)) & 0xffff_ffff_ffff_ffff
+
+        def read_u64(self, data, offset):
+            return int.from_bytes(data[offset:offset + 8], "little")
+
+        def read_u32(self, data, offset):
+            return int.from_bytes(data[offset:offset + 4], "little")
+
+        def read_u16(self, data, offset):
+            return int.from_bytes(data[offset:offset + 2], "little")
+
+        def read_u8(self, data, offset):
+            return data[offset]
+
+        def process_block(self, data, offset):
+            v0, v1, v2, v3 = self.state
+
+            v0 = self.mask64(v0 + self.read_u64(data, offset + 0) * self.k0)
+            v0 = self.mask64(self.rotate_right(v0, 29) + v2)
+
+            v1 = self.mask64(v1 + self.read_u64(data, offset + 8) * self.k1)
+            v1 = self.mask64(self.rotate_right(v1, 29) + v3)
+
+            v2 = self.mask64(v2 + self.read_u64(data, offset + 16) * self.k2)
+            v2 = self.mask64(self.rotate_right(v2, 29) + v0)
+
+            v3 = self.mask64(v3 + self.read_u64(data, offset + 24) * self.k3)
+            v3 = self.mask64(self.rotate_right(v3, 29) + v1)
+
+            self.state = [v0, v1, v2, v3]
+            return
+
+        def initialize(self, seed):
+            raise NotImplementedError("initialize must be implemented by subclass")
+            return
+
+        def finalize(self):
+            raise NotImplementedError("finalize must be implemented by subclass")
+            return
+
+    class MetroHash64(MetroHashBase):
+        digest_size = 8
+
+        k0 = 0xd6d0_18f5
+        k1 = 0xa2aa_033b
+        k2 = 0x6299_2fc1
+        k3 = 0x30bc_5b29
+
+        def initialize(self, seed):
+            self.vseed = self.mask64((seed + self.k2) * self.k0)
+            self.state = [self.vseed, self.vseed, self.vseed, self.vseed]
+            self.bytes = 0
+            return
+
+        def finalize(self):
+            v0, v1, v2, v3 = self.state
+
+            if self.bytes >= 32:
+                v2 ^= self.mask64(self.rotate_right(self.mask64(((v0 + v3) * self.k0) + v1), 37) * self.k1)
+                v3 ^= self.mask64(self.rotate_right(self.mask64(((v1 + v2) * self.k1) + v0), 37) * self.k0)
+                v0 ^= self.mask64(self.rotate_right(self.mask64(((v0 + v2) * self.k0) + v3), 37) * self.k1)
+                v1 ^= self.mask64(self.rotate_right(self.mask64(((v1 + v3) * self.k1) + v2), 37) * self.k0)
+                v0 = self.mask64(self.vseed + (v0 ^ v1))
+
+            ptr = 0
+            end = self.bytes % 32
+
+            if (end - ptr) >= 16:
+                t1 = self.mask64(v0 + self.read_u64(self.input, ptr) * self.k2)
+                ptr += 8
+                t1 = self.mask64(self.rotate_right(t1, 29) * self.k3)
+
+                t2 = self.mask64(v0 + self.read_u64(self.input, ptr) * self.k2)
+                ptr += 8
+                t2 = self.mask64(self.rotate_right(t2, 29) * self.k3)
+
+                t1 ^= self.mask64(self.rotate_right(self.mask64(t1 * self.k0), 21) + t2)
+                t2 ^= self.mask64(self.rotate_right(self.mask64(t2 * self.k3), 21) + t1)
+                v0 = self.mask64(v0 + t2)
+
+                v1 = t1
+                v2 = t2
+
+            if (end - ptr) >= 8:
+                v0 = self.mask64(v0 + self.read_u64(self.input, ptr) * self.k3)
+                ptr += 8
+                v0 ^= self.mask64(self.rotate_right(v0, 55) * self.k1)
+
+            if (end - ptr) >= 4:
+                v0 = self.mask64(v0 + self.read_u32(self.input, ptr) * self.k3)
+                ptr += 4
+                v0 ^= self.mask64(self.rotate_right(v0, 26) * self.k1)
+
+            if (end - ptr) >= 2:
+                v0 = self.mask64(v0 + self.read_u16(self.input, ptr) * self.k3)
+                ptr += 2
+                v0 ^= self.mask64(self.rotate_right(v0, 48) * self.k1)
+
+            if (end - ptr) >= 1:
+                v0 = self.mask64(v0 + self.read_u8(self.input, ptr) * self.k3)
+                v0 ^= self.mask64(self.rotate_right(v0, 37) * self.k1)
+
+            v0 ^= self.rotate_right(v0, 28)
+            v0 = self.mask64(v0 * self.k0)
+            v0 ^= self.rotate_right(v0, 29)
+
+            self.state = [v0, v1, v2, v3]
+            self.bytes = 0
+
+            self.result = v0.to_bytes(8, "little")
+            return
+
+    class MetroHash128(MetroHashBase):
+        digest_size = 16
+
+        k0 = 0xc83a_91e1
+        k1 = 0x8648_dbdb
+        k2 = 0x7bde_c03b
+        k3 = 0x2f58_70a5
+
+        def initialize(self, seed):
+            self.state[0] = self.mask64((seed - self.k0) * self.k3)
+            self.state[1] = self.mask64((seed + self.k1) * self.k2)
+            self.state[2] = self.mask64((seed + self.k0) * self.k2)
+            self.state[3] = self.mask64((seed - self.k1) * self.k3)
+            self.bytes = 0
+            return
+
+        def finalize(self):
+            v0, v1, v2, v3 = self.state
+
+            if self.bytes >= 32:
+                v2 ^= self.mask64(self.rotate_right(self.mask64(((v0 + v3) * self.k0) + v1), 21) * self.k1)
+                v3 ^= self.mask64(self.rotate_right(self.mask64(((v1 + v2) * self.k1) + v0), 21) * self.k0)
+                v0 ^= self.mask64(self.rotate_right(self.mask64(((v0 + v2) * self.k0) + v3), 21) * self.k1)
+                v1 ^= self.mask64(self.rotate_right(self.mask64(((v1 + v3) * self.k1) + v2), 21) * self.k0)
+
+            ptr = 0
+            end = self.bytes % 32
+
+            if (end - ptr) >= 16:
+                v0 = self.mask64(v0 + self.read_u64(self.input, ptr) * self.k2)
+                ptr += 8
+                v0 = self.mask64(self.rotate_right(v0, 33) * self.k3)
+
+                v1 = self.mask64(v1 + self.read_u64(self.input, ptr) * self.k2)
+                ptr += 8
+                v1 = self.mask64(self.rotate_right(v1, 33) * self.k3)
+
+                v0 ^= self.mask64(self.rotate_right(self.mask64((v0 * self.k2) + v1), 45) * self.k1)
+                v1 ^= self.mask64(self.rotate_right(self.mask64((v1 * self.k3) + v0), 45) * self.k0)
+
+            if (end - ptr) >= 8:
+                v0 = self.mask64(v0 + self.read_u64(self.input, ptr) * self.k2)
+                ptr += 8
+                v0 = self.mask64(self.rotate_right(v0, 33) * self.k3)
+                v0 ^= self.mask64(self.rotate_right(self.mask64((v0 * self.k2) + v1), 27) * self.k1)
+
+            if (end - ptr) >= 4:
+                v1 = self.mask64(v1 + self.read_u32(self.input, ptr) * self.k2)
+                ptr += 4
+                v1 = self.mask64(self.rotate_right(v1, 33) * self.k3)
+                v1 ^= self.mask64(self.rotate_right(self.mask64((v1 * self.k3) + v0), 46) * self.k0)
+
+            if (end - ptr) >= 2:
+                v0 = self.mask64(v0 + self.read_u16(self.input, ptr) * self.k2)
+                ptr += 2
+                v0 = self.mask64(self.rotate_right(v0, 33) * self.k3)
+                v0 ^= self.mask64(self.rotate_right(self.mask64((v0 * self.k2) + v1), 22) * self.k1)
+
+            if (end - ptr) >= 1:
+                v1 = self.mask64(v1 + self.read_u8(self.input, ptr) * self.k2)
+                v1 = self.mask64(self.rotate_right(v1, 33) * self.k3)
+                v1 ^= self.mask64(self.rotate_right(self.mask64((v1 * self.k3) + v0), 58) * self.k0)
+
+            v0 = self.mask64(v0 + self.rotate_right(self.mask64((v0 * self.k0) + v1), 13))
+            v1 = self.mask64(v1 + self.rotate_right(self.mask64((v1 * self.k1) + v0), 37))
+            v0 = self.mask64(v0 + self.rotate_right(self.mask64((v0 * self.k2) + v1), 13))
+            v1 = self.mask64(v1 + self.rotate_right(self.mask64((v1 * self.k3) + v0), 37))
+
+            self.state = [v0, v1, v2, v3]
+            self.bytes = 0
+
+            self.result = v0.to_bytes(8, "little") + v1.to_bytes(8, "little")
+            return
 
 
 @register_command
@@ -79139,8 +80362,10 @@ class HashCommand(GenericCommand):
 
     _note_ = [
         "[128b/16B] means 128 bits (16 bytes).",
-        'The salt for BLAKE2s and BLAKE2b is "\\0".',
-        'The key for KMAC128 and KMAC256 is "".',
+        'The salt for BLAKE2s and BLAKE2b is blank.',
+        'The key for KMAC128 and KMAC256 is blank.',
+        'The key for SipHash is "\\0" * 16.',
+        'The key for HalfSipHash is "\\0" * 8.',
     ]
     _note_ = "\n".join(_note_)
 
@@ -79282,9 +80507,11 @@ class HashCommand(GenericCommand):
         yield ("BLAKE-256", Hash.BLAKE256())
         yield ("BLAKE-384", Hash.BLAKE384())
         yield ("BLAKE-512", Hash.BLAKE512())
-        yield ("BLAKE3-128", Hash.BLAKE3(digest_bits=128))
-        yield ("BLAKE3-256", Hash.BLAKE3(digest_bits=256))
-        yield ("BLAKE3-512", Hash.BLAKE3(digest_bits=512))
+        yield ("BLAKE2sp", Hash.BLAKE2sp())
+        yield ("BLAKE2bp", Hash.BLAKE2bp())
+        #yield ("BLAKE3-128", Hash.BLAKE3(digest_bits=128))
+        #yield ("BLAKE3-256", Hash.BLAKE3(digest_bits=256))
+        #yield ("BLAKE3-512", Hash.BLAKE3(digest_bits=512))
         yield ("xxHash32", Hash.XXH32())
         yield ("xxHash64", Hash.XXH64())
         yield ("xxHash3-64", Hash.XXH3_64())
@@ -79325,13 +80552,25 @@ class HashCommand(GenericCommand):
         yield ("Murmur3c", Hash.MurmurHash3_x86_128())
         yield ("Murmur3f", Hash.MurmurHash3_x64_128())
         yield ("FORK256", Hash.FORK256())
-        yield ("CityHash32", Hash.CityHash32())
-        yield ("CityHash64", Hash.CityHash64())
-        yield ("CityHash128", Hash.CityHash128())
-        yield ("FarmHash", Hash.FarmHash())
-        yield ("FarmHash32", Hash.FarmHash32())
-        yield ("FarmHash64", Hash.FarmHash64())
-        yield ("FarmHash128", Hash.FarmHash128())
+        #yield ("CityHash32", Hash.CityHash32())
+        #yield ("CityHash64", Hash.CityHash64())
+        #yield ("CityHash128", Hash.CityHash128())
+        #yield ("FarmHash", Hash.FarmHash())
+        #yield ("FarmHash32", Hash.FarmHash32())
+        #yield ("FarmHash64", Hash.FarmHash64())
+        #yield ("FarmHash128", Hash.FarmHash128())
+        yield ("MetroHash64", Hash.MetroHash64())
+        yield ("MetroHash128", Hash.MetroHash128())
+        yield ("SipHash64_2_4", Hash.SipHash64_2_4())
+        yield ("SipHash64_1_3", Hash.SipHash64_1_3())
+        yield ("SipHash64_4_8", Hash.SipHash64_4_8())
+        yield ("SipHash128_2_4", Hash.SipHash128_2_4())
+        yield ("SipHash128_4_8", Hash.SipHash128_4_8())
+        yield ("HalfSipHash32_2_4", Hash.HalfSipHash32_2_4())
+        yield ("HalfSipHash64_2_4", Hash.HalfSipHash64_2_4())
+        yield ("SpookyHash32", Hash.SpookyHash32())
+        yield ("SpookyHash64", Hash.SpookyHash64())
+        yield ("SpookyHash128", Hash.SpookyHash128())
         return None
 
     def make_line(self, hname, hfunc, h):
@@ -79430,8 +80669,11 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
         return hfunc.hexdigest()
 
     def process(self):
+        tqdm = GefUtil.get_tqdm()
+
         self.out.append(titlify("hashlib"))
-        for hname, hfunc in self.get_valid_hash_funcs_hashlib():
+        hash_funcs_hashlib = list(self.get_valid_hash_funcs_hashlib())
+        for hname, hfunc in tqdm(hash_funcs_hashlib, leave=False, total=len(hash_funcs_hashlib)):
             if not self.should_be_displayed(hname):
                 continue
             h = self.calc_hash(hfunc, self.args.location, self.args.location + self.args.size)
@@ -79446,7 +80688,8 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
             return
 
         self.out.append(titlify("other"))
-        for hname, hfunc in self.get_valid_hash_funcs_other():
+        hash_funcs_other = list(self.get_valid_hash_funcs_other())
+        for hname, hfunc in tqdm(hash_funcs_other, leave=False, total=len(hash_funcs_other)):
             if not self.should_be_displayed(hname):
                 continue
             h = self.calc_hash(hfunc, self.args.location, self.args.location + self.args.size)
@@ -79496,8 +80739,11 @@ class HashValueCommand(HashCommand, BufferingOutput):
         return
 
     def process(self, value):
+        tqdm = GefUtil.get_tqdm()
+
         self.out.append(titlify("hashlib"))
-        for hname, hfunc in self.get_valid_hash_funcs_hashlib():
+        hash_funcs_hashlib = list(self.get_valid_hash_funcs_hashlib())
+        for hname, hfunc in tqdm(hash_funcs_hashlib, leave=False, total=len(hash_funcs_hashlib)):
             if not self.should_be_displayed(hname):
                 continue
             hfunc.update(value)
@@ -79509,7 +80755,8 @@ class HashValueCommand(HashCommand, BufferingOutput):
             return
 
         self.out.append(titlify("other"))
-        for hname, hfunc in self.get_valid_hash_funcs_other():
+        hash_funcs_other = list(self.get_valid_hash_funcs_other())
+        for hname, hfunc in tqdm(hash_funcs_other, leave=False, total=len(hash_funcs_other)):
             if not self.should_be_displayed(hname):
                continue
             hfunc.update(value)
@@ -80043,7 +81290,7 @@ class HashTestCommand(HashCommand, BufferingOutput):
         super().__init__(prefix=False, complete=gdb.COMPLETE_NONE)
         return
 
-    hash_dic = {
+    test_vector_AAAA = {
         # hashlib
         "MD5": "098890dde069e9abad63f19a0d9e1f32",
         "SHA1": "e2512172abf8cc9f67fdd49eb6cacf2df71bbad3",
@@ -80132,6 +81379,10 @@ class HashTestCommand(HashCommand, BufferingOutput):
                      "305b6f0c5ac6dec3f276fadc6e7ee863",
         "BLAKE-512": "3c4ce424bb86c770d5ecde021dcffcc17a18a6ee10bef69ac4e33d7f342ce867" \
                      "d2f59873e3ac804f8610039b2d8ad3cdaaf1b3fc802e1de4bfbd2f3ae080f250",
+        # https://github.com/jonelo/jacksum
+        "BLAKE2sp": "f0af273147167678aea7e95ff9e8f1b5f970aa51febabad5b776c64b6dafce8a",
+        "BLAKE2bp": "308d00127806d7b23eae8c71e81055caae3417be0698369d1de2e559fe4b9aad" \
+                    "0a518d6de295472f4b06e55ba6b0e7607bad78af9eeadc02d29e9ae37fdfe596",
         # https://emn178.github.io/online-tools/blake3/
         "BLAKE3-128": "26c7bb3daaaa0439eb3e5c5270e7c4db",
         "BLAKE3-256": "26c7bb3daaaa0439eb3e5c5270e7c4db05218d8892a0258fbd4911cef5006d23",
@@ -80210,8 +81461,8 @@ class HashTestCommand(HashCommand, BufferingOutput):
         # https://murmurhash.shorelabs.com/
         "Murmur2": "d9734258", # need int->hex (LE)
         "Murmur3a": "3c670daa", # need int->hex (LE)
-        "Murmur3c": "845f46cf34f35c3b34f35c3b34f35c3b", # need 4-byteswap
-        "Murmur3f": "fc765a89dd529b4885593d95128e23c1", # need 8-byteswap
+        "Murmur3c": "845f46cf34f35c3b34f35c3b34f35c3b", # need 4-byte swap
+        "Murmur3f": "fc765a89dd529b4885593d95128e23c1", # need 8-byte swap
         # https://www.ciphertools.org/tools/murmur2/text
         "Murmur2a": "9aef82bf", # need int->hex (LE)
         "Murmur64a": "04c070c3f10e8471", # need int->hex(LE)
@@ -80226,6 +81477,19 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "FarmHash32": "ba1fe1de",
         "FarmHash64": "d0e3a446f95cab20",
         "FarmHash128": "0fae0f385c9442af0a57b660d4207cd7",
+        "MetroHash64": "f6401ec51c1aba77", # need byte swap
+        "MetroHash128": "086a19058454fe348734adf6946ae1ec", # need byte swap
+        "SpookyHash32": "29289f57", # need byte swap
+        "SpookyHash64": "29289f5710bd2825", # need byte swap
+        "SpookyHash128": "29289f5710bd2825c2607e47db8ff439",
+        # https://pypi.org/project/siphash-cffi/
+        "SipHash64_2_4": "853440dfa96333a1",
+        "SipHash64_1_3": "9ea30335f2d625ec",
+        "SipHash64_4_8": "b42c9060b6f9d0e0",
+        "SipHash128_2_4": "9e417e4039896730590b7de94f430610",
+        "SipHash128_4_8": "842457abcbb1467aabaa841d7b7e5986",
+        "HalfSipHash32_2_4": "c4fc2f58",
+        "HalfSipHash64_2_4": "ca03fd7a9e4e5b1b",
         # self created
         "MD5 x2 (raw)": "e5c0442336da4b88d1bb70f1c00a8d81",
         "MD5 x3 (raw)": "455f9b73a7efe384e74d1ebab057af06",
@@ -80257,9 +81521,9 @@ class HashTestCommand(HashCommand, BufferingOutput):
         bit = len(h) * 4
         byte = bit // 8
 
-        expected = self.hash_dic.get(hname, None)
+        expected = self.test_vector_AAAA.get(hname, None)
         if expected is None:
-            self.err_add_out("{:18s}:[{:3d}b/{:2d}B] {:s}".format(hname, bit, byte, "Failed"))
+            self.err_add_out("{:18s}:[{:3d}b/{:2d}B] {:s}".format(hname, bit, byte, "Not found"))
             return
 
         if expected != h:
