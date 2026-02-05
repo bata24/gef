@@ -15496,7 +15496,7 @@ class SecondBreakpoint(gdb.Breakpoint):
 
 @register_command
 class NiCommand(GenericCommand):
-    """`ni` wrapper for some specific architecures (OpenRISC 1000 and CRIS)."""
+    """`ni` wrapper for some specific architectures (OpenRISC 1000 and CRIS)."""
 
     _cmdline_ = "nexti-for-qemu-user"
     _category_ = "01-c. Debugging Support - Basic Command Extension"
@@ -24756,7 +24756,7 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "Please specify the file obtained by the `heap snashot` command.",
+        "Please specify the file obtained by the `heap snapshot` command.",
         "Usually, it is saved in /tmp/gef/heap-snashot-arenaN-...",
     ]
     _note_ = "\n".join(_note_)
@@ -78618,11 +78618,11 @@ class Hash:
             return (a + b + c) & 0xffff_ffff
 
         def f(self, x):
-            # f(x) = x ⊞ (x<<<7 ⊕ x<<<22)
+            # f(x) = x + (x<<<7 XOR x<<<22)
             return self.add32(x, self.rol32(x, 7) ^ self.rol32(x, 22))
 
         def g(self, x):
-            # g(x) = x ⊕ (x<<<13 ⊞ x<<<27)
+            # g(x) = x XOR (x<<<13 + x<<<27)
             return (x ^ self.add32(self.rol32(x, 13), self.rol32(x, 27))) & 0xffff_ffff
 
         def step(self, v, m0, m1, alpha, beta):
