@@ -74497,7 +74497,7 @@ class Hash:
             0xcd56_d943_0ea8_280e, 0xc125_91d7_535f_5065, 0xc832_23f1_720a_ef96, 0xc3a0_396f_7363_a51f,
         ]
 
-        def __init__(self, data=b"", digest_bits=128, passes=3):
+        def __init__(self, data=b"", digest_bits=128, passes=3, version=1):
             if not isinstance(data, (bytes, bytearray)):
                 raise TypeError("data must be bytes-like")
             self.a = 0x0123_4567_89ab_cdef
@@ -74507,12 +74507,13 @@ class Hash:
             self.passes = passes
             self.buf = bytearray()
             self.msg_len = 0  # in bytes
+            self.version = version
             if data:
                 self.update(bytes(data))
             return
 
         def copy(self):
-            other = self.__class__(digest_bits=self.digest_size * 8, passes=self.passes)
+            other = self.__class__(digest_bits=self.digest_size * 8, passes=self.passes, version=self.version)
             other.a = self.a
             other.b = self.b
             other.c = self.c
@@ -74542,7 +74543,10 @@ class Hash:
 
         def finalize(self):
             bit_len = self.msg_len * 8
-            self.buf.append(0x01)
+            if self.version == 1:
+                self.buf.append(0x01)
+            else:
+                self.buf.append(0x80)
             while (len(self.buf) % 64) != 56:
                 self.buf.append(0x00)
             self.buf.extend(struct.pack("<Q", bit_len))
@@ -79232,6 +79236,9 @@ class HashCommand(GenericCommand):
         yield ("TIGER128,4", Hash.TIGER(digest_bits=128, passes=4))
         yield ("TIGER160,4", Hash.TIGER(digest_bits=160, passes=4))
         yield ("TIGER192,4", Hash.TIGER(digest_bits=192, passes=4))
+        yield ("TIGER2/128,3", Hash.TIGER(digest_bits=128, passes=3, version=2))
+        yield ("TIGER2/160,3", Hash.TIGER(digest_bits=160, passes=3, version=2))
+        yield ("TIGER2/192,3", Hash.TIGER(digest_bits=192, passes=3, version=2))
         yield ("SHA-0", Hash.SHA0())
         yield ("Whirlpool-0", Hash.Whirlpool0())
         yield ("Whirlpool-T", Hash.WhirlpoolT())
@@ -80194,6 +80201,10 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "TIGER128,4": "4de9258c8efb8ea92170f381be19c354",
         "TIGER160,4": "4de9258c8efb8ea92170f381be19c354373622d3",
         "TIGER192,4": "4de9258c8efb8ea92170f381be19c354373622d349897286",
+        # https://marekknapek.github.io/hash/
+        "TIGER2/128,3": "71973b53e246026a865b3826aa65f5eb",
+        "TIGER2/160,3": "71973b53e246026a865b3826aa65f5eb4ff94cd6",
+        "TIGER2/192,3": "71973b53e246026a865b3826aa65f5eb4ff94cd6cf0cd8fa",
         # https://asecuritysite.com/hash/smh
         "Murmur1": "4f0cd660", # need int->hex (LE)
         # https://murmurhash.shorelabs.com/
