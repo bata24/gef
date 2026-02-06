@@ -78861,6 +78861,223 @@ class Hash:
             self.h0, self.h1, self.h2, self.h3, self.h4, self.h5, self.h6, self.h7 = new_cv
             return
 
+    class BELT:
+        block_size = 32
+        digest_size = 32
+        mask32 = 0xffff_ffff
+        h5 = [
+            0x0000_1620, 0x0000_1280, 0x0000_1740, 0x0000_1900, 0x0000_0140, 0x0000_0100, 0x0000_1ea0, 0x0000_0760,
+            0x0000_06c0, 0x0000_0da0, 0x0000_0000, 0x0000_11c0, 0x0000_0b00, 0x0000_0940, 0x0000_0ba0, 0x0000_1c80,
+            0x0000_10a0, 0x0000_0080, 0x0000_1f40, 0x0000_13a0, 0x0000_0360, 0x0000_16c0, 0x0000_18e0, 0x0000_1580,
+            0x0000_04a0, 0x0000_05c0, 0x0000_0e40, 0x0000_1840, 0x0000_0040, 0x0000_1fa0, 0x0000_19c0, 0x0000_01a0,
+            0x0000_0b60, 0x0000_1c60, 0x0000_1ac0, 0x0000_0240, 0x0000_02e0, 0x0000_1720, 0x0000_0c20, 0x0000_1020,
+            0x0000_1fc0, 0x0000_0ce0, 0x0000_10c0, 0x0000_15a0, 0x0000_0e20, 0x0000_0d60, 0x0000_1120, 0x0000_0160,
+            0x0000_0b80, 0x0000_1600, 0x0000_1800, 0x0000_1fe0, 0x0000_0660, 0x0000_1860, 0x0000_0ac0, 0x0000_1700,
+            0x0000_06a0, 0x0000_1880, 0x0000_00a0, 0x0000_15c0, 0x0000_1b00, 0x0000_1c00, 0x0000_0fe0, 0x0000_1320,
+            0x0000_1c20, 0x0000_0560, 0x0000_1b80, 0x0000_0340, 0x0000_1c40, 0x0000_1040, 0x0000_0ae0, 0x0000_1d80,
+            0x0000_0e00, 0x0000_07e0, 0x0000_1980, 0x0000_1e00, 0x0000_12a0, 0x0000_1dc0, 0x0000_11a0, 0x0000_1e20,
+            0x0000_1820, 0x0000_1560, 0x0000_0ec0, 0x0000_0700, 0x0000_13e0, 0x0000_1cc0, 0x0000_0f00, 0x0000_1940,
+            0x0000_1ee0, 0x0000_18c0, 0x0000_1f00, 0x0000_0c00, 0x0000_1aa0, 0x0000_1760, 0x0000_1380, 0x0000_09e0,
+            0x0000_1e60, 0x0000_0780, 0x0000_0ca0, 0x0000_0f60, 0x0000_0c60, 0x0000_0f80, 0x0000_0600, 0x0000_0d40,
+            0x0000_1ba0, 0x0000_09c0, 0x0000_14e0, 0x0000_0f20, 0x0000_13c0, 0x0000_1640, 0x0000_07a0, 0x0000_0620,
+            0x0000_07c0, 0x0000_1300, 0x0000_16a0, 0x0000_0dc0, 0x0000_04e0, 0x0000_1a60, 0x0000_1780, 0x0000_19e0,
+            0x0000_0b20, 0x0000_03c0, 0x0000_0300, 0x0000_03e0, 0x0000_0980, 0x0000_0b40, 0x0000_16e0, 0x0000_1260,
+            0x0000_1d20, 0x0000_1bc0, 0x0000_1ce0, 0x0000_0580, 0x0000_11e0, 0x0000_0180, 0x0000_01e0, 0x0000_14c0,
+            0x0000_05a0, 0x0000_1b60, 0x0000_0920, 0x0000_1e80, 0x0000_0de0, 0x0000_0e60, 0x0000_12c0, 0x0000_08e0,
+            0x0000_00c0, 0x0000_00e0, 0x0000_0a60, 0x0000_02c0, 0x0000_1da0, 0x0000_0480, 0x0000_0f40, 0x0000_06e0,
+            0x0000_0720, 0x0000_1960, 0x0000_1460, 0x0000_1060, 0x0000_0060, 0x0000_1520, 0x0000_1160, 0x0000_1ec0,
+            0x0000_1240, 0x0000_17a0, 0x0000_1360, 0x0000_0380, 0x0000_1ca0, 0x0000_1a20, 0x0000_0820, 0x0000_0020,
+            0x0000_0a80, 0x0000_08a0, 0x0000_1f60, 0x0000_1920, 0x0000_0bc0, 0x0000_09a0, 0x0000_01c0, 0x0000_1e40,
+            0x0000_0d00, 0x0000_0400, 0x0000_1000, 0x0000_1540, 0x0000_0440, 0x0000_0fa0, 0x0000_0c80, 0x0000_05e0,
+            0x0000_04c0, 0x0000_10e0, 0x0000_1f20, 0x0000_0680, 0x0000_1200, 0x0000_0800, 0x0000_0aa0, 0x0000_0220,
+            0x0000_17c0, 0x0000_0640, 0x0000_12e0, 0x0000_0260, 0x0000_0860, 0x0000_1f80, 0x0000_1340, 0x0000_0900,
+            0x0000_1400, 0x0000_0540, 0x0000_1100, 0x0000_0be0, 0x0000_0320, 0x0000_0960, 0x0000_0120, 0x0000_1420,
+            0x0000_0fc0, 0x0000_19a0, 0x0000_1480, 0x0000_1a00, 0x0000_02a0, 0x0000_0880, 0x0000_15e0, 0x0000_1180,
+            0x0000_14a0, 0x0000_1080, 0x0000_0a00, 0x0000_17e0, 0x0000_0cc0, 0x0000_1a40, 0x0000_1d00, 0x0000_1140,
+            0x0000_1440, 0x0000_1ae0, 0x0000_08c0, 0x0000_0a40, 0x0000_0840, 0x0000_1500, 0x0000_1be0, 0x0000_1660,
+            0x0000_0d20, 0x0000_0e80, 0x0000_18a0, 0x0000_0a20, 0x0000_1d60, 0x0000_0460, 0x0000_0520, 0x0000_0420,
+            0x0000_1a80, 0x0000_1de0, 0x0000_1b20, 0x0000_1680, 0x0000_0740, 0x0000_0c40, 0x0000_0500, 0x0000_0ea0,
+            0x0000_1220, 0x0000_0280, 0x0000_0200, 0x0000_1d40, 0x0000_0ee0, 0x0000_0d80, 0x0000_1b40, 0x0000_03a0
+        ]
+
+        def __init__(self, data=b""):
+            if not isinstance(data, (bytes,)):
+                raise TypeError("data must be bytes")
+            self.r = 0
+            self.s = [0, 0, 0, 0]
+            self.h = [
+                0xc8ba_94b1, 0x3bf5_080a, 0x8e00_6d36, 0xe45d_4a58,
+                0x9dfa_0485, 0xacc7_b61b, 0xc272_2e25, 0x0dce_fd02,
+            ]
+            self.buf = bytearray()
+            self.done = False
+            self.out = None
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.r = self.r
+            other.s = list(self.s)
+            other.h = list(self.h)
+            other.buf = bytearray(self.buf)
+            other.done = self.done
+            other.out = None if self.out is None else list(self.out)
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes,)):
+                raise TypeError("data must be bytes")
+            if self.done:
+                raise ValueError("hash context is finalized")
+            self.buf.extend(data)
+            while len(self.buf) >= self.block_size:
+                block = bytes(self.buf[:self.block_size])
+                del self.buf[:self.block_size]
+                self.r += 1
+                self.compress_block(block)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            out = bytearray()
+            for w in c.out:
+                out.extend(w.to_bytes(4, "little"))
+            return bytes(out)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            if self.done:
+                return
+            pos = len(self.buf)
+            if pos != 0:
+                block = bytes(self.buf) + b"\x00" * (self.block_size - pos)
+                self.buf.clear()
+                self.compress_block(block)
+            bit_len = (self.r * self.block_size + pos) * 8
+            r_words = self.encode_r(bit_len)
+            _, y = self.belt_compress(r_words, self.s, self.h)
+            self.out = y
+            self.done = True
+            return
+
+        def compress_block(self, block):
+            x1 = [
+                self.get_u32(block, 0),
+                self.get_u32(block, 1),
+                self.get_u32(block, 2),
+                self.get_u32(block, 3),
+            ]
+            x2 = [
+                self.get_u32(block, 4),
+                self.get_u32(block, 5),
+                self.get_u32(block, 6),
+                self.get_u32(block, 7),
+            ]
+            t, h = self.belt_compress(x1, x2, self.h)
+            self.h = h
+            self.s = [(self.s[i] ^ t[i]) & self.mask32 for i in range(4)]
+            return
+
+        def get_u32(self, data, i):
+            return int.from_bytes(data[4 * i : 4 * i + 4], "little")
+
+        def xor4(self, a, b):
+            return [
+                (a[0] ^ b[0]) & self.mask32,
+                (a[1] ^ b[1]) & self.mask32,
+                (a[2] ^ b[2]) & self.mask32,
+                (a[3] ^ b[3]) & self.mask32,
+            ]
+
+        def concat4(self, a, b):
+            return [a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3]]
+
+        def encode_r(self, r_bits):
+            r = int(r_bits)
+            return [
+                (r & 0xffff_ffff),
+                ((r >> 32) & 0xffff_ffff),
+                ((r >> 64) & 0xffff_ffff),
+                ((r >> 96) & 0xffff_ffff),
+            ]
+
+        def h13_entry(self, i):
+            return (self.h5[i] << 8) & self.mask32
+
+        def h21_entry(self, i):
+            return (self.h5[i] << 16) & self.mask32
+
+        def h29_entry(self, i):
+            v = self.h5[i] & self.mask32
+            return ((v >> 8) | ((v & 0xff) << 24)) & self.mask32
+
+        def g5(self, u):
+            return (
+                self.h29_entry((u >> 24) & 0xff)
+                ^ self.h21_entry((u >> 16) & 0xff)
+                ^ self.h13_entry((u >> 8) & 0xff)
+                ^ self.h5[u & 0xff]
+            ) & self.mask32
+
+        def g13(self, u):
+            return (
+                self.h5[(u >> 24) & 0xff]
+                ^ self.h29_entry((u >> 16) & 0xff)
+                ^ self.h21_entry((u >> 8) & 0xff)
+                ^ self.h13_entry(u & 0xff)
+            ) & self.mask32
+
+        def g21(self, u):
+            return (
+                self.h13_entry((u >> 24) & 0xff)
+                ^ self.h5[(u >> 16) & 0xff]
+                ^ self.h29_entry((u >> 8) & 0xff)
+                ^ self.h21_entry(u & 0xff)
+            ) & self.mask32
+
+        def key_idx(self, key, i, delta):
+            return key[(7 * i - delta - 1) % 8] & self.mask32
+
+        def belt_block_raw(self, x, key):
+            a = x[0] & self.mask32
+            b = x[1] & self.mask32
+            c = x[2] & self.mask32
+            d = x[3] & self.mask32
+
+            for i in range(1, 9):
+                b ^= self.g5((a + self.key_idx(key, i, 6)) & self.mask32)
+                c ^= self.g21((d + self.key_idx(key, i, 5)) & self.mask32)
+                a = (a - self.g13((b + self.key_idx(key, i, 4)) & self.mask32)) & self.mask32
+                e = (self.g21((b + c + self.key_idx(key, i, 3)) & self.mask32) ^ i) & self.mask32
+                b = (b + e) & self.mask32
+                c = (c - e) & self.mask32
+                d = (d + self.g13((c + self.key_idx(key, i, 2)) & self.mask32)) & self.mask32
+                b ^= self.g21((a + self.key_idx(key, i, 1)) & self.mask32)
+                c ^= self.g5((d + self.key_idx(key, i, 0)) & self.mask32)
+                a, b = b, a
+                c, d = d, c
+                b, c = c, b
+
+            return [b & self.mask32, d & self.mask32, a & self.mask32, c & self.mask32]
+
+        def belt_compress(self, x1, x2, x34):
+            x3 = [x34[0], x34[1], x34[2], x34[3]]
+            x4 = [x34[4], x34[5], x34[6], x34[7]]
+
+            t1 = self.belt_block_raw(self.xor4(x3, x4), self.concat4(x1, x2))
+            s = self.xor4(self.xor4(t1, x3), x4)
+            t2 = self.belt_block_raw(x1, self.concat4(s, x4))
+            y1 = self.xor4(t2, x1)
+            s_inv = [(~v) & self.mask32 for v in s]
+            t3 = self.belt_block_raw(x2, self.concat4(s_inv, x3))
+            y2 = self.xor4(t3, x2)
+            return (s, self.concat4(y1, y2))
+
     class CityFarmBase:
         mask32 = 0xffff_ffff
         mask64 = 0xffff_ffff_ffff_ffff
@@ -80712,6 +80929,300 @@ class Hash:
             self.result = v0.to_bytes(8, "little") + v1.to_bytes(8, "little")
             return
 
+    class HighwayHashBase:
+        block_size = 32
+        digest_size = 0
+        output_words = 0
+        final_rounds = 0
+        mask64 = 0xffff_ffff_ffff_ffff
+
+        def __init__(self, data=b"", key=None):
+            self.key = self.normalize_key(key)
+            self.mul0 = [0, 0, 0, 0]
+            self.mul1 = [0, 0, 0, 0]
+            self.v0 = [0, 0, 0, 0]
+            self.v1 = [0, 0, 0, 0]
+            self.buf = bytearray()
+            self.finalized = False
+            self.result_words = None
+            self.reset(self.key)
+            if data:
+                self.update(data)
+            return
+
+        def normalize_key(self, key):
+            if key is None:
+                return (0, 0, 0, 0)
+            if isinstance(key, (bytes, bytearray)):
+                key_bytes = bytes(key)
+                if len(key_bytes) != 32:
+                    raise ValueError("key must be 32 bytes")
+                w0 = int.from_bytes(key_bytes[0:8], "little")
+                w1 = int.from_bytes(key_bytes[8:16], "little")
+                w2 = int.from_bytes(key_bytes[16:24], "little")
+                w3 = int.from_bytes(key_bytes[24:32], "little")
+                return (w0 & self.mask64, w1 & self.mask64, w2 & self.mask64, w3 & self.mask64)
+            values = list(key)
+            if len(values) != 4:
+                raise ValueError("key must be 4x uint64 or 32 bytes")
+            return (
+                int(values[0]) & self.mask64,
+                int(values[1]) & self.mask64,
+                int(values[2]) & self.mask64,
+                int(values[3]) & self.mask64,
+            )
+
+        def reset(self, key=None):
+            if key is not None:
+                self.key = self.normalize_key(key)
+            self.mul0 = [
+                0xdbe6_d5d5_fe4c_ce2f,
+                0xa409_3822_299f_31d0,
+                0x1319_8a2e_0370_7344,
+                0x243f_6a88_85a3_08d3,
+            ]
+            self.mul1 = [
+                0x3bd3_9e10_cb0e_f593,
+                0xc0ac_f169_b5f1_8a8c,
+                0xbe54_66cf_34e9_0c6c,
+                0x4528_21e6_38d0_1377,
+            ]
+            self.v0 = [
+                (self.mul0[0] ^ self.key[0]) & self.mask64,
+                (self.mul0[1] ^ self.key[1]) & self.mask64,
+                (self.mul0[2] ^ self.key[2]) & self.mask64,
+                (self.mul0[3] ^ self.key[3]) & self.mask64,
+            ]
+            self.v1 = [
+                (self.mul1[0] ^ self.swap32(self.key[0])) & self.mask64,
+                (self.mul1[1] ^ self.swap32(self.key[1])) & self.mask64,
+                (self.mul1[2] ^ self.swap32(self.key[2])) & self.mask64,
+                (self.mul1[3] ^ self.swap32(self.key[3])) & self.mask64,
+            ]
+            self.buf = bytearray()
+            self.finalized = False
+            self.result_words = None
+            return
+
+        def copy(self):
+            other = self.__class__(b"", self.key)
+            other.mul0 = list(self.mul0)
+            other.mul1 = list(self.mul1)
+            other.v0 = list(self.v0)
+            other.v1 = list(self.v1)
+            other.buf = bytearray(self.buf)
+            other.finalized = self.finalized
+            other.result_words = None if self.result_words is None else list(self.result_words)
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            if self.finalized:
+                raise ValueError("hash object already finalized")
+            data_bytes = bytes(data)
+            if not data_bytes:
+                return self
+
+            if self.buf:
+                need = self.block_size - len(self.buf)
+                if len(data_bytes) < need:
+                    self.buf.extend(data_bytes)
+                    return self
+                self.buf.extend(data_bytes[:need])
+                self.update_packet(bytes(self.buf))
+                self.buf.clear()
+                data_bytes = data_bytes[need:]
+
+            i = 0
+            n = len(data_bytes)
+            while i + 32 <= n:
+                self.update_packet(data_bytes[i : i + 32])
+                i += 32
+            if i != n:
+                self.buf.extend(data_bytes[i:])
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            out = bytearray()
+            for w in c.result_words:
+                out.extend(c.bswap64(w).to_bytes(8, "big"))
+            return bytes(out)
+
+        def hexdigest(self):
+            c = self.copy()
+            c.finalize()
+            parts = []
+            for w in c.result_words:
+                parts.append(format(c.bswap64(w), "016x"))
+            return "".join(parts)
+
+        def finalize(self):
+            if self.finalized:
+                return
+            if self.buf:
+                self.update_remainder(bytes(self.buf))
+                self.buf.clear()
+            self.final_permutes(self.final_rounds)
+            self.result_words = self.finalize_words()
+            self.finalized = True
+            return
+
+        def swap32(self, x):
+            x &= self.mask64
+            return ((x >> 32) | ((x << 32) & self.mask64)) & self.mask64
+
+        def bswap64(self, x):
+            x &= self.mask64
+            return int.from_bytes(x.to_bytes(8, "little"), "big")
+
+        def read64(self, b, off):
+            return int.from_bytes(b[off : off + 8], "little") & self.mask64
+
+        def zipper_merge_and_add(self, v1, v0, add1, idx1, add0, idx0):
+            term0 = (
+                (((v0 & 0xff00_0000) | (v1 & 0xff00_0000_00)) >> 24)
+                | (((v0 & 0xff00_0000_0000) | (v1 & 0xff00_0000_0000_00)) >> 16)
+                | (v0 & 0xff00_00)
+                | ((v0 & 0xff00) << 32)
+                | ((v1 & 0xff00_0000_0000_0000) >> 8)
+                | ((v0 << 56) & self.mask64)
+            ) & self.mask64
+            term1 = (
+                (((v1 & 0xff00_0000) | (v0 & 0xff00_0000_00)) >> 24)
+                | (v1 & 0xff00_00)
+                | ((v1 & 0xff00_0000_0000) >> 16)
+                | ((v1 & 0xff00) << 24)
+                | ((v0 & 0xff00_0000_0000_00) >> 8)
+                | ((v1 & 0xff) << 48)
+                | (v0 & 0xff00_0000_0000_0000)
+            ) & self.mask64
+            add0[idx0] = (add0[idx0] + term0) & self.mask64
+            add1[idx1] = (add1[idx1] + term1) & self.mask64
+            return
+
+        def update_lanes(self, lanes):
+            for i in range(4):
+                self.v1[i] = (self.v1[i] + self.mul0[i] + (lanes[i] & self.mask64)) & self.mask64
+                self.mul0[i] = (self.mul0[i] ^ (((self.v1[i] & 0xffff_ffff) * (self.v0[i] >> 32)) & self.mask64)) & self.mask64
+                self.v0[i] = (self.v0[i] + self.mul1[i]) & self.mask64
+                self.mul1[i] = (self.mul1[i] ^ (((self.v0[i] & 0xffff_ffff) * (self.v1[i] >> 32)) & self.mask64)) & self.mask64
+
+            self.zipper_merge_and_add(self.v1[1], self.v1[0], self.v0, 1, self.v0, 0)
+            self.zipper_merge_and_add(self.v1[3], self.v1[2], self.v0, 3, self.v0, 2)
+            self.zipper_merge_and_add(self.v0[1], self.v0[0], self.v1, 1, self.v1, 0)
+            self.zipper_merge_and_add(self.v0[3], self.v0[2], self.v1, 3, self.v1, 2)
+            return
+
+        def update_packet(self, packet):
+            lanes = [
+                self.read64(packet, 0),
+                self.read64(packet, 8),
+                self.read64(packet, 16),
+                self.read64(packet, 24),
+            ]
+            self.update_lanes(lanes)
+            return
+
+        def rotate32_by(self, count, lanes):
+            out = [0, 0, 0, 0]
+            for i in range(4):
+                x = lanes[i] & self.mask64
+                half0 = x & 0xffff_ffff
+                half1 = (x >> 32) & 0xffff_ffff
+                r0 = ((half0 << count) | (half0 >> (32 - count))) & 0xffff_ffff
+                r1 = ((half1 << count) | (half1 >> (32 - count))) & 0xffff_ffff
+                out[i] = (r0 | (r1 << 32)) & self.mask64
+            return out
+
+        def update_remainder(self, bytes_data):
+            size_mod32 = len(bytes_data)
+            size_mod4 = size_mod32 & 3
+            packet = bytearray(32)
+
+            for i in range(4):
+                self.v0[i] = (self.v0[i] + ((size_mod32 << 32) + size_mod32)) & self.mask64
+            self.v1 = self.rotate32_by(size_mod32, self.v1)
+
+            upto = size_mod32 & ~3
+            packet[:upto] = bytes_data[:upto]
+
+            if size_mod32 & 16:
+                tail = bytes_data[size_mod32 - 4 : size_mod32]
+                packet[28:32] = tail
+            else:
+                if size_mod4:
+                    remainder = bytes_data[upto:]
+                    packet[16] = remainder[0]
+                    packet[17] = remainder[size_mod4 >> 1]
+                    packet[18] = remainder[size_mod4 - 1]
+
+            self.update_packet(bytes(packet))
+            return
+
+        def permute(self, v):
+            return [
+                self.swap32(v[2]),
+                self.swap32(v[3]),
+                self.swap32(v[0]),
+                self.swap32(v[1]),
+            ]
+
+        def permute_and_update(self):
+            self.update_lanes(self.permute(self.v0))
+            return
+
+        def final_permutes(self, rounds):
+            for _ in range(rounds):
+                self.permute_and_update()
+            return
+
+        def modular_reduction(self, a3_unmasked, a2, a1, a0):
+            a3 = a3_unmasked & 0x3fff_ffff_ffff_ffff
+            m1 = (a1 ^ (((a3 << 1) & self.mask64) | (a2 >> 63)) ^ (((a3 << 2) & self.mask64) | (a2 >> 62))) & self.mask64
+            m0 = (a0 ^ ((a2 << 1) & self.mask64) ^ ((a2 << 2) & self.mask64)) & self.mask64
+            return (m0, m1)
+
+        def finalize_words(self):
+            if self.output_words == 1:
+                w0 = (self.v0[0] + self.v1[0] + self.mul0[0] + self.mul1[0]) & self.mask64
+                return [w0]
+            if self.output_words == 2:
+                w0 = (self.v0[0] + self.mul0[0] + self.v1[2] + self.mul1[2]) & self.mask64
+                w1 = (self.v0[1] + self.mul0[1] + self.v1[3] + self.mul1[3]) & self.mask64
+                return [w0, w1]
+            if self.output_words == 4:
+                a3 = (self.v1[1] + self.mul1[1]) & self.mask64
+                a2 = (self.v1[0] + self.mul1[0]) & self.mask64
+                a1 = (self.v0[1] + self.mul0[1]) & self.mask64
+                a0 = (self.v0[0] + self.mul0[0]) & self.mask64
+                h0, h1 = self.modular_reduction(a3, a2, a1, a0)
+
+                b3 = (self.v1[3] + self.mul1[3]) & self.mask64
+                b2 = (self.v1[2] + self.mul1[2]) & self.mask64
+                b1 = (self.v0[3] + self.mul0[3]) & self.mask64
+                b0 = (self.v0[2] + self.mul0[2]) & self.mask64
+                h2, h3 = self.modular_reduction(b3, b2, b1, b0)
+                return [h0, h1, h2, h3]
+            raise ValueError("invalid output_words")
+
+    class HighwayHash64(HighwayHashBase):
+        digest_size = 8
+        output_words = 1
+        final_rounds = 4
+
+    class HighwayHash128(HighwayHashBase):
+        digest_size = 16
+        output_words = 2
+        final_rounds = 6
+
+    class HighwayHash256(HighwayHashBase):
+        digest_size = 32
+        output_words = 4
+        final_rounds = 10
+
     class GOST94:
         block_size = 32
         digest_size = 32
@@ -81304,6 +81815,1421 @@ class Hash:
         def hexdigest(self):
             return self.digest().hex()
 
+    class Mt19937_64:
+        mask64 = 0xffff_ffff_ffff_ffff
+        n = 312
+        m = 156
+        matrix_a = 0xb502_6f5a_a966_19e9
+        upper_mask = 0xffff_ffff_8000_0000
+        lower_mask = 0x7fff_ffff
+        f = 0x5851_f42d_4c95_7f2d
+
+        def __init__(self, seed=0x1571):
+            self.mt = [0] * self.n
+            self.index = self.n
+            self.seed(seed)
+            return
+
+        def seed(self, seed):
+            self.mt[0] = seed & self.mask64
+            for i in range(1, self.n):
+                prev = self.mt[i - 1]
+                self.mt[i] = (self.f * (prev ^ (prev >> 62)) + i) & self.mask64
+            self.index = self.n
+            return
+
+        def twist(self):
+            for i in range(self.n):
+                x = (self.mt[i] & self.upper_mask) + (self.mt[(i + 1) % self.n] & self.lower_mask)
+                x_a = x >> 1
+                if x & 1:
+                    x_a ^= self.matrix_a
+                self.mt[i] = (self.mt[(i + self.m) % self.n] ^ x_a) & self.mask64
+            self.index = 0
+            return
+
+        def next_u64(self):
+            if self.index >= self.n:
+                self.twist()
+            y = self.mt[self.index]
+            self.index += 1
+            y ^= (y >> 29) & 0x5555_5555_5555_5555
+            y ^= (y << 17) & 0x71d6_7fff_eda6_0000
+            y ^= (y << 37) & 0xfff7_eee0_0000_0000
+            y ^= (y >> 43)
+            return y & self.mask64
+
+    class HalfTimeHashBase:
+        mask64 = 0xffff_ffff_ffff_ffff
+        out_width = 2
+        in_width = 3
+        dimension = 6
+        encoded_dimension = 7
+        fanout = 8
+        max_stack_size = 9
+
+        digest_size = 8
+        block_size = 1
+
+        entropy_words = []
+        entropy_mt = None
+
+        lanes = 1
+
+        def __init__(self, data=b""):
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            self.buf = bytearray()
+            self.msg_len = 0
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            self.buf.extend(data)
+            self.msg_len += len(data)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.digest_bytes
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            data = bytes(self.buf)
+            value = self.hash_uint64(data)
+            self.digest_bytes = struct.pack(">Q", value)
+            return
+
+        def ensure_entropy_words(self, needed):
+            if self.entropy_mt is None:
+                self.entropy_mt = Hash.Mt19937_64()
+            while len(self.entropy_words) < needed:
+                self.entropy_words.append(self.entropy_mt.next_u64())
+            return
+
+        def floor_log(self, a, b):
+            if a <= 1:
+                return 0
+            h = 0
+            while b >= a:
+                b //= a
+                h += 1
+            return h
+
+        def entropy_words_needed_for_hasher(self, length):
+            b = self.lanes
+            h = self.floor_log(self.fanout, length // (b * self.dimension * self.in_width))
+            words = (self.encoded_dimension * self.in_width) \
+                    + (self.fanout - 1) * self.out_width * h \
+                    + b * self.fanout * self.out_width * h \
+                    + b * self.dimension * self.in_width \
+                    + self.out_width - 1
+            return words
+
+        def hash_uint64(self, data):
+            length = len(data)
+            table_max = 24 * 256
+            entropy_for_hasher_offset = self.out_width * 256
+            hasher_words = self.entropy_words_needed_for_hasher(length)
+            needed = max(table_max, entropy_for_hasher_offset + hasher_words + (self.out_width + 2) * self.lanes + 32)
+            self.ensure_entropy_words(needed)
+            entropy = self.entropy_words
+
+            output0, output1 = self.hasher(entropy, entropy_for_hasher_offset, data, length)
+
+            result = self.tabulate_bytes(length, entropy, 0)
+            result ^= self.tabulate_bytes(output0, entropy, 8 * 256)
+            result ^= self.tabulate_bytes(output1, entropy, 16 * 256)
+            return result & self.mask64
+
+        def tabulate_bytes(self, value, entropy, base):
+            result = 0
+            for i in range(8):
+                index = (value >> (8 * i)) & 0xff
+                result ^= entropy[base + i * 256 + index]
+            return result & self.mask64
+
+        def load_one(self, word):
+            w = word & self.mask64
+            return [w] * self.lanes
+
+        def load_block_words(self, entropy, offset):
+            return [(entropy[offset + i] & self.mask64) for i in range(self.lanes)]
+
+        def load_block_bytes(self, data, offset_bytes):
+            out = []
+            for i in range(self.lanes):
+                chunk = data[offset_bytes + 8 * i: offset_bytes + 8 * (i + 1)]
+                if len(chunk) < 8:
+                    chunk = chunk + b"\x00" * (8 - len(chunk))
+                out.append(int.from_bytes(chunk, "little") & self.mask64)
+            return out
+
+        def plus(self, a, b):
+            return [((x + y) & self.mask64) for x, y in zip(a, b)]
+
+        def minus(self, a, b):
+            return [((x - y) & self.mask64) for x, y in zip(a, b)]
+
+        def xor(self, a, b):
+            return [((x ^ y) & self.mask64) for x, y in zip(a, b)]
+
+        def left_shift(self, a, s):
+            return [((x << s) & self.mask64) for x in a]
+
+        def right_shift32(self, a):
+            return [((x >> 32) & self.mask64) for x in a]
+
+        def plus32(self, a, b):
+            out = []
+            for x, y in zip(a, b):
+                lo = (x & 0xffff_ffff) + (y & 0xffff_ffff)
+                hi = ((x >> 32) & 0xffff_ffff) + ((y >> 32) & 0xffff_ffff)
+                lo &= 0xffff_ffff
+                hi &= 0xffff_ffff
+                out.append((lo | (hi << 32)) & self.mask64)
+            return out
+
+        def times(self, a, b):
+            out = []
+            for x, y in zip(a, b):
+                out.append(((x & 0xffff_ffff) * (y & 0xffff_ffff)) & self.mask64)
+            return out
+
+        def negate(self, a):
+            return [(-x) & self.mask64 for x in a]
+
+        def sum_block(self, a):
+            s = 0
+            for x in a:
+                s = (s + x) & self.mask64
+            return s
+
+        def multiply_add(self, summand, factor1, factor2):
+            return self.plus(summand, self.times(factor1, factor2))
+
+        def mix(self, accum, input_block, entropy_block):
+            out = self.plus32(entropy_block, input_block)
+            twin = self.right_shift32(out)
+            out = self.multiply_add(accum, out, twin)
+            return out
+
+        def mix_one(self, accum, input_block, entropy_word):
+            return self.mix(accum, input_block, self.load_one(entropy_word))
+
+        def mix_none(self, input_block, entropy_word):
+            out = self.plus32(self.load_one(entropy_word), input_block)
+            twin = self.right_shift32(out)
+            out = self.times(out, twin)
+            return out
+
+        def simpler_times(self, k, x):
+            if k == -1:
+                return self.negate(x)
+            if k == 0:
+                return [0] * self.lanes
+            if k == 1:
+                return x
+            if k == 2:
+                return self.left_shift(x, 1)
+            if k == 3:
+                return self.plus(x, self.left_shift(x, 1))
+            if k == 4:
+                return self.left_shift(x, 2)
+            if k == 5:
+                return self.plus(x, self.left_shift(x, 2))
+            if k == 7:
+                return self.minus(self.left_shift(x, 3), x)
+            if k == 8:
+                return self.left_shift(x, 3)
+            if k == 9:
+                return self.plus(x, self.left_shift(x, 3))
+            raise ValueError("unsupported multiplier")
+
+        def dot2(self, sinks, x, c0, c1):
+            sinks[0] = self.plus(sinks[0], self.simpler_times(c0, x))
+            sinks[1] = self.plus(sinks[1], self.simpler_times(c1, x))
+            return sinks
+
+        def combine2(self, input_blocks):
+            sinks = [input_blocks[0], input_blocks[1]]
+            self.dot2(sinks, input_blocks[2], 1, 1)
+            self.dot2(sinks, input_blocks[3], 1, 2)
+            self.dot2(sinks, input_blocks[4], 2, 1)
+            self.dot2(sinks, input_blocks[5], 1, 4)
+            self.dot2(sinks, input_blocks[6], 4, 1)
+            return sinks
+
+        def encode2(self, io):
+            for i in range(self.in_width):
+                acc = io[0][i]
+                for j in range(1, self.dimension):
+                    acc = self.xor(acc, io[j][i])
+                io[self.dimension][i] = acc
+            return io
+
+        def parse_entropy_matrix(self, entropy, offset):
+            m = []
+            idx = offset
+            for _i in range(self.encoded_dimension):
+                row = []
+                for _j in range(self.in_width):
+                    row.append(entropy[idx] & self.mask64)
+                    idx += 1
+                m.append(row)
+            return m
+
+        def hash_matrix(self, input_matrix, entropy_matrix):
+            out = [None] * self.encoded_dimension
+            for i in range(self.encoded_dimension):
+                out[i] = self.mix_none(input_matrix[i][0], entropy_matrix[i][0])
+            for j in range(1, self.in_width):
+                for i in range(self.encoded_dimension):
+                    out[i] = self.mix_one(out[i], input_matrix[i][j], entropy_matrix[i][j])
+            return out
+
+        def ehc_base_layer(self, entropy, entropy_offset, data, data_offset_bytes):
+            block_size = 8 * self.lanes
+            io = [[None] * self.in_width for _ in range(self.encoded_dimension)]
+            zero = [0] * self.lanes
+            for i in range(self.dimension):
+                for j in range(self.in_width):
+                    io[i][j] = self.load_block_bytes(data, data_offset_bytes + (i * self.in_width + j) * block_size)
+            for i in range(self.dimension, self.encoded_dimension):
+                for j in range(self.in_width):
+                    io[i][j] = zero
+            self.encode2(io)
+            entropy_matrix = self.parse_entropy_matrix(entropy, entropy_offset)
+            tmp = self.hash_matrix(io, entropy_matrix)
+            out_blocks = self.combine2(tmp)
+            return out_blocks
+
+        def ehc_upper_layer(self, entropy, entropy_offset, input_blocks):
+            output = [None] * self.out_width
+            for i in range(self.out_width):
+                acc = input_blocks[0][i]
+                for j in range(1, self.fanout):
+                    acc = self.mix_one(acc, input_blocks[j][i], entropy[entropy_offset + (self.fanout - 1) * i + (j - 1)])
+                output[i] = acc
+            return output
+
+        def dfs_tree_hash(self, entropy, entropy_offset, data, block_group_length, stack, stack_lengths):
+            group_bytes = self.dimension * self.in_width * 8 * self.lanes
+            for k in range(block_group_length):
+                i = 0
+                while stack_lengths[i] == self.fanout:
+                    i += 1
+                for j in range(i - 1, -1, -1):
+                    upper_entropy_offset = entropy_offset + (self.encoded_dimension * self.in_width) + \
+                        (self.fanout - 1) * self.out_width * j
+                    stack[j + 1][stack_lengths[j + 1]] = self.ehc_upper_layer(entropy, upper_entropy_offset, stack[j])
+                    stack_lengths[j] = 0
+                    stack_lengths[j + 1] += 1
+                stack[0][stack_lengths[0]] = self.ehc_base_layer(entropy, entropy_offset, data, k * group_bytes)
+                stack_lengths[0] += 1
+            return
+
+        def dfs_greedy_finalizer(self, entropy, entropy_offset, stack, stack_lengths, tail_bytes):
+            block_words = self.lanes
+            block_size = 8 * self.lanes
+            accum = [[0] * self.lanes for _ in range(self.out_width)]
+            idx = entropy_offset
+
+            j = 0
+            while j < len(stack_lengths) and stack_lengths[j] > 0:
+                for k in range(stack_lengths[j]):
+                    x_out = stack[j][k]
+                    for i in range(self.out_width):
+                        seed_block = self.load_block_words(entropy, idx)
+                        accum[i] = self.mix(accum[i], x_out[i], seed_block)
+                        idx += block_words
+                j += 1
+
+            i = 0
+            while i + block_size <= len(tail_bytes):
+                x_block = self.load_block_bytes(tail_bytes, i)
+                base = idx
+                for o in range(self.out_width):
+                    seed_block = self.load_block_words(entropy, base + o * block_words)
+                    accum[o] = self.mix(accum[o], x_block, seed_block)
+                idx += block_words
+                i += block_size
+
+            x_block = self.load_block_bytes(tail_bytes, i)
+            base = idx
+            for o in range(self.out_width):
+                seed_block = self.load_block_words(entropy, base + o * block_words)
+                accum[o] = self.mix(accum[o], x_block, seed_block)
+            idx += block_words
+
+            output0 = self.sum_block(accum[0])
+            output1 = self.sum_block(accum[1])
+            return output0, output1
+
+        def hasher(self, entropy, entropy_offset, data, length):
+            group_bytes = self.dimension * self.in_width * 8 * self.lanes
+            wide_length = length // group_bytes
+
+            stack = [
+                [
+                    [ [0] * self.lanes for _ in range(self.out_width)]
+                    for _ in range(self.fanout)
+                ] for _ in range(self.max_stack_size)
+            ]
+            stack_lengths = [0] * self.max_stack_size
+
+            self.dfs_tree_hash(entropy, entropy_offset, data, wide_length, stack, stack_lengths)
+
+            greedy_entropy_offset = entropy_offset + (self.encoded_dimension * self.in_width) + \
+                self.out_width * (self.fanout - 1) * self.max_stack_size
+            used = wide_length * group_bytes
+            tail = data[used:]
+            return self.dfs_greedy_finalizer(entropy, greedy_entropy_offset, stack, stack_lengths, tail)
+
+    class HalfTimeHash64(HalfTimeHashBase):
+        lanes = 1
+
+    class HalfTimeHash128(HalfTimeHashBase):
+        lanes = 2
+
+    class HalfTimeHash256(HalfTimeHashBase):
+        lanes = 4
+
+    class HalfTimeHash512(HalfTimeHashBase):
+        lanes = 8
+
+    class WYHash:
+        block_size = 64
+        digest_size = 8
+
+        secret = (
+            0xa076_1d64_78bd_642f,
+            0xe703_7ed1_a0b4_28db,
+            0x8ebc_6af0_9c88_c6e3,
+            0x5899_65cc_7537_4cc3,
+        )
+        mask64 = 0xffff_ffff_ffff_ffff
+
+        def __init__(self, data=b""):
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.result = 0
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.result = self.result
+            return other
+
+        def update(self, data):
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            return self
+
+        def sum64(self):
+            c = self.copy()
+            c.finalize()
+            return c.result
+
+        def digest(self):
+            h = self.sum64()
+            return int(h).to_bytes(8, byteorder="big", signed=False)
+
+        def hexdigest(self):
+            return format(self.sum64(), "016x")
+
+        def finalize(self):
+            data = bytes(self.buf)
+            self.result = self.hash(data)
+            return
+
+        def mum(self, a, b):
+            r = (a & self.mask64) * (b & self.mask64)
+            lo = r & self.mask64
+            hi = (r >> 64) & self.mask64
+            return lo, hi
+
+        def mix(self, a, b):
+            lo, hi = self.mum(a, b)
+            return (lo ^ hi) & self.mask64
+
+        def r8(self, data, off):
+            return int.from_bytes(data[off:off + 8], byteorder="little", signed=False)
+
+        def r4(self, data, off):
+            return int.from_bytes(data[off:off + 4], byteorder="little", signed=False)
+
+        def r3(self, data, off, k):
+            return ((data[off] << 16) | (data[off + (k >> 1)] << 8) | data[off + k - 1]) & self.mask64
+
+        def hash(self, data):
+            length = len(data)
+            p = 0
+            seed = self.secret[0]
+            a = 0
+            b = 0
+
+            if length <= 16:
+                if length >= 4:
+                    a = ((self.r4(data, p) << 32) | self.r4(data, p + ((length >> 3) << 2))) & self.mask64
+                    b = ((self.r4(data, p + length - 4) << 32) | self.r4(data, p + length - 4 - ((length >> 3) << 2))) & self.mask64
+                elif length > 0:
+                    a = self.r3(data, p, length)
+                    b = 0
+                else:
+                    a = 0
+                    b = 0
+            else:
+                i = length
+                if i > 48:
+                    see1 = seed
+                    see2 = seed
+                    while i > 48:
+                        seed = self.mix(self.r8(data, p) ^ self.secret[1], self.r8(data, p + 8) ^ seed)
+                        see1 = self.mix(self.r8(data, p + 16) ^ self.secret[2], self.r8(data, p + 24) ^ see1)
+                        see2 = self.mix(self.r8(data, p + 32) ^ self.secret[3], self.r8(data, p + 40) ^ see2)
+                        p += 48
+                        i -= 48
+                    seed = (seed ^ see1 ^ see2) & self.mask64
+                while i > 16:
+                    seed = self.mix(self.r8(data, p) ^ self.secret[1], self.r8(data, p + 8) ^ seed)
+                    p += 16
+                    i -= 16
+                a = self.r8(data, p + i - 16)
+                b = self.r8(data, p + i - 8)
+
+            return self.mix(self.secret[1] ^ (length & self.mask64), self.mix(a ^ self.secret[1], b ^ seed))
+
+    class HAS160:
+        block_size = 64  # 512 bits
+        digest_size = 20  # 160 bits
+
+        ROT_A = (
+            5, 11, 7, 15, 6, 13, 8, 14, 7, 12,
+            9, 11, 8, 15, 6, 12, 9, 14, 5, 13,
+        )
+        ROT_B = (10, 17, 25, 30)
+        K = (0x0000_0000, 0x5a82_7999, 0x6ed9_eba1, 0x8f1b_bcdc)
+        ORDER = (
+            (18, 0, 1, 2, 3, 19, 4, 5, 6, 7, 16, 8, 9, 10, 11, 17, 12, 13, 14, 15),
+            (18, 3, 6, 9, 12, 19, 15, 2, 5, 8, 16, 11, 14, 1, 4, 17, 7, 10, 13, 0),
+            (18, 12, 5, 14, 7, 19, 0, 9, 2, 11, 16, 4, 13, 6, 15, 17, 8, 1, 10, 3),
+            (18, 7, 2, 13, 8, 19, 3, 14, 9, 4, 16, 15, 10, 5, 0, 17, 11, 6, 1, 12),
+        )
+
+        def __init__(self, data=b""):
+            self.h0 = 0x6745_2301
+            self.h1 = 0xefcd_ab89
+            self.h2 = 0x98ba_dcfe
+            self.h3 = 0x1032_5476
+            self.h4 = 0xc3d2_e1f0
+            self.buf = bytearray()
+            self.msg_len = 0  # in bytes
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.h0 = self.h0
+            other.h1 = self.h1
+            other.h2 = self.h2
+            other.h3 = self.h3
+            other.h4 = self.h4
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes,)):
+                raise TypeError("data must be bytes")
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            while len(self.buf) >= 64:
+                block = bytes(self.buf[:64])
+                del self.buf[:64]
+                self.compress(block)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return struct.pack("<5I", c.h0, c.h1, c.h2, c.h3, c.h4)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            bit_len = self.msg_len * 8
+            self.buf.append(0x80)
+            while (len(self.buf) % 64) != 56:
+                self.buf.append(0x00)
+            self.buf.extend(struct.pack("<Q", bit_len))
+            while len(self.buf) >= 64:
+                block = bytes(self.buf[:64])
+                del self.buf[:64]
+                self.compress(block)
+            return
+
+        def rol32(self, x, n):
+            x &= 0xffff_ffff
+            return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
+
+        def f0(self, x, y, z):
+            return ((x & y) | ((~x) & z)) & 0xffff_ffff
+
+        def f1(self, x, y, z):
+            return (x ^ y ^ z) & 0xffff_ffff
+
+        def f2(self, x, y, z):
+            return (y ^ (x | (~z))) & 0xffff_ffff
+
+        def compress(self, block):
+            x = list(struct.unpack("<16I", block))
+
+            a = self.h0
+            b = self.h1
+            c = self.h2
+            d = self.h3
+            e = self.h4
+
+            for r in range(4):
+                if r == 0:
+                    x16 = x[0] ^ x[1] ^ x[2] ^ x[3]
+                    x17 = x[4] ^ x[5] ^ x[6] ^ x[7]
+                    x18 = x[8] ^ x[9] ^ x[10] ^ x[11]
+                    x19 = x[12] ^ x[13] ^ x[14] ^ x[15]
+                    f = self.f0
+                elif r == 1:
+                    x16 = x[3] ^ x[6] ^ x[9] ^ x[12]
+                    x17 = x[15] ^ x[2] ^ x[5] ^ x[8]
+                    x18 = x[11] ^ x[14] ^ x[1] ^ x[4]
+                    x19 = x[7] ^ x[10] ^ x[13] ^ x[0]
+                    f = self.f1
+                elif r == 2:
+                    x16 = x[12] ^ x[5] ^ x[14] ^ x[7]
+                    x17 = x[0] ^ x[9] ^ x[2] ^ x[11]
+                    x18 = x[4] ^ x[13] ^ x[6] ^ x[15]
+                    x19 = x[8] ^ x[1] ^ x[10] ^ x[3]
+                    f = self.f2
+                else:
+                    x16 = x[7] ^ x[2] ^ x[13] ^ x[8]
+                    x17 = x[3] ^ x[14] ^ x[9] ^ x[4]
+                    x18 = x[15] ^ x[10] ^ x[5] ^ x[0]
+                    x19 = x[11] ^ x[6] ^ x[1] ^ x[12]
+                    f = self.f1
+
+                words = x + [
+                    x16 & 0xffff_ffff,
+                    x17 & 0xffff_ffff,
+                    x18 & 0xffff_ffff,
+                    x19 & 0xffff_ffff,
+                ]
+
+                k = self.K[r]
+                rb = self.ROT_B[r]
+                order = self.ORDER[r]
+
+                for t in range(20):
+                    w = words[order[t]]
+                    temp = (self.rol32(a, self.ROT_A[t]) + f(b, c, d) + e + w + k) & 0xffff_ffff
+                    e = d
+                    d = c
+                    c = self.rol32(b, rb)
+                    b = a
+                    a = temp
+
+            self.h0 = (self.h0 + a) & 0xffff_ffff
+            self.h1 = (self.h1 + b) & 0xffff_ffff
+            self.h2 = (self.h2 + c) & 0xffff_ffff
+            self.h3 = (self.h3 + d) & 0xffff_ffff
+            self.h4 = (self.h4 + e) & 0xffff_ffff
+            return
+
+    class SnefruBase:
+        block_size = 64
+        security_level = 8
+        standard_sboxes = (
+            (
+                0x64f9_001b, 0xfedd_cdf6, 0x7c8f_f1e2, 0x11d7_1514, 0x8b8c_18d3, 0xdddf_881e, 0x6eab_5056, 0x88ce_d8e1,
+                0x4914_8959, 0x69c5_6fd5, 0xb799_4f03, 0x0fbc_ee3e, 0x3c26_4940, 0x2155_7e58, 0xe14b_3fc2, 0x2e5c_f591,
+                0xdcef_f8ce, 0x092a_1648, 0xbe81_2936, 0xff7b_0c6a, 0xd525_1037, 0xafa4_48f1, 0x7daf_c95a, 0x1ea6_9c3f,
+                0xa417_abe7, 0x5890_e423, 0xb0cb_70c0, 0xc850_25f7, 0x244d_97e3, 0x1ff3_595f, 0xc4ec_6396, 0x5918_1e17,
+                0xe635_b477, 0x354e_7dbf, 0x796f_7753, 0x66eb_52cc, 0x77c3_f995, 0x32e3_a927, 0x80cc_aed6, 0x4e2b_e89d,
+                0x375b_bd28, 0xad1a_3d05, 0x2b1b_42b3, 0x16c4_4c71, 0x4d54_bfa8, 0xe57d_dc7a, 0xec6d_8144, 0x5a71_046b,
+                0xd822_9650, 0x87fc_8f24, 0xcbc6_0e09, 0xb639_0366, 0xd9f7_6092, 0xd393_a70b, 0x1d31_a08a, 0x9cd9_71c9,
+                0x5c1e_f445, 0x86fa_b694, 0xfdb4_4165, 0x8eaa_fcbe, 0x4bca_c6eb, 0xfb7a_94e5, 0x5789_d04e, 0xfa13_cf35,
+                0x236b_8da9, 0x4133_f000, 0x6224_261c, 0xf412_f23b, 0xe75e_56a4, 0x3002_2116, 0xbaf1_7f1f, 0xd098_72f9,
+                0xc1a3_699c, 0xf1e8_02aa, 0x0dd1_45dc, 0x4fdc_e093, 0x8d84_12f0, 0x6cd0_f376, 0x3de6_b73d, 0x84ba_737f,
+                0xb43a_30f2, 0x4456_9f69, 0x00e4_eaca, 0xb58d_e3b0, 0x9591_13c8, 0xd62e_fee9, 0x9086_1f83, 0xced6_9874,
+                0x2f79_3cee, 0xe857_1c30, 0x4836_65d1, 0xab07_b031, 0x914c_844f, 0x15bf_3be8, 0x2c3f_2a9a, 0x9eb9_5fd4,
+                0x92e7_472d, 0x2297_cc5b, 0xee5f_2782, 0x5377_b562, 0xdb8e_bbcf, 0xf961_dedd, 0xc59b_5c60, 0x1bd3_910d,
+                0x26d2_06ad, 0xb285_14d8, 0x5ecf_6b52, 0x7fea_78bb, 0x5048_79ac, 0xed34_a884, 0x36e5_1d3c, 0x1753_741d,
+                0x8c47_caed, 0x9d0a_40ef, 0x3145_e221, 0xda27_eb70, 0xdf73_0ba3, 0x183c_8789, 0x739a_c0a6, 0x9a58_dfc6,
+                0x54b1_34c1, 0xac3e_242e, 0xcc49_3902, 0x7b2d_da99, 0x8f15_bc01, 0x29fd_38c7, 0x27d5_318f, 0x604a_aff5,
+                0xf29c_6818, 0xc38a_a2ec, 0x1019_d4c3, 0xa8fb_936e, 0x20ed_7b39, 0x0b68_6119, 0x89a0_906f, 0x1cc7_829e,
+                0x9952_ef4b, 0x850e_9e8c, 0xcd06_3a90, 0x6700_2f8e, 0xcfac_8cb7, 0xeaa2_4b11, 0x988b_4e6c, 0x46f0_66df,
+                0xca7e_ec08, 0xc7bb_a664, 0x831d_17bd, 0x63f5_75e6, 0x9764_350e, 0x4787_0d42, 0x026c_a4a2, 0x8167_d587,
+                0x61b6_adab, 0xaa65_64d2, 0x70da_237b, 0x25e1_c74a, 0xa1c9_01a0, 0x0eb0_a5da, 0x7670_f741, 0x51c0_5aea,
+                0x933d_fa32, 0x0759_ff1a, 0x5601_0ab8, 0x5fde_cb78, 0x3f32_edf8, 0xaebe_dbb9, 0x39f8_326d, 0xd208_58c5,
+                0x9b63_8be4, 0xa572_c80a, 0x28e0_a19f, 0x4320_99fc, 0x3a37_c3cd, 0xbf95_c585, 0xb392_c12a, 0x6aa7_07d7,
+                0x52f6_6a61, 0x12d4_83b1, 0x9643_5b5e, 0x3e75_802b, 0x3ba5_2b33, 0xa99f_51a5, 0xbda1_e157, 0x78c2_e70c,
+                0xfcae_7ce0, 0xd160_2267, 0x2aff_ac4d, 0x4a51_0947, 0x0ab2_b83a, 0x7a04_e579, 0x340d_fd80, 0xb916_e922,
+                0xe29d_5e9b, 0xf562_4af4, 0x4ca9_d9af, 0x6bbd_2cfe, 0xe3b7_f620, 0xc274_6e07, 0x5b42_b9b6, 0xa069_19bc,
+                0xf0f2_c40f, 0x7221_7ab5, 0x14c1_9df3, 0xf380_2dae, 0xe094_beb4, 0xa210_1aff, 0x0529_575d, 0x55cd_b27c,
+                0xa33b_ddb2, 0x6528_b37d, 0x740c_05db, 0xe96a_62c4, 0x4078_2846, 0x6d30_d706, 0xbbf4_8e2c, 0xbce2_d3de,
+                0x049e_37fa, 0x01b5_e634, 0x2d88_6d8d, 0x7e5a_2e7e, 0xd741_2013, 0x06e9_0f97, 0xe45d_3eba, 0xb8ad_3386,
+                0x1305_1b25, 0x0c03_5354, 0x71c8_9b75, 0xc638_fbd0, 0x197f_11a1, 0xef0f_08fb, 0xf844_8651, 0x3840_9563,
+                0x452f_4443, 0x5d46_4d55, 0x03d8_764c, 0xb1b8_d638, 0xa70b_ba2f, 0x94b3_d210, 0xeb66_92a7, 0xd409_c2d9,
+                0x6883_8526, 0xa6db_8a15, 0x751f_6c98, 0xde76_9a88, 0xc9ee_4668, 0x1a82_a373, 0x0896_aa49, 0x4223_3681,
+                0xf62c_55cb, 0x9f1c_5404, 0xf74f_b15c, 0xc06e_4312, 0x6ffe_5d72, 0x8aa8_678b, 0x337c_d129, 0x8211_cefd,
+            ),
+            (
+                0x074a_1d09, 0x52a1_0e5a, 0x9275_a3f8, 0x4b82_506c, 0x37df_7e1b, 0x4c78_b3c5, 0xcefa_b1da, 0xf472_267e,
+                0xb630_45f6, 0xd66a_1fc0, 0x4002_98e3, 0x27e6_0c94, 0x87d2_f1b8, 0xdf9e_56cc, 0x45cd_1803, 0x1d35_e098,
+                0xcce7_c736, 0x0348_3bf1, 0x1f73_07d7, 0xc6e8_f948, 0xe613_c111, 0x3955_c6ff, 0x1170_ed7c, 0x8e95_da41,
+                0x99c3_1bf4, 0xa4da_8021, 0x7b5f_94fb, 0xdd0d_a51f, 0x6562_aa77, 0x556b_cb23, 0xdb1b_acc6, 0x7980_40b9,
+                0xbfe5_378f, 0x731d_55e6, 0xdaa5_bfee, 0x389b_bc60, 0x1b33_fba4, 0x9c56_7204, 0x36c2_6c68, 0x77ee_9d69,
+                0x8aeb_3e88, 0x2d50_b5ce, 0x9579_e790, 0x42b1_3cfc, 0x33fb_d32b, 0xee05_03a7, 0xb586_2824, 0x15e4_1ead,
+                0xc841_2ef7, 0x9d44_1275, 0x2fce_c582, 0x5ff4_83b7, 0x8f39_31df, 0x2e5d_2a7b, 0x4946_7bf9, 0x0653_dea9,
+                0x2684_ce35, 0x7e65_5e5c, 0xf127_71d8, 0xbb15_cc67, 0xab09_7ca1, 0x983d_cf52, 0x10dd_f026, 0x2126_7f57,
+                0x2c58_f6b4, 0x3104_3265, 0x0bab_8c01, 0xd549_2099, 0xacaa_e619, 0x944c_e54a, 0xf2d1_3d39, 0xadd3_fc32,
+                0xcda0_8a40, 0xe2b0_d451, 0x9efe_08ae, 0xb9d5_0fd2, 0xea5c_d7fd, 0xc9a7_49dd, 0x13ea_2253, 0x832d_ebaa,
+                0x24be_640f, 0xe03e_926a, 0x29e0_1cde, 0x8bf5_9f18, 0x0f9d_00b6, 0xe123_8b46, 0x1e7d_8e34, 0x9361_9adb,
+                0x76b3_2f9f, 0xbd97_2cec, 0xe31f_a976, 0xa68f_bb10, 0xfb3b_a49d, 0x8587_c41d, 0xa5ad_d1d0, 0xf3cf_84bf,
+                0xd4e1_1150, 0xd9ff_a6bc, 0xc3f6_018c, 0xaef1_0572, 0x74a6_4b2f, 0xe7dc_9559, 0x2aae_35d5, 0x5b6f_587f,
+                0xa9e3_53fe, 0xca4f_b674, 0x04ba_24a8, 0xe5c6_875f, 0xdcbc_6266, 0x6bc5_c03f, 0x661e_ef02, 0xed74_0bab,
+                0x058e_34e4, 0xb7e9_46cf, 0x8869_8125, 0x72ec_48ed, 0xb110_73a3, 0xa134_85eb, 0xa2a2_429c, 0xfa40_7547,
+                0x50b7_6713, 0x5418_c37d, 0x9619_2da5, 0x170b_b04b, 0x518a_021e, 0xb0ac_13d1, 0x0963_fa2a, 0x4a6e_10e1,
+                0x5847_2bdc, 0xf7f8_d962, 0x9791_39ea, 0x8d85_6538, 0xc099_7042, 0x4832_4d7a, 0x4476_23cb, 0x8cbb_e364,
+                0x6e0c_6b0e, 0xd36d_63b0, 0x3f24_4c84, 0x3542_c971, 0x2b22_8dc1, 0xcb03_25bb, 0xf8c0_d6e9, 0xde11_066b,
+                0xa864_9327, 0xfc31_f83e, 0x7dd8_0406, 0xf916_dd61, 0xd89f_79d3, 0x6151_44c2, 0xebb4_5d31, 0x2800_2958,
+                0x5689_0a37, 0xf05b_3808, 0x123a_e844, 0x8683_9e16, 0x914b_0d83, 0xc506_b43c, 0xcf3c_ba5e, 0x7c60_f5c9,
+                0x22de_b2a0, 0x5d9c_2715, 0xc77b_a0ef, 0x4f45_360b, 0xc101_7d8b, 0xe45a_dc29, 0xa759_909b, 0x412c_d293,
+                0xd7d7_96b1, 0x00c8_ff30, 0x23a3_4a80, 0x4ec1_5c91, 0x714e_78b5, 0x47b9_e42e, 0x78f3_ea4d, 0x7f07_8f5b,
+                0x346c_593a, 0xa3a8_7a1a, 0x9bcb_fe12, 0x3d43_9963, 0xb2ef_6d8e, 0xb8d4_6028, 0x6c2f_d5ca, 0x6267_5256,
+                0x01f2_a2f3, 0xbc96_ae0a, 0x709a_8920, 0xb414_6e87, 0x6308_b9e2, 0x64bd_a7ba, 0xafed_6892, 0x6037_f2a2,
+                0xf529_69e0, 0x0adb_43a6, 0x8281_1400, 0x90d0_bdf0, 0x19c9_549e, 0x203f_6a73, 0x1acc_af4f, 0x8971_4e6d,
+                0x164d_4705, 0x6766_5f07, 0xec20_6170, 0x0c21_82b2, 0xa02b_9c81, 0x5328_9722, 0xf6a9_7686, 0x140e_4179,
+                0x9f77_8849, 0x9a88_e15d, 0x25ca_db54, 0xd157_f36f, 0x32a4_21c3, 0xb368_e98a, 0x5a92_cd0d, 0x757a_a8d4,
+                0xc20a_c278, 0x08b5_51c7, 0x8494_91e8, 0x4dc7_5ad6, 0x697c_33be, 0xbaf0_ca33, 0x4612_5b4e, 0x59d6_77b3,
+                0x30d9_c8f2, 0xd0af_860c, 0x1c7f_d0fa, 0xfe0f_f72c, 0x5c8d_6f43, 0x57fd_ec3b, 0x6ab6_ad97, 0xd22a_df89,
+                0x1817_1785, 0x02bf_e22d, 0x6db8_0917, 0x80b2_16af, 0xe85e_4f9a, 0x7a1c_306e, 0x6fc4_9bf5, 0x3af7_a11c,
+                0x81e2_15e7, 0x6836_3fcd, 0x3e93_57c8, 0xef52_fd55, 0x3b8b_ab4c, 0x3c8c_f495, 0xbefc_eebd, 0xfd25_b714,
+                0xc498_d83d, 0x0d2e_1a8d, 0xe9f9_66ac, 0x0e38_7445, 0x4354_19e5, 0x5e7e_bec4, 0xaa90_b8d9, 0xff1a_3a96,
+            ),
+            (
+                0x4a8f_e4e3, 0xf27d_99cd, 0xd04a_40ca, 0xcb5f_f194, 0x3668_275a, 0xff48_16be, 0xa78b_394c, 0x4c6b_e9db,
+                0x4eec_38d2, 0x4296_ec80, 0xcdce_96f8, 0x888c_2f38, 0xe755_08f5, 0x7b91_6414, 0x060a_a14a, 0xa214_f327,
+                0xbe60_8daf, 0x1ebb_dec2, 0x61f9_8ce9, 0xe921_56fe, 0x4f22_d7a3, 0x3f76_a8d9, 0x559a_4b33, 0x38ad_2959,
+                0xf3f1_7e9e, 0x85e1_ba91, 0xe5eb_a6fb, 0x73dc_d48c, 0xf5c3_ff78, 0x481b_6058, 0x8a32_97f7, 0x8f1f_3bf4,
+                0x9378_5ab2, 0x477a_4a5b, 0x6334_eb5d, 0x6d25_1b2e, 0x74a9_102d, 0x07e3_8ffa, 0x915c_9c62, 0xccc2_75ea,
+                0x6be2_73ec, 0x3ebd_dd70, 0xd895_796c, 0xdc54_a91b, 0xc9af_df81, 0x2363_3f73, 0x2751_19b4, 0xb19f_6b67,
+                0x5075_6e22, 0x2bb1_52e2, 0x76ea_46a2, 0xa353_e232, 0x2f59_6ad6, 0x0b1e_db0b, 0x02d3_d9a4, 0x78b4_7843,
+                0x6489_3e90, 0x40f0_caad, 0xf68d_3ad7, 0x46fd_1707, 0x1c9c_67ef, 0xb5e0_86de, 0x96ee_6ca6, 0x9aa3_4774,
+                0x1ba4_f48a, 0x8d01_abfd, 0x183e_e1f6, 0x5ff8_aa7a, 0x17e4_faae, 0x3039_83b0, 0x6c08_668b, 0xd4ac_4382,
+                0xe6c5_849f, 0x92fe_fb53, 0xc1ca_c4ce, 0x4350_1388, 0x4411_18cf, 0xec4f_b308, 0x53a0_8e86, 0x9e0f_e0c5,
+                0xf91c_1525, 0xac45_be05, 0xd798_7cb5, 0x49ba_1487, 0x5793_8940, 0xd587_7648, 0xa958_727f, 0x58df_e3c3,
+                0xf436_cf77, 0x399e_4d11, 0xf0a5_bfa9, 0xef61_a33b, 0xa64c_ac60, 0x04a8_d0ba, 0x030d_d572, 0xb83d_320f,
+                0xcab2_3045, 0xe366_f2f0, 0x815d_008d, 0xc897_a43a, 0x1d35_2df3, 0xb9cc_571d, 0x8bf3_8744, 0x7220_9092,
+                0xeba1_24eb, 0xfb99_ce5e, 0x3bb9_4293, 0x28da_549c, 0xaab8_a228, 0xa419_7785, 0x33c7_0296, 0x25f6_259b,
+                0x5c85_da21, 0xdf15_bdee, 0x15b7_c7e8, 0xe2ab_ef75, 0xfcc1_9bc1, 0x417f_f868, 0x1488_4434, 0x6282_5179,
+                0xc6d5_c11c, 0x0e47_05dc, 0x2270_0de0, 0xd3d2_af18, 0x9be8_22a0, 0x35b6_69f1, 0xc42b_b55c, 0x0a80_1252,
+                0x115b_f0fc, 0x3cd7_d856, 0xb43f_5f9d, 0xc230_6516, 0xa123_1c47, 0xf149_207e, 0x5209_a795, 0x34b3_ccd8,
+                0x67ae_fe54, 0x2c83_924e, 0x6662_cbac, 0x5eed_d161, 0x84e6_81aa, 0x5d57_d26b, 0xfa46_5cc4, 0x7e3a_c3a8,
+                0xbf7c_0cc6, 0xe18a_9aa1, 0xc32f_0a6f, 0xb22c_c00d, 0x3d28_0369, 0x994e_554f, 0x68f4_80d3, 0xadcf_f5e6,
+                0x3a8e_b265, 0x8326_9831, 0xbd56_8a09, 0x4bc8_ae6a, 0x69f5_6d2b, 0x0f17_eac8, 0x772e_b6c7, 0x9f41_343c,
+                0xab1d_0742, 0x826a_6f50, 0xfea2_097c, 0x1912_c283, 0xce18_5899, 0xe444_4839, 0x2d86_35d5, 0x65d0_b1ff,
+                0x865a_7f17, 0x326d_9fb1, 0x59e5_2820, 0x0090_ade1, 0x753c_7149, 0x9ddd_8b98, 0xa5a6_91da, 0x0d03_82bb,
+                0x8904_c930, 0x086c_b000, 0x6e69_d3bd, 0x24d4_e7a7, 0x0524_4fd0, 0x101a_5e0c, 0x6a94_7dcb, 0xe840_f77b,
+                0x7d0c_5003, 0x7c37_0f1f, 0x8052_45ed, 0xe05e_3d3f, 0x7906_880e, 0xbabf_cd35, 0x1a7e_c697, 0x8c05_2324,
+                0x0c6e_c8df, 0xd129_a589, 0xc7a7_5b02, 0x12d8_1de7, 0xd9be_2a66, 0x1f42_63ab, 0xde73_fdb6, 0x2a00_680a,
+                0x5664_9e36, 0x3133_ed55, 0x90fa_0bf2, 0x2910_a02a, 0x949d_9d46, 0xa0d1_dcdd, 0xcfc9_b7d4, 0xd267_7be5,
+                0x95cb_36b3, 0x13cd_9410, 0xdbf7_3313, 0xb7c6_e8c0, 0xf781_414b, 0x510b_016d, 0xb0de_1157, 0xd6b0_f62c,
+                0xbb07_4ecc, 0x7f13_95b7, 0xee79_2cf9, 0xea6f_d63e, 0x5bd6_938e, 0xaf02_fc64, 0xdab5_7ab8, 0x8edb_3784,
+                0x8716_318f, 0x164d_1a01, 0x26f2_6141, 0xb372_e6b9, 0xf8fc_2b06, 0x7ac0_0e04, 0x3727_b89a, 0x97e9_bca5,
+                0x9c2a_742f, 0xbc3b_1f7d, 0x7165_b471, 0x609b_4c29, 0x2092_5351, 0x5ae7_2112, 0x454b_e5d1, 0xc0ff_b95f,
+                0xdd0e_f919, 0x6f2d_70c9, 0x0974_c5bf, 0x98aa_6263, 0x01d9_1e4d, 0x2184_bb6e, 0x70c4_3c1e, 0x4d43_5915,
+                0xae7b_8523, 0xb6fb_06bc, 0x5431_ee76, 0xfdbc_5d26, 0xed77_493d, 0xc571_2ee4, 0xa838_0437, 0x2eef_261a,
+            ),
+            (
+                0x5a79_392b, 0xb8af_32c2, 0x41f7_720a, 0x833a_61ec, 0x13df_edac, 0xc499_0bc4, 0xdc0f_54bc, 0xfedd_5e88,
+                0x80da_1881, 0x4dea_1afd, 0xfd40_2cc6, 0xae67_cc7a, 0xc523_8525, 0x8ea0_1254, 0xb56b_9bd5, 0x862f_bd6d,
+                0xac85_75d3, 0x6fba_3714, 0xda7e_bf46, 0x59cd_5238, 0x8ac9_dbfe, 0x3537_29fc, 0xe497_d7f2, 0xc3ab_84e0,
+                0xf05a_114b, 0x7b88_7a75, 0xedc6_03dd, 0x5e6f_e680, 0x2c84_b399, 0x884e_b1da, 0x1cb8_c8bf, 0xaa51_098a,
+                0xc862_231c, 0x8bac_2221, 0x21b3_87e5, 0x208a_430d, 0x2a3f_0f8b, 0xa5ff_9cd2, 0x6012_a2ea, 0x147a_9ee7,
+                0xf62a_501d, 0xb4b2_e51a, 0x3ef3_484c, 0xc025_3c59, 0x2b82_b536, 0x0aa9_696b, 0xbe0c_109b, 0xc70b_7929,
+                0xce3e_8a19, 0x2f66_950e, 0x459f_1c2c, 0xe68f_b93d, 0xa3c3_ff3e, 0x62b4_5c62, 0x3009_91cb, 0x0191_4c57,
+                0x7f7b_c06a, 0x1828_31f5, 0xe7b7_4bca, 0xfa50_f6d0, 0x523c_aa61, 0xe3a7_cf05, 0xe9e4_1311, 0x280a_21d1,
+                0x6a42_97e1, 0xf24d_c67e, 0xfc31_89e6, 0xb72b_f34f, 0x4b1e_67af, 0x5434_02ce, 0x79a5_9867, 0x0648_e02a,
+                0x00a3_ac17, 0xc620_8d35, 0x6e7f_5f76, 0xa45b_b4be, 0xf168_fa63, 0x3f41_25f3, 0xf311_406f, 0x0270_6565,
+                0xbfe5_8022, 0x0cfc_fdd9, 0x0735_a7f7, 0x8f04_9092, 0xd98e_dc27, 0xf5c5_d55c, 0xe0f2_01db, 0x0dca_fc9a,
+                0x7727_fb79, 0xaf43_abf4, 0x26e9_38c1, 0x401b_26a6, 0x9007_20fa, 0x2752_d97b, 0xcff1_d1b3, 0xa9d9_e424,
+                0x42db_99ab, 0x6cf8_be5f, 0xe82c_ebe3, 0x3afb_733b, 0x6b73_4eb6, 0x1036_414a, 0x975f_667c, 0x049d_6377,
+                0xba58_7c60, 0xb1d1_0483, 0xde1a_efcc, 0x1129_d055, 0x7205_1e91, 0x6946_d623, 0xf9e8_6ea7, 0x4876_8c00,
+                0xb016_6c93, 0x9956_bbf0, 0x1f1f_6d84, 0xfb15_e18e, 0x033b_495d, 0x56e3_362e, 0x4f44_c53c, 0x747c_ba51,
+                0x89d3_7872, 0x5d9c_331b, 0xd2ef_9fa8, 0x2549_17f8, 0x1b10_6f47, 0x37d7_5553, 0xb3f0_53b0, 0x7dcc_d8ef,
+                0xd30e_b802, 0x5889_f42d, 0x6102_06d7, 0x1a7d_34a1, 0x92d8_7dd8, 0xe5f4_a315, 0xd1cf_0e71, 0xb22d_fe45,
+                0xb901_e8eb, 0x0fc0_ce5e, 0x2efa_60c9, 0x2de7_4290, 0x36d0_c906, 0x381c_70e4, 0x4c6d_a5b5, 0x3d81_a682,
+                0x7e38_1f34, 0x396c_4f52, 0x95ad_5901, 0x1db5_0c5a, 0x2998_2e9e, 0x1557_689f, 0x3471_ee42, 0xd7e2_f7c0,
+                0x8795_a1e2, 0xbc32_4d8d, 0xe224_c3c8, 0x1283_7e39, 0xcdee_3d74, 0x7ad2_143f, 0x0e13_d40c, 0x78bd_4a68,
+                0xa2eb_194d, 0xdb94_51f9, 0x859b_71dc, 0x5c4f_5b89, 0xca14_a8a4, 0xef92_f003, 0x1674_1d98, 0x33aa_4444,
+                0x9e96_7fbb, 0x092e_3020, 0xd86a_35b8, 0x8cc1_7b10, 0xe1bf_08ae, 0x5569_3fc5, 0x7680_ad13, 0x1e65_46e8,
+                0x23b6_e7b9, 0xee77_a4b2, 0x08ed_0533, 0x44fd_2895, 0xb639_3b69, 0x05d6_cacf, 0x9819_b209, 0xecbb_b72f,
+                0x9a75_779c, 0xeaec_0749, 0x94a6_5aee, 0xbdf5_2dc3, 0xd6a2_5d04, 0x8200_8e4e, 0xa6de_160f, 0x9b03_6afb,
+                0x228b_3a66, 0x5fb1_0a70, 0xcc33_8b58, 0x5378_a9df, 0xc908_bca9, 0x4959_e25b, 0x4690_9a97, 0x66ae_8f6e,
+                0xdd06_83e9, 0x65f9_94b4, 0x6426_cda5, 0xc24b_8840, 0x3253_9da0, 0x6317_5650, 0xd0c8_15ff, 0x50cb_c41e,
+                0xf7c7_74a3, 0x31b0_c231, 0x8d0d_8116, 0x24be_f16c, 0xd555_d256, 0xdf47_ea8c, 0x6d21_eccd, 0xa887_a012,
+                0x8454_2aed, 0xa7b9_c1bd, 0x914c_1bb1, 0xa0d5_b67d, 0x438c_e937, 0x7030_f873, 0x71f6_b0c7, 0x5745_76ba,
+                0xf8bc_4541, 0x9c61_d348, 0x1960_579d, 0x17c4_daad, 0x96a4_cb0b, 0xc193_f2f6, 0x756e_afa2, 0x7c1d_2f94,
+                0xf4fe_2b43, 0xcb86_e33a, 0xebd4_c728, 0x9d18_ae64, 0x9fe1_3e30, 0x3ce0_f5de, 0xaba1_f985, 0xaddc_2718,
+                0x68ce_6278, 0xd45e_241f, 0xa15c_82b7, 0x3b22_93d4, 0x739e_dd32, 0x674a_6bf1, 0x5b5d_587f, 0x4772_deaa,
+                0x4a63_968f, 0x0be6_8686, 0x513d_6426, 0x939a_4787, 0xbba8_9296, 0x4ec2_0007, 0x818d_0d08, 0xff64_dfd6,
+            ),
+            (
+                0xcb22_97cb, 0xdb48_a144, 0xa16c_be4b, 0xbbea_1d6c, 0x5af6_b6b7, 0x8a81_10b6, 0xf923_6ef9, 0xc98f_83e6,
+                0x0f9c_65b8, 0x252d_4a89, 0xa497_f068, 0xa5d7_ed2d, 0x94c2_2845, 0x9da1_c8c4, 0xe27c_2e2e, 0x6e8b_a2b4,
+                0xc3dd_17fb, 0x498c_d482, 0x0dfe_6a9f, 0xb070_5829, 0x9a1e_6dc1, 0xf829_717c, 0x07bb_8e3a, 0xda3c_0b02,
+                0x1af8_2fc7, 0x73b7_0955, 0x7a04_379c, 0x5ee2_0a28, 0x8371_2ae5, 0xf4c4_7c6d, 0xdf72_ba56, 0xd794_858d,
+                0x8c0c_f709, 0x18f0_f390, 0xb6c6_9b35, 0xbf2f_01db, 0x2fa7_4dca, 0xd0cd_9127, 0xbde6_6cec, 0x3dee_bd46,
+                0x57c8_8fc3, 0xcee1_406f, 0x0066_385a, 0xf3c3_444f, 0x3a79_d5d5, 0x7575_1eb9, 0x3e7f_8185, 0x521c_2605,
+                0xe1aa_ab6e, 0x38eb_b80f, 0xbee7_e904, 0x61cb_9647, 0xea54_904e, 0x05ae_00e4, 0x2d7a_c65f, 0x0877_51a1,
+                0xdcd8_2915, 0x0921_ee16, 0xdd86_d33b, 0xd6bd_491a, 0x40fb_adf0, 0x4232_cbd2, 0x3380_8d10, 0x3909_8c42,
+                0x193f_3199, 0x0bc1_e47a, 0x4a82_b149, 0x02b6_5a8a, 0x104c_dc8e, 0x24a8_f52c, 0x685c_6077, 0xc79f_95c9,
+                0x1d11_fe50, 0xc08d_afcd, 0x7b1a_9a03, 0x1c1f_11d8, 0x8425_0e7f, 0x979d_b248, 0xebdc_0501, 0xb955_3395,
+                0xe3c0_5ea8, 0xb1e5_1c4c, 0x13b0_e681, 0x3b40_7766, 0x36db_3087, 0xee17_c9fc, 0x6c53_ecf2, 0xadcc_c58f,
+                0xc427_660b, 0xefd5_867d, 0x9b6d_54a5, 0x6ff1_aeff, 0x8e78_7952, 0x9e2b_ffe0, 0x8761_d034, 0xe00b_dbad,
+                0xae99_a8d3, 0xcc03_f6e2, 0xfd0e_d807, 0x0e50_8ae3, 0xb741_82ab, 0x4349_245d, 0xd120_a465, 0xb246_a641,
+                0xaf3b_7ab0, 0x2a64_88bb, 0x4b3a_0d1f, 0xe7c7_e58c, 0x3faf_f2eb, 0x9044_5ffd, 0xcf38_c393, 0x995d_07e7,
+                0xf24f_1b36, 0x356f_6891, 0x6d6e_bcbe, 0x8da9_e262, 0x50fd_520e, 0x5bca_9e1e, 0x3747_2cf3, 0x6907_5057,
+                0x7ec5_fded, 0x0cab_892a, 0xfb24_12ba, 0x1728_debf, 0xa000_a988, 0xd843_ce79, 0x042e_20dd, 0x4fe8_f853,
+                0x5665_9c3c, 0x2739_d119, 0xa78a_6120, 0x8096_0375, 0x7042_0611, 0x85e0_9f78, 0xabd1_7e96, 0x1b51_3eaf,
+                0x1e01_eb63, 0x26ad_2133, 0xa890_c094, 0x7613_cf60, 0x817e_781b, 0xa391_13d7, 0xe957_fa58, 0x4131_b99e,
+                0x28b1_efda, 0x66ac_fba7, 0xff68_944a, 0x77a4_4fd1, 0x7f33_1522, 0x59ff_b3fa, 0xa6df_935b, 0xfa12_d9df,
+                0xc6bf_6f3f, 0x8952_0cf6, 0x659e_dd6a, 0x544d_a739, 0x8b05_2538, 0x7c30_ea21, 0xc234_5525, 0x1592_7fb2,
+                0x144a_436b, 0xba10_7b8b, 0x1219_ac97, 0x0673_0432, 0x3183_1ab3, 0xc55a_5c24, 0xaa0f_cd3e, 0xe560_6be8,
+                0x5c88_f19b, 0x4c08_41ee, 0x1fe3_7267, 0x11f9_c4f4, 0x9f1b_9dae, 0x864e_76d0, 0xe637_c731, 0xd97d_23a6,
+                0x32f5_3d5c, 0xb816_1980, 0x93fa_0f84, 0xcaef_0870, 0x8874_487e, 0x98f2_cc73, 0x645f_b5c6, 0xcd85_3659,
+                0x2062_470d, 0x16ed_e8e9, 0x6b06_dab5, 0x78b4_3900, 0xfc95_b786, 0x5d8e_7de1, 0x465b_5954, 0xfe7b_a014,
+                0xf7d2_3f7b, 0x92bc_8b18, 0x0359_3592, 0x55ce_f4f7, 0x74b2_7317, 0x79de_1fc2, 0xc8a0_bfbd, 0x2293_98cc,
+                0x62a6_02ce, 0xbcb9_4661, 0x5336_d206, 0xd2a3_75fe, 0x6a6a_b483, 0x4702_a5a4, 0xa2e9_d73d, 0x23a2_e0f1,
+                0x9189_140a, 0x581d_18dc, 0xb39a_922b, 0x8235_6212, 0xd5f4_32a9, 0xd356_c2a3, 0x5f76_5b4d, 0x450a_fcc8,
+                0x4415_e137, 0xe8ec_dfbc, 0xed0d_e3ea, 0x60d4_2b13, 0xf13d_f971, 0x71fc_5da2, 0xc145_5340, 0xf087_742f,
+                0xf55e_5751, 0x67b3_c1f8, 0xac6b_8774, 0x7dcf_aaac, 0x9598_3bc0, 0x489b_b0b1, 0x2c18_4223, 0x964b_6726,
+                0x2bd3_271c, 0x7226_6472, 0xded6_4530, 0x0a2a_a343, 0xd4f7_16a0, 0xb4da_d6d9, 0x2184_345e, 0x512c_990c,
+                0x29d9_2d08, 0x2ebe_709a, 0x0114_4c69, 0x3458_4b9d, 0xe463_4ed6, 0xecc9_63cf, 0x3c69_84aa, 0x4ed0_56ef,
+                0x9ca5_6976, 0x8f3e_80d4, 0xb5ba_e7c5, 0x30b5_caf5, 0x63f3_3a64, 0xa9e4_bbde, 0xf6b8_2298, 0x4d67_3c1d,
+            ),
+            (
+                0x4b4f_1121, 0xba18_3081, 0xc784_f41f, 0xd17d_0bac, 0x083d_2267, 0x37b1_361e, 0x3581_ad05, 0xfda2_f6bc,
+                0x1e89_2cdd, 0xb56d_3c3a, 0x3214_0e46, 0x138d_8aab, 0xe147_73d4, 0x5b0e_71df, 0x5d1f_e055, 0x3fb9_91d3,
+                0xf1f4_6c71, 0xa325_988c, 0x10f6_6e80, 0xb100_6348, 0x726a_9f60, 0x3b67_f8ba, 0x4e11_4ef4, 0x05c5_2115,
+                0x4c5c_a11c, 0x99e1_efd8, 0x471b_83b3, 0xcbf7_e524, 0x43ad_82f5, 0x690c_a93b, 0xfaa6_1bb2, 0x12a8_32b5,
+                0xb734_f943, 0xbd22_aea7, 0x88fe_c626, 0x5e80_c3e7, 0xbe3e_af5e, 0x4461_7652, 0xa572_4475, 0xbb3b_9695,
+                0x7f3f_ee8f, 0x964e_7deb, 0x518c_052d, 0x2a0b_bc2b, 0xc217_5f5c, 0x9a7b_3889, 0xa70d_8d0c, 0xeacc_dd29,
+                0xcccd_6658, 0x34bb_25e6, 0xb839_1090, 0xf651_356f, 0x5298_7c9e, 0x0c16_c1cd, 0x8e37_2d3c, 0x2fc6_ebbd,
+                0x6e5d_a3e3, 0xb0e2_7239, 0x5f68_5738, 0x4541_1786, 0x067f_65f8, 0x6177_8b40, 0x81ab_2e65, 0x14c8_f0f9,
+                0xa6b7_b4ce, 0x4036_eaec, 0xbf62_b00a, 0xecfd_5e02, 0x0454_49a6, 0xb20a_fd28, 0x2166_d273, 0x0d13_a863,
+                0x8950_8756, 0xd51a_7530, 0x2d65_3f7a, 0x3cdb_dbc3, 0x80c9_df4f, 0x3d58_12d9, 0x53fb_b1f3, 0xc0f1_85c0,
+                0x7a3c_3d7e, 0x6864_6410, 0x8576_07a0, 0x1d12_622e, 0x97f3_3466, 0xdb4c_9917, 0x6469_607c, 0x566e_043d,
+                0x79ef_1edb, 0x2c05_898d, 0xc957_8e25, 0xcd38_0101, 0x46e0_4377, 0x7d1c_c7a9, 0x6552_b837, 0x2019_2608,
+                0xb975_00c5, 0xed29_6b44, 0x3686_48b4, 0x6299_5cd5, 0x8273_1400, 0xf9ae_bd8b, 0x3844_c0c7, 0x7c2d_e794,
+                0x33a1_a770, 0x8ae5_28c2, 0x5a2b_e812, 0x1f8f_4a07, 0x2b5e_d7ca, 0x937e_b564, 0x6fda_7e11, 0xe49b_5d6c,
+                0xb4b3_244e, 0x18aa_53a4, 0x3a06_1334, 0x4d60_67a3, 0x83ba_5868, 0x9bdf_4dfe, 0x7449_f261, 0x709f_8450,
+                0xcad1_33cb, 0xde94_1c3f, 0xf52a_e484, 0x781d_77ed, 0x7e43_95f0, 0xae10_3b59, 0x9223_31bb, 0x42ce_50c8,
+                0xe6f0_8153, 0xe7d9_41d0, 0x5028_ed6b, 0xb3d2_c49b, 0xad4d_9c3e, 0xd201_fb6e, 0xa45b_d5be, 0xffcb_7f4b,
+                0x579d_7806, 0xf821_bb5b, 0x59d5_92ad, 0xd0be_0c31, 0xd4e3_b676, 0x0107_165a, 0x0fe9_39d2, 0x49bc_aafd,
+                0x55ff_cfe5, 0x2ec1_f783, 0xf39a_09a5, 0x3eb4_2772, 0x19b5_5a5d, 0x024a_0679, 0x8c83_b3f7, 0x8642_ba1d,
+                0xacac_d9ea, 0x87d3_52c4, 0x6093_1f45, 0xa05f_97d7, 0x1cec_d42c, 0xe2fc_c87b, 0xb60f_94e2, 0x67a3_4b0b,
+                0xfcdd_40c9, 0x0b15_0a27, 0xd3ee_9e04, 0x582e_29e9, 0x4ac2_2b41, 0x6ac4_e1b8, 0xbcca_a51a, 0x237a_f30e,
+                0xebc3_b709, 0xc4a5_9d19, 0x284b_c98a, 0xe9d4_1a93, 0x6bfa_2018, 0x73b2_d651, 0x11f9_a2fa, 0xce09_bff1,
+                0x41a4_70aa, 0x2588_8f22, 0x77e7_54e8, 0xf733_0d8e, 0x158e_ab16, 0xc5d6_8842, 0xc685_a6f6, 0xe5b8_2fde,
+                0x09ea_3a96, 0x6dde_1536, 0x4fa9_19da, 0x26c0_be9f, 0x9eed_6f69, 0xf055_55f2, 0xe06f_c285, 0x9cd7_6d23,
+                0xaf45_2a92, 0xefc7_4cb7, 0x9d6b_4732, 0x8be4_08ee, 0x2240_1d0d, 0xee6c_459d, 0x7587_cb82, 0xe874_6862,
+                0x5cbd_de87, 0x9879_4278, 0x31af_b94d, 0xc11e_0f2f, 0x30e8_fc2a, 0xcf32_61ef, 0x1a30_23e1, 0xaa2f_86cf,
+                0xf202_e24a, 0x8d08_dcff, 0x7648_37c6, 0xa263_74cc, 0x9f7c_3e88, 0x949c_c57d, 0xdd26_a07f, 0xc39e_fab0,
+                0xc8f8_79a1, 0xdce6_7bb9, 0xf4b0_a435, 0x912c_9ae0, 0xd856_03e4, 0x953a_9bbf, 0xfb82_90d6, 0x0aeb_cd5f,
+                0x1620_6a9a, 0x6c78_7a14, 0xd9a0_f16a, 0x29bf_4f74, 0x8f8b_ce91, 0x0e5a_9354, 0xab03_8cb1, 0x1b8a_d11b,
+                0xe327_ff49, 0x0053_da20, 0x90cf_51dc, 0xda92_fe6d, 0x0390_ca47, 0xa895_8097, 0xa9dc_5baf, 0x3931_e3c1,
+                0x8404_46b6, 0x63d0_69fb, 0xd746_0299, 0x7124_ecd1, 0x0791_e613, 0x4859_18fc, 0xd635_d04c, 0xdf96_ac33,
+                0x66f2_d303, 0x2470_56ae, 0xa1a7_b2a8, 0x27d8_cc9c, 0x17b6_e998, 0x7bf5_590f, 0xfe97_f557, 0x5471_d8a2,
+            ),
+            (
+                0x83a3_27a1, 0x9f37_9f51, 0x40a7_d007, 0x1130_7423, 0x2245_87c1, 0xac27_d63b, 0x3b7e_64ea, 0x2e1c_bfa6,
+                0x0999_6000, 0x03bc_0e2c, 0xd4c4_478a, 0x4542_e0ab, 0xfeda_26d4, 0xc1d1_0fcb, 0x8252_f596, 0x4494_eb5c,
+                0xa362_f314, 0xf5ba_81fd, 0x75c3_a376, 0x4ca2_14ca, 0xe164_dedd, 0x5088_fa97, 0x4b09_30e0, 0x2fcf_b7e8,
+                0x33a6_f4b2, 0xc7e9_4211, 0x2d66_c774, 0x43be_8bae, 0xc663_d445, 0x908e_b130, 0xf4e3_be15, 0x63b9_d566,
+                0x5293_96b5, 0x1e1b_e743, 0x4d5f_f63f, 0x985e_4a83, 0x71ab_9df7, 0xc516_c6f5, 0x85c1_9ab4, 0x1f4d_aee4,
+                0xf297_3431, 0xb713_dc5e, 0x3f2e_159a, 0xc824_da16, 0x06bf_376a, 0xb2fe_23ec, 0xe39b_1c22, 0xf1ee_cb5f,
+                0x08e8_2d52, 0x5656_86c2, 0xab0a_ea93, 0xfd47_219f, 0xebdb_abd7, 0x2404_a185, 0x8c73_12b9, 0xa8f2_d828,
+                0x0c89_02da, 0x65b4_2b63, 0xc0bb_ef62, 0x4e3e_4cef, 0x788f_8018, 0xee1e_bab7, 0x9392_8f9d, 0x683d_2903,
+                0xd3b6_0689, 0xafcb_0ddc, 0x88a4_c47a, 0xf6dd_9c3d, 0x7ea5_fca0, 0x8a6d_7244, 0xbe11_f120, 0x04ff_91b8,
+                0x8d2d_c8c0, 0x27f9_7fdb, 0x7f9e_1f47, 0x1734_f0c7, 0x26f3_ed8e, 0x0df8_f2bf, 0xb083_3d9e, 0xe420_a4e5,
+                0xa423_cae6, 0x9561_6772, 0x9ae6_c049, 0x0759_41f2, 0xd8e1_2812, 0x000f_6f4f, 0x3c0d_6b05, 0x6cef_921c,
+                0xb82b_c264, 0x396c_b008, 0x5d60_8a6f, 0x6d77_82c8, 0x1865_50aa, 0x6b6f_ec09, 0x28e7_0b13, 0x57ce_5688,
+                0xecd3_af84, 0x2333_5a95, 0x91f4_0cd2, 0x7b6a_3b26, 0xbd32_b3b6, 0x3754_a6fb, 0x8ed0_88f0, 0xf867_e87c,
+                0x2085_1746, 0x6410_f9c6, 0x3538_0442, 0xc2ca_10a7, 0x1ade_a27f, 0x76bd_dd79, 0x9274_2cf4, 0x0e98_f7ee,
+                0x164e_931d, 0xb9c8_35b3, 0x6906_0a99, 0xb44c_531e, 0xfa7b_66fe, 0xc98a_5b53, 0x7d95_aae9, 0x302f_467b,
+                0x74b8_11de, 0xf386_6abd, 0xb5b3_d32d, 0xfc31_57a4, 0xd251_fe19, 0x0b5d_8eac, 0xda71_ffd5, 0x47ea_05a3,
+                0x05c6_a9e1, 0xca0e_e958, 0x9939_034d, 0x25dc_5edf, 0x7908_3cb1, 0x8676_8450, 0xcf75_7d6d, 0x5972_b6bc,
+                0xa78d_59c9, 0xc4ad_8d41, 0x2a36_2ad3, 0xd117_9991, 0x6014_07ff, 0xdcf5_0917, 0x5870_69d0, 0xe082_1ed6,
+                0xdbb5_9427, 0x7391_1a4b, 0x7c90_4fc3, 0x844a_fb92, 0x6f8c_955d, 0xe8c0_c5bb, 0xb67a_b987, 0xa529_d96c,
+                0xf91f_7181, 0x618b_1b06, 0xe718_bb0c, 0x8bd7_615b, 0xd5a9_3a59, 0x54ae_f81b, 0x7721_36e3, 0xce44_fd9c,
+                0x10cd_a57e, 0x87d6_6e0b, 0x3d79_8967, 0x1b2c_1804, 0x3edf_bd68, 0x15f6_e62b, 0xef68_b854, 0x3896_db35,
+                0x12b7_b5e2, 0xcb48_9029, 0x9e4f_98a5, 0x62eb_77a8, 0x217c_24a2, 0x9641_52f6, 0x49b2_080a, 0x53d2_3ee7,
+                0x48fb_6d69, 0x1903_d190, 0x9449_e494, 0xbf6e_7886, 0xfb35_6cfa, 0x3a26_1365, 0x424b_c1eb, 0xa119_2570,
+                0x019c_a782, 0x9d3f_7e0e, 0x9c12_7575, 0xedf0_2039, 0xad57_bcce, 0x5c15_3277, 0x81a8_4540, 0xbcaa_7356,
+                0xccd5_9b60, 0xa62a_629b, 0xa25c_cd10, 0x2b5b_65cf, 0x1c53_5832, 0x55fd_4e3a, 0x31d9_790d, 0xf06b_c37d,
+                0x4afc_1d71, 0xaeed_5533, 0xba46_1634, 0xbb69_4b78, 0x5f3a_5c73, 0x6a3c_764a, 0x8fb0_cca9, 0xf725_684c,
+                0x4fe5_382f, 0x1d01_63af, 0x5aa0_7a8f, 0xe205_a8ed, 0xc30b_ad38, 0xff22_cf1f, 0x7243_2e2e, 0x32c2_518b,
+                0x3487_ce4e, 0x7ae0_ac02, 0x709f_a098, 0x0a3b_395a, 0x5b40_43f8, 0xa9e4_8c36, 0x149a_8521, 0xd07d_ee6b,
+                0x46ac_d2f3, 0x8958_dffc, 0xb3a1_223c, 0xb11d_31c4, 0xcd7f_4d3e, 0x0f28_e3ad, 0xe5b1_00be, 0xaac5_4824,
+                0xe9c9_d7ba, 0x9bd4_7001, 0x80f1_49b0, 0x6602_2f0f, 0x020c_4048, 0x6efa_192a, 0x6707_3f8d, 0x13ec_7bf9,
+                0x3655_011a, 0xe6af_e157, 0xd984_5f6e, 0xdecc_4425, 0x511a_e2cc, 0xdf81_b4d8, 0xd780_9e55, 0xd6d8_83d9,
+                0x2cc7_978c, 0x5e78_7cc5, 0xdd00_33d1, 0xa050_c937, 0x97f7_5dcd, 0x299d_e580, 0x41e2_b261, 0xea5a_54f1,
+            ),
+            (
+                0x7e67_2590, 0xbea5_13bb, 0x2c90_6fe6, 0x8602_9c2b, 0x55dc_4f74, 0x0553_398e, 0x63e0_9647, 0xcafd_0bab,
+                0x264c_37df, 0x8272_210f, 0x67af_a669, 0x12d9_8a5f, 0x8cab_23c4, 0x75c6_8bd1, 0xc337_0470, 0x33f3_7f4e,
+                0x2839_92ff, 0xe73a_3a67, 0x1032_f283, 0xf5ad_9fc2, 0x963f_0c5d, 0x664f_bc45, 0x202b_a41c, 0xc7c0_2d80,
+                0x5473_1e84, 0x8a10_85f5, 0x601d_80fb, 0x2f96_8e55, 0x35e9_6812, 0xe45a_8f78, 0xbd7d_e662, 0x3b6e_6ead,
+                0x8097_c5ef, 0x070b_6781, 0xb1e5_08f3, 0x24e4_fae3, 0xb81a_7805, 0xec0f_c918, 0x43c8_774b, 0x9b25_12a9,
+                0x2b05_ad04, 0x32c2_536f, 0xedf2_36e0, 0x8bc4_b0cf, 0xbace_b837, 0x4535_b289, 0x0d0e_94c3, 0xa5a3_71d0,
+                0xad69_5a58, 0x39e3_437d, 0x9186_bffc, 0x2103_8c3b, 0x0aa9_dff9, 0x5d1f_06ce, 0x62de_f8a4, 0xf740_a2b4,
+                0xa257_5868, 0x6826_83c1, 0xdbb3_0fac, 0x61fe_1928, 0x468a_6511, 0xc61c_d5f4, 0xe54d_9800, 0x6b98_d7f7,
+                0x8418_b6a5, 0x5f09_a5d2, 0x90b4_e80b, 0x49b2_c852, 0x69f1_1c77, 0x1741_2b7e, 0x7f6f_c0ed, 0x5683_8dcc,
+                0x6e95_46a2, 0xd075_8619, 0x087b_9b9a, 0xd231_a01d, 0xaf46_d415, 0x0970_60fd, 0xd920_f657, 0x882d_3f9f,
+                0x3ae7_c3c9, 0xe8a0_0d9b, 0x4fe6_7ebe, 0x2ef8_0eb2, 0xc191_6b0c, 0xf4df_fea0, 0xb97e_b3eb, 0xfdff_84dd,
+                0xff8b_14f1, 0xe96b_0572, 0xf64b_508c, 0xae22_0a6e, 0x4423_ae5a, 0xc2be_ce5e, 0xde27_567c, 0xfc93_5c63,
+                0x4707_5573, 0xe65b_27f0, 0xe121_fd22, 0xf266_8753, 0x2deb_f5d7, 0x8347_e08d, 0xac5e_da03, 0x2a7c_ebe9,
+                0x3fe8_d92e, 0x2354_2fe4, 0x1fa7_bd50, 0xcf9b_4102, 0x9d0d_ba39, 0x9cb8_902a, 0xa724_9d8b, 0x0f6d_667a,
+                0x5ebf_a9ec, 0x6a59_4df2, 0x7960_0938, 0x023b_7591, 0xea2c_79c8, 0xc99d_07ea, 0x64cb_5ee1, 0x1a9c_ab3d,
+                0x76db_9527, 0xc08e_012f, 0x3dfb_481a, 0x872f_22e7, 0x2948_d15c, 0xa478_2c79, 0x6f50_d232, 0x78f0_728a,
+                0x5a87_aab1, 0xc4e2_c19c, 0xee76_7387, 0x1b2a_1864, 0x7b8d_10d3, 0xd171_3161, 0x0eea_c456, 0xd879_9e06,
+                0xb645_b548, 0x4043_cb65, 0xa874_fb29, 0x4b12_d030, 0x7d68_7413, 0x18ef_9a1f, 0xd763_1d4c, 0x5829_c7da,
+                0xcdfa_30fa, 0xc508_4bb0, 0x92cd_20e2, 0xd4c1_6940, 0x0328_3ec0, 0xa917_813f, 0x9a58_7d01, 0x7004_1f8f,
+                0xdc6a_b1dc, 0xddae_e3d5, 0x3182_9742, 0x198c_022d, 0x1c9e_afcb, 0x5bbc_6c49, 0xd3d3_293a, 0x16d5_0007,
+                0x04bb_8820, 0x3c5c_2a41, 0x37ee_7af8, 0x8eb0_4025, 0x9313_ecba, 0xbffc_4799, 0x8955_a744, 0xef85_d633,
+                0x5044_99a7, 0xa6ca_6a86, 0xbb3d_3297, 0xb34a_8236, 0x6dcc_be4f, 0x0614_3394, 0xce19_fc7b, 0xccc3_c6c6,
+                0xe362_54ae, 0x77b7_eda1, 0xa133_dd9e, 0xebf9_356a, 0x513c_cf88, 0xe2a1_b417, 0x972e_e5bd, 0x8538_24cd,
+                0x5752_f4ee, 0x6c11_42e8, 0x3ea4_f309, 0xb2b5_934a, 0xdfd6_28aa, 0x59ac_ea3e, 0xa01e_b92c, 0x3899_64bc,
+                0xda30_5dd4, 0x019a_59b7, 0x11d2_ca93, 0xfaa6_d3b9, 0x4e77_2eca, 0x7265_1776, 0xfb4e_5b0e, 0xa38f_91a8,
+                0x1d06_63b5, 0x30f4_f192, 0xb500_51b6, 0xb716_ccb3, 0x4abd_1b59, 0x146c_5f26, 0xf134_e2de, 0x00f6_7c6c,
+                0xb0e1_b795, 0x98aa_4ec7, 0x0cc7_3b34, 0x6542_76a3, 0x8d1b_a871, 0x740a_5216, 0xe0d0_1a23, 0x9ed1_61d6,
+                0x9f36_a324, 0x993e_bb7f, 0xfeb9_491b, 0x365d_dcdb, 0x810c_ffc5, 0x71ec_0382, 0x2249_e7bf, 0x4881_7046,
+                0xf3a2_4a5b, 0x4288_e4d9, 0x0bf5_c243, 0x257f_e151, 0x95b6_4c0d, 0x4164_f066, 0xaaf7_db08, 0x73b1_119d,
+                0x8f9f_7bb8, 0xd684_4596, 0xf07a_34a6, 0x5394_3d0a, 0xf9dd_166d, 0x7a89_57af, 0xf8ba_3ce5, 0x27c9_621e,
+                0x5cda_e910, 0xc851_8998, 0x9415_38fe, 0x1361_15d8, 0xaba8_443c, 0x4d01_f931, 0x34ed_f760, 0xb45f_266b,
+                0xd5d4_de14, 0x52d8_ac35, 0x15cf_d885, 0xcbc5_cd21, 0x4cd7_6d4d, 0x7c80_ef54, 0xbc92_ee75, 0x1e56_a1f6,
+            ),
+            (
+                0xbaa2_0b6c, 0x9ffb_ad26, 0xe1f7_d738, 0x794a_ec8d, 0xc9e9_cf3c, 0x8a9a_7846, 0xc57c_4685, 0xb9a9_2fed,
+                0x29cb_141f, 0x52f9_ddb7, 0xf68b_a6bc, 0x19cc_c020, 0x4f58_4aaa, 0x3bf6_a596, 0x003b_7cf7, 0x54f0_ce9a,
+                0xa7ec_4303, 0x46cf_0077, 0x78d3_3aa1, 0x2152_47d9, 0x74bc_df91, 0x0838_1d30, 0xdac4_3e40, 0x6487_2531,
+                0x0bef_fe5f, 0xb317_f457, 0xaebb_12da, 0xd5d0_d67b, 0x7d75_c6b4, 0x42a6_d241, 0x1502_d0a9, 0x3fd9_7fff,
+                0xc6c3_ed28, 0x8186_8d0a, 0x9262_8bc5, 0x8667_9544, 0xfd18_67af, 0x5ca3_ea61, 0x568d_5578, 0x4a2d_71f4,
+                0x43c9_d549, 0x8d95_de2b, 0x6e5c_74a0, 0x9120_ffc7, 0x0d05_d14a, 0xa930_49d3, 0xbfa8_0e17, 0xf409_6810,
+                0x043f_5ef5, 0xa673_b4f1, 0x6d78_0298, 0xa484_7783, 0x5ee7_26fb, 0x9934_c281, 0x220a_588c, 0x384e_240f,
+                0x933d_5c69, 0x39e5_ef47, 0x26e8_b8f3, 0x4c1c_6212, 0x8040_f75d, 0x074b_7093, 0x6625_a8d7, 0x3629_8945,
+                0x7628_5088, 0x651d_37c3, 0x24f5_274d, 0xdbca_3dab, 0x186b_7ee1, 0xd80f_8182, 0x1421_0c89, 0x943a_3075,
+                0x4e6e_11c4, 0x4d7e_6bad, 0xf050_64c8, 0x025d_cd97, 0x4bc1_0302, 0x7ced_e572, 0x8f90_a970, 0xab88_eeba,
+                0xb599_8029, 0x5124_d839, 0xb0ee_b6a3, 0x89dd_abdc, 0xe807_4d76, 0xa146_5223, 0x3251_8cf2, 0x9d39_d4eb,
+                0xc0d8_4524, 0xe35e_6ea8, 0x7abf_3804, 0x113e_2348, 0x9ae6_069d, 0xb4df_dabb, 0xa8c5_313f, 0x23ea_3f79,
+                0x530e_36a2, 0xa5fd_228b, 0x95d1_d350, 0x2b14_cc09, 0x4004_2956, 0x879d_05cc, 0x2064_b9ca, 0xacac_a40e,
+                0xb29c_846e, 0x9676_c9e3, 0x752b_7b8a, 0x7be2_bcc2, 0x6bd5_8f5e, 0xd48f_4c32, 0x6068_35e4, 0x9cd7_c364,
+                0x2c26_9b7a, 0x3a0d_079c, 0x73b6_83fe, 0x4537_4f1e, 0x10af_a242, 0x577f_8666, 0xddaa_10f6, 0xf34f_561c,
+                0x3d35_5d6b, 0xe470_48ae, 0xaa13_c492, 0x0503_44fd, 0x2aab_5151, 0xf5b2_6ae5, 0xed91_9a59, 0x5ac6_7900,
+                0xf1cd_e380, 0x0c79_a11b, 0x3515_33fc, 0xcd4d_8e36, 0x1f85_6005, 0x690b_9fdd, 0xe736_dccf, 0x1d47_bf6a,
+                0x7f66_c72a, 0x85f2_1b7f, 0x983c_bdb6, 0x01eb_bebf, 0x035f_3b99, 0xeb11_1f34, 0x28ce_fdc6, 0x5bfc_9ecd,
+                0xf22e_acb0, 0x9e41_cbb2, 0xe0f8_327c, 0x82e3_e26f, 0xfc43_fc86, 0xd0ba_66df, 0x489e_f2a7, 0xd9e0_c81d,
+                0x6869_0d52, 0xcc45_1367, 0xc223_2e16, 0xe95a_7335, 0x0fda_e19b, 0xff5b_962c, 0x9759_6527, 0xc46d_b333,
+                0x3ed4_c562, 0xc14c_9d9e, 0x5d6f_aa21, 0x638e_940d, 0xf931_6d58, 0x47b3_b0ea, 0x30ff_cad2, 0xce1b_ba7d,
+                0x1e61_08e6, 0x2e1e_a33d, 0x507b_f05b, 0xfafe_f94b, 0xd17d_e8e2, 0x5598_b214, 0x1663_f813, 0x17d2_5a2d,
+                0xeefa_5ff9, 0x582f_4e37, 0x1212_8773, 0xfef1_7ab8, 0x0600_5322, 0xbb32_bbc9, 0x8c89_8508, 0x592c_15f0,
+                0xd38a_4054, 0x4957_b7d6, 0xd2b8_91db, 0x37bd_2d3e, 0x34ad_20cb, 0x6222_88e9, 0x2dc7_345a, 0xafb4_16c0,
+                0x1cf4_59b1, 0xdc77_39fa, 0x0a71_1a25, 0x13e1_8a0c, 0x5f72_af4c, 0x6ac8_db11, 0xbe53_c18e, 0x1aa5_69b9,
+                0xef55_1ea4, 0xa02a_429f, 0xbd16_e790, 0x7eb9_171a, 0x77d6_93d8, 0x8e06_993a, 0x9bde_7560, 0xe580_1987,
+                0xc37a_09be, 0xb8db_76ac, 0xe208_7294, 0x6c81_616d, 0xb7f3_0fe7, 0xbc9b_82bd, 0xfba4_e4d4, 0xc7b1_012f,
+                0xa20c_043b, 0xde9f_ebd0, 0x2f92_97ce, 0xe610_aef8, 0x70b0_6f19, 0xc86a_e00b, 0x0e01_988f, 0x4119_2ae0,
+                0x448c_1cb5, 0xadbe_92ee, 0x7293_a007, 0x1b54_b5b3, 0xd61f_63d1, 0xeae4_0a74, 0x61a7_2b55, 0xec83_a7d5,
+                0x8894_2806, 0x90a0_7da5, 0xd742_4b95, 0x6774_5b4e, 0xa31a_1853, 0xca60_21ef, 0xdfb5_6c4f, 0xcbc2_d915,
+                0x3c48_e918, 0x8bae_3c63, 0x6f65_9c71, 0xf8b7_54c1, 0x2782_f3de, 0xf796_f168, 0x7149_2c84, 0x33c0_f5a6,
+                0x3144_f6ec, 0x25dc_412e, 0xb16c_5743, 0x83a1_fa7e, 0x0997_b101, 0xb627_e6e8, 0xcf33_905c, 0x8456_fb65,
+            ),
+            (
+                0xb29b_ea74, 0xc35d_a605, 0x305c_1ca3, 0xd2e9_f5bc, 0x6fd5_bff4, 0xff34_7703, 0xfc45_b163, 0xf498_e068,
+                0xb712_29fc, 0x81ac_c3fb, 0x7853_8a8b, 0x984e_cf81, 0xa5da_47a4, 0x8f25_9eef, 0x6475_dc65, 0x0818_65b9,
+                0x49e1_4a3c, 0x19e6_6079, 0xd382_e91b, 0x5b10_9794, 0x3f9f_81e1, 0x4470_a388, 0x4160_1abe, 0xaaf9_f407,
+                0x8e17_5ef6, 0xed84_2297, 0x893a_4271, 0x1790_839a, 0xd566_a99e, 0x6b41_7dee, 0x75c9_0d23, 0x715e_db31,
+                0x7235_53f7, 0x9afb_50c9, 0xfbc5_f600, 0xcd3b_6a4e, 0x97ed_0fba, 0x2968_9aec, 0x6313_5c8e, 0xf0e2_6c7e,
+                0x0692_ae7f, 0xdbb2_08ff, 0x2ede_3e9b, 0x6a65_bebd, 0xd408_67e9, 0xc954_afc5, 0x73b0_8201, 0x7ffd_f809,
+                0x1195_c24f, 0x1ca5_adca, 0x74bd_6d1f, 0xb393_c455, 0xcadf_d3fa, 0x99f1_3011, 0x0ebc_a813, 0x60e7_91b8,
+                0x6597_ac7a, 0x18a7_e46b, 0x09cb_49d3, 0x0b27_df6d, 0xcfe5_2f87, 0xcef6_6837, 0xe632_8035, 0xfa87_c592,
+                0x37ba_ff93, 0xd71f_cc99, 0xdcab_205c, 0x4d7a_5638, 0x4801_2510, 0x6279_7558, 0xb6cf_1fe5, 0xbc31_1834,
+                0x9c23_73ac, 0x14ec_6175, 0xa439_cbdf, 0x54af_b0ea, 0xd686_960b, 0xfdd0_d47b, 0x7b06_3902, 0x8b78_bac3,
+                0x26c6_a4d5, 0x5c00_55b6, 0x2376_102e, 0x0411_783e, 0x2aa3_f1cd, 0x51fc_6ea8, 0x701c_e243, 0x9b2a_0abb,
+                0x0ad9_3733, 0x6e80_d03d, 0xaf62_95d1, 0xf629_896f, 0xa30b_0648, 0x463d_8dd4, 0x963f_84cb, 0x01ff_94f8,
+                0x8d7f_efdc, 0x5536_11c0, 0xa97c_1719, 0xb96a_f759, 0xe0e3_c95e, 0x0528_335b, 0x21fe_5925, 0x821a_5245,
+                0x8072_38b1, 0x67f2_3db5, 0xea6b_4eab, 0x0da6_f985, 0xab1b_c85a, 0xef8c_90e4, 0x4526_230e, 0x38eb_8b1c,
+                0x1b91_cd91, 0x9fce_5f0c, 0xf72c_c72b, 0xc64f_2617, 0xdaf7_857d, 0x7d37_3cf1, 0x28ea_edd7, 0x2038_87d0,
+                0xc49a_155f, 0xa251_b3b0, 0xf2d4_7ae3, 0x3d9e_f267, 0x4a94_ab2f, 0x7755_a222, 0x0205_e329, 0xc28f_a7a7,
+                0xaec1_fe51, 0x270f_164c, 0x8c6d_01bf, 0x53b5_bc98, 0xc09d_3feb, 0x8349_86cc, 0x4309_a12c, 0x578b_2a96,
+                0x3bb7_4b86, 0x6956_1b4a, 0x037e_32f3, 0xde33_5b08, 0xc515_6be0, 0xe7ef_09ad, 0x93b8_34c7, 0xa771_9352,
+                0x5930_2821, 0xe352_9d26, 0xf961_da76, 0xcb14_2c44, 0xa0f3_b98d, 0x7650_2457, 0x945a_414b, 0x078e_eb12,
+                0xdff8_de69, 0xeb6c_8c2d, 0xbda9_0c4d, 0xe9c4_4d16, 0x168d_fd66, 0xad64_763b, 0xa65f_d764, 0x95a2_9c06,
+                0x32d7_713f, 0x40f0_b277, 0x224a_f08f, 0x004c_b5e8, 0x9257_4814, 0x8877_d827, 0x3e5b_2d04, 0x68c2_d5f2,
+                0x8696_6273, 0x1d43_3ada, 0x8774_988a, 0x3c0e_0bfe, 0xddad_581d, 0x2fd6_54ed, 0x0f47_69fd, 0xc181_ee9d,
+                0x5fd8_8f61, 0x341d_bb3a, 0x5285_43f9, 0xd922_35cf, 0x1ea8_2eb4, 0xb5cd_790f, 0x91d2_4f1e, 0xa869_e6c2,
+                0x61f4_74d2, 0xcc20_5add, 0x0c7b_fba9, 0xbf2b_0489, 0xb02d_72d8, 0x2b46_ece6, 0xe4dc_d90a, 0xb8a1_1440,
+                0xee8a_63b7, 0x854d_d1a1, 0xd1e0_0583, 0x42b4_0e24, 0x9e89_64de, 0xb4b3_5d78, 0xbec7_6f6e, 0x24b9_c620,
+                0xd8d3_99a6, 0x5adb_2190, 0x2db1_2730, 0x3a58_66af, 0x58c8_fadb, 0x5d88_44e7, 0x8a4b_f380, 0x15a0_1d70,
+                0x79f5_c028, 0x66be_3b8c, 0xf3e4_2b53, 0x5699_0039, 0x2c0c_3182, 0x5e16_407c, 0xecc0_4515, 0x6c44_0284,
+                0x4cb6_701a, 0x13bf_c142, 0x9d03_9f6a, 0x4f6e_92c8, 0xa140_7c62, 0x8483_a095, 0xc70a_e1c4, 0xe202_13a2,
+                0xbaca_fc41, 0x4ecc_12b3, 0x4bee_3646, 0x1fe8_07ae, 0x2521_7f9c, 0x35dd_e5f5, 0x7a7d_d6ce, 0xf89c_ce50,
+                0xac07_b718, 0x7e73_d2c6, 0xe563_e76c, 0x123c_a536, 0x3948_ca56, 0x9019_dd49, 0x10aa_88d9, 0xc824_51e2,
+                0x473e_b6d6, 0x506f_e854, 0xe8bb_03a5, 0x332f_4c32, 0xfe1e_1e72, 0xb1ae_572a, 0x7c0d_7bc1, 0xe1c3_7eb2,
+                0xf542_aa60, 0xf1a4_8ea0, 0xd067_b89f, 0xbbfa_195d, 0x1a04_9b0d, 0x3159_46aa, 0x36d1_b447, 0x6d2e_bdf0,
+            ),
+            (
+                0x0d18_8a6d, 0x12ce_a0db, 0x7e63_740e, 0x6a44_4821, 0x253d_234f, 0x6ffc_6597, 0x94a6_bdef, 0x33ee_1b2f,
+                0x0a6c_00c0, 0x3aa3_36b1, 0x5af5_5d17, 0x265f_b3dc, 0x0e89_cf4d, 0x0786_b008, 0xc800_55b8, 0x6b17_c3ce,
+                0x72b0_5a74, 0xd21a_8d78, 0xa6b7_0840, 0xfe8e_ae77, 0xed69_565c, 0x55e1_bcf4, 0x585c_2f60, 0xe06f_1a62,
+                0xad67_c0cd, 0x7712_af88, 0x9cc2_6aca, 0x1888_053d, 0x37eb_853e, 0x9215_abd7, 0xde30_adfc, 0x1f10_38e6,
+                0x70c5_1c8a, 0x8d58_6c26, 0xf72b_dd90, 0x4dc3_ce15, 0x68ea_eefa, 0xd0e9_c8b9, 0x200f_9c44, 0xddd1_41ba,
+                0x024b_f1d3, 0x0f64_c9d4, 0xc421_e9e9, 0x9d11_c14c, 0x9a0d_d9e4, 0x5f92_ec19, 0x1b98_0df0, 0x1dcc_4542,
+                0xb8fe_8c56, 0x0c9c_9167, 0x4e81_eb49, 0xca36_8f27, 0xe360_3b37, 0xea08_accc, 0xac51_6992, 0xc34f_513b,
+                0x804d_100d, 0x6edc_a4c4, 0xfc91_2939, 0x29d2_19b0, 0x278a_aa3c, 0x4868_da7d, 0x54e8_90b7, 0xb46d_735a,
+                0x5145_89aa, 0xd6c6_30af, 0x4980_dfe8, 0xbe3c_cc55, 0x59d4_1202, 0x650c_078b, 0xaf3a_9e7b, 0x3ed9_827a,
+                0x9e79_fc6e, 0xaadb_fbae, 0xc5f7_d803, 0x3daf_7f50, 0x67b4_f465, 0x7340_6e11, 0x3931_3f8c, 0x8a6e_6686,
+                0xd807_5f1f, 0xd3cb_fed1, 0x69c7_e49c, 0x9305_81e0, 0xe4b1_a5a8, 0xbbc4_5472, 0x09dd_bf58, 0xc91d_687e,
+                0xbdbf_fda5, 0x88c0_8735, 0xe9e3_6bf9, 0xdb5e_a9b6, 0x9555_9404, 0x08f4_32fb, 0xe24e_a281, 0x6466_3579,
+                0x000b_8010, 0x7914_e7d5, 0x32fd_0473, 0xd1a7_f0a4, 0x445a_b98e, 0xec72_993f, 0xa29a_4d32, 0xb773_06d8,
+                0xc7c9_7cf6, 0x7b6a_b645, 0xf5ef_7adf, 0xfb2e_15f7, 0xe747_f757, 0x5e94_4354, 0x234a_2669, 0x47e4_6359,
+                0x9b9d_11a9, 0x4076_2ced, 0x56f1_de98, 0x1133_4668, 0x890a_9a70, 0x1a29_6113, 0xb3bd_4af5, 0x163b_7548,
+                0xd51b_4f84, 0xb99b_2abc, 0x3cc1_dc30, 0xa9f0_b56c, 0x8122_72b2, 0x0b23_3a5f, 0xb650_dbf2, 0xf1a0_771b,
+                0x3656_2b76, 0xdc03_7b0f, 0x104c_97ff, 0xc2ec_98d2, 0x9059_6f22, 0x28b6_620b, 0xdf42_b212, 0xfdbc_4243,
+                0xf3fb_175e, 0x4a2d_8b00, 0xe8f3_869b, 0x30d6_9bc3, 0x8537_14c8, 0xa775_1d2e, 0x31e5_6dea, 0xd484_0b0c,
+                0x9685_d783, 0x068c_9333, 0x8fba_032c, 0x76d7_bb47, 0x6d0e_e22b, 0xb546_794b, 0xd971_b894, 0x8b09_d253,
+                0xa0ad_5761, 0xee77_ba06, 0x4635_9f31, 0x577c_c7ec, 0x5282_5efd, 0xa4be_ed95, 0x9825_c52a, 0xeb48_029a,
+                0xbaae_59f8, 0xcf49_0ee1, 0xbc99_0164, 0x8ca4_9dfe, 0x4f38_a6e7, 0x2ba9_8389, 0x8228_f538, 0x199f_64ac,
+                0x01a1_cac5, 0xa8b5_1641, 0x5ce7_2d01, 0x8e5d_f26b, 0x60f2_8e1e, 0xcd5b_e125, 0xe5b3_76bf, 0x1c8d_3116,
+                0x7132_cbb3, 0xcb7a_e320, 0xc0fa_5366, 0xd765_3e34, 0x971c_88c2, 0xc62c_7dd0, 0x34d0_a3da, 0x868f_6709,
+                0x7ae6_fa8f, 0x22bb_d523, 0x66cd_3d5b, 0x1ef9_288d, 0xf9cf_58c1, 0x5b78_4e80, 0x7439_a191, 0xae13_4c36,
+                0x9116_c463, 0x2e9e_1396, 0xf861_1f3a, 0x2d2f_3307, 0x247f_37dd, 0xc1e2_ff9d, 0x43c8_21e5, 0x05ed_5cab,
+                0xef74_e80a, 0x4cca_6028, 0xf0ac_3cbd, 0x5d87_4b29, 0x6c62_f6a6, 0x4b2a_2ef3, 0xb1aa_2087, 0x62a5_d0a3,
+                0x0327_221c, 0xb096_b4c6, 0x417e_c693, 0xaba8_40d6, 0x7897_25eb, 0xf4b9_e02d, 0xe6e0_0975, 0xcc04_961a,
+                0x63f6_24bb, 0x7fa2_1ecb, 0x2c01_ea7f, 0xb241_5005, 0x2a8b_beb5, 0x83b2_b14e, 0xa383_d1a7, 0x5352_f96a,
+                0x043e_cdad, 0xce19_18a1, 0xfa6b_e6c9, 0x50de_f36f, 0xf6b8_0ce2, 0x4543_ef7c, 0x9953_d651, 0xf257_955d,
+                0x8724_4914, 0xda1e_0a24, 0xffda_4785, 0x14d3_27a2, 0x3b93_c29f, 0x8406_84b4, 0x61ab_71a0, 0x9f7b_784a,
+                0x2fd5_70cf, 0x1595_5bde, 0x38f8_d471, 0x3534_a718, 0x133f_b71d, 0x3fd8_0f52, 0x4290_a8be, 0x75ff_44c7,
+                0xa554_e546, 0xe102_3499, 0xbf26_52e3, 0x7d20_399e, 0xa1df_7e82, 0x1770_92ee, 0x217d_d3f1, 0x7c1f_f8d9,
+            ),
+            (
+                0x1211_3f2e, 0xbfbd_0785, 0xf117_93fb, 0xa5bf_f566, 0x83c7_b0e5, 0x72fb_316b, 0x7552_6a9a, 0x41e0_e612,
+                0x7156_ba09, 0x53ce_7dee, 0x0aa2_6881, 0xa43e_0d7d, 0x3da7_3ca3, 0x1827_61ed, 0xbd50_77ff, 0x56db_4aa0,
+                0xe792_711c, 0xf0a4_eb1d, 0x7f87_8237, 0xec65_c4e8, 0x08dc_8d43, 0x0f8c_e142, 0x8258_abda, 0xf415_4e16,
+                0x49de_c2fd, 0xcd8d_5705, 0x6c2c_3a0f, 0x5c12_bb88, 0xeff3_cdb6, 0x2c89_ed8c, 0x7beb_a967, 0x2a14_2157,
+                0xc6d0_836f, 0xb4f9_7e96, 0x6931_e969, 0x514e_6c7c, 0xa779_2600, 0x0bbb_f780, 0x5967_1bbd, 0x0707_b676,
+                0x3748_2d93, 0x80af_1479, 0x3805_a60d, 0xe1f4_cac1, 0x580b_3074, 0x30b8_d6ce, 0x05a3_04be, 0xd176_626d,
+                0xebca_97f3, 0xbb20_1f11, 0x6a1a_fe23, 0xffaa_86e4, 0x62b4_da49, 0x1b66_29f5, 0xf5d9_e092, 0xf37f_3dd1,
+                0x619b_d45b, 0xa6ec_8e4f, 0x29c8_0939, 0x0c7c_0c34, 0x9cfe_6e48, 0xe65f_d3ac, 0x7361_3b65, 0xb3c6_69f9,
+                0xbe2e_8a9e, 0x286f_9678, 0x5797_fd13, 0x9980_5d75, 0xcfb6_41c5, 0xa910_74ba, 0x6343_af47, 0x6403_cb46,
+                0x8894_c8db, 0x2663_034c, 0x3c40_dc5e, 0x0099_5231, 0x9678_9aa2, 0x2efd_e4b9, 0x7dc1_95e1, 0x547d_add5,
+                0x06a8_ea04, 0xf234_7a63, 0x5e0d_c6f7, 0x8462_dfc2, 0x1e6b_2c3c, 0x9bd2_75b3, 0x91d4_19e2, 0xbcef_d17e,
+                0xb900_3924, 0xd07e_7320, 0xdef0_495c, 0xc36a_d00e, 0x1785_b1ab, 0x92e2_0bcf, 0xb139_f0e9, 0x675b_b9a1,
+                0xaecf_a4af, 0x1323_76cb, 0xe845_89d3, 0x79a0_5456, 0xa2f8_60bc, 0x1ae4_f8b5, 0x20df_4db4, 0xa1e1_428b,
+                0x3bf6_0a1a, 0x27ff_7bf1, 0xcb44_c0e7, 0xf7f5_87c4, 0x1f3b_9b21, 0x9436_8f01, 0x856e_23a4, 0x6f93_de3f,
+                0x773f_5bbf, 0x8b22_056e, 0xdf41_f654, 0xb824_6ff4, 0x8d57_bff2, 0xd571_67ea, 0xc569_9f22, 0x4073_4ba7,
+                0x5d5c_2772, 0x0330_20a8, 0xe30a_7c4d, 0xadc4_0fd6, 0x7635_3441, 0x5aa5_229b, 0x8151_6590, 0xda49_f14e,
+                0x4fa6_72a5, 0x4d9f_ac5f, 0x154b_e230, 0x8a7a_5cc0, 0xce3d_2f84, 0xcca1_5514, 0x5221_360c, 0xaf0f_b81e,
+                0x5bdd_5873, 0xf682_5f8f, 0x1113_d228, 0x70ad_996c, 0x9332_0051, 0x6047_1c53, 0xe9ba_567b, 0x3a46_2ae3,
+                0x5f55_e72d, 0x1d3c_5ad7, 0xdcfc_45ec, 0x34d8_12ef, 0xfa96_ee1b, 0x369d_1ef8, 0xc9b1_a189, 0x7c1d_3555,
+                0x5084_5edc, 0x4bb3_1877, 0x8764_a060, 0x8c9a_9415, 0x230e_1a3a, 0xb05e_9133, 0x242b_9e03, 0xa3b9_9db7,
+                0xc2d7_fb0a, 0x3333_849d, 0xd272_78d4, 0xb5d3_efa6, 0x78ac_28ad, 0xc7b2_c135, 0x0926_ecf0, 0xc137_4c91,
+                0x74f1_6d98, 0x2274_084a, 0x3f6d_9cfa, 0x7ac0_a383, 0xb73a_ff1f, 0x3909_a23d, 0x9f16_53ae, 0x4e2f_3e71,
+                0xca5a_b22a, 0xe01e_3858, 0x90c5_a7eb, 0x3e4a_17df, 0xaa98_7fb0, 0x488b_bd62, 0xb625_062b, 0x2d77_6bb8,
+                0x43b5_fc08, 0x1490_d532, 0xd6d1_2495, 0x44e8_9845, 0x2fe6_0118, 0x9d9e_f950, 0xac38_133e, 0xd386_4329,
+                0x017b_255a, 0xfdc2_dd26, 0x2568_51e6, 0x318e_7086, 0x2bfa_4861, 0x89ea_c706, 0xee59_40c6, 0x68c3_bc2f,
+                0xe260_334b, 0x98da_90bb, 0xf818_f270, 0x4706_d897, 0x212d_3799, 0x4cf7_e5d0, 0xd9c9_649f, 0xa85d_b5cd,
+                0x35e9_0e82, 0x6b88_1152, 0xab1c_02c7, 0x4675_2b02, 0x664f_598e, 0x45ab_2e64, 0xc4cd_b4b2, 0xba42_107f,
+                0xea2a_808a, 0x971b_f3de, 0x4a54_a836, 0x4253_aecc, 0x1029_be68, 0x6dcc_9225, 0xe4bc_a56a, 0xc0ae_50b1,
+                0x7e01_1d94, 0xe59c_162c, 0xd8e5_c340, 0xd470_fa0b, 0xb2be_79dd, 0xd783_889c, 0x1ced_e8f6, 0x8f4c_817a,
+                0xddb7_85c9, 0x8602_32d8, 0x198a_aad9, 0xa081_4738, 0x3219_cffc, 0x1695_46d2, 0xfc0c_b759, 0x5591_1510,
+                0x04d5_cec3, 0xed08_cc3b, 0x0d6c_f427, 0xc8e3_8cca, 0x0eee_e3fe, 0x9ee7_d7c8, 0xf9f2_4fa9, 0xdb04_b35d,
+                0x9ab0_c9e0, 0x651f_4417, 0x028f_8b07, 0x6e28_d9aa, 0xfba9_6319, 0x8ed6_6687, 0xfecb_c58d, 0x954d_db44,
+            ),
+            (
+                0x7b0b_dffe, 0x865d_16b1, 0x49a0_58c0, 0x97ab_aa3f, 0xcaac_c75d, 0xaba6_c17d, 0xf874_6f92, 0x6f48_aeed,
+                0x8841_d4b5, 0xf36a_146a, 0x73c3_90ab, 0xe6fb_558f, 0x87b1_019e, 0x2697_0252, 0x2463_77b2, 0xcbf6_76ae,
+                0xf923_db06, 0xf738_9116, 0x14c8_1a90, 0x8311_4eb4, 0x8b13_7559, 0x95a8_6a7a, 0xd5b8_da8c, 0xc4df_780e,
+                0x5a9c_b3e2, 0xe44d_4062, 0xe8dc_8ef6, 0x9d18_0845, 0x817a_d18b, 0xc286_c85b, 0x251f_20de, 0xee6d_5933,
+                0xf6ed_ef81, 0xd4d1_6c1e, 0xc94a_0c32, 0x8437_fd22, 0x3271_ee43, 0x4257_2aee, 0x5f91_962a, 0x1c52_2d98,
+                0x59b2_3f0c, 0xd86b_8804, 0x08c6_3531, 0x2c0d_7a40, 0xb97c_4729, 0x0496_4df9, 0x13c7_4a17, 0x5878_362f,
+                0x4c80_8cd6, 0x092c_b1e0, 0x6df0_2885, 0xa0c2_105e, 0x8aba_9e68, 0x64e0_3057, 0xe5d6_1325, 0x0e43_a628,
+                0x16db_d62b, 0x2733_d90b, 0x3ae5_7283, 0xc0c1_052c, 0x4b6f_b620, 0x3751_3953, 0xfc89_8bb3, 0x471b_179f,
+                0xdf6e_66b8, 0xd321_42f5, 0x9b30_fafc, 0x4ed9_2549, 0x105c_6d99, 0x4acd_69ff, 0x2b1a_27d3, 0x6bfc_c067,
+                0x6301_a278, 0xad36_e6f2, 0xef3f_f64e, 0x56b3_cadb, 0x0184_bb61, 0x17be_b9fd, 0xfaec_6109, 0xa2e1_ffa1,
+                0x2fd2_24f8, 0x238f_5be6, 0x8f85_70cf, 0xaeb5_f25a, 0x4f1d_3e64, 0x4377_eb24, 0x1fa4_5346, 0xb205_6386,
+                0x5209_5e76, 0xbb7b_5adc, 0x3514_e472, 0xdde8_1e6e, 0x7ace_a9c4, 0xac15_cc48, 0x71c9_7d93, 0x767f_941c,
+                0x9110_52a2, 0xffea_09bf, 0xfe3d_dcf0, 0x15eb_f3aa, 0x9235_b8bc, 0x7540_8615, 0x9a72_3437, 0xe1a1_bd38,
+                0x3354_1b7e, 0x1bdd_6856, 0xb307_e13e, 0x9081_4bb0, 0x51d7_217b, 0x0bb9_2219, 0x689f_4500, 0xc568_b01f,
+                0x5df3_d2d7, 0x3c0e_cd0d, 0x2a02_44c8, 0x8525_74e8, 0xe72f_23a9, 0x8e26_ed02, 0x2d92_cbdd, 0xdabc_0458,
+                0xcdf5_feb6, 0x9e4e_8dcc, 0xf4f1_e344, 0x0d8c_436d, 0x4427_603b, 0xbdd3_7fda, 0x8050_5f26, 0x8c7d_2b8e,
+                0xb732_73c5, 0x3973_62ea, 0x618a_3811, 0x608b_fb88, 0x06f7_d714, 0x212e_4677, 0x28ef_cead, 0x076c_0371,
+                0x36a3_a4d9, 0x5487_b455, 0x3429_a365, 0x65d4_67ac, 0x78ee_7eeb, 0x99bf_12b7, 0x4d12_9896, 0x772a_5601,
+                0xcce2_84c7, 0x2ed8_5c21, 0xd099_e8a4, 0xa179_158a, 0x6ac0_ab1a, 0x299a_4807, 0xbe67_a58d, 0xdc19_544a,
+                0xb894_9b54, 0x8d31_5779, 0xb6f8_49c1, 0x53c5_ac34, 0x66de_92a5, 0xf195_dd13, 0x318d_3a73, 0x301e_c542,
+                0x0cc4_0da6, 0xf253_ade4, 0x467e_e566, 0xea55_85ec, 0x3baf_19bb, 0x7de9_f480, 0x7900_6e7c, 0xa9b7_a197,
+                0xa44b_d8f1, 0xfb2b_a739, 0xec34_2fd4, 0xed4f_d32d, 0x3d17_89ba, 0x400f_5d7f, 0xc798_f594, 0x4506_a847,
+                0x034c_0a95, 0xe216_2c9d, 0x55a9_cfd0, 0x692d_832e, 0xcf9d_b2ca, 0x5e22_87e9, 0xd261_0ef3, 0x1ae7_ecc2,
+                0x4839_9ca0, 0xa7e4_269b, 0x6ee3_a0af, 0x7065_bfe1, 0xa6ff_e708, 0x2256_804c, 0x7476_e21b, 0x41b0_796c,
+                0x7c24_3b05, 0x000a_950f, 0x1858_416b, 0xf5a5_3c89, 0xe9fe_f823, 0x3f44_3275, 0xe0cb_f091, 0x0af2_7b84,
+                0x3ebb_0f27, 0x1de6_f7f4, 0xc31c_29f7, 0xb166_de3d, 0x1293_2ec3, 0x9c0c_0674, 0x5cda_81b9, 0xd1bd_9d12,
+                0xaffd_7c82, 0x8962_bca7, 0xa342_c4a8, 0x6245_7151, 0x8208_9f03, 0xeb49_c670, 0x5b5f_6530, 0x7e28_bad2,
+                0x2088_0ba3, 0xf0fa_afcd, 0xce82_b56f, 0x0275_335c, 0xc18e_8afb, 0xde60_1d69, 0xba9b_820a, 0xc8a2_be4f,
+                0xd7ca_c335, 0xd9a7_3741, 0x115e_974d, 0x7f5a_c21d, 0x383b_f9c6, 0xbcae_b75f, 0xfd03_50ce, 0xb5d0_6b87,
+                0x9820_e03c, 0x72d5_f163, 0xe364_4fc9, 0xa546_4c4b, 0x5704_8fcb, 0x9690_c9df, 0xdbf9_eafa, 0xbff4_649a,
+                0x053c_00e3, 0xb4b6_1136, 0x6759_3dd1, 0x503e_e960, 0x9fb4_993a, 0x1983_1810, 0xc670_d518, 0xb05b_51d8,
+                0x0f3a_1ce5, 0x6caa_1f9c, 0xaacc_31be, 0x949e_d050, 0x1ead_07e7, 0xa847_9abd, 0xd6cf_fcd5, 0x9369_93ef,
+            ),
+            (
+                0x472e_91cb, 0x5444_b5b6, 0x62be_5861, 0x1be1_02c7, 0x63e4_b31e, 0xe81f_71b7, 0x9e23_17c9, 0x39a4_08ae,
+                0x5180_24f4, 0x1731_c66f, 0x68cb_c918, 0x71fb_0c9e, 0xd03b_7fdd, 0x7d62_22eb, 0x9057_eda3, 0x1a34_a407,
+                0x8cc2_253d, 0xb6f6_979d, 0x8356_75dc, 0xf319_be9f, 0xbe1c_d743, 0x4d32_fee4, 0x77e7_d887, 0x37e9_ebfd,
+                0x15f8_51e8, 0x23dc_3706, 0x19d7_8385, 0xbd50_6933, 0xa13a_d4a6, 0x913f_1a0e, 0xdde5_60b9, 0x9a5f_0996,
+                0xa65a_0435, 0x48d3_4c4d, 0xe908_39a7, 0x8abb_a54e, 0x6fd1_3ce1, 0xc7ee_bd3c, 0x0e29_7602, 0x58b9_bbb4,
+                0xef79_01e6, 0x64a2_8a62, 0xa509_875a, 0xf883_4442, 0x2702_c709, 0x0735_3f31, 0x3b39_f665, 0xf5b1_8b49,
+                0x4010_ae37, 0x784d_e00b, 0x7a11_21e9, 0xde91_8ed3, 0xc852_9dcd, 0x816a_5d05, 0x02ed_8298, 0x04e3_dd84,
+                0xfd2b_c3e2, 0xaf16_7089, 0x96af_367e, 0xa4da_6232, 0x18ff_7325, 0x05f9_a9f1, 0x4fef_b9f9, 0xcd94_eaa5,
+                0xbfaa_5069, 0xa0b8_c077, 0x60d8_6f57, 0xfe71_c813, 0x29eb_d2c8, 0x4ca8_6538, 0x6bf1_a030, 0xa237_b88a,
+                0xaa8a_f41d, 0xe1f7_b6ec, 0xe214_d953, 0x3305_7879, 0x49ca_a736, 0xfa45_cff3, 0xc063_b411, 0xba7e_27d0,
+                0x3153_3819, 0x2a00_4ac1, 0x210e_fc3f, 0x2646_885e, 0x6672_7dcf, 0x9d7f_bf54, 0xa8dd_0ea8, 0x3447_cace,
+                0x3f0c_14db, 0xb838_2aac, 0x4ace_3539, 0x0a51_8d51, 0x9517_8981, 0x35ae_e2ca, 0x73f0_f7e3, 0x9428_1140,
+                0x59d0_e523, 0xd292_cb88, 0x565d_1b27, 0x7ec8_fbaf, 0x069a_f08d, 0xc127_fd24, 0x0bc7_7b10, 0x5f03_e7ef,
+                0x453e_99ba, 0xeed9_ff7f, 0x87b5_5215, 0x7915_ab4c, 0xd389_a358, 0x5e75_ce6d, 0x28d6_55c0, 0xdad2_6c73,
+                0x2e25_10ff, 0x9fa7_eecc, 0x1d06_29c3, 0xdc9c_9c46, 0x2d67_ecd7, 0xe75e_94bd, 0x3d64_9e2a, 0x6c41_3a2b,
+                0x706f_0d7c, 0xdfb0_127b, 0x4e36_6b55, 0x2c82_5650, 0x2420_5720, 0xb5c9_98f7, 0x3e95_462c, 0x756e_5c72,
+                0x3259_488f, 0x11e8_771a, 0xa7c0_a617, 0x5776_63e5, 0x089b_6401, 0x8eab_1941, 0xae55_ef8c, 0x3aac_5460,
+                0xd4e6_262f, 0x5d97_9a47, 0xb198_23b0, 0x7f8d_6a0c, 0xffa0_8683, 0x0170_cd0f, 0x858c_d5d8, 0x5396_1c90,
+                0xc4c6_1556, 0x41f2_f226, 0xcfcd_062d, 0xf24c_03b8, 0xea81_df5b, 0x7be2_fa52, 0xb361_f98b, 0xc290_1316,
+                0x55ba_4bbc, 0x93b2_34a9, 0x0fbc_6603, 0x80a9_6822, 0x6d60_491f, 0x22bd_00f8, 0xbcad_5aad, 0x52f3_f13b,
+                0x42fd_2b28, 0xb41d_d01c, 0xc52c_93bf, 0xfc66_3094, 0x8f58_d100, 0x43fe_cc08, 0xc633_1e5d, 0xe648_0f66,
+                0xca84_7204, 0x4bdf_1da0, 0x30cc_2efb, 0x13e0_2dea, 0xfb49_ac45, 0xf9d4_434f, 0xf47c_5b9c, 0x1488_79c2,
+                0x039f_c234, 0xa3db_9bfc, 0xd1a1_dc5c, 0x763d_7cd4, 0xed6d_2f93, 0xab13_af6e, 0x1e8e_054a, 0xd68f_4f9a,
+                0xc304_84b3, 0xd7d5_0afa, 0x6930_855f, 0xcc07_db95, 0xce74_6db1, 0x744e_967d, 0xf16c_f575, 0x8643_e8b5,
+                0xf0ea_e38e, 0xe52d_e1d1, 0x6587_dae0, 0x0c4b_8121, 0x1c7a_c567, 0xac0d_b20a, 0x36c3_a812, 0x5b1a_4514,
+                0xa9a3_f868, 0xb926_3baa, 0xcb3c_e9d2, 0xe44f_b1a4, 0x9221_bc82, 0xb293_90fe, 0x6ab4_1863, 0x974a_3e2e,
+                0x89f5_31c5, 0x255c_a13e, 0x8b65_d348, 0xec24_8f78, 0xd8fc_16f0, 0x50ec_deee, 0x0901_0792, 0x3c7d_1fb2,
+                0xeba5_426b, 0x847b_417a, 0x468b_40d9, 0x8dc4_e680, 0x7cc1_f391, 0x2f1e_b086, 0x6e5b_aa6a, 0xe0b3_95da,
+                0xe31b_2cf6, 0xd969_0b0d, 0x729e_c464, 0x3840_3dde, 0x610b_80a2, 0x5cf4_33ab, 0xb078_5fc4, 0xd512_e4c6,
+                0xbbb7_d699, 0x5a86_591b, 0x10cf_5376, 0x12bf_9f4b, 0x980f_baa1, 0x992a_4e70, 0x20fa_7ae7, 0xf799_6ebb,
+                0xc918_a2be, 0x82de_74f2, 0xad54_209b, 0xf66b_4d74, 0x1fc5_b771, 0x169d_9229, 0x8877_61df, 0x00b6_67d5,
+                0xdb42_5e59, 0xb72f_2844, 0x9b0a_c1f5, 0x9c73_7e3a, 0x2b85_476c, 0x6722_add6, 0x44a6_3297, 0x0d68_8ced,
+            ),
+            (
+                0xabc5_9484, 0x4107_778a, 0x8ad9_4c6f, 0xfe83_df90, 0x0f64_053f, 0xd129_2e9d, 0xc574_4356, 0x8dd1_abb4,
+                0x4c4e_7667, 0xfb4a_7fc1, 0x74f4_02cb, 0x70f0_6afd, 0xa822_86f2, 0x918d_d076, 0x7a97_c5ce, 0x48f7_bde3,
+                0x6a04_d11d, 0xac24_3ef7, 0x33ac_10ca, 0x2f7a_341e, 0x5f75_157a, 0xf477_3381, 0x591c_870e, 0x78df_8cc8,
+                0x22f3_adb0, 0x251a_5993, 0x09fb_ef66, 0x7969_42a8, 0x9754_1d2e, 0x2373_daa9, 0x1bd2_f142, 0xb57e_8eb2,
+                0xe1a5_bfdb, 0x7d0e_fa92, 0xb344_2c94, 0xd2cb_6447, 0x386a_c97e, 0x66d6_1805, 0xbdad_a15e, 0x11bc_1aa7,
+                0x14e9_f6ea, 0xe533_a0c0, 0xf935_ee0a, 0x8fee_8a04, 0x810d_6d85, 0x7c68_b6d6, 0x4edc_9aa2, 0x956e_897d,
+                0xed87_581a, 0x264b_e9d7, 0xff4d_db29, 0x8238_57c2, 0xe005_a9a0, 0xf1cc_2450, 0x6f99_51e1, 0xaade_2310,
+                0xe70c_75f5, 0x83e1_a31f, 0x4f7d_de8e, 0xf723_b563, 0x368e_0928, 0x8636_2b71, 0x21e8_982d, 0xdfb3_f92b,
+                0x4467_6352, 0x99ef_ba31, 0x2eab_4e1c, 0xfc6c_a5e7, 0x0ebe_5d4e, 0xa071_7d0c, 0xb64f_8199, 0x946b_31a1,
+                0x5656_cbc6, 0xcffe_c3ef, 0x6227_66c9, 0xfa21_1e35, 0x52f9_8b89, 0x6d01_674b, 0x4978_a802, 0xf651_f701,
+                0x15b0_d43d, 0xd6ff_4683, 0x3463_855f, 0x672b_a29c, 0xbc12_8312, 0x4626_a70d, 0xc892_7a5a, 0xb848_1cf9,
+                0x1c96_2262, 0xa211_96ba, 0xbaba_5ee9, 0x5bb1_62d0, 0x6994_3bd1, 0x0c47_e35c, 0x8cc9_619a, 0xe284_d948,
+                0x271b_f264, 0xc27f_b398, 0x4bc7_0897, 0x60cf_202c, 0x7f42_d6aa, 0xa5a1_3506, 0x5d3e_8860, 0xcea6_3d3c,
+                0x63bf_0a8f, 0xf02e_9efa, 0xb17b_0674, 0xb072_b1d3, 0x06e5_723b, 0x3737_e436, 0x24aa_49c7, 0x0ded_0d18,
+                0xdb25_6b14, 0x58b2_7877, 0xecb4_9f54, 0x6c40_256a, 0x6ea9_2ffb, 0x3906_aa4c, 0xc986_6fd5, 0x4549_323e,
+                0xa7b8_5fab, 0x1918_cc27, 0x7308_d7b5, 0x1e16_c7ad, 0x7185_0b37, 0x3095_fd78, 0xa63b_70e6, 0xd880_e2ae,
+                0x3e28_2769, 0xa39b_a6bc, 0x9870_0fa3, 0xf34c_53e8, 0x288a_f426, 0xb99d_930f, 0xf5b9_9df1, 0xe9d0_c8cf,
+                0x5ac8_405d, 0x50e7_217b, 0x511f_bbbe, 0x2ca2_e639, 0xc020_301b, 0x356d_bc00, 0x8e43_ddb9, 0x4d32_7b4a,
+                0xf20f_f3ed, 0x1dbb_29bd, 0x43d4_4779, 0xa1b6_8f70, 0x6114_455b, 0xe63d_280b, 0x6bf6_ff65, 0x10fc_39e5,
+                0x3dae_126e, 0xc1d7_cf11, 0xcb60_b795, 0x1789_d5b3, 0x9bca_36b7, 0x0830_6075, 0x8461_5608, 0x8b3a_0186,
+                0xe88f_becd, 0x7ba4_7c4d, 0x2de4_4dac, 0x653f_e58d, 0xcca0_b968, 0xd7fa_0e72, 0x9390_1780, 0x1f2c_26cc,
+                0xae59_5b6b, 0xa9ec_ea9b, 0xe3db_f8c4, 0x319c_c130, 0x1298_1196, 0x01a3_a4de, 0x32c4_54b6, 0x755b_d817,
+                0x3cd8_71e4, 0xa48b_b8da, 0x02fd_ec09, 0xfd2d_c2e2, 0x9e57_8088, 0x9a9f_916d, 0x4065_fe6c, 0x1853_999e,
+                0xc779_3f23, 0xdc10_16bb, 0x9693_55ff, 0x7ef2_92f6, 0xcdce_4adc, 0x05e2_4416, 0x85c1_6c46, 0xd441_d37f,
+                0x57bd_6855, 0x8746_f54f, 0x9ca7_73df, 0x770b_ae22, 0x5482_8413, 0xb75e_4b19, 0x04c3_5c03, 0xbf7c_ca07,
+                0x2955_c4dd, 0x721d_b041, 0xb239_4f33, 0x03f5_1387, 0x89b7_3c9f, 0x0b17_37f3, 0x07e6_9024, 0x9231_d245,
+                0x7619_3861, 0x8815_9c15, 0xdeb5_52d9, 0xd976_7e40, 0x20c6_c0c3, 0x4281_977c, 0xf8af_e1e0, 0xd32a_0751,
+                0x3fc2_7432, 0xddf1_dcc5, 0x6858_1f34, 0x3bcd_5025, 0x0091_b2ee, 0x4aeb_6944, 0x1602_e743, 0xea09_eb58,
+                0xef0a_2a8b, 0x641e_03a5, 0xeb50_e021, 0x5c8c_cef8, 0x802f_f0b8, 0xd5e3_edfe, 0xc4dd_1b49, 0x5334_cd2a,
+                0x13f8_2d2f, 0x4745_0c20, 0x55da_fbd2, 0xbec0_c6f4, 0xb45d_7959, 0x3ad3_6e8c, 0x0aa8_ac57, 0x1a3c_8d73,
+                0xe45a_afb1, 0x9f66_4838, 0xc688_0053, 0xd003_9bbf, 0xee5f_19eb, 0xca00_41d8, 0xbbea_3aaf, 0xda62_8291,
+                0x9d5c_95d4, 0xadd5_04a6, 0xc39a_b482, 0x5e9e_14a4, 0x2be0_65f0, 0x2a13_fc3a, 0x9052_e8ec, 0xaf6f_5afc,
+            ),
+            (
+                0x519a_a8b5, 0xbb30_3da9, 0xe00e_2b10, 0xdfa6_c1db, 0x2e6b_952e, 0xee10_dc23, 0x3793_6d09, 0x1fc4_2e92,
+                0x39b2_5a9f, 0x13ff_89f4, 0xc8f5_3fea, 0x1850_0bc7, 0x95a0_379d, 0x98f7_51c2, 0x2289_c42f, 0xa21e_4098,
+                0x6f39_1f41, 0xf27e_7e58, 0x0d0d_f887, 0x4b79_d540, 0x8e84_09aa, 0x71fe_46f8, 0x688a_9b29, 0x3f08_b548,
+                0x84ab_e03a, 0x5e91_b6c1, 0xfde4_c2ae, 0x251d_0e72, 0x92d4_fee5, 0xf937_1967, 0x9175_108f, 0xe6e8_1835,
+                0x8c8c_b8ee, 0xb55a_67b3, 0xcef1_38cc, 0x8b25_6268, 0x00d8_15f5, 0xe881_0812, 0x7782_6189, 0xea73_267d,
+                0x19b9_0f8d, 0x45c3_3bb4, 0x8247_7056, 0xe177_0075, 0x0946_7aa6, 0xa7c6_f54a, 0x7976_8742, 0x61b8_6bca,
+                0xd664_4a44, 0xe33f_0171, 0xc229_fbcd, 0x41b0_8feb, 0xd190_3e30, 0x65ec_9080, 0x563d_6fbd, 0xf56d_a488,
+                0xebf6_4cd8, 0x4934_426b, 0x7c85_92fc, 0x6aca_8cf2, 0x1cea_111b, 0x3a57_ee7a, 0xace1_1c0d, 0x9942_d85e,
+                0xc461_3407, 0xfa8e_643b, 0x327f_c701, 0x4ca9_be82, 0x3352_526d, 0x2c04_7f63, 0xf3a8_f7dd, 0x1a4a_98a8,
+                0x762e_d4d1, 0x27c7_5008, 0xbdf4_97c0, 0x7a7b_84df, 0x315c_28ab, 0x801f_93e3, 0xf19b_0ca1, 0x8f14_e46a,
+                0xe48b_a333, 0x9605_e625, 0xf03e_cb60, 0x6038_5f2d, 0x9028_45ba, 0x7f96_d66f, 0x24bf_f05c, 0x2820_730b,
+                0x9471_33cb, 0xd444_828a, 0xb343_f6f1, 0x0bef_4705, 0x8da5_74f9, 0x01e2_5d6c, 0x1732_793e, 0x4f0f_7b27,
+                0x364b_7117, 0xb2d1_da77, 0xa6c5_f1e9, 0x574c_a5b1, 0x386a_3076, 0xad68_94d6, 0x1156_d7fa, 0xa48d_1d9a,
+                0x4794_c0af, 0x150c_0aa0, 0x26d3_48ac, 0x29fd_eabe, 0xa5de_de53, 0x8167_1e8e, 0x594e_e3bf, 0xa96c_56e6,
+                0x3426_a726, 0xc597_6579, 0xbc22_e5e4, 0xc100_6319, 0xdaaf_dd2a, 0xa1a1_aa83, 0x3bad_d0e7, 0xc3b1_4981,
+                0xd770_b155, 0xccd7_c693, 0x42e9_44c5, 0x03e0_064f, 0xca95_b4ef, 0x3dee_81c3, 0xfbbc_d98c, 0x1e07_e15b,
+                0x667c_e949, 0xe7d6_773f, 0x21b6_124b, 0x6b2a_6ef7, 0xd327_8a9c, 0x9a98_8304, 0x75d2_ae9b, 0xfe49_e2ff,
+                0x9bc2_4f46, 0x74cc_2cf6, 0xa313_9f36, 0x6c9e_f35a, 0x9fc1_dffe, 0x9e5f_acdc, 0xaadc_8bbb, 0x5abd_bc5f,
+                0x44b3_b390, 0xf754_efa7, 0x5fe3_bdb7, 0x4e59_c886, 0x06a4_c984, 0xa033_8878, 0xcd51_3cd7, 0x63eb_d27e,
+                0x8aba_80ad, 0x50da_144e, 0x5d9f_4e97, 0x025b_751c, 0x2d58_0200, 0xb6c0_5837, 0x580a_a15d, 0x5402_2a6e,
+                0xb41a_5415, 0x4863_fab6, 0xb0b7_9957, 0x46d0_d159, 0xdc2b_8650, 0x20a7_bb0c, 0x4a03_2974, 0xec86_36a2,
+                0x8548_f24c, 0xf6a2_bf16, 0x1088_f4b0, 0x0c2f_3a94, 0x525d_c396, 0x1406_5785, 0x2b4d_ca52, 0x08ae_ed39,
+                0xabed_fc99, 0xb1db_cf18, 0x87f8_5bbc, 0xae3a_ff61, 0x433c_cd70, 0x5b23_cc64, 0x7b45_3213, 0x5355_c545,
+                0x9318_ec0a, 0x7869_2d31, 0x0a21_693d, 0xd566_6814, 0x05fb_59d9, 0xc719_85b2, 0x2abb_8e0e, 0xcf6e_6c91,
+                0xd9cf_e7c6, 0xefe7_132c, 0x9711_ab28, 0x3ce5_2732, 0x12d5_16d2, 0x7209_a0d0, 0xd278_d306, 0x70fa_4b7b,
+                0x1d40_7dd3, 0xdb0b_eba4, 0xbfd9_7621, 0xa8be_21e1, 0x1b6f_1b66, 0x3065_0dda, 0xba7d_dbb9, 0x7df9_53fb,
+                0x9d1c_3902, 0xedf0_e8d5, 0xb874_1ae0, 0x0f24_0565, 0x62cd_438b, 0xc616_a924, 0xaf7a_96a3, 0x3536_5538,
+                0xe583_af4d, 0x7341_5eb8, 0x2317_6a47, 0xfc9c_cee8, 0x7efc_9de2, 0x695e_03cf, 0xf8ce_66d4, 0x88b4_781d,
+                0x67dd_9c03, 0x3e8f_9e73, 0xc0c9_5c51, 0xbe31_4d22, 0x55aa_0795, 0xcb1b_b011, 0xe980_fdc8, 0x9c62_b7ce,
+                0xde2d_239e, 0x042c_adf3, 0xffdf_04de, 0x5ce6_a60f, 0xd8c8_31ed, 0xb7b5_b9ec, 0xb9cb_f962, 0xe253_b254,
+                0x0735_ba1f, 0x16ac_917f, 0xdd60_7c2b, 0x64a3_35c4, 0x4015_9a7c, 0x8692_22f0, 0x6ef2_1769, 0x839d_20a5,
+                0xd03b_24c9, 0xf412_601e, 0x6d72_a243, 0x0e01_8dfd, 0x89f3_721a, 0xc94f_4134, 0x2f99_2f20, 0x4d87_253c,
+            ),
+        )
+
+        def __init__(self, data=b""):
+            self.output_words = self.__class__.output_words
+            self.digest_size = self.__class__.digest_size
+            self.chunk_size = (16 - self.output_words) * 4
+            self.h = [0] * self.output_words
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.finalized = False
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.h = list(self.h)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.finalized = self.finalized
+            return other
+
+        def update(self, data):
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            if self.finalized:
+                raise ValueError("hash object already finalized")
+            if not data:
+                return self
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            while len(self.buf) >= self.chunk_size:
+                chunk = bytes(self.buf[:self.chunk_size])
+                del self.buf[:self.chunk_size]
+                self.process_chunk(chunk)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            fmt = ">" + str(c.output_words) + "I"
+            return struct.pack(fmt, *c.h)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            if self.finalized:
+                return
+            if len(self.buf) > 0:
+                chunk = bytes(self.buf) + b"\x00" * (self.chunk_size - len(self.buf))
+                self.buf.clear()
+                self.process_chunk(chunk)
+
+            bit_len = self.msg_len * 8
+            hi = (bit_len >> 32) & 0xffff_ffff
+            lo = bit_len & 0xffff_ffff
+
+            input_words = list(self.h) + [0] * (16 - self.output_words)
+            input_words[14] = hi
+            input_words[15] = lo
+            self.h = self.hash512(input_words)
+            self.finalized = True
+            return
+
+        def process_chunk(self, chunk):
+            words = self.bytes_to_words(chunk)
+            input_words = list(self.h) + words
+            self.h = self.hash512(input_words)
+            return
+
+        def bytes_to_words(self, data):
+            words = []
+            for i in range(0, len(data), 4):
+                t0 = data[i]
+                t1 = data[i + 1]
+                t2 = data[i + 2]
+                t3 = data[i + 3]
+                w = ((t0 << 24) | (t1 << 16) | (t2 << 8) | t3) & 0xffff_ffff
+                words.append(w)
+            return words
+
+        def rotate_right32(self, x, shift):
+            x &= 0xffff_ffff
+            return ((x >> shift) | (x << (32 - shift))) & 0xffff_ffff
+
+        def hash512(self, input_words):
+            shift_table = [16, 8, 16, 24]
+            mask32 = 0xffff_ffff
+
+            b00 = input_words[0] & mask32
+            b01 = input_words[1] & mask32
+            b02 = input_words[2] & mask32
+            b03 = input_words[3] & mask32
+            b04 = input_words[4] & mask32
+            b05 = input_words[5] & mask32
+            b06 = input_words[6] & mask32
+            b07 = input_words[7] & mask32
+            b08 = input_words[8] & mask32
+            b09 = input_words[9] & mask32
+            b10 = input_words[10] & mask32
+            b11 = input_words[11] & mask32
+            b12 = input_words[12] & mask32
+            b13 = input_words[13] & mask32
+            b14 = input_words[14] & mask32
+            b15 = input_words[15] & mask32
+
+            for index in range(self.security_level):
+                s0 = self.standard_sboxes[2 * index + 0]
+                s1 = self.standard_sboxes[2 * index + 1]
+                for byte_in_word in range(4):
+                    sbe = s0[b00 & 0xff]
+                    b15 = (b15 ^ sbe) & mask32
+                    b01 = (b01 ^ sbe) & mask32
+
+                    sbe = s0[b01 & 0xff]
+                    b00 = (b00 ^ sbe) & mask32
+                    b02 = (b02 ^ sbe) & mask32
+
+                    sbe = s1[b02 & 0xff]
+                    b01 = (b01 ^ sbe) & mask32
+                    b03 = (b03 ^ sbe) & mask32
+
+                    sbe = s1[b03 & 0xff]
+                    b02 = (b02 ^ sbe) & mask32
+                    b04 = (b04 ^ sbe) & mask32
+
+                    sbe = s0[b04 & 0xff]
+                    b03 = (b03 ^ sbe) & mask32
+                    b05 = (b05 ^ sbe) & mask32
+
+                    sbe = s0[b05 & 0xff]
+                    b04 = (b04 ^ sbe) & mask32
+                    b06 = (b06 ^ sbe) & mask32
+
+                    sbe = s1[b06 & 0xff]
+                    b05 = (b05 ^ sbe) & mask32
+                    b07 = (b07 ^ sbe) & mask32
+
+                    sbe = s1[b07 & 0xff]
+                    b06 = (b06 ^ sbe) & mask32
+                    b08 = (b08 ^ sbe) & mask32
+
+                    sbe = s0[b08 & 0xff]
+                    b07 = (b07 ^ sbe) & mask32
+                    b09 = (b09 ^ sbe) & mask32
+
+                    sbe = s0[b09 & 0xff]
+                    b08 = (b08 ^ sbe) & mask32
+                    b10 = (b10 ^ sbe) & mask32
+
+                    sbe = s1[b10 & 0xff]
+                    b09 = (b09 ^ sbe) & mask32
+                    b11 = (b11 ^ sbe) & mask32
+
+                    sbe = s1[b11 & 0xff]
+                    b10 = (b10 ^ sbe) & mask32
+                    b12 = (b12 ^ sbe) & mask32
+
+                    sbe = s0[b12 & 0xff]
+                    b11 = (b11 ^ sbe) & mask32
+                    b13 = (b13 ^ sbe) & mask32
+
+                    sbe = s0[b13 & 0xff]
+                    b12 = (b12 ^ sbe) & mask32
+                    b14 = (b14 ^ sbe) & mask32
+
+                    sbe = s1[b14 & 0xff]
+                    b13 = (b13 ^ sbe) & mask32
+                    b15 = (b15 ^ sbe) & mask32
+
+                    sbe = s1[b15 & 0xff]
+                    b14 = (b14 ^ sbe) & mask32
+                    b00 = (b00 ^ sbe) & mask32
+
+                    shift = shift_table[byte_in_word]
+                    b00 = self.rotate_right32(b00, shift)
+                    b01 = self.rotate_right32(b01, shift)
+                    b02 = self.rotate_right32(b02, shift)
+                    b03 = self.rotate_right32(b03, shift)
+                    b04 = self.rotate_right32(b04, shift)
+                    b05 = self.rotate_right32(b05, shift)
+                    b06 = self.rotate_right32(b06, shift)
+                    b07 = self.rotate_right32(b07, shift)
+                    b08 = self.rotate_right32(b08, shift)
+                    b09 = self.rotate_right32(b09, shift)
+                    b10 = self.rotate_right32(b10, shift)
+                    b11 = self.rotate_right32(b11, shift)
+                    b12 = self.rotate_right32(b12, shift)
+                    b13 = self.rotate_right32(b13, shift)
+                    b14 = self.rotate_right32(b14, shift)
+                    b15 = self.rotate_right32(b15, shift)
+
+            output = []
+            output.append((input_words[0] ^ b15) & mask32)
+            output.append((input_words[1] ^ b14) & mask32)
+            output.append((input_words[2] ^ b13) & mask32)
+            output.append((input_words[3] ^ b12) & mask32)
+            if self.output_words == 4:
+                return output
+            output.append((input_words[4] ^ b11) & mask32)
+            output.append((input_words[5] ^ b10) & mask32)
+            output.append((input_words[6] ^ b09) & mask32)
+            output.append((input_words[7] ^ b08) & mask32)
+            if self.output_words == 8:
+                return output
+            raise ValueError("bad output_words")
+
+    class Snefru128(SnefruBase):
+        output_words = 4
+        digest_size = 16
+
+    class Snefru256(SnefruBase):
+        output_words = 8
+        digest_size = 32
+
     class GOST94cp(GOST94):
         sbox = [
             [0x04, 0x0a, 0x09, 0x02, 0x0d, 0x08, 0x00, 0x0e, 0x06, 0x0b, 0x01, 0x0c, 0x07, 0x0f, 0x05, 0x03],
@@ -81549,6 +83475,210 @@ class Hash:
             self.h = full[::-1]
             return
 
+    class AsconBase:
+        block_size = 8
+
+        round_constants = [
+            0x0000_0000_0000_00f0,
+            0x0000_0000_0000_00e1,
+            0x0000_0000_0000_00d2,
+            0x0000_0000_0000_00c3,
+            0x0000_0000_0000_00b4,
+            0x0000_0000_0000_00a5,
+            0x0000_0000_0000_0096,
+            0x0000_0000_0000_0087,
+            0x0000_0000_0000_0078,
+            0x0000_0000_0000_0069,
+            0x0000_0000_0000_005a,
+            0x0000_0000_0000_004b,
+        ]
+
+        init_state = (0, 0, 0, 0, 0)
+        b_rounds = 12
+        digest_size = 32
+
+        def __init__(self, data=b""):
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            self.x0, self.x1, self.x2, self.x3, self.x4 = self.init_state
+            self.buf = bytearray()
+            self.msg_len = 0
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.x0 = self.x0
+            other.x1 = self.x1
+            other.x2 = self.x2
+            other.x3 = self.x3
+            other.x4 = self.x4
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, bytes):
+                raise TypeError("data must be bytes")
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            while len(self.buf) >= self.block_size:
+                block = bytes(self.buf[:self.block_size])
+                del self.buf[:self.block_size]
+                self.absorb_block(block)
+                self.permute(self.b_rounds)
+            return self
+
+        def digest(self, length=None):
+            c = self.copy()
+            c.finalize()
+            if length is None:
+                length = c.digest_size
+            out = c.squeeze(length)
+            return out
+
+        def hexdigest(self, length=None):
+            return self.digest(length).hex()
+
+        def finalize(self):
+            m = len(self.buf)
+            if m == 0:
+                block = b"\x80" + b"\x00" * (self.block_size - 1)
+            else:
+                pad_len = self.block_size - m
+                block = bytes(self.buf) + (b"\x80" + b"\x00" * (pad_len - 1))
+            self.buf.clear()
+            self.absorb_block(block)
+            self.permute(12)
+            return
+
+        def absorb_block(self, block):
+            if len(block) != self.block_size:
+                raise ValueError("invalid block size")
+            self.x0 ^= self.bytes_to_u64(block)
+            self.x0 &= 0xffff_ffff_ffff_ffff
+            return
+
+        def squeeze(self, out_len):
+            if not isinstance(out_len, int) or out_len < 0:
+                raise ValueError("out_len must be a non-negative integer")
+            out = bytearray()
+            while len(out) < out_len:
+                out.extend(self.u64_to_bytes(self.x0))
+                self.permute(self.b_rounds)
+            return bytes(out[:out_len])
+
+        def rotr64(self, x, n):
+            x &= 0xffff_ffff_ffff_ffff
+            n &= 63
+            return ((x >> n) | ((x << (64 - n)) & 0xffff_ffff_ffff_ffff)) & 0xffff_ffff_ffff_ffff
+
+        def permute(self, rounds):
+            if rounds not in (6, 8, 12):
+                raise ValueError("invalid round count")
+            start = 12 - rounds
+            for r in range(start, 12):
+                self.x2 ^= self.round_constants[r]
+
+                x0 = self.x0
+                x1 = self.x1
+                x2 = self.x2
+                x3 = self.x3
+                x4 = self.x4
+
+                x0 ^= x4
+                x4 ^= x3
+                x2 ^= x1
+
+                t0 = (~x0) & x1
+                t1 = (~x1) & x2
+                t2 = (~x2) & x3
+                t3 = (~x3) & x4
+                t4 = (~x4) & x0
+
+                x0 ^= t1
+                x1 ^= t2
+                x2 ^= t3
+                x3 ^= t4
+                x4 ^= t0
+
+                x1 ^= x0
+                x0 ^= x4
+                x3 ^= x2
+                x2 = ~x2
+
+                x0 &= 0xffff_ffff_ffff_ffff
+                x1 &= 0xffff_ffff_ffff_ffff
+                x2 &= 0xffff_ffff_ffff_ffff
+                x3 &= 0xffff_ffff_ffff_ffff
+                x4 &= 0xffff_ffff_ffff_ffff
+
+                x0 ^= self.rotr64(x0, 19) ^ self.rotr64(x0, 28)
+                x1 ^= self.rotr64(x1, 61) ^ self.rotr64(x1, 39)
+                x2 ^= self.rotr64(x2, 1) ^ self.rotr64(x2, 6)
+                x3 ^= self.rotr64(x3, 10) ^ self.rotr64(x3, 17)
+                x4 ^= self.rotr64(x4, 7) ^ self.rotr64(x4, 41)
+
+                self.x0 = x0 & 0xffff_ffff_ffff_ffff
+                self.x1 = x1 & 0xffff_ffff_ffff_ffff
+                self.x2 = x2 & 0xffff_ffff_ffff_ffff
+                self.x3 = x3 & 0xffff_ffff_ffff_ffff
+                self.x4 = x4 & 0xffff_ffff_ffff_ffff
+            return
+
+        def bytes_to_u64(self, b):
+            if len(b) != 8:
+                raise ValueError("expected 8 bytes")
+            return int.from_bytes(b, "big")
+
+        def u64_to_bytes(self, x):
+            return int(x & 0xffff_ffff_ffff_ffff).to_bytes(8, "big")
+
+    class Ascon(AsconBase):
+        digest_size = 32
+        b_rounds = 12
+        init_state = (
+            0xee93_98aa_db67_f03d,
+            0x8bb2_1831_c60f_1002,
+            0xb48a_92db_98d5_da62,
+            0x4318_9921_b8f8_e3e8,
+            0x348f_a5c9_d525_e140,
+        )
+
+    class AsconA(AsconBase):
+        digest_size = 32
+        b_rounds = 8
+        init_state = (
+            0x0147_0194_fc65_28a6,
+            0x738e_c38a_c0ad_ffa7,
+            0x2ec8_e329_6c76_384c,
+            0xd6f6_a54d_7f52_377d,
+            0xa13c_42a2_23be_8d87,
+        )
+
+    class AsconX(AsconBase):
+        digest_size = 128
+        b_rounds = 12
+        init_state = (
+            0xb57e_273b_814c_d416,
+            0x2b51_0425_62ae_2420,
+            0x66a3_a776_8ddf_2218,
+            0x5aad_0a7a_8153_650c,
+            0x4f3e_0e32_5394_93b6,
+        )
+
+    class AsconXA(AsconBase):
+        digest_size = 128
+        b_rounds = 8
+        init_state = (
+            0x4490_6568_b77b_9832,
+            0xcd8d_6cae_5345_5532,
+            0xf7b5_2127_5642_2129,
+            0x2468_85e1_de0d_225b,
+            0xa8cb_5ce3_3449_973f,
+        )
+
     class RSHash:
         def __init__(self, data=b""):
             self.b = 378551
@@ -81753,6 +83883,404 @@ class Hash:
 
         def hexdigest(self):
             return self.digest().hex()
+
+    class JOAAT: # Jenkins One-At-A-Time
+        def __init__(self, data=b""):
+            self.hash = 0
+            if data:
+                self.update(data)
+            return
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            for c in bytes(data):
+                self.hash = (self.hash + c) & 0xffff_ffff
+                self.hash = (self.hash + (self.hash << 10)) & 0xffff_ffff
+                self.hash = (self.hash ^ (self.hash >> 6)) & 0xffff_ffff
+            return self
+
+        def digest(self):
+            h = self.hash
+            h = (h + (h << 3)) & 0xffff_ffff
+            h = (h ^ (h >> 11)) & 0xffff_ffff
+            h = (h + (h << 15)) & 0xffff_ffff
+            return h.to_bytes(4, "big")
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+    class T1HABase:
+        block_size = 32
+        digest_size = 8
+
+        mask32 = 0xffff_ffff
+        mask64 = 0xffff_ffff_ffff_ffff
+
+        prime_0 = 0xec99_bf0d_8372_caab
+        prime_1 = 0x8243_4fe9_0edc_ef39
+        prime_2 = 0xd4f0_6db9_9d67_be4b
+        prime_3 = 0xbd9c_acc2_2c6e_9571
+        prime_4 = 0x9c06_faf4_d023_e3ab
+        prime_5 = 0xc060_724a_8424_f345
+        prime_6 = 0xcb5a_f53a_e3aa_ac31
+
+        def __init__(self, data=b"", seed=0):
+            if not isinstance(data, (bytes,)):
+                raise TypeError("data must be bytes")
+            self.seed = seed & self.mask64
+            self.buf = bytearray()
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__(seed=self.seed)
+            other.buf = bytearray(self.buf)
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes,)):
+                raise TypeError("data must be bytes")
+            self.buf.extend(data)
+            return self
+
+        def digest(self):
+            return self.digest_bytes(bytes(self.buf))
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def rot32(self, x, n):
+            x &= self.mask32
+            return ((x >> n) | ((x << (32 - n)) & self.mask32)) & self.mask32
+
+        def rot64(self, x, n):
+            x &= self.mask64
+            return ((x >> n) | ((x << (64 - n)) & self.mask64)) & self.mask64
+
+        def fetch32_le(self, data, off):
+            return int.from_bytes(data[off:off + 4], "little")
+
+        def fetch64_le(self, data, off):
+            return int.from_bytes(data[off:off + 8], "little")
+
+        def tail32_le(self, data, off, tail):
+            n = tail & 3
+            if n == 0:
+                return self.fetch32_le(data, off)
+            return int.from_bytes(data[off:off + n] + b"\x00" * (4 - n), "little")
+
+        def tail64_le(self, data, off, tail):
+            n = tail & 7
+            if n == 0:
+                return self.fetch64_le(data, off)
+            return int.from_bytes(data[off:off + n] + b"\x00" * (8 - n), "little")
+
+        def mul64x64_128(self, a, b):
+            p = (a & self.mask64) * (b & self.mask64)
+            lo = p & self.mask64
+            hi = (p >> 64) & self.mask64
+            return lo, hi
+
+        def mux64(self, v, prime):
+            lo, hi = self.mul64x64_128(v, prime)
+            return lo ^ hi
+
+        def mixup64(self, a, b, v, prime):
+            lo, hi = self.mul64x64_128((b + v) & self.mask64, prime)
+            a ^= lo
+            b = (b + hi) & self.mask64
+            return a & self.mask64, b
+
+        def final64(self, a, b):
+            x = ((a + self.rot64(b, 41)) & self.mask64) * self.prime_0
+            y = ((self.rot64(a, 23) + b) & self.mask64) * self.prime_6
+            return self.mux64((x ^ y) & self.mask64, self.prime_5) & self.mask64
+
+        def mix64(self, v, p):
+            v = (v * p) & self.mask64
+            return (v ^ self.rot64(v, 41)) & self.mask64
+
+        def final_weak_avalanche(self, a, b):
+            r = self.mux64(self.rot64((a + b) & self.mask64, 17), self.prime_4)
+            r = (r + self.mix64((a ^ b) & self.mask64, self.prime_0)) & self.mask64
+            return r
+
+        def t1ha1_le(self, data, seed):
+            length = len(data)
+            a = seed & self.mask64
+            b = length & self.mask64
+            off = 0
+            tail = length
+
+            if tail > 32:
+                c = (self.rot64(tail, 17) + seed) & self.mask64
+                d = (tail ^ self.rot64(seed, 17)) & self.mask64
+                detent = tail - 31
+
+                while off < detent:
+                    w0 = self.fetch64_le(data, off + 0)
+                    w1 = self.fetch64_le(data, off + 8)
+                    w2 = self.fetch64_le(data, off + 16)
+                    w3 = self.fetch64_le(data, off + 24)
+                    off += 32
+
+                    d02 = w0 ^ self.rot64((w2 + d) & self.mask64, 17)
+                    c13 = w1 ^ self.rot64((w3 + c) & self.mask64, 17)
+                    d = (d - (b ^ self.rot64(w1, 31))) & self.mask64
+                    c = (c + (a ^ self.rot64(w0, 41))) & self.mask64
+                    b ^= (self.prime_0 * ((c13 + w2) & self.mask64)) & self.mask64
+                    a ^= (self.prime_1 * ((d02 + w3) & self.mask64)) & self.mask64
+                    a &= self.mask64
+                    b &= self.mask64
+
+                a ^= (self.prime_6 * ((self.rot64(c, 17) + d) & self.mask64)) & self.mask64
+                b ^= (self.prime_5 * ((c + self.rot64(d, 17)) & self.mask64)) & self.mask64
+                a &= self.mask64
+                b &= self.mask64
+                tail &= 31
+
+            tail_off = off
+            if tail > 24:
+                b = (b + self.mux64(self.fetch64_le(data, tail_off), self.prime_4)) & self.mask64
+                tail_off += 8
+            if tail > 16:
+                a = (a + self.mux64(self.fetch64_le(data, tail_off), self.prime_3)) & self.mask64
+                tail_off += 8
+            if tail > 8:
+                b = (b + self.mux64(self.fetch64_le(data, tail_off), self.prime_2)) & self.mask64
+                tail_off += 8
+            if tail != 0:
+                a = (a + self.mux64(self.tail64_le(data, tail_off, tail), self.prime_1)) & self.mask64
+
+            return self.final_weak_avalanche(a, b)
+
+        def t1ha2_squash(self, a, b, c, d):
+            a ^= (self.prime_6 * ((c + self.rot64(d, 23)) & self.mask64)) & self.mask64
+            b ^= (self.prime_5 * ((self.rot64(c, 19) + d) & self.mask64)) & self.mask64
+            return a & self.mask64, b & self.mask64
+
+        def t1ha2_update(self, a, b, c, d, w0, w1, w2, w3):
+            d02 = (w0 + self.rot64((w2 + d) & self.mask64, 56)) & self.mask64
+            c13 = (w1 + self.rot64((w3 + c) & self.mask64, 19)) & self.mask64
+            d ^= (b + self.rot64(w1, 38)) & self.mask64
+            c ^= (a + self.rot64(w0, 57)) & self.mask64
+            b ^= (self.prime_6 * ((c13 + w2) & self.mask64)) & self.mask64
+            a ^= (self.prime_5 * ((d02 + w3) & self.mask64)) & self.mask64
+            return a & self.mask64, b & self.mask64, c & self.mask64, d & self.mask64
+
+        def t1ha2_atonce(self, data, seed):
+            length = len(data)
+            a = seed & self.mask64
+            b = length & self.mask64
+            off = 0
+
+            if length > 32:
+                c = (self.rot64(length, 23) + ((~seed) & self.mask64)) & self.mask64
+                d = (((~length) & self.mask64) + self.rot64(seed, 19)) & self.mask64
+                detent = length - 31
+
+                while off < detent:
+                    w0 = self.fetch64_le(data, off + 0)
+                    w1 = self.fetch64_le(data, off + 8)
+                    w2 = self.fetch64_le(data, off + 16)
+                    w3 = self.fetch64_le(data, off + 24)
+                    a, b, c, d = self.t1ha2_update(a, b, c, d, w0, w1, w2, w3)
+                    off += 32
+
+                a, b = self.t1ha2_squash(a, b, c, d)
+                tail = length & 31
+            else:
+                tail = length
+
+            tail_off = off
+            if tail > 24:
+                w = self.fetch64_le(data, tail_off)
+                a, b = self.mixup64(a, b, w, self.prime_4)
+                tail_off += 8
+            if tail > 16:
+                w = self.fetch64_le(data, tail_off)
+                b, a = self.mixup64(b, a, w, self.prime_3)
+                tail_off += 8
+            if tail > 8:
+                w = self.fetch64_le(data, tail_off)
+                a, b = self.mixup64(a, b, w, self.prime_2)
+                tail_off += 8
+            if tail != 0:
+                w = self.tail64_le(data, tail_off, tail)
+                b, a = self.mixup64(b, a, w, self.prime_1)
+
+            return self.final64(a, b)
+
+        def t1ha2_final128(self, a, b, c, d):
+            a, b = self.mixup64(a, b, self.rot64(c, 41) ^ d, self.prime_0)
+            b, c = self.mixup64(b, c, self.rot64(d, 23) ^ a, self.prime_6)
+            c, d = self.mixup64(c, d, self.rot64(a, 19) ^ b, self.prime_5)
+            d, a = self.mixup64(d, a, self.rot64(b, 31) ^ c, self.prime_4)
+            hi = (c + d) & self.mask64
+            lo = (a ^ b) & self.mask64
+            return lo, hi
+
+        def t1ha2_atonce128(self, data, seed):
+            length = len(data)
+            a = seed & self.mask64
+            b = length & self.mask64
+            c = (self.rot64(length, 23) + ((~seed) & self.mask64)) & self.mask64
+            d = (((~length) & self.mask64) + self.rot64(seed, 19)) & self.mask64
+            off = 0
+
+            if length > 32:
+                detent = length - 31
+                while off < detent:
+                    w0 = self.fetch64_le(data, off + 0)
+                    w1 = self.fetch64_le(data, off + 8)
+                    w2 = self.fetch64_le(data, off + 16)
+                    w3 = self.fetch64_le(data, off + 24)
+                    a, b, c, d = self.t1ha2_update(a, b, c, d, w0, w1, w2, w3)
+                    off += 32
+                tail = length & 31
+            else:
+                tail = length
+
+            tail_off = off
+            if tail > 24:
+                w = self.fetch64_le(data, tail_off)
+                a, d = self.mixup64(a, d, w, self.prime_4)
+                tail_off += 8
+            if tail > 16:
+                w = self.fetch64_le(data, tail_off)
+                b, a = self.mixup64(b, a, w, self.prime_3)
+                tail_off += 8
+            if tail > 8:
+                w = self.fetch64_le(data, tail_off)
+                c, b = self.mixup64(c, b, w, self.prime_2)
+                tail_off += 8
+            if tail != 0:
+                w = self.tail64_le(data, tail_off, tail)
+                d, c = self.mixup64(d, c, w, self.prime_1)
+
+            return self.t1ha2_final128(a, b, c, d)
+
+    class T1HA0_32(T1HABase):
+        block_size = 16
+        digest_size = 4
+
+        prime32_0 = 0x92d7_8269
+        prime32_1 = 0xca9b_4735
+        prime32_2 = 0xa4ab_a1c3
+        prime32_3 = 0xf649_9843
+        prime32_4 = 0x86f0_fd61
+        prime32_5 = 0xca2d_a6fb
+        prime32_6 = 0xc4bb_3575
+
+        def mul32x32_64(self, a, b):
+            return (a & self.mask32) * (b & self.mask32)
+
+        def mixup32(self, a, b, v, prime):
+            p = self.mul32x32_64((b + v) & self.mask32, prime)
+            a ^= p & self.mask32
+            b = (b + ((p >> 32) & self.mask32)) & self.mask32
+            return a & self.mask32, b
+
+        def final32(self, a, b):
+            l = ((b ^ self.rot32(a, 13)) | ((a & self.mask32) << 32)) & self.mask64 # noqa: E741
+            l = (l * self.prime_0) & self.mask64 # noqa: E741
+            l ^= l >> 41 # noqa: E741
+            l &= self.mask64 # noqa: E741
+            l = (l * self.prime_4) & self.mask64 # noqa: E741
+            l ^= l >> 47 # noqa: E741
+            l &= self.mask64 # noqa: E741
+            l = (l * self.prime_6) & self.mask64 # noqa: E741
+            return l & self.mask64
+
+        def t1ha0_32le(self, data, seed):
+            length = len(data)
+            a = (self.rot32(length & self.mask32, 17) + (seed & self.mask32)) & self.mask32
+            b = ((length & self.mask32) ^ ((seed >> 32) & self.mask32)) & self.mask32
+            off = 0
+
+            if length > 16:
+                c = (~a) & self.mask32
+                d = self.rot32(b, 5) & self.mask32
+                detent = length - 15
+
+                while off < detent:
+                    w0 = self.fetch32_le(data, off + 0)
+                    w1 = self.fetch32_le(data, off + 4)
+                    w2 = self.fetch32_le(data, off + 8)
+                    w3 = self.fetch32_le(data, off + 12)
+                    off += 16
+
+                    d13 = (w1 + self.rot32((w3 + d) & self.mask32, 17)) & self.mask32
+                    c02 = (w0 ^ self.rot32((w2 + c) & self.mask32, 11)) & self.mask32
+                    d ^= self.rot32((a + w0) & self.mask32, 3)
+                    c ^= self.rot32((b + w1) & self.mask32, 7)
+                    b = (self.prime32_1 * ((c02 + w3) & self.mask32)) & self.mask32
+                    a = (self.prime32_0 * (d13 ^ w2)) & self.mask32
+
+                c = (c + a) & self.mask32
+                d = (d + b) & self.mask32
+                a ^= (self.prime32_6 * ((self.rot32(c, 16) + d) & self.mask32)) & self.mask32
+                b ^= (self.prime32_5 * ((c + self.rot32(d, 16)) & self.mask32)) & self.mask32
+                tail = length & 15
+            else:
+                tail = length
+
+            tail_off = off
+            if tail > 12:
+                v = self.fetch32_le(data, tail_off)
+                a, b = self.mixup32(a, b, v, self.prime32_4)
+                tail_off += 4
+            if tail > 8:
+                v = self.fetch32_le(data, tail_off)
+                b, a = self.mixup32(b, a, v, self.prime32_3)
+                tail_off += 4
+            if tail > 4:
+                v = self.fetch32_le(data, tail_off)
+                a, b = self.mixup32(a, b, v, self.prime32_2)
+                tail_off += 4
+            if tail != 0:
+                v = self.tail32_le(data, tail_off, tail)
+                b, a = self.mixup32(b, a, v, self.prime32_1)
+
+            return self.final32(a, b)
+
+        def digest_bytes(self, data):
+            v = self.t1ha0_32le(data, self.seed) & self.mask32
+            return struct.pack(">I", v)
+
+    class T1HA0_64(T1HABase):
+        block_size = 32
+        digest_size = 8
+
+        def digest_bytes(self, data):
+            v = self.t1ha2_atonce(data, self.seed)
+            return struct.pack(">Q", v)
+
+    class T1HA1_64(T1HABase):
+        block_size = 32
+        digest_size = 8
+
+        def digest_bytes(self, data):
+            v = self.t1ha1_le(data, self.seed)
+            return struct.pack(">Q", v)
+
+    class T1HA2_64(T1HABase):
+        block_size = 32
+        digest_size = 8
+
+        def digest_bytes(self, data):
+            v = self.t1ha2_atonce(data, self.seed)
+            return struct.pack(">Q", v)
+
+    class T1HA2_128(T1HABase):
+        block_size = 32
+        digest_size = 16
+
+        def digest_bytes(self, data):
+            lo, hi = self.t1ha2_atonce128(data, self.seed)
+            return struct.pack(">QQ", hi, lo)
 
 
 @register_command
@@ -81965,6 +84493,7 @@ class HashCommand(GenericCommand):
         yield ("Murmur3c", Hash.MurmurHash3_x86_128())
         yield ("Murmur3f", Hash.MurmurHash3_x64_128())
         yield ("FORK256", Hash.FORK256())
+        yield ("BelT Hash", Hash.BELT())
         yield ("CityHash32", Hash.CityHash32())
         yield ("CityHash64", Hash.CityHash64())
         yield ("CityHash128", Hash.CityHash128())
@@ -81983,10 +84512,25 @@ class HashCommand(GenericCommand):
         yield ("SpookyHash32", Hash.SpookyHash32())
         yield ("SpookyHash64", Hash.SpookyHash64())
         yield ("SpookyHash128", Hash.SpookyHash128())
+        yield ("HighwayHash64", Hash.HighwayHash64())
+        yield ("HighwayHash128", Hash.HighwayHash128())
+        yield ("HighwayHash256", Hash.HighwayHash256())
+        yield ("HalfTimeHash64", Hash.HalfTimeHash64())
+        yield ("HalfTimeHash128", Hash.HalfTimeHash128())
+        yield ("HalfTimeHash256", Hash.HalfTimeHash256())
+        yield ("HalfTimeHash512", Hash.HalfTimeHash512())
+        yield ("WYHash", Hash.WYHash())
+        yield ("HAS-160", Hash.HAS160())
+        yield ("Snefru128", Hash.Snefru128())
+        yield ("Snefru256", Hash.Snefru256())
         yield ("GOST94", Hash.GOST94())
         yield ("GOST94cp", Hash.GOST94cp())
         yield ("Streebog256", Hash.Streebog256())
         yield ("Streebog512", Hash.Streebog512())
+        yield ("Ascon-Hash Hash", Hash.Ascon())
+        yield ("Ascon-HashA Hash", Hash.AsconA())
+        yield ("Ascon-Xof Hash", Hash.AsconX())
+        yield ("Ascon-XofA Hash", Hash.AsconXA())
         yield ("RS Hash", Hash.RSHash())
         yield ("JS Hash", Hash.JSHash())
         yield ("PJW Hash", Hash.PJWHash())
@@ -81997,6 +84541,12 @@ class HashCommand(GenericCommand):
         yield ("DJB2 (xor)", Hash.DJB2_xor())
         yield ("DEK Hash", Hash.DEKHash())
         yield ("AP Hash", Hash.APHash())
+        yield ("JOAAT", Hash.JOAAT())
+        yield ("T1HA0_32", Hash.T1HA0_32())
+        yield ("T1HA0_64", Hash.T1HA0_64())
+        yield ("T1HA1_64", Hash.T1HA1_64())
+        yield ("T1HA2_64", Hash.T1HA2_64())
+        yield ("T1HA2_128", Hash.T1HA2_128())
         return None
 
     def make_line(self, hname, hfunc, h):
@@ -82894,6 +85444,8 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "Murmur64b": "d3162f20c6346d8c", # need int->hex(LE)
         # https://github.com/jonelo/jacksum
         "FORK256": "1ee170ee859491d46f6195d9e1f89eb6036ed081d39cbafc39e9bcce985cad47",
+        # https://hashing.tools/belt
+        "BelT Hash": "3f7355d4b29d2f47e2e832111f01ad06c3d6c9fb51f3d5718299ddc808a0947e",
         # https://asecuritysite.com/hash/smh
         "CityHash32": "ba1fe1de",
         "CityHash64": "d0e3a446f95cab20",
@@ -82914,6 +85466,23 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "SipHash128_4_8": "842457abcbb1467aabaa841d7b7e5986",
         "HalfSipHash32_2_4": "c4fc2f58",
         "HalfSipHash64_2_4": "ca03fd7a9e4e5b1b",
+        # https://asecuritysite.com/hash/smh
+        "HighwayHash64": "0b026f1ded9e24ab",
+        "HighwayHash128": "a381734b906dba499c04376ee01b8b4f",
+        "HighwayHash256": "3f8e342fdd1651aeadcc4da5ab7fca0ef690bb56a66929c5411e693b0a8dc3ae",
+        # https://asecuritysite.com/hash/smh_Halftime
+        "HalfTimeHash64": "e35a3ccbfdb1141a",
+        "HalfTimeHash128": "9cb91ba4310167e8",
+        "HalfTimeHash256": "c544a39d9a2a450a",
+        "HalfTimeHash512": "b9202baff3881d67",
+        # https://asecuritysite.com/hash/wy
+        "WYHash": "0380a909f6736d7e",
+        # https://gchq.github.io/CyberChef/
+        "HAS-160": "844dddb5575ca4ed659c371f20087044bfb9c221",
+        # https://md5hashing.net/hash/snefru
+        "Snefru128": "b3b1dc5b943d0715844079f616b6dbae",
+        # https://md5hashing.net/hash/snefru256
+        "Snefru256": "68a64887d1b87f9767e993d23012ef838b2ca846ceb36d963375e62d7384b929",
         # https://github.com/jonelo/jacksum
         "GOST94cp": "b274b62c68e20657ac10d6196cdbf471d83414e1e7de9263aeb2455f1caf4208",
         # https://asecuritysite.com/hash/gost # codespell:ignore
@@ -82921,6 +85490,17 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "Streebog256": "e50036abf764cf12777cbda188b0e5474ebdb087496b4a7b03554fcd5a51675f",
         "Streebog512": "a0967a41cc08e7fe4c997c9a4c5973f12a0db343d09050c0bf9eb95d262ed105" \
                        "1e17dac859513452e0849a98a957b1560cf7f27eba353a23f80a231885a81ffc",
+        # https://hashing.tools/ascon
+        "Ascon-Hash Hash": "e71806e7b65349943ecc9533937482b14defee112076a2fa80068611b70c74d3",
+        "Ascon-HashA Hash": "43ec1c7e4e95d084c615e23a02463143be37df8dbaec9780182bfc92170af57f",
+        "Ascon-Xof Hash": "3fe739f98bdec9105af35be44832a82b1f957112f7f0b86b603820842373a246" \
+                          "745c1f424299a5b5b4b5aa11261b7522d617b0ca1e11fcb7c5f2b51faf45fc4f" \
+                          "374a4921ad068595cb7345646905fbfc29fa895a2ea1fb848fab795bd7d6fa7d" \
+                          "be2059d3c8b9871cb438ae4a324ddf319d6d95ab2f6ae6a9e62db393b0988d3f",
+        "Ascon-XofA Hash": "6ac0dcf1eb2b323d0c176d841f4f2f6b05d99fb51b0aeb94faa901544314acf2" \
+                           "b8508a1d8b86856a1ae45b3052b490c3c0225adc11ad1e5b07bfe824a6bfbd4a" \
+                           "802f44486562bf88c9718cafbc043ed8b01766b88913942dab9519e7e21f3a73" \
+                           "40586b49b8a3c99a25d5d6fac6e7fa1b06b1cd28423e8fe7802555dde987ff1a",
         # self
         "RS Hash": "8ffbc5b0",
         # https://www.convertcase.com/hashing/js-hash-calculator
@@ -82941,6 +85521,14 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "DEK Hash": "00618c61",
         # self
         "AP Hash": "d9305920",
+        # https://md5hashing.net/hash/joaat
+        "JOAAT": "b010242c",
+        # https://asecuritysite.com/hash/smh_t1ha
+        "T1HA0_32": "ea20dace",
+        "T1HA0_64": "fc6ac5b8fd7be2a2",
+        "T1HA1_64": "ec12ff5c6a2e80f7",
+        "T1HA2_64": "fc6ac5b8fd7be2a2",
+        "T1HA2_128": "3728551b03a1300f9ec6bd85baff1c7a",
         # self
         "MD5 x2 (raw)": "e5c0442336da4b88d1bb70f1c00a8d81",
         "MD5 x3 (raw)": "455f9b73a7efe384e74d1ebab057af06",
