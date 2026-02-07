@@ -16293,6 +16293,7 @@ class CanaryCommand(GenericCommand):
         vmmap = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
         unpack = u32 if current_arch.ptrsize == 4 else u64
         sp = current_arch.sp
+        printed_flag_sp = False
         for m in vmmap:
             if not (m.permission & Permission.READ):
                 continue
@@ -16313,7 +16314,9 @@ class CanaryCommand(GenericCommand):
                 else:
                     path = m.path
                 if prev_addr <= sp <= addr:
-                    info("(Stack pointer is at {!s})".format(ProcessMap.lookup_address(sp)))
+                    if printed_flag_sp is False:
+                        info("(Stack pointer is at {!s})".format(ProcessMap.lookup_address(sp)))
+                        printed_flag_sp = True
                 if path == "[stack]":
                     info("Found at {!s} in {!r} (sp{:+#x})".format(
                         ProcessMap.lookup_address(addr), path, addr - sp,
