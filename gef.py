@@ -19758,6 +19758,7 @@ class KillThreadsCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("thread_id", metavar="THREAD_ID", nargs="*", type=int, help="the thread id (not TID) to kill.")
     parser.add_argument("-a", "--all", action="store_true", help="kill all threads except current thread.")
+    parser.add_argument("-e", "--exclude", action="append", type=int, default=[], help="the thread id not to kill.")
     parser.add_argument("-c", "--commit", action="store_true", help="commit to kill.")
     _syntax_ = parser.format_help()
 
@@ -19773,7 +19774,7 @@ class KillThreadsCommand(GenericCommand):
     @require_arch_set
     def do_invoke(self, args):
         # print tid list and exit
-        if not args.all and not args.thread_id:
+        if not args.all and not args.thread_id and not args.exclude:
             info("Non-current `Thread Id`(s) from the list are available")
             gdb.execute("context-threads -i -1")
             return
@@ -19785,8 +19786,19 @@ class KillThreadsCommand(GenericCommand):
         for th in gdb.selected_inferior().threads():
             if th.num == orig_thread.num:
                 continue
-            if args.all or (th.num in args.thread_id):
-                target_threads.append(th)
+            if args.all:
+                if th.num not in args.exclude:
+                    target_threads.append(th)
+                continue
+            elif args.thread_id:
+                if th.num in args.thread_id:
+                    if th.num not in args.exclude:
+                        target_threads.append(th)
+                continue
+            else:
+                if th.num not in args.exclude:
+                    target_threads.append(th)
+                continue
         target_threads = sorted(target_threads, key=lambda x: x.num)
         gef_print("target Thread Id(s) to kill: {}".format([th.num for th in target_threads]))
 
