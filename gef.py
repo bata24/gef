@@ -18662,14 +18662,15 @@ class SearchPatternCommand(GenericCommand):
     _aliases_ = ["xfind", "xf"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("--hex", action="store_true",
-                        help="interpret PATTERN as hex. invalid characters are ignored.")
-    parser.add_argument("--hex-regex", action="store_true",
-                        help="interpret PATTERN as hex with REGEX-style.")
-    parser.add_argument("--big", action="store_true",
+    group1 = parser.add_mutually_exclusive_group()
+    group1.add_argument("--hex", action="store_true",
+                       help="interpret PATTERN as hex. invalid characters are ignored.")
+    group1.add_argument("--hex-regex", action="store_true",
+                       help="interpret PATTERN as hex with REGEX-style. space is ignored.")
+    parser.add_argument("-d", "--disable-utf16", action="store_true",
+                        help="disable utf16 search if PATTERN is ascii string.")
+    parser.add_argument("-b", "--big", action="store_true",
                         help="interpret PATTERN as big endian if PATTERN is 0xXXXXXXXX style.")
-    parser.add_argument("--phys", action="store_true",
-                        help="treat START_ADDR as a physical address (qemu-system only).")
     parser.add_argument("-a", "--aligned", type=AddressUtil.parse_address, default=1,
                         help="alignment unit. (default: %(default)s)")
     parser.add_argument("-p", "--perm", default="r??",
@@ -18680,15 +18681,18 @@ class SearchPatternCommand(GenericCommand):
                         help="the limit of the search result.")
     parser.add_argument("-s", "--max-region-size", type=AddressUtil.parse_address, default=0x1000_0000,
                         help="maximum search region size. (default: %(default)#x; 0: infinity)")
-    parser.add_argument("-d", "--disable-utf16", action="store_true",
-                        help="disable utf16 search if PATTERN is ascii string.")
-    parser.add_argument("-k", "--kernel-only", action="store_true",
+    parser.add_argument("--phys", action="store_true",
+                        help="treat START_ADDR as a physical address (available in qemu-system).")
+    group2 = parser.add_mutually_exclusive_group()
+    group2.add_argument("-k", "--kernel-only", action="store_true",
                         help="search from kernel area (available in qemu-system).")
-    parser.add_argument("-u", "--user-only", action="store_true",
+    group2.add_argument("-u", "--user-only", action="store_true",
                         help="search from user area (available in qemu-system).")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="shows the section currently being searched.")
     parser.add_argument("-q", "--quiet", action="store_true", help="suppress warnings.")
+    parser.add_argument("-Q", "--quiet-region", action="store_true", help="suppress region information.")
+    parser.add_argument("-S", "--quiet-symbol", action="store_true", help="not shown even if symbol exists.")
     parser.add_argument("pattern", metavar="PATTERN",
                         help='search target value. "double-escaped string" or 0xXXXXXXXX style.')
     parser.add_argument("section", metavar="SECTION_OR_START_ADDR", nargs="?",
@@ -18746,6 +18750,8 @@ class SearchPatternCommand(GenericCommand):
         return False
 
     def print_section(self, section):
+        if self.args.quiet_region:
+            return
         if isinstance(section, Address):
             section = section.section
         if section is None:
@@ -18763,7 +18769,7 @@ class SearchPatternCommand(GenericCommand):
     def print_loc(self, loc):
         if self.args.aligned and loc[0] % self.args.aligned:
             return
-        h = hexdump(loc[1], 0x10, base=loc[0])
+        h = hexdump(loc[1], 0x10, base=loc[0], show_symbol=not self.args.quiet_symbol)
         gef_print("  {:s}".format(h))
         return
 
@@ -18836,6 +18842,7 @@ class SearchPatternCommand(GenericCommand):
 
                         # loop check
                         if self.check_limit():
+                            info("Limit reached, no more matches shown")
                             return locations
                 # fall through
 
@@ -18869,6 +18876,7 @@ class SearchPatternCommand(GenericCommand):
 
                 # loop check
                 if self.check_limit():
+                    info("Limit reached, no more matches shown")
                     return locations
 
             old_mem = mem
@@ -18983,6 +18991,7 @@ class SearchPatternCommand(GenericCommand):
                 err("The process is dead")
                 break
             if self.check_limit():
+                info("Limit reached, no more matches shown")
                 break
         return
 
@@ -18997,6 +19006,7 @@ class SearchPatternCommand(GenericCommand):
             else:
                 area = section_name
 
+            gef_print(titlify(""))
             info("Searching for '{:s}' in {:s}{:s}".format(
                 Color.yellowify(pattern), area, extra,
             ))
@@ -19006,7 +19016,7 @@ class SearchPatternCommand(GenericCommand):
 
     def create_patterns(self):
         if self.args.hex_regex:
-            pattern = self.args.pattern.lower()
+            pattern = self.args.pattern.lower().replace(" ", "")
             return (pattern,)
 
         # create normal pattern
