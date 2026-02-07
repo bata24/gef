@@ -18172,15 +18172,15 @@ class HijackFdCommand(GenericCommand):
     parser.add_argument("old_fd", metavar="OLD_FD", type=int, help="file descriptor number to redirect.")
     parser.add_argument("new_output", metavar="NEW_OUTPUT", type=str, help="the location redirected data is stored.")
     parser.add_argument("--fd-adjust-connect", type=int, default=0,
-                        help="use when syscall return value and the actually opened FD do not match (for qemu-user).")
+                        help="slide value when `connect` syscall result and the actual opened FD differ (for old qemu-user).")
     parser.add_argument("--fd-adjust-dup3", type=int, default=0,
-                        help="use when syscall return value and the actually opened FD do not match (for qemu-user).")
+                        help="slide value when `dup3` syscall result and the actual opened FD differ (for old qemu-user).")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
     _example_ = [
         "{0:s} 2 /tmp/gef/stderr.txt",
-        "{0:s} 2 localhost:8000",
+        "{0:s} 2 localhost:8000  # determined as the socket by the presence of `:`.",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -18311,7 +18311,7 @@ class HijackFdCommand(GenericCommand):
     @exclude_specific_arch(arch=("CRIS",))
     @require_arch_set
     def do_invoke(self, args):
-        # In one version of qemu, the file descriptor was sometimes shifted by a
+        # In old version of qemu, the file descriptor was sometimes shifted by a
         # constant value on i386 (fd returned by the syscall == actual opened fd + 80).
         # This had been hard-coded as a workaround, but the issue appears to be fixed,
         # so it should now be specified via a command argument.
