@@ -27620,14 +27620,43 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_lockdown(self):
         cfg = "Lockdown"
+
+        kversion = Kernel.kernel_version()
+        if kversion < "5.4":
+            additional = "{:s}: implemented from linux 5.4".format(cfg)
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unimplemented", "bold red"), additional))
+            return
+
         lockdown_lsm_init = Symbol.get_ksymaddr("lockdown_lsm_init")
         if lockdown_lsm_init is None:
             additional = "lockdown_lsm_init: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
             return
 
-        additional = "lockdown_lsm_init: Found"
-        gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
+        kernel_locked_down = KernelAddressHeuristicFinder.get_kernel_locked_down()
+        if kernel_locked_down is None:
+            additional = "lockdown_lsm_init: Found, kernel_locked_down: Not found"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
+            return
+
+        try:
+            val = read_int32_from_memory(kernel_locked_down)
+        except gdb.MemoryError:
+            additional = "lockdown_lsm_init: Found, kernel_locked_down: Read memory error"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
+            return
+
+        if val == 0:
+            additional = "lockdown_lsm_init: Found, kernel_locked_down: 0 (none)"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+        else:
+            if val == 1:
+                additional = "lockdown_lsm_init: Found, kernel_locked_down: 1 (integrity)"
+            elif val == 2:
+                additional = "lockdown_lsm_init: Found, kernel_locked_down: 2 (confidentiality)"
+            else:
+                additional = "lockdown_lsm_init: Found, kernel_locked_down: {:d}".format(val)
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         return
 
     def check_bpf(self):
@@ -58152,7 +58181,7 @@ class KernelAddressHeuristicFinder:
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, reg="rdi")
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, "rdi")
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, "e[a-d]x")
                 elif is_arm64():
@@ -58183,7 +58212,7 @@ class KernelAddressHeuristicFinder:
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, reg="rdi")
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, "rdi")
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, "e[a-d]x")
                 elif is_arm64():
@@ -58191,7 +58220,14 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_ldr_reg_const(res, "r0")
                 for x in g:
-                    return x
+                    if not is_valid_addr(x):
+                        continue
+                    if is_arm32():
+                        v = read_int32_from_memory(x)
+                        if is_valid_addr(v):
+                            return v
+                    else:
+                        return x
         return None
 
     @staticmethod
@@ -58246,6 +58282,34 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res, skip=1)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, skip=1)
+                for x in g:
+                    return x
+        return None
+
+    @staticmethod
+    @switch_to_intel_syntax
+    def get_kernel_locked_down():
+        # plan 1 (directly)
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            x = Symbol.get_ksymaddr("kernel_locked_down")
+            if x:
+                return x
+
+        kversion = Kernel.kernel_version()
+
+        # plan 2 (available v5.4 or later)
+        if kversion and "5.4" <= kversion:
+            addr = Symbol.get_ksymaddr("lock_kernel_down")
+            if addr:
+                res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
+                if is_x86_64():
+                    g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
+                elif is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x86_dword_ptr_ds(res)
+                elif is_arm64():
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res)
+                elif is_arm32():
+                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
                 for x in g:
                     return x
         return None
