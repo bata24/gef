@@ -79319,7 +79319,7 @@ class Hash:
 
         def digest_normalize(self, digest):
             digest = bytes.fromhex(digest)
-            return str(int.from_bytes(digest[::-1]))
+            return str(int.from_bytes(digest[::-1], "little"))
 
     class MurmurHash3_x86_128(MurmurHash3Base):
         block_size = 16
