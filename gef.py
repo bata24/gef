@@ -22265,22 +22265,23 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
         to the output list."""
         try:
             cmd = "p ((struct malloc_state*) {:#x})[0]".format(arena.addr)
-            title = titlify("[arena] ----- {:s}".format(cmd))
+            title = titlify("[arena - debuginfo] ----- {:s}".format(cmd))
             result = gdb.execute(cmd, to_string=True)
             self.out.append(title)
             self.out.extend(result.splitlines())
         except gdb.error:
-            title = titlify("[arena] ----- {:#x}".format(arena.addr))
+            title = titlify("[arena - heuristic] ----- {:#x}".format(arena.addr))
             self.out.append(title)
             self.out.append("$1 = {")
             self.out.append("  mutex = {:#x},".format(int(arena.mutex)))
             self.out.append("  flags = {:#x},".format(int(arena.flags)))
-            if get_libc_version() >= (2, 27):
+            if get_libc_version() >= (2, 27) and get_libc_version() < (2, 43):
                 self.out.append("  have_fastchunks = {:#x},".format(int(arena.have_fastchunks)))
-            self.out.append("  fastbinsY = {")
-            for i in range(int(arena.num_fastbins)):
-                self.out.append("    [{:#x}] = {:#x},".format(i, int(arena.fastbinsY[i])))
-            self.out.append("  },")
+            if get_libc_version() < (2, 43):
+                self.out.append("  fastbinsY = {")
+                for i in range(int(arena.num_fastbins)):
+                    self.out.append("    [{:#x}] = {:#x},".format(i, int(arena.fastbinsY[i])))
+                self.out.append("  },")
             self.out.append("  top = {:#x},".format(int(arena.top)))
             self.out.append("  last_remainder = {:#x},".format(int(arena.last_remainder)))
             self.out.append("  bins = {")
@@ -22313,13 +22314,13 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
 
         try:
             cmd = "p ((struct malloc_par*) {:#x})[0]".format(mp)
-            title = titlify("[mp_] ----- {:s}".format(cmd))
+            title = titlify("[mp_ - debuginfo] ----- {:s}".format(cmd))
             result = gdb.execute(cmd, to_string=True)
             self.out.append(title)
             self.out.extend(result.splitlines())
         except gdb.error:
             mp = GlibcHeap.MallocPar(mp)
-            self.out.append(titlify("[mp_] ----- {:#x}".format(mp.addr)))
+            self.out.append(titlify("[mp_ - heuristic] ----- {:#x}".format(mp.addr)))
             self.out.append("$1 = {")
             self.out.append("  trim_threshold = {:#x},".format(int(mp.trim_threshold)))
             self.out.append("  top_pad = {:#x},".format(int(mp.top_pad)))
@@ -22363,13 +22364,13 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
 
         try:
             cmd = "p ((struct _heap_info*) {:#x})[0]".format(heap_info)
-            title = titlify("[heap_info] ----- {:s}".format(cmd))
+            title = titlify("[heap_info - debuginfo] ----- {:s}".format(cmd))
             result = gdb.execute(cmd, to_string=True)
             self.out.append(title)
             self.out.extend(result.splitlines())
         except gdb.error:
             heap_info = GlibcHeap.HeapInfo(heap_info)
-            self.out.append(titlify("[heap_info] ----- {:#x}".format(heap_info.addr)))
+            self.out.append(titlify("[heap_info - heuristic] ----- {:#x}".format(heap_info.addr)))
             self.out.append("$1 = {")
             self.out.append("  ar_ptr = {:#x},".format(int(heap_info.ar_ptr)))
             self.out.append("  prev = {:#x},".format(int(heap_info.prev)))
