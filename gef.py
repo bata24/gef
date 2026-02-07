@@ -60770,7 +60770,7 @@ class KernelVersionCommand(GenericCommand):
 
 @register_command
 class KernelCmdlineCommand(GenericCommand):
-    """Display kernel cmdline string."""
+    """Display kernel command-line string."""
 
     _cmdline_ = "kcmdline"
     _category_ = "08-c. Qemu-system Cooperation - Linux Basic"
@@ -64208,7 +64208,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class KernelFilesCommand(GenericCommand):
-    """Display open files list of each process (shortcut for `ktask -quF`)."""
+    """Display open files list for each process (shortcut for `ktask -quF`)."""
 
     _cmdline_ = "kfiles"
     _category_ = "08-f. Qemu-system Cooperation - Linux Task"
@@ -64234,7 +64234,7 @@ class KernelFilesCommand(GenericCommand):
 
 @register_command
 class KernelSavedRegsCommand(GenericCommand):
-    """Display saved registers of each process (shortcut for `ktask -qur`)."""
+    """Display saved registers for each process (shortcut for `ktask -qur`)."""
 
     _cmdline_ = "kregs"
     _category_ = "08-f. Qemu-system Cooperation - Linux Task"
@@ -64260,7 +64260,7 @@ class KernelSavedRegsCommand(GenericCommand):
 
 @register_command
 class KernelSignalsCommand(GenericCommand):
-    """Display signal handlers of each process (shortcut for `ktask -qus`)."""
+    """Display signal handlers for each process (shortcut for `ktask -qus`)."""
 
     _cmdline_ = "ksighands"
     _category_ = "08-f. Qemu-system Cooperation - Linux Task"
@@ -64286,7 +64286,7 @@ class KernelSignalsCommand(GenericCommand):
 
 @register_command
 class KernelNamespacesCommand(GenericCommand):
-    """Display namespaces of each process (shortcut for `ktask -quN`)."""
+    """Display namespaces for each process (shortcut for `ktask -quN`)."""
 
     _cmdline_ = "knamespaces"
     _category_ = "08-f. Qemu-system Cooperation - Linux Task"
@@ -93487,17 +93487,17 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-m", "--mtype", dest="mtype_filter", action="append", type=int,
                         help="filter by specified mtype.")
     parser.add_argument("-p", "--pcp-index", dest="pcp_index_filter", action="append", type=int,
-                        help="filter by specified pcp_index.")
-    parser.add_argument("-P", "--only-pcp", action="store_true", help="dump only per_cpu_pages.")
-    parser.add_argument("-F", "--skip-pcp", action="store_true", help="skip dumping per_cpu_pages.")
-    parser.add_argument("--cpu", action="append", type=int, help="filter by specific cpu for per_cpu_pages.")
+                        help="filter by specified per-cpu index.")
+    parser.add_argument("-P", "--only-pcp", action="store_true", help="dump only per-cpu pages.")
+    parser.add_argument("-F", "--skip-pcp", action="store_true", help="skip dumping per-cpu pages.")
+    parser.add_argument("--cpu", action="append", type=int, help="filter by specific cpu for per-cpu pages.")
     parser.add_argument("-s", "--sort", action="store_true",
                         help="sort by page address instead of link list order of each size.")
     parser.add_argument("-S", "--sort-verbose", action="store_true",
                         help="enable --sort and add used area. filtered areas are treated as used.")
     parser.add_argument("-Q", "--skip-phys", action="store_true", help="skip virt -> phys translation.")
     parser.add_argument("-M", "--use-physmap", action="store_true",
-                        help="use physmap for virt -> phys translation to speed up (when kGDB mode, x64/arm64 only).")
+                        help="use physmap for virt -> phys translation to speed up (when KGDB mode, x64/arm64 only).")
     parser.add_argument("--MIGRATE_PCPTYPES", type=int, choices=[3, 4], default=3,
                         help="use specify value; linux: 3, android: 4 (2023~).")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
