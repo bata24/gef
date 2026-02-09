@@ -109045,6 +109045,10 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify("CR3 (Control Register 3)"))
         desc = "It contains the physical address of the base of the paging-structure hierarchy and two flags"
         bit_info = [
+            [62, "LAM_U48", "User LAM48 enable",
+             "If 1 and CR3.LAM_U57 is 0, enables LAM48 (masking of linear-address bits 62:48) for user pointers"],
+            [61, "LAM_U57", "User LAM57 enable",
+            "If 1, enables LAM57 (masking of linear-address bits 62:57) for user pointers; overrides CR3.LAM_U48"],
             [range(12, 32), None, None,
              "Base of page directory base, typically it points to PML4T if 4-level paging"],
             [range(0, 12), None, None,
@@ -109061,6 +109065,10 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify("CR4 (Control Register 4)"))
         desc = "It contains flags that architectural extensions, indicate OS or executive support"
         bit_info = [
+            [28, "LAM_SUP", "Supervisor LAM enable",
+             "If 1, enables LAM for supervisor pointers (kernel addresses)"],
+            [27, "LASS", "Linear-address-space Separation",
+             "If 1, enables LASS (linear-address-space separation)"],
             [25, "UINTR", "Enable user-mode inter-processor interrupts",
              "If 1, enable User-Interrupt Delivery"],
             [24, "PKS", "Enable protection keys for supervisor-mode pages",
@@ -109079,7 +109087,7 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
              "If 1, enable XSAVE/XSAVEC/XSAVEOPT/XSAVES/XRSTOR/XRSTORS/XSETBV/XGETBV"],
             [17, "PCIDE", "PCID Enable",
              "If 1, enable process-context identifiers (PCIDs)"],
-            [15, "FSGSBASE", "FSGSBASE Enable",
+            [16, "FSGSBASE", "FSGSBASE Enable",
              "If 1, enable RDFSBASE/RDGSBASE/WRFSBASE/WRGSBASE"],
             [14, "SMXE", "Safer Mode Extensions Enable",
              "If 1, enable Trusted Execution Technology (TXT)"],
@@ -109119,56 +109127,41 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify("CR8 (Control Register 8)"))
         desc = "Contain task priority level"
         bit_info = [
-            [range(0, 4), "TPL", "Task Priority Level"],
+            [range(0, 4), "TPL", "Task Priority Class"],
         ]
         cr8 = get_register("cr8", use_monitor=True)
         if cr8 is not None: # only access x86 64-bit mode
             self.out.extend(BitInfo("CR8", bit_info=bit_info, desc=desc).make_out(cr8))
 
         # XCR0
+        # QEMU’s monitor does not currently support displaying XCR0. Therefore, this code will not be executed.
         self.out.append(titlify("XCR0 (Extended Control Register 0)"))
         desc = "Contain task priority level"
         bit_info = [
-            [19, "APX",
-             "Extended GPRs (R16 through R31)"],
-            [18, "AMX_TILEDATA",
-             "Advanced Matrix Extensions Tile Data"],
-            [17, "AMX_TILECFG",
-             "Advanced Matrix Extensions Tile Config"],
-            [16, "HWP",
-             "Hardware P-states"],
-            [15, "LBR",
-             "Last branch record"],
-            [14, "UINTR",
-             "User interrupts"],
-            [13, "HDC",
-             "Hardware duty cycling"],
-            [12, "CET_S",
-             "Control-flow Enforcement Technology (CET) Supervisor State"],
-            [11, "CET_U",
-             "Control-flow Enforcement Technology (CET) User State"],
-            [10, "PASID",
-             "Processor Address Space ID (PASID) state"],
-            [9, "PKRU",
-             "XSAVE feature set can be used for PKRU register, which is part of the protection keys mechanism"],
-            [8, "PT",
-             "Processor Trace"],
-            [7, "Hi16_ZMM",
-             "AVX-512 enable, and XSAVE feature set can be used for the upper ZMM regs"],
-            [6, "ZMM_Hi256",
-             "AVX-512 enable, and XSAVE feature set can be used for upper-halves of the lower ZMM regs"],
-            [5, "opmask",
-             "AVX-512 enable, and XSAVE feature set can be used for AVX opmask, a.k.a. k0-k7 regs"],
-            [4, "BNDCSR",
-             "MPX enable, and XSAVE feature set can be used for BNDCFGU and BNDSTATUS regs"],
-            [3, "BNDREG",
-             "MPX enable, and XSAVE feature set can be used for BND0-3 regs"],
-            [2, "AVX",
-             "AVX enable, and XSAVE feature set can be used to manage YMM regs"],
-            [1, "SSE",
-             "XSAVE feature set enable for MXCSR and XMM regs"],
-            [0, "X87",
-             "x87 FPU/MMX State", "always 1"],
+            [19, "APX", "Intel APX",
+             "Enables Intel APX; EGPR (R16-R31) state is managed via XSAVE"],
+            [18, "AMX_TILEDATA", "Intel AMX tile data",
+             "Enables XSAVE-managed AMX tile data state (requires XCR0[18:17]=0b11 for AMX instructions)"],
+            [17, "AMX_TILECFG", "Intel AMX tile config",
+             "Enables XSAVE-managed AMX tile config state (requires XCR0[18:17]=0b11 for AMX instructions)"],
+            [9, "PKRU", "Protection Keys",
+             "Enables XSAVE-managed PKRU state"],
+            [7, "HI16_ZMM", "AVX-512 ZMM16-31",
+             "Enables XSAVE-managed upper ZMM registers ZMM16-ZMM31"],
+            [6, "ZMM_HI256", "AVX-512 upper halves",
+             "Enables XSAVE-managed upper 256 bits of ZMM0-ZMM15"],
+            [5, "OPMASK", "AVX-512 opmask",
+             "Enables XSAVE-managed opmask registers k0-k7"],
+            [4, "BNDCSR", "MPX bounds config/status",
+             "Enables XSAVE-managed BNDCFGU and BNDSTATUS (MPX)"],
+            [3, "BNDREG", "MPX bounds registers",
+             "Enables XSAVE-managed BND0-BND3 registers (MPX)"],
+            [2, "AVX", "AVX YMM state",
+             "Enables XSAVE-managed YMM state (requires SSE enabled)"],
+            [1, "SSE", "SSE XMM/MXCSR state",
+             "Enables XSAVE-managed XMM registers and MXCSR"],
+            [0, "X87", "x87 FPU/MMX state",
+             "x87 FPU/MMX state (architecturally required)"],
         ]
         xcr0 = get_register("xcr0", use_monitor=True)
         if xcr0 is not None:
