@@ -15160,7 +15160,7 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        'GDB 17 and later do not allow multiple color specifications (such as "bold red").',
+        'GDB 17 do not allow multiple color specifications (such as "bold red"). This bug had fixed in GDB 18.',
     ]
     _note_ = "\n".join(_note_)
 
