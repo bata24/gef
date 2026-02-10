@@ -1601,6 +1601,34 @@ class Permission:
         perm_str += "x" if self & Permission.EXECUTE else "-"
         return perm_str
 
+    def match(self, perm_str):
+        if not isinstance(perm_str, str):
+            return False
+        if len(perm_str) != 3:
+            return False
+
+        if perm_str[0] not in "rR-_?":
+            return False
+        if perm_str[1] not in "wR-_?":
+            return False
+        if perm_str[2] not in "xX-_?":
+            return False
+
+        if perm_str[0] in "rR" and not bool(self.value & Permission.READ):
+            return False
+        if perm_str[0] in "-_" and bool(self.value & Permission.READ):
+            return False
+        if perm_str[1] in "wW" and not bool(self.value & Permission.WRITE):
+            return False
+        if perm_str[1] in "-_" and bool(self.value & Permission.WRITE):
+            return False
+        if perm_str[2] in "xX" and not bool(self.value & Permission.EXECUTE):
+            return False
+        if perm_str[2] in "-_" and bool(self.value & Permission.EXECUTE):
+            return False
+
+        return True
+
     @staticmethod
     def from_process_maps(perm_str):
         perm = Permission()
@@ -34580,13 +34608,19 @@ class DereferenceCommand(GenericCommand):
                         help="display only valid addresses.")
     parser.add_argument("-A", "--is-not-addr", action="store_true",
                         help="display only invalid addresses.")
+    parser.add_argument("-P", "--perm", type=str,
+                        help="display only specified permission.")
     parser.add_argument("-z", "--is-zero", action="store_true",
                         help="display only zero values.")
     parser.add_argument("-Z", "--is-not-zero", action="store_true",
                         help="display only non-zero values.")
+    parser.add_argument("-m", "--mask-hits", nargs="+", action="append", type=AddressUtil.parse_address,
+                        metavar=("MASK", "VALUE"), help="display only mask hits.")
+    parser.add_argument("-M", "--no-mask-hits", nargs="+", action="append", type=AddressUtil.parse_address,
+                        metavar=("MASK", "VALUE"), help="display only mask non-hits.")
     parser.add_argument("-t", "--tag", nargs=2, action="append", metavar=("IDX", "TAG"),
                         help="display with tags.")
-    parser.add_argument("-T", "--tag-offset", type=int, default=0,
+    parser.add_argument("-T", "--tag-offset", type=AddressUtil.parse_address, default=0,
                         help="the slide offset of all tag positions.")
     parser.add_argument("-r", "--reverse", action="store_true",
                         help="display in reverse order line by line.")
@@ -34596,9 +34630,9 @@ class DereferenceCommand(GenericCommand):
                         help="display with uniq.")
     parser.add_argument("-i", "--interval", type=AddressUtil.parse_address, default=1,
                         help="the line number of the interval for showing.")
-    parser.add_argument("-d", "--depth", type=int, default=1,
+    parser.add_argument("-d", "--depth", type=AddressUtil.parse_address, default=1,
                         help="depth of recursive. (default: %(default)s)")
-    parser.add_argument("-D", "--depth-nb-lines", type=int, default=4,
+    parser.add_argument("-D", "--depth-nb-lines", type=AddressUtil.parse_address, default=4,
                         help="NB_LINES when recursive. (default: %(default)s)")
     parser.add_argument("-p", "--phys", action="store_true",
                         help="treat LOCATION as a physical address. (qemu-system only)")
@@ -34868,6 +34902,40 @@ class DereferenceCommand(GenericCommand):
                     if v == 0:
                         continue
 
+                # mask hits filtering
+                if self.args.mask_hits is not None:
+                    v = self.read_int_from_memory(current_address)
+                    hit = False
+                    for m in self.args.mask_hits:
+                        masked = v & m[0]
+                        if (len(m) == 1 and masked != 0) or (len(m) != 1 and masked in m[1:]):
+                            hit = True
+                            break
+                    if not hit:
+                        continue
+
+                # mask no-hits filtering
+                if self.args.no_mask_hits is not None:
+                    v = self.read_int_from_memory(current_address)
+                    hit = False
+                    for m in self.args.no_mask_hits:
+                        masked = v & m[0]
+                        if (len(m) == 1 and masked == 0) or (len(m) != 1 and masked not in m[1:]):
+                            hit = True
+                            break
+                    if not hit:
+                        continue
+
+                # permission filtering
+                if self.args.perm is not None:
+                    v = self.read_int_from_memory(current_address)
+                    try:
+                        pm = ProcessMap.lookup_address(v)
+                        if not pm.section.permission.match(self.args.perm):
+                            continue
+                    except Exception:
+                        continue
+
                 # tags
                 if has_tag:
                     tag = self.tags_dict.get(idx, "")
@@ -34938,6 +35006,21 @@ class DereferenceCommand(GenericCommand):
         if (args.slab_contains or args.slab_contains_unaligned) and args.phys:
             err("Unsupported option pairs")
             return
+
+        # perm
+        if args.perm:
+            if len(args.perm) != 3:
+                err("Invalid permission length")
+                return
+            if args.perm[0] not in "rR-_?":
+                err("Invalid permission")
+                return
+            if args.perm[1] not in "wW-_?":
+                err("Invalid permission")
+                return
+            if args.perm[2] not in "xX-_?":
+                err("Invalid permission")
+                return
 
         # tags
         self.tags_dict = {}
