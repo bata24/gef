@@ -101283,7 +101283,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class CageCommand(GenericCommand, BufferingOutput):
-    """Display v8 (especially d8) ubercage area."""
+    """Display v8 and d8 ubercage area."""
 
     _cmdline_ = "cage"
     _category_ = "09-e. Misc - V8"
@@ -101325,7 +101325,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return addr
 
         tls = current_arch.get_tls()
-        for i in range(256):
+        for i in range(256 * 4): # heuristic; d8: 256, chromium: 1024
             try:
                 x = read_int_from_memory(tls - current_arch.ptrsize * i)
             except gdb.MemoryError:
@@ -101367,14 +101367,108 @@ class CageCommand(GenericCommand, BufferingOutput):
         if not isolate:
             return None
 
-        candidates = []
+        """
+        gef> dt 'v8::internal::IsolateData'
+        struct v8::internal::IsolateData {
+            /* offset | size   */
+            /*        | 0x0008 */    const intptr_t kIsolateRootBias;
+            /* 0x0000 | 0x0008 */    const v8::internal::Address cage_base_;
+            /* 0x0008 | 0x0040 */    v8::internal::StackGuard stack_guard_;
+            /* 0x0048 | 0x0001 */    uint8_t is_marking_flag_;
+            /* 0x0049 | 0x0001 */    uint8_t is_minor_marking_flag_;
+            /* 0x004a | 0x0001 */    uint8_t is_shared_space_isolate_flag_;
+            /* 0x004b | 0x0001 */    uint8_t uses_shared_heap_flag_;
+            /* 0x004c | 0x0001 */    v8::base::Flags<...> execution_mode_;
+            /* 0x004d | 0x0001 */    uint8_t stack_is_iterable_;
+            /* 0x004e | 0x0001 */    uint8_t error_message_param_;
+            /* 0x004f | 0x0001 */    uint8_t [1] tables_alignment_padding_;
+            /* 0x0050 | 0x0008 */    int32_t * regexp_static_result_offsets_vector_;
+            /* 0x0058 | 0x0038 */    v8::internal::Address [7] builtin_tier0_entry_table_;
+            /* 0x0090 | 0x0038 */    v8::internal::Address [7] builtin_tier0_table_;
+            /* 0x00c8 | 0x0018 */    v8::internal::LinearAllocationArea new_allocation_info_;
+            /* 0x00e0 | 0x0018 */    v8::internal::LinearAllocationArea old_allocation_info_;
+            /* 0x00f8 | 0x0028 */    v8::internal::Address [5] fast_c_call_alignment_padding_;
+            /* 0x0120 | 0x0010 */    struct {...} ;
+            /* 0x0130 | 0x0008 */    v8::internal::Address fast_api_call_target_;
+            /* 0x0138 | 0x0008 */    size_t long_task_stats_counter_;
+            /* 0x0140 | 0x00f0 */    v8::internal::ThreadLocalTop thread_local_top_;
+            /* 0x0230 | 0x0018 */    v8::internal::HandleScopeData handle_scope_data_;
+            /* 0x0248 | 0x0020 */    void *[4] embedder_data_;
+            /* 0x0268 | 0x0030 */    v8::internal::ExternalPointerTable external_pointer_table_;
+            /* 0x0298 | 0x0008 */    v8::internal::ExternalPointerTable * shared_external_pointer_table_;
+            /* 0x02a0 | 0x0030 */    v8::internal::CppHeapPointerTable cpp_heap_pointer_table_;
+            /* 0x02d0 | 0x0008 */    const v8::internal::Address trusted_cage_base_;
+            /* 0x02d8 | 0x0030 */    v8::internal::TrustedPointerTable trusted_pointer_table_;
+            /* 0x0308 | 0x0008 */    v8::internal::TrustedPointerTable * shared_trusted_pointer_table_;
+            /* 0x0310 | 0x0008 */    v8::internal::TrustedPointerPublishingScope * trusted_pointer_publishing_scope_;
+            /* 0x0318 | 0x0008 */    const v8::internal::Address code_pointer_table_base_address_;
+            /* 0x0320 | 0x0008 */    v8::internal::Address api_callback_thunk_argument_;
+            /* 0x0328 | 0x0008 */    v8::internal::Address js_dispatch_table_base_;
+            /* 0x0330 | 0x0008 */    v8::internal::Address regexp_exec_vector_argument_;
+            /* 0x0338 | 0x0008 */    v8::internal::Tagged<...> continuation_preserved_embedder_data_;
+            /* 0x0340 | 0x23b8 */    v8::internal::RootsTable roots_table_;
+            /* 0x26f8 | 0x3320 */    v8::internal::ExternalReferenceTable external_reference_table_;
+            /* 0x5a18 | 0x49b8 */    v8::internal::Address [2359] builtin_entry_table_;
+            /* 0xa3d0 | 0x49b8 */    v8::internal::Address [2359] builtin_table_;
+            /* 0xed88 | 0x0008 */    v8::internal::wasm::StackMemory * active_stack_;
+            /* 0xed90 | 0x0008 */    v8::internal::Tagged<...> active_suspender_;
+            /* 0xed98 | 0x0004 */    int32_t date_cache_stamp_;
+            /* 0xed9c | 0x0001 */    uint8_t is_date_cache_used_;
+            /* 0xed9d | 0x0003 */    uint8_t [3] raw_arguments_padding_;
+            /* 0xeda0 | 0x0010 */    v8::internal::IsolateData::RawArgument [2] raw_arguments_;
+            /* 0xedb0 | 0x0000 */    uint8_t [0] trailing_padding_;
+        } // total: 0xedb0 bytes
+        gef>
+
+        [d8]
+        gef> telescope 0x555555857000 256 -M 0xfff -P r__ -n \
+                -t 0 cage_base_ \
+                -t 77 external_pointer_table_.base \
+                -t 84 cpp_heap_pointer_table_.base \
+                -t 90 trusted_cage_base_ \
+                -t 91 trusted_pointer_table_ \
+                -t 99 code_pointer_table_base_address_ \
+                -t 101 js_dispatch_table_base_
+              0x555555857000|+0x0000|+000: cage_base_                      : 0x00001adc00000000  ->  0x0000000000081140
+              0x5555558570d8|+0x00d8|+027:                                 : 0x00001adc001c0000  ->  0x0000000000081140
+              0x5555558570f0|+0x00f0|+030:                                 : 0x00001adc00080000  ->  0x0000000000081140
+              0x555555857268|+0x0268|+077: external_pointer_table_.base    : 0x00007fff4c000000  ->  0x0000000000000000
+              0x5555558572a0|+0x02a0|+084: cpp_heap_pointer_table_.base    : 0x00007fff2c000000  ->  0x0000000000000000
+              0x5555558572d8|+0x02d8|+091: trusted_pointer_table_          : 0x00007fff28000000  ->  0x0000000000000000
+              0x555555857318|+0x0318|+099: code_pointer_table_base_address_: 0x00007fffa4000000  ->  0x0000000000000000
+              0x555555857328|+0x0328|+101: js_dispatch_table_base_         : 0x00007fff94000000  ->  0x0000000000000000
+        gef>
+
+        [chromium]
+        gef> telescope 0x3ea4004a4000 256 -M 0xfff -P r__ -n \
+                -t 0 cage_base_ \
+                -t 77 external_pointer_table_.base \
+                -t 84 cpp_heap_pointer_table_.base \
+                -t 90 trusted_cage_base_ \
+                -t 91 trusted_pointer_table_ \
+                -t 99 code_pointer_table_base_address_ \
+                -t 100 js_dispatch_table_base_
+              0x3ea4004a4000|+0x0000|+000: cage_base_                      : 0x0000321700000000  ->  0x0000000000000000
+              0x3ea4004a4268|+0x0268|+077: external_pointer_table_.base    : 0x0000720dbb154000  ->  0x0000000000000000
+              0x3ea4004a42a0|+0x02a0|+084: cpp_heap_pointer_table_.base    : 0x0000720d9b154000  ->  0x0000000000000000
+              0x3ea4004a42d8|+0x02d8|+091: trusted_pointer_table_          : 0x0000720d97154000  ->  0x0000000000000000
+              0x3ea4004a4318|+0x0318|+099: code_pointer_table_base_address_: 0x0000720de3154000  ->  0x0000000000000000
+              0x3ea4004a4320|+0x0320|+100: js_dispatch_table_base_         : 0x0000720d87154000  ->  0x0000000000000000
+        gef>
+        """
+
+        # In d8 it is aligned to 0x100_0000 bytes.
+        candidates_z_ffffff = []
+        # In chromium it is aligned to 0x1000 bytes.
+        candidates_z_fff = []
+
         for i in range(256):
             addr = isolate + current_arch.ptrsize * i
             try:
                 value = read_int_from_memory(addr)
             except gdb.MemoryError:
                 return []
-            if value & 0xff_ffff:
+            if value & 0xfff:
                 continue
             if not is_valid_addr(value):
                 continue
@@ -101384,10 +101478,13 @@ class CageCommand(GenericCommand, BufferingOutput):
                     continue
             except Exception:
                 continue
-            candidates.append(value)
-        if len(candidates) != 6:
-            warn("len(candidates) != 6")
-        return candidates
+            if value & 0xff_ffff == 0:
+                candidates_z_ffffff.append(value)
+            candidates_z_fff.append(value)
+
+        if len(candidates_z_ffffff) >= 6:
+            return candidates_z_ffffff
+        return candidates_z_fff
 
     @Cache.cache_until_next
     def get_external_pointer_table_base(self, force_heuristic=False):
@@ -101803,7 +101900,7 @@ class CageCommand(GenericCommand, BufferingOutput):
                     pass
 
             # known already entry filtering
-            if entry.path:
+            if entry.path and not entry.path.startswith("[anon:v8"):
                 if args.vvverbose:
                     self.dump_entry(entry, "")
                 continue
