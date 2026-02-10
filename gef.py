@@ -101432,7 +101432,7 @@ class CageCommand(GenericCommand, BufferingOutput):
 
     @Cache.cache_until_next
     def get_code_range_base(self, force_heuristic=False):
-        sym = "'v8::internal::g_current_isolate_'->heap().code_range_.base_"
+        sym = "'v8::internal::g_current_isolate_'->heap_.code_range_.base_"
         addr = self.get_sym_addr(sym, force_heuristic)
         if addr:
             return addr
@@ -101459,7 +101459,7 @@ class CageCommand(GenericCommand, BufferingOutput):
 
     @Cache.cache_until_next
     def get_code_range_size(self, force_heuristic=False):
-        sym = "'v8::internal::g_current_isolate_'->heap().code_range_.size_"
+        sym = "'v8::internal::g_current_isolate_'->heap_.code_range_.size_"
         value = self.get_sym_value(sym, force_heuristic)
         if value:
             return value
