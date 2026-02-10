@@ -101773,9 +101773,38 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
     _category_ = "09-e. Misc - V8"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use map cache.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
+
+    _note_ = [
+        "Simplified built-in maps structure:",
+        "",
+        "                        +-cage-------------+",
+        "                        | +-ro_space-----+ |",
+        "+-glibc-heap-+          | | ...          | |",
+        "| ...        |          | | ...          | |",
+        "| *map       |----------->| map          | |",
+        "| *map       |----------->| map          | |",
+        "| *map1      |----------->| map1         |<----+",
+        "| *map       |----------->| map          | |   |",
+        "| *map       |----------->| map          | |   |",
+        "| ...        |          | | ...          | |   + cage_base",
+        "+------------+          | | ...          | |   |",
+        "                        | +-old_space----+ |   |",
+        "                        | | ...          | |   |",
+        "                        | | +0x10: ofs   |-----+",
+        "                        | | ...          | |",
+        "                        | +--------------+ |",
+        "                        | | ...          | |",
+        "                        | +--------------+ |",
+        "                        | | ...          | |",
+        "                        | +--------------+ |",
+        "                        | ...              |",
+        "                        +------------------+",
+    ]
+    _note_ = "\n".join(_note_)
 
     def redirect_stdout(self):
         syscall_table = get_syscall_table()
@@ -101860,6 +101889,17 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
             err("Could not find wanted maps")
             return
 
+        """
+        0x555555859178|+0x0000|+000: 0x000011b7000013e5  ->  0xa54b000013000004  <- cage_base + 0x10
+        0x555555859180|+0x0008|+001: 0x000011b70000140d  ->  0xa64b000003000004
+        0x555555859188|+0x0010|+002: 0x000011b700001435  ->  0xa74b000008000004
+        0x555555859190|+0x0018|+003: 0x000011b70000145d  ->  0xa84b000004000004
+        0x555555859198|+0x0020|+004: 0x000011b700001485  ->  0xa94b000003000004
+        0x5555558591a0|+0x0028|+005: 0x000011b7000014ad  ->  0xaa4b000003000004
+        0x5555558591a8|+0x0030|+006: 0x000011b7000014d5  ->  0xab4b000003000004
+        0x5555558591b0|+0x0038|+007: 0x000011b7000014fd  ->  0xac4b000002000004
+        """
+
         # glibc heap contains a array of addresses of v8 heap objects
         # find the top of the array
         cage_mask = cage_base & 0xffff_ffff_0000_0000
@@ -101882,12 +101922,17 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
             eidx += 1
 
         # dump
-        self.redirect_stdout()
-        tqdm = GefUtil.get_tqdm()
-        for idx in tqdm(range(sidx, eidx), leave=False):
-            v = heap_contents[idx]
-            gdb.execute("v8 {:#x}".format(v), to_string=True)
-        self.revert_stdout()
+        try:
+            # The v8 command simply invokes V8's own dump functions via an inferior function call.
+            # The output is printed to stdout, but since it is not a GDB command, GDB cannot capture that output directly.
+            # Therefore, GEF temporarily redirect stdout to collect the results.
+            self.redirect_stdout()
+            tqdm = GefUtil.get_tqdm()
+            for idx in tqdm(range(sidx, eidx), leave=False):
+                v = heap_contents[idx]
+                gdb.execute("v8 {:#x}".format(v), to_string=True)
+        finally:
+            self.revert_stdout()
         return
 
     def list_maps(self, region, cage_base):
@@ -102378,9 +102423,11 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
 
             # dump details
             if (self.args.verbose and "STRING" in instance_name) or self.args.vverbose:
-                self.redirect_stdout()
-                gdb.execute("v8 {:#x}".format(addr | 1), to_string=True)
-                self.revert_stdout()
+                try:
+                    self.redirect_stdout()
+                    gdb.execute("v8 {:#x}".format(addr | 1), to_string=True)
+                finally:
+                    self.revert_stdout()
                 content = open(self.temp_output_path).read()
                 if not content:
                     self.warn_add_out("No content; Something is wrong")
