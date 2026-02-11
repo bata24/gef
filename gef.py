@@ -101283,7 +101283,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class CageCommand(GenericCommand, BufferingOutput):
-    """Display v8 and d8 ubercage area."""
+    """Display v8 (Chromium and d8) ubercage area."""
 
     _cmdline_ = "cage"
     _category_ = "09-e. Misc - V8"
@@ -101947,7 +101947,7 @@ class CageCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class V8ListMapsCommand(GenericCommand, BufferingOutput):
-    """List v8 (especially d8) built-in maps."""
+    """List v8 (Chromium and d8) built-in maps."""
 
     _cmdline_ = "v8-list-maps"
     _category_ = "09-e. Misc - V8"
@@ -101961,60 +101961,77 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
     _note_ = [
         "Simplified built-in maps structure:",
         "",
-        "                        +-cage-------------+",
-        "                        | +-ro_space-----+ |",
-        "+-glibc-heap-+          | | ...          | |",
-        "| ...        |          | | ...          | |",
-        "| *map       |----------->| map          | |",
-        "| *map       |----------->| map          | |",
-        "| *map1      |----------->| map1         |<----+",
-        "| *map       |----------->| map          | |   |",
-        "| *map       |----------->| map          | |   |",
-        "| ...        |          | | ...          | |   + cage_base",
-        "+------------+          | | ...          | |   |",
-        "                        | +-old_space----+ |   |",
-        "                        | | ...          | |   |",
-        "                        | | +0x10: ofs   |-----+",
-        "                        | | ...          | |",
-        "                        | +--------------+ |",
-        "                        | | ...          | |",
-        "                        | +--------------+ |",
-        "                        | | ...          | |",
-        "                        | +--------------+ |",
-        "                        | ...              |",
-        "                        +------------------+",
+        "                             +-cage-------------+",
+        "chromium: partition-alloc    | +-ro_space-----+ |",
+        "+-d8: glibc-heap-+           | | ...          | |",
+        "| ...            |           | | ...          | |",
+        "| *map           |------------>| map          | |",
+        "| *map           |------------>| map          | |",
+        "| *map1          |------------>| map1         |<----+",
+        "| *map           |------------>| map          | |   |",
+        "| *map           |------------>| map          | |   |",
+        "| ...            |           | | ...          | |   + cage_base",
+        "+----------------+           | | ...          | |   |",
+        "                             | +-old_space----+ |   |",
+        "                             | | ...          | |   |",
+        "                             | | +0x10: ofs   |-----+",
+        "                             | | ...          | |",
+        "                             | +--------------+ |",
+        "                             | | ...          | |",
+        "                             | +--------------+ |",
+        "                             | | ...          | |",
+        "                             | +--------------+ |",
+        "                             | ...              |",
+        "                             +------------------+",
+        "",
+        "For Chromium: this command needs `--no-sandbox` to bypass `seccomp`.",
+        "Also, since it uses V8 commands internally, `_v8_internal_Print_Object` must be resolvable.",
     ]
     _note_ = "\n".join(_note_)
 
-    def redirect_stdout(self):
+    @staticmethod
+    def redirect_stdout(output_path):
         syscall_table = get_syscall_table()
 
         # dup
         ret = ExecSyscall(syscall_table.name_table["dup"].nr, [1]).exec_code()
-        self.stdout_oldfd = ret["reg"][current_arch.return_register]
+        stdout_oldfd = ret["reg"][current_arch.return_register]
 
         # open
-        gdb.execute("patch string $sp '{:s}\\x00'".format(self.output_path), to_string=True)
+        gdb.execute("patch string $sp '{:s}\\x00'".format(output_path), to_string=True)
         flags = 0o100 | 0o1 | 0o1000 # O_CREAT | O_WRONLY | O_TRUNC
         ret = ExecSyscall(syscall_table.name_table["open"].nr, [current_arch.sp, flags, 0o666]).exec_code()
         file_fd = ret["reg"][current_arch.return_register]
         gdb.execute("patch revert 0", to_string=True)
+
+        def u2i(x):
+            x = struct.pack("<Q", x & 0xffff_ffff_ffff_ffff)
+            return struct.unpack("<q", x)[0]
+
+        if u2i(file_fd) < 0:
+            # fail, revert dup
+            ExecSyscall(syscall_table.name_table["dup2"].nr, [stdout_oldfd, 1]).exec_code()
+            return None
 
         # dup2
         ExecSyscall(syscall_table.name_table["dup2"].nr, [file_fd, 1]).exec_code()
 
         # close
         ExecSyscall(syscall_table.name_table["close"].nr, [file_fd]).exec_code()
-        return
+        return stdout_oldfd
 
-    def revert_stdout(self):
+    @staticmethod
+    def revert_stdout(stdout_oldfd):
+        if stdout_oldfd is None:
+            return
+
         syscall_table = get_syscall_table()
 
         # dup2
-        ExecSyscall(syscall_table.name_table["dup2"].nr, [self.stdout_oldfd, 1]).exec_code()
+        ExecSyscall(syscall_table.name_table["dup2"].nr, [stdout_oldfd, 1]).exec_code()
 
         # close
-        ExecSyscall(syscall_table.name_table["close"].nr, [self.stdout_oldfd]).exec_code()
+        ExecSyscall(syscall_table.name_table["close"].nr, [stdout_oldfd]).exec_code()
         return
 
     @staticmethod
@@ -102044,6 +102061,32 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
             return int(start, 16)
         return None
 
+    def get_heap_contents(self, map1):
+        maps = ProcessMap.get_process_maps()
+        pa_maps = [m for m in maps if m.path == "[anon:partition_alloc]"]
+        if pa_maps:
+            # get partition-alloc (for chromium)
+            for m in pa_maps:
+                if m.permission.value != Permission.READ | Permission.WRITE:
+                    continue
+                heap_contents = read_memory(m.page_start, m.size)
+                heap_contents = slice_unpack(heap_contents, current_arch.ptrsize)
+                if map1 in heap_contents:
+                    break
+            else:
+                err("Could not find the partition-alloc heap")
+                return None
+        else:
+            # get glibc heap (for d8)
+            heap_base = HeapbaseCommand.heap_base()
+            if not heap_base:
+                err("Could not find the glibc heap")
+                return None
+            heap_section = ProcessMap.lookup_address(heap_base).section
+            heap_contents = read_memory(heap_base, heap_section.size)
+            heap_contents = slice_unpack(heap_contents, current_arch.ptrsize)
+        return heap_contents
+
     def do_list_maps(self, region, cage_base):
         # old_space+0x10 has heap_object
         ofs = read_int32_from_memory(region + 0x10)
@@ -102052,15 +102095,10 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
             err("Memory access error")
             return
 
-        # get glibc heap content
-        heap_base = HeapbaseCommand.heap_base()
-        if not heap_base:
-            err("Could not find the heap")
+        # get heap contents
+        heap_contents = self.get_heap_contents(map1)
+        if heap_contents is None:
             return
-
-        heap_section = ProcessMap.lookup_address(heap_base).section
-        heap_contents = read_memory(heap_base, heap_section.size)
-        heap_contents = slice_unpack(heap_contents, current_arch.ptrsize)
 
         # get reference index (from glibc heap)
         try:
@@ -102106,13 +102144,16 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
             # The v8 command simply invokes V8's own dump functions via an inferior function call.
             # The output is printed to stdout, but since it is not a GDB command, GDB cannot capture that output directly.
             # Therefore, GEF temporarily redirect stdout to collect the results.
-            self.redirect_stdout()
+            stdout_oldfd = None
+            stdout_oldfd = V8ListMapsCommand.redirect_stdout(self.output_path)
+            if stdout_oldfd is None:
+                raise RuntimeError("Failed to redirect: {:s}".format(self.output_path))
             tqdm = GefUtil.get_tqdm()
             for idx in tqdm(range(sidx, eidx), leave=False):
                 v = heap_contents[idx]
                 gdb.execute("v8 {:#x}".format(v), to_string=True)
         finally:
-            self.revert_stdout()
+            V8ListMapsCommand.revert_stdout(stdout_oldfd)
         return
 
     def list_maps(self, region, cage_base):
@@ -102153,7 +102194,7 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
-    """Dump v8 (especially d8) heap objects in each space."""
+    """Dump v8 (Chromium and d8) heap objects in each space."""
 
     _cmdline_ = "v8-dump-space"
     _category_ = "09-e. Misc - V8"
@@ -102172,41 +102213,11 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     _note_ = [
-        "It only works with the debug build of d8.",
+        "It only works with the debug build of d8 or Chromium.",
         "Since many parts are detected heuristically and testing is insufficient,",
         "it is highly likely that it will not work depending on the version of v8.",
     ]
     _note_ = "\n".join(_note_)
-
-    def redirect_stdout(self):
-        syscall_table = get_syscall_table()
-
-        # dup
-        ret = ExecSyscall(syscall_table.name_table["dup"].nr, [1]).exec_code()
-        self.stdout_oldfd = ret["reg"][current_arch.return_register]
-
-        # open
-        gdb.execute("patch string $sp '{:s}\\x00'".format(self.temp_output_path), to_string=True)
-        flags = 0o100 | 0o1 | 0o1000 # O_CREAT | O_WRONLY | O_TRUNC
-        ret = ExecSyscall(syscall_table.name_table["open"].nr, [current_arch.sp, flags, 0o666]).exec_code()
-        file_fd = ret["reg"][current_arch.return_register]
-        gdb.execute("patch revert 0", to_string=True)
-
-        # dup2
-        ExecSyscall(syscall_table.name_table["dup2"].nr, [file_fd, 1]).exec_code()
-
-        # close
-        ExecSyscall(syscall_table.name_table["close"].nr, [file_fd]).exec_code()
-        return
-
-    def revert_stdout(self):
-        syscall_table = get_syscall_table()
-        # dup2
-        ExecSyscall(syscall_table.name_table["dup2"].nr, [self.stdout_oldfd, 1]).exec_code()
-
-        # close
-        ExecSyscall(syscall_table.name_table["close"].nr, [self.stdout_oldfd]).exec_code()
-        return
 
     def get_target_regions(self):
         res = gdb.execute("cage --no-pager", to_string=True)
@@ -102264,6 +102275,8 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
         return
 
     def append_instance_type_dict(self, instance_type, type_name):
+        self.instance_type_dic[instance_type] = type_name
+
         with open(self.instace_type_cache_path, "a") as f:
             f.write("{:d}={:s}\n".format(instance_type, type_name))
         return
@@ -102280,19 +102293,37 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             return self.instance_type_dic[instance_type]
 
         # slow path
-        self.redirect_stdout()
-        gdb.execute("v8 {:#x}".format(map_addr | 1), to_string=True)
-        self.revert_stdout()
-        map_content = open(self.temp_output_path).read()
-        r = re.search(r"- type: (.+)", map_content)
-        if r:
-            type_name = r.group(1)
-            self.instance_type_dic[instance_type] = type_name
-            # save to cache file
-            self.append_instance_type_dict(instance_type, type_name)
+        try:
+            stdout_oldfd = None
+            stdout_oldfd = V8ListMapsCommand.redirect_stdout(self.output_path)
+            if stdout_oldfd is None:
+                raise RuntimeError("Failed to redirect: {:s}".format(self.output_path))
+            gdb.execute("v8 {:#x}".format(map_addr | 1), to_string=True)
+        finally:
+            V8ListMapsCommand.revert_stdout(stdout_oldfd)
+
+        map_content = open(self.output_path).read()
+        if V8Command.is_chromium():
+            # 0x06c300000475 <MetaMap (0x06c30000002d <null>)>
+            r = re.search(r"<MetaMap ", map_content)
+            if r:
+                type_name = "MAP_TYPE"
+                self.append_instance_type_dict(instance_type, type_name)
+                return type_name
+
+            # 0x06c30000049d <Map[28](ODDBALL_TYPE)>
+            r = re.search(r"\(([A-Z_]+?)\)>$", map_content)
+            if r:
+                type_name = r.group(1)
+                self.append_instance_type_dict(instance_type, type_name)
+                return type_name
         else:
-            type_name = "???"
-        return type_name
+            r = re.search(r"- type: (.+)", map_content) # for d8
+            if r:
+                type_name = r.group(1)
+                self.append_instance_type_dict(instance_type, type_name)
+                return type_name
+        return "???"
 
     def get_object_size(self, addr, map_addr, cage_base, area_end):
         """get header size and variable size"""
@@ -102454,10 +102485,15 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             return 0x14, length * 4
         elif instance_name == "SCOPE_INFO_TYPE":
             # The logic is very complicated, so the v8 command is used instead.
-            self.redirect_stdout()
-            gdb.execute("v8 {:#x}".format(addr | 1), to_string=True)
-            self.revert_stdout()
-            content = open(self.temp_output_path).read()
+            try:
+                stdout_oldfd = None
+                stdout_oldfd = V8ListMapsCommand.redirect_stdout(self.output_path)
+                if stdout_oldfd is None:
+                    raise RuntimeError("Failed to redirect: {:s}".format(self.output_path))
+                gdb.execute("v8 {:#x}".format(addr | 1), to_string=True)
+            finally:
+                V8ListMapsCommand.revert_stdout(stdout_oldfd)
+            content = open(self.output_path).read()
             r = re.search(r"- length: (\d+)", content)
             if r:
                 return 4, int(r.group(1)) * 4
@@ -102542,7 +102578,7 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             return 8, length * 4
 
         instance_type = read_int16_from_memory((map_addr & ~1) + 8)
-        self.warn_add_out("instance_type: {:#x}".format(instance_type))
+        self.warn_add_out("Unknown instance_type: {:#x}".format(instance_type))
         return 0, 0
 
     def walk_space(self, start, limit, cage_base):
@@ -102604,11 +102640,14 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             # dump details
             if (self.args.verbose and "STRING" in instance_name) or self.args.vverbose:
                 try:
-                    self.redirect_stdout()
+                    stdout_oldfd = None
+                    stdout_oldfd = V8ListMapsCommand.redirect_stdout(self.output_path)
+                    if stdout_oldfd is None:
+                        raise RuntimeError("Failed to redirect: {:s}".format(self.output_path))
                     gdb.execute("v8 {:#x}".format(addr | 1), to_string=True)
                 finally:
-                    self.revert_stdout()
-                content = open(self.temp_output_path).read()
+                    V8ListMapsCommand.revert_stdout(stdout_oldfd)
+                content = open(self.output_path).read()
                 if not content:
                     self.warn_add_out("No content; Something is wrong")
                     return
@@ -102652,7 +102691,7 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             return
         info("The cage base: {:#x}".format(cage_base))
 
-        self.temp_output_path = os.path.join(GEF_TEMP_DIR, "v8-dump-space-{:#x}.txt".format(cage_base))
+        self.output_path = os.path.join(GEF_TEMP_DIR, "v8-dump-space-{:#x}.txt".format(cage_base))
         self.instace_type_cache_path = os.path.join(GEF_TEMP_DIR, "v8-dump-space-instance-type.txt")
 
         target_regions = self.get_target_regions()
@@ -102697,6 +102736,15 @@ class V8Command(GenericCommand):
             info("Reuse gdbinit cached previously")
         return gdbinit_filename
 
+    @staticmethod
+    @Cache.cache_this_session
+    def is_chromium():
+        maps = ProcessMap.get_process_maps()
+        for m in maps:
+            if m.path.startswith("[anon:partition_alloc]"):
+                return True
+        return False
+
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
@@ -102731,6 +102779,13 @@ class V8Command(GenericCommand):
                 # Since this command is used so often, it can be implemented without loading from internet.
                 cmd = "call (void) _v8_internal_Print_Object((void*)({:#x}))".format(args.address)
                 gdb.execute(cmd)
+                # When attached to chromium and run, the newline is not generated,
+                # so it is not displayed immediately due to buffering. As a workaround, run putchar('\n') and fflush(0).
+                if V8Command.is_chromium():
+                    cmd = "call (void) putchar(0x0a)"
+                    gdb.execute(cmd)
+                    cmd = "call (void) fflush(0)"
+                    gdb.execute(cmd)
             except gdb.error:
                 pass
         return
@@ -119126,7 +119181,7 @@ class KmallocAllocatedByCommand(GenericCommand):
     def test_syscall(self, breakpoints):
 
         def u2i(x):
-            x = struct.pack("<Q", ret & 0xffff_ffff_ffff_ffff)
+            x = struct.pack("<Q", x & 0xffff_ffff_ffff_ffff)
             return struct.unpack("<q", x)[0]
 
         def gen_testcase():
@@ -125142,9 +125197,14 @@ class Gef:
 
         # create tmp dir
         if not os.path.exists(GEF_TEMP_DIR):
-            os.mkdir(GEF_TEMP_DIR)
+            os.mkdir(GEF_TEMP_DIR) # 0o755
+            # GEF runs with root privileges, but it may attach to a normal privileges program.
+            # If you want to execute a command that involves stdout redirection for that program,
+            # you will need write permission to /tmp/gef.
+            os.chmod(GEF_TEMP_DIR, 0o777)
 
         # check tmp dir access permission
+        # This check takes into account the cases where GEF is run with root privileges and with normal user privileges.
         if not os.access(GEF_TEMP_DIR, os.W_OK|os.R_OK|os.X_OK):
             err("Permission denied to {:s}. Please delete it first.".format(GEF_TEMP_DIR))
             return

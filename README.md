@@ -402,15 +402,15 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - Execute as `LD_PRELOAD=/PATH/TO/libsnmallocshim.so ./a.out`.
 - `optee-bget-dump`: dumps bget allocator of OPTEE-Trusted-App.
     - ![](images/optee-bget-dump.png)
-- `v8`: displays v8 tagged object.
+- `v8`: displays v8 (Chromium and `d8`) tagged object.
     - ![](images/v8.png)
     - It also loads more commands from latest gdbinit for v8.
     - ![](images/v8-load.png)
-- `cage`: displays v8 and d8 ubercage.
+- `cage`: displays v8 (Chromium and `d8`) ubercage.
     - ![](images/cage.png)
-- `v8-list-maps`: lists v8 (especially d8) built-in maps.
+- `v8-list-maps`: lists v8 (Chromium and `d8`) built-in maps.
     - ![](images/v8-list-maps.png)
-- `v8-dump-space`: dumps v8 (especially d8) heap objects in each space.
+- `v8-dump-space`: dumps v8 (Chromium and `d8`) heap objects in each space.
     - ![](images/v8-dump-space.png)
 
 ### Improved Features
