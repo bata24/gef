@@ -102348,6 +102348,7 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
         # instance_size == 0
         instance_name = self.get_instance_name(map_addr)
 
+        # Object sizes are manually specified by referencing src/objects.h etc.
         # TODO: inline property <-> external property
         if instance_name == "ARRAY_LIST_TYPE":
             length = read_int32_from_memory(addr + 4)
@@ -102373,7 +102374,8 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
         elif instance_name == "CODE_TYPE":
             return 0x44, 0
         elif instance_name == "COVERAGE_INFO_TYPE":
-            pass # TODO
+            length = read_int16_from_memory(addr + 4)
+            return 8, length * 4 * 4
         elif instance_name == "DESCRIPTOR_ARRAY_TYPE":
             length = read_int16_from_memory(addr + 4)
             return 0x14, length * 4 * 3
@@ -102418,8 +102420,11 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             length = read_int32_from_memory(addr + 4)
             length >>= 1
             return 8, length * 4
-        elif instance_name == "INSTRUCTION_STREAM_TYPE":
-            pass # TODO
+        elif instance_name == "INSTRUCTION_STREAM_TYPE": # in code_range
+            header = 0x10
+            length = read_int32_from_memory(addr + 12)
+            length = AddressUtil.align_address_to_size(header + length, 0x40)
+            return header, length - header
         elif instance_name == "INTERNALIZED_ONE_BYTE_STRING_TYPE":
             length = read_int32_from_memory(addr + 8)
             length = AddressUtil.align_address_to_size(length, 4)
@@ -102461,7 +102466,11 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             length >>= 1
             return 8, length * 4
         elif instance_name == "PREPARSE_DATA_TYPE":
-            pass # TODO
+            data_length = read_int32_from_memory(addr + 4)
+            children_length = read_int32_from_memory(addr + 8)
+            padding = AddressUtil.align_address_to_size(data_length, 4)
+            length = data_length + padding + children_length * 4
+            return 12, length
         elif instance_name == "PROPERTY_ARRAY_TYPE":
             length_or_hash = read_int32_from_memory(addr + 4)
             length = length_or_hash & 0x3ff
