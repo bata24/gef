@@ -507,7 +507,7 @@ Below is a summary of each.
 |Memory-resident `debuginfo`<br>(if `CONFIG_DEBUG_INFO_BTF=y`)|- Not available by default<br>- Accessible via `ktypes-load`|- Used by some commands if available after `ktypes-load`<br>- Can be viewed with `dt`|
 |Memory-resident `kallsyms`<br>(if `CONFIG_KALLSYMS=y`)|- Not available by default<br>- Accessible via `ks-apply`|- Accessible after `ksymaddr-remote`<br>- Used by various GEF commands internally|
 
-## The kernel-related commands are unstable; sometimes they work fine, sometimes they don’t. / The output of `ksymaddr-remote` seems odd.
+## The kernel-related commands are unstable; sometimes they work fine, sometimes they don't. / The output of `ksymaddr-remote` seems odd.
 This may be due to the GEF's caching mechanism.
 
 GEF resolves kernel symbols using the `ksymaddr-remote` command.
@@ -551,7 +551,7 @@ If you are referring to system-wide `glibc`, you can resolve this with the follo
 ## The command to get the source (e.g., `ptr-mangle --source`) does not work.
 Do not use `~` in paths that point to the `gef.py` directory in `.gdbinit`.
 
-Python’s `inspect` may not expand tildes reliably; use absolute paths instead.
+Python's `inspect` may not expand tildes reliably; use absolute paths instead.
 I encountered this behavior in Python 3.9.2 on Debian 11.
 
 ## When using qemu-user, an error occurs when continuing execution.

@@ -16477,7 +16477,7 @@ class AuxvCommand(GenericCommand):
 
 @register_command
 class ArgvCommand(GenericCommand, BufferingOutput):
-    """Display the program’s argv array."""
+    """Display the program's argv array."""
 
     _cmdline_ = "argv"
     _category_ = "02-d. Process Information - Trivial Information"
@@ -24509,7 +24509,7 @@ class GlibcHeapDumpImageCommand(GenericCommand):
         Color.colorify("dark gray", "gray") + " and " + Color.colorify("light gray", "cloud") + ".",
         Color.colorify("Freed chunks", "underline") + " are displayed alternately in " + \
         Color.colorify("muted red", "orange") + " and " + Color.colorify("muted yellow", "lemon_yellow") + ".",
-        "In both cases, the color is determined by whether the chunk’s position from the beginning",
+        "In both cases, the color is determined by whether the chunk's position from the beginning",
         "is odd-numbered or even-numbered.",
         "",
         "The `convert` command limits height to 32000px; output may shrink based on heap size.",
@@ -109482,7 +109482,7 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
             self.out.extend(BitInfo("CR8", bit_info=bit_info, desc=desc).make_out(cr8))
 
         # XCR0
-        # QEMU’s monitor does not currently support displaying XCR0. Therefore, this code will not be executed.
+        # QEMU's monitor does not currently support displaying XCR0. Therefore, this code will not be executed.
         self.out.append(titlify("XCR0 (Extended Control Register 0)"))
         desc = "Contain task priority level"
         bit_info = [
