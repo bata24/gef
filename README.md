@@ -679,7 +679,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/ii.png)
 - `extra`: manages user specified command to execute when each step.
 - `comment`: manages user specified temporary comment.
-- `seccomp`: invokes `seccomp-tools`.
+- `seccomp`: invokes `ceccomp` or `seccomp-tools`.
 - `onegadget`: invokes `one_gadget`.
     - ![](images/onegadget.png)
 - `rp`: invokes `rp++` with commonly used options.

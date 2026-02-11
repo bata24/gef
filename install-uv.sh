@@ -57,8 +57,10 @@ fi
 echo "[+] pip3"
 uv pip install setuptools crccheck unicorn capstone ropper keystone-engine tqdm magika codext angr pillow pyzbar
 
+# The GEF installer installs `seccomp-tools` if neither `ceccomp` nor `seccomp-tools` is found.
+# I recomend `ceccomp`, but its build is not simple. Install it manually if needed.
 echo "[+] Install seccomp-tools"
-if [ -z "$(command -v seccomp-tools)" ]; then
+if [ -z "$(command -v seccomp-tools)" ] && [ -z "$(command -v ceccomp)" ]; then
     gem install -i "${GEF_VENV_PATH}" seccomp-tools
 fi
 
@@ -74,11 +76,6 @@ if [ "$(uname -m)" = "x86_64" ]; then
         unzip /tmp/rp-lin-clang.zip -d "${GEF_VENV_BIN_PATH}"
         rm /tmp/rp-lin-clang.zip
     fi
-fi
-
-echo "[+] Install vmlinux-to-elf"
-if [ -z "$(command -v vmlinux-to-elf)" ]; then
-    uv tool install git+https://github.com/marin-m/vmlinux-to-elf
 fi
 
 echo "[+] Download gef"

@@ -128,7 +128,7 @@ There are three installers.
 - `uv`-based install
     - This is the installation method provided by `install-uv.sh`.
     - This uses `uv` to install Python packages into an isolated environment.
-    - This is a full installation, so you can use all the features that GEF provides.
+    - This is a full installation, so you can use almost all the features that GEF provides.
     - This is the currently recommended installer for GEF.
 - Minimal install
     - This is the installation method provided by `install-minimal.sh`.
@@ -137,7 +137,7 @@ There are three installers.
 - Normal install
     - This is the installation method provided by `install.sh`.
     - This uses `python3-pip` to install Python packages globally.
-    - This is a full installation, so you can use all the features that GEF provides.
+    - This is a full installation, so you can use almost all the features that GEF provides.
     - This installer is not currently recommended, but it still works.
     - This method was used before the `uv`-based installation became available.
 
@@ -217,8 +217,8 @@ To use these commands fully, you need to manually install the necessary packages
 |`vdump`|`imagemagick`|-|-|
 |`sixel-memory`|`imagemagick`|-|-|
 |`sixel-memory -b`|-|`pillow`, `pyzbar`|-|
-|`ktask -S`|-|-|`seccomp-tools`|
-|`seccomp-tools`|-|-|`seccomp-tools`|
+|`ktask -S`|-|-|`ceccomp` or `seccomp-tools`|
+|`seccomp-tools`|-|-|`ceccomp` or `seccomp-tools`|
 |`onegadget`|-|-|`one_gadget`|
 |Progress Indicator|-|`tqdm`|-|
 |`angr`|-|`angr`|-|
@@ -242,8 +242,9 @@ To use these commands fully, you need to manually install the necessary packages
 
 Notes:
 - To save installation time, the GEF installer does not install `binwalk` by default. This is because it has many package dependencies.
-- The GEF installer does not install `bpftool` when run inside a Docker container because `bpftool` is intended to run in the host.
-
+- The GEF installer does no longer install `bpftool` when run inside a Docker container because `bpftool` is intended to run in the host.
+- The GEF installer installs `seccomp-tools` if neither `ceccomp` nor `seccomp-tools` is found. I recomend `ceccomp`, but its build is not simple. Install it manually if needed.
+- The GEF installer does no longer install `vmlinux-to-elf` because in many cases you can use `ks-apply` instead.
 
 # About the Host Environment
 

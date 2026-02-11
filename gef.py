@@ -52348,28 +52348,75 @@ class OneGadgetCommand(GenericCommand):
 
 @register_command
 class SeccompCommand(GenericCommand):
-    """Invoke `seccomp-tools`."""
+    """Invoke `ceccomp` or `seccomp-tools`."""
 
     _cmdline_ = "seccomp"
     _category_ = "07-b. External Command - Exploit Development"
+    _aliases_ = ["ceccomp"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    group = parser.add_mutually_exclusive_group(required=False)
+    group.add_argument("-c", "--force-ceccomp", action="store_true", help="force use ceccomp.")
+    group.add_argument("-s", "--force-seccomp-tools", action="store_true", help="force use seccomp-tools.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_gdb_target_local
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    def do_invoke(self, args):
+    _note_ = [
+        "Default: Search `ceccomp` -> `seccomp-tools`, and use found one.",
+        "With `-c` or `-s`: Forces GEF to use the specified one.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def get_ceccomp_command(self):
         try:
-            seccomp_tools_command = GefUtil.which("seccomp-tools")
+            comm = GefUtil.which("ceccomp")
+            return [f"{comm!r} trace --quiet ", f"{comm!r} probe --quiet "]
+        except FileNotFoundError:
+            err("Missing `ceccomp`, install from https://github.com/dbgbgtf1/Ceccomp")
+            return None
+
+    def get_seccomp_tools_command(self):
+        try:
+            comm = GefUtil.which("seccomp-tools")
+            return [f"{comm!r} dump "]
         except FileNotFoundError:
             err("Missing `seccomp-tools`, install with: `gem install seccomp-tools`")
+            return None
+
+    def get_either_command(self):
+        try:
+            comm = GefUtil.which("ceccomp")
+            return [f"{comm!r} trace --quiet ", f"{comm!r} probe --quiet "]
+        except FileNotFoundError:
+            try:
+                comm = GefUtil.which("seccomp-tools")
+                return [f"{comm!r} dump "]
+            except FileNotFoundError:
+                err("Missing both `ceccomp` and `seccomp-tools`")
+                err("install with `gem install seccomp-tools` or build `ceccomp`")
+                return None
+
+    @parse_args
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        if args.force_seccomp_tools:
+            ret = self.get_seccomp_tools_command()
+        elif args.force_ceccomp:
+            ret = self.get_ceccomp_command()
+        else:
+            ret = self.get_either_command()
+        if ret is None:
             return
+        commands = ret
 
         path = Path.get_filepath()
-        gef_print(titlify("{!r} dump {!r}".format(seccomp_tools_command, path)))
-        os.system("{!r} dump {!r}".format(seccomp_tools_command, path))
+        if path is None:
+            err("Could not find the target binary")
+            return
+
+        for comm in commands:
+            comm += f"{path!r}"
+            gef_print(titlify(comm))
+            os.system(comm)
         return
 
 
@@ -63998,13 +64045,20 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             self.quiet_info("offsetof(bpf_prog, orig_prog): {:#x}".format(self.offset_orig_prog))
 
             try:
-                self.seccomp_tools_command = GefUtil.which("seccomp-tools")
-                self.quiet_info("seccomp-tools is found")
-                if is_arm32():
-                    self.quiet_warn("seccomp-tools is unsupported on arm32")
+                self.seccomp_tools_command = [GefUtil.which("ceccomp"), "disasm", "-c", "always"]
+                self.quiet_info("ceccomp is found")
             except FileNotFoundError:
-                self.quiet_info("Could not find seccomp-tools, use `capstone-disable bpf_func`")
-                self.seccomp_tools_command = None
+                try:
+                    self.seccomp_tools_command = [GefUtil.which("seccomp-tools"), "disasm"]
+                    self.quiet_info("seccomp-tools is found")
+                    if is_arm32():
+                        self.quiet_warn("`seccomp-tools` is not supported on ARM32. "
+                                        "Consider using `ceccomp` instead, as it supports ARM32.")
+                        self.quiet_info("GEF uses `capstone-disable bpf_func`")
+                        self.seccomp_tools_command = None
+                except FileNotFoundError:
+                    self.quiet_info("Could not find ceccomp or seccomp-tools, GEF uses `capstone-disable bpf_func`")
+                    self.seccomp_tools_command = None
 
         return task_addrs
 
@@ -64302,7 +64356,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                             tmp_fd, tmp_path = GefUtil.mkstemp(prefix="ktask")
                             os.fdopen(tmp_fd, "wb").write(data)
                             ret = GefUtil.gef_execute_external(
-                                [self.seccomp_tools_command, "disasm", tmp_path], as_list=True,
+                                self.seccomp_tools_command + [tmp_path], as_list=True,
                             )
                             self.out.extend(ret)
                             os.unlink(tmp_path)
@@ -124126,6 +124180,7 @@ class GefStatusCommand(GenericCommand):
         gef_print(titlify("Others"))
         gef_print("{:30s}  ->  {!s}".format("is_alive()", is_alive()))
         gef_print("{:30s}  ->  {!s}".format("is_kvm_enabled()", is_kvm_enabled()))
+        gef_print("{:30s}  ->  {!s}".format("is_smp_enabled()", is_smp_enabled()))
         gef_print("{:30s}  ->  {!s}".format("is_support_secure_world()", is_support_secure_world()))
         gef_print("{:30s}  ->  {!s}".format("is_supported_physmode()", is_supported_physmode()))
         if is_supported_physmode():
@@ -124358,6 +124413,14 @@ class GefVersionCommand(GenericCommand):
         res = GefUtil.gef_execute_external([seccomp_tools_command, "--version"], as_list=True)
         return res[0]
 
+    def ceccomp_version(self):
+        try:
+            ceccomp_command = GefUtil.which("ceccomp")
+        except FileNotFoundError:
+            return "Not found"
+        res = GefUtil.gef_execute_external([ceccomp_command, "version"], as_list=True)
+        return res[0]
+
     def one_gadget_version(self):
         try:
             one_gadget_command = GefUtil.which("one_gadget")
@@ -124407,6 +124470,7 @@ class GefVersionCommand(GenericCommand):
         gef_print("readelf:                {:s}".format(self.readelf_version()))
         gef_print("objdump:                {:s}".format(self.objdump_version()))
         gef_print("seccomp-tools:          {:s}".format(self.seccomp_tools_version()))
+        gef_print("ceccomp:                {:s}".format(self.ceccomp_version()))
         gef_print("one_gadget:             {:s}".format(self.one_gadget_version()))
         gef_print("rp:                     {:s}".format(self.rp_version()))
 
