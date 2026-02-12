@@ -39184,33 +39184,44 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
         return None
 
     def show_information(self, allocated):
+        def get_offset_str(v):
+            if v == 0:
+                return ""
+            arenas = GlibcHeap.get_all_arenas()
+            for arena in arenas:
+                if arena.heap_base is None:
+                    return ""
+                heap_base = arena.heap_base
+                size = to_unsigned_long(arena.system_mem)
+                if heap_base <= v < heap_base + size:
+                    return Color.colorify("${:+#x}".format(v - heap_base), "lilac")
+            return ""
+
+        # show information
+        text1 = "{:s} - {!s}{:s}{:s}".format(
+            Color.colorify("Heap-Analysis", "bold yellow"),
+            allocated,
+            Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
+            get_offset_str(allocated.value),
+        )
         if self.name in ["malloc", "valloc"]:
-            text = "{:s} - {:s} {:s}({:#x})".format(
-                Color.colorify("Heap-Analysis", "bold yellow"),
-                Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
+            text2 = "{:s}({:#x})".format(
                 self.name, self.size,
             )
         elif self.name == "calloc":
-            text = "{:s} - {:s} {:s}({:#x}, {:#x})".format(
-                Color.colorify("Heap-Analysis", "bold yellow"),
-                Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
+            text2 = "{:s}({:#x}, {:#x})".format(
                 self.name, self.nmemb, self.size,
             )
         elif self.name in ["aligned_alloc", "memalign"]:
-            text = "{:s} - {:s} {:s}({:#x}, {:#x})".format(
-                Color.colorify("Heap-Analysis", "bold yellow"),
-                Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
+            text2 = "{:s}({:#x}, {:#x})".format(
                 self.name, self.alignment, self.size,
             )
         elif self.name == "posix_memalign":
-            text = "{:s} - {:s} {:s}({:#x}, {:#x}, {:#x})".format(
-                Color.colorify("Heap-Analysis", "bold yellow"),
-                Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
+            text2 = "{:s}({:#x}, {:#x}, {:#x})".format(
                 self.name, self.memptr, self.alignment, self.size,
             )
-        pad = " " * (60 - len(Color.remove_color(text)))
-        text = "{:s}{:s}= {!s}".format(text, pad, allocated)
-        gef_print(text)
+        padlen = 44 - len(Color.remove_color(text1))
+        gef_print("{:s}{:s} = {:s}".format(text1, " " * padlen, text2))
         return
 
     def check_inconsistency(self, allocated):
@@ -39344,42 +39355,56 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
         return None
 
     def show_information(self, new_loc):
+        def get_offset_str(v):
+            if v == 0:
+                return ""
+            arenas = GlibcHeap.get_all_arenas()
+            for arena in arenas:
+                if arena.heap_base is None:
+                    return ""
+                heap_base = arena.heap_base
+                size = to_unsigned_long(arena.system_mem)
+                if heap_base <= v < heap_base + size:
+                    return Color.colorify("${:+#x}".format(v - heap_base), "lilac")
+            return ""
+
         # get action index
         idx = self.search_allocated_index(self.old_loc)
         if idx is None:
             action_index_s = ""
         else:
             action_index = GlibcHeapTracerCommand.heap_allocated_list[idx][0]
-            action_index_s = " {:s}".format(Color.colorify("#{:d}".format(action_index), "bold cyan"))
+            action_index_s = "{:s}".format(Color.colorify("#{:d}".format(action_index), "bold cyan"))
 
         # check realloc result type
         if self.old_loc.value == 0:
-            extra = Color.yellowify("{!s} (return new chunk)".format(new_loc))
+            extra = Color.colorify("return new chunk", "bold yellow")
         elif self.old_loc.value != new_loc.value:
-            extra = Color.redify("{!s} (return another chunk)".format(new_loc))
+            extra = Color.colorify("return another chunk", "bold red")
         else:
-            extra = Color.greenify("{!s} (return same chunk)".format(new_loc))
+            extra = Color.colorify("return same chunk", "bold green")
 
         # show information
+        text1 = "{:s} - {!s}{:s}{:s}".format(
+            Color.colorify("Heap-Analysis", "bold yellow"),
+            new_loc,
+            Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
+            get_offset_str(new_loc.value),
+        )
         if self.name == "realloc":
-            text = "{:s} - {:s} {:s}({!s}, {:#x}){:s}".format(
-                Color.colorify("Heap-Analysis", "bold yellow"),
-                Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
+            text2 = "{:s}({!s}{:s}{:s}, {:#x})  // {:s}".format(
                 self.name,
                 self.old_loc if self.old_loc.value != 0 else Color.boldify("NULL"),
-                self.size, action_index_s,
+                action_index_s, get_offset_str(self.old_loc.value), self.size, extra,
             )
         elif self.name == "reallocarray":
-            text = "{:s} - {:s} {:s}({!s}, {:#x}, {:#x}){:s}".format(
-                Color.colorify("Heap-Analysis", "bold yellow"),
-                Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
+            text2 = "{:s}({!s}{:s}{:s}, {:#x}, {:#x})  // {:s}".format(
                 self.name,
                 self.old_loc if self.old_loc.value != 0 else Color.boldify("NULL"),
-                self.nmemb, self.size, action_index_s,
+                action_index_s, get_offset_str(self.old_loc.value), self.nmemb, self.size, extra,
             )
-        pad = " " * (60 - len(Color.remove_color(text)))
-        text = "{:s}{:s}= {:s}".format(text, pad, extra)
-        gef_print(text)
+        padlen = 44 - len(Color.remove_color(text1))
+        gef_print("{:s}{:s} = {:s}".format(text1, " " * padlen, text2))
         return
 
     def check_double_free(self, to_free):
@@ -39505,22 +39530,37 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
         return None
 
     def show_information(self, to_free):
+        def get_offset_str(v):
+            if v == 0:
+                return ""
+            arenas = GlibcHeap.get_all_arenas()
+            for arena in arenas:
+                if arena.heap_base is None:
+                    return ""
+                heap_base = arena.heap_base
+                size = to_unsigned_long(arena.system_mem)
+                if heap_base <= v < heap_base + size:
+                    return Color.colorify("${:+#x}".format(v - heap_base), "lilac")
+            return ""
+
         # get action index
         idx = self.search_allocated_index(to_free)
         if idx is None:
             action_index_s = ""
         else:
             action_index = GlibcHeapTracerCommand.heap_allocated_list[idx][0]
-            action_index_s = " {:s}".format(Color.colorify("#{:d}".format(action_index), "bold cyan"))
+            action_index_s = "{:s}".format(Color.colorify("#{:d}".format(action_index), "bold cyan"))
 
         # show information
-        text = "{:s} - {:s} free({!s}){:s}".format(
+        text1 = "{:s} -".format(
             Color.colorify("Heap-Analysis", "bold yellow"),
-            Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
-            to_free if to_free.value != 0 else Color.boldify("NULL"),
-            action_index_s,
         )
-        gef_print(text)
+        text2 = "free({!s}{:s}{:s})".format(
+            to_free if to_free.value != 0 else Color.boldify("NULL"),
+            action_index_s, get_offset_str(to_free.value),
+        )
+        padlen = 44 - len(Color.remove_color(text1))
+        gef_print("{:s}{:s} = {:s}".format(text1, " " * padlen, text2))
         return
 
     def check_double_free(self, to_free):
