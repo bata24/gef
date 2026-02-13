@@ -1325,17 +1325,6 @@ class AddressUtil:
         raise EnvironmentError("GEF is running under an unsupported mode")
 
     @staticmethod
-    def align_address_to_size(addr, align):
-        """Align the address to the given size.
-        e.g., 0xdeadbeef with align 8 -> 0xdeadbef0"""
-        return addr + ((align - (addr % align)) % align)
-
-    @staticmethod
-    def align_address_to_ptrsize(addr):
-        """Align the address to the ptrsize."""
-        return AddressUtil.align_address_to_size(addr, current_arch.ptrsize)
-
-    @staticmethod
     @Cache.cache_until_next
     def get_vmem_end():
         return 1 << AddressUtil.get_memory_alignment(in_bits=True)
@@ -3378,9 +3367,9 @@ class GlibcHeap:
         @property
         def addrof_mmapped_mem(self):
             if get_libc_version() >= (2, 15):
-                return AddressUtil.align_address_to_ptrsize(self.addrof_no_dyn_threshold + self.int_t.sizeof)
+                return align_to_ptrsize(self.addrof_no_dyn_threshold + self.int_t.sizeof)
             else:
-                return AddressUtil.align_address_to_ptrsize(self.addrof_pagesize + self.int_t.sizeof)
+                return align_to_ptrsize(self.addrof_pagesize + self.int_t.sizeof)
 
         @property
         def addrof_max_mmapped_mem(self):
@@ -3621,7 +3610,7 @@ class GlibcHeap:
             if get_libc_version() >= (2, 43):
                 return None
             elif get_libc_version() >= (2, 27):
-                fastbin_offset = AddressUtil.align_address_to_size(self.int_t.sizeof * 3, self.size_t.sizeof)
+                fastbin_offset = align(self.int_t.sizeof * 3, self.size_t.sizeof)
             else:
                 fastbin_offset = self.int_t.sizeof * 2
             return self.addr + fastbin_offset
@@ -3900,9 +3889,7 @@ class GlibcHeap:
             try:
                 malloc_hook_addr = AddressUtil.parse_address("(void*) &__malloc_hook")
                 if is_x86():
-                    Cache.cached_main_arena = AddressUtil.align_address_to_size(
-                        malloc_hook_addr + current_arch.ptrsize, 0x20,
-                    )
+                    Cache.cached_main_arena = align(malloc_hook_addr + current_arch.ptrsize, 0x20)
                 elif is_arm64():
                     mstate_size = GlibcHeap.MallocStateStruct(0).sizeof
                     Cache.cached_main_arena = malloc_hook_addr - current_arch.ptrsize * 2 - mstate_size
@@ -5718,6 +5705,22 @@ def slice_unpack(data, n):
         return [u128(data[i:i + 16]) for i in range(0, len(data), 16)]
     else:
         raise
+
+
+def align(value, align):
+    """Align the value to the given size.
+    e.g., 0xdeadbeef with align 8 -> 0xdeadbef0"""
+    return value + ((align - (value % align)) % align)
+
+
+def align_to_ptrsize(addr):
+    """Align the address to the ptrsize."""
+    return align(addr, current_arch.ptrsize)
+
+
+def align_to_pagesize(addr):
+    """Align the address to the pagesize."""
+    return align(addr, get_pagesize())
 
 
 def byteswap(x, byte_size=None):
@@ -33573,7 +33576,7 @@ class LoadFileMmapCommand(GenericCommand):
         mmap_start = args.location & get_pagesize_mask_high()
         data_start = args.location
         data_end = data_start + data_size
-        mmap_end = AddressUtil.align_address_to_size(data_end, get_pagesize())
+        mmap_end = align_to_pagesize(data_end)
         mmap_size = mmap_end - mmap_start
 
         # mmap
@@ -61864,7 +61867,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # slow path
         kversion = Kernel.kernel_version()
-        offset_stack_canary = AddressUtil.align_address_to_ptrsize(offset_pid + 4 + 4)
+        offset_stack_canary = align_to_ptrsize(offset_pid + 4 + 4)
         found = True
         for task in task_addrs:
             v1 = read_int_from_memory(task + offset_stack_canary)
@@ -61910,7 +61913,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # slow path
         if offset_kcanary is None:
-            offset_real_parent = AddressUtil.align_address_to_ptrsize(offset_pid + 4 + 4)
+            offset_real_parent = align_to_ptrsize(offset_pid + 4 + 4)
         else:
             offset_real_parent = offset_kcanary + current_arch.ptrsize
         offset_group_leader = offset_real_parent + current_arch.ptrsize * (1 + 1 + 2 + 2)
@@ -62593,7 +62596,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         for i in range(10):
             offset_user_ns = offset_uid + uid_gid_size + sizeof_securebits
-            offset_user_ns = AddressUtil.align_address_to_ptrsize(offset_user_ns)
+            offset_user_ns = align_to_ptrsize(offset_user_ns)
             offset_user_ns += cap_size + current_arch.ptrsize * i
             v = read_int_from_memory(init_task_cred_ptr + offset_user_ns)
             if not is_valid_addr(v):
@@ -88180,7 +88183,7 @@ class StringLengthCommand(GenericCommand):
         while True:
             # calc read_size
             if current & get_pagesize_mask_low():
-                read_size = AddressUtil.align_address_to_size(current, get_pagesize()) - current
+                read_size = align_to_pagesize(current) - current
             else:
                 read_size = get_pagesize()
             # read
@@ -88244,7 +88247,7 @@ class SequenceLengthCommand(GenericCommand):
         while True:
             # calc read_size
             if current & get_pagesize_mask_low():
-                read_size = AddressUtil.align_address_to_size(current, get_pagesize()) - current
+                read_size = align_to_pagesize(current) - current
             else:
                 read_size = get_pagesize()
             while read_size < unit:
@@ -92004,14 +92007,14 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                     found = False
                     break
                 node_addr_ptr = kmem_cache_top + candidate_offset + 4 + 4
-                node_addr_ptr = AddressUtil.align_address_to_ptrsize(node_addr_ptr)
+                node_addr_ptr = align_to_ptrsize(node_addr_ptr)
                 node_addr = read_int_from_memory(node_addr_ptr)
                 if not is_valid_addr(node_addr):
                     found = False
                     break
 
             if found:
-                self.kmem_cache_offset_node = AddressUtil.align_address_to_ptrsize(candidate_offset + 4 * 2)
+                self.kmem_cache_offset_node = align_to_ptrsize(candidate_offset + 4 * 2)
                 return
         return
 
@@ -93904,7 +93907,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             pass
 
         # slow path
-        current = AddressUtil.align_address_to_ptrsize(per_cpu_pageset + 4 * 3) # count, high, batch
+        current = align_to_ptrsize(per_cpu_pageset + 4 * 3) # count, high, batch
         while not is_double_link_list(current): # search for list_head
             current += current_arch.ptrsize
         self.offset_lists = current - per_cpu_pageset
@@ -94930,7 +94933,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(pipe_buffer, len): {:#x}".format(self.offset_len))
         self.offset_flags = self.offset_len + 4 + current_arch.ptrsize
         self.quiet_info("offsetof(pipe_buffer, flags): {:#x}".format(self.offset_flags))
-        self.sizeof_pipe_buffer = AddressUtil.align_address_to_ptrsize(self.offset_flags + 4) + current_arch.ptrsize
+        self.sizeof_pipe_buffer = align_to_ptrsize(self.offset_flags + 4) + current_arch.ptrsize
         self.quiet_info("sizeof(pipe_buffer): {:#x}".format(self.sizeof_pipe_buffer))
 
         self.initialized = True
@@ -95560,10 +95563,10 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
         self.offset_jited_len = self.offset_len + 4
         self.offset_tag = self.offset_jited_len + 4
         if "5.12" <= kversion:
-            self.offset_aux = AddressUtil.align_address_to_ptrsize(self.offset_tag + 8) + current_arch.ptrsize * 3
+            self.offset_aux = align_to_ptrsize(self.offset_tag + 8) + current_arch.ptrsize * 3
             self.offset_bpf_func = self.offset_aux - current_arch.ptrsize
         else:
-            self.offset_aux = AddressUtil.align_address_to_ptrsize(self.offset_tag + 8)
+            self.offset_aux = align_to_ptrsize(self.offset_tag + 8)
             self.offset_bpf_func = self.offset_aux + current_arch.ptrsize * 2
         self.quiet_info("offsetof(bpf_prog, type): {:#x}".format(self.offset_prog_type))
         self.quiet_info("offsetof(bpf_prog, expected_attach_type): {:#x}".format(self.offset_expected_attach_type))
@@ -95617,7 +95620,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             """
             # bpf_array->union_array
             value_size = read_int32_from_memory(maps[0] + self.offset_value_size)
-            value_size_aligned_8 = AddressUtil.align_address_to_size(value_size, 8)
+            value_size_aligned_8 = align(value_size, 8)
             max_entries = read_int32_from_memory(maps[0] + self.offset_max_entries)
             k = 1
             while k < max_entries:
@@ -97109,7 +97112,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
             self.quiet_err("Could not find irq_desc->irq_data.irq")
             return False
 
-        ofs_irq = AddressUtil.align_address_to_ptrsize(self.offset_irq + 4 * 2)
+        ofs_irq = align_to_ptrsize(self.offset_irq + 4 * 2)
         for i in range(100):
             x = read_int_from_memory(desc + ofs_irq + current_arch.ptrsize * i)
             y = read_int_from_memory(desc + ofs_irq + current_arch.ptrsize * (i + 1))
@@ -98913,7 +98916,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         else: # kernel_version >= (6, 4):
             position = self.offset_kallsyms_token_index + 0x200
             # TODO: align size is 0x8? 0x10? ptrsize?
-            position_relative_base = AddressUtil.align_address_to_size(position + self.num_symbols * offset_byte_size, 8)
+            position_relative_base = align(position + self.num_symbols * offset_byte_size, 8)
             relative_base_address_data = self.kernel_img[position_relative_base:position_relative_base + address_byte_size]
             relative_base_address = int.from_bytes(relative_base_address_data, endian_str)
             if not (relative_base_address and (relative_base_address & get_pagesize_mask_low()) == 0):
@@ -100282,7 +100285,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
         sl_bitmap = read_memory(pool + offset_sl_bitmap, 4 * self.REAL_FLI)
         sl_bitmap = slice_unpack(sl_bitmap, 4)
 
-        offset_matrix = AddressUtil.align_address_to_ptrsize(offset_sl_bitmap + 4 * self.REAL_FLI)
+        offset_matrix = align_to_ptrsize(offset_sl_bitmap + 4 * self.REAL_FLI)
         matrix = read_memory(pool + offset_matrix, current_arch.ptrsize * self.REAL_FLI * self.MAX_SLI)
         matrix = slice_unpack(matrix, current_arch.ptrsize)
         matrix = slicer(matrix, self.MAX_SLI)
@@ -102454,12 +102457,12 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
         elif instance_name == "BYTECODE_ARRAY_TYPE":
             length = read_int32_from_memory(addr + 8)
             length >>= 1
-            length = AddressUtil.align_address_to_size(length, 4)
+            length = align(length, 4)
             return 0x28, length
         elif instance_name == "BYTE_ARRAY_TYPE":
             length = read_int32_from_memory(addr + 4)
             length >>= 1
-            length = AddressUtil.align_address_to_size(length, 4)
+            length = align(length, 4)
             return 8, length
         elif instance_name == "CLOSURE_FEEDBACK_CELL_ARRAY_TYPE":
             length = read_int32_from_memory(addr + 4)
@@ -102488,7 +102491,7 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             if length1 != 0:
                 length1 = (length1 - 1) // 6 + 1 # 5-bit encode
             length2 = read_int32_from_memory(addr + 8)
-            length = AddressUtil.align_address_to_size(length1 * 4 + length2 * 2, 4)
+            length = align(length1 * 4 + length2 * 2, 4)
             return 12, length
         elif instance_name == "FEEDBACK_VECTOR_TYPE":
             length = read_int32_from_memory(addr + 4)
@@ -102517,15 +102520,15 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
         elif instance_name == "INSTRUCTION_STREAM_TYPE": # in code_range
             header = 0x10
             length = read_int32_from_memory(addr + 12)
-            length = AddressUtil.align_address_to_size(header + length, 0x40)
+            length = align(header + length, 0x40)
             return header, length - header
         elif instance_name == "INTERNALIZED_ONE_BYTE_STRING_TYPE":
             length = read_int32_from_memory(addr + 8)
-            length = AddressUtil.align_address_to_size(length, 4)
+            length = align(length, 4)
             return 12, length
         elif instance_name == "INTERNALIZED_TWO_BYTE_STRING_TYPE":
             length = read_int32_from_memory(addr + 8)
-            length = AddressUtil.align_address_to_size(length * 2, 4)
+            length = align(length * 2, 4)
             return 12, length
         elif instance_name == "NAME_DICTIONARY_TYPE":
             length = read_int32_from_memory(addr + 4)
@@ -102562,7 +102565,7 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
         elif instance_name == "PREPARSE_DATA_TYPE":
             data_length = read_int32_from_memory(addr + 4)
             children_length = read_int32_from_memory(addr + 8)
-            padding = AddressUtil.align_address_to_size(data_length, 4)
+            padding = align(data_length, 4)
             length = data_length + padding + children_length * 4
             return 12, length
         elif instance_name == "PROPERTY_ARRAY_TYPE":
@@ -102612,11 +102615,11 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             return 8, length * 4
         elif instance_name == "SEQ_ONE_BYTE_STRING_TYPE":
             length = read_int32_from_memory(addr + 8)
-            length = AddressUtil.align_address_to_size(length, 4)
+            length = align(length, 4)
             return 12, length
         elif instance_name == "SEQ_TWO_BYTE_STRING_TYPE":
             length = read_int32_from_memory(addr + 8)
-            length = AddressUtil.align_address_to_size(length * 2, 4)
+            length = align(length * 2, 4)
             return 12, length
         elif instance_name == "SHARED_SEQ_ONE_BYTE_STRING_TYPE":
             pass # TODO
@@ -102639,8 +102642,8 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
         elif instance_name == "SWISS_NAME_DICTIONARY_TYPE":
             length = read_int32_from_memory(addr + 8)
             data_table_len = length * 2 * 4
-            ctrl_table_len = AddressUtil.align_address_to_size(length + 0x10, 4)
-            property_details_table_len = AddressUtil.align_address_to_size(length, 4)
+            ctrl_table_len = align(length + 0x10, 4)
+            property_details_table_len = align(length, 4)
             return 0x10, data_table_len + ctrl_table_len + property_details_table_len
         elif instance_name == "TRANSITION_ARRAY_TYPE":
             length = read_int32_from_memory(addr + 4)
@@ -102649,7 +102652,7 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
         elif instance_name == "TRUSTED_BYTE_ARRAY_TYPE":
             length = read_int32_from_memory(addr + 4)
             length >>= 1
-            length = AddressUtil.align_address_to_size(length, 4)
+            length = align(length, 4)
             return 8, length
         elif instance_name == "TRUSTED_FIXED_ARRAY_TYPE":
             length = read_int32_from_memory(addr + 4)
@@ -115622,7 +115625,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             line = line.split()
             module_name = line[1]
             module_base = int(line[2], 16)
-            module_size = AddressUtil.align_address_to_size(int(line[3], 16), get_pagesize())
+            module_size = align_to_pagesize(int(line[3], 16))
             description = "kernel module ({:s})".format(module_name)
             self.insert_region(module_base, module_size, description)
         return
@@ -119235,7 +119238,7 @@ class KmallocAllocatedByCommand(GenericCommand):
             if isinstance(arg, bytes):
                 write_memory(sp, arg)
                 gdb.execute("set {:s}={:#x}".format(reg, sp), to_string=True)
-                sp = AddressUtil.align_address_to_size(sp + len(arg), current_arch.ptrsize * 2)
+                sp = align(sp + len(arg), current_arch.ptrsize * 2)
             else:
                 gdb.execute("set {:s}={:#x}".format(reg, arg), to_string=True)
         self.tested_syscall.add(syscall_name)
@@ -123895,6 +123898,7 @@ class GefPyObjListCommand(GenericCommand, BufferingOutput):
             if gobj.startswith("__") and t is not function_type:
                 global_configs.append("{!s} {!s}".format(t, gobj))
             elif gobj in ["current_arch"]:
+                t = type(get_current_arch())
                 global_configs.append("{!s} {!s}".format(t, gobj))
             elif gobj.upper() == gobj and t is not class_type:
                 global_configs.append("{!s} {!s}".format(t, gobj))
