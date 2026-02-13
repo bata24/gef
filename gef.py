@@ -4032,6 +4032,9 @@ class GlibcHeap:
 
         @staticmethod
         def TCACHE_FILL_COUNT():
+            v = Config.get_gef_setting("heap.tcache_max_count")
+            if v != -1:
+                return v
             if get_libc_version() >= (2, 43):
                 return 0x10
             else:
@@ -22182,6 +22185,7 @@ class GlibcHeapCommand(GenericCommand):
 
     def __init__(self):
         super().__init__(prefix=True)
+        self.add_setting("tcache_max_count", -1, "Max chunks per tcache bin (if configured by GLIBC_TUNABLES)")
         return
 
     @parse_args
