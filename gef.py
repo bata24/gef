@@ -4024,21 +4024,37 @@ class GlibcHeap:
         """Glibc arena class."""
 
         @staticmethod
+        def TCACHE_SMALL_BINS():
+            if get_libc_version() < (2, 42):
+                return None
+            else:
+                return 0x40
+
+        @staticmethod
+        def TCACHE_LARGE_BINS():
+            if get_libc_version() < (2, 42):
+                return None
+            else:
+                return 12
+
+        @staticmethod
+        @Cache.cache_this_session
         def TCACHE_MAX_BINS():
             if get_libc_version() < (2, 42):
                 return 0x40
             else:
-                return 0x40 + 12
+                return GlibcHeap.GlibcArena.TCACHE_SMALL_BINS() + GlibcHeap.GlibcArena.TCACHE_LARGE_BINS()
 
         @staticmethod
+        @Cache.cache_this_session
         def TCACHE_FILL_COUNT():
             v = Config.get_gef_setting("heap.tcache_max_count")
             if v != -1:
                 return v
-            if get_libc_version() >= (2, 43):
-                return 0x10
-            else:
+            if get_libc_version() < (2, 43):
                 return 7
+            else:
+                return 16
 
         def __init__(self, arena_addr=None):
             # Manually calling a command like `call malloc(0x10)` alters the heap's internal structure.
@@ -22826,26 +22842,35 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
     _note_ = "\n".join(_note_)
 
     def bins_simple(self, arenas):
-        def get_size(arena, c):
+        def get_size(arena, c, from_base=True):
             if self.args.skip_size:
                 return ""
             try:
-                sz = GlibcHeap.GlibcChunk(arena, c + current_arch.ptrsize * 2).size
+                sz = GlibcHeap.GlibcChunk(arena, c, from_base=from_base).size
                 return " (sz:{:#x})".format(sz)
             except gdb.MemoryError:
                 return ""
+
+        libc_version = get_libc_version()
 
         for arena in arenas:
             gef_print(titlify("arena: {:#x}{:s}".format(
                 arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
             )
 
+            TCACHE_SMALL_BINS = arena.TCACHE_SMALL_BINS()
+
             gef_print(titlify("tcache"))
-            if get_libc_version() < (2, 26):
+            if libc_version < (2, 26):
                 info("No tcache in this version of libc")
             else:
                 for i, chunks in arena.get_tcache_list().items():
-                    m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
+                    if libc_version < (2, 42) or i < TCACHE_SMALL_BINS:
+                        m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
+                    else:
+                        m = ["{!s}{:s}{:s}".format(
+                                ProcessMap.lookup_address(c), Symbol.get_symbol_string(c), get_size(arena, c, from_base=False),
+                            ) for c in chunks]
                     if m or self.args.verbose:
                         count = arena.tcachebins_i_count(i)
                         if "size" in GlibcHeap.get_binsize_table()["tcache"][i]:
@@ -22857,7 +22882,7 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
                             gef_print("{:#x}-{:#x} [{:d}] ({:d}): ".format(size_min, size_max, i, count) + " -> ".join(m))
 
             gef_print(titlify("fastbins"))
-            if get_libc_version() < (2, 43):
+            if libc_version < (2, 43):
                 for i, chunks in arena.get_fastbins_list().items():
                     m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
                     if m or self.args.verbose:
