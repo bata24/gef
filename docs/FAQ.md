@@ -143,12 +143,24 @@ There are three installers.
 
 For an explanation of each installer, see [About GEF's Files or Directories](#about-gefs-files-or-directories).
 
-## Why does GEF need to run with `root` privileges?
-This is because when working with qemu-system or qemu-user, memory may be read and written via /proc.
+## Why does GEF need to run as `root`?
+Some GDB stubs require GEF to gather information and to read or write process memory through `/proc`, which typically needs root privileges.
 
-If you absolutely do not want to run with `root` privileges, there are two options:
-- Install within Docker, etc.
-- Install with normal user privileges, using the steps below.
+Examples:
+- Resolving the real PID during remote debugging (e.g., when connecting to `localhost`):
+    - GEF may search across `/proc` to identify the target process and determine details about the remote network endpoint.
+- Gathering attachment details for a process running in a container (e.g., namespaces, real file paths).
+- Intel Pin / SDE: Reads memory via `/proc/<PID>/mem` for performance.
+- qemu-user etc.: Applies patches at addresses that are not writable.
+- qemu-system: Reads physical memory via `/proc/<PID>/mem` for performance.
+    - If this is unavailable, GEF falls back to slower memory access through `gdb`.
+- qemu-system (ARM32/ARM64): Reads and writes secure-world memory.
+
+As a result, running GEF as an unprivileged user is not currently tested.
+
+If you prefer not to run GEF as `root`, you have two options:
+- Install and run it inside a container (e.g., Docker).
+- Install it as a normal user using the steps below.
 
 ## How to change the location of GEF? / How can I run GEF as a non-`root` user?
 This is NOT officially supported; proceed at your own risk. Future updates may break this workflow.
@@ -243,7 +255,7 @@ To use these commands fully, you need to manually install the necessary packages
 Notes:
 - To save installation time, the GEF installer does not install `binwalk` by default. This is because it has many package dependencies.
 - The GEF installer does no longer install `bpftool` when run inside a Docker container because `bpftool` is intended to run in the host.
-- The GEF installer installs `seccomp-tools` if neither `ceccomp` nor `seccomp-tools` is found. I recomend `ceccomp`, but its build is not simple. Install it manually if needed.
+- The GEF installer installs `seccomp-tools` if neither `ceccomp` nor `seccomp-tools` is found. I recommend `ceccomp`, but its build is not simple. Install it manually if needed.
 - The GEF installer does no longer install `vmlinux-to-elf` because in many cases you can use `ks-apply` instead.
 
 # About the Host Environment
@@ -644,17 +656,31 @@ There are also similar functions. Here is the list:
 ## Are there any other globally accessible functions that are useful?
 - Memory access
     - `write_memory(addr, data)`, `read_memory(addr, length)`
-    - `is_valid_addr(addr)`
-    - `read_int_from_memory(addr)`
+    - `read_int_from_memory(addr)` # Sizes are estimated
+        - `read_int8_from_memory(addr)`
+        - `read_int16_from_memory(addr)`
+        - `read_int32_from_memory(addr)`
+        - `read_int64_from_memory(addr)`
     - `read_cstring_from_memory(addr, max_length=None)`
     - `read_physmem(paddr, size)`, `write_physmem(paddr, data)`
+    - `is_valid_addr(addr)`
+    - `is_single_link_list(addr)`, `is_double_link_list(addr, min_len=0)`
+    - `is_ascii_string(addr)`
 - Register access
     - `get_register(regname, use_mbed_exec=False, use_monitor=False)`
-- Other
+- Calculating a minor hash function (100+ variants)
+    - `Hash.SHA0`, `Hash.Whirlpool`, etc.
+- Value manipulation
     - `String.str2bytes(x)`, `String.bytes2str(x)`
     - `slicer(data, n)`, `slice_unpack(data, n)`
     - `p8`, `p16`, `p32`, `p64`
     - `u8`, `u16`, `u32`, `u64`, `u128`
+    - `byteswap(x, byte_size=None)`, `xor(a, b=None)`,
+    - `ror(val, bits, arch_bits=64)`, `rol(val, bits, arch_bits=64)`,
+    - `align(value, align)`, `align_to_ptrsize(addr)`, `align_to_pagesize(addr)`,
+- Other
+    - `get_pagesize()`, `get_pagesize_mask_low()`, `get_pagesize_mask_high()`
+    - `get_syscall_table(arch=None, mode=None)`
 
 If you want the complete list, run `gef pyobj-list`.
 
