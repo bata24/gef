@@ -86,3 +86,21 @@ Add `mte=on`, `-cpu max` and `hostfwd` settings.
 (guest) ./gdbserver 0.0.0.0:1234 ./main
 (host) gdb-multiarch -q ./main -ex 'target remote :1234'
 ```
+
+## Note
+GDB (aarch64-linux) already supports tagged pointers, treating the top byte as non-address data.
+In practice, this means tagged-pointer chasing (e.g., `telescope`) is generally usable for userland debugging without manually stripping tags.
+
+Here is a sample (see `0x007ffa47e858`).
+```
+gef> telescope -n $sp 8
+ $x29+ 0x007ffa47e830|+0x0000|+000: 0x0000007ffa47e8c0  ->  0x0000007ffa47e8d0  ->  0x0000007ffa47e9e0  ->  ...
+       0x007ffa47e838|+0x0008|+001: 0x0000000000401128 <main+0x14>  ->  0x5280000097ffff52  <-  retaddr[1]
+       0x007ffa47e840|+0x0010|+002: 0x0000007ffa47e850  ->  0x0000007ffa47e8b0  ->  0x0000007ffa47e000  ->  ...
+       0x007ffa47e848|+0x0018|+003: 0x0000007ffa47e870  ->  0x0000000a41414141 ('AAAA\n'?)
+       0x007ffa47e850|+0x0020|+004: 0x0000007ffa47e8b0  ->  0x0000007ffa47e000  ->  0x0000000000000000
+       0x007ffa47e858|+0x0028|+005: 0x4100007ffa47e870  ->  0x0000000a41414141 ('AAAA\n'?)  <-  $x0
+       0x007ffa47e860|+0x0030|+006: 0x0000000000000000
+       0x007ffa47e868|+0x0038|+007: 0x0000000000000000
+gef>
+```
