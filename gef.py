@@ -118750,6 +118750,147 @@ class KfreeBreakpoint(gdb.Breakpoint):
         return False
 
 
+class AllocPagesBreakpoint(gdb.Breakpoint):
+    """Create a breakpoint to print information of __alloc_pages."""
+
+    def __init__(self, loc, sym, index_of_order_arg, option, extra):
+        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
+        self.sym = sym
+        self.index_of_order_arg = index_of_order_arg
+        self.option = option
+        self.extra = extra
+        self.enabled = False
+        return
+
+    def check_nested(self, task_addr):
+        for bp in gdb.breakpoints():
+            try:
+                if bp.__class__.__name__ in ["AllocPagesRetBreakpoint"]:
+                    if bp.enabled and bp.task_addr == task_addr:
+                        return True
+            except Exception:
+                pass
+        return False
+
+    def stop(self):
+        Cache.reset_gef_caches()
+
+        # fast return if nested break
+        task_addr, task_name = KmallocTracerCommand.get_task()
+        if self.check_nested(task_addr):
+            return False
+
+        # filtering by task addr
+        if self.option.target_task and task_addr != self.option.target_task:
+            return False
+
+        # filtering by task name
+        if self.option.task_name and task_name not in self.option.task_name:
+            return False
+
+        # get order from arguments
+        _, order = current_arch.get_ith_parameter(self.index_of_order_arg)
+
+        # Use gdb.Breakpoint instead of gdb.FinishBreakpoint because gdb.FinishBreakpoint is buggy
+        ret_addr = gdb.newest_frame().older().pc()
+        AllocPagesRetBreakpoint(ret_addr, self.sym, order, task_addr, self.option, self.extra)
+        return False
+
+
+class AllocPagesRetBreakpoint(gdb.Breakpoint):
+    """Create a breakpoint to print information of __alloc_pages."""
+
+    def __init__(self, loc, sym, order, task_addr, option, extra):
+        # Note that specifying temporary=True does not remove the breakpoint if stop() returns False.
+        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=True)
+        self.order = order
+        self.sym = sym
+        self.task_addr = task_addr
+        self.option = option
+        self.extra = extra
+        KmallocTracerCommand.clear_disabled_breakpoints("AllocPagesRetBreakpoint")
+        return
+
+    def stop(self):
+        Cache.reset_gef_caches()
+
+        # check if another thread is detected
+        task_addr, task_name = KmallocTracerCommand.get_task()
+        if self.task_addr != task_addr:
+            return False
+
+        task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
+        allocated_page = AddressUtil.parse_address(current_arch.return_register)
+        if not is_valid_addr(allocated_page):
+            allocated_virt = 0
+        else:
+            allocated_virt = Kernel.page2virt(allocated_page)
+        if allocated_virt is None:
+            allocated_virt = 0
+        allocated_virt_s = Color.colorify_hex(
+            allocated_virt, Config.get_gef_setting("theme.heap_page_address"),
+        )
+        size = KernelAddressHeuristicFinder.consts().PAGE_SIZE * (2 ** self.order)
+
+        # print less info
+        gef_print("{:s} {:40s}: {:s} (page: {:#x}, order: {:d}, size: {:#x})".format(
+            task_prefix, self.sym, allocated_virt_s, allocated_page, self.order, size,
+        ))
+        KmallocTracerCommand.print_backtrace(self.option.backtrace)
+        KmallocTracerCommand.dump_chunk(self.option.dump_chunk, allocated_virt)
+        self.enabled = False
+        return False
+
+
+class FreePagesBreakpoint(gdb.Breakpoint):
+    """Create a breakpoint to print information of __free_pages."""
+
+    def __init__(self, loc, sym, index_of_addr_arg, index_of_order_arg, option, extra):
+        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
+        self.sym = sym
+        self.index_of_addr_arg = index_of_addr_arg
+        self.index_of_order_arg = index_of_order_arg
+        self.option = option
+        self.extra = extra
+        self.enabled = False
+        return
+
+    def stop(self):
+        Cache.reset_gef_caches()
+
+        _, to_free_page = current_arch.get_ith_parameter(self.index_of_addr_arg)
+        _, order = current_arch.get_ith_parameter(self.index_of_order_arg)
+
+        # filtering by task addr
+        task_addr, task_name = KmallocTracerCommand.get_task()
+        if self.option.target_task and task_addr != self.option.target_task:
+            return False
+
+        # filtering by task name
+        if self.option.task_name and task_name not in self.option.task_name:
+            return False
+
+        task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
+        if not is_valid_addr(to_free_page):
+            to_free_virt = 0
+        else:
+            to_free_virt = Kernel.page2virt(to_free_page)
+        if to_free_virt is None:
+            to_free_virt = 0
+        to_free_virt_s = Color.colorify_hex(
+            to_free_virt, Config.get_gef_setting("theme.heap_page_address")
+        )
+        size = KernelAddressHeuristicFinder.consts().PAGE_SIZE * (2 ** order)
+
+        # print less info
+        gef_print("{:s} {:40s}: {:s} (page: {:#x}, order: {:d}, size: {:#x})".format(
+            task_prefix, self.sym, to_free_virt_s, to_free_page, order, size,
+        ))
+        KmallocTracerCommand.print_backtrace(self.option.backtrace)
+        KmallocTracerCommand.dump_chunk(self.option.dump_chunk, to_free_virt)
+        return False
+
+
 @register_command
 class KmallocTracerCommand(GenericCommand):
     """Collect and display information when kmalloc/kfree."""
@@ -118763,6 +118904,8 @@ class KmallocTracerCommand(GenericCommand):
     parser.add_argument("-N", "--print-null", action="store_true", help="display free(NULL).")
     parser.add_argument("-t", "--backtrace", action="store_true", help="display backtrace.")
     parser.add_argument("-d", "--dump-chunk", action="store_true", help="dump the first 0x40 bytes of each chunk.")
+    parser.add_argument("-p", "--enable-page-allocator-trace", action="store_true",
+                        help="in addition to kmalloc and kfree, it also monitors __alloc_pages and __free_pages.")
     parser.add_argument("-v", "--verbose", action="store_true", help="print meta information.")
     _syntax_ = parser.format_help()
 
@@ -118775,6 +118918,7 @@ class KmallocTracerCommand(GenericCommand):
     _note_ = [
         "Disable `-enable-kvm` option for qemu-system (#PF may occur).",
         "Append `tsc=unstable` option for kernel cmdline.",
+        "Tracing `kmem_cache_alloc` type is not supported.",
         "This command requires CONFIG_RANDSTRUCT=n.",
     ]
     _note_ = "\n".join(_note_)
@@ -119013,7 +119157,7 @@ class KmallocTracerCommand(GenericCommand):
         """
 
         # This list may be incomplete.
-        # If you know of any memory-allocating functions that may be freed with kfree, please let us know.
+        # If you know of any memory-allocating functions that may be freed with kfree, please let me know.
         # The number is the argument index of the size. -1 means index 0 is `struct kmem_cache*`.
         kversion = Kernel.kernel_version()
         if kversion < "3.16":
@@ -119157,6 +119301,63 @@ class KmallocTracerCommand(GenericCommand):
                 breakpoints.append(bp)
         return breakpoints
 
+    @staticmethod
+    def set_bp_to_alloc_free_pages(option_info, extra_info):
+        """
+        [3.0~5.12]
+        EXPORT_SYMBOL(__alloc_pages_nodemask);
+        EXPORT_SYMBOL(__free_pages);
+        [5.13~6.9]
+        EXPORT_SYMBOL(__alloc_pages);
+        EXPORT_SYMBOL(__free_pages);
+        [6.10~6.13]
+        EXPORT_SYMBOL(__alloc_pages_noprof);
+        EXPORT_SYMBOL(__free_pages);
+        [6.14~]
+        EXPORT_SYMBOL(__alloc_frozen_pages_noprof);
+        EXPORT_SYMBOL(__free_pages);
+        """
+
+        # This list may be incomplete.
+        # If you know of any memory-allocating functions that may be freed with kfree, please let me know.
+        # The number is the argument index of the order.
+        kversion = Kernel.kernel_version()
+        if kversion < "5.13":
+            alloc_pages_sym = [
+                ["__alloc_pages_nodemask", 1],
+            ]
+        elif kversion < "6.10":
+            alloc_pages_sym = [
+                ["__alloc_pages", 1],
+            ]
+        elif kversion < "6.14":
+            alloc_pages_sym = [
+                ["__alloc_pages_noprof", 1],
+            ]
+        else:
+            alloc_pages_sym = [
+                ["__alloc_frozen_pages_noprof", 1],
+            ]
+
+        free_pages_sym = [
+            ["__free_pages", 0, 1],
+        ]
+
+        breakpoints = []
+        for sym, index_of_order_arg in alloc_pages_sym:
+            func_addr = Symbol.get_ksymaddr(sym)
+            if func_addr:
+                gef_print(sym + ": ", end="")
+                bp = AllocPagesBreakpoint(func_addr, sym, index_of_order_arg, option_info, extra_info)
+                breakpoints.append(bp)
+        for sym, index_of_addr_arg, index_of_order_arg in free_pages_sym:
+            func_addr = Symbol.get_ksymaddr(sym)
+            if func_addr:
+                gef_print(sym + ": ", end="")
+                bp = FreePagesBreakpoint(func_addr, sym, index_of_addr_arg, index_of_order_arg, option_info, extra_info)
+                breakpoints.append(bp)
+        return breakpoints
+
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system",))
@@ -119196,8 +119397,10 @@ class KmallocTracerCommand(GenericCommand):
         # create option_info
         option_info = KmallocTracerCommand.create_option_info(args)
 
-        # set kmalloc break points
+        # set breakpoints
         breakpoints = KmallocTracerCommand.set_bp_to_kmalloc_kfree(option_info, self.extra_info)
+        if args.enable_page_allocator_trace:
+            breakpoints += KmallocTracerCommand.set_bp_to_alloc_free_pages(option_info, self.extra_info)
         for bp in breakpoints:
             bp.enabled = True
 
@@ -119210,6 +119413,8 @@ class KmallocTracerCommand(GenericCommand):
         for bp in breakpoints:
             bp.delete()
         KmallocTracerCommand.clear_disabled_breakpoints("KmallocRetBreakpoint", force=True)
+        if args.enable_page_allocator_trace:
+            KmallocTracerCommand.clear_disabled_breakpoints("AllocPagesRetBreakpoint", force=True)
         return
 
 
