@@ -16055,7 +16055,7 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
             type_prefix = "enum"
         else:
             err("{:s} is not struct or union".format(tp.name or args_type))
-            return
+            return False
 
         self.out = [
             "{:s} {:s} {{".format(type_prefix, Instruction.smartify_text(tp.name or args_type)),
@@ -16084,12 +16084,12 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
                 msg = "    {:s}    {} {:s} = {:#x};".format(offsz_str, type_str, name_str, field.enumval)
             self.out.append(msg)
         self.out.append("}} // total: {:#x} bytes".format(tp.sizeof))
-        return
+        return True
 
     def apply_type(self, tp, args_address):
         if not is_valid_addr(args_address):
             err("Memory read error")
-            return
+            return False
 
         # change setting
         if tp.sizeof > 2200: # 2200 is default value of max-value-size
@@ -16098,7 +16098,7 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
         v = gdb.Value(args_address)
         s = v.cast(tp.pointer()).dereference()
         self.out = s.format_string(styling=True).splitlines()
-        return
+        return True
 
     @parse_args
     @only_if_gdb_running
@@ -16133,11 +16133,12 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
 
         # doit
         if args.address is None:
-            self.dump_type(tp, args.type)
+            ret = self.dump_type(tp, args.type)
         else:
-            self.apply_type(tp, args.address)
+            ret = self.apply_type(tp, args.address)
 
-        self.print_output(check_terminal_size=True)
+        if ret:
+            self.print_output(check_terminal_size=True)
 
         # revert setting
         if args.smart:
