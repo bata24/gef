@@ -88977,6 +88977,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     group = parser.add_mutually_exclusive_group(required=False)
     group.add_argument("--only-partial", action="store_true", help="dump only partial pages.")
     group.add_argument("--only-node", action="store_true", help="dump only node pages.")
+    parser.add_argument("--skip-sheaf", action="store_true", help="skip to dump sheaf (6.18~).")
     parser.add_argument("--hexdump-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
                         help="hexdump `used chunks` if layout is resolved.")
     parser.add_argument("--hexdump-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
@@ -89017,27 +89018,33 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     _note_ = [
         "Simplified SLUB structure:",
         "",
-        "                         +-kmem_cache--+          +-kmem_cache--+   +-kmem_cache--+",
-        "                         | cpu_slab    |---+      | cpu_slab    |   | cpu_slab    |",
-        "                         | flags       |   |      | flags       |   | flags       |",
-        "                         | size        |   |      | size        |   | size        |",
-        "                         | object_size |   |      | object_size |   | object_size |",
-        "                         | offset      |   |      | offset      |   | offset      |",
-        "       +-slab_caches-+   | name        |   |      | name        |   | name        |",
-        " ...<->| list_head   |<->| list_head   |<-------->| list_head   |<->| list_head   |<-> ...",
-        "       +-------------+   | random      |   |      | random      |   | random      |",
-        "                         | node[]      |-+ |      | node[]      |   | node[]      |",
-        "                         +-------------+ | |      +-------------+   +-------------+",
-        "                                         | |",
-        "    +------------------------------------+ |",
-        "    |   +----------------------------------+",
-        "    |   |",
-        "    |   |          +-__per_cpu_offset-+",
-        "    |   +----------| cpu0_offset      |",
-        "    |   |          | cpu1_offset      |                    [active page freelist (fast path)]",
-        "    |   |          | cpu2_offset      |                      +-chunk---+  +-chunk---+",
-        "    |   |          | ...              |                      | ^       |  | ^       |",
-        "    |   |          +------------------+                      | |offset |  | |offset |",
+        "                         +-kmem_cache----------+         +-kmem_cache--+   +-kmem_cache--+",
+        "                         | cpu_slab            |---+     | cpu_slab    |   | cpu_slab    |",
+        "                         | cpu_sheaves (6.18~) |---|-+   | cpu_sheaves |   | cpu_sheaves |",
+        "                         | flags               |   | |   | flags       |   | flags       |",
+        "                         | size                |   | |   | size        |   | size        |",
+        "                         | object_size         |   | |   | object_size |   | object_size |",
+        "                         | offset              |   | |   | offset      |   | offset      |",
+        "       +-slab_caches-+   | name                |   | |   | name        |   | name        |",
+        " ...<->| list_head   |<->| list_head           |<------->| list_head   |<->| list_head   |<-> ...",
+        "       +-------------+   | random              |   | |   | random      |   | random      |",
+        "                         | node[]              |-+ | |   | node[]      |   | node[]      |",
+        "                         +---------------------+ | | |   +-------------+   +-------------+",
+        "                                                 | | |",
+        "                                                 | | |     [sheaf/barn (the fastest path)]",
+        "    +--------------------------------------------+ | |                     +-->+-slab_sheaf-+",
+        "    |   +------------------------------------------+ |                     |   | barn_list  |",
+        "    |   |                               +------------+                     |   | size       |",
+        "    |   |     +-__per_cpu_offset-+      |                                  |   | objects[]  |",
+        "    |   +-----| cpu0_offset      |------+------->+-slub_percpu_sheaves-+   |   |  ptr       |->chunk",
+        "    |   |     | cpu1_offset      |               | main                |---+   |  ptr       |->chunk",
+        "    |   |     | cpu2_offset      |               | spare               |-->... |  ...       |",
+        "    |   |     | ...              |               +---------------------+       +------------+",
+        "    |   |     +------------------+",
+        "    |   |                                                  [active page freelist (fast path)]",
+        "    |   |                                                    +-chunk---+  +-chunk---+",
+        "    |   |                                                    | ^       |  | ^       |",
+        "    |   |                                                    | |offset |  | |offset |",
         "    |   |                                                    | v       |  | v       |",
         "    |   |                  +-------------------------------->| next    |->| next    |->NULL",
         "    |   v                  |                                 +---------+  +---------+",
@@ -89073,24 +89080,33 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         "      +-kmem_cache_node-+     | freelist            |----+    | ^       |  | ^       |",
         "      | partial         |---->| next                |--+ |    | |offset |  | |offset |",
         "      | (full)          |     +---------------------+  | |    | v       |  | v       |",
-        "      +-----------------+                              | +--->| next    |->| next    |->NULL",
-        "      | ...             |  +---------------------------+      +---------+  +---------+",
-        "      |                 |  |",
-        "      +-----------------+  |                                [numa node partial page freelist]",
-        "                           |  +-page/slab(numa-node)+         +-chunk---+  +-chunk---+",
-        "                           |  | freelist            |----+    | ^       |  | ^       |",
-        "                           +->| next                |--+ |    | |offset |  | |offset |",
-        "                              +---------------------+  | |    | v       |  | v       |",
-        "                                                       | +--->| next    |->| next    |->NULL",
-        "                           +---------------------------+      +---------+  +---------+",
-        "                           |",
-        "                           v",
-        "                          ...",
+        "  +---| barn (6.18~)    |                              | +--->| next    |->| next    |->NULL",
+        "  |   +-----------------+  +---------------------------+      +---------+  +---------+",
+        "  |   | ...             |  |",
+        "  |   |                 |  |                                [numa node partial page freelist]",
+        "  |   +-----------------+  |  +-page/slab(numa-node)+         +-chunk---+  +-chunk---+",
+        "  |                        |  | freelist            |----+    | ^       |  | ^       |",
+        "  |                        +->| next                |--+ |    | |offset |  | |offset |",
+        "  |                           +---------------------+  | |    | v       |  | v       |",
+        "  |                                                    | +--->| next    |->| next    |->NULL",
+        "  |                        +---------------------------+      +---------+  +---------+",
+        "  |                        |",
+        "  +----+                   v",
+        "       |                  ...",
+        "       v",
+        "      +-node_barn-----+         +-slab_sheaf-+    +-slab_sheaf-+",
+        "      | sheaves_full  |<------->| barn_list  |<-->| barn_list  |<-->",
+        "      | sheaves_empty |<-->...  | ...        |    | ...        |",
+        "      +---------------+         +------------+    +------------+",
+        "",
         "* `struct page` has been split into `struct page` and `struct slab` since kernel 5.17.",
         "  The structure name used for SLUB has been changed to `struct slab`.",
         "* If all chunks in certain page (or slab) are in use, they will not be displayed by this command.",
         "  This is because they cannot be reached by parsing from `slab_caches`.",
         "  So use `slab-contains` (if you know the address) or `kvmmap` (if you want to see all slabs even if it takes time).",
+        "* `slab_sheaf`/`barn` introduced in 6.18 is not used by default, but used by setting it when calling `kmem_cache_create`.",
+        "  `slab_sheaf.objects[]` is a stack that grows downwards and caches freed addresses.",
+        "  The top of the stack is represented by `slab_sheaf.size`.",
         "* To see the CONFIG_SLAB_VIRTUAL ASCII diagram, execute `slub-dump --help-for-slab-virtual`.",
     ]
     _note_ = "\n".join(_note_)
@@ -89791,7 +89807,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # slow path
         if self.kmem_cache_offset_node is None:
-            self.quiet_info("offsetof(kmem_cache_node, partial): Not found")
             self.kmem_cache_node_offset_partial = None
             return
 
@@ -89805,6 +89820,254 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             if is_double_link_list(node + offset_partial):
                 self.kmem_cache_node_offset_partial = offset_partial
                 return
+        return
+
+    def get_slub_percpu_sheaves(self, addr, cpu):
+        cpu_sheaves = read_int_from_memory(addr + self.kmem_cache_offset_cpu_sheaves)
+        if cpu_sheaves == 0:
+            return None
+        if len(self.cpu_offset) > 0:
+            slub_percpu_sheaves = cpu_sheaves + self.cpu_offset[cpu]
+        else:
+            slub_percpu_sheaves = cpu_sheaves
+        return AddressUtil.align_address(slub_percpu_sheaves)
+
+    def resolve_slub_percpu_sheaves_offset_main(self):
+        self.slub_percpu_sheaves_offset_main = None
+
+        if self.kmem_cache_offset_cpu_sheaves is None:
+            return
+
+        # fast path
+        try:
+            self.slub_percpu_sheaves_offset_main = to_unsigned_long(
+                gdb.parse_and_eval("&((struct slub_percpu_sheaves*)0).main")
+            )
+            return
+        except gdb.error:
+            pass
+
+        """
+        struct slub_percpu_sheaves {
+            struct {
+            #ifdef CONFIG_DEBUG_LOCK_ALLOC
+                struct lockdep_map {
+                    struct lock_class_key *key;
+                    struct lock_class *class_cache[2];
+                    const char *name;
+                    u8 wait_type_outer;
+                    u8 wait_type_inner;
+                    u8 lock_type;
+                #ifdef CONFIG_LOCK_STAT
+                    int cpu;
+                    unsigned long ip;
+                #endif
+                } dep_map;
+                struct task_struct *owner;
+            #endif
+                u8 acquired;
+            } local_trylock_t lock;
+            struct slab_sheaf *main;
+            struct slab_sheaf *spare;
+            struct slab_sheaf *rcu_free;
+        };
+        """
+
+        # slow path
+        kmem_caches = self.parse_kmem_caches_for_initialize()
+        for kmem_cache in kmem_caches:
+            kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
+            for cpu in range(self.ncpus):
+                slub_percpu_sheaves = self.get_slub_percpu_sheaves(kmem_cache_top, cpu)
+                if slub_percpu_sheaves is None:
+                    continue
+
+                # CONFIG_DEBUG_LOCK_ALLOC=n
+                acquired = read_int_from_memory(slub_percpu_sheaves)
+                main = read_int_from_memory(slub_percpu_sheaves + current_arch.ptrsize)
+                if acquired in [0, 1] and is_valid_addr(main):
+                    self.slub_percpu_sheaves_offset_main = current_arch.ptrsize
+                    return
+
+                # CONFIG_DEBUG_LOCK_ALLOC=y
+                for i in range(8):
+                    v = read_int_from_memory(slub_percpu_sheaves + current_arch.ptrsize * i)
+                    if v == kmem_cache: # owner
+                        self.slub_percpu_sheaves_offset_main = current_arch.ptrsize * (i + 2)
+                        return
+        return
+
+    def resolve_kmem_cache_node_offset_barn(self):
+        self.kmem_cache_node_offset_barn = None
+
+        if self.kmem_cache_offset_node is None:
+            return
+
+        # fast path
+        try:
+            self.kmem_cache_node_offset_barn = to_unsigned_long(
+                gdb.parse_and_eval("&((struct kmem_cache_node*)0).barn")
+            )
+            return
+        except gdb.error:
+            pass
+
+        """
+        struct kmem_cache_node {
+            spinlock_t list_lock;
+            unsigned long nr_partial;
+            struct list_head partial;
+            atomic_long_t nr_slabs;                  // if CONFIG_SLUB_DEBUG=y
+            atomic_long_t total_objects;             // if CONFIG_SLUB_DEBUG=y
+            struct list_head full;                   // if CONFIG_SLUB_DEBUG=y
+            struct node_barn *barn;                  // 6.18 <= kernel
+        };
+        """
+
+        kmem_caches = self.parse_kmem_caches_for_initialize()
+        for kmem_cache in kmem_caches:
+            kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
+            for cpu in range(self.ncpus):
+                # is kmem_cache enabled sheaves?
+                slub_percpu_sheaves = self.get_slub_percpu_sheaves(kmem_cache_top, cpu)
+                if slub_percpu_sheaves is None:
+                    continue
+
+                # get kmem_cache_node
+                kmem_cache_node_array = kmem_cache_top + self.kmem_cache_offset_node
+                if not is_valid_addr(kmem_cache_node_array):
+                    continue
+                kmem_cache_node = read_int_from_memory(kmem_cache_node_array)
+                if not is_valid_addr(kmem_cache_node): # check 1st element is enough
+                    continue
+
+                # search list_head
+                for i in range(0x20):
+                    offset_candidate_list_head = current_arch.ptrsize * i
+                    if is_double_link_list(kmem_cache_node + offset_candidate_list_head):
+                        offset_candidate = offset_candidate_list_head + current_arch.ptrsize * 2
+                        # search valid pointer which locates next to it
+                        if is_valid_addr_addr(kmem_cache_node + offset_candidate):
+                            self.kmem_cache_node_offset_barn = offset_candidate
+                            return
+        return
+
+    def resolve_node_barn_offset_sheaves_full(self):
+        self.node_barn_offset_sheaves_full = None
+
+        if self.kmem_cache_offset_node is None:
+            return
+
+        # fast path
+        try:
+            self.node_barn_offset_sheaves_full = to_unsigned_long(
+                gdb.parse_and_eval("&((struct node_barn*)0).sheaves_full")
+            )
+            return
+        except gdb.error:
+            pass
+
+        """
+        struct node_barn {
+            spinlock_t lock;
+            struct list_head sheaves_full;
+            struct list_head sheaves_empty;
+            unsigned int nr_full;
+            unsigned int nr_empty;
+        };
+        """
+
+        # slow path
+        kmem_caches = self.parse_kmem_caches_for_initialize()
+        for kmem_cache in kmem_caches:
+            kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
+            for cpu in range(self.ncpus):
+                # is kmem_cache enabled sheaves?
+                slub_percpu_sheaves = self.get_slub_percpu_sheaves(kmem_cache_top, cpu)
+                if slub_percpu_sheaves is None:
+                    continue
+
+                # get kmem_cache_node
+                kmem_cache_node_array = kmem_cache_top + self.kmem_cache_offset_node
+                if not is_valid_addr(kmem_cache_node_array):
+                    continue
+                kmem_cache_node = read_int_from_memory(kmem_cache_node_array)
+                if not is_valid_addr(kmem_cache_node): # check 1st element is enough
+                    continue
+
+                # get barn
+                barn = read_int_from_memory(kmem_cache_node + self.kmem_cache_node_offset_barn)
+                if is_valid_addr(barn):
+                    # search list_head
+                    for i in range(0x20):
+                        offset_candidate = current_arch.ptrsize * i
+                        if is_double_link_list(barn + offset_candidate):
+                            self.node_barn_offset_sheaves_full = offset_candidate
+                            return
+        return
+
+    def resolve_sheaves(self):
+        self.sheaves_enabled = False
+
+        kversion = Kernel.kernel_version()
+        if kversion < "6.18":
+            return
+
+        if self.kmem_cache_offset_cpu_sheaves is None:
+            return
+        if self.kmem_cache_offset_node is None:
+            return
+
+        # offsetof(slub_percpu_sheaves, main)
+        self.resolve_slub_percpu_sheaves_offset_main()
+        if self.slub_percpu_sheaves_offset_main is None:
+            self.quiet_info("offsetof(slub_percpu_sheaves, main): Not found")
+            return
+        self.quiet_info("offsetof(slub_percpu_sheaves, main): {:#x}".format(self.slub_percpu_sheaves_offset_main))
+
+        # offsetof(kmem_cache_node, barn)
+        self.resolve_kmem_cache_node_offset_barn()
+        if self.kmem_cache_node_offset_barn is None:
+            self.quiet_info("offsetof(kmem_cache_node, barn): Not found")
+            return
+        self.quiet_info("offsetof(kmem_cache_node, barn): {:#x}".format(self.kmem_cache_node_offset_barn))
+
+        # offsetof(node_barn, sheaves_full)
+        self.resolve_node_barn_offset_sheaves_full()
+        if self.node_barn_offset_sheaves_full is None:
+            self.quiet_info("offsetof(node_barn, sheaves_full): Not found")
+            return
+        self.quiet_info("offsetof(node_barn, sheaves_full): {:#x}".format(self.node_barn_offset_sheaves_full))
+
+        # offsetof(slub_percpu_sheaves, spare)
+        self.slub_percpu_sheaves_offset_spare = self.slub_percpu_sheaves_offset_main + current_arch.ptrsize
+
+        """
+        struct slab_sheaf {
+            union {
+                struct rcu_head rcu_head;
+                struct list_head barn_list;
+                unsigned int capacity; /* only used for prefilled sheafs */
+            };
+            struct kmem_cache *cache;
+            unsigned int size;
+            int node; /* only used for rcu_sheaf */
+            void *objects[];
+        };
+        """
+        # offsetof(slab_sheaf, barn_list)
+        self.slab_sheaf_offset_barn_list = 0
+        # offsetof(slab_sheaf, kmem_cache)
+        self.slab_sheaf_offset_kmem_cache = self.slab_sheaf_offset_barn_list + current_arch.ptrsize * 2
+        # offsetof(slab_sheaf, size)
+        self.slab_sheaf_offset_size = self.slab_sheaf_offset_kmem_cache + current_arch.ptrsize
+        # offsetof(slab_sheaf, objects)
+        self.slab_sheaf_offset_objects = self.slab_sheaf_offset_size + current_arch.ptrsize
+
+        # offsetof(node_barn, sheaves_empty)
+        self.node_barn_offset_sheaves_empty = self.node_barn_offset_sheaves_full + current_arch.ptrsize * 2
+
+        self.sheaves_enabled = True
         return
 
     # CONFIG_SLAB_VIRTUAL=n
@@ -89947,6 +90210,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         atomic_long_t nr_slabs;                  // if CONFIG_SLUB_DEBUG=y
         atomic_long_t total_objects;             // if CONFIG_SLUB_DEBUG=y
         struct list_head full;                   // if CONFIG_SLUB_DEBUG=y
+        struct node_barn *barn;                  // 6.18 <= kernel
     };
     """
 
@@ -90055,7 +90319,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # offsetof(kmem_cache, list)
         self.resolve_kmem_cache_offset_list()
-        if not self.kmem_cache_offset_list:
+        if self.kmem_cache_offset_list is None:
             self.quiet_info("offsetof(kmem_cache, list): Not found")
             return False
         self.quiet_info("offsetof(kmem_cache, list): {:#x}".format(self.kmem_cache_offset_list))
@@ -90081,6 +90345,13 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             else:
                 self.kmem_cache_offset_flags = current_arch.ptrsize * 2
         self.quiet_info("offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags))
+
+        # offsetof(kmem_cache, cpu_sheaves)
+        if kversion < "6.18":
+            self.kmem_cache_offset_cpu_sheaves = None
+        else:
+            self.kmem_cache_offset_cpu_sheaves = self.kmem_cache_offset_flags - current_arch.ptrsize
+            self.quiet_info("offsetof(kmem_cache, cpu_sheaves): {:#x}".format(self.kmem_cache_offset_cpu_sheaves))
 
         # offsetof(kmem_cache, size)
         self.kmem_cache_offset_size = self.kmem_cache_offset_flags + current_arch.ptrsize * 2
@@ -90219,16 +90490,19 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # offsetof(kmem_cache_node, partial)
         self.resolve_kmem_cache_node_offset_partial()
-        if self.kmem_cache_node_offset_partial:
-            self.quiet_info("offsetof(kmem_cache_node, partial): {:#x}".format(self.kmem_cache_node_offset_partial))
-        else:
+        if self.kmem_cache_node_offset_partial is None:
             self.quiet_info("offsetof(kmem_cache_node, partial): Not found")
+        else:
+            self.quiet_info("offsetof(kmem_cache_node, partial): {:#x}".format(self.kmem_cache_node_offset_partial))
 
         # offsetof(kmem_cache_node, full)
-        if self.kmem_cache_node_offset_partial:
-            self.kmem_cache_node_offset_full = self.kmem_cache_node_offset_partial + current_arch.ptrsize * 4
-        else:
+        if self.kmem_cache_node_offset_partial is None:
             self.kmem_cache_node_offset_full = None
+        else:
+            self.kmem_cache_node_offset_full = self.kmem_cache_node_offset_partial + current_arch.ptrsize * 4
+
+        # for sheaves / barn
+        self.resolve_sheaves()
 
         self.initialized = True
         return True
@@ -90473,7 +90747,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             current_partial_page = next_partial_page
         return
 
-    def walk_node_list(self, kmem_cache, kmem_cache_node, offset_list):
+    def walk_node_list(self, kmem_cache, kmem_cache_node, offset_list): # use different offsets
         node_page_list = []
         node_page_head = kmem_cache_node + offset_list
         if not is_valid_addr(node_page_head):
@@ -90501,6 +90775,48 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             current_node_page = read_int_from_memory(node_page["address"] + self.page_offset_next)
         return node_page_list
 
+    # for sheaf / barn
+    def walk_node_barn_list(self, kmem_cache, kmem_cache_node):
+        if not self.sheaves_enabled:
+            return
+
+        if self.args.skip_sheaf:
+            return
+
+        if not hasattr(kmem_cache, "node_barn"):
+            kmem_cache["node_barn"] = []
+
+        def read_link_list(addr):
+            seen = []
+            while is_valid_addr(addr):
+                if addr in seen:
+                    break
+                seen.append(addr)
+                addr = read_int_from_memory(addr)
+            if len(seen) >= 1:
+                seen = seen[1:] # skip first
+            return seen
+
+        node_barn = {}
+        node_barn["address"] = read_int_from_memory(kmem_cache_node + self.kmem_cache_node_offset_barn)
+        if is_valid_addr(node_barn["address"]):
+            # full
+            node_barn["sheaves_full"] = []
+            sheaves_full = read_link_list(node_barn["address"] + self.node_barn_offset_sheaves_full)
+            for addr in sheaves_full:
+                sheaf = self.walk_sheaf(addr - self.slab_sheaf_offset_barn_list, kmem_cache["address"])
+                node_barn["sheaves_full"].append(sheaf)
+
+            # empty
+            node_barn["sheaves_empty"] = []
+            sheaves_empty = read_link_list(node_barn["address"] + self.node_barn_offset_sheaves_empty)
+            for addr in sheaves_empty:
+                sheaf = self.walk_sheaf(addr - self.slab_sheaf_offset_barn_list, kmem_cache["address"])
+                node_barn["sheaves_empty"].append(sheaf)
+
+        kmem_cache["node_barn"].append(node_barn)
+        return
+
     def walk_caches_node_page(self, cpu, kmem_cache):
         if not self.kmem_cache_offset_node:
             return
@@ -90510,6 +90826,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         kmem_cache["nodes_partial"] = []
         if self.args.slub_debug_y:
             kmem_cache["nodes_full"] = []
+
         kmem_cache_node_array = kmem_cache["address"] + self.kmem_cache_offset_node
         current_kmem_cache_node_ptr = kmem_cache_node_array
         while True:
@@ -90534,6 +90851,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 )
                 kmem_cache["nodes_full"].append(node_page_list_full)
 
+            # node barn
+            self.walk_node_barn_list(kmem_cache, current_kmem_cache_node)
+
+            # goto next
             current_kmem_cache_node_ptr += current_arch.ptrsize
         return
 
@@ -90550,6 +90871,53 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             # next slab
             current_slab = read_int_from_memory(current_slab + offset_next) - offset_next
         return slab_list
+
+    # for sheaf / barn
+    def walk_sheaf(self, addr, kmem_cache_addr):
+        sheaf = {}
+        sheaf["address"] = addr
+        if not is_valid_addr(sheaf["address"]):
+            return sheaf
+        sheaf["kmem_cache"] = read_int_from_memory(sheaf["address"] + self.slab_sheaf_offset_kmem_cache)
+        assert sheaf["kmem_cache"] == kmem_cache_addr
+        sheaf["size"] = read_int32_from_memory(sheaf["address"] + self.slab_sheaf_offset_size)
+        sheaf["objects"] = []
+        for i in range(sheaf["size"]):
+            v = read_int_from_memory(sheaf["address"] + self.slab_sheaf_offset_objects + current_arch.ptrsize * i)
+            sheaf["objects"].append(v)
+        return sheaf
+
+    # for sheaf / barn
+    def walk_cpu_sheaves(self, cpu, kmem_cache):
+        if not self.sheaves_enabled:
+            return
+
+        if self.args.skip_sheaf:
+            return
+
+        if not hasattr(kmem_cache, "cpu_sheaves"):
+            kmem_cache["cpu_sheaves"] = {}
+
+        # cpu_sheaves
+        kmem_cache["cpu_sheaves"][cpu] = {}
+        kmem_cache["cpu_sheaves"][cpu]["address"] = self.get_slub_percpu_sheaves(kmem_cache["address"], cpu)
+        if kmem_cache["cpu_sheaves"][cpu]["address"] is None:
+            return
+        if self.slub_percpu_sheaves_offset_main is None:
+            return
+
+        # cpu_sheaves->main
+        kmem_cache["cpu_sheaves"][cpu]["main"] = self.walk_sheaf(
+            read_int_from_memory(kmem_cache["cpu_sheaves"][cpu]["address"] + self.slub_percpu_sheaves_offset_main),
+            kmem_cache["address"],
+        )
+
+        # cpu_sheaves->spare
+        kmem_cache["cpu_sheaves"][cpu]["spare"] = self.walk_sheaf(
+            read_int_from_memory(kmem_cache["cpu_sheaves"][cpu]["address"] + self.slub_percpu_sheaves_offset_spare),
+            kmem_cache["address"],
+        )
+        return
 
     def walk_caches(self, target_names, cpus):
         current_kmem_cache = self.get_next_kmem_cache(self.slab_caches, point_to_base=False)
@@ -90572,7 +90940,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             kmem_cache["red_left_pad"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_red_left_pad)
             kmem_cache["random"] = self.get_random(current_kmem_cache)
             kmem_cache["next"] = self.get_next_kmem_cache(current_kmem_cache)
-            # parse extra members for Feat. CONFIG_SLAB_VIRTUAL
+            # parse extra members for feat. CONFIG_SLAB_VIRTUAL
             if self.slab_virtual_enabled:
                 kmem_cache["nr_freed_pages"] = read_int_from_memory(current_kmem_cache + self.kmem_cache_offset_nr_freed_pages)
                 kmem_cache["freed_slabs_normal"] = self.walk_slab_list(
@@ -90610,6 +90978,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 # parse active
                 if self.dump_target_active:
                     self.walk_caches_active_page(cpu, kmem_cache)
+                    # parse cpu_sheaves
+                    self.walk_cpu_sheaves(cpu, kmem_cache)
                 # parse partial
                 if self.dump_target_partial:
                     self.walk_caches_partial_page(cpu, kmem_cache)
@@ -90779,6 +91149,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.dump_page_print_freelist(tag, kmem_cache, page, freelist, freelist_fastpath)
         return
 
+    # for CONFIG_SLAB_VIRTUAL
     def dump_slub_tlbflush_queue(self, parsed_slabs):
         chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
         not_mapped_virt = Config.get_gef_setting("theme.address_valid_but_none")
@@ -90792,6 +91163,54 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             # virtual address is not mapped here
             virt = "{:#x}".format(self.page2virt_for_slab_virtual(slab_addr))
             self.out.append("    virt: {:s}".format(Color.colorify(virt, not_mapped_virt)))
+        return
+
+    # for sheaf / barn
+    def dump_sheaf(self, sheaf, tag):
+        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+
+        self.out.append("      {:s}: {:#x}".format(tag, sheaf["address"]))
+        self.out.append("        size: {:d}".format(sheaf["size"]))
+
+        if self.args.simple:
+            return
+
+        for i, chunk in enumerate(sheaf["objects"]):
+            chunk_s = Color.colorify_hex(chunk, freed_address_color)
+            if i == 0:
+                self.out.append("        objects:  {:#05x} {:s}".format(i, chunk_s))
+            elif i == len(sheaf["objects"]) - 1:
+                self.out.append("                  {:#05x} {:s} <- top".format(i, chunk_s))
+            else:
+                self.out.append("                  {:#05x} {:s}".format(i, chunk_s))
+
+            if self.args.hexdump_freed:
+                peeked_data = read_memory(chunk, self.args.hexdump_freed)
+                h = hexdump(peeked_data, 0x10, base=chunk, unit=current_arch.ptrsize)
+                self.out.append(h)
+            if self.args.telescope_freed:
+                n = self.args.telescope_freed // current_arch.ptrsize
+                for i in range(n):
+                    line = DereferenceCommand.pprint_dereferenced(chunk, i)
+                    self.out.append(line)
+        return
+
+    # for sheaf / barn
+    def dump_sheaves(self, cpu_sheaves, kmem_cache):
+        label_active_color = Config.get_gef_setting("theme.heap_label_active")
+        label_inactive_color = Config.get_gef_setting("theme.heap_label_inactive")
+
+        # main
+        if "main" in cpu_sheaves:
+            if cpu_sheaves["main"]["address"]:
+                tag = Color.colorify("main sheaf", label_active_color) + " (fastest path)"
+                self.dump_sheaf(cpu_sheaves["main"], tag)
+
+        # spare
+        if "spare" in cpu_sheaves:
+            if cpu_sheaves["spare"]["address"]:
+                tag = Color.colorify("spare sheaf", label_inactive_color)
+                self.dump_sheaf(cpu_sheaves["spare"], tag)
         return
 
     def dump_caches(self, target_names, cpus, parsed_caches):
@@ -90852,6 +91271,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     active_page = kmem_cache["kmem_cache_cpu"][cpu]["active_page"]
                     freelist_fastpath = kmem_cache["kmem_cache_cpu"][cpu]["freelist"]
                     self.dump_page(active_page, kmem_cache, "active", freelist_fastpath)
+                    if "cpu_sheaves" in kmem_cache:
+                        cpu_sheaves = kmem_cache["cpu_sheaves"][cpu]
+                        self.dump_sheaves(cpu_sheaves, kmem_cache)
 
                 # dump partial
                 if self.dump_target_partial:
@@ -90891,6 +91313,14 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                             self.out.append("      {:s}: (none)".format(
                                 Color.colorify("node (full) pages", label_inactive_color),
                             ))
+
+                    # barn list (6.18~)
+                    if "node_barn" in kmem_cache:
+                        for node_barn in kmem_cache["node_barn"]:
+                            for sheaves_full in node_barn["sheaves_full"]:
+                                self.dump_sheaf(sheaves_full, Color.colorify("node full sheaf", "underline"))
+                            for sheaves_empty in node_barn["sheaves_empty"]:
+                                self.dump_sheaf(sheaves_empty, Color.colorify("node empty sheaf", "underline"))
 
             self.out.append("    next: {:#x}".format(kmem_cache["next"]))
         return
@@ -91474,6 +91904,8 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
                 break
             if current_kmem_cache_node & 0b111:
                 break
+
+            # node list
             node_page_list = []
             node_page_head = current_kmem_cache_node + self.kmem_cache_node_offset_partial
             if not is_valid_addr(node_page_head):
@@ -91500,6 +91932,8 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
                 node_page_list.append(node_page)
                 current_node_page = read_int_from_memory(node_page["address"] + self.slab_offset_next)
             kmem_cache["nodes"].append(node_page_list)
+
+            # goto next
             current_kmem_cache_node_ptr += current_arch.ptrsize
         return
 

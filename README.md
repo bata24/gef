@@ -148,6 +148,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - Supported on x64/x86/ARM64/ARM + `SLUB` + no-symbol + kASLR.
     - Supported regardless of whether `CONFIG_SLAB_FREELIST_HARDENED` is `y` or `n`.
     - Supported regardless of whether `CONFIG_SLAB_VIRTUAL` is `y` or `n` (x64 only).
+    - It supports `sheaf/barn` mechanism for linux 6.18~.
     - It supports dumping partial pages (`-v`) and NUMA node pages (`-vv`).
     - Since `page_to_virt` is difficult to implement, it will heuristically determine the virtual address from the free-list.
     - ![](images/slub-dump.png)
