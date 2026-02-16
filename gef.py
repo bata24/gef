@@ -61269,7 +61269,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-s", "--print-sighand", action="store_true",
                         help="print signal handlers for each user process.")
     parser.add_argument("-S", "--print-seccomp", action="store_true",
-                        help="print seccomp information for each user process.")
+                        help="dump the seccomp filter. If the tool is available, it dumps orig_prog; otherwise, it disassembles bpf_func.")
     parser.add_argument("-N", "--print-namespace", action="store_true",
                         help="print namespaces for each user process.")
     parser.add_argument("-u", "--user-process-only", action="store_true",
@@ -64145,6 +64145,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 return False
             self.quiet_info("offsetof(bpf_prog, orig_prog): {:#x}".format(self.offset_orig_prog))
 
+            self.offset_jited_len = 16
+
             try:
                 self.seccomp_tools_command = [GefUtil.which("ceccomp"), "disasm", "-c", "always"]
                 self.quiet_info("ceccomp is found")
@@ -64155,10 +64157,10 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     if is_arm32():
                         self.quiet_warn("`seccomp-tools` is not supported on ARM32. "
                                         "Consider using `ceccomp` instead, as it supports ARM32.")
-                        self.quiet_info("GEF uses `capstone-disable bpf_func`")
+                        self.quiet_info("GEF uses `capstone-disassemble bpf_func`")
                         self.seccomp_tools_command = None
                 except FileNotFoundError:
-                    self.quiet_info("Could not find ceccomp or seccomp-tools, GEF uses `capstone-disable bpf_func`")
+                    self.quiet_info("Could not find ceccomp or seccomp-tools, GEF uses `capstone-disassemble bpf_func`")
                     self.seccomp_tools_command = None
 
         return task_addrs
@@ -64444,14 +64446,18 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                         filter_prev = read_int_from_memory(filter_current + self.offset_prev)
                         bpf_func = read_int_from_memory(prog + self.offset_bpf_func)
                         orig_prog = read_int_from_memory(prog + self.offset_orig_prog)
+                        jited_len = read_int32_from_memory(prog + self.offset_jited_len)
 
                         self.out.append("")
-                        self.out.append("[{:d}/{:d}] filter:{:#x} prev:{:#x} bpf_func:{:#x} orig_prog:{:#x}".format(
-                            i + 1, filter_count, filter_current, filter_prev, bpf_func, orig_prog,
-                        ))
+                        self.out.append(
+                            "[{:d}/{:d}] filter:{:#x} prev:{:#x} prog:{:#x} bpf_func:{:#x} jited_len:{:#x} orig_prog:{:#x}".format(
+                                i + 1, filter_count, filter_current, filter_prev, prog, bpf_func, jited_len, orig_prog,
+                            )
+                        )
 
-                        if self.seccomp_tools_command:
-                            cnt = read_int_from_memory(orig_prog) & 0xffff
+                        if self.seccomp_tools_command and is_valid_addr(orig_prog):
+                            # use seccomp-tools or ceccomp
+                            cnt = read_int16_from_memory(orig_prog)
                             prog = read_int_from_memory(orig_prog + current_arch.ptrsize)
                             data = read_memory(prog, cnt * 8)
                             tmp_fd, tmp_path = GefUtil.mkstemp(prefix="ktask")
@@ -64461,10 +64467,24 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                             )
                             self.out.extend(ret)
                             os.unlink(tmp_path)
+                        elif is_valid_addr(bpf_func):
+                            try:
+                                __import__("capstone")
+                                # use capstone
+                                data = read_memory(bpf_func, jited_len)
+                                dump_count = 0
+                                for insn in Disasm.capstone_disassemble(bpf_func, jited_len, code=data.hex()):
+                                    msg = insn.colored_text(10)
+                                    self.out.append(msg)
+                                    dump_count += insn.size
+                                    if dump_count >= jited_len:
+                                        break
+                            except ImportError:
+                                ret = gdb.execute("x/40i {:#x}".format(bpf_func), to_string=True).rstrip()
+                                self.out.append(ret)
+                                self.out.append("...")
                         else:
-                            ret = gdb.execute("capstone-disassemble {:#x}".format(bpf_func), to_string=True).rstrip()
-                            self.out.append(ret)
-                            self.out.append("      ...")
+                            self.err_add_out("Read memory error")
 
                         filter_current = filter_prev
 
@@ -96051,6 +96071,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
         else:
             self.offset_aux = align_to_ptrsize(self.offset_tag + 8)
             self.offset_bpf_func = self.offset_aux + current_arch.ptrsize * 2
+        self.offset_orig_prog = self.offset_aux + current_arch.ptrsize
         self.quiet_info("offsetof(bpf_prog, type): {:#x}".format(self.offset_prog_type))
         self.quiet_info("offsetof(bpf_prog, expected_attach_type): {:#x}".format(self.offset_expected_attach_type))
         self.quiet_info("offsetof(bpf_prog, len): {:#x}".format(self.offset_len))
@@ -96058,6 +96079,23 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(bpf_prog, tag): {:#x}".format(self.offset_tag))
         self.quiet_info("offsetof(bpf_prog, aux): {:#x}".format(self.offset_aux))
         self.quiet_info("offsetof(bpf_prog, bpf_func): {:#x}".format(self.offset_bpf_func))
+        self.quiet_info("offsetof(bpf_prog, orig_prog): {:#x}".format(self.offset_orig_prog))
+
+        try:
+            self.seccomp_tools_command = [GefUtil.which("ceccomp"), "disasm", "-c", "always"]
+            self.quiet_info("ceccomp is found")
+        except FileNotFoundError:
+            try:
+                self.seccomp_tools_command = [GefUtil.which("seccomp-tools"), "disasm"]
+                self.quiet_info("seccomp-tools is found")
+                if is_arm32():
+                    self.quiet_warn("`seccomp-tools` is not supported on ARM32. "
+                                    "Consider using `ceccomp` instead, as it supports ARM32.")
+                    self.quiet_info("GEF uses `capstone-disassemble bpf_func`")
+                    self.seccomp_tools_command = None
+            except FileNotFoundError:
+                self.quiet_info("Could not find ceccomp or seccomp-tools, GEF uses `capstone-disassemble bpf_func`")
+                self.seccomp_tools_command = None
 
         if maps:
             """
@@ -96126,8 +96164,8 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
 
     def dump_bpf_progs(self, progs):
         self.out.append(titlify("prog_idr"))
-        fmt = "{:3s} {:18s} {:23s} {:24s} {:18s} {:18s} {:18s}"
-        legend = ["#", "bpf_prog", "bpf_prog_type", "bpf_attach_type", "tag", "bpf_prog_aux", "bpf_func"]
+        fmt = "{:3s} {:18s} {:23s} {:24s} {:18s} {:18s} {:18s} {:9s} {:18s}"
+        legend = ["#", "bpf_prog", "bpf_prog_type", "bpf_attach_type", "tag", "bpf_prog_aux", "bpf_func", "jited_len", "orig_prog"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         defined_prog_types = [
@@ -96205,20 +96243,52 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             "XDP",
         ]
 
-        fmt = "{:<3d} {:#018x} {:23s} {:24s} {:#018x} {:#018x} {:#018x}"
+        fmt = "{:<3d} {:#018x} {:23s} {:24s} {:#018x} {:#018x} {:#018x} {:<#9x} {:#018x}"
         for i, prog in enumerate(progs):
             bpf_type = read_int32_from_memory(prog + self.offset_prog_type)
             bpf_attach_type = read_int32_from_memory(prog + self.offset_expected_attach_type)
+            jited_len = read_int32_from_memory(prog + self.offset_jited_len)
+            orig_prog = read_int_from_memory(prog + self.offset_orig_prog)
             t1 = defined_prog_types[bpf_type]
             t2 = defined_attach_types[bpf_attach_type]
             tag = read_int64_from_memory(prog + self.offset_tag)
             aux = read_int_from_memory(prog + self.offset_aux)
             bpf_func = read_int_from_memory(prog + self.offset_bpf_func)
-            self.out.append(fmt.format(i, prog, t1, t2, tag, aux, bpf_func))
+            self.out.append(fmt.format(i, prog, t1, t2, tag, aux, bpf_func, jited_len, orig_prog))
+
             if self.args.verbose:
-                ret = gdb.execute("capstone-disassemble {:#x}".format(bpf_func), to_string=True).rstrip()
-                self.out.append(ret)
-                self.out.append("      ...")
+                # dump func
+                if self.seccomp_tools_command and is_valid_addr(orig_prog):
+                    # use seccomp-tools or ceccomp
+                    cnt = read_int16_from_memory(orig_prog)
+                    prog = read_int_from_memory(orig_prog + current_arch.ptrsize)
+                    data = read_memory(prog, cnt * 8)
+                    tmp_fd, tmp_path = GefUtil.mkstemp(prefix="kbpf")
+                    os.fdopen(tmp_fd, "wb").write(data)
+                    ret = GefUtil.gef_execute_external(
+                        self.seccomp_tools_command + [tmp_path], as_list=True,
+                    )
+                    self.out.extend(ret)
+                    os.unlink(tmp_path)
+                elif is_valid_addr(bpf_func):
+                    try:
+                        __import__("capstone")
+                        # use capstone
+                        data = read_memory(bpf_func, jited_len)
+                        dump_count = 0
+                        for insn in Disasm.capstone_disassemble(bpf_func, jited_len, code=data.hex()):
+                            msg = insn.colored_text(10)
+                            self.out.append(msg)
+                            dump_count += insn.size
+                            if dump_count >= jited_len:
+                                break
+                    except ImportError:
+                        ret = gdb.execute("x/40i {:#x}".format(bpf_func), to_string=True).rstrip()
+                        self.out.append(ret)
+                        self.out.append("...")
+                else:
+                    self.err_add_out("Read memory error")
+                self.out.append(titlify(""))
         return
 
     def dump_bpf_maps(self, maps):
