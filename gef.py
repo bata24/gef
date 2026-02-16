@@ -60374,17 +60374,17 @@ class Kernel:
                 perm = line[5][1:] # [xxx
                 maps.append([vaddr, size, perm])
 
-        if maps == []:
+        if len(maps) <= 1:
             if is_x86():
-                warn("Make sure you are in ring0 (=kernel mode)")
+                warn("Make sure you are in ring0 (=kernel mode); See pagewalk")
             elif is_arm32():
-                warn("Make sure you are in supervisor mode (=kernel mode)")
+                warn("Make sure you are in supervisor mode (=kernel mode); See pagewalk")
                 warn("Make sure qemu 3.x or higher")
             elif is_arm64():
-                warn("Make sure you are in EL1 (=kernel mode)")
+                warn("Make sure you are in EL1 (=kernel mode); See pagewalk")
                 warn("Make sure qemu 3.x or higher")
             elif is_riscv64() or is_riscv32():
-                warn("Make sure you are in S-mode (=kernel mode)")
+                warn("Make sure you are in S-mode (=kernel mode); See pagewalk")
             return None
         else:
             return maps
