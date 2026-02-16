@@ -23624,12 +23624,12 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         patches = {}
         if is_x86_64():
             regs_new = {"$rdi": arg1, "$rsi": arg2, "$rax": caller_address}
-            patches[current_arch.pc] = "ffd0" # call rax
+            patches[current_arch.pc] = bytes.fromhex("ffd0") # call rax
             stop_address = current_arch.pc + 2
 
         elif is_x86_32():
             regs_new = {"$edi": arg1, "$esi": arg2, "$eax": caller_address}
-            patches[current_arch.pc] = "5657ffd0" # push esi; push edi; call eax
+            patches[current_arch.pc] = bytes.fromhex("5657ffd0") # push esi; push edi; call eax
             stop_address = current_arch.pc + 4
 
         elif is_arm32():
@@ -23661,16 +23661,16 @@ class GlibcHeapTryFreeCommand(GenericCommand):
             # Check current $pc is thumb2
             if current_arch.is_thumb():
                 regs_new = {"$r0": arg1, "$r1": arg2, "$r2": caller_address}
-                patches[current_arch.pc & ~1] = "9047" # blx r2
+                patches[current_arch.pc & ~1] = bytes.fromhex("9047") # blx r2
                 stop_address = (current_arch.pc & ~1) + 2
             else:
                 regs_new = {"$r0": arg1, "$r1": arg2, "$r2": caller_address}
-                patches[current_arch.pc] = "32ff2fe1" # blx r2
+                patches[current_arch.pc] = bytes.fromhex("32ff2fe1") # blx r2
                 stop_address = current_arch.pc + 4
 
         elif is_arm64():
             regs_new = {"$x0": arg1, "$x1": arg2, "$x2": caller_address}
-            patches[current_arch.pc] = "40003fd6" # blr x2
+            patches[current_arch.pc] = bytes.fromhex("40003fd6") # blr x2
             stop_address = current_arch.pc + 4
 
         # create namedtuple
@@ -23804,8 +23804,8 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                 addr = int(line.split("|")[0], 16)
                 after_memories = line.split("|")[-2]
                 values = [int(x, 16) for x in after_memories.strip().split()]
-                values = [x.to_bytes(current_arch.ptrsize, "little").hex() for x in values]
-                patches[addr] = "".join(values)
+                values = [x.to_bytes(current_arch.ptrsize, "little") for x in values]
+                patches[addr] = b"".join(values)
         return patches
 
     def doit(self, name, arg1, arg2):
@@ -23823,8 +23823,9 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         # modify (registers, memories)
         for regname, regvalue in info.regs_new.items():
             gdb.execute("set {:s}={:#x}".format(regname, regvalue))
+        tag = PatchCommand.PatchInfo.get_unique_tag()
         for patch_addr, patch_code in info.patches.items():
-            gdb.execute("patch hex {:#x} {:s}".format(patch_addr, patch_code), to_string=True)
+            PatchCommand.PatchInfo(patch_addr, patch_code, tag=tag).patch(silent=not self.args.verbose)
 
         # execute
         option = ["-t", hex(info.stop_address), "-A", "-E", "-I"]
@@ -23846,9 +23847,8 @@ class GlibcHeapTryFreeCommand(GenericCommand):
             if success and self.args.command:
                 # temporarily reflects changes in memory
                 patches = self.make_patch_info_from_emulation_result(res)
-                if patches:
-                    for addr, value in patches.items():
-                        gdb.execute("patch hex {:#x} {:s}".format(addr, value), to_string=not self.args.verbose)
+                for addr, value in patches.items():
+                    PatchCommand.PatchInfo(addr, value, tag=tag).patch(silent=not self.args.verbose)
                 # do command
                 for cmd in self.args.command:
                     try:
@@ -23857,14 +23857,11 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                     except Exception:
                         exc_type, exc_value, exc_traceback = sys.exc_info()
                         gef_print(exc_value)
-                # revert (temporarily reflected memory)
-                if patches:
-                    gdb.execute("patch revert {:d}".format(len(patches) - 1), to_string=not self.args.verbose)
 
         # revert (registers, memories, thread locking)
         for regname, regvalue in info.regs_old.items():
             gdb.execute("set {:s}={:#x}".format(regname, regvalue))
-        gdb.execute("patch revert {:d}".format(len(info.patches) - 1), to_string=not self.args.verbose)
+        PatchCommand.PatchInfo.revert_to_tag(tag, silent=not self.args.verbose)
         return
 
     @parse_args
@@ -33668,7 +33665,7 @@ class PatchCommand(GenericCommand):
     subparsers.add_parser("revert")
     _syntax_ = parser.format_help()
 
-    patch_history = []
+    patch_history = [] # [ [patch1a, patch1b], [patch2a], ...]
 
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
@@ -33678,19 +33675,49 @@ class PatchCommand(GenericCommand):
         return
 
     class PatchInfo:
-        def __init__(self, tag, addr, data, length, phys=None):
-            self.tag = tag
+        def __init__(self, addr, data, length=None, phys=None, tag=None):
+            if not isinstance(addr, int):
+                raise ValueError
             self.addr = addr
+
+            if not isinstance(data, bytes):
+                raise ValueError
             self.data = data
-            self.length = length
+
+            if length is None:
+                self.length = len(self.data)
+            else:
+                self.length = length
+
             self.phys = phys
+
+            # tag: A key to group multiple patches together
+            if tag is None:
+                self.tag = PatchCommand.PatchInfo.get_unique_tag()
+            else:
+                self.tag = tag
             return
 
         def __repr__(self):
-            return '<{:s}.{:s} object at {:#x}, addr={:#x}, data={}, length={:#x}, phys={}>'.format(
+            return '<{:s}.{:s} object at {:#x}, addr={:#x}, data={}, length={:#x}, phys={}, tag={}>'.format(
                 self.__module__, self.__class__.__name__, id(self),
-                self.addr, self.data, self.length, self.phys
+                self.addr, self.data, self.length, self.phys,
+                hex(self.tag) if isinstance(self.tag, int) else self.tag,
             )
+
+        @staticmethod
+        def get_unique_tag():
+            import random
+            tags = PatchCommand.PatchInfo.get_tag_set()
+            while True:
+                v = random.randint(1, 0xffff_ffff)
+                if v not in tags:
+                    break
+            return v
+
+        @staticmethod
+        def get_tag_set():
+            return {x[0].tag for x in PatchCommand.patch_history}
 
         def a(self):
             a = " ".join(["{:02x}".format(x) for x in self.after_data[:0x10]])
@@ -33704,7 +33731,7 @@ class PatchCommand(GenericCommand):
                 b += " ..."
             return b
 
-        def patch(self):
+        def patch(self, silent=False):
             orig_mode = QemuMonitor.get_current_mmu_mode()
             if orig_mode == "virt" and self.phys:
                 enable_phys()
@@ -33724,10 +33751,11 @@ class PatchCommand(GenericCommand):
                 self.after_data = read_memory(self.addr, self.length)
 
             # print
-            ok("Patch success: {!s}{:s}: {:s} -> {:s}".format(
-                ProcessMap.lookup_address(self.addr), Symbol.get_symbol_string(self.addr),
-                self.b(), self.a(),
-            ))
+            if not silent:
+                ok("Patch success: {!s}{:s}: {:s} -> {:s}".format(
+                    ProcessMap.lookup_address(self.addr), Symbol.get_symbol_string(self.addr),
+                    self.b(), self.a(),
+                ))
 
             # history
             self.insert_history()
@@ -33742,7 +33770,7 @@ class PatchCommand(GenericCommand):
                 PatchCommand.patch_history.insert(0, [self])
             return
 
-        def revert(self):
+        def revert(self, silent=False):
             orig_mode = QemuMonitor.get_current_mmu_mode()
             if orig_mode == "virt" and self.phys:
                 enable_phys()
@@ -33756,10 +33784,11 @@ class PatchCommand(GenericCommand):
                 write_memory(self.addr, self.before_data)
 
             # print
-            ok("Revert success: {!s}{:s}: {:s} -> {:s}".format(
-                ProcessMap.lookup_address(self.addr), Symbol.get_symbol_string(self.addr),
-                self.a(), self.b(),
-            ))
+            if not silent:
+                ok("Revert success: {!s}{:s}: {:s} -> {:s}".format(
+                    ProcessMap.lookup_address(self.addr), Symbol.get_symbol_string(self.addr),
+                    self.a(), self.b(),
+                ))
 
             # history
             self.remove_history()
@@ -33771,6 +33800,24 @@ class PatchCommand(GenericCommand):
                     PatchCommand.patch_history[i].remove(self)
                     if PatchCommand.patch_history[i] == []:
                         PatchCommand.patch_history.pop(i)
+                    break
+            return
+
+        @staticmethod
+        def revert_to_tag(tag, silent=False):
+            tags = PatchCommand.PatchInfo.get_tag_set()
+            if tag not in tags:
+                err("Not found tag")
+                return None
+            while PatchCommand.patch_history:
+                hist = PatchCommand.patch_history.pop(0)
+                for patch_info in hist:
+                    try:
+                        patch_info.revert(silent)
+                    except Exception as e:
+                        err(e)
+                        return
+                if tag == hist[0].tag:
                     break
             return
 
@@ -33802,14 +33849,12 @@ class PatchCommand(GenericCommand):
         else:
             d = ">" if Endian.is_little_endian() else "<"
 
-        import random
-        tag = random.randint(1, 0xffff_ffff)
-
+        tag = PatchCommand.PatchInfo.get_unique_tag()
         for value in args.values:
             value = AddressUtil.parse_address(value) & ((1 << size * 8) - 1)
             vstr = struct.pack(d + fcode, value)
             try:
-                self.PatchInfo(tag, addr, vstr, size, args.phys).patch()
+                self.PatchInfo(addr, vstr, size, phys=args.phys, tag=tag).patch()
             except Exception as e:
                 err(e)
                 return
@@ -33976,10 +34021,8 @@ class PatchStringCommand(PatchCommand):
         else:
             vstr = args.vstr
 
-        import random
-        tag = random.randint(1, 0xffff_ffff)
         try:
-            self.PatchInfo(tag, args.location, vstr, len(vstr), args.phys).patch()
+            self.PatchInfo(args.location, vstr, phys=args.phys).patch()
         except Exception as e:
             err(e)
         return
@@ -34027,10 +34070,8 @@ class PatchHexCommand(PatchCommand):
         else:
             hstr = args.hstr
 
-        import random
-        tag = random.randint(1, 0xffff_ffff)
         try:
-            self.PatchInfo(tag, args.location, hstr, len(hstr), args.phys).patch()
+            self.PatchInfo(args.location, hstr, phys=args.phys).patch()
         except Exception as e:
             err(e)
         return
@@ -34078,10 +34119,8 @@ class PatchPatternCommand(PatchCommand):
             info("Generated pattern: {}".format(pats))
             return
 
-        import random
-        tag = random.randint(1, 0xffff_ffff)
         try:
-            self.PatchInfo(tag, args.location, pats, len(pats), args.phys).patch()
+            self.PatchInfo(args.location, pats, phys=args.phys).patch()
         except Exception as e:
             err(e)
         return
@@ -34148,9 +34187,7 @@ class PatchNopCommand(PatchCommand):
         else:
             insn = current_arch.nop_insn
 
-        import random
-        tag = random.randint(1, 0xffff_ffff)
-        self.PatchInfo(tag, addr, insn * count, patch_bytes, self.args.phys).patch()
+        self.PatchInfo(addr, insn * count, length=patch_bytes, phys=self.args.phys).patch()
         return
 
     @parse_args
@@ -34228,9 +34265,7 @@ class PatchInfloopCommand(PatchCommand):
                 if current_arch.has_delay_slot:
                     insn += current_arch.nop_insn
 
-        import random
-        tag = random.randint(1, 0xffff_ffff)
-        self.PatchInfo(tag, addr, insn, len(insn), self.args.phys).patch()
+        self.PatchInfo(addr, insn, phys=self.args.phys).patch()
         return
 
     @parse_args
@@ -34295,9 +34330,7 @@ class PatchTrapCommand(PatchCommand):
             if current_arch.has_delay_slot:
                 insn += current_arch.nop_insn
 
-        import random
-        tag = random.randint(1, 0xffff_ffff)
-        self.PatchInfo(tag, addr, insn, len(insn), self.args.phys).patch()
+        self.PatchInfo(addr, insn, phys=self.args.phys).patch()
         return
 
     @parse_args
@@ -34362,9 +34395,7 @@ class PatchRetCommand(PatchCommand):
             if current_arch.has_delay_slot:
                 insn += current_arch.nop_insn
 
-        import random
-        tag = random.randint(1, 0xffff_ffff)
-        self.PatchInfo(tag, addr, insn, len(insn), self.args.phys).patch()
+        self.PatchInfo(addr, insn, phys=self.args.phys).patch()
         return
 
     @parse_args
@@ -34429,9 +34460,7 @@ class PatchSyscallCommand(PatchCommand):
             if current_arch.has_syscall_delay_slot:
                 insn += current_arch.nop_insn
 
-        import random
-        tag = random.randint(1, 0xffff_ffff)
-        self.PatchInfo(tag, addr, insn, len(insn), self.args.phys).patch()
+        self.PatchInfo(addr, insn, phys=self.args.phys).patch()
         return
 
     @parse_args
@@ -34485,8 +34514,8 @@ class PatchHistoryCommand(PatchCommand, BufferingOutput):
 
         if PatchCommand.patch_history:
             self.out.append(titlify("NEW"))
-            for i, hist in enumerate(PatchCommand.patch_history):
-                self.out.append("[{:s}]".format(Color.boldify("{:d}".format(i))))
+            self.out.append("[{:s}] (current state)".format(Color.boldify("0")))
+            for i, hist in enumerate(PatchCommand.patch_history, start=1):
                 for j, patch_info in enumerate(hist):
                     if not self.args.verbose:
                         if j > 8:
@@ -34497,6 +34526,7 @@ class PatchHistoryCommand(PatchCommand, BufferingOutput):
                         Symbol.get_symbol_string(patch_info.addr),
                         patch_info.b(), patch_info.a(),
                     ))
+                self.out.append("[{:s}]".format(Color.boldify("{:d}".format(i))))
             self.out.append(titlify("OLD"))
         else:
             self.info_add_out("Patch history stack is empty")
@@ -34514,14 +34544,14 @@ class PatchRevertCommand(PatchCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("revert_target", metavar="REVERT_TARGET_HISTORY", nargs="?", type=int,
-                        help="the history index number to revert.")
+    group.add_argument("target_state", metavar="TARGET_STATE", nargs="?", type=int,
+                        help="the history state index number to revert.")
     group.add_argument("--all", action="store_true", help="revert all patches.")
     _syntax_ = parser.format_help()
 
     _example_ = [
-        "{0:s} 0  # revert to patch history stack[0]",
-        "{0:s} 3  # revert to patch history stack[3] ([0]-[2] are also reverted)",
+        "{0:s} 0  # do nothing (keep the current state).",
+        "{0:s} 2  # roll back to history state [2].",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -34538,14 +34568,14 @@ class PatchRevertCommand(PatchCommand):
             return
 
         if args.all:
-            revert_count = len(PatchCommand.patch_history)
+            revert_count = len(PatchCommand.patch_history) + 1
         else:
-            if not (0 <= args.revert_target < len(PatchCommand.patch_history)):
+            if not (0 <= args.target_state < len(PatchCommand.patch_history) + 1):
                 err("Invalid target index")
                 gef_print(titlify("Patch history stack"))
                 gdb.execute("patch history")
                 return
-            revert_count = args.revert_target + 1
+            revert_count = args.target_state
 
         while PatchCommand.patch_history and revert_count > 0:
             hist = PatchCommand.patch_history.pop(0)
@@ -34595,15 +34625,13 @@ class PatchRangeReplaceCommand(PatchCommand):
             err("Memory read error")
             return
 
-        import random
-        tag = random.randint(1, 0xffff_ffff)
-
+        tag = PatchCommand.PatchInfo.get_unique_tag()
         pos = 0
         while True:
             found_pos = data.find(self.args.hstr_from, pos)
             if found_pos == -1:
                 break
-            self.PatchInfo(tag, self.args.range_start + found_pos, self.args.hstr_to, len(self.args.hstr_to)).patch()
+            self.PatchInfo(self.args.range_start + found_pos, self.args.hstr_to, tag=tag).patch()
             pos = found_pos + len(self.args.hstr_from)
         return
 
@@ -72740,10 +72768,8 @@ class MemorySetCommand(GenericCommand):
     def memset(self, to_phys, to_addr, value, size):
         data = bytes([value]) * size
 
-        import random
-        tag = random.randint(1, 0xffff_ffff)
         try:
-            PatchCommand.PatchInfo(tag, to_addr, data, size, to_phys).patch()
+            PatchCommand.PatchInfo(to_addr, data, length=size, phys=to_phys).patch()
         except (gdb.MemoryError, ValueError, OverflowError):
             err("Write error {:#x}".format(to_addr))
             return
@@ -72827,10 +72853,8 @@ class MemoryCopyCommand(GenericCommand):
         if data is None:
             return
 
-        import random
-        tag = random.randint(1, 0xffff_ffff)
         try:
-            PatchCommand.PatchInfo(tag, to_addr, data, size, to_phys).patch()
+            PatchCommand.PatchInfo(to_addr, data, length=size, phys=to_phys).patch()
         except (gdb.MemoryError, ValueError, OverflowError):
             err("Write error {:#x}".format(to_addr))
             return
@@ -72882,16 +72906,14 @@ class MemorySwapCommand(GenericCommand):
         if data2 is None:
             return
 
-        import random
-        tag = random.randint(1, 0xffff_ffff)
-
+        tag = PatchCommand.PatchInfo.get_unique_tag()
         try:
-            PatchCommand.PatchInfo(tag, addr1, data2, size, phys1).patch()
+            PatchCommand.PatchInfo(addr1, data2, length=size, phys=phys1, tag=tag).patch()
         except (gdb.MemoryError, ValueError, OverflowError):
             err("Write error {:#x}".format(addr1))
             return
         try:
-            PatchCommand.PatchInfo(tag, addr2, data1, size, phys2).patch()
+            PatchCommand.PatchInfo(addr2, data1, length=size, phys=phys2, tag=tag).patch()
         except (gdb.MemoryError, ValueError, OverflowError):
             err("Write error {:#x}".format(addr2))
             return
@@ -72948,11 +72970,8 @@ class MemoryInsertCommand(GenericCommand):
 
         to_write_data = data2 + data1
 
-        import random
-        tag = random.randint(1, 0xffff_ffff)
-
         try:
-            PatchCommand.PatchInfo(tag, addr1, to_write_data, len(to_write_data), phys1).patch()
+            PatchCommand.PatchInfo(addr1, to_write_data, phys=phys1).patch()
         except (gdb.MemoryError, ValueError, OverflowError):
             err("Write error {:#x}".format(addr1))
             return
@@ -102559,11 +102578,12 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
         stdout_oldfd = ret["reg"][current_arch.return_register]
 
         # open
-        gdb.execute("patch string $sp '{:s}\\x00'".format(output_path), to_string=True)
+        p = PatchCommand.PatchInfo(current_arch.sp, output_path.encode() + b"\0")
+        p.patch(silent=True)
         flags = 0o100 | 0o1 | 0o1000 # O_CREAT | O_WRONLY | O_TRUNC
         ret = ExecSyscall(syscall_table.name_table["open"].nr, [current_arch.sp, flags, 0o666]).exec_code()
         file_fd = ret["reg"][current_arch.return_register]
-        gdb.execute("patch revert 0", to_string=True)
+        PatchCommand.PatchInfo.revert_to_tag(p.tag, silent=True)
 
         def u2i(x):
             x = struct.pack("<Q", x & 0xffff_ffff_ffff_ffff)
@@ -102739,12 +102759,12 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         cage_base = V8ListMapsCommand.get_cage_base()
         if not cage_base:
-            err("Cannot determine cage base")
+            err("Could not find cage base")
             return
 
         old_space_region = self.get_old_space()
         if not old_space_region:
-            err("Cannot determine old space")
+            err("Could not find old space")
             return
 
         self.out = []
