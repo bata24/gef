@@ -85606,6 +85606,1563 @@ class Hash:
             lo, hi = self.t1ha2_atonce128(data, self.seed)
             return struct.pack(">QQ", hi, lo)
 
+    class KupynaBase:
+        matrix = [0x01, 0x01, 0x05, 0x01, 0x08, 0x06, 0x07, 0x04]
+        mask64 = 0xffff_ffff_ffff_ffff
+        s0 = [
+            0xa8, 0x43, 0x5f, 0x06, 0x6b, 0x75, 0x6c, 0x59, 0x71, 0xdf, 0x87, 0x95, 0x17, 0xf0, 0xd8, 0x09,
+            0x6d, 0xf3, 0x1d, 0xcb, 0xc9, 0x4d, 0x2c, 0xaf, 0x79, 0xe0, 0x97, 0xfd, 0x6f, 0x4b, 0x45,
+            0x39, 0x3e, 0xdd, 0xa3, 0x4f, 0xb4, 0xb6, 0x9a, 0x0e, 0x1f, 0xbf, 0x15, 0xe1, 0x49, 0xd2,
+            0x93, 0xc6, 0x92, 0x72, 0x9e, 0x61, 0xd1, 0x63, 0xfa, 0xee, 0xf4, 0x19, 0xd5, 0xad, 0x58,
+            0xa4, 0xbb, 0xa1, 0xdc, 0xf2, 0x83, 0x37, 0x42, 0xe4, 0x7a, 0x32, 0x9c, 0xcc, 0xab, 0x4a,
+            0x8f, 0x6e, 0x04, 0x27, 0x2e, 0xe7, 0xe2, 0x5a, 0x96, 0x16, 0x23, 0x2b, 0xc2, 0x65, 0x66,
+            0x0f, 0xbc, 0xa9, 0x47, 0x41, 0x34, 0x48, 0xfc, 0xb7, 0x6a, 0x88, 0xa5, 0x53, 0x86, 0xf9,
+            0x5b, 0xdb, 0x38, 0x7b, 0xc3, 0x1e, 0x22, 0x33, 0x24, 0x28, 0x36, 0xc7, 0xb2, 0x3b, 0x8e,
+            0x77, 0xba, 0xf5, 0x14, 0x9f, 0x08, 0x55, 0x9b, 0x4c, 0xfe, 0x60, 0x5c, 0xda, 0x18, 0x46,
+            0xcd, 0x7d, 0x21, 0xb0, 0x3f, 0x1b, 0x89, 0xff, 0xeb, 0x84, 0x69, 0x3a, 0x9d, 0xd7, 0xd3,
+            0x70, 0x67, 0x40, 0xb5, 0xde, 0x5d, 0x30, 0x91, 0xb1, 0x78, 0x11, 0x01, 0xe5, 0x00, 0x68,
+            0x98, 0xa0, 0xc5, 0x02, 0xa6, 0x74, 0x2d, 0x0b, 0xa2, 0x76, 0xb3, 0xbe, 0xce, 0xbd, 0xae,
+            0xe9, 0x8a, 0x31, 0x1c, 0xec, 0xf1, 0x99, 0x94, 0xaa, 0xf6, 0x26, 0x2f, 0xef, 0xe8, 0x8c,
+            0x35, 0x03, 0xd4, 0x7f, 0xfb, 0x05, 0xc1, 0x5e, 0x90, 0x20, 0x3d, 0x82, 0xf7, 0xea, 0x0a,
+            0x0d, 0x7e, 0xf8, 0x50, 0x1a, 0xc4, 0x07, 0x57, 0xb8, 0x3c, 0x62, 0xe3, 0xc8, 0xac, 0x52,
+            0x64, 0x10, 0xd0, 0xd9, 0x13, 0x0c, 0x12, 0x29, 0x51, 0xb9, 0xcf, 0xd6, 0x73, 0x8d, 0x81,
+            0x54, 0xc0, 0xed, 0x4e, 0x44, 0xa7, 0x2a, 0x85, 0x25, 0xe6, 0xca, 0x7c, 0x8b, 0x56, 0x80,
+        ]
+        s1 = [
+            0xce, 0xbb, 0xeb, 0x92, 0xea, 0xcb, 0x13, 0xc1, 0xe9, 0x3a, 0xd6, 0xb2, 0xd2, 0x90, 0x17, 0xf8,
+            0x42, 0x15, 0x56, 0xb4, 0x65, 0x1c, 0x88, 0x43, 0xc5, 0x5c, 0x36, 0xba, 0xf5, 0x57, 0x67, 0x8d,
+            0x31, 0xf6, 0x64, 0x58, 0x9e, 0xf4, 0x22, 0xaa, 0x75, 0x0f, 0x02, 0xb1, 0xdf, 0x6d, 0x73, 0x4d,
+            0x7c, 0x26, 0x2e, 0xf7, 0x08, 0x5d, 0x44, 0x3e, 0x9f, 0x14, 0xc8, 0xae, 0x54, 0x10, 0xd8, 0xbc,
+            0x1a, 0x6b, 0x69, 0xf3, 0xbd, 0x33, 0xab, 0xfa, 0xd1, 0x9b, 0x68, 0x4e, 0x16, 0x95, 0x91, 0xee,
+            0x4c, 0x63, 0x8e, 0x5b, 0xcc, 0x3c, 0x19, 0xa1, 0x81, 0x49, 0x7b, 0xd9, 0x6f, 0x37, 0x60, 0xca,
+            0xe7, 0x2b, 0x48, 0xfd, 0x96, 0x45, 0xfc, 0x41, 0x12, 0x0d, 0x79, 0xe5, 0x89, 0x8c, 0xe3, 0x20,
+            0x30, 0xdc, 0xb7, 0x6c, 0x4a, 0xb5, 0x3f, 0x97, 0xd4, 0x62, 0x2d, 0x06, 0xa4, 0xa5, 0x83, 0x5f,
+            0x2a, 0xda, 0xc9, 0x00, 0x7e, 0xa2, 0x55, 0xbf, 0x11, 0xd5, 0x9c, 0xcf, 0x0e, 0x0a, 0x3d, 0x51,
+            0x7d, 0x93, 0x1b, 0xfe, 0xc4, 0x47, 0x09, 0x86, 0x0b, 0x8f, 0x9d, 0x6a, 0x07, 0xb9, 0xb0, 0x98,
+            0x18, 0x32, 0x71, 0x4b, 0xef, 0x3b, 0x70, 0xa0, 0xe4, 0x40, 0xff, 0xc3, 0xa9, 0xe6, 0x78, 0xf9,
+            0x8b, 0x46, 0x80, 0x1e, 0x38, 0xe1, 0xb8, 0xa8, 0xe0, 0x0c, 0x23, 0x76, 0x1d, 0x25, 0x24, 0x05,
+            0xf1, 0x6e, 0x94, 0x28, 0x9a, 0x84, 0xe8, 0xa3, 0x4f, 0x77, 0xd3, 0x85, 0xe2, 0x52, 0xf2, 0x82,
+            0x50, 0x7a, 0x2f, 0x74, 0x53, 0xb3, 0x61, 0xaf, 0x39, 0x35, 0xde, 0xcd, 0x1f, 0x99, 0xac, 0xad,
+            0x72, 0x2c, 0xdd, 0xd0, 0x87, 0xbe, 0x5e, 0xa6, 0xec, 0x04, 0xc6, 0x03, 0x34, 0xfb, 0xdb, 0x59,
+            0xb6, 0xc2, 0x01, 0xf0, 0x5a, 0xed, 0xa7, 0x66, 0x21, 0x7f, 0x8a, 0x27, 0xc7, 0xc0, 0x29, 0xd7,
+        ]
+        s2 = [
+            0x93, 0xd9, 0x9a, 0xb5, 0x98, 0x22, 0x45, 0xfc, 0xba, 0x6a, 0xdf, 0x02, 0x9f, 0xdc, 0x51, 0x59,
+            0x4a, 0x17, 0x2b, 0xc2, 0x94, 0xf4, 0xbb, 0xa3, 0x62, 0xe4, 0x71, 0xd4, 0xcd, 0x70, 0x16, 0xe1,
+            0x49, 0x3c, 0xc0, 0xd8, 0x5c, 0x9b, 0xad, 0x85, 0x53, 0xa1, 0x7a, 0xc8, 0x2d, 0xe0, 0xd1, 0x72,
+            0xa6, 0x2c, 0xc4, 0xe3, 0x76, 0x78, 0xb7, 0xb4, 0x09, 0x3b, 0x0e, 0x41, 0x4c, 0xde, 0xb2, 0x90,
+            0x25, 0xa5, 0xd7, 0x03, 0x11, 0x00, 0xc3, 0x2e, 0x92, 0xef, 0x4e, 0x12, 0x9d, 0x7d, 0xcb, 0x35,
+            0x10, 0xd5, 0x4f, 0x9e, 0x4d, 0xa9, 0x55, 0xc6, 0xd0, 0x7b, 0x18, 0x97, 0xd3, 0x36, 0xe6, 0x48,
+            0x56, 0x81, 0x8f, 0x77, 0xcc, 0x9c, 0xb9, 0xe2, 0xac, 0xb8, 0x2f, 0x15, 0xa4, 0x7c, 0xda, 0x38,
+            0x1e, 0x0b, 0x05, 0xd6, 0x14, 0x6e, 0x6c, 0x7e, 0x66, 0xfd, 0xb1, 0xe5, 0x60, 0xaf, 0x5e, 0x33,
+            0x87, 0xc9, 0xf0, 0x5d, 0x6d, 0x3f, 0x88, 0x8d, 0xc7, 0xf7, 0x1d, 0xe9, 0xec, 0xed, 0x80, 0x29,
+            0x27, 0xcf, 0x99, 0xa8, 0x50, 0x0f, 0x37, 0x24, 0x28, 0x30, 0x95, 0xd2, 0x3e, 0x5b, 0x40, 0x83,
+            0xb3, 0x69, 0x57, 0x1f, 0x07, 0x1c, 0x8a, 0xbc, 0x20, 0xeb, 0xce, 0x8e, 0xab, 0xee, 0x31, 0xa2,
+            0x73, 0xf9, 0xca, 0x3a, 0x1a, 0xfb, 0x0d, 0xc1, 0xfe, 0xfa, 0xf2, 0x6f, 0xbd, 0x96, 0xdd, 0x43,
+            0x52, 0xb6, 0x08, 0xf3, 0xae, 0xbe, 0x19, 0x89, 0x32, 0x26, 0xb0, 0xea, 0x4b, 0x64, 0x84, 0x82,
+            0x6b, 0xf5, 0x79, 0xbf, 0x01, 0x5f, 0x75, 0x63, 0x1b, 0x23, 0x3d, 0x68, 0x2a, 0x65, 0xe8, 0x91,
+            0xf6, 0xff, 0x13, 0x58, 0xf1, 0x47, 0x0a, 0x7f, 0xc5, 0xa7, 0xe7, 0x61, 0x5a, 0x06, 0x46, 0x44,
+            0x42, 0x04, 0xa0, 0xdb, 0x39, 0x86, 0x54, 0xaa, 0x8c, 0x34, 0x21, 0x8b, 0xf8, 0x0c, 0x74, 0x67,
+        ]
+        s3 = [
+            0x68, 0x8d, 0xca, 0x4d, 0x73, 0x4b, 0x4e, 0x2a, 0xd4, 0x52, 0x26, 0xb3, 0x54, 0x1e, 0x19, 0x1f,
+            0x22, 0x03, 0x46, 0x3d, 0x2d, 0x4a, 0x53, 0x83, 0x13, 0x8a, 0xb7, 0xd5, 0x25, 0x79, 0xf5, 0xbd,
+            0x58, 0x2f, 0x0d, 0x02, 0xed, 0x51, 0x9e, 0x11, 0xf2, 0x3e, 0x55, 0x5e, 0xd1, 0x16, 0x3c, 0x66,
+            0x70, 0x5d, 0xf3, 0x45, 0x40, 0xcc, 0xe8, 0x94, 0x56, 0x08, 0xce, 0x1a, 0x3a, 0xd2, 0xe1, 0xdf,
+            0xb5, 0x38, 0x6e, 0x0e, 0xe5, 0xf4, 0xf9, 0x86, 0xe9, 0x4f, 0xd6, 0x85, 0x23, 0xcf, 0x32, 0x99,
+            0x31, 0x14, 0xae, 0xee, 0xc8, 0x48, 0xd3, 0x30, 0xa1, 0x92, 0x41, 0xb1, 0x18, 0xc4, 0x2c, 0x71,
+            0x72, 0x44, 0x15, 0xfd, 0x37, 0xbe, 0x5f, 0xaa, 0x9b, 0x88, 0xd8, 0xab, 0x89, 0x9c, 0xfa, 0x60,
+            0xea, 0xbc, 0x62, 0x0c, 0x24, 0xa6, 0xa8, 0xec, 0x67, 0x20, 0xdb, 0x7c, 0x28, 0xdd, 0xac, 0x5b,
+            0x34, 0x7e, 0x10, 0xf1, 0x7b, 0x8f, 0x63, 0xa0, 0x05, 0x9a, 0x43, 0x77, 0x21, 0xbf, 0x27, 0x09,
+            0xc3, 0x9f, 0xb6, 0xd7, 0x29, 0xc2, 0xeb, 0xc0, 0xa4, 0x8b, 0x8c, 0x1d, 0xfb, 0xff, 0xc1, 0xb2,
+            0x97, 0x2e, 0xf8, 0x65, 0xf6, 0x75, 0x07, 0x04, 0x49, 0x33, 0xe4, 0xd9, 0xb9, 0xd0, 0x42, 0xc7,
+            0x6c, 0x90, 0x00, 0x8e, 0x6f, 0x50, 0x01, 0xc5, 0xda, 0x47, 0x3f, 0xcd, 0x69, 0xa2, 0xe2, 0x7a,
+            0xa7, 0xc6, 0x93, 0x0f, 0x0a, 0x06, 0xe6, 0x2b, 0x96, 0xa3, 0x1c, 0xaf, 0x6a, 0x12, 0x84, 0x39,
+            0xe7, 0xb0, 0x82, 0xf7, 0xfe, 0x9d, 0x87, 0x5c, 0x81, 0x35, 0xde, 0xb4, 0xa5, 0xfc, 0x80, 0xef,
+            0xcb, 0xbb, 0x6b, 0x76, 0xba, 0x5a, 0x7d, 0x78, 0x0b, 0x95, 0xe3, 0xad, 0x74, 0x98, 0x3b, 0x36,
+            0x64, 0x6d, 0xdc, 0xf0, 0x59, 0xa9, 0x4c, 0x17, 0x7f, 0x91, 0xb8, 0xc9, 0x57, 0x1b, 0xe0, 0x61,
+        ]
+        mul_tables = None
+
+        def __init__(self, data=b""):
+            self.state = [0] * self.columns
+            self.state[0] = self.block_size
+            self.buf = bytearray()
+            self.msg_len_bits = 0
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.state = list(self.state)
+            other.buf = bytearray(self.buf)
+            other.msg_len_bits = self.msg_len_bits
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            if not data:
+                return self
+            self.ensure_mul_tables()
+            self.msg_len_bits += len(data) * 8
+            self.buf.extend(data)
+            while len(self.buf) >= self.block_size:
+                block = bytes(self.buf[:self.block_size])
+                del self.buf[:self.block_size]
+                self.process_block(block)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            out = c.digest_from_state()
+            return out
+
+        def hexdigest(self):
+            out = self.digest().hex()
+            return out
+
+        def finalize(self):
+            self.ensure_mul_tables()
+            bit_len = self.msg_len_bits & ((1 << 96) - 1)
+            self.buf.append(0x80)
+            len_pos = self.block_size - 12
+            if len(self.buf) > len_pos:
+                while len(self.buf) < self.block_size:
+                    self.buf.append(0x00)
+                block = bytes(self.buf[:self.block_size])
+                del self.buf[:self.block_size]
+                self.process_block(block)
+            while len(self.buf) < len_pos:
+                self.buf.append(0x00)
+            self.buf.extend(bit_len.to_bytes(12, "little"))
+            while len(self.buf) >= self.block_size:
+                block = bytes(self.buf[:self.block_size])
+                del self.buf[:self.block_size]
+                self.process_block(block)
+            self.output_transform()
+            return
+
+        def digest_from_state(self):
+            needed_cols = self.digest_size // 8
+            start_col = self.columns - needed_cols
+            out = b"".join(self.state[i].to_bytes(8, "little") for i in range(start_col, self.columns))
+            return out
+
+        def process_block(self, block):
+            words = [int.from_bytes(block[i * 8:(i + 1) * 8], "little") for i in range(self.columns)]
+            t1 = [self.state[i] ^ words[i] for i in range(self.columns)]
+            t2 = list(words)
+            self.perm_p(t1)
+            self.perm_q(t2)
+            for i in range(self.columns):
+                self.state[i] ^= t1[i] ^ t2[i]
+                self.state[i] &= self.mask64
+            return
+
+        def output_transform(self):
+            t = list(self.state)
+            self.perm_p(t)
+            for i in range(self.columns):
+                self.state[i] ^= t[i]
+                self.state[i] &= self.mask64
+            return
+
+        def perm_p(self, s):
+            for rnd in range(self.rounds):
+                for col in range(self.columns):
+                    s[col] ^= ((col << 4) ^ rnd)
+                    s[col] &= self.mask64
+                self.shift_rows(s)
+                self.sub_bytes(s)
+                self.mix_columns(s)
+            return
+
+        def perm_q(self, s):
+            for rnd in range(self.rounds):
+                rc = ((((self.columns - 1) << 4) ^ rnd) << 56) | 0x00f0_f0f0_f0f0_f0f3
+                for col in range(self.columns):
+                    s[col] = (s[col] + rc) & self.mask64
+                    rc = (rc - 0x1000_0000_0000_0000) & self.mask64
+                self.shift_rows(s)
+                self.sub_bytes(s)
+                self.mix_columns(s)
+            return
+
+        def sub_bytes(self, s):
+            boxes = (self.s0, self.s1, self.s2, self.s3)
+            for col in range(self.columns):
+                w = s[col]
+                nw = 0
+                for row in range(8):
+                    b = (w >> (8 * row)) & 0xff
+                    sb = boxes[row & 3][b]
+                    nw |= sb << (8 * row)
+                s[col] = nw & self.mask64
+            return
+
+        def shift_rows(self, s):
+            if self.columns == 8:
+                offsets = (0, 1, 2, 3, 4, 5, 6, 7)
+            else:
+                offsets = (0, 1, 2, 3, 4, 5, 6, 11)
+            rows = [[0] * self.columns for _ in range(8)]
+            for col in range(self.columns):
+                w = s[col]
+                for row in range(8):
+                    rows[row][col] = (w >> (8 * row)) & 0xff
+            for row in range(8):
+                off = offsets[row] % self.columns
+                if off:
+                    r = rows[row]
+                    rows[row] = r[-off:] + r[:-off]
+            for col in range(self.columns):
+                w = 0
+                for row in range(8):
+                    w |= rows[row][col] << (8 * row)
+                s[col] = w & self.mask64
+            return
+
+        def mix_columns(self, s):
+            m = self.matrix
+            tables = self.mul_tables
+            for col in range(self.columns):
+                w = s[col]
+                inp = [(w >> (8 * row)) & 0xff for row in range(8)]
+                outp = [0] * 8
+                for row in range(8):
+                    acc = 0
+                    for k in range(8):
+                        coef = m[(k - row) & 7]
+                        b = inp[k]
+                        if coef == 1:
+                            acc ^= b
+                        else:
+                            acc ^= tables[coef][b]
+                    outp[row] = acc
+                nw = 0
+                for row in range(8):
+                    nw |= outp[row] << (8 * row)
+                s[col] = nw & self.mask64
+            return
+
+        def ensure_mul_tables(self):
+            if self.__class__.mul_tables is not None:
+                return
+            tables = {}
+            for coef in set(self.matrix):
+                if coef == 1:
+                    continue
+                tables[coef] = [self.gf_mul(coef, x) for x in range(256)]
+            self.__class__.mul_tables = tables
+            return
+
+        def gf_mul(self, a, b):
+            res = 0
+            aa = a & 0xff
+            bb = b & 0xff
+            while bb:
+                if bb & 1:
+                    res ^= aa
+                aa <<= 1
+                if aa & 0x100:
+                    aa ^= 0x11d
+                aa &= 0x1ff
+                bb >>= 1
+            return res & 0xff
+
+    class Kupyna256(KupynaBase):
+        block_size = 64
+        digest_size = 32
+        columns = 8
+        rounds = 10
+
+    class Kupyna384(KupynaBase):
+        block_size = 128
+        digest_size = 48
+        columns = 16
+        rounds = 14
+
+    class Kupyna512(KupynaBase):
+        block_size = 128
+        digest_size = 64
+        columns = 16
+        rounds = 14
+
+    class CubeHash:
+        def __init__(self, data=b"", params="CubeHash160+16/32+160-256"):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            self.params = ""
+            self.i = 0
+            self.r = 0
+            self.b = 0
+            self.f = 0
+            self.h = 0
+            self.block_size = 0
+            self.digest_size = 0
+            self.state = [0] * 32
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.finalized = False
+            self.set_params(params)
+            self.init_state()
+            if data:
+                self.update(data)
+            return
+
+        def set_params(self, params):
+            if not isinstance(params, str):
+                raise TypeError("params must be str")
+            m = re.fullmatch(r"CubeHash(\d+)\+(\d+)/(\d+)\+(\d+)-(\d+)", params)
+            if not m:
+                raise ValueError("invalid params format")
+            self.i = int(m.group(1))
+            self.r = int(m.group(2))
+            self.b = int(m.group(3))
+            self.f = int(m.group(4))
+            self.h = int(m.group(5))
+            if not (0 <= self.i):
+                raise ValueError("i must be >= 0")
+            if not (0 <= self.f):
+                raise ValueError("f must be >= 0")
+            if not (1 <= self.r <= 128):
+                raise ValueError("r must be 1..128")
+            if not (1 <= self.b <= 128):
+                raise ValueError("b must be 1..128")
+            if self.h % 8 != 0 or not (8 <= self.h <= 512):
+                raise ValueError("h must be multiple of 8 and 8..512")
+            if (self.h // 8) > 128:
+                raise ValueError("h/8 too large")
+            self.params = f"CubeHash{self.i}+{self.r}/{self.b}+{self.f}-{self.h}"
+            self.block_size = self.b
+            self.digest_size = self.h // 8
+            return
+
+        def init_state(self):
+            self.state = [0] * 32
+            self.state[0] = self.h // 8
+            self.state[1] = self.b
+            self.state[2] = self.r
+            self.transform(self.i)
+            return
+
+        def copy(self):
+            other = self.__class__(b"", params=self.params)
+            other.state = list(self.state)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.finalized = self.finalized
+            return other
+
+        def rol32(self, x, n):
+            x &= 0xffff_ffff
+            return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
+
+        def round(self):
+            x = self.state
+            mask = 0xffff_ffff
+            for t in range(16):
+                x[16 + t] = (x[16 + t] + x[t]) & mask
+            for t in range(16):
+                x[t] = self.rol32(x[t], 7)
+            for t in range(8):
+                x[t], x[t + 8] = x[t + 8], x[t]
+            for t in range(16):
+                x[t] ^= x[16 + t]
+            for j in range(2):
+                for k in range(2):
+                    for m in range(2):
+                        idx = 16 + (j << 3) + (k << 2) + m
+                        x[idx], x[idx + 2] = x[idx + 2], x[idx]
+            for t in range(16):
+                x[16 + t] = (x[16 + t] + x[t]) & mask
+            for t in range(16):
+                x[t] = self.rol32(x[t], 11)
+            for j in range(2):
+                for l in range(2): # noqa: E741
+                    for m in range(2):
+                        idx = (j << 3) + (l << 1) + m
+                        x[idx], x[idx + 4] = x[idx + 4], x[idx]
+            for t in range(16):
+                x[t] ^= x[16 + t]
+            for j in range(2):
+                for k in range(2):
+                    for l in range(2): # noqa: E741
+                        idx = 16 + (j << 3) + (k << 2) + (l << 1)
+                        x[idx], x[idx + 1] = x[idx + 1], x[idx]
+            self.state = x
+            return
+
+        def transform(self, n_rounds):
+            for _ in range(n_rounds):
+                self.round()
+            return
+
+        def xor_block(self, block):
+            if len(block) != self.b:
+                raise ValueError("block size mismatch")
+            x = self.state
+            n_full = self.b // 4
+            rem = self.b % 4
+            pos = 0
+            for w in range(n_full):
+                v = int.from_bytes(block[pos:pos + 4], "little")
+                x[w] ^= v
+                pos += 4
+            if rem:
+                v = int.from_bytes(block[pos:pos + rem], "little")
+                x[n_full] ^= v
+            self.state = x
+            return
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            if self.finalized:
+                raise ValueError("already finalized")
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            while len(self.buf) >= self.b:
+                block = bytes(self.buf[:self.b])
+                del self.buf[:self.b]
+                self.xor_block(block)
+                self.transform(self.r)
+            return self
+
+        def finalize(self):
+            if self.finalized:
+                return
+            self.buf.append(0x80)
+            while (len(self.buf) % self.b) != 0:
+                self.buf.append(0x00)
+            while len(self.buf) >= self.b:
+                block = bytes(self.buf[:self.b])
+                del self.buf[:self.b]
+                self.xor_block(block)
+                self.transform(self.r)
+            self.state[31] ^= 0x0000_0001
+            self.transform(self.f)
+            self.finalized = True
+            return
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            raw = struct.pack("<32I", *[(w & 0xffff_ffff) for w in c.state])
+            return raw[:self.digest_size]
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+    class ECHOBase:
+        sbox = [
+            0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+            0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+            0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+            0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+            0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+            0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+            0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+            0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+            0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+            0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+            0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+            0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+            0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+            0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+            0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+            0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
+        ]
+
+        def __init__(self, data=b""):
+            self.salt = bytearray(16)
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.total_bits = 0
+            self.v = bytearray()
+            self.init_state()
+            if data:
+                self.update(data)
+            return
+
+        def init_state(self):
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.total_bits = 0
+            word = self.hash_size.to_bytes(2, "little") + b"\x00" * 14
+            self.v = bytearray(word * self.cv_words)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.salt = bytearray(self.salt)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.total_bits = self.total_bits
+            other.v = bytearray(self.v)
+            return other
+
+        def set_salt(self, salt=b""): # noqa
+            if not isinstance(salt, (bytes, bytearray)):
+                raise TypeError("salt must be bytes-like")
+            if len(salt) not in (0, 16):
+                raise ValueError("salt must be 16 bytes or empty")
+            if len(salt) == 0:
+                self.salt = bytearray(16)
+            else:
+                self.salt = bytearray(salt)
+            return
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            if not data:
+                return self
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            while len(self.buf) >= self.block_size:
+                block = bytes(self.buf[: self.block_size])
+                del self.buf[: self.block_size]
+                Ci = self.total_bits + self.block_size * 8
+                self.compress(block, Ci)
+                self.total_bits = Ci
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return bytes(c.v[: self.digest_size])
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            L = self.msg_len * 8
+            block_bytes = self.block_size
+            pos = len(self.buf)
+            total = self.total_bits + pos * 8
+            if total != L:
+                raise AssertionError("internal length mismatch")
+
+            self.buf.append(0x80)
+            pos += 1
+
+            processed_extra = False
+            if pos > block_bytes - 18:
+                if pos < block_bytes:
+                    self.buf.extend(b"\x00" * (block_bytes - pos))
+                self.compress(bytes(self.buf[:block_bytes]), total)
+                processed_extra = True
+                self.buf = bytearray()
+                pos = 0
+
+            if pos < block_bytes - 18:
+                self.buf.extend(b"\x00" * (block_bytes - 18 - pos))
+
+            self.buf.extend(self.hash_size.to_bytes(2, "little"))
+            self.buf.extend(L.to_bytes(16, "little"))
+
+            if len(self.buf) != block_bytes:
+                raise AssertionError("final block size mismatch")
+
+            # Ci=L if the final block contains message bits, Ci=0 otherwise
+            # (if message length is on a block boundary or "extra block for length field" occurs)
+            Ci = total if (not processed_extra and L != self.total_bits) else 0
+            self.compress(bytes(self.buf), Ci)
+
+            self.buf = bytearray()
+            self.total_bits = total
+            return
+
+        def compress(self, block, Ci):
+            v_words = [list(self.v[i * 16:(i + 1) * 16]) for i in range(self.cv_words)]
+            m_words = [list(block[i * 16:(i + 1) * 16]) for i in range(self.msg_words)]
+
+            w = [None] * 16
+            for i in range(self.cv_words):
+                w[i] = v_words[i][:]
+
+            for i in range(self.msg_words):
+                w[self.cv_words + i] = m_words[i][:]
+
+            counter = (Ci & 0xffff_ffff_ffff_ffff) if Ci else 0
+
+            for _ in range(self.rounds):
+                counter = self.sub_words(w, counter)
+                self.shift_rows_words(w)
+                self.mix_columns_words(w)
+
+            out_words = []
+            if self.cv_words == 4:
+                for r in range(4):
+                    tmp = [0] * 16
+                    for j in range(16):
+                        tmp[j] = (
+                            v_words[r][j] ^
+                            m_words[r][j] ^
+                            m_words[r + 4][j] ^
+                            m_words[r + 8][j] ^
+                            w[r][j] ^
+                            w[r + 4][j] ^
+                            w[r + 8][j] ^
+                            w[r + 12][j]
+                        ) & 0xff
+                    out_words.append(tmp)
+            else:
+                for r in range(8):
+                    tmp = [0] * 16
+                    for j in range(16):
+                        tmp[j] = (
+                            v_words[r][j] ^
+                            m_words[r][j] ^
+                            w[r][j] ^
+                            w[r + 8][j]
+                        ) & 0xff
+                    out_words.append(tmp)
+
+            self.v = bytearray(sum(out_words, []))
+            return
+
+        def sub_words(self, w, counter):
+            k = counter & 0xffff_ffff_ffff_ffff
+            salt_key = list(self.salt)
+            for i in range(16):
+                k1 = list(k.to_bytes(8, "little") + b"\x00" * 8)
+                w[i] = self.aes_round(w[i], k1)
+                w[i] = self.aes_round(w[i], salt_key)
+                k = (k + 1) & 0xffff_ffff_ffff_ffff
+            return k
+
+        def aes_round(self, state, round_key):
+            state = self.aes_sub_bytes(state)
+            state = self.aes_shift_rows(state)
+            state = self.aes_mix_columns(state)
+            state = self.aes_add_round_key(state, round_key)
+            return state
+
+        def aes_sub_bytes(self, state):
+            return [self.sbox[b] for b in state]
+
+        def aes_shift_rows(self, state):
+            out = state[:]
+            out[1], out[5], out[9], out[13] = state[5], state[9], state[13], state[1]
+            out[2], out[6], out[10], out[14] = state[10], state[14], state[2], state[6]
+            out[3], out[7], out[11], out[15] = state[15], state[3], state[7], state[11]
+            return out
+
+        def aes_mix_columns(self, state):
+            out = state[:]
+            for c in range(4):
+                i = 4 * c
+                r0, r1, r2, r3 = self.mix_column4(state[i], state[i + 1], state[i + 2], state[i + 3])
+                out[i], out[i + 1], out[i + 2], out[i + 3] = r0, r1, r2, r3
+            return out
+
+        def aes_add_round_key(self, state, round_key):
+            return [(state[i] ^ round_key[i]) & 0xff for i in range(16)]
+
+        def xtime8(self, x):
+            x &= 0xff
+            if x & 0x80:
+                return ((x << 1) ^ 0x1b) & 0xff
+            return (x << 1) & 0xff
+
+        def mix_column4(self, a0, a1, a2, a3):
+            a0 &= 0xff
+            a1 &= 0xff
+            a2 &= 0xff
+            a3 &= 0xff
+            t = (a0 ^ a1 ^ a2 ^ a3) & 0xff
+            u = a0
+            r0 = (a0 ^ t ^ self.xtime8(a0 ^ a1)) & 0xff
+            r1 = (a1 ^ t ^ self.xtime8(a1 ^ a2)) & 0xff
+            r2 = (a2 ^ t ^ self.xtime8(a2 ^ a3)) & 0xff
+            r3 = (a3 ^ t ^ self.xtime8(a3 ^ u)) & 0xff
+            return r0, r1, r2, r3
+
+        def shift_rows_words(self, w):
+            w[1], w[5], w[9], w[13] = w[5], w[9], w[13], w[1]
+            w[2], w[6], w[10], w[14] = w[10], w[14], w[2], w[6]
+            w[3], w[7], w[11], w[15] = w[15], w[3], w[7], w[11]
+            return
+
+        def mix_columns_words(self, w):
+            for col in range(4):
+                base = col * 4
+                for b in range(16):
+                    a0 = w[base + 0][b]
+                    a1 = w[base + 1][b]
+                    a2 = w[base + 2][b]
+                    a3 = w[base + 3][b]
+                    r0, r1, r2, r3 = self.mix_column4(a0, a1, a2, a3)
+                    w[base + 0][b] = r0
+                    w[base + 1][b] = r1
+                    w[base + 2][b] = r2
+                    w[base + 3][b] = r3
+            return
+
+    class ECHO224(ECHOBase):
+        block_size = 192
+        digest_size = 28
+        hash_size = 224
+        cv_words = 4
+        msg_words = 12
+        rounds = 8
+
+    class ECHO256(ECHOBase):
+        block_size = 192
+        digest_size = 32
+        hash_size = 256
+        cv_words = 4
+        msg_words = 12
+        rounds = 8
+
+    class ECHO384(ECHOBase):
+        block_size = 128
+        digest_size = 48
+        hash_size = 384
+        cv_words = 8
+        msg_words = 8
+        rounds = 10
+
+    class ECHO512(ECHOBase):
+        block_size = 128
+        digest_size = 64
+        hash_size = 512
+        cv_words = 8
+        msg_words = 8
+        rounds = 10
+
+    class FSBBase:
+        class FSBPiBin:
+            size_bytes = 0x04_2800
+            digits = size_bytes * 8
+            guard_digits = 0x20
+
+            c3_over_24 = 0x26_dd04_1d87_8000
+            a_const = 0xcf_6371
+            b_const = 0x207e_2da6
+            k_const = 0x06_8380
+            sqrt_const = 0x2715
+
+            def __init__(self):
+                self.gmpy2 = None
+                try:
+                    self.gmpy2 = __import__("gmpy2")
+                except Exception:
+                    self.gmpy2 = None
+                return
+
+            def enable_unlimited_int_to_str(self):
+                try:
+                    sys.set_int_max_str_digits(0)
+                except Exception:
+                    pass
+                return
+
+            def make_int(self, x):
+                if self.gmpy2 is None:
+                    return int(x)
+                return self.gmpy2.mpz(int(x))
+
+            def isqrt(self, x):
+                if self.gmpy2 is None:
+                    import math
+                    return math.isqrt(int(x))
+                return self.gmpy2.isqrt(x)
+
+            def pow10(self, n):
+                if self.gmpy2 is None:
+                    return 10 ** int(n)
+                return self.gmpy2.mpz(10) ** int(n)
+
+            def bs(self, a, b):
+                if b - a == 1:
+                    if a == 0:
+                        P = self.make_int(1)
+                        Q = self.make_int(1)
+                    else:
+                        k = self.make_int(a)
+                        P = (self.make_int(6) * k - self.make_int(5)) * \
+                            (self.make_int(2) * k - self.make_int(1)) * \
+                            (self.make_int(6) * k - self.make_int(1))
+                        Q = k * k * k * self.make_int(self.c3_over_24)
+                    T = P * (self.make_int(self.a_const) + self.make_int(self.b_const) * self.make_int(a))
+                    if a & 1:
+                        T = -T
+                    return P, Q, T
+
+                m = (a + b) // 2
+                P1, Q1, T1 = self.bs(a, m)
+                P2, Q2, T2 = self.bs(m, b)
+                P = P1 * P2
+                Q = Q1 * Q2
+                T = T1 * Q2 + T2 * P1
+                return P, Q, T
+
+            def pi_scaled(self, digits):
+                digits = int(digits)
+                n_terms = digits // 14 + 1
+                P, Q, T = self.bs(0, n_terms)
+
+                one = self.pow10(digits)
+                sqrt_10005 = self.isqrt(self.make_int(self.sqrt_const) * one * one)
+                pi_scaled = (self.make_int(self.k_const) * sqrt_10005 * Q) // T
+                return pi_scaled
+
+            def pi_fractional_digits(self, n_digits):
+                self.enable_unlimited_int_to_str()
+
+                n_digits = int(n_digits)
+                guard = int(self.guard_digits)
+                digits_total = n_digits + guard
+
+                x = self.pi_scaled(digits_total)
+                if guard:
+                    x = x // self.pow10(guard)
+
+                s = str(int(x)) if self.gmpy2 is not None else str(x)
+                need = n_digits + 1
+                if len(s) < need:
+                    s = ("0" * (need - len(s))) + s
+
+                frac = s[1:1 + n_digits]
+                return frac
+
+            def pack_parity_stream(self, frac_digits):
+                digit_bytes = frac_digits.encode("ascii")
+                out = bytearray(self.size_bytes)
+
+                pos = 0
+                for i in range(self.size_bytes):
+                    b0 = (digit_bytes[pos + 0] & 1) << 7
+                    b1 = (digit_bytes[pos + 1] & 1) << 6
+                    b2 = (digit_bytes[pos + 2] & 1) << 5
+                    b3 = (digit_bytes[pos + 3] & 1) << 4
+                    b4 = (digit_bytes[pos + 4] & 1) << 3
+                    b5 = (digit_bytes[pos + 5] & 1) << 2
+                    b6 = (digit_bytes[pos + 6] & 1) << 1
+                    b7 = (digit_bytes[pos + 7] & 1) << 0
+                    out[i] = b0 | b1 | b2 | b3 | b4 | b5 | b6 | b7
+                    pos += 8
+
+                return bytes(out)
+
+            def make_pi_bin(self):
+                cache_path = os.path.join(GEF_TEMP_DIR, "FSB_hash_pi.bin")
+                try:
+                    st = os.stat(cache_path)
+                    if st.st_size == self.size_bytes:
+                        with open(cache_path, "rb") as f:
+                            data = f.read()
+                        if len(data) == self.size_bytes:
+                            return data
+                except Exception:
+                    pass
+
+                frac = self.pi_fractional_digits(self.digits)
+                data = self.pack_parity_stream(frac)
+
+                try:
+                    with open(cache_path, "wb") as f:
+                        f.write(data)
+                except Exception:
+                    pass
+                return data
+
+        block_size = None
+        digest_size = None
+        n = None
+        w = None
+        r = None
+        p = None
+        s = None
+
+        pi_data = None
+        vectors = None
+        p_mask = None
+        p_extra_bits = None
+        p_shift_prefix = None
+        output_bytes = None
+        n_div_w = None
+        shift_message = None
+        batch_size = None
+        batch_mask = None
+
+        def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            self.ensure_prepared()
+            self.h = bytearray(self.output_bytes)
+            self.buf = bytearray()
+            self.msg_len = 0
+            if data:
+                self.update(data)
+            return
+
+        def ensure_prepared(self):
+            if self.vectors is not None:
+                return
+            self.pi_data = self.FSBPiBin().make_pi_bin()
+
+            if self.block_size is None or self.digest_size is None:
+                raise RuntimeError("invalid parameters")
+            if self.n is None or self.w is None or self.r is None or self.p is None or self.s is None:
+                raise RuntimeError("invalid parameters")
+
+            if (self.r % 8) != 0:
+                raise RuntimeError("r must be multiple of 8")
+            if (self.p <= self.r) is False:
+                pass
+            if (self.s - self.r) <= 0:
+                raise RuntimeError("s must be greater than r")
+            if ((self.s - self.r) % self.w) != 0:
+                raise RuntimeError("(s-r) must be divisible by w")
+            if (self.r % self.w) != 0:
+                raise RuntimeError("r must be divisible by w")
+
+            self.output_bytes = self.r // 8
+            self.shift_message = self.r // self.w
+            self.batch_size = (self.s - self.r) // self.w
+            self.batch_mask = (1 << self.batch_size) - 1
+            self.n_div_w = self.n // self.w
+
+            self.p_extra_bits = 8 - (self.p % 8)
+            if self.p_extra_bits == 0:
+                self.p_extra_bits = 8
+            self.p_mask = (1 << self.p) - 1
+            self.p_shift_prefix = self.p - self.r
+
+            size_vectors = (self.p // 8) + 1
+            vectors_count = self.n // self.r
+            need = vectors_count * size_vectors
+            if len(self.pi_data) < need:
+                raise RuntimeError("FSB_hash_pi.bin is too short for this variant")
+
+            vecs = []
+            for i in range(vectors_count):
+                start = i * size_vectors
+                end = start + size_vectors
+                chunk = self.pi_data[start:end]
+                v = int.from_bytes(chunk, "big") >> self.p_extra_bits
+                vecs.append(v)
+            self.vectors = vecs
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.h = bytearray(self.h)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            self.msg_len += len(data)
+            self.buf.extend(data)
+
+            bs = self.block_size
+            while len(self.buf) >= bs:
+                block = bytes(self.buf[:bs])
+                del self.buf[:bs]
+                self.compress(block)
+            return self
+
+        def finalize(self):
+            bs = self.block_size
+
+            bit_len = (self.msg_len * 8) & 0xffff_ffff_ffff_ffff
+            self.buf.append(0x80)
+            while (len(self.buf) % bs) != (bs - 8):
+                self.buf.append(0x00)
+            self.buf.extend(struct.pack(">Q", bit_len))
+
+            while len(self.buf) >= bs:
+                block = bytes(self.buf[:bs])
+                del self.buf[:bs]
+                self.compress(block)
+            return
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            wh = Hash.Whirlpool(bytes(c.h))
+            full = wh.digest()
+            return full[: self.digest_size]
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def compress(self, block):
+            if len(block) != self.block_size:
+                raise ValueError("invalid block length")
+
+            msg_int = int.from_bytes(block, "big")
+            divided = [0] * self.w
+            for i in range(self.w):
+                shift = (self.w - 1 - i) * self.batch_size
+                divided[i] = (msg_int >> shift) & self.batch_mask
+
+            state = self.h
+            acc = 0
+            for i in range(self.w):
+                w_index = (i * self.n_div_w) + state[i] + (divided[i] << self.shift_message)
+                chosen_vec = w_index // self.r
+                shift_value = w_index % self.r
+
+                v = self.vectors[chosen_vec]
+                if shift_value != 0:
+                    v = ((v >> shift_value) | (v << (self.p - shift_value))) & self.p_mask
+                prefix = v >> self.p_shift_prefix
+                acc ^= prefix
+
+            self.h = bytearray(acc.to_bytes(self.output_bytes, "big"))
+            return
+
+    class FSB160(FSBBase):
+        block_size = 0x3c
+        digest_size = 0x14
+        n = 0x14_00_00
+        w = 0x50
+        r = 0x2_80
+        p = 0x2_8d
+        s = 0x4_60
+
+    class FSB224(FSBBase):
+        block_size = 0x54
+        digest_size = 0x1c
+        n = 0x1c_00_00
+        w = 0x70
+        r = 0x3_80
+        p = 0x3_8b
+        s = 0x6_20
+
+    class FSB256(FSBBase):
+        block_size = 0x60
+        digest_size = 0x20
+        n = 0x20_00_00
+        w = 0x80
+        r = 0x4_00
+        p = 0x4_25
+        s = 0x7_00
+
+    class FSB384(FSBBase):
+        block_size = 0x73
+        digest_size = 0x30
+        n = 0x17_00_00
+        w = 0xb8
+        r = 0x5_c0
+        p = 0x5_cb
+        s = 0x9_58
+
+    class FSB512(FSBBase):
+        block_size = 0x9b
+        digest_size = 0x40
+        n = 0x1f_00_00
+        w = 0xf8
+        r = 0x7_c0
+        p = 0x7_c3
+        s = 0xc_98
+
+    class SHAvite3Base:
+        mask32 = 0xffff_ffff
+
+        sbox = [
+            0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+            0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+            0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+            0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+            0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+            0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+            0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+            0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+            0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+            0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+            0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+            0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+            0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+            0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+            0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+            0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
+        ]
+
+        aes0 = None
+        aes1 = None
+        aes2 = None
+        aes3 = None
+
+        block_size = None
+        digest_size = None
+        iv = None
+
+        def __init__(self, data=b"", salt=0):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            if salt != 0:
+                raise ValueError("only salt=0 is supported")
+            self.h = list(self.iv)
+            self.buf = bytearray(self.block_size)
+            self.ptr = 0
+            self.count0 = 0
+            self.count1 = 0
+            if self.block_size != 0x40:
+                self.count2 = 0
+                self.count3 = 0
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.h = list(self.h)
+            other.buf = bytearray(self.buf)
+            other.ptr = self.ptr
+            other.count0 = self.count0
+            other.count1 = self.count1
+            if self.block_size != 0x40:
+                other.count2 = self.count2
+                other.count3 = self.count3
+            return other
+
+        def rotl32(self, x, n):
+            x &= self.mask32
+            return ((x << n) | (x >> (0x20 - n))) & self.mask32
+
+        def swap32(self, x):
+            x &= self.mask32
+            return ((x & 0x0000_00ff) << 0x18) | ((x & 0x0000_ff00) << 0x08) | \
+                   ((x & 0x00ff_0000) >> 0x08) | ((x & 0xff00_0000) >> 0x18)
+
+        def dec32le(self, b, off):
+            return b[off] | (b[off + 1] << 0x08) | (b[off + 2] << 0x10) | (b[off + 3] << 0x18)
+
+        def enc32le(self, x):
+            return (x & self.mask32).to_bytes(0x04, "little")
+
+        def xtime(self, x):
+            x &= 0xff
+            return ((x << 1) ^ (0x1b if (x & 0x80) else 0x00)) & 0xff
+
+        def not32(self, x):
+            return x ^ self.mask32
+
+        def init_aes_tables(self):
+            if self.__class__.aes0 is not None:
+                return
+            te0 = [0] * 0x100
+            for i in range(0x100):
+                s = self.sbox[i]
+                s2 = self.xtime(s)
+                s3 = s2 ^ s
+                te0[i] = ((s2 << 0x18) | (s << 0x10) | (s << 0x08) | s3) & self.mask32
+            te1 = [self.rotl32(x, 0x08) for x in te0]
+            te2 = [self.rotl32(x, 0x10) for x in te0]
+            te3 = [self.rotl32(x, 0x18) for x in te0]
+            self.__class__.aes0 = [self.swap32(x) for x in te0]
+            self.__class__.aes1 = [self.swap32(x) for x in te3]
+            self.__class__.aes2 = [self.swap32(x) for x in te2]
+            self.__class__.aes3 = [self.swap32(x) for x in te1]
+            return
+
+        def aes_round_nokey(self, x0, x1, x2, x3):
+            self.init_aes_tables()
+            a0 = self.__class__.aes0
+            a1 = self.__class__.aes1
+            a2 = self.__class__.aes2
+            a3 = self.__class__.aes3
+            y0 = a0[(x0 >> 0x00) & 0xff] ^ a1[(x1 >> 0x08) & 0xff] ^ a2[(x2 >> 0x10) & 0xff] ^ a3[(x3 >> 0x18) & 0xff]
+            y1 = a0[(x1 >> 0x00) & 0xff] ^ a1[(x2 >> 0x08) & 0xff] ^ a2[(x3 >> 0x10) & 0xff] ^ a3[(x0 >> 0x18) & 0xff]
+            y2 = a0[(x2 >> 0x00) & 0xff] ^ a1[(x3 >> 0x08) & 0xff] ^ a2[(x0 >> 0x10) & 0xff] ^ a3[(x1 >> 0x18) & 0xff]
+            y3 = a0[(x3 >> 0x00) & 0xff] ^ a1[(x0 >> 0x08) & 0xff] ^ a2[(x1 >> 0x10) & 0xff] ^ a3[(x2 >> 0x18) & 0xff]
+            return y0, y1, y2, y3
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            off = 0
+            length = len(data)
+            while length > 0:
+                clen = self.block_size - self.ptr
+                if clen > length:
+                    clen = length
+                self.buf[self.ptr:self.ptr + clen] = data[off:off + clen]
+                self.ptr += clen
+                off += clen
+                length -= clen
+                if self.ptr == self.block_size:
+                    if self.block_size == 0x40:
+                        self.count0 = (self.count0 + 0x200) & self.mask32
+                        if self.count0 == 0:
+                            self.count1 = (self.count1 + 1) & self.mask32
+                        self.c256(bytes(self.buf))
+                    else:
+                        self.count0 = (self.count0 + 0x400) & self.mask32
+                        if self.count0 == 0:
+                            self.count1 = (self.count1 + 1) & self.mask32
+                            if self.count1 == 0:
+                                self.count2 = (self.count2 + 1) & self.mask32
+                                if self.count2 == 0:
+                                    self.count3 = (self.count3 + 1) & self.mask32
+                        self.c512(bytes(self.buf))
+                    self.ptr = 0
+            return self
+
+        def c256(self, block):
+            rk = [0] * 0x90
+            for i in range(0x10):
+                rk[i] = self.dec32le(block, i * 0x04)
+            u = 0x10
+            for _ in range(0x04):
+                for _ in range(0x02):
+                    x0, x1, x2, x3 = rk[u - 0x0f], rk[u - 0x0e], rk[u - 0x0d], rk[u - 0x10]
+                    x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                    rk[u + 0x00] = x0 ^ rk[u - 0x04]
+                    rk[u + 0x01] = x1 ^ rk[u - 0x03]
+                    rk[u + 0x02] = x2 ^ rk[u - 0x02]
+                    rk[u + 0x03] = x3 ^ rk[u - 0x01]
+                    if u == 0x10:
+                        rk[0x10] ^= self.count0
+                        rk[0x11] ^= self.not32(self.count1)
+                    elif u == 0x38:
+                        rk[0x39] ^= self.count1
+                        rk[0x3a] ^= self.not32(self.count0)
+                    u += 0x04
+                    x0, x1, x2, x3 = rk[u - 0x0f], rk[u - 0x0e], rk[u - 0x0d], rk[u - 0x10]
+                    x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                    rk[u + 0x00] = x0 ^ rk[u - 0x04]
+                    rk[u + 0x01] = x1 ^ rk[u - 0x03]
+                    rk[u + 0x02] = x2 ^ rk[u - 0x02]
+                    rk[u + 0x03] = x3 ^ rk[u - 0x01]
+                    if u == 0x54:
+                        rk[0x56] ^= self.count1
+                        rk[0x57] ^= self.not32(self.count0)
+                    elif u == 0x7c:
+                        rk[0x7c] ^= self.count0
+                        rk[0x7f] ^= self.not32(self.count1)
+                    u += 0x04
+                for _ in range(0x04):
+                    rk[u + 0x00] = rk[u - 0x10] ^ rk[u - 0x03]
+                    rk[u + 0x01] = rk[u - 0x0f] ^ rk[u - 0x02]
+                    rk[u + 0x02] = rk[u - 0x0e] ^ rk[u - 0x01]
+                    rk[u + 0x03] = rk[u - 0x0d] ^ rk[u - 0x00]
+                    u += 0x04
+            p0, p1, p2, p3, p4, p5, p6, p7 = self.h
+            u = 0
+            for _ in range(0x06):
+                x0 = p4 ^ rk[u + 0]
+                x1 = p5 ^ rk[u + 1]
+                x2 = p6 ^ rk[u + 2]
+                x3 = p7 ^ rk[u + 3]
+                u += 4
+                x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                x0 ^= rk[u + 0]
+                x1 ^= rk[u + 1]
+                x2 ^= rk[u + 2]
+                x3 ^= rk[u + 3]
+                u += 4
+                x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                x0 ^= rk[u + 0]
+                x1 ^= rk[u + 1]
+                x2 ^= rk[u + 2]
+                x3 ^= rk[u + 3]
+                u += 4
+                x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                p0 ^= x0
+                p1 ^= x1
+                p2 ^= x2
+                p3 ^= x3
+                x0 = p0 ^ rk[u + 0]
+                x1 = p1 ^ rk[u + 1]
+                x2 = p2 ^ rk[u + 2]
+                x3 = p3 ^ rk[u + 3]
+                u += 4
+                x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                x0 ^= rk[u + 0]
+                x1 ^= rk[u + 1]
+                x2 ^= rk[u + 2]
+                x3 ^= rk[u + 3]
+                u += 4
+                x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                x0 ^= rk[u + 0]
+                x1 ^= rk[u + 1]
+                x2 ^= rk[u + 2]
+                x3 ^= rk[u + 3]
+                u += 4
+                x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                p4 ^= x0
+                p5 ^= x1
+                p6 ^= x2
+                p7 ^= x3
+            self.h[0] ^= p0
+            self.h[1] ^= p1
+            self.h[2] ^= p2
+            self.h[3] ^= p3
+            self.h[4] ^= p4
+            self.h[5] ^= p5
+            self.h[6] ^= p6
+            self.h[7] ^= p7
+            return
+
+        def c512(self, block):
+            rk = [0] * 0x1c0
+            for i in range(0x20):
+                rk[i] = self.dec32le(block, i * 0x04)
+            u = 0x20
+            while True:
+                for _ in range(0x04):
+                    x0, x1, x2, x3 = rk[u - 0x1f], rk[u - 0x1e], rk[u - 0x1d], rk[u - 0x20]
+                    x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                    rk[u + 0x00] = x0 ^ rk[u - 0x04]
+                    rk[u + 0x01] = x1 ^ rk[u - 0x03]
+                    rk[u + 0x02] = x2 ^ rk[u - 0x02]
+                    rk[u + 0x03] = x3 ^ rk[u - 0x01]
+                    if u == 0x20:
+                        rk[0x20] ^= self.count0
+                        rk[0x21] ^= self.count1
+                        rk[0x22] ^= self.count2
+                        rk[0x23] ^= self.not32(self.count3)
+                    elif u == 0x1b8:
+                        rk[0x1b8] ^= self.count1
+                        rk[0x1b9] ^= self.count0
+                        rk[0x1ba] ^= self.count3
+                        rk[0x1bb] ^= self.not32(self.count2)
+                    u += 0x04
+                    x0, x1, x2, x3 = rk[u - 0x1f], rk[u - 0x1e], rk[u - 0x1d], rk[u - 0x20]
+                    x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                    rk[u + 0x00] = x0 ^ rk[u - 0x04]
+                    rk[u + 0x01] = x1 ^ rk[u - 0x03]
+                    rk[u + 0x02] = x2 ^ rk[u - 0x02]
+                    rk[u + 0x03] = x3 ^ rk[u - 0x01]
+                    if u == 0xa4:
+                        rk[0xa4] ^= self.count3
+                        rk[0xa5] ^= self.count2
+                        rk[0xa6] ^= self.count1
+                        rk[0xa7] ^= self.not32(self.count0)
+                    elif u == 0x13c:
+                        rk[0x13c] ^= self.count2
+                        rk[0x13d] ^= self.count3
+                        rk[0x13e] ^= self.count0
+                        rk[0x13f] ^= self.not32(self.count1)
+                    u += 0x04
+                if u == 0x1c0:
+                    break
+                for _ in range(0x08):
+                    rk[u + 0x00] = rk[u - 0x20] ^ rk[u - 0x07]
+                    rk[u + 0x01] = rk[u - 0x1f] ^ rk[u - 0x06]
+                    rk[u + 0x02] = rk[u - 0x1e] ^ rk[u - 0x05]
+                    rk[u + 0x03] = rk[u - 0x1d] ^ rk[u - 0x04]
+                    u += 0x04
+            p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, pA, pB, pC, pD, pE, pF = self.h
+            u = 0
+            for _ in range(0x0e):
+                x0 = p4 ^ rk[u + 0]
+                x1 = p5 ^ rk[u + 1]
+                x2 = p6 ^ rk[u + 2]
+                x3 = p7 ^ rk[u + 3]
+                u += 4
+                x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                x0 ^= rk[u + 0]
+                x1 ^= rk[u + 1]
+                x2 ^= rk[u + 2]
+                x3 ^= rk[u + 3]
+                u += 4
+                x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                x0 ^= rk[u + 0]
+                x1 ^= rk[u + 1]
+                x2 ^= rk[u + 2]
+                x3 ^= rk[u + 3]
+                u += 4
+                x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                x0 ^= rk[u + 0]
+                x1 ^= rk[u + 1]
+                x2 ^= rk[u + 2]
+                x3 ^= rk[u + 3]
+                u += 4
+                x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                p0 ^= x0
+                p1 ^= x1
+                p2 ^= x2
+                p3 ^= x3
+                x0 = pC ^ rk[u + 0]
+                x1 = pD ^ rk[u + 1]
+                x2 = pE ^ rk[u + 2]
+                x3 = pF ^ rk[u + 3]
+                u += 4
+                x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                x0 ^= rk[u + 0]
+                x1 ^= rk[u + 1]
+                x2 ^= rk[u + 2]
+                x3 ^= rk[u + 3]
+                u += 4
+                x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                x0 ^= rk[u + 0]
+                x1 ^= rk[u + 1]
+                x2 ^= rk[u + 2]
+                x3 ^= rk[u + 3]
+                u += 4
+                x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                x0 ^= rk[u + 0]
+                x1 ^= rk[u + 1]
+                x2 ^= rk[u + 2]
+                x3 ^= rk[u + 3]
+                u += 4
+                x0, x1, x2, x3 = self.aes_round_nokey(x0, x1, x2, x3)
+                p8 ^= x0
+                p9 ^= x1
+                pA ^= x2
+                pB ^= x3
+                p0, p4, p8, pC = pC, p0, p4, p8
+                p1, p5, p9, pD = pD, p1, p5, p9
+                p2, p6, pA, pE = pE, p2, p6, pA
+                p3, p7, pB, pF = pF, p3, p7, pB
+            self.h[0] ^= p0
+            self.h[1] ^= p1
+            self.h[2] ^= p2
+            self.h[3] ^= p3
+            self.h[4] ^= p4
+            self.h[5] ^= p5
+            self.h[6] ^= p6
+            self.h[7] ^= p7
+            self.h[8] ^= p8
+            self.h[9] ^= p9
+            self.h[0x0a] ^= pA
+            self.h[0x0b] ^= pB
+            self.h[0x0c] ^= pC
+            self.h[0x0d] ^= pD
+            self.h[0x0e] ^= pE
+            self.h[0x0f] ^= pF
+            return
+
+        def finalize(self):
+            buf = self.buf
+            ptr = self.ptr
+            if self.block_size == 0x40:
+                self.count0 = (self.count0 + (ptr << 0x03)) & self.mask32
+                count0 = self.count0
+                count1 = self.count1
+                if ptr == 0:
+                    buf[0] = 0x80
+                    for i in range(0x01, 0x36):
+                        buf[i] = 0x00
+                    self.count0 = 0
+                    self.count1 = 0
+                elif ptr < 0x36:
+                    buf[ptr] = 0x80
+                    ptr += 1
+                    for i in range(ptr, 0x36):
+                        buf[i] = 0x00
+                else:
+                    buf[ptr] = 0x80
+                    ptr += 1
+                    for i in range(ptr, 0x40):
+                        buf[i] = 0x00
+                    self.c256(bytes(buf))
+                    for i in range(0x36):
+                        buf[i] = 0x00
+                    self.count0 = 0
+                    self.count1 = 0
+                buf[0x36:0x3a] = self.enc32le(count0)
+                buf[0x3a:0x3e] = self.enc32le(count1)
+                out_w = self.digest_size // 0x04
+                buf[0x3e] = (out_w << 0x05) & 0xff
+                buf[0x3f] = (out_w >> 0x03) & 0xff
+                self.c256(bytes(buf))
+                out = bytearray()
+                for u in range(out_w):
+                    out.extend(self.enc32le(self.h[u]))
+                return bytes(out)
+            self.count0 = (self.count0 + (ptr << 0x03)) & self.mask32
+            count0 = self.count0
+            count1 = self.count1
+            count2 = self.count2
+            count3 = self.count3
+            if ptr == 0:
+                buf[0] = 0x80
+                for i in range(0x01, 0x6e):
+                    buf[i] = 0x00
+                self.count0 = 0
+                self.count1 = 0
+                self.count2 = 0
+                self.count3 = 0
+            elif ptr < 0x6e:
+                buf[ptr] = 0x80
+                ptr += 1
+                for i in range(ptr, 0x6e):
+                    buf[i] = 0x00
+            else:
+                buf[ptr] = 0x80
+                ptr += 1
+                for i in range(ptr, 0x80):
+                    buf[i] = 0x00
+                self.c512(bytes(buf))
+                for i in range(0x6e):
+                    buf[i] = 0x00
+                self.count0 = 0
+                self.count1 = 0
+                self.count2 = 0
+                self.count3 = 0
+            buf[0x6e:0x72] = self.enc32le(count0)
+            buf[0x72:0x76] = self.enc32le(count1)
+            buf[0x76:0x7a] = self.enc32le(count2)
+            buf[0x7a:0x7e] = self.enc32le(count3)
+            out_w = self.digest_size // 0x04
+            buf[0x7e] = (out_w << 0x05) & 0xff
+            buf[0x7f] = (out_w >> 0x03) & 0xff
+            self.c512(bytes(buf))
+            out = bytearray()
+            for u in range(out_w):
+                out.extend(self.enc32le(self.h[u]))
+            return bytes(out)
+
+        def digest(self):
+            c = self.copy()
+            return c.finalize()
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+    class SHAvite3_224(SHAvite3Base):
+        block_size = 0x40
+        digest_size = 0x1c
+        iv = [
+            0x6774_f31c, 0x990a_e210, 0xc87d_4274, 0xc954_6371,
+            0x62b2_aea8, 0x4b58_01d8, 0x1b70_2860, 0x842f_3017,
+        ]
+
+    class SHAvite3_256(SHAvite3Base):
+        block_size = 0x40
+        digest_size = 0x20
+        iv = [
+            0x49bb_3e47, 0x2674_860d, 0xa8b3_92ac, 0x021a_c4e6,
+            0x4092_83cf, 0x620e_5d86, 0x6d92_9dcb, 0x96cc_2a8b,
+        ]
+
+    class SHAvite3_384(SHAvite3Base):
+        block_size = 0x80
+        digest_size = 0x30
+        iv = [
+            0x83df_1545, 0xf9aa_ec13, 0xf480_3cb0, 0x11fe_1f47,
+            0xda6c_d269, 0x4f53_fcd7, 0x9505_29a2, 0x9790_8147,
+            0xb0a4_d7af, 0x2b91_32bf, 0x226e_607d, 0x3c0f_8d7c,
+            0x487b_3f0f, 0x0436_3e22, 0x0155_c99c, 0xec2e_20d3,
+        ]
+
+    class SHAvite3_512(SHAvite3Base):
+        block_size = 0x80
+        digest_size = 0x40
+        iv = [
+            0x72fc_cdd8, 0x79ca_4727, 0x128a_077b, 0x40d5_5aec,
+            0xd190_1a06, 0x430a_e307, 0xb29f_5cd1, 0xdf07_fbfc,
+            0x8e45_d73d, 0x681a_b538, 0xbde8_6578, 0xdd57_7e47,
+            0xe275_eade, 0x502d_9fcd, 0xb935_7178, 0x022a_4b9a,
+        ]
+
 
 @register_command
 class HashCommand(GenericCommand):
@@ -85631,6 +87188,7 @@ class HashCommand(GenericCommand):
         'The key for KMAC128 and KMAC256 is blank.',
         'The key for SipHash is "\\0" * 16.',
         'The key for HalfSipHash is "\\0" * 8.',
+        "To calculate FSB hash, you need the `gmpy2` package (uv pip install gmpy2).",
     ]
     _note_ = "\n".join(_note_)
 
@@ -86755,6 +88313,44 @@ class HashTestCommand(HashCommand, BufferingOutput):
                      "9f4fd29e0adf56320fe0f6208315525f",
         "Shabal512": "0530206770d0011ba26994a2cd16bc5499e68ec8c2a50558da6aecdf46e397cd" \
                      "7e4372637c4277a44c65351cf4023745917aabd13e4376e962d1c1f5e63fc30f",
+        # https://github.com/dstucrypt/dstu7564
+        "Kupyna256": "92a6074cf10c88c1e05f5e23e9f38a69a3e5d2219a3d5e18b585bc564477e29a",
+        "Kupyna384": "87bf930aefca3f96bf86d47bb7d8046b547250f828dca07e679be902c307ab34" \
+                     "1f1a6a120b8085aa2da0d8806686c2d7",
+        "Kupyna512": "b77674b2a30e91f0106a85acf65c2ae087bf930aefca3f96bf86d47bb7d8046b" \
+                     "547250f828dca07e679be902c307ab341f1a6a120b8085aa2da0d8806686c2d7",
+        # self
+        "CubeHash10+1/1+10-256": "501ed22433feb0e6570e2f205e4d30fac20d21d630203b602415f7182a45a867",
+        "CubeHash80+8/1+80-256": "1af3ca351ae221ce8d8d6d8425b63e336b775fb8b63dd2a28fc955d7855ffd88",
+        "CubeHash160+16/32+160-256": "01eb7d4eccafbf839cb45931dfaf617fba7a51253467250b29320b9f3cff06c1",
+        "CubeHash10+1/1+10-512": "f1679fee84b979fc81c3289be62c54bb5b645a7b3bc2656b993dd9bf2292bdae" \
+                                 "1b4a872950837249918c796c07dca11fd0fb78bfc43fd1cd60aa418260243ab4",
+        "CubeHash80+8/1+80-512": "9f96db01948a52f5d59c273aec791927664b273355aec10472bc73f31aa013a2" \
+                                 "19210b2ac5f03b6dac5b4567d4494bfb1fe2ca47211cda9ddd421c52e58faa1a",
+        "CubeHash160+16/32+160-512": "d411897fca1e608564a1a143b7adb9208cca5c03ba78bcdaa5eb00835975e479" \
+                                     "4f23c096ee6571a42fb5264f8a1ec65cb641570d387a454e188abe58a9c352ec",
+        # https://github.com/kerukuro/digestpp
+        "ECHO224": "ba6e4a1a71cbc05a862fb279183ff7373fce210a37c8b62640abae7c",
+        "ECHO256": "ac3be7bd3d27508e8bb8f834abbd2cd847e2b94c0816b451e68f908ce185c4ae",
+        "ECHO384": "2c78438be177bebe1a216a914efea335364e8ed47dbfb1050770f111b2158108f" \
+                   "ec71c8465720658142a766164ff1ab7",
+        "ECHO512": "154b84e1956bd907269cb9c81ac2f7cf8ef059109a11ab6e9ce977c4248b5e1ac" \
+                   "19873117932df6258782abf64e782512a5d6883a54906fa8665b0cce1552acd",
+        # https://hashing.tools/fsb
+        "FSB160": "b0a13fe24c0190e8d53f91e246ea10540e147af3",
+        "FSB224": "207ac5eb161b20be6ca49f7d3d7851a7634bc328ec083bde3488bf3a",
+        "FSB256": "5eb1e8ee65a311f2b06652943b39e0ecb1f2f80d72c8d62b069abed31ae878e7",
+        "FSB384": "26f1b38803c91c7e169f75f1b2ce8e2063db6faa8cf1e27e362c78b50d4098d6" \
+                  "c386b5f4fabc074f7974cb0bc6e5f659",
+        "FSB512": "3177b373816230dc1ada0931de19a1971f08e8f6344194536449f78e89775da2" \
+                  "e3bd53db8366f553424b28cad88a7bf63848cd8f991f182bc31578243daa5bde",
+        # https://github.com/gray/digest-shavite3
+        "SHAvite3-224": "b1814d4448ec5f08996b9a77236ee66f2cd1294fc7a1b1fb7337ae83",
+        "SHAvite3-256": "fa043957aed28fa90d13c0680ac9bc60ce3b84259909ea75ec3ae0b722783aa0",
+        "SHAvite3-384": "333336ff886c555f333a0332b2c91ae0a9ceff8fb2f7122a20b537180747b133" \
+                        "e81e0442c2f92f2c052b52ad4925f61a",
+        "SHAvite3-512": "dea616109d18cce6fffeebabcfd7f698c5c33c4c4175d01ca1463564cbcacaca" \
+                        "187dd4a0b417093acdaa975672b8e087cd3b55f950a02f6799295b916c572533",
         # https://www.browserling.com/tools/md6-hash
         "MD6-128": "d92b75252b0b05b8e64db33361b73a03",
         "MD6-256": "7235c21eafc0992b2cae6eec077a1b5854640e956e3f35a655ec6cc673967735",
