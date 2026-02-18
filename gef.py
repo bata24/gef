@@ -79833,7 +79833,7 @@ class Hash:
         def digest_normalize(self, digest):
             digest = bytes.fromhex(digest)
             a, b, c, d = digest[:4], digest[4:8], digest[8:12], digest[12:]
-            return (a[::-1] + b[::-1] +c[::-1] + d[::-1]).hex()
+            return " ".join(x[::-1].hex() for x in [a, b, c, d])
 
     class MurmurHash3_x64_128(MurmurHash3Base):
         block_size = 16
@@ -79973,7 +79973,7 @@ class Hash:
         def digest_normalize(self, digest):
             digest = bytes.fromhex(digest)
             a, b = digest[:8], digest[8:]
-            return (a[::-1] + b[::-1]).hex()
+            return " ".join(x[::-1].hex() for x in [a, b])
 
     class FORK256:
         block_size = 64   # 512 bits
@@ -87215,6 +87215,908 @@ class Hash:
             0xe275_eade, 0x502d_9fcd, 0xb935_7178, 0x022a_4b9a,
         ]
 
+    class LaneBase:
+        sbox = [
+            0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+            0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+            0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+            0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+            0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+            0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+            0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+            0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+            0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+            0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+            0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+            0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+            0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+            0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+            0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+            0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
+        ]
+        k_table = None
+
+        def __init__(self, data=b''):
+            self.hashbitlen = int(self.hashbitlen)
+            self.digest_size = self.hashbitlen // 8
+            self.block_size = 64 if self.hashbitlen <= 256 else 128
+
+            self.databitcount = 0
+            self.buffer = bytearray(128)
+            self.hash = bytearray(64)
+            self.finalized = False
+            self.final_digest = None
+
+            self.ensure_tables()
+            self.initialize()
+            if data:
+                self.update(data)
+            return
+
+        def ensure_tables(self):
+            if self.k_table is not None:
+                return
+            k = [0] * 768
+            k[0] = 0x07fc_703d
+            for i in range(1, 768):
+                prev = k[i - 1]
+                v = (prev >> 1) & 0xffff_ffff
+                if prev & 0x0000_0001:
+                    v ^= 0xd000_0001
+                k[i] = v & 0xffff_ffff
+            self.k_table = k
+            return
+
+        def initialize(self):
+            for i in range(64):
+                self.hash[i] = 0
+            for i in range(128):
+                self.buffer[i] = 0
+
+            self.buffer[0] = 0x02
+            hb = self.hashbitlen & 0xffff_ffff
+            self.buffer[1] = self.select_byte_32(hb, 0)
+            self.buffer[2] = self.select_byte_32(hb, 1)
+            self.buffer[3] = self.select_byte_32(hb, 2)
+            self.buffer[4] = self.select_byte_32(hb, 3)
+
+            if self.hashbitlen <= 256:
+                self.lane256_transform(self.buffer[:64], 0)
+            else:
+                self.lane512_transform(self.buffer[:128], 0)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.databitcount = self.databitcount
+            other.buffer[:] = self.buffer
+            other.hash[:] = self.hash
+            other.finalized = self.finalized
+            other.final_digest = self.final_digest
+            return other
+
+        def update(self, data):
+            if self.finalized:
+                raise ValueError("hash object already finalized")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+
+            blocksize = self.block_size
+            bytes_len = len(data)
+            offset = 0
+
+            buffill = (self.databitcount >> 3) & (blocksize - 1)
+            if buffill:
+                n = blocksize - buffill
+                if n > bytes_len:
+                    n = bytes_len
+                self.buffer[buffill:buffill + n] = data[0:n]
+                self.databitcount += n << 3
+                if buffill + n == blocksize:
+                    if blocksize == 64:
+                        self.lane256_transform(self.buffer[:64], self.databitcount)
+                    else:
+                        self.lane512_transform(self.buffer[:128], self.databitcount)
+                offset += n
+                bytes_len -= n
+
+            while bytes_len >= blocksize:
+                self.databitcount += blocksize << 3
+                if blocksize == 64:
+                    self.lane256_transform(data[offset:offset + 64], self.databitcount)
+                else:
+                    self.lane512_transform(data[offset:offset + 128], self.databitcount)
+                offset += blocksize
+                bytes_len -= blocksize
+
+            if bytes_len:
+                self.buffer[0:bytes_len] = data[offset:offset + bytes_len]
+                self.databitcount += bytes_len << 3
+            return
+
+        def digest(self):
+            if self.finalized:
+                return self.final_digest
+            tmp = self.copy()
+            tmp.finalize()
+            return tmp.final_digest
+
+        def hexdigest(self):
+            d = self.digest()
+            return d.hex()
+
+        def finalize(self):
+            if self.finalized:
+                return
+            blocksize = self.block_size
+
+            if blocksize == 64:
+                if self.databitcount & 0x1ff:
+                    n = (((self.databitcount - 1) >> 3) + 1) & 0x3f
+                    if n < 64:
+                        self.buffer[n:64] = b"\x00" * (64 - n)
+                    idx = (self.databitcount >> 3) & 0x3f
+                    self.buffer[idx] &= (~(0xff >> (self.databitcount & 0x7))) & 0xff
+                    self.lane256_transform(self.buffer[:64], self.databitcount)
+            else:
+                if self.databitcount & 0x3ff:
+                    n = (((self.databitcount - 1) >> 3) + 1) & 0x7f
+                    if n < 128:
+                        self.buffer[n:128] = b"\x00" * (128 - n)
+                    idx = (self.databitcount >> 3) & 0x7f
+                    self.buffer[idx] &= (~(0xff >> (self.databitcount & 0x7))) & 0xff
+                    self.lane512_transform(self.buffer[:128], self.databitcount)
+
+            for i in range(blocksize):
+                self.buffer[i] = 0
+            self.buffer[0] = 0x00
+            counter = self.databitcount & 0xffff_ffff_ffff_ffff
+            for i in range(8):
+                self.buffer[i + 1] = self.select_byte_64(counter, i)
+
+            if blocksize == 64:
+                self.lane256_transform(self.buffer[:64], 0)
+            else:
+                self.lane512_transform(self.buffer[:128], 0)
+
+            self.final_digest = bytes(self.hash[:self.digest_size])
+            self.finalized = True
+            return
+
+        def select_byte_32(self, word, idx):
+            return (word >> ((3 - idx) * 8)) & 0xff
+
+        def select_byte_64(self, word, idx):
+            return (word >> ((7 - idx) * 8)) & 0xff
+
+        def mul2(self, a):
+            a &= 0xff
+            if a & 0x80:
+                return (((a << 1) & 0xff) ^ 0x1b) & 0xff
+            return ((a << 1) & 0xff)
+
+        def mul3(self, a):
+            return self.mul2(a) ^ (a & 0xff)
+
+        def new_aes_state(self):
+            rows = []
+            for _ in range(4):
+                rows.append([0, 0, 0, 0])
+            return rows
+
+        def new_lane_state(self, parts):
+            states = []
+            for _ in range(parts):
+                states.append(self.new_aes_state())
+            return states
+
+        def add_constants(self, r, a, parts):
+            k = self.k_table
+            if parts == 2:
+                base = 8 * r
+                for m in range(2):
+                    for col in range(4):
+                        word = k[base + 4 * m + col]
+                        for row in range(4):
+                            a[m][row][col] ^= self.select_byte_32(word, row)
+            else:
+                base = 16 * r
+                for m in range(4):
+                    for col in range(4):
+                        word = k[base + 4 * m + col]
+                        for row in range(4):
+                            a[m][row][col] ^= self.select_byte_32(word, row)
+            return
+
+        def add_counter(self, r, a, counter):
+            shift = 4 * (r % 2)
+            for row in range(4):
+                a[0][row][3] ^= self.select_byte_64(counter, shift + row)
+            return
+
+        def shift_rows(self, a, parts):
+            for m in range(parts):
+                for row in range(1, 4):
+                    tmp0 = a[m][row][(0 + row) & 3]
+                    tmp1 = a[m][row][(1 + row) & 3]
+                    tmp2 = a[m][row][(2 + row) & 3]
+                    tmp3 = a[m][row][(3 + row) & 3]
+                    a[m][row][0] = tmp0
+                    a[m][row][1] = tmp1
+                    a[m][row][2] = tmp2
+                    a[m][row][3] = tmp3
+            return
+
+        def sub_bytes(self, a, parts):
+            s = self.sbox
+            for m in range(parts):
+                for row in range(4):
+                    r0 = a[m][row]
+                    r0[0] = s[r0[0]]
+                    r0[1] = s[r0[1]]
+                    r0[2] = s[r0[2]]
+                    r0[3] = s[r0[3]]
+            return
+
+        def mix_columns(self, a, parts):
+            for m in range(parts):
+                for col in range(4):
+                    a0 = a[m][0][col]
+                    a1 = a[m][1][col]
+                    a2 = a[m][2][col]
+                    a3 = a[m][3][col]
+                    b0 = self.mul2(a0) ^ self.mul3(a1) ^ a2 ^ a3
+                    b1 = self.mul2(a1) ^ self.mul3(a2) ^ a3 ^ a0
+                    b2 = self.mul2(a2) ^ self.mul3(a3) ^ a0 ^ a1
+                    b3 = self.mul2(a3) ^ self.mul3(a0) ^ a1 ^ a2
+                    a[m][0][col] = b0 & 0xff
+                    a[m][1][col] = b1 & 0xff
+                    a[m][2][col] = b2 & 0xff
+                    a[m][3][col] = b3 & 0xff
+            return
+
+        def xor_lane_state(self, a, b, parts):
+            for m in range(parts):
+                for row in range(4):
+                    for col in range(4):
+                        a[m][row][col] ^= b[m][row][col]
+            return
+
+        def swap_columns256(self, a):
+            for row in range(4):
+                a[0][row][2], a[1][row][0] = a[1][row][0], a[0][row][2]
+                a[0][row][3], a[1][row][1] = a[1][row][1], a[0][row][3]
+            return
+
+        def swap_columns512(self, a):
+            for row in range(4):
+                a[0][row][1], a[1][row][0] = a[1][row][0], a[0][row][1]
+                a[0][row][2], a[2][row][0] = a[2][row][0], a[0][row][2]
+                a[0][row][3], a[3][row][0] = a[3][row][0], a[0][row][3]
+                a[1][row][2], a[2][row][1] = a[2][row][1], a[1][row][2]
+                a[1][row][3], a[3][row][1] = a[3][row][1], a[1][row][3]
+                a[2][row][3], a[3][row][2] = a[3][row][2], a[2][row][3]
+            return
+
+        def permute_p256(self, j, a, counter):
+            for i in range(5):
+                r = 5 * j + i
+                self.sub_bytes(a, 2)
+                self.shift_rows(a, 2)
+                self.mix_columns(a, 2)
+                self.add_constants(r, a, 2)
+                self.add_counter(r, a, counter)
+                self.swap_columns256(a)
+            self.sub_bytes(a, 2)
+            self.shift_rows(a, 2)
+            self.mix_columns(a, 2)
+            self.swap_columns256(a)
+            return
+
+        def permute_q256(self, j, a, counter):
+            for i in range(2):
+                r = 30 + 2 * j + i
+                self.sub_bytes(a, 2)
+                self.shift_rows(a, 2)
+                self.mix_columns(a, 2)
+                self.add_constants(r, a, 2)
+                self.add_counter(r, a, counter)
+                self.swap_columns256(a)
+            self.sub_bytes(a, 2)
+            self.shift_rows(a, 2)
+            self.mix_columns(a, 2)
+            self.swap_columns256(a)
+            return
+
+        def permute_p512(self, j, a, counter):
+            for i in range(7):
+                r = 7 * j + i
+                self.sub_bytes(a, 4)
+                self.shift_rows(a, 4)
+                self.mix_columns(a, 4)
+                self.add_constants(r, a, 4)
+                self.add_counter(r, a, counter)
+                self.swap_columns512(a)
+            self.sub_bytes(a, 4)
+            self.shift_rows(a, 4)
+            self.mix_columns(a, 4)
+            self.swap_columns512(a)
+            return
+
+        def permute_q512(self, j, a, counter):
+            for i in range(3):
+                r = 42 + 3 * j + i
+                self.sub_bytes(a, 4)
+                self.shift_rows(a, 4)
+                self.mix_columns(a, 4)
+                self.add_constants(r, a, 4)
+                self.add_counter(r, a, counter)
+                self.swap_columns512(a)
+            self.sub_bytes(a, 4)
+            self.shift_rows(a, 4)
+            self.mix_columns(a, 4)
+            self.swap_columns512(a)
+            return
+
+        def expand_message256(self, hashval, buffer, W0, W1, W2, W3, W4, W5):
+            for col in range(4):
+                for row in range(4):
+                    idx = 4 * col + row
+                    W0[0][row][col] = hashval[idx] ^ buffer[idx] ^ buffer[16 + idx] ^ buffer[32 + idx] ^ buffer[48 + idx]
+                    W0[1][row][col] = hashval[16 + idx] ^ buffer[idx] ^ buffer[32 + idx]
+
+                    W1[0][row][col] = hashval[idx] ^ hashval[16 + idx] ^ buffer[idx] ^ buffer[32 + idx] ^ buffer[48 + idx]
+                    W1[1][row][col] = hashval[idx] ^ buffer[16 + idx] ^ buffer[32 + idx]
+
+                    W2[0][row][col] = hashval[idx] ^ hashval[16 + idx] ^ buffer[idx] ^ buffer[16 + idx] ^ buffer[32 + idx]
+                    W2[1][row][col] = hashval[idx] ^ buffer[idx] ^ buffer[48 + idx]
+
+                    W3[0][row][col] = hashval[idx]
+                    W3[1][row][col] = hashval[16 + idx]
+
+                    W4[0][row][col] = buffer[idx]
+                    W4[1][row][col] = buffer[16 + idx]
+
+                    W5[0][row][col] = buffer[32 + idx]
+                    W5[1][row][col] = buffer[48 + idx]
+            return
+
+        def store_hash256(self, hashval, W0):
+            for m in range(2):
+                base = 16 * m
+                for col in range(4):
+                    for row in range(4):
+                        hashval[base + 4 * col + row] = W0[m][row][col] & 0xff
+            return
+
+        def lane256_transform(self, buffer, counter):
+            W0 = self.new_lane_state(2)
+            W1 = self.new_lane_state(2)
+            W2 = self.new_lane_state(2)
+            W3 = self.new_lane_state(2)
+            W4 = self.new_lane_state(2)
+            W5 = self.new_lane_state(2)
+
+            self.expand_message256(self.hash, buffer, W0, W1, W2, W3, W4, W5)
+
+            self.permute_p256(0, W0, counter)
+            self.permute_p256(1, W1, counter)
+            self.permute_p256(2, W2, counter)
+            self.permute_p256(3, W3, counter)
+            self.permute_p256(4, W4, counter)
+            self.permute_p256(5, W5, counter)
+
+            self.xor_lane_state(W0, W1, 2)
+            self.xor_lane_state(W0, W2, 2)
+            self.xor_lane_state(W3, W4, 2)
+            self.xor_lane_state(W3, W5, 2)
+
+            self.permute_q256(0, W0, counter)
+            self.permute_q256(1, W3, counter)
+
+            self.xor_lane_state(W0, W3, 2)
+
+            self.store_hash256(self.hash, W0)
+            return
+
+        def expand_message512(self, hashval, buffer, W0, W1, W2, W3, W4, W5):
+            for col in range(4):
+                for row in range(4):
+                    idx = 4 * col + row
+                    W0[0][row][col] = hashval[idx] ^ buffer[idx] ^ buffer[32 + idx] ^ buffer[64 + idx] ^ buffer[96 + idx]
+                    W0[1][row][col] = hashval[16 + idx] ^ buffer[16 + idx] ^ buffer[48 + idx] ^ buffer[80 + idx] ^ buffer[112 + idx]
+                    W0[2][row][col] = hashval[32 + idx] ^ buffer[idx] ^ buffer[64 + idx]
+                    W0[3][row][col] = hashval[48 + idx] ^ buffer[16 + idx] ^ buffer[80 + idx]
+
+                    W1[0][row][col] = hashval[idx] ^ hashval[32 + idx] ^ buffer[idx] ^ buffer[64 + idx] ^ buffer[96 + idx]
+                    W1[1][row][col] = hashval[16 + idx] ^ hashval[48 + idx] ^ buffer[16 + idx] ^ buffer[80 + idx] ^ buffer[112 + idx]
+                    W1[2][row][col] = hashval[idx] ^ buffer[32 + idx] ^ buffer[64 + idx]
+                    W1[3][row][col] = hashval[16 + idx] ^ buffer[48 + idx] ^ buffer[80 + idx]
+
+                    W2[0][row][col] = hashval[idx] ^ hashval[32 + idx] ^ buffer[idx] ^ buffer[32 + idx] ^ buffer[64 + idx]
+                    W2[1][row][col] = hashval[16 + idx] ^ hashval[48 + idx] ^ buffer[16 + idx] ^ buffer[48 + idx] ^ buffer[80 + idx]
+                    W2[2][row][col] = hashval[idx] ^ buffer[idx] ^ buffer[96 + idx]
+                    W2[3][row][col] = hashval[16 + idx] ^ buffer[16 + idx] ^ buffer[112 + idx]
+
+                    W3[0][row][col] = hashval[idx]
+                    W3[1][row][col] = hashval[16 + idx]
+                    W3[2][row][col] = hashval[32 + idx]
+                    W3[3][row][col] = hashval[48 + idx]
+
+                    W4[0][row][col] = buffer[idx]
+                    W4[1][row][col] = buffer[16 + idx]
+                    W4[2][row][col] = buffer[32 + idx]
+                    W4[3][row][col] = buffer[48 + idx]
+
+                    W5[0][row][col] = buffer[64 + idx]
+                    W5[1][row][col] = buffer[80 + idx]
+                    W5[2][row][col] = buffer[96 + idx]
+                    W5[3][row][col] = buffer[112 + idx]
+            return
+
+        def store_hash512(self, hashval, W0):
+            for m in range(4):
+                base = 16 * m
+                for col in range(4):
+                    for row in range(4):
+                        hashval[base + 4 * col + row] = W0[m][row][col] & 0xff
+            return
+
+        def lane512_transform(self, buffer, counter):
+            W0 = self.new_lane_state(4)
+            W1 = self.new_lane_state(4)
+            W2 = self.new_lane_state(4)
+            W3 = self.new_lane_state(4)
+            W4 = self.new_lane_state(4)
+            W5 = self.new_lane_state(4)
+
+            self.expand_message512(self.hash, buffer, W0, W1, W2, W3, W4, W5)
+
+            self.permute_p512(0, W0, counter)
+            self.permute_p512(1, W1, counter)
+            self.permute_p512(2, W2, counter)
+            self.permute_p512(3, W3, counter)
+            self.permute_p512(4, W4, counter)
+            self.permute_p512(5, W5, counter)
+
+            self.xor_lane_state(W0, W1, 4)
+            self.xor_lane_state(W0, W2, 4)
+            self.xor_lane_state(W3, W4, 4)
+            self.xor_lane_state(W3, W5, 4)
+
+            self.permute_q512(0, W0, counter)
+            self.permute_q512(1, W3, counter)
+
+            self.xor_lane_state(W0, W3, 4)
+
+            self.store_hash512(self.hash, W0)
+            return
+
+    class Lane224(LaneBase):
+        hashbitlen = 224
+
+    class Lane256(LaneBase):
+        hashbitlen = 256
+
+    class Lane384(LaneBase):
+        hashbitlen = 384
+
+    class Lane512(LaneBase):
+        hashbitlen = 512
+
+    class FastHashBase:
+        block_size = 8
+        digest_size = 0
+        value_bits = 0
+        pack_format = ""
+        m_const = 0x8803_55f2_1e6d_1965
+        mix_const = 0x2127_599b_f432_5c37
+        mask64 = 0xffff_ffff_ffff_ffff
+        mask32 = 0xffff_ffff
+
+        def __init__(self, data=b"", seed=0):
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.seed = seed
+            self.value = 0
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__(seed=self.seed)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.value = self.value
+            return other
+
+        def u64(self, x):
+            return x & self.mask64
+
+        def u32(self, x):
+            return x & self.mask32
+
+        def mix64(self, h):
+            h = self.u64(h)
+            h ^= (h >> 23)
+            h = self.u64(h)
+            h = self.u64(h * self.mix_const)
+            h ^= (h >> 47)
+            h = self.u64(h)
+            return h
+
+        def fasthash64(self, message, seed):
+            m = self.m_const
+            length = len(message)
+
+            h = self.u64(seed) ^ self.u64(length * m)
+
+            index = 0
+            end = length & ~7
+            while index < end:
+                v = struct.unpack_from("<Q", message, index)[0]
+                index += 8
+                h ^= self.mix64(v)
+                h = self.u64(h * m)
+
+            rem = length & 7
+            if rem:
+                tail = message[end:end + rem]
+                v = 0
+                for i in range(rem):
+                    v ^= tail[i] << (8 * i)
+                h ^= self.mix64(v)
+                h = self.u64(h * m)
+
+            h = self.mix64(h)
+            return h
+
+        def compute_value(self, message, seed):
+            raise NotImplementedError("compute_value must be implemented in subclass")
+            return
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes or bytearray")
+            self.buf.extend(data)
+            self.msg_len += len(data)
+            return self
+
+        def finalize(self):
+            message = bytes(self.buf)
+            self.value = self.compute_value(message, self.seed)
+            return
+
+        def digest_uint(self):
+            c = self.copy()
+            c.finalize()
+            return c.value
+
+        def digest_int(self):
+            x = self.digest_uint()
+            sign = 1 << (self.value_bits - 1)
+            mod = 1 << self.value_bits
+            if x & sign:
+                x -= mod
+            return x
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return struct.pack(self.pack_format, c.value)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+    class FastHash64(FastHashBase):
+        digest_size = 8
+        value_bits = 64
+        pack_format = "<Q"
+
+        def compute_value(self, message, seed):
+            return self.fasthash64(message, seed)
+
+    class FastHash32(FastHashBase):
+        digest_size = 4
+        value_bits = 32
+        pack_format = "<I"
+
+        def compute_value(self, message, seed):
+            h = self.fasthash64(message, seed)
+            v = self.u32(h - (h >> 32))
+            return v
+
+    class SuperFastHash:
+        block_size = 4
+        digest_size = 4
+
+        def __init__(self, data=b""):
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.value = 0
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.value = self.value
+            return other
+
+        def u32(self, x):
+            x &= 0xffff_ffff
+            return x
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            self.buf.extend(data)
+            self.msg_len += len(data)
+            return self
+
+        def finalize(self):
+            message = bytes(self.buf)
+            length = len(message)
+
+            index = 0
+            digest = self.u32(length)
+
+            for _ in range(length >> 2):
+                w1 = message[index] | (message[index + 1] << 8)
+                w2 = message[index + 2] | (message[index + 3] << 8)
+                index += 4
+
+                digest = self.u32(digest + w1)
+                digest ^= self.u32(digest << 16) ^ self.u32(w2 << 11)
+                digest = self.u32(digest + (digest >> 11))
+
+            rem = length & 3
+            if rem == 3:
+                digest = self.u32(digest + (message[index] | (message[index + 1] << 8)))
+                digest ^= self.u32(digest << 16)
+                digest ^= self.u32(message[index + 2] << 18)
+                digest = self.u32(digest + (digest >> 11))
+            elif rem == 2:
+                digest = self.u32(digest + (message[index] | (message[index + 1] << 8)))
+                digest ^= self.u32(digest << 11)
+                digest = self.u32(digest + (digest >> 17))
+            elif rem == 1:
+                digest = self.u32(digest + message[index])
+                digest ^= self.u32(digest << 10)
+                digest = self.u32(digest + (digest >> 1))
+
+            digest ^= self.u32(digest << 3)
+            digest = self.u32(digest + (digest >> 5))
+            digest ^= self.u32(digest << 4)
+            digest = self.u32(digest + (digest >> 17))
+            digest ^= self.u32(digest << 25)
+            digest = self.u32(digest + (digest >> 6))
+
+            self.value = digest
+            return
+
+        def digest_uint(self):
+            c = self.copy()
+            c.finalize()
+            return c.value
+
+        def digest_int(self):
+            x = self.digest_uint()
+            if x & 0x8000_0000:
+                x -= 0x1_0000_0000
+            return x
+
+        def digest(self):
+            return struct.pack("<I", self.digest_uint())
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+    class BuzHash:
+        digest_size = 4
+        block_size = 0
+
+        bytehash = (
+            0x12bd_9527, 0xf414_0cea, 0x987b_d6e1, 0x7907_9850, 0xafbf_d539, 0xd350_ce0a, 0x8297_3931, 0x9fc3_2b9c,
+            0x2800_3b88, 0xc30c_13aa, 0x6b67_8c34, 0x5844_ef1d, 0xaa55_2c18, 0x4a77_d3e8, 0xd1f6_2ea0, 0x6599_417c,
+            0xfbe3_0e7a, 0xf9e2_d5ee, 0xa1fc_a42e, 0x4154_8969, 0x116d_5b59, 0xaeda_1e1a, 0xc519_1c17, 0x54b9_a3cb,
+            0x727e_492a, 0x5c43_2f91, 0x31a5_0bce, 0xc269_6af6, 0x217c_8020, 0x1262_aefc, 0xace7_5924, 0x9876_a04f,
+            0xaf30_0bc2, 0x3ffc_e3f6, 0xd668_0fb5, 0xd0b1_ced8, 0x6651_f842, 0x736f_adef, 0xbc2d_3429, 0xb03d_2904,
+            0x7e63_4ba4, 0xdfd8_7d8c, 0x7988_d63a, 0x4be4_d933, 0x6a8d_0382, 0x9e13_2d62, 0x3ee9_c95f, 0xfec0_5b97,
+            0x6907_ad34, 0x8616_cfcc, 0xa6aa_bf24, 0x8ad1_c92e, 0x4f2a_ffc0, 0xb875_19db, 0x6576_eaf6, 0x15db_e00a,
+            0x63e1_dd82, 0xa36b_6a81, 0xeead_99b3, 0xbc6a_4309, 0x3478_d1a7, 0x2182_bcc0, 0xdd50_cfce, 0x7cb2_5580,
+            0x7307_5483, 0x503b_7f42, 0x4cd5_0d63, 0x3f4d_94c9, 0x385f_cbb7, 0x90da_f16c, 0xece1_0b8e, 0x11c1_cb04,
+            0x816a_899b, 0x69a2_9d06, 0xfb09_0b37, 0xf98e_f13c, 0x0765_3435, 0x9f15_dc42, 0x3b43_abdf, 0x1334_283f,
+            0x93f3_d9af, 0x0cbd_fe71, 0xa788_a614, 0x4f54_d2f0, 0xd437_4fc7, 0x7055_7ce7, 0xf741_fce8, 0xe4b6_f661,
+            0xc630_cb98, 0x387a_6366, 0x72f4_28fd, 0x5390_09db, 0xc53e_3810, 0x1e1a_52e5, 0x7d68_16b0, 0x040f_9b81,
+            0x9c99_c9fb, 0x9f3a_f3d2, 0x774d_1061, 0xd5c8_40ea, 0x8e14_80fe, 0x6ee4_023c, 0x2fbd_a535, 0xd88e_ff7a,
+            0xd863_2a2a, 0x43c4_e024, 0x3ef2_7971, 0xc728_66fd, 0xe35c_c630, 0x46d9_6220, 0x437a_8384, 0xe92c_af0c,
+            0x6290_a47e, 0xa7bb_9238, 0x0e10_00f9, 0x49e7_6bdc, 0x3acf_b4b8, 0x0358_2b8e, 0x6ea2_de4e, 0x2ec1_008d,
+            0xfcc8_df69, 0x91c2_fe0a, 0xb471_c7d9, 0x778b_e812, 0x70d2_9ad1, 0x7641_1cbf, 0xc302_e81c, 0x4e44_5194,
+            0x22e3_aa72, 0xb657_62e9, 0xa280_db05, 0x827a_a70e, 0x4c53_1a9d, 0x7a60_bf4a, 0x8fd9_5a44, 0x2289_aef0,
+            0xcd50_ddc4, 0x639a_ae69, 0x5fe8_5ed6, 0x4ed7_24ff, 0x00f0_4f7d, 0x95a5_fcb0, 0x8825_5d15, 0xa603_d2c9,
+            0xf695_6a5b, 0x53ea_7f3e, 0xb570_f225, 0x2b3b_e203, 0xa181_e40e, 0xc413_cdce, 0xa7cb_1ebb, 0xcf25_8b1f,
+            0x516e_b016, 0xca20_4586, 0xd1e6_9894, 0xe85a_73d3, 0x7db2_d382, 0xae73_b463, 0x3598_d643, 0x5087_c864,
+            0xd91f_30b6, 0xe1d4_d1e7, 0x73b3_b337, 0xceac_1233, 0x8edf_7845, 0xa69c_45c9, 0xdb5d_b3ab, 0x28cf_ade8,
+            0xebfa_49e7, 0xcbc2_a659, 0x59cc_e971, 0x959a_01af, 0x8ee9_aae7, 0xfb2f_01c6, 0x5a75_2836, 0x9ed1_2981,
+            0x618d_05b6, 0x93ec_12b3, 0x4590_c779, 0xed13_17a2, 0x03fe_5835, 0x7ad3_c6f7, 0xd4aa_d5b5, 0x1a99_5ed7,
+            0x247b_faa4, 0x69c2_c799, 0x745f_a405, 0xc5b9_f239, 0xc3d9_aebc, 0xa6f6_0e0b, 0xdf1e_91d7, 0xab8e_041c,
+            0xee31_88c6, 0x3737_7a9e, 0xc0e1_a3bf, 0x19a5_a9e4, 0x56cb_9556, 0xc4d3_3d3f, 0xfb1e_b03e, 0xf955_7057,
+            0x1be3_1d37, 0xd1fa_65f1, 0xf518_d714, 0x570a_c722, 0xf26c_f66a, 0x2479_4d47, 0x8ba2_e402, 0x3f51_37e6,
+            0x35be_1453, 0x4335_0478, 0x9f05_ee88, 0x364c_f9cf, 0x39a2_3ee7, 0xa4db_8d49, 0xc2eb_b3d2, 0xc6fb_99d5,
+            0xe014_dfb0, 0x7156_d425, 0xe090_a87a, 0x4cc1_2f78, 0x1b30_f503, 0x0669_4a7a, 0x6819_8cd1, 0x2f83_45bd,
+            0x9d79_198e, 0xd871_943f, 0x22ef_6cf4, 0xe81b_1c15, 0x067b_61d8, 0xfc4e_a4f5, 0xfe6d_ab57, 0x1bf7_44ba,
+            0xa70b_6a25, 0xafe6_e412, 0xc6c1_a05c, 0x8ffb_e3ce, 0xc427_0af1, 0xf3f3_6373, 0xc450_7dd8, 0x5e6f_d1e2,
+            0x58cd_9739, 0x47d3_c5b5, 0xe1d5_a343, 0x3d4d_ea4a, 0x893d_91ae, 0xbb2a_5e2a, 0x0d57_b800, 0x652a_7cc9,
+            0x6a68_ccfd, 0x6252_9f0b, 0xec5f_36d6, 0x766c_ceda, 0x96ca_63ef, 0xa049_9838, 0xd903_0f59, 0x8185_f4d2,
+        )
+
+        def __init__(self, n=64, data=b""):
+            if not isinstance(n, int) or n <= 0:
+                raise ValueError("n must be a positive int")
+            self.n = n
+            self.block_size = n
+            self.bshiftn = n % 32
+            self.buf = bytearray(n)
+            self.state = 0
+            self.bufpos = 0
+            self.overflow = False
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__(self.n)
+            other.state = self.state
+            other.buf = bytearray(self.buf)
+            other.bufpos = self.bufpos
+            other.overflow = self.overflow
+            return other
+
+        def reset(self):
+            self.state = 0
+            self.bufpos = 0
+            self.overflow = False
+            return
+
+        def rol32(self, x, n):
+            x &= 0xffff_ffff
+            n &= 31
+            if n == 0:
+                return x
+            return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
+
+        def update_byte(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            if len(data) != 1:
+                raise ValueError("data must be exactly 1 byte")
+            b = data[0]
+
+            if self.bufpos == self.n:
+                self.overflow = True
+                self.bufpos = 0
+
+            state = self.state
+            state = self.rol32(state, 1)
+
+            if self.overflow:
+                toshift = self.bytehash[self.buf[self.bufpos]]
+                state ^= self.rol32(toshift, self.bshiftn)
+
+            self.buf[self.bufpos] = b
+            self.bufpos += 1
+
+            state ^= self.bytehash[b]
+            self.state = state
+            return state
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            for b in data:
+                self.update_byte(bytes([b]))
+            return self
+
+        def finalize(self):
+            return
+
+        def digest(self):
+            return self.state.to_bytes(4, "little")
+
+        def hexdigest(self):
+            h = self.digest().hex()
+            return h
+
+        def sum32(self):
+            return self.state
+
+    class NHash:
+        digest_size = 0
+        block_size = 1
+
+        primes = (
+            0x03, 0x05, 0x07, 0x0b, 0x0d, 0x11, 0x13, 0x17,
+            0x1d, 0x1f, 0x25, 0x29, 0x2b, 0x2f, 0x35, 0x3b,
+            0x3d, 0x43, 0x47, 0x49, 0x4f, 0x53, 0x59, 0x61,
+            0x65, 0x67, 0x6b, 0x6d, 0x71,
+        )
+
+        def __init__(self, data=b"", divisors=None):
+            self.total = 0
+            self.i = 0
+            if divisors is None:
+                self.divisors = []
+            else:
+                self.divisors = list(divisors)
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.total = self.total
+            other.i = self.i
+            other.divisors = list(self.divisors)
+            return other
+
+        def reset(self):
+            self.total = 0
+            self.i = 0
+            return
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            for b in data:
+                self.i = (self.i + 0x1c) % 0x1d
+                self.total += self.primes[self.i] * b
+            return self
+
+        def finalize(self):
+            return
+
+        def value(self):
+            return self.total
+
+        def moddiv_list(self):
+            if not self.divisors:
+                return []
+            tmp = self.total
+            ret = []
+            for div in reversed(self.divisors):
+                if not isinstance(div, int) or div <= 0:
+                    raise ValueError("all divisors must be positive int")
+                ret.append(tmp % div)
+                tmp //= div
+            ret.reverse()
+            return ret
+
+        def moddiv_string(self):
+            if not self.divisors:
+                s = str(self.total)
+                return s
+            parts = [str(x) for x in self.moddiv_list()]
+            s = "/".join(parts)
+            return s
+
+        def digest(self):
+            if self.divisors:
+                return self.moddiv_string().encode("ascii")
+            v = self.total
+            nbytes = (v.bit_length() + 7) // 8
+            if nbytes == 0:
+                nbytes = 1
+            return v.to_bytes(nbytes, "big")
+
+        def hexdigest(self):
+            h = self.digest().hex()
+            return h
+
 
 @register_command
 class HashCommand(GenericCommand):
@@ -87367,7 +88269,10 @@ class HashCommand(GenericCommand):
             yield ("FSB512", Hash.FSB512())
         except ImportError:
             pass
-        # TODO: Lane
+        yield ("Lane224", Hash.Lane224())
+        yield ("Lane256", Hash.Lane256())
+        yield ("Lane384", Hash.Lane384())
+        yield ("Lane512", Hash.Lane512())
         yield ("MD6-128", Hash.MD6(d=128))
         yield ("MD6-256", Hash.MD6(d=256))
         yield ("MD6-512", Hash.MD6(d=512))
@@ -87488,6 +88393,8 @@ class HashCommand(GenericCommand):
         yield ("FarmHash32 (fp)", Hash.FarmHash32())
         yield ("FarmHash64 (fp)", Hash.FarmHash64())
         yield ("FarmHash128 (fp)", Hash.FarmHash128())
+        yield ("FastHash32", Hash.FastHash32())
+        yield ("FastHash64", Hash.FastHash64())
         yield ("HalfSipHash32_2_4", Hash.HalfSipHash32_2_4())
         yield ("HalfSipHash64_2_4", Hash.HalfSipHash64_2_4())
         yield ("HalfTimeHash64", Hash.HalfTimeHash64())
@@ -87539,6 +88446,9 @@ class HashCommand(GenericCommand):
         yield ("DEK Hash", Hash.DEKHash())
         yield ("AP Hash", Hash.APHash())
         yield ("JOAAT", Hash.JOAAT())
+        yield ("SuperFastHash", Hash.SuperFastHash())
+        yield ("BuzHash", Hash.BuzHash())
+        yield ("NHash", Hash.NHash())
 
         # MD5/SHA1/SHA256 n-times
         yield ("MD5 x2 (raw)", Hash.HASHxN("md5", N=2))
@@ -88475,6 +89385,13 @@ class HashTestCommand(HashCommand, BufferingOutput):
                         "e81e0442c2f92f2c052b52ad4925f61a",
         "SHAvite3-512": "dea616109d18cce6fffeebabcfd7f698c5c33c4c4175d01ca1463564cbcacaca" \
                         "187dd4a0b417093acdaa975672b8e087cd3b55f950a02f6799295b916c572533",
+        # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/LANE.zip
+        "Lane224": "3d5570321466295c009ac92b1362a237e2837f10cb4948144c1a4a25",
+        "Lane256": "7979cbede5e1fb39bc4440847685fb709bc49a75d8f4cbef997301e967413c05",
+        "Lane384": "f852ee97c76001fa1a8d48bf3b72b3670adc0bef71e0d4f714038aba49f17543" \
+                   "9ca0ac87dce6a7abb94a04dc51563868",
+        "Lane512": "ce10112d96a3f175066a319d6162169593733a38d631d2e535e2828899ff5a89" \
+                   "e4d48ba3e3648fd57554d78fa879546ed8eb0d3af38237c10ba36b41f8eba878",
         # https://www.browserling.com/tools/md6-hash
         "MD6-128": "d92b75252b0b05b8e64db33361b73a03",
         "MD6-256": "7235c21eafc0992b2cae6eec077a1b5854640e956e3f35a655ec6cc673967735",
@@ -88635,7 +89552,7 @@ class HashTestCommand(HashCommand, BufferingOutput):
                       "b8508a1d8b86856a1ae45b3052b490c3c0225adc11ad1e5b07bfe824a6bfbd4a" \
                       "802f44486562bf88c9718cafbc043ed8b01766b88913942dab9519e7e21f3a73" \
                       "40586b49b8a3c99a25d5d6fac6e7fa1b06b1cd28423e8fe7802555dde987ff1a",
-        # self
+        # https://asecuritysite.com/hash/gphash
         "RS Hash": "8ffbc5b0",
         # https://www.convertcase.com/hashing/js-hash-calculator
         "JS Hash": "408c6482",
@@ -88653,10 +89570,19 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "DJB2 (xor)": "7c7e8745",
         # https://www.convertcase.com/hashing/dek-hash-calculator
         "DEK Hash": "00618c61",
-        # self
+        # https://www.partow.net/programming/hashfunctions/ (C implementation)
         "AP Hash": "d9305920",
         # https://md5hashing.net/hash/joaat
         "JOAAT": "b010242c",
+        # https://github.com/mjethani/superfasthash
+        "SuperFastHash": "78c89319",
+        # https://github.com/ztanml/fast-hash
+        "FastHash32": "76f00c7a",
+        "FastHash64": "12b481039cc37489",
+        # https://github.com/silvasur/buzhash
+        "BuzHash": "dd867b31",
+        # https://metacpan.org/release/MOOLI/Algorithm-Nhash-0.002/source/lib/Algorithm/Nhash.pm
+        "NHash": "5389",
         # https://asecuritysite.com/hash/smh_t1ha
         "T1HA0_32": "ea20dace",
         "T1HA0_64": "fc6ac5b8fd7be2a2",
