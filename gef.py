@@ -73079,8 +73079,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.msg_len += len(data)
             self.buf.extend(data)
             while len(self.buf) >= 128:
@@ -73444,8 +73444,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.msg_len += len(data)
             self.buf.extend(data)
 
@@ -73596,10 +73596,10 @@ class Hash:
         def __init__(self, data=b"", custom=b"", digest_bits=128):
             if self.rate_bytes is None or self.cv_len is None:
                 raise ValueError("rate_bytes, cv_len, digest_size must be set in subclass")
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
-            if not isinstance(custom, bytes):
-                raise TypeError("custom must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            if not isinstance(custom, (bytes, bytearray)):
+                raise TypeError("custom must be bytes-like")
 
             self.digest_size = digest_bits // 8
             self.block_size = self.chunk_size
@@ -73618,8 +73618,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.msg_len += len(data)
             self.buf.extend(data)
             return self
@@ -74861,8 +74861,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.msg_len += len(data)
             self.buf.extend(data)
             while len(self.buf) >= 64:
@@ -75163,8 +75163,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.count += len(data)
             self.buf += data
             while len(self.buf) >= 64:
@@ -76733,8 +76733,8 @@ class Hash:
         hash_name = ""
 
         def __init__(self, data=b""):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.buf = bytearray()
             self.msg_len = 0x00
             self.block_index = 0x00
@@ -76804,8 +76804,8 @@ class Hash:
         def update(self, data):
             if self.finalized:
                 raise ValueError("hash object already finalized")
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.msg_len += len(data)
             self.buf.extend(data)
 
@@ -77135,8 +77135,8 @@ class Hash:
         def __init__(self, data=b""):
             if self.hashbitlen is None or self.digest_size is None:
                 raise ValueError("hashbitlen/digest_size must be set in subclass")
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.databitlen = 0
             self.datasize_in_buffer = 0  # bits
             self.H = bytearray(128)
@@ -77163,8 +77163,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             if not data:
                 return self
 
@@ -77382,8 +77382,8 @@ class Hash:
         sigma_q = None
 
         def __init__(self, data=b""):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.buf = bytearray()
             self.msg_len = 0
             self.h = self.init_state()
@@ -77409,8 +77409,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.msg_len += len(data)
             self.buf.extend(data)
             while len(self.buf) >= self.block_size:
@@ -77601,8 +77601,8 @@ class Hash:
         default_digest_bits = None
 
         def __init__(self, data=b"", digest_bits=None):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             if digest_bits is None:
                 digest_bits = self.default_digest_bits
             if digest_bits not in (0x100, 0x200, 0x400):
@@ -77628,8 +77628,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             if not data:
                 return self
             self.msg_len += len(data)
@@ -77700,8 +77700,8 @@ class Hash:
             return bytes(s)
 
         def ubi(self, g_words, m_bytes, type_value):
-            if not isinstance(m_bytes, bytes):
-                raise TypeError("m_bytes must be bytes")
+            if not isinstance(m_bytes, (bytes, bytearray)):
+                raise TypeError("m_bytes must be bytes-like")
             nm = len(m_bytes)
             if nm == 0:
                 padded = b"\x00" * self.block_size
@@ -77854,8 +77854,8 @@ class Hash:
         def __init__(self, data=b""):
             if self.hashbitlen is None or self.digest_size is None:
                 raise ValueError("hashbitlen/digest_size must be set in derived class")
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.a = [0] * self.shabal_param_r
             self.b = [0] * self.shabal_block_words
             self.c = [0] * self.shabal_block_words
@@ -77880,8 +77880,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.msg_len += len(data)
             self.buf.extend(data)
             while len(self.buf) >= self.block_size:
@@ -78831,8 +78831,8 @@ class Hash:
                 raise ValueError("digest_bits must be one of 128,160,192,224,256")
             if passes not in (3, 4, 5):
                 raise ValueError("passes must be one of 3,4,5")
-            if not isinstance(data, (bytes,)):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.digest_bits = digest_bits
             self.passes = passes
             self.digest_size = digest_bits // 8
@@ -78993,8 +78993,8 @@ class Hash:
             return
 
         def update(self, data):
-            if not isinstance(data, (bytes,)):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.buf.extend(data)
             self.bitlen += len(data) * 8
             while len(self.buf) >= 128:
@@ -79043,8 +79043,8 @@ class Hash:
         def __init__(self, data=b"", seed=0):
             if not isinstance(seed, int):
                 raise TypeError("seed must be int")
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
 
             self.seed = seed
             self.buf = bytearray()
@@ -79068,8 +79068,8 @@ class Hash:
         def update(self, data):
             if self.finalized:
                 raise ValueError("hash object already finalized")
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
 
             self.msg_len += len(data)
             self.buf.extend(data)
@@ -79497,8 +79497,8 @@ class Hash:
         def __init__(self, data=b"", seed=0):
             if not isinstance(seed, int):
                 raise TypeError("seed must be int")
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
 
             self.seed = seed
             self.buf = bytearray()
@@ -79522,8 +79522,8 @@ class Hash:
         def update(self, data):
             if self.finalized:
                 raise ValueError("hash object already finalized")
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
 
             self.msg_len += len(data)
             self.buf.extend(data)
@@ -79992,8 +79992,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.msg_len += len(data)
             self.buf.extend(data)
 
@@ -80171,8 +80171,8 @@ class Hash:
         ]
 
         def __init__(self, data=b""):
-            if not isinstance(data, (bytes,)):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.r = 0
             self.s = [0, 0, 0, 0]
             self.h = [
@@ -80197,8 +80197,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, (bytes,)):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             if self.done:
                 raise ValueError("hash context is finalized")
             self.buf.extend(data)
@@ -80362,15 +80362,15 @@ class Hash:
         c2 = 0x1b87_3593
 
         def __init__(self, data=b"", seed=0):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.data = data
             self.seed = seed
             return
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.data += data
             return
 
@@ -80558,8 +80558,8 @@ class Hash:
             return self.weak_hash_len32_with_seeds_words(w, x, y, z, a, b)
 
         def cityhash64(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             n = len(data)
             if n <= 32:
                 if n <= 16:
@@ -80599,15 +80599,15 @@ class Hash:
             )
 
         def cityhash64_with_seeds(self, data, seed0, seed1):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             seed0 &= self.mask64
             seed1 &= self.mask64
             return self.hash_len16((self.cityhash64(data) - seed0) & self.mask64, seed1)
 
         def cityhash64_with_seed(self, data, seed):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             seed &= self.mask64
             return self.cityhash64_with_seeds(data, self.k2, seed)
 
@@ -80644,8 +80644,8 @@ class Hash:
             return self.fmix(self.mur(f, self.mur(e, self.mur(d, self.mur(c, self.mur(b, self.mur(a, h)))))))
 
         def cityhash32(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             n = len(data)
             if n <= 24:
                 if n <= 12:
@@ -80770,8 +80770,8 @@ class Hash:
             return ((a ^ b) & self.mask64, self.hash_len16(b, a))
 
         def cityhash128_with_seed(self, data, seed_lo, seed_hi):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             n = len(data)
             if n < 128:
                 return self.city_murmur(data, seed_lo, seed_hi)
@@ -80842,8 +80842,8 @@ class Hash:
             return (lo, hi)
 
         def cityhash128(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             n = len(data)
             if n >= 16:
                 seed_lo = self.fetch64(data, 0)
@@ -80890,8 +80890,8 @@ class Hash:
             return self.fmix(h)
 
         def farmhash32(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             n = len(data)
             if n <= 24:
                 if n >= 13:
@@ -80967,8 +80967,8 @@ class Hash:
             return h & self.mask32
 
         def farmhash32_with_seed(self, data, seed):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             seed &= self.mask32
             n = len(data)
             if n <= 24:
@@ -80982,8 +80982,8 @@ class Hash:
             return self.mur((self.farmhash32(data[24:]) + seed) & self.mask32, h)
 
         def farmhash64(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             n = len(data)
             seed = 81
             if n <= 32:
@@ -81044,15 +81044,15 @@ class Hash:
             )
 
         def farmhash64_with_seeds(self, data, seed0, seed1):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             seed0 &= self.mask64
             seed1 &= self.mask64
             return self.hash_len16((self.farmhash64(data) - seed0) & self.mask64, seed1)
 
         def farmhash64_with_seed(self, data, seed):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             seed &= self.mask64
             return self.farmhash64_with_seeds(data, self.k2, seed)
 
@@ -81133,12 +81133,12 @@ class Hash:
         iv3 = 0x7465_6462_7974_6573
 
         def __init__(self, key=b"\0" * 16, data=b""):
-            if not isinstance(key, bytes):
-                raise TypeError("key must be bytes")
+            if not isinstance(key, (bytes, bytearray)):
+                raise TypeError("key must be bytes-like")
             if len(key) != self.key_size:
                 raise ValueError("key must be 16 bytes")
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
 
             self.key = key
             self.buf = bytearray()
@@ -81170,8 +81170,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             if not data:
                 return self
 
@@ -81294,12 +81294,12 @@ class Hash:
         iv3 = 0x7465_6462
 
         def __init__(self, key=b"\0" * 8, data=b""):
-            if not isinstance(key, bytes):
-                raise TypeError("key must be bytes")
+            if not isinstance(key, (bytes, bytearray)):
+                raise TypeError("key must be bytes-like")
             if len(key) != self.key_size:
                 raise ValueError("key must be 8 bytes")
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
 
             self.key = key
             self.buf = bytearray()
@@ -81336,8 +81336,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             if not data:
                 return self
 
@@ -81450,8 +81450,8 @@ class Hash:
         sc_buf_size = 2 * sc_block_size
 
         def __init__(self, data=b"", seed=0):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.seed = seed & self.mask64
             self.buf = bytearray()
             self.msg_len = 0
@@ -81470,8 +81470,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.msg_len += len(data)
             self.buf.extend(data)
             return self
@@ -81949,8 +81949,8 @@ class Hash:
         block_size = 32
 
         def __init__(self, data=b"", seed=0):
-            if not isinstance(data, (bytes,)):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             if not isinstance(seed, (int,)):
                 raise TypeError("seed must be int")
 
@@ -81977,8 +81977,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, (bytes,)):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
 
             ptr = 0
             end = len(data)
@@ -83002,8 +83002,8 @@ class Hash:
             return
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             size = len(data)
             index = self.msg_length & 31
             self.msg_length += size
@@ -83147,8 +83147,8 @@ class Hash:
         lanes = 1
 
         def __init__(self, data=b""):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.buf = bytearray()
             self.msg_len = 0
             if data:
@@ -83162,8 +83162,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.buf.extend(data)
             self.msg_len += len(data)
             return self
@@ -83487,8 +83487,8 @@ class Hash:
         default_seed = 0
 
         def __init__(self, data=b"", seed=None):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             if seed is None:
                 self.seed = self.default_seed & self.mask
             else:
@@ -83510,8 +83510,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.msg_len += len(data)
             self.buf.extend(data)
             return self
@@ -83685,8 +83685,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, (bytes,)):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.msg_len += len(data)
             self.buf.extend(data)
             while len(self.buf) >= 64:
@@ -84361,8 +84361,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             if self.finalized:
                 raise ValueError("hash object already finalized")
             if not data:
@@ -84662,8 +84662,8 @@ class Hash:
         MUL_TABLE = None
 
         def __init__(self, data=b""):
-            if not isinstance(data, (bytes,)):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.buf = bytearray()
             self.msg_len = 0
             self.h = b""
@@ -84680,8 +84680,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, (bytes,)):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.msg_len += len(data)
             self.buf.extend(data)
             return self
@@ -84822,8 +84822,8 @@ class Hash:
         digest_size = 32
 
         def __init__(self, data=b""):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.x0, self.x1, self.x2, self.x3, self.x4 = self.init_state
             self.buf = bytearray()
             self.msg_len = 0
@@ -84843,8 +84843,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, bytes):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.msg_len += len(data)
             self.buf.extend(data)
             while len(self.buf) >= self.block_size:
@@ -85250,8 +85250,8 @@ class Hash:
         prime_6 = 0xcb5a_f53a_e3aa_ac31
 
         def __init__(self, data=b"", seed=0):
-            if not isinstance(data, (bytes,)):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.seed = seed & self.mask64
             self.buf = bytearray()
             if data:
@@ -85264,8 +85264,8 @@ class Hash:
             return other
 
         def update(self, data):
-            if not isinstance(data, (bytes,)):
-                raise TypeError("data must be bytes")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
             self.buf.extend(data)
             return self
 
