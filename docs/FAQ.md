@@ -247,6 +247,7 @@ To use these commands fully, you need to manually install the necessary packages
 |`base-n-decode`|-|`codext`|-|
 |`base-n-encode`|-|`codext`|-|
 |`crc`|-|`crccheck`|-|
+|`hash`(FSB hash) |-|`gmpy2`|-|
 |`uefi-ovmf-info`|-|`crccheck`|-|
 |`filetype-memory`|`file`|`magika`|-|
 |`ropper`|-|`ropper`|-|
@@ -768,7 +769,7 @@ Yes. This project is listed on Orynth for discovery: https://www.orynth.dev/proj
 
 ## What is `B24G`?
 `B24G` is the market token symbol shown on the Orynth project page.
-- Using this project does NOT require Orynth.
+- Using this project does NOT require token.
 - This is just fan token and no utility.
 - Orynth markets are optional and do not represent equity/ownership/rights.
 
