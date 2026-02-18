@@ -78664,7 +78664,7 @@ class Hash:
         bits = None
         fnv_prime = None
         offset_basis = None
-        variant = None  # "fnv1" or "fnv1a"
+        variant = None  # "fnv0", "fnv0a", "fnv1", "fnv1a"
 
         def __init__(self, data=b"", basis=None, variant="fnv1"):
             if self.bits is None or self.fnv_prime is None or self.offset_basis is None:
@@ -78672,7 +78672,10 @@ class Hash:
             self.variant = variant
             self.mask = (1 << self.bits) - 1
             if basis is None:
-                self.h = self.offset_basis & self.mask
+                if variant in ["fnv0", "fnv0a"]:
+                    self.h = 0
+                else:
+                    self.h = self.offset_basis & self.mask
             else:
                 self.h = int(basis) & self.mask
             if data:
@@ -78686,12 +78689,12 @@ class Hash:
                 raise TypeError("data must be bytes-like")
             b = bytes(data)
 
-            if self.variant == "fnv1":
+            if self.variant in ["fnv0", "fnv1"]:
                 for byte in b:
                     self.h = (self.h * self.fnv_prime) & self.mask
                     self.h ^= byte
             else:
-                # fnv1a
+                # fnv0a, fnv1a
                 for byte in b:
                     self.h ^= byte
                     self.h = (self.h * self.fnv_prime) & self.mask
@@ -78705,28 +78708,33 @@ class Hash:
         def hexdigest(self):
             return self.digest().hex()
 
-    class FNV1_32(FNVBase):
+    class FNV_32(FNVBase):
         bits = 32
+        digest_size = 4
         fnv_prime = 0x0100_0193
         offset_basis = 0x811c_9dc5
 
-    class FNV1_64(FNVBase):
+    class FNV_64(FNVBase):
         bits = 64
+        digest_size = 8
         fnv_prime = 0x0000_0100_0000_01b3
         offset_basis = 0xcbf2_9ce4_8422_2325
 
-    class FNV1_128(FNVBase):
+    class FNV_128(FNVBase):
         bits = 128
+        digest_size = 16
         fnv_prime = 0x0000_0000_0100_0000_0000_0000_0000_013b
         offset_basis = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d
 
-    class FNV1_256(FNVBase):
+    class FNV_256(FNVBase):
         bits = 256
+        digest_size = 32
         fnv_prime = 0x0000_0000_0000_0000_0000_0100_0000_0000_0000_0000_0000_0000_0000_0000_0000_0163
         offset_basis = 0xdd26_8dbc_aac5_5036_2d98_c384_c4e5_76cc_c8b1_5368_47b6_bbb3_1023_b4c8_caee_0535
 
-    class FNV1_512(FNVBase):
+    class FNV_512(FNVBase):
         bits = 512
+        digest_size = 64
         fnv_prime = (
             (0x0000_0000_0000_0000_0000_0000_0000_0000 << (128 * 3)) | \
             (0x0000_0000_0100_0000_0000_0000_0000_0000 << (128 * 2)) | \
@@ -78740,8 +78748,9 @@ class Hash:
             (0x1820_3641_5f56_e34b_ac98_2aac_4afe_9fd9 << (128 * 0))
         )
 
-    class FNV1_1024(FNVBase):
+    class FNV_1024(FNVBase):
         bits = 1024
+        digest_size = 128
         fnv_prime = (
             (0x0000_0000_0000_0000_0000_0000_0000_0000 << (128 * 7)) | \
             (0x0000_0000_0000_0000_0000_0000_0000_0000 << (128 * 6)) | \
@@ -87374,18 +87383,30 @@ class HashCommand(GenericCommand):
         yield ("BLAKE3-128", Hash.BLAKE3(digest_bits=128))
         yield ("BLAKE3-256", Hash.BLAKE3(digest_bits=256))
         yield ("BLAKE3-512", Hash.BLAKE3(digest_bits=512))
-        yield ("FNV-1-32", Hash.FNV1_32())
-        yield ("FNV-1-64", Hash.FNV1_64())
-        yield ("FNV-1-128", Hash.FNV1_128())
-        yield ("FNV-1-256", Hash.FNV1_256())
-        yield ("FNV-1-512", Hash.FNV1_512())
-        yield ("FNV-1-1024", Hash.FNV1_1024())
-        yield ("FNV-1a-32", Hash.FNV1_32(variant="fnv1a"))
-        yield ("FNV-1a-64", Hash.FNV1_64(variant="fnv1a"))
-        yield ("FNV-1a-128", Hash.FNV1_128(variant="fnv1a"))
-        yield ("FNV-1a-256", Hash.FNV1_256(variant="fnv1a"))
-        yield ("FNV-1a-512", Hash.FNV1_512(variant="fnv1a"))
-        yield ("FNV-1a-1024", Hash.FNV1_1024(variant="fnv1a"))
+        yield ("FNV-1-32", Hash.FNV_32())
+        yield ("FNV-1-64", Hash.FNV_64())
+        yield ("FNV-1-128", Hash.FNV_128())
+        yield ("FNV-1-256", Hash.FNV_256())
+        yield ("FNV-1-512", Hash.FNV_512())
+        yield ("FNV-1-1024", Hash.FNV_1024())
+        yield ("FNV-1a-32", Hash.FNV_32(variant="fnv1a"))
+        yield ("FNV-1a-64", Hash.FNV_64(variant="fnv1a"))
+        yield ("FNV-1a-128", Hash.FNV_128(variant="fnv1a"))
+        yield ("FNV-1a-256", Hash.FNV_256(variant="fnv1a"))
+        yield ("FNV-1a-512", Hash.FNV_512(variant="fnv1a"))
+        yield ("FNV-1a-1024", Hash.FNV_1024(variant="fnv1a"))
+        yield ("FNV-0-32", Hash.FNV_32(variant="fnv0"))
+        yield ("FNV-0-64", Hash.FNV_64(variant="fnv0"))
+        yield ("FNV-0-128", Hash.FNV_128(variant="fnv0"))
+        yield ("FNV-0-256", Hash.FNV_256(variant="fnv0"))
+        yield ("FNV-0-512", Hash.FNV_512(variant="fnv0"))
+        yield ("FNV-0-1024", Hash.FNV_1024(variant="fnv0"))
+        yield ("FNV-0a-32", Hash.FNV_32(variant="fnv0a"))
+        yield ("FNV-0a-64", Hash.FNV_64(variant="fnv0a"))
+        yield ("FNV-0a-128", Hash.FNV_128(variant="fnv0a"))
+        yield ("FNV-0a-256", Hash.FNV_256(variant="fnv0a"))
+        yield ("FNV-0a-512", Hash.FNV_512(variant="fnv0a"))
+        yield ("FNV-0a-1024", Hash.FNV_1024(variant="fnv0a"))
         yield ("FORK256", Hash.FORK256())
         yield ("GOST94", Hash.GOST94())
         yield ("GOST94cp", Hash.GOST94cp())
@@ -88488,6 +88509,28 @@ class HashTestCommand(HashCommand, BufferingOutput):
                        "e94929e41548c220b723b3000000000000000000000000000000000000000000" \
                        "000000000000000000000000000000000000000000000000001ba08046e07e04" \
                        "18fb7be0ec07b8ea87a61bb4f073e2bab740db8398ef60cb9b50c03425e2bfcb",
+        # https://github.com/jonelo/jacksum
+        "FNV-0-32": "12f20e74",
+        "FNV-0-64": "322b16013e2b90b4",
+        "FNV-0-128": "0001269d560000000000000078b586e4",
+        "FNV-0-256": "000000000000000177aa160000000000000000000000000000000000adcdc6d4",
+        "FNV-0-512": "0000000000000000000000000000000000015eb8860000000000000000000000" \
+                     "000000000000000000000000000000000000000000000000000000009cc9008c",
+        "FNV-0-1024": "0000000000000000000000000000000000000000000000000000000000000000" \
+                      "0000000000000001d42c62000000000000000000000000000000000000000000" \
+                      "0000000000000000000000000000000000000000000000000000000000000000" \
+                      "00000000000000000000000000000000000000000000000000000000f1cf1978",
+        # self
+        "FNV-0a-32": "470cc09c",
+        "FNV-0a-64": "6ac7181ca406e1dc",
+        "FNV-0a-128": "01e3391fb600000000000094875cfa8c",
+        "FNV-0a-256": "00000000000002b6bea35600000000000000000000000000000000f1045ab7fc",
+        "FNV-0a-512": "000000000000000000000000000000000272b23c160000000000000000000000" \
+                      "000000000000000000000000000000000000000000000000000000d2114fbb94",
+        "FNV-0a-1024": "0000000000000000000000000000000000000000000000000000000000000000" \
+                       "00000000000003c7d7ed72000000000000000000000000000000000000000000" \
+                       "0000000000000000000000000000000000000000000000000000000000000000" \
+                       "00000000000000000000000000000000000000000000000000000176fe2a7f18",
         # https://www.webutils.pl/index.php?idx=ripemd
         "RIPEMD-128": "cf40e861b1e917889720ce2ee335b4c1",
         "RIPEMD-160": "5b481bd818e7863b580488f6174b2fdf48c211a2",
