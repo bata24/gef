@@ -75296,6 +75296,7 @@ class Hash:
             self.name = name
             self.N = N
             self.hash = self.get_hash_func(name)
+            self.digest_size = self.hash.digest_size
             self.use_hex = use_hex
             if data:
                 self.update(data)
@@ -75559,6 +75560,7 @@ class Hash:
 
     class NTLM:
         # NT hash: MD4(UTF-16LE(password))
+        digest_size = 32
 
         def __init__(self, data=b""):
             self.md4 = Hash.MD4()
@@ -75861,6 +75863,7 @@ class Hash:
                 raise ValueError("L must be non-negative")
 
             self.d = int(d)
+            self.digest_size = self.d // 8
             self.key = bytes(key)
             self.L = int(L)
 
@@ -78171,6 +78174,8 @@ class Hash:
             return out
 
     class XXH32(XXHashBase):
+        digest_size = 4
+
         def round32(self, acc, lane):
             acc = self.mask32(acc + self.mask32(lane * self.prime32_2))
             acc = self.rol32(acc, 13)
@@ -78229,6 +78234,8 @@ class Hash:
             return h32.to_bytes(4, "big")
 
     class XXH64(XXHashBase):
+        digest_size = 8
+
         def round64(self, acc, lane):
             acc = self.mask64(acc + self.mask64(lane * self.prime64_2))
             acc = self.rol64(acc, 31)
@@ -78343,6 +78350,8 @@ class Hash:
             return result
 
     class XXH3_64(XXH3Base):
+        digest_size = 8
+
         def digest(self):
             data = self.buf
             n = len(data)
@@ -78455,6 +78464,8 @@ class Hash:
             return out.to_bytes(8, "big")
 
     class XXH3_128(XXH3Base):
+        digest_size = 16
+
         def digest(self):
             data = self.buf
             n = len(data)
@@ -81057,11 +81068,15 @@ class Hash:
             return self.farmhash64_with_seeds(data, self.k2, seed)
 
     class CityHash32(CityFarmBase):
+        digest_size = 4
+
         def hexdigest(self):
             value = self.cityhash32(self.data)
             return f"{value & self.mask32:08x}"
 
     class CityHash64(CityFarmBase):
+        digest_size = 8
+
         def hexdigest(self):
             if self.seed:
                 value = self.cityhash64_with_seed(self.data, int(self.seed) & self.mask64)
@@ -81070,6 +81085,8 @@ class Hash:
             return f"{value & self.mask64:016x}"
 
     class CityHash128(CityFarmBase):
+        digest_size = 16
+
         def hexdigest(self):
             if self.seed:
                 if isinstance(self.seed, tuple) and len(self.seed) == 2:
@@ -81083,6 +81100,8 @@ class Hash:
             return f"{lo & self.mask64:016x}{hi & self.mask64:016x}"
 
     class FarmHash32(CityFarmBase):
+        digest_size = 4
+
         def __init__(self, data=b"", seed=0):
             super().__init__(data=data, seed=seed)
             return
@@ -81095,6 +81114,8 @@ class Hash:
             return f"{value & self.mask32:08x}"
 
     class FarmHash64(CityFarmBase):
+        digest_size = 8
+
         def __init__(self, data=b"", seed=0):
             super().__init__(data=data, seed=seed)
             return
@@ -81107,6 +81128,8 @@ class Hash:
             return f"{value & self.mask64:016x}"
 
     class FarmHash128(CityFarmBase):
+        digest_size = 16
+
         def hexdigest(self):
             # Fingerprint128: farmhashcc::Fingerprint128 = CityHash128
             if self.seed:
@@ -85004,6 +85027,8 @@ class Hash:
         )
 
     class RSHash:
+        digest_size = 4
+
         def __init__(self, data=b""):
             self.b = 378551
             self.a = 63689
@@ -85027,6 +85052,8 @@ class Hash:
             return self.digest().hex()
 
     class JSHash:
+        digest_size = 4
+
         def __init__(self, data=b""):
             self.hash = 1315423911
             if data:
@@ -85047,6 +85074,8 @@ class Hash:
             return self.digest().hex()
 
     class PJWHash:
+        digest_size = 4
+
         def __init__(self, data=b""):
             self.hash = 0
             if data:
@@ -85070,6 +85099,8 @@ class Hash:
             return self.digest().hex()
 
     class ELFHash:
+        digest_size = 4
+
         def __init__(self, data=b""):
             self.hash = 0
             if data:
@@ -85093,6 +85124,8 @@ class Hash:
             return self.digest().hex()
 
     class BKDRHash:
+        digest_size = 4
+
         def __init__(self, data=b""):
             self.seed = 131
             self.hash = 0
@@ -85114,6 +85147,8 @@ class Hash:
             return self.digest().hex()
 
     class SDBMHash:
+        digest_size = 4
+
         def __init__(self, data=b""):
             self.hash = 0
             if data:
@@ -85134,6 +85169,8 @@ class Hash:
             return self.digest().hex()
 
     class DJB2Base:
+        digest_size = 4
+
         def __init__(self, data=b""):
             self.hash = 5381
             if data:
@@ -85163,6 +85200,8 @@ class Hash:
             return self
 
     class DEKHash:
+        digest_size = 4
+
         def __init__(self, data=b""):
             self.buf = bytearray()
             if data:
@@ -85185,6 +85224,8 @@ class Hash:
             return self.digest().hex()
 
     class APHash:
+        digest_size = 4
+
         def __init__(self, data=b""):
             self.hash = 0xaaaa_aaaa
             if data:
@@ -85209,6 +85250,8 @@ class Hash:
             return self.digest().hex()
 
     class JOAAT: # Jenkins One-At-A-Time
+        digest_size = 4
+
         def __init__(self, data=b""):
             self.hash = 0
             if data:
@@ -87229,6 +87272,7 @@ class HashCommand(GenericCommand):
             def __init__(self, hname, bits):
                 self.hfunc = hashlib.new(hname)
                 self.bits = bits
+                self.digest_size = bits // 8
                 return
 
             def hexdigest(self):
@@ -87513,9 +87557,13 @@ class HashCommand(GenericCommand):
             line = "{:18s}:[{:3d}b/{:2d}B] {:s}".format(hname, bit, byte, h)
         return line
 
-    def should_be_displayed(self, hname):
+    def should_be_displayed(self, hname, hfunc):
         if self.args.smart >= 2:
             if hname not in ["MD5", "SHA1", "SHA2-256"]:
+                return False
+
+        if self.args.length_filter:
+            if self.args.length_filter != hfunc.digest_size:
                 return False
 
         if not self.args.filter:
@@ -87556,6 +87604,8 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
                         help="the size for hash calculation.")
     parser.add_argument("-f", "--filter", metavar="REGEX", type=re.compile, default=[], action="append",
                         help="filter by REGEX pattern.")
+    parser.add_argument("-l", "--length-filter", type=AddressUtil.parse_address,
+                        help="filter by hash byte length.")
     parser.add_argument("-s", "--smart", action="count", default=0, help="increase output smart level. (-s, -ss)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
@@ -87604,7 +87654,7 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
         self.out.append(titlify("hashlib"))
         hash_funcs_hashlib = list(self.get_valid_hash_funcs_hashlib())
         for hname, hfunc in tqdm(hash_funcs_hashlib, leave=False, total=len(hash_funcs_hashlib)):
-            if not self.should_be_displayed(hname):
+            if not self.should_be_displayed(hname, hfunc):
                 continue
             h = self.calc_hash(hfunc, self.args.location, self.args.location + self.args.size)
             if h is False:
@@ -87620,7 +87670,7 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
         self.out.append(titlify("other"))
         hash_funcs_other = list(self.get_valid_hash_funcs_other())
         for hname, hfunc in tqdm(hash_funcs_other, leave=False, total=len(hash_funcs_other)):
-            if not self.should_be_displayed(hname):
+            if not self.should_be_displayed(hname, hfunc):
                 continue
             h = self.calc_hash(hfunc, self.args.location, self.args.location + self.args.size)
             if h is False:
@@ -87654,6 +87704,8 @@ class HashValueCommand(HashCommand, BufferingOutput):
     parser.add_argument("--hex", action="store_true", help="interpret VALUE as hex. invalid character is ignored.")
     parser.add_argument("-f", "--filter", metavar="REGEX", type=re.compile, default=[], action="append",
                         help="filter by REGEX pattern.")
+    parser.add_argument("-l", "--length-filter", type=AddressUtil.parse_address,
+                        help="filter by hash byte length.")
     parser.add_argument("-s", "--smart", action="count", default=0, help="increase output smart level. (-s, -ss)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
@@ -87674,7 +87726,7 @@ class HashValueCommand(HashCommand, BufferingOutput):
         self.out.append(titlify("hashlib"))
         hash_funcs_hashlib = list(self.get_valid_hash_funcs_hashlib())
         for hname, hfunc in tqdm(hash_funcs_hashlib, leave=False, total=len(hash_funcs_hashlib)):
-            if not self.should_be_displayed(hname):
+            if not self.should_be_displayed(hname, hfunc):
                 continue
             hfunc.update(value)
             h = hfunc.hexdigest()
@@ -87687,7 +87739,7 @@ class HashValueCommand(HashCommand, BufferingOutput):
         self.out.append(titlify("other"))
         hash_funcs_other = list(self.get_valid_hash_funcs_other())
         for hname, hfunc in tqdm(hash_funcs_other, leave=False, total=len(hash_funcs_other)):
-            if not self.should_be_displayed(hname):
+            if not self.should_be_displayed(hname, hfunc):
                continue
             hfunc.update(value)
             h = hfunc.hexdigest()
@@ -88210,6 +88262,8 @@ class HashTestCommand(HashCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-f", "--filter", metavar="REGEX", type=re.compile, default=[], action="append",
                         help="filter by REGEX pattern.")
+    parser.add_argument("-l", "--length-filter", type=AddressUtil.parse_address,
+                        help="filter by hash byte length.")
     parser.add_argument("-s", "--smart", action="store_true", help="show only failed.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
@@ -88616,7 +88670,7 @@ class HashTestCommand(HashCommand, BufferingOutput):
 
         self.out.append(titlify("hashlib"))
         for hname, hfunc in self.get_valid_hash_funcs_hashlib():
-            if not self.should_be_displayed(hname):
+            if not self.should_be_displayed(hname, hfunc):
                 continue
             hfunc.update(value)
             h = hfunc.hexdigest()
@@ -88624,7 +88678,7 @@ class HashTestCommand(HashCommand, BufferingOutput):
 
         self.out.append(titlify("other"))
         for hname, hfunc in self.get_valid_hash_funcs_other():
-            if not self.should_be_displayed(hname):
+            if not self.should_be_displayed(hname, hfunc):
                continue
             hfunc.update(value)
             h = hfunc.hexdigest()
