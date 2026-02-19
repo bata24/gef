@@ -38,15 +38,24 @@ Numerous other commands have been added and enhanced. Enjoy!
 - Might work on Ubuntu 20.04-21.10, though not recommended.
 
 ### Install
-- Run the following command (**NEW**: this is the `uv`-based installer).
+- Run the following command:
     ```bash
     wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sudo sh
     ```
-- Notes
-    - To simplify installation, `gef.py` is always installed to `/root/.gef/gef.py`
-    - The required Python packages are in `/root/.gef/.venv-gef`.
-    - GEF's directory (`/root/.gef`) is also registered in `/root/.gdbinit`.
-    - For more installation options (no `venv`, minimal install, and for non-`root` user), see [docs/FAQ.md](docs/FAQ.md).
+    - Notes
+        - To simplify installation, `gef.py` is always installed to `/root/.gef/gef.py`
+        - The required Python packages are in `/root/.gef/.venv-gef`.
+        - GEF's directory (`/root/.gef`) is also registered in `/root/.gdbinit`.
+        - For more installation options (for non-`root` user, etc), see [docs/FAQ.md](docs/FAQ.md).
+
+- Or, quick trial (no installation):
+    ```bash
+    wget https://raw.githubusercontent.com/bata24/gef/dev/gef.py
+    echo "source $(pwd)/gef.py" >> ~/.gdbinit
+    ```
+    - Notes
+        - Most features work fine even without external tools or `root` privileges.
+        - For limitations, see [docs/FAQ.md](docs/FAQ.md).
 
 ### Upgrade
 ```bash
