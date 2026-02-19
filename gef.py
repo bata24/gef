@@ -130939,10 +130939,15 @@ class GefTmuxSetupCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     _note_ = [
-        "`screen` is no longer supported.",
-        "`tmux` settings are predefined and cannot be customized in this command.",
-        "If you want to customize it, edit tmux_setup.py and run `source /path/to/tmux_setup.py`.",
-        "It can be found in https://github.com/bata24/gef/blob/dev/dev/tmux/tmux_setup.py."
+        "- `screen` is no longer supported.",
+        "",
+        "- `tmux` settings are predefined and cannot be customized in this command.",
+        "- If you want to customize it, edit `tmux_setup.py` and run `source /path/to/tmux_setup.py`.",
+        "- It can be found in https://github.com/bata24/gef/blob/dev/dev/tmux/tmux_setup.py.",
+        "",
+        "- There is experimental support for `zellij` using a similar script.",
+        "- Try starting `zellij-wrapper.py` in your shell (before starting `zellij` and `gdb`).",
+        "- It can be found in https://github.com/bata24/gef/blob/dev/dev/zellij/zellij-wrapper.py.",
     ]
     _note_ = "\n".join(_note_)
 
