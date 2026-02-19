@@ -87707,7 +87707,6 @@ class Hash:
     class FastHashBase:
         block_size = 8
         digest_size = 0
-        value_bits = 0
         pack_format = ""
         m_const = 0x8803_55f2_1e6d_1965
         mix_const = 0x2127_599b_f432_5c37
@@ -87771,10 +87770,6 @@ class Hash:
             h = self.mix64(h)
             return h
 
-        def compute_value(self, message, seed):
-            raise NotImplementedError("compute_value must be implemented in subclass")
-            return
-
         def update(self, data):
             if not isinstance(data, (bytes, bytearray)):
                 raise TypeError("data must be bytes or bytearray")
@@ -87787,19 +87782,6 @@ class Hash:
             self.value = self.compute_value(message, self.seed)
             return
 
-        def digest_uint(self):
-            c = self.copy()
-            c.finalize()
-            return c.value
-
-        def digest_int(self):
-            x = self.digest_uint()
-            sign = 1 << (self.value_bits - 1)
-            mod = 1 << self.value_bits
-            if x & sign:
-                x -= mod
-            return x
-
         def digest(self):
             c = self.copy()
             c.finalize()
@@ -87810,7 +87792,6 @@ class Hash:
 
     class FastHash64(FastHashBase):
         digest_size = 8
-        value_bits = 64
         pack_format = "<Q"
 
         def compute_value(self, message, seed):
@@ -87818,7 +87799,6 @@ class Hash:
 
     class FastHash32(FastHashBase):
         digest_size = 4
-        value_bits = 32
         pack_format = "<I"
 
         def compute_value(self, message, seed):
@@ -87897,19 +87877,10 @@ class Hash:
             self.value = digest
             return
 
-        def digest_uint(self):
+        def digest(self):
             c = self.copy()
             c.finalize()
-            return c.value
-
-        def digest_int(self):
-            x = self.digest_uint()
-            if x & 0x8000_0000:
-                x -= 0x1_0000_0000
-            return x
-
-        def digest(self):
-            return struct.pack("<I", self.digest_uint())
+            return struct.pack("<I", c.value)
 
         def hexdigest(self):
             return self.digest().hex()
@@ -88031,9 +88002,6 @@ class Hash:
             h = self.digest().hex()
             return h
 
-        def sum32(self):
-            return self.state
-
     class NHash:
         digest_size = 0
         block_size = 1
@@ -88117,6 +88085,1927 @@ class Hash:
             h = self.digest().hex()
             return h
 
+    class LSHBase:
+        word_bits = None
+        ns = None
+        block_size = None  # in bytes
+        digest_size = None  # in bytes
+        iv = None
+
+        tau = [0x03, 0x02, 0x00, 0x01, 0x07, 0x04, 0x05, 0x06, 0x0b, 0x0a, 0x08, 0x09, 0x0f, 0x0c, 0x0d, 0x0e]
+        sigma = [0x06, 0x04, 0x05, 0x07, 0x0c, 0x0f, 0x0e, 0x0d, 0x02, 0x00, 0x01, 0x03, 0x08, 0x0b, 0x0a, 0x09]
+
+        gamma32 = [0x00, 0x08, 0x10, 0x18, 0x18, 0x10, 0x08, 0x00]
+        gamma64 = [0x00, 0x10, 0x20, 0x30, 0x08, 0x18, 0x28, 0x38]
+
+        sc0_32 = [
+            0x917c_af90, 0x6c1b_10a2, 0x6f35_2943, 0xcf77_8243,
+            0x2ceb_7472, 0x29e9_6ff2, 0x8a9b_a428, 0x2eeb_2642,
+        ]
+        sc0_64 = [
+            0x9788_4283_c938_982a, 0xba1f_ca93_533e_2355, 0xc519_a2e8_7aeb_1c03, 0x9a0f_c954_62af_17b1,
+            0xfc3d_da8a_b019_a82b, 0x0282_5d07_9a89_5407, 0x79f2_d0a7_ee06_a6f7, 0xd76d_15ee_d9fd_f5fe,
+        ]
+
+        def __init__(self, data=b""):
+            if self.word_bits not in (32, 64):
+                raise ValueError("invalid word_bits")
+            if self.ns not in (26, 28):
+                raise ValueError("invalid ns")
+            if self.block_size not in (128, 256):
+                raise ValueError("invalid block_size")
+            if self.digest_size not in (28, 32, 48, 64):
+                raise ValueError("invalid digest_size")
+            if not isinstance(self.iv, (list, tuple)) or len(self.iv) != 16:
+                raise ValueError("invalid iv")
+
+            self.word_bytes = self.word_bits // 8
+            self.mask = (1 << self.word_bits) - 1
+
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.cv = list(self.iv)
+            self.sc = self.make_step_constants()
+
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = object.__new__(self.__class__)
+            other.word_bits = self.word_bits
+            other.ns = self.ns
+            other.block_size = self.block_size
+            other.digest_size = self.digest_size
+            other.iv = self.iv
+
+            other.word_bytes = self.word_bytes
+            other.mask = self.mask
+            other.sc = self.sc
+
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.cv = list(self.cv)
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+
+            self.msg_len += len(data)
+            self.buf.extend(data)
+
+            while len(self.buf) >= self.block_size:
+                block = bytes(self.buf[:self.block_size])
+                del self.buf[:self.block_size]
+                self.compress(block)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.output()
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            # One-zeros padding
+            self.buf.append(0x80)
+            while (len(self.buf) % self.block_size) != 0:
+                self.buf.append(0x00)
+
+            while len(self.buf) >= self.block_size:
+                block = bytes(self.buf[:self.block_size])
+                del self.buf[:self.block_size]
+                self.compress(block)
+            return
+
+        def output(self):
+            h = [(self.cv[i] ^ self.cv[i + 8]) & self.mask for i in range(8)]
+            out = b"".join(int(x).to_bytes(self.word_bytes, "little") for x in h)
+            return out[:self.digest_size]
+
+        def rol(self, x, n):
+            x &= self.mask
+            if n == 0:
+                return x
+            return ((x << n) | (x >> (self.word_bits - n))) & self.mask
+
+        def alpha_beta(self, j):
+            if self.word_bits == 32:
+                if (j & 1) == 0:
+                    return 0x1d, 0x01
+                return 0x05, 0x11
+            if (j & 1) == 0:
+                return 0x17, 0x3b
+            return 0x07, 0x03
+
+        def gamma(self, l): # noqa: E741
+            if self.word_bits == 32:
+                return self.gamma32[l]
+            return self.gamma64[l]
+
+        def make_step_constants(self):
+            if self.word_bits == 32:
+                sc0 = self.sc0_32
+            else:
+                sc0 = self.sc0_64
+
+            sc = [list(sc0)]
+            for j in range(1, self.ns):
+                prev = sc[j - 1]
+                sc.append([(prev[l] + self.rol(prev[l], 8)) & self.mask for l in range(8)]) # noqa: E741
+            return sc
+
+        def msg_add(self, x, y):
+            return [x[i] ^ y[i] for i in range(16)]
+
+        def mix_pair(self, j, l, x, y): # noqa: E741
+            alpha, beta = self.alpha_beta(j)
+            g = self.gamma(l)
+
+            x = (x + y) & self.mask
+            x = self.rol(x, alpha)
+            x ^= self.sc[j][l]
+
+            y = (x + y) & self.mask
+            y = self.rol(y, beta)
+
+            x = (x + y) & self.mask
+            y = self.rol(y, g)
+            return x, y
+
+        def mix(self, j, t):
+            t = list(t)
+            for l in range(8): # noqa: E741
+                x, y = self.mix_pair(j, l, t[l], t[l + 8])
+                t[l] = x
+                t[l + 8] = y
+            return t
+
+        def word_perm(self, x):
+            return [x[self.sigma[i]] for i in range(16)]
+
+        def step(self, j, t, mj):
+            t = self.msg_add(t, mj)
+            t = self.mix(j, t)
+            t = self.word_perm(t)
+            return t
+
+        def msg_expand(self, m32):
+            sub = [m32[:16], m32[16:32]]
+            for j in range(2, self.ns + 1):
+                prev1 = sub[j - 1]
+                prev2 = sub[j - 2]
+                sub.append([(prev1[l] + prev2[self.tau[l]]) & self.mask for l in range(16)]) # noqa: E741
+            return sub
+
+        def compress(self, block):
+            if self.word_bits == 32:
+                fmt = "<32I"
+            else:
+                fmt = "<32Q"
+            m = list(struct.unpack(fmt, block))
+
+            sub = self.msg_expand(m)
+            t = list(self.cv)
+            for j in range(self.ns):
+                t = self.step(j, t, sub[j])
+            self.cv = self.msg_add(t, sub[self.ns])
+            return
+
+    class LSH256_224(LSHBase):
+        word_bits = 32
+        ns = 26
+        block_size = 128
+        digest_size = 28
+        iv = [
+            0x0686_08d3, 0x62d8_f7a7, 0xd766_52ab, 0x4c60_0a43, 0xbdc4_0aa8, 0x1eca_0b68, 0xda1a_89be, 0x3147_d354,
+            0x707e_b4f9, 0xf65b_3862, 0x6b0b_2abe, 0x56b8_ec0a, 0xcf23_7286, 0xee0d_1727, 0x3363_6595, 0x8bb8_d05f,
+        ]
+
+    class LSH256_256(LSHBase):
+        word_bits = 32
+        ns = 26
+        block_size = 128
+        digest_size = 32
+        iv = [
+            0x46a1_0f1f, 0xfddc_e486, 0xb414_43a8, 0x198e_6b9d, 0x3304_388d, 0xb0f5_a3c7, 0xb360_61c4, 0x7adb_d553,
+            0x105d_5378, 0x2f74_de54, 0x5c2f_2d95, 0xf255_3fbe, 0x8051_357a, 0x1386_68c8, 0x47aa_4484, 0xe01a_fb41,
+        ]
+
+    class LSH512_224(LSHBase):
+        word_bits = 64
+        ns = 28
+        block_size = 256
+        digest_size = 28
+        iv = [
+            0x0c40_1e9f_e881_3a55, 0x4a5f_4462_68fd_3d35, 0xff13_e452_334f_612a, 0xf822_7661_037e_354a,
+            0xa5f2_2372_3c9c_a29d, 0x95d9_65a1_1aed_3979, 0x01e2_3835_b9ab_02cc, 0x52d4_9cba_d5b3_0616,
+            0x9e5c_2027_773f_4ed3, 0x66a5_c880_1925_b701, 0x22bb_c85b_4c67_79d9, 0xc131_71a4_2c55_9c23,
+            0x31e2_b67d_25be_3813, 0xd522_c4de_ed8e_4d83, 0xa79f_5509_b43f_bafe, 0xe00d_2cd8_8b4b_6c6a,
+        ]
+
+    class LSH512_256(LSHBase):
+        word_bits = 64
+        ns = 28
+        block_size = 256
+        digest_size = 32
+        iv = [
+            0x6dc5_7c33_df98_9423, 0xd8ea_7f6e_8342_c199, 0x76df_8356_f860_3ac4, 0x40f1_b44d_e838_223a,
+            0x39ff_e7cf_c314_84cd, 0x39c4_326c_c528_1548, 0x8a2f_f85a_3460_45d8, 0xff20_2aa4_6dbd_d61e,
+            0xcf78_5b3c_d5fc_db8b, 0x1f03_23b6_4a81_50bf, 0xff75_d972_f29e_a355, 0x2e56_7f30_bf1c_a9e1,
+            0xb596_875b_f8ff_6dba, 0xfcca_39b0_89ef_4615, 0xecff_4017_d020_b4b6, 0x7e77_384c_772e_d802,
+        ]
+
+    class LSH512_384(LSHBase):
+        word_bits = 64
+        ns = 28
+        block_size = 256
+        digest_size = 48
+        iv = [
+            0x5315_6a66_2928_08f6, 0xb2c4_f362_b204_c2bc, 0xb84b_7213_bfa0_5c4e, 0x976c_eb7c_1b29_9f73,
+            0xdf0c_c63c_0570_ae97, 0xda44_41ba_a486_ce3f, 0x6559_f5d9_b5f2_acc2, 0x22da_cf19_b4b5_2a16,
+            0xbbcd_acef_de80_953a, 0xc989_1a28_7972_5b3e, 0x7c9f_e633_0237_e440, 0xa30b_a550_553f_7431,
+            0xbb08_043f_b34e_3e30, 0xa0de_c48d_5461_8ead, 0x1503_1726_7464_bc57, 0x32d1_501f_de63_dc93,
+        ]
+
+    class LSH512_512(LSHBase):
+        word_bits = 64
+        ns = 28
+        block_size = 256
+        digest_size = 64
+        iv = [
+            0xadd5_0f3c_7f07_094e, 0xe3f3_cee8_f941_8a4f, 0xb527_ecde_5b3d_0ae9, 0x2ef6_dec6_8076_f501,
+            0x8cb9_94ca_e5ac_a216, 0xfbb9_eae4_bba4_8cc7, 0x650a_5261_7472_5fea, 0x1f9a_61a7_3f8d_8085,
+            0xb660_7378_173b_539b, 0x1bc9_9853_b0c0_b9ed, 0xdf72_7fc1_9b18_2d47, 0xdbef_360c_f893_a457,
+            0x4981_f5e5_7014_7e80, 0xd00c_4490_ca7d_3e30, 0x5d73_940c_0e4a_e1ec, 0x8940_85e2_edb2_d819,
+        ]
+
+    class FugueBase:
+        block_size = None
+        digest_size = None
+        state_words = 36  # Fugue-384/512: 36, Fugue-224/256: 30
+        sbox = None
+
+        def __init__(self, data=b""):
+            self.S = [0] * 36
+            self.bit_count = 0
+            self.partial = 0
+            self.partial_len = 0
+            self.rshift = 0
+
+            self.ensure_tables()
+            self.reset()
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.S = list(self.S)
+            other.bit_count = self.bit_count
+            other.partial = self.partial
+            other.partial_len = self.partial_len
+            other.rshift = self.rshift
+            return other
+
+        def reset(self):
+            for i in range(36):
+                self.S[i] = 0
+
+            self.bit_count = 0
+            self.partial = 0
+            self.partial_len = 0
+            self.rshift = 0
+
+            iv = self.get_iv()
+            if iv:
+                n = self.state_words
+                off = n - len(iv)
+                for i, v in enumerate(iv):
+                    self.S[off + i] = v & 0xffff_ffff
+            return
+
+        def get_iv(self):
+            return self.init_val
+
+        def encode_be_int(self, x, out, off):
+            x &= 0xffff_ffff
+            out[off + 0] = (x >> 24) & 0xff
+            out[off + 1] = (x >> 16) & 0xff
+            out[off + 2] = (x >> 8) & 0xff
+            out[off + 3] = x & 0xff
+            return
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+
+            data = bytes(data)
+            self.bit_count = (self.bit_count + ((len(data) & 0xffff_ffff_ffff_ffff) << 3)) & 0xffff_ffff_ffff_ffff
+
+            for b in data:
+                self.partial = ((self.partial << 8) | (b & 0xff)) & 0xffff_ffff
+                self.partial_len += 1
+                if self.partial_len == 4:
+                    self.process(self.partial)
+                    self.partial = 0
+                    self.partial_len = 0
+            return self
+
+        def finalize(self):
+            if self.partial_len != 0:
+                while self.partial_len < 4:
+                    self.partial = (self.partial << 8) & 0xffff_ffff
+                    self.partial_len += 1
+                self.process(self.partial)
+                self.partial = 0
+                self.partial_len = 0
+
+            high = (self.bit_count >> 32) & 0xffff_ffff
+            low = self.bit_count & 0xffff_ffff
+            self.process(high)
+            self.process(low)
+
+            out = bytearray(self.digest_size)
+            self.process_final(out)
+            return bytes(out)
+
+        def digest(self):
+            c = self.copy()
+            return c.finalize()
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def ror(self, rc, length):
+            rc %= length
+            if rc == 0:
+                return
+            tmp = self.S[length - rc:length]
+            self.S[rc:length] = self.S[0:length - rc]
+            self.S[0:rc] = tmp
+            return
+
+        def cmix30(self):
+            S = self.S
+            S[0] ^= S[4]
+            S[1] ^= S[5]
+            S[2] ^= S[6]
+            S[15] ^= S[4]
+            S[16] ^= S[5]
+            S[17] ^= S[6]
+            for i in (0, 1, 2, 15, 16, 17):
+                S[i] &= 0xffff_ffff
+            return
+
+        def cmix36(self):
+            S = self.S
+            S[0] ^= S[4]
+            S[1] ^= S[5]
+            S[2] ^= S[6]
+            S[18] ^= S[4]
+            S[19] ^= S[5]
+            S[20] ^= S[6]
+            for i in (0, 1, 2, 18, 19, 20):
+                S[i] &= 0xffff_ffff
+            return
+
+        def gf_mul(self, a, b):
+            a &= 0xff
+            b &= 0xff
+            res = 0
+            for _ in range(8):
+                if b & 1:
+                    res ^= a
+                hi = a & 0x80
+                a = (a << 1) & 0xff
+                if hi:
+                    a ^= 0x1b
+                b >>= 1
+            return res & 0xff
+
+        def gf_pow(self, a, e):
+            res = 1
+            base = a & 0xff
+            while e:
+                if e & 1:
+                    res = self.gf_mul(res, base)
+                base = self.gf_mul(base, base)
+                e >>= 1
+            return res & 0xff
+
+        def rotl8(self, x, n):
+            x &= 0xff
+            n &= 7
+            return ((x << n) | (x >> (8 - n))) & 0xff
+
+        def smix(self, i0, i1, i2, i3):
+            S = self.S
+            x0 = S[i0] & 0xffff_ffff
+            x1 = S[i1] & 0xffff_ffff
+            x2 = S[i2] & 0xffff_ffff
+            x3 = S[i3] & 0xffff_ffff
+
+            U = [[0] * 4 for _ in range(4)]
+            xs = (x0, x1, x2, x3)
+            for col in range(4):
+                w = xs[col]
+                U[0][col] = (w >> 24) & 0xff
+                U[1][col] = (w >> 16) & 0xff
+                U[2][col] = (w >> 8) & 0xff
+                U[3][col] = w & 0xff
+
+            sb = self.sbox
+            for r in range(4):
+                for c in range(4):
+                    U[r][c] = sb[U[r][c]]
+
+            M = (
+                (1, 4, 7, 1),
+                (1, 1, 4, 7),
+                (7, 1, 1, 4),
+                (4, 7, 1, 1),
+            )
+
+            V = [[0] * 4 for _ in range(4)]
+            for i in range(4):
+                for j in range(4):
+                    acc = 0
+                    for k in range(4):
+                        coeff = M[i][k]
+                        if coeff == 1:
+                            acc ^= U[k][j]
+                        else:
+                            acc ^= self.gf_mul(U[k][j], coeff)
+                    V[i][j] = acc & 0xff
+
+            d = [0] * 4
+            for i in range(4):
+                acc = 0
+                for j in range(4):
+                    if j != i:
+                        acc ^= U[i][j]
+                d[i] = acc & 0xff
+
+            W = [[0] * 4 for _ in range(4)]
+            for i in range(4):
+                for j in range(4):
+                    coeff = M[j][i]
+                    add = d[i] if coeff == 1 else self.gf_mul(d[i], coeff)
+                    W[i][j] = (V[i][j] ^ add) & 0xff
+
+            for i in range(4):
+                n = i & 3
+                if n:
+                    W[i] = W[i][n:] + W[i][:n]
+
+            y0 = ((W[0][0] << 24) | (W[1][0] << 16) | (W[2][0] << 8) | W[3][0]) & 0xffff_ffff
+            y1 = ((W[0][1] << 24) | (W[1][1] << 16) | (W[2][1] << 8) | W[3][1]) & 0xffff_ffff
+            y2 = ((W[0][2] << 24) | (W[1][2] << 16) | (W[2][2] << 8) | W[3][2]) & 0xffff_ffff
+            y3 = ((W[0][3] << 24) | (W[1][3] << 16) | (W[2][3] << 8) | W[3][3]) & 0xffff_ffff
+
+            S[i0], S[i1], S[i2], S[i3] = y0, y1, y2, y3
+            return
+
+        def ensure_tables(self):
+            if self.sbox is not None:
+                return
+
+            sbox = [0] * 256
+            for x in range(256):
+                inv = 0 if x == 0 else self.gf_pow(x, 254)
+                y = inv & 0xff
+                sb = (y ^ self.rotl8(y, 1) ^ self.rotl8(y, 2) ^ self.rotl8(y, 3) ^ self.rotl8(y, 4) ^ 0x63)
+                sbox[x] = sb & 0xff
+
+            self.sbox = sbox
+            return
+
+    class FugueCore30(FugueBase):
+        state_words = 30
+
+        def process(self, w):
+            S = self.S
+            w &= 0xffff_ffff
+            rs = self.rshift
+
+            if rs == 1:
+                S[4] ^= S[24]
+                S[24] = w
+                S[2] ^= S[24]
+                S[25] ^= S[18]
+                S[21] ^= S[25]
+                S[22] ^= S[26]
+                S[23] ^= S[27]
+                S[6] ^= S[25]
+                S[7] ^= S[26]
+                S[8] ^= S[27]
+                self.smix(21, 22, 23, 24)
+                S[18] ^= S[22]
+                S[19] ^= S[23]
+                S[20] ^= S[24]
+                S[3] ^= S[22]
+                S[4] ^= S[23]
+                S[5] ^= S[24]
+                self.smix(18, 19, 20, 21)
+                self.rshift = 2
+
+            elif rs == 2:
+                S[28] ^= S[18]
+                S[18] = w
+                S[26] ^= S[18]
+                S[19] ^= S[12]
+                S[15] ^= S[19]
+                S[16] ^= S[20]
+                S[17] ^= S[21]
+                S[0] ^= S[19]
+                S[1] ^= S[20]
+                S[2] ^= S[21]
+                self.smix(15, 16, 17, 18)
+                S[12] ^= S[16]
+                S[13] ^= S[17]
+                S[14] ^= S[18]
+                S[27] ^= S[16]
+                S[28] ^= S[17]
+                S[29] ^= S[18]
+                self.smix(12, 13, 14, 15)
+                self.rshift = 3
+
+            elif rs == 3:
+                S[22] ^= S[12]
+                S[12] = w
+                S[20] ^= S[12]
+                S[13] ^= S[6]
+                S[9] ^= S[13]
+                S[10] ^= S[14]
+                S[11] ^= S[15]
+                S[24] ^= S[13]
+                S[25] ^= S[14]
+                S[26] ^= S[15]
+                self.smix(9, 10, 11, 12)
+                S[6] ^= S[10]
+                S[7] ^= S[11]
+                S[8] ^= S[12]
+                S[21] ^= S[10]
+                S[22] ^= S[11]
+                S[23] ^= S[12]
+                self.smix(6, 7, 8, 9)
+                self.rshift = 4
+
+            elif rs == 4:
+                S[16] ^= S[6]
+                S[6] = w
+                S[14] ^= S[6]
+                S[7] ^= S[0]
+                S[3] ^= S[7]
+                S[4] ^= S[8]
+                S[5] ^= S[9]
+                S[18] ^= S[7]
+                S[19] ^= S[8]
+                S[20] ^= S[9]
+                self.smix(3, 4, 5, 6)
+                S[0] ^= S[4]
+                S[1] ^= S[5]
+                S[2] ^= S[6]
+                S[15] ^= S[4]
+                S[16] ^= S[5]
+                S[17] ^= S[6]
+                self.smix(0, 1, 2, 3)
+                self.rshift = 0
+
+            else:
+                S[10] ^= S[0]
+                S[0] = w
+                S[8] ^= S[0]
+                S[1] ^= S[24]
+                S[27] ^= S[1]
+                S[28] ^= S[2]
+                S[29] ^= S[3]
+                S[12] ^= S[1]
+                S[13] ^= S[2]
+                S[14] ^= S[3]
+                self.smix(27, 28, 29, 0)
+                S[24] ^= S[28]
+                S[25] ^= S[29]
+                S[26] ^= S[0]
+                S[9] ^= S[28]
+                S[10] ^= S[29]
+                S[11] ^= S[0]
+                self.smix(24, 25, 26, 27)
+                self.rshift = 1
+
+            for i in range(30):
+                S[i] &= 0xffff_ffff
+            return
+
+        def process_final(self, out):
+            S = self.S
+
+            self.ror(6 * self.rshift, 30)
+
+            for _ in range(10):
+                self.ror(3, 30)
+                self.cmix30()
+                self.smix(0, 1, 2, 3)
+
+            for _ in range(13):
+                S[4] ^= S[0]
+                S[15] ^= S[0]
+                self.ror(15, 30)
+                self.smix(0, 1, 2, 3)
+
+                S[4] ^= S[0]
+                S[16] ^= S[0]
+                self.ror(14, 30)
+                self.smix(0, 1, 2, 3)
+
+            S[4] ^= S[0]
+            S[15] ^= S[0]
+
+            self.encode_be_int(S[1], out, 0)
+            self.encode_be_int(S[2], out, 4)
+            self.encode_be_int(S[3], out, 8)
+            self.encode_be_int(S[4], out, 12)
+            self.encode_be_int(S[15], out, 16)
+            self.encode_be_int(S[16], out, 20)
+            self.encode_be_int(S[17], out, 24)
+            if len(out) >= 32:
+                self.encode_be_int(S[18], out, 28)
+            return
+
+    class Fugue224(FugueCore30):
+        block_size = 28
+        digest_size = 28
+
+        init_val = [
+            0xf4c9_120d, 0x6286_f757, 0xee39_e01c, 0xe074_e3cb, 0xa112_7c62, 0x9a43_d215, 0xbd8d_679a,
+        ]
+
+    class Fugue256(FugueCore30):
+        block_size = 32
+        digest_size = 32
+
+        init_val = [
+            0xe952_bdde, 0x6671_135f, 0xe0d4_f668, 0xd2b0_b594, 0xf96c_621d, 0xfbf9_29de, 0x9149_e899, 0x34f8_c248,
+        ]
+
+    class Fugue384(FugueBase):
+        block_size = 48
+        digest_size = 48
+
+        init_val = [
+            0xaa61_ec0d, 0x3125_2e1f, 0xa01d_b4c7, 0x0060_0985, 0x215e_f44a, 0x741b_5e9c, 0xfa69_3e9a, 0x473e_b040,
+            0xe502_ae8a, 0xa99c_25e0, 0xbc95_517c, 0x5c10_95a1,
+        ]
+
+        def process(self, w):
+            S = self.S
+            w &= 0xffff_ffff
+            rs = self.rshift
+
+            if rs == 1:
+                S[7] ^= S[27]
+                S[27] = w
+                S[35] ^= S[27]
+                S[28] ^= S[18]
+                S[31] ^= S[21]
+                S[24] ^= S[28]
+                S[25] ^= S[29]
+                S[26] ^= S[30]
+                S[6] ^= S[28]
+                S[7] ^= S[29]
+                S[8] ^= S[30]
+                self.smix(24, 25, 26, 27)
+                S[21] ^= S[25]
+                S[22] ^= S[26]
+                S[23] ^= S[27]
+                S[3] ^= S[25]
+                S[4] ^= S[26]
+                S[5] ^= S[27]
+                self.smix(21, 22, 23, 24)
+                S[18] ^= S[22]
+                S[19] ^= S[23]
+                S[20] ^= S[24]
+                S[0] ^= S[22]
+                S[1] ^= S[23]
+                S[2] ^= S[24]
+                self.smix(18, 19, 20, 21)
+                self.rshift = 2
+
+            elif rs == 2:
+                S[34] ^= S[18]
+                S[18] = w
+                S[26] ^= S[18]
+                S[19] ^= S[9]
+                S[22] ^= S[12]
+                S[15] ^= S[19]
+                S[16] ^= S[20]
+                S[17] ^= S[21]
+                S[33] ^= S[19]
+                S[34] ^= S[20]
+                S[35] ^= S[21]
+                self.smix(15, 16, 17, 18)
+                S[12] ^= S[16]
+                S[13] ^= S[17]
+                S[14] ^= S[18]
+                S[30] ^= S[16]
+                S[31] ^= S[17]
+                S[32] ^= S[18]
+                self.smix(12, 13, 14, 15)
+                S[9] ^= S[13]
+                S[10] ^= S[14]
+                S[11] ^= S[15]
+                S[27] ^= S[13]
+                S[28] ^= S[14]
+                S[29] ^= S[15]
+                self.smix(9, 10, 11, 12)
+                self.rshift = 3
+
+            elif rs == 3:
+                S[25] ^= S[9]
+                S[9] = w
+                S[17] ^= S[9]
+                S[10] ^= S[0]
+                S[13] ^= S[3]
+                S[6] ^= S[10]
+                S[7] ^= S[11]
+                S[8] ^= S[12]
+                S[24] ^= S[10]
+                S[25] ^= S[11]
+                S[26] ^= S[12]
+                self.smix(6, 7, 8, 9)
+                S[3] ^= S[7]
+                S[4] ^= S[8]
+                S[5] ^= S[9]
+                S[21] ^= S[7]
+                S[22] ^= S[8]
+                S[23] ^= S[9]
+                self.smix(3, 4, 5, 6)
+                S[0] ^= S[4]
+                S[1] ^= S[5]
+                S[2] ^= S[6]
+                S[18] ^= S[4]
+                S[19] ^= S[5]
+                S[20] ^= S[6]
+                self.smix(0, 1, 2, 3)
+                self.rshift = 0
+
+            else:
+                S[16] ^= S[0]
+                S[0] = w
+                S[8] ^= S[0]
+                S[1] ^= S[27]
+                S[4] ^= S[30]
+                S[33] ^= S[1]
+                S[34] ^= S[2]
+                S[35] ^= S[3]
+                S[15] ^= S[1]
+                S[16] ^= S[2]
+                S[17] ^= S[3]
+                self.smix(33, 34, 35, 0)
+                S[30] ^= S[34]
+                S[31] ^= S[35]
+                S[32] ^= S[0]
+                S[12] ^= S[34]
+                S[13] ^= S[35]
+                S[14] ^= S[0]
+                self.smix(30, 31, 32, 33)
+                S[27] ^= S[31]
+                S[28] ^= S[32]
+                S[29] ^= S[33]
+                S[9] ^= S[31]
+                S[10] ^= S[32]
+                S[11] ^= S[33]
+                self.smix(27, 28, 29, 30)
+                self.rshift = 1
+
+            for i in range(36):
+                S[i] &= 0xffff_ffff
+            return
+
+        def process_final(self, out):
+            S = self.S
+
+            self.ror(9 * self.rshift, 36)
+
+            for _ in range(18):
+                self.ror(3, 36)
+                self.cmix36()
+                self.smix(0, 1, 2, 3)
+
+            for _ in range(13):
+                S[4] ^= S[0]
+                S[12] ^= S[0]
+                S[24] ^= S[0]
+                self.ror(12, 36)
+                self.smix(0, 1, 2, 3)
+
+                S[4] ^= S[0]
+                S[13] ^= S[0]
+                S[24] ^= S[0]
+                self.ror(12, 36)
+                self.smix(0, 1, 2, 3)
+
+                S[4] ^= S[0]
+                S[13] ^= S[0]
+                S[25] ^= S[0]
+                self.ror(11, 36)
+                self.smix(0, 1, 2, 3)
+
+            S[4] ^= S[0]
+            S[12] ^= S[0]
+            S[24] ^= S[0]
+
+            self.encode_be_int(S[1], out, 0)
+            self.encode_be_int(S[2], out, 4)
+            self.encode_be_int(S[3], out, 8)
+            self.encode_be_int(S[4], out, 12)
+            self.encode_be_int(S[12], out, 16)
+            self.encode_be_int(S[13], out, 20)
+            self.encode_be_int(S[14], out, 24)
+            self.encode_be_int(S[15], out, 28)
+            self.encode_be_int(S[24], out, 32)
+            self.encode_be_int(S[25], out, 36)
+            self.encode_be_int(S[26], out, 40)
+            self.encode_be_int(S[27], out, 44)
+            return
+
+    class Fugue512(FugueBase):
+        block_size = 64
+        digest_size = 64
+
+        init_val = [
+            0x8807_a57e, 0xe616_af75, 0xc5d3_e4db, 0xac9a_b027, 0xd915_f117, 0xb6ee_cc54, 0x06e8_020b, 0x4a92_efd1,
+            0xaac6_e2c9, 0xddb2_1398, 0xcae6_5838, 0x437f_203f, 0x25ea_78e7, 0x951f_ddd6, 0xda6e_d11d, 0xe13e_3567,
+        ]
+
+        def process(self, w):
+            S = self.S
+            w &= 0xffff_ffff
+            rs = self.rshift
+
+            if rs == 1:
+                S[10] ^= S[24]
+                S[24] = w
+                S[32] ^= S[24]
+                S[25] ^= S[12]
+                S[28] ^= S[15]
+                S[31] ^= S[18]
+                S[21] ^= S[25]
+                S[22] ^= S[26]
+                S[23] ^= S[27]
+                S[3] ^= S[25]
+                S[4] ^= S[26]
+                S[5] ^= S[27]
+                self.smix(21, 22, 23, 24)
+                S[18] ^= S[22]
+                S[19] ^= S[23]
+                S[20] ^= S[24]
+                S[0] ^= S[22]
+                S[1] ^= S[23]
+                S[2] ^= S[24]
+                self.smix(18, 19, 20, 21)
+                S[15] ^= S[19]
+                S[16] ^= S[20]
+                S[17] ^= S[21]
+                S[33] ^= S[19]
+                S[34] ^= S[20]
+                S[35] ^= S[21]
+                self.smix(15, 16, 17, 18)
+                S[12] ^= S[16]
+                S[13] ^= S[17]
+                S[14] ^= S[18]
+                S[30] ^= S[16]
+                S[31] ^= S[17]
+                S[32] ^= S[18]
+                self.smix(12, 13, 14, 15)
+                self.rshift = 2
+
+            elif rs == 2:
+                S[34] ^= S[12]
+                S[12] = w
+                S[20] ^= S[12]
+                S[13] ^= S[0]
+                S[16] ^= S[3]
+                S[19] ^= S[6]
+                S[9] ^= S[13]
+                S[10] ^= S[14]
+                S[11] ^= S[15]
+                S[27] ^= S[13]
+                S[28] ^= S[14]
+                S[29] ^= S[15]
+                self.smix(9, 10, 11, 12)
+                S[6] ^= S[10]
+                S[7] ^= S[11]
+                S[8] ^= S[12]
+                S[24] ^= S[10]
+                S[25] ^= S[11]
+                S[26] ^= S[12]
+                self.smix(6, 7, 8, 9)
+                S[3] ^= S[7]
+                S[4] ^= S[8]
+                S[5] ^= S[9]
+                S[21] ^= S[7]
+                S[22] ^= S[8]
+                S[23] ^= S[9]
+                self.smix(3, 4, 5, 6)
+                S[0] ^= S[4]
+                S[1] ^= S[5]
+                S[2] ^= S[6]
+                S[18] ^= S[4]
+                S[19] ^= S[5]
+                S[20] ^= S[6]
+                self.smix(0, 1, 2, 3)
+                self.rshift = 0
+
+            else:
+                S[22] ^= S[0]
+                S[0] = w
+                S[8] ^= S[0]
+                S[1] ^= S[24]
+                S[4] ^= S[27]
+                S[7] ^= S[30]
+                S[33] ^= S[1]
+                S[34] ^= S[2]
+                S[35] ^= S[3]
+                S[15] ^= S[1]
+                S[16] ^= S[2]
+                S[17] ^= S[3]
+                self.smix(33, 34, 35, 0)
+                S[30] ^= S[34]
+                S[31] ^= S[35]
+                S[32] ^= S[0]
+                S[12] ^= S[34]
+                S[13] ^= S[35]
+                S[14] ^= S[0]
+                self.smix(30, 31, 32, 33)
+                S[27] ^= S[31]
+                S[28] ^= S[32]
+                S[29] ^= S[33]
+                S[9] ^= S[31]
+                S[10] ^= S[32]
+                S[11] ^= S[33]
+                self.smix(27, 28, 29, 30)
+                S[24] ^= S[28]
+                S[25] ^= S[29]
+                S[26] ^= S[30]
+                S[6] ^= S[28]
+                S[7] ^= S[29]
+                S[8] ^= S[30]
+                self.smix(24, 25, 26, 27)
+                self.rshift = 1
+
+            for i in range(36):
+                S[i] &= 0xffff_ffff
+            return
+
+        def process_final(self, out):
+            S = self.S
+
+            self.ror(12 * self.rshift, 36)
+
+            for _ in range(32):
+                self.ror(3, 36)
+                self.cmix36()
+                self.smix(0, 1, 2, 3)
+
+            for _ in range(13):
+                S[4] ^= S[0]
+                S[9] ^= S[0]
+                S[18] ^= S[0]
+                S[27] ^= S[0]
+                self.ror(9, 36)
+                self.smix(0, 1, 2, 3)
+
+                S[4] ^= S[0]
+                S[10] ^= S[0]
+                S[18] ^= S[0]
+                S[27] ^= S[0]
+                self.ror(9, 36)
+                self.smix(0, 1, 2, 3)
+
+                S[4] ^= S[0]
+                S[10] ^= S[0]
+                S[19] ^= S[0]
+                S[27] ^= S[0]
+                self.ror(9, 36)
+                self.smix(0, 1, 2, 3)
+
+                S[4] ^= S[0]
+                S[10] ^= S[0]
+                S[19] ^= S[0]
+                S[28] ^= S[0]
+                self.ror(8, 36)
+                self.smix(0, 1, 2, 3)
+
+            S[4] ^= S[0]
+            S[9] ^= S[0]
+            S[18] ^= S[0]
+            S[27] ^= S[0]
+
+            self.encode_be_int(S[1], out, 0)
+            self.encode_be_int(S[2], out, 4)
+            self.encode_be_int(S[3], out, 8)
+            self.encode_be_int(S[4], out, 12)
+            self.encode_be_int(S[9], out, 16)
+            self.encode_be_int(S[10], out, 20)
+            self.encode_be_int(S[11], out, 24)
+            self.encode_be_int(S[12], out, 28)
+            self.encode_be_int(S[18], out, 32)
+            self.encode_be_int(S[19], out, 36)
+            self.encode_be_int(S[20], out, 40)
+            self.encode_be_int(S[21], out, 44)
+            self.encode_be_int(S[27], out, 48)
+            self.encode_be_int(S[28], out, 52)
+            self.encode_be_int(S[29], out, 56)
+            self.encode_be_int(S[30], out, 60)
+            return
+
+    class HamsiBase:
+        mask32 = 0xffff_ffff
+
+        alpha_n = [
+            0xff00_f0f0, 0xcccc_aaaa, 0xf0f0_cccc, 0xff00_aaaa, 0xcccc_aaaa, 0xf0f0_ff00, 0xaaaa_cccc, 0xf0f0_ff00,
+            0xf0f0_cccc, 0xaaaa_ff00, 0xcccc_ff00, 0xaaaa_f0f0, 0xaaaa_f0f0, 0xff00_cccc, 0xcccc_f0f0, 0xff00_aaaa,
+            0xcccc_aaaa, 0xff00_f0f0, 0xff00_aaaa, 0xf0f0_cccc, 0xf0f0_ff00, 0xcccc_aaaa, 0xf0f0_ff00, 0xaaaa_cccc,
+            0xaaaa_ff00, 0xf0f0_cccc, 0xaaaa_f0f0, 0xcccc_ff00, 0xff00_cccc, 0xaaaa_f0f0, 0xff00_aaaa, 0xcccc_f0f0,
+        ]
+
+        alpha_f = [
+            0xcaf9_639c, 0x0ff0_f9c0, 0x639c_0ff0, 0xcaf9_f9c0, 0x0ff0_f9c0, 0x639c_caf9, 0xf9c0_0ff0, 0x639c_caf9,
+            0x639c_0ff0, 0xf9c0_caf9, 0x0ff0_caf9, 0xf9c0_639c, 0xf9c0_639c, 0xcaf9_0ff0, 0x0ff0_639c, 0xcaf9_f9c0,
+            0x0ff0_f9c0, 0xcaf9_639c, 0xcaf9_f9c0, 0x639c_0ff0, 0x639c_caf9, 0x0ff0_f9c0, 0x639c_caf9, 0xf9c0_0ff0,
+            0xf9c0_caf9, 0x639c_0ff0, 0xf9c0_639c, 0x0ff0_caf9, 0xcaf9_0ff0, 0xf9c0_639c, 0xcaf9_f9c0, 0x0ff0_639c,
+        ]
+
+        iv = []
+        block_size = 0
+        digest_size = 0
+        output_indexes = []
+
+        t256 = [
+            0x7495_1000, 0x5a2b_467e, 0x88fd_1d2b, 0x1ee6_8292, 0xcba9_0000, 0x9027_3769, 0xbbdc_f407, 0xd0f4_af61,
+            0xcba9_0000, 0x9027_3769, 0xbbdc_f407, 0xd0f4_af61, 0xbf3c_1000, 0xca0c_7117, 0x3321_e92c, 0xce12_2df3,
+            0xe92a_2000, 0xb457_8cfc, 0x11fa_3a57, 0x3dc9_0524, 0x9753_0000, 0x204f_6ed3, 0x77b9_e80f, 0xa1ec_5ec1,
+            0x9753_0000, 0x204f_6ed3, 0x77b9_e80f, 0xa1ec_5ec1, 0x7e79_2000, 0x9418_e22f, 0x6643_d258, 0x9c25_5be5,
+            0x121b_4000, 0x5b17_d9e8, 0x8dfa_cfab, 0xce36_cc72, 0xe657_0000, 0x4bb3_3a25, 0x8485_98ba, 0x1041_003e,
+            0xe657_0000, 0x4bb3_3a25, 0x8485_98ba, 0x1041_003e, 0xf44c_4000, 0x10a4_e3cd, 0x097f_5711, 0xde77_cc4c,
+            0xe478_8000, 0x8596_73c1, 0xb5fb_2452, 0x29cc_5edf, 0x045f_0000, 0x9c4a_93c9, 0x62fc_79d0, 0x731e_bdc2,
+            0x045f_0000, 0x9c4a_93c9, 0x62fc_79d0, 0x731e_bdc2, 0xe027_8000, 0x19dc_e008, 0xd707_5d82, 0x5ad2_e31d,
+            0xb7a4_0100, 0x8a1f_31d8, 0x8589_d8ab, 0xe6c4_6464, 0x734c_0000, 0x956f_a7d6, 0xa29d_1297, 0x6ee5_6854,
+            0x734c_0000, 0x956f_a7d6, 0xa29d_1297, 0x6ee5_6854, 0xc4e8_0100, 0x1f70_960e, 0x2714_ca3c, 0x8821_0c30,
+            0xa7b8_0200, 0x1f12_8433, 0x60e5_f9f2, 0x9e14_7576, 0xee26_0000, 0x124b_683e, 0x80c2_d68f, 0x3bf3_ab2c,
+            0xee26_0000, 0x124b_683e, 0x80c2_d68f, 0x3bf3_ab2c, 0x499e_0200, 0x0d59_ec0d, 0xe027_2f7d, 0xa5e7_de5a,
+            0x8f3e_0400, 0x0d9d_c877, 0x6fc5_48e1, 0x898d_2cd6, 0x14bd_0000, 0x2fba_37ff, 0x6a72_e5bb, 0x247f_ebe6,
+            0x14bd_0000, 0x2fba_37ff, 0x6a72_e5bb, 0x247f_ebe6, 0x9b83_0400, 0x2227_ff88, 0x05b7_ad5a, 0xadf2_c730,
+            0xde32_0800, 0x2883_50fe, 0x7185_2ac7, 0xa6bf_9f96, 0xe18b_0000, 0x5459_887d, 0xbf12_83d3, 0x1b66_6a73,
+            0xe18b_0000, 0x5459_887d, 0xbf12_83d3, 0x1b66_6a73, 0x3fb9_0800, 0x7cda_d883, 0xce97_a914, 0xbdd9_f5e5,
+            0x515c_0010, 0x40f3_72fb, 0xfce7_2602, 0x7157_5061, 0x2e39_0000, 0x64dd_6689, 0x3cd4_06fc, 0xb1f4_90bc,
+            0x2e39_0000, 0x64dd_6689, 0x3cd4_06fc, 0xb1f4_90bc, 0x7f65_0010, 0x242e_1472, 0xc033_20fe, 0xc0a3_c0dd,
+            0xa2b8_0020, 0x81e7_e5f6, 0xf9ce_4c04, 0xe2af_a0c0, 0x5c72_0000, 0xc9ba_cd12, 0x79a9_0df9, 0x63e9_2178,
+            0x5c72_0000, 0xc9ba_cd12, 0x79a9_0df9, 0x63e9_2178, 0xfeca_0020, 0x485d_28e4, 0x8067_41fd, 0x8146_81b8,
+            0x4dce_0040, 0x3b5b_ec7e, 0x3665_6ba8, 0x2363_3a05, 0x78ab_0000, 0xa0cd_5a34, 0x5d5c_a0f7, 0x7277_84cb,
+            0x78ab_0000, 0xa0cd_5a34, 0x5d5c_a0f7, 0x7277_84cb, 0x3565_0040, 0x9b96_b64a, 0x6b39_cb5f, 0x5114_bece,
+            0x5bd2_0080, 0x450f_18ec, 0xc2c4_6c55, 0xf362_b233, 0x39a6_0000, 0x4ab7_53eb, 0xd14e_094b, 0xb772_b42b,
+            0x39a6_0000, 0x4ab7_53eb, 0xd14e_094b, 0xb772_b42b, 0x6274_0080, 0x0fb8_4b07, 0x138a_651e, 0x4410_0618,
+            0xc04e_0001, 0x33b9_c010, 0xae0e_bb05, 0xb5a4_c63b, 0xc8f1_0000, 0x0b2d_e782, 0x6bf6_48a4, 0x539c_bdbf,
+            0xc8f1_0000, 0x0b2d_e782, 0x6bf6_48a4, 0x539c_bdbf, 0x08bf_0001, 0x3894_2792, 0xc5f8_f3a1, 0xe638_7b84,
+            0x8823_0002, 0x5fe7_a7b3, 0x99e5_85aa, 0x8d75_f7f1, 0x51ac_0000, 0x25e3_0f14, 0x79e2_2a4c, 0x1298_bd46,
+            0x51ac_0000, 0x25e3_0f14, 0x79e2_2a4c, 0x1298_bd46, 0xd98f_0002, 0x7a04_a8a7, 0xe007_afe6, 0x9fed_4ab7,
+            0xd008_0004, 0x8c76_8f77, 0x9dc5_b050, 0xaf4a_29da, 0x6ba9_0000, 0x40eb_f9aa, 0x9832_1c3d, 0x76ac_c733,
+            0x6ba9_0000, 0x40eb_f9aa, 0x9832_1c3d, 0x76ac_c733, 0xbba1_0004, 0xcc9d_76dd, 0x05f7_ac6d, 0xd9e6_eee9,
+            0xa8ae_0008, 0x2079_397d, 0xfe73_9301, 0xb8a9_2831, 0x171c_0000, 0xb26e_3344, 0x9e6a_837e, 0x58f8_485f,
+            0x171c_0000, 0xb26e_3344, 0x9e6a_837e, 0x58f8_485f, 0xbfb2_0008, 0x9217_0a39, 0x6019_107f, 0xe051_606e,
+        ]
+
+        t512 = [
+            0xef0b_0270, 0x3afd_0000, 0x5dae_0000, 0x6949_0000, 0x9b0f_3c06, 0x4405_b5f9, 0x6614_0a51, 0x924f_5d0a,
+            0xc96b_0030, 0xe725_0000, 0x2f84_0000, 0x264f_0000, 0x0869_5bf9, 0x6dfc_f137, 0x509f_6984, 0x9e69_af68,
+            0xc96b_0030, 0xe725_0000, 0x2f84_0000, 0x264f_0000, 0x0869_5bf9, 0x6dfc_f137, 0x509f_6984, 0x9e69_af68,
+            0x2660_0240, 0xddd8_0000, 0x722a_0000, 0x4f06_0000, 0x9366_67ff, 0x29f9_44ce, 0x368b_63d5, 0x0c26_f262,
+            0x145a_3c00, 0xb9e9_0000, 0x6127_0000, 0xf161_0000, 0xce61_3d6c, 0xb049_3d78, 0x47a9_6720, 0xe18e_24c5,
+            0x2367_1400, 0xc8b9_0000, 0xf4c7_0000, 0xfb75_0000, 0x73cd_2465, 0xf8a6_a549, 0x02c4_0a3f, 0xdc24_e61f,
+            0x2367_1400, 0xc8b9_0000, 0xf4c7_0000, 0xfb75_0000, 0x73cd_2465, 0xf8a6_a549, 0x02c4_0a3f, 0xdc24_e61f,
+            0x373d_2800, 0x7150_0000, 0x95e0_0000, 0x0a14_0000, 0xbdac_1909, 0x48ef_9831, 0x456d_6d1f, 0x3daa_c2da,
+            0x5428_5c00, 0xeaed_0000, 0xc5d6_0000, 0xa1c5_0000, 0xb3a2_6770, 0x94a5_c4e1, 0x6bb0_419d, 0x551b_3782,
+            0x9cbb_1800, 0xb0d3_0000, 0x9251_0000, 0xed93_0000, 0x593a_4345, 0xe114_d5f4, 0x4306_33da, 0x78ca_ce29,
+            0x9cbb_1800, 0xb0d3_0000, 0x9251_0000, 0xed93_0000, 0x593a_4345, 0xe114_d5f4, 0x4306_33da, 0x78ca_ce29,
+            0xc893_4400, 0x5a3e_0000, 0x5787_0000, 0x4c56_0000, 0xea98_2435, 0x75b1_1115, 0x28b6_7247, 0x2dd1_f9ab,
+            0x2944_9c00, 0x64e7_0000, 0xf24b_0000, 0xc2f3_0000, 0x0ede_4e8f, 0x56c2_3745, 0xf3e0_4259, 0x8d0d_9ec4,
+            0x466d_0c00, 0x0862_0000, 0xdd5d_0000, 0xbadd_0000, 0x6a92_7942, 0x441f_2b93, 0x218a_ce6f, 0xbf2c_0be2,
+            0x466d_0c00, 0x0862_0000, 0xdd5d_0000, 0xbadd_0000, 0x6a92_7942, 0x441f_2b93, 0x218a_ce6f, 0xbf2c_0be2,
+            0x6f29_9000, 0x6c85_0000, 0x2f16_0000, 0x782e_0000, 0x644c_37cd, 0x12dd_1cd6, 0xd26a_8c36, 0x3221_9526,
+            0xf680_0005, 0x3443_c000, 0x2407_0000, 0x8f3d_0000, 0x2137_3bfb, 0x0ab8_d5ae, 0xcdc5_8b19, 0xd795_ba31,
+            0xa67f_0001, 0x7137_8000, 0x19fc_0000, 0x96db_0000, 0x3a8b_6dfd, 0xebca_aef3, 0x2c6d_478f, 0xac8e_6c88,
+            0xa67f_0001, 0x7137_8000, 0x19fc_0000, 0x96db_0000, 0x3a8b_6dfd, 0xebca_aef3, 0x2c6d_478f, 0xac8e_6c88,
+            0x50ff_0004, 0x4574_4000, 0x3dfb_0000, 0x19e6_0000, 0x1bbc_5606, 0xe172_7b5d, 0xe1a8_cc96, 0x7b1b_d6b9,
+            0xf775_0009, 0xcf3c_c000, 0xc3d6_0000, 0x0492_0000, 0x0295_19a9, 0xf8e8_36ba, 0x7a87_f14e, 0x9e16_981a,
+            0xd46a_0000, 0x8dc8_c000, 0xa5af_0000, 0x4a29_0000, 0xfc4e_427a, 0xc9b4_866c, 0x9836_9604, 0xf746_c320,
+            0xd46a_0000, 0x8dc8_c000, 0xa5af_0000, 0x4a29_0000, 0xfc4e_427a, 0xc9b4_866c, 0x9836_9604, 0xf746_c320,
+            0x231f_0009, 0x42f4_0000, 0x6679_0000, 0x4ebb_0000, 0xfedb_5bd3, 0x315c_b0d6, 0xe2b1_674a, 0x6950_5b3a,
+            0x7744_00f0, 0xf15a_0000, 0xf5b2_0000, 0x3414_0000, 0x8937_7e8c, 0x5a8b_ec25, 0x0bc3_cd1e, 0xcf37_75cb,
+            0xf46c_0050, 0x9618_0000, 0x14a5_0000, 0x031f_0000, 0x4294_7eb8, 0x66bf_7e19, 0x9ca4_70d2, 0x8a34_1574,
+            0xf46c_0050, 0x9618_0000, 0x14a5_0000, 0x031f_0000, 0x4294_7eb8, 0x66bf_7e19, 0x9ca4_70d2, 0x8a34_1574,
+            0x8328_00a0, 0x6742_0000, 0xe117_0000, 0x370b_0000, 0xcba3_0034, 0x3c34_923c, 0x9767_bdcc, 0x4503_60bf,
+            0xe887_0170, 0x9d72_0000, 0x12db_0000, 0xd422_0000, 0xf288_6b27, 0xa921_e543, 0x4ef8_b518, 0x6188_13b1,
+            0xb437_0060, 0x0c4c_0000, 0x56c2_0000, 0x5cae_0000, 0x9454_1f3f, 0x3b3e_f825, 0x1b36_5f3d, 0xf3d4_5758,
+            0xb437_0060, 0x0c4c_0000, 0x56c2_0000, 0x5cae_0000, 0x9454_1f3f, 0x3b3e_f825, 0x1b36_5f3d, 0xf3d4_5758,
+            0x5cb0_0110, 0x913e_0000, 0x4419_0000, 0x888c_0000, 0x66dc_7418, 0x921f_1d66, 0x55ce_ea25, 0x925c_44e9,
+            0x0c72_0000, 0x49e5_0f00, 0x4279_0000, 0x5cea_0000, 0x33aa_301a, 0x1582_2514, 0x95a3_4b7b, 0xb44b_0090,
+            0xfe22_0000, 0xa758_0500, 0x25d1_0000, 0xf760_0000, 0x8931_78da, 0x1fd4_f860, 0x4ed0_a315, 0xa123_ff9f,
+            0xfe22_0000, 0xa758_0500, 0x25d1_0000, 0xf760_0000, 0x8931_78da, 0x1fd4_f860, 0x4ed0_a315, 0xa123_ff9f,
+            0xf250_0000, 0xeebd_0a00, 0x67a8_0000, 0xab8a_0000, 0xba9b_48c0, 0x0a56_dd74, 0xdb73_e86e, 0x1568_ff0f,
+            0x4518_0000, 0xa5b5_1700, 0xf96a_0000, 0x3b48_0000, 0x1ecc_142c, 0x2313_95d6, 0x16bc_a6b0, 0xdf33_f4df,
+            0xb83d_0000, 0x1671_0600, 0x379a_0000, 0xf5b1_0000, 0x2281_61ac, 0xae48_f145, 0x6624_1616, 0xc5c1_eb3e,
+            0xb83d_0000, 0x1671_0600, 0x379a_0000, 0xf5b1_0000, 0x2281_61ac, 0xae48_f145, 0x6624_1616, 0xc5c1_eb3e,
+            0xfd25_0000, 0xb3c4_1100, 0xcef0_0000, 0xcef9_0000, 0x3c4d_7580, 0x8d5b_6493, 0x7098_b0a6, 0x1af2_1fe1,
+            0x75a4_0000, 0xc28b_2700, 0x94a4_0000, 0x90f5_0000, 0xfb78_57e0, 0x49ce_0bae, 0x1767_c483, 0xaedf_667e,
+            0xd166_0000, 0x1bbc_0300, 0x9eec_0000, 0xf694_0000, 0x0302_4527, 0xcf70_fcf2, 0xb443_1b17, 0x857f_3c2b,
+            0xd166_0000, 0x1bbc_0300, 0x9eec_0000, 0xf694_0000, 0x0302_4527, 0xcf70_fcf2, 0xb443_1b17, 0x857f_3c2b,
+            0xa4c2_0000, 0xd937_2400, 0x0a48_0000, 0x6661_0000, 0xf87a_12c7, 0x86be_f75c, 0xa324_df94, 0x2ba0_5a55,
+            0x75c9_0003, 0x0e10_c000, 0xd120_0000, 0xbaea_0000, 0x8bc4_2f3e, 0x8758_b757, 0xbb28_761d, 0x00b7_2e2b,
+            0xeecf_0001, 0x6f56_4000, 0xf33e_0000, 0xa79e_0000, 0xbdb5_7219, 0xb711_ebc5, 0x4a3b_40ba, 0xfeab_f254,
+            0xeecf_0001, 0x6f56_4000, 0xf33e_0000, 0xa79e_0000, 0xbdb5_7219, 0xb711_ebc5, 0x4a3b_40ba, 0xfeab_f254,
+            0x9b06_0002, 0x6146_8000, 0x221e_0000, 0x1d74_0000, 0x3671_5d27, 0x3049_5c92, 0xf113_36a7, 0xfe1c_dc7f,
+            0x8679_0000, 0x3f39_0002, 0xe19a_e000, 0x9856_0000, 0x9565_670e, 0x4e88_c8ea, 0xd3dd_4944, 0x161d_dab9,
+            0x30b7_0000, 0xe5d0_0000, 0xf4f4_6000, 0x42c4_0000, 0x63b8_3d6a, 0x78ba_9460, 0x21af_a1ea, 0xb0a5_1834,
+            0x30b7_0000, 0xe5d0_0000, 0xf4f4_6000, 0x42c4_0000, 0x63b8_3d6a, 0x78ba_9460, 0x21af_a1ea, 0xb0a5_1834,
+            0xb6ce_0000, 0xdae9_0002, 0x156e_8000, 0xda92_0000, 0xf6dd_5a64, 0x3632_5c8a, 0xf272_e8ae, 0xa6b8_c28d,
+            0x1419_0000, 0x23ca_003c, 0x50df_0000, 0x44b6_0000, 0x1b6c_67b0, 0x3cf3_ac75, 0x61e6_10b0, 0xdbca_db80,
+            0xe343_0000, 0x3a4e_0014, 0xf2c6_0000, 0xaa4e_0000, 0xdb1e_42a6, 0x256b_be15, 0x123d_b156, 0x3a4e_99d7,
+            0xe343_0000, 0x3a4e_0014, 0xf2c6_0000, 0xaa4e_0000, 0xdb1e_42a6, 0x256b_be15, 0x123d_b156, 0x3a4e_99d7,
+            0xf75a_0000, 0x1984_0028, 0xa219_0000, 0xeef8_0000, 0xc072_2516, 0x1998_1260, 0x73db_a1e6, 0xe184_4257,
+            0x5450_0000, 0x0671_005c, 0x25ae_0000, 0x6a1e_0000, 0x2ea5_4edf, 0x664e_8512, 0xbfba_18c3, 0x7e71_5d17,
+            0xbc8d_0000, 0xfc3b_0018, 0x1983_0000, 0xd10b_0000, 0xae18_78c4, 0x42a6_9856, 0x0012_da37, 0x2c3b_504e,
+            0xbc8d_0000, 0xfc3b_0018, 0x1983_0000, 0xd10b_0000, 0xae18_78c4, 0x42a6_9856, 0x0012_da37, 0x2c3b_504e,
+            0xe8dd_0000, 0xfa4a_0044, 0x3c2d_0000, 0xbb15_0000, 0x80bd_361b, 0x24e8_1d44, 0xbfa8_c2f4, 0x524a_0d59,
+            0x6951_0000, 0xd4e1_009c, 0xc323_0000, 0xac2f_0000, 0xe495_0bae, 0xcea4_15dc, 0x87ec_287c, 0xbce1_a3ce,
+            0xc673_0000, 0xaf8d_000c, 0xa4c1_0000, 0x218d_0000, 0x2311_1587, 0x7913_512f, 0x1d28_ac88, 0x378d_d173,
+            0xc673_0000, 0xaf8d_000c, 0xa4c1_0000, 0x218d_0000, 0x2311_1587, 0x7913_512f, 0x1d28_ac88, 0x378d_d173,
+            0xaf22_0000, 0x7b6c_0090, 0x67e2_0000, 0x8da2_0000, 0xc784_1e29, 0xb7b7_44f3, 0x9ac4_84f4, 0x8b6c_72bd,
+            0xcc14_0000, 0xa563_0000, 0x5ab9_0780, 0x3b50_0000, 0x4bd0_13ff, 0x879b_3418, 0x6943_48c1, 0xca5a_87fe,
+            0x819e_0000, 0xec57_0000, 0x6632_0280, 0x95f3_0000, 0x5da9_2802, 0x48f4_3cbc, 0xe65a_a22d, 0x8e67_b7fa,
+            0x819e_0000, 0xec57_0000, 0x6632_0280, 0x95f3_0000, 0x5da9_2802, 0x48f4_3cbc, 0xe65a_a22d, 0x8e67_b7fa,
+            0x4d8a_0000, 0x4934_0000, 0x3c8b_0500, 0xaea3_0000, 0x1679_3bfd, 0xcf6f_08a4, 0x8f19_eaec, 0x443d_3004,
+            0x7823_0000, 0x12fc_0000, 0xa93a_0b80, 0x90a5_0000, 0x713e_2879, 0x7ee9_8924, 0xf08c_a062, 0x636f_8bab,
+            0x02af_0000, 0xb728_0000, 0xba1c_0300, 0x5698_0000, 0xba8d_45d3, 0x8048_c667, 0xa95c_149a, 0xf4f6_ea7b,
+            0x02af_0000, 0xb728_0000, 0xba1c_0300, 0x5698_0000, 0xba8d_45d3, 0x8048_c667, 0xa95c_149a, 0xf4f6_ea7b,
+            0x7a8c_0000, 0xa5d4_0000, 0x1326_0880, 0xc63d_0000, 0xcbb3_6daa, 0xfea1_4f43, 0x59d0_b4f8, 0x9799_61d0,
+            0xac48_0000, 0x1ba6_0000, 0x45fb_1380, 0x0343_0000, 0x5a85_316a, 0x1fb2_50b6, 0xfe72_c7fe, 0x91e4_78f6,
+            0x1e4e_0000, 0xdecf_0000, 0x6df8_0180, 0x7724_0000, 0xec47_079e, 0xf4a0_694e, 0xcda3_1812, 0x98aa_496e,
+            0x1e4e_0000, 0xdecf_0000, 0x6df8_0180, 0x7724_0000, 0xec47_079e, 0xf4a0_694e, 0xcda3_1812, 0x98aa_496e,
+            0xb206_0000, 0xc569_0000, 0x2803_1200, 0x7467_0000, 0xb6c2_36f4, 0xeb12_39f8, 0x33d1_dfec, 0x094e_3198,
+            0xaec3_0000, 0x9c4f_0001, 0x79d1_e000, 0x2c15_0000, 0x45cc_75b3, 0x6650_b736, 0xab92_f78f, 0xa312_567b,
+            0xdb25_0000, 0x0929_0000, 0x49aa_c000, 0x81e1_0000, 0xcafe_6b59, 0x4279_3431, 0x4356_6b76, 0xe86c_ba2e,
+            0xdb25_0000, 0x0929_0000, 0x49aa_c000, 0x81e1_0000, 0xcafe_6b59, 0x4279_3431, 0x4356_6b76, 0xe86c_ba2e,
+            0x75e6_0000, 0x9566_0001, 0x307b_2000, 0xadf4_0000, 0x8f32_1eea, 0x2429_8307, 0xe8c4_9cf9, 0x4b7e_ec55,
+            0x5843_0000, 0x807e_0000, 0x7833_0001, 0xc66b_3800, 0xe737_5cdc, 0x79ad_3fdd, 0xac73_fe6f, 0x3a44_79b1,
+            0x1d5a_0000, 0x2b72_0000, 0x488d_0000, 0xaf61_1800, 0x25cb_2ec5, 0xc879_bfd0, 0x81a2_0429, 0x1e75_36a6,
+            0x1d5a_0000, 0x2b72_0000, 0x488d_0000, 0xaf61_1800, 0x25cb_2ec5, 0xc879_bfd0, 0x81a2_0429, 0x1e75_36a6,
+            0x4519_0000, 0xab0c_0000, 0x30be_0001, 0x690a_2000, 0xc2fc_7219, 0xb1d4_800d, 0x2dd1_fa46, 0x2431_4f17,
+            0xa53b_0000, 0x1426_0000, 0x4e30_001e, 0x7cae_0000, 0x8f9e_0dd5, 0x78df_aa3d, 0xf731_68d8, 0x0b1b_4946,
+            0x07ed_0000, 0xb250_0000, 0x8774_000a, 0x970d_0000, 0x4372_23ae, 0x48c7_6ea4, 0xf478_6222, 0x9075_b1ce,
+            0x07ed_0000, 0xb250_0000, 0x8774_000a, 0x970d_0000, 0x4372_23ae, 0x48c7_6ea4, 0xf478_6222, 0x9075_b1ce,
+            0xa2d6_0000, 0xa676_0000, 0xc944_0014, 0xeba3_0000, 0xccec_2e7b, 0x3018_c499, 0x0349_0afa, 0x9b6e_f888,
+            0x8898_0000, 0x1f94_0000, 0x7fcf_002e, 0xfb4e_0000, 0xf158_079a, 0x61ae_9167, 0xa895_706c, 0xe610_7494,
+            0x0bc2_0000, 0xdb63_0000, 0x7e88_000c, 0x1586_0000, 0x91fd_48f3, 0x7581_bb43, 0xf460_449e, 0xd8b6_1463,
+            0x0bc2_0000, 0xdb63_0000, 0x7e88_000c, 0x1586_0000, 0x91fd_48f3, 0x7581_bb43, 0xf460_449e, 0xd8b6_1463,
+            0x835a_0000, 0xc4f7_0000, 0x0147_0022, 0xeec8_0000, 0x60a5_4f69, 0x142f_2a24, 0x5cf5_34f2, 0x3ea6_60f7,
+            0x5250_0000, 0x2954_0000, 0x6a61_004e, 0xf0ff_0000, 0x9a31_7eec, 0x4523_41ce, 0xcf56_8fe5, 0x5303_130f,
+            0x538d_0000, 0xa9fc_0000, 0x9ef7_0006, 0x56ff_0000, 0x0ae4_004e, 0x92c5_cdf9, 0xa944_4018, 0x7f97_5691,
+            0x538d_0000, 0xa9fc_0000, 0x9ef7_0006, 0x56ff_0000, 0x0ae4_004e, 0x92c5_cdf9, 0xa944_4018, 0x7f97_5691,
+            0x01dd_0000, 0x80a8_0000, 0xf496_0048, 0xa600_0000, 0x90d5_7ea2, 0xd7e6_8c37, 0x6612_cffd, 0x2c94_459e,
+            0xe628_0000, 0x4c4b_0000, 0xa855_0000, 0xd3d0_02e0, 0xd861_30b8, 0x98a7_b0da, 0x2895_06b4, 0xd75a_4897,
+            0xf0c5_0000, 0x5923_0000, 0x4582_0000, 0xe18d_00c0, 0x3b6d_0631, 0xc2ed_5699, 0xcbe0_fe1c, 0x56a7_b19f,
+            0xf0c5_0000, 0x5923_0000, 0x4582_0000, 0xe18d_00c0, 0x3b6d_0631, 0xc2ed_5699, 0xcbe0_fe1c, 0x56a7_b19f,
+            0x16ed_0000, 0x1568_0000, 0xedd7_0000, 0x325d_0220, 0xe30c_3689, 0x5a4a_e643, 0xe375_f8a8, 0x81fd_f908,
+            0xb431_0000, 0x7733_0000, 0xb15d_0000, 0x7fd0_04e0, 0x78a2_6138, 0xd116_c35d, 0xd256_d489, 0x4e6f_74de,
+            0xe306_0000, 0xbdc1_0000, 0x8713_0000, 0xbff2_0060, 0x2eba_0a1a, 0x8db5_3751, 0x73c5_ab06, 0x5bd6_1539,
+            0xe306_0000, 0xbdc1_0000, 0x8713_0000, 0xbff2_0060, 0x2eba_0a1a, 0x8db5_3751, 0x73c5_ab06, 0x5bd6_1539,
+            0x5737_0000, 0xcaf2_0000, 0x364e_0000, 0xc022_0480, 0x5618_6b22, 0x5ca3_f40c, 0xa193_7f8f, 0x15b9_61e7,
+            0x02f2_0000, 0xa281_0000, 0x873f_0000, 0xe36c_7800, 0x1e1d_74ef, 0x073d_2bd6, 0xc4c2_3237, 0x7f32_259e,
+            0xbadd_0000, 0x13ad_0000, 0xb7e7_0000, 0xf728_2800, 0xdf45_144d, 0x361a_c33a, 0xea5a_8d14, 0x2a2c_18f0,
+            0xbadd_0000, 0x13ad_0000, 0xb7e7_0000, 0xf728_2800, 0xdf45_144d, 0x361a_c33a, 0xea5a_8d14, 0x2a2c_18f0,
+            0xb82f_0000, 0xb12c_0000, 0x30d8_0000, 0x1444_5000, 0xc158_60a2, 0x3127_e8ec, 0x2e98_bf23, 0x551e_3d6e,
+            0x1e6c_0000, 0xc442_0000, 0x8a2e_0000, 0xbcb6_b800, 0x2c44_13b6, 0x8bfd_d3da, 0x6a0c_1bc8, 0xb99d_c2eb,
+            0x9256_0000, 0x1eda_0000, 0xea51_0000, 0xe8b1_3000, 0xa935_56a5, 0xebfb_6199, 0xb15c_2254, 0x33c5_244f,
+            0x9256_0000, 0x1eda_0000, 0xea51_0000, 0xe8b1_3000, 0xa935_56a5, 0xebfb_6199, 0xb15c_2254, 0x33c5_244f,
+            0x8c3a_0000, 0xda98_0000, 0x607f_0000, 0x5407_8800, 0x8571_4513, 0x6006_b243, 0xdb50_399c, 0x8a58_e6a4,
+            0x033d_0000, 0x08b3_0000, 0xf33a_0000, 0x3ac2_0007, 0x5129_8a50, 0x6b6e_661f, 0x0ea5_cfe3, 0xe6da_7ffe,
+            0xa8da_0000, 0x96be_0000, 0x5c1d_0000, 0x07da_0002, 0x7d66_9583, 0x1f98_708a, 0xbb66_8808, 0xda87_8000,
+            0xa8da_0000, 0x96be_0000, 0x5c1d_0000, 0x07da_0002, 0x7d66_9583, 0x1f98_708a, 0xbb66_8808, 0xda87_8000,
+            0xabe7_0000, 0x9e0d_0000, 0xaf27_0000, 0x3d18_0005, 0x2c4f_1fd3, 0x74f6_1695, 0xb5c3_47eb, 0x3c5d_fffe,
+            0x0193_0000, 0xe782_0000, 0xedfb_0000, 0xcf0c_000b, 0x8dd0_8d58, 0xbca3_b42e, 0x0636_61e1, 0x536f_9e7b,
+            0x9228_0000, 0xdc85_0000, 0x57fa_0000, 0x56dc_0003, 0xbae9_2316, 0x5aef_a30c, 0x90ce_f752, 0x7b16_75d7,
+            0x9228_0000, 0xdc85_0000, 0x57fa_0000, 0x56dc_0003, 0xbae9_2316, 0x5aef_a30c, 0x90ce_f752, 0x7b16_75d7,
+            0x93bb_0000, 0x3b07_0000, 0xba01_0000, 0x99d0_0008, 0x3739_ae4e, 0xe64c_1722, 0x96f8_96b3, 0x2879_ebac,
+            0x5fa8_0000, 0x5603_0000, 0x43ae_0000, 0x64f3_0013, 0x257e_86bf, 0x1311_944e, 0x541e_95bf, 0x8ea4_db69,
+            0x0044_0000, 0x7f48_0000, 0xda7c_0000, 0x2a23_0001, 0x3bad_c9cc, 0xa9b6_9c87, 0x030a_9e60, 0xbe0a_679e,
+            0x0044_0000, 0x7f48_0000, 0xda7c_0000, 0x2a23_0001, 0x3bad_c9cc, 0xa9b6_9c87, 0x030a_9e60, 0xbe0a_679e,
+            0x5fec_0000, 0x294b_0000, 0x99d2_0000, 0x4ed0_0012, 0x1ed3_4f73, 0xbaa7_08c9, 0x5714_0bdf, 0x30ae_bcf7,
+            0xee93_0000, 0xd607_0000, 0x92c1_0000, 0x2b98_01e0, 0x9451_287c, 0x3b6c_fb57, 0x4531_2374, 0x201f_6a64,
+            0x7b28_0000, 0x5742_0000, 0xa9e5_0000, 0x6343_00a0, 0x9edb_442f, 0x6d99_95bb, 0x27f8_3b03, 0xc7ff_60f0,
+            0x7b28_0000, 0x5742_0000, 0xa9e5_0000, 0x6343_00a0, 0x9edb_442f, 0x6d99_95bb, 0x27f8_3b03, 0xc7ff_60f0,
+            0x95bb_0000, 0x8145_0000, 0x3b24_0000, 0x48db_0140, 0x0a8a_6c53, 0x56f5_6eec, 0x62c9_1877, 0xe7e0_0a94,
+        ]
+
+        def __init__(self, data=b""):
+            self.h = list(self.iv)
+            self.buf = bytearray()
+            self.msg_len = 0
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.h = list(self.h)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            while len(self.buf) >= self.block_size:
+                block = bytes(self.buf[:self.block_size])
+                del self.buf[:self.block_size]
+                self.compress(block, False)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.output()
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            bit_len = self.msg_len * 8
+
+            if self.block_size == 4:
+                pad = bytearray(self.buf)
+                pad.append(0x80)
+                while len(pad) < 4:
+                    pad.append(0x00)
+                pad.extend(struct.pack(">Q", bit_len))
+
+                self.compress(bytes(pad[0:4]), False)
+                self.compress(bytes(pad[4:8]), False)
+                self.compress(bytes(pad[8:12]), True)
+
+            elif self.block_size == 8:
+                pad_block = bytearray(self.buf)
+                pad_block.append(0x80)
+                while len(pad_block) < 8:
+                    pad_block.append(0x00)
+
+                self.compress(bytes(pad_block), False)
+                self.compress(struct.pack(">Q", bit_len), True)
+
+            else:
+                raise ValueError("invalid block_size")
+
+            self.buf = bytearray()
+            return
+
+        def output(self):
+            if self.block_size == 4:
+                words = [self.h[i] for i in range(self.digest_size // 4)]
+                return self.pack_words_be(words)
+
+            if self.digest_size == 48:
+                words = [self.h[i] for i in self.output_indexes]
+                return self.pack_words_be(words)
+
+            words = list(self.h)
+            return self.pack_words_be(words)
+
+        def pack_words_be(self, words):
+            return struct.pack(">" + ("I" * len(words)), *[(w & self.mask32) for w in words])
+
+        def rotl32(self, x, n):
+            x &= self.mask32
+            return ((x << n) | (x >> (32 - n))) & self.mask32
+
+        def sbox(self, a, b, c, d):
+            t = a
+            a = (a & c) ^ d
+            c ^= b
+            c ^= a
+            d = (d | t) ^ b
+            t ^= c
+            b = d
+            d = (d | t) ^ a
+            a &= b
+            t ^= a
+            b ^= d
+            b ^= t
+            a = c
+            c = b
+            b = d
+            d = (~t) & self.mask32
+            return a, b, c, d
+
+        def linear(self, a, b, c, d):
+            a = self.rotl32(a, 13)
+            c = self.rotl32(c, 3)
+            b ^= a ^ c
+            d ^= c ^ ((a << 3) & self.mask32)
+            b = self.rotl32(b, 1)
+            d = self.rotl32(d, 7)
+            a ^= b ^ d
+            c ^= d ^ ((b << 7) & self.mask32)
+            a = self.rotl32(a, 5)
+            c = self.rotl32(c, 22)
+            return a, b, c, d
+
+        def expand(self, block):
+            if self.block_size == 4:
+                m = [0] * 8
+                for u in range(4):
+                    db = block[u]
+                    for v in range(8):
+                        if db & 1:
+                            off = (u * 8 + v) * 8
+                            for i in range(8):
+                                m[i] ^= self.t256[off + i]
+                        db >>= 1
+                return m
+
+            if self.block_size == 8:
+                m = [0] * 16
+                for u in range(8):
+                    db = block[u]
+                    for v in range(8):
+                        if db & 1:
+                            off = (u * 8 + v) * 16
+                            for i in range(16):
+                                m[i] ^= self.t512[off + i]
+                        db >>= 1
+                return m
+
+            raise ValueError("invalid block_size")
+
+        def compress(self, block, final_round):
+            if self.block_size == 4:
+                self.compress_small(block, final_round)
+            elif self.block_size == 8:
+                self.compress_big(block, final_round)
+            else:
+                raise ValueError("invalid block_size")
+            return
+
+        def compress_small(self, block, final_round):
+            m0, m1, m2, m3, m4, m5, m6, m7 = self.expand(block)
+            c0, c1, c2, c3, c4, c5, c6, c7 = self.h
+
+            s0 = m0
+            s1 = m1
+            s2 = c0
+            s3 = c1
+            s4 = c2
+            s5 = c3
+            s6 = m2
+            s7 = m3
+            s8 = m4
+            s9 = m5
+            s10 = c4
+            s11 = c5
+            s12 = c6
+            s13 = c7
+            s14 = m6
+            s15 = m7
+
+            alpha = self.alpha_f if final_round else self.alpha_n
+            rounds = 6 if final_round else 3
+
+            for rc in range(rounds):
+                s0 ^= alpha[0x00]
+                s1 ^= alpha[0x01] ^ rc
+                s2 ^= alpha[0x02]
+                s3 ^= alpha[0x03]
+                s4 ^= alpha[0x08]
+                s5 ^= alpha[0x09]
+                s6 ^= alpha[0x0a]
+                s7 ^= alpha[0x0b]
+                s8 ^= alpha[0x10]
+                s9 ^= alpha[0x11]
+                s10 ^= alpha[0x12]
+                s11 ^= alpha[0x13]
+                s12 ^= alpha[0x18]
+                s13 ^= alpha[0x19]
+                s14 ^= alpha[0x1a]
+                s15 ^= alpha[0x1b]
+
+                s0, s4, s8, s12 = self.sbox(s0, s4, s8, s12)
+                s1, s5, s9, s13 = self.sbox(s1, s5, s9, s13)
+                s2, s6, s10, s14 = self.sbox(s2, s6, s10, s14)
+                s3, s7, s11, s15 = self.sbox(s3, s7, s11, s15)
+
+                s0, s5, s10, s15 = self.linear(s0, s5, s10, s15)
+                s1, s6, s11, s12 = self.linear(s1, s6, s11, s12)
+                s2, s7, s8, s13 = self.linear(s2, s7, s8, s13)
+                s3, s4, s9, s14 = self.linear(s3, s4, s9, s14)
+
+            self.h[7] = (self.h[7] ^ s11) & self.mask32
+            self.h[6] = (self.h[6] ^ s10) & self.mask32
+            self.h[5] = (self.h[5] ^ s9) & self.mask32
+            self.h[4] = (self.h[4] ^ s8) & self.mask32
+            self.h[3] = (self.h[3] ^ s3) & self.mask32
+            self.h[2] = (self.h[2] ^ s2) & self.mask32
+            self.h[1] = (self.h[1] ^ s1) & self.mask32
+            self.h[0] = (self.h[0] ^ s0) & self.mask32
+            return
+
+        def compress_big(self, block, final_round):
+            m = self.expand(block)
+            m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12, m13, m14, m15 = m
+            c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15 = self.h
+
+            s00 = m0
+            s01 = m1
+            s02 = c0
+            s03 = c1
+            s04 = m2
+            s05 = m3
+            s06 = c2
+            s07 = c3
+            s08 = c4
+            s09 = c5
+            s0a = m4
+            s0b = m5
+            s0c = c6
+            s0d = c7
+            s0e = m6
+            s0f = m7
+            s10 = m8
+            s11 = m9
+            s12 = c8
+            s13 = c9
+            s14 = m10
+            s15 = m11
+            s16 = c10
+            s17 = c11
+            s18 = c12
+            s19 = c13
+            s1a = m12
+            s1b = m13
+            s1c = c14
+            s1d = c15
+            s1e = m14
+            s1f = m15
+
+            alpha = self.alpha_f if final_round else self.alpha_n
+            rounds = 12 if final_round else 6
+
+            for rc in range(rounds):
+                s00 ^= alpha[0x00]
+                s01 ^= alpha[0x01] ^ rc
+                s02 ^= alpha[0x02]
+                s03 ^= alpha[0x03]
+                s04 ^= alpha[0x04]
+                s05 ^= alpha[0x05]
+                s06 ^= alpha[0x06]
+                s07 ^= alpha[0x07]
+                s08 ^= alpha[0x08]
+                s09 ^= alpha[0x09]
+                s0a ^= alpha[0x0a]
+                s0b ^= alpha[0x0b]
+                s0c ^= alpha[0x0c]
+                s0d ^= alpha[0x0d]
+                s0e ^= alpha[0x0e]
+                s0f ^= alpha[0x0f]
+                s10 ^= alpha[0x10]
+                s11 ^= alpha[0x11]
+                s12 ^= alpha[0x12]
+                s13 ^= alpha[0x13]
+                s14 ^= alpha[0x14]
+                s15 ^= alpha[0x15]
+                s16 ^= alpha[0x16]
+                s17 ^= alpha[0x17]
+                s18 ^= alpha[0x18]
+                s19 ^= alpha[0x19]
+                s1a ^= alpha[0x1a]
+                s1b ^= alpha[0x1b]
+                s1c ^= alpha[0x1c]
+                s1d ^= alpha[0x1d]
+                s1e ^= alpha[0x1e]
+                s1f ^= alpha[0x1f]
+
+                s00, s08, s10, s18 = self.sbox(s00, s08, s10, s18)
+                s01, s09, s11, s19 = self.sbox(s01, s09, s11, s19)
+                s02, s0a, s12, s1a = self.sbox(s02, s0a, s12, s1a)
+                s03, s0b, s13, s1b = self.sbox(s03, s0b, s13, s1b)
+                s04, s0c, s14, s1c = self.sbox(s04, s0c, s14, s1c)
+                s05, s0d, s15, s1d = self.sbox(s05, s0d, s15, s1d)
+                s06, s0e, s16, s1e = self.sbox(s06, s0e, s16, s1e)
+                s07, s0f, s17, s1f = self.sbox(s07, s0f, s17, s1f)
+
+                s00, s09, s12, s1b = self.linear(s00, s09, s12, s1b)
+                s01, s0a, s13, s1c = self.linear(s01, s0a, s13, s1c)
+                s02, s0b, s14, s1d = self.linear(s02, s0b, s14, s1d)
+                s03, s0c, s15, s1e = self.linear(s03, s0c, s15, s1e)
+                s04, s0d, s16, s1f = self.linear(s04, s0d, s16, s1f)
+                s05, s0e, s17, s18 = self.linear(s05, s0e, s17, s18)
+                s06, s0f, s10, s19 = self.linear(s06, s0f, s10, s19)
+                s07, s08, s11, s1a = self.linear(s07, s08, s11, s1a)
+
+                s00, s02, s05, s07 = self.linear(s00, s02, s05, s07)
+                s10, s13, s15, s16 = self.linear(s10, s13, s15, s16)
+                s09, s0b, s0c, s0e = self.linear(s09, s0b, s0c, s0e)
+                s19, s1a, s1c, s1f = self.linear(s19, s1a, s1c, s1f)
+
+            self.h[15] = (self.h[15] ^ s17) & self.mask32
+            self.h[14] = (self.h[14] ^ s16) & self.mask32
+            self.h[13] = (self.h[13] ^ s15) & self.mask32
+            self.h[12] = (self.h[12] ^ s14) & self.mask32
+            self.h[11] = (self.h[11] ^ s13) & self.mask32
+            self.h[10] = (self.h[10] ^ s12) & self.mask32
+            self.h[9] = (self.h[9] ^ s11) & self.mask32
+            self.h[8] = (self.h[8] ^ s10) & self.mask32
+            self.h[7] = (self.h[7] ^ s07) & self.mask32
+            self.h[6] = (self.h[6] ^ s06) & self.mask32
+            self.h[5] = (self.h[5] ^ s05) & self.mask32
+            self.h[4] = (self.h[4] ^ s04) & self.mask32
+            self.h[3] = (self.h[3] ^ s03) & self.mask32
+            self.h[2] = (self.h[2] ^ s02) & self.mask32
+            self.h[1] = (self.h[1] ^ s01) & self.mask32
+            self.h[0] = (self.h[0] ^ s00) & self.mask32
+            return
+
+    class Hamsi224(HamsiBase):
+        block_size = 4
+        digest_size = 28
+        iv = [
+            0xc396_7a67, 0xc3bc_6c20, 0x4bc3_bcc3, 0xa7c3_bc6b, 0x2c20_4b61, 0x7468_6f6c, 0x6965_6b65, 0x2055_6e69,
+        ]
+
+    class Hamsi256(HamsiBase):
+        block_size = 4
+        digest_size = 32
+        iv = [
+            0x7665_7273, 0x6974_6569, 0x7420_4c65, 0x7576_656e, 0x2c20_4465, 0x7061_7274, 0x656d_656e, 0x7420_456c,
+        ]
+
+    class Hamsi384(HamsiBase):
+        block_size = 8
+        digest_size = 48
+        iv = [
+            0x656b_7472, 0x6f74_6563, 0x686e_6965, 0x6b2c_2043, 0x6f6d_7075, 0x7465_7220, 0x5365_6375, 0x7269_7479,
+            0x2061_6e64, 0x2049_6e64, 0x7573_7472, 0x6961_6c20, 0x4372_7970, 0x746f_6772, 0x6170_6879, 0x2c20_4b61,
+        ]
+        output_indexes = [0, 1, 3, 4, 5, 6, 8, 9, 10, 12, 13, 15]
+
+    class Hamsi512(HamsiBase):
+        block_size = 8
+        digest_size = 64
+        iv = [
+            0x7374_6565, 0x6c70_6172, 0x6b20_4172, 0x656e_6265, 0x7267_2031, 0x302c_2062, 0x7573_2032, 0x3434_362c,
+            0x2042_2d33, 0x3030_3120, 0x4c65_7576, 0x656e_2d48, 0x6576_6572, 0x6c65_652c, 0x2042_656c, 0x6769_756d,
+        ]
+
+    class LuffaBase:
+        block_size = 0x20  # 256 bits
+        digest_size = None
+        w = None  # number of 256-bit blocks (3/4/5)
+
+        mask32 = 0xffff_ffff
+
+        # Appendix A: Starting Variables
+        V = [
+            [0x6d25_1e69, 0x44b0_51e0, 0x4eaa_6fb4, 0xdbf7_8465, 0x6e29_2011, 0x9015_2df4, 0xee05_8139, 0xdef6_10bb],
+            [0xc3b4_4b95, 0xd9d2_f256, 0x70ee_e9a0, 0xde09_9fa3, 0x5d9b_0557, 0x8fc9_44b3, 0xcf1c_cf0e, 0x746c_d581],
+            [0xf7ef_c89d, 0x5dba_5781, 0x0401_6ce5, 0xad65_9c05, 0x0306_194f, 0x666d_1836, 0x24aa_230a, 0x8b26_4ae7],
+            [0x8580_75d5, 0x36d7_9cce, 0xe571_f7d7, 0x204b_1f67, 0x3587_0c6a, 0x57e9_e923, 0x14bc_b808, 0x7cde_72ce],
+            [0x6c68_e9be, 0x5ec4_1e22, 0xc825_b7c7, 0xaffb_4363, 0xf5df_3999, 0x0fc6_88f1, 0xb072_24cc, 0x03e8_6cea],
+        ]
+
+        # Appendix B-1: Constant generator initial values (c^(0)_{j,L}, c^(0)_{j,R})
+        C_INIT = [
+            [0x181c_ca53, 0x380c_de06],
+            [0x5b6f_0876, 0xf16f_8594],
+            [0x7e10_6ce9, 0x3897_9cb0],
+            [0xbb62_f364, 0x92e9_3c29],
+            [0x9a02_5047, 0xcff2_a940],
+        ]
+
+        # Section 3.2.1: Message Injection matrices (coefficients in GF(2^8))
+        MI_MAT = {
+            0x03: [
+                [0x03, 0x02, 0x02, 0x01],
+                [0x02, 0x03, 0x02, 0x02],
+                [0x02, 0x02, 0x03, 0x04],
+            ],
+            0x04: [
+                [0x04, 0x06, 0x06, 0x07, 0x01],
+                [0x07, 0x04, 0x06, 0x06, 0x02],
+                [0x06, 0x07, 0x04, 0x06, 0x04],
+                [0x06, 0x06, 0x07, 0x04, 0x08],
+            ],
+            0x05: [
+                [0x0f, 0x08, 0x0a, 0x0a, 0x08, 0x01],
+                [0x08, 0x0f, 0x08, 0x0a, 0x0a, 0x02],
+                [0x0a, 0x08, 0x0f, 0x08, 0x0a, 0x04],
+                [0x0a, 0x0a, 0x08, 0x0f, 0x08, 0x08],
+                [0x08, 0x0a, 0x0a, 0x08, 0x0f, 0x10],
+            ],
+        }
+
+        def __init__(self, data=b""):
+            if self.w is None or self.digest_size is None:
+                raise ValueError("LuffaBase must be subclassed with w and digest_size")
+
+            self.H = [list(self.V[i]) for i in range(self.w)]
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.step_const = self.build_step_constants(self.w)
+
+            if data:
+                self.update(data)
+
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.H = [list(b) for b in self.H]
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.step_const = self.step_const
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes or bytearray")
+
+            data = bytes(data)
+            self.msg_len += len(data)
+            self.buf.extend(data)
+
+            while len(self.buf) >= self.block_size:
+                block = bytes(self.buf[:self.block_size])
+                del self.buf[:self.block_size]
+                self.compress(block)
+
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.output_digest_bytes()
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            # Section 3.1: append '1' bit then '0' until length is multiple of 256 bits
+            self.buf.append(0x80)
+            while (len(self.buf) % self.block_size) != 0:
+                self.buf.append(0x00)
+
+            while len(self.buf) >= self.block_size:
+                block = bytes(self.buf[:self.block_size])
+                del self.buf[:self.block_size]
+                self.compress(block)
+
+            return
+
+        def compress(self, block):
+            if not isinstance(block, (bytes, bytearray)):
+                raise TypeError("block must be bytes or bytearray")
+
+            block = bytes(block)
+            if len(block) != self.block_size:
+                raise ValueError("block must be 32 bytes")
+
+            m = list(struct.unpack(">8I", block))
+            self.round_function(m)
+            return
+
+        def output_digest_bytes(self):
+            # Section 3.3: finalization (blank round + OF, then additional rounds with 0 as needed)
+            zero_m = [0] * 8
+
+            self.round_function(zero_m)
+            z0 = self.output_function()
+
+            words = []
+            if self.digest_size == 0x1c:
+                words.extend(z0[:7])
+            elif self.digest_size == 0x20:
+                words.extend(z0[:8])
+            elif self.digest_size == 0x30:
+                words.extend(z0[:8])
+                self.round_function(zero_m)
+                z1 = self.output_function()
+                words.extend(z1[:4])
+            elif self.digest_size == 0x40:
+                words.extend(z0[:8])
+                self.round_function(zero_m)
+                z1 = self.output_function()
+                words.extend(z1[:8])
+            else:
+                raise ValueError("unsupported digest size")
+
+            out = b"".join(struct.pack(">I", w) for w in words)
+            return out
+
+        def output_function(self):
+            z = [0] * 8
+            for j in range(self.w):
+                for k in range(8):
+                    z[k] ^= self.H[j][k]
+            return z
+
+        def round_function(self, m):
+            xs = self.message_injection(m)
+            for j in range(self.w):
+                self.H[j] = self.permute(xs[j], j)
+            return
+
+        def message_injection(self, m):
+            mat = self.MI_MAT[self.w]
+            inputs = [self.H[j] for j in range(self.w)] + [m]
+
+            outs = []
+            for row in mat:
+                acc = [0] * 8
+                for coeff, vec in zip(row, inputs):
+                    if coeff == 0:
+                        continue
+                    if coeff == 1:
+                        term = vec
+                    else:
+                        term = self.scalar_mul(vec, coeff)
+                    for k in range(8):
+                        acc[k] ^= term[k]
+                outs.append(acc)
+
+            return outs
+
+        def scalar_mul(self, vec, coeff):
+            coeff &= 0xff
+            if coeff == 0:
+                return [0] * 8
+            if coeff == 1:
+                return list(vec)
+
+            res = [0] * 8
+            tmp = list(vec)
+            for i in range(8):
+                if (coeff >> i) & 1:
+                    for k in range(8):
+                        res[k] ^= tmp[k]
+                tmp = self.mul2(tmp)
+
+            return res
+
+        def mul2(self, a):
+            # Appendix E: multiplication by x in GF(2^8)^32 (phi(x)=x^8+x^4+x^3+x+1)
+            tmp = a[7]
+            b0 = tmp
+            b1 = a[0] ^ tmp
+            b2 = a[1]
+            b3 = a[2] ^ tmp
+            b4 = a[3] ^ tmp
+            b5 = a[4]
+            b6 = a[5]
+            b7 = a[6]
+            return [b0, b1, b2, b3, b4, b5, b6, b7]
+
+        def rol32(self, x, n):
+            n &= 31
+            x &= self.mask32
+            return ((x << n) | (x >> (32 - n))) & self.mask32
+
+        def mixword(self, xk, xk4):
+            # Section 4.3 (sigma1=2,sigma2=14,sigma3=10,sigma4=1), rotations
+            yk4 = xk4 ^ xk
+            yk = self.rol32(xk, 2)
+            yk ^= yk4
+
+            yk4 = self.rol32(yk4, 14)
+            yk4 ^= yk
+
+            yk = self.rol32(yk, 10)
+            yk ^= yk4
+
+            yk4 = self.rol32(yk4, 1)
+            return yk, yk4
+
+        def subcrumb(self, a0, a1, a2, a3):
+            # Appendix D Table 4: bit-sliced Sbox schedule
+            r0 = a0
+            r1 = a1
+            r2 = a2
+            r3 = a3
+            r4 = r0
+
+            r0 = r0 | r1
+            r2 = r2 ^ r3
+
+            r1 = (~r1) & self.mask32
+            r0 = r0 ^ r3
+            r3 = r3 & r4
+
+            r1 = r1 ^ r3
+            r3 = r3 ^ r2
+            r2 = r2 & r0
+
+            r0 = (~r0) & self.mask32
+            r2 = r2 ^ r1
+            r1 = r1 | r3
+
+            r4 = r4 ^ r1
+            r3 = r3 ^ r2
+            r2 = r2 & r1
+
+            r1 = r1 ^ r0
+
+            x0 = r4
+            x1 = r1
+            x2 = r2
+            x3 = r3
+            return x0, x1, x2, x3
+
+        def permute(self, words, j):
+            # Section 4.1: Permute(a, j) = Q_j
+            a = [w & self.mask32 for w in words]
+
+            # Section 4.5: tweak (rotate least significant four words by j bits to the left)
+            for k in range(4, 8):
+                a[k] = self.rol32(a[k], j)
+
+            for r in range(8):
+                a[0], a[1], a[2], a[3] = self.subcrumb(a[0], a[1], a[2], a[3])
+                # IMPORTANT: the latter four words are input to SubCrumb in different order
+                a[5], a[6], a[7], a[4] = self.subcrumb(a[5], a[6], a[7], a[4])
+
+                for k in range(4):
+                    a[k], a[k + 4] = self.mixword(a[k], a[k + 4])
+
+                c0, c4 = self.step_const[j][r]
+                a[0] ^= c0
+                a[4] ^= c4
+
+            return a
+
+        def build_step_constants(self, w):
+            # Section 4.4: generates (c_{j,0}, c_{j,4}) for r=0..7 using the constant generator
+            out = []
+            for j in range(w):
+                tl, tr = self.C_INIT[j]
+                jconst = []
+                for _r in range(8):
+                    tl, tr, c0 = self.step_const_gen(tl, tr)
+                    tl, tr, c4 = self.step_const_gen(tl, tr)
+                    jconst.append((c0, c4))
+                out.append(jconst)
+
+            return out
+
+        def step_const_gen(self, tl, tr):
+            # Section 4.4: one step of constant generator (pseudo code in the spec)
+            tl &= self.mask32
+            tr &= self.mask32
+
+            c = (tl >> 31) & 1
+            tl2 = ((tl << 1) | (tr >> 31)) & self.mask32
+            tr2 = (tr << 1) & self.mask32
+
+            if c == 1:
+                tl2 ^= 0xc4d6_496c
+                tr2 ^= 0x55c6_1c8d
+
+            # SWAP(tl, tr)
+            tl3, tr3 = tr2, tl2
+            step_const = tr3
+            return tl3, tr3, step_const
+
+    class Luffa224(LuffaBase):
+        digest_size = 0x1c
+        w = 0x03
+
+    class Luffa256(LuffaBase):
+        digest_size = 0x20
+        w = 0x03
+
+    class Luffa384(LuffaBase):
+        digest_size = 0x30
+        w = 0x04
+
+    class Luffa512(LuffaBase):
+        digest_size = 0x40
+        w = 0x05
+
 
 @register_command
 class HashCommand(GenericCommand):
@@ -88157,10 +90046,10 @@ class HashCommand(GenericCommand):
             "MD5": "md5",
             "SHA1": "sha1",
             "MD5-SHA1": "md5-sha1",
-            "SHA2-224": "sha224",
-            "SHA2-256": "sha256",
-            "SHA2-384": "sha384",
-            "SHA2-512": "sha512",
+            "SHA224": "sha224",
+            "SHA256": "sha256",
+            "SHA384": "sha384",
+            "SHA512": "sha512",
             "SHA512/224": "sha512-224",
             "SHA512/256": "sha512-256",
             "SHA3-224": "sha3-224",
@@ -88194,7 +90083,7 @@ class HashCommand(GenericCommand):
 
         for hname_base in ["shake-128", "shake-256"]:
             for bits in [128, 256, 512]:
-                hname = "{:s}-{:d}".format(hname_base.upper(), bits)
+                hname = "{:s}-{:d}".format(hname_base.upper().replace("-", ""), bits)
                 try:
                     hfunc = ShakeWrapper(hname_base, bits)
                 except Exception:
@@ -88216,10 +90105,10 @@ class HashCommand(GenericCommand):
         yield ("JH256", Hash.JH256())
         yield ("JH384", Hash.JH384())
         yield ("JH512", Hash.JH512())
-        yield ("Keccak-224", Hash.Keccak224())
-        yield ("Keccak-256", Hash.Keccak256())
-        yield ("Keccak-384", Hash.Keccak384())
-        yield ("Keccak-512", Hash.Keccak512())
+        yield ("Keccak224", Hash.Keccak224())
+        yield ("Keccak256", Hash.Keccak256())
+        yield ("Keccak384", Hash.Keccak384())
+        yield ("Keccak512", Hash.Keccak512())
         yield ("Skein256-256", Hash.Skein256(digest_bits=256))
         yield ("Skein256-512", Hash.Skein256(digest_bits=512))
         yield ("Skein256-1024", Hash.Skein256(digest_bits=1024))
@@ -88242,9 +90131,18 @@ class HashCommand(GenericCommand):
         yield ("ECHO256", Hash.ECHO256())
         yield ("ECHO384", Hash.ECHO384())
         yield ("ECHO512", Hash.ECHO512())
-        # TODO: Fugue
-        # TODO: Hamsi
-        # TODO: Luffa
+        yield ("Fugue224", Hash.Fugue224())
+        yield ("Fugue256", Hash.Fugue256())
+        yield ("Fugue384", Hash.Fugue384())
+        yield ("Fugue512", Hash.Fugue512())
+        yield ("Hamsi224", Hash.Hamsi224())
+        yield ("Hamsi256", Hash.Hamsi256())
+        yield ("Hamsi384", Hash.Hamsi384())
+        yield ("Hamsi512", Hash.Hamsi512())
+        yield ("Luffa224", Hash.Luffa224())
+        yield ("Luffa256", Hash.Luffa256())
+        yield ("Luffa384", Hash.Luffa384())
+        yield ("Luffa512", Hash.Luffa512())
         yield ("Shabal192", Hash.Shabal192())
         yield ("Shabal224", Hash.Shabal224())
         yield ("Shabal256", Hash.Shabal256())
@@ -88347,6 +90245,12 @@ class HashCommand(GenericCommand):
         yield ("Kupyna384", Hash.Kupyna384())
         yield ("Kupyna512", Hash.Kupyna512())
         yield ("LM hash", Hash.LM())
+        yield ("LSH256-224", Hash.LSH256_224())
+        yield ("LSH256-256", Hash.LSH256_256())
+        yield ("LSH512-224", Hash.LSH512_224())
+        yield ("LSH512-256", Hash.LSH512_256())
+        yield ("LSH512-384", Hash.LSH512_384())
+        yield ("LSH512-512", Hash.LSH512_512())
         yield ("MD2", Hash.MD2())
         yield ("MD4", Hash.MD4())
         yield ("NTLM hash", Hash.NTLM())
@@ -88467,14 +90371,14 @@ class HashCommand(GenericCommand):
         yield ("SHA1 x3 (hex)", Hash.HASHxN("sha1", N=3, use_hex=True))
         yield ("SHA1 x4 (hex)", Hash.HASHxN("sha1", N=4, use_hex=True))
         yield ("SHA1 x5 (hex)", Hash.HASHxN("sha1", N=5, use_hex=True))
-        yield ("SHA2-256 x2 (raw)", Hash.HASHxN("sha256", N=2))
-        yield ("SHA2-256 x3 (raw)", Hash.HASHxN("sha256", N=3))
-        yield ("SHA2-256 x4 (raw)", Hash.HASHxN("sha256", N=4))
-        yield ("SHA2-256 x5 (raw)", Hash.HASHxN("sha256", N=5))
-        yield ("SHA2-256 x2 (hex)", Hash.HASHxN("sha256", N=2, use_hex=True))
-        yield ("SHA2-256 x3 (hex)", Hash.HASHxN("sha256", N=3, use_hex=True))
-        yield ("SHA2-256 x4 (hex)", Hash.HASHxN("sha256", N=4, use_hex=True))
-        yield ("SHA2-256 x5 (hex)", Hash.HASHxN("sha256", N=5, use_hex=True))
+        yield ("SHA256 x2 (raw)", Hash.HASHxN("sha256", N=2))
+        yield ("SHA256 x3 (raw)", Hash.HASHxN("sha256", N=3))
+        yield ("SHA256 x4 (raw)", Hash.HASHxN("sha256", N=4))
+        yield ("SHA256 x5 (raw)", Hash.HASHxN("sha256", N=5))
+        yield ("SHA256 x2 (hex)", Hash.HASHxN("sha256", N=2, use_hex=True))
+        yield ("SHA256 x3 (hex)", Hash.HASHxN("sha256", N=3, use_hex=True))
+        yield ("SHA256 x4 (hex)", Hash.HASHxN("sha256", N=4, use_hex=True))
+        yield ("SHA256 x5 (hex)", Hash.HASHxN("sha256", N=5, use_hex=True))
 
         return None
 
@@ -88490,7 +90394,7 @@ class HashCommand(GenericCommand):
 
     def should_be_displayed(self, hname, hfunc):
         if self.args.smart >= 2:
-            if hname not in ["MD5", "SHA1", "SHA2-256"]:
+            if hname not in ["MD5", "SHA1", "SHA256"]:
                 return False
 
         if self.args.length_filter:
@@ -89211,11 +91115,11 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "SHA1": "e2512172abf8cc9f67fdd49eb6cacf2df71bbad3",
         "MD5-SHA1": "098890dde069e9abad63f19a0d9e1f32e2512172abf8cc9f67fdd49eb6cacf2d" \
                     "f71bbad3",
-        "SHA2-224": "5cdde10ca4df3e7e6e0e428f683e1c6ca0bfb917555ad94727a3f344",
-        "SHA2-256": "63c1dd951ffedf6f7fd968ad4efa39b8ed584f162f46e715114ee184f8de9201",
-        "SHA2-384": "d8bf1572ab3b9bc239325d2a657ad37cb8fa6cb32c2d83cddee33be1238eb7a4" \
+        "SHA224": "5cdde10ca4df3e7e6e0e428f683e1c6ca0bfb917555ad94727a3f344",
+        "SHA256": "63c1dd951ffedf6f7fd968ad4efa39b8ed584f162f46e715114ee184f8de9201",
+        "SHA384": "d8bf1572ab3b9bc239325d2a657ad37cb8fa6cb32c2d83cddee33be1238eb7a4" \
                     "0b33d1bc796b426b6c68c22e4769dea2",
-        "SHA2-512": "53b74be8b295b733fdfafbd7d2a22b1686733740de7fdc592b26cf3e1874cfce" \
+        "SHA512": "53b74be8b295b733fdfafbd7d2a22b1686733740de7fdc592b26cf3e1874cfce" \
                     "158170ce9230e24696331a61829244e5d9f48abdacc9ffa8c4cb498724844cf8",
         "SHA512/224": "42707cc06636e3a479f5bc19bbc3c31249805072993efb715e16f273",
         "SHA512/256": "d01e3d10611ee4b5b1e570be2e8e9d76988781c40e1a3ecc930d5298fb541e27",
@@ -89229,20 +91133,20 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "BLAKE2b": "5448fb61bfeba39eb14a49f72310ab14653b230655b0adccadcb31148602317a" \
                    "f3bcef80f09f0945f06607465a0e467ab8cf257a3088d25065aded9fc0963271",
         "SM3": "2afccdaa7f803b0bc90b1b7f2ac18c03f0297b989d573e1514267dc73909e4e4",
-        "SHAKE-128-128": "547260c6330814b54770daad5b39c15a",
-        "SHAKE-128-256": "547260c6330814b54770daad5b39c15ad159de955afc13622d9fa7b7d1899536",
-        "SHAKE-128-512": "547260c6330814b54770daad5b39c15ad159de955afc13622d9fa7b7d1899536" \
+        "SHAKE128-128": "547260c6330814b54770daad5b39c15a",
+        "SHAKE128-256": "547260c6330814b54770daad5b39c15ad159de955afc13622d9fa7b7d1899536",
+        "SHAKE128-512": "547260c6330814b54770daad5b39c15ad159de955afc13622d9fa7b7d1899536" \
                          "74bb09f145b5979df9b9a05d214f9ae625e22bb9f72f319fae6d9877ee606335",
-        "SHAKE-256-128": "ded2952bb56c24ea5c198e9f6a641a70",
-        "SHAKE-256-256": "ded2952bb56c24ea5c198e9f6a641a70c4306ba75123e15c4f5e445013133d82",
-        "SHAKE-256-512": "ded2952bb56c24ea5c198e9f6a641a70c4306ba75123e15c4f5e445013133d82" \
+        "SHAKE256-128": "ded2952bb56c24ea5c198e9f6a641a70",
+        "SHAKE256-256": "ded2952bb56c24ea5c198e9f6a641a70c4306ba75123e15c4f5e445013133d82",
+        "SHAKE256-512": "ded2952bb56c24ea5c198e9f6a641a70c4306ba75123e15c4f5e445013133d82" \
                          "4ca42c15720c7a8e9e8e0d2cce0ace4c82e80a579cfba4575cd59170fb3fd97c",
         # pycryptodome
-        "Keccak-224": "6481454863fcf20ef04ec24dd2e70094aa62fa3be3038336d3fa5a76",
-        "Keccak-256": "e6b6ca9b98ea0c1b64bee9382438c8c99f35bc4d680bcca9f2db31a577915fe4",
-        "Keccak-384": "f1e59400c4f5e9db9bbc7246a2debcbcac52814d5440e050837f2cf8c844b210" \
+        "Keccak224": "6481454863fcf20ef04ec24dd2e70094aa62fa3be3038336d3fa5a76",
+        "Keccak256": "e6b6ca9b98ea0c1b64bee9382438c8c99f35bc4d680bcca9f2db31a577915fe4",
+        "Keccak384": "f1e59400c4f5e9db9bbc7246a2debcbcac52814d5440e050837f2cf8c844b210" \
                       "1e4a0fe41a6ce30161235a3854a39573",
-        "Keccak-512": "271675245024e6db7c455a67cef6df927bb0cc50344976ca8741d5a81e812301" \
+        "Keccak512": "271675245024e6db7c455a67cef6df927bb0cc50344976ca8741d5a81e812301" \
                       "296f84dbd23b0639c4ecf318da8c284a00e7208cc73ff6de2b4252c4ce828787",
         "TurboSHAKE128-128": "6a03eb22b6f9245cb048561ca750216b",
         "TurboSHAKE128-256": "6a03eb22b6f9245cb048561ca750216b9637f3c4de590199cdf739277f117561",
@@ -89370,6 +91274,27 @@ class HashTestCommand(HashCommand, BufferingOutput):
                    "ec71c8465720658142a766164ff1ab7",
         "ECHO512": "154b84e1956bd907269cb9c81ac2f7cf8ef059109a11ab6e9ce977c4248b5e1ac" \
                    "19873117932df6258782abf64e782512a5d6883a54906fa8665b0cce1552acd",
+        # https://github.com/jonelo/jacksum
+        "Fugue224": "9f5590d057ec6e9ef4e21151010e5a799aa4e61e5b37a192b1d4386c",
+        "Fugue256": "7933b7f8a1af4e62b4b49a163786be0db6284d5a5a1134a7828d5de17bc6cd20",
+        "Fugue384": "72f0c64915324ac04406080be3bced131aab691079e77497609cb103b484b229" \
+                    "f02b1e7fedde0e5fcc527a1b17b98ade",
+        "Fugue512": "04b55f4683f494bcbd34fb19dc93b104029b9e3c32e6febfced23d310375029c" \
+                    "0cce83dfc717d67bdbdd1e03514523aa7b05d6c6d2539aa19d7414ae554dbb65",
+        # https://github.com/aidansteele/sphlib
+        "Hamsi224": "84720b535ab1b0d4a82e08e13f600806f63c814847fdae03d87f7864",
+        "Hamsi256": "13a467388a80e16b5a3c8684c65b16b5035facce7220d42df20132c6cc4527b2",
+        "Hamsi384": "ac6b2182f4abb1be1677aa623cc9c5ed7ac5bd59fb1241acb152704a5124f8b3" \
+                    "d494ee4911bfc0ed27530758fcdc5127",
+        "Hamsi512": "93e143850a911fab4ab2ab6baae26f10e54300f7a640ad6530086d1d4dfa6337" \
+                    "6d18a310a5a16ab0edbd4ac0b1cb0bfaecc5492ef752e802ecab5bb94cb763b8",
+        # https://github.com/jonelo/jacksum
+        "Luffa224": "d21e910aa3a24791ae18dddbd0da5475bc3ec9c2642d4bd5e48e0e67",
+        "Luffa256": "d21e910aa3a24791ae18dddbd0da5475bc3ec9c2642d4bd5e48e0e67129b65d8",
+        "Luffa384": "9b2565ffa5894b9c3417d415c0a39fe3247e485e4758324eae785c4d600b5eda" \
+                    "9b257daffffeba1bf9de22d488417c4d",
+        "Luffa512": "0f58baf41fc01e0854b6d3bda78a6fda7b744841a725c63252b6d4d9e342f2f1" \
+                    "39151ba29be81cc2d8281ce170b2603498f7dd8dc71675f7773cd72ba4dbc422",
         # https://hashing.tools/fsb
         "FSB160": "b0a13fe24c0190e8d53f91e246ea10540e147af3",
         "FSB224": "207ac5eb161b20be6ca49f7d3d7851a7634bc328ec083bde3488bf3a",
@@ -89552,6 +91477,15 @@ class HashTestCommand(HashCommand, BufferingOutput):
                       "b8508a1d8b86856a1ae45b3052b490c3c0225adc11ad1e5b07bfe824a6bfbd4a" \
                       "802f44486562bf88c9718cafbc043ed8b01766b88913942dab9519e7e21f3a73" \
                       "40586b49b8a3c99a25d5d6fac6e7fa1b06b1cd28423e8fe7802555dde987ff1a",
+        # https://github.com/jonelo/jacksum
+        "LSH256-224": "2a5a6f285ea628e2c5573c9bd66050f3f2b5b0a0e3ddce1b36d57e72",
+        "LSH256-256": "d3fe55d8ad2a50827b7bdf0dac026096a2f270453312b2cd94e9145073e9a942",
+        "LSH512-224": "bdc0991d9d6d813d44dd8d9e6fa9b767a585d576e08bcb6680a5e6f5",
+        "LSH512-256": "ff3129658616be12002c29be4f52877fda120a94f1c55a318f5959006ef0aa0b",
+        "LSH512-384": "78a457fe84429c854212f5cf765fee4dcd8cc62bf649a453ab76d8ee1b37077b" \
+                      "f28e64133cc007099ffbda39fcdc3c4a",
+        "LSH512-512": "267ccc1a5fd8e562864a8c934dc181f3f9ed07ed08843c52314b8ab2e0c09679" \
+                      "2e52e028069ceacfdadd62a71aa322f007a3706801a21778e74f7f591b60e4a3",
         # https://asecuritysite.com/hash/gphash
         "RS Hash": "8ffbc5b0",
         # https://www.convertcase.com/hashing/js-hash-calculator
@@ -89582,7 +91516,7 @@ class HashTestCommand(HashCommand, BufferingOutput):
         # https://github.com/silvasur/buzhash
         "BuzHash": "dd867b31",
         # https://metacpan.org/release/MOOLI/Algorithm-Nhash-0.002/source/lib/Algorithm/Nhash.pm
-        "NHash": "5389",
+        "NHash": "6db0",
         # https://asecuritysite.com/hash/smh_t1ha
         "T1HA0_32": "ea20dace",
         "T1HA0_64": "fc6ac5b8fd7be2a2",
@@ -89606,14 +91540,14 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "SHA1 x3 (hex)": "8d42601236e8a82ff4068a24703b2798a074af19",
         "SHA1 x4 (hex)": "4608d6cdd1043c4f2da31c258408f55a6b44e2cd",
         "SHA1 x5 (hex)": "846f4690c284c2daed1b2b19b2a18f0dab2fd598",
-        "SHA2-256 x2 (raw)": "fcdedab12f9eb01b4a8e47d2b0b7fe01aef336267e703b30c9953461f0779c67",
-        "SHA2-256 x3 (raw)": "bfb3a50ba6a2feb2c0d8a6101f1ae6a8bb40a1947a4c68c45f05ceed859c271d",
-        "SHA2-256 x4 (raw)": "3da31d9e1700e0e154283f650a638b618b7ee7cb7952291d61bb8dbc870e1bfe",
-        "SHA2-256 x5 (raw)": "acf7b5dbb971d39af81dcc5e944c4bda6cf37bb8c0b3d79da0a4311b300497a4",
-        "SHA2-256 x2 (hex)": "bc60b809690fd31029823d942f495c9f10260303212074fc7991916dc1e90b8e",
-        "SHA2-256 x3 (hex)": "dd4eaec01b7b005ec00747b3c102ebde369bedae55bc295376616cb06889d4b5",
-        "SHA2-256 x4 (hex)": "30417a796ae57d36b0740249797c91764acb62c57581ea041276df2f3b257c7a",
-        "SHA2-256 x5 (hex)": "87bef0ca44ef6618f81b1a846a2f2b62643a63ee25535968c642a3fc4ea94f53",
+        "SHA256 x2 (raw)": "fcdedab12f9eb01b4a8e47d2b0b7fe01aef336267e703b30c9953461f0779c67",
+        "SHA256 x3 (raw)": "bfb3a50ba6a2feb2c0d8a6101f1ae6a8bb40a1947a4c68c45f05ceed859c271d",
+        "SHA256 x4 (raw)": "3da31d9e1700e0e154283f650a638b618b7ee7cb7952291d61bb8dbc870e1bfe",
+        "SHA256 x5 (raw)": "acf7b5dbb971d39af81dcc5e944c4bda6cf37bb8c0b3d79da0a4311b300497a4",
+        "SHA256 x2 (hex)": "bc60b809690fd31029823d942f495c9f10260303212074fc7991916dc1e90b8e",
+        "SHA256 x3 (hex)": "dd4eaec01b7b005ec00747b3c102ebde369bedae55bc295376616cb06889d4b5",
+        "SHA256 x4 (hex)": "30417a796ae57d36b0740249797c91764acb62c57581ea041276df2f3b257c7a",
+        "SHA256 x5 (hex)": "87bef0ca44ef6618f81b1a846a2f2b62643a63ee25535968c642a3fc4ea94f53",
     }
 
     def hash_check_one(self, hname, h):
