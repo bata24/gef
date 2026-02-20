@@ -94440,7 +94440,7 @@ class HashValueCommand(HashCommand, BufferingOutput):
 
             hname, hfunc = elem
             if not self.should_be_displayed(hname, hfunc):
-               continue
+                continue
             hfunc.update(value)
             h = hfunc.hexdigest()
             line = self.make_line(hname, hfunc, h)
@@ -94478,7 +94478,7 @@ class HashListCommand(HashCommand, BufferingOutput):
                         help="filter by REGEX pattern.")
     parser.add_argument("-l", "--length-filter", type=AddressUtil.parse_address,
                         help="filter by hash byte length.")
-    parser.add_argument("-s", "--smart", action="store_true", help="show only failed.")
+    parser.add_argument("-s", "--smart", action="count", default=0, help="increase output smart level. (-s, -ss)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
@@ -94489,6 +94489,7 @@ class HashListCommand(HashCommand, BufferingOutput):
         return
 
     def process(self):
+        i = 0
         for elem in self.get_valid_hash_funcs():
             if isinstance(elem, str):
                 if self.args.smart:
@@ -94499,9 +94500,11 @@ class HashListCommand(HashCommand, BufferingOutput):
 
             hname, hfunc = elem
             if not self.should_be_displayed(hname, hfunc):
-               continue
+                i += 1
+                continue
             line = self.make_line(hname, hfunc, None)
-            self.out.append(line)
+            self.out.append("[{:3d}] {:s}".format(i, line))
+            i += 1
         return
 
     @parse_args
@@ -95088,7 +95091,7 @@ class HashTestCommand(HashCommand, BufferingOutput):
                 continue
             hname, hfunc = elem
             if not self.should_be_displayed(hname, hfunc):
-               continue
+                continue
             hfunc.update(value)
             h = hfunc.hexdigest()
             self.hash_check_one(hname, h)
