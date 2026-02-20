@@ -73179,7 +73179,7 @@ class Hash:
             return
 
     class SHA512_224(SHA512TruncBase):
-        digest_size = 28  # 224 bits # noqa
+        digest_size = 28
 
         def initial_state(self):
             return [
@@ -73194,7 +73194,7 @@ class Hash:
             ]
 
     class SHA512_256(SHA512TruncBase):
-        digest_size = 32  # 256 bits # noqa
+        digest_size = 32
 
         def initial_state(self):
             return [
@@ -73375,20 +73375,20 @@ class Hash:
             return
 
     class Keccak224(KeccakBase):
-        rate_bytes = 144  # 1152 bits
-        digest_size = 28  # 224 bits # noqa
+        rate_bytes = 144
+        digest_size = 28
 
     class Keccak256(KeccakBase):
-        rate_bytes = 136  # 1088 bits
-        digest_size = 32  # 256 bits # noqa
+        rate_bytes = 136
+        digest_size = 32
 
     class Keccak384(KeccakBase):
-        rate_bytes = 104  # 832 bits
-        digest_size = 48  # 384 bits # noqa
+        rate_bytes = 104
+        digest_size = 48
 
     class Keccak512(KeccakBase):
-        rate_bytes = 72  # 576 bits
-        digest_size = 64  # 512 bits # noqa
+        rate_bytes = 72
+        digest_size = 64
 
     class TurboShakeBase:
         # Keccak-p[1600,12] with little-endian 64-bit lanes
@@ -74977,8 +74977,8 @@ class Hash:
             return
 
     class SHA0:
-        block_size = 64 # 512 bits
-        digest_size = 20 # 160 bits # noqa
+        block_size = 64
+        digest_size = 20
 
         def __init__(self, data=b""):
             # Initial values are the same as SHA-1
@@ -75325,8 +75325,8 @@ class Hash:
             return self.digest().hex()
 
     class MD2:
-        block_size = 16  # 128 bits
-        digest_size = 16  # 128 bits # noqa
+        block_size = 16
+        digest_size = 16
 
         def __init__(self, data=b""):
             self.buf = bytearray()
@@ -75416,7 +75416,7 @@ class Hash:
 
     class MD4:
         block_size = 64
-        digest_size = 16 # noqa
+        digest_size = 16
 
         def __init__(self, data=b""):
             self.a = 0x6745_2301
@@ -86840,13 +86840,13 @@ class Hash:
             off = 0
             length = len(data)
             while length > 0:
-                clen = self.block_size - self.ptr
-                if clen > length:
-                    clen = length
-                self.buf[self.ptr:self.ptr + clen] = data[off:off + clen]
-                self.ptr += clen
-                off += clen
-                length -= clen
+                c_len = self.block_size - self.ptr
+                if c_len > length:
+                    c_len = length
+                self.buf[self.ptr:self.ptr + c_len] = data[off:off + c_len]
+                self.ptr += c_len
+                off += c_len
+                length -= c_len
                 if self.ptr == self.block_size:
                     if self.block_size == 0x40:
                         self.count0 = (self.count0 + 0x200) & self.mask32
@@ -91000,6 +91000,1143 @@ class Hash:
             0xaaaa_aaaa_aaaa_aaac, 0xaaaa_aaaa_aaaa_aaad, 0xaaaa_aaaa_aaaa_aaae, 0xaaaa_aaaa_aaaa_aaaf,
         ]
 
+    class RadioGatunBase:
+        digest_size = 0x20  # 256 bits
+        block_size = None
+        word_bits = None
+        rotate = None
+        blank_rounds = 0x10  # nb = 16
+
+        def __init__(self, data=b""):
+            if self.word_bits is None or self.rotate is None:
+                raise ValueError("word_bits and rotate must be set in subclasses")
+
+            self.word_bytes = self.word_bits // 0x08
+            if self.block_size is None:
+                self.block_size = self.word_bytes * 0x03
+
+            self.word_mask = (0x01 << self.word_bits) - 0x01
+            self.mill = [0x00] * 0x13  # 19
+            self.belt = [0x00] * (0x0d * 0x03)  # 13 stages * 3 words
+            self.buf = bytearray()
+            self.is_finalized = False
+            self.phase = 0x00
+
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.mill = list(self.mill)
+            other.belt = list(self.belt)
+            other.buf = bytearray(self.buf)
+            other.is_finalized = self.is_finalized
+            other.phase = self.phase
+            return other
+
+        def update(self, data):
+            if self.is_finalized:
+                raise ValueError("hash object already finalized")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+
+            self.buf.extend(data)
+            while len(self.buf) >= self.block_size:
+                block = bytes(self.buf[: self.block_size])
+                del self.buf[: self.block_size]
+                self.absorb_block(block)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.squeeze(self.digest_size)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            if self.is_finalized:
+                return
+
+            data = bytes(self.buf) + b"\x01"
+            self.buf = bytearray()
+
+            rem = len(data) % self.block_size
+            if rem != 0:
+                data += b"\x00" * (self.block_size - rem)
+
+            for off in range(0x00, len(data), self.block_size):
+                self.absorb_block(data[off : off + self.block_size])
+
+            for _ in range(self.blank_rounds):
+                self.beltmill()
+
+            self.is_finalized = True
+            self.phase = 0x00
+            return
+
+        def squeeze(self, nbytes):
+            if not self.is_finalized:
+                self.finalize()
+
+            out = bytearray()
+            while len(out) < nbytes:
+                w = self.get_word()
+                out.extend(w.to_bytes(self.word_bytes, "little"))
+            return bytes(out[:nbytes])
+
+        def get_word(self):
+            if self.phase == 0x00:
+                self.beltmill()
+                self.phase = 0x01
+
+            out = self.mill[self.phase]
+            self.phase += 0x01
+            if self.phase > 0x02:
+                self.phase = 0x00
+            return out
+
+        def rotr(self, x, r):
+            if r == 0x00:
+                return x
+            return ((x >> r) | (x << (self.word_bits - r))) & self.word_mask
+
+        def not_word(self, x):
+            return x ^ self.word_mask
+
+        def mill_func(self, mill):
+            A = [0x00] * 0x13
+            for i in range(0x13):
+                A[i] = mill[i] ^ (mill[(i + 0x01) % 0x13] | self.not_word(mill[(i + 0x02) % 0x13]))
+
+            a = [0x00] * 0x13
+            for i in range(0x13):
+                a[i] = self.rotr(A[(0x07 * i) % 0x13], self.rotate[i])
+
+            for i in range(0x13):
+                A[i] = a[i] ^ a[(i + 0x01) % 0x13] ^ a[(i + 0x04) % 0x13]
+
+            A[0x00] ^= 0x01
+            return A
+
+        def beltmill(self):
+            old_belt = self.belt
+            old_mill = self.mill
+
+            new_belt = [0x00] * (0x0d * 0x03)
+
+            # Belt rotation (errata-correct direction): B[i] = b[i - 1 mod 13]
+            for i in range(0x0d):
+                src = (i - 0x01) % 0x0d
+                new_belt[i * 0x03 : (i + 0x01) * 0x03] = old_belt[src * 0x03 : (src + 0x01) * 0x03]
+
+            # Mill to belt feedforward
+            for i in range(0x0c):
+                stage = i + 0x01
+                word = i % 0x03
+                new_belt[stage * 0x03 + word] ^= old_mill[i + 0x01]
+
+            new_mill = self.mill_func(old_mill)
+
+            # Belt to mill feedforward (uses old belt stage 12)
+            base = 0x0c * 0x03
+            new_mill[0x0d] ^= old_belt[base + 0x00]
+            new_mill[0x0e] ^= old_belt[base + 0x01]
+            new_mill[0x0f] ^= old_belt[base + 0x02]
+
+            self.belt = new_belt
+            self.mill = new_mill
+            return
+
+        def absorb_block(self, block):
+            w = self.word_bytes
+            p0 = int.from_bytes(block[0x00 * w : 0x01 * w], "little")
+            p1 = int.from_bytes(block[0x01 * w : 0x02 * w], "little")
+            p2 = int.from_bytes(block[0x02 * w : 0x03 * w], "little")
+
+            # Input mapping Fi: XOR into belt stage 0 and mill[16..18]
+            self.belt[0x00] ^= p0
+            self.belt[0x01] ^= p1
+            self.belt[0x02] ^= p2
+            self.mill[0x10] ^= p0
+            self.mill[0x11] ^= p1
+            self.mill[0x12] ^= p2
+
+            self.beltmill()
+            return
+
+    class RadioGatun32(RadioGatunBase):
+        block_size = 0x0c
+        word_bits = 0x20
+        rotate = [
+            0x00, 0x01, 0x03, 0x06, 0x0a, 0x0f, 0x15, 0x1c, 0x04, 0x0d,
+            0x17, 0x02, 0x0e, 0x1b, 0x09, 0x18, 0x08, 0x19, 0x0b,
+        ]
+
+    class RadioGatun64(RadioGatunBase):
+        block_size = 0x18
+        word_bits = 0x40
+        rotate = [
+            0x00, 0x01, 0x03, 0x06, 0x0a, 0x0f, 0x15, 0x1c, 0x24, 0x2d,
+            0x37, 0x02, 0x0e, 0x1b, 0x29, 0x38, 0x08, 0x19, 0x2b,
+        ]
+
+    class ED2KBase:
+        block_size = 64
+        digest_size = 16
+        chunk_size = 9_728_000
+
+        def __init__(self, data=b""):
+            self.chunk_hasher = Hash.MD4()
+            self.chunk_len = 0
+            self.list_hasher = Hash.MD4()
+            self.chunk_count = 0
+            self.first_chunk_hash = b"\x00" * 16
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.chunk_hasher = self.chunk_hasher.copy()
+            other.chunk_len = self.chunk_len
+            other.list_hasher = self.list_hasher.copy()
+            other.chunk_count = self.chunk_count
+            other.first_chunk_hash = bytes(self.first_chunk_hash)
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+
+            pos = 0
+            total = len(data)
+            while pos < total:
+                free = self.chunk_size - self.chunk_len
+                take = total - pos
+                if take > free:
+                    take = free
+
+                part = data[pos:pos + take]
+                self.chunk_hasher.update(part)
+                self.chunk_len += take
+                pos += take
+
+                if self.chunk_len == self.chunk_size:
+                    self.hash_chunk()
+            return self
+
+        def digest(self):
+            c = self.copy()
+            return c.finalize()
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            if self.variant_name == "red":
+                return self.finalize_red()
+            if self.variant_name == "blue":
+                return self.finalize_blue()
+            if self.variant_name == "redblue":
+                return self.finalize_redblue()
+            raise ValueError("unknown ED2K variant")
+
+        def hash_chunk(self):
+            chunk_hash = self.chunk_hasher.digest()
+            self.chunk_hasher = Hash.MD4()
+            self.chunk_len = 0
+            self.add_chunk_hash(chunk_hash)
+            return
+
+        def add_chunk_hash(self, chunk_hash):
+            if self.chunk_count == 0:
+                self.first_chunk_hash = bytes(chunk_hash)
+            self.chunk_count += 1
+            self.list_hasher.update(chunk_hash)
+            return
+
+        def list_digest(self):
+            return self.list_hasher.digest()
+
+        def finalize_red(self):
+            if self.chunk_count == 0:
+                self.hash_chunk()
+                return bytes(self.first_chunk_hash)
+
+            self.hash_chunk()
+            return self.list_digest()
+
+        def finalize_blue(self):
+            if self.chunk_count == 0:
+                self.hash_chunk()
+                return bytes(self.first_chunk_hash)
+
+            if self.chunk_len != 0:
+                self.hash_chunk()
+                return self.list_digest()
+
+            if self.chunk_count == 1:
+                return bytes(self.first_chunk_hash)
+
+            return self.list_digest()
+
+        def finalize_redblue(self):
+            if self.chunk_count == 0:
+                self.hash_chunk()
+                one = bytes(self.first_chunk_hash)
+                return one + one
+
+            if self.chunk_len != 0:
+                self.hash_chunk()
+                one = self.list_digest()
+                return one + one
+
+            if self.chunk_count == 1:
+                blue = bytes(self.first_chunk_hash)
+            else:
+                blue = self.list_digest()
+
+            self.hash_chunk()
+            red = self.list_digest()
+            return red + blue
+
+    class ED2KRed(ED2KBase):
+        digest_size = 16
+        variant_name = "red"
+
+    class ED2KBlue(ED2KBase):
+        digest_size = 16
+        variant_name = "blue"
+
+    class ED2KRedBlue(ED2KBase):
+        digest_size = 32
+        variant_name = "redblue"
+
+    class MDC2:
+        block_size = 8
+        digest_size = 16
+
+        IP = [
+            0x3a, 0x32, 0x2a, 0x22, 0x1a, 0x12, 0xa, 0x2,
+            0x3c, 0x34, 0x2c, 0x24, 0x1c, 0x14, 0xc, 0x4,
+            0x3e, 0x36, 0x2e, 0x26, 0x1e, 0x16, 0xe, 0x6,
+            0x40, 0x38, 0x30, 0x28, 0x20, 0x18, 0x10, 0x8,
+            0x39, 0x31, 0x29, 0x21, 0x19, 0x11, 0x9, 0x1,
+            0x3b, 0x33, 0x2b, 0x23, 0x1b, 0x13, 0xb, 0x3,
+            0x3d, 0x35, 0x2d, 0x25, 0x1d, 0x15, 0xd, 0x5,
+            0x3f, 0x37, 0x2f, 0x27, 0x1f, 0x17, 0xf, 0x7,
+        ]
+
+        FP = [
+            0x28, 0x8, 0x30, 0x10, 0x38, 0x18, 0x40, 0x20,
+            0x27, 0x7, 0x2f, 0xf, 0x37, 0x17, 0x3f, 0x1f,
+            0x26, 0x6, 0x2e, 0xe, 0x36, 0x16, 0x3e, 0x1e,
+            0x25, 0x5, 0x2d, 0xd, 0x35, 0x15, 0x3d, 0x1d,
+            0x24, 0x4, 0x2c, 0xc, 0x34, 0x14, 0x3c, 0x1c,
+            0x23, 0x3, 0x2b, 0xb, 0x33, 0x13, 0x3b, 0x1b,
+            0x22, 0x2, 0x2a, 0xa, 0x32, 0x12, 0x3a, 0x1a,
+            0x21, 0x1, 0x29, 0x9, 0x31, 0x11, 0x39, 0x19,
+        ]
+
+        E = [
+            0x20, 0x1, 0x2, 0x3, 0x4, 0x5, 0x4, 0x5,
+            0x6, 0x7, 0x8, 0x9, 0x8, 0x9, 0xa, 0xb,
+            0xc, 0xd, 0xc, 0xd, 0xe, 0xf, 0x10, 0x11,
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x14, 0x15,
+            0x16, 0x17, 0x18, 0x19, 0x18, 0x19, 0x1a, 0x1b,
+            0x1c, 0x1d, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x1,
+        ]
+
+        P = [
+            0x10, 0x7, 0x14, 0x15, 0x1d, 0xc, 0x1c, 0x11,
+            0x1, 0xf, 0x17, 0x1a, 0x5, 0x12, 0x1f, 0xa,
+            0x2, 0x8, 0x18, 0xe, 0x20, 0x1b, 0x3, 0x9,
+            0x13, 0xd, 0x1e, 0x6, 0x16, 0xb, 0x4, 0x19,
+        ]
+
+        PC1 = [
+            0x39, 0x31, 0x29, 0x21, 0x19, 0x11, 0x9, 0x1,
+            0x3a, 0x32, 0x2a, 0x22, 0x1a, 0x12, 0xa, 0x2,
+            0x3b, 0x33, 0x2b, 0x23, 0x1b, 0x13, 0xb, 0x3,
+            0x3c, 0x34, 0x2c, 0x24, 0x3f, 0x37, 0x2f, 0x27,
+            0x1f, 0x17, 0xf, 0x7, 0x3e, 0x36, 0x2e, 0x26,
+            0x1e, 0x16, 0xe, 0x6, 0x3d, 0x35, 0x2d, 0x25,
+            0x1d, 0x15, 0xd, 0x5, 0x1c, 0x14, 0xc, 0x4,
+        ]
+
+        PC2 = [
+            0xe, 0x11, 0xb, 0x18, 0x1, 0x5, 0x3, 0x1c,
+            0xf, 0x6, 0x15, 0xa, 0x17, 0x13, 0xc, 0x4,
+            0x1a, 0x8, 0x10, 0x7, 0x1b, 0x14, 0xd, 0x2,
+            0x29, 0x34, 0x1f, 0x25, 0x2f, 0x37, 0x1e, 0x28,
+            0x33, 0x2d, 0x21, 0x30, 0x2c, 0x31, 0x27, 0x38,
+            0x22, 0x35, 0x2e, 0x2a, 0x32, 0x24, 0x1d, 0x20,
+        ]
+
+        SHIFTS = [
+            0x1, 0x1, 0x2, 0x2, 0x2, 0x2, 0x2, 0x2,
+            0x1, 0x2, 0x2, 0x2, 0x2, 0x2, 0x2, 0x1,
+        ]
+
+        SBOX = [
+            [
+                [0xe, 0x4, 0xd, 0x1, 0x2, 0xf, 0xb, 0x8, 0x3, 0xa, 0x6, 0xc, 0x5, 0x9, 0x0, 0x7],
+                [0x0, 0xf, 0x7, 0x4, 0xe, 0x2, 0xd, 0x1, 0xa, 0x6, 0xc, 0xb, 0x9, 0x5, 0x3, 0x8],
+                [0x4, 0x1, 0xe, 0x8, 0xd, 0x6, 0x2, 0xb, 0xf, 0xc, 0x9, 0x7, 0x3, 0xa, 0x5, 0x0],
+                [0xf, 0xc, 0x8, 0x2, 0x4, 0x9, 0x1, 0x7, 0x5, 0xb, 0x3, 0xe, 0xa, 0x0, 0x6, 0xd],
+            ],
+            [
+                [0xf, 0x1, 0x8, 0xe, 0x6, 0xb, 0x3, 0x4, 0x9, 0x7, 0x2, 0xd, 0xc, 0x0, 0x5, 0xa],
+                [0x3, 0xd, 0x4, 0x7, 0xf, 0x2, 0x8, 0xe, 0xc, 0x0, 0x1, 0xa, 0x6, 0x9, 0xb, 0x5],
+                [0x0, 0xe, 0x7, 0xb, 0xa, 0x4, 0xd, 0x1, 0x5, 0x8, 0xc, 0x6, 0x9, 0x3, 0x2, 0xf],
+                [0xd, 0x8, 0xa, 0x1, 0x3, 0xf, 0x4, 0x2, 0xb, 0x6, 0x7, 0xc, 0x0, 0x5, 0xe, 0x9],
+            ],
+            [
+                [0xa, 0x0, 0x9, 0xe, 0x6, 0x3, 0xf, 0x5, 0x1, 0xd, 0xc, 0x7, 0xb, 0x4, 0x2, 0x8],
+                [0xd, 0x7, 0x0, 0x9, 0x3, 0x4, 0x6, 0xa, 0x2, 0x8, 0x5, 0xe, 0xc, 0xb, 0xf, 0x1],
+                [0xd, 0x6, 0x4, 0x9, 0x8, 0xf, 0x3, 0x0, 0xb, 0x1, 0x2, 0xc, 0x5, 0xa, 0xe, 0x7],
+                [0x1, 0xa, 0xd, 0x0, 0x6, 0x9, 0x8, 0x7, 0x4, 0xf, 0xe, 0x3, 0xb, 0x5, 0x2, 0xc],
+            ],
+            [
+                [0x7, 0xd, 0xe, 0x3, 0x0, 0x6, 0x9, 0xa, 0x1, 0x2, 0x8, 0x5, 0xb, 0xc, 0x4, 0xf],
+                [0xd, 0x8, 0xb, 0x5, 0x6, 0xf, 0x0, 0x3, 0x4, 0x7, 0x2, 0xc, 0x1, 0xa, 0xe, 0x9],
+                [0xa, 0x6, 0x9, 0x0, 0xc, 0xb, 0x7, 0xd, 0xf, 0x1, 0x3, 0xe, 0x5, 0x2, 0x8, 0x4],
+                [0x3, 0xf, 0x0, 0x6, 0xa, 0x1, 0xd, 0x8, 0x9, 0x4, 0x5, 0xb, 0xc, 0x7, 0x2, 0xe],
+            ],
+            [
+                [0x2, 0xc, 0x4, 0x1, 0x7, 0xa, 0xb, 0x6, 0x8, 0x5, 0x3, 0xf, 0xd, 0x0, 0xe, 0x9],
+                [0xe, 0xb, 0x2, 0xc, 0x4, 0x7, 0xd, 0x1, 0x5, 0x0, 0xf, 0xa, 0x3, 0x9, 0x8, 0x6],
+                [0x4, 0x2, 0x1, 0xb, 0xa, 0xd, 0x7, 0x8, 0xf, 0x9, 0xc, 0x5, 0x6, 0x3, 0x0, 0xe],
+                [0xb, 0x8, 0xc, 0x7, 0x1, 0xe, 0x2, 0xd, 0x6, 0xf, 0x0, 0x9, 0xa, 0x4, 0x5, 0x3],
+            ],
+            [
+                [0xc, 0x1, 0xa, 0xf, 0x9, 0x2, 0x6, 0x8, 0x0, 0xd, 0x3, 0x4, 0xe, 0x7, 0x5, 0xb],
+                [0xa, 0xf, 0x4, 0x2, 0x7, 0xc, 0x9, 0x5, 0x6, 0x1, 0xd, 0xe, 0x0, 0xb, 0x3, 0x8],
+                [0x9, 0xe, 0xf, 0x5, 0x2, 0x8, 0xc, 0x3, 0x7, 0x0, 0x4, 0xa, 0x1, 0xd, 0xb, 0x6],
+                [0x4, 0x3, 0x2, 0xc, 0x9, 0x5, 0xf, 0xa, 0xb, 0xe, 0x1, 0x7, 0x6, 0x0, 0x8, 0xd],
+            ],
+            [
+                [0x4, 0xb, 0x2, 0xe, 0xf, 0x0, 0x8, 0xd, 0x3, 0xc, 0x9, 0x7, 0x5, 0xa, 0x6, 0x1],
+                [0xd, 0x0, 0xb, 0x7, 0x4, 0x9, 0x1, 0xa, 0xe, 0x3, 0x5, 0xc, 0x2, 0xf, 0x8, 0x6],
+                [0x1, 0x4, 0xb, 0xd, 0xc, 0x3, 0x7, 0xe, 0xa, 0xf, 0x6, 0x8, 0x0, 0x5, 0x9, 0x2],
+                [0x6, 0xb, 0xd, 0x8, 0x1, 0x4, 0xa, 0x7, 0x9, 0x5, 0x0, 0xf, 0xe, 0x2, 0x3, 0xc],
+            ],
+            [
+                [0xd, 0x2, 0x8, 0x4, 0x6, 0xf, 0xb, 0x1, 0xa, 0x9, 0x3, 0xe, 0x5, 0x0, 0xc, 0x7],
+                [0x1, 0xf, 0xd, 0x8, 0xa, 0x3, 0x7, 0x4, 0xc, 0x5, 0x6, 0xb, 0x0, 0xe, 0x9, 0x2],
+                [0x7, 0xb, 0x4, 0x1, 0x9, 0xc, 0xe, 0x2, 0x0, 0x6, 0xa, 0xd, 0xf, 0x3, 0x5, 0x8],
+                [0x2, 0x1, 0xe, 0x7, 0x4, 0xa, 0x8, 0xd, 0xf, 0xc, 0x9, 0x0, 0x3, 0x5, 0x6, 0xb],
+            ],
+        ]
+
+        def __init__(self, data=b""):
+            self.h = bytearray([0x52] * 8)
+            self.hh = bytearray([0x25] * 8)
+            self.buf = bytearray()
+            self.msg_len = 0 # in bytes
+            self.pad_type = 0x1
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.h = bytearray(self.h)
+            other.hh = bytearray(self.hh)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.pad_type = self.pad_type
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            while len(self.buf) >= 8:
+                block = bytes(self.buf[:8])
+                del self.buf[:8]
+                self.compress(block)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return bytes(c.h + c.hh)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            if (len(self.buf) > 0) or (self.pad_type == 0x2):
+                if self.pad_type == 0x2:
+                    self.buf.append(0x80)
+                while len(self.buf) < 8:
+                    self.buf.append(0x00)
+                self.compress(bytes(self.buf[:8]))
+                del self.buf[:8]
+            return
+
+        def compress(self, block):
+            self.h[0] = (self.h[0] & 0x9f) | 0x40
+            self.hh[0] = (self.hh[0] & 0x9f) | 0x20
+            self.set_odd_parity(self.h)
+            self.set_odd_parity(self.hh)
+            d = self.des_encrypt_block(block, bytes(self.h))
+            dd = self.des_encrypt_block(block, bytes(self.hh))
+            h = bytearray(8)
+            hh = bytearray(8)
+            for i in range(4):
+                h[i] = block[i] ^ d[i]
+                hh[i] = block[i] ^ dd[i]
+            for i in range(4, 8):
+                h[i] = block[i] ^ dd[i]
+                hh[i] = block[i] ^ d[i]
+            self.h = h
+            self.hh = hh
+            return
+
+        def set_odd_parity(self, data):
+            for i in range(len(data)):
+                data[i] = self.set_odd_parity_byte(data[i])
+            return
+
+        def set_odd_parity_byte(self, value):
+            x = value & 0xfe
+            ones = 0
+            y = x
+            while y != 0:
+                ones += y & 0x1
+                y >>= 1
+            if (ones % 2) == 0:
+                x |= 0x1
+            return x
+
+        def des_encrypt_block(self, block, key):
+            subkeys = self.des_subkeys(key)
+            x = int.from_bytes(block, "big")
+            x = self.permute(x, self.IP, 64)
+            l = x >> 32 # noqa: E741
+            r = x & 0xffff_ffff
+            for subkey in subkeys:
+                nl = r
+                nr = l ^ self.des_f(r, subkey)
+                l = nl # noqa: E741
+                r = nr
+            y = (r << 32) | l
+            y = self.permute(y, self.FP, 64)
+            return y.to_bytes(8, "big")
+
+        def des_subkeys(self, key):
+            k = int.from_bytes(key, "big")
+            k56 = self.permute(k, self.PC1, 64)
+            c = k56 >> 28
+            d = k56 & 0x0fff_ffff
+            subkeys = []
+            for shift in self.SHIFTS:
+                c = self.rol28(c, shift)
+                d = self.rol28(d, shift)
+                cd = (c << 28) | d
+                subkeys.append(self.permute(cd, self.PC2, 56))
+            return subkeys
+
+        def rol28(self, x, n):
+            return ((x << n) | (x >> (28 - n))) & 0x0fff_ffff
+
+        def des_f(self, r, subkey):
+            x = self.permute(r, self.E, 32) ^ subkey
+            y = 0
+            for i in range(8):
+                chunk = (x >> (42 - (i * 6))) & 0x3f
+                row = ((chunk & 0x20) >> 4) | (chunk & 0x1)
+                col = (chunk >> 1) & 0x0f
+                y = (y << 4) | self.SBOX[i][row][col]
+            y = self.permute(y, self.P, 32)
+            return y
+
+        def permute(self, value, table, in_bits):
+            out = 0
+            for pos in table:
+                bit = (value >> (in_bits - pos)) & 0x1
+                out = (out << 1) | bit
+            return out
+
+    class MarsupilamiFourteen:
+        block_size = 136
+        digest_size = 64
+        mask64 = 0xffff_ffff_ffff_ffff
+        node_block_size = 8192
+
+        single = bytes([0x07])
+        intermediate = bytes([0x0b])
+        final = bytes([0xff, 0xff, 0x06])
+        first = bytes([0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+
+        round_constants = [
+            0x0000_0000_0000_0001, 0x0000_0000_0000_8082,
+            0x8000_0000_0000_808a, 0x8000_0000_8000_8000,
+            0x0000_0000_0000_808b, 0x0000_0000_8000_0001,
+            0x8000_0000_8000_8081, 0x8000_0000_0000_8009,
+            0x0000_0000_0000_008a, 0x0000_0000_0000_0088,
+            0x0000_0000_8000_8009, 0x0000_0000_8000_000a,
+            0x0000_0000_8000_808b, 0x8000_0000_0000_008b,
+            0x8000_0000_0000_8089, 0x8000_0000_0000_8003,
+            0x8000_0000_0000_8002, 0x8000_0000_0000_0080,
+            0x0000_0000_0000_800a, 0x8000_0000_8000_000a,
+            0x8000_0000_8000_8081, 0x8000_0000_0000_8080,
+            0x0000_0000_8000_0001, 0x8000_0000_8000_8008,
+        ]
+
+        class KangarooSponge:
+            mask64 = 0xffff_ffff_ffff_ffff
+
+            def __init__(self, strength, rounds, round_constants):
+                self.strength = strength
+                self.rounds = rounds
+                self.round_constants = round_constants
+                self.rate_bytes = (1600 - (strength << 1)) >> 3
+                self.state = [0] * 25
+                self.queue = bytearray(self.rate_bytes)
+                self.bytes_in_queue = 0
+                self.squeezing = False
+                self.init_sponge()
+                return
+
+            def copy(self):
+                other = self.__class__(self.strength, self.rounds, self.round_constants)
+                other.state = self.state[:]
+                other.queue = bytearray(self.queue)
+                other.bytes_in_queue = self.bytes_in_queue
+                other.squeezing = self.squeezing
+                return other
+
+            def init_sponge(self):
+                for i in range(25):
+                    self.state[i] = 0
+                for i in range(self.rate_bytes):
+                    self.queue[i] = 0
+                self.bytes_in_queue = 0
+                self.squeezing = False
+                return
+
+            def absorb(self, data, off, length):
+                if self.squeezing:
+                    raise ValueError("attempt to absorb while squeezing")
+
+                count = 0
+                while count < length:
+                    if self.bytes_in_queue == 0 and count <= (length - self.rate_bytes):
+                        while True:
+                            self.kangaroo_absorb(data, off + count)
+                            count += self.rate_bytes
+                            if count > (length - self.rate_bytes):
+                                break
+                    else:
+                        partial_block = min(self.rate_bytes - self.bytes_in_queue, length - count)
+                        self.queue[self.bytes_in_queue:self.bytes_in_queue + partial_block] = \
+                            data[off + count:off + count + partial_block]
+                        self.bytes_in_queue += partial_block
+                        count += partial_block
+
+                        if self.bytes_in_queue == self.rate_bytes:
+                            self.kangaroo_absorb(self.queue, 0)
+                            self.bytes_in_queue = 0
+                return
+
+            def pad_and_switch_to_squeezing_phase(self):
+                for i in range(self.bytes_in_queue, self.rate_bytes):
+                    self.queue[i] = 0
+                self.queue[self.rate_bytes - 1] ^= 0x80
+                self.kangaroo_absorb(self.queue, 0)
+                self.kangaroo_extract()
+                self.bytes_in_queue = self.rate_bytes
+                self.squeezing = True
+                return
+
+            def squeeze(self, out, off, output_length):
+                if not self.squeezing:
+                    self.pad_and_switch_to_squeezing_phase()
+
+                i = 0
+                while i < output_length:
+                    if self.bytes_in_queue == 0:
+                        self.kangaroo_permutation()
+                        self.kangaroo_extract()
+                        self.bytes_in_queue = self.rate_bytes
+
+                    partial_block = min(self.bytes_in_queue, output_length - i)
+                    src = self.rate_bytes - self.bytes_in_queue
+                    out[off + i:off + i + partial_block] = self.queue[src:src + partial_block]
+                    self.bytes_in_queue -= partial_block
+                    i += partial_block
+                return
+
+            def kangaroo_absorb(self, data, off):
+                count = self.rate_bytes >> 3
+                off_set = off
+                for i in range(count):
+                    lane = int.from_bytes(data[off_set:off_set + 8], "little")
+                    self.state[i] ^= lane
+                    off_set += 8
+                self.kangaroo_permutation()
+                return
+
+            def kangaroo_extract(self):
+                count = self.rate_bytes >> 3
+                off = 0
+                for i in range(count):
+                    self.queue[off:off + 8] = self.state[i].to_bytes(8, "little")
+                    off += 8
+                return
+
+            def rol64(self, x, n):
+                return ((x << n) | (x >> (64 - n))) & self.mask64
+
+            def inv64(self, x):
+                return x ^ self.mask64
+
+            def kangaroo_permutation(self):
+                a = self.state
+                a00, a01, a02, a03, a04 = a[0], a[1], a[2], a[3], a[4]
+                a05, a06, a07, a08, a09 = a[5], a[6], a[7], a[8], a[9]
+                a10, a11, a12, a13, a14 = a[10], a[11], a[12], a[13], a[14]
+                a15, a16, a17, a18, a19 = a[15], a[16], a[17], a[18], a[19]
+                a20, a21, a22, a23, a24 = a[20], a[21], a[22], a[23], a[24]
+
+                base = len(self.round_constants) - self.rounds
+
+                for i in range(self.rounds):
+                    c0 = a00 ^ a05 ^ a10 ^ a15 ^ a20
+                    c1 = a01 ^ a06 ^ a11 ^ a16 ^ a21
+                    c2 = a02 ^ a07 ^ a12 ^ a17 ^ a22
+                    c3 = a03 ^ a08 ^ a13 ^ a18 ^ a23
+                    c4 = a04 ^ a09 ^ a14 ^ a19 ^ a24
+
+                    d1 = self.rol64(c1, 1) ^ c4
+                    d2 = self.rol64(c2, 1) ^ c0
+                    d3 = self.rol64(c3, 1) ^ c1
+                    d4 = self.rol64(c4, 1) ^ c2
+                    d0 = self.rol64(c0, 1) ^ c3
+
+                    a00 ^= d1
+                    a05 ^= d1
+                    a10 ^= d1
+                    a15 ^= d1
+                    a20 ^= d1
+                    a01 ^= d2
+                    a06 ^= d2
+                    a11 ^= d2
+                    a16 ^= d2
+                    a21 ^= d2
+                    a02 ^= d3
+                    a07 ^= d3
+                    a12 ^= d3
+                    a17 ^= d3
+                    a22 ^= d3
+                    a03 ^= d4
+                    a08 ^= d4
+                    a13 ^= d4
+                    a18 ^= d4
+                    a23 ^= d4
+                    a04 ^= d0
+                    a09 ^= d0
+                    a14 ^= d0
+                    a19 ^= d0
+                    a24 ^= d0
+
+                    c1 = self.rol64(a01, 1)
+                    a01 = self.rol64(a06, 44)
+                    a06 = self.rol64(a09, 20)
+                    a09 = self.rol64(a22, 61)
+                    a22 = self.rol64(a14, 39)
+                    a14 = self.rol64(a20, 18)
+                    a20 = self.rol64(a02, 62)
+                    a02 = self.rol64(a12, 43)
+                    a12 = self.rol64(a13, 25)
+                    a13 = self.rol64(a19, 8)
+                    a19 = self.rol64(a23, 56)
+                    a23 = self.rol64(a15, 41)
+                    a15 = self.rol64(a04, 27)
+                    a04 = self.rol64(a24, 14)
+                    a24 = self.rol64(a21, 2)
+                    a21 = self.rol64(a08, 55)
+                    a08 = self.rol64(a16, 45)
+                    a16 = self.rol64(a05, 36)
+                    a05 = self.rol64(a03, 28)
+                    a03 = self.rol64(a18, 21)
+                    a18 = self.rol64(a17, 15)
+                    a17 = self.rol64(a11, 10)
+                    a11 = self.rol64(a07, 6)
+                    a07 = self.rol64(a10, 3)
+                    a10 = c1
+
+                    c0 = a00 ^ (self.inv64(a01) & a02)
+                    c1 = a01 ^ (self.inv64(a02) & a03)
+                    a02 ^= self.inv64(a03) & a04
+                    a03 ^= self.inv64(a04) & a00
+                    a04 ^= self.inv64(a00) & a01
+                    a00 = c0
+                    a01 = c1
+
+                    c0 = a05 ^ (self.inv64(a06) & a07)
+                    c1 = a06 ^ (self.inv64(a07) & a08)
+                    a07 ^= self.inv64(a08) & a09
+                    a08 ^= self.inv64(a09) & a05
+                    a09 ^= self.inv64(a05) & a06
+                    a05 = c0
+                    a06 = c1
+
+                    c0 = a10 ^ (self.inv64(a11) & a12)
+                    c1 = a11 ^ (self.inv64(a12) & a13)
+                    a12 ^= self.inv64(a13) & a14
+                    a13 ^= self.inv64(a14) & a10
+                    a14 ^= self.inv64(a10) & a11
+                    a10 = c0
+                    a11 = c1
+
+                    c0 = a15 ^ (self.inv64(a16) & a17)
+                    c1 = a16 ^ (self.inv64(a17) & a18)
+                    a17 ^= self.inv64(a18) & a19
+                    a18 ^= self.inv64(a19) & a15
+                    a19 ^= self.inv64(a15) & a16
+                    a15 = c0
+                    a16 = c1
+
+                    c0 = a20 ^ (self.inv64(a21) & a22)
+                    c1 = a21 ^ (self.inv64(a22) & a23)
+                    a22 ^= self.inv64(a23) & a24
+                    a23 ^= self.inv64(a24) & a20
+                    a24 ^= self.inv64(a20) & a21
+                    a20 = c0
+                    a21 = c1
+
+                    a00 ^= self.round_constants[base + i]
+
+                a[0], a[1], a[2], a[3], a[4] = a00, a01, a02, a03, a04
+                a[5], a[6], a[7], a[8], a[9] = a05, a06, a07, a08, a09
+                a[10], a[11], a[12], a[13], a[14] = a10, a11, a12, a13, a14
+                a[15], a[16], a[17], a[18], a[19] = a15, a16, a17, a18, a19
+                a[20], a[21], a[22], a[23], a[24] = a20, a21, a22, a23, a24
+                return
+
+        def __init__(self, data=b"", digest_size=64, personal=b""):
+            self.strength = 256
+            self.rounds = 14
+            self.output_size = digest_size
+            self.tree = self.KangarooSponge(self.strength, self.rounds, self.round_constants)
+            self.leaf = self.KangarooSponge(self.strength, self.rounds, self.round_constants)
+            self.chain_len = self.strength >> 2
+            self.personal = b""
+            self.squeezing = False
+            self.curr_node = 0
+            self.processed = 0
+            self.msg_len = 0
+            self.build_personal(personal)
+
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__(b"", self.output_size)
+            other.tree = self.tree.copy()
+            other.leaf = self.leaf.copy()
+            other.chain_len = self.chain_len
+            other.personal = bytes(self.personal)
+            other.squeezing = self.squeezing
+            other.curr_node = self.curr_node
+            other.processed = self.processed
+            other.msg_len = self.msg_len
+            return other
+
+        def build_personal(self, personal):
+            if personal is None:
+                personal = b""
+            if not isinstance(personal, (bytes, bytearray)):
+                raise TypeError("personal must be bytes-like")
+            personal = bytes(personal)
+            encoded = self.length_encode(len(personal))
+            self.personal = personal + encoded
+            return
+
+        def length_encode(self, value):
+            n = 0
+            v = value
+            if v != 0:
+                n = 1
+                while True:
+                    v >>= 8
+                    if v == 0:
+                        break
+                    n += 1
+
+            out = bytearray(n + 1)
+            out[n] = n
+            for i in range(n):
+                shift = 8 * (n - i - 1)
+                out[i] = (value >> shift) & 0xff
+            return bytes(out)
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            if self.squeezing:
+                raise ValueError("attempt to absorb while squeezing")
+
+            data = bytes(data)
+            self.msg_len += len(data)
+            self.process_data(data, 0, len(data))
+            return self
+
+        def process_data(self, data, off, length):
+            if self.squeezing:
+                raise ValueError("attempt to absorb while squeezing")
+
+            sponge = self.tree if self.curr_node == 0 else self.leaf
+            space = self.node_block_size - self.processed
+
+            if space >= length:
+                sponge.absorb(data, off, length)
+                self.processed += length
+                return
+
+            if space > 0:
+                sponge.absorb(data, off, space)
+                self.processed += space
+
+            processed = space
+            while processed < length:
+                if self.processed == self.node_block_size:
+                    self.switch_leaf(True)
+
+                data_len = min(length - processed, self.node_block_size)
+                self.leaf.absorb(data, off + processed, data_len)
+                self.processed += data_len
+                processed += data_len
+            return
+
+        def reset(self):
+            self.tree.init_sponge()
+            self.leaf.init_sponge()
+            self.squeezing = False
+            self.curr_node = 0
+            self.processed = 0
+            self.msg_len = 0
+            return
+
+        def switch_leaf(self, more_to_come):
+            if self.curr_node == 0:
+                self.tree.absorb(self.first, 0, len(self.first))
+            else:
+                self.leaf.absorb(self.intermediate, 0, len(self.intermediate))
+                chain_value = bytearray(self.chain_len)
+                self.leaf.squeeze(chain_value, 0, self.chain_len)
+                self.tree.absorb(chain_value, 0, self.chain_len)
+                self.leaf.init_sponge()
+
+            if more_to_come:
+                self.curr_node += 1
+            self.processed = 0
+            return
+
+        def switch_to_squeezing(self):
+            self.process_data(self.personal, 0, len(self.personal))
+            if self.curr_node == 0:
+                self.switch_single()
+            else:
+                self.switch_final()
+            self.squeezing = True
+            return
+
+        def switch_single(self):
+            self.tree.absorb(self.single, 0, len(self.single))
+            self.tree.pad_and_switch_to_squeezing_phase()
+            return
+
+        def switch_final(self):
+            self.switch_leaf(False)
+            node_count_encoded = self.length_encode(self.curr_node)
+            self.tree.absorb(node_count_encoded, 0, len(node_count_encoded))
+            self.tree.absorb(self.final, 0, len(self.final))
+            self.tree.pad_and_switch_to_squeezing_phase()
+            return
+
+        def finalize(self):
+            if not self.squeezing:
+                self.switch_to_squeezing()
+            return
+
+        def read(self, length):
+            if length < 0:
+                raise ValueError("invalid output length")
+            if not self.squeezing:
+                self.switch_to_squeezing()
+
+            out = bytearray(length)
+            self.tree.squeeze(out, 0, length)
+            return bytes(out)
+
+        def digest(self, length=None):
+            c = self.copy()
+            if length is None:
+                length = c.output_size
+            return c.read(length)
+
+        def hexdigest(self, length=None):
+            return self.digest(length).hex()
+
+    class Panama:
+        block_size = 32
+        digest_size = 32
+
+        def __init__(self, data=b""):
+            self.state = [0] * 17
+            self.buffer = [[0] * 8 for _ in range(32)]
+            self.buffer_ptr = 0
+            self.buf = bytearray()
+            self.msg_len = 0
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.state = list(self.state)
+            other.buffer = [list(row) for row in self.buffer]
+            other.buffer_ptr = self.buffer_ptr
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            while len(self.buf) >= 32:
+                block = bytes(self.buf[:32])
+                del self.buf[:32]
+                self.push(block)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            out = bytearray()
+            for i in range(8):
+                out.extend(struct.pack("<I", c.state[i + 9]))
+            return bytes(out)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            block = bytearray(32)
+            n = len(self.buf)
+            if n:
+                block[:n] = self.buf
+            block[n] = 0x01
+            self.push(bytes(block))
+            self.pull(32)
+            self.buf.clear()
+            return
+
+        def rol32(self, x, n):
+            x &= 0xffff_ffff
+            return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
+
+        def decode_block(self, block):
+            return list(struct.unpack("<8I", block))
+
+        def gamma(self, a):
+            g = [0] * 17
+            for i in range(17):
+                g[i] = (a[i] ^ (a[(i + 1) % 17] | (~a[(i + 2) % 17]))) & 0xffff_ffff
+            return g
+
+        def pi(self, g):
+            p = [0] * 17
+            p[0] = g[0]
+            p[1] = self.rol32(g[7], 1)
+            p[2] = self.rol32(g[14], 3)
+            p[3] = self.rol32(g[4], 6)
+            p[4] = self.rol32(g[11], 10)
+            p[5] = self.rol32(g[1], 15)
+            p[6] = self.rol32(g[8], 21)
+            p[7] = self.rol32(g[15], 28)
+            p[8] = self.rol32(g[5], 4)
+            p[9] = self.rol32(g[12], 13)
+            p[10] = self.rol32(g[2], 23)
+            p[11] = self.rol32(g[9], 2)
+            p[12] = self.rol32(g[16], 14)
+            p[13] = self.rol32(g[6], 27)
+            p[14] = self.rol32(g[13], 9)
+            p[15] = self.rol32(g[3], 24)
+            p[16] = self.rol32(g[10], 8)
+            return p
+
+        def theta(self, p):
+            t = [0] * 17
+            for i in range(17):
+                t[i] = p[i] ^ p[(i + 1) % 17] ^ p[(i + 4) % 17]
+            return t
+
+        def step(self, inw1, inw2):
+            a = list(self.state)
+            ptr0 = self.buffer_ptr
+            ptr24 = (ptr0 - 8) & 31
+            ptr31 = (ptr0 - 1) & 31
+
+            pairs = (
+                (0, 2),
+                (1, 3),
+                (2, 4),
+                (3, 5),
+                (4, 6),
+                (5, 7),
+                (6, 0),
+                (7, 1),
+            )
+            for n0, n2 in pairs:
+                self.buffer[ptr24][n0] ^= self.buffer[ptr31][n2]
+                self.buffer[ptr31][n2] ^= inw1[n2]
+
+            g = self.gamma(a)
+            p = self.pi(g)
+            t = self.theta(p)
+
+            ptr16 = ptr0 ^ 16
+            next_state = [0] * 17
+            next_state[0] = t[0] ^ 1
+            for i in range(8):
+                next_state[i + 1] = t[i + 1] ^ inw2[i]
+            for i in range(8):
+                next_state[i + 9] = t[i + 9] ^ self.buffer[ptr16][i]
+
+            self.state = next_state
+            self.buffer_ptr = ptr31
+            return
+
+        def push(self, block):
+            x = self.decode_block(block)
+            self.step(x, x)
+            return
+
+        def pull(self, num):
+            for _ in range(num):
+                a = self.state
+                inw1 = [a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]]
+                ptr4 = (self.buffer_ptr + 4) & 31
+                inw2 = list(self.buffer[ptr4])
+                self.step(inw1, inw2)
+            return
+
 
 @register_command
 class HashCommand(GenericCommand):
@@ -91035,7 +92172,9 @@ class HashCommand(GenericCommand):
         super().__init__(prefix=prefix, complete=complete)
         return
 
-    def get_valid_hash_funcs_hashlib(self):
+    def get_valid_hash_funcs(self):
+        yield "hashlib"
+
         hashlib_hashes = {
             "MD5": "md5",
             "SHA1": "sha1",
@@ -91044,8 +92183,8 @@ class HashCommand(GenericCommand):
             "SHA256": "sha256",
             "SHA384": "sha384",
             "SHA512": "sha512",
-            "SHA512/224": "sha512-224",
-            "SHA512/256": "sha512-256",
+            "SHA512/224": "sha512-224", # May not be usable depending on availability of OpenSSL
+            "SHA512/256": "sha512-256", # May not be usable depending on availability of OpenSSL
             "SHA3-224": "sha3-224",
             "SHA3-256": "sha3-256",
             "SHA3-384": "sha3-384",
@@ -91053,7 +92192,7 @@ class HashCommand(GenericCommand):
             "BLAKE2s": "blake2s",
             "BLAKE2b": "blake2b",
             "SM3": "sm3",
-            "RIPEMD-160": "ripemd160",
+            "RIPEMD-160": "ripemd160", # May not be usable depending on availability of OpenSSL
         }
         for hname, hname_hashlib in hashlib_hashes.items():
             try:
@@ -91083,9 +92222,7 @@ class HashCommand(GenericCommand):
                 except Exception:
                     continue
                 yield (hname, hfunc)
-        return None
 
-    def get_valid_hash_funcs_other(self):
         # SHA-3 Round3 candidates
         yield "SHA3 Round3 candidates"
         yield ("BLAKE-224", Hash.BLAKE224())
@@ -91179,7 +92316,7 @@ class HashCommand(GenericCommand):
         yield ("MD6-512", Hash.MD6(d=512))
 
         # Other (relatively long)
-        yield "relatively long"
+        yield "Relatively long"
         yield ("Ascon-Hash", Hash.Ascon())
         yield ("Ascon-HashA", Hash.AsconA())
         yield ("Ascon-Xof", Hash.AsconX())
@@ -91190,6 +92327,9 @@ class HashCommand(GenericCommand):
         yield ("BLAKE3-128", Hash.BLAKE3(digest_bits=128))
         yield ("BLAKE3-256", Hash.BLAKE3(digest_bits=256))
         yield ("BLAKE3-512", Hash.BLAKE3(digest_bits=512))
+        yield ("ED2K-Blue", Hash.ED2KBlue())
+        yield ("ED2K-Red", Hash.ED2KRed())
+        yield ("ED2K-RedBlue", Hash.ED2KRedBlue())
         yield ("ESCH256", Hash.ESCH256())
         yield ("ESCH384", Hash.ESCH384())
         yield ("FNV1-32", Hash.FNV_32())
@@ -91257,9 +92397,14 @@ class HashCommand(GenericCommand):
         yield ("LSH512-256", Hash.LSH512_256())
         yield ("LSH512-384", Hash.LSH512_384())
         yield ("LSH512-512", Hash.LSH512_512())
+        yield ("MarsupilamiFourteen", Hash.MarsupilamiFourteen())
         yield ("MD2", Hash.MD2())
         yield ("MD4", Hash.MD4())
+        yield ("MDC-2", Hash.MDC2())
         yield ("NTLM hash", Hash.NTLM())
+        yield ("Panama", Hash.Panama())
+        yield ("RadioGatun32", Hash.RadioGatun32())
+        yield ("RadioGatun64", Hash.RadioGatun64())
         yield ("RIPEMD-128", Hash.RIPEMD128())
         yield ("RIPEMD-160", Hash.RIPEMD160())
         yield ("RIPEMD-256", Hash.RIPEMD256())
@@ -91297,7 +92442,7 @@ class HashCommand(GenericCommand):
         yield ("Whirlpool", Hash.Whirlpool())
 
         # Other (relatively short)
-        yield "relatively short"
+        yield "Relatively short"
         yield ("CityHash32", Hash.CityHash32())
         yield ("CityHash64", Hash.CityHash64())
         yield ("CityHash128", Hash.CityHash128())
@@ -91495,28 +92640,15 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
 
     def process(self):
         tqdm = GefUtil.get_tqdm()
-
-        self.out.append(titlify("hashlib"))
-        hash_funcs_hashlib = list(self.get_valid_hash_funcs_hashlib())
-        for hname, hfunc in tqdm(hash_funcs_hashlib, leave=False, total=len(hash_funcs_hashlib)):
-            if not self.should_be_displayed(hname, hfunc):
-                continue
-            h = self.calc_hash(hfunc, self.args.location, self.args.location + self.args.size)
-            if h is False:
-                return
-            if h is None:
-                continue
-            line = self.make_line(hname, hfunc, h)
-            self.out.append(line)
-
-        if self.args.smart:
-            return
-
-        hash_funcs_other = list(self.get_valid_hash_funcs_other())
-        for elem in tqdm(hash_funcs_other, leave=False, total=len(hash_funcs_other)):
+        hash_funcs = list(self.get_valid_hash_funcs())
+        for elem in tqdm(hash_funcs, leave=False, total=len(hash_funcs)):
             if isinstance(elem, str):
+                if self.args.smart:
+                    if elem != "hashlib":
+                        break
                 self.out.append(titlify(elem))
                 continue
+
             hname, hfunc = elem
             if not self.should_be_displayed(hname, hfunc):
                 continue
@@ -91570,25 +92702,15 @@ class HashValueCommand(HashCommand, BufferingOutput):
 
     def process(self, value):
         tqdm = GefUtil.get_tqdm()
-
-        self.out.append(titlify("hashlib"))
-        hash_funcs_hashlib = list(self.get_valid_hash_funcs_hashlib())
-        for hname, hfunc in tqdm(hash_funcs_hashlib, leave=False, total=len(hash_funcs_hashlib)):
-            if not self.should_be_displayed(hname, hfunc):
-                continue
-            hfunc.update(value)
-            h = hfunc.hexdigest()
-            line = self.make_line(hname, hfunc, h)
-            self.out.append(line)
-
-        if self.args.smart:
-            return
-
-        hash_funcs_other = list(self.get_valid_hash_funcs_other())
-        for elem in tqdm(hash_funcs_other, leave=False, total=len(hash_funcs_other)):
+        hash_funcs = list(self.get_valid_hash_funcs())
+        for elem in tqdm(hash_funcs, leave=False, total=len(hash_funcs)):
             if isinstance(elem, str):
+                if self.args.smart:
+                    if elem != "hashlib":
+                        break
                 self.out.append(titlify(elem))
                 continue
+
             hname, hfunc = elem
             if not self.should_be_displayed(hname, hfunc):
                continue
@@ -91613,6 +92735,567 @@ class HashValueCommand(HashCommand, BufferingOutput):
 
         self.out = []
         self.process(value)
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class HashTestCommand(HashCommand, BufferingOutput):
+    """Calculate and check hash from constant inputs."""
+
+    _cmdline_ = "hash test"
+    _category_ = "03-e. Memory - Calculation"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-f", "--filter", metavar="REGEX", type=re.compile, default=[], action="append",
+                        help="filter by REGEX pattern.")
+    parser.add_argument("-l", "--length-filter", type=AddressUtil.parse_address,
+                        help="filter by hash byte length.")
+    parser.add_argument("-s", "--smart", action="store_true", help="show only failed.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    _note_ = None
+
+    def __init__(self):
+        super().__init__(prefix=False, complete=gdb.COMPLETE_NONE)
+        return
+
+    test_vector_AAAA = {
+        # -------------------- hashlib --------------------
+        # hashlib
+        "MD5": "098890dde069e9abad63f19a0d9e1f32",
+        "SHA1": "e2512172abf8cc9f67fdd49eb6cacf2df71bbad3",
+        "MD5-SHA1": "098890dde069e9abad63f19a0d9e1f32e2512172abf8cc9f67fdd49eb6cacf2d" \
+                    "f71bbad3",
+        "SHA224": "5cdde10ca4df3e7e6e0e428f683e1c6ca0bfb917555ad94727a3f344",
+        "SHA256": "63c1dd951ffedf6f7fd968ad4efa39b8ed584f162f46e715114ee184f8de9201",
+        "SHA384": "d8bf1572ab3b9bc239325d2a657ad37cb8fa6cb32c2d83cddee33be1238eb7a4" \
+                    "0b33d1bc796b426b6c68c22e4769dea2",
+        "SHA512": "53b74be8b295b733fdfafbd7d2a22b1686733740de7fdc592b26cf3e1874cfce" \
+                    "158170ce9230e24696331a61829244e5d9f48abdacc9ffa8c4cb498724844cf8",
+        "SHA512/224": "42707cc06636e3a479f5bc19bbc3c31249805072993efb715e16f273",
+        "SHA512/256": "d01e3d10611ee4b5b1e570be2e8e9d76988781c40e1a3ecc930d5298fb541e27",
+        "SHA3-224": "5accd6cfeec028803453ddd46aed0f9281336fc2215484d0f9110336",
+        "SHA3-256": "5ba7fe44cc7b13be0a25d2caccd80443c79835c38aa6945c714ab689d2f10c13",
+        "SHA3-384": "78f27d6e5727ff2ce7bfba5d7aeed27def619abb73e779771130ad0851d748db" \
+                    "6327456280c3b5cfacad0d8ad84e108c",
+        "SHA3-512": "990fb60e8dbd852804795c671db3a97b8b37685976026672d8164b05be0e9a55" \
+                    "5ed0a9e30668abcfaed0a34d3610dbbbb9ac615a92545b4654f13a39cb7f07ba",
+        "BLAKE2s": "ad0b5f0ea7abe50530487c4d1f0de59699955eca58fa60372863927620bba191",
+        "BLAKE2b": "5448fb61bfeba39eb14a49f72310ab14653b230655b0adccadcb31148602317a" \
+                   "f3bcef80f09f0945f06607465a0e467ab8cf257a3088d25065aded9fc0963271",
+        "SM3": "2afccdaa7f803b0bc90b1b7f2ac18c03f0297b989d573e1514267dc73909e4e4",
+        "SHAKE128-128": "547260c6330814b54770daad5b39c15a",
+        "SHAKE128-256": "547260c6330814b54770daad5b39c15ad159de955afc13622d9fa7b7d1899536",
+        "SHAKE128-512": "547260c6330814b54770daad5b39c15ad159de955afc13622d9fa7b7d1899536" \
+                         "74bb09f145b5979df9b9a05d214f9ae625e22bb9f72f319fae6d9877ee606335",
+        "SHAKE256-128": "ded2952bb56c24ea5c198e9f6a641a70",
+        "SHAKE256-256": "ded2952bb56c24ea5c198e9f6a641a70c4306ba75123e15c4f5e445013133d82",
+        "SHAKE256-512": "ded2952bb56c24ea5c198e9f6a641a70c4306ba75123e15c4f5e445013133d82" \
+                         "4ca42c15720c7a8e9e8e0d2cce0ace4c82e80a579cfba4575cd59170fb3fd97c",
+        # -------------------- SHA3 Round3 candidates --------------------
+        # https://crashdemons.github.io/BLAKE-wasm/
+        "BLAKE-224": "29a7331e595c8d88a40dae3ccebb1830a7462f7c8ca472dd0e0a39ec",
+        "BLAKE-256": "0dd4375066df0e5a2c95fbe58ec0ca260d7c84a1f5054ac8f1636611dcaefd52",
+        "BLAKE-384": "40c7a002d92c7722d21359fd49985be493e584353df3cda76b51ea7d8d0d10f7" \
+                     "305b6f0c5ac6dec3f276fadc6e7ee863",
+        "BLAKE-512": "3c4ce424bb86c770d5ecde021dcffcc17a18a6ee10bef69ac4e33d7f342ce867" \
+                     "d2f59873e3ac804f8610039b2d8ad3cdaaf1b3fc802e1de4bfbd2f3ae080f250",
+        # https://hashing.tools/groestl
+        "Groestl224": "dc4231694f7608af592137743b6a8933c733cf529066dbe99bfb8444",
+        "Groestl256": "2dd64197803cffb2dd2e880b4f8d165ddce58ec36bcb34c7128c8558efc4f613",
+        "Groestl384": "b9004dfa83ecef64b89a875c0bda9eafbd89f9a3bbadcc45c4c0d7113de0960a" \
+                      "909e78546e48e1bb2ccaa0019cb7cd9a",
+        "Groestl512": "5a4386660ad4dfcd4eddaf7cf95d9509de55d6de091501b89554ed582492252f" \
+                      "737e753c2bb2f8547a0b87c6ff8a33e2d5a533d796084092df68da74db395bb5",
+        # https://hashing.tools/jh
+        "JH224": "5b1b04276a075566c83100d46bc2dc11e3f966eda7661a5e0cbb7f35",
+        "JH256": "930d87810e8776aa366eba101b6e1fc7cc5d80e84d420c25796cf5d1bbe6d58a",
+        "JH384": "5928217793ba5db4df18bd992018027849d640d7d2c24aaac559c45a20a30128" \
+                 "13ee8fb94976c89a7eb0d6663887a27c",
+        "JH512": "98c8d6a1101a2d6eaa8eed9861ae789cf5b9555aaf399eac0971ad531545377f" \
+                 "19dface152f53768e476b1a3e5ca9bc102c1bbe9400c861561d18641feb8e9f1",
+        # pycryptodome
+        "Keccak224": "6481454863fcf20ef04ec24dd2e70094aa62fa3be3038336d3fa5a76",
+        "Keccak256": "e6b6ca9b98ea0c1b64bee9382438c8c99f35bc4d680bcca9f2db31a577915fe4",
+        "Keccak384": "f1e59400c4f5e9db9bbc7246a2debcbcac52814d5440e050837f2cf8c844b210" \
+                      "1e4a0fe41a6ce30161235a3854a39573",
+        "Keccak512": "271675245024e6db7c455a67cef6df927bb0cc50344976ca8741d5a81e812301" \
+                      "296f84dbd23b0639c4ecf318da8c284a00e7208cc73ff6de2b4252c4ce828787",
+        # https://hashing.tools/skein
+        "Skein256-256": "29a9cb5d286ff2998e2f691d63284f60401e34a8a37c263fac8d5cf8296c8710",
+        "Skein256-512": "c5a08ec5b4bb342c5f14efc6fed95207420ef5430dceccdeeeadb0385237b2f0" \
+                        "ee9bf3403065d9d8716608d02830577b2dcab22600b2d9ff9cae425da4a642dc",
+        "Skein256-1024": "b7fb2417f29df9d87ac014bb37c14fcabd521f9a49d52c62ae0f36f5699da929" \
+                         "52694e5dbdaad94e3574965a24770f62d7201b6ee7e16c8f339d8178e1bc39b2" \
+                         "50721cffc4acc0d899cf4410330dc070ebac99f3487a8be1e9be8428e32c2520" \
+                         "901600ddfe3050ba059d1c78e4958ea278e120eaed6ccb3af64fe4b7d29e304a",
+        "Skein512-256": "6ed494c55f491955e0044d412046d2604f6c3a955957484d885b8766a8313552",
+        "Skein512-512": "53f24d27f31e80c5866daf67d347fc1c5124955b3abd5eed04ed0b40a4ec7095" \
+                        "a0b7078f1f128f433c80e6f5b1e99e82fba51190e0ba7b35f5975d9bc7972029",
+        "Skein512-1024": "30423ae9ddff2db5e76cb029f26b574d06701047a5f12d6442a8c745302c3d54" \
+                         "9324297dc697533b58c0d6b23557a72dd7099213739431fd785c12524ca63d70" \
+                         "4d3ec1517fd765143fb18b5d44aafe0498fd032328c4669325090c1f10537985" \
+                         "f49f7602df05fa760a9b6959468b1b5887a3d268a58fb05e678b39fb5de09ab8",
+        "Skein1024-256": "9512fc73fd35e84ee97fa22b4e6aa55228f1b1caf6f51a2868fc693a5f623d57",
+        "Skein1024-512": "9983ceda6fa87f3f03f322c24e4da4612c1857b98b99810eb4383b71974c1327" \
+                         "5de652009a9d4b50eb5830ee990f48257e2ec2110bf3727acb712929a17e358d",
+        "Skein1024-1024": "44b1a34b55cd4ca8b3e259fc7b02af20aedbc348818eb3f6d00ae98bcade259f" \
+                          "5e0d6460bac703a8523aa5e5d473f8f8405eeb65ec4f1a8674ec516cd98ecf0c" \
+                          "1b036309f8b8890a6d180badb9168eea94c542de001f55970bb005895724c2ac" \
+                          "54a810545b3e34e14cd546c0dcb6e51b93b056defa935e155b9e26c76f3a04ab",
+        # -------------------- SHA3 Round2 candidates --------------------
+        # https://github.com/aidansteele/sphlib
+        "BMW224": "d2250e5f6be6817a09557403ed3241ef078e366c56949be6aadcf01f",
+        "BMW256": "1f5e707b2e4799f1d6dee11669ae4a3deba97f5e68f8db85a9916fd1dc88454b",
+        "BMW384": "95f4cf7ac9069c408ef1250c96fbb37ed56091707fcb76b07d244c5d2ab96c25" \
+                  "875f780b5ad300c9a4e10b89f47ff539",
+        "BMW512": "6da8db61e74cf44050fb321bca5fd51c2856a9ed432acdb4134459655ec0a460" \
+                  "3eb81e5b0e57e1f0963885ac745a8da140817f6df33413d80884d8bbe623c4a0",
+        # self
+        "CubeHash10+1/1+10-256": "501ed22433feb0e6570e2f205e4d30fac20d21d630203b602415f7182a45a867",
+        "CubeHash80+8/1+80-256": "1af3ca351ae221ce8d8d6d8425b63e336b775fb8b63dd2a28fc955d7855ffd88",
+        "CubeHash160+16/32+160-256": "01eb7d4eccafbf839cb45931dfaf617fba7a51253467250b29320b9f3cff06c1",
+        "CubeHash10+1/1+10-512": "f1679fee84b979fc81c3289be62c54bb5b645a7b3bc2656b993dd9bf2292bdae" \
+                                 "1b4a872950837249918c796c07dca11fd0fb78bfc43fd1cd60aa418260243ab4",
+        "CubeHash80+8/1+80-512": "9f96db01948a52f5d59c273aec791927664b273355aec10472bc73f31aa013a2" \
+                                 "19210b2ac5f03b6dac5b4567d4494bfb1fe2ca47211cda9ddd421c52e58faa1a",
+        "CubeHash160+16/32+160-512": "d411897fca1e608564a1a143b7adb9208cca5c03ba78bcdaa5eb00835975e479" \
+                                     "4f23c096ee6571a42fb5264f8a1ec65cb641570d387a454e188abe58a9c352ec",
+        # https://github.com/kerukuro/digestpp
+        "ECHO224": "ba6e4a1a71cbc05a862fb279183ff7373fce210a37c8b62640abae7c",
+        "ECHO256": "ac3be7bd3d27508e8bb8f834abbd2cd847e2b94c0816b451e68f908ce185c4ae",
+        "ECHO384": "2c78438be177bebe1a216a914efea335364e8ed47dbfb1050770f111b2158108f" \
+                   "ec71c8465720658142a766164ff1ab7",
+        "ECHO512": "154b84e1956bd907269cb9c81ac2f7cf8ef059109a11ab6e9ce977c4248b5e1ac" \
+                   "19873117932df6258782abf64e782512a5d6883a54906fa8665b0cce1552acd",
+        # https://github.com/jonelo/jacksum
+        "Fugue224": "9f5590d057ec6e9ef4e21151010e5a799aa4e61e5b37a192b1d4386c",
+        "Fugue256": "7933b7f8a1af4e62b4b49a163786be0db6284d5a5a1134a7828d5de17bc6cd20",
+        "Fugue384": "72f0c64915324ac04406080be3bced131aab691079e77497609cb103b484b229" \
+                    "f02b1e7fedde0e5fcc527a1b17b98ade",
+        "Fugue512": "04b55f4683f494bcbd34fb19dc93b104029b9e3c32e6febfced23d310375029c" \
+                    "0cce83dfc717d67bdbdd1e03514523aa7b05d6c6d2539aa19d7414ae554dbb65",
+        # https://github.com/aidansteele/sphlib
+        "Hamsi224": "84720b535ab1b0d4a82e08e13f600806f63c814847fdae03d87f7864",
+        "Hamsi256": "13a467388a80e16b5a3c8684c65b16b5035facce7220d42df20132c6cc4527b2",
+        "Hamsi384": "ac6b2182f4abb1be1677aa623cc9c5ed7ac5bd59fb1241acb152704a5124f8b3" \
+                    "d494ee4911bfc0ed27530758fcdc5127",
+        "Hamsi512": "93e143850a911fab4ab2ab6baae26f10e54300f7a640ad6530086d1d4dfa6337" \
+                    "6d18a310a5a16ab0edbd4ac0b1cb0bfaecc5492ef752e802ecab5bb94cb763b8",
+        # https://github.com/jonelo/jacksum
+        "Luffa224": "d21e910aa3a24791ae18dddbd0da5475bc3ec9c2642d4bd5e48e0e67",
+        "Luffa256": "d21e910aa3a24791ae18dddbd0da5475bc3ec9c2642d4bd5e48e0e67129b65d8",
+        "Luffa384": "9b2565ffa5894b9c3417d415c0a39fe3247e485e4758324eae785c4d600b5eda" \
+                    "9b257daffffeba1bf9de22d488417c4d",
+        "Luffa512": "0f58baf41fc01e0854b6d3bda78a6fda7b744841a725c63252b6d4d9e342f2f1" \
+                    "39151ba29be81cc2d8281ce170b2603498f7dd8dc71675f7773cd72ba4dbc422",
+        # https://hashing.tools/shabal
+        "Shabal192": "3bad0c036e2d521e83fe0e62992a18240c947437cb05d540",
+        "Shabal224": "86134f04b4e73f2d000769279333448b16cf9e60a3cd121d6d1feaad",
+        "Shabal256": "653522b60c60ba0b01d466fd5b61de4e176032169ef38416b386e233df9ffa27",
+        "Shabal384": "6b8017c27287428e0b6696334a192d2c8825540fe6ce6455f6add58f654befba" \
+                     "9f4fd29e0adf56320fe0f6208315525f",
+        "Shabal512": "0530206770d0011ba26994a2cd16bc5499e68ec8c2a50558da6aecdf46e397cd" \
+                      "7e4372637c4277a44c65351cf4023745917aabd13e4376e962d1c1f5e63fc30f",
+        # https://github.com/gray/digest-shavite3
+        "SHAvite3-224": "b1814d4448ec5f08996b9a77236ee66f2cd1294fc7a1b1fb7337ae83",
+        "SHAvite3-256": "fa043957aed28fa90d13c0680ac9bc60ce3b84259909ea75ec3ae0b722783aa0",
+        "SHAvite3-384": "333336ff886c555f333a0332b2c91ae0a9ceff8fb2f7122a20b537180747b133" \
+                        "e81e0442c2f92f2c052b52ad4925f61a",
+        "SHAvite3-512": "dea616109d18cce6fffeebabcfd7f698c5c33c4c4175d01ca1463564cbcacaca" \
+                        "187dd4a0b417093acdaa975672b8e087cd3b55f950a02f6799295b916c572533",
+        # https://github.com/aidansteele/sphlib
+        "SIMD224": "14a4564faac0a13b5c921b5ff1c6529e146ab46976072a2b2cb5f817",
+        "SIMD256": "6a68b05b65a906c430cc854b2ed7e9d9a6b4ddae15f339495e4da68e49092c00",
+        "SIMD384": "44ba5d64e35ccc1da7564cee4762dd02dc208328ae5d5211bbc20e2ee1b63ba2" \
+                   "7124af92ab7f9c64fab7a9d7f94b6b23",
+        "SIMD512": "24949bf23897f6cc00637b4ab352700c778b21f46c2b0607ae6f52898fe9f6ea" \
+                   "68c9fcc663c7e82951faea69b66fe095501fb4b54136fbaf16cbcbe24afbfef2",
+        # -------------------- SHA3 Round1 candidates --------------------
+        # https://hashing.tools/fsb
+        "FSB160": "b0a13fe24c0190e8d53f91e246ea10540e147af3",
+        "FSB224": "207ac5eb161b20be6ca49f7d3d7851a7634bc328ec083bde3488bf3a",
+        "FSB256": "5eb1e8ee65a311f2b06652943b39e0ecb1f2f80d72c8d62b069abed31ae878e7",
+        "FSB384": "26f1b38803c91c7e169f75f1b2ce8e2063db6faa8cf1e27e362c78b50d4098d6" \
+                  "c386b5f4fabc074f7974cb0bc6e5f659",
+        "FSB512": "3177b373816230dc1ada0931de19a1971f08e8f6344194536449f78e89775da2" \
+                  "e3bd53db8366f553424b28cad88a7bf63848cd8f991f182bc31578243daa5bde",
+        # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/LANE.zip
+        "Lane224": "3d5570321466295c009ac92b1362a237e2837f10cb4948144c1a4a25",
+        "Lane256": "7979cbede5e1fb39bc4440847685fb709bc49a75d8f4cbef997301e967413c05",
+        "Lane384": "f852ee97c76001fa1a8d48bf3b72b3670adc0bef71e0d4f714038aba49f17543" \
+                   "9ca0ac87dce6a7abb94a04dc51563868",
+        "Lane512": "ce10112d96a3f175066a319d6162169593733a38d631d2e535e2828899ff5a89" \
+                   "e4d48ba3e3648fd57554d78fa879546ed8eb0d3af38237c10ba36b41f8eba878",
+        # https://www.browserling.com/tools/md6-hash
+        "MD6-128": "d92b75252b0b05b8e64db33361b73a03",
+        "MD6-256": "7235c21eafc0992b2cae6eec077a1b5854640e956e3f35a655ec6cc673967735",
+        "MD6-512": "9338e12bc2e524115044daf7ed9f042d47685805d30f8a520b7087e29c60c006" \
+                   "9f2b90a5ee1547e67952e4768e81c26aea30941838ff39a20d477b075ff44438",
+        # -------------------- relatively long --------------------
+        # https://hashing.tools/ascon
+        "Ascon-Hash": "e71806e7b65349943ecc9533937482b14defee112076a2fa80068611b70c74d3",
+        "Ascon-HashA": "43ec1c7e4e95d084c615e23a02463143be37df8dbaec9780182bfc92170af57f",
+        "Ascon-Xof": "3fe739f98bdec9105af35be44832a82b1f957112f7f0b86b603820842373a246" \
+                     "745c1f424299a5b5b4b5aa11261b7522d617b0ca1e11fcb7c5f2b51faf45fc4f" \
+                     "374a4921ad068595cb7345646905fbfc29fa895a2ea1fb848fab795bd7d6fa7d" \
+                     "be2059d3c8b9871cb438ae4a324ddf319d6d95ab2f6ae6a9e62db393b0988d3f",
+        "Ascon-XofA": "6ac0dcf1eb2b323d0c176d841f4f2f6b05d99fb51b0aeb94faa901544314acf2" \
+                      "b8508a1d8b86856a1ae45b3052b490c3c0225adc11ad1e5b07bfe824a6bfbd4a" \
+                      "802f44486562bf88c9718cafbc043ed8b01766b88913942dab9519e7e21f3a73" \
+                      "40586b49b8a3c99a25d5d6fac6e7fa1b06b1cd28423e8fe7802555dde987ff1a",
+        # https://hashing.tools/belt
+        "BelT Hash": "3f7355d4b29d2f47e2e832111f01ad06c3d6c9fb51f3d5718299ddc808a0947e",
+        # https://github.com/jonelo/jacksum
+        "BLAKE2sp": "f0af273147167678aea7e95ff9e8f1b5f970aa51febabad5b776c64b6dafce8a",
+        "BLAKE2bp": "308d00127806d7b23eae8c71e81055caae3417be0698369d1de2e559fe4b9aad" \
+                    "0a518d6de295472f4b06e55ba6b0e7607bad78af9eeadc02d29e9ae37fdfe596",
+        # https://emn178.github.io/online-tools/blake3/
+        "BLAKE3-128": "26c7bb3daaaa0439eb3e5c5270e7c4db",
+        "BLAKE3-256": "26c7bb3daaaa0439eb3e5c5270e7c4db05218d8892a0258fbd4911cef5006d23",
+        "BLAKE3-512": "26c7bb3daaaa0439eb3e5c5270e7c4db05218d8892a0258fbd4911cef5006d23" \
+                      "77bc1f40685ce1ea35dfec340a0f2bd050003eed06378b1d113d4ad18eb5de7a",
+        # https://github.com/Kimundi/ed2k
+        "ED2K-Blue": "90353ed2d3d2cd620347ff246e8fbab6",
+        "ED2K-Red": "90353ed2d3d2cd620347ff246e8fbab6",
+        "ED2K-RedBlue": "90353ed2d3d2cd620347ff246e8fbab690353ed2d3d2cd620347ff246e8fbab6",
+        # https://github.com/jonelo/jacksum
+        "ESCH256": "bfa63c4eddacd1b5b54d1aee5bc8d77a6682b99adddf3a2a00908e34f321a5ab",
+        "ESCH384": "528e1ca88b46d38fac73d4083cde3755b0ed02caee838e7e47b2d52c42383271" \
+                   "d4fecb027cd6d211516c345febf9604e",
+        # https://fnvhash.github.io/fnv-calculator-online/
+        "FNV1-32": "2abf8e21",
+        "FNV1-64": "1946e07e5e301541",
+        "FNV1-128": "66ac10a3c0757277b806e89cb5099d59",
+        "FNV1-256": "e46ddd4ed460b0b348e441459f2a8e9d123f79d831721584cc463bb62ecb6471",
+        "FNV1-512": "f9fe9eefe38ca43fcf36c8fbc0d25bef5457f8ac9f00000000002a5259a146c7" \
+                     "f24cae042d99828e5baba0a28b18bf530de9c3137ca2a36973f8d16ecfb745ed",
+        "FNV1-1024": "00000000026f791f9147aedad1354bef7d238f3219005cbd6e8d664f6b4eefdb" \
+                      "e94929e41548be786c9c43000000000000000000000000000000000000000000" \
+                      "000000000000000000000000000000000000000000000000001ba08046e07e04" \
+                      "18fb7be0ec07b8ea87a61bb4f073e2bab740db8398ef60cb9b50bec99be18feb",
+        "FNV1a-32": "0ff323f9",
+        "FNV1a-64": "8943628b9f33b719",
+        "FNV1a-128": "6883d8a760757277b806e92e125ae1b1",
+        "FNV1a-256": "e46ddd4ed460b353546201459f2a8e9d123f79d831721584cc463c9f2c963e49",
+        "FNV1a-512": "f9fe9eefe38ca43fcf36c8fbc0d25bef51e6a67f8f00000000002a5259a146c7" \
+                      "f24cae042d99828e5baba0a28b18bf530de9c3137ca2a36973f8d09d5c15a7e5",
+        "FNV1a-1024": "00000000026f791f9147aedad1354bef7d238f3219005cbd6e8d664f6b4eefdb" \
+                       "e94929e41548c220b723b3000000000000000000000000000000000000000000" \
+                       "000000000000000000000000000000000000000000000000001ba08046e07e04" \
+                       "18fb7be0ec07b8ea87a61bb4f073e2bab740db8398ef60cb9b50c03425e2bfcb",
+        # https://github.com/jonelo/jacksum
+        "FNV0-32": "12f20e74",
+        "FNV0-64": "322b16013e2b90b4",
+        "FNV0-128": "0001269d560000000000000078b586e4",
+        "FNV0-256": "000000000000000177aa160000000000000000000000000000000000adcdc6d4",
+        "FNV0-512": "0000000000000000000000000000000000015eb8860000000000000000000000" \
+                     "000000000000000000000000000000000000000000000000000000009cc9008c",
+        "FNV0-1024": "0000000000000000000000000000000000000000000000000000000000000000" \
+                      "0000000000000001d42c62000000000000000000000000000000000000000000" \
+                      "0000000000000000000000000000000000000000000000000000000000000000" \
+                      "00000000000000000000000000000000000000000000000000000000f1cf1978",
+        # self
+        "FNV0a-32": "470cc09c",
+        "FNV0a-64": "6ac7181ca406e1dc",
+        "FNV0a-128": "01e3391fb600000000000094875cfa8c",
+        "FNV0a-256": "00000000000002b6bea35600000000000000000000000000000000f1045ab7fc",
+        "FNV0a-512": "000000000000000000000000000000000272b23c160000000000000000000000" \
+                      "000000000000000000000000000000000000000000000000000000d2114fbb94",
+        "FNV0a-1024": "0000000000000000000000000000000000000000000000000000000000000000" \
+                       "00000000000003c7d7ed72000000000000000000000000000000000000000000" \
+                       "0000000000000000000000000000000000000000000000000000000000000000" \
+                       "00000000000000000000000000000000000000000000000000000176fe2a7f18",
+        # https://github.com/jonelo/jacksum
+        "FORK256": "1ee170ee859491d46f6195d9e1f89eb6036ed081d39cbafc39e9bcce985cad47",
+        # https://asecuritysite.com/hash/gost # codespell:ignore
+        "GOST94": "576f4b986a3922c8f6a176c593362e4968f6e6610303f1784e7d46cdd03eb3f6",
+        # https://github.com/jonelo/jacksum
+        "GOST94cp": "b274b62c68e20657ac10d6196cdbf471d83414e1e7de9263aeb2455f1caf4208",
+        # https://gchq.github.io/CyberChef/
+        "HAS-160": "844dddb5575ca4ed659c371f20087044bfb9c221",
+        # https://www.webutils.pl/index.php?idx=haval
+        "HAVAL128,3": "c0714c1b833e9a4ed44ed93b2cca88b6",
+        "HAVAL128,4": "b465b22fd9b6f436e5d90a8836a9c616",
+        "HAVAL128,5": "fb9a05afe6d19341182ea75d7874aeaa",
+        "HAVAL160,3": "9d2d2bb1b6be8d8f22d6e20f4c8f2ef4e025e269",
+        "HAVAL160,4": "35124a6218a70fa697aab04d918fa196dda63872",
+        "HAVAL160,5": "8fefc392e9e98e585b76feb9f8066c32e4d37672",
+        "HAVAL192,3": "ab18bffc90d9fb45420ea5ee8a3c7b465b6dccc1ba00b96c",
+        "HAVAL192,4": "eb490a5b80f93a42268a04d0f2f63a8787a81bb2dcebb0d6",
+        "HAVAL192,5": "5696c29456f9503df358ffd08bd018ad57834c0c43377cd1",
+        "HAVAL224,3": "821d27c7ebac996e15f8ff7566883b32f685728917d3ca66f3f21d69",
+        "HAVAL224,4": "cc91f9a6201475df6f07ed7f19a807494fd4b227cef5e73c8a46469b",
+        "HAVAL224,5": "faabba324382eddf559f79dd62088c38df9b66334089ab898c24e629",
+        "HAVAL256,3": "494445fabc7b3251026471b327b563333aadf434b15d6a1191a8cc7e2d8d2e1f",
+        "HAVAL256,4": "990c486c1d43b86b88b3aa8be2208095185501c36cd3c8e124f7b7e2b2f17e1b",
+        "HAVAL256,5": "df3b465b42f9adadeaf4e28a3f0792c7332ead5875a5cef12140d031924cd8e7",
+        # pycryptodome
+        "KangarooTwelve128-128": "15d4a67bd0f8e88ffbc6cd44eaf4c196",
+        "KangarooTwelve128-256": "15d4a67bd0f8e88ffbc6cd44eaf4c1964a5f87eefae90aebba9f0f123f62271b",
+        "KangarooTwelve128-512": "15d4a67bd0f8e88ffbc6cd44eaf4c1964a5f87eefae90aebba9f0f123f62271b" \
+                                 "9cc48e4140bf92aca5dbf82d43e631fbef0df5fe511ee5810cddae79701a0a00",
+        # https://marekknapek.github.io/hash/
+        "KangarooTwelve256-128": "551e1a849f04f415fdfc175ff014d27d",
+        "KangarooTwelve256-256": "551e1a849f04f415fdfc175ff014d27db1f6f21e7cb89f4260dc237f95c4accc",
+        "KangarooTwelve256-512": "551e1a849f04f415fdfc175ff014d27db1f6f21e7cb89f4260dc237f95c4accc" \
+                                 "5f1ed07d7990a512bb18a7ff813c734a4a846502e4d74e286d2fa4f692c8abca",
+        # pycryptodome
+        "KMAC128-128": "ab430646fd5b4d845845eb9e58e5b5da",
+        "KMAC128-256": "22a26ebd5b727db05aecc0c8d43d38dd219e2114aaa21d3e7f0cbe475cea1b69",
+        "KMAC128-512": "68a0869543c57bb495d75257a625e054b8c85782838cb157ad5e5e1c306ac29a" \
+                       "79d1b54f84fba43a1973d60cccac8356b757b8c79523533f0d7395f238bfd4b5",
+        "KMAC256-128": "aa58df37139ee03fb259be20309011fe",
+        "KMAC256-256": "b493a1bf9da2ca2153a8b5cb3a3e17c30201e71b414e4428c550be1364dfa551",
+        "KMAC256-512": "d5b57d5716825a227c44114cd109b057fd0017c944373b1b69132da2b9df85b9" \
+                       "d5d77d1eb900eb1d765e0554744ccbca63403542478488dcc860262e7e8df9aa",
+        # https://github.com/dstucrypt/dstu7564
+        "Kupyna256": "92a6074cf10c88c1e05f5e23e9f38a69a3e5d2219a3d5e18b585bc564477e29a",
+        "Kupyna384": "87bf930aefca3f96bf86d47bb7d8046b547250f828dca07e679be902c307ab34" \
+                     "1f1a6a120b8085aa2da0d8806686c2d7",
+        "Kupyna512": "b77674b2a30e91f0106a85acf65c2ae087bf930aefca3f96bf86d47bb7d8046b" \
+                     "547250f828dca07e679be902c307ab341f1a6a120b8085aa2da0d8806686c2d7",
+        # https://asecuritysite.com/hash/lmhash
+        "LM hash": "dcf9caa6dbc2f2dfaad3b435b51404ee",
+        # https://github.com/jonelo/jacksum
+        "LSH256-224": "2a5a6f285ea628e2c5573c9bd66050f3f2b5b0a0e3ddce1b36d57e72",
+        "LSH256-256": "d3fe55d8ad2a50827b7bdf0dac026096a2f270453312b2cd94e9145073e9a942",
+        "LSH512-224": "bdc0991d9d6d813d44dd8d9e6fa9b767a585d576e08bcb6680a5e6f5",
+        "LSH512-256": "ff3129658616be12002c29be4f52877fda120a94f1c55a318f5959006ef0aa0b",
+        "LSH512-384": "78a457fe84429c854212f5cf765fee4dcd8cc62bf649a453ab76d8ee1b37077b" \
+                      "f28e64133cc007099ffbda39fcdc3c4a",
+        "LSH512-512": "267ccc1a5fd8e562864a8c934dc181f3f9ed07ed08843c52314b8ab2e0c09679" \
+                      "2e52e028069ceacfdadd62a71aa322f007a3706801a21778e74f7f591b60e4a3",
+        # https://github.com/jonelo/jacksum
+        "MarsupilamiFourteen": "919bed60248f664ff5272a86716c313a67a84eba658e67dcafe4f5bcdea6d293" \
+                               "fc100f65369237cc223c75f94a391e7ddac08c7bfcf14e36d58031c1fafe5e17",
+        # https://marekknapek.github.io/hash/
+        "MD2": "3fc0aab8f5715786a02393555aa9393c",
+        # https://marekknapek.github.io/hash/
+        "MD4": "90353ed2d3d2cd620347ff246e8fbab6",
+        # https://github.com/jonelo/jacksum
+        "MDC-2": "3d15b2993b260f9a295a7ea540b466bd",
+        # https://asecuritysite.com/hash/lmhash
+        "NTLM hash": "d7f46ed5fb59a15e1b6db14e813e2799",
+        # https://github.com/jonelo/jacksum
+        "Panama": "e0469269f7cf934863962838b33f9f145a75d28a56985cd66a96e572121c0f45",
+        # https://github.com/jonelo/jacksum
+        "RadioGatun32": "17dc1e3f7d87f05772f63bef9f737d3bbb75864dc8fc21f82ea27b773257842f",
+        "RadioGatun64": "0ddd58801c1203f939771bfcf8224bbf917ca34a7fe28fa0a0353ee5507c6e2e",
+        # https://www.webutils.pl/index.php?idx=ripemd
+        "RIPEMD-128": "cf40e861b1e917889720ce2ee335b4c1",
+        "RIPEMD-160": "5b481bd818e7863b580488f6174b2fdf48c211a2",
+        "RIPEMD-256": "87c1ac0a90061fc771e4f5403b830cbbd87b5f7fc5e1a8e836b822e89e39c34a",
+        "RIPEMD-320": "aa5516597409ecb2415a71251fe1a711f271f477d6428c72f02dcdfc985c8a2a" \
+                      "a4e930bbe83ac3c7",
+        # https://marekknapek.github.io/hash/
+        "SHA-0": "4c472b324e6216a90dac5d070363fc3f7644f6f0",
+        # https://md5hashing.net/hash/snefru
+        "Snefru128": "b3b1dc5b943d0715844079f616b6dbae",
+        # https://md5hashing.net/hash/snefru256
+        "Snefru256": "68a64887d1b87f9767e993d23012ef838b2ca846ceb36d963375e62d7384b929",
+        # https://asecuritysite.com/hash/gost # codespell:ignore
+        "Streebog256": "e50036abf764cf12777cbda188b0e5474ebdb087496b4a7b03554fcd5a51675f",
+        "Streebog512": "a0967a41cc08e7fe4c997c9a4c5973f12a0db343d09050c0bf9eb95d262ed105" \
+                       "1e17dac859513452e0849a98a957b1560cf7f27eba353a23f80a231885a81ffc",
+        # https://www.webutils.pl/index.php?idx=tiger
+        "TIGER128,3": "11084622b563ab8b87146e6143abdbcf",
+        "TIGER160,3": "11084622b563ab8b87146e6143abdbcf24b3362d",
+        "TIGER192,3": "11084622b563ab8b87146e6143abdbcf24b3362dcbffb26a",
+        "TIGER128,4": "4de9258c8efb8ea92170f381be19c354",
+        "TIGER160,4": "4de9258c8efb8ea92170f381be19c354373622d3",
+        "TIGER192,4": "4de9258c8efb8ea92170f381be19c354373622d349897286",
+        # https://marekknapek.github.io/hash/
+        "TIGER2/128,3": "71973b53e246026a865b3826aa65f5eb",
+        "TIGER2/160,3": "71973b53e246026a865b3826aa65f5eb4ff94cd6",
+        "TIGER2/192,3": "71973b53e246026a865b3826aa65f5eb4ff94cd6cf0cd8fa",
+        # pycryptodome
+        "TupleHash128-128": "fc7c5cdeb2236fa96533c8ef5dc224c8",
+        "TupleHash128-256": "4ecffd54182a733b743c567cceaa1885a3c91a0254bf501d5c52e7d436f5736a",
+        "TupleHash128-512": "4ce4199c3cc3510ea00d6cee71369e5736b5dc491e9965508c6e03add7d2ffad" \
+                            "3e51b198bcc32c0a2b5eb4bf3570418399a10f958226cd96cf47966fc8684f04",
+        "TupleHash256-128": "c3a2ea77db796e5f28eec65b0638e1eb",
+        "TupleHash256-256": "d434dd5b7208302f753591b9801169a687f5f1611a2132941e83a9ad7de9fe6a",
+        "TupleHash256-512": "47f7874de70ff2bec15a58dd721326bf14150467a27b0bc90c69df4fd322cf7a" \
+                            "db54f98257b71a88f5ce066d8bb8cd0e858cdc2fd82b083df8dbd10a7d19fa2b",
+        # pycryptodome
+        "TurboSHAKE128-128": "6a03eb22b6f9245cb048561ca750216b",
+        "TurboSHAKE128-256": "6a03eb22b6f9245cb048561ca750216b9637f3c4de590199cdf739277f117561",
+        "TurboSHAKE128-512": "6a03eb22b6f9245cb048561ca750216b9637f3c4de590199cdf739277f117561" \
+                            "242dfdc618f3039ac8ebd9e3deabe8e594bf9f02fc999c786db6035a0f89a0e6",
+        "TurboSHAKE256-128": "9ea8526cc9233c0d27a2a2039f096be0",
+        "TurboSHAKE256-256": "9ea8526cc9233c0d27a2a2039f096be04e92fd82eb39c69d81c1f2ee6b01060d",
+        "TurboSHAKE256-512": "9ea8526cc9233c0d27a2a2039f096be04e92fd82eb39c69d81c1f2ee6b01060d" \
+                             "76ce6c0b61cfeb164d31b0ba2f0abb4a6aa3ef25901f2ca13a3c556e442ccb6f",
+        # https://asecuritysite.com/javascript/js04
+        "Whirlpool-0": "6fb2d3919950eb545e9295b905bc22ce2aee368193994c7c6dfe8a643669ee49" \
+                       "407ac9f93e88f7fa00f805790e444f39dcade4e03b94c5453335b4bb7f3456e4",
+        "Whirlpool-T": "04577eb557964ddee0775a8aea4b11ed6168a0e2d108ec4c35acebf34a5d8b20" \
+                       "b580321adc1b773f5110cf0279640d87d8b4b0d848a62b06e45800170a7a6e3c",
+        "Whirlpool": "78541cfb65b3f1a3959bcc844273862857f76bd32765400070d1cc0c9956af63" \
+                     "c12a26a96aa0f4f7e62eb9e7f0f187f5a46b8f92e14f96f41b10168222be8b2f",
+        # -------------------- relatively short --------------------
+        # https://asecuritysite.com/hash/smh
+        "CityHash32": "ba1fe1de",
+        "CityHash64": "d0e3a446f95cab20",
+        "CityHash128": "0a57b660d4207cd70fae0f385c9442af",
+        # https://asecuritysite.com/hash/smh
+        "FarmHash32 (fp)": "ba1fe1de",
+        "FarmHash64 (fp)": "d0e3a446f95cab20",
+        "FarmHash128 (fp)": "0fae0f385c9442af0a57b660d4207cd7",
+        # https://github.com/ztanml/fast-hash
+        "FastHash32": "76f00c7a",
+        "FastHash64": "12b481039cc37489",
+        # https://pypi.org/project/siphash-cffi/
+        "HalfSipHash32_2_4": "c4fc2f58",
+        "HalfSipHash64_2_4": "ca03fd7a9e4e5b1b",
+        # https://asecuritysite.com/hash/smh_Halftime
+        "HalfTimeHash64": "e35a3ccbfdb1141a",
+        "HalfTimeHash128": "9cb91ba4310167e8",
+        "HalfTimeHash256": "c544a39d9a2a450a",
+        "HalfTimeHash512": "b9202baff3881d67",
+        # https://asecuritysite.com/hash/smh
+        "HighwayHash64": "0b026f1ded9e24ab",
+        "HighwayHash128": "a381734b906dba499c04376ee01b8b4f",
+        "HighwayHash256": "3f8e342fdd1651aeadcc4da5ab7fca0ef690bb56a66929c5411e693b0a8dc3ae",
+        # https://asecuritysite.com/hash/smh
+        "MetroHash64": "f6401ec51c1aba77", # need byte swap
+        "MetroHash128": "086a19058454fe348734adf6946ae1ec", # need byte swap
+        # https://asecuritysite.com/hash/smh
+        "Murmur1": "4f0cd660", # need int->hex (LE)
+        # https://murmurhash.shorelabs.com/
+        "Murmur2": "d9734258", # need int->hex (LE)
+        # https://www.ciphertools.org/tools/murmur2/text
+        "Murmur2a": "9aef82bf", # need int->hex (LE)
+        # https://www.ciphertools.org/tools/murmur2/text
+        "Murmur64a": "04c070c3f10e8471", # need int->hex(LE)
+        "Murmur64b": "d3162f20c6346d8c", # need int->hex(LE)
+        # https://murmurhash.shorelabs.com/
+        "Murmur3a": "3c670daa", # need int->hex (LE)
+        "Murmur3c": "845f46cf34f35c3b34f35c3b34f35c3b", # need 4-byte swap
+        "Murmur3f": "fc765a89dd529b4885593d95128e23c1", # need 8-byte swap
+        # https://pypi.org/project/siphash-cffi/
+        "SipHash64_2_4": "853440dfa96333a1",
+        "SipHash64_1_3": "9ea30335f2d625ec",
+        "SipHash64_4_8": "b42c9060b6f9d0e0",
+        "SipHash128_2_4": "9e417e4039896730590b7de94f430610",
+        "SipHash128_4_8": "842457abcbb1467aabaa841d7b7e5986",
+        # https://asecuritysite.com/hash/smh
+        "SpookyHash32": "29289f57", # need byte swap
+        "SpookyHash64": "29289f5710bd2825", # need byte swap
+        "SpookyHash128": "29289f5710bd2825c2607e47db8ff439",
+        # https://asecuritysite.com/hash/smh_t1ha
+        "T1HA0_32": "ea20dace",
+        "T1HA0_64": "fc6ac5b8fd7be2a2",
+        "T1HA1_64": "ec12ff5c6a2e80f7",
+        "T1HA2_64": "fc6ac5b8fd7be2a2",
+        "T1HA2_128": "3728551b03a1300f9ec6bd85baff1c7a",
+        # https://www.coderstool.com/xxh-hash-generator
+        "xxHash32": "02b6a9f5",
+        "xxHash64": "cf40b5b72bc43e77",
+        "xxHash3-64": "ab12e0c62bf99c9d",
+        "xxHash3-128": "4a304154487284efd582166935acd8a2",
+        # https://asecuritysite.com/hash/smh
+        "WYHash32": "46ae4e6b",
+        "WYHash64": "0380a909f6736d7e",
+        # -------------------- checksum --------------------
+        # https://asecuritysite.com/hash/gphash
+        "RS Hash": "8ffbc5b0",
+        # https://www.convertcase.com/hashing/js-hash-calculator
+        "JS Hash": "408c6482",
+        # https://www.convertcase.com/hashing/pjw-hash-calculator
+        "PJW Hash": "00045551",
+        # https://github.com/jonelo/jacksum
+        "ELF Hash": "00045551",
+        # https://www.ciphertools.org/tools/bkdr/text
+        "BKDR Hash": "08c6db28",
+        # https://md5hashing.net/hash/sdbm
+        "SDBM Hash": "f07e0080",
+        # https://www.convertcase.com/hashing/djb-hash-calculator
+        "DJB2 (add)": "7c81d149",
+        # https://md5hashing.net/hash/djb2
+        "DJB2 (xor)": "7c7e8745",
+        # https://www.convertcase.com/hashing/dek-hash-calculator
+        "DEK Hash": "00618c61",
+        # https://www.partow.net/programming/hashfunctions/ (C implementation)
+        "AP Hash": "d9305920",
+        # https://md5hashing.net/hash/joaat
+        "JOAAT": "b010242c",
+        # https://md5calc.com/hash/adler32
+        "Adler32": "028e0105",
+        # https://github.com/mjethani/superfasthash
+        "SuperFastHash": "78c89319",
+        # https://github.com/silvasur/buzhash
+        "BuzHash": "dd867b31",
+        # https://metacpan.org/release/MOOLI/Algorithm-Nhash-0.002/source/lib/Algorithm/Nhash.pm
+        "NHash": "6db0",
+        # -------------------- MD5/SHA1/SHA256 n-times --------------------
+        # self
+        "MD5 x2 (raw)": "e5c0442336da4b88d1bb70f1c00a8d81",
+        "MD5 x3 (raw)": "455f9b73a7efe384e74d1ebab057af06",
+        "MD5 x4 (raw)": "5f2f0e30010bccc4e18b9d3cb88c9acc",
+        "MD5 x5 (raw)": "08baf4479c845a5117afe7e7e0e0bca6",
+        "MD5 x2 (hex)": "9686b1b7998742893c8148e861d08f9b",
+        "MD5 x3 (hex)": "b40c55e3e2fdd508db889d8c71b230f1",
+        "MD5 x4 (hex)": "1176317362643bc09c6f5f6f0b3ac537",
+        "MD5 x5 (hex)": "dd76badc1f5ade24f6e69c2c80010e08",
+        "SHA1 x2 (raw)": "73a62eaf29047523804a1c4d73034eb847b186c2",
+        "SHA1 x3 (raw)": "473c4c59c91fabd5ad9dc6f1a7006d0783e5351f",
+        "SHA1 x4 (raw)": "312dc0119fe87d2fafb54453d8dd160dfe2e9a64",
+        "SHA1 x5 (raw)": "29d206ef78d6f72b0de1410bfb103c6bf6bf930a",
+        "SHA1 x2 (hex)": "fa901279e7d1f9fb8801ee2b26f94bfbedc52ad2",
+        "SHA1 x3 (hex)": "8d42601236e8a82ff4068a24703b2798a074af19",
+        "SHA1 x4 (hex)": "4608d6cdd1043c4f2da31c258408f55a6b44e2cd",
+        "SHA1 x5 (hex)": "846f4690c284c2daed1b2b19b2a18f0dab2fd598",
+        "SHA256 x2 (raw)": "fcdedab12f9eb01b4a8e47d2b0b7fe01aef336267e703b30c9953461f0779c67",
+        "SHA256 x3 (raw)": "bfb3a50ba6a2feb2c0d8a6101f1ae6a8bb40a1947a4c68c45f05ceed859c271d",
+        "SHA256 x4 (raw)": "3da31d9e1700e0e154283f650a638b618b7ee7cb7952291d61bb8dbc870e1bfe",
+        "SHA256 x5 (raw)": "acf7b5dbb971d39af81dcc5e944c4bda6cf37bb8c0b3d79da0a4311b300497a4",
+        "SHA256 x2 (hex)": "bc60b809690fd31029823d942f495c9f10260303212074fc7991916dc1e90b8e",
+        "SHA256 x3 (hex)": "dd4eaec01b7b005ec00747b3c102ebde369bedae55bc295376616cb06889d4b5",
+        "SHA256 x4 (hex)": "30417a796ae57d36b0740249797c91764acb62c57581ea041276df2f3b257c7a",
+        "SHA256 x5 (hex)": "87bef0ca44ef6618f81b1a846a2f2b62643a63ee25535968c642a3fc4ea94f53",
+    }
+
+    def hash_check_one(self, hname, h):
+        bit = len(h) * 4
+        byte = bit // 8
+
+        expected = self.test_vector_AAAA.get(hname, None)
+        if expected is None:
+            self.err_add_out("{:18s}:[{:3d}b/{:2d}B] {:s}".format(hname, bit, byte, "Not found"))
+            return
+
+        if expected != h:
+            self.err_add_out("{:18s}:[{:3d}b/{:2d}B] {:s}".format(hname, bit, byte, "Failed"))
+            return
+
+        if not self.args.smart:
+            self.info_add_out("{:18s}:[{:3d}b/{:2d}B] {:s}".format(hname, bit, byte, "Success"))
+        return
+
+    def hash_test(self):
+        value = b"AAAA"
+        self.out.append(titlify("Hash({!r})".format(value)))
+
+        for elem in self.get_valid_hash_funcs():
+            if isinstance(elem, str):
+                self.out.append(titlify(elem))
+                continue
+            hname, hfunc = elem
+            if not self.should_be_displayed(hname, hfunc):
+               continue
+            hfunc.update(value)
+            h = hfunc.hexdigest()
+            self.hash_check_one(hname, h)
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        self.out = []
+        self.hash_test()
         self.print_output(check_terminal_size=True)
         return
 
@@ -92099,539 +93782,6 @@ class HashKnownCollisionCommand(HashCommand, BufferingOutput):
         self.out = []
         self.show_md5_hash_collision()
         self.show_sha1_hash_collision()
-        self.print_output(check_terminal_size=True)
-        return
-
-
-@register_command
-class HashTestCommand(HashCommand, BufferingOutput):
-    """Calculate and check hash from constant inputs."""
-
-    _cmdline_ = "hash test"
-    _category_ = "03-e. Memory - Calculation"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-f", "--filter", metavar="REGEX", type=re.compile, default=[], action="append",
-                        help="filter by REGEX pattern.")
-    parser.add_argument("-l", "--length-filter", type=AddressUtil.parse_address,
-                        help="filter by hash byte length.")
-    parser.add_argument("-s", "--smart", action="store_true", help="show only failed.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    _syntax_ = parser.format_help()
-
-    _note_ = None
-
-    def __init__(self):
-        super().__init__(prefix=False, complete=gdb.COMPLETE_NONE)
-        return
-
-    test_vector_AAAA = {
-        # hashlib
-        "MD5": "098890dde069e9abad63f19a0d9e1f32",
-        "SHA1": "e2512172abf8cc9f67fdd49eb6cacf2df71bbad3",
-        "MD5-SHA1": "098890dde069e9abad63f19a0d9e1f32e2512172abf8cc9f67fdd49eb6cacf2d" \
-                    "f71bbad3",
-        "SHA224": "5cdde10ca4df3e7e6e0e428f683e1c6ca0bfb917555ad94727a3f344",
-        "SHA256": "63c1dd951ffedf6f7fd968ad4efa39b8ed584f162f46e715114ee184f8de9201",
-        "SHA384": "d8bf1572ab3b9bc239325d2a657ad37cb8fa6cb32c2d83cddee33be1238eb7a4" \
-                    "0b33d1bc796b426b6c68c22e4769dea2",
-        "SHA512": "53b74be8b295b733fdfafbd7d2a22b1686733740de7fdc592b26cf3e1874cfce" \
-                    "158170ce9230e24696331a61829244e5d9f48abdacc9ffa8c4cb498724844cf8",
-        "SHA512/224": "42707cc06636e3a479f5bc19bbc3c31249805072993efb715e16f273",
-        "SHA512/256": "d01e3d10611ee4b5b1e570be2e8e9d76988781c40e1a3ecc930d5298fb541e27",
-        "SHA3-224": "5accd6cfeec028803453ddd46aed0f9281336fc2215484d0f9110336",
-        "SHA3-256": "5ba7fe44cc7b13be0a25d2caccd80443c79835c38aa6945c714ab689d2f10c13",
-        "SHA3-384": "78f27d6e5727ff2ce7bfba5d7aeed27def619abb73e779771130ad0851d748db" \
-                    "6327456280c3b5cfacad0d8ad84e108c",
-        "SHA3-512": "990fb60e8dbd852804795c671db3a97b8b37685976026672d8164b05be0e9a55" \
-                    "5ed0a9e30668abcfaed0a34d3610dbbbb9ac615a92545b4654f13a39cb7f07ba",
-        "BLAKE2s": "ad0b5f0ea7abe50530487c4d1f0de59699955eca58fa60372863927620bba191",
-        "BLAKE2b": "5448fb61bfeba39eb14a49f72310ab14653b230655b0adccadcb31148602317a" \
-                   "f3bcef80f09f0945f06607465a0e467ab8cf257a3088d25065aded9fc0963271",
-        "SM3": "2afccdaa7f803b0bc90b1b7f2ac18c03f0297b989d573e1514267dc73909e4e4",
-        "SHAKE128-128": "547260c6330814b54770daad5b39c15a",
-        "SHAKE128-256": "547260c6330814b54770daad5b39c15ad159de955afc13622d9fa7b7d1899536",
-        "SHAKE128-512": "547260c6330814b54770daad5b39c15ad159de955afc13622d9fa7b7d1899536" \
-                         "74bb09f145b5979df9b9a05d214f9ae625e22bb9f72f319fae6d9877ee606335",
-        "SHAKE256-128": "ded2952bb56c24ea5c198e9f6a641a70",
-        "SHAKE256-256": "ded2952bb56c24ea5c198e9f6a641a70c4306ba75123e15c4f5e445013133d82",
-        "SHAKE256-512": "ded2952bb56c24ea5c198e9f6a641a70c4306ba75123e15c4f5e445013133d82" \
-                         "4ca42c15720c7a8e9e8e0d2cce0ace4c82e80a579cfba4575cd59170fb3fd97c",
-        # pycryptodome
-        "Keccak224": "6481454863fcf20ef04ec24dd2e70094aa62fa3be3038336d3fa5a76",
-        "Keccak256": "e6b6ca9b98ea0c1b64bee9382438c8c99f35bc4d680bcca9f2db31a577915fe4",
-        "Keccak384": "f1e59400c4f5e9db9bbc7246a2debcbcac52814d5440e050837f2cf8c844b210" \
-                      "1e4a0fe41a6ce30161235a3854a39573",
-        "Keccak512": "271675245024e6db7c455a67cef6df927bb0cc50344976ca8741d5a81e812301" \
-                      "296f84dbd23b0639c4ecf318da8c284a00e7208cc73ff6de2b4252c4ce828787",
-        "TurboSHAKE128-128": "6a03eb22b6f9245cb048561ca750216b",
-        "TurboSHAKE128-256": "6a03eb22b6f9245cb048561ca750216b9637f3c4de590199cdf739277f117561",
-        "TurboSHAKE128-512": "6a03eb22b6f9245cb048561ca750216b9637f3c4de590199cdf739277f117561" \
-                            "242dfdc618f3039ac8ebd9e3deabe8e594bf9f02fc999c786db6035a0f89a0e6",
-        "TurboSHAKE256-128": "9ea8526cc9233c0d27a2a2039f096be0",
-        "TurboSHAKE256-256": "9ea8526cc9233c0d27a2a2039f096be04e92fd82eb39c69d81c1f2ee6b01060d",
-        "TurboSHAKE256-512": "9ea8526cc9233c0d27a2a2039f096be04e92fd82eb39c69d81c1f2ee6b01060d" \
-                             "76ce6c0b61cfeb164d31b0ba2f0abb4a6aa3ef25901f2ca13a3c556e442ccb6f",
-        "KangarooTwelve128-128": "15d4a67bd0f8e88ffbc6cd44eaf4c196",
-        "KangarooTwelve128-256": "15d4a67bd0f8e88ffbc6cd44eaf4c1964a5f87eefae90aebba9f0f123f62271b",
-        "KangarooTwelve128-512": "15d4a67bd0f8e88ffbc6cd44eaf4c1964a5f87eefae90aebba9f0f123f62271b" \
-                                 "9cc48e4140bf92aca5dbf82d43e631fbef0df5fe511ee5810cddae79701a0a00",
-        "KMAC128-128": "ab430646fd5b4d845845eb9e58e5b5da",
-        "KMAC128-256": "22a26ebd5b727db05aecc0c8d43d38dd219e2114aaa21d3e7f0cbe475cea1b69",
-        "KMAC128-512": "68a0869543c57bb495d75257a625e054b8c85782838cb157ad5e5e1c306ac29a" \
-                       "79d1b54f84fba43a1973d60cccac8356b757b8c79523533f0d7395f238bfd4b5",
-        "KMAC256-128": "aa58df37139ee03fb259be20309011fe",
-        "KMAC256-256": "b493a1bf9da2ca2153a8b5cb3a3e17c30201e71b414e4428c550be1364dfa551",
-        "KMAC256-512": "d5b57d5716825a227c44114cd109b057fd0017c944373b1b69132da2b9df85b9" \
-                       "d5d77d1eb900eb1d765e0554744ccbca63403542478488dcc860262e7e8df9aa",
-        "TupleHash128-128": "fc7c5cdeb2236fa96533c8ef5dc224c8",
-        "TupleHash128-256": "4ecffd54182a733b743c567cceaa1885a3c91a0254bf501d5c52e7d436f5736a",
-        "TupleHash128-512": "4ce4199c3cc3510ea00d6cee71369e5736b5dc491e9965508c6e03add7d2ffad" \
-                            "3e51b198bcc32c0a2b5eb4bf3570418399a10f958226cd96cf47966fc8684f04",
-        "TupleHash256-128": "c3a2ea77db796e5f28eec65b0638e1eb",
-        "TupleHash256-256": "d434dd5b7208302f753591b9801169a687f5f1611a2132941e83a9ad7de9fe6a",
-        "TupleHash256-512": "47f7874de70ff2bec15a58dd721326bf14150467a27b0bc90c69df4fd322cf7a" \
-                            "db54f98257b71a88f5ce066d8bb8cd0e858cdc2fd82b083df8dbd10a7d19fa2b",
-        # https://marekknapek.github.io/hash/
-        "KangarooTwelve256-128": "551e1a849f04f415fdfc175ff014d27d",
-        "KangarooTwelve256-256": "551e1a849f04f415fdfc175ff014d27db1f6f21e7cb89f4260dc237f95c4accc",
-        "KangarooTwelve256-512": "551e1a849f04f415fdfc175ff014d27db1f6f21e7cb89f4260dc237f95c4accc" \
-                                 "5f1ed07d7990a512bb18a7ff813c734a4a846502e4d74e286d2fa4f692c8abca",
-        # https://marekknapek.github.io/hash/
-        "SHA-0": "4c472b324e6216a90dac5d070363fc3f7644f6f0",
-        "MD2": "3fc0aab8f5715786a02393555aa9393c",
-        "MD4": "90353ed2d3d2cd620347ff246e8fbab6",
-        # https://asecuritysite.com/javascript/js04
-        "Whirlpool-0": "6fb2d3919950eb545e9295b905bc22ce2aee368193994c7c6dfe8a643669ee49" \
-                       "407ac9f93e88f7fa00f805790e444f39dcade4e03b94c5453335b4bb7f3456e4",
-        "Whirlpool-T": "04577eb557964ddee0775a8aea4b11ed6168a0e2d108ec4c35acebf34a5d8b20" \
-                       "b580321adc1b773f5110cf0279640d87d8b4b0d848a62b06e45800170a7a6e3c",
-        "Whirlpool": "78541cfb65b3f1a3959bcc844273862857f76bd32765400070d1cc0c9956af63" \
-                     "c12a26a96aa0f4f7e62eb9e7f0f187f5a46b8f92e14f96f41b10168222be8b2f",
-        # https://crashdemons.github.io/BLAKE-wasm/
-        "BLAKE-224": "29a7331e595c8d88a40dae3ccebb1830a7462f7c8ca472dd0e0a39ec",
-        "BLAKE-256": "0dd4375066df0e5a2c95fbe58ec0ca260d7c84a1f5054ac8f1636611dcaefd52",
-        "BLAKE-384": "40c7a002d92c7722d21359fd49985be493e584353df3cda76b51ea7d8d0d10f7" \
-                     "305b6f0c5ac6dec3f276fadc6e7ee863",
-        "BLAKE-512": "3c4ce424bb86c770d5ecde021dcffcc17a18a6ee10bef69ac4e33d7f342ce867" \
-                     "d2f59873e3ac804f8610039b2d8ad3cdaaf1b3fc802e1de4bfbd2f3ae080f250",
-        # https://github.com/jonelo/jacksum
-        "BLAKE2sp": "f0af273147167678aea7e95ff9e8f1b5f970aa51febabad5b776c64b6dafce8a",
-        "BLAKE2bp": "308d00127806d7b23eae8c71e81055caae3417be0698369d1de2e559fe4b9aad" \
-                    "0a518d6de295472f4b06e55ba6b0e7607bad78af9eeadc02d29e9ae37fdfe596",
-        # https://emn178.github.io/online-tools/blake3/
-        "BLAKE3-128": "26c7bb3daaaa0439eb3e5c5270e7c4db",
-        "BLAKE3-256": "26c7bb3daaaa0439eb3e5c5270e7c4db05218d8892a0258fbd4911cef5006d23",
-        "BLAKE3-512": "26c7bb3daaaa0439eb3e5c5270e7c4db05218d8892a0258fbd4911cef5006d23" \
-                      "77bc1f40685ce1ea35dfec340a0f2bd050003eed06378b1d113d4ad18eb5de7a",
-        # https://hashing.tools/jh
-        "JH224": "5b1b04276a075566c83100d46bc2dc11e3f966eda7661a5e0cbb7f35",
-        "JH256": "930d87810e8776aa366eba101b6e1fc7cc5d80e84d420c25796cf5d1bbe6d58a",
-        "JH384": "5928217793ba5db4df18bd992018027849d640d7d2c24aaac559c45a20a30128" \
-                 "13ee8fb94976c89a7eb0d6663887a27c",
-        "JH512": "98c8d6a1101a2d6eaa8eed9861ae789cf5b9555aaf399eac0971ad531545377f" \
-                 "19dface152f53768e476b1a3e5ca9bc102c1bbe9400c861561d18641feb8e9f1",
-        # https://hashing.tools/groestl
-        "Groestl224": "dc4231694f7608af592137743b6a8933c733cf529066dbe99bfb8444",
-        "Groestl256": "2dd64197803cffb2dd2e880b4f8d165ddce58ec36bcb34c7128c8558efc4f613",
-        "Groestl384": "b9004dfa83ecef64b89a875c0bda9eafbd89f9a3bbadcc45c4c0d7113de0960a" \
-                      "909e78546e48e1bb2ccaa0019cb7cd9a",
-        "Groestl512": "5a4386660ad4dfcd4eddaf7cf95d9509de55d6de091501b89554ed582492252f" \
-                      "737e753c2bb2f8547a0b87c6ff8a33e2d5a533d796084092df68da74db395bb5",
-        # https://hashing.tools/skein
-        "Skein256-256": "29a9cb5d286ff2998e2f691d63284f60401e34a8a37c263fac8d5cf8296c8710",
-        "Skein256-512": "c5a08ec5b4bb342c5f14efc6fed95207420ef5430dceccdeeeadb0385237b2f0" \
-                        "ee9bf3403065d9d8716608d02830577b2dcab22600b2d9ff9cae425da4a642dc",
-        "Skein256-1024": "b7fb2417f29df9d87ac014bb37c14fcabd521f9a49d52c62ae0f36f5699da929" \
-                         "52694e5dbdaad94e3574965a24770f62d7201b6ee7e16c8f339d8178e1bc39b2" \
-                         "50721cffc4acc0d899cf4410330dc070ebac99f3487a8be1e9be8428e32c2520" \
-                         "901600ddfe3050ba059d1c78e4958ea278e120eaed6ccb3af64fe4b7d29e304a",
-        "Skein512-256": "6ed494c55f491955e0044d412046d2604f6c3a955957484d885b8766a8313552",
-        "Skein512-512": "53f24d27f31e80c5866daf67d347fc1c5124955b3abd5eed04ed0b40a4ec7095" \
-                        "a0b7078f1f128f433c80e6f5b1e99e82fba51190e0ba7b35f5975d9bc7972029",
-        "Skein512-1024": "30423ae9ddff2db5e76cb029f26b574d06701047a5f12d6442a8c745302c3d54" \
-                         "9324297dc697533b58c0d6b23557a72dd7099213739431fd785c12524ca63d70" \
-                         "4d3ec1517fd765143fb18b5d44aafe0498fd032328c4669325090c1f10537985" \
-                         "f49f7602df05fa760a9b6959468b1b5887a3d268a58fb05e678b39fb5de09ab8",
-        "Skein1024-256": "9512fc73fd35e84ee97fa22b4e6aa55228f1b1caf6f51a2868fc693a5f623d57",
-        "Skein1024-512": "9983ceda6fa87f3f03f322c24e4da4612c1857b98b99810eb4383b71974c1327" \
-                         "5de652009a9d4b50eb5830ee990f48257e2ec2110bf3727acb712929a17e358d",
-        "Skein1024-1024": "44b1a34b55cd4ca8b3e259fc7b02af20aedbc348818eb3f6d00ae98bcade259f" \
-                          "5e0d6460bac703a8523aa5e5d473f8f8405eeb65ec4f1a8674ec516cd98ecf0c" \
-                          "1b036309f8b8890a6d180badb9168eea94c542de001f55970bb005895724c2ac" \
-                          "54a810545b3e34e14cd546c0dcb6e51b93b056defa935e155b9e26c76f3a04ab",
-        # https://hashing.tools/shabal
-        "Shabal192": "3bad0c036e2d521e83fe0e62992a18240c947437cb05d540",
-        "Shabal224": "86134f04b4e73f2d000769279333448b16cf9e60a3cd121d6d1feaad",
-        "Shabal256": "653522b60c60ba0b01d466fd5b61de4e176032169ef38416b386e233df9ffa27",
-        "Shabal384": "6b8017c27287428e0b6696334a192d2c8825540fe6ce6455f6add58f654befba" \
-                     "9f4fd29e0adf56320fe0f6208315525f",
-        "Shabal512": "0530206770d0011ba26994a2cd16bc5499e68ec8c2a50558da6aecdf46e397cd" \
-                     "7e4372637c4277a44c65351cf4023745917aabd13e4376e962d1c1f5e63fc30f",
-        # https://github.com/dstucrypt/dstu7564
-        "Kupyna256": "92a6074cf10c88c1e05f5e23e9f38a69a3e5d2219a3d5e18b585bc564477e29a",
-        "Kupyna384": "87bf930aefca3f96bf86d47bb7d8046b547250f828dca07e679be902c307ab34" \
-                     "1f1a6a120b8085aa2da0d8806686c2d7",
-        "Kupyna512": "b77674b2a30e91f0106a85acf65c2ae087bf930aefca3f96bf86d47bb7d8046b" \
-                     "547250f828dca07e679be902c307ab341f1a6a120b8085aa2da0d8806686c2d7",
-        # self
-        "CubeHash10+1/1+10-256": "501ed22433feb0e6570e2f205e4d30fac20d21d630203b602415f7182a45a867",
-        "CubeHash80+8/1+80-256": "1af3ca351ae221ce8d8d6d8425b63e336b775fb8b63dd2a28fc955d7855ffd88",
-        "CubeHash160+16/32+160-256": "01eb7d4eccafbf839cb45931dfaf617fba7a51253467250b29320b9f3cff06c1",
-        "CubeHash10+1/1+10-512": "f1679fee84b979fc81c3289be62c54bb5b645a7b3bc2656b993dd9bf2292bdae" \
-                                 "1b4a872950837249918c796c07dca11fd0fb78bfc43fd1cd60aa418260243ab4",
-        "CubeHash80+8/1+80-512": "9f96db01948a52f5d59c273aec791927664b273355aec10472bc73f31aa013a2" \
-                                 "19210b2ac5f03b6dac5b4567d4494bfb1fe2ca47211cda9ddd421c52e58faa1a",
-        "CubeHash160+16/32+160-512": "d411897fca1e608564a1a143b7adb9208cca5c03ba78bcdaa5eb00835975e479" \
-                                     "4f23c096ee6571a42fb5264f8a1ec65cb641570d387a454e188abe58a9c352ec",
-        # https://github.com/kerukuro/digestpp
-        "ECHO224": "ba6e4a1a71cbc05a862fb279183ff7373fce210a37c8b62640abae7c",
-        "ECHO256": "ac3be7bd3d27508e8bb8f834abbd2cd847e2b94c0816b451e68f908ce185c4ae",
-        "ECHO384": "2c78438be177bebe1a216a914efea335364e8ed47dbfb1050770f111b2158108f" \
-                   "ec71c8465720658142a766164ff1ab7",
-        "ECHO512": "154b84e1956bd907269cb9c81ac2f7cf8ef059109a11ab6e9ce977c4248b5e1ac" \
-                   "19873117932df6258782abf64e782512a5d6883a54906fa8665b0cce1552acd",
-        # https://github.com/jonelo/jacksum
-        "Fugue224": "9f5590d057ec6e9ef4e21151010e5a799aa4e61e5b37a192b1d4386c",
-        "Fugue256": "7933b7f8a1af4e62b4b49a163786be0db6284d5a5a1134a7828d5de17bc6cd20",
-        "Fugue384": "72f0c64915324ac04406080be3bced131aab691079e77497609cb103b484b229" \
-                    "f02b1e7fedde0e5fcc527a1b17b98ade",
-        "Fugue512": "04b55f4683f494bcbd34fb19dc93b104029b9e3c32e6febfced23d310375029c" \
-                    "0cce83dfc717d67bdbdd1e03514523aa7b05d6c6d2539aa19d7414ae554dbb65",
-        # https://github.com/aidansteele/sphlib
-        "Hamsi224": "84720b535ab1b0d4a82e08e13f600806f63c814847fdae03d87f7864",
-        "Hamsi256": "13a467388a80e16b5a3c8684c65b16b5035facce7220d42df20132c6cc4527b2",
-        "Hamsi384": "ac6b2182f4abb1be1677aa623cc9c5ed7ac5bd59fb1241acb152704a5124f8b3" \
-                    "d494ee4911bfc0ed27530758fcdc5127",
-        "Hamsi512": "93e143850a911fab4ab2ab6baae26f10e54300f7a640ad6530086d1d4dfa6337" \
-                    "6d18a310a5a16ab0edbd4ac0b1cb0bfaecc5492ef752e802ecab5bb94cb763b8",
-        # https://github.com/jonelo/jacksum
-        "Luffa224": "d21e910aa3a24791ae18dddbd0da5475bc3ec9c2642d4bd5e48e0e67",
-        "Luffa256": "d21e910aa3a24791ae18dddbd0da5475bc3ec9c2642d4bd5e48e0e67129b65d8",
-        "Luffa384": "9b2565ffa5894b9c3417d415c0a39fe3247e485e4758324eae785c4d600b5eda" \
-                    "9b257daffffeba1bf9de22d488417c4d",
-        "Luffa512": "0f58baf41fc01e0854b6d3bda78a6fda7b744841a725c63252b6d4d9e342f2f1" \
-                    "39151ba29be81cc2d8281ce170b2603498f7dd8dc71675f7773cd72ba4dbc422",
-        # https://github.com/jonelo/jacksum
-        "ESCH256": "bfa63c4eddacd1b5b54d1aee5bc8d77a6682b99adddf3a2a00908e34f321a5ab",
-        "ESCH384": "528e1ca88b46d38fac73d4083cde3755b0ed02caee838e7e47b2d52c42383271" \
-                   "d4fecb027cd6d211516c345febf9604e",
-        # https://github.com/aidansteele/sphlib
-        "SIMD224": "14a4564faac0a13b5c921b5ff1c6529e146ab46976072a2b2cb5f817",
-        "SIMD256": "6a68b05b65a906c430cc854b2ed7e9d9a6b4ddae15f339495e4da68e49092c00",
-        "SIMD384": "44ba5d64e35ccc1da7564cee4762dd02dc208328ae5d5211bbc20e2ee1b63ba2" \
-                   "7124af92ab7f9c64fab7a9d7f94b6b23",
-        "SIMD512": "24949bf23897f6cc00637b4ab352700c778b21f46c2b0607ae6f52898fe9f6ea" \
-                   "68c9fcc663c7e82951faea69b66fe095501fb4b54136fbaf16cbcbe24afbfef2",
-        # https://github.com/aidansteele/sphlib
-        "BMW224": "d2250e5f6be6817a09557403ed3241ef078e366c56949be6aadcf01f",
-        "BMW256": "1f5e707b2e4799f1d6dee11669ae4a3deba97f5e68f8db85a9916fd1dc88454b",
-        "BMW384": "95f4cf7ac9069c408ef1250c96fbb37ed56091707fcb76b07d244c5d2ab96c25" \
-                  "875f780b5ad300c9a4e10b89f47ff539",
-        "BMW512": "6da8db61e74cf44050fb321bca5fd51c2856a9ed432acdb4134459655ec0a460" \
-                  "3eb81e5b0e57e1f0963885ac745a8da140817f6df33413d80884d8bbe623c4a0",
-        # https://hashing.tools/fsb
-        "FSB160": "b0a13fe24c0190e8d53f91e246ea10540e147af3",
-        "FSB224": "207ac5eb161b20be6ca49f7d3d7851a7634bc328ec083bde3488bf3a",
-        "FSB256": "5eb1e8ee65a311f2b06652943b39e0ecb1f2f80d72c8d62b069abed31ae878e7",
-        "FSB384": "26f1b38803c91c7e169f75f1b2ce8e2063db6faa8cf1e27e362c78b50d4098d6" \
-                  "c386b5f4fabc074f7974cb0bc6e5f659",
-        "FSB512": "3177b373816230dc1ada0931de19a1971f08e8f6344194536449f78e89775da2" \
-                  "e3bd53db8366f553424b28cad88a7bf63848cd8f991f182bc31578243daa5bde",
-        # https://github.com/gray/digest-shavite3
-        "SHAvite3-224": "b1814d4448ec5f08996b9a77236ee66f2cd1294fc7a1b1fb7337ae83",
-        "SHAvite3-256": "fa043957aed28fa90d13c0680ac9bc60ce3b84259909ea75ec3ae0b722783aa0",
-        "SHAvite3-384": "333336ff886c555f333a0332b2c91ae0a9ceff8fb2f7122a20b537180747b133" \
-                        "e81e0442c2f92f2c052b52ad4925f61a",
-        "SHAvite3-512": "dea616109d18cce6fffeebabcfd7f698c5c33c4c4175d01ca1463564cbcacaca" \
-                        "187dd4a0b417093acdaa975672b8e087cd3b55f950a02f6799295b916c572533",
-        # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/LANE.zip
-        "Lane224": "3d5570321466295c009ac92b1362a237e2837f10cb4948144c1a4a25",
-        "Lane256": "7979cbede5e1fb39bc4440847685fb709bc49a75d8f4cbef997301e967413c05",
-        "Lane384": "f852ee97c76001fa1a8d48bf3b72b3670adc0bef71e0d4f714038aba49f17543" \
-                   "9ca0ac87dce6a7abb94a04dc51563868",
-        "Lane512": "ce10112d96a3f175066a319d6162169593733a38d631d2e535e2828899ff5a89" \
-                   "e4d48ba3e3648fd57554d78fa879546ed8eb0d3af38237c10ba36b41f8eba878",
-        # https://www.browserling.com/tools/md6-hash
-        "MD6-128": "d92b75252b0b05b8e64db33361b73a03",
-        "MD6-256": "7235c21eafc0992b2cae6eec077a1b5854640e956e3f35a655ec6cc673967735",
-        "MD6-512": "9338e12bc2e524115044daf7ed9f042d47685805d30f8a520b7087e29c60c006" \
-                   "9f2b90a5ee1547e67952e4768e81c26aea30941838ff39a20d477b075ff44438",
-        # https://asecuritysite.com/hash/lmhash
-        "NTLM hash": "d7f46ed5fb59a15e1b6db14e813e2799",
-        "LM hash": "dcf9caa6dbc2f2dfaad3b435b51404ee",
-        # https://www.coderstool.com/xxh-hash-generator
-        "xxHash32": "02b6a9f5",
-        "xxHash64": "cf40b5b72bc43e77",
-        "xxHash3-64": "ab12e0c62bf99c9d",
-        "xxHash3-128": "4a304154487284efd582166935acd8a2",
-        # https://fnvhash.github.io/fnv-calculator-online/
-        "FNV1-32": "2abf8e21",
-        "FNV1-64": "1946e07e5e301541",
-        "FNV1-128": "66ac10a3c0757277b806e89cb5099d59",
-        "FNV1-256": "e46ddd4ed460b0b348e441459f2a8e9d123f79d831721584cc463bb62ecb6471",
-        "FNV1-512": "f9fe9eefe38ca43fcf36c8fbc0d25bef5457f8ac9f00000000002a5259a146c7" \
-                     "f24cae042d99828e5baba0a28b18bf530de9c3137ca2a36973f8d16ecfb745ed",
-        "FNV1-1024": "00000000026f791f9147aedad1354bef7d238f3219005cbd6e8d664f6b4eefdb" \
-                      "e94929e41548be786c9c43000000000000000000000000000000000000000000" \
-                      "000000000000000000000000000000000000000000000000001ba08046e07e04" \
-                      "18fb7be0ec07b8ea87a61bb4f073e2bab740db8398ef60cb9b50bec99be18feb",
-        "FNV1a-32": "0ff323f9",
-        "FNV1a-64": "8943628b9f33b719",
-        "FNV1a-128": "6883d8a760757277b806e92e125ae1b1",
-        "FNV1a-256": "e46ddd4ed460b353546201459f2a8e9d123f79d831721584cc463c9f2c963e49",
-        "FNV1a-512": "f9fe9eefe38ca43fcf36c8fbc0d25bef51e6a67f8f00000000002a5259a146c7" \
-                      "f24cae042d99828e5baba0a28b18bf530de9c3137ca2a36973f8d09d5c15a7e5",
-        "FNV1a-1024": "00000000026f791f9147aedad1354bef7d238f3219005cbd6e8d664f6b4eefdb" \
-                       "e94929e41548c220b723b3000000000000000000000000000000000000000000" \
-                       "000000000000000000000000000000000000000000000000001ba08046e07e04" \
-                       "18fb7be0ec07b8ea87a61bb4f073e2bab740db8398ef60cb9b50c03425e2bfcb",
-        # https://github.com/jonelo/jacksum
-        "FNV0-32": "12f20e74",
-        "FNV0-64": "322b16013e2b90b4",
-        "FNV0-128": "0001269d560000000000000078b586e4",
-        "FNV0-256": "000000000000000177aa160000000000000000000000000000000000adcdc6d4",
-        "FNV0-512": "0000000000000000000000000000000000015eb8860000000000000000000000" \
-                     "000000000000000000000000000000000000000000000000000000009cc9008c",
-        "FNV0-1024": "0000000000000000000000000000000000000000000000000000000000000000" \
-                      "0000000000000001d42c62000000000000000000000000000000000000000000" \
-                      "0000000000000000000000000000000000000000000000000000000000000000" \
-                      "00000000000000000000000000000000000000000000000000000000f1cf1978",
-        # self
-        "FNV0a-32": "470cc09c",
-        "FNV0a-64": "6ac7181ca406e1dc",
-        "FNV0a-128": "01e3391fb600000000000094875cfa8c",
-        "FNV0a-256": "00000000000002b6bea35600000000000000000000000000000000f1045ab7fc",
-        "FNV0a-512": "000000000000000000000000000000000272b23c160000000000000000000000" \
-                      "000000000000000000000000000000000000000000000000000000d2114fbb94",
-        "FNV0a-1024": "0000000000000000000000000000000000000000000000000000000000000000" \
-                       "00000000000003c7d7ed72000000000000000000000000000000000000000000" \
-                       "0000000000000000000000000000000000000000000000000000000000000000" \
-                       "00000000000000000000000000000000000000000000000000000176fe2a7f18",
-        # https://www.webutils.pl/index.php?idx=ripemd
-        "RIPEMD-128": "cf40e861b1e917889720ce2ee335b4c1",
-        "RIPEMD-160": "5b481bd818e7863b580488f6174b2fdf48c211a2",
-        "RIPEMD-256": "87c1ac0a90061fc771e4f5403b830cbbd87b5f7fc5e1a8e836b822e89e39c34a",
-        "RIPEMD-320": "aa5516597409ecb2415a71251fe1a711f271f477d6428c72f02dcdfc985c8a2a" \
-                      "a4e930bbe83ac3c7",
-        # https://www.webutils.pl/index.php?idx=haval
-        "HAVAL128,3": "c0714c1b833e9a4ed44ed93b2cca88b6",
-        "HAVAL128,4": "b465b22fd9b6f436e5d90a8836a9c616",
-        "HAVAL128,5": "fb9a05afe6d19341182ea75d7874aeaa",
-        "HAVAL160,3": "9d2d2bb1b6be8d8f22d6e20f4c8f2ef4e025e269",
-        "HAVAL160,4": "35124a6218a70fa697aab04d918fa196dda63872",
-        "HAVAL160,5": "8fefc392e9e98e585b76feb9f8066c32e4d37672",
-        "HAVAL192,3": "ab18bffc90d9fb45420ea5ee8a3c7b465b6dccc1ba00b96c",
-        "HAVAL192,4": "eb490a5b80f93a42268a04d0f2f63a8787a81bb2dcebb0d6",
-        "HAVAL192,5": "5696c29456f9503df358ffd08bd018ad57834c0c43377cd1",
-        "HAVAL224,3": "821d27c7ebac996e15f8ff7566883b32f685728917d3ca66f3f21d69",
-        "HAVAL224,4": "cc91f9a6201475df6f07ed7f19a807494fd4b227cef5e73c8a46469b",
-        "HAVAL224,5": "faabba324382eddf559f79dd62088c38df9b66334089ab898c24e629",
-        "HAVAL256,3": "494445fabc7b3251026471b327b563333aadf434b15d6a1191a8cc7e2d8d2e1f",
-        "HAVAL256,4": "990c486c1d43b86b88b3aa8be2208095185501c36cd3c8e124f7b7e2b2f17e1b",
-        "HAVAL256,5": "df3b465b42f9adadeaf4e28a3f0792c7332ead5875a5cef12140d031924cd8e7",
-        # https://www.webutils.pl/index.php?idx=tiger
-        "TIGER128,3": "11084622b563ab8b87146e6143abdbcf",
-        "TIGER160,3": "11084622b563ab8b87146e6143abdbcf24b3362d",
-        "TIGER192,3": "11084622b563ab8b87146e6143abdbcf24b3362dcbffb26a",
-        "TIGER128,4": "4de9258c8efb8ea92170f381be19c354",
-        "TIGER160,4": "4de9258c8efb8ea92170f381be19c354373622d3",
-        "TIGER192,4": "4de9258c8efb8ea92170f381be19c354373622d349897286",
-        # https://marekknapek.github.io/hash/
-        "TIGER2/128,3": "71973b53e246026a865b3826aa65f5eb",
-        "TIGER2/160,3": "71973b53e246026a865b3826aa65f5eb4ff94cd6",
-        "TIGER2/192,3": "71973b53e246026a865b3826aa65f5eb4ff94cd6cf0cd8fa",
-        # https://asecuritysite.com/hash/smh
-        "Murmur1": "4f0cd660", # need int->hex (LE)
-        # https://murmurhash.shorelabs.com/
-        "Murmur2": "d9734258", # need int->hex (LE)
-        "Murmur3a": "3c670daa", # need int->hex (LE)
-        "Murmur3c": "845f46cf34f35c3b34f35c3b34f35c3b", # need 4-byte swap
-        "Murmur3f": "fc765a89dd529b4885593d95128e23c1", # need 8-byte swap
-        # https://www.ciphertools.org/tools/murmur2/text
-        "Murmur2a": "9aef82bf", # need int->hex (LE)
-        "Murmur64a": "04c070c3f10e8471", # need int->hex(LE)
-        "Murmur64b": "d3162f20c6346d8c", # need int->hex(LE)
-        # https://github.com/jonelo/jacksum
-        "FORK256": "1ee170ee859491d46f6195d9e1f89eb6036ed081d39cbafc39e9bcce985cad47",
-        # https://hashing.tools/belt
-        "BelT Hash": "3f7355d4b29d2f47e2e832111f01ad06c3d6c9fb51f3d5718299ddc808a0947e",
-        # https://asecuritysite.com/hash/smh
-        "CityHash32": "ba1fe1de",
-        "CityHash64": "d0e3a446f95cab20",
-        "CityHash128": "0a57b660d4207cd70fae0f385c9442af",
-        "FarmHash32 (fp)": "ba1fe1de",
-        "FarmHash64 (fp)": "d0e3a446f95cab20",
-        "FarmHash128 (fp)": "0fae0f385c9442af0a57b660d4207cd7",
-        "MetroHash64": "f6401ec51c1aba77", # need byte swap
-        "MetroHash128": "086a19058454fe348734adf6946ae1ec", # need byte swap
-        "SpookyHash32": "29289f57", # need byte swap
-        "SpookyHash64": "29289f5710bd2825", # need byte swap
-        "SpookyHash128": "29289f5710bd2825c2607e47db8ff439",
-        # https://pypi.org/project/siphash-cffi/
-        "SipHash64_2_4": "853440dfa96333a1",
-        "SipHash64_1_3": "9ea30335f2d625ec",
-        "SipHash64_4_8": "b42c9060b6f9d0e0",
-        "SipHash128_2_4": "9e417e4039896730590b7de94f430610",
-        "SipHash128_4_8": "842457abcbb1467aabaa841d7b7e5986",
-        "HalfSipHash32_2_4": "c4fc2f58",
-        "HalfSipHash64_2_4": "ca03fd7a9e4e5b1b",
-        # https://asecuritysite.com/hash/smh
-        "HighwayHash64": "0b026f1ded9e24ab",
-        "HighwayHash128": "a381734b906dba499c04376ee01b8b4f",
-        "HighwayHash256": "3f8e342fdd1651aeadcc4da5ab7fca0ef690bb56a66929c5411e693b0a8dc3ae",
-        # https://asecuritysite.com/hash/smh_Halftime
-        "HalfTimeHash64": "e35a3ccbfdb1141a",
-        "HalfTimeHash128": "9cb91ba4310167e8",
-        "HalfTimeHash256": "c544a39d9a2a450a",
-        "HalfTimeHash512": "b9202baff3881d67",
-        # https://asecuritysite.com/hash/smh
-        "WYHash32": "46ae4e6b",
-        "WYHash64": "0380a909f6736d7e",
-        # https://gchq.github.io/CyberChef/
-        "HAS-160": "844dddb5575ca4ed659c371f20087044bfb9c221",
-        # https://md5hashing.net/hash/snefru
-        "Snefru128": "b3b1dc5b943d0715844079f616b6dbae",
-        # https://md5hashing.net/hash/snefru256
-        "Snefru256": "68a64887d1b87f9767e993d23012ef838b2ca846ceb36d963375e62d7384b929",
-        # https://github.com/jonelo/jacksum
-        "GOST94cp": "b274b62c68e20657ac10d6196cdbf471d83414e1e7de9263aeb2455f1caf4208",
-        # https://asecuritysite.com/hash/gost # codespell:ignore
-        "GOST94": "576f4b986a3922c8f6a176c593362e4968f6e6610303f1784e7d46cdd03eb3f6",
-        "Streebog256": "e50036abf764cf12777cbda188b0e5474ebdb087496b4a7b03554fcd5a51675f",
-        "Streebog512": "a0967a41cc08e7fe4c997c9a4c5973f12a0db343d09050c0bf9eb95d262ed105" \
-                       "1e17dac859513452e0849a98a957b1560cf7f27eba353a23f80a231885a81ffc",
-        # https://hashing.tools/ascon
-        "Ascon-Hash": "e71806e7b65349943ecc9533937482b14defee112076a2fa80068611b70c74d3",
-        "Ascon-HashA": "43ec1c7e4e95d084c615e23a02463143be37df8dbaec9780182bfc92170af57f",
-        "Ascon-Xof": "3fe739f98bdec9105af35be44832a82b1f957112f7f0b86b603820842373a246" \
-                     "745c1f424299a5b5b4b5aa11261b7522d617b0ca1e11fcb7c5f2b51faf45fc4f" \
-                     "374a4921ad068595cb7345646905fbfc29fa895a2ea1fb848fab795bd7d6fa7d" \
-                     "be2059d3c8b9871cb438ae4a324ddf319d6d95ab2f6ae6a9e62db393b0988d3f",
-        "Ascon-XofA": "6ac0dcf1eb2b323d0c176d841f4f2f6b05d99fb51b0aeb94faa901544314acf2" \
-                      "b8508a1d8b86856a1ae45b3052b490c3c0225adc11ad1e5b07bfe824a6bfbd4a" \
-                      "802f44486562bf88c9718cafbc043ed8b01766b88913942dab9519e7e21f3a73" \
-                      "40586b49b8a3c99a25d5d6fac6e7fa1b06b1cd28423e8fe7802555dde987ff1a",
-        # https://github.com/jonelo/jacksum
-        "LSH256-224": "2a5a6f285ea628e2c5573c9bd66050f3f2b5b0a0e3ddce1b36d57e72",
-        "LSH256-256": "d3fe55d8ad2a50827b7bdf0dac026096a2f270453312b2cd94e9145073e9a942",
-        "LSH512-224": "bdc0991d9d6d813d44dd8d9e6fa9b767a585d576e08bcb6680a5e6f5",
-        "LSH512-256": "ff3129658616be12002c29be4f52877fda120a94f1c55a318f5959006ef0aa0b",
-        "LSH512-384": "78a457fe84429c854212f5cf765fee4dcd8cc62bf649a453ab76d8ee1b37077b" \
-                      "f28e64133cc007099ffbda39fcdc3c4a",
-        "LSH512-512": "267ccc1a5fd8e562864a8c934dc181f3f9ed07ed08843c52314b8ab2e0c09679" \
-                      "2e52e028069ceacfdadd62a71aa322f007a3706801a21778e74f7f591b60e4a3",
-        # https://asecuritysite.com/hash/gphash
-        "RS Hash": "8ffbc5b0",
-        # https://www.convertcase.com/hashing/js-hash-calculator
-        "JS Hash": "408c6482",
-        # https://www.convertcase.com/hashing/pjw-hash-calculator
-        "PJW Hash": "00045551",
-        # https://github.com/jonelo/jacksum
-        "ELF Hash": "00045551",
-        # https://www.ciphertools.org/tools/bkdr/text
-        "BKDR Hash": "08c6db28",
-        # https://md5hashing.net/hash/sdbm
-        "SDBM Hash": "f07e0080",
-        # https://www.convertcase.com/hashing/djb-hash-calculator
-        "DJB2 (add)": "7c81d149",
-        # https://md5hashing.net/hash/djb2
-        "DJB2 (xor)": "7c7e8745",
-        # https://www.convertcase.com/hashing/dek-hash-calculator
-        "DEK Hash": "00618c61",
-        # https://www.partow.net/programming/hashfunctions/ (C implementation)
-        "AP Hash": "d9305920",
-        # https://md5hashing.net/hash/joaat
-        "JOAAT": "b010242c",
-        # https://md5calc.com/hash/adler32
-        "Adler32": "028e0105",
-        # https://github.com/mjethani/superfasthash
-        "SuperFastHash": "78c89319",
-        # https://github.com/ztanml/fast-hash
-        "FastHash32": "76f00c7a",
-        "FastHash64": "12b481039cc37489",
-        # https://github.com/silvasur/buzhash
-        "BuzHash": "dd867b31",
-        # https://metacpan.org/release/MOOLI/Algorithm-Nhash-0.002/source/lib/Algorithm/Nhash.pm
-        "NHash": "6db0",
-        # https://asecuritysite.com/hash/smh_t1ha
-        "T1HA0_32": "ea20dace",
-        "T1HA0_64": "fc6ac5b8fd7be2a2",
-        "T1HA1_64": "ec12ff5c6a2e80f7",
-        "T1HA2_64": "fc6ac5b8fd7be2a2",
-        "T1HA2_128": "3728551b03a1300f9ec6bd85baff1c7a",
-        # self
-        "MD5 x2 (raw)": "e5c0442336da4b88d1bb70f1c00a8d81",
-        "MD5 x3 (raw)": "455f9b73a7efe384e74d1ebab057af06",
-        "MD5 x4 (raw)": "5f2f0e30010bccc4e18b9d3cb88c9acc",
-        "MD5 x5 (raw)": "08baf4479c845a5117afe7e7e0e0bca6",
-        "MD5 x2 (hex)": "9686b1b7998742893c8148e861d08f9b",
-        "MD5 x3 (hex)": "b40c55e3e2fdd508db889d8c71b230f1",
-        "MD5 x4 (hex)": "1176317362643bc09c6f5f6f0b3ac537",
-        "MD5 x5 (hex)": "dd76badc1f5ade24f6e69c2c80010e08",
-        "SHA1 x2 (raw)": "73a62eaf29047523804a1c4d73034eb847b186c2",
-        "SHA1 x3 (raw)": "473c4c59c91fabd5ad9dc6f1a7006d0783e5351f",
-        "SHA1 x4 (raw)": "312dc0119fe87d2fafb54453d8dd160dfe2e9a64",
-        "SHA1 x5 (raw)": "29d206ef78d6f72b0de1410bfb103c6bf6bf930a",
-        "SHA1 x2 (hex)": "fa901279e7d1f9fb8801ee2b26f94bfbedc52ad2",
-        "SHA1 x3 (hex)": "8d42601236e8a82ff4068a24703b2798a074af19",
-        "SHA1 x4 (hex)": "4608d6cdd1043c4f2da31c258408f55a6b44e2cd",
-        "SHA1 x5 (hex)": "846f4690c284c2daed1b2b19b2a18f0dab2fd598",
-        "SHA256 x2 (raw)": "fcdedab12f9eb01b4a8e47d2b0b7fe01aef336267e703b30c9953461f0779c67",
-        "SHA256 x3 (raw)": "bfb3a50ba6a2feb2c0d8a6101f1ae6a8bb40a1947a4c68c45f05ceed859c271d",
-        "SHA256 x4 (raw)": "3da31d9e1700e0e154283f650a638b618b7ee7cb7952291d61bb8dbc870e1bfe",
-        "SHA256 x5 (raw)": "acf7b5dbb971d39af81dcc5e944c4bda6cf37bb8c0b3d79da0a4311b300497a4",
-        "SHA256 x2 (hex)": "bc60b809690fd31029823d942f495c9f10260303212074fc7991916dc1e90b8e",
-        "SHA256 x3 (hex)": "dd4eaec01b7b005ec00747b3c102ebde369bedae55bc295376616cb06889d4b5",
-        "SHA256 x4 (hex)": "30417a796ae57d36b0740249797c91764acb62c57581ea041276df2f3b257c7a",
-        "SHA256 x5 (hex)": "87bef0ca44ef6618f81b1a846a2f2b62643a63ee25535968c642a3fc4ea94f53",
-    }
-
-    def hash_check_one(self, hname, h):
-        bit = len(h) * 4
-        byte = bit // 8
-
-        expected = self.test_vector_AAAA.get(hname, None)
-        if expected is None:
-            self.err_add_out("{:18s}:[{:3d}b/{:2d}B] {:s}".format(hname, bit, byte, "Not found"))
-            return
-
-        if expected != h:
-            self.err_add_out("{:18s}:[{:3d}b/{:2d}B] {:s}".format(hname, bit, byte, "Failed"))
-            return
-
-        if not self.args.smart:
-            self.info_add_out("{:18s}:[{:3d}b/{:2d}B] {:s}".format(hname, bit, byte, "Success"))
-        return
-
-    def hash_test(self):
-        value = b"AAAA"
-        self.out.append(titlify("Hash({!r})".format(value)))
-
-        self.out.append(titlify("hashlib"))
-        for hname, hfunc in self.get_valid_hash_funcs_hashlib():
-            if not self.should_be_displayed(hname, hfunc):
-                continue
-            hfunc.update(value)
-            h = hfunc.hexdigest()
-            self.hash_check_one(hname, h)
-
-        for elem in self.get_valid_hash_funcs_other():
-            if isinstance(elem, str):
-                self.out.append(titlify(elem))
-                continue
-            hname, hfunc = elem
-            if not self.should_be_displayed(hname, hfunc):
-               continue
-            hfunc.update(value)
-            h = hfunc.hexdigest()
-            self.hash_check_one(hname, h)
-        return
-
-    @parse_args
-    def do_invoke(self, args):
-        self.out = []
-        self.hash_test()
         self.print_output(check_terminal_size=True)
         return
 
