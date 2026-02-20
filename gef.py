@@ -92137,6 +92137,587 @@ class Hash:
                 self.step(inw1, inw2)
             return
 
+    class PhotonBeetle:
+        block_size = 4
+        digest_size = 32
+
+        sbox = [
+            0x0c, 0x05, 0x06, 0x0b,
+            0x09, 0x00, 0x0a, 0x0d,
+            0x03, 0x0e, 0x0f, 0x08,
+            0x04, 0x07, 0x01, 0x02,
+        ]
+
+        rc = [
+            [0x01, 0x00, 0x02, 0x06, 0x0e, 0x0f, 0x0d, 0x09],
+            [0x03, 0x02, 0x00, 0x04, 0x0c, 0x0d, 0x0f, 0x0b],
+            [0x07, 0x06, 0x04, 0x00, 0x08, 0x09, 0x0b, 0x0f],
+            [0x0e, 0x0f, 0x0d, 0x09, 0x01, 0x00, 0x02, 0x06],
+            [0x0d, 0x0c, 0x0e, 0x0a, 0x02, 0x03, 0x01, 0x05],
+            [0x0b, 0x0a, 0x08, 0x0c, 0x04, 0x05, 0x07, 0x03],
+            [0x06, 0x07, 0x05, 0x01, 0x09, 0x08, 0x0a, 0x0e],
+            [0x0c, 0x0d, 0x0f, 0x0b, 0x03, 0x02, 0x00, 0x04],
+            [0x09, 0x08, 0x0a, 0x0e, 0x06, 0x07, 0x05, 0x01],
+            [0x02, 0x03, 0x01, 0x05, 0x0d, 0x0c, 0x0e, 0x0a],
+            [0x05, 0x04, 0x06, 0x02, 0x0a, 0x0b, 0x09, 0x0d],
+            [0x0a, 0x0b, 0x09, 0x0d, 0x05, 0x04, 0x06, 0x02],
+        ]
+
+        gf16_mul_table = None
+        m8 = None
+
+        def __init__(self, data=b""):
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.finalized = False
+            self.result = b""
+            self.init_tables()
+            if data:
+                self.update(data)
+            return
+
+        def init_tables(self):
+            if self.__class__.gf16_mul_table is None:
+                tab = []
+                for a in range(16):
+                    row = []
+                    for b in range(16):
+                        row.append(self.gf16_mul(a, b))
+                    tab.append(row)
+                self.__class__.gf16_mul_table = tab
+
+            if self.__class__.m8 is None:
+                self.__class__.m8 = self.compute_m8()
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.finalized = self.finalized
+            other.result = bytes(self.result)
+            return other
+
+        def update(self, data):
+            if self.finalized:
+                raise ValueError("hash already finalized")
+            self.buf.extend(data)
+            self.msg_len += len(data)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return bytes(c.result)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            if self.finalized:
+                return
+            self.result = self.hash_bytes(bytes(self.buf))
+            self.finalized = True
+            return
+
+        def hash_bytes(self, msg):
+            state = bytearray(32)
+            mlen = len(msg)
+
+            if mlen == 0:
+                state[31] ^= (0x01 << 5)
+                out = self.gen_tag(state)
+                return out
+
+            if mlen <= 16:
+                state[0:mlen] = msg
+                if mlen < 16:
+                    state[mlen] ^= 0x01
+                c0 = 0x01 if mlen < 16 else 0x02
+                state[31] ^= (c0 << 5)
+                out = self.gen_tag(state)
+                return out
+
+            state[0:16] = msg[0:16]
+            rem = msg[16:]
+            c0 = 0x02 if (len(rem) % 4) == 0 else 0x01
+            self.absorb4(state, rem, c0)
+            out = self.gen_tag(state)
+            return out
+
+        def gen_tag(self, state):
+            self.photon256(state)
+
+            out = bytearray(32)
+            out[0:16] = state[0:16]
+
+            self.photon256(state)
+            out[16:32] = state[0:16]
+
+            return bytes(out)
+
+        def absorb4(self, state, msg, c0):
+            off = 0
+            full = (len(msg) // 4) * 4
+
+            while off < full:
+                self.photon256(state)
+                for i in range(4):
+                    state[i] ^= msg[off + i]
+                off += 4
+
+            rem = len(msg) - off
+            if rem > 0:
+                self.photon256(state)
+                for i in range(rem):
+                    state[i] ^= msg[off + i]
+                state[rem] ^= 0x01
+
+            state[31] ^= (c0 << 5)
+            return
+
+        def photon256(self, state):
+            mat = self.state_bytes_to_matrix(state)
+
+            for rnd in range(12):
+                self.add_constant(mat, rnd)
+                self.subcells(mat)
+                self.shift_rows(mat)
+                self.mix_column_serial(mat)
+
+            packed = self.matrix_to_state_bytes(mat)
+            state[:] = packed
+            return
+
+        def state_bytes_to_matrix(self, state):
+            mat = [[0 for j in range(8)] for i in range(8)]
+
+            for r in range(8):
+                for c4 in range(4):
+                    b = state[r * 4 + c4]
+                    mat[r][c4 * 2] = b & 0x0f
+                    mat[r][c4 * 2 + 1] = b >> 4
+
+            return mat
+
+        def matrix_to_state_bytes(self, mat):
+            out = bytearray(32)
+
+            for r in range(8):
+                for c4 in range(4):
+                    lo = mat[r][c4 * 2]
+                    hi = mat[r][c4 * 2 + 1]
+                    out[r * 4 + c4] = lo | (hi << 4)
+
+            return out
+
+        def add_constant(self, mat, rnd):
+            for r in range(8):
+                mat[r][0] ^= self.rc[rnd][r]
+            return
+
+        def subcells(self, mat):
+            for r in range(8):
+                for c in range(8):
+                    mat[r][c] = self.sbox[mat[r][c]]
+            return
+
+        def shift_rows(self, mat):
+            for r in range(8):
+                s = r & 0x07
+                if s != 0:
+                    row = mat[r]
+                    mat[r] = row[s:] + row[:s]
+            return
+
+        def mix_column_serial(self, mat):
+            out = [[0 for j in range(8)] for i in range(8)]
+            m8 = self.m8
+            tab = self.gf16_mul_table
+
+            for c in range(8):
+                for r in range(8):
+                    v = 0
+                    for k in range(8):
+                        v ^= tab[m8[r][k]][mat[k][c]]
+                    out[r][c] = v
+
+            for r in range(8):
+                for c in range(8):
+                    mat[r][c] = out[r][c]
+
+            return
+
+        def gf16_mul(self, a, b):
+            x = a
+            y = b
+            z = 0
+
+            for _ in range(4):
+                if (y & 0x01) != 0:
+                    z ^= x
+
+                carry = x & 0x08
+                x = (x << 1) & 0x0f
+                if carry != 0:
+                    x ^= 0x03
+
+                y >>= 1
+
+            return z
+
+        def gf16_matrix_mul(self, a, b):
+            tab = self.gf16_mul_table
+            out = [[0 for j in range(8)] for i in range(8)]
+
+            for i in range(8):
+                for j in range(8):
+                    v = 0
+                    for k in range(8):
+                        v ^= tab[a[i][k]][b[k][j]]
+                    out[i][j] = v
+
+            return out
+
+        def gf16_matrix_square(self, m):
+            out = self.gf16_matrix_mul(m, m)
+            return out
+
+        def compute_m8(self):
+            m = [
+                [0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+                [0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00],
+                [0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00],
+                [0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00],
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00],
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00],
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
+                [0x02, 0x04, 0x02, 0x0b, 0x02, 0x08, 0x05, 0x06],
+            ]
+
+            m2 = self.gf16_matrix_square(m)
+            m4 = self.gf16_matrix_square(m2)
+            m8 = self.gf16_matrix_square(m4)
+
+            return m8
+
+    class VSH1024:
+        block_size = 0x83  # logical block size in bits (131)
+        digest_size = 0x80
+
+        def __init__(self, data=b""):
+            # Fixed 1024-bit composite modulus (deterministic composite)
+            self.n = ((0x1 << 0x209) - 0x1) * ((0x1 << 0x1f7) - 0x1)
+
+            self.primes = []
+            self.k = 0
+            self.x = 0x1
+            self.bit_buf = []
+            self.msg_len_bits = 0
+
+            self.init_params()
+
+            if data:
+                self.update(data)
+            return
+
+        def init_params(self):
+            self.primes = self.generate_primes_for_modulus(self.n)
+            self.k = len(self.primes)
+            self.block_size = self.k
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.n = self.n
+            other.primes = list(self.primes)
+            other.k = self.k
+            other.x = self.x
+            other.bit_buf = list(self.bit_buf)
+            other.msg_len_bits = self.msg_len_bits
+            other.block_size = self.block_size
+            return other
+
+        def update(self, data):
+            data = bytes(data)
+
+            for b in data:
+                bit = 0x80
+                while bit != 0x0:
+                    if b & bit:
+                        self.bit_buf.append(0x1)
+                    else:
+                        self.bit_buf.append(0x0)
+
+                    self.msg_len_bits += 0x1
+                    bit >>= 0x1
+
+                    if len(self.bit_buf) >= self.k:
+                        block_bits = self.bit_buf[:self.k]
+                        del self.bit_buf[:self.k]
+                        self.compress(block_bits)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.x.to_bytes(self.digest_size, "big")
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            # Pad remaining message bits with zeros to a full VSH block
+            if len(self.bit_buf) != 0:
+                block_bits = list(self.bit_buf)
+                while len(block_bits) < self.k:
+                    block_bits.append(0x0)
+                self.compress(block_bits)
+                self.bit_buf = []
+
+            # Final length block (little-endian bit order on the integer bit length)
+            length_bits = []
+            value = self.msg_len_bits
+            i = 0
+            while i < self.k:
+                length_bits.append(value & 0x1)
+                value >>= 0x1
+                i += 0x1
+
+            self.compress(length_bits)
+            return
+
+        def compress(self, block_bits):
+            mul = 0x1
+            i = 0
+            while i < self.k:
+                if block_bits[i]:
+                    mul *= self.primes[i]
+                i += 0x1
+
+            self.x = (self.x * self.x * mul) % self.n
+            return
+
+        def generate_primes_for_modulus(self, n):
+            primes = []
+            primorial = 0x1
+            cand = 0x2
+
+            while True:
+                if self.is_prime(cand):
+                    next_primorial = primorial * cand
+                    if next_primorial < n:
+                        primes.append(cand)
+                        primorial = next_primorial
+                    else:
+                        break
+
+                if cand == 0x2:
+                    cand = 0x3
+                else:
+                    cand += 0x2
+
+            return primes
+
+        def is_prime(self, x):
+            if x < 0x2:
+                return False
+            if x == 0x2:
+                return True
+            if (x & 0x1) == 0x0:
+                return False
+
+            d = 0x3
+            while d * d <= x:
+                if (x % d) == 0x0:
+                    return False
+                d += 0x2
+
+            return True
+
+    class Xoodyak:
+        block_size = 16
+        digest_size = 32
+
+        round_constants = (
+            0x0000_0058, 0x0000_0038, 0x0000_03c0, 0x0000_00d0,
+            0x0000_0120, 0x0000_0014, 0x0000_0060, 0x0000_002c,
+            0x0000_0380, 0x0000_00f0, 0x0000_01a0, 0x0000_0012,
+        )
+
+        def __init__(self, data=b""):
+            self.state = bytearray(48)
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.phase = "up"
+            self.absorb_started = False
+            self.finalized = False
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.state = bytearray(self.state)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.phase = self.phase
+            other.absorb_started = self.absorb_started
+            other.finalized = self.finalized
+            return other
+
+        def update(self, data):
+            if self.finalized:
+                raise ValueError("hash object already finalized")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+
+            self.msg_len += len(data)
+            self.buf.extend(data)
+
+            while len(self.buf) >= self.block_size:
+                chunk = bytes(self.buf[:self.block_size])
+                del self.buf[:self.block_size]
+                self.absorb_chunk(chunk)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.squeeze_any(self.digest_size, 0x40)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            if self.finalized:
+                return
+
+            if len(self.buf) != 0 or not self.absorb_started:
+                chunk = bytes(self.buf)
+                self.buf.clear()
+                self.absorb_chunk(chunk)
+
+            self.finalized = True
+            return
+
+        def absorb_chunk(self, chunk):
+            if self.phase != "up":
+                self.up(0, 0x00)
+
+            if self.absorb_started:
+                self.down(chunk, 0x00)
+            else:
+                self.down(chunk, 0x03)
+                self.absorb_started = True
+            return
+
+        def squeeze_any(self, length, c_u):
+            y = bytearray(self.up(min(length, self.block_size), c_u))
+            while len(y) < length:
+                self.down(b"", 0x00)
+                y.extend(self.up(min(length - len(y), self.block_size), 0x00))
+            return bytes(y)
+
+        def down(self, xi, c_d):
+            n = len(xi)
+            i = 0
+            while i < n:
+                self.state[i] ^= xi[i]
+                i += 1
+
+            self.state[n] ^= 0x01
+            self.state[47] ^= (c_d & 0x01)
+            self.phase = "down"
+            return
+
+        def up(self, yi_len, c_u):
+            self.permute()
+            self.phase = "up"
+            return bytes(self.state[:yi_len])
+
+        def rol32(self, x, n):
+            return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
+
+        def plane_shift(self, plane, t, v):
+            out = [0, 0, 0, 0]
+            x = 0
+            while x < 4:
+                out[x] = self.rol32(plane[(x - t) & 3], v)
+                x += 1
+            return out
+
+        def permute(self):
+            a = []
+            i = 0
+            while i < 12:
+                start = i * 4
+                a.append(int.from_bytes(self.state[start:start + 4], "little"))
+                i += 1
+
+            for rc in self.round_constants:
+                p = [0, 0, 0, 0]
+                x = 0
+                while x < 4:
+                    p[x] = a[x] ^ a[4 + x] ^ a[8 + x]
+                    x += 1
+
+                e = self.plane_shift(p, 1, 5)
+                e2 = self.plane_shift(p, 1, 14)
+                x = 0
+                while x < 4:
+                    e[x] ^= e2[x]
+                    x += 1
+
+                x = 0
+                while x < 4:
+                    a[x] ^= e[x]
+                    a[4 + x] ^= e[x]
+                    a[8 + x] ^= e[x]
+                    x += 1
+
+                a1 = self.plane_shift(a[4:8], 1, 0)
+                a2 = self.plane_shift(a[8:12], 0, 11)
+                x = 0
+                while x < 4:
+                    a[4 + x] = a1[x]
+                    a[8 + x] = a2[x]
+                    x += 1
+
+                a[0] ^= rc
+
+                b0 = [0, 0, 0, 0]
+                b1 = [0, 0, 0, 0]
+                b2 = [0, 0, 0, 0]
+                x = 0
+                while x < 4:
+                    b0[x] = (a[4 + x] ^ 0xffff_ffff) & a[8 + x]
+                    b1[x] = (a[8 + x] ^ 0xffff_ffff) & a[x]
+                    b2[x] = (a[x] ^ 0xffff_ffff) & a[4 + x]
+                    x += 1
+
+                x = 0
+                while x < 4:
+                    a[x] ^= b0[x]
+                    a[4 + x] ^= b1[x]
+                    a[8 + x] ^= b2[x]
+                    x += 1
+
+                a1 = self.plane_shift(a[4:8], 0, 1)
+                a2 = self.plane_shift(a[8:12], 2, 8)
+                x = 0
+                while x < 4:
+                    a[4 + x] = a1[x]
+                    a[8 + x] = a2[x]
+                    x += 1
+
+            i = 0
+            while i < 12:
+                start = i * 4
+                self.state[start:start + 4] = a[i].to_bytes(4, "little")
+                i += 1
+            return
+
 
 @register_command
 class HashCommand(GenericCommand):
@@ -92405,6 +92986,7 @@ class HashCommand(GenericCommand):
         yield ("Panama", Hash.Panama())
         yield ("RadioGatun32", Hash.RadioGatun32())
         yield ("RadioGatun64", Hash.RadioGatun64())
+        yield ("PhotonBeetle", Hash.PhotonBeetle())
         yield ("RIPEMD-128", Hash.RIPEMD128())
         yield ("RIPEMD-160", Hash.RIPEMD160())
         yield ("RIPEMD-256", Hash.RIPEMD256())
@@ -92437,9 +93019,11 @@ class HashCommand(GenericCommand):
         yield ("TurboSHAKE256-128", Hash.TurboShake256(digest_bits=128))
         yield ("TurboSHAKE256-256", Hash.TurboShake256(digest_bits=256))
         yield ("TurboSHAKE256-512", Hash.TurboShake256(digest_bits=512))
+        yield ("VSH-1024", Hash.VSH1024())
         yield ("Whirlpool-0", Hash.Whirlpool0())
         yield ("Whirlpool-T", Hash.WhirlpoolT())
         yield ("Whirlpool", Hash.Whirlpool())
+        yield ("Xoodyak", Hash.Xoodyak())
 
         # Other (relatively short)
         yield "Relatively short"
@@ -92483,12 +93067,12 @@ class HashCommand(GenericCommand):
         yield ("T1HA1_64", Hash.T1HA1_64())
         yield ("T1HA2_64", Hash.T1HA2_64())
         yield ("T1HA2_128", Hash.T1HA2_128())
+        yield ("WYHash32", Hash.WYHash32())
+        yield ("WYHash64", Hash.WYHash64())
         yield ("xxHash32", Hash.XXH32())
         yield ("xxHash64", Hash.XXH64())
         yield ("xxHash3-64", Hash.XXH3_64())
         yield ("xxHash3-128", Hash.XXH3_128())
-        yield ("WYHash32", Hash.WYHash32())
-        yield ("WYHash64", Hash.WYHash64())
 
         # Checksum
         yield "Checksum"
@@ -93082,6 +93666,8 @@ class HashTestCommand(HashCommand, BufferingOutput):
         # https://github.com/jonelo/jacksum
         "Panama": "e0469269f7cf934863962838b33f9f145a75d28a56985cd66a96e572121c0f45",
         # https://github.com/jonelo/jacksum
+        "PhotonBeetle": "a7045127356641578a56300d4802b98f80351c8a1367e0554141e4728cc652a8",
+        # https://github.com/jonelo/jacksum
         "RadioGatun32": "17dc1e3f7d87f05772f63bef9f737d3bbb75864dc8fc21f82ea27b773257842f",
         "RadioGatun64": "0ddd58801c1203f939771bfcf8224bbf917ca34a7fe28fa0a0353ee5507c6e2e",
         # https://www.webutils.pl/index.php?idx=ripemd
@@ -93129,6 +93715,11 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "TurboSHAKE256-256": "9ea8526cc9233c0d27a2a2039f096be04e92fd82eb39c69d81c1f2ee6b01060d",
         "TurboSHAKE256-512": "9ea8526cc9233c0d27a2a2039f096be04e92fd82eb39c69d81c1f2ee6b01060d" \
                              "76ce6c0b61cfeb164d31b0ba2f0abb4a6aa3ef25901f2ca13a3c556e442ccb6f",
+        # https://github.com/jonelo/jacksum
+        "VSH-1024": "0000000000000000000000000000000000000000000000000000000000000000" \
+                    "0000000000000000000000000000000000000000000000000000000000000000" \
+                    "0000000000000000000000000000000000000000000000000000000000000000" \
+                    "000000000000000000000000000000000000000001a9dbfd214d278f702e9435",
         # https://asecuritysite.com/javascript/js04
         "Whirlpool-0": "6fb2d3919950eb545e9295b905bc22ce2aee368193994c7c6dfe8a643669ee49" \
                        "407ac9f93e88f7fa00f805790e444f39dcade4e03b94c5453335b4bb7f3456e4",
@@ -93136,6 +93727,8 @@ class HashTestCommand(HashCommand, BufferingOutput):
                        "b580321adc1b773f5110cf0279640d87d8b4b0d848a62b06e45800170a7a6e3c",
         "Whirlpool": "78541cfb65b3f1a3959bcc844273862857f76bd32765400070d1cc0c9956af63" \
                      "c12a26a96aa0f4f7e62eb9e7f0f187f5a46b8f92e14f96f41b10168222be8b2f",
+        # https://github.com/jonelo/jacksum
+        "Xoodyak": "54c954dd273a558fce913490f8f4b4dc2ae9ac68e57af2c3e2950419e60646fa",
         # -------------------- relatively short --------------------
         # https://asecuritysite.com/hash/smh
         "CityHash32": "ba1fe1de",
@@ -93192,14 +93785,14 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "T1HA1_64": "ec12ff5c6a2e80f7",
         "T1HA2_64": "fc6ac5b8fd7be2a2",
         "T1HA2_128": "3728551b03a1300f9ec6bd85baff1c7a",
+        # https://asecuritysite.com/hash/smh
+        "WYHash32": "46ae4e6b",
+        "WYHash64": "0380a909f6736d7e",
         # https://www.coderstool.com/xxh-hash-generator
         "xxHash32": "02b6a9f5",
         "xxHash64": "cf40b5b72bc43e77",
         "xxHash3-64": "ab12e0c62bf99c9d",
         "xxHash3-128": "4a304154487284efd582166935acd8a2",
-        # https://asecuritysite.com/hash/smh
-        "WYHash32": "46ae4e6b",
-        "WYHash64": "0380a909f6736d7e",
         # -------------------- checksum --------------------
         # https://asecuritysite.com/hash/gphash
         "RS Hash": "8ffbc5b0",
