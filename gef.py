@@ -11361,7 +11361,7 @@ class ARC(Architecture):
             if len(ops) >= 2:
                 taken, reason = v0u > v1u, "{:s}>{:s}".format(ops[0], ops[1])
             else:
-                taken, reason = not carry and not zero, "!C || !Z"
+                taken, reason = not carry and not zero, "!C && !Z"
 
         elif mnemo.startswith(("bhs", "brhs", "jhs")):
             if len(ops) >= 2:
@@ -11552,7 +11552,7 @@ class CSKY(Architecture):
             taken, reason = v0 == 0, "{:s}==0".format(ops[0])
         elif mnemo == "bnez":
             v0 = get_register(ops[0])
-            taken, reason = v0 != 0, "{:s}==0".format(ops[0])
+            taken, reason = v0 != 0, "{:s}!=0".format(ops[0])
         elif mnemo == "bhz":
             v0s = u2i(get_register(ops[0]))
             taken, reason = v0s > 0, "{:s}>0".format(ops[0])
