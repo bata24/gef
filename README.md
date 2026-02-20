@@ -570,6 +570,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - `screen` is no longer supported.
     - `tmux` settings are predefined and cannot be customized.
     - If you want to customize it, edit [dev/tmux/tmux_setup.py](dev/tmux/tmux_setup.py) and run `source /path/to/tmux_setup.py`.
+    - If you're a `zellij` user, you can use [dev/zellij/zellij-wrapper.py](dev/zellij/zellij-wrapper.py). Run this script before starting `gdb` or `zellij`.
 
 ### Added Features
 - `pid`/`tid`: prints pid and tid.
