@@ -93596,6 +93596,252 @@ class Hash:
         inner_digest_bits = 512
         xof_mode = True
 
+    class AbacusBase:
+        block_size = 1
+
+        num_blank_rounds = 135
+        num_absorb_clocks = 1
+        num_squeeze_clocks = 1
+
+        ctr1_mod = 0xe9  # 233
+        ctr2_mod = 0xef  # 239
+        ctr3_mod = 0xf1  # 241
+        ctr4_mod = 0xfb  # 251
+
+        sbox = (
+            0xe3, 0x84, 0xf0, 0xd6, 0xf9, 0xf6, 0xbe, 0x90, 0x85, 0x7d, 0x28, 0x43, 0x12, 0xc0, 0xe1, 0xb4,
+            0x55, 0xc7, 0x8c, 0x87, 0x42, 0xe0, 0xd9, 0x27, 0x78, 0xec, 0xcb, 0x07, 0xaa, 0x95, 0xc1, 0x3f,
+            0xb2, 0xdc, 0x26, 0xa7, 0x1f, 0xdf, 0xf3, 0x54, 0xd2, 0xe7, 0x24, 0x3e, 0x32, 0xd1, 0x56, 0xc6,
+            0x35, 0x73, 0xf7, 0x7b, 0x62, 0x29, 0x52, 0x80, 0xa9, 0xba, 0xab, 0xe9, 0x02, 0x53, 0x6a, 0xe4,
+            0x67, 0xa0, 0x8e, 0xfb, 0x9a, 0x79, 0x4e, 0x8d, 0xe5, 0x4a, 0x41, 0xaf, 0x5a, 0x5c, 0xa6, 0x6b,
+            0x16, 0x5e, 0xe8, 0x3c, 0x9c, 0x5b, 0x88, 0x76, 0x15, 0xf4, 0x60, 0xbd, 0x83, 0x98, 0x8f, 0xc8,
+            0x09, 0x68, 0x0d, 0x18, 0x65, 0x45, 0x04, 0xce, 0x7a, 0xf2, 0x39, 0xc5, 0x9e, 0xf1, 0x17, 0xef,
+            0x38, 0x21, 0x94, 0x86, 0x69, 0x37, 0xf5, 0xed, 0x36, 0x66, 0xcf, 0x3b, 0x63, 0x4b, 0x33, 0xb6,
+            0xff, 0xbc, 0x11, 0x5d, 0xb3, 0x2b, 0xd3, 0xd0, 0x3a, 0x96, 0x77, 0x7c, 0x1c, 0xc2, 0xfe, 0x0a,
+            0xc3, 0x25, 0x4d, 0xfc, 0x89, 0xde, 0x30, 0x23, 0x64, 0x81, 0xd5, 0xae, 0x70, 0xdb, 0xe6, 0x7e,
+            0xb0, 0x6f, 0x0f, 0xd7, 0xbf, 0x9b, 0xc4, 0x74, 0xb7, 0x57, 0x4f, 0x58, 0x10, 0x2d, 0xa4, 0xb9,
+            0xa2, 0xad, 0x61, 0xeb, 0xac, 0x1a, 0xa3, 0xd8, 0x2c, 0x5f, 0x91, 0x2f, 0x72, 0x31, 0xb1, 0x82,
+            0x49, 0xda, 0x0c, 0xca, 0x00, 0xa1, 0xb5, 0x75, 0x6e, 0x47, 0x6d, 0x13, 0x19, 0x93, 0x20, 0x05,
+            0x01, 0x9f, 0x1d, 0x44, 0x8a, 0x1e, 0x50, 0x34, 0xfa, 0x9d, 0xa8, 0x8b, 0x0b, 0x4c, 0xa5, 0x2e,
+            0x71, 0xf8, 0x40, 0xcd, 0x99, 0xfd, 0x51, 0x59, 0x0e, 0x2a, 0x3d, 0x92, 0x14, 0x48, 0x6c, 0xea,
+            0x46, 0x22, 0xcc, 0x06, 0xd4, 0x97, 0xe2, 0x1b, 0xdd, 0x7f, 0xbb, 0xc9, 0xb8, 0x03, 0xee, 0x08,
+        )
+
+        def __init__(self, data=b"", salt=b""):
+            self.ra = 0
+            self.rb = []
+            self.rc = []
+            self.rd = []
+            self.ctr1 = 0
+            self.ctr2 = 0
+            self.ctr3 = 0
+            self.ctr4 = 0
+            self.out = 0
+            self.msg_len = 0
+            self.salt = b""
+            self.is_finalized = False
+            self.digest_buf = b""
+
+            if not isinstance(salt, (bytes, bytearray)):
+                raise TypeError("salt must be bytes-like")
+            self.salt = bytes(salt)
+
+            self.init_state()
+            self.absorb_pretrain()
+
+            if data:
+                self.update(data)
+            return
+
+        def init_state(self):
+            self.ra = self.sbox[0]
+            self.rb = list(self.sbox[1:6])
+            self.rc = list(self.sbox[6:43])
+            self.rd = list(self.sbox[43:132])
+
+            self.ctr1 = 0
+            self.ctr2 = 0
+            self.ctr3 = 0
+            self.ctr4 = 0
+            self.out = 0
+
+            self.msg_len = 0
+            self.is_finalized = False
+            self.digest_buf = b""
+            return
+
+        def copy(self):
+            other = self.__class__(salt=self.salt)
+
+            other.ra = self.ra
+            other.rb = list(self.rb)
+            other.rc = list(self.rc)
+            other.rd = list(self.rd)
+
+            other.ctr1 = self.ctr1
+            other.ctr2 = self.ctr2
+            other.ctr3 = self.ctr3
+            other.ctr4 = self.ctr4
+
+            other.out = self.out
+            other.msg_len = self.msg_len
+            other.is_finalized = self.is_finalized
+            other.digest_buf = bytes(self.digest_buf)
+            return other
+
+        def update(self, data):
+            if self.is_finalized:
+                raise ValueError("hash object already finalized")
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+
+            data = bytes(data)
+            self.msg_len += len(data)
+
+            for b in data:
+                self.absorb_round(b)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return bytes(c.digest_buf)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            if self.is_finalized:
+                return self
+
+            for b in self.posttrain():
+                self.absorb_round(b)
+
+            for _ in range(self.num_blank_rounds):
+                self.absorb_round(0x00)
+
+            out = bytearray()
+            for _ in range(self.digest_size):
+                out.append(self.squeeze_round())
+
+            self.digest_buf = bytes(out)
+            self.is_finalized = True
+            return self
+
+        def hash_len_field(self):
+            n = self.digest_size * 8
+            return n.to_bytes(4, "big")
+
+        def msg_len_field(self):
+            n = self.msg_len * 8
+            return n.to_bytes(16, "big")
+
+        def pretrain(self):
+            # Beta Padding: SALT || HASH_LEN_BITS || NULL_128
+            return self.salt + self.hash_len_field() + (0).to_bytes(16, "big")
+
+        def posttrain(self):
+            # Beta Padding: SALT || HASH_LEN_BITS || MSG_LEN_BITS
+            return self.salt + self.hash_len_field() + self.msg_len_field()
+
+        def absorb_pretrain(self):
+            for b in self.pretrain():
+                self.absorb_round(b)
+            return
+
+        def absorb_round(self, msg_byte):
+            for _ in range(self.num_absorb_clocks):
+                self.clock_core(msg_byte, False)
+            return
+
+        def squeeze_round(self):
+            out_byte = 0
+            for _ in range(self.num_squeeze_clocks):
+                out_byte = self.clock_core(self.out, True)
+            return out_byte
+
+        def clock_core(self, in_byte, do_squeeze):
+            s = self.sbox
+
+            ra = s[self.ra ^ self.rd[58]] ^ self.ctr1
+            rb0 = s[self.rb[0] ^ self.rc[24]] ^ self.ctr2
+            rc0 = s[self.rc[0] ^ self.rb[3]] ^ self.ctr3
+            rd0 = s[self.rd[0] ^ in_byte] ^ self.ctr4
+
+            ra, rb0, rc0, rd0 = self.mds4(ra, rb0, rc0, rd0)
+
+            ra = s[ra]
+            rb0 = s[rb0]
+            rc0 = s[rc0]
+            rd0 = s[rd0]
+
+            self.ra = ra
+            self.rb[0] = rb0
+            self.rc[0] = rc0
+            self.rd[0] = rd0
+
+            out_byte = 0
+            if do_squeeze:
+                self.out = s[self.ra ^ self.rb[0]] ^ s[self.rc[0] ^ self.rd[0]]
+                out_byte = self.out
+
+            self.rotate_arrays()
+            self.inc_counters()
+            return out_byte
+
+        def xtime(self, x):
+            y = (x << 1) & 0xff
+            if x & 0x80:
+                y ^= 0x1b
+            return y
+
+        def mds4(self, x0, x1, x2, x3):
+            a0 = x0
+            a1 = x1
+            a2 = x2
+            a3 = x3
+
+            b0 = self.xtime(a0)
+            b1 = self.xtime(a1)
+            b2 = self.xtime(a2)
+            b3 = self.xtime(a3)
+
+            c0 = b0 ^ a0
+            c1 = b1 ^ a1
+            c2 = b2 ^ a2
+            c3 = b3 ^ a3
+
+            r0 = a0 ^ b3 ^ c2 ^ a1
+            r1 = a1 ^ b0 ^ c3 ^ a2
+            r2 = a2 ^ b1 ^ c0 ^ a3
+            r3 = a3 ^ b2 ^ c1 ^ a0
+            return r0, r1, r2, r3
+
+        def rotate_arrays(self):
+            self.rb = self.rb[1:] + self.rb[:1]
+            self.rc = self.rc[1:] + self.rc[:1]
+            self.rd = self.rd[1:] + self.rd[:1]
+            return
+
+        def inc_counters(self):
+            self.ctr1 = (self.ctr1 + 1) % self.ctr1_mod
+            self.ctr2 = (self.ctr2 + 1) % self.ctr2_mod
+            self.ctr3 = (self.ctr3 + 1) % self.ctr3_mod
+            self.ctr4 = (self.ctr4 + 1) % self.ctr4_mod
+            return
+
+    class Abacus224(AbacusBase):
+        digest_size = 28
+
+    class Abacus256(AbacusBase):
+        digest_size = 32
+
+    class Abacus384(AbacusBase):
+        digest_size = 48
+
+    class Abacus512(AbacusBase):
+        digest_size = 64
+
 
 @register_command
 class HashCommand(GenericCommand):
@@ -93611,8 +93857,9 @@ class HashCommand(GenericCommand):
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("memory")
     subparsers.add_parser("value")
-    subparsers.add_parser("known-collision")
+    subparsers.add_parser("list")
     subparsers.add_parser("test")
+    subparsers.add_parser("known-collision")
     _syntax_ = parser.format_help()
 
     _note_ = [
@@ -93754,6 +94001,10 @@ class HashCommand(GenericCommand):
 
         # SHA-3 Round1 candidates
         yield "SHA3 Round1 candidates"
+        yield ("Abacus224", Hash.Abacus224())
+        yield ("Abacus256", Hash.Abacus256())
+        yield ("Abacus384", Hash.Abacus384())
+        yield ("Abacus512", Hash.Abacus512())
         try:
             # FSB requires a hexadecimal representation of pi.
             # If gmpy2 is available, it can be calculated quickly,
@@ -94008,6 +94259,12 @@ class HashCommand(GenericCommand):
         return None
 
     def make_line(self, hname, hfunc, h):
+        if h is None:
+            byte = hfunc.digest_size
+            bit = byte * 8
+            line = "{:30s}:[{:4d}b/{:3d}B]".format(hname, bit, byte)
+            return line
+
         bit = len(h) * 4
         byte = bit // 8
         if hasattr(hfunc, "digest_normalize"):
@@ -94022,7 +94279,7 @@ class HashCommand(GenericCommand):
             if hname not in ["MD5", "SHA1", "SHA256"]:
                 return False
 
-        if self.args.length_filter:
+        if self.args.length_filter is not None:
             if self.args.length_filter != hfunc.digest_size:
                 return False
 
@@ -94167,7 +94424,7 @@ class HashValueCommand(HashCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     def __init__(self):
-        super().__init__(prefix=False)
+        super().__init__(prefix=False, complete=gdb.COMPLETE_NONE)
         return
 
     def process(self, value):
@@ -94205,6 +94462,52 @@ class HashValueCommand(HashCommand, BufferingOutput):
 
         self.out = []
         self.process(value)
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class HashListCommand(HashCommand, BufferingOutput):
+    """List hash supported by GEF."""
+
+    _cmdline_ = "hash list"
+    _category_ = "03-e. Memory - Calculation"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-f", "--filter", metavar="REGEX", type=re.compile, default=[], action="append",
+                        help="filter by REGEX pattern.")
+    parser.add_argument("-l", "--length-filter", type=AddressUtil.parse_address,
+                        help="filter by hash byte length.")
+    parser.add_argument("-s", "--smart", action="store_true", help="show only failed.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    _note_ = None
+
+    def __init__(self):
+        super().__init__(prefix=False, complete=gdb.COMPLETE_NONE)
+        return
+
+    def process(self):
+        for elem in self.get_valid_hash_funcs():
+            if isinstance(elem, str):
+                if self.args.smart:
+                    if elem != "hashlib":
+                        break
+                self.out.append(titlify(elem))
+                continue
+
+            hname, hfunc = elem
+            if not self.should_be_displayed(hname, hfunc):
+               continue
+            line = self.make_line(hname, hfunc, None)
+            self.out.append(line)
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        self.out = []
+        self.process()
         self.print_output(check_terminal_size=True)
         return
 
@@ -94384,6 +94687,13 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "SIMD512": "24949bf23897f6cc00637b4ab352700c778b21f46c2b0607ae6f52898fe9f6ea" \
                    "68c9fcc663c7e82951faea69b66fe095501fb4b54136fbaf16cbcbe24afbfef2",
         # -------------------- SHA3 Round1 candidates --------------------
+        # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/Abacus.zip
+        "Abacus224": "4cce4439e6a5d3474c0c6d2b2139d795e3ff3307e7dbaaf6bd5e348a",
+        "Abacus256": "fabd01ce8cdc42bd732e280495720b82c292559e876fb40190fcbb2d362acdfd",
+        "Abacus384": "c101a643e1cf69ab57c28d3f59c241a624ef361d3f062e4da93c8157e237e296" \
+                     "3e3d877f8c860d5a5f60c3750e4b47c8",
+        "Abacus512": "46f1db2e75d6d0624f216a21019526858227208dde706b8fbb24aa207f748a90" \
+                     "505a3d64957e8bf47119133f90692ee0a2b62cfea517b56a270e51255b3daef6",
         # https://hashing.tools/fsb
         "FSB160": "b0a13fe24c0190e8d53f91e246ea10540e147af3",
         "FSB224": "207ac5eb161b20be6ca49f7d3d7851a7634bc328ec083bde3488bf3a",
