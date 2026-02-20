@@ -96541,7 +96541,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         if self.args.skip_sheaf:
             return
 
-        if not hasattr(kmem_cache, "cpu_sheaves"):
+        if "cpu_sheaves" not in kmem_cache:
             kmem_cache["cpu_sheaves"] = {}
 
         # cpu_sheaves
@@ -96917,6 +96917,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     active_page = kmem_cache["kmem_cache_cpu"][cpu]["active_page"]
                     freelist_fastpath = kmem_cache["kmem_cache_cpu"][cpu]["freelist"]
                     self.dump_page(active_page, kmem_cache, "active", freelist_fastpath)
+                    # dump sheaves
                     if "cpu_sheaves" in kmem_cache:
                         cpu_sheaves = kmem_cache["cpu_sheaves"][cpu]
                         self.dump_sheaves(cpu_sheaves, kmem_cache)
