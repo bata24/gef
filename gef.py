@@ -58082,7 +58082,7 @@ class KernelAddressHeuristicFinder:
             # plan 3 (from slub-dump / slub-tiny-dump)
             allocator = Kernel.get_slab_type()
             if allocator in ["SLUB", "SLUB_TINY"]:
-                command = {"SLUB": "slub-dump --node", "SLUB_TINY": "slub-tiny-dump"}[allocator]
+                command = {"SLUB": "slub-dump --node --skip-sheaf", "SLUB_TINY": "slub-tiny-dump"}[allocator]
                 for n in [8, 16, 32, 64, 128, 192, 256, 512]:
                     ret = gdb.execute(
                         "{:s} --simple --no-pager --quiet kmalloc-{:d}".format(command, n),
@@ -60886,7 +60886,7 @@ class Kernel:
 
         if allocator in ["SLUB", "SLUB_TINY"]:
             # get valid page and vaddr pair
-            command = {"SLUB": "slub-dump --node", "SLUB_TINY": "slub-tiny-dump"}[allocator]
+            command = {"SLUB": "slub-dump --node --skip-sheaf", "SLUB_TINY": "slub-tiny-dump"}[allocator]
             for n in [8, 16, 32, 64, 128, 192, 256, 512]:
                 # this function calls slub-dump, but it called from slub-dump itself.
                 # * get_page_virt_pair
@@ -96963,10 +96963,12 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     # barn list (6.18~)
                     if "node_barn" in kmem_cache:
                         for node_barn in kmem_cache["node_barn"]:
-                            for sheaves_full in node_barn["sheaves_full"]:
-                                self.dump_sheaf(sheaves_full, Color.colorify("node full sheaf", "underline"))
-                            for sheaves_empty in node_barn["sheaves_empty"]:
-                                self.dump_sheaf(sheaves_empty, Color.colorify("node empty sheaf", "underline"))
+                            if "shaves_full" in node_barn:
+                                for sheaves_full in node_barn["sheaves_full"]:
+                                    self.dump_sheaf(sheaves_full, Color.colorify("node full sheaf", "underline"))
+                            if "shaves_empty" in node_barn:
+                                for sheaves_empty in node_barn["sheaves_empty"]:
+                                    self.dump_sheaf(sheaves_empty, Color.colorify("node empty sheaf", "underline"))
 
             self.out.append("    next: {:#x}".format(kmem_cache["next"]))
         return
