@@ -79838,7 +79838,7 @@ class Hash:
     class MurmurHash3_x64_128(MurmurHash3Base):
         block_size = 16
         digest_size = 16
-        word_bits = (64, 64)
+        word_bits = [64, 64]
 
         def init_state(self):
             self.seed = self.seed & 0xffff_ffff_ffff_ffff
@@ -81016,8 +81016,8 @@ class Hash:
             x = seed & self.mask64
             y = (seed * self.k1 + 113) & self.mask64
             z = (self.shift_mix((y * self.k2 + 113) & self.mask64) * self.k2) & self.mask64
-            v = (0, 0)
-            w = (0, 0)
+            v = [0, 0]
+            w = [0, 0]
             x = (x * self.k2 + self.fetch64(data, 0)) & self.mask64
 
             end = ((n - 1) // 64) * 64
@@ -82278,16 +82278,10 @@ class Hash:
             if key is not None:
                 self.key = self.normalize_key(key)
             self.mul0 = [
-                0xdbe6_d5d5_fe4c_ce2f,
-                0xa409_3822_299f_31d0,
-                0x1319_8a2e_0370_7344,
-                0x243f_6a88_85a3_08d3,
+                0xdbe6_d5d5_fe4c_ce2f, 0xa409_3822_299f_31d0, 0x1319_8a2e_0370_7344, 0x243f_6a88_85a3_08d3,
             ]
             self.mul1 = [
-                0x3bd3_9e10_cb0e_f593,
-                0xc0ac_f169_b5f1_8a8c,
-                0xbe54_66cf_34e9_0c6c,
-                0x4528_21e6_38d0_1377,
+                0x3bd3_9e10_cb0e_f593, 0xc0ac_f169_b5f1_8a8c, 0xbe54_66cf_34e9_0c6c, 0x4528_21e6_38d0_1377,
             ]
             self.v0 = [
                 (self.mul0[0] ^ self.key[0]) & self.mask64,
@@ -83680,18 +83674,18 @@ class Hash:
         block_size = 64  # 512 bits
         digest_size = 20  # 160 bits
 
-        ROT_A = (
+        ROT_A = [
             5, 11, 7, 15, 6, 13, 8, 14, 7, 12,
             9, 11, 8, 15, 6, 12, 9, 14, 5, 13,
-        )
-        ROT_B = (10, 17, 25, 30)
-        K = (0x0000_0000, 0x5a82_7999, 0x6ed9_eba1, 0x8f1b_bcdc)
-        ORDER = (
-            (18, 0, 1, 2, 3, 19, 4, 5, 6, 7, 16, 8, 9, 10, 11, 17, 12, 13, 14, 15),
-            (18, 3, 6, 9, 12, 19, 15, 2, 5, 8, 16, 11, 14, 1, 4, 17, 7, 10, 13, 0),
-            (18, 12, 5, 14, 7, 19, 0, 9, 2, 11, 16, 4, 13, 6, 15, 17, 8, 1, 10, 3),
-            (18, 7, 2, 13, 8, 19, 3, 14, 9, 4, 16, 15, 10, 5, 0, 17, 11, 6, 1, 12),
-        )
+        ]
+        ROT_B = [10, 17, 25, 30]
+        K = [0x0000_0000, 0x5a82_7999, 0x6ed9_eba1, 0x8f1b_bcdc]
+        ORDER = [
+            [18, 0, 1, 2, 3, 19, 4, 5, 6, 7, 16, 8, 9, 10, 11, 17, 12, 13, 14, 15],
+            [18, 3, 6, 9, 12, 19, 15, 2, 5, 8, 16, 11, 14, 1, 4, 17, 7, 10, 13, 0],
+            [18, 12, 5, 14, 7, 19, 0, 9, 2, 11, 16, 4, 13, 6, 15, 17, 8, 1, 10, 3],
+            [18, 7, 2, 13, 8, 19, 3, 14, 9, 4, 16, 15, 10, 5, 0, 17, 11, 6, 1, 12],
+        ]
 
         def __init__(self, data=b""):
             self.h0 = 0x6745_2301
@@ -86680,47 +86674,47 @@ class Hash:
     class FSB160(FSBBase):
         block_size = 0x3c
         digest_size = 0x14
-        n = 0x14_00_00
+        n = 0x14_0000
         w = 0x50
-        r = 0x2_80
-        p = 0x2_8d
-        s = 0x4_60
+        r = 0x280
+        p = 0x28d
+        s = 0x460
 
     class FSB224(FSBBase):
         block_size = 0x54
         digest_size = 0x1c
-        n = 0x1c_00_00
+        n = 0x1c_0000
         w = 0x70
-        r = 0x3_80
-        p = 0x3_8b
-        s = 0x6_20
+        r = 0x380
+        p = 0x38b
+        s = 0x620
 
     class FSB256(FSBBase):
         block_size = 0x60
         digest_size = 0x20
-        n = 0x20_00_00
+        n = 0x20_0000
         w = 0x80
-        r = 0x4_00
-        p = 0x4_25
-        s = 0x7_00
+        r = 0x400
+        p = 0x425
+        s = 0x700
 
     class FSB384(FSBBase):
         block_size = 0x73
         digest_size = 0x30
-        n = 0x17_00_00
+        n = 0x17_0000
         w = 0xb8
-        r = 0x5_c0
-        p = 0x5_cb
-        s = 0x9_58
+        r = 0x5c0
+        p = 0x5cb
+        s = 0x958
 
     class FSB512(FSBBase):
         block_size = 0x9b
         digest_size = 0x40
-        n = 0x1f_00_00
+        n = 0x1f_0000
         w = 0xf8
-        r = 0x7_c0
-        p = 0x7_c3
-        s = 0xc_98
+        r = 0x7c0
+        p = 0x7c3
+        s = 0xc98
 
     class SHAvite3Base:
         mask32 = 0xffff_ffff
@@ -90503,7 +90497,7 @@ class Hash:
         order = 0x80
         z_stride = 0x08
         root = 0x8b
-        const_exps = (0x7f, 0x7d)
+        const_exps = [0x7f, 0x7d]
 
         out_words = 0x07
         iv_words = [
@@ -90523,7 +90517,7 @@ class Hash:
         order = 0x80
         z_stride = 0x08
         root = 0x8b
-        const_exps = (0x7f, 0x7d)
+        const_exps = [0x7f, 0x7d]
 
         out_words = 0x08
         iv_words = [
@@ -90543,7 +90537,7 @@ class Hash:
         order = 0x100
         z_stride = 0x10
         root = 0x29
-        const_exps = (0xff, 0xfd)
+        const_exps = [0xff, 0xfd]
 
         out_words = 0x0c
         iv_words = [
@@ -90565,7 +90559,7 @@ class Hash:
         order = 0x100
         z_stride = 0x10
         root = 0x29
-        const_exps = (0xff, 0xfd)
+        const_exps = [0xff, 0xfd]
 
         out_words = 0x10
         iv_words = [
@@ -93842,6 +93836,1615 @@ class Hash:
     class Abacus512(AbacusBase):
         digest_size = 64
 
+    class ARIRANG256Base:
+        block_size = 64
+        digest_words = 8
+        digest_size = 32
+
+        iv_words = [
+            0x6a09_e667, 0xbb67_ae85, 0x3c6e_f372, 0xa54f_f53a,
+            0x510e_527f, 0x9b05_688c, 0x1f83_d9ab, 0x5be0_cd19,
+        ]
+
+        k_words = [
+            0x517c_c1b7, 0x7651_7cc1, 0xbd76_517c, 0x2dbd_7651,
+            0x272d_bd76, 0xcb27_2dbd, 0x90cb_272d, 0x0a90_cb27,
+            0xec0a_90cb, 0x5bec_0a90, 0x9a5b_ec0a, 0xe69a_5bec,
+            0xb7e6_9a5b, 0xc1b7_e69a, 0x7cc1_b7e6, 0x517c_c1b7,
+        ]
+
+        round_pairs_1 = [(16, 17), (0, 1), (2, 3), (4, 5), (6, 7), (18, 19), (8, 9), (10, 11), (12, 13), (14, 15)]
+        round_pairs_2 = [(20, 21), (3, 6), (9, 12), (15, 2), (5, 8), (22, 23), (11, 14), (1, 4), (7, 10), (13, 0)]
+        round_pairs_3 = [(24, 25), (12, 5), (14, 7), (0, 9), (2, 11), (26, 27), (4, 13), (6, 15), (8, 1), (10, 3)]
+        round_pairs_4 = [(28, 29), (7, 2), (13, 8), (3, 14), (9, 4), (30, 31), (15, 10), (5, 0), (11, 6), (1, 12)]
+
+        sbx = None
+        f2 = None
+        f3 = None
+        f4 = None
+        f8 = None
+        f9 = None
+        fa = None
+
+        def __init__(self, data=b""):
+            self.ensure_tables()
+            self.h = list(self.iv_words)
+            self.buf = bytearray()
+            self.count0 = 0
+            self.count1 = 0
+            self.counter0 = 0
+            self.counter1 = 0
+            self.finalized = False
+            if data:
+                self.update(data)
+            return
+
+        @classmethod
+        def ensure_tables(cls):
+            if cls.sbx is not None:
+                return
+
+            pow_tab = [0] * 256
+            log_tab = [0] * 256
+
+            p = 1
+            for i in range(256):
+                pow_tab[i] = p & 0xff
+                log_tab[p & 0xff] = i
+                p = p ^ (p << 1) ^ (0x01b if (p & 0x80) else 0)
+                p &= 0xff
+
+            sbx = [0] * 256
+            for i in range(256):
+                if i != 0:
+                    p = pow_tab[255 - log_tab[i]]
+                else:
+                    p = 0
+
+                q = p
+                q = ((q >> 7) | (q << 1)) & 0xff
+                p ^= q
+                q = ((q >> 7) | (q << 1)) & 0xff
+                p ^= q
+                q = ((q >> 7) | (q << 1)) & 0xff
+                p ^= q
+                q = ((q >> 7) | (q << 1)) & 0xff
+                p ^= q ^ 0x63
+
+                sbx[i] = p & 0xff
+
+            def ff_mult(a, b):
+                if a == 0 or b == 0:
+                    return 0
+                return pow_tab[(log_tab[a] + log_tab[b]) % 255]
+
+            f2 = [0] * 256
+            f3 = [0] * 256
+            f4 = [0] * 256
+            f8 = [0] * 256
+            f9 = [0] * 256
+            fa = [0] * 256
+
+            for i in range(256):
+                f2[i] = ff_mult(i, 2)
+                f3[i] = ff_mult(i, 3)
+                f4[i] = ff_mult(i, 4)
+                f8[i] = ff_mult(i, 8)
+                f9[i] = ff_mult(i, 9)
+                fa[i] = ff_mult(i, 10)
+
+            cls.sbx = sbx
+            cls.f2 = f2
+            cls.f3 = f3
+            cls.f4 = f4
+            cls.f8 = f8
+            cls.f9 = f9
+            cls.fa = fa
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.h = list(self.h)
+            other.buf = bytearray(self.buf)
+            other.count0 = self.count0
+            other.count1 = self.count1
+            other.counter0 = self.counter0
+            other.counter1 = self.counter1
+            other.finalized = self.finalized
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            if self.finalized:
+                raise ValueError("hash already finalized")
+
+            data = bytes(data)
+
+            add_bits = len(data) << 3
+            new_count0 = (self.count0 + add_bits) & 0xffff_ffff_ffff_ffff
+            if new_count0 < self.count0:
+                self.count1 = (self.count1 + 1) & 0xffff_ffff_ffff_ffff
+            self.count0 = new_count0
+
+            self.buf.extend(data)
+            while len(self.buf) >= self.block_size:
+                block = bytes(self.buf[:self.block_size])
+                del self.buf[:self.block_size]
+                self.compress(block)
+
+            return self
+
+        def byte(self, x, n):
+            return (x >> (8 * n)) & 0xff
+
+        def rol32(self, x, n):
+            x &= 0xffff_ffff
+            return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
+
+        def g256(self, x):
+            sbx = self.sbx
+            f2 = self.f2
+            f3 = self.f3
+
+            t = (
+                sbx[self.byte(x, 0)]
+                | (sbx[self.byte(x, 1)] << 8)
+                | (sbx[self.byte(x, 2)] << 16)
+                | (sbx[self.byte(x, 3)] << 24)
+            )
+
+            b0 = self.byte(t, 0)
+            b1 = self.byte(t, 1)
+            b2 = self.byte(t, 2)
+            b3 = self.byte(t, 3)
+
+            out = (
+                (f2[b0] ^ f3[b1] ^ b2 ^ b3)
+                | ((b0 ^ f2[b1] ^ f3[b2] ^ b3) << 8)
+                | ((b0 ^ b1 ^ f2[b2] ^ f3[b3]) << 16)
+                | ((f3[b0] ^ b1 ^ b2 ^ f2[b3]) << 24)
+            )
+
+            return out & 0xffff_ffff
+
+        def step(self, r, m1, m2):
+            r[0] ^= m1
+            r[4] ^= m2
+
+            t1 = self.g256(r[0])
+            t2 = self.g256(r[4])
+
+            r[1] ^= t1
+            r[2] ^= self.rol32(t1, 13)
+            r[3] ^= self.rol32(t1, 23)
+            r[5] ^= t2
+            r[6] ^= self.rol32(t2, 29)
+            r[7] ^= self.rol32(t2, 7)
+
+            t = r[7]
+            r[7] = r[6]
+            r[6] = r[5]
+            r[5] = r[4]
+            r[4] = r[3]
+            r[3] = r[2]
+            r[2] = r[1]
+            r[1] = r[0]
+            r[0] = t
+            return
+
+        def message_schedule(self, w):
+            k = self.k_words
+            w = list(w)
+
+            w.append(self.rol32(w[9] ^ w[11] ^ w[13] ^ w[15] ^ k[0], 5))
+            w.append(self.rol32(w[8] ^ w[10] ^ w[12] ^ w[14] ^ k[1], 11))
+            w.append(self.rol32(w[1] ^ w[3] ^ w[5] ^ w[7] ^ k[2], 19))
+            w.append(self.rol32(w[0] ^ w[2] ^ w[4] ^ w[6] ^ k[3], 31))
+
+            w.append(self.rol32(w[14] ^ w[4] ^ w[10] ^ w[0] ^ k[4], 5))
+            w.append(self.rol32(w[11] ^ w[1] ^ w[7] ^ w[13] ^ k[5], 11))
+            w.append(self.rol32(w[6] ^ w[12] ^ w[2] ^ w[8] ^ k[6], 19))
+            w.append(self.rol32(w[3] ^ w[9] ^ w[15] ^ w[5] ^ k[7], 31))
+
+            w.append(self.rol32(w[13] ^ w[15] ^ w[1] ^ w[3] ^ k[8], 5))
+            w.append(self.rol32(w[4] ^ w[6] ^ w[8] ^ w[10] ^ k[9], 11))
+            w.append(self.rol32(w[5] ^ w[7] ^ w[9] ^ w[11] ^ k[10], 19))
+            w.append(self.rol32(w[12] ^ w[14] ^ w[0] ^ w[2] ^ k[11], 31))
+
+            w.append(self.rol32(w[10] ^ w[0] ^ w[6] ^ w[12] ^ k[12], 5))
+            w.append(self.rol32(w[15] ^ w[5] ^ w[11] ^ w[1] ^ k[13], 11))
+            w.append(self.rol32(w[2] ^ w[8] ^ w[14] ^ w[4] ^ k[14], 19))
+            w.append(self.rol32(w[7] ^ w[13] ^ w[3] ^ w[9] ^ k[15], 31))
+
+            return w
+
+        def compress(self, block):
+            self.h[0] ^= (self.counter0 >> 32) & 0xffff_ffff
+            self.h[4] ^= self.counter0 & 0xffff_ffff
+
+            w0 = struct.unpack(">16I", block)
+            w = self.message_schedule(w0)
+
+            r = [v & 0xffff_ffff for v in self.h]
+
+            for i, j in self.round_pairs_1:
+                self.step(r, w[i], w[j])
+            for i, j in self.round_pairs_2:
+                self.step(r, w[i], w[j])
+
+            for i in range(8):
+                r[i] ^= self.h[i]
+
+            for i, j in self.round_pairs_3:
+                self.step(r, w[i], w[j])
+            for i, j in self.round_pairs_4:
+                self.step(r, w[i], w[j])
+
+            for i in range(8):
+                self.h[i] ^= r[i]
+
+            self.counter0 = (self.counter0 + 1) & 0xffff_ffff_ffff_ffff
+            if self.counter0 == 0:
+                self.counter1 = (self.counter1 + 1) & 0xffff_ffff_ffff_ffff
+
+            return
+
+        def finalize(self):
+            if self.finalized:
+                return
+
+            buf = bytearray(self.buf)
+            buf.append(0x80)
+
+            if len(buf) > (self.block_size - 8):
+                while len(buf) < self.block_size:
+                    buf.append(0x00)
+                self.compress(bytes(buf))
+                buf = bytearray()
+
+            while len(buf) < (self.block_size - 8):
+                buf.append(0x00)
+
+            buf.extend(struct.pack(">Q", self.count0))
+
+            self.counter0 = 0xb7e1_5162_8aed_2a6a
+            self.compress(bytes(buf))
+
+            self.buf = bytearray()
+            self.finalized = True
+            return
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            words = c.h[:self.digest_words]
+            return struct.pack(">" + ("I" * len(words)), *words)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+
+    class ARIRANG224(ARIRANG256Base):
+        digest_words = 7
+        digest_size = 28
+
+        iv_words = [
+            0xcbbb_9d5d, 0x629a_292a, 0x9159_015a, 0x152f_ecd8,
+            0x6733_2667, 0x8eb4_4a87, 0xdb0c_2e0d, 0x47b5_481d,
+        ]
+
+    class ARIRANG256(ARIRANG256Base):
+        pass
+
+    class ARIRANG512Base(ARIRANG256Base):
+        block_size = 128
+        digest_words = 8
+        digest_size = 64
+
+        iv_words = [
+            0x6a09_e667_f3bc_c908, 0xbb67_ae85_84ca_a73b, 0x3c6e_f372_fe94_f82b, 0xa54f_f53a_5f1d_36f1,
+            0x510e_527f_ade6_82d1, 0x9b05_688c_2b3e_6c1f, 0x1f83_d9ab_fb41_bd6b, 0x5be0_cd19_137e_2179,
+        ]
+
+        k_words = [
+            0x517c_c1b7_2722_0a94, 0x2db6_517c_c1b7_2722, 0xe695_2db6_517c_c1b7, 0x90cb_e695_2db6_517c,
+            0x7cca_90cb_e695_2db6, 0xcb23_7cca_90cb_e695, 0x765e_cb23_7cca_90cb, 0xec01_765e_cb23_7cca,
+            0xb7e9_ec01_765e_cb23, 0xbd7d_b7e9_ec01_765e, 0x9a5f_bd7d_b7e9_ec01, 0x5be8_9a5f_bd7d_b7e9,
+            0x0a94_5be8_9a5f_bd7d, 0x2722_0a94_5be8_9a5f, 0xc1b7_2722_0a94_5be8, 0x517c_c1b7_2722_0a94,
+        ]
+
+        def __init__(self, data=b""):
+            self.ensure_tables()
+
+            self.h = list(self.iv_words)
+            self.buf = bytearray()
+            self.count0 = 0
+            self.count1 = 0
+            self.counter0 = 0
+            self.counter1 = 0
+            self.finalized = False
+
+            if data:
+                self.update(data)
+
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.h = list(self.h)
+            other.buf = bytearray(self.buf)
+            other.count0 = self.count0
+            other.count1 = self.count1
+            other.counter0 = self.counter0
+            other.counter1 = self.counter1
+            other.finalized = self.finalized
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            if self.finalized:
+                raise ValueError("hash already finalized")
+
+            data = bytes(data)
+
+            add_bits = len(data) << 3
+            new_count0 = (self.count0 + add_bits) & 0xffff_ffff_ffff_ffff
+            if new_count0 < self.count0:
+                self.count1 = (self.count1 + 1) & 0xffff_ffff_ffff_ffff
+            self.count0 = new_count0
+
+            self.buf.extend(data)
+            while len(self.buf) >= self.block_size:
+                block = bytes(self.buf[:self.block_size])
+                del self.buf[:self.block_size]
+                self.compress(block)
+
+            return self
+
+        def byte(self, x, n):
+            return (x >> (8 * n)) & 0xff
+
+        def rol64(self, x, n):
+            x &= 0xffff_ffff_ffff_ffff
+            return ((x << n) | (x >> (64 - n))) & 0xffff_ffff_ffff_ffff
+
+        def g512(self, x):
+            sbx = self.sbx
+            f2 = self.f2
+            f4 = self.f4
+            f8 = self.f8
+            f9 = self.f9
+            fa = self.fa
+
+            t = 0
+            t |= sbx[self.byte(x, 0)]
+            t |= sbx[self.byte(x, 1)] << 8
+            t |= sbx[self.byte(x, 2)] << 16
+            t |= sbx[self.byte(x, 3)] << 24
+            t |= sbx[self.byte(x, 4)] << 32
+            t |= sbx[self.byte(x, 5)] << 40
+            t |= sbx[self.byte(x, 6)] << 48
+            t |= sbx[self.byte(x, 7)] << 56
+
+            b0 = self.byte(t, 0)
+            b1 = self.byte(t, 1)
+            b2 = self.byte(t, 2)
+            b3 = self.byte(t, 3)
+            b4 = self.byte(t, 4)
+            b5 = self.byte(t, 5)
+            b6 = self.byte(t, 6)
+            b7 = self.byte(t, 7)
+
+            out = 0
+            out |= (b0 ^ f2[b1] ^ fa[b2] ^ f9[b3] ^ f8[b4] ^ b5 ^ f4[b6] ^ b7)
+            out |= (b0 ^ b1 ^ f2[b2] ^ fa[b3] ^ f9[b4] ^ f8[b5] ^ b6 ^ f4[b7]) << 8
+            out |= (f4[b0] ^ b1 ^ b2 ^ f2[b3] ^ fa[b4] ^ f9[b5] ^ f8[b6] ^ b7) << 16
+            out |= (b0 ^ f4[b1] ^ b2 ^ b3 ^ f2[b4] ^ fa[b5] ^ f9[b6] ^ f8[b7]) << 24
+            out |= (f8[b0] ^ b1 ^ f4[b2] ^ b3 ^ b4 ^ f2[b5] ^ fa[b6] ^ f9[b7]) << 32
+            out |= (f9[b0] ^ f8[b1] ^ b2 ^ f4[b3] ^ b4 ^ b5 ^ f2[b6] ^ fa[b7]) << 40
+            out |= (fa[b0] ^ f9[b1] ^ f8[b2] ^ b3 ^ f4[b4] ^ b5 ^ b6 ^ f2[b7]) << 48
+            out |= (f2[b0] ^ fa[b1] ^ f9[b2] ^ f8[b3] ^ b4 ^ f4[b5] ^ b6 ^ b7) << 56
+
+            return out & 0xffff_ffff_ffff_ffff
+
+        def step(self, r, m1, m2):
+            r[0] ^= m1
+            r[4] ^= m2
+
+            t1 = self.g512(r[0])
+            t2 = self.g512(r[4])
+
+            r[1] ^= t1
+            r[2] ^= self.rol64(t1, 29)
+            r[3] ^= self.rol64(t1, 41)
+            r[5] ^= t2
+            r[6] ^= self.rol64(t2, 53)
+            r[7] ^= self.rol64(t2, 13)
+
+            t = r[7]
+            r[7] = r[6]
+            r[6] = r[5]
+            r[5] = r[4]
+            r[4] = r[3]
+            r[3] = r[2]
+            r[2] = r[1]
+            r[1] = r[0]
+            r[0] = t
+            return
+
+        def message_schedule(self, w):
+            k = self.k_words
+            w = list(w)
+
+            w.append(self.rol64(w[9] ^ w[11] ^ w[13] ^ w[15] ^ k[0], 11))
+            w.append(self.rol64(w[8] ^ w[10] ^ w[12] ^ w[14] ^ k[1], 23))
+            w.append(self.rol64(w[1] ^ w[3] ^ w[5] ^ w[7] ^ k[2], 37))
+            w.append(self.rol64(w[0] ^ w[2] ^ w[4] ^ w[6] ^ k[3], 59))
+
+            w.append(self.rol64(w[14] ^ w[4] ^ w[10] ^ w[0] ^ k[4], 11))
+            w.append(self.rol64(w[11] ^ w[1] ^ w[7] ^ w[13] ^ k[5], 23))
+            w.append(self.rol64(w[6] ^ w[12] ^ w[2] ^ w[8] ^ k[6], 37))
+            w.append(self.rol64(w[3] ^ w[9] ^ w[15] ^ w[5] ^ k[7], 59))
+
+            w.append(self.rol64(w[13] ^ w[15] ^ w[1] ^ w[3] ^ k[8], 11))
+            w.append(self.rol64(w[4] ^ w[6] ^ w[8] ^ w[10] ^ k[9], 23))
+            w.append(self.rol64(w[5] ^ w[7] ^ w[9] ^ w[11] ^ k[10], 37))
+            w.append(self.rol64(w[12] ^ w[14] ^ w[0] ^ w[2] ^ k[11], 59))
+
+            w.append(self.rol64(w[10] ^ w[0] ^ w[6] ^ w[12] ^ k[12], 11))
+            w.append(self.rol64(w[15] ^ w[5] ^ w[11] ^ w[1] ^ k[13], 23))
+            w.append(self.rol64(w[2] ^ w[8] ^ w[14] ^ w[4] ^ k[14], 37))
+            w.append(self.rol64(w[7] ^ w[13] ^ w[3] ^ w[9] ^ k[15], 59))
+
+            return w
+
+        def compress(self, block):
+            self.h[0] ^= self.counter1
+            self.h[4] ^= self.counter0
+
+            w = struct.unpack(">16Q", block)
+            w = self.message_schedule(w)
+
+            r = [v & 0xffff_ffff_ffff_ffff for v in self.h]
+
+            for i, j in self.round_pairs_1:
+                self.step(r, w[i], w[j])
+            for i, j in self.round_pairs_2:
+                self.step(r, w[i], w[j])
+
+            for i in range(8):
+                r[i] ^= self.h[i]
+
+            for i, j in self.round_pairs_3:
+                self.step(r, w[i], w[j])
+            for i, j in self.round_pairs_4:
+                self.step(r, w[i], w[j])
+
+            for i in range(8):
+                self.h[i] ^= r[i]
+
+            self.counter0 = (self.counter0 + 1) & 0xffff_ffff_ffff_ffff
+            if self.counter0 == 0:
+                self.counter1 = (self.counter1 + 1) & 0xffff_ffff_ffff_ffff
+
+            return
+
+        def finalize(self):
+            if self.finalized:
+                return
+
+            buf = bytearray(self.buf)
+            buf.append(0x80)
+
+            if len(buf) > (self.block_size - 16):
+                while len(buf) < self.block_size:
+                    buf.append(0x00)
+                self.compress(bytes(buf))
+                buf = bytearray()
+
+            while len(buf) < (self.block_size - 16):
+                buf.append(0x00)
+
+            buf.extend(struct.pack(">Q", self.count1))
+            buf.extend(struct.pack(">Q", self.count0))
+
+            self.counter1 = 0xb7e1_5162_8aed_2a6a
+            self.counter0 = 0xbf71_5880_9cf4_f3c7
+            self.compress(bytes(buf))
+
+            self.buf = bytearray()
+            self.finalized = True
+            return
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            words = c.h[:self.digest_words]
+            return struct.pack(">" + ("Q" * len(words)), *words)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+    class ARIRANG384(ARIRANG512Base):
+        digest_words = 6
+        digest_size = 48
+
+        iv_words = [
+            0xcbbb_9d5d_c105_9ed8, 0x629a_292a_367c_d507, 0x9159_015a_3070_dd17, 0x152f_ecd8_f70e_5939,
+            0x6733_2667_ffc0_0b31, 0x8eb4_4a87_6858_1511, 0xdb0c_2e0d_64f9_8fa7, 0x47b5_481d_befa_4fa4,
+        ]
+
+    class ARIRANG512(ARIRANG512Base):
+        pass
+
+    class AURORABase:
+        block_size = 64
+        digest_size = 0
+        init_fill = 0x00
+        con_iv = ()
+        con_mask = ()
+        mode = ""  # "256", "512", "256m"
+        sbox = [
+            0xd9, 0xdc, 0xd3, 0x69, 0xbd, 0x00, 0x4d, 0xeb, 0x02, 0x24, 0x57, 0xc2, 0xb8, 0x5d, 0xb7, 0x6d,
+            0xf5, 0x40, 0x37, 0x4e, 0x19, 0xd8, 0x64, 0x62, 0x9d, 0x34, 0x0f, 0x7c, 0xec, 0xce, 0x94, 0x04,
+            0xd1, 0x8a, 0x74, 0xfb, 0xe7, 0x87, 0x12, 0x23, 0xb5, 0x5c, 0x1a, 0xbb, 0x42, 0x49, 0x18, 0x85,
+            0x11, 0x46, 0x0d, 0x71, 0x67, 0x8f, 0xc6, 0x50, 0x58, 0xfd, 0x4b, 0xa4, 0xcd, 0x8e, 0x99, 0x1f,
+            0xad, 0x63, 0xc9, 0x6b, 0xf7, 0x28, 0x9f, 0x65, 0x2f, 0x5f, 0x61, 0x73, 0x3d, 0x8b, 0x0e, 0x1b,
+            0x33, 0xe0, 0xac, 0x26, 0xa1, 0xe3, 0xf3, 0x82, 0x83, 0x75, 0x44, 0x90, 0x13, 0xaf, 0xf0, 0x07,
+            0x96, 0x21, 0xf8, 0x3f, 0xa2, 0x98, 0x9a, 0xa3, 0x91, 0x4c, 0x7f, 0x92, 0x97, 0xea, 0x01, 0x1c,
+            0x1e, 0x2d, 0x89, 0x39, 0xe6, 0x9c, 0x0a, 0x54, 0x0c, 0x51, 0x6c, 0x43, 0xae, 0xdb, 0x53, 0x59,
+            0xa6, 0xf4, 0x06, 0xda, 0xe2, 0x78, 0x1d, 0x29, 0x30, 0xe1, 0x35, 0xfc, 0xed, 0xbc, 0x47, 0xd5,
+            0xc0, 0xab, 0xcc, 0xa8, 0x80, 0x2b, 0x09, 0xb0, 0x93, 0xd4, 0xc5, 0xb3, 0xd0, 0xdf, 0xa9, 0xaa,
+            0x7a, 0x36, 0x2a, 0xd6, 0xb2, 0xfa, 0xe8, 0xb1, 0xa0, 0x68, 0x5a, 0x81, 0x48, 0x08, 0x17, 0xc7,
+            0xfe, 0x76, 0xbf, 0xc4, 0xf2, 0x3e, 0x4a, 0x0b, 0x10, 0x14, 0xf1, 0xef, 0xa7, 0x27, 0xe5, 0xc8,
+            0xde, 0x9b, 0x8d, 0x3c, 0x56, 0xd7, 0x8c, 0x60, 0x6a, 0x79, 0xee, 0xa5, 0x31, 0x2e, 0x77, 0x41,
+            0xff, 0x95, 0xdd, 0x25, 0x3b, 0x55, 0xca, 0x52, 0x9e, 0x2c, 0x15, 0x4f, 0xe4, 0x16, 0x70, 0x7d,
+            0x72, 0x3a, 0x7b, 0x84, 0xf6, 0x32, 0x86, 0x03, 0xb4, 0x38, 0x6f, 0xb9, 0xc1, 0x45, 0x88, 0xe9,
+            0xba, 0xb6, 0x6e, 0x5e, 0xbe, 0x7e, 0x20, 0xf9, 0x22, 0x66, 0x05, 0xd2, 0xcb, 0xc3, 0xcf, 0x5b,
+        ]
+        mat0 = [0x01, 0x02, 0x02, 0x03]
+        mat1 = [0x01, 0x06, 0x08, 0x02]
+        mat2 = [0x03, 0x01, 0x02, 0x02]
+        mat3 = [0x06, 0x08, 0x02, 0x01]
+        pi = [
+            4, 29, 22, 15, 8, 9, 10, 11, 12, 5, 30, 23, 16, 17, 18, 19,
+            20, 13, 6, 31, 24, 25, 26, 27, 28, 21, 14, 7, 0, 1, 2, 3
+        ]
+
+        def __init__(self, data=b""):
+            self.h = [self.init_fill] * 64
+            self.blk_num = [0x00] * 8
+            self.cnt = 0
+            self.blk_idx = 0
+            self.buf = [0x00] * 64
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.h = list(self.h)
+            other.blk_num = list(self.blk_num)
+            other.cnt = self.cnt
+            other.blk_idx = self.blk_idx
+            other.buf = list(self.buf)
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            if self.mode == "256":
+                self.aurora256_update(data)
+            elif self.mode in ("512", "256m"):
+                self.aurora512_update(data)
+            else:
+                raise ValueError("invalid mode")
+            return self
+
+        def digest(self):
+            c = self.copy()
+            out = c.final_bytes()
+            return out
+
+        def hexdigest(self):
+            out = self.digest().hex()
+            return out
+
+        def final_bytes(self):
+            if self.mode == "256":
+                out = self.aurora256_final()
+            elif self.mode == "512":
+                out = self.aurora512_final()
+            elif self.mode == "256m":
+                out = self.aurora256m_final()
+            else:
+                raise ValueError("invalid mode")
+            out = self.truncate_digest(out)
+            return out
+
+        def truncate_digest(self, out):
+            return out[:self.digest_size]
+
+        def byte_cpy(self, dst, dst_ofs, src, src_ofs, bytelen):
+            i = 0
+            while i < bytelen:
+                dst[dst_ofs + i] = src[src_ofs + i] & 0xff
+                i += 1
+            return
+
+        def byte_xor(self, dst, dst_ofs, src, src_ofs, bytelen):
+            i = 0
+            while i < bytelen:
+                dst[dst_ofs + i] = (dst[dst_ofs + i] ^ src[src_ofs + i]) & 0xff
+                i += 1
+            return
+
+        def aurora_mul(self, x, y):
+            xy = 0
+            i = 0
+            xx = x & 0xff
+            yy = y & 0xff
+            while i < 4:
+                if yy & 0x01:
+                    xy ^= xx
+                yy >>= 1
+                if xx & 0x80:
+                    xx ^= 0x0d
+                xx = ((xx << 1) | (xx >> 7)) & 0xff
+                i += 1
+            return xy & 0xff
+
+        def aurora_f_xor(self, y, y_ofs, x, x_ofs, cirmat):
+            z0 = self.sbox[x[x_ofs + 0]]
+            z1 = self.sbox[x[x_ofs + 1]]
+            z2 = self.sbox[x[x_ofs + 2]]
+            z3 = self.sbox[x[x_ofs + 3]]
+
+            y[y_ofs + 0] = (self.aurora_mul(z0, cirmat[0]) ^ self.aurora_mul(z1, cirmat[1]) ^ \
+                            self.aurora_mul(z2, cirmat[2]) ^ self.aurora_mul(z3, cirmat[3])) & 0xff
+            y[y_ofs + 1] = (self.aurora_mul(z0, cirmat[3]) ^ self.aurora_mul(z1, cirmat[0]) ^ \
+                            self.aurora_mul(z2, cirmat[1]) ^ self.aurora_mul(z3, cirmat[2])) & 0xff
+            y[y_ofs + 2] = (self.aurora_mul(z0, cirmat[2]) ^ self.aurora_mul(z1, cirmat[3]) ^ \
+                            self.aurora_mul(z2, cirmat[0]) ^ self.aurora_mul(z3, cirmat[1])) & 0xff
+            y[y_ofs + 3] = (self.aurora_mul(z0, cirmat[1]) ^ self.aurora_mul(z1, cirmat[2]) ^ \
+                            self.aurora_mul(z2, cirmat[3]) ^ self.aurora_mul(z3, cirmat[0])) & 0xff
+            y[y_ofs + 4] = (x[x_ofs + 4] ^ y[y_ofs + 0]) & 0xff
+            y[y_ofs + 5] = (x[x_ofs + 5] ^ y[y_ofs + 1]) & 0xff
+            y[y_ofs + 6] = (x[x_ofs + 6] ^ y[y_ofs + 2]) & 0xff
+            y[y_ofs + 7] = (x[x_ofs + 7] ^ y[y_ofs + 3]) & 0xff
+            return
+
+        def aurora_bd(self, y, x):
+            i = 0
+            while i < 32:
+                y[i] = x[self.pi[i]] & 0xff
+                i += 1
+            return
+
+        def aurora_one_round(self, inout, cirmat0, cirmat1):
+            x = [0x00] * 32
+            self.aurora_bd(x, inout)
+            self.aurora_f_xor(inout, 0, x, 0, cirmat0)
+            self.aurora_f_xor(inout, 8, x, 8, cirmat1)
+            self.aurora_f_xor(inout, 16, x, 16, cirmat0)
+            self.aurora_f_xor(inout, 24, x, 24, cirmat1)
+            return
+
+        def aurora_con_update(self, con, iv, mask):
+            con[0] = (iv[0] ^ mask[0]) & 0xff
+            con[1] = (iv[1] ^ mask[1]) & 0xff
+            con[2] = (~iv[1]) & 0xff
+            con[3] = (~iv[0]) & 0xff
+            con[4] = (iv[2] ^ mask[2]) & 0xff
+            con[5] = (iv[3] ^ mask[3]) & 0xff
+            con[6] = (~iv[3]) & 0xff
+            con[7] = (~iv[2]) & 0xff
+            con[8] = iv[1] & 0xff
+            con[9] = iv[0] & 0xff
+            con[10] = (iv[0] ^ mask[4]) & 0xff
+            con[11] = (iv[1] ^ mask[5]) & 0xff
+            con[12] = ((iv[2] >> 7) | (iv[3] << 1)) & 0xff
+            con[13] = ((iv[3] >> 7) | (iv[2] << 1)) & 0xff
+            con[14] = (iv[2] ^ mask[6]) & 0xff
+            con[15] = (iv[3] ^ mask[7]) & 0xff
+
+            if iv[0] & 0x80:
+                iv[0] = (iv[0] ^ 0x54) & 0xff
+                iv[1] = (iv[1] ^ 0x18) & 0xff
+            tmp = (iv[0] >> 7) & 0xff
+            iv0 = iv[0]
+            iv1 = iv[1]
+            iv[0] = ((iv0 << 1) | (iv1 >> 7)) & 0xff
+            iv[1] = ((iv1 << 1) | tmp) & 0xff
+
+            if iv[3] & 0x01:
+                iv[2] = (iv[2] ^ 0xa8) & 0xff
+                iv[3] = (iv[3] ^ 0x30) & 0xff
+            tmp = ((iv[2] << 7) & 0xff)
+            iv2 = iv[2]
+            iv3 = iv[3]
+            iv[2] = ((iv2 >> 1) | (iv3 << 7)) & 0xff
+            iv[3] = ((iv3 >> 1) | tmp) & 0xff
+            return
+
+        def aurora_rotl_con_xor(self, inout, con, mask, rotval):
+            inout[4] = (inout[4] ^ ((con[0] << rotval) ^ (con[1] >> (8 - rotval)))) & 0xff
+            inout[5] = (inout[5] ^ ((con[1] << rotval) ^ (con[2] >> (8 - rotval)))) & 0xff
+            inout[6] = (inout[6] ^ ((con[2] << rotval) ^ (con[3] >> (8 - rotval)))) & 0xff
+            inout[7] = (inout[7] ^ ((con[3] << rotval) ^ (con[0] >> (8 - rotval)))) & 0xff
+
+            inout[12] = (inout[12] ^ ((con[4] << rotval) ^ (con[5] >> (8 - rotval)))) & 0xff
+            inout[13] = (inout[13] ^ ((con[5] << rotval) ^ (con[6] >> (8 - rotval)))) & 0xff
+            inout[14] = (inout[14] ^ ((con[6] << rotval) ^ (con[7] >> (8 - rotval)))) & 0xff
+            inout[15] = (inout[15] ^ ((con[7] << rotval) ^ (con[4] >> (8 - rotval)))) & 0xff
+
+            inout[20] = (inout[20] ^ ((con[8] << rotval) ^ (con[9] >> (8 - rotval)))) & 0xff
+            inout[21] = (inout[21] ^ ((con[9] << rotval) ^ (con[10] >> (8 - rotval)))) & 0xff
+            inout[22] = (inout[22] ^ ((con[10] << rotval) ^ (con[11] >> (8 - rotval)))) & 0xff
+            inout[23] = (inout[23] ^ ((con[11] << rotval) ^ (con[8] >> (8 - rotval)))) & 0xff
+
+            inout[28] = (inout[28] ^ ((con[12] << rotval) ^ (con[13] >> (8 - rotval)) ^ mask)) & 0xff
+            inout[29] = (inout[29] ^ ((con[13] << rotval) ^ (con[14] >> (8 - rotval)) ^ mask)) & 0xff
+            inout[30] = (inout[30] ^ ((con[14] << rotval) ^ (con[15] >> (8 - rotval)) ^ mask)) & 0xff
+            inout[31] = (inout[31] ^ ((con[15] << rotval) ^ (con[12] >> (8 - rotval)) ^ mask)) & 0xff
+            return
+
+        def aurora_rotr_con_xor(self, inout, con, mask, rotval):
+            inout[4] = (inout[4] ^ ((con[0] >> rotval) ^ (con[3] << (8 - rotval)))) & 0xff
+            inout[5] = (inout[5] ^ ((con[1] >> rotval) ^ (con[0] << (8 - rotval)))) & 0xff
+            inout[6] = (inout[6] ^ ((con[2] >> rotval) ^ (con[1] << (8 - rotval)))) & 0xff
+            inout[7] = (inout[7] ^ ((con[3] >> rotval) ^ (con[2] << (8 - rotval)))) & 0xff
+
+            inout[12] = (inout[12] ^ ((con[4] >> rotval) ^ (con[7] << (8 - rotval)))) & 0xff
+            inout[13] = (inout[13] ^ ((con[5] >> rotval) ^ (con[4] << (8 - rotval)))) & 0xff
+            inout[14] = (inout[14] ^ ((con[6] >> rotval) ^ (con[5] << (8 - rotval)))) & 0xff
+            inout[15] = (inout[15] ^ ((con[7] >> rotval) ^ (con[6] << (8 - rotval)))) & 0xff
+
+            inout[20] = (inout[20] ^ ((con[8] >> rotval) ^ (con[11] << (8 - rotval)))) & 0xff
+            inout[21] = (inout[21] ^ ((con[9] >> rotval) ^ (con[8] << (8 - rotval)))) & 0xff
+            inout[22] = (inout[22] ^ ((con[10] >> rotval) ^ (con[9] << (8 - rotval)))) & 0xff
+            inout[23] = (inout[23] ^ ((con[11] >> rotval) ^ (con[10] << (8 - rotval)))) & 0xff
+
+            inout[28] = (inout[28] ^ ((con[12] >> rotval) ^ (con[15] << (8 - rotval)) ^ mask)) & 0xff
+            inout[29] = (inout[29] ^ ((con[13] >> rotval) ^ (con[12] << (8 - rotval)) ^ mask)) & 0xff
+            inout[30] = (inout[30] ^ ((con[14] >> rotval) ^ (con[13] << (8 - rotval)) ^ mask)) & 0xff
+            inout[31] = (inout[31] ^ ((con[15] >> rotval) ^ (con[14] << (8 - rotval)) ^ mask)) & 0xff
+            return
+
+        def aurora_protl_xor(self, dst, x):
+            z = [0x00] * 32
+            self.byte_cpy(z, 0, x, 0, 4)
+            self.byte_cpy(z, 8, x, 8, 4)
+            self.byte_cpy(z, 16, x, 16, 16)
+            z[4] = ((x[4] << 1) | (x[5] >> 7)) & 0xff
+            z[5] = ((x[5] << 1) | (x[6] >> 7)) & 0xff
+            z[6] = ((x[6] << 1) | (x[7] >> 7)) & 0xff
+            z[7] = ((x[7] << 1) | (x[12] >> 7)) & 0xff
+            z[12] = ((x[12] << 1) | (x[13] >> 7)) & 0xff
+            z[13] = ((x[13] << 1) | (x[14] >> 7)) & 0xff
+            z[14] = ((x[14] << 1) | (x[15] >> 7)) & 0xff
+            z[15] = ((x[15] << 1) | (x[4] >> 7)) & 0xff
+            self.byte_xor(dst, 0, z, 0, 32)
+            return
+
+        def aurora_protr_xor(self, dst, y):
+            z = [0x00] * 32
+            self.byte_cpy(z, 0, y, 0, 4)
+            self.byte_cpy(z, 8, y, 8, 4)
+            self.byte_cpy(z, 16, y, 16, 16)
+            z[4] = ((y[4] >> 1) | (y[15] << 7)) & 0xff
+            z[5] = ((y[5] >> 1) | (y[4] << 7)) & 0xff
+            z[6] = ((y[6] >> 1) | (y[5] << 7)) & 0xff
+            z[7] = ((y[7] >> 1) | (y[6] << 7)) & 0xff
+            z[12] = ((y[12] >> 1) | (y[7] << 7)) & 0xff
+            z[13] = ((y[13] >> 1) | (y[12] << 7)) & 0xff
+            z[14] = ((y[14] >> 1) | (y[13] << 7)) & 0xff
+            z[15] = ((y[15] >> 1) | (y[14] << 7)) & 0xff
+            self.byte_xor(dst, 0, z, 0, 32)
+            return
+
+        def aurora256_cf(self, cv, m, mask, con_iv, con_mask):
+            ml = [0x00] * 32
+            mr = [0x00] * 32
+            x = [0x00] * 32
+            t = [0x00] * 4
+            con = [0x00] * 16
+
+            self.byte_cpy(ml, 0, m, 0, 32)
+            self.byte_cpy(mr, 0, m, 32, 32)
+            self.byte_cpy(x, 0, cv, 0, 32)
+            self.byte_cpy(t, 0, con_iv, 0, 4)
+
+            r = 0
+            while r < 17:
+                self.aurora_con_update(con, t, con_mask)
+                if (r % 2) == 0:
+                    if r < 16:
+                        self.aurora_rotl_con_xor(ml, con, 0x00, 1)
+                    self.aurora_protl_xor(x, ml)
+                    self.aurora_one_round(ml, self.mat0, self.mat1)
+                else:
+                    self.aurora_rotr_con_xor(mr, con, 0x00, 1)
+                    self.aurora_protr_xor(x, mr)
+                    self.aurora_one_round(mr, self.mat2, self.mat3)
+
+                self.aurora_rotl_con_xor(x, con, mask, 0)
+                self.aurora_one_round(x, self.mat1, self.mat0)
+                r += 1
+
+            self.aurora_protr_xor(x, mr)
+            self.byte_xor(cv, 0, x, 0, 32)
+            return
+
+        def aurora512_cf(self, cv, m, mask, con_iv, con_mask):
+            ml = [0x00] * 32
+            mr = [0x00] * 32
+            xl = [0x00] * 32
+            xr = [0x00] * 32
+            t = [0x00] * 4
+            con = [0x00] * 16
+
+            self.byte_cpy(ml, 0, m, 0, 32)
+            self.byte_cpy(mr, 0, m, 32, 32)
+            self.byte_cpy(xl, 0, cv, 0, 32)
+            self.byte_cpy(xr, 0, cv, 32, 32)
+            self.byte_cpy(t, 0, con_iv, 0, 4)
+
+            r = 0
+            while r < 17:
+                self.aurora_con_update(con, t, con_mask)
+                if (r % 2) == 0:
+                    if r < 16:
+                        self.aurora_rotl_con_xor(ml, con, 0x00, 1)
+                    self.aurora_protl_xor(xl, ml)
+                    self.aurora_protl_xor(xr, ml)
+                    self.aurora_one_round(ml, self.mat0, self.mat1)
+                else:
+                    self.aurora_rotr_con_xor(mr, con, 0x00, 1)
+                    self.aurora_protr_xor(xl, mr)
+                    self.aurora_protr_xor(xr, mr)
+                    self.aurora_one_round(mr, self.mat2, self.mat3)
+
+                self.aurora_rotl_con_xor(xl, con, mask, 0)
+                self.aurora_one_round(xl, self.mat1, self.mat0)
+                self.aurora_rotl_con_xor(xr, con, mask, 3)
+                self.aurora_one_round(xr, self.mat3, self.mat2)
+                r += 1
+
+            self.aurora_protr_xor(xl, mr)
+            self.aurora_protr_xor(xr, mr)
+            self.byte_xor(cv, 0, xl, 0, 32)
+            self.byte_xor(cv, 32, xr, 0, 32)
+            return
+
+        def aurora512_cfmf(self):
+            if self.blk_idx >= 0x08:
+                self.aurora512_cf(self.h, self.h, self.blk_idx, self.con_iv, self.con_mask)
+                self.blk_idx = 0
+            self.aurora512_cf(self.h, self.buf, self.blk_idx, self.con_iv, self.con_mask)
+            self.blk_idx = (self.blk_idx + 1) & 0xff
+            return
+
+        def aurora256_mff(self, cv):
+            mr = [0x00] * 32
+            x = [0x00] * 32
+            t = [0x3c, 0x6e, 0xa5, 0x4f]
+            con_mask = [0xb5, 0xc0, 0xe9, 0xb5, 0x61, 0x35, 0x79, 0xcc]
+            con = [0x00] * 16
+
+            self.byte_cpy(mr, 0, cv, 32, 32)
+            self.byte_cpy(x, 0, cv, 0, 32)
+
+            r = 0
+            while r < 17:
+                self.aurora_con_update(con, t, con_mask)
+                if (r % 2) == 1:
+                    self.aurora_rotr_con_xor(mr, con, 0x00, 1)
+                    self.aurora_protr_xor(x, mr)
+                    self.aurora_one_round(mr, self.mat2, self.mat3)
+                self.aurora_rotl_con_xor(x, con, 0x09, 0)
+                self.aurora_one_round(x, self.mat1, self.mat0)
+                r += 1
+
+            self.aurora_protr_xor(x, mr)
+            self.byte_xor(cv, 0, x, 0, 32)
+            return
+
+        def add_blk(self):
+            i = 7
+            while i >= 0:
+                self.blk_num[i] = (self.blk_num[i] + 1) & 0xff
+                if self.blk_num[i] != 0:
+                    break
+                i -= 1
+            return
+
+        def aurora256_update(self, msg):
+            if self.cnt & 0x07:
+                raise ValueError("bit-aligned state is not supported")
+            if (self.cnt < 0) or (self.cnt >= 512):
+                raise ValueError("invalid internal state")
+
+            byte_cnt = self.cnt // 8
+            msg_pos = 0
+            msg_len = len(msg)
+
+            while msg_pos < msg_len:
+                self.buf[byte_cnt] = msg[msg_pos] & 0xff
+                byte_cnt += 1
+                msg_pos += 1
+                self.cnt += 8
+
+                if byte_cnt >= 64:
+                    self.aurora256_cf(self.h, self.buf, 0x00, self.con_iv, self.con_mask)
+                    self.add_blk()
+                    byte_cnt = 0
+                    self.cnt = 0
+            return
+
+        def aurora512_update(self, msg):
+            if self.cnt & 0x07:
+                raise ValueError("bit-aligned state is not supported")
+            if (self.cnt < 0) or (self.cnt >= 512):
+                raise ValueError("invalid internal state")
+
+            byte_cnt = self.cnt // 8
+            msg_pos = 0
+            msg_len = len(msg)
+
+            while msg_pos < msg_len:
+                self.buf[byte_cnt] = msg[msg_pos] & 0xff
+                byte_cnt += 1
+                msg_pos += 1
+                self.cnt += 8
+
+                if byte_cnt >= 64:
+                    self.aurora512_cfmf()
+                    self.add_blk()
+                    byte_cnt = 0
+                    self.cnt = 0
+            return
+
+        def aurora256_final(self):
+            byte_cnt = self.cnt // 8
+            if (self.cnt < 0) or (self.cnt >= 512):
+                return bytes([0x00] * 32)
+
+            if self.cnt != 0:
+                self.add_blk()
+
+            if self.cnt & 0x07:
+                raise ValueError("bit-aligned state is not supported")
+            self.buf[byte_cnt] = 0x80
+            byte_cnt += 1
+
+            if self.cnt > 447:
+                while byte_cnt < 64:
+                    self.buf[byte_cnt] = 0x00
+                    byte_cnt += 1
+                byte_cnt = 0
+                self.aurora256_cf(self.h, self.buf, 0x00, self.con_iv, self.con_mask)
+
+            while byte_cnt < 56:
+                self.buf[byte_cnt] = 0x00
+                byte_cnt += 1
+
+            self.byte_cpy(self.buf, 56, self.blk_num, 0, 8)
+            self.aurora256_cf(self.h, self.buf, 0x01, self.con_iv, self.con_mask)
+            return bytes(self.h[:32])
+
+        def aurora512_final(self):
+            byte_cnt = self.cnt // 8
+            if (self.cnt < 0) or (self.cnt >= 512):
+                return bytes([0x00] * 64)
+
+            if self.cnt != 0:
+                self.add_blk()
+
+            if self.cnt & 0x07:
+                raise ValueError("bit-aligned state is not supported")
+            self.buf[byte_cnt] = 0x80
+            byte_cnt += 1
+
+            if self.cnt > 447:
+                while byte_cnt < 64:
+                    self.buf[byte_cnt] = 0x00
+                    byte_cnt += 1
+                byte_cnt = 0
+                self.aurora512_cfmf()
+
+            while byte_cnt < 56:
+                self.buf[byte_cnt] = 0x00
+                byte_cnt += 1
+
+            self.byte_cpy(self.buf, 56, self.blk_num, 0, 8)
+            self.aurora512_cfmf()
+            self.aurora512_cf(self.h, self.h, 0x09, self.con_iv, self.con_mask)
+            return bytes(self.h[:64])
+
+        def aurora256m_final(self):
+            byte_cnt = self.cnt // 8
+            if (self.cnt < 0) or (self.cnt >= 512):
+                return bytes([0x00] * 32)
+
+            if self.cnt != 0:
+                self.add_blk()
+
+            if self.cnt & 0x07:
+                raise ValueError("bit-aligned state is not supported")
+            self.buf[byte_cnt] = 0x80
+            byte_cnt += 1
+
+            if self.cnt > 447:
+                while byte_cnt < 64:
+                    self.buf[byte_cnt] = 0x00
+                    byte_cnt += 1
+                byte_cnt = 0
+                self.aurora512_cfmf()
+
+            while byte_cnt < 56:
+                self.buf[byte_cnt] = 0x00
+                byte_cnt += 1
+
+            self.byte_cpy(self.buf, 56, self.blk_num, 0, 8)
+            self.aurora512_cfmf()
+            self.aurora256_mff(self.h)
+            return bytes(self.h[:32])
+
+
+    class AURORA256(AURORABase):
+        digest_size = 32
+        init_fill = 0x00
+        con_iv = [0x6a, 0x09, 0xbb, 0x67]
+        con_mask = [0x42, 0x8a, 0x71, 0x37, 0x26, 0x11, 0x3e, 0xe8]
+        mode = "256"
+
+
+    class AURORA224(AURORA256):
+        digest_size = 28
+        init_fill = 0xff
+
+        def truncate_digest(self, out):
+            dst = bytearray()
+            i = 0
+            while i < 4:
+                base = i * 8
+                j = 0
+                while j < 7:
+                    dst.append(out[base + j])
+                    j += 1
+                i += 1
+            return bytes(dst)
+
+    class AURORA512(AURORABase):
+        digest_size = 64
+        init_fill = 0x00
+        con_iv = [0x51, 0x0e, 0x9b, 0x05]
+        con_mask = [0x39, 0x56, 0x59, 0xf1, 0x9d, 0x8a, 0xab, 0x97]
+        mode = "512"
+
+    class AURORA384(AURORA512):
+        digest_size = 48
+        init_fill = 0xff
+
+        def truncate_digest(self, out):
+            dst = bytearray()
+            i = 0
+            while i < 8:
+                base = i * 8
+                j = 0
+                while j < 6:
+                    dst.append(out[base + j])
+                    j += 1
+                i += 1
+            return bytes(dst)
+
+    class AURORA256M(AURORABase):
+        digest_size = 32
+        init_fill = 0x00
+        con_iv = [0x3c, 0x6e, 0xa5, 0x4f]
+        con_mask = [0xb5, 0xc0, 0xe9, 0xb5, 0x61, 0x35, 0x79, 0xcc]
+        mode = "256m"
+
+    class AURORA224M(AURORA256M):
+        digest_size = 28
+        init_fill = 0xff
+
+        def truncate_digest(self, out):
+            dst = bytearray()
+            i = 0
+            while i < 4:
+                base = i * 8
+                j = 0
+                while j < 7:
+                    dst.append(out[base + j])
+                    j += 1
+                i += 1
+            return bytes(dst)
+
+    class BlenderBase:
+        block_size = 0
+        digest_size = 0
+        word_bits = 0
+        word_count = 0
+        iv_words = ()
+        first_block_size = 13
+
+        def __init__(self, data=b""):
+            self.word_bytes = self.word_bits // 8
+            self.mask = (1 << self.word_bits) - 1
+
+            self.word = list(self.iv_words)
+            self.sum_words = [0] * self.word_count
+
+            self.checksum1 = 0
+            self.checksum2 = 0
+            self.carry1 = 0
+            self.carry2 = 0
+
+            self.rounds_to_go = 32
+            self.block_size_frags = 16
+
+            self.buf = bytearray()
+            self.first_block = bytearray()
+            self.msg_bits = 0
+
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.word = list(self.word)
+            other.sum_words = list(self.sum_words)
+            other.checksum1 = self.checksum1
+            other.checksum2 = self.checksum2
+            other.carry1 = self.carry1
+            other.carry2 = self.carry2
+            other.rounds_to_go = self.rounds_to_go
+            other.block_size_frags = self.block_size_frags
+            other.buf = bytearray(self.buf)
+            other.first_block = bytearray(self.first_block)
+            other.msg_bits = self.msg_bits
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            if not data:
+                return self
+
+            self.msg_bits += len(data) * 8
+
+            if len(self.first_block) < self.first_block_size:
+                need = self.first_block_size - len(self.first_block)
+                self.first_block.extend(data[:need])
+
+            self.buf.extend(data)
+
+            frag_bytes = self.word_bytes
+            whole = (len(self.buf) // frag_bytes) * frag_bytes
+            if whole > 0:
+                block = bytes(self.buf[:whole])
+                del self.buf[:whole]
+                self.compress_fragments(block)
+
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+
+            out = bytearray()
+            for value in c.sum_words:
+                out.extend(c.word_to_big_endian_bytes(value))
+            return bytes(out)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            len_bytes = self.encode_length_le(self.msg_bits)
+            residue = bytearray(self.buf)
+
+            space_left = (self.rounds_to_go - 2) * self.word_bytes
+            space_needed = len(len_bytes) + 2 + len(residue)
+            while space_left < space_needed:
+                space_left += self.block_size_frags * self.word_bytes
+            fill_size = space_left + 1 - space_needed
+
+            fill_source = bytearray(self.first_block)
+            if len(fill_source) < self.first_block_size and residue:
+                need = self.first_block_size - len(fill_source)
+                fill_source.extend(residue[:need])
+            if not fill_source:
+                fill_source = bytearray(b"\x00" * self.first_block_size)
+
+            work = bytearray(residue)
+            if fill_size > 0:
+                reps = (fill_size + len(fill_source) - 1) // len(fill_source)
+                work.extend((fill_source * reps)[:fill_size])
+
+            work.extend(len_bytes)
+            work.append(len(len_bytes))
+
+            if len(work) % self.word_bytes != 0:
+                raise ValueError("internal error: pre-checksum tail is not fragment-aligned")
+
+            if work:
+                self.compress_fragments(bytes(work))
+
+            chk = bytearray()
+            chk.extend(self.word_to_little_endian_bytes((~self.checksum1) & self.mask))
+            chk.extend(self.word_to_little_endian_bytes(self.checksum2))
+            self.compress_fragments(bytes(chk))
+            return
+
+        def compress_fragments(self, data):
+            if not data:
+                return
+            if len(data) % self.word_bytes != 0:
+                raise ValueError("fragment data must be aligned")
+
+            pos = 0
+            while pos < len(data):
+                fragment = self.bytes_to_little_endian_word(data[pos:pos + self.word_bytes])
+                pos += self.word_bytes
+
+                self.checksum1 = (self.checksum1 + fragment) & self.mask
+                self.checksum2 = (self.checksum2 + ((~fragment) & self.mask)) & self.mask
+
+                even_left = self.ror(fragment, 8) ^ self.word[0]
+                even_right = self.ror(self.word[2], 8) ^ self.word[4]
+                self.carry2, t2 = self.add_with_carry(even_left, even_right, self.carry2)
+
+                odd_left = fragment ^ self.word[5]
+                odd_right = self.rol(self.word[3], 8) ^ self.word[1]
+                self.carry1, t1 = self.add_with_carry(odd_left, odd_right, self.carry1)
+
+                rotate_bits = 8 - (self.carry1 + self.carry2)
+                t1 = self.rol(t1, rotate_bits)
+                t2 = self.ror(t2, rotate_bits)
+
+                temp = self.ror(self.word[0], 7)
+                old = list(self.word)
+
+                self.word[0] = old[1] ^ t2
+                self.word[1] = old[2] ^ t1
+                self.word[2] = old[3] ^ t2
+                self.word[3] = old[4] ^ t1
+                self.word[4] = old[5] ^ t2
+
+                if self.word_count == 6:
+                    self.word[5] = temp ^ t1
+                elif self.word_count == 7:
+                    self.word[5] = old[6] ^ t1
+                    self.word[6] = temp ^ t2
+                elif self.word_count == 8:
+                    self.word[5] = old[6] ^ t1
+                    self.word[6] = old[7] ^ t2
+                    self.word[7] = temp ^ t1
+                else:
+                    raise ValueError("unsupported word_count")
+
+                for i in range(self.word_count):
+                    self.sum_words[i] = (self.sum_words[i] + self.word[i]) & self.mask
+
+                self.rounds_to_go -= 1
+                if self.rounds_to_go == 0:
+                    self.rounds_to_go = self.block_size_frags
+
+            return
+
+        def add_with_carry(self, x, y, carry_in):
+            total = x + y + carry_in
+            carry_out = 0
+            if total > self.mask:
+                carry_out = 1
+            result = total & self.mask
+            return carry_out, result
+
+        def rol(self, value, count):
+            value &= self.mask
+            count %= self.word_bits
+            if count == 0:
+                return value
+            return ((value << count) | (value >> (self.word_bits - count))) & self.mask
+
+        def ror(self, value, count):
+            value &= self.mask
+            count %= self.word_bits
+            if count == 0:
+                return value
+            return ((value >> count) | (value << (self.word_bits - count))) & self.mask
+
+        def encode_length_le(self, value):
+            if value == 0:
+                return b"\x00"
+
+            out = bytearray()
+            while value > 0:
+                out.append(value & 0xff)
+                value >>= 8
+            return bytes(out)
+
+        def bytes_to_little_endian_word(self, chunk):
+            value = 0
+            shift = 0
+            for b in chunk:
+                value |= b << shift
+                shift += 8
+            return value
+
+        def word_to_little_endian_bytes(self, value):
+            out = bytearray()
+            for i in range(self.word_bytes):
+                out.append((value >> (8 * i)) & 0xff)
+            return bytes(out)
+
+        def word_to_big_endian_bytes(self, value):
+            out = bytearray()
+            for i in range(self.word_bytes - 1, -1, -1):
+                out.append((value >> (8 * i)) & 0xff)
+            return bytes(out)
+
+    class Blender224(BlenderBase):
+        block_size = 64
+        digest_size = 28
+        word_bits = 32
+        word_count = 7
+        iv_words = [
+            0xc105_9ed8, 0x367c_d507, 0x3070_dd17, 0xf70e_5939,
+            0xffc0_0b31, 0x6858_1511, 0x64f9_8fa7,
+        ]
+
+    class Blender256(BlenderBase):
+        block_size = 64
+        digest_size = 32
+        word_bits = 32
+        word_count = 8
+        iv_words = [
+            0x6a09_e667, 0xbb67_ae85, 0x3c6e_f372, 0xa54f_f53a,
+            0x510e_527f, 0x9b05_688c, 0x1f83_d9ab, 0x5be0_cd19,
+        ]
+
+    class Blender384(BlenderBase):
+        # KAT-compatible version of Reference Implementation / BlenderUpdate.zip
+        # The sixth word is set to 0 to accommodate V384 initialization.
+        block_size = 128
+        digest_size = 48
+        word_bits = 64
+        word_count = 6
+        iv_words = [
+            0xcbbb_9d5d_c105_9ed8, 0x629a_292a_367c_d507, 0x9159_015a_3070_dd17, 0x152f_ecd8_f70e_5939,
+            0x6733_2667_ffc0_0b31, 0x0000_0000_0000_0000,
+        ]
+
+    class Blender384Spec(BlenderBase):
+        # Version using SHA-384-derived initial values ​​as per the specification
+        block_size = 128
+        digest_size = 48
+        word_bits = 64
+        word_count = 6
+        iv_words = [
+            0xcbbb_9d5d_c105_9ed8, 0x629a_292a_367c_d507, 0x9159_015a_3070_dd17, 0x152f_ecd8_f70e_5939,
+            0x6733_2667_ffc0_0b31, 0x8eb4_4a87_6858_1511,
+        ]
+
+    class Blender512(BlenderBase):
+        block_size = 128
+        digest_size = 64
+        word_bits = 64
+        word_count = 8
+        iv_words = [
+            0x6a09_e667_f3bc_c908, 0xbb67_ae85_84ca_a73b, 0x3c6e_f372_fe94_f82b, 0xa54f_f53a_5f1d_36f1,
+            0x510e_527f_ade6_82d1, 0x9b05_688c_2b3e_6c1f, 0x1f83_d9ab_fb41_bd6b, 0x5be0_cd19_137e_2179,
+        ]
+
+    class BOOLEBase:
+        word_size = 64
+        block_size = 8
+        state_words = 16
+        initsum = 0x6996_c53a
+        mask = 0xffff_ffff_ffff_ffff
+
+        def __init__(self, data=b"", digest_bits=None):
+            if digest_bits is None:
+                if not hasattr(self, "default_digest_bits"):
+                    raise ValueError("digest_bits is required")
+                digest_bits = self.default_digest_bits
+
+            if digest_bits <= 0 or digest_bits > (8 * self.word_size):
+                raise ValueError("invalid digest_bits")
+            if (digest_bits % 8) != 0:
+                raise ValueError("digest_bits must be byte-aligned")
+
+            self.digest_bits = int(digest_bits)
+            self.digest_size = self.digest_bits // 8
+            self.hashbitlen = self.digest_bits
+
+            self.r = [0] * self.state_words
+            self.nbits_total = 0
+            self.xsum = 0
+            self.lsum = 0
+            self.rsum = 0
+            self.buf = bytearray()
+            self.msg_len = 0
+
+            self.init_state()
+
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__(digest_bits=self.digest_bits)
+            other.r = list(self.r)
+            other.nbits_total = self.nbits_total
+            other.xsum = self.xsum
+            other.lsum = self.lsum
+            other.rsum = self.rsum
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError("data must be bytes-like")
+
+            data = bytes(data)
+            self.msg_len += len(data)
+            self.nbits_total = (self.nbits_total + (len(data) * 8)) & self.mask
+            self.buf.extend(data)
+
+            while len(self.buf) >= self.block_size:
+                word = int.from_bytes(self.buf[:self.block_size], "little")
+                del self.buf[:self.block_size]
+                self.data_cycle(word)
+
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.generate()
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            self.finish()
+            self.finish()
+            return
+
+        def rol(self, value, count):
+            value &= self.mask
+            return ((value << count) | (value >> (self.word_size - count))) & self.mask
+
+        def ror(self, value, count):
+            value &= self.mask
+            return ((value >> count) | (value << (self.word_size - count))) & self.mask
+
+        def sbox1(self, value):
+            value &= self.mask
+            value ^= self.initsum
+            value ^= self.rol(value, 34) | self.rol(value, 42)
+            value ^= self.rol(value, 20) | self.rol(value, 55)
+            value ^= (value << 3) | self.rol(value, 60)
+            return value & self.mask
+
+        def sbox2(self, value):
+            value &= self.mask
+            value ^= self.initsum
+            value ^= self.ror(value, 35) | self.ror(value, 46)
+            value ^= self.ror(value, 27) | self.ror(value, 52)
+            value ^= (value >> 5) | self.ror(value, 55)
+            return value & self.mask
+
+        def soft_reset(self):
+            self.nbits_total = 0
+            self.xsum = 0
+            self.lsum = self.initsum
+            self.rsum = self.rol(self.initsum, 8)
+            return
+
+        def init_state(self):
+            self.r[0] = self.sbox1(1)
+
+            i = 1
+            while i < self.state_words:
+                self.r[i] = self.sbox1(self.r[i - 1])
+                i += 1
+
+            self.soft_reset()
+            return
+
+        def cycle(self):
+            t = self.r[12] ^ self.r[13]
+            t = self.sbox1(t) ^ self.rol(self.r[0], 1)
+
+            i = 1
+            while i < self.state_words:
+                self.r[i - 1] = self.r[i]
+                i += 1
+            self.r[self.state_words - 1] = t
+
+            t = self.sbox2(self.r[2] ^ self.r[15])
+            self.r[0] ^= t
+            return
+
+        def data_cycle(self, word):
+            self.xsum ^= word
+            self.lsum = self.sbox1(self.lsum) ^ word
+            self.rsum ^= self.lsum
+            self.lsum = self.rol(self.lsum, 1)
+            self.rsum = self.ror(self.rsum, 1)
+
+            self.r[3] ^= self.lsum
+            self.r[13] ^= self.rsum
+
+            self.cycle()
+            return
+
+        def stream_cycle(self):
+            self.cycle()
+            return self.r[0] ^ self.r[8] ^ self.r[12]
+
+        def diffuse(self):
+            i = 0
+            while i < self.state_words:
+                self.cycle()
+                i += 1
+            return
+
+        def finish(self):
+            if len(self.buf) != 0:
+                # Absorb remaining bytes as a zero-padded little-endian word.
+                tail = bytes(self.buf)
+                word = int.from_bytes(tail.ljust(self.block_size, b"\x00"), "little")
+                self.data_cycle(word)
+                self.buf.clear()
+
+            # For 64-bit DataLength, only R[0] is xored with the message bit length.
+            self.r[0] ^= self.nbits_total
+            self.r[4] ^= self.hashbitlen
+
+            i = 4
+            while i < self.state_words:
+                self.r[i] ^= self.lsum
+                self.r[i + 1] ^= self.xsum
+                self.r[i + 2] ^= self.rsum
+                i += 3
+
+            self.diffuse()
+            return
+
+        def generate(self):
+            out = bytearray()
+            while len(out) < self.digest_size:
+                word = self.stream_cycle()
+                out.extend(word.to_bytes(self.block_size, "little"))
+            return bytes(out[:self.digest_size])
+
+    class BOOLE224(BOOLEBase):
+        default_digest_bits = 224
+        digest_size = 28
+
+    class BOOLE256(BOOLEBase):
+        default_digest_bits = 256
+        digest_size = 32
+
+    class BOOLE384(BOOLEBase):
+        default_digest_bits = 384
+        digest_size = 48
+
+    class BOOLE512(BOOLEBase):
+        default_digest_bits = 512
+        digest_size = 64
+
 
 @register_command
 class HashCommand(GenericCommand):
@@ -94005,6 +95608,25 @@ class HashCommand(GenericCommand):
         yield ("Abacus256", Hash.Abacus256())
         yield ("Abacus384", Hash.Abacus384())
         yield ("Abacus512", Hash.Abacus512())
+        yield ("ARIRANG224", Hash.ARIRANG224())
+        yield ("ARIRANG256", Hash.ARIRANG256())
+        yield ("ARIRANG384", Hash.ARIRANG384())
+        yield ("ARIRANG512", Hash.ARIRANG512())
+        yield ("AURORA224", Hash.AURORA224())
+        yield ("AURORA224M", Hash.AURORA224M())
+        yield ("AURORA256", Hash.AURORA256())
+        yield ("AURORA256M", Hash.AURORA256M())
+        yield ("AURORA384", Hash.AURORA384())
+        yield ("AURORA512", Hash.AURORA512())
+        yield ("Blender224", Hash.Blender224())
+        yield ("Blender256", Hash.Blender256())
+        yield ("Blender384", Hash.Blender384())
+        yield ("Blender384Spec", Hash.Blender384Spec())
+        yield ("Blender512", Hash.Blender512())
+        yield ("BOOLE224", Hash.BOOLE224())
+        yield ("BOOLE256", Hash.BOOLE256())
+        yield ("BOOLE384", Hash.BOOLE384())
+        yield ("BOOLE512", Hash.BOOLE512())
         try:
             # FSB requires a hexadecimal representation of pi.
             # If gmpy2 is available, it can be calculated quickly,
@@ -94262,16 +95884,16 @@ class HashCommand(GenericCommand):
         if h is None:
             byte = hfunc.digest_size
             bit = byte * 8
-            line = "{:30s}:[{:4d}b/{:3d}B]".format(hname, bit, byte)
+            line = "{:26s}:[{:4d}b/{:3d}B]".format(hname, bit, byte)
             return line
 
         bit = len(h) * 4
         byte = bit // 8
         if hasattr(hfunc, "digest_normalize"):
             hn = hfunc.digest_normalize(h)
-            line = "{:18s}:[{:3d}b/{:2d}B] {:s} ({:s})".format(hname, bit, byte, h, hn)
+            line = "{:26s}:[{:4d}b/{:3d}B] {:s} ({:s})".format(hname, bit, byte, h, hn)
         else:
-            line = "{:18s}:[{:3d}b/{:2d}B] {:s}".format(hname, bit, byte, h)
+            line = "{:26s}:[{:4d}b/{:3d}B] {:s}".format(hname, bit, byte, h)
         return line
 
     def should_be_displayed(self, hname, hfunc):
@@ -94690,6 +96312,11 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "SIMD512": "24949bf23897f6cc00637b4ab352700c778b21f46c2b0607ae6f52898fe9f6ea" \
                    "68c9fcc663c7e82951faea69b66fe095501fb4b54136fbaf16cbcbe24afbfef2",
         # -------------------- SHA3 Round1 candidates --------------------
+        # If the link is dead, use these.
+        # https://web.archive.org/web/20170404095802/http://csrc.nist.gov/groups/ST/hash/sha-3/Round1/submissions_rnd1.html
+        # https://web.archive.org/web/20170211075400/http://csrc.nist.gov/groups/ST/hash/sha-3/Round2/submissions_rnd2.html
+        # https://web.archive.org/web/20170211075442/http://csrc.nist.gov/groups/ST/hash/sha-3/Round3/submissions_rnd3.html
+
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/Abacus.zip
         "Abacus224": "4cce4439e6a5d3474c0c6d2b2139d795e3ff3307e7dbaaf6bd5e348a",
         "Abacus256": "fabd01ce8cdc42bd732e280495720b82c292559e876fb40190fcbb2d362acdfd",
@@ -94697,6 +96324,38 @@ class HashTestCommand(HashCommand, BufferingOutput):
                      "3e3d877f8c860d5a5f60c3750e4b47c8",
         "Abacus512": "46f1db2e75d6d0624f216a21019526858227208dde706b8fbb24aa207f748a90" \
                      "505a3d64957e8bf47119133f90692ee0a2b62cfea517b56a270e51255b3daef6",
+        # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/ARIRANGUpdate.zip
+        "ARIRANG224": "94d5e36a647ca0bf7c6ca4c6c7baf62d99e579def65921eb3b650d6f",
+        "ARIRANG256": "d12670af67579c32891ce78d1fcc4fe09117bb3a78ab3cc942a1b6d00433bc2a",
+        "ARIRANG384": "de7d9ac2f916835c19a35da67b5e9482106c12e4ea62551f7a64b32125876f90" \
+                      "bdc58ff897211b81bd35199e551fd54c",
+        "ARIRANG512": "657b51884ad5b026fac601d3fe25e2f098662f63a8c04c42fa33f3b642f53f41" \
+                      "d45309dd6f33c180905f40639de9ed251eb0b3b3a05d6535ddafee91535805d7",
+        # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/AURORA.zip
+        "AURORA224": "0dd7c2555fb2aac360dc5af45b11b25adae957190358b21c234b72d8",
+        "AURORA224M": "9f1fd46fc31c7cf7857185a6a2984d41ceb65f2523dbc61e2ce9eb5f",
+        "AURORA256": "cfc1dc755cb53e0eb11a09df87cd09f7ce7a36774f0f077549a30691d88e47fb",
+        "AURORA256M": "09f995fade2f4e1c264a1f1c5084d940a308c328a3a1dae7b733b965e369749f",
+        "AURORA384": "ec46174a9d6a36d64f45cdfb23e3c415a0164b33c740f043f15e09e9bf7bd649" \
+                     "2dbc1f669a6eb6d4a40ac635f2744e39",
+        "AURORA512": "0131d81f00adca30aca5869c077f1b89e1a152d7a33c264d3baf8260e5128bac" \
+                     "7658f01427d02a97764315f932d68fe1ad4a9eecba2c562ac04824a07aafd843",
+        # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/Blender.zip
+        "Blender224": "fb4f7f2553f3a6ea97280e59b88c12079c2b0eddce0653ecc41f3a17",
+        "Blender256": "cc9b7c7b23e9a39e64caa21154bae402354b6e584466cf2c08a0cd61f01c7a80",
+        "Blender384": "8491360df9aebf5e82acb9bbff50a9f119b72becb6bfcd6b234db11d4b09b9ca" \
+                      "d2599533cc9c5c66f4c8d0d6ffb6b12f",
+        "Blender384Spec": "4b45793d09c26560bed42236c7124af41453f9fbe09c95891dbb0e5fdb508f2d" \
+                          "3f8e5571b180ee57b77a3ffbca54178a",
+        "Blender512": "747a5d61b29c1c7a3c4b204331d7487b2004eb8f33b1146313b55a380f9ae7d3" \
+                      "d9f4c30ca240a941f77f2821ab537553e9cbe3651d4dd3c978b8cc8258fec310",
+        # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/BOOLE.zip
+        "BOOLE224": "fedfa0ffc49e92f317c270cc06bf16b9b43f58b45d491e449bf4a280",
+        "BOOLE256": "4072a004c83ebdbf14d939c7ddf784a029830356d0a6d733c65718aa2c1f97e2",
+        "BOOLE384": "295cafc56b77dced1a9857531e8a457f9347675a3ba685b43a2ce86da6a5b11c" \
+                    "cb28c5ba83ae50c5ce9b45f720729fa4",
+        "BOOLE512": "5563f51182323408e9df71e0b32d1fd7a1e15a1d04f226d3062c311fb867951a" \
+                    "c500d0f1b402c75996847052d03a560f3e95e3f9c220c3b23b77b2562fc00962",
         # https://hashing.tools/fsb
         "FSB160": "b0a13fe24c0190e8d53f91e246ea10540e147af3",
         "FSB224": "207ac5eb161b20be6ca49f7d3d7851a7634bc328ec083bde3488bf3a",
