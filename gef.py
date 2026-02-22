@@ -105,6 +105,7 @@ import datetime
 import functools
 import hashlib
 import itertools
+import json
 import os
 import re
 import struct
@@ -24663,7 +24664,7 @@ class GlibcHeapDumpImageCommand(GenericCommand):
 
         data = b"".join(data_parts)
 
-        tmp_fd, tmp_path = GefUtil.mkstemp(prefix="heap-composition", suffix=".raw")
+        tmp_fd, tmp_path = GefUtil.mkstemp(prefix="heap-dump-image", suffix=".raw")
         os.fdopen(tmp_fd, "wb").write(data)
         return tmp_path
 
@@ -24769,7 +24770,9 @@ class GlibcHeapSnapshotCommand(GenericCommand):
     parser.add_argument("--all", action="store_true", help="dump all arenas.")
     _syntax_ = parser.format_help()
 
-    def take_snap_shot(self, arena, arena_index):
+    @staticmethod
+    def dump_heap(arena):
+        # data
         try:
             section = ProcessMap.lookup_address(arena.heap_base).section
             page_start = section.page_start
@@ -24779,14 +24782,108 @@ class GlibcHeapSnapshotCommand(GenericCommand):
             return None
 
         try:
-            data = read_memory(page_start, region_size)
+            raw = read_memory(page_start, region_size)
         except gdb.MemoryError:
             err("Failed to dump memory")
             return None
 
-        tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix="heap-snapshot-arena{:d}".format(arena_index), suffix=".raw")
-        os.fdopen(tmp_fd, "wb").write(data)
-        return tmp_filepath
+        # info
+        try:
+            heap_base = arena.heap_base
+            dump_start = heap_base
+            if arena.is_main_arena:
+                if (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
+                    dump_start += 8
+
+            info = {
+                "heap_base": arena.heap_base,
+                "dump_start": dump_start,
+                "top": arena.top,
+            }
+
+            chunks = []
+            current_chunk = GlibcHeap.GlibcChunk(arena, dump_start, from_base=True)
+            while True:
+                """
+                0x555555fa9500|+0x00000: 0x0000000000000020 0x0000000000000041  <- start_offset
+                0x555555fa9510|+0x00010: 0x726f7272652d736c 0x2d746f6e6e61632d
+                0x555555fa9520|+0x00020: 0x7269642d6e65706f 0x622d79726f746365
+                0x555555fa9530|+0x00030: 0x72637365642d6461 0x696c2f726f747069  <- end_offset
+                """
+                start_offset = current_chunk.chunk_base_address - heap_base
+                chunks.append({
+                    "start_offset": start_offset,
+                    "size": current_chunk.size,
+                    "end_offset": start_offset + current_chunk.size - (current_arch.ptrsize * 2),
+                    "used": current_chunk.is_real_used(),
+                    "extra": "",
+                })
+                if current_chunk.chunk_base_address > arena.top:
+                    break
+                if current_chunk.size == 0:
+                    break
+                chunks[-1]["extra"] = ",".join(arena.get_bins_info(current_chunk))
+                if current_chunk.chunk_base_address == arena.top:
+                    break
+
+                next_chunk = current_chunk.get_next_chunk()
+                if next_chunk is None:
+                    break
+                if not is_valid_addr(next_chunk.address):
+                    break
+                current_chunk = next_chunk
+
+            info["chunks"] = chunks
+        except Exception:
+            return None
+
+        return raw, info
+
+    @staticmethod
+    def take_snapshot(arena, arena_index):
+        ret = GlibcHeapSnapshotCommand.dump_heap(arena)
+        if ret is None:
+            return None
+        raw, info = ret
+
+        raw_fd, raw_filepath = GefUtil.mkstemp(
+            prefix="heap-ss-arena{:d}".format(arena_index),
+            dt=datetime.datetime.now().strftime("%H%M%S"),
+            suffix=".raw",
+        )
+        os.fdopen(raw_fd, "wb").write(raw)
+
+        base, _ = os.path.splitext(raw_filepath)
+        json.dump(info, open(base + ".json", "w"))
+
+        GlibcHeapSnapshotCommand.last_dumped_filepath = raw_filepath
+        return raw_filepath
+
+    @staticmethod
+    def read_snapshot(filepath):
+        if os.path.basename(filepath) == filepath:
+            filepath = os.path.join(GEF_TEMP_DIR, filepath)
+
+        base, _ = os.path.splitext(filepath)
+        raw_path = base + ".raw"
+        json_path = base + ".json"
+
+        if not os.path.exists(raw_path) or os.path.getsize(raw_path) == 0:
+            err("Invalid file path (.raw)")
+            return None
+        if not os.path.exists(json_path) or os.path.getsize(json_path) == 0:
+            err("Invalid file path (.json)")
+            return None
+
+        try:
+            raw = open(raw_path, "rb").read()
+        except gdb.MemoryError:
+            return None
+        try:
+            info = json.loads(open(json_path).read())
+        except Exception:
+            return None
+        return raw, info
 
     @parse_args
     @only_if_gdb_running
@@ -24811,7 +24908,7 @@ class GlibcHeapSnapshotCommand(GenericCommand):
 
         # doit
         for i, arena in enumerate(arenas):
-            path = self.take_snap_shot(arena, i)
+            path = self.take_snapshot(arena, i)
             if path:
                 info("Snapshot successful: {:s}".format(path))
         return
@@ -24827,10 +24924,13 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
                         help="the address or number to interpret as an arena. (default: main_arena)")
-    parser.add_argument("file_path", metavar="FILE_PATH", help="the filepath to compare.")
+    parser.add_argument("file_path", metavar="FILE_PATH", nargs="?",
+                        help="the filepath to compare (default: last dumped file).")
     parser.add_argument("file_path2", metavar="FILE_PATH2", nargs="?", help="the filepath to compare.")
-    parser.add_argument("-f", "--full", action="store_true", help="display the same line without omitting.")
+    parser.add_argument("-e", "--extra", action="store_true", help="display extra chunk info.")
+    parser.add_argument("-f", "--full", action="store_true", help="display after `top` chunk.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -24849,97 +24949,186 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
         return
 
-    def read_heap_region(self, arena):
-        try:
-            section = ProcessMap.lookup_address(arena.heap_base).section
-            page_start = section.page_start
-            region_size = section.size
-        except Exception:
-            err("Failed to get memory range")
+    class LightRangeDict:
+        def __init__(self):
+            self.starts = []
+            self.items = []
+            return
+
+        def add(self, start, stop, value):
+            import bisect
+            if not (start < stop):
+                raise ValueError("start must be < stop")
+
+            i = bisect.bisect_left(self.starts, start)
+
+            if 0 < i and start < self.items[i - 1][1]:
+                raise ValueError("overlapping range")
+
+            if i < len(self.items) and self.items[i][0] < stop:
+                raise ValueError("overlapping range")
+
+            self.starts.insert(i, start)
+            self.items.insert(i, (start, stop, value))
             return None
 
-        try:
-            data = read_memory(page_start, region_size)
-        except gdb.MemoryError:
-            err("Failed to dump memory")
-            return None
-        return data, page_start
+        def __getitem__(self, key):
+            import bisect
+            i = bisect.bisect_right(self.starts, key) - 1
+            if 0 <= i:
+                start, stop, value = self.items[i]
+                if key < stop:
+                    return value
+            if hasattr(self, "default"):
+                return self.default
+            raise KeyError(key)
 
-    def compare(self, data1, data2, data1_addr=None):
-        diff_found = False
-        asterisk = False
+        def setdefault(self, default):
+            self.default = default
+            return
 
-        size = max(len(data1), len(data2))
+    def compare(self, raw1, info1, raw2, info2):
+        ptrsize = current_arch.ptrsize
+        assert len(raw1) % ptrsize == 0
+        assert len(raw2) % ptrsize == 0
 
-        for pos in range(0, size, 16):
-            # determining continuity
-            bin16_1 = data1[pos : pos + 16]
-            bin16_2 = data2[pos : pos + 16]
-            if not self.args.full:
-                if bin16_1 == bin16_2:
-                    if asterisk is False:
-                        self.out.append("*")
-                        asterisk = True
-                    continue
+        double_ptrsize = ptrsize * 2
+        hex_width = double_ptrsize + 2
 
-            diff_found = True
-            asterisk = False
+        if self.args.full:
+            max_size = max(len(raw1), len(raw2))
+        else:
+            max_size = max(
+                info1["top"] + double_ptrsize - info1["heap_base"],
+                info2["top"] + double_ptrsize - info2["heap_base"],
+            )
+
+        color_dict = {
+            # same, is_size, is_underline, is_used
+            (True, True, True, True): "underline magenta",
+            (True, True, True, False): "underline magenta",
+            (True, True, False, True): "magenta",
+            (True, True, False, False): "magenta",
+            (True, False, True, True): "underline graphite",
+            (True, False, True, False): "underline",
+            (True, False, False, True): "graphite",
+            (True, False, False, False): "",
+            (False, True, True, True): "bold underline magenta",
+            (False, True, True, False): "bold underline magenta",
+            (False, True, False, True): "bold magenta",
+            (False, True, False, False): "bold magenta",
+            (False, False, True, True): "bold underline graphite",
+            (False, False, True, False): "bold underline",
+            (False, False, False, True): "bold graphite",
+            (False, False, False, False): "bold",
+        }
+
+        start_offset_list1 = {c["start_offset"] for c in info1["chunks"]}
+        start_offset_list2 = {c["start_offset"] for c in info2["chunks"]}
+        end_offset_list1 = {c["end_offset"] for c in info1["chunks"]}
+        end_offset_list2 = {c["end_offset"] for c in info2["chunks"]}
+        if self.args.extra:
+            prefix_blank = " " * (AddressUtil.get_format_address_width() + 18)
+            fwidth = (double_ptrsize + 2) * 2 + 7 + double_ptrsize
+            extra_dict1 = {c["start_offset"]: c["extra"] for c in info1["chunks"]}
+            extra_dict2 = {c["start_offset"]: c["extra"] for c in info2["chunks"]}
+
+        used_dict1 = self.LightRangeDict()
+        used_dict1.setdefault(False)
+        for ch in info1["chunks"]:
+            used_dict1.add(ch["start_offset"], ch["start_offset"] + ch["size"], ch["used"])
+        used_dict2 = self.LightRangeDict()
+        used_dict2.setdefault(False)
+        for ch in info2["chunks"]:
+            used_dict2.add(ch["start_offset"], ch["start_offset"] + ch["size"], ch["used"])
+
+        def to_ascii(v):
+            s = ""
+            for i in range(ptrsize):
+                c = (v >> (8 * i)) & 0xff
+                s += chr(c) if 0x20 <= c < 0x7f else "."
+            return s
+
+        # process block
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
+        for pos in tqdm(range(0, max_size, double_ptrsize), leave=False):
+            # skip or not
+            raw16_1 = raw1[pos : pos + double_ptrsize]
+            raw16_2 = raw2[pos : pos + double_ptrsize]
 
             # coloring
             hex_1 = []
             hex_2 = []
             ascii_1 = []
             ascii_2 = []
-            for i in range(min(max(len(bin16_1), len(bin16_2)), 16)):
-                bin16_1_i = bin16_1[i] if i < len(bin16_1) else None
-                bin16_2_i = bin16_2[i] if i < len(bin16_2) else None
+            is_line_same = True
 
-                if bin16_1_i == bin16_2_i:
-                    color_func = lambda x: x
-                else:
-                    color_func = Color.boldify
+            # unpack
+            values1 = slice_unpack(raw16_1, ptrsize)
+            values2 = slice_unpack(raw16_2, ptrsize)
 
-                if bin16_1_i is None:
-                    hex_1.append("  ")
-                    ascii_1.append(" ")
-                else:
-                    hex_1.append(color_func("{:02x}".format(bin16_1_i)))
-                    ascii_1.append(color_func(chr(bin16_1_i) if 0x20 <= bin16_1_i < 0x7f else "."))
+            # check size, underline, used
+            is_size1 = pos in start_offset_list1
+            is_size2 = pos in start_offset_list2
+            is_underline1 = pos in end_offset_list1
+            is_underline2 = pos in end_offset_list2
+            is_used1 = used_dict1[pos]
+            is_used2 = used_dict2[pos]
 
-                if bin16_2_i is None:
-                    hex_2.append("  ")
-                    ascii_2.append(" ")
-                else:
-                    hex_2.append(color_func("{:02x}".format(bin16_2_i)))
-                    ascii_2.append(color_func(chr(bin16_2_i) if 0x20 <= bin16_2_i < 0x7f else "."))
+            # cmp
+            for i in range(2):
+                try:
+                    v1 = values1[i]
+                    h1 = "{:#0{:d}x}".format(v1, hex_width)
+                    a1 = to_ascii(v1)
+                except IndexError:
+                    v1 = None
+                    h1 = " " * hex_width
+                    a1 = " " * ptrsize
+                try:
+                    v2 = values2[i]
+                    h2 = "{:#0{:d}x}".format(v2, hex_width)
+                    a2 = to_ascii(v2)
+                except IndexError:
+                    v2 = None
+                    h2 = " " * hex_width
+                    a2 = " " * ptrsize
 
-            # formatting
-            # ["00", "11", ... "66" "77", ...] -> ["0x7766554433221100", ...]
-            hex_1_2 = ["0x" + "".join(x[::-1]) for x in slicer(hex_1, current_arch.ptrsize)]
-            hex_2_2 = ["0x" + "".join(x[::-1]) for x in slicer(hex_2, current_arch.ptrsize)]
-            hex_1_s = " ".join(hex_1_2)
-            hex_2_s = " ".join(hex_2_2)
-            # [".", ".", ...] -> "................"
-            ascii_1_s = "".join(ascii_1) + " " * (16 - len(ascii_1))
-            ascii_2_s = "".join(ascii_2) + " " * (16 - len(ascii_2))
+                # elment coloring
+                is_same = (v1 is None) or (v2 is None) or v1 == v2
+                is_line_same &= is_same
+                is_size1_e = is_size1 & (i == 1)
+                is_size2_e = is_size2 & (i == 1)
+                hex_1.append(Color.colorify(h1, color_dict[is_same, is_size1_e, is_underline1, is_used1]))
+                ascii_1.append(Color.colorify(a1, color_dict[is_same, is_size1_e, is_underline1, is_used1]))
+                hex_2.append(Color.colorify(h2, color_dict[is_same, is_size2_e, is_underline2, is_used2]))
+                ascii_2.append(Color.colorify(a2, color_dict[is_same, is_size2_e, is_underline2, is_used2]))
+
+            # blank coloring
+            sep1 = Color.colorify(" ", " ".join(color_dict[True, False, is_underline1, is_used1]))
+            sep2 = Color.colorify(" ", " ".join(color_dict[True, False, is_underline2, is_used2]))
+            hex_1_joined = sep1.join(hex_1)
+            hex_2_joined = sep2.join(hex_2)
+            ascii_1_joined = sep1.join(ascii_1)
+            ascii_2_joined = sep2.join(ascii_2)
+
+            if self.args.extra:
+                # make extra line
+                extra1 = extra_dict1.get(pos, "")
+                extra2 = extra_dict2.get(pos, "")
+                if extra1 or extra2:
+                    line = "{:s} {:{:d}s} {:{:d}s}".format(prefix_blank, extra1, fwidth, extra2, fwidth)
+                    self.out.append(line.rstrip())
 
             # make line
-            if data1_addr is not None:
-                data1_addr_pos = ProcessMap.lookup_address(data1_addr + pos)
-                data2_addr_pos = AddressUtil.format_address(pos)
-                self.out.append("{!s}: {:s} |{:s}| {:s}: {:s} |{:s}|".format(
-                    data1_addr_pos, hex_1_s, ascii_1_s,
-                    data2_addr_pos, hex_2_s, ascii_2_s,
-                ))
-            else:
-                data_addr_pos = AddressUtil.format_address(pos)
-                self.out.append("{:s}: {:s} |{:s}| {:s}: {:s} |{:s}|".format(
-                    data_addr_pos, hex_1_s, ascii_1_s,
-                    data_addr_pos, hex_2_s, ascii_2_s,
-                ))
-
-        if diff_found is False:
-            self.info_add_out("No difference")
+            addr = ProcessMap.lookup_address(info1["dump_start"] + pos)
+            line = "{:s}{!s}|{:+#08x}|{:+06d}: {:s} | {:s} | {:s} | {:s} |".format(
+                " " if is_line_same else "+",
+                addr, pos, pos // double_ptrsize,
+                hex_1_joined, ascii_1_joined,
+                hex_2_joined, ascii_2_joined,
+            )
+            self.out.append(line)
         return
 
     @parse_args
@@ -24947,7 +25136,12 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @require_arch_set
     def do_invoke(self, args):
-        if args.file_path2 is None:
+        if args.file_path is not None and args.file_path2 is not None:
+            ret1 = GlibcHeapSnapshotCommand.read_snapshot(self.args.file_path)
+            ret2 = GlibcHeapSnapshotCommand.read_snapshot(self.args.file_path2)
+            file_path1 = os.path.basename(self.args.file_path)
+            file_path2 = os.path.basename(self.args.file_path2)
+        else:
             # parse arena
             arena = GlibcHeap.get_arena(args.arena_addr)
 
@@ -24959,27 +25153,36 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                 err("Heap is not initialized")
                 return
 
-            if not os.path.exists(self.args.file_path) or os.path.getsize(self.args.file_path) == 0:
-                err("Invalid file path")
-                return
+            ret1 = GlibcHeapSnapshotCommand.dump_heap(arena)
+            file_path1 = "Current memory"
 
-            data1, vaddr = self.read_heap_region(arena)
-            data2 = open(self.args.file_path, "rb").read()
+            if args.file_path is None:
+                if not hasattr(GlibcHeapSnapshotCommand, "last_dumped_filepath"):
+                    err("Invalid filepath")
+                    return
+                ret2 = GlibcHeapSnapshotCommand.read_snapshot(GlibcHeapSnapshotCommand.last_dumped_filepath)
+                file_path2 = os.path.basename(GlibcHeapSnapshotCommand.last_dumped_filepath)
+            else:
+                ret2 = GlibcHeapSnapshotCommand.read_snapshot(self.args.file_path)
+                file_path2 = os.path.basename(self.args.file_path)
 
-        else:
-            if not os.path.exists(self.args.file_path) or os.path.getsize(self.args.file_path) == 0:
-                err("Invalid file path")
-                return
-            if not os.path.exists(self.args.file_path2) or os.path.getsize(self.args.file_path2) == 0:
-                err("Invalid file path2")
-                return
-            data1 = open(self.args.file_path, "rb").read()
-            data2 = open(self.args.file_path2, "rb").read()
-            vaddr = None
+        if ret1 is None or ret2 is None:
+            return
+        raw1, info1 = ret1
+        raw2, info2 = ret2
+
+        # legend
+        self.out = []
+        fwidth = (current_arch.ptrsize * 2 + 2) * 2 + 7 + (current_arch.ptrsize * 2)
+        fmt = " {:{:d}s} {:8s} {:6s}  {:{:d}s} {:{:d}s}"
+        legend = [
+            "Address", AddressUtil.get_format_address_width(), "Offset", "Line",
+            file_path1, fwidth, file_path2, fwidth,
+        ]
+        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         # doit
-        self.out = []
-        self.compare(data1, data2, data1_addr=vaddr)
+        self.compare(memoryview(raw1), info1, memoryview(raw2), info2)
         self.print_output(check_terminal_size=True)
         return
 
@@ -25764,7 +25967,6 @@ class AsmListCommand(GenericCommand):
                 open(x86data_js, "wb").write(x86)
 
             x86 = x86.split(b"// ${JSON:BEGIN}")[1].split(b"// ${JSON:END}")[0]
-            import json
             return json.loads(x86)
 
         # load capstone
@@ -97323,7 +97525,6 @@ class JsonMemoryCommand(JsonCommand):
             err("Could not find JSON")
             return
 
-        import json
         try:
             jstr = json.dumps(json.loads(j), indent=2)
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -97359,7 +97560,6 @@ class JsonValueCommand(JsonCommand):
 
     @parse_args
     def do_invoke(self, args):
-        import json
         try:
             jstr = json.dumps(json.loads(self.args.value), indent=2)
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -136036,13 +136236,19 @@ class GefUtil:
         """Create a temporary file."""
         if dt is None:
             dt = GefUtil.now_str()
+
+        s = []
         if prefix:
-            prefix += "-" + dt + "-"
-        else:
-            prefix = dt + "-"
+            s.append(prefix)
+        if dt:
+            s.append(dt)
+        real_prefix = "-".join(s)
+        if real_prefix:
+            real_prefix += "-"
+
         if dir is None:
             dir = GEF_TEMP_DIR
-        return tempfile.mkstemp(dir=dir, prefix=prefix, suffix=suffix)
+        return tempfile.mkstemp(dir=dir, prefix=real_prefix, suffix=suffix)
 
     @staticmethod
     def rmdir(directory, verbose=False, keep_root=False):
