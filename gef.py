@@ -23202,6 +23202,8 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
                         help="the address or number to interpret as an arena. (default: main_arena)")
+    parser.add_argument("-i", "--index-filter", type=AddressUtil.parse_address,
+                        help="filter by tcache index.")
     parser.add_argument("-v", "--verbose", action="store_true", help="display empty bins.")
     parser.add_argument("--all", action="store_true", help="dump all arenas.")
     _syntax_ = parser.format_help()
@@ -23211,7 +23213,7 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
         return
 
     @staticmethod
-    def print_tcache(arena, verbose=False):
+    def print_tcache(arena, verbose=False, index_filter=None):
         """Pretty-print tcache bins for the given arena, detecting loops and chunk corruption."""
         if get_libc_version() < (2, 26):
             return
@@ -23223,6 +23225,11 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
         nb_chunk = 0
         for i in range(arena.TCACHE_MAX_BINS()):
+            # index filter
+            if index_filter is not None:
+                if i != index_filter:
+                    continue
+
             chunk = arena.get_tcachebins_i(i)
             chunks = []
             m = []
@@ -23307,7 +23314,7 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
             gef_print(titlify("arena: {:#x}{:s}".format(
                 arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
             )
-            GlibcHeapTcachebinsCommand.print_tcache(arena, args.verbose)
+            GlibcHeapTcachebinsCommand.print_tcache(arena, args.verbose, args.index_filter)
         return
 
 
@@ -23322,6 +23329,8 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
                         help="the address or number to interpret as an arena. (default: main_arena)")
+    parser.add_argument("-i", "--index-filter", type=AddressUtil.parse_address,
+                        help="filter by fastbins index.")
     parser.add_argument("-v", "--verbose", action="store_true", help="display empty bins.")
     parser.add_argument("--all", action="store_true", help="dump all arenas.")
     _syntax_ = parser.format_help()
@@ -23331,7 +23340,7 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
         return
 
     @staticmethod
-    def print_fastbin(arena, verbose=False):
+    def print_fastbin(arena, verbose=False, index_filter=None):
         """Pretty-print fastbin lists for the given arena, checking for loops and incorrect indices."""
         if get_libc_version() >= (2, 43):
             return
@@ -23348,6 +23357,11 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
 
         nb_chunk = 0
         for i in range(NFASTBINS):
+            # index filter
+            if index_filter is not None:
+                if i != index_filter:
+                    continue
+
             chunk = arena.get_fastbins_i(i)
             chunks = []
             m = []
@@ -23424,7 +23438,7 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
             gef_print(titlify("arena: {:#x}{:s}".format(
                 arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
             )
-            GlibcHeapFastbinsYCommand.print_fastbin(arena, args.verbose)
+            GlibcHeapFastbinsYCommand.print_fastbin(arena, args.verbose, args.index_filter)
         return
 
 
@@ -23490,6 +23504,8 @@ class GlibcHeapSmallBinsCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
                         help="the address or number to interpret as an arena. (default: main_arena)")
+    parser.add_argument("-i", "--index-filter", type=AddressUtil.parse_address,
+                        help="filter by smallbins index.")
     parser.add_argument("-v", "--verbose", action="store_true", help="display empty bins.")
     parser.add_argument("--all", action="store_true", help="dump all arenas.")
     _syntax_ = parser.format_help()
@@ -23527,6 +23543,12 @@ class GlibcHeapSmallBinsCommand(GenericCommand):
             gef_print(titlify("small bins"))
             bins = {}
             for i in range(1, 63):
+                # index filter
+                if args.index_filter is not None:
+                    if i != args.index_filter:
+                        continue
+
+                # print
                 nb_chunk = GlibcHeapBinsCommand.pprint_bin(arena, i, "small_bins", args.verbose)
                 if nb_chunk < 0:
                     break
@@ -23549,6 +23571,8 @@ class GlibcHeapLargeBinsCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
                         help="the address or number to interpret as an arena. (default: main_arena)")
+    parser.add_argument("-i", "--index-filter", type=AddressUtil.parse_address,
+                        help="filter by largebins index.")
     parser.add_argument("-v", "--verbose", action="store_true", help="display empty bins.")
     parser.add_argument("--all", action="store_true", help="dump all arenas.")
     _syntax_ = parser.format_help()
@@ -23586,6 +23610,12 @@ class GlibcHeapLargeBinsCommand(GenericCommand):
             gef_print(titlify("large bins"))
             bins = {}
             for i in range(63, 126):
+                # index filter
+                if args.index_filter is not None:
+                    if i != args.index_filter:
+                        continue
+
+                # print
                 nb_chunk = GlibcHeapBinsCommand.pprint_bin(arena, i, "large_bins", args.verbose)
                 if nb_chunk < 0:
                     break
