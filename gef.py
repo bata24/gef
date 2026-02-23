@@ -4596,7 +4596,7 @@ class GlibcHeap:
             corrupted = False
             chunks_bk = []
 
-            # first: process backword
+            # first: process backward
             while bk != head:
                 chunk = GlibcHeap.GlibcChunk(self, bk, from_base=True)
 
@@ -25172,7 +25172,7 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                     h2 = " " * hex_width
                     a2 = " " * ptrsize
 
-                # elment coloring
+                # element coloring
                 is_same = (v1 is None) or (v2 is None) or v1 == v2
                 is_line_same &= is_same
                 is_size1_e = is_size1 & (i == 1)
@@ -94803,13 +94803,13 @@ class Hash:
                 i += 1
             return
 
-        def aurora_one_round(self, inout, cirmat0, cirmat1):
+        def aurora_one_round(self, inout, cirmat0, cirmat1): # codespell:ignore
             x = [0x00] * 32
-            self.aurora_bd(x, inout)
-            self.aurora_f_xor(inout, 0, x, 0, cirmat0)
-            self.aurora_f_xor(inout, 8, x, 8, cirmat1)
-            self.aurora_f_xor(inout, 16, x, 16, cirmat0)
-            self.aurora_f_xor(inout, 24, x, 24, cirmat1)
+            self.aurora_bd(x, inout) # codespell:ignore
+            self.aurora_f_xor(inout, 0, x, 0, cirmat0) # codespell:ignore
+            self.aurora_f_xor(inout, 8, x, 8, cirmat1) # codespell:ignore
+            self.aurora_f_xor(inout, 16, x, 16, cirmat0) # codespell:ignore
+            self.aurora_f_xor(inout, 24, x, 24, cirmat1) # codespell:ignore
             return
 
         def aurora_con_update(self, con, iv, mask):
@@ -94849,48 +94849,48 @@ class Hash:
             iv[3] = ((iv3 >> 1) | tmp) & 0xff
             return
 
-        def aurora_rotl_con_xor(self, inout, con, mask, rotval):
-            inout[4] = (inout[4] ^ ((con[0] << rotval) ^ (con[1] >> (8 - rotval)))) & 0xff
-            inout[5] = (inout[5] ^ ((con[1] << rotval) ^ (con[2] >> (8 - rotval)))) & 0xff
-            inout[6] = (inout[6] ^ ((con[2] << rotval) ^ (con[3] >> (8 - rotval)))) & 0xff
-            inout[7] = (inout[7] ^ ((con[3] << rotval) ^ (con[0] >> (8 - rotval)))) & 0xff
+        def aurora_rotl_con_xor(self, inout, con, mask, rotval): # codespell:ignore
+            inout[4] = (inout[4] ^ ((con[0] << rotval) ^ (con[1] >> (8 - rotval)))) & 0xff # codespell:ignore
+            inout[5] = (inout[5] ^ ((con[1] << rotval) ^ (con[2] >> (8 - rotval)))) & 0xff # codespell:ignore
+            inout[6] = (inout[6] ^ ((con[2] << rotval) ^ (con[3] >> (8 - rotval)))) & 0xff # codespell:ignore
+            inout[7] = (inout[7] ^ ((con[3] << rotval) ^ (con[0] >> (8 - rotval)))) & 0xff # codespell:ignore
 
-            inout[12] = (inout[12] ^ ((con[4] << rotval) ^ (con[5] >> (8 - rotval)))) & 0xff
-            inout[13] = (inout[13] ^ ((con[5] << rotval) ^ (con[6] >> (8 - rotval)))) & 0xff
-            inout[14] = (inout[14] ^ ((con[6] << rotval) ^ (con[7] >> (8 - rotval)))) & 0xff
-            inout[15] = (inout[15] ^ ((con[7] << rotval) ^ (con[4] >> (8 - rotval)))) & 0xff
+            inout[12] = (inout[12] ^ ((con[4] << rotval) ^ (con[5] >> (8 - rotval)))) & 0xff # codespell:ignore
+            inout[13] = (inout[13] ^ ((con[5] << rotval) ^ (con[6] >> (8 - rotval)))) & 0xff # codespell:ignore
+            inout[14] = (inout[14] ^ ((con[6] << rotval) ^ (con[7] >> (8 - rotval)))) & 0xff # codespell:ignore
+            inout[15] = (inout[15] ^ ((con[7] << rotval) ^ (con[4] >> (8 - rotval)))) & 0xff # codespell:ignore
 
-            inout[20] = (inout[20] ^ ((con[8] << rotval) ^ (con[9] >> (8 - rotval)))) & 0xff
-            inout[21] = (inout[21] ^ ((con[9] << rotval) ^ (con[10] >> (8 - rotval)))) & 0xff
-            inout[22] = (inout[22] ^ ((con[10] << rotval) ^ (con[11] >> (8 - rotval)))) & 0xff
-            inout[23] = (inout[23] ^ ((con[11] << rotval) ^ (con[8] >> (8 - rotval)))) & 0xff
+            inout[20] = (inout[20] ^ ((con[8] << rotval) ^ (con[9] >> (8 - rotval)))) & 0xff # codespell:ignore
+            inout[21] = (inout[21] ^ ((con[9] << rotval) ^ (con[10] >> (8 - rotval)))) & 0xff # codespell:ignore
+            inout[22] = (inout[22] ^ ((con[10] << rotval) ^ (con[11] >> (8 - rotval)))) & 0xff # codespell:ignore
+            inout[23] = (inout[23] ^ ((con[11] << rotval) ^ (con[8] >> (8 - rotval)))) & 0xff # codespell:ignore
 
-            inout[28] = (inout[28] ^ ((con[12] << rotval) ^ (con[13] >> (8 - rotval)) ^ mask)) & 0xff
-            inout[29] = (inout[29] ^ ((con[13] << rotval) ^ (con[14] >> (8 - rotval)) ^ mask)) & 0xff
-            inout[30] = (inout[30] ^ ((con[14] << rotval) ^ (con[15] >> (8 - rotval)) ^ mask)) & 0xff
-            inout[31] = (inout[31] ^ ((con[15] << rotval) ^ (con[12] >> (8 - rotval)) ^ mask)) & 0xff
+            inout[28] = (inout[28] ^ ((con[12] << rotval) ^ (con[13] >> (8 - rotval)) ^ mask)) & 0xff # codespell:ignore
+            inout[29] = (inout[29] ^ ((con[13] << rotval) ^ (con[14] >> (8 - rotval)) ^ mask)) & 0xff # codespell:ignore
+            inout[30] = (inout[30] ^ ((con[14] << rotval) ^ (con[15] >> (8 - rotval)) ^ mask)) & 0xff # codespell:ignore
+            inout[31] = (inout[31] ^ ((con[15] << rotval) ^ (con[12] >> (8 - rotval)) ^ mask)) & 0xff # codespell:ignore
             return
 
-        def aurora_rotr_con_xor(self, inout, con, mask, rotval):
-            inout[4] = (inout[4] ^ ((con[0] >> rotval) ^ (con[3] << (8 - rotval)))) & 0xff
-            inout[5] = (inout[5] ^ ((con[1] >> rotval) ^ (con[0] << (8 - rotval)))) & 0xff
-            inout[6] = (inout[6] ^ ((con[2] >> rotval) ^ (con[1] << (8 - rotval)))) & 0xff
-            inout[7] = (inout[7] ^ ((con[3] >> rotval) ^ (con[2] << (8 - rotval)))) & 0xff
+        def aurora_rotr_con_xor(self, inout, con, mask, rotval): # codespell:ignore
+            inout[4] = (inout[4] ^ ((con[0] >> rotval) ^ (con[3] << (8 - rotval)))) & 0xff # codespell:ignore
+            inout[5] = (inout[5] ^ ((con[1] >> rotval) ^ (con[0] << (8 - rotval)))) & 0xff # codespell:ignore
+            inout[6] = (inout[6] ^ ((con[2] >> rotval) ^ (con[1] << (8 - rotval)))) & 0xff # codespell:ignore
+            inout[7] = (inout[7] ^ ((con[3] >> rotval) ^ (con[2] << (8 - rotval)))) & 0xff # codespell:ignore
 
-            inout[12] = (inout[12] ^ ((con[4] >> rotval) ^ (con[7] << (8 - rotval)))) & 0xff
-            inout[13] = (inout[13] ^ ((con[5] >> rotval) ^ (con[4] << (8 - rotval)))) & 0xff
-            inout[14] = (inout[14] ^ ((con[6] >> rotval) ^ (con[5] << (8 - rotval)))) & 0xff
-            inout[15] = (inout[15] ^ ((con[7] >> rotval) ^ (con[6] << (8 - rotval)))) & 0xff
+            inout[12] = (inout[12] ^ ((con[4] >> rotval) ^ (con[7] << (8 - rotval)))) & 0xff # codespell:ignore
+            inout[13] = (inout[13] ^ ((con[5] >> rotval) ^ (con[4] << (8 - rotval)))) & 0xff # codespell:ignore
+            inout[14] = (inout[14] ^ ((con[6] >> rotval) ^ (con[5] << (8 - rotval)))) & 0xff # codespell:ignore
+            inout[15] = (inout[15] ^ ((con[7] >> rotval) ^ (con[6] << (8 - rotval)))) & 0xff # codespell:ignore
 
-            inout[20] = (inout[20] ^ ((con[8] >> rotval) ^ (con[11] << (8 - rotval)))) & 0xff
-            inout[21] = (inout[21] ^ ((con[9] >> rotval) ^ (con[8] << (8 - rotval)))) & 0xff
-            inout[22] = (inout[22] ^ ((con[10] >> rotval) ^ (con[9] << (8 - rotval)))) & 0xff
-            inout[23] = (inout[23] ^ ((con[11] >> rotval) ^ (con[10] << (8 - rotval)))) & 0xff
+            inout[20] = (inout[20] ^ ((con[8] >> rotval) ^ (con[11] << (8 - rotval)))) & 0xff # codespell:ignore
+            inout[21] = (inout[21] ^ ((con[9] >> rotval) ^ (con[8] << (8 - rotval)))) & 0xff # codespell:ignore
+            inout[22] = (inout[22] ^ ((con[10] >> rotval) ^ (con[9] << (8 - rotval)))) & 0xff # codespell:ignore
+            inout[23] = (inout[23] ^ ((con[11] >> rotval) ^ (con[10] << (8 - rotval)))) & 0xff # codespell:ignore
 
-            inout[28] = (inout[28] ^ ((con[12] >> rotval) ^ (con[15] << (8 - rotval)) ^ mask)) & 0xff
-            inout[29] = (inout[29] ^ ((con[13] >> rotval) ^ (con[12] << (8 - rotval)) ^ mask)) & 0xff
-            inout[30] = (inout[30] ^ ((con[14] >> rotval) ^ (con[13] << (8 - rotval)) ^ mask)) & 0xff
-            inout[31] = (inout[31] ^ ((con[15] >> rotval) ^ (con[14] << (8 - rotval)) ^ mask)) & 0xff
+            inout[28] = (inout[28] ^ ((con[12] >> rotval) ^ (con[15] << (8 - rotval)) ^ mask)) & 0xff # codespell:ignore
+            inout[29] = (inout[29] ^ ((con[13] >> rotval) ^ (con[12] << (8 - rotval)) ^ mask)) & 0xff # codespell:ignore
+            inout[30] = (inout[30] ^ ((con[14] >> rotval) ^ (con[13] << (8 - rotval)) ^ mask)) & 0xff # codespell:ignore
+            inout[31] = (inout[31] ^ ((con[15] >> rotval) ^ (con[14] << (8 - rotval)) ^ mask)) & 0xff # codespell:ignore
             return
 
         def aurora_protl_xor(self, dst, x):
