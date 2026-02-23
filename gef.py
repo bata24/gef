@@ -23003,34 +23003,152 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
         return
 
 
-@register_command
-class GlibcHeapBinsCommand(GenericCommand):
-    """Display information about the bins of an arena."""
+class GlibcHeapBinsDump:
+    """Manage glibc heap bins dumper."""
 
-    _cmdline_ = "heap bins"
-    _category_ = "06-a. Heap - Glibc"
-    _aliases_ = ["bins"]
+    def print_tcache(self, arena, verbose=False, index_filter=None):
+        """Pretty-print tcache bins for the given arena, detecting loops and chunk corruption."""
+        if get_libc_version() < (2, 26):
+            return
 
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
-                        help="the address or number to interpret as an arena. (default: main_arena)")
-    parser.add_argument("-v", "--verbose", action="store_true", help="display empty bins.")
-    parser.add_argument("--all", action="store_true", help="dump all arenas.")
-    _syntax_ = parser.format_help()
+        self.out.append(titlify("tcache (&tcache_perthread_struct: {:#x})".format(
+            arena.tcache_perthread_struct,
+        )))
 
-    _example_ = [
-        "{0:s}",
-        "{0:s} -a 0x7ffff0000020 -v",
-        "{0:s} -a 1 -v",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+        nb_chunk = 0
+        for i in range(arena.TCACHE_MAX_BINS()):
+            # index filter
+            if index_filter is not None:
+                if i != index_filter:
+                    continue
 
-    def __init__(self):
-        super().__init__(prefix=True)
+            chunk = arena.get_tcachebins_i(i)
+            chunks = []
+            m = []
+
+            # Only print the entry if there are valid chunks. Don't trust count
+            while True:
+                if chunk is None:
+                    break
+                try:
+                    m.append(" -> {!s}".format(chunk))
+                    if chunk.address in chunks:
+                        m.append(Color.colorify(
+                            " -> {:#x} [Loop detected]".format(chunk.address),
+                            corrupted_msg_color,
+                        ))
+                        break
+
+                    chunks.append(chunk.address)
+                    nb_chunk += 1
+
+                    next_chunk = chunk.get_fwd_ptr(True)
+                    if next_chunk == 0 or next_chunk is None:
+                        break
+
+                    chunk = GlibcHeap.GlibcChunk(arena, next_chunk)
+                except gdb.MemoryError:
+                    m.append(Color.colorify(
+                        " -> {:#x} [Corrupted chunk]".format(chunk.address),
+                        corrupted_msg_color,
+                    ))
+                    break
+
+            if m or verbose:
+                count = arena.tcachebins_i_count(i)
+                bins_addr = ProcessMap.lookup_address(arena.addrof_tcachebins_i(i))
+                fd = ProcessMap.lookup_address(read_int_from_memory(bins_addr.value))
+                if "size" in GlibcHeap.get_binsize_table()["tcache"][i]:
+                    size = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
+                    self.out.append("tcachebins[idx={:d}, size={:#x}, @{!s}]: fd={!s} count={:d}".format(
+                        i, size, bins_addr, fd, count,
+                    ))
+                else:
+                    size_min = GlibcHeap.get_binsize_table()["tcache"][i]["size_min"]
+                    size_max = GlibcHeap.get_binsize_table()["tcache"][i]["size_max"]
+                    self.out.append("tcachebins[idx={:d}, size={:#x}-{:#x}, @{!s}]: fd={!s} count={:d}".format(
+                        i, size_min, size_max, bins_addr, fd, count,
+                    ))
+                if m:
+                    self.out.extend(m)
+
+        self.info_add_out("Found {:d} valid chunks in tcache".format(nb_chunk))
         return
 
-    @staticmethod
-    def pprint_bin(arena, index, bin_name, verbose=False):
+    def print_fastbin(self, arena, verbose=False, index_filter=None):
+        """Pretty-print fastbin lists for the given arena, checking for loops and incorrect indices."""
+        if get_libc_version() >= (2, 43):
+            return
+
+        def fastbin_index(sz):
+            return (sz >> 4) - 2 if SIZE_SZ == 8 else (sz >> 3) - 2
+
+        SIZE_SZ = current_arch.ptrsize
+        MAX_FAST_SIZE = 80 * SIZE_SZ // 4
+        NFASTBINS = fastbin_index(MAX_FAST_SIZE) - 1
+
+        self.out.append(titlify("fastbins"))
+        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+
+        nb_chunk = 0
+        for i in range(NFASTBINS):
+            # index filter
+            if index_filter is not None:
+                if i != index_filter:
+                    continue
+
+            chunk = arena.get_fastbins_i(i)
+            chunks = []
+            m = []
+
+            while True:
+                if chunk is None:
+                    break
+
+                try:
+                    m.append(" -> {!s}".format(chunk))
+                    if chunk.address in chunks:
+                        m.append(Color.colorify(
+                            " -> {:#x} [Loop detected]".format(chunk.chunk_base_address),
+                            corrupted_msg_color,
+                        ))
+                        break
+
+                    if fastbin_index(chunk.get_chunk_size()) != i:
+                        m.append(Color.colorify("[Incorrect fastbin_index]", corrupted_msg_color))
+
+                    chunks.append(chunk.address)
+                    nb_chunk += 1
+
+                    next_chunk = chunk.get_fwd_ptr(True)
+                    if next_chunk == 0 or next_chunk is None:
+                        break
+
+                    chunk = GlibcHeap.GlibcChunk(arena, next_chunk, from_base=True)
+                except gdb.MemoryError:
+                    m.append(Color.colorify(
+                        " -> {:#x} [Corrupted chunk]".format(chunk.chunk_base_address),
+                        corrupted_msg_color,
+                    ))
+                    break
+
+            if m or verbose:
+                bin_table = GlibcHeap.get_binsize_table()["fastbins"]
+                if i in bin_table:
+                    size = bin_table[i]["size"]
+                    bins_addr = ProcessMap.lookup_address(arena.addrof_fastbins_i(i))
+                    fd = ProcessMap.lookup_address(read_int_from_memory(bins_addr.value))
+                    self.out.append("fastbins[idx={:d}, size={:#x}, @{!s}]: fd={!s}".format(
+                        i, size, bins_addr, fd,
+                    ))
+                    if m:
+                        self.out.extend(m)
+
+        self.info_add_out("Found {:d} valid chunks in fastbins".format(nb_chunk))
+        return
+
+    def pprint_bin(self, arena, index, bin_name, verbose=False):
         """Pretty-print the contents of a heap bin, following forward and backward links
         and checking for corruption."""
         fw, bk = arena.get_bins_i(index)
@@ -23122,8 +23240,36 @@ class GlibcHeapBinsCommand(GenericCommand):
             m += mf
         m += mb[::-1]
 
-        gef_print("\n".join(m))
+        self.out.extend(m)
         return nb_chunk
+
+
+@register_command
+class GlibcHeapBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutput):
+    """Display information about the bins of an arena."""
+
+    _cmdline_ = "heap bins"
+    _category_ = "06-a. Heap - Glibc"
+    _aliases_ = ["bins"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
+                        help="the address or number to interpret as an arena. (default: main_arena)")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display empty bins.")
+    parser.add_argument("--all", action="store_true", help="dump all arenas.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s}",
+        "{0:s} -a 0x7ffff0000020 -v",
+        "{0:s} -a 1 -v",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    def __init__(self):
+        super().__init__(prefix=True)
+        return
 
     @parse_args
     @only_if_gdb_running
@@ -23147,52 +23293,54 @@ class GlibcHeapBinsCommand(GenericCommand):
             arenas = [arena]
 
         # doit
+        self.out = []
         for arena in arenas:
-            gef_print(titlify("arena: {:#x}{:s}".format(
+            self.out.append(titlify("arena: {:#x}{:s}".format(
                 arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
             )
 
             # tcache
-            GlibcHeapTcachebinsCommand.print_tcache(arena, args.verbose)
+            self.print_tcache(arena, args.verbose)
 
             # fastbins
-            GlibcHeapFastbinsYCommand.print_fastbin(arena, args.verbose)
+            self.print_fastbin(arena, args.verbose)
 
             # unsorted bin
-            gef_print(titlify("unsorted bin"))
-            nb_chunk = GlibcHeapBinsCommand.pprint_bin(arena, 0, "unsorted_bin", args.verbose)
-            info("Found {:d} valid chunks in unsorted bin (when traced from `bk`)".format(nb_chunk))
+            self.out.append(titlify("unsorted bin"))
+            nb_chunk = self.pprint_bin(arena, 0, "unsorted_bin", args.verbose)
+            self.info_add_out("Found {:d} valid chunks in unsorted bin (when traced from `bk`)".format(nb_chunk))
 
             # small bins
-            gef_print(titlify("small bins"))
+            self.out.append(titlify("small bins"))
             bins = {}
             for i in range(1, 63):
-                nb_chunk = GlibcHeapBinsCommand.pprint_bin(arena, i, "small_bins", args.verbose)
+                nb_chunk = self.pprint_bin(arena, i, "small_bins", args.verbose)
                 if nb_chunk < 0:
                     break
                 if nb_chunk > 0:
                     bins[i] = nb_chunk
-            info("Found {:d} valid chunks in {:d} small bins (when traced from `bk`)".format(
+            self.info_add_out("Found {:d} valid chunks in {:d} small bins (when traced from `bk`)".format(
                 sum(bins.values()), len(bins),
             ))
 
             # large bins
-            gef_print(titlify("large bins"))
+            self.out.append(titlify("large bins"))
             bins = {}
             for i in range(63, 126):
-                nb_chunk = GlibcHeapBinsCommand.pprint_bin(arena, i, "large_bins", args.verbose)
+                nb_chunk = self.pprint_bin(arena, i, "large_bins", args.verbose)
                 if nb_chunk < 0:
                     break
                 if nb_chunk > 0:
                     bins[i] = nb_chunk
-            info("Found {:d} valid chunks in {:d} large bins (when traced from `bk`)".format(
+            self.info_add_out("Found {:d} valid chunks in {:d} large bins (when traced from `bk`)".format(
                 sum(bins.values()), len(bins),
             ))
+        self.print_output(check_terminal_size=True)
         return
 
 
 @register_command
-class GlibcHeapTcachebinsCommand(GenericCommand):
+class GlibcHeapTcachebinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutput):
     """Display information about the Tcache of an arena."""
 
     _cmdline_ = "heap bins tcache"
@@ -23206,81 +23354,11 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
                         help="filter by tcache index.")
     parser.add_argument("-v", "--verbose", action="store_true", help="display empty bins.")
     parser.add_argument("--all", action="store_true", help="dump all arenas.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
-        return
-
-    @staticmethod
-    def print_tcache(arena, verbose=False, index_filter=None):
-        """Pretty-print tcache bins for the given arena, detecting loops and chunk corruption."""
-        if get_libc_version() < (2, 26):
-            return
-
-        gef_print(titlify("tcache (&tcache_perthread_struct: {:#x})".format(
-            arena.tcache_perthread_struct,
-        )))
-
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
-        nb_chunk = 0
-        for i in range(arena.TCACHE_MAX_BINS()):
-            # index filter
-            if index_filter is not None:
-                if i != index_filter:
-                    continue
-
-            chunk = arena.get_tcachebins_i(i)
-            chunks = []
-            m = []
-
-            # Only print the entry if there are valid chunks. Don't trust count
-            while True:
-                if chunk is None:
-                    break
-                try:
-                    m.append(" -> {!s}".format(chunk))
-                    if chunk.address in chunks:
-                        m.append(Color.colorify(
-                            " -> {:#x} [Loop detected]".format(chunk.address),
-                            corrupted_msg_color,
-                        ))
-                        break
-
-                    chunks.append(chunk.address)
-                    nb_chunk += 1
-
-                    next_chunk = chunk.get_fwd_ptr(True)
-                    if next_chunk == 0 or next_chunk is None:
-                        break
-
-                    chunk = GlibcHeap.GlibcChunk(arena, next_chunk)
-                except gdb.MemoryError:
-                    m.append(Color.colorify(
-                        " -> {:#x} [Corrupted chunk]".format(chunk.address),
-                        corrupted_msg_color,
-                    ))
-                    break
-
-            if m or verbose:
-                count = arena.tcachebins_i_count(i)
-                bins_addr = ProcessMap.lookup_address(arena.addrof_tcachebins_i(i))
-                fd = ProcessMap.lookup_address(read_int_from_memory(bins_addr.value))
-                if "size" in GlibcHeap.get_binsize_table()["tcache"][i]:
-                    size = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
-                    gef_print("tcachebins[idx={:d}, size={:#x}, @{!s}]: fd={!s} count={:d}".format(
-                        i, size, bins_addr, fd, count,
-                    ))
-                else:
-                    size_min = GlibcHeap.get_binsize_table()["tcache"][i]["size_min"]
-                    size_max = GlibcHeap.get_binsize_table()["tcache"][i]["size_max"]
-                    gef_print("tcachebins[idx={:d}, size={:#x}-{:#x}, @{!s}]: fd={!s} count={:d}".format(
-                        i, size_min, size_max, bins_addr, fd, count,
-                    ))
-                if m:
-                    gef_print("\n".join(m))
-
-        info("Found {:d} valid chunks in tcache".format(nb_chunk))
         return
 
     @parse_args
@@ -23310,16 +23388,18 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
             arenas = [arena]
 
         # doit
+        self.out = []
         for arena in arenas:
-            gef_print(titlify("arena: {:#x}{:s}".format(
+            self.out.append(titlify("arena: {:#x}{:s}".format(
                 arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
             )
-            GlibcHeapTcachebinsCommand.print_tcache(arena, args.verbose, args.index_filter)
+            self.print_tcache(arena, args.verbose, args.index_filter)
+        self.print_output(check_terminal_size=True)
         return
 
 
 @register_command
-class GlibcHeapFastbinsYCommand(GenericCommand):
+class GlibcHeapFastbinsYCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutput):
     """Display information about the fastbinsY of an arena."""
 
     _cmdline_ = "heap bins fast"
@@ -23333,83 +23413,11 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
                         help="filter by fastbins index.")
     parser.add_argument("-v", "--verbose", action="store_true", help="display empty bins.")
     parser.add_argument("--all", action="store_true", help="dump all arenas.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
-        return
-
-    @staticmethod
-    def print_fastbin(arena, verbose=False, index_filter=None):
-        """Pretty-print fastbin lists for the given arena, checking for loops and incorrect indices."""
-        if get_libc_version() >= (2, 43):
-            return
-
-        def fastbin_index(sz):
-            return (sz >> 4) - 2 if SIZE_SZ == 8 else (sz >> 3) - 2
-
-        SIZE_SZ = current_arch.ptrsize
-        MAX_FAST_SIZE = 80 * SIZE_SZ // 4
-        NFASTBINS = fastbin_index(MAX_FAST_SIZE) - 1
-
-        gef_print(titlify("fastbins"))
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
-
-        nb_chunk = 0
-        for i in range(NFASTBINS):
-            # index filter
-            if index_filter is not None:
-                if i != index_filter:
-                    continue
-
-            chunk = arena.get_fastbins_i(i)
-            chunks = []
-            m = []
-
-            while True:
-                if chunk is None:
-                    break
-
-                try:
-                    m.append(" -> {!s}".format(chunk))
-                    if chunk.address in chunks:
-                        m.append(Color.colorify(
-                            " -> {:#x} [Loop detected]".format(chunk.chunk_base_address),
-                            corrupted_msg_color,
-                        ))
-                        break
-
-                    if fastbin_index(chunk.get_chunk_size()) != i:
-                        m.append(Color.colorify("[Incorrect fastbin_index]", corrupted_msg_color))
-
-                    chunks.append(chunk.address)
-                    nb_chunk += 1
-
-                    next_chunk = chunk.get_fwd_ptr(True)
-                    if next_chunk == 0 or next_chunk is None:
-                        break
-
-                    chunk = GlibcHeap.GlibcChunk(arena, next_chunk, from_base=True)
-                except gdb.MemoryError:
-                    m.append(Color.colorify(
-                        " -> {:#x} [Corrupted chunk]".format(chunk.chunk_base_address),
-                        corrupted_msg_color,
-                    ))
-                    break
-
-            if m or verbose:
-                bin_table = GlibcHeap.get_binsize_table()["fastbins"]
-                if i in bin_table:
-                    size = bin_table[i]["size"]
-                    bins_addr = ProcessMap.lookup_address(arena.addrof_fastbins_i(i))
-                    fd = ProcessMap.lookup_address(read_int_from_memory(bins_addr.value))
-                    gef_print("fastbins[idx={:d}, size={:#x}, @{!s}]: fd={!s}".format(
-                        i, size, bins_addr, fd,
-                    ))
-                    if m:
-                        gef_print("\n".join(m))
-
-        info("Found {:d} valid chunks in fastbins".format(nb_chunk))
         return
 
     @parse_args
@@ -23434,16 +23442,18 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
             arenas = [arena]
 
         # doit
+        self.out = []
         for arena in arenas:
-            gef_print(titlify("arena: {:#x}{:s}".format(
+            self.out.append(titlify("arena: {:#x}{:s}".format(
                 arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
             )
-            GlibcHeapFastbinsYCommand.print_fastbin(arena, args.verbose, args.index_filter)
+            self.print_fastbin(arena, args.verbose, args.index_filter)
+        self.print_output(check_terminal_size=True)
         return
 
 
 @register_command
-class GlibcHeapUnsortedBinsCommand(GenericCommand):
+class GlibcHeapUnsortedBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutput):
     """Display information about the Unsorted Bins of an arena."""
 
     _cmdline_ = "heap bins unsorted"
@@ -23455,6 +23465,7 @@ class GlibcHeapUnsortedBinsCommand(GenericCommand):
                         help="the address or number to interpret as an arena. (default: main_arena)")
     parser.add_argument("-v", "--verbose", action="store_true", help="display empty bins.")
     parser.add_argument("--all", action="store_true", help="dump all arenas.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -23483,18 +23494,20 @@ class GlibcHeapUnsortedBinsCommand(GenericCommand):
             arenas = [arena]
 
         # doit
+        self.out = []
         for arena in arenas:
-            gef_print(titlify("arena: {:#x}{:s}".format(
+            self.out.append(titlify("arena: {:#x}{:s}".format(
                 arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
             )
-            gef_print(titlify("unsorted bin"))
-            nb_chunk = GlibcHeapBinsCommand.pprint_bin(arena, 0, "unsorted_bin", args.verbose)
-            info("Found {:d} valid chunks in unsorted bin (when traced from `bk`)".format(nb_chunk))
+            self.out.append(titlify("unsorted bin"))
+            nb_chunk = self.pprint_bin(arena, 0, "unsorted_bin", args.verbose)
+            self.info_add_out("Found {:d} valid chunks in unsorted bin (when traced from `bk`)".format(nb_chunk))
+        self.print_output(check_terminal_size=True)
         return
 
 
 @register_command
-class GlibcHeapSmallBinsCommand(GenericCommand):
+class GlibcHeapSmallBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutput):
     """Display information about the Small Bins of an arena."""
 
     _cmdline_ = "heap bins small"
@@ -23508,6 +23521,7 @@ class GlibcHeapSmallBinsCommand(GenericCommand):
                         help="filter by smallbins index.")
     parser.add_argument("-v", "--verbose", action="store_true", help="display empty bins.")
     parser.add_argument("--all", action="store_true", help="dump all arenas.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -23536,11 +23550,12 @@ class GlibcHeapSmallBinsCommand(GenericCommand):
             arenas = [arena]
 
         # doit
+        self.out = []
         for arena in arenas:
-            gef_print(titlify("arena: {:#x}{:s}".format(
+            self.out.append(titlify("arena: {:#x}{:s}".format(
                 arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
             )
-            gef_print(titlify("small bins"))
+            self.out.append(titlify("small bins"))
             bins = {}
             for i in range(1, 63):
                 # index filter
@@ -23549,19 +23564,20 @@ class GlibcHeapSmallBinsCommand(GenericCommand):
                         continue
 
                 # print
-                nb_chunk = GlibcHeapBinsCommand.pprint_bin(arena, i, "small_bins", args.verbose)
+                nb_chunk = self.pprint_bin(arena, i, "small_bins", args.verbose)
                 if nb_chunk < 0:
                     break
                 if nb_chunk > 0:
                     bins[i] = nb_chunk
-            info("Found {:d} valid chunks in {:d} small bins (when traced from `bk`)".format(
+            self.info_add_out("Found {:d} valid chunks in {:d} small bins (when traced from `bk`)".format(
                 sum(bins.values()), len(bins),
             ))
+        self.print_output(check_terminal_size=True)
         return
 
 
 @register_command
-class GlibcHeapLargeBinsCommand(GenericCommand):
+class GlibcHeapLargeBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutput):
     """Display information about the Large Bins of an arena."""
 
     _cmdline_ = "heap bins large"
@@ -23575,6 +23591,7 @@ class GlibcHeapLargeBinsCommand(GenericCommand):
                         help="filter by largebins index.")
     parser.add_argument("-v", "--verbose", action="store_true", help="display empty bins.")
     parser.add_argument("--all", action="store_true", help="dump all arenas.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -23603,11 +23620,12 @@ class GlibcHeapLargeBinsCommand(GenericCommand):
             arenas = [arena]
 
         # doit
+        self.out = []
         for arena in arenas:
-            gef_print(titlify("arena: {:#x}{:s}".format(
+            self.out.append(titlify("arena: {:#x}{:s}".format(
                 arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
             )
-            gef_print(titlify("large bins"))
+            self.out.append(titlify("large bins"))
             bins = {}
             for i in range(63, 126):
                 # index filter
@@ -23616,14 +23634,15 @@ class GlibcHeapLargeBinsCommand(GenericCommand):
                         continue
 
                 # print
-                nb_chunk = GlibcHeapBinsCommand.pprint_bin(arena, i, "large_bins", args.verbose)
+                nb_chunk = self.pprint_bin(arena, i, "large_bins", args.verbose)
                 if nb_chunk < 0:
                     break
                 if nb_chunk > 0:
                     bins[i] = nb_chunk
-            info("Found {:d} valid chunks in {:d} large bins (when traced from `bk`)".format(
+            self.info_add_out("Found {:d} valid chunks in {:d} large bins (when traced from `bk`)".format(
                 sum(bins.values()), len(bins),
             ))
+        self.print_output(check_terminal_size=True)
         return
 
 
