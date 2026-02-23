@@ -4508,45 +4508,33 @@ class GlibcHeap:
 
             chunks_all = {}
             for i in range(self.TCACHE_MAX_BINS()):
+                # head check
                 try:
                     chunk = self.get_tcachebins_i(i)
                 except gdb.MemoryError:
-                    if "size" in GlibcHeap.get_binsize_table()["tcache"][i]:
-                        sz = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
-                        err("tcache[idx={:d}, sz={:#x}] is corrupted".format(i, sz))
-                    else:
-                        sz_min = GlibcHeap.get_binsize_table()["tcache"][i]["size_min"]
-                        sz_max = GlibcHeap.get_binsize_table()["tcache"][i]["size_max"]
-                        err("tcache[idx={:d}, sz={:#x}-{:#x}] is corrupted".format(i, sz_min, sz_max))
+                    chunks_all[i] = ["Corrupted"]
                     continue
+
+                # parse list
                 chunks = []
-                while True:
-                    if chunk is None:
-                        break
+                while chunk is not None:
                     if chunk.address in chunks:
-                        if "size" in GlibcHeap.get_binsize_table()["tcache"][i]:
-                            sz = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
-                            err("tcache[idx={:d}, sz={:#x}] has a loop".format(i, sz))
-                        else:
-                            sz_min = GlibcHeap.get_binsize_table()["tcache"][i]["size_min"]
-                            sz_max = GlibcHeap.get_binsize_table()["tcache"][i]["size_max"]
-                            err("tcache[idx={:d}, sz={:#x}-{:#x}] has a loop".format(i, sz_min, sz_max))
+                        chunks.append(chunk.address)
+                        chunks.append("Loop detected")
                         break # loop detected
+
                     chunks.append(chunk.address)
                     next_chunk = chunk.get_fwd_ptr(True)
-                    if next_chunk == 0:
-                        break
                     if next_chunk is None:
-                        if "size" in GlibcHeap.get_binsize_table()["tcache"][i]:
-                            sz = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
-                            err("tcache[idx={:d}, sz={:#x}] is corrupted".format(i, sz))
-                        else:
-                            sz_min = GlibcHeap.get_binsize_table()["tcache"][i]["size_min"]
-                            sz_max = GlibcHeap.get_binsize_table()["tcache"][i]["size_max"]
-                            err("tcache[idx={:d}, sz={:#x}-{:#x}] is corrupted".format(i, sz_min, sz_max))
-                        break
+                        chunks.append("Corrupted")
+                        break # invalid
+
+                    if next_chunk == 0:
+                        break # valid end
+
                     chunk = GlibcHeap.GlibcChunk(self, next_chunk)
                 chunks_all[i] = chunks
+
             return chunks_all
 
         def get_fastbins_list(self):
@@ -4563,30 +4551,33 @@ class GlibcHeap:
             NFASTBINS = fastbin_index(MAX_FAST_SIZE) - 1
             chunks_all = {}
             for i in range(NFASTBINS):
+                # head check
                 try:
                     chunk = self.get_fastbins_i(i)
                 except gdb.MemoryError:
-                    sz = GlibcHeap.get_binsize_table()["fastbins"][i]["size"]
-                    err("fastbins[idx={:d}, sz={:#x}] is corrupted".format(i, sz))
+                    chunks_all[i] = ["Corrupted"]
                     continue
+
+                # parse list
                 chunks = []
-                while True:
-                    if chunk is None:
-                        break
+                while chunk is not None:
                     if chunk.address in chunks:
-                        sz = GlibcHeap.get_binsize_table()["fastbins"][i]["size"]
-                        err("fastbins[idx={:d}, sz={:#x}] has a loop".format(i, sz))
+                        chunks.append(chunk.address)
+                        chunks.append("Loop detected")
                         break # loop detected
+
                     chunks.append(chunk.address)
                     next_chunk = chunk.get_fwd_ptr(True)
-                    if next_chunk == 0:
-                        break
                     if next_chunk is None:
-                        sz = GlibcHeap.get_binsize_table()["fastbins"][i]["size"]
-                        err("fastbins[idx={:d}, sz={:#x}] is corrupted".format(i, sz))
-                        break
+                        chunks.append("Corrupted")
+                        break # invalid
+
+                    if next_chunk == 0:
+                        break # valid end
+
                     chunk = GlibcHeap.GlibcChunk(self, next_chunk, from_base=True)
                 chunks_all[i] = chunks
+
             return chunks_all
 
         def get_bins_list(self, index):
@@ -4594,58 +4585,55 @@ class GlibcHeap:
             try:
                 fw, bk = self.get_bins_i(index)
             except gdb.MemoryError:
-                return [] # invalid
+                return ["Corrupted"]
             if bk == 0x00 and fw == 0x00:
-                return [] # invalid
+                return ["Corrupted"]
+
             head = self.addrof_bins_i(index) - current_arch.ptrsize * 2
             if fw == head:
                 return [] # no entry
 
             corrupted = False
             chunks_bk = []
+
+            # first: process backword
             while bk != head:
                 chunk = GlibcHeap.GlibcChunk(self, bk, from_base=True)
+
                 if chunk.chunk_base_address in chunks_bk:
-                    if index == 0:
-                        err("unsortedbin has a loop")
-                    elif index in GlibcHeap.get_binsize_table()["small_bins"]:
-                        sz = GlibcHeap.get_binsize_table()["small_bins"][index]["size"]
-                        err("small_bins[idx={:d}, sz={:#x}] has a loop".format(index, sz))
-                    elif index in GlibcHeap.get_binsize_table()["large_bins"]:
-                        sz_min = GlibcHeap.get_binsize_table()["large_bins"][index]["size_min"]
-                        sz_max = GlibcHeap.get_binsize_table()["large_bins"][index]["size_max"]
-                        err("large_bins[idx={:d}, sz={:#x}-{:#x}] has a loop".format(index, sz_min, sz_max))
+                    chunks_bk.append(chunk.chunk_base_address)
+                    chunks_bk.append("Loop detected")
                     corrupted = True
                     break
+
                 chunks_bk.append(chunk.chunk_base_address)
+
                 bk = chunk.bck
                 if bk is None:
-                    if index == 0:
-                        err("unsortedbin is corrupted")
-                    elif index in GlibcHeap.get_binsize_table()["small_bins"]:
-                        sz = GlibcHeap.get_binsize_table()["small_bins"][index]["size"]
-                        err("small_bins[idx={:d}, sz={:#x}] is corrupted".format(index, sz))
-                    elif index in GlibcHeap.get_binsize_table()["large_bins"]:
-                        sz_min = GlibcHeap.get_binsize_table()["large_bins"][index]["size_min"]
-                        sz_max = GlibcHeap.get_binsize_table()["large_bins"][index]["size_max"]
-                        err("large_bins[idx={:d}, sz={:#x}-{:#x}] is corrupted".format(index, sz_min, sz_max))
+                    chunks_bk.append("Corrupted")
                     corrupted = True
                     break
+
             chunks = chunks_bk[::-1]
 
             if corrupted:
+                # second: process forward
                 chunks_fw = []
                 while fw != head:
                     chunk = GlibcHeap.GlibcChunk(self, fw, from_base=True)
+
                     if chunk.chunk_base_address in chunks:
-                        break
+                        break # meet backward's list
                     if chunk.chunk_base_address in chunks_fw:
-                        break
+                        break # loop
+
                     chunks_fw.append(chunk.chunk_base_address)
                     fw = chunk.fwd
                     if fw is None:
-                        break
+                        break # corrupted
+
                 chunks = chunks_fw + chunks
+
             return chunks
 
         def get_unsortedbin_list(self):
@@ -4682,17 +4670,22 @@ class GlibcHeap:
             self.cached_smallbins_list = self.get_smallbins_list()
             self.cached_largebins_list = self.get_largebins_list()
 
+            def int_filter(a):
+                return {x for x in a if isinstance(x, int)}
+
             # cacheed_XXX_addr_list = {chunk, chunk, ...}
-            self.cached_tcache_addr_list = set().union(*self.cached_tcache_list.values())
-            self.cached_fastbins_addr_list = set().union(*self.cached_fastbins_list.values())
-            self.cached_unsortedbin_addr_list = self.cached_unsortedbin_list[0]
-            self.cached_smallbins_addr_list = set().union(*self.cached_smallbins_list.values())
-            self.cached_largebins_addr_list = set().union(*self.cached_largebins_list.values())
+            self.cached_tcache_addr_list = int_filter(set().union(*self.cached_tcache_list.values()))
+            self.cached_fastbins_addr_list = int_filter(set().union(*self.cached_fastbins_list.values()))
+            self.cached_unsortedbin_addr_list = int_filter(self.cached_unsortedbin_list[0])
+            self.cached_smallbins_addr_list = int_filter(set().union(*self.cached_smallbins_list.values()))
+            self.cached_largebins_addr_list = int_filter(set().union(*self.cached_largebins_list.values()))
 
             # dict[address] = ["bins info1", "bins info2", ...]
             self.bins_dict_for_address = {}
             for tcache_idx, tcache_list in self.cached_tcache_list.items():
                 for address in tcache_list:
+                    if not isinstance(address, int):
+                        continue
                     pos = ",".join([str(i + 1) for i, x in enumerate(tcache_list) if x == address])
                     if "size" in  GlibcHeap.get_binsize_table()["tcache"][tcache_idx]:
                         sz = GlibcHeap.get_binsize_table()["tcache"][tcache_idx]["size"]
@@ -4705,8 +4698,11 @@ class GlibcHeap:
                         )
                     new_list = self.bins_dict_for_address.get(address, []) + [m]
                     self.bins_dict_for_address[address] = new_list
+
             for fastbin_idx, fastbin_list in self.cached_fastbins_list.items():
                 for address in set(fastbin_list):
+                    if not isinstance(address, int):
+                        continue
                     pos = ",".join([str(i + 1) for i, x in enumerate(fastbin_list) if x == address])
                     sz = GlibcHeap.get_binsize_table()["fastbins"][fastbin_idx]["size"]
                     m = "fastbins[idx={:d},sz={:#x}][{:s}/{:d}]".format(fastbin_idx, sz, pos, len(fastbin_list))
@@ -4717,19 +4713,27 @@ class GlibcHeap:
             self.bins_dict_for_base_address = {}
             for _, unsortedbin_list in self.cached_unsortedbin_list.items():
                 for base_address in unsortedbin_list:
+                    if not isinstance(base_address, int):
+                        continue
                     pos = ",".join([str(i + 1) for i, x in enumerate(unsortedbin_list) if x == base_address])
                     m = "unsortedbins[{:s}/{:d}]".format(pos, len(unsortedbin_list))
                     new_list = self.bins_dict_for_base_address.get(base_address, []) + [m]
                     self.bins_dict_for_base_address[base_address] = new_list
+
             for smallbin_idx, smallbin_list in self.cached_smallbins_list.items():
                 for base_address in smallbin_list:
+                    if not isinstance(base_address, int):
+                        continue
                     pos = ",".join([str(i + 1) for i, x in enumerate(smallbin_list) if x == base_address])
                     sz = GlibcHeap.get_binsize_table()["small_bins"][smallbin_idx]["size"]
                     m = "smallbins[idx={:d},sz={:#x}][{:s}/{:d}]".format(smallbin_idx, sz, pos, len(smallbin_list))
                     new_list = self.bins_dict_for_base_address.get(base_address, []) + [m]
                     self.bins_dict_for_base_address[base_address] = new_list
+
             for largebin_idx, largebin_list in self.cached_largebins_list.items():
                 for base_address in largebin_list:
+                    if not isinstance(base_address, int):
+                        continue
                     pos = ",".join([str(i + 1) for i, x in enumerate(largebin_list) if x == base_address])
                     sz_min = GlibcHeap.get_binsize_table()["large_bins"][largebin_idx]["size_min"]
                     sz_max = GlibcHeap.get_binsize_table()["large_bins"][largebin_idx]["size_max"]
@@ -4993,7 +4997,7 @@ class GlibcHeap:
                 msg.append("  Chunk size: {:#x}".format(self.get_chunk_size()))
                 msg.append("  Usable size: {:#x}".format(self.get_usable_size()))
             except gdb.MemoryError:
-                msg.append("  Chunk size: Cannot read at {:#x} (corrupted?)".format(self.size_addr))
+                msg.append("  Chunk size: Cannot read at {:#x} (Corrupted?)".format(self.size_addr))
                 failed = True
 
             if self.has_p_bit():
@@ -5002,7 +5006,7 @@ class GlibcHeap:
                 try:
                     msg.append("  Previous chunk size: {:#x}".format(self.get_prev_chunk_size()))
                 except gdb.MemoryError:
-                    msg.append("  Previous chunk size: Cannot read at {:#x} (corrupted?)".format(self.chunk_base_address))
+                    msg.append("  Previous chunk size: Cannot read at {:#x} (Corrupted?)".format(self.chunk_base_address))
                     failed = True
 
             if not failed:
@@ -5018,12 +5022,12 @@ class GlibcHeap:
             try:
                 msg.append("  Forward pointer: {:#x}".format(self.get_fwd_ptr(False)))
             except gdb.MemoryError:
-                msg.append("  Forward pointer: {:#x} (corrupted?)".format(fwd))
+                msg.append("  Forward pointer: {:#x} (Corrupted?)".format(fwd))
 
             try:
                 msg.append("  Backward pointer: {:#x}".format(self.get_bkw_ptr()))
             except gdb.MemoryError:
-                msg.append("  Backward pointer: {:#x} (corrupted?)".format(bkw))
+                msg.append("  Backward pointer: {:#x} (Corrupted?)".format(bkw))
 
             return "\n".join(msg)
 
@@ -5071,8 +5075,8 @@ class GlibcHeap:
                         if sll and a.value == 0:
                             # single link-list && 0: ok
                             continue
-                        return ", {:s}".format(Color.colorify(
-                            "corrupted", Config.get_gef_setting("theme.heap_corrupted_msg"),
+                        return " [{:s}]".format(Color.colorify(
+                            "Corrupted", Config.get_gef_setting("theme.heap_corrupted_msg"),
                         ))
                 return ""
 
@@ -22853,77 +22857,121 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
             except gdb.MemoryError:
                 return ""
 
+        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
         libc_version = get_libc_version()
 
+        # iterate arena ------------------------------------------------------------------------------------------------------
         for arena in arenas:
             gef_print(titlify("arena: {:#x}{:s}".format(
                 arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
             )
 
+            # tcache ---------------------------------------------------------------------------------------------------------
             TCACHE_SMALL_BINS = arena.TCACHE_SMALL_BINS()
+            TCACHE_FILL_COUNT = arena.TCACHE_FILL_COUNT()
 
             gef_print(titlify("tcache"))
             if libc_version < (2, 26):
                 info("No tcache in this version of libc")
             else:
                 for i, chunks in arena.get_tcache_list().items():
-                    if libc_version < (2, 42) or i < TCACHE_SMALL_BINS:
-                        m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
-                    else:
-                        m = ["{!s}{:s}{:s}".format(
+                    m = []
+                    for c in chunks:
+                        if isinstance(c, str):
+                            m.append(Color.colorify(c, corrupted_msg_color))
+                        elif libc_version < (2, 42) or i < TCACHE_SMALL_BINS:
+                            m.append("{!s}{:s}".format(
+                                ProcessMap.lookup_address(c), Symbol.get_symbol_string(c),
+                            ))
+                        else:
+                            m.append("{!s}{:s}{:s}".format(
                                 ProcessMap.lookup_address(c), Symbol.get_symbol_string(c), get_size(arena, c, from_base=False),
-                            ) for c in chunks]
+                            ))
                     if m or self.args.verbose:
                         count = arena.tcachebins_i_count(i)
                         if "size" in GlibcHeap.get_binsize_table()["tcache"][i]:
                             size = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
-                            gef_print("{:#x} [{:d}] ({:d}): ".format(size, i, count) + " -> ".join(m))
+                            gef_print("{:#x} [{:d}] ({:d}/{:d}): {:s}".format(
+                                size, i, count, TCACHE_FILL_COUNT, " -> ".join(m),
+                            ).rstrip())
                         else:
                             size_min = GlibcHeap.get_binsize_table()["tcache"][i]["size_min"]
                             size_max = GlibcHeap.get_binsize_table()["tcache"][i]["size_max"]
-                            gef_print("{:#x}-{:#x} [{:d}] ({:d}): ".format(size_min, size_max, i, count) + " -> ".join(m))
+                            gef_print("{:#x}-{:#x} [{:d}] ({:d}/{:d}): {:s}".format(
+                                size_min, size_max, i, count, TCACHE_FILL_COUNT, " -> ".join(m),
+                            ).rstrip())
 
+            # fastbins -------------------------------------------------------------------------------------------------------
             gef_print(titlify("fastbins"))
             if libc_version < (2, 43):
                 for i, chunks in arena.get_fastbins_list().items():
-                    m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
+                    m = []
+                    for c in chunks:
+                        if isinstance(c, str):
+                            m.append(Color.colorify(c, corrupted_msg_color))
+                        else:
+                            m.append("{!s}{:s}".format(
+                                ProcessMap.lookup_address(c), Symbol.get_symbol_string(c),
+                            ))
                     if m or self.args.verbose:
                         size = GlibcHeap.get_binsize_table()["fastbins"][i]["size"]
-                        gef_print("{:#x} [{:d}]: ".format(size, i) + " -> ".join(m))
+                        gef_print("{:#x} [{:d}]: {:s}".format(size, i, " -> ".join(m)).rstrip())
             else:
                 info("No fastbins in this version of libc")
 
+            # unsorted bin ---------------------------------------------------------------------------------------------------
             gef_print(titlify("unsorted bin"))
             for _, chunks in arena.get_unsortedbin_list().items():
-                m = ["{!s}{:s}{:s}".format(
-                        ProcessMap.lookup_address(c), Symbol.get_symbol_string(c), get_size(arena, c),
-                    ) for c in chunks]
+                m = []
+                for c in chunks:
+                    if isinstance(c, str):
+                        m.append(Color.colorify(c, corrupted_msg_color))
+                    else:
+                        m.append("{!s}{:s}{:s}".format(
+                            ProcessMap.lookup_address(c), Symbol.get_symbol_string(c), get_size(arena, c),
+                        ))
                 if m or self.args.verbose:
-                    gef_print("any [0]: " + " <-> ".join(m))
+                    gef_print("any [0]: {:s}".format(" <-> ".join(m)).rstrip())
 
+            # small bins -----------------------------------------------------------------------------------------------------
             gef_print(titlify("small bins"))
             for i, chunks in arena.get_smallbins_list().items():
-                m = ["{!s}{:s}".format(ProcessMap.lookup_address(c), Symbol.get_symbol_string(c)) for c in chunks]
+                m = []
+                for c in chunks:
+                    if isinstance(c, str):
+                        m.append(Color.colorify(c, corrupted_msg_color))
+                    else:
+                        m.append("{!s}{:s}".format(
+                            ProcessMap.lookup_address(c), Symbol.get_symbol_string(c),
+                        ))
                 if m or self.args.verbose:
                     size = GlibcHeap.get_binsize_table()["small_bins"][i]["size"]
-                    gef_print("{:#x} [{:d}]: ".format(size, i) + " <-> ".join(m))
+                    gef_print("{:#x} [{:d}]: {:s}".format(size, i, " <-> ".join(m)).rstrip())
 
+            # large bins -----------------------------------------------------------------------------------------------------
             gef_print(titlify("large bins"))
             for i, chunks in arena.get_largebins_list().items():
-                m = ["{!s}{:s}{:s}".format(
-                        ProcessMap.lookup_address(c), Symbol.get_symbol_string(c), get_size(arena, c),
-                    ) for c in chunks]
+                m = []
+                for c in chunks:
+                    if isinstance(c, str):
+                        m.append(Color.colorify(c, corrupted_msg_color))
+                    else:
+                        m.append("{!s}{:s}{:s}".format(
+                            ProcessMap.lookup_address(c), Symbol.get_symbol_string(c), get_size(arena, c),
+                        ))
                 if m or self.args.verbose:
                     size_min = GlibcHeap.get_binsize_table()["large_bins"][i]["size_min"]
                     size_max = GlibcHeap.get_binsize_table()["large_bins"][i]["size_max"]
-                    gef_print("{:#x}-{:#x} [{:d}]: ".format(size_min, size_max, i) + " <-> ".join(m))
+                    gef_print("{:#x}-{:#x} [{:d}]: {:s}".format(size_min, size_max, i, " <-> ".join(m)).rstrip())
 
             gef_print(titlify("arena"))
+            # top ------------------------------------------------------------------------------------------------------------
             top = arena.top
             gef_print("top: {!s}{:s}{:s}".format(
                 ProcessMap.lookup_address(top), Symbol.get_symbol_string(top), get_size(arena, top),
             ))
 
+            # last_remainder -------------------------------------------------------------------------------------------------
             lm = arena.last_remainder
             gef_print("last_remainder: {!s}{:s}{:s}".format(
                 ProcessMap.lookup_address(lm), Symbol.get_symbol_string(lm), get_size(arena, lm),
@@ -23019,7 +23067,7 @@ class GlibcHeapBinsCommand(GenericCommand):
             chunk = GlibcHeap.GlibcChunk(arena, bk, from_base=True)
             if chunk.address in seen_bk:
                 mb.append(Color.colorify(
-                    " -> {:#x} [loop detected]".format(chunk.chunk_base_address),
+                    " -> {:#x} [Loop detected]".format(chunk.chunk_base_address),
                     corrupted_msg_color,
                 ))
                 corrupted = True
@@ -23029,7 +23077,7 @@ class GlibcHeapBinsCommand(GenericCommand):
                 mb.append(" -> {!s}".format(chunk))
             except gdb.MemoryError:
                 mb.append(Color.colorify(
-                    " -> {:#x} [corrupted chunk]".format(chunk.chunk_base_address),
+                    " -> {:#x} [Corrupted chunk]".format(chunk.chunk_base_address),
                     corrupted_msg_color,
                 ))
                 corrupted = True
@@ -23047,7 +23095,7 @@ class GlibcHeapBinsCommand(GenericCommand):
                     break
                 if chunk.address in seen_fw:
                     mf.append(Color.colorify(
-                        " -> {:#x} [loop detected]".format(chunk.chunk_base_address),
+                        " -> {:#x} [Loop detected]".format(chunk.chunk_base_address),
                         corrupted_msg_color,
                     ))
                     break
@@ -23056,7 +23104,7 @@ class GlibcHeapBinsCommand(GenericCommand):
                     mf.append(" -> {!s}".format(chunk))
                 except gdb.MemoryError:
                     mf.append(Color.colorify(
-                        " -> {:#x} [corrupted chunk]".format(chunk.chunk_base_address),
+                        " -> {:#x} [Corrupted chunk]".format(chunk.chunk_base_address),
                         corrupted_msg_color,
                     ))
                     break
@@ -23187,7 +23235,7 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
                     m.append(" -> {!s}".format(chunk))
                     if chunk.address in chunks:
                         m.append(Color.colorify(
-                            " -> {:#x} [loop detected]".format(chunk.address),
+                            " -> {:#x} [Loop detected]".format(chunk.address),
                             corrupted_msg_color,
                         ))
                         break
@@ -23202,7 +23250,7 @@ class GlibcHeapTcachebinsCommand(GenericCommand):
                     chunk = GlibcHeap.GlibcChunk(arena, next_chunk)
                 except gdb.MemoryError:
                     m.append(Color.colorify(
-                        " -> {:#x} [corrupted chunk]".format(chunk.address),
+                        " -> {:#x} [Corrupted chunk]".format(chunk.address),
                         corrupted_msg_color,
                     ))
                     break
@@ -23312,13 +23360,13 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
                     m.append(" -> {!s}".format(chunk))
                     if chunk.address in chunks:
                         m.append(Color.colorify(
-                            " -> {:#x} [loop detected]".format(chunk.chunk_base_address),
+                            " -> {:#x} [Loop detected]".format(chunk.chunk_base_address),
                             corrupted_msg_color,
                         ))
                         break
 
                     if fastbin_index(chunk.get_chunk_size()) != i:
-                        m.append(Color.colorify("[incorrect fastbin_index]", corrupted_msg_color))
+                        m.append(Color.colorify("[Incorrect fastbin_index]", corrupted_msg_color))
 
                     chunks.append(chunk.address)
                     nb_chunk += 1
@@ -23330,7 +23378,7 @@ class GlibcHeapFastbinsYCommand(GenericCommand):
                     chunk = GlibcHeap.GlibcChunk(arena, next_chunk, from_base=True)
                 except gdb.MemoryError:
                     m.append(Color.colorify(
-                        " -> {:#x} [corrupted chunk]".format(chunk.chunk_base_address),
+                        " -> {:#x} [Corrupted chunk]".format(chunk.chunk_base_address),
                         corrupted_msg_color,
                     ))
                     break
