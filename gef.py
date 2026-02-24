@@ -105131,7 +105131,15 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             ))
             return
         except gdb.error:
-            pass
+            # In some environments, the size of list_head is not saved, resulting in division by 0.
+            try:
+                t = gdb.lookup_type("struct per_cpu_pages")
+                f = next(x for x in t.fields() if x.name == "lists")
+                lo, hi = f.type.range()
+                self.NR_PCP_LISTS = hi - lo
+                return
+            except gdb.error:
+                pass
 
         # slow path
         current = per_cpu_pageset + self.offset_lists
