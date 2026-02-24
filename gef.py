@@ -20419,9 +20419,9 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
             try:
                 data = read_memory(address, 0x100)
             except gdb.MemoryError:
-                return None
+                continue
             if not data:
-                return None
+                continue
 
             for return_register, byte_code in d["insn"]:
                 # adjust offset
@@ -20454,7 +20454,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "kgdb"))
+    @only_if_specific_gdb_mode(mode=("kgdb",))
     @only_if_specific_arch(arch=("x86_64", "ARM64"))
     def do_invoke(self, args):
         if current_arch is None:
