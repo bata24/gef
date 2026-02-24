@@ -14659,6 +14659,9 @@ class Auxv:
         if current_arch.sp is None:
             return None
 
+        if is_in_kernel():
+            return None
+
         # do not use get_pagesize(), get_pagesize_mask_high(), etc.
         # because get_pagesize() -> Auxv.get_auxiliary_values() -> Auxv.get_auxiliary_walk()
         page_size = 0x1000
@@ -14747,6 +14750,9 @@ class Auxv:
             return None
 
         if not is_alive():
+            return None
+
+        if is_in_kernel():
             return None
 
         if is_qemu_system() or is_kgdb() or is_vmware() or is_wine():
@@ -16321,10 +16327,13 @@ class CanaryCommand(GenericCommand):
     def gef_read_canary():
         """Read the canary of a running process using Auxiliary Vector.
         Return a tuple of (canary, location) if found, None otherwise."""
-        auxval = Auxv.get_auxiliary_values()
-        if not auxval:
+        if is_in_kernel():
             return None
+
         try:
+            auxval = Auxv.get_auxiliary_values()
+            if not auxval:
+                return None
             canary_location = auxval["AT_RANDOM"]
             canary = read_int_from_memory(canary_location)
             canary &= ~0xff
@@ -19201,6 +19210,8 @@ class PtrDemangleCommand(GenericCommand):
     @staticmethod
     @Cache.cache_until_next
     def get_cookie():
+        if is_in_kernel():
+            return None
         if is_arm32_cortex_m():
             return None
         if is_qiling():
