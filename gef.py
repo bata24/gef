@@ -56638,9 +56638,17 @@ class KernelConstsArm64(KernelConstsBase):
         assert "3.7" <= self.kversion # arm64 support start version
         return
 
+    @Cache.cache_until_next
+    def TCR_EL1(self):
+        return get_register("$TCR_EL1", use_mbed_exec=True)
+
+    @Cache.cache_until_next
+    def ID_AA64MMFR2_EL1(self):
+        return get_register("$ID_AA64MMFR2_EL1", use_mbed_exec=True)
+
     @property
     def PAGE_SHIFT(self):
-        tcr = get_register("$TCR_EL1")
+        tcr = self.TCR_EL1()
         if tcr is not None:
             tg1 = (tcr >> 30) & 0b11
             if tg1 == 0b01:
@@ -56658,7 +56666,7 @@ class KernelConstsArm64(KernelConstsBase):
 
     @property
     def FEAT_LVA(self):
-        ID_AA64MMFR2_EL1 = get_register("$ID_AA64MMFR2_EL1")
+        ID_AA64MMFR2_EL1 = self.ID_AA64MMFR2_EL1()
         if ID_AA64MMFR2_EL1 is not None:
             FEAT_LVA = ((ID_AA64MMFR2_EL1 >> 16) & 0b1111) == 0b0001
         else:
@@ -56693,7 +56701,8 @@ class KernelConstsArm64(KernelConstsBase):
 
     @property
     def CONFIG_ARM64_VA_BITS(self):
-        T1SZ = (get_register("$TCR_EL1") >> 16) & 0b111111
+        tcr = self.TCR_EL1()
+        T1SZ = (tcr >> 16) & 0b111111
         region_end = 2 ** 64
         region_start = region_end - (2 ** (64 - T1SZ))
         region_bits = GefUtil.log2(region_end - region_start)
@@ -56874,7 +56883,7 @@ class KernelConstsArm64(KernelConstsBase):
                 return self.VA_BITS_MIN
         elif "6.9" <= self.kversion:
             if self.VA_BITS > 48:
-                tcr = get_register("$TCR_EL1")
+                tcr = self.TCR_EL1()
                 return (64 - ((tcr >> 16) & 63))
             else:
                 return self.VA_BITS
@@ -57253,6 +57262,18 @@ class KernelConstsArm64(KernelConstsBase):
         return None
 
     @property
+    def PHYS_MASK_SHIFT(self):
+        if "6.12" <= self.kversion:
+            return self.VA_BITS
+        return None
+
+    @property
+    def PHYS_MASK(self):
+        if "6.12" <= self.kversion:
+            return (1 << self.PHYS_MASK_SHIFT) - 1
+        return None
+
+    @property
     def physmap_base(self):
         if hasattr(self, "cached_physmap_base"):
             return self.cached_physmap_base
@@ -57273,6 +57294,8 @@ class KernelConstsArm64(KernelConstsBase):
             return None
 
         PHYS_OFFSET = read_int_from_memory(memstart_addr)
+        if "6.12" <= self.kversion:
+            PHYS_OFFSET &= self.PHYS_MASK
         self.cached_physmap_base = AddressUtil.align_address(self.PAGE_OFFSET - PHYS_OFFSET)
         return self.cached_physmap_base
 
