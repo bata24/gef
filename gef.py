@@ -102147,11 +102147,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             gef_print(self._note2_.strip())
             return
 
-        # This command depends on page2virt, which requires access to system registers.
-        if is_kgdb() and not kgdb_has_system_registers():
-            err("Unsupported in kgdb mode without access to system registers")
-            return
-
         self.quiet_info("Wait for memory scan")
 
         allocator = Kernel.get_slab_type()
@@ -104469,11 +104464,6 @@ class SlabContainsCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        # This command depends on virt2page, which requires access to system registers.
-        if is_kgdb() and not kgdb_has_system_registers():
-            err("Unsupported in kgdb mode without access to system registers")
-            return
-
         self.quiet_info("Wait for memory scan")
 
         if not hasattr(self, "initialized"):
@@ -104902,11 +104892,6 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        # This command depends on slub-dump, which requires access to system registers.
-        if is_kgdb() and not kgdb_has_system_registers():
-            err("Unsupported in kgdb mode without access to system registers")
-            return
-
         self.quiet_info("Wait for memory scan")
 
         kversion = Kernel.kernel_version()
@@ -105985,11 +105970,6 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        # This command depends on page2virt, which requires access to system registers.
-        if is_kgdb() and not kgdb_has_system_registers():
-            err("Unsupported in kgdb mode without access to system registers")
-            return
-
         kversion = Kernel.kernel_version()
         if kversion < "3.1":
             self.quiet_err("Unsupported before v3.1")
@@ -108888,11 +108868,6 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        # This command depends on ksymaddr-remote, which requires access to system registers.
-        if is_kgdb() and not kgdb_has_system_registers():
-            err("Unsupported in kgdb mode without access to system registers")
-            return
-
         self.quiet_info("Wait for memory scan")
 
         ret = self.initialize()
@@ -110493,10 +110468,6 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, args):
-        if is_kgdb() and not kgdb_has_system_registers():
-            err("Unsupported in kgdb mode without access to system registers")
-            return
-
         if args.print_saved_config:
             self.print_saved_config()
             return
@@ -121191,11 +121162,6 @@ class Virt2PhysCommand(GenericCommand):
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
-        # This command depends on pagewalk, which requires access to system registers.
-        if is_kgdb() and not kgdb_has_system_registers():
-            err("Unsupported in kgdb mode without access to system registers")
-            return
-
         FORCE_PREFIX_S = None
         if is_arm32() or is_arm64():
             if args.force_normal:
@@ -121242,11 +121208,6 @@ class Phys2VirtCommand(GenericCommand):
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
-        # This command depends on pagewalk, which requires access to system registers.
-        if is_kgdb() and not kgdb_has_system_registers():
-            err("Unsupported in kgdb mode without access to system registers")
-            return
-
         FORCE_PREFIX_S = None
         if is_arm32() or is_arm64():
             if args.force_normal:
@@ -121632,9 +121593,6 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, argv):
-        if is_kgdb() and not kgdb_has_system_registers():
-            err("Unsupported in kgdb mode without access to system registers")
-            return
         if is_x86_32() or is_x86_16():
             gdb.execute("pagewalk x86 {}".format(" ".join(argv)))
         elif is_x86_64():
@@ -125967,10 +125925,6 @@ class PagewalkArm64Command(PagewalkCommand):
     @only_if_specific_gdb_mode(mode=("qemu-system", "kgdb"))
     @only_if_specific_arch(arch=("ARM64",))
     def do_invoke(self, args):
-        if is_kgdb() and not kgdb_has_system_registers():
-            err("Unsupported in kgdb mode without access to system registers")
-            return
-
         if args.optee:
             self.aarch64_optee_pseudo_pagewalk()
             return
@@ -127611,10 +127565,6 @@ class PageToVirtCommand(PageCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     @only_if_in_kernel
     def do_invoke(self, args):
-        if is_kgdb() and not kgdb_has_system_registers():
-            err("Unsupported in kgdb mode without access to system registers")
-            return
-
         if args.rescan:
             PageCommand.initialized = False
 
@@ -127668,10 +127618,6 @@ class PageFromVirtCommand(PageCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     @only_if_in_kernel
     def do_invoke(self, args):
-        if is_kgdb() and not kgdb_has_system_registers():
-            err("Unsupported in kgdb mode without access to system registers")
-            return
-
         if args.rescan:
             PageCommand.initialized = False
 
@@ -127730,11 +127676,6 @@ class PageToPhysCommand(PageCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     @only_if_in_kernel
     def do_invoke(self, args):
-        # This command depends on pagewalk, which requires access to system registers.
-        if is_kgdb() and not kgdb_has_system_registers():
-            err("Unsupported in kgdb mode without access to system registers")
-            return
-
         if args.rescan:
             PageCommand.initialized = False
 
@@ -127794,11 +127735,6 @@ class PhysToPageCommand(PageCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     @only_if_in_kernel
     def do_invoke(self, args):
-        # This command depends on pagewalk, which requires access to system registers.
-        if is_kgdb() and not kgdb_has_system_registers():
-            err("Unsupported in kgdb mode without access to system registers")
-            return
-
         if args.rescan:
             PageCommand.initialized = False
 
