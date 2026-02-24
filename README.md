@@ -711,9 +711,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/multi-line.png)
 - `cpuid`: shows the result of cpuid(eax=0,1,2...).
     - ![](images/cpuid.png)
-- `read-system-register`: reads system register for old `qemu-system-arm`.
-    - ![](images/read-system-register.png)
-- `read-control-register`: reads control register for kgdb.
+- `read-system-register-for-qemu-arm`: reads system register for old `qemu-system-arm`.
+- `read-system-register-for-kgdb`: reads system register for kgdb (x64/ARM64 only).
 - `capability`: shows the capabilities of the debugging process.
     - ![](images/capability.png)
 - `dasm`: disassembles the code by capstone.

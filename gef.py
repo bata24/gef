@@ -12788,7 +12788,7 @@ def get_register(regname, use_mbed_exec=False, use_monitor=False):
     if use_mbed_exec and is_qemu_system() and is_arm32():
         # Note that attempting to read a non-existent register will jump to an Undefined exception
         try:
-            r = gdb.execute("read-system-register {:s}".format(regname), to_string=True)
+            r = gdb.execute("read-system-register-for-qemu-arm {:s}".format(regname), to_string=True)
             if r:
                 return int(r.split("=")[1], 16)
         except gdb.error:
@@ -12808,11 +12808,10 @@ def get_register(regname, use_mbed_exec=False, use_monitor=False):
         if r:
             return int(r.group(1), 16)
 
-    if use_mbed_exec and is_kgdb() and is_x86_64():
-        regname = regname.lstrip("$")
-        if regname in ["cr0", "cr2", "cr3", "cr4"]:
+    if use_mbed_exec and is_kgdb() and (is_x86_64() or is_arm64()):
+        if ReadSystemRegisterForKgdbCommand.is_supported_reg(regname):
             try:
-                r = gdb.execute("read-control-register {:s}".format(regname), to_string=True)
+                r = gdb.execute("read-system-register-for-kgdb {:s}".format(regname), to_string=True)
                 if r:
                     return int(r.split("=")[1], 16)
             except gdb.error:
@@ -20231,20 +20230,21 @@ class MprotectCommand(GenericCommand):
 
 
 @register_command
-class ReadControlRegisterCommand(GenericCommand):
-    """Read control register for kgdb / kdb."""
+class ReadSystemRegisterForKgdbCommand(GenericCommand):
+    """Read system register for kgdb / kdb."""
 
-    _cmdline_ = "read-control-register"
+    _cmdline_ = "read-system-register-for-kgdb"
     _category_ = "04-a. Register - View"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    registers = ["cr0", "cr2", "cr3", "cr4"]
-    parser.add_argument("reg_name", metavar="REGISTER_NAME", choices=registers,
-                        help="register name to read a value.")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("reg_name", metavar="REGISTER_NAME", nargs="?", help="register name to read a value.")
+    group.add_argument("-l", "--list", action="store_true", help="show the supported register names.")
     _syntax_ = parser.format_help()
 
     _example_ = [
         "{0:s} cr0",
+        "{0:s} TTBR0_EL1",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -20252,19 +20252,148 @@ class ReadControlRegisterCommand(GenericCommand):
         super().__init__(complete="use_user_complete")
         return
 
+    REGISTER_DICT = {
+        "x64": {
+            "cr0": {
+                "sym": [
+                    "native_read_cr0",
+                ],
+                "insn": [
+                    ["$rax", b"\x0f\x20\xc0"], # mov rax, cr0
+                ],
+            },
+            "cr2": {
+                "sym": [
+                    "native_read_cr2",
+                    "pv_native_read_cr2",
+                ],
+                "insn": [
+                    ["$rax", b"\x0f\x20\xd0"], # mov rax, cr2
+                ],
+            },
+            "cr3": {
+                "sym": [
+                    "native_read_cr3",
+                    "__native_read_cr3",
+                ],
+                "insn": [
+                    ["$rax", b"\x0f\x20\xd8"], # mov rax, cr3
+                ],
+            },
+            "cr4": {
+                "sym": [
+                    "native_read_cr4",
+                    "cr4_init",
+                ],
+                "insn": [
+                    ["$rax", b"\x0f\x20\xe0"], # mov rax, cr4
+                ],
+            },
+        },
+        "arm64": {
+            "TTBR0_EL1": {
+                "sym": [
+                    "mte_cpu_setup", # 5.19~
+                ],
+                "insn": [[f"$x{i}", bytes([0x00 + i]) + b"\x20\x38\xd5"] for i in range(30)], # mrs x0, TTBR0_EL1
+            },
+            "TTBR1_EL1": {
+                "sym": [
+                    "mte_cpu_setup", # 5.19~
+                    "__sdei_asm_entry_trampoline", # 4.16~
+                ],
+                "insn": [[f"$x{i}", bytes([0x20 + i]) + b"\x20\x38\xd5"] for i in range(30)], # mrs x0, TTBR1_EL1
+            },
+            "TCR_EL1": {
+                "sym": [
+                    "cpu_do_suspend", # 3.14~
+                ],
+                "insn": [[f"$x{i}", bytes([0x40 + i]) + b"\x20\x38\xd5"] for i in range(30)], # mrs x0, TCR_EL1
+            },
+            "SCTLR_EL1": {
+                "sym": [
+                    "cpu_enable_pan", # 4.3~
+                ],
+                "insn": [[f"$x{i}", bytes([0x00 + i]) + b"\x10\x38\xd5"] for i in range(30)], # mrs x0, SCTLR_EL1
+            },
+            "ID_AA64MMFR0_EL1": {
+                "sym": [
+                    "__cpuinfo_store_cpu", # 3.17~
+                ],
+                "insn": [[f"$x{i}", bytes([0x00 + i]) + b"\x07\x38\xd5"] for i in range(30)], # mrs x0, ID_AA64MMFR0_EL1
+            },
+            "ID_AA64MMFR1_EL1": {
+                "sym": [
+                    "__cpuinfo_store_cpu", # 3.17~
+                ],
+                "insn": [[f"$x{i}", bytes([0x20 + i]) + b"\x07\x38\xd5"] for i in range(30)], # mrs x0, ID_AA64MMFR1_EL1
+            },
+            "ID_AA64MMFR2_EL1": {
+                "sym": [
+                    "__cpuinfo_store_cpu", # 3.17~
+                ],
+                "insn": [[f"$x{i}", bytes([0x40 + i]) + b"\x07\x38\xd5"] for i in range(30)], # mrs x0, ID_AA64MMFR2_EL1
+            },
+            "VBAR_EL1": {
+                "sym": [
+                    "cpu_do_suspend", # 3.14~
+                ],
+                "insn": [[f"$x{i}", bytes([0x00 + i]) + b"\xc0\x38\xd5"] for i in range(30)], # mrs x0, VBAR_EL1
+            },
+        },
+    }
+
+    @staticmethod
+    def get_supported_regs():
+        if not is_alive():
+            return []
+
+        if is_x86_64():
+            dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["x64"]
+        elif is_arm64():
+            dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["arm64"]
+        else:
+            return []
+
+        # filter if sym is defined or not
+        regs = []
+        for k, v in dic.items():
+            if not v["sym"]:
+                continue
+            regs.append(k)
+        return regs
+
+    @staticmethod
+    def is_supported_reg(reg_name):
+        regs = [r.lower() for r in ReadSystemRegisterForKgdbCommand.get_supported_regs()]
+        return reg_name.lstrip("$").lower() in regs
+
     def complete(self, text, word): # noqa
-        if text.strip() in self.registers:
+        regs = ReadSystemRegisterForKgdbCommand.get_supported_regs()
+        if text.strip() in regs:
             # already matched
             return []
 
         if text == "":
             # no prefix
-            return [s for s in self.registers if ((word is None) or (s and word in s))]
+            return [s for s in regs if ((word is None) or (s and word in s))]
 
         # finally, look for possible values for given prefix
-        return [s for s in self.registers if s and s.startswith(text.strip())]
+        return [s for s in regs if s and s.startswith(text.strip())]
 
-    def get_getter_address(self, reg_name):
+    @Cache.cache_this_session
+    def get_stub_address(self, reg_name):
+        if not is_alive():
+            return None
+        if is_x86_64():
+            dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["x64"]
+        elif is_arm64():
+            dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["arm64"]
+        else:
+            return None
+
+        reg_name = reg_name.lstrip("$")
+
         # In kgdb mode, direct modification (patching) of text memory is not permitted.
         # Therefore, we instead utilize legitimate kernel-provided symbols and mechanisms
         # to achieve the same goal.
@@ -20275,66 +20404,88 @@ class ReadControlRegisterCommand(GenericCommand):
         # to allow patching via physical address, or execute hand-crafted assembly
         # to obtain the value directly (without symbol).
 
-        symbol = {
-            "cr0": "native_read_cr0",
-            "cr2": "pv_native_read_cr2",
-            "cr3": "__native_read_cr3",
-            "cr4": "cr4_init",
-        }[reg_name]
-
-        byte_code = {
-            "cr0": b"\x0f\x20\xc0", # mov rax, cr0
-            "cr2": b"\x0f\x20\xd0", # mov rax, cr2
-            "cr3": b"\x0f\x20\xd8", # mov rax, cr3
-            "cr4": b"\x0f\x20\xe0", # mov rax, cr4
-        }[reg_name]
-
-        # resolve symbol
-        if is_kdb():
-            address = Symbol.get_symbol_by_monitor(symbol)
-        else:
-            address = Symbol.get_ksymaddr(symbol)
-        if address is None:
+        d = dic.get(reg_name.lower(), None) or dic.get(reg_name.upper(), None)
+        if not d:
             return None
 
-        # adjust offset
-        data = read_memory(address, 20)
-        index = data.find(byte_code)
-        if index >= 0:
-            return address + index
+        for symbol in d["sym"]:
+            # resolve symbol
+            if is_kdb():
+                address = Symbol.get_symbol_by_monitor(symbol)
+            else:
+                address = Symbol.get_ksymaddr(symbol)
+            if address is None:
+                continue
+            try:
+                data = read_memory(address, 0x100)
+            except gdb.MemoryError:
+                return None
+            if not data:
+                return None
+
+            for return_register, byte_code in d["insn"]:
+                # adjust offset
+                index = data.find(byte_code)
+                if index >= 0:
+                    return address + index, return_register
         return None
 
-    def execute_getter(self, getter_address):
+    def execute_stub(self, stub_address, return_register):
         codes = []
-        regs = {"$rip": getter_address}
-        ret = ExecAsm(codes, regs=regs, step=1).exec_code()
-        return ret["reg"][current_arch.return_register]
+        regs = {
+            "$pc": stub_address,
+            return_register: 0xdead_beef,
+        }
+        use_bp = False
+
+        if is_arm64():
+            # Step execution often fails due to an interrupt on ARM64
+            # but succeeds with the use of breakpoints.
+            use_bp = True
+
+        # It may fail on the first run, possibly due to gdb cache, but succeed on the second run.
+        for _ in range(2):
+            ret = ExecAsm(codes, regs=regs, step=1, use_bp=use_bp).exec_code()
+            if abs(ret["reg"]["$pc"] - stub_address) > 0x10:
+                return None
+            if ret["reg"][return_register] != 0xdead_beef:
+                return ret["reg"][return_register]
+        return None
 
     @parse_args
     @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("kgdb",))
-    @only_if_specific_arch(arch=("x86_64",))
+    @only_if_specific_gdb_mode(mode=("qemu-system", "kgdb"))
+    @only_if_specific_arch(arch=("x86_64", "ARM64"))
     def do_invoke(self, args):
         if current_arch is None:
             err("current_arch is not set")
             return
 
-        getter_address = self.get_getter_address(args.reg_name)
-        if getter_address is None:
-            err("Failed to get")
+        if args.list:
+            for reg in ReadSystemRegisterForKgdbCommand.get_supported_regs():
+                gef_print(reg)
             return
 
-        ret = self.execute_getter(getter_address)
+        if not ReadSystemRegisterForKgdbCommand.is_supported_reg(args.reg_name):
+            err("Unsupported register")
+            return
+
+        ret = self.get_stub_address(args.reg_name)
+        if ret is None:
+            err("Failed to get the target stub")
+            return
+
+        ret = self.execute_stub(*ret)
         if ret is not None:
             gef_print("{:s} = {:#x}".format(args.reg_name, ret))
         return
 
 
 @register_command
-class ReadSystemRegisterCommand(GenericCommand):
+class ReadSystemRegisterForQemuArmCommand(GenericCommand):
     """Read system register for old qemu-system-arm."""
 
-    _cmdline_ = "read-system-register"
+    _cmdline_ = "read-system-register-for-qemu-arm"
     _category_ = "08-b. Qemu-system Cooperation - Register"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -71622,9 +71773,10 @@ class ExecAsm:
     """Execute embedded asm. e.g., ExecAsm(asm_op_list).exec_code().
     WARNING: Disable `-enable-kvm` option for qemu-system; If set, this code will crash the guest OS."""
 
-    def __init__(self, target_codes, regs=None, step=None, debug=False):
+    def __init__(self, target_codes, regs=None, step=None, use_bp=False, debug=False):
         self.stdout = 1
         self.debug = debug
+        self.use_bp = use_bp
         self.regs = regs
         self.step = step or 1
 
@@ -71743,17 +71895,29 @@ class ExecAsm:
                 gdb.execute("set $npc = {:#x}".format(dst2), to_string=True)
             else:
                 gdb.execute("set $pc = {:#x}".format(dst), to_string=True)
-            if self.debug:
-                gdb.execute("context")
 
         # exec
         self.close_stdout()
         if self.debug:
             gdb.execute("context")
-        try:
-            gdb.execute("stepi {:d}".format(self.step), to_string=True)
-        except gdb.MemoryError:
-            pass
+        if self.use_bp:
+            bp = None
+            try:
+                bp_addr = current_arch.pc
+                for _ in range(self.step):
+                    bp_addr += get_insn(bp_addr).size
+                bp = gdb.Breakpoint("*{:#x}".format(bp_addr))
+                gdb.execute("continue", to_string=True)
+            except gdb.error:
+                pass
+            finally:
+                if bp:
+                    bp.delete()
+        else:
+            try:
+                gdb.execute("stepi {:d}".format(self.step), to_string=True)
+            except gdb.MemoryError:
+                pass
         if self.debug:
             gdb.execute("context")
         self.revert_stdout()
