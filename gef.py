@@ -27628,7 +27628,7 @@ class KernelChecksecCommand(GenericCommand):
         gef_print("{:<40s}: {:s} (all ARMv8~ is supported)".format("PXN", Color.colorify("Enabled", "bold green")))
 
         # PAN
-        ID_AA64MMFR1_EL1 = get_register("$ID_AA64MMFR1_EL1")
+        ID_AA64MMFR1_EL1 = get_register("$ID_AA64MMFR1_EL1", use_mbed_exec=True)
         if ID_AA64MMFR1_EL1 is not None and ((ID_AA64MMFR1_EL1 >> 20) & 0b1111) != 0b0000:
             gef_print("{:<40s}: {:s}".format("PAN (ID_AA64MMFR1_EL1 bit 23-20)", Color.colorify("Enabled", "bold green")))
         else:
@@ -125428,8 +125428,8 @@ class PagewalkArm64Command(PagewalkCommand):
     def pagewalk_TTBR0_EL1(self):
         self.out.append(titlify("$TTBR0_EL1", color="bold", msg_color="bold"))
 
-        TTBR0_EL1 = get_register("$TTBR0_EL1")
-        TCR_EL1 = get_register("$TCR_EL1")
+        TTBR0_EL1 = get_register("$TTBR0_EL1", use_mbed_exec=True)
+        TCR_EL1 = get_register("$TCR_EL1", use_mbed_exec=True)
         if TTBR0_EL1 == 0:
             self.warn_add_out("Maybe unused TTBR0_EL1")
             return
@@ -125473,8 +125473,8 @@ class PagewalkArm64Command(PagewalkCommand):
     def pagewalk_TTBR1_EL1(self):
         self.out.append(titlify("$TTBR1_EL1", color="bold", msg_color="bold"))
 
-        TTBR1_EL1 = get_register("$TTBR1_EL1")
-        TCR_EL1 = get_register("$TCR_EL1")
+        TTBR1_EL1 = get_register("$TTBR1_EL1", use_mbed_exec=True)
+        TCR_EL1 = get_register("$TCR_EL1", use_mbed_exec=True)
         if TTBR1_EL1 == 0:
             self.warn_add_out("Maybe unused TTBR1_EL1")
             return
@@ -125771,12 +125771,12 @@ class PagewalkArm64Command(PagewalkCommand):
         return
 
     def pagewalk_init(self):
-        res = gdb.execute("info registers TTBR0_EL1", to_string=True)
-        if "TTBR" not in res:
-            self.err_add_out("Could not find system registers, try check qemu version (at least: 3.x~, recommend: 5.x~)")
-            return
+        res = get_register("$TTBR0_EL1", use_mbed_exec=True)
+        if res is None:
+            self.err_add_out("Could not find system registers")
+            return False
 
-        SCTLR_EL1 = get_register("$SCTLR_EL1")
+        SCTLR_EL1 = get_register("$SCTLR_EL1", use_mbed_exec=True)
         if SCTLR_EL1 is None:
             SCTLR_EL1 = get_register("$SCTLR")
         if SCTLR_EL1 is not None:
@@ -125814,7 +125814,7 @@ class PagewalkArm64Command(PagewalkCommand):
             self.EL3_M = False
             self.EL3_WXN = False
 
-        ID_AA64MMFR0_EL1 = get_register("$ID_AA64MMFR0_EL1")
+        ID_AA64MMFR0_EL1 = get_register("$ID_AA64MMFR0_EL1", use_mbed_exec=True)
         if ID_AA64MMFR0_EL1 is not None:
             TGran4_2 = (ID_AA64MMFR0_EL1 >> 40) & 0b1111
             TGran16_2 = (ID_AA64MMFR0_EL1 >> 32) & 0b1111
@@ -125826,7 +125826,7 @@ class PagewalkArm64Command(PagewalkCommand):
             self.FEAT_LPA2 = False
             self.FEAT_LPA = False
 
-        ID_AA64MMFR1_EL1 = get_register("$ID_AA64MMFR1_EL1")
+        ID_AA64MMFR1_EL1 = get_register("$ID_AA64MMFR1_EL1", use_mbed_exec=True)
         if ID_AA64MMFR1_EL1 is not None:
             self.FEAT_PAN = ((ID_AA64MMFR1_EL1 >> 20) & 0b1111) != 0b0000
         else:
@@ -125837,18 +125837,19 @@ class PagewalkArm64Command(PagewalkCommand):
         else:
             self.quiet_info_add_out("PAN is unsupported")
 
-        ID_AA64MMFR2_EL1 = get_register("$ID_AA64MMFR2_EL1")
+        ID_AA64MMFR2_EL1 = get_register("$ID_AA64MMFR2_EL1", use_mbed_exec=True)
         if ID_AA64MMFR2_EL1 is not None:
             self.FEAT_TTST = ((ID_AA64MMFR2_EL1 >> 28) & 0b1111) == 0b0001
             self.FEAT_LVA = ((ID_AA64MMFR2_EL1 >> 16) & 0b1111) == 0b0001
         else:
             self.FEAT_TTST = False
             self.FEAT_LVA = False
-        return
+        return True
 
     def pagewalk(self):
         # parse system registers
-        self.pagewalk_init()
+        if not self.pagewalk_init():
+            return
 
         self.silent = False
         self.mappings = None
@@ -125995,6 +125996,11 @@ class PagewalkArm64Command(PagewalkCommand):
                 self.TargetEL = 1
         else:
             self.TargetEL = args.target_el
+
+        if is_kgdb():
+            if self.TargetEL != 1:
+                err("Unsupported target EL")
+                return
 
         self.out = []
         self.cache = {}
