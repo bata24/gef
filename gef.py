@@ -9883,6 +9883,10 @@ class ALPHA(Architecture):
         return ra
 
     def get_tls(self):
+        tls = get_register("$unique")
+        if tls is not None:
+            return tls
+
         codes = [b"\x9e\x00\x00\x00"] # rduniq
         ret = ExecAsm(codes).exec_code()
         return ret["reg"]["$v0"]
@@ -10223,6 +10227,14 @@ class HPPA(Architecture):
         return ra
 
     def get_tls(self):
+        tls = get_register("$cr27")
+        if tls is not None:
+            return tls
+
+        tls = get_register("$mpsfu_high")
+        if tls is not None:
+            return tls
+
         codes = [b"\xbc\x08\x60\x03"] # mfctl tr3, ret0
         ret = ExecAsm(codes).exec_code()
         return ret["reg"]["$ret0"]
