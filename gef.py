@@ -1092,6 +1092,8 @@ class Address:
     """GEF representation of memory addresses."""
 
     def __init__(self, addr):
+        if isinstance(addr, gdb.Value):
+            addr = to_unsigned_long(addr)
         self.value = addr
         return
 
@@ -4481,7 +4483,7 @@ class GlibcHeap:
                 last_remainder = ProcessMap.lookup_address(self.last_remainder)
             else:
                 last_remainder = hex(self.last_remainder)
-            next = ProcessMap.lookup_address(int(self.next))
+            next = ProcessMap.lookup_address(self.next)
             system_mem = int(self.system_mem)
             try:
                 if is_valid_addr(self.next_free):
