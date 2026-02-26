@@ -336,9 +336,13 @@ class DisplayHook:
             f += "rw_end=" + DisplayHook.pp(o.rw_end, 0) + ",\n"
             f += I1(idt + 1) + "rwx=" + DisplayHook.pp(o.rwx, 0) + ", "
             f += "has_none=" + DisplayHook.pp(o.has_none, 0) + ", "
-            f += "maps=[\n"
-            f += "\n".join(R2(o.maps, idt + 1))
-            f += "\n" + I1(idt + 1) + "]\n" + I1(idt) + ")"
+            if o.maps is None:
+                f += "maps=" + DisplayHook.pp(o.maps, 0) + ",\n"
+            else:
+                f += "maps=[\n"
+                f += "\n".join(R2(o.maps, idt + 1))
+                f += "\n" + I1(idt + 1) + "]\n"
+            f += I1(idt) + ")"
             return f
 
         elif name == "Entry":
@@ -12590,6 +12594,9 @@ def only_if_specific_gdb_mode(mode=()):
                 if dic.get(m, lambda: False)():
                     return f(*args, **kwargs)
             warn("This command is not supported in this gdb mode")
+            if "kgdb" in mode:
+                if is_in_kernel() and not is_qemu_system() and not is_vmware():
+                    info("For KGDB: Try `gef config gef.kgdb_force True`")
             return
 
         return inner_f
@@ -52498,6 +52505,8 @@ class KernelMagicCommand(GenericCommand):
 
     def resolve_and_print_kernel(self, sym, base, maps, external_func=None, to_string=False):
         def get_permission(addr, maps):
+            if maps is None:
+                return "???"
             for vaddr, size, perm in maps:
                 if vaddr <= addr and addr < vaddr + size:
                     return perm
@@ -52561,7 +52570,7 @@ class KernelMagicCommand(GenericCommand):
         maps = kinfo.maps
         text_base = kinfo.text_base
         text_size = kinfo.text_size
-        if maps is None or text_base is None or text_size is None:
+        if text_base is None or text_size is None:
             return
         gef_print("{:42s} {:#x} ({:#x} bytes)".format("kernel_base", text_base, text_size))
 
@@ -52759,7 +52768,7 @@ class KernelMagicCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
@@ -70896,7 +70905,17 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
         if kinfo.ro_base is None:
             err("Not recognized .rodata")
             return False
-        ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
+
+        if is_kgdb():
+            info("The config is often near the top of .rodata; once found, the search stops early.")
+            ro_data = b""
+            tqdm = GefUtil.get_tqdm(not self.args.quiet)
+            for pos in tqdm(range(0, kinfo.ro_size, 0x1000), leave=False):
+                ro_data += read_memory(kinfo.ro_base + pos, 0x1000)
+                if ro_data.find(b"IKCFG_ST") >= 0 and ro_data.find(b"IKCFG_ED") >= 0:
+                    break
+        else:
+            ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
 
         start_pos = ro_data.find(b"IKCFG_ST")
         if start_pos == -1:
@@ -70918,7 +70937,7 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
 
     @parse_args
     @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
