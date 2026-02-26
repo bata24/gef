@@ -68762,7 +68762,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
 
     @parse_args
     @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
@@ -135526,11 +135526,11 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
         if self.args.only_unavailable and avail:
             return
         if avail:
-            self.out.append("{:<30s}: {:s}".format(
+            self.out.append("{:<34s}: {:s}".format(
                 cmdline, Color.colorify("Available", "bold green"),
             ))
         else:
-            self.out.append("{:<30s}: {:s} ({:s})".format(
+            self.out.append("{:<34s}: {:s} ({:s})".format(
                 cmdline, Color.colorify("Unavailable", "bold red"), msg,
             ))
         return
@@ -135543,17 +135543,17 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
             if self.check_require_arch_set(decorators):
                 self.add_out(cmdline, False, "current_arch is None")
                 continue
-            if not self.check_include_mode(decorators):
-                self.add_out(cmdline, False, "Unsupported gdb mode")
-                continue
-            if self.check_exclude_mode(decorators):
-                self.add_out(cmdline, False, "Unsupported gdb mode")
-                continue
             if not self.check_include_arch(decorators, arch_name):
                 self.add_out(cmdline, False, "Unsupported arch")
                 continue
             if self.check_exclude_arch(decorators, arch_name):
                 self.add_out(cmdline, False, "Unsupported arch")
+                continue
+            if not self.check_include_mode(decorators):
+                self.add_out(cmdline, False, "Unsupported gdb mode")
+                continue
+            if self.check_exclude_mode(decorators):
+                self.add_out(cmdline, False, "Unsupported gdb mode")
                 continue
             if not self.check_load_package(decorators, "@load_capstone", "capstone"):
                 self.add_out(cmdline, False, "capstone package is unavailable")
