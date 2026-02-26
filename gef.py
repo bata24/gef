@@ -68931,6 +68931,10 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     def read_cstring_from_memory(self, addr):
         return read_cstring_from_memory(addr)
 
+    @Cache.cache_until_next
+    def is_valid_addr(self, addr):
+        return is_valid_addr(addr)
+
     def should_be_print(self, procname):
         if self.args.filter == []:
             return True
@@ -68948,14 +68952,14 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                     return True
             return False
 
-    def dump_data(self, ctl_table, param_path, mode, skip_add_cache=False):
+    def dump_data(self, ctl_table, param_path, mode):
         if not self.should_be_print(param_path):
             return
 
         maxlen = self.read_int32_from_memory(ctl_table + self.offset_maxlen)
         # data
         data_addr = self.read_int_from_memory(ctl_table + current_arch.ptrsize)
-        if data_addr and is_valid_addr(data_addr):
+        if data_addr and self.is_valid_addr(data_addr):
             # type from handler
             handler = self.read_int_from_memory(ctl_table + self.offset_handler)
             # data length
@@ -69002,14 +69006,6 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                     param_path, data_addr, maxlen, mode,
                 ))
 
-        if skip_add_cache:
-            return
-
-        # for cache
-        if not self.args.filter:
-            if not self.args.exact:
-                if not self.args.skip_symlink:
-                    self.cache.append([ctl_table, param_path, mode])
         return
 
     def redirect_root_for_symlink(self, ctl_table, pbar):
@@ -69018,7 +69014,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
 
         ctset = None
         root = self.read_int_from_memory(ctl_table + current_arch.ptrsize)
-        if is_valid_addr(root + self.offset_lookup):
+        if self.is_valid_addr(root + self.offset_lookup):
             lookup = self.read_int_from_memory(root + self.offset_lookup)
             if lookup == Symbol.get_ksymaddr("net_ctl_header_lookup"): # net.*
                 ctset = self.net_ctset
@@ -69307,12 +69303,9 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             self.quiet_err("Filter string is needed")
             return
 
-        if not hasattr(self, "cache"):
-            self.cache = []
-
         if args.rescan:
             self.initialized = False
-            self.cache = []
+            Cache.reset_gef_caches(all=True)
 
         self.quiet_info("Wait for memory scan")
 
@@ -69326,38 +69319,31 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             legend = ["ParamName", "ParamAddress", "MaxLen", "Mode", "ParamValue"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        if self.cache:
-            for entry in self.cache:
-                if args.skip_symlink:
-                    if entry[1].startswith(("net.", "user.")):
-                        continue
-                self.dump_data(*entry, skip_add_cache=True)
-                if args.exact and self.exact_found:
-                    break
-        else:
-            pbar = None
-            if not args.quiet:
-                try:
-                    from tqdm import tqdm
-                    pbar = tqdm(total=None, leave=False)
-                except ImportError:
-                    pass
-
-            self.seen_ctl_dir = set()
-            self.seen_ctl_table = set()
-            self.seen_ctset = set()
-            self.parent_paths = {self.root_ctl_dir: ""}
+        # progress setup
+        pbar = None
+        if not args.quiet:
             try:
-                # This try-except is a countermeasure to a parse error when CONFIG_RANDSTRUCT=y.
-                self.sysctl_dump(self.root_rb_node, pbar)
-            except gdb.MemoryError:
-                self.cache = []
-                self.quiet_err("Memory read error")
-                return
-            finally:
-                if pbar is not None:
-                    pbar.close()
+                from tqdm import tqdm
+                pbar = tqdm(total=None, leave=False)
+            except ImportError:
+                pass
 
+        # parse rb_tree
+        self.seen_ctl_dir = set()
+        self.seen_ctl_table = set()
+        self.seen_ctset = set()
+        self.parent_paths = {self.root_ctl_dir: ""}
+        try:
+            # This try-except is a countermeasure to a parse error when CONFIG_RANDSTRUCT=y.
+            self.sysctl_dump(self.root_rb_node, pbar)
+        except gdb.MemoryError:
+            self.quiet_err("Memory read error")
+            return
+        finally:
+            if pbar is not None:
+                pbar.close()
+
+        # print
         self.print_output(check_terminal_size=True)
         return
 
