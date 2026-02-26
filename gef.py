@@ -68901,6 +68901,29 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
+    # Because this may be called repeatedly with different filter conditions,
+    # GEF caches the results for a short time.
+
+    @Cache.cache_until_next
+    def read_int_from_memory(self, addr):
+        return read_int_from_memory(addr)
+
+    @Cache.cache_until_next
+    def read_int8_from_memory(self, addr):
+        return read_int8_from_memory(addr)
+
+    @Cache.cache_until_next
+    def read_int32_from_memory(self, addr):
+        return read_int32_from_memory(addr)
+
+    @Cache.cache_until_next
+    def read_int64_from_memory(self, addr):
+        return read_int64_from_memory(addr)
+
+    @Cache.cache_until_next
+    def read_cstring_from_memory(self, addr):
+        return read_cstring_from_memory(addr)
+
     def should_be_print(self, procname):
         if self.args.filter == []:
             return True
@@ -68922,30 +68945,30 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         if not self.should_be_print(param_path):
             return
 
-        maxlen = read_int32_from_memory(ctl_table + self.offset_maxlen)
+        maxlen = self.read_int32_from_memory(ctl_table + self.offset_maxlen)
         # data
-        data_addr = read_int_from_memory(ctl_table + current_arch.ptrsize)
+        data_addr = self.read_int_from_memory(ctl_table + current_arch.ptrsize)
         if data_addr and is_valid_addr(data_addr):
             # type from handler
-            handler = read_int_from_memory(ctl_table + self.offset_handler)
+            handler = self.read_int_from_memory(ctl_table + self.offset_handler)
             # data length
             if handler in self.str_types:
-                data_val = read_cstring_from_memory(data_addr)
+                data_val = self.read_cstring_from_memory(data_addr)
                 self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {!r}".format(
                     param_path, data_addr, maxlen, mode, data_val,
                 )) # allow None
             elif maxlen == 4:
-                data_val = read_int32_from_memory(data_addr)
+                data_val = self.read_int32_from_memory(data_addr)
                 self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {:#018x}".format(
                     param_path, data_addr, maxlen, mode, data_val,
                 ))
             elif maxlen == 8:
-                data_val = read_int64_from_memory(data_addr)
+                data_val = self.read_int64_from_memory(data_addr)
                 self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {:#018x}".format(
                     param_path, data_addr, maxlen, mode, data_val,
                 ))
             elif maxlen == 1:
-                data_val = read_int8_from_memory(data_addr)
+                data_val = self.read_int8_from_memory(data_addr)
                 self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {:#018x}".format(
                     param_path, data_addr, maxlen, mode, data_val,
                 ))
@@ -68956,13 +68979,13 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                     ))
             else:
                 # type from heuristic
-                data_val = read_cstring_from_memory(data_addr)
+                data_val = self.read_cstring_from_memory(data_addr)
                 if data_val and data_val.isprintable() and len(data_val) >= 2:
                     self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {!r}".format(
                         param_path, data_addr, maxlen, mode, data_val,
                     ))
                 else:
-                    data_val = read_int_from_memory(data_addr)
+                    data_val = self.read_int_from_memory(data_addr)
                     self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {:#018x}".format(
                         param_path, data_addr, maxlen, mode, data_val,
                     ))
@@ -68982,31 +69005,31 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                     self.cache.append([ctl_table, param_path, mode])
         return
 
-    def redirect_root_for_symlink(self, ctl_table):
+    def redirect_root_for_symlink(self, ctl_table, pbar):
         if self.args.skip_symlink:
             return
 
         ctset = None
-        root = read_int_from_memory(ctl_table + current_arch.ptrsize)
+        root = self.read_int_from_memory(ctl_table + current_arch.ptrsize)
         if is_valid_addr(root + self.offset_lookup):
-            lookup = read_int_from_memory(root + self.offset_lookup)
+            lookup = self.read_int_from_memory(root + self.offset_lookup)
             if lookup == Symbol.get_ksymaddr("net_ctl_header_lookup"): # net.*
                 ctset = self.net_ctset
             elif lookup == Symbol.get_ksymaddr("set_lookup"): # user.*
                 ctset = self.user_ctset
         if ctset:
-            symlink_rb_node = read_int_from_memory(ctset + current_arch.ptrsize + self.offset_rb_node)
+            symlink_rb_node = self.read_int_from_memory(ctset + current_arch.ptrsize + self.offset_rb_node)
             if ctset not in self.seen_ctset:
-                self.seen_ctset.append(ctset)
-                self.sysctl_dump(symlink_rb_node)
+                self.seen_ctset.add(ctset)
+                self.sysctl_dump(symlink_rb_node, pbar)
         return
 
     def get_param_path(self, ctl_dir, ctl_table, parent_path):
-        procname = read_int_from_memory(ctl_table)
+        procname = self.read_int_from_memory(ctl_table)
         if procname == 0:
             return None
 
-        procname_str = read_cstring_from_memory(procname)
+        procname_str = self.read_cstring_from_memory(procname)
         if not procname_str: # None or ""
             return None
 
@@ -69014,25 +69037,28 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         self.parent_paths[ctl_dir] = param_path
         return param_path
 
-    def sysctl_dump(self, rb_node):
+    def sysctl_dump(self, rb_node, pbar):
         if not rb_node:
             return
         if self.args.exact and self.exact_found:
             return
 
+        if pbar is not None:
+            pbar.update(1)
+
         # ctl_node.header (=ctl_dir)
-        ctl_dir = read_int_from_memory(rb_node + current_arch.ptrsize * 3)
+        ctl_dir = self.read_int_from_memory(rb_node + current_arch.ptrsize * 3)
         if ctl_dir not in self.seen_ctl_dir:
-            self.seen_ctl_dir.append(ctl_dir)
+            self.seen_ctl_dir.add(ctl_dir)
 
             # parent
-            parent = read_int_from_memory(ctl_dir + self.offset_parent)
+            parent = self.read_int_from_memory(ctl_dir + self.offset_parent)
             parent_path = self.parent_paths.get(parent, "")
 
             # ctl_table(s)
-            ctl_table = read_int_from_memory(ctl_dir)
+            ctl_table = self.read_int_from_memory(ctl_dir)
             while ctl_table not in self.seen_ctl_table:
-                self.seen_ctl_table.append(ctl_table)
+                self.seen_ctl_table.add(ctl_table)
 
                 # param_path
                 param_path = self.get_param_path(ctl_dir, ctl_table, parent_path)
@@ -69040,15 +69066,17 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                     break
 
                 # mode
-                mode = read_int32_from_memory(ctl_table + self.offset_mode)
+                mode = self.read_int32_from_memory(ctl_table + self.offset_mode)
 
                 # dump
                 if (mode & 0o0120000) == 0o0120000: # symlink
                     # `net.*` and `user.*` have a symlink attribute and they are redirected to another location.
                     # These must be traced from another root.
-                    self.redirect_root_for_symlink(ctl_table)
-                elif (mode & 0o0040000) != 0: # directory
+                    self.redirect_root_for_symlink(ctl_table, pbar)
+                elif (mode & 0o0040000) == 0o0040000: # directory
                     pass
+                elif mode > 0o777:
+                    break
                 else:
                     # If it's not a directory, it should hold data, so dump it.
                     self.dump_data(ctl_table, param_path, mode)
@@ -69059,16 +69087,16 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                 ctl_table += self.sizeof_ctl_table
 
             # ctl_dir.rb_root->rb_node
-            ctl_dir_rb_node = read_int_from_memory(ctl_dir + self.offset_rb_node) & ~1 # remove RB_BLACK
-            self.sysctl_dump(ctl_dir_rb_node)
+            ctl_dir_rb_node = self.read_int_from_memory(ctl_dir + self.offset_rb_node) & ~1 # remove RB_BLACK
+            self.sysctl_dump(ctl_dir_rb_node, pbar)
 
         # ctl_node.node.rb_right
-        right = read_int_from_memory(rb_node + current_arch.ptrsize * 1) & ~1 # remove RB_BLACK
-        self.sysctl_dump(right)
+        right = self.read_int_from_memory(rb_node + current_arch.ptrsize * 1) & ~1 # remove RB_BLACK
+        self.sysctl_dump(right, pbar)
 
         # ctl_node.node.rb_left
-        left = read_int_from_memory(rb_node + current_arch.ptrsize * 2) & ~1 # remove RB_BLACK
-        self.sysctl_dump(left)
+        left = self.read_int_from_memory(rb_node + current_arch.ptrsize * 2) & ~1 # remove RB_BLACK
+        self.sysctl_dump(left, pbar)
         return
 
     def initialize(self):
@@ -69210,7 +69238,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             is_seen = Symbol.get_ksymaddr("is_seen")
             if is_seen:
                 while True:
-                    v = read_int_from_memory(current)
+                    v = self.read_int_from_memory(current)
                     if v == is_seen:
                         self.net_ctset = current
                         break
@@ -69225,7 +69253,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             set_is_seen = Symbol.get_ksymaddr_multiple("set_is_seen")
             if set_is_seen:
                 while True:
-                    v = read_int_from_memory(current)
+                    v = self.read_int_from_memory(current)
                     if v in set_is_seen:
                         self.user_ctset = current
                         break
@@ -69253,7 +69281,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                 self.str_types.append(handler_addr)
 
         self.root_ctl_dir = self.sysctl_table_root + current_arch.ptrsize
-        self.root_rb_node = read_int_from_memory(self.root_ctl_dir + self.offset_rb_node)
+        self.root_rb_node = self.read_int_from_memory(self.root_ctl_dir + self.offset_rb_node)
         self.quiet_info("root_ctl_dir: {:#x}".format(self.root_ctl_dir))
         self.quiet_info("root_rb_node: {:#x}".format(self.root_rb_node))
 
@@ -69262,7 +69290,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
 
     @parse_args
     @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
@@ -69300,17 +69328,28 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                 if args.exact and self.exact_found:
                     break
         else:
-            self.seen_ctl_dir = []
-            self.seen_ctl_table = []
-            self.seen_ctset = []
+            pbar = None
+            if not args.quiet:
+                try:
+                    from tqdm import tqdm
+                    pbar = tqdm(total=None, leave=False)
+                except ImportError:
+                    pass
+
+            self.seen_ctl_dir = set()
+            self.seen_ctl_table = set()
+            self.seen_ctset = set()
             self.parent_paths = {self.root_ctl_dir: ""}
             try:
                 # This try-except is a countermeasure to a parse error when CONFIG_RANDSTRUCT=y.
-                self.sysctl_dump(self.root_rb_node)
+                self.sysctl_dump(self.root_rb_node, pbar)
             except gdb.MemoryError:
                 self.cache = []
                 self.quiet_err("Memory read error")
                 return
+            finally:
+                if pbar is not None:
+                    pbar.close()
 
         self.print_output(check_terminal_size=True)
         return
