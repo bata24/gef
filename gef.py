@@ -20361,6 +20361,13 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
                 ],
                 "insn": [[f"$x{i}", bytes([0x00 + i]) + b"\xc0\x38\xd5"] for i in range(30)], # mrs x0, VBAR_EL1
             },
+            "SP_EL0": {
+                "sym": [
+                    "cpu_die_early", # 4.6~
+                    "sched_setaffinity", # 3.7~
+                ],
+                "insn": [[f"$x{i}", bytes([0x00 + i]) + b"\x41\x38\xd5"] for i in range(30)], # mrs x0, SP_EL0
+            },
         },
     }
 
