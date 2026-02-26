@@ -388,77 +388,70 @@ class Cache:
     "this_session": Cached until gdb exits.
     Note: each command may have its own cache outside this mechanism. Not all caches are centralized here."""
 
-    __gef_caches__ = {
-        "until_next": {},
-        "this_session": {},
-    }
-    cached_context_legend = None
-    cached_heap_base = None
-    cached_main_arena = None
-    cached_libc_version = None
+    __gef_caches__ = {"until_next": {}, "this_session": {}}
+
+    @staticmethod
+    def cache_wrap(life_time, f, skip_None_cache=False):
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            caches = Cache.__gef_caches__[life_time]
+            fname = f"{f.__module__}:{f.__qualname__}"
+            fcache = caches.setdefault(fname, {})
+
+            try:
+                kw = tuple(sorted(kwargs.items()))
+                key = (args, kw)
+                return fcache[key]
+            except KeyError:
+                ret = f(*args, **kwargs)
+                if skip_None_cache is False or ret is not None:
+                    fcache[key] = ret
+                return ret
+            except TypeError:
+                return f(*args, **kwargs)
+
+        return wrapper
 
     @staticmethod
     def cache_until_next(f):
-        """Decorator for short-term caching until si or ni is executed."""
+        return Cache.cache_wrap("until_next", f)
 
-        LIFE_TIME = "until_next"
-
-        @functools.wraps(f)
-        def wrapper(*args, **kwargs):
-            kw = tuple(kwargs.items())
-            id_ = id(f)
-
-            try:
-                return Cache.__gef_caches__[LIFE_TIME][f.__name__, id_][args, kw]
-            except KeyError:
-                ret = f(*args, **kwargs)
-                if (f.__name__, id_) not in Cache.__gef_caches__[LIFE_TIME]:
-                    Cache.__gef_caches__[LIFE_TIME][f.__name__, id_] = {}
-                Cache.__gef_caches__[LIFE_TIME][f.__name__, id_][args, kw] = ret
-                return ret
-
-        return wrapper
+    @staticmethod # noqa
+    def cache_until_next_skip_None_cache(f):
+        return Cache.cache_wrap("until_next", f, skip_None_cache=True)
 
     @staticmethod
     def cache_this_session(f):
-        """Decorator for long-term caching for the duration of the session."""
+        return Cache.cache_wrap("this_session", f)
 
-        LIFE_TIME = "this_session"
-
-        @functools.wraps(f)
-        def wrapper(*args, **kwargs):
-            kw = tuple(kwargs.items())
-            id_ = id(f)
-
-            try:
-                return Cache.__gef_caches__[LIFE_TIME][f.__name__, id_][args, kw]
-            except KeyError:
-                ret = f(*args, **kwargs)
-                if (f.__name__, id_) not in Cache.__gef_caches__[LIFE_TIME]:
-                    Cache.__gef_caches__[LIFE_TIME][f.__name__, id_] = {}
-                Cache.__gef_caches__[LIFE_TIME][f.__name__, id_][args, kw] = ret
-                return ret
-
-        return wrapper
+    @staticmethod
+    def cache_this_session_skip_None_cache(f):
+        return Cache.cache_wrap("this_session", f, skip_None_cache=True)
 
     @staticmethod
     def reset_gef_caches(all=False):
         """Clear the cache of GEF.
         By default, it only clears caches of `until_next` type."""
 
-        Cache.__gef_caches__["until_next"] = {}
+        Cache.__gef_caches__["until_next"].clear()
 
         if all:
-            Cache.__gef_caches__["this_session"] = {}
-
-        if all:
-            Cache.cached_context_legend = None
-            Cache.cached_main_arena = None
-            Cache.cached_heap_base = None
-            Cache.cached_libc_version = None
+            Cache.__gef_caches__["this_session"].clear()
 
         # gdb cache
-        gdb.execute("maintenance flush dcache", to_string=True)
+        try:
+            gdb.execute("maintenance flush dcache", to_string=True)
+        except Exception:
+            pass
+        return
+
+    @staticmethod # noqa
+    def clear_cache_for(f):
+        """Clear the cache of specified function."""
+
+        fname = f"{f.__module__}:{f.__qualname__}"
+        Cache.__gef_caches__["until_next"].pop(fname, None)
+        Cache.__gef_caches__["this_session"].pop(fname, None)
         return
 
 
@@ -3869,11 +3862,9 @@ class GlibcHeap:
         return None
 
     @staticmethod
+    @Cache.cache_this_session_skip_None_cache
     def search_for_main_arena():
         """Search for the address of main_arena using multiple strategies and caches the result."""
-        if Cache.cached_main_arena:
-            return Cache.cached_main_arena
-
         if is_arm64():
             # For some reason, native gdb (at least v10.1) on ARM64 has a bug where evaluating main_arena
             # destroys tcache symbols. See issues #95
@@ -3886,8 +3877,7 @@ class GlibcHeap:
 
         # plan 1 (directly)
         try:
-            Cache.cached_main_arena = AddressUtil.parse_address("(void*) &main_arena")
-            return Cache.cached_main_arena
+            return AddressUtil.parse_address("(void*) &main_arena")
         except gdb.error:
             pass
 
@@ -3896,24 +3886,22 @@ class GlibcHeap:
             try:
                 malloc_hook_addr = AddressUtil.parse_address("(void*) &__malloc_hook")
                 if is_x86():
-                    Cache.cached_main_arena = align(malloc_hook_addr + current_arch.ptrsize, 0x20)
+                    return align(malloc_hook_addr + current_arch.ptrsize, 0x20)
                 elif is_arm64():
                     mstate_size = GlibcHeap.MallocStateStruct(0).sizeof
-                    Cache.cached_main_arena = malloc_hook_addr - current_arch.ptrsize * 2 - mstate_size
+                    return malloc_hook_addr - current_arch.ptrsize * 2 - mstate_size
                 elif is_arm32():
                     mstate_size = GlibcHeap.MallocStateStruct(0).sizeof
-                    Cache.cached_main_arena = malloc_hook_addr - current_arch.ptrsize - mstate_size
+                    return malloc_hook_addr - current_arch.ptrsize - mstate_size
                 else:
                     raise
-                return Cache.cached_main_arena
             except gdb.error:
                 pass
 
         # plan 3 (from TLS)
         ptr = GlibcHeap.search_for_main_arena_from_tls()
         if ptr:
-            Cache.cached_main_arena = read_int_from_memory(ptr)
-            return Cache.cached_main_arena
+            return read_int_from_memory(ptr)
 
         raise OSError("Cannot find main_arena for {}".format(current_arch.arch))
 
@@ -5404,6 +5392,7 @@ class GlibcHeap:
 GH = GlibcHeap # noqa
 
 
+@Cache.cache_this_session
 def get_libc_version(verbose=False):
     """Detect and return the glibc version as a tuple, using cache, configuration,
     process maps, or system fallback."""
@@ -5412,7 +5401,7 @@ def get_libc_version(verbose=False):
     RE_GLIBC_VERSION = re.compile(rb"glibc (\d+)\.(\d+)")
 
     def get_libc_version_from_path():
-        Cache.reset_gef_caches(all=True) # get_process_maps may be caching old information
+        Cache.reset_gef_caches() # get_process_maps may be caching old information
 
         sections = ProcessMap.get_process_maps()
         for section in sections:
@@ -5469,18 +5458,11 @@ def get_libc_version(verbose=False):
                 return tuple(int(x) for x in r.groups())
         return None
 
-    # use cache
-    if Cache.cached_libc_version is not None:
-        if verbose:
-            info("Use cache")
-        return Cache.cached_libc_version
-
     # use manual settings
     libc_assume_version = eval(Config.get_gef_setting("libc.assume_version"))
     if libc_assume_version != ():
         if verbose:
             info("Use libc.assume_version")
-        Cache.cached_libc_version = libc_assume_version
         return libc_assume_version
 
     # resolve from maps information
@@ -5488,7 +5470,6 @@ def get_libc_version(verbose=False):
     if libc_version is not None:
         if verbose:
             info("Resolve from maps")
-        Cache.cached_libc_version = libc_version
         return libc_version
 
     # resolve from system libc
@@ -5497,7 +5478,6 @@ def get_libc_version(verbose=False):
         if libc_version is not None:
             if verbose:
                 info("Resolve from system libc")
-            Cache.cached_libc_version = libc_version
             return libc_version
 
     err("The libc version could not be determined.")
@@ -12324,7 +12304,7 @@ def disable_phys():
         return True
 
 
-@Cache.cache_until_next
+@Cache.cache_this_session
 def p8(x, s=False):
     """Pack one byte respecting the current architecture endianness."""
     if not s:
@@ -12333,7 +12313,7 @@ def p8(x, s=False):
         return struct.pack("{}b".format(Endian.endian_str()), x)
 
 
-@Cache.cache_until_next
+@Cache.cache_this_session
 def p16(x, s=False):
     """Pack one word respecting the current architecture endianness."""
     if not s:
@@ -12342,7 +12322,7 @@ def p16(x, s=False):
         return struct.pack("{}h".format(Endian.endian_str()), x)
 
 
-@Cache.cache_until_next
+@Cache.cache_this_session
 def p32(x, s=False):
     """Pack one dword respecting the current architecture endianness."""
     if not s:
@@ -12351,7 +12331,7 @@ def p32(x, s=False):
         return struct.pack("{}i".format(Endian.endian_str()), x)
 
 
-@Cache.cache_until_next
+@Cache.cache_this_session
 def p64(x, s=False):
     """Pack one qword respecting the current architecture endianness."""
     if not s:
@@ -12360,7 +12340,7 @@ def p64(x, s=False):
         return struct.pack("{}q".format(Endian.endian_str()), x)
 
 
-@Cache.cache_until_next
+@Cache.cache_this_session
 def u8(x, s=False):
     """Unpack one byte respecting the current architecture endianness."""
     if not s:
@@ -12369,7 +12349,7 @@ def u8(x, s=False):
         return struct.unpack("{}b".format(Endian.endian_str()), x)[0]
 
 
-@Cache.cache_until_next
+@Cache.cache_this_session
 def u16(x, s=False):
     """Unpack one word respecting the current architecture endianness."""
     if not s:
@@ -12378,7 +12358,7 @@ def u16(x, s=False):
         return struct.unpack("{}h".format(Endian.endian_str()), x)[0]
 
 
-@Cache.cache_until_next
+@Cache.cache_this_session
 def u32(x, s=False):
     """Unpack one dword respecting the current architecture endianness."""
     if not s:
@@ -12387,7 +12367,7 @@ def u32(x, s=False):
         return struct.unpack("{}i".format(Endian.endian_str()), x)[0]
 
 
-@Cache.cache_until_next
+@Cache.cache_this_session
 def u64(x, s=False):
     """Unpack one qword respecting the current architecture endianness."""
     if not s:
@@ -12396,7 +12376,7 @@ def u64(x, s=False):
         return struct.unpack("{}q".format(Endian.endian_str()), x)[0]
 
 
-@Cache.cache_until_next
+@Cache.cache_this_session
 def u128(x):
     """Unpack one oword respecting the current architecture endianness."""
     upper = struct.unpack("{}Q".format(Endian.endian_str()), x[8:])[0]
@@ -31721,21 +31701,14 @@ class ContextLegendCommand(GenericCommand):
         self.add_setting("redirect", "", "The target tty name to redirect `context legend` to")
         return
 
-    def context_legend(self, redirect):
-        # fast path (use cache)
-        if Cache.cached_context_legend is not None:
-            if Cache.cached_context_legend:
-                gef_print(Cache.cached_context_legend, redirect=redirect)
-            return
-
-        # slow path
+    @staticmethod
+    @Cache.cache_this_session
+    def get_context_legend():
         if is_qemu_system() or is_kgdb() or is_vmware():
-            Cache.cached_context_legend = False
-            return
+            return None
 
-        if Config.get_gef_setting("gef.disable_color") is True:
-            Cache.cached_context_legend = False
-            return
+        if Config.get_gef_setting("gef.disable_color"):
+            return None
 
         legend = "[ Legend: {:s} ]".format(
             " | ".join([
@@ -31750,9 +31723,12 @@ class ContextLegendCommand(GenericCommand):
                 Color.colorify("String", Config.get_gef_setting("theme.dereference_string")),
             ]),
         )
-        gef_print(legend, redirect=redirect)
+        return legend
 
-        Cache.cached_context_legend = legend
+    def context_legend(self, redirect):
+        legend = ContextLegendCommand.get_context_legend()
+        if legend:
+            gef_print(legend, redirect=redirect)
         return
 
     @parse_args
@@ -52057,23 +52033,24 @@ class HeapbaseCommand(GenericCommand):
         return None
 
     @staticmethod
+    @Cache.cache_this_session_skip_None_cache
     def heap_base(force_heuristic=False):
-        # use cache
-        if Cache.cached_heap_base and not force_heuristic:
-            return Cache.cached_heap_base
-
-        # use 4 ways
         heap_base = HeapbaseCommand.heap_base_from_symbol(force_heuristic)
-        if heap_base is None:
-            heap_base = HeapbaseCommand.heap_base_from_info_proc_map(force_heuristic)
-        if heap_base is None:
-            heap_base = HeapbaseCommand.heap_base_from_tcache()
-        if heap_base is None:
-            heap_base = HeapbaseCommand.heap_base_from_mp()
-
         if is_valid_addr(heap_base):
-            Cache.cached_heap_base = heap_base
             return heap_base
+
+        heap_base = HeapbaseCommand.heap_base_from_info_proc_map(force_heuristic)
+        if is_valid_addr(heap_base):
+            return heap_base
+
+        heap_base = HeapbaseCommand.heap_base_from_tcache()
+        if is_valid_addr(heap_base):
+            return heap_base
+
+        heap_base = HeapbaseCommand.heap_base_from_mp()
+        if is_valid_addr(heap_base):
+            return heap_base
+
         return None
 
     @parse_args
@@ -71015,12 +70992,9 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    def read_int_from_memory_cache(self, addr):
-        if addr in self.cache:
-            return self.cache[addr]
-        out = read_int_from_memory(addr)
-        self.cache[addr] = out
-        return out
+    @Cache.cache_until_next
+    def read_int_from_memory(self, addr):
+        return read_int_from_memory(addr)
 
     def get_permission(self, addr):
         for vaddr, size, perm in self.kinfo.maps:
@@ -71063,7 +71037,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
             if not is_valid_addr(cur):
                 continue
             # check result of previous recursive
-            v = self.read_int_from_memory_cache(cur)
+            v = self.read_int_from_memory(cur)
             if v in self.invalid_addrs[depth]:
                 continue
             # add to backtrack
@@ -71100,7 +71074,6 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
 
         self.invalid_addrs = {}
         self.out = []
-        self.cache = {}
         rw_data = read_memory(self.kinfo.rw_base, self.kinfo.rw_size)
         rw_data = slice_unpack(rw_data, current_arch.ptrsize)
 
