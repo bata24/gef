@@ -71002,7 +71002,7 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class KernelSearchCodePtrCommand(GenericCommand):
+class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
     """Search the code pointer in kernel data area."""
 
     _cmdline_ = "ksearch-code-ptr"
@@ -71110,8 +71110,7 @@ class KernelSearchCodePtrCommand(GenericCommand):
             backtrack_info = [(rw_addr, 0)]
             self.search(backtrack_info, rw_d, args.max_range, args.depth - 1)
 
-        if self.out:
-            gef_print("\n".join(self.out), less=not args.no_pager)
+        self.print_output(check_terminal_size=True)
         return
 
 
