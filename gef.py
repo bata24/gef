@@ -9763,7 +9763,7 @@ class ALPHA(Architecture):
         "$v0", "$t0", "$t1", "$t2", "$t3", "$t4", "$t5", "$t6",
         "$t7", "$s0", "$s1", "$s2", "$s3", "$s4", "$s5", "$fp",
         "$a0", "$a1", "$a2", "$a3", "$a4", "$a5", "$t8", "$t9",
-        "$t10", "$t11", "$ra", "$t12", "$at", "$gp", "$sp", "$pc",
+        "$t10", "$t11", "$ra", "$t12", "$at", "$gp", "$sp", "$zero", "$pc",
     ]
     alias_registers = {
         "$v0": "$r0", "$t0": "$r1", "$t1": "$r2", "$t2": "$r3",
@@ -9773,7 +9773,7 @@ class ALPHA(Architecture):
         "$a0": "$r16", "$a1": "$r17", "$a2": "$r18", "$a3": "$r19",
         "$a4": "$r20", "$a5": "$r21", "$t8": "$r22", "$t9": "$r23",
         "$t10": "$r24", "$t11": "$r25", "$ra": "$r26", "$t12": "$r27/$pv",
-        "$at": "$r28", "$gp": "$r29", "$sp": "$r30", "$pc": "$r31/$zero",
+        "$at": "$r28", "$gp": "$r29", "$sp": "$r30", "$zero": "$r31",
     }
     flag_register = None # alpha has no flags register
     return_register = "$v0"
