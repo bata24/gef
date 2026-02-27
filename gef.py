@@ -25723,6 +25723,16 @@ class RopperCommand(GenericCommand):
         gef_print(titlify(filepath))
         pid = os.fork()
         if pid == 0:
+            # Reorder GdbRemoveReadlineFinder in child processes so readline can be loaded.
+            finder = None
+            for x in list(sys.meta_path):
+                if type(x).__name__ == "GdbRemoveReadlineFinder":
+                    finder = x
+                    sys.meta_path.remove(x)
+                    break
+            if finder is not None:
+                sys.meta_path.append(finder)
+            # doit
             try:
                 ropper = sys.modules["ropper"]
                 ropper.start(argv)
