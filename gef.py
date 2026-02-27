@@ -5955,153 +5955,154 @@ class Symbol:
         return v
 
 
-def load_capstone(f):
-    """Decorator wrapper to load capstone."""
+class ModuleLoader:
+    def load_capstone(f):
+        """Decorator wrapper to load capstone."""
 
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        try:
-            capstone = __import__("capstone")
-            if capstone.cs_version()[0] == 6:
-                LOONGARCH64.capstone_support = True
-                ALPHA.capstone_support = True
-                HPPA.capstone_support = True
-                HPPA64.capstone_support = True
-            return f(*args, **kwargs)
-        except ImportError as err:
-            msg = "Missing `capstone` package for Python, try installing with `pip install capstone`"
-            raise ImportWarning(msg) from err
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            try:
+                capstone = __import__("capstone")
+                if capstone.cs_version()[0] == 6:
+                    LOONGARCH64.capstone_support = True
+                    ALPHA.capstone_support = True
+                    HPPA.capstone_support = True
+                    HPPA64.capstone_support = True
+                return f(*args, **kwargs)
+            except ImportError as err:
+                msg = "Missing `capstone` package for Python, try installing with `pip install capstone`"
+                raise ImportWarning(msg) from err
 
-    return wrapper
-
-
-def load_unicorn(f):
-    """Decorator wrapper to load unicorn."""
-
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        try:
-            __import__("unicorn")
-
-            if is_ppc32(): # unicorn does not support ppc64
-                try:
-                    __import__("unicorn.ppc_const")
-                except ImportError:
-                    pass
-
-            if is_riscv32() or is_riscv64():
-                try:
-                    __import__("unicorn.riscv_const")
-                except ImportError:
-                    pass
-
-            if is_s390x():
-                try:
-                    __import__("unicorn.s390x_const")
-                except ImportError:
-                    pass
-
-            return f(*args, **kwargs)
-        except ImportError as err:
-            msg = "Missing `unicorn` package for Python, try installing with `pip install unicorn`"
-            raise ImportWarning(msg) from err
-
-    return wrapper
+        return wrapper
 
 
-def load_keystone(f):
-    """Decorator wrapper to load keystone."""
+    def load_unicorn(f):
+        """Decorator wrapper to load unicorn."""
 
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        try:
-            __import__("keystone")
-            return f(*args, **kwargs)
-        except ImportError as err:
-            msg = "Missing `keystone-engine` package for Python, try installing with `pip install keystone-engine`"
-            raise ImportWarning(msg) from err
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            try:
+                __import__("unicorn")
 
-    return wrapper
+                if is_ppc32(): # unicorn does not support ppc64
+                    try:
+                        __import__("unicorn.ppc_const")
+                    except ImportError:
+                        pass
 
+                if is_riscv32() or is_riscv64():
+                    try:
+                        __import__("unicorn.riscv_const")
+                    except ImportError:
+                        pass
 
-def load_ropper(f):
-    """Decorator wrapper to load ropper."""
+                if is_s390x():
+                    try:
+                        __import__("unicorn.s390x_const")
+                    except ImportError:
+                        pass
 
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        try:
-            __import__("ropper")
-            return f(*args, **kwargs)
-        except ImportError as err:
-            msg = "Missing `ropper` package for Python, try installing with `pip install ropper`"
-            raise ImportWarning(msg) from err
+                return f(*args, **kwargs)
+            except ImportError as err:
+                msg = "Missing `unicorn` package for Python, try installing with `pip install unicorn`"
+                raise ImportWarning(msg) from err
 
-    return wrapper
-
-
-def load_binwalk(f):
-    """Decorator wrapper to load binwalk."""
-
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        try:
-            __import__("binwalk")
-            return f(*args, **kwargs)
-        except ImportError as err:
-            msg = "Missing `binwalk` package for Python, try installing with `apt install binwalk`"
-            raise ImportWarning(msg) from err
-
-    return wrapper
+        return wrapper
 
 
-def load_crccheck(f):
-    """Decorator wrapper to load crccheck."""
+    def load_keystone(f):
+        """Decorator wrapper to load keystone."""
 
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        try:
-            __import__("crccheck")
-            return f(*args, **kwargs)
-        except ImportError as err:
-            msg = "Missing `crccheck` package for Python, try installing with `pip install crccheck`"
-            raise ImportWarning(msg) from err
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            try:
+                __import__("keystone")
+                return f(*args, **kwargs)
+            except ImportError as err:
+                msg = "Missing `keystone-engine` package for Python, try installing with `pip install keystone-engine`"
+                raise ImportWarning(msg) from err
 
-    return wrapper
-
-
-def load_codext(f):
-    """Decorator wrapper to load codext."""
-
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        try:
-            __import__("codext")
-            return f(*args, **kwargs)
-        except ImportError as err:
-            msg = "Missing `codext` package for Python, try installing with `pip install codext`"
-            raise ImportWarning(msg) from err
-
-    return wrapper
+        return wrapper
 
 
-def load_angr(f):
-    """Decorator wrapper to load angr."""
+    def load_ropper(f):
+        """Decorator wrapper to load ropper."""
 
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        try:
-            # Angr seems to import readline internally, so tab completion breaks after loading.
-            # Therefore, disable readline temporarily.
-            readline = sys.modules.get("readline", None)
-            sys.modules["readline"] = None
-            __import__("angr")
-            sys.modules["readline"] = readline
-            return f(*args, **kwargs)
-        except ImportError as err:
-            msg = "Missing `angr` package for Python, try installing with `pip install angr`"
-            raise ImportWarning(msg) from err
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            try:
+                __import__("ropper")
+                return f(*args, **kwargs)
+            except ImportError as err:
+                msg = "Missing `ropper` package for Python, try installing with `pip install ropper`"
+                raise ImportWarning(msg) from err
 
-    return wrapper
+        return wrapper
+
+
+    def load_binwalk(f):
+        """Decorator wrapper to load binwalk."""
+
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            try:
+                __import__("binwalk")
+                return f(*args, **kwargs)
+            except ImportError as err:
+                msg = "Missing `binwalk` package for Python, try installing with `apt install binwalk`"
+                raise ImportWarning(msg) from err
+
+        return wrapper
+
+
+    def load_crccheck(f):
+        """Decorator wrapper to load crccheck."""
+
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            try:
+                __import__("crccheck")
+                return f(*args, **kwargs)
+            except ImportError as err:
+                msg = "Missing `crccheck` package for Python, try installing with `pip install crccheck`"
+                raise ImportWarning(msg) from err
+
+        return wrapper
+
+
+    def load_codext(f):
+        """Decorator wrapper to load codext."""
+
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            try:
+                __import__("codext")
+                return f(*args, **kwargs)
+            except ImportError as err:
+                msg = "Missing `codext` package for Python, try installing with `pip install codext`"
+                raise ImportWarning(msg) from err
+
+        return wrapper
+
+
+    def load_angr(f):
+        """Decorator wrapper to load angr."""
+
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            try:
+                # Angr seems to import readline internally, so tab completion breaks after loading.
+                # Therefore, disable readline temporarily.
+                readline = sys.modules.get("readline", None)
+                sys.modules["readline"] = None
+                __import__("angr")
+                sys.modules["readline"] = readline
+                return f(*args, **kwargs)
+            except ImportError as err:
+                msg = "Missing `angr` package for Python, try installing with `pip install angr`"
+                raise ImportWarning(msg) from err
+
+        return wrapper
 
 
 class Disasm:
@@ -6231,7 +6232,7 @@ class Disasm:
         return None
 
     @staticmethod
-    @load_capstone
+    @ModuleLoader.load_capstone
     def capstone_get_nth_previous_instruction_address(addr, n, cs=None):
         """Return the address (Integer) of the `n`-th instruction before `addr`."""
         if addr is None:
@@ -6269,7 +6270,7 @@ class Disasm:
         return None
 
     @staticmethod
-    @load_capstone
+    @ModuleLoader.load_capstone
     def capstone_disassemble(location, nb_insn, **kwargs):
         """Disassemble `nb_insn` instructions after `addr` and `nb_prev` before `addr`
         using the capstone disassembler. Return an iterator of Instruction objects.
@@ -14170,7 +14171,7 @@ class UnicornKeystoneCapstone:
         return arch, mode
 
     @staticmethod
-    @load_unicorn
+    @ModuleLoader.load_unicorn
     def get_unicorn_arch(arch=None, mode=None, endian=None, to_string=False):
         if (arch, mode, endian) == (None, None, None):
             arch = current_arch.arch
@@ -14205,7 +14206,7 @@ class UnicornKeystoneCapstone:
         )
 
     @staticmethod
-    @load_capstone
+    @ModuleLoader.load_capstone
     def get_capstone_arch(arch=None, mode=None, endian=None, to_string=False):
         if (arch, mode, endian) == (None, None, None):
             arch = current_arch.arch
@@ -14253,7 +14254,7 @@ class UnicornKeystoneCapstone:
         )
 
     @staticmethod
-    @load_keystone
+    @ModuleLoader.load_keystone
     def get_keystone_arch(arch=None, mode=None, endian=None, to_string=False):
         if (arch, mode, endian) == (None, None, None):
             arch = current_arch.arch
@@ -14285,7 +14286,7 @@ class UnicornKeystoneCapstone:
         )
 
     @staticmethod
-    @load_unicorn
+    @ModuleLoader.load_unicorn
     def get_unicorn_registers(to_string=False, add_sse=False):
         "Return a dict matching the Unicorn identifier for a specific register."
         unicorn = sys.modules["unicorn"]
@@ -14325,7 +14326,7 @@ class UnicornKeystoneCapstone:
         return regs
 
     @staticmethod
-    @load_keystone
+    @ModuleLoader.load_keystone
     def keystone_assemble(code, arch, mode, *args, **kwargs):
         """Assembly encoding function based on keystone."""
         import multiprocessing
@@ -21878,8 +21879,8 @@ class UnicornEmulateCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @load_capstone
-    @load_unicorn
+    @ModuleLoader.load_capstone
+    @ModuleLoader.load_unicorn
     @require_arch_set
     def do_invoke(self, args):
         if current_arch.unicorn_support is False:
@@ -22169,7 +22170,7 @@ class AngrCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @load_angr
+    @ModuleLoader.load_angr
     def do_invoke(self, args):
         if not args.find or not args.sym:
             self.usage()
@@ -22289,7 +22290,7 @@ class CapstoneDisassembleCommand(GenericCommand):
 
     @parse_args
     @only_if_gdb_running
-    @load_capstone
+    @ModuleLoader.load_capstone
     @require_arch_set
     def do_invoke(self, args):
         kwargs = {}
@@ -25693,7 +25694,7 @@ class RopperCommand(GenericCommand):
     # Need not @parse_args because argparse can't stop interpreting options for ropper.
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @load_ropper
+    @ModuleLoader.load_ropper
     @require_arch_set
     def do_invoke(self, argv):
         if "-h" in argv or "--help" in argv:
@@ -25921,7 +25922,7 @@ class AssembleCommand(GenericCommand):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     @parse_args
-    @load_keystone
+    @ModuleLoader.load_keystone
     def do_invoke(self, args):
         if (args.arch, args.mode) == (None, None):
             if is_alive() and current_arch:
@@ -26043,7 +26044,7 @@ class DisassembleCommand(GenericCommand):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     @parse_args
-    @load_capstone
+    @ModuleLoader.load_capstone
     def do_invoke(self, args):
         if (args.arch, args.mode) == (None, None):
             if is_alive() and current_arch:
@@ -26300,7 +26301,7 @@ class AsmListCommand(GenericCommand):
         return valid_patterns
 
     @parse_args
-    @load_capstone
+    @ModuleLoader.load_capstone
     @require_arch_set
     def do_invoke(self, args):
         if (args.arch, args.mode) == (None, None):
@@ -40919,6 +40920,7 @@ asmlinkage long sys_old_mmap(struct mmap_arg_struct __user *arg);
 asmlinkage long sys_ni_posix_timers(void);
 """
 
+
 # include/linux/compat.h
 syscall_defs_compat = """
 asmlinkage long compat_sys_io_setup(unsigned nr_reqs, u32 __user *ctx32p);
@@ -42747,6 +42749,7 @@ arm_compat_syscall_tbl = """
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
 """
+
 
 # ARM (native)
 # - arch/arm/tools/syscall.tbl
@@ -98063,7 +98066,7 @@ class CrcMemoryCommand(CrcCommand):
 
     @parse_args
     @only_if_gdb_running
-    @load_crccheck
+    @ModuleLoader.load_crccheck
     def do_invoke(self, args):
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
@@ -98107,7 +98110,7 @@ class CrcValueCommand(CrcCommand):
         return
 
     @parse_args
-    @load_crccheck
+    @ModuleLoader.load_crccheck
     def do_invoke(self, args):
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
@@ -98497,7 +98500,7 @@ class BaseNDecodeMemoryCommand(BaseNDecodeCommand):
 
     @parse_args
     @only_if_gdb_running
-    @load_codext
+    @ModuleLoader.load_codext
     def do_invoke(self, args):
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
@@ -98543,7 +98546,7 @@ class BaseNDecodeValueCommand(BaseNDecodeCommand):
         return
 
     @parse_args
-    @load_crccheck
+    @ModuleLoader.load_crccheck
     def do_invoke(self, args):
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
@@ -98637,7 +98640,7 @@ class BaseNEncodeMemoryCommand(BaseNEncodeCommand):
 
     @parse_args
     @only_if_gdb_running
-    @load_codext
+    @ModuleLoader.load_codext
     def do_invoke(self, args):
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
@@ -98686,7 +98689,7 @@ class BaseNEncodeValueCommand(BaseNEncodeCommand):
         return
 
     @parse_args
-    @load_crccheck
+    @ModuleLoader.load_crccheck
     def do_invoke(self, args):
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
@@ -132812,7 +132815,7 @@ class UefiOvmfInfoCommand(GenericCommand):
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
-    @load_crccheck
+    @ModuleLoader.load_crccheck
     def do_invoke(self, args):
         gef_print(titlify("SEC (Security) phase variables"))
         gef_print("Unimplemented")
@@ -134285,7 +134288,7 @@ class BinwalkMemoryCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @load_binwalk
+    @ModuleLoader.load_binwalk
     def do_invoke(self, args):
         self.memory_binwalk()
         return
@@ -135558,28 +135561,28 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
             if self.check_exclude_mode(decorators):
                 self.add_out(cmdline, False, "Unsupported gdb mode")
                 continue
-            if not self.check_load_package(decorators, "@load_capstone", "capstone"):
+            if not self.check_load_package(decorators, "@ModuleLoader.load_capstone", "capstone"):
                 self.add_out(cmdline, False, "capstone package is unavailable")
                 continue
-            if not self.check_load_package(decorators, "@load_unicorn", "unicorn"):
+            if not self.check_load_package(decorators, "@ModuleLoader.load_unicorn", "unicorn"):
                 self.add_out(cmdline, False, "unicorn package is unavailable")
                 continue
-            if not self.check_load_package(decorators, "@load_keystone", "keystone"):
+            if not self.check_load_package(decorators, "@ModuleLoader.load_keystone", "keystone"):
                 self.add_out(cmdline, False, "keystone-engine package is unavailable")
                 continue
-            if not self.check_load_package(decorators, "@load_ropper", "ropper"):
+            if not self.check_load_package(decorators, "@ModuleLoader.load_ropper", "ropper"):
                 self.add_out(cmdline, False, "ropper package is unavailable")
                 continue
-            if not self.check_load_package(decorators, "@load_binwalk", "binwalk"):
+            if not self.check_load_package(decorators, "@ModuleLoader.load_binwalk", "binwalk"):
                 self.add_out(cmdline, False, "binwalk package is unavailable")
                 continue
-            if not self.check_load_package(decorators, "@load_crccheck", "crccheck"):
+            if not self.check_load_package(decorators, "@ModuleLoader.load_crccheck", "crccheck"):
                 self.add_out(cmdline, False, "crccheck package is unavailable")
                 continue
-            if not self.check_load_package(decorators, "@load_codext", "codext"):
+            if not self.check_load_package(decorators, "@ModuleLoader.load_codext", "codext"):
                 self.add_out(cmdline, False, "codext package is unavailable")
                 continue
-            if not self.check_load_package(decorators, "@load_angr", "angr"):
+            if not self.check_load_package(decorators, "@ModuleLoader.load_angr", "angr"):
                 self.add_out(cmdline, False, "angr package is unavailable")
                 continue
             self.add_out(cmdline, True)
@@ -135840,7 +135843,7 @@ class GefVersionCommand(GenericCommand):
         return sys.version.replace("\n", " ")
 
     def capstone_version(self):
-        @load_capstone
+        @ModuleLoader.load_capstone
         def _capstone_version():
             capstone = sys.modules["capstone"]
             return ".".join(map(str, capstone.cs_version()))
@@ -135850,7 +135853,7 @@ class GefVersionCommand(GenericCommand):
             return "Not found"
 
     def keystone_version(self):
-        @load_keystone
+        @ModuleLoader.load_keystone
         def _keystone_version():
             keystone = sys.modules["keystone"]
             return ".".join(map(str, keystone.ks_version()))
@@ -135860,7 +135863,7 @@ class GefVersionCommand(GenericCommand):
             return "Not found"
 
     def unicorn_version(self):
-        @load_unicorn
+        @ModuleLoader.load_unicorn
         def _unicorn_version():
             unicorn = sys.modules["unicorn"]
             return unicorn.__version__
@@ -135870,7 +135873,7 @@ class GefVersionCommand(GenericCommand):
             return "Not found"
 
     def ropper_version(self):
-        @load_ropper
+        @ModuleLoader.load_ropper
         def _ropper_version():
             ropper = sys.modules["ropper"]
             return ".".join(map(str, ropper.VERSION))
@@ -135880,7 +135883,7 @@ class GefVersionCommand(GenericCommand):
             return "Not found"
 
     def angr_version(self):
-        @load_angr
+        @ModuleLoader.load_angr
         def _angr_version():
             angr = sys.modules["angr"]
             return angr.__version__
