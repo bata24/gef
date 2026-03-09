@@ -19143,7 +19143,7 @@ class SearchPatternCommand(GenericCommand):
         if args.limit and args.limit <= 0:
             err("Invalid limit value")
             return
-        if args.max_region_size < 0x1000:
+        if args.max_region_size and args.max_region_size < 0x1000:
             err("Invalid max-region-size")
             return
 
