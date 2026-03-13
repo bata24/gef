@@ -76141,264 +76141,6 @@ class Hash:
         def hexdigest(self):
             return self.md4.hexdigest()
 
-    class DES:
-        # DES tables (standard), all entries in hex
-        ip = [
-            0x3a, 0x32, 0x2a, 0x22, 0x1a, 0x12, 0x0a, 0x02,
-            0x3c, 0x34, 0x2c, 0x24, 0x1c, 0x14, 0x0c, 0x04,
-            0x3e, 0x36, 0x2e, 0x26, 0x1e, 0x16, 0x0e, 0x06,
-            0x40, 0x38, 0x30, 0x28, 0x20, 0x18, 0x10, 0x08,
-            0x39, 0x31, 0x29, 0x21, 0x19, 0x11, 0x09, 0x01,
-            0x3b, 0x33, 0x2b, 0x23, 0x1b, 0x13, 0x0b, 0x03,
-            0x3d, 0x35, 0x2d, 0x25, 0x1d, 0x15, 0x0d, 0x05,
-            0x3f, 0x37, 0x2f, 0x27, 0x1f, 0x17, 0x0f, 0x07
-        ]
-
-        fp = [
-            0x28, 0x08, 0x30, 0x10, 0x38, 0x18, 0x40, 0x20,
-            0x27, 0x07, 0x2f, 0x0f, 0x37, 0x17, 0x3f, 0x1f,
-            0x26, 0x06, 0x2e, 0x0e, 0x36, 0x16, 0x3e, 0x1e,
-            0x25, 0x05, 0x2d, 0x0d, 0x35, 0x15, 0x3d, 0x1d,
-            0x24, 0x04, 0x2c, 0x0c, 0x34, 0x14, 0x3c, 0x1c,
-            0x23, 0x03, 0x2b, 0x0b, 0x33, 0x13, 0x3b, 0x1b,
-            0x22, 0x02, 0x2a, 0x0a, 0x32, 0x12, 0x3a, 0x1a,
-            0x21, 0x01, 0x29, 0x09, 0x31, 0x11, 0x39, 0x19
-        ]
-
-        e = [
-            0x20, 0x01, 0x02, 0x03, 0x04, 0x05,
-            0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
-            0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11,
-            0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
-            0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
-            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
-            0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x01
-        ]
-
-        p = [
-            0x10, 0x07, 0x14, 0x15,
-            0x1d, 0x0c, 0x1c, 0x11,
-            0x01, 0x0f, 0x17, 0x1a,
-            0x05, 0x12, 0x1f, 0x0a,
-            0x02, 0x08, 0x18, 0x0e,
-            0x20, 0x1b, 0x03, 0x09,
-            0x13, 0x0d, 0x1e, 0x06,
-            0x16, 0x0b, 0x04, 0x19
-        ]
-
-        pc1 = [
-            0x39, 0x31, 0x29, 0x21, 0x19, 0x11, 0x09,
-            0x01, 0x3a, 0x32, 0x2a, 0x22, 0x1a, 0x12,
-            0x0a, 0x02, 0x3b, 0x33, 0x2b, 0x23, 0x1b,
-            0x13, 0x0b, 0x03, 0x3c, 0x34, 0x2c, 0x24,
-            0x3f, 0x37, 0x2f, 0x27, 0x1f, 0x17, 0x0f,
-            0x07, 0x3e, 0x36, 0x2e, 0x26, 0x1e, 0x16,
-            0x0e, 0x06, 0x3d, 0x35, 0x2d, 0x25, 0x1d,
-            0x15, 0x0d, 0x05, 0x1c, 0x14, 0x0c, 0x04
-        ]
-
-        pc2 = [
-            0x0e, 0x11, 0x0b, 0x18, 0x01, 0x05,
-            0x03, 0x1c, 0x0f, 0x06, 0x15, 0x0a,
-            0x17, 0x13, 0x0c, 0x04, 0x1a, 0x08,
-            0x10, 0x07, 0x1b, 0x14, 0x0d, 0x02,
-            0x29, 0x34, 0x1f, 0x25, 0x2f, 0x37,
-            0x1e, 0x28, 0x33, 0x2d, 0x21, 0x30,
-            0x2c, 0x31, 0x27, 0x38, 0x22, 0x35,
-            0x2e, 0x2a, 0x32, 0x24, 0x1d, 0x20
-        ]
-
-        shifts = [0x01, 0x01, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x01, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x01]
-
-        sboxes = [
-            # S1
-            [
-                [0x0e, 0x04, 0x0d, 0x01, 0x02, 0x0f, 0x0b, 0x08, 0x03, 0x0a, 0x06, 0x0c, 0x05, 0x09, 0x00, 0x07],
-                [0x00, 0x0f, 0x07, 0x04, 0x0e, 0x02, 0x0d, 0x01, 0x0a, 0x06, 0x0c, 0x0b, 0x09, 0x05, 0x03, 0x08],
-                [0x04, 0x01, 0x0e, 0x08, 0x0d, 0x06, 0x02, 0x0b, 0x0f, 0x0c, 0x09, 0x07, 0x03, 0x0a, 0x05, 0x00],
-                [0x0f, 0x0c, 0x08, 0x02, 0x04, 0x09, 0x01, 0x07, 0x05, 0x0b, 0x03, 0x0e, 0x0a, 0x00, 0x06, 0x0d],
-            ],
-            # S2
-            [
-                [0x0f, 0x01, 0x08, 0x0e, 0x06, 0x0b, 0x03, 0x04, 0x09, 0x07, 0x02, 0x0d, 0x0c, 0x00, 0x05, 0x0a],
-                [0x03, 0x0d, 0x04, 0x07, 0x0f, 0x02, 0x08, 0x0e, 0x0c, 0x00, 0x01, 0x0a, 0x06, 0x09, 0x0b, 0x05],
-                [0x00, 0x0e, 0x07, 0x0b, 0x0a, 0x04, 0x0d, 0x01, 0x05, 0x08, 0x0c, 0x06, 0x09, 0x03, 0x02, 0x0f],
-                [0x0d, 0x08, 0x0a, 0x01, 0x03, 0x0f, 0x04, 0x02, 0x0b, 0x06, 0x07, 0x0c, 0x00, 0x05, 0x0e, 0x09],
-            ],
-            # S3
-            [
-                [0x0a, 0x00, 0x09, 0x0e, 0x06, 0x03, 0x0f, 0x05, 0x01, 0x0d, 0x0c, 0x07, 0x0b, 0x04, 0x02, 0x08],
-                [0x0d, 0x07, 0x00, 0x09, 0x03, 0x04, 0x06, 0x0a, 0x02, 0x08, 0x05, 0x0e, 0x0c, 0x0b, 0x0f, 0x01],
-                [0x0d, 0x06, 0x04, 0x09, 0x08, 0x0f, 0x03, 0x00, 0x0b, 0x01, 0x02, 0x0c, 0x05, 0x0a, 0x0e, 0x07],
-                [0x01, 0x0a, 0x0d, 0x00, 0x06, 0x09, 0x08, 0x07, 0x04, 0x0f, 0x0e, 0x03, 0x0b, 0x05, 0x02, 0x0c],
-            ],
-            # S4
-            [
-                [0x07, 0x0d, 0x0e, 0x03, 0x00, 0x06, 0x09, 0x0a, 0x01, 0x02, 0x08, 0x05, 0x0b, 0x0c, 0x04, 0x0f],
-                [0x0d, 0x08, 0x0b, 0x05, 0x06, 0x0f, 0x00, 0x03, 0x04, 0x07, 0x02, 0x0c, 0x01, 0x0a, 0x0e, 0x09],
-                [0x0a, 0x06, 0x09, 0x00, 0x0c, 0x0b, 0x07, 0x0d, 0x0f, 0x01, 0x03, 0x0e, 0x05, 0x02, 0x08, 0x04],
-                [0x03, 0x0f, 0x00, 0x06, 0x0a, 0x01, 0x0d, 0x08, 0x09, 0x04, 0x05, 0x0b, 0x0c, 0x07, 0x02, 0x0e],
-            ],
-            # S5
-            [
-                [0x02, 0x0c, 0x04, 0x01, 0x07, 0x0a, 0x0b, 0x06, 0x08, 0x05, 0x03, 0x0f, 0x0d, 0x00, 0x0e, 0x09],
-                [0x0e, 0x0b, 0x02, 0x0c, 0x04, 0x07, 0x0d, 0x01, 0x05, 0x00, 0x0f, 0x0a, 0x03, 0x09, 0x08, 0x06],
-                [0x04, 0x02, 0x01, 0x0b, 0x0a, 0x0d, 0x07, 0x08, 0x0f, 0x09, 0x0c, 0x05, 0x06, 0x03, 0x00, 0x0e],
-                [0x0b, 0x08, 0x0c, 0x07, 0x01, 0x0e, 0x02, 0x0d, 0x06, 0x0f, 0x00, 0x09, 0x0a, 0x04, 0x05, 0x03],
-            ],
-            # S6
-            [
-                [0x0c, 0x01, 0x0a, 0x0f, 0x09, 0x02, 0x06, 0x08, 0x00, 0x0d, 0x03, 0x04, 0x0e, 0x07, 0x05, 0x0b],
-                [0x0a, 0x0f, 0x04, 0x02, 0x07, 0x0c, 0x09, 0x05, 0x06, 0x01, 0x0d, 0x0e, 0x00, 0x0b, 0x03, 0x08],
-                [0x09, 0x0e, 0x0f, 0x05, 0x02, 0x08, 0x0c, 0x03, 0x07, 0x00, 0x04, 0x0a, 0x01, 0x0d, 0x0b, 0x06],
-                [0x04, 0x03, 0x02, 0x0c, 0x09, 0x05, 0x0f, 0x0a, 0x0b, 0x0e, 0x01, 0x07, 0x06, 0x00, 0x08, 0x0d],
-            ],
-            # S7
-            [
-                [0x04, 0x0b, 0x02, 0x0e, 0x0f, 0x00, 0x08, 0x0d, 0x03, 0x0c, 0x09, 0x07, 0x05, 0x0a, 0x06, 0x01],
-                [0x0d, 0x00, 0x0b, 0x07, 0x04, 0x09, 0x01, 0x0a, 0x0e, 0x03, 0x05, 0x0c, 0x02, 0x0f, 0x08, 0x06],
-                [0x01, 0x04, 0x0b, 0x0d, 0x0c, 0x03, 0x07, 0x0e, 0x0a, 0x0f, 0x06, 0x08, 0x00, 0x05, 0x09, 0x02],
-                [0x06, 0x0b, 0x0d, 0x08, 0x01, 0x04, 0x0a, 0x07, 0x09, 0x05, 0x00, 0x0f, 0x0e, 0x02, 0x03, 0x0c],
-            ],
-            # S8
-            [
-                [0x0d, 0x02, 0x08, 0x04, 0x06, 0x0f, 0x0b, 0x01, 0x0a, 0x09, 0x03, 0x0e, 0x05, 0x00, 0x0c, 0x07],
-                [0x01, 0x0f, 0x0d, 0x08, 0x0a, 0x03, 0x07, 0x04, 0x0c, 0x05, 0x06, 0x0b, 0x00, 0x0e, 0x09, 0x02],
-                [0x07, 0x0b, 0x04, 0x01, 0x09, 0x0c, 0x0e, 0x02, 0x00, 0x06, 0x0a, 0x0d, 0x0f, 0x03, 0x05, 0x08],
-                [0x02, 0x01, 0x0e, 0x07, 0x04, 0x0a, 0x08, 0x0d, 0x0f, 0x0c, 0x09, 0x00, 0x03, 0x05, 0x06, 0x0b],
-            ],
-        ]
-
-        def permute(self, x, inbits, table):
-            out = 0
-            for p in table:
-                out = (out << 1) | ((x >> (inbits - p)) & 1)
-            return out
-
-        def rol(self, x, n, bits):
-            mask = (1 << bits) - 1
-            x &= mask
-            return ((x << n) | (x >> (bits - n))) & mask
-
-        def subkeys(self, key8):
-            if not isinstance(key8, (bytes, bytearray)) or len(key8) != 8:
-                raise ValueError("key8 must be 8 bytes")
-            k64 = int.from_bytes(bytes(key8), "big")
-            k56 = self.permute(k64, 64, self.pc1)
-            c = (k56 >> 28) & 0x0fff_ffff
-            d = k56 & 0x0fff_ffff
-
-            keys = []
-            for s in self.shifts:
-                c = self.rol(c, s, 28)
-                d = self.rol(d, s, 28)
-                cd = (c << 28) | d
-                keys.append(self.permute(cd, 56, self.pc2))
-            return keys
-
-        def feistel(self, r32, k48):
-            e48 = self.permute(r32, 32, self.e) ^ k48
-
-            out32 = 0
-            for i in range(8):
-                shift = (7 - i) * 6
-                chunk = (e48 >> shift) & 0x3f
-                row = ((chunk >> 5) << 1) | (chunk & 1)
-                col = (chunk >> 1) & 0x0f
-                s = self.sboxes[i][row][col]
-                out32 = (out32 << 4) | s
-
-            return self.permute(out32, 32, self.p) & 0xffff_ffff
-
-        def encrypt_block(self, key8, block8):
-            if not isinstance(block8, (bytes, bytearray)) or len(block8) != 8:
-                raise ValueError("block8 must be 8 bytes")
-
-            ks = self.subkeys(key8)
-            b = int.from_bytes(bytes(block8), "big")
-            b = self.permute(b, 64, self.ip)
-
-            l = (b >> 32) & 0xffff_ffff # noqa: E741
-            r = b & 0xffff_ffff
-
-            for i in range(16):
-                l, r = r, (l ^ self.feistel(r, ks[i])) & 0xffff_ffff # noqa: E741
-
-            preout = ((r & 0xffff_ffff) << 32) | (l & 0xffff_ffff)
-            out = self.permute(preout, 64, self.fp)
-            return out.to_bytes(8, "big")
-
-    class LM:
-        block_size = 1
-        digest_size = 16
-
-        def __init__(self, data=b""):
-            self.des = Hash.DES()
-            self.buf = b""
-            if data:
-                self.update(data)
-            return
-
-        def copy(self):
-            o = self.__class__()
-            o.buf = self.buf
-            return o
-
-        def set_odd_parity(self, b):
-            b &= 0xff
-            ones = 0
-            x = b & 0xfe
-            for i in range(7):
-                ones ^= (x >> i) & 1
-            return x | (0 if ones == 1 else 1)
-
-        def make_des_key_from_7bytes(self, key7):
-            if not isinstance(key7, (bytes, bytearray)) or len(key7) != 7:
-                raise ValueError("key7 must be 7 bytes")
-            k = bytes(key7)
-            key8 = bytearray(8)
-
-            key8[0] = k[0] & 0xfe
-            key8[1] = ((k[0] << 7) | (k[1] >> 1)) & 0xfe
-            key8[2] = ((k[1] << 6) | (k[2] >> 2)) & 0xfe
-            key8[3] = ((k[2] << 5) | (k[3] >> 3)) & 0xfe
-            key8[4] = ((k[3] << 4) | (k[4] >> 4)) & 0xfe
-            key8[5] = ((k[4] << 3) | (k[5] >> 5)) & 0xfe
-            key8[6] = ((k[5] << 2) | (k[6] >> 6)) & 0xfe
-            key8[7] = (k[6] << 1) & 0xfe
-
-            for i in range(8):
-                key8[i] = self.set_odd_parity(key8[i])
-
-            return bytes(key8)
-
-        def update(self, password):
-            if isinstance(password, str):
-                data = password.encode("ascii", "ignore")
-            elif isinstance(password, (bytes, bytearray)):
-                data = bytes(password)
-            else:
-                raise TypeError("password must be str or bytes-like")
-
-            self.buf += data
-            return self
-
-        def digest(self):
-            pw = self.buf.upper()
-            pw14 = (pw[:14] + b"\x00" * 14)[:14]
-            left7 = pw14[:7]
-            right7 = pw14[7:]
-            key1 = self.make_des_key_from_7bytes(left7)
-            key2 = self.make_des_key_from_7bytes(right7)
-            magic = b"KGS!@#$%"
-            out1 = self.des.encrypt_block(key1, magic)
-            out2 = self.des.encrypt_block(key2, magic)
-            return out1 + out2
-
-        def hexdigest(self):
-            return self.digest().hex()
-
     class MD6:
         def __init__(self, d=256, key=b"", L=64, r=None):
             if not (1 <= int(d) <= 512):
@@ -83065,20 +82807,20 @@ class Hash:
         output_words = 4
         final_rounds = 10
 
-    class GOST94:
+    class GOST:
         block_size = 32
         digest_size = 32
         sbox = None
 
         sbox = [
-            [0x0a, 0x04, 0x05, 0x06, 0x08, 0x01, 0x03, 0x07, 0x0d, 0x0c, 0x0e, 0x00, 0x09, 0x02, 0x0b, 0x0f],
-            [0x05, 0x0f, 0x04, 0x00, 0x02, 0x0d, 0x0b, 0x09, 0x01, 0x07, 0x06, 0x03, 0x0c, 0x0e, 0x0a, 0x08],
-            [0x07, 0x0f, 0x0c, 0x0e, 0x09, 0x04, 0x01, 0x00, 0x03, 0x0b, 0x05, 0x02, 0x06, 0x0a, 0x08, 0x0d],
-            [0x04, 0x0a, 0x07, 0x0c, 0x00, 0x0f, 0x02, 0x08, 0x0e, 0x01, 0x06, 0x05, 0x0d, 0x0b, 0x09, 0x03],
-            [0x07, 0x06, 0x04, 0x0b, 0x09, 0x0c, 0x02, 0x0a, 0x01, 0x08, 0x00, 0x0e, 0x0f, 0x0d, 0x03, 0x05],
-            [0x07, 0x06, 0x02, 0x04, 0x0d, 0x09, 0x0f, 0x00, 0x0a, 0x01, 0x05, 0x0b, 0x08, 0x0e, 0x0c, 0x03],
-            [0x0d, 0x0e, 0x04, 0x01, 0x07, 0x00, 0x05, 0x0a, 0x03, 0x0c, 0x08, 0x0f, 0x06, 0x02, 0x09, 0x0b],
-            [0x01, 0x03, 0x0a, 0x09, 0x05, 0x0b, 0x04, 0x0f, 0x08, 0x06, 0x07, 0x0e, 0x0d, 0x00, 0x02, 0x0c],
+            [0x04, 0x0a, 0x09, 0x02, 0x0d, 0x08, 0x00, 0x0e, 0x06, 0x0b, 0x01, 0x0c, 0x07, 0x0f, 0x05, 0x03],
+            [0x0e, 0x0b, 0x04, 0x0c, 0x06, 0x0d, 0x0f, 0x0a, 0x02, 0x03, 0x08, 0x01, 0x00, 0x07, 0x05, 0x09],
+            [0x05, 0x08, 0x01, 0x0d, 0x0a, 0x03, 0x04, 0x02, 0x0e, 0x0f, 0x0c, 0x07, 0x06, 0x00, 0x09, 0x0b],
+            [0x07, 0x0d, 0x0a, 0x01, 0x00, 0x08, 0x09, 0x0f, 0x0e, 0x04, 0x06, 0x0c, 0x0b, 0x02, 0x05, 0x03],
+            [0x06, 0x0c, 0x07, 0x01, 0x05, 0x0f, 0x0d, 0x08, 0x04, 0x0a, 0x09, 0x0e, 0x00, 0x03, 0x0b, 0x02],
+            [0x04, 0x0b, 0x0a, 0x00, 0x07, 0x02, 0x01, 0x0d, 0x03, 0x06, 0x08, 0x05, 0x09, 0x0c, 0x0f, 0x0e],
+            [0x0d, 0x0b, 0x04, 0x01, 0x03, 0x0f, 0x05, 0x09, 0x00, 0x0a, 0x0e, 0x07, 0x06, 0x08, 0x02, 0x0c],
+            [0x01, 0x0f, 0x0d, 0x00, 0x05, 0x07, 0x0a, 0x04, 0x09, 0x02, 0x03, 0x0e, 0x06, 0x0b, 0x08, 0x0c],
         ]
 
         def __init__(self, data=b""):
@@ -83656,6 +83398,18 @@ class Hash:
 
         def hexdigest(self):
             return self.digest().hex()
+
+    class GOST94cp(GOST):
+        sbox = [
+            [0x0a, 0x04, 0x05, 0x06, 0x08, 0x01, 0x03, 0x07, 0x0d, 0x0c, 0x0e, 0x00, 0x09, 0x02, 0x0b, 0x0f],
+            [0x05, 0x0f, 0x04, 0x00, 0x02, 0x0d, 0x0b, 0x09, 0x01, 0x07, 0x06, 0x03, 0x0c, 0x0e, 0x0a, 0x08],
+            [0x07, 0x0f, 0x0c, 0x0e, 0x09, 0x04, 0x01, 0x00, 0x03, 0x0b, 0x05, 0x02, 0x06, 0x0a, 0x08, 0x0d],
+            [0x04, 0x0a, 0x07, 0x0c, 0x00, 0x0f, 0x02, 0x08, 0x0e, 0x01, 0x06, 0x05, 0x0d, 0x0b, 0x09, 0x03],
+            [0x07, 0x06, 0x04, 0x0b, 0x09, 0x0c, 0x02, 0x0a, 0x01, 0x08, 0x00, 0x0e, 0x0f, 0x0d, 0x03, 0x05],
+            [0x07, 0x06, 0x02, 0x04, 0x0d, 0x09, 0x0f, 0x00, 0x0a, 0x01, 0x05, 0x0b, 0x08, 0x0e, 0x0c, 0x03],
+            [0x0d, 0x0e, 0x04, 0x01, 0x07, 0x00, 0x05, 0x0a, 0x03, 0x0c, 0x08, 0x0f, 0x06, 0x02, 0x09, 0x0b],
+            [0x01, 0x03, 0x0a, 0x09, 0x05, 0x0b, 0x04, 0x0f, 0x08, 0x06, 0x07, 0x0e, 0x0d, 0x00, 0x02, 0x0c],
+        ]
 
     class Mt19937_64:
         mask64 = 0xffff_ffff_ffff_ffff
@@ -85126,18 +84880,6 @@ class Hash:
         output_words = 8
         digest_size = 32
 
-    class GOST94cp(GOST94):
-        sbox = [
-            [0x04, 0x0a, 0x09, 0x02, 0x0d, 0x08, 0x00, 0x0e, 0x06, 0x0b, 0x01, 0x0c, 0x07, 0x0f, 0x05, 0x03],
-            [0x0e, 0x0b, 0x04, 0x0c, 0x06, 0x0d, 0x0f, 0x0a, 0x02, 0x03, 0x08, 0x01, 0x00, 0x07, 0x05, 0x09],
-            [0x05, 0x08, 0x01, 0x0d, 0x0a, 0x03, 0x04, 0x02, 0x0e, 0x0f, 0x0c, 0x07, 0x06, 0x00, 0x09, 0x0b],
-            [0x07, 0x0d, 0x0a, 0x01, 0x00, 0x08, 0x09, 0x0f, 0x0e, 0x04, 0x06, 0x0c, 0x0b, 0x02, 0x05, 0x03],
-            [0x06, 0x0c, 0x07, 0x01, 0x05, 0x0f, 0x0d, 0x08, 0x04, 0x0a, 0x09, 0x0e, 0x00, 0x03, 0x0b, 0x02],
-            [0x04, 0x0b, 0x0a, 0x00, 0x07, 0x02, 0x01, 0x0d, 0x03, 0x06, 0x08, 0x05, 0x09, 0x0c, 0x0f, 0x0e],
-            [0x0d, 0x0b, 0x04, 0x01, 0x03, 0x0f, 0x05, 0x09, 0x00, 0x0a, 0x0e, 0x07, 0x06, 0x08, 0x02, 0x0c],
-            [0x01, 0x0f, 0x0d, 0x00, 0x05, 0x07, 0x0a, 0x04, 0x09, 0x02, 0x03, 0x0e, 0x06, 0x0b, 0x08, 0x0c],
-        ]
-
     class StreebogBase:
         block_size = 64
 
@@ -85334,16 +85076,16 @@ class Hash:
             M = msg
 
             while size >= 64:
-                m = M[size - 64:size]
+                m = M[:64][::-1]
                 h = self.g(h, m, N)
                 N = self.sum512(N, self.tohex512(512))
                 sigma = self.sum512(sigma, m)
+                M = M[64:]
                 size -= 64
 
-            # last block padding
             m = bytearray(64)
             m[64 - size - 1] = 1
-            m[64 - size:] = M[:size]
+            m[64 - size:] = M[::-1]
             m = bytes(m)
 
             h = self.g(h, m, N)
@@ -85692,7 +85434,7 @@ class Hash:
         def hexdigest(self):
             return self.digest().hex()
 
-    class DJB2Base:
+    class DJB2Hash:
         digest_size = 4
 
         def __init__(self, data=b""):
@@ -85701,13 +85443,6 @@ class Hash:
                 self.update(data)
             return
 
-        def digest(self):
-            return self.hash.to_bytes(4, "big")
-
-        def hexdigest(self):
-            return self.digest().hex()
-
-    class DJB2_add(DJB2Base):
         def update(self, data):
             if not isinstance(data, (bytes, bytearray)):
                 raise TypeError("data must be bytes-like")
@@ -85715,13 +85450,11 @@ class Hash:
                 self.hash = (((self.hash << 5) + self.hash) + c) & 0xffff_ffff
             return self
 
-    class DJB2_xor(DJB2Base):
-        def update(self, data):
-            if not isinstance(data, (bytes, bytearray)):
-                raise TypeError("data must be bytes-like")
-            for c in bytes(data):
-                self.hash = (((self.hash << 5) + self.hash) ^ c) & 0xffff_ffff
-            return self
+        def digest(self):
+            return self.hash.to_bytes(4, "big")
+
+        def hexdigest(self):
+            return self.digest().hex()
 
     class DEKHash:
         digest_size = 4
@@ -86165,14 +85898,6 @@ class Hash:
         def digest_bytes(self, data):
             v = self.t1ha0_32le(data, self.seed) & self.mask32
             return struct.pack(">I", v)
-
-    class T1HA0_64(T1HABase):
-        block_size = 32
-        digest_size = 8
-
-        def digest_bytes(self, data):
-            v = self.t1ha2_atonce(data, self.seed)
-            return struct.pack(">Q", v)
 
     class T1HA1_64(T1HABase):
         block_size = 32
@@ -92780,7 +92505,7 @@ class Hash:
 
             state[0:16] = msg[0:16]
             rem = msg[16:]
-            c0 = 0x02 if (len(rem) % 4) == 0 else 0x01
+            c0 = 0x01 if (len(rem) % 4) == 0 else 0x02
             self.absorb4(state, rem, c0)
             out = self.gen_tag(state)
             return out
@@ -92946,8 +92671,12 @@ class Hash:
         digest_size = 0x80
 
         def __init__(self, data=b""):
-            # Fixed 1024-bit composite modulus (deterministic composite)
-            self.n = ((0x1 << 0x209) - 0x1) * ((0x1 << 0x1f7) - 0x1)
+            self.n = int(
+                "1350664108659952233496032162788059699388814756056670275244851438515"
+                "265106048595338339402871505719094417982072821644715513736804197039641917430464965"
+                "892742562393410208643832021103729587257623585096431105640735015081875106765946292"
+                "05563685529475213500852879416377328533906109750544334999811150056977236890927563"
+            )
 
             self.primes = []
             self.k = 0
@@ -96235,7 +95964,7 @@ class HashCommand(GenericCommand):
         yield ("FNV0a-512", Hash.FNV_512(variant="fnv0a"))
         yield ("FNV0a-1024", Hash.FNV_1024(variant="fnv0a"))
         yield ("FORK256", Hash.FORK256())
-        yield ("GOST94", Hash.GOST94())
+        yield ("GOST", Hash.GOST())
         yield ("GOST94cp", Hash.GOST94cp())
         yield ("HAS-160", Hash.HAS160())
         yield ("HAVAL128,3", Hash.HAVAL(digest_bits=128, passes=3))
@@ -96268,7 +95997,6 @@ class HashCommand(GenericCommand):
         yield ("Kupyna256", Hash.Kupyna256())
         yield ("Kupyna384", Hash.Kupyna384())
         yield ("Kupyna512", Hash.Kupyna512())
-        yield ("LM hash", Hash.LM())
         yield ("LSH256-224", Hash.LSH256_224())
         yield ("LSH256-256", Hash.LSH256_256())
         yield ("LSH512-224", Hash.LSH512_224())
@@ -96368,7 +96096,6 @@ class HashCommand(GenericCommand):
         yield ("SpookyHash64", Hash.SpookyHash64())
         yield ("SpookyHash128", Hash.SpookyHash128())
         yield ("T1HA0_32", Hash.T1HA0_32())
-        yield ("T1HA0_64", Hash.T1HA0_64())
         yield ("T1HA1_64", Hash.T1HA1_64())
         yield ("T1HA2_64", Hash.T1HA2_64())
         yield ("T1HA2_128", Hash.T1HA2_128())
@@ -96387,8 +96114,7 @@ class HashCommand(GenericCommand):
         yield ("ELF Hash", Hash.ELFHash())
         yield ("BKDR Hash", Hash.BKDRHash())
         yield ("SDBM Hash", Hash.SDBMHash())
-        yield ("DJB2 (add)", Hash.DJB2_add())
-        yield ("DJB2 (xor)", Hash.DJB2_xor())
+        yield ("DJB2", Hash.DJB2Hash())
         yield ("DEK Hash", Hash.DEKHash())
         yield ("AP Hash", Hash.APHash())
         yield ("JOAAT", Hash.JOAAT())
@@ -96705,158 +96431,201 @@ class HashTestCommand(HashCommand, BufferingOutput):
         super().__init__(prefix=False, complete=gdb.COMPLETE_NONE)
         return
 
-    test_vector_AAAA = {
+    # "The quick brown fox jumps over the lazy dog"
+    test_vectors = {
         # -------------------- hashlib --------------------
         # hashlib
-        "MD5": "098890dde069e9abad63f19a0d9e1f32",
-        "SHA1": "e2512172abf8cc9f67fdd49eb6cacf2df71bbad3",
-        "MD5-SHA1": "098890dde069e9abad63f19a0d9e1f32e2512172abf8cc9f67fdd49eb6cacf2d" \
-                    "f71bbad3",
-        "SHA224": "5cdde10ca4df3e7e6e0e428f683e1c6ca0bfb917555ad94727a3f344",
-        "SHA256": "63c1dd951ffedf6f7fd968ad4efa39b8ed584f162f46e715114ee184f8de9201",
-        "SHA384": "d8bf1572ab3b9bc239325d2a657ad37cb8fa6cb32c2d83cddee33be1238eb7a4" \
-                    "0b33d1bc796b426b6c68c22e4769dea2",
-        "SHA512": "53b74be8b295b733fdfafbd7d2a22b1686733740de7fdc592b26cf3e1874cfce" \
-                    "158170ce9230e24696331a61829244e5d9f48abdacc9ffa8c4cb498724844cf8",
-        "SHA512/224": "42707cc06636e3a479f5bc19bbc3c31249805072993efb715e16f273",
-        "SHA512/256": "d01e3d10611ee4b5b1e570be2e8e9d76988781c40e1a3ecc930d5298fb541e27",
-        "SHA3-224": "5accd6cfeec028803453ddd46aed0f9281336fc2215484d0f9110336",
-        "SHA3-256": "5ba7fe44cc7b13be0a25d2caccd80443c79835c38aa6945c714ab689d2f10c13",
-        "SHA3-384": "78f27d6e5727ff2ce7bfba5d7aeed27def619abb73e779771130ad0851d748db" \
-                    "6327456280c3b5cfacad0d8ad84e108c",
-        "SHA3-512": "990fb60e8dbd852804795c671db3a97b8b37685976026672d8164b05be0e9a55" \
-                    "5ed0a9e30668abcfaed0a34d3610dbbbb9ac615a92545b4654f13a39cb7f07ba",
-        "BLAKE2s": "ad0b5f0ea7abe50530487c4d1f0de59699955eca58fa60372863927620bba191",
-        "BLAKE2b": "5448fb61bfeba39eb14a49f72310ab14653b230655b0adccadcb31148602317a" \
-                   "f3bcef80f09f0945f06607465a0e467ab8cf257a3088d25065aded9fc0963271",
-        "SM3": "2afccdaa7f803b0bc90b1b7f2ac18c03f0297b989d573e1514267dc73909e4e4",
-        "SHAKE128-128": "547260c6330814b54770daad5b39c15a",
-        "SHAKE128-256": "547260c6330814b54770daad5b39c15ad159de955afc13622d9fa7b7d1899536",
-        "SHAKE128-512": "547260c6330814b54770daad5b39c15ad159de955afc13622d9fa7b7d1899536" \
-                         "74bb09f145b5979df9b9a05d214f9ae625e22bb9f72f319fae6d9877ee606335",
-        "SHAKE256-128": "ded2952bb56c24ea5c198e9f6a641a70",
-        "SHAKE256-256": "ded2952bb56c24ea5c198e9f6a641a70c4306ba75123e15c4f5e445013133d82",
-        "SHAKE256-512": "ded2952bb56c24ea5c198e9f6a641a70c4306ba75123e15c4f5e445013133d82" \
-                         "4ca42c15720c7a8e9e8e0d2cce0ace4c82e80a579cfba4575cd59170fb3fd97c",
+        "MD5":
+            "9e107d9d372bb6826bd81d3542a419d6",
+        "SHA1":
+            "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12",
+        "MD5-SHA1":
+            "9e107d9d372bb6826bd81d3542a419d62fd4e1c67a2d28fced849ee1bb76e7391b93eb12", \
+        "SHA224":
+            "730e109bd7a8a32b1cb9d9a09aa2325d2430587ddbc0c38bad911525",
+        "SHA256":
+            "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592",
+        "SHA384":
+            "ca737f1014a48f4c0b6dd43cb177b0afd9e5169367544c494011e3317dbf9a509cb1e5dc1e85a941bbee3d7f2afbc9b1",
+        "SHA512":
+            "07e547d9586f6a73f73fbac0435ed76951218fb7d0c8d788a309d785436bbb642e93a252a954f23912547d1e8a3b5ed6e1bfd7097821233fa0538f3db854fee6",
+        "SHA512/224":
+            "944cd2847fb54558d4775db0485a50003111c8e5daa63fe722c6aa37",
+        "SHA512/256":
+            "dd9d67b371519c339ed8dbd25af90e976a1eeefd4ad3d889005e532fc5bef04d",
+        "SHA3-224":
+            "d15dadceaa4d5d7bb3b48f446421d542e08ad8887305e28d58335795",
+        "SHA3-256":
+            "69070dda01975c8c120c3aada1b282394e7f032fa9cf32f4cb2259a0897dfc04",
+        "SHA3-384":
+            "7063465e08a93bce31cd89d2e3ca8f602498696e253592ed26f07bf7e703cf328581e1471a7ba7ab119b1a9ebdf8be41",
+        "SHA3-512":
+            "01dedd5de4ef14642445ba5f5b97c15e47b9ad931326e4b0727cd94cefc44fff23f07bf543139939b49128caf436dc1bdee54fcb24023a08d9403f9b4bf0d450",
+        "BLAKE2s":
+            "606beeec743ccbeff6cbcdf5d5302aa855c256c29b88c8ed331ea1a6bf3c8812",
+        "BLAKE2b":
+            "a8add4bdddfd93e4877d2746e62817b116364a1fa7bc148d95090bc7333b3673f82401cf7aa2e4cb1ecd90296e3f14cb5413f8ed77be73045b13914cdcd6a918",
+        "SM3":
+            "5fdfe814b8573ca021983970fc79b2218c9570369b4859684e2e4c3fc76cb8ea",
+        "SHAKE128-128":
+            "f4202e3c5852f9182a0430fd8144f0a7",
+        "SHAKE128-256":
+            "f4202e3c5852f9182a0430fd8144f0a74b95e7417ecae17db0f8cfeed0e3e66e",
+        "SHAKE128-512":
+            "f4202e3c5852f9182a0430fd8144f0a74b95e7417ecae17db0f8cfeed0e3e66eb5585ec6f86021cacf272c798bcf97d368b886b18fec3a571f096086a523717a",
+        "SHAKE256-128":
+            "2f671343d9b2e1604dc9dcf0753e5fe1",
+        "SHAKE256-256":
+            "2f671343d9b2e1604dc9dcf0753e5fe15c7c64a0d283cbbf722d411a0e36f6ca",
+        "SHAKE256-512":
+            "2f671343d9b2e1604dc9dcf0753e5fe15c7c64a0d283cbbf722d411a0e36f6ca1d01d1369a23539cd80f7c054b6e5daf9c962cad5b8ed5bd11998b40d5734442",
         # -------------------- SHA3 Round3 candidates --------------------
         # https://crashdemons.github.io/BLAKE-wasm/
-        "BLAKE-224": "29a7331e595c8d88a40dae3ccebb1830a7462f7c8ca472dd0e0a39ec",
-        "BLAKE-256": "0dd4375066df0e5a2c95fbe58ec0ca260d7c84a1f5054ac8f1636611dcaefd52",
-        "BLAKE-384": "40c7a002d92c7722d21359fd49985be493e584353df3cda76b51ea7d8d0d10f7" \
-                     "305b6f0c5ac6dec3f276fadc6e7ee863",
-        "BLAKE-512": "3c4ce424bb86c770d5ecde021dcffcc17a18a6ee10bef69ac4e33d7f342ce867" \
-                     "d2f59873e3ac804f8610039b2d8ad3cdaaf1b3fc802e1de4bfbd2f3ae080f250",
+        "BLAKE-224":
+            "c8e92d7088ef87c1530aee2ad44dc720cc10589cc2ec58f95a15e51b",
+        "BLAKE-256":
+            "7576698ee9cad30173080678e5965916adbb11cb5245d386bf1ffda1cb26c9d7",
+        "BLAKE-384":
+            "67c9e8ef665d11b5b57a1d99c96adffb3034d8768c0827d1c6e60b54871e8673651767a2c6c43d0ba2a9bb2500227406",
+        "BLAKE-512":
+            "1f7e26f63b6ad25a0896fd978fd050a1766391d2fd0471a77afb975e5034b7ad2d9ccf8dfb47abbbe656e1b82fbc634ba42ce186e8dc5e1ce09a885d41f43451",
         # https://hashing.tools/groestl
-        "Groestl224": "dc4231694f7608af592137743b6a8933c733cf529066dbe99bfb8444",
-        "Groestl256": "2dd64197803cffb2dd2e880b4f8d165ddce58ec36bcb34c7128c8558efc4f613",
-        "Groestl384": "b9004dfa83ecef64b89a875c0bda9eafbd89f9a3bbadcc45c4c0d7113de0960a" \
-                      "909e78546e48e1bb2ccaa0019cb7cd9a",
-        "Groestl512": "5a4386660ad4dfcd4eddaf7cf95d9509de55d6de091501b89554ed582492252f" \
-                      "737e753c2bb2f8547a0b87c6ff8a33e2d5a533d796084092df68da74db395bb5",
+        "Groestl224":
+            "8ce3ce0f7092cada755be8f614fd6d5e5738ff1f6cd5dabe42404c46",
+        "Groestl256":
+            "8c7ad62eb26a21297bc39c2d7293b4bd4d3399fa8afab29e970471739e28b301",
+        "Groestl384":
+            "9330aeb62a1fc0a464dd70ac27b57075e00ae5d627f9bd6ff72952b3857aba2cfbcc4345af9a04fcc13eb346829e4088",
+        "Groestl512":
+            "badc1f70ccd69e0cf3760c3f93884289da84ec13c70b3d12a53a7a8a4a513f99715d46288f55e1dbf926e6d084a0538e4eebfc91cf2b21452921ccde9131718d",
         # https://hashing.tools/jh
-        "JH224": "5b1b04276a075566c83100d46bc2dc11e3f966eda7661a5e0cbb7f35",
-        "JH256": "930d87810e8776aa366eba101b6e1fc7cc5d80e84d420c25796cf5d1bbe6d58a",
-        "JH384": "5928217793ba5db4df18bd992018027849d640d7d2c24aaac559c45a20a30128" \
-                 "13ee8fb94976c89a7eb0d6663887a27c",
-        "JH512": "98c8d6a1101a2d6eaa8eed9861ae789cf5b9555aaf399eac0971ad531545377f" \
-                 "19dface152f53768e476b1a3e5ca9bc102c1bbe9400c861561d18641feb8e9f1",
-        # pycryptodome
-        "Keccak224": "6481454863fcf20ef04ec24dd2e70094aa62fa3be3038336d3fa5a76",
-        "Keccak256": "e6b6ca9b98ea0c1b64bee9382438c8c99f35bc4d680bcca9f2db31a577915fe4",
-        "Keccak384": "f1e59400c4f5e9db9bbc7246a2debcbcac52814d5440e050837f2cf8c844b210" \
-                      "1e4a0fe41a6ce30161235a3854a39573",
-        "Keccak512": "271675245024e6db7c455a67cef6df927bb0cc50344976ca8741d5a81e812301" \
-                      "296f84dbd23b0639c4ecf318da8c284a00e7208cc73ff6de2b4252c4ce828787",
+        "JH224":
+            "bb21255e4a6bcbd3ddbf8694df2e7f41b74a69c1a7e1c2d36a3fd405",
+        "JH256":
+            "6a049fed5fc6874acfdc4a08b568a4f8cbac27de933496f031015b38961608a0",
+        "JH384":
+            "de44fe5f835f5518c603aec9d67363466d9f3a5b54d4cfbd4083b055f95a21a2562abaa59b830b3bc4e023d0b52a1268",
+        "JH512":
+            "043f14e7c0775e7b1ef5ad657b1e858250b21e2e61fd699783f8634cb86f3ff938451cabd0c8cdae91d4f659d3f9f6f654f1bfedca117ffba735c15fedda47a3",
+        # https://hashing.tools/keccak
+        "Keccak224":
+            "310aee6b30c47350576ac2873fa89fd190cdc488442f3ef654cf23fe",
+        "Keccak256":
+            "4d741b6f1eb29cb2a9b9911c82f56fa8d73b04959d3d9d222895df6c0b28aa15",
+        "Keccak384":
+            "283990fa9d5fb731d786c5bbee94ea4db4910f18c62c03d173fc0a5e494422e8a0b3da7574dae7fa0baf005e504063b3",
+        "Keccak512":
+            "d135bb84d0439dbac432247ee573a23ea7d3c9deb2a968eb31d47c4fb45f1ef4422d6c531b5b9bd6f449ebcc449ea94d0a8f05f62130fda612da53c79659f609",
         # https://hashing.tools/skein
-        "Skein256-256": "29a9cb5d286ff2998e2f691d63284f60401e34a8a37c263fac8d5cf8296c8710",
-        "Skein256-512": "c5a08ec5b4bb342c5f14efc6fed95207420ef5430dceccdeeeadb0385237b2f0" \
-                        "ee9bf3403065d9d8716608d02830577b2dcab22600b2d9ff9cae425da4a642dc",
-        "Skein256-1024": "b7fb2417f29df9d87ac014bb37c14fcabd521f9a49d52c62ae0f36f5699da929" \
-                         "52694e5dbdaad94e3574965a24770f62d7201b6ee7e16c8f339d8178e1bc39b2" \
-                         "50721cffc4acc0d899cf4410330dc070ebac99f3487a8be1e9be8428e32c2520" \
-                         "901600ddfe3050ba059d1c78e4958ea278e120eaed6ccb3af64fe4b7d29e304a",
-        "Skein512-256": "6ed494c55f491955e0044d412046d2604f6c3a955957484d885b8766a8313552",
-        "Skein512-512": "53f24d27f31e80c5866daf67d347fc1c5124955b3abd5eed04ed0b40a4ec7095" \
-                        "a0b7078f1f128f433c80e6f5b1e99e82fba51190e0ba7b35f5975d9bc7972029",
-        "Skein512-1024": "30423ae9ddff2db5e76cb029f26b574d06701047a5f12d6442a8c745302c3d54" \
-                         "9324297dc697533b58c0d6b23557a72dd7099213739431fd785c12524ca63d70" \
-                         "4d3ec1517fd765143fb18b5d44aafe0498fd032328c4669325090c1f10537985" \
-                         "f49f7602df05fa760a9b6959468b1b5887a3d268a58fb05e678b39fb5de09ab8",
-        "Skein1024-256": "9512fc73fd35e84ee97fa22b4e6aa55228f1b1caf6f51a2868fc693a5f623d57",
-        "Skein1024-512": "9983ceda6fa87f3f03f322c24e4da4612c1857b98b99810eb4383b71974c1327" \
-                         "5de652009a9d4b50eb5830ee990f48257e2ec2110bf3727acb712929a17e358d",
-        "Skein1024-1024": "44b1a34b55cd4ca8b3e259fc7b02af20aedbc348818eb3f6d00ae98bcade259f" \
-                          "5e0d6460bac703a8523aa5e5d473f8f8405eeb65ec4f1a8674ec516cd98ecf0c" \
-                          "1b036309f8b8890a6d180badb9168eea94c542de001f55970bb005895724c2ac" \
-                          "54a810545b3e34e14cd546c0dcb6e51b93b056defa935e155b9e26c76f3a04ab",
+        "Skein256-256":
+            "c0fbd7d779b20f0a4614a66697f9e41859eaf382f14bf857e8cdb210adb9b3fe",
+        "Skein256-512":
+            "f8138e72cdd9e11cf09e4be198c234acb0d21a9f75f936e989cf532f1fa9f4fb21d255811f0f1592fb3617d04704add875ae7bd16ddbbeaed4eca6eb9675d2c6",
+        "Skein256-1024":
+            "20151f29d6e0c8bae62710bf8bd0ae97c9d8b20c0df932874bba412bb89b4420d910680ef9021e3fe8f7473ddce3cc01ec55b0d9c419c807339786e328b081c6" \
+            "0bbdeb57dc4f568e457a997c6cb91667d21c7183ddb9b6d6e7e733fa759cc9d86e4ebd273d0f105d3961f928c00b65ab43e62b33af851c42e3894917302801f1",
+        "Skein512-256":
+            "b3250457e05d3060b1a4bbc1428bc75a3f525ca389aeab96cfa34638d96e492a",
+        "Skein512-512":
+            "94c2ae036dba8783d0b3f7d6cc111ff810702f5c77707999be7e1c9486ff238a7044de734293147359b4ac7e1d09cd247c351d69826b78dcddd951f0ef912713",
+        "Skein512-1024":
+            "9a8faf76b15cb3335bbc1c2ef953d48916511eb3e07294d1d43087c47e78d753885623794963e66233cf3938912f6bad1d5b3c34dd1a2123be2afbd6bd45aed8" \
+            "12b44b4ea78cb7f7fd76e0b3daea51009c8ce44dea427bbae1c2e7200eab150bd88dd85e72980c98108c13671cbc1a66e866a0cdde8dc1ddfe58ba6140e8924f",
+        "Skein1024-256":
+            "054922d4393e36af62143986221555bee407671f6e57631bd7273e215a714833",
+        "Skein1024-512":
+            "a40ba71fa36a8c1d152bfc68b79782ef206d2e74b9a072b11aa874e6ec2148d937e9acd4ca1026ad636fed1a88b740112d782e2ca0e6c3bbe0dd2704a60a10a5",
+        "Skein1024-1024":
+            "4cf6152f1a7e598098d28f04e13d7742ba39b7fadbbcf2167bda4e1615d551f3f6b4edbbb391ffa09e6cc0a4af1eb366b30b5f107b437e2ea5cb586afb0341bd" \
+            "97dabe7cc46e7be3a054aa605395e43b243654c01ffc14c8b5443488f35d80b504a612f3d29d767106d0d9249aaa4fd99b67a94fb8661a3520004501192d84fa",
         # -------------------- SHA3 Round2 candidates --------------------
         # https://github.com/aidansteele/sphlib
-        "BMW224": "d2250e5f6be6817a09557403ed3241ef078e366c56949be6aadcf01f",
-        "BMW256": "1f5e707b2e4799f1d6dee11669ae4a3deba97f5e68f8db85a9916fd1dc88454b",
-        "BMW384": "95f4cf7ac9069c408ef1250c96fbb37ed56091707fcb76b07d244c5d2ab96c25" \
-                  "875f780b5ad300c9a4e10b89f47ff539",
-        "BMW512": "6da8db61e74cf44050fb321bca5fd51c2856a9ed432acdb4134459655ec0a460" \
-                  "3eb81e5b0e57e1f0963885ac745a8da140817f6df33413d80884d8bbe623c4a0",
+        "BMW224":
+            "278f7e6db8fd7c9353fc181d840bf20351e3a45229ff42983ac26697",
+        "BMW256":
+            "ca0981a78ac2c97ecb358267f6d8d88216366024ef0d7137938b5a3165898dff",
+        "BMW384":
+            "ca60ffd15eab7f4809f1b8f8daa5687f2192f872cc554303181403626cf5311be3c8f86e49aab330278f8e1b411d3c60",
+        "BMW512":
+            "2998d4cb31323e1169b458ab03a54d0b68e411a3c7cc7612adbf05bf901b8197dfd852c1c0099c09717d2fad3537207e737c6159c31d377d1ab8f5ed1ceeea06",
         # self
-        "CubeHash10+1/1+10-256": "501ed22433feb0e6570e2f205e4d30fac20d21d630203b602415f7182a45a867",
-        "CubeHash80+8/1+80-256": "1af3ca351ae221ce8d8d6d8425b63e336b775fb8b63dd2a28fc955d7855ffd88",
-        "CubeHash160+16/32+160-256": "01eb7d4eccafbf839cb45931dfaf617fba7a51253467250b29320b9f3cff06c1",
-        "CubeHash10+1/1+10-512": "f1679fee84b979fc81c3289be62c54bb5b645a7b3bc2656b993dd9bf2292bdae" \
-                                 "1b4a872950837249918c796c07dca11fd0fb78bfc43fd1cd60aa418260243ab4",
-        "CubeHash80+8/1+80-512": "9f96db01948a52f5d59c273aec791927664b273355aec10472bc73f31aa013a2" \
-                                 "19210b2ac5f03b6dac5b4567d4494bfb1fe2ca47211cda9ddd421c52e58faa1a",
-        "CubeHash160+16/32+160-512": "d411897fca1e608564a1a143b7adb9208cca5c03ba78bcdaa5eb00835975e479" \
-                                     "4f23c096ee6571a42fb5264f8a1ec65cb641570d387a454e188abe58a9c352ec",
-        # https://github.com/kerukuro/digestpp
-        "ECHO224": "ba6e4a1a71cbc05a862fb279183ff7373fce210a37c8b62640abae7c",
-        "ECHO256": "ac3be7bd3d27508e8bb8f834abbd2cd847e2b94c0816b451e68f908ce185c4ae",
-        "ECHO384": "2c78438be177bebe1a216a914efea335364e8ed47dbfb1050770f111b2158108f" \
-                   "ec71c8465720658142a766164ff1ab7",
-        "ECHO512": "154b84e1956bd907269cb9c81ac2f7cf8ef059109a11ab6e9ce977c4248b5e1ac" \
-                   "19873117932df6258782abf64e782512a5d6883a54906fa8665b0cce1552acd",
-        # https://github.com/jonelo/jacksum
-        "Fugue224": "9f5590d057ec6e9ef4e21151010e5a799aa4e61e5b37a192b1d4386c",
-        "Fugue256": "7933b7f8a1af4e62b4b49a163786be0db6284d5a5a1134a7828d5de17bc6cd20",
-        "Fugue384": "72f0c64915324ac04406080be3bced131aab691079e77497609cb103b484b229" \
-                    "f02b1e7fedde0e5fcc527a1b17b98ade",
-        "Fugue512": "04b55f4683f494bcbd34fb19dc93b104029b9e3c32e6febfced23d310375029c" \
-                    "0cce83dfc717d67bdbdd1e03514523aa7b05d6c6d2539aa19d7414ae554dbb65",
+        "CubeHash10+1/1+10-256":
+            "217a4876f2b24cec489c9171f85d53395cc979156ea0254938c4c2c59dfdf8a4",
+        "CubeHash80+8/1+80-256":
+            "94e0c958d85cdfaf554919980f0f50b945b88ad08413e0762d6ff0219aff3e55",
+        "CubeHash160+16/32+160-256":
+            "5151e251e348cbbfee46538651c06b138b10eeb71cf6ea6054d7ca5fec82eb79",
+        "CubeHash10+1/1+10-512":
+            "eb7f5f80706e8668c61186c3c710ce57f9094fbfa1dbdc7554842cdbb4d10ce42fce72736d10b152f6216f23fc648bce810a7af4d58e571ec1b852fa514a0a8e",
+        "CubeHash80+8/1+80-512":
+            "ca942b088ed9103726af1fa87b4deb59e50cf3b5c6dcfbcebf5bba22fb39a6be9936c87bfdd7c52fc5e71700993958fa4e7b5e6e2a3672122475c40f9ec816ba",
+        "CubeHash160+16/32+160-512":
+            "bdba44a28cd16b774bdf3c9511def1a2baf39d4ef98b92c27cf5e37beb8990b7cdb6575dae1a548330780810618b8a5c351c1368904db7ebdf8857d596083a86",
         # https://github.com/aidansteele/sphlib
-        "Hamsi224": "84720b535ab1b0d4a82e08e13f600806f63c814847fdae03d87f7864",
-        "Hamsi256": "13a467388a80e16b5a3c8684c65b16b5035facce7220d42df20132c6cc4527b2",
-        "Hamsi384": "ac6b2182f4abb1be1677aa623cc9c5ed7ac5bd59fb1241acb152704a5124f8b3" \
-                    "d494ee4911bfc0ed27530758fcdc5127",
-        "Hamsi512": "93e143850a911fab4ab2ab6baae26f10e54300f7a640ad6530086d1d4dfa6337" \
-                    "6d18a310a5a16ab0edbd4ac0b1cb0bfaecc5492ef752e802ecab5bb94cb763b8",
+        "ECHO224":
+            "ea7548f1186079bea3b7002f7651b60cb1fd559191f3dde26700f069",
+        "ECHO256":
+            "3c3c10b84e818cbddfd71e1aefc6cb9cd7fd1b84acb5765813e716734a97d422",
+        "ECHO384":
+            "d045abb41ef43012e0436855f10f1a115eeec1f346ff119e86bf96cf427f453b625f0df8ee2b123e335a9a38446702c6",
+        "ECHO512":
+            "fe61eba97bdfcaa027ded44a5f883fcb900b97449596d7b4a7187c76e71ad750e6117b529bd69992bec015bef862d16d62c384b600cb300d486e565f94202abf",
         # https://github.com/jonelo/jacksum
-        "Luffa224": "d21e910aa3a24791ae18dddbd0da5475bc3ec9c2642d4bd5e48e0e67",
-        "Luffa256": "d21e910aa3a24791ae18dddbd0da5475bc3ec9c2642d4bd5e48e0e67129b65d8",
-        "Luffa384": "9b2565ffa5894b9c3417d415c0a39fe3247e485e4758324eae785c4d600b5eda" \
-                    "9b257daffffeba1bf9de22d488417c4d",
-        "Luffa512": "0f58baf41fc01e0854b6d3bda78a6fda7b744841a725c63252b6d4d9e342f2f1" \
-                    "39151ba29be81cc2d8281ce170b2603498f7dd8dc71675f7773cd72ba4dbc422",
+        "Fugue224":
+            "6e8e3280e6e3a4d8fcf27a82ea81d66f66f94b73dc3a85a361740b78",
+        "Fugue256":
+            "4b2c2011fc9e5f5d6aed35dd20ce151af631db61aad0b2a5e12e17e01538d5ca",
+        "Fugue384":
+            "3a327a7b4a05f05d0e5a06e2f1eb49a0e837a9e07bf60b5eeefe5fc8ca98cf85578ce856b60d6f3828b81c5eb051ace8",
+        "Fugue512":
+            "ee1e53e892bedd72d753bd4c9f704201708fb9b79177816051ebca1dc1af7ee928b8996df0862bbea24503be2781b1a036079a88627d4d248f2d0ec77b579b7f",
+        # https://github.com/aidansteele/sphlib
+        "Hamsi224":
+            "0e0bd268a3c7d9ca55b12a03ae18d4322394178d042d0e28c8b7da9b",
+        "Hamsi256":
+            "415e7fa87a20d942012c9b458507c247498043e09381a165a893e4d22c52246c",
+        "Hamsi384":
+            "810b536315560820b2a4ebaf4680ba4fd77b577ade9b326029d1d4954b4d203fd9ab519ca8ebf1132369d3926e4e4572",
+        "Hamsi512":
+            "d7453c84a10eab2d4eef9d8862ced59e0640fe0f3fb088812a8b71ac5ac68953b213492ce3d83415f22c7033573b66e28417da0cb728a18e8914e08140d0948c",
+        # https://github.com/jonelo/jacksum
+        "Luffa224":
+            "49ac0a3651e0dbf30224e2b0a8b7f24450c8b49f21e6eef9fc7968c3",
+        "Luffa256":
+            "49ac0a3651e0dbf30224e2b0a8b7f24450c8b49f21e6eef9fc7968c33e25bef7",
+        "Luffa384":
+            "e67f459e496dfe04a0091a2e2c253e5f48883472dc21dce1d6a0bb0359867fc11815d8e0f868bbfb102f412e24075107",
+        "Luffa512":
+            "459e2280a7cdb0c721d8d9dbeb9ed339659dc9e7b158e9dd2d328d946cb21474dc9177edfc93602f1aadb31944c795c9b5df859a3dc6132d4f0a4c476aaf797f",
         # https://hashing.tools/shabal
-        "Shabal192": "3bad0c036e2d521e83fe0e62992a18240c947437cb05d540",
-        "Shabal224": "86134f04b4e73f2d000769279333448b16cf9e60a3cd121d6d1feaad",
-        "Shabal256": "653522b60c60ba0b01d466fd5b61de4e176032169ef38416b386e233df9ffa27",
-        "Shabal384": "6b8017c27287428e0b6696334a192d2c8825540fe6ce6455f6add58f654befba" \
-                     "9f4fd29e0adf56320fe0f6208315525f",
-        "Shabal512": "0530206770d0011ba26994a2cd16bc5499e68ec8c2a50558da6aecdf46e397cd" \
-                      "7e4372637c4277a44c65351cf4023745917aabd13e4376e962d1c1f5e63fc30f",
-        # https://github.com/gray/digest-shavite3
-        "SHAvite3-224": "b1814d4448ec5f08996b9a77236ee66f2cd1294fc7a1b1fb7337ae83",
-        "SHAvite3-256": "fa043957aed28fa90d13c0680ac9bc60ce3b84259909ea75ec3ae0b722783aa0",
-        "SHAvite3-384": "333336ff886c555f333a0332b2c91ae0a9ceff8fb2f7122a20b537180747b133" \
-                        "e81e0442c2f92f2c052b52ad4925f61a",
-        "SHAvite3-512": "dea616109d18cce6fffeebabcfd7f698c5c33c4c4175d01ca1463564cbcacaca" \
-                        "187dd4a0b417093acdaa975672b8e087cd3b55f950a02f6799295b916c572533",
+        "Shabal192":
+            "c0629db89b2911e0febaabd7618a5da22ad6ea2638e13d40",
+        "Shabal224":
+            "0afa60c76a61bcc73773ec8e2694862506f7782a088ce8a30ba5e789",
+        "Shabal256":
+            "cdee2d6e35a1aa235c09e3d1a94e59207459c8da37cfaed0c2d51fab9a59f932",
+        "Shabal384":
+            "c08623c184f728d3e35c15bd74a27f0480de3a837f3a14bef7df70edc0e4a9500e100092d3e3f3b464ed18cbc1121bc5",
+        "Shabal512":
+            "f12f6893f4535d360b07ec15be706e5921b0358d736e61cb2e7ffd2157cd119dc1aeecbf2f1ac73552dc052ad4edcf8cbe87073a4db4d1b4f6a31e39edf5a96d",
         # https://github.com/aidansteele/sphlib
-        "SIMD224": "14a4564faac0a13b5c921b5ff1c6529e146ab46976072a2b2cb5f817",
-        "SIMD256": "6a68b05b65a906c430cc854b2ed7e9d9a6b4ddae15f339495e4da68e49092c00",
-        "SIMD384": "44ba5d64e35ccc1da7564cee4762dd02dc208328ae5d5211bbc20e2ee1b63ba2" \
-                   "7124af92ab7f9c64fab7a9d7f94b6b23",
-        "SIMD512": "24949bf23897f6cc00637b4ab352700c778b21f46c2b0607ae6f52898fe9f6ea" \
-                   "68c9fcc663c7e82951faea69b66fe095501fb4b54136fbaf16cbcbe24afbfef2",
+        "SHAvite3-224":
+            "12a8401b9f8465ef01201698b66a21d3fb030c995f237da20377bafe",
+        "SHAvite3-256":
+            "eb43e5be6d6cab5d81910dec375120106936879e55e27188735e240144a36a66",
+        "SHAvite3-384":
+            "67e488432df469c810797aaa65c7e6622096c094439fedebba892ccab1547332f9fa506f9ea1ecf6d150a896141eeba6",
+        "SHAvite3-512":
+            "4dbd97835c4e5cfa14799884a7adc96688dd808ff53d5c4cfe7db89a55ee98d0260791ec0c9b5466482ab3f6f236da7e65e1cb6d1ee624f61a5b2b79f63c4120",
+        # https://github.com/aidansteele/sphlib
+        "SIMD224":
+            "964ff29db5c3d88794c6c488b274d77c52d5ff07509c5aa8d67a14b8",
+        "SIMD256":
+            "c9deb40282ee7b66a6fc1c8e240ce73aac4252c30b48d247e8d8693ad8ae2e34",
+        "SIMD384":
+            "f4f9ba9a4e4e870079c69cf61b5e52c39bab522782fda17d093d8757231539f2bfb72c8dbbe36bea8321520f59a2d378",
+        "SIMD512":
+            "ca493ce78cc2a63b5a48393e61d113d59a930b3e76d062ab58177345c48b59890a08661d04dd6160a1b42d215f1e303d97ab0abb54e65f758f79aee2b182b34b",
         # -------------------- SHA3 Round1 candidates --------------------
         # If the link is dead, use these.
         # https://web.archive.org/web/20170404095802/http://csrc.nist.gov/groups/ST/hash/sha-3/Round1/submissions_rnd1.html
@@ -96864,430 +96633,614 @@ class HashTestCommand(HashCommand, BufferingOutput):
         # https://web.archive.org/web/20170211075442/http://csrc.nist.gov/groups/ST/hash/sha-3/Round3/submissions_rnd3.html
 
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/Abacus.zip
-        "Abacus224": "4cce4439e6a5d3474c0c6d2b2139d795e3ff3307e7dbaaf6bd5e348a",
-        "Abacus256": "fabd01ce8cdc42bd732e280495720b82c292559e876fb40190fcbb2d362acdfd",
-        "Abacus384": "c101a643e1cf69ab57c28d3f59c241a624ef361d3f062e4da93c8157e237e296" \
-                     "3e3d877f8c860d5a5f60c3750e4b47c8",
-        "Abacus512": "46f1db2e75d6d0624f216a21019526858227208dde706b8fbb24aa207f748a90" \
-                     "505a3d64957e8bf47119133f90692ee0a2b62cfea517b56a270e51255b3daef6",
+        "Abacus224":
+            "2d4c4d46c6198fc5646345f78011e9c07ebf81a354acf40090dab750",
+        "Abacus256":
+            "666cb308c69caa6d5043292be664218c9b928957703a04a3be89ffabfbbdb00f",
+        "Abacus384":
+            "e7ee677abdc304988e76d96f1a44fbf9f71b57f1411456f3bd9459061e124919a5f5cc0d986c73694b639b00c8578a26",
+        "Abacus512":
+            "0e115823ebeb52ed3d8d0280e1ae1c1204f5b74bc4644fc74a21c53fb4358c233a230f9bc012d8471d4acfde2b3ddb529dc5e39fb1315c45adcd90e9edaa41a3",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/ARIRANGUpdate.zip
-        "ARIRANG224": "94d5e36a647ca0bf7c6ca4c6c7baf62d99e579def65921eb3b650d6f",
-        "ARIRANG256": "d12670af67579c32891ce78d1fcc4fe09117bb3a78ab3cc942a1b6d00433bc2a",
-        "ARIRANG384": "de7d9ac2f916835c19a35da67b5e9482106c12e4ea62551f7a64b32125876f90" \
-                      "bdc58ff897211b81bd35199e551fd54c",
-        "ARIRANG512": "657b51884ad5b026fac601d3fe25e2f098662f63a8c04c42fa33f3b642f53f41" \
-                      "d45309dd6f33c180905f40639de9ed251eb0b3b3a05d6535ddafee91535805d7",
+        "ARIRANG224":
+            "84c24ed54d07dd09f6168c0f9ebfa79a334e7c26de49d5db26b2623f",
+        "ARIRANG256":
+            "16ac451d0a5af18cad3218e8e6638b46db5637b6221efcc014b3062ade373ed8",
+        "ARIRANG384":
+            "374f750f62f5d75c1a93cda8fff30cead2a5e1985dc4b7a45c9f6f758b48f3269db90a346412914f0c282608c568b870",
+        "ARIRANG512":
+            "e9b2975ddea2a06e1a9d18ae9b8c64c78e3351140b2b1ea8c13f6cc59f42771b7d64ac2f53d3308d8cfa952be0f8e99687e2a8e6fb3878c0d88c32cd956d79c8",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/AURORA.zip
-        "AURORA224": "0dd7c2555fb2aac360dc5af45b11b25adae957190358b21c234b72d8",
-        "AURORA224M": "9f1fd46fc31c7cf7857185a6a2984d41ceb65f2523dbc61e2ce9eb5f",
-        "AURORA256": "cfc1dc755cb53e0eb11a09df87cd09f7ce7a36774f0f077549a30691d88e47fb",
-        "AURORA256M": "09f995fade2f4e1c264a1f1c5084d940a308c328a3a1dae7b733b965e369749f",
-        "AURORA384": "ec46174a9d6a36d64f45cdfb23e3c415a0164b33c740f043f15e09e9bf7bd649" \
-                     "2dbc1f669a6eb6d4a40ac635f2744e39",
-        "AURORA512": "0131d81f00adca30aca5869c077f1b89e1a152d7a33c264d3baf8260e5128bac" \
-                     "7658f01427d02a97764315f932d68fe1ad4a9eecba2c562ac04824a07aafd843",
+        "AURORA224":
+            "906d1d3a48807021fe633a69729f8635a91ae00c0f761cc088bfc5c7",
+        "AURORA224M":
+            "6675d1dc85079a3615322dfa4b7c30a1ac1c954c622cf6fda307f5e3",
+        "AURORA256":
+            "b8ed2c7f4de46220e9f0b8128a80dec4c610db13c8be6f0037ab67a878e44444",
+        "AURORA256M":
+            "84e70ab7424da2030b95229895318e371153b20b831860e6453379a079a00f90",
+        "AURORA384":
+            "9bfb11ee28694460da9cf58edb869c89b6f3bb1e403bcfd820839e5e033de214a06fc7f385f39a985d74e0e25c0ceb8f",
+        "AURORA512":
+            "ca358e3ebf5b86d933eb29789180d0554b5187acc3aea4d2a9953a56d15b5486c74c210b66af8d71a8d9698d115b71c9915df9e82708fd6667ee3199005f3b7b",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/Blender.zip
-        "Blender224": "fb4f7f2553f3a6ea97280e59b88c12079c2b0eddce0653ecc41f3a17",
-        "Blender256": "cc9b7c7b23e9a39e64caa21154bae402354b6e584466cf2c08a0cd61f01c7a80",
-        "Blender384": "8491360df9aebf5e82acb9bbff50a9f119b72becb6bfcd6b234db11d4b09b9ca" \
-                      "d2599533cc9c5c66f4c8d0d6ffb6b12f",
-        "Blender384Spec": "4b45793d09c26560bed42236c7124af41453f9fbe09c95891dbb0e5fdb508f2d" \
-                          "3f8e5571b180ee57b77a3ffbca54178a",
-        "Blender512": "747a5d61b29c1c7a3c4b204331d7487b2004eb8f33b1146313b55a380f9ae7d3" \
-                      "d9f4c30ca240a941f77f2821ab537553e9cbe3651d4dd3c978b8cc8258fec310",
+        "Blender224":
+            "f22751ae660fdf910c58e9e0f5411a1f4c75047be98ee0ec227cf9c9",
+        "Blender256":
+            "1e57c8b0a331abc5a89a4ac540f69473be495aa4cbfd1970783d4919d12be26c",
+        "Blender384":
+            "bafe74892a4842b96807fbef086d923ebbe54e3b1d32c366abac2cc2f9a54e97ebf7e6b0826cd402e5854b1ab40baa9b",
+        "Blender384Spec":
+            "d36e625afb6a617a54e195c138504ac85f6cdf17fb1e32e0d48182a1497bd3e5a7fd8f2fed89288f8c87fc9c23a5d27f",
+        "Blender512":
+            "a70415a188effe1092f2c3eb164d2f19f4e09ad739eba9aee7b0c5df751f01bf0ecac5a73c278df009ab7f946461a654d4f893a364894d40d9bb728cea737296",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/BOOLE.zip
-        "BOOLE224": "fedfa0ffc49e92f317c270cc06bf16b9b43f58b45d491e449bf4a280",
-        "BOOLE256": "4072a004c83ebdbf14d939c7ddf784a029830356d0a6d733c65718aa2c1f97e2",
-        "BOOLE384": "295cafc56b77dced1a9857531e8a457f9347675a3ba685b43a2ce86da6a5b11c" \
-                    "cb28c5ba83ae50c5ce9b45f720729fa4",
-        "BOOLE512": "5563f51182323408e9df71e0b32d1fd7a1e15a1d04f226d3062c311fb867951a" \
-                    "c500d0f1b402c75996847052d03a560f3e95e3f9c220c3b23b77b2562fc00962",
+        "BOOLE224":
+            "4e8a0e1652f4ad9e6f9a69d22e68501e4d38152a9beb059a1367781f",
+        "BOOLE256":
+            "bb6b6b1bc99d2a79ff1c78db3c2933395dde77053ec1a5b48b97ab034534a346",
+        "BOOLE384":
+            "9acbd9b59a683e378227ebb02f2b9d1dc8141b7d8f583aa1d12fed2f6a577a36e8116c7010a1a4138baec994165bf5c2",
+        "BOOLE512":
+            "ccbae29b9f0315207475991aaefbd873ebc07721a489dfe1aeaf0447a3808fe01966d3cf9cdb6f24377e8925aac446ddc07d5166b61228ce733371228b72ea4a",
         # https://hashing.tools/fsb
-        "FSB160": "b0a13fe24c0190e8d53f91e246ea10540e147af3",
-        "FSB224": "207ac5eb161b20be6ca49f7d3d7851a7634bc328ec083bde3488bf3a",
-        "FSB256": "5eb1e8ee65a311f2b06652943b39e0ecb1f2f80d72c8d62b069abed31ae878e7",
-        "FSB384": "26f1b38803c91c7e169f75f1b2ce8e2063db6faa8cf1e27e362c78b50d4098d6" \
-                  "c386b5f4fabc074f7974cb0bc6e5f659",
-        "FSB512": "3177b373816230dc1ada0931de19a1971f08e8f6344194536449f78e89775da2" \
-                  "e3bd53db8366f553424b28cad88a7bf63848cd8f991f182bc31578243daa5bde",
+        "FSB160":
+            "a25f6e24c6fb67533f0a25233ac5cc09d5793e8a",
+        "FSB224":
+            "1dd28d92cad63335fcca4c64a5e1133ccaa8c3e6083ad15591280701",
+        "FSB256":
+            "a0751229aac5aeba6aeb1c0533988302e5084bb11029e7bb0ada7a653491df24",
+        "FSB384":
+            "4983ecfa3930e3cf61ac4c82695c01a394016b39cf22b5d6dcba447ef8cbcda46ac341ccf5835f331fed0abe73e9bf1c",
+        "FSB512":
+            "6f87b9dc051330bfb0dd7ad35c05d6a2040e9a6110b06886368934d6ae25694fd9790b1bf1086af9da4b15619609b688fa576376f136adbd3b5a51ae1a1f2158",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/LANE.zip
-        "Lane224": "3d5570321466295c009ac92b1362a237e2837f10cb4948144c1a4a25",
-        "Lane256": "7979cbede5e1fb39bc4440847685fb709bc49a75d8f4cbef997301e967413c05",
-        "Lane384": "f852ee97c76001fa1a8d48bf3b72b3670adc0bef71e0d4f714038aba49f17543" \
-                   "9ca0ac87dce6a7abb94a04dc51563868",
-        "Lane512": "ce10112d96a3f175066a319d6162169593733a38d631d2e535e2828899ff5a89" \
-                   "e4d48ba3e3648fd57554d78fa879546ed8eb0d3af38237c10ba36b41f8eba878",
+        "Lane224":
+            "35ff2f82ede8c86f9ba7823a7d2363805ed72d748a5308a1c5242607",
+        "Lane256":
+            "710ba632ed2581206fab281eb3ac8a4acd0b3cdfb1af8dc1b7a6b1679e9161e0",
+        "Lane384":
+            "1d326d45b84a8a0db4733b91f68fa46cd16dc5004e28843b72333ffbcf5a528564558d3e4fe3d7723f46f9c242e4c489",
+        "Lane512":
+            "bb8fcd93dddc1fe2c283dde8dff248ab69d67368146155cbcfa118e4e81a89d2e3455a5252f0cef43b177ec9d9de656b8c1b5fd7d8088241a7a73688ade0fb56",
         # https://www.browserling.com/tools/md6-hash
-        "MD6-128": "d92b75252b0b05b8e64db33361b73a03",
-        "MD6-256": "7235c21eafc0992b2cae6eec077a1b5854640e956e3f35a655ec6cc673967735",
-        "MD6-512": "9338e12bc2e524115044daf7ed9f042d47685805d30f8a520b7087e29c60c006" \
-                   "9f2b90a5ee1547e67952e4768e81c26aea30941838ff39a20d477b075ff44438",
+        "MD6-128":
+            "7b428f5ec47e0174faf31dc7c89590c6",
+        "MD6-256":
+            "977592608c45c9923340338450fdcccc21a68888e1e6350e133c5186cd9736ee",
+        "MD6-512":
+            "dcba0c6593fbd83a0f5f148588baa79530579c1f5e7f19d500fe282d137bff465106f25c9f0619b4082a730683d5f58311c0c1913068e91b0ebdf9ace3ff5b9e",
         # -------------------- relatively long --------------------
         # https://hashing.tools/ascon
-        "Ascon-Hash": "e71806e7b65349943ecc9533937482b14defee112076a2fa80068611b70c74d3",
-        "Ascon-HashA": "43ec1c7e4e95d084c615e23a02463143be37df8dbaec9780182bfc92170af57f",
-        "Ascon-Xof": "3fe739f98bdec9105af35be44832a82b1f957112f7f0b86b603820842373a246" \
-                     "745c1f424299a5b5b4b5aa11261b7522d617b0ca1e11fcb7c5f2b51faf45fc4f" \
-                     "374a4921ad068595cb7345646905fbfc29fa895a2ea1fb848fab795bd7d6fa7d" \
-                     "be2059d3c8b9871cb438ae4a324ddf319d6d95ab2f6ae6a9e62db393b0988d3f",
-        "Ascon-XofA": "6ac0dcf1eb2b323d0c176d841f4f2f6b05d99fb51b0aeb94faa901544314acf2" \
-                      "b8508a1d8b86856a1ae45b3052b490c3c0225adc11ad1e5b07bfe824a6bfbd4a" \
-                      "802f44486562bf88c9718cafbc043ed8b01766b88913942dab9519e7e21f3a73" \
-                      "40586b49b8a3c99a25d5d6fac6e7fa1b06b1cd28423e8fe7802555dde987ff1a",
+        "Ascon-Hash":
+            "3375fb43372c49cbd48ac5bb6774e7cf5702f537b2cf854628edae1bd280059e",
+        "Ascon-HashA":
+            "f40d49f17c5b7efc22ef8a623c4117f532a94c60faff439d5b5f02a31e8933c6",
+        "Ascon-Xof":
+            "c100696bd70a3e731873bdc8a76ffb53b6cca80b694473b320d436883bbbc300dd5abfebcfdfdee1a6671a51f181543c3933b533e7e132e186bb557515b898cb" \
+            "d92d86ce999d979f25face87e00e9eea869a328f12537b8be359ec3a5064b4f03b95a1e4ecb85763fad1b29fed3415831602313f0687eef75d26aa56c3a03aca",
+        "Ascon-XofA":
+            "5c32bbe73bd8ea9191435d72cc973a2bb2d8f40410de6188e06c65b78401759c30a3f1b24ea251b12d468d729aad6570883b82438e798020d0ebb3e920490629" \
+            "051c64fe2ddb2ff14b89e9d2352cfda9bbffe4601d0e5bffb6c4b8165c44172cc0dc76430d7a38fbb5b57134936c53648989c49e79052fb1040a8b0a7f43e0ad",
         # https://hashing.tools/belt
-        "BelT Hash": "3f7355d4b29d2f47e2e832111f01ad06c3d6c9fb51f3d5718299ddc808a0947e",
+        "BelT Hash":
+            "b0333d1bb3c391893a5a1df907eaf2b5cc60e993bd4fa0cdd865d09a243183cd",
         # https://github.com/jonelo/jacksum
-        "BLAKE2sp": "f0af273147167678aea7e95ff9e8f1b5f970aa51febabad5b776c64b6dafce8a",
-        "BLAKE2bp": "308d00127806d7b23eae8c71e81055caae3417be0698369d1de2e559fe4b9aad" \
-                    "0a518d6de295472f4b06e55ba6b0e7607bad78af9eeadc02d29e9ae37fdfe596",
+        "BLAKE2sp":
+            "cf192976714bb648e72b29fa90e6bf0fbc5bf2efe7d5c26ed8ff34e855368691",
+        "BLAKE2bp":
+            "f10e0523631699102c63412c0701fa19f6550fbac0e9c035803c6033b50465222bb92ee0af0dad53edca32f0e08a72c077a6cafc6f4d24a7fb649079d47ce089",
         # https://emn178.github.io/online-tools/blake3/
-        "BLAKE3-128": "26c7bb3daaaa0439eb3e5c5270e7c4db",
-        "BLAKE3-256": "26c7bb3daaaa0439eb3e5c5270e7c4db05218d8892a0258fbd4911cef5006d23",
-        "BLAKE3-512": "26c7bb3daaaa0439eb3e5c5270e7c4db05218d8892a0258fbd4911cef5006d23" \
-                      "77bc1f40685ce1ea35dfec340a0f2bd050003eed06378b1d113d4ad18eb5de7a",
+        "BLAKE3-128":
+            "2f1514181aadccd913abd94cfa592701",
+        "BLAKE3-256":
+            "2f1514181aadccd913abd94cfa592701a5686ab23f8df1dff1b74710febc6d4a",
+        "BLAKE3-512":
+            "2f1514181aadccd913abd94cfa592701a5686ab23f8df1dff1b74710febc6d4ac0615cd845be939b4ef6aec25e799aaa450c63f8d9e333cdb0dd79b70ee69879",
         # https://github.com/Kimundi/ed2k
-        "ED2K-Blue": "90353ed2d3d2cd620347ff246e8fbab6",
-        "ED2K-Red": "90353ed2d3d2cd620347ff246e8fbab6",
-        "ED2K-RedBlue": "90353ed2d3d2cd620347ff246e8fbab690353ed2d3d2cd620347ff246e8fbab6",
+        "ED2K-Blue":
+            "1bee69a46ba811185c194762abaeae90",
+        "ED2K-Red":
+            "1bee69a46ba811185c194762abaeae90",
+        "ED2K-RedBlue":
+            "1bee69a46ba811185c194762abaeae901bee69a46ba811185c194762abaeae90",
         # https://github.com/jonelo/jacksum
-        "ESCH256": "bfa63c4eddacd1b5b54d1aee5bc8d77a6682b99adddf3a2a00908e34f321a5ab",
-        "ESCH384": "528e1ca88b46d38fac73d4083cde3755b0ed02caee838e7e47b2d52c42383271" \
-                   "d4fecb027cd6d211516c345febf9604e",
+        "ESCH256":
+            "d43f87a0fe60fc5925064880c6116c136b6d94fa24a93dffcb35d178c3af932c",
+        "ESCH384":
+            "0a8167a616fc8dbca06b877427c15fd27b7db3430f86794742394a5db6838d916843d739ac821c6b0b7df538aa4554ea",
         # https://fnvhash.github.io/fnv-calculator-online/
-        "FNV1-32": "2abf8e21",
-        "FNV1-64": "1946e07e5e301541",
-        "FNV1-128": "66ac10a3c0757277b806e89cb5099d59",
-        "FNV1-256": "e46ddd4ed460b0b348e441459f2a8e9d123f79d831721584cc463bb62ecb6471",
-        "FNV1-512": "f9fe9eefe38ca43fcf36c8fbc0d25bef5457f8ac9f00000000002a5259a146c7" \
-                     "f24cae042d99828e5baba0a28b18bf530de9c3137ca2a36973f8d16ecfb745ed",
-        "FNV1-1024": "00000000026f791f9147aedad1354bef7d238f3219005cbd6e8d664f6b4eefdb" \
-                      "e94929e41548be786c9c43000000000000000000000000000000000000000000" \
-                      "000000000000000000000000000000000000000000000000001ba08046e07e04" \
-                      "18fb7be0ec07b8ea87a61bb4f073e2bab740db8398ef60cb9b50bec99be18feb",
-        "FNV1a-32": "0ff323f9",
-        "FNV1a-64": "8943628b9f33b719",
-        "FNV1a-128": "6883d8a760757277b806e92e125ae1b1",
-        "FNV1a-256": "e46ddd4ed460b353546201459f2a8e9d123f79d831721584cc463c9f2c963e49",
-        "FNV1a-512": "f9fe9eefe38ca43fcf36c8fbc0d25bef51e6a67f8f00000000002a5259a146c7" \
-                      "f24cae042d99828e5baba0a28b18bf530de9c3137ca2a36973f8d09d5c15a7e5",
-        "FNV1a-1024": "00000000026f791f9147aedad1354bef7d238f3219005cbd6e8d664f6b4eefdb" \
-                       "e94929e41548c220b723b3000000000000000000000000000000000000000000" \
-                       "000000000000000000000000000000000000000000000000001ba08046e07e04" \
-                       "18fb7be0ec07b8ea87a61bb4f073e2bab740db8398ef60cb9b50c03425e2bfcb",
+        "FNV1-32":
+            "e9c86c6e",
+        "FNV1-64":
+            "a8b2f3117de37ace",
+        "FNV1-128":
+            "185adb693e7c97844ecfa9497cb529b6",
+        "FNV1-256":
+            "5484a6fda3cdc44b211d89bcc7aba23d3db53b8d4a1c4f181452bea38d5e407e",
+        "FNV1-512":
+            "116c3e885f0cddf9a9c30a3f45515050f0bcc29201becf78ddd2cebfc099cbc8db9fbebdc5b4f08169eb705d8fbf92b2b7b9121d2991b91374b428901c2965ca",
+        "FNV1-1024":
+            "3a4d50796fdfef4453da11fd40f3e795c7335d9c1a76f44ec522a26cf89030ab56d73d675114a4d0448067000000002c78c4ffbd2756340f2832a6ab43a50f84" \
+            "596efc9c7ce1ea25ed87cfae6f9618346680553973accf6176f84a30253b45f8bfbd52c3e21ab215feaebe3dccd33670146f723b0bc667774d094a5e8ed2a36c",
+        "FNV1a-32":
+            "048fff90",
+        "FNV1a-64":
+            "f3f9b7f5e7e47110",
+        "FNV1a-128":
+            "68cce4cd885ea04239f02af30e297870",
+        "FNV1a-256":
+            "de8de01f19056b20fd89451c1046c67801f99f71264e4fff078e67f490022ab0",
+        "FNV1a-512":
+            "cd74f564c0520cbd816ee4a6a9efebce4865dd1c4152d79ecbb3acbb2e55d860bc17f0b55ae4686537b02bced854f29c3cc8785e72d030249267163b61128df8",
+        "FNV1a-1024":
+            "0480a708ee10a2217801aad08aa2c906aca079f6094db1580606e97a3f6e984598ccdba1e41d93a0ed3a40000000002c78c4ffbd2756340f2832a6ab43a50f84" \
+            "596efc9c7ce1ea25ed87cfae6f9618346863feabd80d9e025589dc2c79905a9f4a72e8adca100c3d2adf5090e1da90932a039a0112125dc44de5ba7fe1234040",
         # https://github.com/jonelo/jacksum
-        "FNV0-32": "12f20e74",
-        "FNV0-64": "322b16013e2b90b4",
-        "FNV0-128": "0001269d560000000000000078b586e4",
-        "FNV0-256": "000000000000000177aa160000000000000000000000000000000000adcdc6d4",
-        "FNV0-512": "0000000000000000000000000000000000015eb8860000000000000000000000" \
-                     "000000000000000000000000000000000000000000000000000000009cc9008c",
-        "FNV0-1024": "0000000000000000000000000000000000000000000000000000000000000000" \
-                      "0000000000000001d42c62000000000000000000000000000000000000000000" \
-                      "0000000000000000000000000000000000000000000000000000000000000000" \
-                      "00000000000000000000000000000000000000000000000000000000f1cf1978",
+        "FNV0-32":
+            "89074759",
+        "FNV0-64":
+            "1f7224b4c8a7bbb9",
+        "FNV0-128":
+            "517098213d50cd2fedca83d32b0c6e31",
+        "FNV0-256":
+            "1a723f286142d2b2969e1fef7bb017bede69fd112d7d28d967152bbe7feb60a9",
+        "FNV0-512":
+            "a6ace7075d8d3c8af92b4dcf579326ed4746b569286e16a8b960f80ec899f597dca8d79d4a538e6a92973bf13004bcae60b9b34435b916d6fc33a01fd246516d",
+        "FNV0-1024":
+            "c871a1311e02a022b212e0617ffa4e2095d93af593a4ddf83a96b4e0bec00845f41e576c181ff9f385eba7000000000000000000000000000000000000000000" \
+            "000000000000000000000000000000000001f7ee241391f3aa67eb21b33f526d0461ca0d711dea56c28ef23c9d2ae40acc520b2e03defb70f19bcbc6d8518dab",
         # self
-        "FNV0a-32": "470cc09c",
-        "FNV0a-64": "6ac7181ca406e1dc",
-        "FNV0a-128": "01e3391fb600000000000094875cfa8c",
-        "FNV0a-256": "00000000000002b6bea35600000000000000000000000000000000f1045ab7fc",
-        "FNV0a-512": "000000000000000000000000000000000272b23c160000000000000000000000" \
-                      "000000000000000000000000000000000000000000000000000000d2114fbb94",
-        "FNV0a-1024": "0000000000000000000000000000000000000000000000000000000000000000" \
-                       "00000000000003c7d7ed72000000000000000000000000000000000000000000" \
-                       "0000000000000000000000000000000000000000000000000000000000000000" \
-                       "00000000000000000000000000000000000000000000000000000176fe2a7f18",
+        "FNV0a-32":
+            "0f75511b",
+        "FNV0a-64":
+            "16b01830f503fb5b",
+        "FNV0a-128":
+            "08b63d54a36c79f9983034d5f84b964b",
+        "FNV0a-256":
+            "29966e65f4d5ec26c8a6f2188530edae6cf9eed2148fa579f25ba92b63670a5b",
+        "FNV0a-512":
+            "42d98f9b069cd7e71d3af9e52d255b8a9f8f563698805c1060ec5bcec6480e78a638e3be95f3d0ca68a150275658cda398cf3063fafd9a0be92b8aa2bc37190b",
+        "FNV0a-1024":
+            "ebc8ecd5f1fd778166986437d8f535f97fcac598859e7690069a8b5421d8027f720903930562657effffa6000000000000000000000000000000000000000000" \
+            "00000000000000000000000000000000030d7c4df25956df4327a342f932d30fcba656d86b64688bb7ada7ffbb83a4bedb3b565c00cbee26ae9b035d7678b22f",
         # https://github.com/jonelo/jacksum
-        "FORK256": "1ee170ee859491d46f6195d9e1f89eb6036ed081d39cbafc39e9bcce985cad47",
-        # https://asecuritysite.com/hash/gost # codespell:ignore
-        "GOST94": "576f4b986a3922c8f6a176c593362e4968f6e6610303f1784e7d46cdd03eb3f6",
+        "FORK256":
+            "290f4a3bc99dd6edc87400af4d4daa10362b0fea41d7cd41710f4e9fe0964428",
         # https://github.com/jonelo/jacksum
-        "GOST94cp": "b274b62c68e20657ac10d6196cdbf471d83414e1e7de9263aeb2455f1caf4208",
+        "GOST":
+            "77b7fa410c9ac58a25f49bca7d0468c9296529315eaca76bd1a10f376d1f4294",
+        "GOST94cp":
+            "9004294a361a508c586fe53d1f1b02746765e71b765472786e4770d565830a76",
         # https://gchq.github.io/CyberChef/
-        "HAS-160": "844dddb5575ca4ed659c371f20087044bfb9c221",
+        "HAS-160":
+            "abe2b8c711f9e8579aa8eb40757a27b4ef14a7ea",
         # https://www.webutils.pl/index.php?idx=haval
-        "HAVAL128,3": "c0714c1b833e9a4ed44ed93b2cca88b6",
-        "HAVAL128,4": "b465b22fd9b6f436e5d90a8836a9c616",
-        "HAVAL128,5": "fb9a05afe6d19341182ea75d7874aeaa",
-        "HAVAL160,3": "9d2d2bb1b6be8d8f22d6e20f4c8f2ef4e025e269",
-        "HAVAL160,4": "35124a6218a70fa697aab04d918fa196dda63872",
-        "HAVAL160,5": "8fefc392e9e98e585b76feb9f8066c32e4d37672",
-        "HAVAL192,3": "ab18bffc90d9fb45420ea5ee8a3c7b465b6dccc1ba00b96c",
-        "HAVAL192,4": "eb490a5b80f93a42268a04d0f2f63a8787a81bb2dcebb0d6",
-        "HAVAL192,5": "5696c29456f9503df358ffd08bd018ad57834c0c43377cd1",
-        "HAVAL224,3": "821d27c7ebac996e15f8ff7566883b32f685728917d3ca66f3f21d69",
-        "HAVAL224,4": "cc91f9a6201475df6f07ed7f19a807494fd4b227cef5e73c8a46469b",
-        "HAVAL224,5": "faabba324382eddf559f79dd62088c38df9b66334089ab898c24e629",
-        "HAVAL256,3": "494445fabc7b3251026471b327b563333aadf434b15d6a1191a8cc7e2d8d2e1f",
-        "HAVAL256,4": "990c486c1d43b86b88b3aa8be2208095185501c36cd3c8e124f7b7e2b2f17e1b",
-        "HAVAL256,5": "df3b465b42f9adadeaf4e28a3f0792c7332ead5875a5cef12140d031924cd8e7",
-        # pycryptodome
-        "KangarooTwelve128-128": "15d4a67bd0f8e88ffbc6cd44eaf4c196",
-        "KangarooTwelve128-256": "15d4a67bd0f8e88ffbc6cd44eaf4c1964a5f87eefae90aebba9f0f123f62271b",
-        "KangarooTwelve128-512": "15d4a67bd0f8e88ffbc6cd44eaf4c1964a5f87eefae90aebba9f0f123f62271b" \
-                                 "9cc48e4140bf92aca5dbf82d43e631fbef0df5fe511ee5810cddae79701a0a00",
+        "HAVAL128,3":
+            "713502673d67e5fa557629a71d331945",
+        "HAVAL128,4":
+            "6eece560a2e8d6b919e81fe91b0e7156",
+        "HAVAL128,5":
+            "696f02111f2e1da5c21d50eb782b7e8f",
+        "HAVAL160,3":
+            "b338ac397e8bccadcccd96549cadd4882d834107",
+        "HAVAL160,4":
+            "6e739d01f5739ceed94da1a115b52d5951280560",
+        "HAVAL160,5":
+            "ecce9fa8a428866304ff082af2f9062637d36b23",
+        "HAVAL192,3":
+            "58e6ced002e311172483d434ba738ad033e7fa950e431503",
+        "HAVAL192,4":
+            "228ee09bc7e36151c6f285f558e6aede66ad38c8341592b9",
+        "HAVAL192,5":
+            "023d045f75d4bf051fd6e50f7b7417bf9949c4b5d2b4b7ef",
+        "HAVAL224,3":
+            "e1d5792306f56b22419662b06d1885a66dca3eba01f53274c89aeaeb",
+        "HAVAL224,4":
+            "dddd6689885f6db4ad91e35a35e1f4498446510df798d4fd54b8654f",
+        "HAVAL224,5":
+            "03d953298c8e56b46385c6761cd4b2e377889a75c97eaea475421c73",
+        "HAVAL256,3":
+            "9446028f42b3768a41bd873ca69b0c006341d986613567f39eb61f96ca683300",
+        "HAVAL256,4":
+            "c0d4c6ea514105fd1a9c38a238553fb7fa21d4127eb1a3035a75ce9d06a83d96",
+        "HAVAL256,5":
+            "b89c551cdfe2e06dbd4cea2be1bc7d557416c58ebb4d07cbc94e49f710c55be4",
         # https://marekknapek.github.io/hash/
-        "KangarooTwelve256-128": "551e1a849f04f415fdfc175ff014d27d",
-        "KangarooTwelve256-256": "551e1a849f04f415fdfc175ff014d27db1f6f21e7cb89f4260dc237f95c4accc",
-        "KangarooTwelve256-512": "551e1a849f04f415fdfc175ff014d27db1f6f21e7cb89f4260dc237f95c4accc" \
-                                 "5f1ed07d7990a512bb18a7ff813c734a4a846502e4d74e286d2fa4f692c8abca",
-        # pycryptodome
-        "KMAC128-128": "ab430646fd5b4d845845eb9e58e5b5da",
-        "KMAC128-256": "22a26ebd5b727db05aecc0c8d43d38dd219e2114aaa21d3e7f0cbe475cea1b69",
-        "KMAC128-512": "68a0869543c57bb495d75257a625e054b8c85782838cb157ad5e5e1c306ac29a" \
-                       "79d1b54f84fba43a1973d60cccac8356b757b8c79523533f0d7395f238bfd4b5",
-        "KMAC256-128": "aa58df37139ee03fb259be20309011fe",
-        "KMAC256-256": "b493a1bf9da2ca2153a8b5cb3a3e17c30201e71b414e4428c550be1364dfa551",
-        "KMAC256-512": "d5b57d5716825a227c44114cd109b057fd0017c944373b1b69132da2b9df85b9" \
-                       "d5d77d1eb900eb1d765e0554744ccbca63403542478488dcc860262e7e8df9aa",
-        # https://github.com/dstucrypt/dstu7564
-        "Kupyna256": "92a6074cf10c88c1e05f5e23e9f38a69a3e5d2219a3d5e18b585bc564477e29a",
-        "Kupyna384": "87bf930aefca3f96bf86d47bb7d8046b547250f828dca07e679be902c307ab34" \
-                     "1f1a6a120b8085aa2da0d8806686c2d7",
-        "Kupyna512": "b77674b2a30e91f0106a85acf65c2ae087bf930aefca3f96bf86d47bb7d8046b" \
-                     "547250f828dca07e679be902c307ab341f1a6a120b8085aa2da0d8806686c2d7",
-        # https://asecuritysite.com/hash/lmhash
-        "LM hash": "dcf9caa6dbc2f2dfaad3b435b51404ee",
+        "KangarooTwelve128-128":
+            "b4f249b4f77c58df170aa4d1723db112",
+        "KangarooTwelve128-256":
+            "b4f249b4f77c58df170aa4d1723db1127d82f1d98d25ddda561ada459cd11a48",
+        "KangarooTwelve128-512":
+            "b4f249b4f77c58df170aa4d1723db1127d82f1d98d25ddda561ada459cd11a489242e112dbfb1f99a1de1d7e830d457778a66d1dc2aa44d61a1da91655122fb7",
+        "KangarooTwelve256-128":
+            "1848a4799bb4f5ca08ad8b1992fc9077",
+        "KangarooTwelve256-256":
+            "1848a4799bb4f5ca08ad8b1992fc9077998b4ad3f1f986d5c10da59de9f23e75",
+        "KangarooTwelve256-512":
+            "1848a4799bb4f5ca08ad8b1992fc9077998b4ad3f1f986d5c10da59de9f23e755c21f5e72959d76ff3b65e2347769d67393914bca74f42069062774e3776715c",
+        # https://emn178.github.io/online-tools/kmac128/
+        "KMAC128-128":
+            "b12d497a01f3b5c9faf89eab268ee7b0",
+        "KMAC128-256":
+            "d26ce5ceb3a1bccd03e454835b4b611aa0d5eba4c9940d05fae3deee7a7206b7",
+        "KMAC128-512":
+            "ba68f09ebe1332dfb1eedde4d47ddf9835bbb9723f429ec815b8e7d63c48828272cc9a16749b14f20f3e8ab865d8a5d82932947d53c01ccdd8d8c032b9fd1873",
+        # https://emn178.github.io/online-tools/kmac256/
+        "KMAC256-128":
+            "ab61345a6ca76d9f54f46b75acb150c4",
+        "KMAC256-256":
+            "19a6c774bfee80202736556b7aa0474e79bb1df95c62674c6e1246dc036c821e",
+        "KMAC256-512":
+            "c212695c45a612147c87e14d70890dd154af5704bbbe6e6f78aa6c08a1560eeccb1c9450a7ab0398625c7bd699557bc5c487a66d92a422626041aaa4a77a34e0",
         # https://github.com/jonelo/jacksum
-        "LSH256-224": "2a5a6f285ea628e2c5573c9bd66050f3f2b5b0a0e3ddce1b36d57e72",
-        "LSH256-256": "d3fe55d8ad2a50827b7bdf0dac026096a2f270453312b2cd94e9145073e9a942",
-        "LSH512-224": "bdc0991d9d6d813d44dd8d9e6fa9b767a585d576e08bcb6680a5e6f5",
-        "LSH512-256": "ff3129658616be12002c29be4f52877fda120a94f1c55a318f5959006ef0aa0b",
-        "LSH512-384": "78a457fe84429c854212f5cf765fee4dcd8cc62bf649a453ab76d8ee1b37077b" \
-                      "f28e64133cc007099ffbda39fcdc3c4a",
-        "LSH512-512": "267ccc1a5fd8e562864a8c934dc181f3f9ed07ed08843c52314b8ab2e0c09679" \
-                      "2e52e028069ceacfdadd62a71aa322f007a3706801a21778e74f7f591b60e4a3",
+        "Kupyna256":
+            "996899f2d7422ceaf552475036b2dc120607eff538abf2b8dff471a98a4740c6",
+        "Kupyna384":
+            "0956d8afa9653b5231614decb1cceb8162ae5b8ff2dc3b02417f86dc4df621d0ca5b1ff399d494766c93a6d2513cae3a",
+        "Kupyna512":
+            "d1b469f43e0963735b6cd08a6e75fc370956d8afa9653b5231614decb1cceb8162ae5b8ff2dc3b02417f86dc4df621d0ca5b1ff399d494766c93a6d2513cae3a",
         # https://github.com/jonelo/jacksum
-        "MarsupilamiFourteen": "919bed60248f664ff5272a86716c313a67a84eba658e67dcafe4f5bcdea6d293" \
-                               "fc100f65369237cc223c75f94a391e7ddac08c7bfcf14e36d58031c1fafe5e17",
+        "LSH256-224":
+            "6375aab1e1a1a446aa8d55a3c3f03e85edb96ab886649a34d1f1e876",
+        "LSH256-256":
+            "f8025b61eb10d80a7f03ccfb906222a0645bb175fdeee9595f223936edbf7070",
+        "LSH512-224":
+            "3b7d9fc1a1356755abefb5c4c24543068f0cd8d71b57129e8fb53dda",
+        "LSH512-256":
+            "5e4ebe2017e84f35420bda7486ebbd791e0ece579cc18e49341b9a526466e633",
+        "LSH512-384":
+            "f7c6f97cd902658ab17ba5696aa7bf79d49d36b46aeb9a8a563917a37459c8e28fe299cc8821d76fe6b94dfd5cfc8bc2",
+        "LSH512-512":
+            "bc0a2b9a0c99bdf2c8a83418c4bef13791c97cef25bd2be8fadbbb0f0807c44163085bde435cf7d41db0104dc87eb5cd47cf21698683375647bff65e2ef51e51",
+        # https://github.com/jonelo/jacksum
+        "MarsupilamiFourteen":
+            "3611bcaa666347770dbffd4562f137c5adfe2e09f3c4268ef7c7d7c0e6c5d59c21fa67c4cfdba29e449c944b1a16c4583f2be8a75fb4f7649df6b98698708ecf",
         # https://marekknapek.github.io/hash/
-        "MD2": "3fc0aab8f5715786a02393555aa9393c",
+        "MD2":
+            "03d85a0d629d2c442e987525319fc471",
         # https://marekknapek.github.io/hash/
-        "MD4": "90353ed2d3d2cd620347ff246e8fbab6",
+        "MD4":
+            "1bee69a46ba811185c194762abaeae90",
         # https://github.com/jonelo/jacksum
-        "MDC-2": "3d15b2993b260f9a295a7ea540b466bd",
-        # https://asecuritysite.com/hash/lmhash
-        "NTLM hash": "d7f46ed5fb59a15e1b6db14e813e2799",
+        "MDC-2":
+            "000ed54e093d61679aefbeae05bfe33a",
+        # https://www.browserling.com/tools/ntlm-hash
+        "NTLM hash":
+            "4e6a076ae1b04a815fa6332f69e2e231",
         # https://github.com/jonelo/jacksum
-        "Panama": "e0469269f7cf934863962838b33f9f145a75d28a56985cd66a96e572121c0f45",
-        # https://github.com/damaki/libkeccak
-        "ParallelHash128": "00dc8ab252a5a0eb8ba7490182c78ad6d46a9f393f0192dd8984ac9d2c6291d6",
-        "ParallelHash256": "c508d095ea7237ae28402af43e704399edd5558ccc683a5451c7ab385d8275aa" \
-                           "fa0bd3b4cddb41d082a403932f4d9012666fadcf7f5283f89ba0ca1d167246ea",
-        "ParallelHashXOF128": "62a65ad0f527a4c206c8f773302bc5613ffac0d086a8f6e72f489da9e01a58cb",
-        "ParallelHashXOF256": "ad03048f6a378dd18b7a7670797e8927b2585b3f93d0dea948a8925ed72c228f" \
-                              "2352833dd9332e4618ed79c4ce109ca700c4a653af5e77bc0b56d53a0ffdc35f",
+        "Panama":
+            "5f5ca355b90ac622b0aa7e654ef5f27e9e75111415b48b8afe3add1c6b89cba1",
+        # https://github.com/damaki/ksum
+        "ParallelHash128":    # ./bin/ksum --parallelhash128 --output-size=32 --block-size=8 -
+            "a6eb1bcdfd9531a193e65ea9c58a1902fbb51ea575e482ef9096049055db520f",
+        "ParallelHashXOF128": # ./bin/ksum --parallelhash128 --output-size=32 --block-size=8 --xof -
+            "762ca8cf752e88ebaf69c5b9c24728b0f63c95a2238cb9196998d282140d2989",
+        "ParallelHash256":    # ./bin/ksum --parallelhash256 --output-size=64 --block-size=8 -
+            "3f975d80fce91ea04f39e66052c6d35fc5bc8222c124063cbdb1328ea584c863bfbd4a41f667dfaf491564d244f1b1fce9c50767555655b3120ca253df50cda0",
+        "ParallelHashXOF256": # ./bin/ksum --parallelhash256 --output-size=64 --block-size=8 --xof -
+            "b9fa18ce16f8b6a4da80deee19e3fb24b51cf4e5c3087a79faf7764a5428faa785b9602e569f011dc1f557dc969529d513c166a36bcccc082b0692cd14f515af",
         # https://github.com/jonelo/jacksum
-        "PhotonBeetle": "a7045127356641578a56300d4802b98f80351c8a1367e0554141e4728cc652a8",
+        "PhotonBeetle":
+            "5ced20c8d747c62114bf691739821516135aa8413997cf34b4b8e40a25489762",
         # https://github.com/jonelo/jacksum
-        "RadioGatun32": "17dc1e3f7d87f05772f63bef9f737d3bbb75864dc8fc21f82ea27b773257842f",
-        "RadioGatun64": "0ddd58801c1203f939771bfcf8224bbf917ca34a7fe28fa0a0353ee5507c6e2e",
+        "RadioGatun32":
+            "191589005fec1f2a248f96a16e9553bf38d0aee1648ffa036655ce29c2e229ae",
+        "RadioGatun64":
+            "6219fb8dad92ebe5b2f7d18318f8da13cecbf13289d79f5abf4d253c6904c807",
         # https://www.webutils.pl/index.php?idx=ripemd
-        "RIPEMD-128": "cf40e861b1e917889720ce2ee335b4c1",
-        "RIPEMD-160": "5b481bd818e7863b580488f6174b2fdf48c211a2",
-        "RIPEMD-256": "87c1ac0a90061fc771e4f5403b830cbbd87b5f7fc5e1a8e836b822e89e39c34a",
-        "RIPEMD-320": "aa5516597409ecb2415a71251fe1a711f271f477d6428c72f02dcdfc985c8a2a" \
-                      "a4e930bbe83ac3c7",
+        "RIPEMD-128":
+            "3fa9b57f053c053fbe2735b2380db596",
+        "RIPEMD-160":
+            "37f332f68db77bd9d7edd4969571ad671cf9dd3b",
+        "RIPEMD-256":
+            "c3b0c2f764ac6d576a6c430fb61a6f2255b4fa833e094b1ba8c1e29b6353036f",
+        "RIPEMD-320":
+            "e7660e67549435c62141e51c9ab1dcc3b1ee9f65c0b3e561ae8f58c5dba3d21997781cd1cc6fbc34",
         # https://marekknapek.github.io/hash/
-        "SHA-0": "4c472b324e6216a90dac5d070363fc3f7644f6f0",
+        "SHA-0":
+            "b03b401ba92d77666221e843feebf8c561cea5f7",
         # https://md5hashing.net/hash/snefru
-        "Snefru128": "b3b1dc5b943d0715844079f616b6dbae",
+        "Snefru128":
+            "59d9539d0dd96d635b5bdbd1395bb86c",
         # https://md5hashing.net/hash/snefru256
-        "Snefru256": "68a64887d1b87f9767e993d23012ef838b2ca846ceb36d963375e62d7384b929",
+        "Snefru256":
+            "674caa75f9d8fd2089856b95e93a4fb42fa6c8702f8980e11d97a142d76cb358",
         # https://asecuritysite.com/hash/gost # codespell:ignore
-        "Streebog256": "e50036abf764cf12777cbda188b0e5474ebdb087496b4a7b03554fcd5a51675f",
-        "Streebog512": "a0967a41cc08e7fe4c997c9a4c5973f12a0db343d09050c0bf9eb95d262ed105" \
-                       "1e17dac859513452e0849a98a957b1560cf7f27eba353a23f80a231885a81ffc",
+        "Streebog256":
+            "3e7dea7f2384b6c5a3d0e24aaa29c05e89ddd762145030ec22c71a6db8b2c1f4",
+        "Streebog512":
+            "d2b793a0bb6cb5904828b5b6dcfb443bb8f33efc06ad09368878ae4cdc8245b97e60802469bed1e7c21a64ff0b179a6a1e0bb74d92965450a0adab69162c00fe",
         # https://www.webutils.pl/index.php?idx=tiger
-        "TIGER128,3": "11084622b563ab8b87146e6143abdbcf",
-        "TIGER160,3": "11084622b563ab8b87146e6143abdbcf24b3362d",
-        "TIGER192,3": "11084622b563ab8b87146e6143abdbcf24b3362dcbffb26a",
-        "TIGER128,4": "4de9258c8efb8ea92170f381be19c354",
-        "TIGER160,4": "4de9258c8efb8ea92170f381be19c354373622d3",
-        "TIGER192,4": "4de9258c8efb8ea92170f381be19c354373622d349897286",
+        "TIGER128,3":
+            "6d12a41e72e644f017b6f0e2f7b44c62",
+        "TIGER160,3":
+            "6d12a41e72e644f017b6f0e2f7b44c6285f06dd5",
+        "TIGER192,3":
+            "6d12a41e72e644f017b6f0e2f7b44c6285f06dd5d2c5b075",
+        "TIGER128,4":
+            "c1f3a704e9f6267e9f75fa47191f83c3",
+        "TIGER160,4":
+            "c1f3a704e9f6267e9f75fa47191f83c354100a04",
+        "TIGER192,4":
+            "c1f3a704e9f6267e9f75fa47191f83c354100a04c4f1dc6f",
         # https://marekknapek.github.io/hash/
-        "TIGER2/128,3": "71973b53e246026a865b3826aa65f5eb",
-        "TIGER2/160,3": "71973b53e246026a865b3826aa65f5eb4ff94cd6",
-        "TIGER2/192,3": "71973b53e246026a865b3826aa65f5eb4ff94cd6cf0cd8fa",
+        "TIGER2/128,3":
+            "976abff8062a2e9dcea3a1ace966ed9c",
+        "TIGER2/160,3":
+            "976abff8062a2e9dcea3a1ace966ed9c19cb8555",
+        "TIGER2/192,3":
+            "976abff8062a2e9dcea3a1ace966ed9c19cb85558b4976d8",
         # pycryptodome
-        "TupleHash128-128": "fc7c5cdeb2236fa96533c8ef5dc224c8",
-        "TupleHash128-256": "4ecffd54182a733b743c567cceaa1885a3c91a0254bf501d5c52e7d436f5736a",
-        "TupleHash128-512": "4ce4199c3cc3510ea00d6cee71369e5736b5dc491e9965508c6e03add7d2ffad" \
-                            "3e51b198bcc32c0a2b5eb4bf3570418399a10f958226cd96cf47966fc8684f04",
-        "TupleHash256-128": "c3a2ea77db796e5f28eec65b0638e1eb",
-        "TupleHash256-256": "d434dd5b7208302f753591b9801169a687f5f1611a2132941e83a9ad7de9fe6a",
-        "TupleHash256-512": "47f7874de70ff2bec15a58dd721326bf14150467a27b0bc90c69df4fd322cf7a" \
-                            "db54f98257b71a88f5ce066d8bb8cd0e858cdc2fd82b083df8dbd10a7d19fa2b",
-        # pycryptodome
-        "TurboSHAKE128-128": "6a03eb22b6f9245cb048561ca750216b",
-        "TurboSHAKE128-256": "6a03eb22b6f9245cb048561ca750216b9637f3c4de590199cdf739277f117561",
-        "TurboSHAKE128-512": "6a03eb22b6f9245cb048561ca750216b9637f3c4de590199cdf739277f117561" \
-                            "242dfdc618f3039ac8ebd9e3deabe8e594bf9f02fc999c786db6035a0f89a0e6",
-        "TurboSHAKE256-128": "9ea8526cc9233c0d27a2a2039f096be0",
-        "TurboSHAKE256-256": "9ea8526cc9233c0d27a2a2039f096be04e92fd82eb39c69d81c1f2ee6b01060d",
-        "TurboSHAKE256-512": "9ea8526cc9233c0d27a2a2039f096be04e92fd82eb39c69d81c1f2ee6b01060d" \
-                             "76ce6c0b61cfeb164d31b0ba2f0abb4a6aa3ef25901f2ca13a3c556e442ccb6f",
+        "TupleHash128-128":
+            "b0b09f20d5e98972f1f8272e700cf912",
+        "TupleHash128-256":
+            "1f223cc030a7f9e63d5207e191660e8d71d0773a50178bd63646a8767555bfdd",
+        "TupleHash128-512":
+            "fa5a91dd0ef12c48f23e035a3ed51502a4ade0524a30d834d28201535a111952c4b56dfd30937577dd955fbdd4128d277c0e3f364bd81d5a727abc5c3cc78fbf",
+        "TupleHash256-128":
+            "e20429d277603b218025dcba37c230e4",
+        "TupleHash256-256":
+            "ee14da8f09fd9a3dfd91ee0b84f75f96d57b979b934981b2cd631522e7279a3a",
+        "TupleHash256-512":
+            "9cd329b4ac886b3aab5c09e19dbd5368c33dbc9a48e57e918873e8d95096d43b390bd805d5b6be5d75e0549908861f5bcaf1d0857818eb9b3b2bc6249a333b5f",
+        # https://marekknapek.github.io/hash/
+        "TurboSHAKE128-128":
+            "76a1720a4848ab64e67e563f16b8c5aa",
+        "TurboSHAKE128-256":
+            "76a1720a4848ab64e67e563f16b8c5aa492b698a4d93429735fd02354657fbf7",
+        "TurboSHAKE128-512":
+            "76a1720a4848ab64e67e563f16b8c5aa492b698a4d93429735fd02354657fbf7a0689ec77b4c795fda9daab410c63092f54200846c34120ff2b253e9fd8d9fc4",
+        "TurboSHAKE256-128":
+            "b6e91a412c262c7936b069f67bd21c2f",
+        "TurboSHAKE256-256":
+            "b6e91a412c262c7936b069f67bd21c2f8ecc48bda8dc6eebfbaf6fcaa82191c3",
+        "TurboSHAKE256-512":
+            "b6e91a412c262c7936b069f67bd21c2f8ecc48bda8dc6eebfbaf6fcaa82191c3974462707ab2a5c5d704b0e874860a2a3fddb588f507c9b4f0417e2b66316090",
         # https://github.com/jonelo/jacksum
-        "VSH-1024": "0000000000000000000000000000000000000000000000000000000000000000" \
-                    "0000000000000000000000000000000000000000000000000000000000000000" \
-                    "0000000000000000000000000000000000000000000000000000000000000000" \
-                    "000000000000000000000000000000000000000001a9dbfd214d278f702e9435",
+        "VSH-1024":
+            "45f3882692a07aa2fd6c76815ac5f784453e09297a4c9374fb3b6a647b6569f8951c519676f89a7d7bb7f44faa025bea88900d3efcc3a4f739a748ac93f66c1f" \
+            "6391daf3daa5e73ae1aaef031b87f11ecd5b778f884cbe397a57ad61fc039981b7cea94843be90fab35c4b92e274343dc9b1b4d24bec6154b416b9597ad52bbe",
         # https://asecuritysite.com/javascript/js04
-        "Whirlpool-0": "6fb2d3919950eb545e9295b905bc22ce2aee368193994c7c6dfe8a643669ee49" \
-                       "407ac9f93e88f7fa00f805790e444f39dcade4e03b94c5453335b4bb7f3456e4",
-        "Whirlpool-T": "04577eb557964ddee0775a8aea4b11ed6168a0e2d108ec4c35acebf34a5d8b20" \
-                       "b580321adc1b773f5110cf0279640d87d8b4b0d848a62b06e45800170a7a6e3c",
-        "Whirlpool": "78541cfb65b3f1a3959bcc844273862857f76bd32765400070d1cc0c9956af63" \
-                     "c12a26a96aa0f4f7e62eb9e7f0f187f5a46b8f92e14f96f41b10168222be8b2f",
+        "Whirlpool-0":
+            "4f8f5cb531e3d49a61cf417cd133792ccfa501fd8da53ee368fed20e5fe0248c3a0b64f98a6533cee1da614c3a8ddec791ff05fee6d971d57c1348320f4eb42d",
+        "Whirlpool-T":
+            "3ccf8252d8bbb258460d9aa999c06ee38e67cb546cffcf48e91f700f6fc7c183ac8cc3d3096dd30a35b01f4620a1e3a20d79cd5168544d9e1b7cdf49970e87f1",
+        "Whirlpool":
+            "b97de512e91e3828b40d2b0fdce9ceb3c4a71f9bea8d88e75c4fa854df36725fd2b52eb6544edcacd6f8beddfea403cb55ae31f03ad62a5ef54e42ee82c3fb35",
         # https://github.com/jonelo/jacksum
-        "Xoodyak": "54c954dd273a558fce913490f8f4b4dc2ae9ac68e57af2c3e2950419e60646fa",
+        "Xoodyak":
+            "087376b970c53ed0339a4fe54f4462f0f34e4e50ed09b4314ed24b32ba9822cb",
         # -------------------- relatively short --------------------
         # https://asecuritysite.com/hash/smh
-        "CityHash32": "ba1fe1de",
-        "CityHash64": "d0e3a446f95cab20",
-        "CityHash128": "0a57b660d4207cd70fae0f385c9442af",
-        # https://asecuritysite.com/hash/smh
-        "FarmHash32 (fp)": "ba1fe1de",
-        "FarmHash64 (fp)": "d0e3a446f95cab20",
-        "FarmHash128 (fp)": "0fae0f385c9442af0a57b660d4207cd7",
+        "CityHash32":
+            "a339c810",
+        "CityHash64":
+            "c268724928feca7d",
+        "CityHash128":
+            "a7f9a86a2d60c968bf1498f876dbe279",
+        # https://asecuritysite.com/hash/smh # fp: fingerpint
+        "FarmHash32 (fp)":
+            "ec998320",
+        "FarmHash64 (fp)":
+            "abbe83f33b1b5134",
+        "FarmHash128 (fp)":
+            "bf1498f876dbe279a7f9a86a2d60c968",
         # https://github.com/ztanml/fast-hash
-        "FastHash32": "76f00c7a",
-        "FastHash64": "12b481039cc37489",
+        "FastHash32":
+            "136bd7e4",
+        "FastHash64":
+            "4611ffb633a627d2",
         # https://github.com/ogxd/gxhash
-        "GxHash32": "d26e1126",
-        "GxHash64": "d26e11265ea1f534",
-        "GxHash128": "d26e11265ea1f534d2ef311e77e6fc7e",
+        "GxHash32":
+            "0bc03dd6",
+        "GxHash64":
+            "0bc03dd6b35d0186",
+        "GxHash128":
+            "0bc03dd6b35d01867892d3b59509300d",
         # https://pypi.org/project/siphash-cffi/
-        "HalfSipHash32_2_4": "c4fc2f58",
-        "HalfSipHash64_2_4": "ca03fd7a9e4e5b1b",
+        "HalfSipHash32_2_4":
+            "ed285d61",
+        "HalfSipHash64_2_4":
+            "31f20e6c986fe414",
         # https://asecuritysite.com/hash/smh_Halftime
-        "HalfTimeHash64": "e35a3ccbfdb1141a",
-        "HalfTimeHash128": "9cb91ba4310167e8",
-        "HalfTimeHash256": "c544a39d9a2a450a",
-        "HalfTimeHash512": "b9202baff3881d67",
+        "HalfTimeHash64":
+            "45bf6c18f4c47ad1",
+        "HalfTimeHash128":
+            "08f19709c03904d6",
+        "HalfTimeHash256":
+            "4761c86ed217c2e0",
+        "HalfTimeHash512":
+            "8dc86dd14f852fe8",
         # https://asecuritysite.com/hash/smh
-        "HighwayHash64": "0b026f1ded9e24ab",
-        "HighwayHash128": "a381734b906dba499c04376ee01b8b4f",
-        "HighwayHash256": "3f8e342fdd1651aeadcc4da5ab7fca0ef690bb56a66929c5411e693b0a8dc3ae",
+        "HighwayHash64":
+            "552d6e674e35333e",
+        "HighwayHash128":
+            "d59d55e677071404dcded33a97cfee4b",
+        "HighwayHash256":
+            "40e0a9717f9dee85a7c86aadee4e2bd884656a3eec42a8172d340faa3cb127de",
         # https://github.com/avaneev/komihash
-        "KomiHash": "6c3ea0c7757ed774",
+        "KomiHash":
+            "4d86bedb30f8641c",
         # https://asecuritysite.com/hash/smh
-        "MetroHash64": "f6401ec51c1aba77", # need byte swap
-        "MetroHash128": "086a19058454fe348734adf6946ae1ec", # need byte swap
+        "MetroHash64":
+            "37b871151974389c", # need byte swap
+        "MetroHash128":
+            "97d78a67ac6c62e9870198793485d405", # need byte swap
         # https://asecuritysite.com/hash/smh
-        "Murmur1": "4f0cd660", # need int->hex (LE)
-        # https://murmurhash.shorelabs.com/
-        "Murmur2": "d9734258", # need int->hex (LE)
+        "Murmur1":
+            "851e251a", # need int->hex (LE)
         # https://www.ciphertools.org/tools/murmur2/text
-        "Murmur2a": "9aef82bf", # need int->hex (LE)
-        # https://www.ciphertools.org/tools/murmur2/text
-        "Murmur64a": "04c070c3f10e8471", # need int->hex(LE)
-        "Murmur64b": "d3162f20c6346d8c", # need int->hex(LE)
+        "Murmur2":
+            "d0292721", # need int->hex (LE)
+        "Murmur2a":
+            "e5b5e153", # need int->hex (LE)
+        "Murmur64a":
+            "1b862a0433ca8955", # need int->hex(LE)
+        "Murmur64b":
+            "51b7c28fccd78d75", # need int->hex(LE)
         # https://murmurhash.shorelabs.com/
-        "Murmur3a": "3c670daa", # need int->hex (LE)
-        "Murmur3c": "845f46cf34f35c3b34f35c3b34f35c3b", # need 4-byte swap
-        "Murmur3f": "fc765a89dd529b4885593d95128e23c1", # need 8-byte swap
+        "Murmur3a":
+            "23f74f2e", # need int->hex (LE)
+        "Murmur3c":
+            "c383152f" "672ceeec" "6cf67b5d" "2c1de9e5", # need 4-byte swap
+        "Murmur3f":
+            "6c1b07bc7bbc4be3" "47939ac4a93c437a", # need 8-byte swap
         # https://pypi.org/project/siphash-cffi/
-        "SipHash64_2_4": "853440dfa96333a1",
-        "SipHash64_1_3": "9ea30335f2d625ec",
-        "SipHash64_4_8": "b42c9060b6f9d0e0",
-        "SipHash128_2_4": "9e417e4039896730590b7de94f430610",
-        "SipHash128_4_8": "842457abcbb1467aabaa841d7b7e5986",
+        "SipHash64_2_4":
+            "0de4702506520059",
+        "SipHash64_1_3":
+            "1e450cd0d376f68d",
+        "SipHash64_4_8":
+            "ed013f3fab3d1abd",
+        "SipHash128_2_4":
+            "df8c5ce876c57f25c03f1bb5df591ab2",
+        "SipHash128_4_8":
+            "23e0a6e8aae3f2e571ba3536bfbea2ff",
         # https://asecuritysite.com/hash/smh
-        "SpookyHash32": "29289f57", # need byte swap
-        "SpookyHash64": "29289f5710bd2825", # need byte swap
-        "SpookyHash128": "29289f5710bd2825c2607e47db8ff439",
+        "SpookyHash32":
+            "c79306aa", # need byte swap
+        "SpookyHash64":
+            "c79306aa46e8122b", # need byte swap
+        "SpookyHash128":
+            "c79306aa46e8122b1b340724747e361d",
         # https://asecuritysite.com/hash/smh_t1ha
-        "T1HA0_32": "ea20dace",
-        "T1HA0_64": "fc6ac5b8fd7be2a2",
-        "T1HA1_64": "ec12ff5c6a2e80f7",
-        "T1HA2_64": "fc6ac5b8fd7be2a2",
-        "T1HA2_128": "3728551b03a1300f9ec6bd85baff1c7a",
+        "T1HA0_32":
+            "d0e6c0a9",
+        "T1HA1_64":
+            "86235f2773f9ada1",
+        "T1HA2_64":
+            "1f1d052e973ff69d",
+        "T1HA2_128":
+            "5891d221cdf479758dd36078748f9731",
         # https://asecuritysite.com/hash/smh
-        "WYHash32": "46ae4e6b",
-        "WYHash64": "0380a909f6736d7e",
+        "WYHash32":
+            "88ca02ad",
+        "WYHash64":
+            "d986947fb5be3867",
         # https://www.coderstool.com/xxh-hash-generator
-        "xxHash32": "02b6a9f5",
-        "xxHash64": "cf40b5b72bc43e77",
-        "xxHash3-64": "ab12e0c62bf99c9d",
-        "xxHash3-128": "4a304154487284efd582166935acd8a2",
+        "xxHash32":
+            "e85ea4de",
+        "xxHash64":
+            "0b242d361fda71bc",
+        "xxHash3-64":
+            "ce7d19a5418fb365",
+        "xxHash3-128":
+            "ddd650205ca3e7fa24a1cc2e3a8a7651",
         # -------------------- checksum --------------------
-        # https://asecuritysite.com/hash/gphash
-        "RS Hash": "8ffbc5b0",
-        # https://www.convertcase.com/hashing/js-hash-calculator
-        "JS Hash": "408c6482",
-        # https://www.convertcase.com/hashing/pjw-hash-calculator
-        "PJW Hash": "00045551",
-        # https://github.com/jonelo/jacksum
-        "ELF Hash": "00045551",
-        # https://www.ciphertools.org/tools/bkdr/text
-        "BKDR Hash": "08c6db28",
-        # https://md5hashing.net/hash/sdbm
-        "SDBM Hash": "f07e0080",
-        # https://www.convertcase.com/hashing/djb-hash-calculator
-        "DJB2 (add)": "7c81d149",
-        # https://md5hashing.net/hash/djb2
-        "DJB2 (xor)": "7c7e8745",
-        # https://www.convertcase.com/hashing/dek-hash-calculator
-        "DEK Hash": "00618c61",
         # https://www.partow.net/programming/hashfunctions/ (C implementation)
-        "AP Hash": "d9305920",
-        # https://md5hashing.net/hash/joaat
-        "JOAAT": "b010242c",
-        # https://md5calc.com/hash/adler32
-        "Adler32": "028e0105",
+        "RS Hash":
+            "29a4500b",
+        # https://www.partow.net/programming/hashfunctions/ (C implementation)
+        "JS Hash":
+            "dfeffe38",
+        # https://www.partow.net/programming/hashfunctions/ (C implementation)
+        "PJW Hash":
+            "04280c57",
+        # https://www.partow.net/programming/hashfunctions/ (C implementation)
+        "ELF Hash":
+            "04280c57",
+        # https://www.partow.net/programming/hashfunctions/ (C implementation)
+        "BKDR Hash":
+            "c5181667",
+        # https://www.partow.net/programming/hashfunctions/ (C implementation)
+        "SDBM Hash":
+            "8ca77173",
+        # https://www.partow.net/programming/hashfunctions/ (C implementation)
+        "DJB2":
+            "34cc38de",
+        # https://www.partow.net/programming/hashfunctions/ (C implementation)
+        "DEK Hash":
+            "ea0e6658",
+        # https://www.partow.net/programming/hashfunctions/ (C implementation)
+        "AP Hash":
+            "a18caec3",
+        # https://md5calc.com/hash/joaat/
+        "JOAAT":
+            "519e91f5",
+        # https://md5calc.com/hash/adler32/
+        "Adler32":
+            "5bdc0fda",
         # https://github.com/mjethani/superfasthash
-        "SuperFastHash": "78c89319",
+        "SuperFastHash":
+            "e37cbf05",
         # https://github.com/silvasur/buzhash
-        "BuzHash": "dd867b31",
+        "BuzHash":
+            "69ef5bad",
         # https://metacpan.org/release/MOOLI/Algorithm-Nhash-0.002/source/lib/Algorithm/Nhash.pm
-        "NHash": "6db0",
+        "NHash":
+            "03f831",
         # -------------------- MD5/SHA1/SHA256 n-times --------------------
         # self
-        "MD5 x2 (raw)": "e5c0442336da4b88d1bb70f1c00a8d81",
-        "MD5 x3 (raw)": "455f9b73a7efe384e74d1ebab057af06",
-        "MD5 x4 (raw)": "5f2f0e30010bccc4e18b9d3cb88c9acc",
-        "MD5 x5 (raw)": "08baf4479c845a5117afe7e7e0e0bca6",
-        "MD5 x2 (hex)": "9686b1b7998742893c8148e861d08f9b",
-        "MD5 x3 (hex)": "b40c55e3e2fdd508db889d8c71b230f1",
-        "MD5 x4 (hex)": "1176317362643bc09c6f5f6f0b3ac537",
-        "MD5 x5 (hex)": "dd76badc1f5ade24f6e69c2c80010e08",
-        "SHA1 x2 (raw)": "73a62eaf29047523804a1c4d73034eb847b186c2",
-        "SHA1 x3 (raw)": "473c4c59c91fabd5ad9dc6f1a7006d0783e5351f",
-        "SHA1 x4 (raw)": "312dc0119fe87d2fafb54453d8dd160dfe2e9a64",
-        "SHA1 x5 (raw)": "29d206ef78d6f72b0de1410bfb103c6bf6bf930a",
-        "SHA1 x2 (hex)": "fa901279e7d1f9fb8801ee2b26f94bfbedc52ad2",
-        "SHA1 x3 (hex)": "8d42601236e8a82ff4068a24703b2798a074af19",
-        "SHA1 x4 (hex)": "4608d6cdd1043c4f2da31c258408f55a6b44e2cd",
-        "SHA1 x5 (hex)": "846f4690c284c2daed1b2b19b2a18f0dab2fd598",
-        "SHA256 x2 (raw)": "fcdedab12f9eb01b4a8e47d2b0b7fe01aef336267e703b30c9953461f0779c67",
-        "SHA256 x3 (raw)": "bfb3a50ba6a2feb2c0d8a6101f1ae6a8bb40a1947a4c68c45f05ceed859c271d",
-        "SHA256 x4 (raw)": "3da31d9e1700e0e154283f650a638b618b7ee7cb7952291d61bb8dbc870e1bfe",
-        "SHA256 x5 (raw)": "acf7b5dbb971d39af81dcc5e944c4bda6cf37bb8c0b3d79da0a4311b300497a4",
-        "SHA256 x2 (hex)": "bc60b809690fd31029823d942f495c9f10260303212074fc7991916dc1e90b8e",
-        "SHA256 x3 (hex)": "dd4eaec01b7b005ec00747b3c102ebde369bedae55bc295376616cb06889d4b5",
-        "SHA256 x4 (hex)": "30417a796ae57d36b0740249797c91764acb62c57581ea041276df2f3b257c7a",
-        "SHA256 x5 (hex)": "87bef0ca44ef6618f81b1a846a2f2b62643a63ee25535968c642a3fc4ea94f53",
+        "MD5 x2 (raw)":
+            "a5f6bc8c547364db2a98ccb9386ea241",
+        "MD5 x3 (raw)":
+            "7b99681999eccbd5f4cdbd87d3335691",
+        "MD5 x4 (raw)":
+            "842b4b942deaef9cb727bd067b9a20d1",
+        "MD5 x5 (raw)":
+            "55522480f27438c9b1afe39ee24dda1c",
+        "MD5 x2 (hex)":
+            "883c631dbcaca4373e1428a73c6cb19d",
+        "MD5 x3 (hex)":
+            "4381d02b989be5b7812e4d15c7d02b27",
+        "MD5 x4 (hex)":
+            "0903fc4520b46c84e0eb563036941e15",
+        "MD5 x5 (hex)":
+            "c9681bee6c4ab3bd0ea4b03e27341be6",
+        "SHA1 x2 (raw)":
+            "a4e4d26fd0c6455e23e2187c3aabe844332aa1b3",
+        "SHA1 x3 (raw)":
+            "ae3924f937127c28eb67b3c287416da8f7222b09",
+        "SHA1 x4 (raw)":
+            "22ce3d415294049921a5973b14cf86561d6a1020",
+        "SHA1 x5 (raw)":
+            "5410a01a85a03f60921eb5ae6fcf8bf219916385",
+        "SHA1 x2 (hex)":
+            "efc4fe664cbe7cec1a06f73305a414b55d7034d3",
+        "SHA1 x3 (hex)":
+            "ff5b671f805069f47c0446296f9043d27123d52c",
+        "SHA1 x4 (hex)":
+            "959bb6a982ae22b8dc7476b6a5099df4d449255e",
+        "SHA1 x5 (hex)":
+            "58464ba20599b425cbf762947a512ffeef6433da",
+        "SHA256 x2 (raw)":
+            "6d37795021e544d82b41850edf7aabab9a0ebe274e54a519840c4666f35b3937",
+        "SHA256 x3 (raw)":
+            "c9280b1eecf03730cd24fbf25fbb482e0efd423c1d8824f54056cf8390fdf445",
+        "SHA256 x4 (raw)":
+            "0059752a917970d20f26f075a203df21a43416a9336fc1a40a7d74cb995898a0",
+        "SHA256 x5 (raw)":
+            "03d5962dde4a1fc73e8351e3a659deeebd4b580649d344b8290473ecd5f47bde",
+        "SHA256 x2 (hex)":
+            "d5074362d20d3c33a1a3e7235632271c276818ff686e25196cb6d89d98363f43",
+        "SHA256 x3 (hex)":
+            "cb990af233d0d01de6f42683086b99b13332f26dc5e8d98991a97659be090b58",
+        "SHA256 x4 (hex)":
+            "506d96a7ee221c2881cd0e73d7f9c8923ce26cfa189ffaf447807c3b8519bcf9",
+        "SHA256 x5 (hex)":
+            "fb26873649b20d04274ebc569a8b6a06a5d80fcae6025b9631ecb25bc5f22a7c",
     }
 
     def hash_check_one(self, hname, h):
         bit = len(h) * 4
         byte = bit // 8
 
-        expected = self.test_vector_AAAA.get(hname, None)
+        expected = self.test_vectors.get(hname, None)
         if expected is None:
-            self.err_add_out("{:18s}:[{:3d}b/{:2d}B] {:s}".format(hname, bit, byte, "Not found"))
+            self.err_add_out("{:26s}:[{:4d}b/{:3d}B] {:s}".format(hname, bit, byte, "Not found"))
             return
 
         if expected != h:
-            self.err_add_out("{:18s}:[{:3d}b/{:2d}B] {:s}".format(hname, bit, byte, "Failed"))
+            self.err_add_out("{:26s}:[{:4d}b/{:3d}B] {:s}".format(hname, bit, byte, "Failed"))
             return
 
         if not self.args.smart:
-            self.info_add_out("{:18s}:[{:3d}b/{:2d}B] {:s}".format(hname, bit, byte, "Success"))
+            self.info_add_out("{:26s}:[{:4d}b/{:3d}B] {:s}".format(hname, bit, byte, "Success"))
         return
 
     def hash_test(self):
-        value = b"AAAA"
+        value = b"The quick brown fox jumps over the lazy dog"
         self.out.append(titlify("Hash({!r})".format(value)))
 
         for elem in self.get_valid_hash_funcs():
