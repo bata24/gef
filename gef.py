@@ -95825,6 +95825,7 @@ class HashCommand(GenericCommand):
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("memory")
+    subparsers.add_parser("file")
     subparsers.add_parser("value")
     subparsers.add_parser("list")
     subparsers.add_parser("test")
@@ -96331,23 +96332,17 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
             step = get_pagesize()
 
         for chunk_addr in range(start_address, end_address, step):
-            if chunk_addr + step > end_address:
-                chunk_size = end_address - chunk_addr
-            else:
-                chunk_size = step
-
+            chunk_size = min(end_address - chunk_addr, step)
             try:
                 mem = read_memory(chunk_addr, chunk_size)
             except (gdb.MemoryError, MemoryError):
                 err("Memory read error")
                 return False
-
             try:
                 hfunc.update(mem)
             except ValueError:
                 return None
             del mem
-
         return hfunc.hexdigest()
 
     def process(self):
@@ -96380,6 +96375,92 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
         self.out.append("Address: {:#x}".format(args.location))
         self.out.append("Size: {:#x}".format(args.size))
         self.process()
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class HashFileCommand(HashCommand, BufferingOutput):
+    """Calculate hash from file."""
+
+    _cmdline_ = "hash file"
+    _category_ = "03-e. Memory - Calculation"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("filename", metavar="FILE", help="the filepath for hash calculation.")
+    parser.add_argument("start", metavar="START_POS", nargs="?", default=0, type=AddressUtil.parse_address,
+                        help="the start position for hash calculation.")
+    parser.add_argument("size", metavar="SIZE", nargs="?", type=AddressUtil.parse_address,
+                        help="the size for hash calculation.")
+    parser.add_argument("-f", "--filter", metavar="REGEX", type=re.compile, default=[], action="append",
+                        help="filter by REGEX pattern.")
+    parser.add_argument("-l", "--length-filter", type=AddressUtil.parse_address,
+                        help="filter by hash byte length.")
+    parser.add_argument("-s", "--smart", action="count", default=0, help="increase output smart level. (-s, -ss)")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__(prefix=False, complete=gdb.COMPLETE_FILENAME)
+        return
+
+    def calc_hash(self, hfunc, filename, start_pos, end_pos):
+        # When calculating the hash of a very large range,
+        # it is not practical to store the entire data in memory.
+        # It is preferable to calculate it in blocks.
+
+        step = 0x400 * get_pagesize()
+
+        with open(self.args.filename, "rb") as f:
+            f.seek(start_pos)
+            for chunk_pos in range(start_pos, end_pos, step):
+                chunk_size = min(end_pos - chunk_pos, step)
+                data = f.read(chunk_size)
+                try:
+                    hfunc.update(data)
+                except ValueError:
+                    return None
+                del data
+        return hfunc.hexdigest()
+
+    def process(self, filename, start_pos, end_pos):
+        tqdm = GefUtil.get_tqdm()
+        hash_funcs = list(self.get_valid_hash_funcs())
+        for elem in tqdm(hash_funcs, leave=False, total=len(hash_funcs)):
+            if isinstance(elem, str):
+                if self.args.smart:
+                    if elem != "hashlib":
+                        break
+                self.out.append(titlify(elem))
+                continue
+
+            hname, hfunc = elem
+            if not self.should_be_displayed(hname, hfunc):
+                continue
+            h = self.calc_hash(hfunc, filename, start_pos, end_pos)
+            if h is False:
+                return
+            if h is None:
+                continue
+            line = self.make_line(hname, hfunc, h)
+            self.out.append(line)
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        self.out = []
+        if not os.path.exists(args.filename):
+            err("File not found")
+            return
+        self.out.append("Path: {:s}".format(args.filename))
+        self.out.append("FileSize: {:#x}".format(os.path.getsize(args.filename)))
+
+        if args.size is None:
+            end_pos = args.start + os.path.getsize(args.filename)
+        else:
+            end_pos = args.start + args.size
+
+        self.process(args.filename, args.start, end_pos)
         self.print_output(check_terminal_size=True)
         return
 
@@ -97973,6 +98054,7 @@ class CrcCommand(GenericCommand, BufferingOutput):
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("memory")
+    subparsers.add_parser("file")
     subparsers.add_parser("value")
     _syntax_ = parser.format_help()
 
@@ -98104,13 +98186,11 @@ class CrcMemoryCommand(CrcCommand):
                 chunk_size = end_address - chunk_addr
             else:
                 chunk_size = step
-
             try:
                 mem = read_memory(chunk_addr, chunk_size)
             except (gdb.MemoryError, MemoryError):
                 err("Memory read error")
                 return False
-
             try:
                 cfunc.process(mem)
             except ValueError:
@@ -98128,6 +98208,75 @@ class CrcMemoryCommand(CrcCommand):
 
         for cname, cfunc in self.get_valid_crc_funcs():
             crc = self.calc_crc(cfunc, args.location, args.location + args.size)
+            if crc is False:
+                return
+            if crc is None:
+                continue
+            line = self.make_line(cname, cfunc, crc)
+            self.out.append(line)
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class CrcFileCommand(CrcCommand):
+    """Calculate crc from file."""
+
+    _cmdline_ = "crc file"
+    _category_ = "03-e. Memory - Calculation"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("filename", metavar="FILE", help="the filepath for crc calculation.")
+    parser.add_argument("start", metavar="START_POS", nargs="?", default=0, type=AddressUtil.parse_address,
+                        help="the start position for crc calculation.")
+    parser.add_argument("size", metavar="SIZE", nargs="?", type=AddressUtil.parse_address,
+                        help="the size for crc calculation.")
+    parser.add_argument("-f", "--filter", metavar="REGEX", type=re.compile, default=[], action="append",
+                        help="filter by REGEX pattern.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__(prefix=False, complete=gdb.COMPLETE_FILENAME)
+        return
+
+    def calc_crc(self, cfunc, filename, start_pos, end_pos):
+        # When calculating the crc of a very large range,
+        # it is not practical to store the entire data in memory.
+        # It is preferable to calculate it in blocks.
+
+        step = 0x400 * get_pagesize()
+
+        with open(self.args.filename, "rb") as f:
+            f.seek(start_pos)
+            for chunk_pos in range(start_pos, end_pos, step):
+                chunk_size = min(end_pos - chunk_pos, step)
+                data = f.read(chunk_size)
+                try:
+                    cfunc.process(data)
+                except ValueError:
+                    return None
+                del data
+        return cfunc.finalhex()
+
+    @parse_args
+    @only_if_gdb_running
+    @ModuleLoader.load_crccheck
+    def do_invoke(self, args):
+        self.out = []
+        if not os.path.exists(args.filename):
+            err("File not found")
+            return
+        self.out.append("Path: {:s}".format(args.filename))
+        self.out.append("FileSize: {:#x}".format(os.path.getsize(args.filename)))
+
+        if args.size is None:
+            end_pos = args.start + os.path.getsize(args.filename)
+        else:
+            end_pos = args.start + args.size
+
+        for cname, cfunc in self.get_valid_crc_funcs():
+            crc = self.calc_crc(cfunc, args.filename, args.start, end_pos)
             if crc is False:
                 return
             if crc is None:
