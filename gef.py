@@ -77511,6 +77511,61 @@ class Hash:
             0x0, 0x6, 0x6, 0x7, 0x3, 0x2, 0x2, 0xa,
         ]
 
+        def build_jh_tables(s0, s1, rc_zero):
+            L = [[0] * 16 for _ in range(16)]
+            for a in range(16):
+                for b in range(16):
+                    tb = b ^ (((a << 1) ^ (a >> 3) ^ (((a >> 2) & 0x2))) & 0xf)
+                    ta = a ^ (((tb << 1) ^ (tb >> 3) ^ (((tb >> 2) & 0x2))) & 0xf)
+                    L[a][b] = (ta, tb)
+            L_TRANSF = tuple(tuple(row) for row in L)
+
+            P = [0] * 256
+            for i in range(256):
+                swapped_i = i ^ 1 if (i & 2) else i
+                if swapped_i % 2 == 0:
+                    k = swapped_i // 2
+                    final_idx = k
+                else:
+                    k = swapped_i // 2
+                    final_idx = 128 + k
+                if final_idx >= 128:
+                    final_idx ^= 1
+                P[i] = final_idx
+            INV_P = [0] * 256
+            for i in range(256):
+                INV_P[P[i]] = i
+            INV_P = tuple(INV_P)
+
+            rc = rc_zero[:]
+            SBOX_RND = []
+            for _rnd in range(42):
+                sboxes = []
+                for i in range(256):
+                    rc_bit = (rc[i >> 2] >> (3 - (i & 3))) & 1
+                    sboxes.append(tuple(s1) if rc_bit else tuple(s0))
+                SBOX_RND.append(tuple(sboxes))
+
+                tem = [0] * 64
+                for i in range(64):
+                    tem[i] = s0[rc[i]]
+                for i in range(0, 64, 2):
+                    tem[i], tem[i + 1] = L[tem[i]][tem[i + 1]]
+                for i in range(0, 64, 4):
+                    tem[i + 2], tem[i + 3] = tem[i + 3], tem[i + 2]
+                new_rc = [0] * 64
+                for i in range(32):
+                    new_rc[i] = tem[i << 1]
+                    new_rc[i + 32] = tem[(i << 1) + 1]
+                for i in range(32, 64, 2):
+                    new_rc[i], new_rc[i + 1] = new_rc[i + 1], new_rc[i]
+                rc = new_rc
+
+            return L_TRANSF, INV_P, tuple(SBOX_RND)
+
+        L_TRANSF, INV_P, SBOX_RND = build_jh_tables(sbox0, sbox1, roundconstant_zero)
+        del build_jh_tables
+
         hashbitlen = None
         digest_size = None
 
@@ -77617,97 +77672,56 @@ class Hash:
         def hexdigest(self):
             return self.digest().hex()
 
-        def l_transform(self, a, b):
-            b ^= (((a << 1) ^ (a >> 3) ^ (((a >> 2) & 0x2))) & 0xf)
-            a ^= (((b << 1) ^ (b >> 3) ^ (((b >> 2) & 0x2))) & 0xf)
-            a &= 0xf
-            b &= 0xf
-            return a, b
-
-        def update_roundconstant(self):
-            tem = [0] * 64
-            for i in range(64):
-                tem[i] = self.sbox0[self.roundconstant[i]]
-
-            for i in range(0, 64, 2):
-                tem[i], tem[i + 1] = self.l_transform(tem[i], tem[i + 1])
-
-            for i in range(0, 64, 4):
-                tem[i + 2], tem[i + 3] = tem[i + 3], tem[i + 2]
-
-            for i in range(32):
-                self.roundconstant[i] = tem[i << 1]
-                self.roundconstant[i + 32] = tem[(i << 1) + 1]
-
-            for i in range(32, 64, 2):
-                self.roundconstant[i], self.roundconstant[i + 1] = self.roundconstant[i + 1], self.roundconstant[i]
-            return
-
-        def r8(self):
-            tem = [0] * 256
-            for i in range(256):
-                rc_bit = (self.roundconstant[i >> 2] >> (3 - (i & 3))) & 1
-                if rc_bit:
-                    tem[i] = self.sbox1[self.A[i]]
-                else:
-                    tem[i] = self.sbox0[self.A[i]]
-
-            for i in range(0, 256, 2):
-                tem[i], tem[i + 1] = self.l_transform(tem[i], tem[i + 1])
-
-            for i in range(0, 256, 4):
-                tem[i + 2], tem[i + 3] = tem[i + 3], tem[i + 2]
-
-            for i in range(128):
-                self.A[i] = tem[i << 1]
-                self.A[i + 128] = tem[(i << 1) + 1]
-
-            for i in range(128, 256, 2):
-                self.A[i], self.A[i + 1] = self.A[i + 1], self.A[i]
-            return
-
         def e8_initialgroup(self):
-            tem = [0] * 256
-            for i in range(256):
-                t0 = (self.H[i >> 3] >> (7 - (i & 7))) & 1
-                t1 = (self.H[(i + 256) >> 3] >> (7 - (i & 7))) & 1
-                t2 = (self.H[(i + 512) >> 3] >> (7 - (i & 7))) & 1
-                t3 = (self.H[(i + 768) >> 3] >> (7 - (i & 7))) & 1
-                tem[i] = (t0 << 3) | (t1 << 2) | (t2 << 1) | (t3 << 0)
-
+            H = self.H
+            A = self.A
             for i in range(128):
-                self.A[i << 1] = tem[i]
-                self.A[(i << 1) + 1] = tem[i + 128]
+                sh = 7 - (i & 7)
+                b = i >> 3
+                A[i * 2] = ((H[b] >> sh) & 1) << 3 | \
+                           ((H[b + 32] >> sh) & 1) << 2 | \
+                           ((H[b + 64] >> sh) & 1) << 1 | \
+                           ((H[b + 96] >> sh) & 1)
+                b2 = (i + 128) >> 3
+                A[i * 2 + 1] = ((H[b2] >> sh) & 1) << 3 | \
+                               ((H[b2 + 32] >> sh) & 1) << 2 | \
+                               ((H[b2 + 64] >> sh) & 1) << 1 | \
+                               ((H[b2 + 96] >> sh) & 1)
             return
 
         def e8_finaldegroup(self):
-            tem = [0] * 256
+            A = self.A
+            H = bytearray(128)
             for i in range(128):
-                tem[i] = self.A[i << 1]
-                tem[i + 128] = self.A[(i << 1) + 1]
+                v0 = A[i << 1]
+                v1 = A[(i << 1) + 1]
+                sh = 7 - (i & 7)
+                b = i >> 3
+                H[b] |= ((v0 >> 3) & 1) << sh
+                H[b + 32] |= ((v0 >> 2) & 1) << sh
+                H[b + 64] |= ((v0 >> 1) & 1) << sh
+                H[b + 96] |= (v0 & 1) << sh
 
-            for i in range(128):
-                self.H[i] = 0
-
-            for i in range(256):
-                t0 = (tem[i] >> 3) & 1
-                t1 = (tem[i] >> 2) & 1
-                t2 = (tem[i] >> 1) & 1
-                t3 = (tem[i] >> 0) & 1
-                self.H[i >> 3] |= t0 << (7 - (i & 7))
-                self.H[(i + 256) >> 3] |= t1 << (7 - (i & 7))
-                self.H[(i + 512) >> 3] |= t2 << (7 - (i & 7))
-                self.H[(i + 768) >> 3] |= t3 << (7 - (i & 7))
+                b2 = (i + 128) >> 3
+                H[b2] |= ((v1 >> 3) & 1) << sh
+                H[b2 + 32] |= ((v1 >> 2) & 1) << sh
+                H[b2 + 64] |= ((v1 >> 1) & 1) << sh
+                H[b2 + 96] |= (v1 & 1) << sh
+            self.H = H
             return
 
         def e8(self):
-            for i in range(64):
-                self.roundconstant[i] = self.roundconstant_zero[i]
-
             self.e8_initialgroup()
-            for _ in range(42):
-                self.r8()
-                self.update_roundconstant()
+            A = self.A
+            L = self.L_TRANSF
+            INV = self.INV_P
+            for rnd in range(42):
+                sboxes = self.SBOX_RND[rnd]
+                tem = [s[a] for s, a in zip(sboxes, A)]
+                for i in range(0, 256, 2):
+                    tem[i], tem[i + 1] = L[tem[i]][tem[i + 1]]
+                A = [tem[i] for i in INV]
+            self.A = A
             self.e8_finaldegroup()
             return
 
@@ -77754,7 +77768,30 @@ class Hash:
             0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
             0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
         ]
-        mix_coeff = [0x02, 0x02, 0x03, 0x04, 0x05, 0x03, 0x05, 0x07]
+
+        def build_gf_tables():
+            def gf_mul(a, b):
+                res = 0
+                for _ in range(8):
+                    if b & 1:
+                        res ^= a
+                    hi = a & 0x80
+                    a = (a << 1) & 0xff
+                    if hi:
+                        a ^= 0x1b
+                    b >>= 1
+                return res
+            m2, m3, m4, m5, m7 = [], [], [], [], []
+            for i in range(256):
+                m2.append(gf_mul(i, 2))
+                m3.append(gf_mul(i, 3))
+                m4.append(gf_mul(i, 4))
+                m5.append(gf_mul(i, 5))
+                m7.append(gf_mul(i, 7))
+            return tuple(m2), tuple(m3), tuple(m4), tuple(m5), tuple(m7)
+
+        mul2, mul3, mul4, mul5, mul7 = build_gf_tables()
+        del build_gf_tables
 
         block_size = None
         digest_size = None
@@ -77859,12 +77896,9 @@ class Hash:
             return
 
         def sub_bytes(self, state):
-            cols = self.block_size // 8
             s = self.sbox
             for r in range(8):
-                row = state[r]
-                for c in range(cols):
-                    row[c] = s[row[c]]
+                state[r] = [s[x] for x in state[r]]
             return
 
         def shift_bytes(self, state, which):
@@ -77879,58 +77913,34 @@ class Hash:
 
         def mix_bytes(self, state):
             cols = self.block_size // 8
-            coeff = self.mix_coeff
+            m2, m3, m4, m5, m7 = self.mul2, self.mul3, self.mul4, self.mul5, self.mul7
             for c in range(cols):
-                col = [state[r][c] for r in range(8)]
-                out = [0] * 8
-                for r in range(8):
-                    acc = 0
-                    for k in range(8):
-                        acc ^= self.gf_mul(col[k], coeff[(k - r) & 0x07])
-                    out[r] = acc & 0xff
-                for r in range(8):
-                    state[r][c] = out[r]
+                s0, s1, s2, s3, s4, s5, s6, s7 = (state[r][c] for r in range(8))
+                state[0][c] = m2[s0] ^ m2[s1] ^ m3[s2] ^ m4[s3] ^ m5[s4] ^ m3[s5] ^ m5[s6] ^ m7[s7]
+                state[1][c] = m7[s0] ^ m2[s1] ^ m2[s2] ^ m3[s3] ^ m4[s4] ^ m5[s5] ^ m3[s6] ^ m5[s7]
+                state[2][c] = m5[s0] ^ m7[s1] ^ m2[s2] ^ m2[s3] ^ m3[s4] ^ m4[s5] ^ m5[s6] ^ m3[s7]
+                state[3][c] = m3[s0] ^ m5[s1] ^ m7[s2] ^ m2[s3] ^ m2[s4] ^ m3[s5] ^ m4[s6] ^ m5[s7]
+                state[4][c] = m5[s0] ^ m3[s1] ^ m5[s2] ^ m7[s3] ^ m2[s4] ^ m2[s5] ^ m3[s6] ^ m4[s7]
+                state[5][c] = m4[s0] ^ m5[s1] ^ m3[s2] ^ m5[s3] ^ m7[s4] ^ m2[s5] ^ m2[s6] ^ m3[s7]
+                state[6][c] = m3[s0] ^ m4[s1] ^ m5[s2] ^ m3[s3] ^ m5[s4] ^ m7[s5] ^ m2[s6] ^ m2[s7]
+                state[7][c] = m2[s0] ^ m3[s1] ^ m4[s2] ^ m5[s3] ^ m3[s4] ^ m5[s5] ^ m7[s6] ^ m2[s7]
             return
-
-        def gf_mul(self, a, b):
-            a &= 0xff
-            b &= 0xff
-            res = 0
-            for _ in range(8):
-                if b & 1:
-                    res ^= a
-                hi = a & 0x80
-                a = (a << 1) & 0xff
-                if hi:
-                    a ^= 0x1b
-                b >>= 1
-            return res & 0xff
 
         def bytes_to_state(self, block):
             cols = self.block_size // 8
-            state = [[0] * cols for _ in range(8)]
-            for c in range(cols):
-                base = c * 8
-                for r in range(8):
-                    state[r][c] = block[base + r]
-            return state
+            return [[block[c * 8 + r] for c in range(cols)] for r in range(8)]
 
         def state_to_bytes(self, state):
             cols = self.block_size // 8
             out = bytearray(self.block_size)
-            for c in range(cols):
-                base = c * 8
-                for r in range(8):
-                    out[base + r] = state[r][c] & 0xff
+            for r in range(8):
+                row = state[r]
+                for c in range(cols):
+                    out[c * 8 + r] = row[c]
             return bytes(out)
 
         def xor_state(self, a, b):
-            cols = self.block_size // 8
-            out = [[0] * cols for _ in range(8)]
-            for r in range(8):
-                for c in range(cols):
-                    out[r][c] = (a[r][c] ^ b[r][c]) & 0xff
-            return out
+            return [[x ^ y for x, y in zip(ra, rb)] for ra, rb in zip(a, b)]
 
     class Groestl224(GroestlBase):
         block_size = 64
@@ -86365,43 +86375,180 @@ class Hash:
             other.finalized = self.finalized
             return other
 
-        def rol32(self, x, n):
-            x &= 0xffff_ffff
-            return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
-
         def round(self):
-            x = self.state
-            mask = 0xffff_ffff
-            for t in range(16):
-                x[16 + t] = (x[16 + t] + x[t]) & mask
-            for t in range(16):
-                x[t] = self.rol32(x[t], 7)
-            for t in range(8):
-                x[t], x[t + 8] = x[t + 8], x[t]
-            for t in range(16):
-                x[t] ^= x[16 + t]
-            for j in range(2):
-                for k in range(2):
-                    for m in range(2):
-                        idx = 16 + (j << 3) + (k << 2) + m
-                        x[idx], x[idx + 2] = x[idx + 2], x[idx]
-            for t in range(16):
-                x[16 + t] = (x[16 + t] + x[t]) & mask
-            for t in range(16):
-                x[t] = self.rol32(x[t], 11)
-            for j in range(2):
-                for l in range(2): # noqa: E741
-                    for m in range(2):
-                        idx = (j << 3) + (l << 1) + m
-                        x[idx], x[idx + 4] = x[idx + 4], x[idx]
-            for t in range(16):
-                x[t] ^= x[16 + t]
-            for j in range(2):
-                for k in range(2):
-                    for l in range(2): # noqa: E741
-                        idx = 16 + (j << 3) + (k << 2) + (l << 1)
-                        x[idx], x[idx + 1] = x[idx + 1], x[idx]
-            self.state = x
+            x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, \
+            x17, x18, x19, x20, x21, x22, x23, x24, x25, x26, x27, x28, x29, x30, x31 = self.state
+
+            x16 = (x16 + x0) & 0xffff_ffff
+            x17 = (x17 + x1) & 0xffff_ffff
+            x18 = (x18 + x2) & 0xffff_ffff
+            x19 = (x19 + x3) & 0xffff_ffff
+            x20 = (x20 + x4) & 0xffff_ffff
+            x21 = (x21 + x5) & 0xffff_ffff
+            x22 = (x22 + x6) & 0xffff_ffff
+            x23 = (x23 + x7) & 0xffff_ffff
+            x24 = (x24 + x8) & 0xffff_ffff
+            x25 = (x25 + x9) & 0xffff_ffff
+            x26 = (x26 + x10) & 0xffff_ffff
+            x27 = (x27 + x11) & 0xffff_ffff
+            x28 = (x28 + x12) & 0xffff_ffff
+            x29 = (x29 + x13) & 0xffff_ffff
+            x30 = (x30 + x14) & 0xffff_ffff
+            x31 = (x31 + x15) & 0xffff_ffff
+
+            x0 = ((x0 << 7) | (x0 >> 25)) & 0xffff_ffff
+            x1 = ((x1 << 7) | (x1 >> 25)) & 0xffff_ffff
+            x2 = ((x2 << 7) | (x2 >> 25)) & 0xffff_ffff
+            x3 = ((x3 << 7) | (x3 >> 25)) & 0xffff_ffff
+            x4 = ((x4 << 7) | (x4 >> 25)) & 0xffff_ffff
+            x5 = ((x5 << 7) | (x5 >> 25)) & 0xffff_ffff
+            x6 = ((x6 << 7) | (x6 >> 25)) & 0xffff_ffff
+            x7 = ((x7 << 7) | (x7 >> 25)) & 0xffff_ffff
+            x8 = ((x8 << 7) | (x8 >> 25)) & 0xffff_ffff
+            x9 = ((x9 << 7) | (x9 >> 25)) & 0xffff_ffff
+            x10 = ((x10 << 7) | (x10 >> 25)) & 0xffff_ffff
+            x11 = ((x11 << 7) | (x11 >> 25)) & 0xffff_ffff
+            x12 = ((x12 << 7) | (x12 >> 25)) & 0xffff_ffff
+            x13 = ((x13 << 7) | (x13 >> 25)) & 0xffff_ffff
+            x14 = ((x14 << 7) | (x14 >> 25)) & 0xffff_ffff
+            x15 = ((x15 << 7) | (x15 >> 25)) & 0xffff_ffff
+
+            x0, x8 = x8, x0
+            x1, x9 = x9, x1
+            x2, x10 = x10, x2
+            x3, x11 = x11, x3
+            x4, x12 = x12, x4
+            x5, x13 = x13, x5
+            x6, x14 = x14, x6
+            x7, x15 = x15, x7
+
+            x0 ^= x16
+            x1 ^= x17
+            x2 ^= x18
+            x3 ^= x19
+            x4 ^= x20
+            x5 ^= x21
+            x6 ^= x22
+            x7 ^= x23
+            x8 ^= x24
+            x9 ^= x25
+            x10 ^= x26
+            x11 ^= x27
+            x12 ^= x28
+            x13 ^= x29
+            x14 ^= x30
+            x15 ^= x31
+
+            x16, x18 = x18, x16
+            x17, x19 = x19, x17
+            x20, x22 = x22, x20
+            x21, x23 = x23, x21
+            x24, x26 = x26, x24
+            x25, x27 = x27, x25
+            x28, x30 = x30, x28
+            x29, x31 = x31, x29
+
+            x16 = (x16 + x0) & 0xffff_ffff
+            x17 = (x17 + x1) & 0xffff_ffff
+            x18 = (x18 + x2) & 0xffff_ffff
+            x19 = (x19 + x3) & 0xffff_ffff
+            x20 = (x20 + x4) & 0xffff_ffff
+            x21 = (x21 + x5) & 0xffff_ffff
+            x22 = (x22 + x6) & 0xffff_ffff
+            x23 = (x23 + x7) & 0xffff_ffff
+            x24 = (x24 + x8) & 0xffff_ffff
+            x25 = (x25 + x9) & 0xffff_ffff
+            x26 = (x26 + x10) & 0xffff_ffff
+            x27 = (x27 + x11) & 0xffff_ffff
+            x28 = (x28 + x12) & 0xffff_ffff
+            x29 = (x29 + x13) & 0xffff_ffff
+            x30 = (x30 + x14) & 0xffff_ffff
+            x31 = (x31 + x15) & 0xffff_ffff
+
+            x0 = ((x0 << 11) | (x0 >> 21)) & 0xffff_ffff
+            x1 = ((x1 << 11) | (x1 >> 21)) & 0xffff_ffff
+            x2 = ((x2 << 11) | (x2 >> 21)) & 0xffff_ffff
+            x3 = ((x3 << 11) | (x3 >> 21)) & 0xffff_ffff
+            x4 = ((x4 << 11) | (x4 >> 21)) & 0xffff_ffff
+            x5 = ((x5 << 11) | (x5 >> 21)) & 0xffff_ffff
+            x6 = ((x6 << 11) | (x6 >> 21)) & 0xffff_ffff
+            x7 = ((x7 << 11) | (x7 >> 21)) & 0xffff_ffff
+            x8 = ((x8 << 11) | (x8 >> 21)) & 0xffff_ffff
+            x9 = ((x9 << 11) | (x9 >> 21)) & 0xffff_ffff
+            x10 = ((x10 << 11) | (x10 >> 21)) & 0xffff_ffff
+            x11 = ((x11 << 11) | (x11 >> 21)) & 0xffff_ffff
+            x12 = ((x12 << 11) | (x12 >> 21)) & 0xffff_ffff
+            x13 = ((x13 << 11) | (x13 >> 21)) & 0xffff_ffff
+            x14 = ((x14 << 11) | (x14 >> 21)) & 0xffff_ffff
+            x15 = ((x15 << 11) | (x15 >> 21)) & 0xffff_ffff
+
+            x0, x4 = x4, x0
+            x1, x5 = x5, x1
+            x2, x6 = x6, x2
+            x3, x7 = x7, x3
+            x8, x12 = x12, x8
+            x9, x13 = x13, x9
+            x10, x14 = x14, x10
+            x11, x15 = x15, x11
+
+            x0 ^= x16
+            x1 ^= x17
+            x2 ^= x18
+            x3 ^= x19
+            x4 ^= x20
+            x5 ^= x21
+            x6 ^= x22
+            x7 ^= x23
+            x8 ^= x24
+            x9 ^= x25
+            x10 ^= x26
+            x11 ^= x27
+            x12 ^= x28
+            x13 ^= x29
+            x14 ^= x30
+            x15 ^= x31
+
+            x16, x17 = x17, x16
+            x18, x19 = x19, x18
+            x20, x21 = x21, x20
+            x22, x23 = x23, x22
+            x24, x25 = x25, x24
+            x26, x27 = x27, x26
+            x28, x29 = x29, x28
+            x30, x31 = x31, x30
+
+            self.state[0] = x0
+            self.state[1] = x1
+            self.state[2] = x2
+            self.state[3] = x3
+            self.state[4] = x4
+            self.state[5] = x5
+            self.state[6] = x6
+            self.state[7] = x7
+            self.state[8] = x8
+            self.state[9] = x9
+            self.state[10] = x10
+            self.state[11] = x11
+            self.state[12] = x12
+            self.state[13] = x13
+            self.state[14] = x14
+            self.state[15] = x15
+            self.state[16] = x16
+            self.state[17] = x17
+            self.state[18] = x18
+            self.state[19] = x19
+            self.state[20] = x20
+            self.state[21] = x21
+            self.state[22] = x22
+            self.state[23] = x23
+            self.state[24] = x24
+            self.state[25] = x25
+            self.state[26] = x26
+            self.state[27] = x27
+            self.state[28] = x28
+            self.state[29] = x29
+            self.state[30] = x30
+            self.state[31] = x31
             return
 
         def transform(self, n_rounds):
@@ -86410,18 +86557,15 @@ class Hash:
             return
 
         def xor_block(self, block):
-            if len(block) != self.b:
-                raise ValueError("block size mismatch")
             x = self.state
             n_full = self.b // 4
             rem = self.b % 4
-            pos = 0
-            for w in range(n_full):
-                v = int.from_bytes(block[pos:pos + 4], "little")
-                x[w] ^= v
-                pos += 4
+            if n_full > 0:
+                words = struct.unpack(f"<{n_full}I", block[:n_full * 4])
+                for w in range(n_full):
+                    x[w] ^= words[w]
             if rem:
-                v = int.from_bytes(block[pos:pos + rem], "little")
+                v = int.from_bytes(block[n_full * 4:], "little")
                 x[n_full] ^= v
             self.state = x
             return
@@ -86484,6 +86628,23 @@ class Hash:
             0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
             0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
         ]
+
+        def build_t_tables(s_box):
+            def xtime(x):
+                return ((x << 1) ^ 0x1b) & 0xff if (x & 0x80) else (x << 1)
+            t0, t1, t2, t3 = [], [], [], []
+            for b in range(256):
+                s = s_box[b]
+                s2 = xtime(s)
+                s3 = s2 ^ s
+                t0.append((s2, s, s, s3))
+                t1.append((s3, s2, s, s))
+                t2.append((s, s3, s2, s))
+                t3.append((s, s, s3, s2))
+            return tuple(t0), tuple(t1), tuple(t2), tuple(t3)
+
+        T0, T1, T2, T3 = build_t_tables(sbox)
+        del build_t_tables
 
         def __init__(self, data=b""):
             self.salt = bytearray(16)
@@ -86644,33 +86805,49 @@ class Hash:
                 k = (k + 1) & 0xffff_ffff_ffff_ffff
             return k
 
-        def aes_round(self, state, round_key):
-            state = self.aes_sub_bytes(state)
-            state = self.aes_shift_rows(state)
-            state = self.aes_mix_columns(state)
-            state = self.aes_add_round_key(state, round_key)
-            return state
+        def aes_round(self, state, rk):
+            t0 = self.T0
+            t1 = self.T1
+            t2 = self.T2
+            t3 = self.T3
 
-        def aes_sub_bytes(self, state):
-            return [self.sbox[b] for b in state]
+            v0 = t0[state[0]]
+            v1 = t1[state[5]]
+            v2 = t2[state[10]]
+            v3 = t3[state[15]]
+            c0 = v0[0] ^ v1[0] ^ v2[0] ^ v3[0] ^ rk[0]
+            c1 = v0[1] ^ v1[1] ^ v2[1] ^ v3[1] ^ rk[1]
+            c2 = v0[2] ^ v1[2] ^ v2[2] ^ v3[2] ^ rk[2]
+            c3 = v0[3] ^ v1[3] ^ v2[3] ^ v3[3] ^ rk[3]
 
-        def aes_shift_rows(self, state):
-            out = state[:]
-            out[1], out[5], out[9], out[13] = state[5], state[9], state[13], state[1]
-            out[2], out[6], out[10], out[14] = state[10], state[14], state[2], state[6]
-            out[3], out[7], out[11], out[15] = state[15], state[3], state[7], state[11]
-            return out
+            v0 = t0[state[4]]
+            v1 = t1[state[9]]
+            v2 = t2[state[14]]
+            v3 = t3[state[3]]
+            c4 = v0[0] ^ v1[0] ^ v2[0] ^ v3[0] ^ rk[4]
+            c5 = v0[1] ^ v1[1] ^ v2[1] ^ v3[1] ^ rk[5]
+            c6 = v0[2] ^ v1[2] ^ v2[2] ^ v3[2] ^ rk[6]
+            c7 = v0[3] ^ v1[3] ^ v2[3] ^ v3[3] ^ rk[7]
 
-        def aes_mix_columns(self, state):
-            out = state[:]
-            for c in range(4):
-                i = 4 * c
-                r0, r1, r2, r3 = self.mix_column4(state[i], state[i + 1], state[i + 2], state[i + 3])
-                out[i], out[i + 1], out[i + 2], out[i + 3] = r0, r1, r2, r3
-            return out
+            v0 = t0[state[8]]
+            v1 = t1[state[13]]
+            v2 = t2[state[2]]
+            v3 = t3[state[7]]
+            c8 = v0[0] ^ v1[0] ^ v2[0] ^ v3[0] ^ rk[8]
+            c9 = v0[1] ^ v1[1] ^ v2[1] ^ v3[1] ^ rk[9]
+            c10 = v0[2] ^ v1[2] ^ v2[2] ^ v3[2] ^ rk[10]
+            c11 = v0[3] ^ v1[3] ^ v2[3] ^ v3[3] ^ rk[11]
 
-        def aes_add_round_key(self, state, round_key):
-            return [(state[i] ^ round_key[i]) & 0xff for i in range(16)]
+            v0 = t0[state[12]]
+            v1 = t1[state[1]]
+            v2 = t2[state[6]]
+            v3 = t3[state[11]]
+            c12 = v0[0] ^ v1[0] ^ v2[0] ^ v3[0] ^ rk[12]
+            c13 = v0[1] ^ v1[1] ^ v2[1] ^ v3[1] ^ rk[13]
+            c14 = v0[2] ^ v1[2] ^ v2[2] ^ v3[2] ^ rk[14]
+            c15 = v0[3] ^ v1[3] ^ v2[3] ^ v3[3] ^ rk[15]
+
+            return [c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15]
 
         def xtime8(self, x):
             x &= 0xff
@@ -88759,7 +88936,9 @@ class Hash:
                 raise TypeError("data must be bytes-like")
 
             data = bytes(data)
-            self.bit_count = (self.bit_count + ((len(data) & 0xffff_ffff_ffff_ffff) << 3)) & 0xffff_ffff_ffff_ffff
+            self.bit_count = (
+                self.bit_count + ((len(data) & 0xffff_ffff_ffff_ffff) << 3)
+            ) & 0xffff_ffff_ffff_ffff
 
             for b in data:
                 self.partial = ((self.partial << 8) | (b & 0xff)) & 0xffff_ffff
@@ -88859,74 +89038,41 @@ class Hash:
 
         def smix(self, i0, i1, i2, i3):
             S = self.S
-            x0 = S[i0] & 0xffff_ffff
-            x1 = S[i1] & 0xffff_ffff
-            x2 = S[i2] & 0xffff_ffff
-            x3 = S[i3] & 0xffff_ffff
+            x0 = S[i0]
+            x1 = S[i1]
+            x2 = S[i2]
+            x3 = S[i3]
 
-            U = [[0] * 4 for _ in range(4)]
-            xs = (x0, x1, x2, x3)
-            for col in range(4):
-                w = xs[col]
-                U[0][col] = (w >> 24) & 0xff
-                U[1][col] = (w >> 16) & 0xff
-                U[2][col] = (w >> 8) & 0xff
-                U[3][col] = w & 0xff
+            Tp = self.__class__.T
 
-            sb = self.sbox
-            for r in range(4):
-                for c in range(4):
-                    U[r][c] = sb[U[r][c]]
+            out = Tp[0][0][(x0 >> 24) & 0xff]
+            out ^= Tp[0][1][(x0 >> 16) & 0xff]
+            out ^= Tp[0][2][(x0 >> 8) & 0xff]
+            out ^= Tp[0][3][x0 & 0xff]
 
-            M = (
-                (1, 4, 7, 1),
-                (1, 1, 4, 7),
-                (7, 1, 1, 4),
-                (4, 7, 1, 1),
-            )
+            out ^= Tp[1][0][(x1 >> 24) & 0xff]
+            out ^= Tp[1][1][(x1 >> 16) & 0xff]
+            out ^= Tp[1][2][(x1 >> 8) & 0xff]
+            out ^= Tp[1][3][x1 & 0xff]
 
-            V = [[0] * 4 for _ in range(4)]
-            for i in range(4):
-                for j in range(4):
-                    acc = 0
-                    for k in range(4):
-                        coeff = M[i][k]
-                        if coeff == 1:
-                            acc ^= U[k][j]
-                        else:
-                            acc ^= self.gf_mul(U[k][j], coeff)
-                    V[i][j] = acc & 0xff
+            out ^= Tp[2][0][(x2 >> 24) & 0xff]
+            out ^= Tp[2][1][(x2 >> 16) & 0xff]
+            out ^= Tp[2][2][(x2 >> 8) & 0xff]
+            out ^= Tp[2][3][x2 & 0xff]
 
-            d = [0] * 4
-            for i in range(4):
-                acc = 0
-                for j in range(4):
-                    if j != i:
-                        acc ^= U[i][j]
-                d[i] = acc & 0xff
+            out ^= Tp[3][0][(x3 >> 24) & 0xff]
+            out ^= Tp[3][1][(x3 >> 16) & 0xff]
+            out ^= Tp[3][2][(x3 >> 8) & 0xff]
+            out ^= Tp[3][3][x3 & 0xff]
 
-            W = [[0] * 4 for _ in range(4)]
-            for i in range(4):
-                for j in range(4):
-                    coeff = M[j][i]
-                    add = d[i] if coeff == 1 else self.gf_mul(d[i], coeff)
-                    W[i][j] = (V[i][j] ^ add) & 0xff
-
-            for i in range(4):
-                n = i & 3
-                if n:
-                    W[i] = W[i][n:] + W[i][:n]
-
-            y0 = ((W[0][0] << 24) | (W[1][0] << 16) | (W[2][0] << 8) | W[3][0]) & 0xffff_ffff
-            y1 = ((W[0][1] << 24) | (W[1][1] << 16) | (W[2][1] << 8) | W[3][1]) & 0xffff_ffff
-            y2 = ((W[0][2] << 24) | (W[1][2] << 16) | (W[2][2] << 8) | W[3][2]) & 0xffff_ffff
-            y3 = ((W[0][3] << 24) | (W[1][3] << 16) | (W[2][3] << 8) | W[3][3]) & 0xffff_ffff
-
-            S[i0], S[i1], S[i2], S[i3] = y0, y1, y2, y3
+            S[i0] = (out >> 96) & 0xffff_ffff
+            S[i1] = (out >> 64) & 0xffff_ffff
+            S[i2] = (out >> 32) & 0xffff_ffff
+            S[i3] = out & 0xffff_ffff
             return
 
         def ensure_tables(self):
-            if self.sbox is not None:
+            if hasattr(self.__class__, "T"):
                 return
 
             sbox = [0] * 256
@@ -88936,7 +89082,54 @@ class Hash:
                 sb = (y ^ self.rotl8(y, 1) ^ self.rotl8(y, 2) ^ self.rotl8(y, 3) ^ self.rotl8(y, 4) ^ 0x63)
                 sbox[x] = sb & 0xff
 
-            self.sbox = sbox
+            self.__class__.sbox = sbox
+
+            def linear_map(U):
+                M = ((1, 4, 7, 1), (1, 1, 4, 7), (7, 1, 1, 4), (4, 7, 1, 1))
+                V = [[0] * 4 for _ in range(4)]
+                for i in range(4):
+                    for j in range(4):
+                        acc = 0
+                        for k in range(4):
+                            coeff = M[i][k]
+                            if coeff == 1:
+                                acc ^= U[k][j]
+                            else:
+                                acc ^= self.gf_mul(U[k][j], coeff)
+                        V[i][j] = acc & 0xff
+                d = [0] * 4
+                for i in range(4):
+                    acc = 0
+                    for j in range(4):
+                        if j != i:
+                            acc ^= U[i][j]
+                    d[i] = acc & 0xff
+                W = [[0] * 4 for _ in range(4)]
+                for i in range(4):
+                    for j in range(4):
+                        coeff = M[j][i]
+                        add = d[i] if coeff == 1 else self.gf_mul(d[i], coeff)
+                        W[i][j] = (V[i][j] ^ add) & 0xff
+                for i in range(4):
+                    n = i & 3
+                    if n:
+                        W[i] = W[i][n:] + W[i][:n]
+                y0 = ((W[0][0] << 24) | (W[1][0] << 16) | (W[2][0] << 8) | W[3][0]) & 0xffff_ffff
+                y1 = ((W[0][1] << 24) | (W[1][1] << 16) | (W[2][1] << 8) | W[3][1]) & 0xffff_ffff
+                y2 = ((W[0][2] << 24) | (W[1][2] << 16) | (W[2][2] << 8) | W[3][2]) & 0xffff_ffff
+                y3 = ((W[0][3] << 24) | (W[1][3] << 16) | (W[2][3] << 8) | W[3][3]) & 0xffff_ffff
+                return y0, y1, y2, y3
+
+            T = [[[0 for _ in range(256)] for _ in range(4)] for _ in range(4)]
+            for c in range(4):
+                for r in range(4):
+                    for val in range(256):
+                        U = [[0]*4 for _ in range(4)]
+                        U[r][c] = sbox[val]
+                        y0, y1, y2, y3 = linear_map(U)
+                        T[c][r][val] = (y0 << 96) | (y1 << 64) | (y2 << 32) | y3
+
+            self.__class__.T = T
             return
 
     class FugueCore30(FugueBase):
@@ -89096,7 +89289,8 @@ class Hash:
         digest_size = 28
 
         init_val = [
-            0xf4c9_120d, 0x6286_f757, 0xee39_e01c, 0xe074_e3cb, 0xa112_7c62, 0x9a43_d215, 0xbd8d_679a,
+            0xf4c9_120d, 0x6286_f757, 0xee39_e01c, 0xe074_e3cb,
+            0xa112_7c62, 0x9a43_d215, 0xbd8d_679a,
         ]
 
     class Fugue256(FugueCore30):
@@ -89104,7 +89298,8 @@ class Hash:
         digest_size = 32
 
         init_val = [
-            0xe952_bdde, 0x6671_135f, 0xe0d4_f668, 0xd2b0_b594, 0xf96c_621d, 0xfbf9_29de, 0x9149_e899, 0x34f8_c248,
+            0xe952_bdde, 0x6671_135f, 0xe0d4_f668, 0xd2b0_b594,
+            0xf96c_621d, 0xfbf9_29de, 0x9149_e899, 0x34f8_c248,
         ]
 
     class Fugue384(FugueBase):
@@ -89112,7 +89307,8 @@ class Hash:
         digest_size = 48
 
         init_val = [
-            0xaa61_ec0d, 0x3125_2e1f, 0xa01d_b4c7, 0x0060_0985, 0x215e_f44a, 0x741b_5e9c, 0xfa69_3e9a, 0x473e_b040,
+            0xaa61_ec0d, 0x3125_2e1f, 0xa01d_b4c7, 0x0060_0985,
+            0x215e_f44a, 0x741b_5e9c, 0xfa69_3e9a, 0x473e_b040,
             0xe502_ae8a, 0xa99c_25e0, 0xbc95_517c, 0x5c10_95a1,
         ]
 
@@ -91790,6 +91986,7 @@ class Hash:
         ]
 
         def __init__(self, data=b""):
+            self.ensure_tables()
             self.h = bytearray([0x52] * 8)
             self.hh = bytearray([0x25] * 8)
             self.buf = bytearray()
@@ -91873,10 +92070,83 @@ class Hash:
                 x |= 0x1
             return x
 
+        def ensure_tables(self):
+            if hasattr(self.__class__, "IP_tables"):
+                return
+
+            def build_perm_tables(table, in_bits):
+                num_chunks = in_bits // 8
+                tables = [[0] * 256 for _ in range(num_chunks)]
+                out_bits = len(table)
+                for chunk in range(num_chunks):
+                    for val in range(256):
+                        out = 0
+                        for i, pos in enumerate(table):
+                            bit_idx = pos - 1
+                            if (bit_idx // 8) == chunk:
+                                bit = (val >> (7 - (bit_idx % 8))) & 1
+                                out |= (bit << (out_bits - 1 - i))
+                        tables[chunk][val] = out
+                return tables
+
+            cls = self.__class__
+            cls.IP_tables = build_perm_tables(cls.IP, 64)
+            cls.FP_tables = build_perm_tables(cls.FP, 64)
+            cls.PC1_tables = build_perm_tables(cls.PC1, 64)
+            cls.PC2_tables = build_perm_tables(cls.PC2, 56)
+            cls.E_tables = build_perm_tables(cls.E, 32)
+
+            SP_tables = [[0] * 64 for _ in range(8)]
+            for i in range(8):
+                for val in range(64):
+                    row = ((val & 0x20) >> 4) | (val & 0x1)
+                    col = (val >> 1) & 0x0f
+                    sval = cls.SBOX[i][row][col]
+                    out = 0
+                    for b in range(4):
+                        bit_val = (sval >> (3 - b)) & 1
+                        in_pos = i * 4 + b + 1
+                        out_idx = cls.P.index(in_pos)
+                        out |= (bit_val << (31 - out_idx))
+                    SP_tables[i][val] = out
+            cls.SP_tables = SP_tables
+            return
+
+        def fast_permute64(self, value, tables):
+            return (
+                tables[0][(value >> 56) & 0xff] ^
+                tables[1][(value >> 48) & 0xff] ^
+                tables[2][(value >> 40) & 0xff] ^
+                tables[3][(value >> 32) & 0xff] ^
+                tables[4][(value >> 24) & 0xff] ^
+                tables[5][(value >> 16) & 0xff] ^
+                tables[6][(value >> 8) & 0xff] ^
+                tables[7][value & 0xff]
+            )
+
+        def fast_permute56(self, value, tables):
+            return (
+                tables[0][(value >> 48) & 0xff] ^
+                tables[1][(value >> 40) & 0xff] ^
+                tables[2][(value >> 32) & 0xff] ^
+                tables[3][(value >> 24) & 0xff] ^
+                tables[4][(value >> 16) & 0xff] ^
+                tables[5][(value >> 8) & 0xff] ^
+                tables[6][value & 0xff]
+            )
+
+        def fast_permute32(self, value, tables):
+            return (
+                tables[0][(value >> 24) & 0xff] ^
+                tables[1][(value >> 16) & 0xff] ^
+                tables[2][(value >> 8) & 0xff] ^
+                tables[3][value & 0xff]
+            )
+
         def des_encrypt_block(self, block, key):
             subkeys = self.des_subkeys(key)
             x = int.from_bytes(block, "big")
-            x = self.permute(x, self.IP, 64)
+            x = self.fast_permute64(x, self.__class__.IP_tables)
             l = x >> 32 # noqa: E741
             r = x & 0xffff_ffff
             for subkey in subkeys:
@@ -91885,12 +92155,12 @@ class Hash:
                 l = nl # noqa: E741
                 r = nr
             y = (r << 32) | l
-            y = self.permute(y, self.FP, 64)
+            y = self.fast_permute64(y, self.__class__.FP_tables)
             return y.to_bytes(8, "big")
 
         def des_subkeys(self, key):
             k = int.from_bytes(key, "big")
-            k56 = self.permute(k, self.PC1, 64)
+            k56 = self.fast_permute64(k, self.__class__.PC1_tables)
             c = k56 >> 28
             d = k56 & 0x0fff_ffff
             subkeys = []
@@ -91898,29 +92168,25 @@ class Hash:
                 c = self.rol28(c, shift)
                 d = self.rol28(d, shift)
                 cd = (c << 28) | d
-                subkeys.append(self.permute(cd, self.PC2, 56))
+                subkeys.append(self.fast_permute56(cd, self.__class__.PC2_tables))
             return subkeys
 
         def rol28(self, x, n):
             return ((x << n) | (x >> (28 - n))) & 0x0fff_ffff
 
         def des_f(self, r, subkey):
-            x = self.permute(r, self.E, 32) ^ subkey
-            y = 0
-            for i in range(8):
-                chunk = (x >> (42 - (i * 6))) & 0x3f
-                row = ((chunk & 0x20) >> 4) | (chunk & 0x1)
-                col = (chunk >> 1) & 0x0f
-                y = (y << 4) | self.SBOX[i][row][col]
-            y = self.permute(y, self.P, 32)
-            return y
-
-        def permute(self, value, table, in_bits):
-            out = 0
-            for pos in table:
-                bit = (value >> (in_bits - pos)) & 0x1
-                out = (out << 1) | bit
-            return out
+            x = self.fast_permute32(r, self.__class__.E_tables) ^ subkey
+            SP = self.__class__.SP_tables
+            return (
+                SP[0][(x >> 42) & 0x3f] ^
+                SP[1][(x >> 36) & 0x3f] ^
+                SP[2][(x >> 30) & 0x3f] ^
+                SP[3][(x >> 24) & 0x3f] ^
+                SP[4][(x >> 18) & 0x3f] ^
+                SP[5][(x >> 12) & 0x3f] ^
+                SP[6][(x >> 6) & 0x3f] ^
+                SP[7][x & 0x3f]
+            )
 
     class MarsupilamiFourteen:
         block_size = 136
@@ -92521,6 +92787,7 @@ class Hash:
 
         gf16_mul_table = None
         m8 = None
+        MIX_VAL = None
 
         def __init__(self, data=b""):
             self.buf = bytearray()
@@ -92544,6 +92811,17 @@ class Hash:
 
             if self.__class__.m8 is None:
                 self.__class__.m8 = self.compute_m8()
+
+            if self.__class__.MIX_VAL is None:
+                tab = self.__class__.gf16_mul_table
+                m8 = self.__class__.m8
+                self.__class__.MIX_VAL = [
+                    [
+                        [
+                            tab[m8[r][k]][v] for v in range(16)
+                        ] for k in range(8)
+                    ] for r in range(8)
+                ]
             return
 
         def copy(self):
@@ -92633,74 +92911,91 @@ class Hash:
             return
 
         def photon256(self, state):
-            mat = self.state_bytes_to_matrix(state)
+            m = [0] * 64
+            for i in range(32):
+                b = state[i]
+                m[i << 1] = b & 0x0f
+                m[(i << 1) + 1] = b >> 4
+
+            rc = self.rc
+            sbox = self.sbox
+            MIX_VAL = self.__class__.MIX_VAL
 
             for rnd in range(12):
-                self.add_constant(mat, rnd)
-                self.subcells(mat)
-                self.shift_rows(mat)
-                self.mix_column_serial(mat)
+                rc_r = rc[rnd]
+                m[0] ^= rc_r[0]
+                m[8] ^= rc_r[1]
+                m[16] ^= rc_r[2]
+                m[24] ^= rc_r[3]
+                m[32] ^= rc_r[4]
+                m[40] ^= rc_r[5]
+                m[48] ^= rc_r[6]
+                m[56] ^= rc_r[7]
 
-            packed = self.matrix_to_state_bytes(mat)
-            state[:] = packed
-            return
+                t = [
+                    sbox[m[0]], sbox[m[1]], sbox[m[2]], sbox[m[3]],
+                    sbox[m[4]], sbox[m[5]], sbox[m[6]], sbox[m[7]],
+                    sbox[m[9]], sbox[m[10]], sbox[m[11]], sbox[m[12]],
+                    sbox[m[13]], sbox[m[14]], sbox[m[15]], sbox[m[8]],
+                    sbox[m[18]], sbox[m[19]], sbox[m[20]], sbox[m[21]],
+                    sbox[m[22]], sbox[m[23]], sbox[m[16]], sbox[m[17]],
+                    sbox[m[27]], sbox[m[28]], sbox[m[29]], sbox[m[30]],
+                    sbox[m[31]], sbox[m[24]], sbox[m[25]], sbox[m[26]],
+                    sbox[m[36]], sbox[m[37]], sbox[m[38]], sbox[m[39]],
+                    sbox[m[32]], sbox[m[33]], sbox[m[34]], sbox[m[35]],
+                    sbox[m[45]], sbox[m[46]], sbox[m[47]], sbox[m[40]],
+                    sbox[m[41]], sbox[m[42]], sbox[m[43]], sbox[m[44]],
+                    sbox[m[54]], sbox[m[55]], sbox[m[48]], sbox[m[49]],
+                    sbox[m[50]], sbox[m[51]], sbox[m[52]], sbox[m[53]],
+                    sbox[m[63]], sbox[m[56]], sbox[m[57]], sbox[m[58]],
+                    sbox[m[59]], sbox[m[60]], sbox[m[61]], sbox[m[62]],
+                ]
 
-        def state_bytes_to_matrix(self, state):
-            mat = [[0 for j in range(8)] for i in range(8)]
-
-            for r in range(8):
-                for c4 in range(4):
-                    b = state[r * 4 + c4]
-                    mat[r][c4 * 2] = b & 0x0f
-                    mat[r][c4 * 2 + 1] = b >> 4
-
-            return mat
-
-        def matrix_to_state_bytes(self, mat):
-            out = bytearray(32)
-
-            for r in range(8):
-                for c4 in range(4):
-                    lo = mat[r][c4 * 2]
-                    hi = mat[r][c4 * 2 + 1]
-                    out[r * 4 + c4] = lo | (hi << 4)
-
-            return out
-
-        def add_constant(self, mat, rnd):
-            for r in range(8):
-                mat[r][0] ^= self.rc[rnd][r]
-            return
-
-        def subcells(self, mat):
-            for r in range(8):
                 for c in range(8):
-                    mat[r][c] = self.sbox[mat[r][c]]
-            return
+                    v0 = t[c]
+                    v1 = t[8 + c]
+                    v2 = t[16 + c]
+                    v3 = t[24 + c]
+                    v4 = t[32 + c]
+                    v5 = t[40 + c]
+                    v6 = t[48 + c]
+                    v7 = t[56 + c]
 
-        def shift_rows(self, mat):
-            for r in range(8):
-                s = r & 0x07
-                if s != 0:
-                    row = mat[r]
-                    mat[r] = row[s:] + row[:s]
-            return
+                    m[c] = (
+                        MIX_VAL[0][0][v0] ^ MIX_VAL[0][1][v1] ^ MIX_VAL[0][2][v2] ^ MIX_VAL[0][3][v3] ^
+                        MIX_VAL[0][4][v4] ^ MIX_VAL[0][5][v5] ^ MIX_VAL[0][6][v6] ^ MIX_VAL[0][7][v7]
+                    )
+                    m[8 + c] = (
+                        MIX_VAL[1][0][v0] ^ MIX_VAL[1][1][v1] ^ MIX_VAL[1][2][v2] ^ MIX_VAL[1][3][v3] ^
+                        MIX_VAL[1][4][v4] ^ MIX_VAL[1][5][v5] ^ MIX_VAL[1][6][v6] ^ MIX_VAL[1][7][v7]
+                    )
+                    m[16 + c] = (
+                        MIX_VAL[2][0][v0] ^ MIX_VAL[2][1][v1] ^ MIX_VAL[2][2][v2] ^ MIX_VAL[2][3][v3] ^
+                        MIX_VAL[2][4][v4] ^ MIX_VAL[2][5][v5] ^ MIX_VAL[2][6][v6] ^ MIX_VAL[2][7][v7]
+                    )
+                    m[24 + c] = (
+                        MIX_VAL[3][0][v0] ^ MIX_VAL[3][1][v1] ^ MIX_VAL[3][2][v2] ^ MIX_VAL[3][3][v3] ^
+                        MIX_VAL[3][4][v4] ^ MIX_VAL[3][5][v5] ^ MIX_VAL[3][6][v6] ^ MIX_VAL[3][7][v7]
+                    )
+                    m[32 + c] = (
+                        MIX_VAL[4][0][v0] ^ MIX_VAL[4][1][v1] ^ MIX_VAL[4][2][v2] ^ MIX_VAL[4][3][v3] ^
+                        MIX_VAL[4][4][v4] ^ MIX_VAL[4][5][v5] ^ MIX_VAL[4][6][v6] ^ MIX_VAL[4][7][v7]
+                    )
+                    m[40 + c] = (
+                        MIX_VAL[5][0][v0] ^ MIX_VAL[5][1][v1] ^ MIX_VAL[5][2][v2] ^ MIX_VAL[5][3][v3] ^
+                        MIX_VAL[5][4][v4] ^ MIX_VAL[5][5][v5] ^ MIX_VAL[5][6][v6] ^ MIX_VAL[5][7][v7]
+                    )
+                    m[48 + c] = (
+                        MIX_VAL[6][0][v0] ^ MIX_VAL[6][1][v1] ^ MIX_VAL[6][2][v2] ^ MIX_VAL[6][3][v3] ^
+                        MIX_VAL[6][4][v4] ^ MIX_VAL[6][5][v5] ^ MIX_VAL[6][6][v6] ^ MIX_VAL[6][7][v7]
+                    )
+                    m[56 + c] = (
+                        MIX_VAL[7][0][v0] ^ MIX_VAL[7][1][v1] ^ MIX_VAL[7][2][v2] ^ MIX_VAL[7][3][v3] ^
+                        MIX_VAL[7][4][v4] ^ MIX_VAL[7][5][v5] ^ MIX_VAL[7][6][v6] ^ MIX_VAL[7][7][v7]
+                    )
 
-        def mix_column_serial(self, mat):
-            out = [[0 for j in range(8)] for i in range(8)]
-            m8 = self.m8
-            tab = self.gf16_mul_table
-
-            for c in range(8):
-                for r in range(8):
-                    v = 0
-                    for k in range(8):
-                        v ^= tab[m8[r][k]][mat[k][c]]
-                    out[r][c] = v
-
-            for r in range(8):
-                for c in range(8):
-                    mat[r][c] = out[r][c]
+            for i in range(32):
+                state[i] = m[i << 1] | (m[(i << 1) + 1] << 4)
 
             return
 
@@ -93587,14 +93882,6 @@ class Hash:
             0x8000_0000_8000_8081, 0x8000_0000_0000_8080, 0x0000_0000_8000_0001, 0x8000_0000_8000_8008,
         )
 
-        keccak_rotc = (
-            1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 2, 14, 27, 41, 56, 8, 25, 43, 62, 18, 39, 61, 20, 44,
-        )
-
-        keccak_piln = (
-            10, 7, 11, 17, 18, 3, 5, 16, 8, 21, 24, 4, 15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1,
-        )
-
         def __init__(self, data=b"", block_size=8, digest_bits=None, customization=b""):
             if not isinstance(block_size, int):
                 raise TypeError("block_size must be int")
@@ -93810,78 +94097,118 @@ class Hash:
             return ((x << n) | (x >> (64 - n))) & 0xffff_ffff_ffff_ffff
 
         def keccak_f1600(self, state):
-            rc_index = 0
-            while rc_index < 24:
-                c0 = state[0] ^ state[5] ^ state[10] ^ state[15] ^ state[20]
-                c1 = state[1] ^ state[6] ^ state[11] ^ state[16] ^ state[21]
-                c2 = state[2] ^ state[7] ^ state[12] ^ state[17] ^ state[22]
-                c3 = state[3] ^ state[8] ^ state[13] ^ state[18] ^ state[23]
-                c4 = state[4] ^ state[9] ^ state[14] ^ state[19] ^ state[24]
+            A = state
+            RC = self.keccak_round_constants
 
-                d0 = c4 ^ self.rol64(c1, 1)
-                d1 = c0 ^ self.rol64(c2, 1)
-                d2 = c1 ^ self.rol64(c3, 1)
-                d3 = c2 ^ self.rol64(c4, 1)
-                d4 = c3 ^ self.rol64(c0, 1)
+            # Explicitly load state into local variables
+            A00, A01, A02, A03, A04 = A[0], A[1], A[2], A[3], A[4]
+            A05, A06, A07, A08, A09 = A[5], A[6], A[7], A[8], A[9]
+            A10, A11, A12, A13, A14 = A[10], A[11], A[12], A[13], A[14]
+            A15, A16, A17, A18, A19 = A[15], A[16], A[17], A[18], A[19]
+            A20, A21, A22, A23, A24 = A[20], A[21], A[22], A[23], A[24]
 
-                state[0] ^= d0
-                state[5] ^= d0
-                state[10] ^= d0
-                state[15] ^= d0
-                state[20] ^= d0
+            for rc in RC:
+                # Theta
+                C0 = A00 ^ A05 ^ A10 ^ A15 ^ A20
+                C1 = A01 ^ A06 ^ A11 ^ A16 ^ A21
+                C2 = A02 ^ A07 ^ A12 ^ A17 ^ A22
+                C3 = A03 ^ A08 ^ A13 ^ A18 ^ A23
+                C4 = A04 ^ A09 ^ A14 ^ A19 ^ A24
 
-                state[1] ^= d1
-                state[6] ^= d1
-                state[11] ^= d1
-                state[16] ^= d1
-                state[21] ^= d1
+                # D0 = C4 ^ rol(C1, 1)
+                D0 = C4 ^ (((C1 << 1) | (C1 >> 63)) & 0xffff_ffff_ffff_ffff)
+                D1 = C0 ^ (((C2 << 1) | (C2 >> 63)) & 0xffff_ffff_ffff_ffff)
+                D2 = C1 ^ (((C3 << 1) | (C3 >> 63)) & 0xffff_ffff_ffff_ffff)
+                D3 = C2 ^ (((C4 << 1) | (C4 >> 63)) & 0xffff_ffff_ffff_ffff)
+                D4 = C3 ^ (((C0 << 1) | (C0 >> 63)) & 0xffff_ffff_ffff_ffff)
 
-                state[2] ^= d2
-                state[7] ^= d2
-                state[12] ^= d2
-                state[17] ^= d2
-                state[22] ^= d2
+                A00 ^= D0
+                A05 ^= D0
+                A10 ^= D0
+                A15 ^= D0
+                A20 ^= D0
+                A01 ^= D1
+                A06 ^= D1
+                A11 ^= D1
+                A16 ^= D1
+                A21 ^= D1
+                A02 ^= D2
+                A07 ^= D2
+                A12 ^= D2
+                A17 ^= D2
+                A22 ^= D2
+                A03 ^= D3
+                A08 ^= D3
+                A13 ^= D3
+                A18 ^= D3
+                A23 ^= D3
+                A04 ^= D4
+                A09 ^= D4
+                A14 ^= D4
+                A19 ^= D4
+                A24 ^= D4
 
-                state[3] ^= d3
-                state[8] ^= d3
-                state[13] ^= d3
-                state[18] ^= d3
-                state[23] ^= d3
+                # Rho and Pi
+                B00 = A00
+                B01 = ((A06 << 44) | (A06 >> 20)) & 0xffff_ffff_ffff_ffff
+                B02 = ((A12 << 43) | (A12 >> 21)) & 0xffff_ffff_ffff_ffff
+                B03 = ((A18 << 21) | (A18 >> 43)) & 0xffff_ffff_ffff_ffff
+                B04 = ((A24 << 14) | (A24 >> 50)) & 0xffff_ffff_ffff_ffff
+                B05 = ((A03 << 28) | (A03 >> 36)) & 0xffff_ffff_ffff_ffff
+                B06 = ((A09 << 20) | (A09 >> 44)) & 0xffff_ffff_ffff_ffff
+                B07 = ((A10 << 3)  | (A10 >> 61)) & 0xffff_ffff_ffff_ffff
+                B08 = ((A16 << 45) | (A16 >> 19)) & 0xffff_ffff_ffff_ffff
+                B09 = ((A22 << 61) | (A22 >> 3))  & 0xffff_ffff_ffff_ffff
+                B10 = ((A01 << 1)  | (A01 >> 63)) & 0xffff_ffff_ffff_ffff
+                B11 = ((A07 << 6)  | (A07 >> 58)) & 0xffff_ffff_ffff_ffff
+                B12 = ((A13 << 25) | (A13 >> 39)) & 0xffff_ffff_ffff_ffff
+                B13 = ((A19 << 8)  | (A19 >> 56)) & 0xffff_ffff_ffff_ffff
+                B14 = ((A20 << 18) | (A20 >> 46)) & 0xffff_ffff_ffff_ffff
+                B15 = ((A04 << 27) | (A04 >> 37)) & 0xffff_ffff_ffff_ffff
+                B16 = ((A05 << 36) | (A05 >> 28)) & 0xffff_ffff_ffff_ffff
+                B17 = ((A11 << 10) | (A11 >> 54)) & 0xffff_ffff_ffff_ffff
+                B18 = ((A17 << 15) | (A17 >> 49)) & 0xffff_ffff_ffff_ffff
+                B19 = ((A23 << 56) | (A23 >> 8))  & 0xffff_ffff_ffff_ffff
+                B20 = ((A02 << 62) | (A02 >> 2))  & 0xffff_ffff_ffff_ffff
+                B21 = ((A08 << 55) | (A08 >> 9))  & 0xffff_ffff_ffff_ffff
+                B22 = ((A14 << 39) | (A14 >> 25)) & 0xffff_ffff_ffff_ffff
+                B23 = ((A15 << 41) | (A15 >> 23)) & 0xffff_ffff_ffff_ffff
+                B24 = ((A21 << 2)  | (A21 >> 62)) & 0xffff_ffff_ffff_ffff
 
-                state[4] ^= d4
-                state[9] ^= d4
-                state[14] ^= d4
-                state[19] ^= d4
-                state[24] ^= d4
+                # Chi
+                A00 = B00 ^ (~B01 & B02)
+                A01 = B01 ^ (~B02 & B03)
+                A02 = B02 ^ (~B03 & B04)
+                A03 = B03 ^ (~B04 & B00)
+                A04 = B04 ^ (~B00 & B01)
+                A05 = B05 ^ (~B06 & B07)
+                A06 = B06 ^ (~B07 & B08)
+                A07 = B07 ^ (~B08 & B09)
+                A08 = B08 ^ (~B09 & B05)
+                A09 = B09 ^ (~B05 & B06)
+                A10 = B10 ^ (~B11 & B12)
+                A11 = B11 ^ (~B12 & B13)
+                A12 = B12 ^ (~B13 & B14)
+                A13 = B13 ^ (~B14 & B10)
+                A14 = B14 ^ (~B10 & B11)
+                A15 = B15 ^ (~B16 & B17)
+                A16 = B16 ^ (~B17 & B18)
+                A17 = B17 ^ (~B18 & B19)
+                A18 = B18 ^ (~B19 & B15)
+                A19 = B19 ^ (~B15 & B16)
+                A20 = B20 ^ (~B21 & B22)
+                A21 = B21 ^ (~B22 & B23)
+                A22 = B22 ^ (~B23 & B24)
+                A23 = B23 ^ (~B24 & B20)
+                A24 = B24 ^ (~B20 & B21)
 
-                t = state[1]
-                j = 0
-                while j < 24:
-                    idx = self.keccak_piln[j]
-                    current = state[idx]
-                    state[idx] = self.rol64(t, self.keccak_rotc[j])
-                    t = current
-                    j += 1
+                A00 ^= rc
 
-                row = 0
-                while row < 25:
-                    a0 = state[row + 0]
-                    a1 = state[row + 1]
-                    a2 = state[row + 2]
-                    a3 = state[row + 3]
-                    a4 = state[row + 4]
-
-                    state[row + 0] = a0 ^ ((~a1 & 0xffff_ffff_ffff_ffff) & a2)
-                    state[row + 1] = a1 ^ ((~a2 & 0xffff_ffff_ffff_ffff) & a3)
-                    state[row + 2] = a2 ^ ((~a3 & 0xffff_ffff_ffff_ffff) & a4)
-                    state[row + 3] = a3 ^ ((~a4 & 0xffff_ffff_ffff_ffff) & a0)
-                    state[row + 4] = a4 ^ ((~a0 & 0xffff_ffff_ffff_ffff) & a1)
-
-                    row += 5
-
-                state[0] ^= self.keccak_round_constants[rc_index]
-                rc_index += 1
-
+            state[0], state[1], state[2], state[3], state[4] = A00, A01, A02, A03, A04
+            state[5], state[6], state[7], state[8], state[9] = A05, A06, A07, A08, A09
+            state[10], state[11], state[12], state[13], state[14] = A10, A11, A12, A13, A14
+            state[15], state[16], state[17], state[18], state[19] = A15, A16, A17, A18, A19
+            state[20], state[21], state[22], state[23], state[24] = A20, A21, A22, A23, A24
             return
 
         def left_encode(self, value):
