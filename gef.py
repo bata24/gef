@@ -96638,6 +96638,7 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
                         help="filter by hash byte length.")
     parser.add_argument("-s", "--smart", action="count", default=0, help="increase output smart level. (-s, -ss)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -96673,7 +96674,7 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
         return hfunc.hexdigest()
 
     def process(self):
-        tqdm = GefUtil.get_tqdm()
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         hash_funcs = list(self.get_valid_hash_funcs())
         pbar = tqdm(hash_funcs, leave=False, total=len(hash_funcs))
         for elem in pbar:
@@ -96681,17 +96682,19 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
                 if self.args.smart:
                     if elem != "hashlib":
                         break
-                self.out.append(titlify(elem))
+                if not self.args.quiet:
+                    self.out.append(titlify(elem))
                 continue
 
             hname, hfunc = elem
             if not self.should_be_displayed(hname, hfunc):
                 continue
 
-            try:
-                pbar.set_description(hname)
-            except Exception:
-                pass
+            if not self.args.quiet:
+                try:
+                    pbar.set_description(hname)
+                except Exception:
+                    pass
 
             h = self.calc_hash(hfunc, self.args.location, self.args.location + self.args.size)
             if h is False:
@@ -96732,6 +96735,7 @@ class HashFileCommand(HashCommand, BufferingOutput):
                         help="filter by hash byte length.")
     parser.add_argument("-s", "--smart", action="count", default=0, help="increase output smart level. (-s, -ss)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -96758,7 +96762,7 @@ class HashFileCommand(HashCommand, BufferingOutput):
         return hfunc.hexdigest()
 
     def process(self, filename, start_pos, end_pos):
-        tqdm = GefUtil.get_tqdm()
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         hash_funcs = list(self.get_valid_hash_funcs())
         pbar = tqdm(hash_funcs, leave=False, total=len(hash_funcs))
         for elem in pbar:
@@ -96766,17 +96770,19 @@ class HashFileCommand(HashCommand, BufferingOutput):
                 if self.args.smart:
                     if elem != "hashlib":
                         break
-                self.out.append(titlify(elem))
+                if not self.args.quiet:
+                    self.out.append(titlify(elem))
                 continue
 
             hname, hfunc = elem
             if not self.should_be_displayed(hname, hfunc):
                 continue
 
-            try:
-                pbar.set_description(hname)
-            except Exception:
-                pass
+            if not self.args.quiet:
+                try:
+                    pbar.set_description(hname)
+                except Exception:
+                    pass
 
             h = self.calc_hash(hfunc, filename, start_pos, end_pos)
             if h is False:
@@ -96822,6 +96828,7 @@ class HashValueCommand(HashCommand, BufferingOutput):
                         help="filter by hash byte length.")
     parser.add_argument("-s", "--smart", action="count", default=0, help="increase output smart level. (-s, -ss)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -96835,7 +96842,7 @@ class HashValueCommand(HashCommand, BufferingOutput):
         return
 
     def process(self, value):
-        tqdm = GefUtil.get_tqdm()
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         hash_funcs = list(self.get_valid_hash_funcs())
         pbar = tqdm(hash_funcs, leave=False, total=len(hash_funcs))
         for elem in pbar:
@@ -96843,17 +96850,19 @@ class HashValueCommand(HashCommand, BufferingOutput):
                 if self.args.smart:
                     if elem != "hashlib":
                         break
-                self.out.append(titlify(elem))
+                if not self.args.quiet:
+                    self.out.append(titlify(elem))
                 continue
 
             hname, hfunc = elem
             if not self.should_be_displayed(hname, hfunc):
                 continue
 
-            try:
-                pbar.set_description(hname)
-            except Exception:
-                pass
+            if not self.args.quiet:
+                try:
+                    pbar.set_description(hname)
+                except Exception:
+                    pass
 
             hfunc.update(value)
             h = hfunc.hexdigest()
