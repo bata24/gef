@@ -96942,8 +96942,11 @@ class HashTestCommand(HashCommand, BufferingOutput):
     parser.add_argument("-l", "--length-filter", type=AddressUtil.parse_address,
                         help="filter by hash byte length.")
     parser.add_argument("-s", "--smart", action="store_true", help="show only failed.")
-    parser.add_argument("-t", "--time", action="store_true",
+    group = parser.add_mutually_exclusive_group(required=False)
+    group.add_argument("-t", "--time", action="store_true",
                         help="measure the time taken to compute the hash using 0x4000 bytes of data.")
+    group.add_argument("-T", "--time-with-sort", action="store_true",
+                        help="measure and sort the time taken to compute the hash using 0x4000 bytes of data.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
@@ -97779,14 +97782,15 @@ class HashTestCommand(HashCommand, BufferingOutput):
 
     def hash_test_time(self):
         value = b"A" * 0x4000
-        cumulative_time = 0.0
+        category = None
+        result = []
 
         tqdm = GefUtil.get_tqdm()
         hash_funcs = list(self.get_valid_hash_funcs())
         pbar = tqdm(hash_funcs, leave=False, total=len(hash_funcs))
         for elem in pbar:
             if isinstance(elem, str):
-                self.out.append(titlify(elem))
+                category = elem
                 continue
 
             hname, hfunc = elem
@@ -97806,8 +97810,20 @@ class HashTestCommand(HashCommand, BufferingOutput):
             bit = len(h) * 4
             byte = bit // 8
             elapsed = end_time_real - start_time_real
+            result.append([elapsed, category, hname, bit, byte])
+
+        if self.args.time_with_sort:
+            result = sorted(result, reverse=True)
+
+        cumulative_time = 0.0
+        prev_category = None
+        for elapsed, category, hname, bit, byte in sorted(result, reverse=True):
             cumulative_time += elapsed
-            self.info_add_out("{:26s}:[{:4d}b/{:3d}B] {:.5f} sec (total: {:.5f} sec)".format(
+            if self.args.time:
+                if prev_category != category:
+                    self.out.append(titlify(category))
+                    prev_category = category
+            self.out.append("{:26s}:[{:4d}b/{:3d}B] {:.5f} sec (total: {:.5f} sec)".format(
                 hname, bit, byte, elapsed, cumulative_time,
             ))
         return
@@ -97815,7 +97831,7 @@ class HashTestCommand(HashCommand, BufferingOutput):
     @parse_args
     def do_invoke(self, args):
         self.out = []
-        if args.time:
+        if args.time or args.time_with_sort:
             self.hash_test_time()
         else:
             self.hash_test()
