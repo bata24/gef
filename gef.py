@@ -76281,21 +76281,11 @@ class Hash:
             ]
 
             self.Q = [
-                0x7311_c281_2425_cfa0,
-                0x6432_2864_34aa_c8e7,
-                0xb604_50e9_ef68_b7c1,
-                0xe8fb_2390_8d9f_06f1,
-                0xdd2e_76cb_a691_e5bf,
-                0x0cd0_d63b_2c30_bc41,
-                0x1f8c_cf68_2305_8f8a,
-                0x54e5_ed5b_88e3_775d,
-                0x4ad1_2aae_0a6d_6031,
-                0x3e7f_16bb_8822_2e0d,
-                0x8af8_671d_3fb5_0c2c,
-                0x995a_d117_8bd2_5c31,
-                0xc878_c1dd_04c4_b633,
-                0x3b72_066c_7a15_52ac,
-                0x0d6f_3522_631e_ffcb,
+                0x7311_c281_2425_cfa0, 0x6432_2864_34aa_c8e7, 0xb604_50e9_ef68_b7c1,
+                0xe8fb_2390_8d9f_06f1, 0xdd2e_76cb_a691_e5bf, 0x0cd0_d63b_2c30_bc41,
+                0x1f8c_cf68_2305_8f8a, 0x54e5_ed5b_88e3_775d, 0x4ad1_2aae_0a6d_6031,
+                0x3e7f_16bb_8822_2e0d, 0x8af8_671d_3fb5_0c2c, 0x995a_d117_8bd2_5c31,
+                0xc878_c1dd_04c4_b633, 0x3b72_066c_7a15_52ac, 0x0d6f_3522_631e_ffcb,
             ]
 
             self.S0 = 0x0123_4567_89ab_cdef
@@ -80816,23 +80806,23 @@ class Hash:
         def bswap32(self, x):
             x &= self.mask32
             return (
-                ((x & 0x0000_00ff) << 24) |
-                ((x & 0x0000_ff00) << 8) |
-                ((x & 0x00ff_0000) >> 8) |
-                ((x & 0xff00_0000) >> 24)
+                ((x & 0x0000_00ff) << 24)
+                | ((x & 0x0000_ff00) << 8)
+                | ((x & 0x00ff_0000) >> 8)
+                | ((x & 0xff00_0000) >> 24)
             ) & self.mask32
 
         def bswap64(self, x):
             x &= self.mask64
             return (
-                ((x & 0x0000_0000_0000_00ff) << 56) |
-                ((x & 0x0000_0000_0000_ff00) << 40) |
-                ((x & 0x0000_0000_00ff_0000) << 24) |
-                ((x & 0x0000_0000_ff00_0000) << 8) |
-                ((x & 0x0000_00ff_0000_0000) >> 8) |
-                ((x & 0x0000_ff00_0000_0000) >> 24) |
-                ((x & 0x00ff_0000_0000_0000) >> 40) |
-                ((x & 0xff00_0000_0000_0000) >> 56)
+                ((x & 0x0000_0000_0000_00ff) << 56)
+                | ((x & 0x0000_0000_0000_ff00) << 40)
+                | ((x & 0x0000_0000_00ff_0000) << 24)
+                | ((x & 0x0000_0000_ff00_0000) << 8)
+                | ((x & 0x0000_00ff_0000_0000) >> 8)
+                | ((x & 0x0000_ff00_0000_0000) >> 24)
+                | ((x & 0x00ff_0000_0000_0000) >> 40)
+                | ((x & 0xff00_0000_0000_0000) >> 56)
             ) & self.mask64
 
         def signed_byte(self, b):
@@ -86101,8 +86091,11 @@ class Hash:
             0x64, 0x6d, 0xdc, 0xf0, 0x59, 0xa9, 0x4c, 0x17, 0x7f, 0x91, 0xb8, 0xc9, 0x57, 0x1b, 0xe0, 0x61,
         ]
         mul_tables = None
+        shift_offsets = None
 
         def __init__(self, data=b""):
+            self.ensure_mul_tables()
+            self.ensure_shift_offsets()
             self.state = [0] * self.columns
             self.state[0] = self.block_size
             self.buf = bytearray()
@@ -86123,13 +86116,13 @@ class Hash:
                 raise TypeError("data must be bytes-like")
             if not data:
                 return self
-            self.ensure_mul_tables()
             self.msg_len_bits += len(data) * 8
             self.buf.extend(data)
-            while len(self.buf) >= self.block_size:
-                block = bytes(self.buf[:self.block_size])
-                del self.buf[:self.block_size]
-                self.process_block(block)
+            block_size = self.block_size
+            process_block = self.process_block
+            while len(self.buf) >= block_size:
+                process_block(self.buf[:block_size])
+                del self.buf[:block_size]
             return self
 
         def digest(self):
@@ -86143,23 +86136,22 @@ class Hash:
             return out
 
         def finalize(self):
-            self.ensure_mul_tables()
             bit_len = self.msg_len_bits & ((1 << 96) - 1)
             self.buf.append(0x80)
-            len_pos = self.block_size - 12
+            block_size = self.block_size
+            len_pos = block_size - 12
+            process_block = self.process_block
             if len(self.buf) > len_pos:
-                while len(self.buf) < self.block_size:
+                while len(self.buf) < block_size:
                     self.buf.append(0x00)
-                block = bytes(self.buf[:self.block_size])
-                del self.buf[:self.block_size]
-                self.process_block(block)
+                process_block(self.buf[:block_size])
+                del self.buf[:block_size]
             while len(self.buf) < len_pos:
                 self.buf.append(0x00)
             self.buf.extend(bit_len.to_bytes(12, "little"))
-            while len(self.buf) >= self.block_size:
-                block = bytes(self.buf[:self.block_size])
-                del self.buf[:self.block_size]
-                self.process_block(block)
+            while len(self.buf) >= block_size:
+                process_block(self.buf[:block_size])
+                del self.buf[:block_size]
             self.output_transform()
             return
 
@@ -86170,14 +86162,20 @@ class Hash:
             return out
 
         def process_block(self, block):
-            words = [int.from_bytes(block[i * 8:(i + 1) * 8], "little") for i in range(self.columns)]
-            t1 = [self.state[i] ^ words[i] for i in range(self.columns)]
+            columns = self.columns
+            state = self.state
+            words = [0] * columns
+            for i in range(columns):
+                j = i * 8
+                words[i] = int.from_bytes(block[j:j + 8], "little")
+            t1 = [0] * columns
+            for i in range(columns):
+                t1[i] = state[i] ^ words[i]
             t2 = list(words)
             self.perm_p(t1)
             self.perm_q(t2)
-            for i in range(self.columns):
-                self.state[i] ^= t1[i] ^ t2[i]
-                self.state[i] &= self.mask64
+            for i in range(columns):
+                state[i] ^= t1[i] ^ t2[i]
             return
 
         def output_transform(self):
@@ -86185,14 +86183,12 @@ class Hash:
             self.perm_p(t)
             for i in range(self.columns):
                 self.state[i] ^= t[i]
-                self.state[i] &= self.mask64
             return
 
         def perm_p(self, s):
             for rnd in range(self.rounds):
                 for col in range(self.columns):
-                    s[col] ^= ((col << 4) ^ rnd)
-                    s[col] &= self.mask64
+                    s[col] ^= (col << 4) ^ rnd
                 self.shift_rows(s)
                 self.sub_bytes(s)
                 self.mix_columns(s)
@@ -86210,71 +86206,98 @@ class Hash:
             return
 
         def sub_bytes(self, s):
-            boxes = (self.s0, self.s1, self.s2, self.s3)
+            s0 = self.s0
+            s1 = self.s1
+            s2 = self.s2
+            s3 = self.s3
             for col in range(self.columns):
                 w = s[col]
-                nw = 0
-                for row in range(8):
-                    b = (w >> (8 * row)) & 0xff
-                    sb = boxes[row & 3][b]
-                    nw |= sb << (8 * row)
-                s[col] = nw & self.mask64
+                s[col] = (
+                    s0[(w >> 0) & 0xff]
+                    | (s1[(w >> 8) & 0xff] << 8)
+                    | (s2[(w >> 16) & 0xff] << 16)
+                    | (s3[(w >> 24) & 0xff] << 24)
+                    | (s0[(w >> 32) & 0xff] << 32)
+                    | (s1[(w >> 40) & 0xff] << 40)
+                    | (s2[(w >> 48) & 0xff] << 48)
+                    | (s3[(w >> 56) & 0xff] << 56)
+                )
             return
 
         def shift_rows(self, s):
-            if self.columns == 8:
-                offsets = (0, 1, 2, 3, 4, 5, 6, 7)
-            else:
-                offsets = (0, 1, 2, 3, 4, 5, 6, 11)
-            rows = [[0] * self.columns for _ in range(8)]
-            for col in range(self.columns):
-                w = s[col]
-                for row in range(8):
-                    rows[row][col] = (w >> (8 * row)) & 0xff
+            columns = self.columns
+            offsets = self.shift_offsets
+            src = list(s)
+            for col in range(columns):
+                s[col] = 0
             for row in range(8):
-                off = offsets[row] % self.columns
-                if off:
-                    r = rows[row]
-                    rows[row] = r[-off:] + r[:-off]
-            for col in range(self.columns):
-                w = 0
-                for row in range(8):
-                    w |= rows[row][col] << (8 * row)
-                s[col] = w & self.mask64
+                off = offsets[row]
+                shift = row * 8
+                for col in range(columns):
+                    dst_col = (col + off) % columns
+                    s[dst_col] |= ((src[col] >> shift) & 0xff) << shift
             return
 
         def mix_columns(self, s):
-            m = self.matrix
             tables = self.mul_tables
+            t4 = tables[0x04]
+            t5 = tables[0x05]
+            t6 = tables[0x06]
+            t7 = tables[0x07]
+            t8 = tables[0x08]
+
             for col in range(self.columns):
                 w = s[col]
-                inp = [(w >> (8 * row)) & 0xff for row in range(8)]
-                outp = [0] * 8
-                for row in range(8):
-                    acc = 0
-                    for k in range(8):
-                        coef = m[(k - row) & 7]
-                        b = inp[k]
-                        if coef == 1:
-                            acc ^= b
-                        else:
-                            acc ^= tables[coef][b]
-                    outp[row] = acc
-                nw = 0
-                for row in range(8):
-                    nw |= outp[row] << (8 * row)
-                s[col] = nw & self.mask64
+
+                b0 = (w >> 0) & 0xff
+                b1 = (w >> 8) & 0xff
+                b2 = (w >> 16) & 0xff
+                b3 = (w >> 24) & 0xff
+                b4 = (w >> 32) & 0xff
+                b5 = (w >> 40) & 0xff
+                b6 = (w >> 48) & 0xff
+                b7 = (w >> 56) & 0xff
+
+                o0 = b0 ^ b1 ^ t5[b2] ^ b3 ^ t8[b4] ^ t6[b5] ^ t7[b6] ^ t4[b7]
+                o1 = t4[b0] ^ b1 ^ b2 ^ t5[b3] ^ b4 ^ t8[b5] ^ t6[b6] ^ t7[b7]
+                o2 = t7[b0] ^ t4[b1] ^ b2 ^ b3 ^ t5[b4] ^ b5 ^ t8[b6] ^ t6[b7]
+                o3 = t6[b0] ^ t7[b1] ^ t4[b2] ^ b3 ^ b4 ^ t5[b5] ^ b6 ^ t8[b7]
+                o4 = t8[b0] ^ t6[b1] ^ t7[b2] ^ t4[b3] ^ b4 ^ b5 ^ t5[b6] ^ b7
+                o5 = b0 ^ t8[b1] ^ t6[b2] ^ t7[b3] ^ t4[b4] ^ b5 ^ b6 ^ t5[b7]
+                o6 = t5[b0] ^ b1 ^ t8[b2] ^ t6[b3] ^ t7[b4] ^ t4[b5] ^ b6 ^ b7
+                o7 = b0 ^ t5[b1] ^ b2 ^ t8[b3] ^ t6[b4] ^ t7[b5] ^ t4[b6] ^ b7
+
+                s[col] = (
+                    o0
+                    | (o1 << 8)
+                    | (o2 << 16)
+                    | (o3 << 24)
+                    | (o4 << 32)
+                    | (o5 << 40)
+                    | (o6 << 48)
+                    | (o7 << 56)
+                )
+            return
+
+        def ensure_shift_offsets(self):
+            if self.__class__.shift_offsets is not None:
+                return
+            if self.columns == 8:
+                self.__class__.shift_offsets = (0, 1, 2, 3, 4, 5, 6, 7)
+            else:
+                self.__class__.shift_offsets = (0, 1, 2, 3, 4, 5, 6, 11)
             return
 
         def ensure_mul_tables(self):
             if self.__class__.mul_tables is not None:
                 return
-            tables = {}
-            for coef in set(self.matrix):
-                if coef == 1:
-                    continue
-                tables[coef] = [self.gf_mul(coef, x) for x in range(256)]
-            self.__class__.mul_tables = tables
+            self.__class__.mul_tables = {
+                0x04: tuple(self.gf_mul(0x04, x) for x in range(256)),
+                0x05: tuple(self.gf_mul(0x05, x) for x in range(256)),
+                0x06: tuple(self.gf_mul(0x06, x) for x in range(256)),
+                0x07: tuple(self.gf_mul(0x07, x) for x in range(256)),
+                0x08: tuple(self.gf_mul(0x08, x) for x in range(256)),
+            }
             return
 
         def gf_mul(self, a, b):
@@ -89696,6 +89719,8 @@ class Hash:
         block_size = 0
         digest_size = 0
         output_indexes = []
+        expand_small_tables = None
+        expand_big_tables = None
 
         t256 = [
             0x7495_1000, 0x5a2b_467e, 0x88fd_1d2b, 0x1ee6_8292, 0xcba9_0000, 0x9027_3769, 0xbbdc_f407, 0xd0f4_af61,
@@ -89881,13 +89906,35 @@ class Hash:
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            data = bytes(data)
-            self.msg_len += len(data)
-            self.buf.extend(data)
-            while len(self.buf) >= self.block_size:
-                block = bytes(self.buf[:self.block_size])
-                del self.buf[:self.block_size]
-                self.compress(block, False)
+            if not data:
+                return self
+
+            mv = memoryview(data)
+            self.msg_len += len(mv)
+
+            bs = self.block_size
+            compress = self.compress
+            buf = self.buf
+
+            if buf:
+                need = bs - len(buf)
+                if len(mv) < need:
+                    buf.extend(mv)
+                    return self
+
+                buf.extend(mv[:need])
+                compress(buf, False)
+                buf.clear()
+                mv = mv[need:]
+
+            full = (len(mv) // bs) * bs
+            off = 0
+            while off < full:
+                compress(mv[off:off + bs], False)
+                off += bs
+
+            if off < len(mv):
+                buf.extend(mv[off:])
             return self
 
         def digest(self):
@@ -89929,18 +89976,67 @@ class Hash:
 
         def output(self):
             if self.block_size == 4:
-                words = [self.h[i] for i in range(self.digest_size // 4)]
-                return self.pack_words_be(words)
+                return self.pack_words_be(self.h[:self.digest_size // 4])
 
             if self.digest_size == 48:
-                words = [self.h[i] for i in self.output_indexes]
-                return self.pack_words_be(words)
+                return self.pack_words_be([self.h[i] for i in self.output_indexes])
 
-            words = list(self.h)
-            return self.pack_words_be(words)
+            return self.pack_words_be(self.h)
 
         def pack_words_be(self, words):
             return struct.pack(">" + ("I" * len(words)), *[(w & self.mask32) for w in words])
+
+        @classmethod
+        def build_expand_small_tables(cls):
+            if cls.expand_small_tables is not None:
+                return cls.expand_small_tables
+
+            tables = []
+            t = cls.t256
+            for u in range(4):
+                pos = []
+                base_u = u * 64
+                for byte in range(256):
+                    acc = [0] * 8
+                    db = byte
+                    off = base_u
+                    for _ in range(8):
+                        if db & 1:
+                            for i in range(8):
+                                acc[i] ^= t[off + i]
+                        db >>= 1
+                        off += 8
+                    pos.append(tuple(acc))
+                tables.append(tuple(pos))
+
+            cls.expand_small_tables = tuple(tables)
+            return cls.expand_small_tables
+
+        @classmethod
+        def build_expand_big_tables(cls):
+            if cls.expand_big_tables is not None:
+                return cls.expand_big_tables
+
+            tables = []
+            t = cls.t512
+            for u in range(8):
+                pos = []
+                base_u = u * 128
+                for byte in range(256):
+                    acc = [0] * 16
+                    db = byte
+                    off = base_u
+                    for _ in range(8):
+                        if db & 1:
+                            for i in range(16):
+                                acc[i] ^= t[off + i]
+                        db >>= 1
+                        off += 16
+                    pos.append(tuple(acc))
+                tables.append(tuple(pos))
+
+            cls.expand_big_tables = tuple(tables)
+            return cls.expand_big_tables
 
         def rotl32(self, x, n):
             x &= self.mask32
@@ -89980,28 +90076,50 @@ class Hash:
 
         def expand(self, block):
             if self.block_size == 4:
-                m = [0] * 8
-                for u in range(4):
-                    db = block[u]
-                    for v in range(8):
-                        if db & 1:
-                            off = (u * 8 + v) * 8
-                            for i in range(8):
-                                m[i] ^= self.t256[off + i]
-                        db >>= 1
-                return m
+                t0, t1, t2, t3 = self.__class__.build_expand_small_tables()
+                a0 = t0[block[0]]
+                a1 = t1[block[1]]
+                a2 = t2[block[2]]
+                a3 = t3[block[3]]
+                return [
+                    a0[0] ^ a1[0] ^ a2[0] ^ a3[0],
+                    a0[1] ^ a1[1] ^ a2[1] ^ a3[1],
+                    a0[2] ^ a1[2] ^ a2[2] ^ a3[2],
+                    a0[3] ^ a1[3] ^ a2[3] ^ a3[3],
+                    a0[4] ^ a1[4] ^ a2[4] ^ a3[4],
+                    a0[5] ^ a1[5] ^ a2[5] ^ a3[5],
+                    a0[6] ^ a1[6] ^ a2[6] ^ a3[6],
+                    a0[7] ^ a1[7] ^ a2[7] ^ a3[7],
+                ]
 
             if self.block_size == 8:
-                m = [0] * 16
-                for u in range(8):
-                    db = block[u]
-                    for v in range(8):
-                        if db & 1:
-                            off = (u * 8 + v) * 16
-                            for i in range(16):
-                                m[i] ^= self.t512[off + i]
-                        db >>= 1
-                return m
+                t0, t1, t2, t3, t4, t5, t6, t7 = self.__class__.build_expand_big_tables()
+                a0 = t0[block[0]]
+                a1 = t1[block[1]]
+                a2 = t2[block[2]]
+                a3 = t3[block[3]]
+                a4 = t4[block[4]]
+                a5 = t5[block[5]]
+                a6 = t6[block[6]]
+                a7 = t7[block[7]]
+                return [
+                    a0[0] ^ a1[0] ^ a2[0] ^ a3[0] ^ a4[0] ^ a5[0] ^ a6[0] ^ a7[0],
+                    a0[1] ^ a1[1] ^ a2[1] ^ a3[1] ^ a4[1] ^ a5[1] ^ a6[1] ^ a7[1],
+                    a0[2] ^ a1[2] ^ a2[2] ^ a3[2] ^ a4[2] ^ a5[2] ^ a6[2] ^ a7[2],
+                    a0[3] ^ a1[3] ^ a2[3] ^ a3[3] ^ a4[3] ^ a5[3] ^ a6[3] ^ a7[3],
+                    a0[4] ^ a1[4] ^ a2[4] ^ a3[4] ^ a4[4] ^ a5[4] ^ a6[4] ^ a7[4],
+                    a0[5] ^ a1[5] ^ a2[5] ^ a3[5] ^ a4[5] ^ a5[5] ^ a6[5] ^ a7[5],
+                    a0[6] ^ a1[6] ^ a2[6] ^ a3[6] ^ a4[6] ^ a5[6] ^ a6[6] ^ a7[6],
+                    a0[7] ^ a1[7] ^ a2[7] ^ a3[7] ^ a4[7] ^ a5[7] ^ a6[7] ^ a7[7],
+                    a0[8] ^ a1[8] ^ a2[8] ^ a3[8] ^ a4[8] ^ a5[8] ^ a6[8] ^ a7[8],
+                    a0[9] ^ a1[9] ^ a2[9] ^ a3[9] ^ a4[9] ^ a5[9] ^ a6[9] ^ a7[9],
+                    a0[10] ^ a1[10] ^ a2[10] ^ a3[10] ^ a4[10] ^ a5[10] ^ a6[10] ^ a7[10],
+                    a0[11] ^ a1[11] ^ a2[11] ^ a3[11] ^ a4[11] ^ a5[11] ^ a6[11] ^ a7[11],
+                    a0[12] ^ a1[12] ^ a2[12] ^ a3[12] ^ a4[12] ^ a5[12] ^ a6[12] ^ a7[12],
+                    a0[13] ^ a1[13] ^ a2[13] ^ a3[13] ^ a4[13] ^ a5[13] ^ a6[13] ^ a7[13],
+                    a0[14] ^ a1[14] ^ a2[14] ^ a3[14] ^ a4[14] ^ a5[14] ^ a6[14] ^ a7[14],
+                    a0[15] ^ a1[15] ^ a2[15] ^ a3[15] ^ a4[15] ^ a5[15] ^ a6[15] ^ a7[15],
+                ]
 
             raise ValueError("invalid block_size")
 
@@ -90810,7 +90928,7 @@ class Hash:
         big_steps = 12
         m_w = 4
 
-    class SIMDHBase:
+    class SIMDBase:
         block_size = None
         digest_size = None
         lanes = None
@@ -90824,6 +90942,9 @@ class Hash:
         const_exps = None
 
         root_pows = None
+        ntt_rows_normal = None
+        ntt_rows_final = None
+        p_xor_table = None
 
         P = [
             0x04, 0x06, 0x00, 0x02, 0x07, 0x05, 0x03, 0x01,
@@ -90855,6 +90976,25 @@ class Hash:
                 for i in range(0x01, cls.order):
                     root_pows[i] = (root_pows[i - 1] * cls.root) % 0x101
                 cls.root_pows = root_pows
+
+            if cls.ntt_rows_normal is None:
+                root_pows = cls.root_pows
+                ntt_rows_normal = [None] * cls.ntt_n
+                ntt_rows_final = [None] * cls.ntt_n
+
+                for i in range(cls.ntt_n):
+                    row = [0] * cls.block_size
+                    for j in range(cls.block_size):
+                        row[j] = root_pows[(i * j) % cls.order]
+
+                    add_normal = root_pows[(cls.const_exps[0] * i) % cls.order]
+                    add_final = add_normal + root_pows[(cls.const_exps[1] * i) % cls.order]
+
+                    ntt_rows_normal[i] = (tuple(row), add_normal)
+                    ntt_rows_final[i] = (tuple(row), add_final)
+
+                cls.ntt_rows_normal = tuple(ntt_rows_normal)
+                cls.ntt_rows_final = tuple(ntt_rows_final)
             return
 
         def copy(self):
@@ -90867,7 +91007,6 @@ class Hash:
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            data = bytes(data)
             self.msg_len += len(data)
             self.buf.extend(data)
             while len(self.buf) >= self.block_size:
@@ -90890,7 +91029,7 @@ class Hash:
             if len(self.buf) != 0:
                 if len(self.buf) < self.block_size:
                     self.buf.extend(b"\x00" * (self.block_size - len(self.buf)))
-                block = bytes(self.buf[:self.block_size])
+                block = self.buf[:self.block_size]
                 del self.buf[:self.block_size]
                 self.compress(block, 0)
 
@@ -90901,33 +91040,20 @@ class Hash:
             return
 
         def rotl32(self, x, n):
-            x &= 0xffff_ffff
             return ((x << n) | (x >> (0x20 - n))) & 0xffff_ffff
 
-        def if_func(self, a, b, c):
-            return c ^ (a & (b ^ c))
-
-        def maj_func(self, a, b, c):
-            return (a & b) | (c & (a | b))
-
-        def p_xor(self, step_index):
-            raise NotImplementedError
-
         def ntt(self, block, final_flag):
-            x = list(block)
-            root_pows = self.__class__.root_pows
-
-            exps = [self.const_exps[0]]
             if final_flag:
-                exps = list(self.const_exps)
+                rows = self.__class__.ntt_rows_final
+            else:
+                rows = self.__class__.ntt_rows_normal
 
             y = [0] * self.ntt_n
             for i in range(self.ntt_n):
-                acc = 0
-                for j in range(len(x)):
-                    acc += x[j] * root_pows[(i * j) % self.order]
-                for e in exps:
-                    acc += root_pows[(e * i) % self.order]
+                coeffs, add_const = rows[i]
+                acc = add_const
+                for j in range(self.block_size):
+                    acc += block[j] * coeffs[j]
                 y[i] = acc % 0x101
             return y
 
@@ -90946,45 +91072,70 @@ class Hash:
 
         def message_expansion(self, block, final_flag):
             y = self.ntt(block, final_flag)
+            z = [None] * 0x20
+            lanes = self.lanes
+            z_stride = self.z_stride
+            ntt_n = self.ntt_n
+            half_n = ntt_n // 0x02
+            pack_code = self.pack_code
 
-            z = []
             for i in range(0x20):
-                row = [0] * self.lanes
-                for j in range(self.lanes):
-                    if i <= 0x0f:
-                        idx = self.z_stride * i + 0x02 * j
-                        row[j] = self.pack_code(y[idx], y[idx + 0x01], 0xb9)
-                    elif i <= 0x17:
-                        idx = self.z_stride * i + 0x02 * j
-                        row[j] = self.pack_code(
-                            y[idx - self.ntt_n],
-                            y[idx - (self.ntt_n // 0x02)],
+                row = [0] * lanes
+                base = z_stride * i
+
+                if i <= 0x0f:
+                    for j in range(lanes):
+                        idx = base + 0x02 * j
+                        row[j] = pack_code(y[idx], y[idx + 0x01], 0xb9)
+                elif i <= 0x17:
+                    for j in range(lanes):
+                        idx = base + 0x02 * j
+                        row[j] = pack_code(
+                            y[idx - ntt_n],
+                            y[idx - half_n],
                             0xe9,
                         )
-                    else:
-                        idx = self.z_stride * i + 0x02 * j
-                        row[j] = self.pack_code(
-                            y[idx - (self.ntt_n + self.ntt_n // 0x02 - 0x01)],
-                            y[idx - (self.ntt_n - 0x01)],
+                else:
+                    offset0 = ntt_n + half_n - 0x01
+                    offset1 = ntt_n - 0x01
+                    for j in range(lanes):
+                        idx = base + 0x02 * j
+                        row[j] = pack_code(
+                            y[idx - offset0],
+                            y[idx - offset1],
                             0xe9,
                         )
-                z.append(row)
+                z[i] = row
 
             w = [None] * 0x20
             for i in range(0x20):
                 w[i] = z[self.P[i]]
             return w
 
-        def step(self, a, b, c, d, w_vec, phi_func, r, s, step_index):
-            p = self.p_xor(step_index)
-
+        def step_if(self, a, b, c, d, w_vec, r, s, p):
             new_a = [0] * self.lanes
             new_b = [0] * self.lanes
             new_c = [0] * self.lanes
             new_d = [0] * self.lanes
-
             for j in range(self.lanes):
-                t = (d[j] + w_vec[j] + phi_func(a[j], b[j], c[j])) & 0xffff_ffff
+                phi = c[j] ^ (a[j] & (b[j] ^ c[j]))
+                t = (d[j] + w_vec[j] + phi) & 0xffff_ffff
+                t = self.rotl32(t, s)
+                u = self.rotl32(a[j ^ p], r)
+                new_a[j] = (t + u) & 0xffff_ffff
+                new_b[j] = self.rotl32(a[j], r)
+                new_c[j] = b[j]
+                new_d[j] = c[j]
+            return new_a, new_b, new_c, new_d
+
+        def step_maj(self, a, b, c, d, w_vec, r, s, p):
+            new_a = [0] * self.lanes
+            new_b = [0] * self.lanes
+            new_c = [0] * self.lanes
+            new_d = [0] * self.lanes
+            for j in range(self.lanes):
+                phi = (a[j] & b[j]) | (c[j] & (a[j] | b[j]))
+                t = (d[j] + w_vec[j] + phi) & 0xffff_ffff
                 t = self.rotl32(t, s)
                 u = self.rotl32(a[j ^ p], r)
                 new_a[j] = (t + u) & 0xffff_ffff
@@ -90996,57 +91147,56 @@ class Hash:
         def compress(self, block, final_flag):
             if len(block) != self.block_size:
                 raise ValueError("invalid block size")
-
             w = self.message_expansion(block, final_flag)
+            m_words = struct.unpack("<" + "I" * (self.lanes * 0x04), block)
+            s_words = [0] * (self.lanes * 0x04)
+            for i in range(self.lanes * 0x04):
+                s_words[i] = self.state[i] ^ m_words[i]
+            lanes = self.lanes
 
-            m_words = list(struct.unpack("<" + "I" * (self.lanes * 0x04), block))
-            s_words = [self.state[i] ^ m_words[i] for i in range(self.lanes * 0x04)]
-
-            a = s_words[0x00 : self.lanes]
-            b = s_words[self.lanes : self.lanes * 0x02]
-            c = s_words[self.lanes * 0x02 : self.lanes * 0x03]
-            d = s_words[self.lanes * 0x03 : self.lanes * 0x04]
-
+            a = list(s_words[0x00 : lanes])
+            b = list(s_words[lanes : lanes * 0x02])
+            c = list(s_words[lanes * 0x02 : lanes * 0x03])
+            d = list(s_words[lanes * 0x03 : lanes * 0x04])
+            ptab = self.p_xor_table
             step_index = 0
             for rnd in range(0x04):
                 pi0, pi1, pi2, pi3 = self.round_pis[rnd]
 
-                a, b, c, d = self.step(a, b, c, d, w[step_index], self.if_func, pi0, pi1, step_index)
+                a, b, c, d = self.step_if(a, b, c, d, w[step_index], pi0, pi1, ptab[step_index])
                 step_index += 0x01
-                a, b, c, d = self.step(a, b, c, d, w[step_index], self.if_func, pi1, pi2, step_index)
+                a, b, c, d = self.step_if(a, b, c, d, w[step_index], pi1, pi2, ptab[step_index])
                 step_index += 0x01
-                a, b, c, d = self.step(a, b, c, d, w[step_index], self.if_func, pi2, pi3, step_index)
+                a, b, c, d = self.step_if(a, b, c, d, w[step_index], pi2, pi3, ptab[step_index])
                 step_index += 0x01
-                a, b, c, d = self.step(a, b, c, d, w[step_index], self.if_func, pi3, pi0, step_index)
-                step_index += 0x01
-
-                a, b, c, d = self.step(a, b, c, d, w[step_index], self.maj_func, pi0, pi1, step_index)
-                step_index += 0x01
-                a, b, c, d = self.step(a, b, c, d, w[step_index], self.maj_func, pi1, pi2, step_index)
-                step_index += 0x01
-                a, b, c, d = self.step(a, b, c, d, w[step_index], self.maj_func, pi2, pi3, step_index)
-                step_index += 0x01
-                a, b, c, d = self.step(a, b, c, d, w[step_index], self.maj_func, pi3, pi0, step_index)
+                a, b, c, d = self.step_if(a, b, c, d, w[step_index], pi3, pi0, ptab[step_index])
                 step_index += 0x01
 
-            iv_a = self.state[0x00 : self.lanes]
-            iv_b = self.state[self.lanes : self.lanes * 0x02]
-            iv_c = self.state[self.lanes * 0x02 : self.lanes * 0x03]
-            iv_d = self.state[self.lanes * 0x03 : self.lanes * 0x04]
+                a, b, c, d = self.step_maj(a, b, c, d, w[step_index], pi0, pi1, ptab[step_index])
+                step_index += 0x01
+                a, b, c, d = self.step_maj(a, b, c, d, w[step_index], pi1, pi2, ptab[step_index])
+                step_index += 0x01
+                a, b, c, d = self.step_maj(a, b, c, d, w[step_index], pi2, pi3, ptab[step_index])
+                step_index += 0x01
+                a, b, c, d = self.step_maj(a, b, c, d, w[step_index], pi3, pi0, ptab[step_index])
+                step_index += 0x01
 
-            a, b, c, d = self.step(a, b, c, d, iv_a, self.if_func, 0x04, 0x0d, step_index)
-            step_index += 0x01
-            a, b, c, d = self.step(a, b, c, d, iv_b, self.if_func, 0x0d, 0x0a, step_index)
-            step_index += 0x01
-            a, b, c, d = self.step(a, b, c, d, iv_c, self.if_func, 0x0a, 0x19, step_index)
-            step_index += 0x01
-            a, b, c, d = self.step(a, b, c, d, iv_d, self.if_func, 0x19, 0x04, step_index)
-            step_index += 0x01
+            iv_a = self.state[0x00 : lanes]
+            iv_b = self.state[lanes : lanes * 0x02]
+            iv_c = self.state[lanes * 0x02 : lanes * 0x03]
+            iv_d = self.state[lanes * 0x03 : lanes * 0x04]
 
+            a, b, c, d = self.step_if(a, b, c, d, iv_a, 0x04, 0x0d, ptab[step_index])
+            step_index += 0x01
+            a, b, c, d = self.step_if(a, b, c, d, iv_b, 0x0d, 0x0a, ptab[step_index])
+            step_index += 0x01
+            a, b, c, d = self.step_if(a, b, c, d, iv_c, 0x0a, 0x19, ptab[step_index])
+            step_index += 0x01
+            a, b, c, d = self.step_if(a, b, c, d, iv_d, 0x19, 0x04, ptab[step_index])
             self.state = list(a + b + c + d)
             return
 
-    class SIMD224(SIMDHBase):
+    class SIMD224(SIMDBase):
         block_size = 0x40
         digest_size = 0x1c
         lanes = 0x04
@@ -91058,15 +91208,18 @@ class Hash:
         const_exps = [0x7f, 0x7d]
 
         out_words = 0x07
-        iv_words = [
+        p_xor_table = (
+            0x01, 0x02, 0x03, 0x01, 0x02, 0x03, 0x01, 0x02, 0x03,
+            0x01, 0x02, 0x03, 0x01, 0x02, 0x03, 0x01, 0x02, 0x03,
+            0x01, 0x02, 0x03, 0x01, 0x02, 0x03, 0x01, 0x02, 0x03,
+            0x01, 0x02, 0x03, 0x01, 0x02, 0x03, 0x01, 0x02, 0x03,
+        )
+        iv_words = (
             0x3358_6e9f, 0x12ff_f033, 0xb2d9_f64d, 0x6f8f_ea53, 0xde94_3106, 0x2742_e439, 0x4fba_b5ac, 0x62b9_ff96,
             0x22e7_b0af, 0xc862_b3a8, 0x33e0_0cdc, 0x236b_86a6, 0xf64a_e77c, 0xfa37_3b76, 0x7dc1_ee5b, 0x7fb2_9ce8,
-        ]
+        )
 
-        def p_xor(self, step_index):
-            return [0x01, 0x02, 0x03][step_index % 0x03]
-
-    class SIMD256(SIMDHBase):
+    class SIMD256(SIMDBase):
         block_size = 0x40
         digest_size = 0x20
         lanes = 0x04
@@ -91078,15 +91231,18 @@ class Hash:
         const_exps = [0x7f, 0x7d]
 
         out_words = 0x08
-        iv_words = [
+        p_xor_table = (
+            0x01, 0x02, 0x03, 0x01, 0x02, 0x03, 0x01, 0x02, 0x03,
+            0x01, 0x02, 0x03, 0x01, 0x02, 0x03, 0x01, 0x02, 0x03,
+            0x01, 0x02, 0x03, 0x01, 0x02, 0x03, 0x01, 0x02, 0x03,
+            0x01, 0x02, 0x03, 0x01, 0x02, 0x03, 0x01, 0x02, 0x03,
+        )
+        iv_words = (
             0x4d56_7983, 0x0719_0ba9, 0x8474_577b, 0x39d7_26e9, 0xaaf3_d925, 0x3ee2_0b03, 0xafd5_e751, 0xc960_06d3,
             0xc2c2_ba14, 0x49b3_bcb4, 0xf67c_af46, 0x6686_26c9, 0xe2ea_a8d2, 0x1ff4_7833, 0xd0c6_61a5, 0x5569_3de1,
-        ]
+        )
 
-        def p_xor(self, step_index):
-            return [0x01, 0x02, 0x03][step_index % 0x03]
-
-    class SIMD384(SIMDHBase):
+    class SIMD384(SIMDBase):
         block_size = 0x80
         digest_size = 0x30
         lanes = 0x08
@@ -91098,17 +91254,22 @@ class Hash:
         const_exps = [0xff, 0xfd]
 
         out_words = 0x0c
-        iv_words = [
+        p_xor_table = (
+            0x01, 0x06, 0x02, 0x03, 0x05, 0x07, 0x04,
+            0x01, 0x06, 0x02, 0x03, 0x05, 0x07, 0x04,
+            0x01, 0x06, 0x02, 0x03, 0x05, 0x07, 0x04,
+            0x01, 0x06, 0x02, 0x03, 0x05, 0x07, 0x04,
+            0x01, 0x06, 0x02, 0x03, 0x05, 0x07, 0x04,
+            0x01,
+        )
+        iv_words = (
             0x8a36_eebc, 0x94a3_bd90, 0xd153_7b83, 0xb25b_070b, 0xf463_f1b5, 0xb6f8_1e20, 0x0055_c339, 0xb4d1_44d1,
             0x7360_ca61, 0x1836_1a03, 0x17dc_b4b9, 0x3414_c45a, 0xa699_a9d2, 0xe39e_9664, 0x468b_fe77, 0x51d0_62f8,
             0xb9e3_bfe8, 0x63be_ce2a, 0x8fe5_06b9, 0xf8cc_4ac2, 0x7ae1_1542, 0xb1aa_dda1, 0x64b0_6794, 0x28d2_f462,
             0xe640_71ec, 0x1deb_91a8, 0x8ac8_db23, 0x3f78_2ab5, 0x039b_5cb8, 0x71dd_d962, 0xfade_2cea, 0x1416_df71,
-        ]
+        )
 
-        def p_xor(self, step_index):
-            return [0x01, 0x06, 0x02, 0x03, 0x05, 0x07, 0x04][step_index % 0x07]
-
-    class SIMD512(SIMDHBase):
+    class SIMD512(SIMDBase):
         block_size = 0x80
         digest_size = 0x40
         lanes = 0x08
@@ -91120,15 +91281,20 @@ class Hash:
         const_exps = [0xff, 0xfd]
 
         out_words = 0x10
-        iv_words = [
+        p_xor_table = (
+            0x01, 0x06, 0x02, 0x03, 0x05, 0x07, 0x04,
+            0x01, 0x06, 0x02, 0x03, 0x05, 0x07, 0x04,
+            0x01, 0x06, 0x02, 0x03, 0x05, 0x07, 0x04,
+            0x01, 0x06, 0x02, 0x03, 0x05, 0x07, 0x04,
+            0x01, 0x06, 0x02, 0x03, 0x05, 0x07, 0x04,
+            0x01,
+        )
+        iv_words = (
             0x0ba1_6b95, 0x72f9_99ad, 0x9fec_c2ae, 0xba32_64fc, 0x5e89_4929, 0x8e9f_30e5, 0x2f1d_aa37, 0xf0f2_c558,
             0xac50_6643, 0xa906_35a5, 0xe25b_878b, 0xaab7_878f, 0x8881_7f7a, 0x0a02_892b, 0x559a_7550, 0x598f_657e,
             0x7eef_60a1, 0x6b70_e3e8, 0x9c17_14d1, 0xb958_e2a8, 0xab02_675e, 0xed1c_014f, 0xcd8d_65bb, 0xfdb7_a257,
             0x0925_4899, 0xd699_c7bc, 0x9019_b6dc, 0x2b90_22e4, 0x8fa1_4956, 0x21bf_9bd3, 0xb94d_0943, 0x6ffd_dc22,
-        ]
-
-        def p_xor(self, step_index):
-            return [0x01, 0x06, 0x02, 0x03, 0x05, 0x07, 0x04][step_index % 0x07]
+        )
 
     class BMWHBase:
         block_size = None
@@ -92788,6 +92954,9 @@ class Hash:
         gf16_mul_table = None
         m8 = None
         MIX_VAL = None
+        MIX_PAIR = None
+        NIBBLE_SPLIT = None
+        NIBBLE_PACK = None
 
         def __init__(self, data=b""):
             self.buf = bytearray()
@@ -92800,28 +92969,70 @@ class Hash:
             return
 
         def init_tables(self):
-            if self.__class__.gf16_mul_table is None:
+            cls = self.__class__
+
+            if cls.gf16_mul_table is None:
                 tab = []
                 for a in range(16):
                     row = []
                     for b in range(16):
                         row.append(self.gf16_mul(a, b))
-                    tab.append(row)
-                self.__class__.gf16_mul_table = tab
+                    tab.append(tuple(row))
+                cls.gf16_mul_table = tuple(tab)
 
-            if self.__class__.m8 is None:
-                self.__class__.m8 = self.compute_m8()
+            if cls.m8 is None:
+                cls.m8 = self.compute_m8()
 
-            if self.__class__.MIX_VAL is None:
-                tab = self.__class__.gf16_mul_table
-                m8 = self.__class__.m8
-                self.__class__.MIX_VAL = [
-                    [
-                        [
-                            tab[m8[r][k]][v] for v in range(16)
-                        ] for k in range(8)
-                    ] for r in range(8)
-                ]
+            if cls.MIX_VAL is None:
+                tab = cls.gf16_mul_table
+                m8 = cls.m8
+                mix_val = []
+                for r in range(8):
+                    row = []
+                    for k in range(8):
+                        mul_row = []
+                        coeff = m8[r][k]
+                        for v in range(16):
+                            mul_row.append(tab[coeff][v])
+                        row.append(tuple(mul_row))
+                    mix_val.append(tuple(row))
+                cls.MIX_VAL = tuple(mix_val)
+
+            if cls.MIX_PAIR is None:
+                mix_val = cls.MIX_VAL
+                mix_pair = []
+                for r in range(8):
+                    row = []
+                    for pair_idx in range(4):
+                        pair_tab = []
+                        k0 = pair_idx << 1
+                        k1 = k0 + 1
+                        mv0 = mix_val[r][k0]
+                        mv1 = mix_val[r][k1]
+                        for a in range(16):
+                            pair_row = []
+                            v0 = mv0[a]
+                            for b in range(16):
+                                pair_row.append(v0 ^ mv1[b])
+                            pair_tab.append(tuple(pair_row))
+                        row.append(tuple(pair_tab))
+                    mix_pair.append(tuple(row))
+                cls.MIX_PAIR = tuple(mix_pair)
+
+            if cls.NIBBLE_SPLIT is None:
+                split = []
+                for b in range(256):
+                    split.append((b & 0x0f, b >> 4))
+                cls.NIBBLE_SPLIT = tuple(split)
+
+            if cls.NIBBLE_PACK is None:
+                pack = []
+                for lo in range(16):
+                    row = []
+                    for hi in range(16):
+                        row.append(lo | (hi << 4))
+                    pack.append(tuple(row))
+                cls.NIBBLE_PACK = tuple(pack)
             return
 
         def copy(self):
@@ -92896,32 +93107,45 @@ class Hash:
 
             while off < full:
                 self.photon256(state)
-                for i in range(4):
-                    state[i] ^= msg[off + i]
+                state[0] ^= msg[off]
+                state[1] ^= msg[off + 1]
+                state[2] ^= msg[off + 2]
+                state[3] ^= msg[off + 3]
                 off += 4
 
             rem = len(msg) - off
             if rem > 0:
                 self.photon256(state)
-                for i in range(rem):
+                i = 0
+                while i < rem:
                     state[i] ^= msg[off + i]
+                    i += 1
                 state[rem] ^= 0x01
 
             state[31] ^= (c0 << 5)
             return
 
         def photon256(self, state):
-            m = [0] * 64
-            for i in range(32):
-                b = state[i]
-                m[i << 1] = b & 0x0f
-                m[(i << 1) + 1] = b >> 4
-
+            split = self.__class__.NIBBLE_SPLIT
+            pack = self.__class__.NIBBLE_PACK
+            mix_pair = self.__class__.MIX_PAIR
             rc = self.rc
             sbox = self.sbox
-            MIX_VAL = self.__class__.MIX_VAL
 
-            for rnd in range(12):
+            m = [0] * 64
+            n = [0] * 64
+
+            i = 0
+            j = 0
+            while i < 32:
+                lo, hi = split[state[i]]
+                m[j] = lo
+                m[j + 1] = hi
+                i += 1
+                j += 2
+
+            rnd = 0
+            while rnd < 12:
                 rc_r = rc[rnd]
                 m[0] ^= rc_r[0]
                 m[8] ^= rc_r[1]
@@ -92932,71 +93156,54 @@ class Hash:
                 m[48] ^= rc_r[6]
                 m[56] ^= rc_r[7]
 
-                t = [
-                    sbox[m[0]], sbox[m[1]], sbox[m[2]], sbox[m[3]],
-                    sbox[m[4]], sbox[m[5]], sbox[m[6]], sbox[m[7]],
-                    sbox[m[9]], sbox[m[10]], sbox[m[11]], sbox[m[12]],
-                    sbox[m[13]], sbox[m[14]], sbox[m[15]], sbox[m[8]],
-                    sbox[m[18]], sbox[m[19]], sbox[m[20]], sbox[m[21]],
-                    sbox[m[22]], sbox[m[23]], sbox[m[16]], sbox[m[17]],
-                    sbox[m[27]], sbox[m[28]], sbox[m[29]], sbox[m[30]],
-                    sbox[m[31]], sbox[m[24]], sbox[m[25]], sbox[m[26]],
-                    sbox[m[36]], sbox[m[37]], sbox[m[38]], sbox[m[39]],
-                    sbox[m[32]], sbox[m[33]], sbox[m[34]], sbox[m[35]],
-                    sbox[m[45]], sbox[m[46]], sbox[m[47]], sbox[m[40]],
-                    sbox[m[41]], sbox[m[42]], sbox[m[43]], sbox[m[44]],
-                    sbox[m[54]], sbox[m[55]], sbox[m[48]], sbox[m[49]],
-                    sbox[m[50]], sbox[m[51]], sbox[m[52]], sbox[m[53]],
-                    sbox[m[63]], sbox[m[56]], sbox[m[57]], sbox[m[58]],
-                    sbox[m[59]], sbox[m[60]], sbox[m[61]], sbox[m[62]],
-                ]
+                r = 0
+                while r < 8:
+                    base = r << 3
+                    shift = r
+                    c = 0
+                    while c < 8:
+                        n[base + c] = sbox[m[base + ((c + shift) & 7)]]
+                        c += 1
+                    r += 1
 
-                for c in range(8):
-                    v0 = t[c]
-                    v1 = t[8 + c]
-                    v2 = t[16 + c]
-                    v3 = t[24 + c]
-                    v4 = t[32 + c]
-                    v5 = t[40 + c]
-                    v6 = t[48 + c]
-                    v7 = t[56 + c]
+                row0 = mix_pair[0]
+                row1 = mix_pair[1]
+                row2 = mix_pair[2]
+                row3 = mix_pair[3]
+                row4 = mix_pair[4]
+                row5 = mix_pair[5]
+                row6 = mix_pair[6]
+                row7 = mix_pair[7]
 
-                    m[c] = (
-                        MIX_VAL[0][0][v0] ^ MIX_VAL[0][1][v1] ^ MIX_VAL[0][2][v2] ^ MIX_VAL[0][3][v3] ^
-                        MIX_VAL[0][4][v4] ^ MIX_VAL[0][5][v5] ^ MIX_VAL[0][6][v6] ^ MIX_VAL[0][7][v7]
-                    )
-                    m[8 + c] = (
-                        MIX_VAL[1][0][v0] ^ MIX_VAL[1][1][v1] ^ MIX_VAL[1][2][v2] ^ MIX_VAL[1][3][v3] ^
-                        MIX_VAL[1][4][v4] ^ MIX_VAL[1][5][v5] ^ MIX_VAL[1][6][v6] ^ MIX_VAL[1][7][v7]
-                    )
-                    m[16 + c] = (
-                        MIX_VAL[2][0][v0] ^ MIX_VAL[2][1][v1] ^ MIX_VAL[2][2][v2] ^ MIX_VAL[2][3][v3] ^
-                        MIX_VAL[2][4][v4] ^ MIX_VAL[2][5][v5] ^ MIX_VAL[2][6][v6] ^ MIX_VAL[2][7][v7]
-                    )
-                    m[24 + c] = (
-                        MIX_VAL[3][0][v0] ^ MIX_VAL[3][1][v1] ^ MIX_VAL[3][2][v2] ^ MIX_VAL[3][3][v3] ^
-                        MIX_VAL[3][4][v4] ^ MIX_VAL[3][5][v5] ^ MIX_VAL[3][6][v6] ^ MIX_VAL[3][7][v7]
-                    )
-                    m[32 + c] = (
-                        MIX_VAL[4][0][v0] ^ MIX_VAL[4][1][v1] ^ MIX_VAL[4][2][v2] ^ MIX_VAL[4][3][v3] ^
-                        MIX_VAL[4][4][v4] ^ MIX_VAL[4][5][v5] ^ MIX_VAL[4][6][v6] ^ MIX_VAL[4][7][v7]
-                    )
-                    m[40 + c] = (
-                        MIX_VAL[5][0][v0] ^ MIX_VAL[5][1][v1] ^ MIX_VAL[5][2][v2] ^ MIX_VAL[5][3][v3] ^
-                        MIX_VAL[5][4][v4] ^ MIX_VAL[5][5][v5] ^ MIX_VAL[5][6][v6] ^ MIX_VAL[5][7][v7]
-                    )
-                    m[48 + c] = (
-                        MIX_VAL[6][0][v0] ^ MIX_VAL[6][1][v1] ^ MIX_VAL[6][2][v2] ^ MIX_VAL[6][3][v3] ^
-                        MIX_VAL[6][4][v4] ^ MIX_VAL[6][5][v5] ^ MIX_VAL[6][6][v6] ^ MIX_VAL[6][7][v7]
-                    )
-                    m[56 + c] = (
-                        MIX_VAL[7][0][v0] ^ MIX_VAL[7][1][v1] ^ MIX_VAL[7][2][v2] ^ MIX_VAL[7][3][v3] ^
-                        MIX_VAL[7][4][v4] ^ MIX_VAL[7][5][v5] ^ MIX_VAL[7][6][v6] ^ MIX_VAL[7][7][v7]
-                    )
+                c = 0
+                while c < 8:
+                    p0a = n[c]
+                    p0b = n[8 + c]
+                    p1a = n[16 + c]
+                    p1b = n[24 + c]
+                    p2a = n[32 + c]
+                    p2b = n[40 + c]
+                    p3a = n[48 + c]
+                    p3b = n[56 + c]
 
-            for i in range(32):
-                state[i] = m[i << 1] | (m[(i << 1) + 1] << 4)
+                    m[c] = row0[0][p0a][p0b] ^ row0[1][p1a][p1b] ^ row0[2][p2a][p2b] ^ row0[3][p3a][p3b]
+                    m[8 + c] = row1[0][p0a][p0b] ^ row1[1][p1a][p1b] ^ row1[2][p2a][p2b] ^ row1[3][p3a][p3b]
+                    m[16 + c] = row2[0][p0a][p0b] ^ row2[1][p1a][p1b] ^ row2[2][p2a][p2b] ^ row2[3][p3a][p3b]
+                    m[24 + c] = row3[0][p0a][p0b] ^ row3[1][p1a][p1b] ^ row3[2][p2a][p2b] ^ row3[3][p3a][p3b]
+                    m[32 + c] = row4[0][p0a][p0b] ^ row4[1][p1a][p1b] ^ row4[2][p2a][p2b] ^ row4[3][p3a][p3b]
+                    m[40 + c] = row5[0][p0a][p0b] ^ row5[1][p1a][p1b] ^ row5[2][p2a][p2b] ^ row5[3][p3a][p3b]
+                    m[48 + c] = row6[0][p0a][p0b] ^ row6[1][p1a][p1b] ^ row6[2][p2a][p2b] ^ row6[3][p3a][p3b]
+                    m[56 + c] = row7[0][p0a][p0b] ^ row7[1][p1a][p1b] ^ row7[2][p2a][p2b] ^ row7[3][p3a][p3b]
+                    c += 1
 
+                rnd += 1
+
+            i = 0
+            j = 0
+            while i < 32:
+                state[i] = pack[m[j]][m[j + 1]]
+                i += 1
+                j += 2
             return
 
         def gf16_mul(self, a, b):
@@ -93928,10 +94135,10 @@ class Hash:
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            data = bytes(data)
 
-            self.msg_len += len(data)
-            self.buf.extend(data)
+            data_view = memoryview(data)
+            self.msg_len += len(data_view)
+            self.buf.extend(data_view)
 
             while len(self.buf) >= self.block_size:
                 block = bytes(self.buf[:self.block_size])
@@ -93971,23 +94178,27 @@ class Hash:
             return out
 
         def process_block(self, block):
-            inner = self.inner_hash(block)
-            self.z.extend(inner)
+            self.z.extend(self.inner_hash(block))
             self.n_blocks += 1
             return
 
         def inner_hash(self, block):
+            out_len = (self.inner_digest_bits + 7) // 8
+
             if self.security_bits == 128:
-                return self.shake128(block, self.inner_digest_bits)
-            if self.security_bits == 256:
-                return self.shake256(block, self.inner_digest_bits)
-            raise ValueError("invalid security_bits")
+                out = hashlib.shake_128(block).digest(out_len)
+            elif self.security_bits == 256:
+                out = hashlib.shake_256(block).digest(out_len)
+            else:
+                raise ValueError("invalid security_bits")
 
-        def shake128(self, data, out_bits):
-            return self.keccak_xof(data, out_bits, 168, 0x1f)
+            if (self.inner_digest_bits % 8) != 0 and len(out) != 0:
+                out_mut = bytearray(out)
+                keep_bits = self.inner_digest_bits % 8
+                out_mut[-1] &= (0xff << (8 - keep_bits)) & 0xff
+                return bytes(out_mut)
 
-        def shake256(self, data, out_bits):
-            return self.keccak_xof(data, out_bits, 136, 0x1f)
+            return out
 
         def cshake(self, data, out_bits, function_name, customization, security_bits):
             if not isinstance(data, (bytes, bytearray, memoryview)):
@@ -94066,11 +94277,11 @@ class Hash:
 
         def keccak_absorb_block(self, state, block, rate_bytes):
             lanes = rate_bytes // 8
-            i = 0
-            while i < lanes:
+
+            for i in range(lanes):
                 lane = int.from_bytes(block[i * 8:(i + 1) * 8], "little")
                 state[i] ^= lane
-                i += 1
+
             return
 
         def keccak_absorb_padded(self, state, tail, rate_bytes, domain_suffix):
@@ -94085,10 +94296,8 @@ class Hash:
             lanes = rate_bytes // 8
             out = bytearray()
 
-            i = 0
-            while i < lanes:
+            for i in range(lanes):
                 out.extend(state[i].to_bytes(8, "little"))
-                i += 1
 
             return bytes(out)
 
@@ -94156,24 +94365,24 @@ class Hash:
                 B04 = ((A24 << 14) | (A24 >> 50)) & 0xffff_ffff_ffff_ffff
                 B05 = ((A03 << 28) | (A03 >> 36)) & 0xffff_ffff_ffff_ffff
                 B06 = ((A09 << 20) | (A09 >> 44)) & 0xffff_ffff_ffff_ffff
-                B07 = ((A10 << 3)  | (A10 >> 61)) & 0xffff_ffff_ffff_ffff
+                B07 = ((A10 << 3) | (A10 >> 61)) & 0xffff_ffff_ffff_ffff
                 B08 = ((A16 << 45) | (A16 >> 19)) & 0xffff_ffff_ffff_ffff
-                B09 = ((A22 << 61) | (A22 >> 3))  & 0xffff_ffff_ffff_ffff
-                B10 = ((A01 << 1)  | (A01 >> 63)) & 0xffff_ffff_ffff_ffff
-                B11 = ((A07 << 6)  | (A07 >> 58)) & 0xffff_ffff_ffff_ffff
+                B09 = ((A22 << 61) | (A22 >> 3)) & 0xffff_ffff_ffff_ffff
+                B10 = ((A01 << 1) | (A01 >> 63)) & 0xffff_ffff_ffff_ffff
+                B11 = ((A07 << 6) | (A07 >> 58)) & 0xffff_ffff_ffff_ffff
                 B12 = ((A13 << 25) | (A13 >> 39)) & 0xffff_ffff_ffff_ffff
-                B13 = ((A19 << 8)  | (A19 >> 56)) & 0xffff_ffff_ffff_ffff
+                B13 = ((A19 << 8) | (A19 >> 56)) & 0xffff_ffff_ffff_ffff
                 B14 = ((A20 << 18) | (A20 >> 46)) & 0xffff_ffff_ffff_ffff
                 B15 = ((A04 << 27) | (A04 >> 37)) & 0xffff_ffff_ffff_ffff
                 B16 = ((A05 << 36) | (A05 >> 28)) & 0xffff_ffff_ffff_ffff
                 B17 = ((A11 << 10) | (A11 >> 54)) & 0xffff_ffff_ffff_ffff
                 B18 = ((A17 << 15) | (A17 >> 49)) & 0xffff_ffff_ffff_ffff
-                B19 = ((A23 << 56) | (A23 >> 8))  & 0xffff_ffff_ffff_ffff
-                B20 = ((A02 << 62) | (A02 >> 2))  & 0xffff_ffff_ffff_ffff
-                B21 = ((A08 << 55) | (A08 >> 9))  & 0xffff_ffff_ffff_ffff
+                B19 = ((A23 << 56) | (A23 >> 8)) & 0xffff_ffff_ffff_ffff
+                B20 = ((A02 << 62) | (A02 >> 2)) & 0xffff_ffff_ffff_ffff
+                B21 = ((A08 << 55) | (A08 >> 9)) & 0xffff_ffff_ffff_ffff
                 B22 = ((A14 << 39) | (A14 >> 25)) & 0xffff_ffff_ffff_ffff
                 B23 = ((A15 << 41) | (A15 >> 23)) & 0xffff_ffff_ffff_ffff
-                B24 = ((A21 << 2)  | (A21 >> 62)) & 0xffff_ffff_ffff_ffff
+                B24 = ((A21 << 2) | (A21 >> 62)) & 0xffff_ffff_ffff_ffff
 
                 # Chi
                 A00 = B00 ^ (~B01 & B02)
@@ -94665,7 +94874,6 @@ class Hash:
                 block = bytes(self.buf[:self.block_size])
                 del self.buf[:self.block_size]
                 self.compress(block)
-
             return self
 
         def byte(self, x, n):
@@ -94817,7 +95025,6 @@ class Hash:
         def hexdigest(self):
             return self.digest().hex()
 
-
     class ARIRANG224(ARIRANG256Base):
         digest_words = 7
         digest_size = 28
@@ -94893,7 +95100,6 @@ class Hash:
                 block = bytes(self.buf[:self.block_size])
                 del self.buf[:self.block_size]
                 self.compress(block)
-
             return self
 
         def byte(self, x, n):
@@ -95105,8 +95311,62 @@ class Hash:
             4, 29, 22, 15, 8, 9, 10, 11, 12, 5, 30, 23, 16, 17, 18, 19,
             20, 13, 6, 31, 24, 25, 26, 27, 28, 21, 14, 7, 0, 1, 2, 3
         ]
+        mul_table_0x01 = (
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+            0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f,
+            0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f,
+            0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f,
+            0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x5f,
+            0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f,
+            0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x7b, 0x7c, 0x7d, 0x7e, 0x7f,
+            0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f,
+            0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f,
+            0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf,
+            0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf,
+            0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xcb, 0xcc, 0xcd, 0xce, 0xcf,
+            0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf,
+            0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xeb, 0xec, 0xed, 0xee, 0xef,
+            0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff,
+        )
+        mul_table_0x02 = ()
+        mul_table_0x03 = ()
+        mul_table_0x06 = ()
+        mul_table_0x08 = ()
+
+        @classmethod
+        def build_mul_table(cls, y):
+            tbl = [0x00] * 256
+            x = 0
+            while x < 256:
+                xy = 0x00
+                xx = x
+                yy = y
+                i = 0
+                while i < 4:
+                    if yy & 0x01:
+                        xy ^= xx
+                    yy >>= 1
+                    if xx & 0x80:
+                        xx ^= 0x0d
+                    xx = ((xx << 1) | (xx >> 7)) & 0xff
+                    i += 1
+                tbl[x] = xy
+                x += 1
+            return tuple(tbl)
+
+        @classmethod
+        def init_mul_tables(cls):
+            if cls.mul_table_0x02:
+                return
+            cls.mul_table_0x02 = cls.build_mul_table(0x02)
+            cls.mul_table_0x03 = cls.build_mul_table(0x03)
+            cls.mul_table_0x06 = cls.build_mul_table(0x06)
+            cls.mul_table_0x08 = cls.build_mul_table(0x08)
+            return
 
         def __init__(self, data=b""):
+            self.__class__.init_mul_tables()
             self.h = [self.init_fill] * 64
             self.blk_num = [0x00] * 8
             self.cnt = 0
@@ -95114,6 +95374,93 @@ class Hash:
             self.buf = [0x00] * 64
             if data:
                 self.update(data)
+            return
+
+        def get_mul_table(self, v):
+            if v == 0x01:
+                return self.mul_table_0x01
+            if v == 0x02:
+                return self.mul_table_0x02
+            if v == 0x03:
+                return self.mul_table_0x03
+            if v == 0x06:
+                return self.mul_table_0x06
+            if v == 0x08:
+                return self.mul_table_0x08
+            raise ValueError("invalid mul table")
+
+        def byte_cpy(self, dst, dst_ofs, src, src_ofs, bytelen):
+            dst[dst_ofs:dst_ofs + bytelen] = src[src_ofs:src_ofs + bytelen]
+            return
+
+        def byte_xor(self, dst, dst_ofs, src, src_ofs, bytelen):
+            i = 0
+            while i < bytelen:
+                dst[dst_ofs + i] ^= src[src_ofs + i]
+                i += 1
+            return
+
+        def aurora_f_xor(self, y, y_ofs, x, x_ofs, cirmat):
+            sbox = self.sbox
+            z0 = sbox[x[x_ofs + 0]]
+            z1 = sbox[x[x_ofs + 1]]
+            z2 = sbox[x[x_ofs + 2]]
+            z3 = sbox[x[x_ofs + 3]]
+
+            t0 = self.get_mul_table(cirmat[0])
+            t1 = self.get_mul_table(cirmat[1])
+            t2 = self.get_mul_table(cirmat[2])
+            t3 = self.get_mul_table(cirmat[3])
+
+            y0 = t0[z0] ^ t1[z1] ^ t2[z2] ^ t3[z3]
+            y1 = t3[z0] ^ t0[z1] ^ t1[z2] ^ t2[z3]
+            y2 = t2[z0] ^ t3[z1] ^ t0[z2] ^ t1[z3]
+            y3 = t1[z0] ^ t2[z1] ^ t3[z2] ^ t0[z3]
+
+            y[y_ofs + 0] = y0
+            y[y_ofs + 1] = y1
+            y[y_ofs + 2] = y2
+            y[y_ofs + 3] = y3
+            y[y_ofs + 4] = x[x_ofs + 4] ^ y0
+            y[y_ofs + 5] = x[x_ofs + 5] ^ y1
+            y[y_ofs + 6] = x[x_ofs + 6] ^ y2
+            y[y_ofs + 7] = x[x_ofs + 7] ^ y3
+            return
+
+        def aurora_bd(self, y, x):
+            pi = self.pi
+            y[0] = x[pi[0]]
+            y[1] = x[pi[1]]
+            y[2] = x[pi[2]]
+            y[3] = x[pi[3]]
+            y[4] = x[pi[4]]
+            y[5] = x[pi[5]]
+            y[6] = x[pi[6]]
+            y[7] = x[pi[7]]
+            y[8] = x[pi[8]]
+            y[9] = x[pi[9]]
+            y[10] = x[pi[10]]
+            y[11] = x[pi[11]]
+            y[12] = x[pi[12]]
+            y[13] = x[pi[13]]
+            y[14] = x[pi[14]]
+            y[15] = x[pi[15]]
+            y[16] = x[pi[16]]
+            y[17] = x[pi[17]]
+            y[18] = x[pi[18]]
+            y[19] = x[pi[19]]
+            y[20] = x[pi[20]]
+            y[21] = x[pi[21]]
+            y[22] = x[pi[22]]
+            y[23] = x[pi[23]]
+            y[24] = x[pi[24]]
+            y[25] = x[pi[25]]
+            y[26] = x[pi[26]]
+            y[27] = x[pi[27]]
+            y[28] = x[pi[28]]
+            y[29] = x[pi[29]]
+            y[30] = x[pi[30]]
+            y[31] = x[pi[31]]
             return
 
         def copy(self):
@@ -95159,62 +95506,6 @@ class Hash:
 
         def truncate_digest(self, out):
             return out[:self.digest_size]
-
-        def byte_cpy(self, dst, dst_ofs, src, src_ofs, bytelen):
-            i = 0
-            while i < bytelen:
-                dst[dst_ofs + i] = src[src_ofs + i] & 0xff
-                i += 1
-            return
-
-        def byte_xor(self, dst, dst_ofs, src, src_ofs, bytelen):
-            i = 0
-            while i < bytelen:
-                dst[dst_ofs + i] = (dst[dst_ofs + i] ^ src[src_ofs + i]) & 0xff
-                i += 1
-            return
-
-        def aurora_mul(self, x, y):
-            xy = 0
-            i = 0
-            xx = x & 0xff
-            yy = y & 0xff
-            while i < 4:
-                if yy & 0x01:
-                    xy ^= xx
-                yy >>= 1
-                if xx & 0x80:
-                    xx ^= 0x0d
-                xx = ((xx << 1) | (xx >> 7)) & 0xff
-                i += 1
-            return xy & 0xff
-
-        def aurora_f_xor(self, y, y_ofs, x, x_ofs, cirmat):
-            z0 = self.sbox[x[x_ofs + 0]]
-            z1 = self.sbox[x[x_ofs + 1]]
-            z2 = self.sbox[x[x_ofs + 2]]
-            z3 = self.sbox[x[x_ofs + 3]]
-
-            y[y_ofs + 0] = (self.aurora_mul(z0, cirmat[0]) ^ self.aurora_mul(z1, cirmat[1]) ^ \
-                            self.aurora_mul(z2, cirmat[2]) ^ self.aurora_mul(z3, cirmat[3])) & 0xff
-            y[y_ofs + 1] = (self.aurora_mul(z0, cirmat[3]) ^ self.aurora_mul(z1, cirmat[0]) ^ \
-                            self.aurora_mul(z2, cirmat[1]) ^ self.aurora_mul(z3, cirmat[2])) & 0xff
-            y[y_ofs + 2] = (self.aurora_mul(z0, cirmat[2]) ^ self.aurora_mul(z1, cirmat[3]) ^ \
-                            self.aurora_mul(z2, cirmat[0]) ^ self.aurora_mul(z3, cirmat[1])) & 0xff
-            y[y_ofs + 3] = (self.aurora_mul(z0, cirmat[1]) ^ self.aurora_mul(z1, cirmat[2]) ^ \
-                            self.aurora_mul(z2, cirmat[3]) ^ self.aurora_mul(z3, cirmat[0])) & 0xff
-            y[y_ofs + 4] = (x[x_ofs + 4] ^ y[y_ofs + 0]) & 0xff
-            y[y_ofs + 5] = (x[x_ofs + 5] ^ y[y_ofs + 1]) & 0xff
-            y[y_ofs + 6] = (x[x_ofs + 6] ^ y[y_ofs + 2]) & 0xff
-            y[y_ofs + 7] = (x[x_ofs + 7] ^ y[y_ofs + 3]) & 0xff
-            return
-
-        def aurora_bd(self, y, x):
-            i = 0
-            while i < 32:
-                y[i] = x[self.pi[i]] & 0xff
-                i += 1
-            return
 
         def aurora_one_round(self, inout, cirmat0, cirmat1): # codespell:ignore
             x = [0x00] * 32
@@ -95586,14 +95877,12 @@ class Hash:
             self.aurora256_mff(self.h)
             return bytes(self.h[:32])
 
-
     class AURORA256(AURORABase):
         digest_size = 32
         init_fill = 0x00
         con_iv = [0x6a, 0x09, 0xbb, 0x67]
         con_mask = [0x42, 0x8a, 0x71, 0x37, 0x26, 0x11, 0x3e, 0xe8]
         mode = "256"
-
 
     class AURORA224(AURORA256):
         digest_size = 28
@@ -95724,7 +96013,6 @@ class Hash:
                 block = bytes(self.buf[:whole])
                 del self.buf[:whole]
                 self.compress_fragments(block)
-
             return self
 
         def digest(self):
@@ -95829,7 +96117,6 @@ class Hash:
                 self.rounds_to_go -= 1
                 if self.rounds_to_go == 0:
                     self.rounds_to_go = self.block_size_frags
-
             return
 
         def add_with_carry(self, x, y, carry_in):
@@ -95997,7 +96284,6 @@ class Hash:
                 word = int.from_bytes(self.buf[:self.block_size], "little")
                 del self.buf[:self.block_size]
                 self.data_cycle(word)
-
             return self
 
         def digest(self):
