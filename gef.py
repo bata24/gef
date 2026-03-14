@@ -96348,7 +96348,8 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
     def process(self):
         tqdm = GefUtil.get_tqdm()
         hash_funcs = list(self.get_valid_hash_funcs())
-        for elem in tqdm(hash_funcs, leave=False, total=len(hash_funcs)):
+        pbar = tqdm(hash_funcs, leave=False, total=len(hash_funcs))
+        for elem in pbar:
             if isinstance(elem, str):
                 if self.args.smart:
                     if elem != "hashlib":
@@ -96359,6 +96360,12 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
             hname, hfunc = elem
             if not self.should_be_displayed(hname, hfunc):
                 continue
+
+            try:
+                pbar.set_description(hname)
+            except Exception:
+                pass
+
             h = self.calc_hash(hfunc, self.args.location, self.args.location + self.args.size)
             if h is False:
                 return
@@ -96426,7 +96433,8 @@ class HashFileCommand(HashCommand, BufferingOutput):
     def process(self, filename, start_pos, end_pos):
         tqdm = GefUtil.get_tqdm()
         hash_funcs = list(self.get_valid_hash_funcs())
-        for elem in tqdm(hash_funcs, leave=False, total=len(hash_funcs)):
+        pbar = tqdm(hash_funcs, leave=False, total=len(hash_funcs))
+        for elem in pbar:
             if isinstance(elem, str):
                 if self.args.smart:
                     if elem != "hashlib":
@@ -96437,6 +96445,12 @@ class HashFileCommand(HashCommand, BufferingOutput):
             hname, hfunc = elem
             if not self.should_be_displayed(hname, hfunc):
                 continue
+
+            try:
+                pbar.set_description(hname)
+            except Exception:
+                pass
+
             h = self.calc_hash(hfunc, filename, start_pos, end_pos)
             if h is False:
                 return
@@ -96496,7 +96510,8 @@ class HashValueCommand(HashCommand, BufferingOutput):
     def process(self, value):
         tqdm = GefUtil.get_tqdm()
         hash_funcs = list(self.get_valid_hash_funcs())
-        for elem in tqdm(hash_funcs, leave=False, total=len(hash_funcs)):
+        pbar = tqdm(hash_funcs, leave=False, total=len(hash_funcs))
+        for elem in pbar:
             if isinstance(elem, str):
                 if self.args.smart:
                     if elem != "hashlib":
@@ -96507,6 +96522,12 @@ class HashValueCommand(HashCommand, BufferingOutput):
             hname, hfunc = elem
             if not self.should_be_displayed(hname, hfunc):
                 continue
+
+            try:
+                pbar.set_description(hname)
+            except Exception:
+                pass
+
             hfunc.update(value)
             h = hfunc.hexdigest()
             line = self.make_line(hname, hfunc, h)
@@ -96594,6 +96615,8 @@ class HashTestCommand(HashCommand, BufferingOutput):
     parser.add_argument("-l", "--length-filter", type=AddressUtil.parse_address,
                         help="filter by hash byte length.")
     parser.add_argument("-s", "--smart", action="store_true", help="show only failed.")
+    parser.add_argument("-t", "--time", action="store_true",
+                        help="measure the time taken to compute the hash using 0x4000 bytes of data.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
@@ -97427,10 +97450,48 @@ class HashTestCommand(HashCommand, BufferingOutput):
             self.hash_check_one(hname, h)
         return
 
+    def hash_test_time(self):
+        value = b"A" * 0x4000
+        cumulative_time = 0.0
+
+        tqdm = GefUtil.get_tqdm()
+        hash_funcs = list(self.get_valid_hash_funcs())
+        pbar = tqdm(hash_funcs, leave=False, total=len(hash_funcs))
+        for elem in pbar:
+            if isinstance(elem, str):
+                self.out.append(titlify(elem))
+                continue
+
+            hname, hfunc = elem
+            if not self.should_be_displayed(hname, hfunc):
+                continue
+
+            try:
+                pbar.set_description(hname)
+            except Exception:
+                pass
+
+            start_time_real = time.perf_counter()
+            hfunc.update(value)
+            h = hfunc.hexdigest()
+            end_time_real = time.perf_counter()
+
+            bit = len(h) * 4
+            byte = bit // 8
+            elapsed = end_time_real - start_time_real
+            cumulative_time += elapsed
+            self.info_add_out("{:26s}:[{:4d}b/{:3d}B] {:.5f} sec (total: {:.5f} sec)".format(
+                hname, bit, byte, elapsed, cumulative_time,
+            ))
+        return
+
     @parse_args
     def do_invoke(self, args):
         self.out = []
-        self.hash_test()
+        if args.time:
+            self.hash_test_time()
+        else:
+            self.hash_test()
         self.print_output(check_terminal_size=True)
         return
 
