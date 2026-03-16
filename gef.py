@@ -115364,12 +115364,14 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
 
         else: # kernel_version >= (6, 4):
             position = self.offset_kallsyms_token_index + 0x200
-            # TODO: align size is 0x8? 0x10? ptrsize?
-            position_relative_base = align(position + self.num_symbols * offset_byte_size, 8)
+            position_relative_base = align(position + self.num_symbols * offset_byte_size, current_arch.ptrsize)
             relative_base_address_data = self.kernel_img[position_relative_base:position_relative_base + address_byte_size]
+            if len(relative_base_address_data) == 0:
+                self.verbose_err("kernel_img is not long enough.")
+                return False
             relative_base_address = int.from_bytes(relative_base_address_data, endian_str)
             if not (relative_base_address and (relative_base_address & get_pagesize_mask_low()) == 0):
-                return False
+                return True
 
         # Getting here means that the relative_address and position have been detected correctly.
         self.verbose_info("relative_base_address: {:#x}".format(relative_base_address))
@@ -115400,7 +115402,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         # Check the ratio of the null value.
         number_of_null_items = kernel_addresses.count(0)
         if number_of_null_items / len(kernel_addresses) >= 0.2:
-            return False
+            return True
 
         # It seems ok.
         self.offset_kallsyms_addresses_or_offsets = position
@@ -115507,7 +115509,10 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         self.offset_kallsyms_addresses_or_offsets = None
         if self.kernel_version >= (4, 6):
             # On modern kernels, first check the case CONFIG_KALLSYMS_BASE_RELATIVE=y.
-            self.find_kallsyms_offsets()
+            ret = self.find_kallsyms_offsets()
+            if not ret:
+                return False
+
         if not self.offset_kallsyms_addresses_or_offsets:
             # the case CONFIG_KALLSYMS_BASE_RELATIVE=n.
             self.find_kallsyms_addresses()
@@ -115610,7 +115615,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             # It will take a long time to parse if you just use it.
             # Gradually increasing ro_size while searching can speed up several times.
             self.ro_base = kinfo.ro_base
-            base_size = 0x10_0000
+            base_size = 0x40_0000
             step = 0x10_0000
             for candidate_size in range(base_size, kinfo.ro_size, step):
                 self.ro_size = candidate_size
