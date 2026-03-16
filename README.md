@@ -185,6 +185,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - There are shortcuts: `virt2page`, `page2virt`, `phys2page` and `page2phys`.
 - `slab-virtual`: displays the transformation between slab-meta and its slab-data/`struct page` address (for `CONFIG_SLAB_VIRTUAL=y`).
     - ![](images/slab-virtual.png)
+- `pageinfo`: dumps `struct page->{flags,page_type}`.
 - `highmem-dump`: dumps `HighMem` mappings.
     - ![](images/highmem-dump.png)
 - `kchecksec`: checks kernel security.

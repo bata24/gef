@@ -61540,6 +61540,14 @@ class Kernel:
             return int(r.group(1), 16)
         return None
 
+    @staticmethod
+    def virt2page(virt):
+        ret = gdb.execute("virt2page {:#x}".format(virt), to_string=True)
+        r = re.search(r"Page: (\S+)", ret)
+        if r:
+            return int(r.group(1), 16)
+        return None
+
 
 @register_command
 class KernelbaseCommand(GenericCommand):
@@ -133281,6 +133289,319 @@ class SlabVirtualCommand(GenericCommand):
                 return
             out.append("Page: {:#x} -> Slab: {:#x}".format(args.address, slab))
         gef_print("\n".join(out))
+        return
+
+
+@register_command
+class PageInfoCommand(GenericCommand):
+    """Dump struct page flags and page_type."""
+
+    _cmdline_ = "pageinfo"
+    _category_ = "06-d. Qemu-system/KGDB Cooperation - Virt/Phys/Page"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("-p", "--page", type=AddressUtil.parse_address, help="page address to dump.")
+    group.add_argument("virt", metavar="VIRT", nargs="?", type=AddressUtil.parse_address, help="virtual address to dump.")
+    _syntax_ = parser.format_help()
+
+    """
+    struct page {
+        memdesc_flags_t flags;
+        union { ... }; // 5 words
+        union {
+            unsigned int page_type;
+            atomic_t _mapcount;
+        };
+        atomic_t _refcount;
+        ...
+    };
+    """
+
+    @staticmethod
+    def get_flags_str(flags_value):
+        kversion = Kernel.kernel_version()
+
+        # PG_uncached, PG_hwpoison, PG_young, PG_idle, PG_arch_2, PG_arch3:
+        # Because it varies depending on the environment, GEF does not support it
+        if "4.18" <= kversion < "4.20":
+            flags_dic = {
+                0x0000_0000_0000_0001: "PG_locked",
+                0x0000_0000_0000_0002: "PG_error",
+                0x0000_0000_0000_0004: "PG_referenced",
+                0x0000_0000_0000_0008: "PG_uptodate",
+                0x0000_0000_0000_0010: "PG_dirty",
+                0x0000_0000_0000_0020: "PG_lru",
+                0x0000_0000_0000_0040: "PG_active",
+                0x0000_0000_0000_0080: "PG_waiters",
+                0x0000_0000_0000_0100: "PG_slab",
+                0x0000_0000_0000_0200: "PG_owner_priv_1",
+                0x0000_0000_0000_0400: "PG_arch_1",
+                0x0000_0000_0000_0800: "PG_reserved",
+                0x0000_0000_0000_1000: "PG_private",
+                0x0000_0000_0000_2000: "PG_private_2",
+                0x0000_0000_0000_4000: "PG_writeback",
+                0x0000_0000_0000_8000: "PG_head",
+                0x0000_0000_0001_0000: "PG_mappedtodisk",
+                0x0000_0000_0002_0000: "PG_reclaim",
+                0x0000_0000_0004_0000: "PG_swapbacked",
+                0x0000_0000_0008_0000: "PG_unevictable",
+                0x0000_0000_0010_0000: "PG_mlocked", # CONFIG_MMU is always defined
+            }
+        elif "4.20" <= kversion < "6.6":
+            flags_dic = {
+                0x0000_0000_0000_0001: "PG_locked",
+                0x0000_0000_0000_0002: "PG_referenced",
+                0x0000_0000_0000_0004: "PG_uptodate",
+                0x0000_0000_0000_0008: "PG_dirty",
+                0x0000_0000_0000_0010: "PG_lru",
+                0x0000_0000_0000_0020: "PG_active",
+                0x0000_0000_0000_0040: "PG_workingset",
+                0x0000_0000_0000_0080: "PG_waiters",
+                0x0000_0000_0000_0100: "PG_error",
+                0x0000_0000_0000_0200: "PG_slab",
+                0x0000_0000_0000_0400: "PG_owner_priv_1",
+                0x0000_0000_0000_0800: "PG_arch_1",
+                0x0000_0000_0000_1000: "PG_reserved",
+                0x0000_0000_0000_2000: "PG_private",
+                0x0000_0000_0000_4000: "PG_private_2",
+                0x0000_0000_0000_8000: "PG_writeback",
+                0x0000_0000_0001_0000: "PG_head",
+                0x0000_0000_0002_0000: "PG_mappedtodisk",
+                0x0000_0000_0004_0000: "PG_reclaim",
+                0x0000_0000_0008_0000: "PG_swapbacked",
+                0x0000_0000_0010_0000: "PG_unevictable",
+                0x0000_0000_0020_0000: "PG_mlocked", # CONFIG_MMU is always defined
+            }
+        elif "6.6" <= kversion < "6.10":
+            flags_dic = {
+                0x0000_0000_0000_0001: "PG_locked",
+                0x0000_0000_0000_0002: "PG_writeback",
+                0x0000_0000_0000_0004: "PG_referenced",
+                0x0000_0000_0000_0008: "PG_uptodate",
+                0x0000_0000_0000_0010: "PG_dirty",
+                0x0000_0000_0000_0020: "PG_lru",
+                0x0000_0000_0000_0040: "PG_head",
+                0x0000_0000_0000_0080: "PG_waiters",
+                0x0000_0000_0000_0100: "PG_active",
+                0x0000_0000_0000_0200: "PG_workingset",
+                0x0000_0000_0000_0400: "PG_error",
+                0x0000_0000_0000_0800: "PG_slab",
+                0x0000_0000_0000_1000: "PG_owner_priv_1",
+                0x0000_0000_0000_2000: "PG_arch_1",
+                0x0000_0000_0000_4000: "PG_reserved",
+                0x0000_0000_0000_8000: "PG_private",
+                0x0000_0000_0001_0000: "PG_private_2",
+                0x0000_0000_0002_0000: "PG_mappedtodisk",
+                0x0000_0000_0004_0000: "PG_reclaim",
+                0x0000_0000_0008_0000: "PG_swapbacked",
+                0x0000_0000_0010_0000: "PG_unevictable",
+                0x0000_0000_0020_0000: "PG_mlocked", # CONFIG_MMU is always defined
+            }
+        elif "6.10" <= kversion < "6.12":
+            flags_dic = {
+                0x0000_0000_0000_0001: "PG_locked",
+                0x0000_0000_0000_0002: "PG_writeback",
+                0x0000_0000_0000_0004: "PG_referenced",
+                0x0000_0000_0000_0008: "PG_uptodate",
+                0x0000_0000_0000_0010: "PG_dirty",
+                0x0000_0000_0000_0020: "PG_lru",
+                0x0000_0000_0000_0040: "PG_head",
+                0x0000_0000_0000_0080: "PG_waiters",
+                0x0000_0000_0000_0100: "PG_active",
+                0x0000_0000_0000_0200: "PG_workingset",
+                0x0000_0000_0000_0400: "PG_error",
+                0x0000_0000_0000_0800: "PG_owner_priv_1",
+                0x0000_0000_0000_1000: "PG_arch_1",
+                0x0000_0000_0000_2000: "PG_reserved",
+                0x0000_0000_0000_4000: "PG_private",
+                0x0000_0000_0000_8000: "PG_private_2",
+                0x0000_0000_0001_0000: "PG_mappedtodisk",
+                0x0000_0000_0002_0000: "PG_reclaim",
+                0x0000_0000_0004_0000: "PG_swapbacked",
+                0x0000_0000_0008_0000: "PG_unevictable",
+                0x0000_0000_0010_0000: "PG_mlocked", # CONFIG_MMU is always defined
+            }
+        elif "6.12" <= kversion < "6.14":
+            flags_dic = {
+                0x0000_0000_0000_0001: "PG_locked",
+                0x0000_0000_0000_0002: "PG_writeback",
+                0x0000_0000_0000_0004: "PG_referenced",
+                0x0000_0000_0000_0008: "PG_uptodate",
+                0x0000_0000_0000_0010: "PG_dirty",
+                0x0000_0000_0000_0020: "PG_lru",
+                0x0000_0000_0000_0040: "PG_head",
+                0x0000_0000_0000_0080: "PG_waiters",
+                0x0000_0000_0000_0100: "PG_active",
+                0x0000_0000_0000_0200: "PG_workingset",
+                0x0000_0000_0000_0400: "PG_owner_priv_1",
+                0x0000_0000_0000_0800: "PG_owner_2",
+                0x0000_0000_0000_1000: "PG_arch_1",
+                0x0000_0000_0000_2000: "PG_reserved",
+                0x0000_0000_0000_4000: "PG_private",
+                0x0000_0000_0000_8000: "PG_private_2",
+                0x0000_0000_0001_0000: "PG_reclaim",
+                0x0000_0000_0002_0000: "PG_swapbacked",
+                0x0000_0000_0004_0000: "PG_unevictable",
+                0x0000_0000_0008_0000: "PG_mlocked", # CONFIG_MMU is always defined
+            }
+        elif "6.14" <= kversion:
+            flags_dic = {
+                0x0000_0000_0000_0001: "PG_locked",
+                0x0000_0000_0000_0002: "PG_writeback",
+                0x0000_0000_0000_0004: "PG_referenced",
+                0x0000_0000_0000_0008: "PG_uptodate",
+                0x0000_0000_0000_0010: "PG_dirty",
+                0x0000_0000_0000_0020: "PG_lru",
+                0x0000_0000_0000_0040: "PG_head",
+                0x0000_0000_0000_0080: "PG_waiters",
+                0x0000_0000_0000_0100: "PG_active",
+                0x0000_0000_0000_0200: "PG_workingset",
+                0x0000_0000_0000_0400: "PG_owner_priv_1",
+                0x0000_0000_0000_0800: "PG_owner_2",
+                0x0000_0000_0000_1000: "PG_arch_1",
+                0x0000_0000_0000_2000: "PG_reserved",
+                0x0000_0000_0000_4000: "PG_private",
+                0x0000_0000_0000_8000: "PG_private_2",
+                0x0000_0000_0001_0000: "PG_reclaim",
+                0x0000_0000_0002_0000: "PG_swapbacked",
+                0x0000_0000_0004_0000: "PG_unevictable",
+                0x0000_0000_0008_0000: "PG_dropbehind",
+                0x0000_0000_0010_0000: "PG_mlocked", # CONFIG_MMU is always defined
+            }
+
+        flags = []
+        for k, v in flags_dic.items():
+            if flags_value & k:
+                flags.append(v)
+
+        flags_str = " | ".join(flags)
+        if flags_str == "":
+            flags_str = "none"
+        return flags_str
+
+    @staticmethod
+    def get_pagetype_str(flags_value):
+        kversion = Kernel.kernel_version()
+        if "4.18" <= kversion < "5.1":
+            flags_dic = {
+                0x0000_0080: "PG_buddy",
+                0x0000_0100: "PG_balloon",
+                0x0000_0200: "PG_kmemcg",
+                0x0000_0400: "PG_table",
+            }
+        elif "5.1" <= kversion < "5.3":
+            flags_dic = {
+                0x0000_0080: "PG_buddy",
+                0x0000_0100: "PG_offline",
+                0x0000_0200: "PG_kmemcg",
+                0x0000_0400: "PG_table",
+            }
+        elif "5.3" <= kversion < "5.11":
+            flags_dic = {
+                0x0000_0080: "PG_buddy",
+                0x0000_0100: "PG_offline",
+                0x0000_0200: "PG_kmemcg",
+                0x0000_0400: "PG_table",
+                0x0000_0800: "PG_guard",
+            }
+        elif "5.11" <= kversion < "6.6":
+            flags_dic = {
+                0x0000_0080: "PG_buddy",
+                0x0000_0100: "PG_offline",
+                0x0000_0200: "PG_table",
+                0x0000_0400: "PG_guard",
+            }
+        elif "6.6" <= kversion < "6.10":
+            flags_dic = {
+                0x0000_0080: "PG_buddy",
+                0x0000_0100: "PG_offline",
+                0x0000_0200: "PG_table",
+                0x0000_0400: "PG_guard",
+                0x0000_0800: "PG_hugetlb",
+            }
+        elif "6.10" <= kversion < "6.11":
+            flags_dic = {
+                0x0000_0080: "PG_buddy",
+                0x0000_0100: "PG_offline",
+                0x0000_0200: "PG_table",
+                0x0000_0400: "PG_guard",
+                0x0000_0800: "PG_hugetlb",
+                0x0000_1000: "PG_slab",
+            }
+        elif "6.11" <= kversion < "6.12":
+            flags_dic = {
+                0x4000_0000: "PG_buddy",
+                0x2000_0000: "PG_offline",
+                0x1000_0000: "PG_table",
+                0x0800_0000: "PG_guard",
+                0x0400_0000: "PG_hugetlb",
+                0x0200_0000: "PG_slab",
+                0x0100_0000: "PG_zsmalloc",
+            }
+        elif "6.12" <= kversion:
+            flags_dic = {
+                0xf0: "PGTY_buddy",
+                0xf1: "PGTY_offline",
+                0xf2: "PGTY_table",
+                0xf3: "PGTY_guard",
+                0xf4: "PGTY_hugetlb",
+                0xf5: "PGTY_slab",
+                0xf6: "PGTY_zsmalloc",
+                0xf7: "PGTY_unaccepted",
+                0xf8: "PGTY_large_kmalloc", # 6.15~
+            }
+
+        if kversion < "6.12":
+            flags = []
+            for k, v in flags_dic.items():
+                if ~flags_value & k:
+                    flags.append(v)
+            flags_str = " | ".join(flags)
+            if flags_str == "":
+                flags_str = "none"
+        else:
+            type_value = (flags_value >> 24) & 0xff
+            flags_str = flags_dic.get(type_value, "none")
+        return flags_str
+
+    def dump_page_info(self, page_addr, virt_addr):
+        flags = read_int_from_memory(page_addr)
+        compound_head = read_int32_from_memory(page_addr + current_arch.ptrsize * 1)
+        page_type = read_int32_from_memory(page_addr + current_arch.ptrsize * 6)
+        refcount = read_int32_from_memory(page_addr + current_arch.ptrsize * 6 + 4)
+
+        gef_print("Page        : {:#x}".format(page_addr))
+        gef_print("Virt        : {:#x}".format(virt_addr))
+
+        gef_print("flags       : {:#x} ({:s})".format(flags, PageInfoCommand.get_flags_str(flags)))
+        gef_print("is_tailpage : {}".format(bool(compound_head & 1)))
+        gef_print("page_type   : {:#x} ({:s})".format(page_type, PageInfoCommand.get_pagetype_str(page_type)))
+        gef_print("refcount    : {:#x}".format(refcount))
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system",))
+    @only_if_in_kernel
+    def do_invoke(self, args):
+        kversion = Kernel.kernel_version()
+        if kversion < "4.18":
+            err("Unsupported before v4.18")
+            return
+
+        if args.virt is not None:
+            virt_addr = args.virt & get_pagesize_mask_high()
+            page_addr = Kernel.virt2page(args.virt & get_pagesize_mask_high())
+        else:
+            page_addr = args.page
+            virt_addr = Kernel.page2virt(args.page)
+
+        if not is_valid_addr(page_addr):
+            err("Invalid page address")
+            return
+
+        self.dump_page_info(page_addr, virt_addr)
         return
 
 
