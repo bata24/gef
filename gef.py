@@ -55956,7 +55956,7 @@ class KernelConstsX64(KernelConstsBase):
             return 0xffff_ffff_8000_0000
         return None
 
-    @property
+    @property # noqa
     def START_KERNEL_map(self):
         return self.__START_KERNEL_map
 
@@ -56648,6 +56648,28 @@ class KernelConstsArm32(KernelConstsBase):
     def RESERVED_END(self):
         return 0xffff_8000
 
+    @property
+    def PHYS_OFFSET(self):
+        if hasattr(self, "cached_PHYS_OFFSET"):
+            return self.cached_PHYS_OFFSET
+
+        # When p2v and v2p are available, memstart_addr can be resolved without relying on symbols.
+        if self.PAGE_OFFSET is None:
+            return None
+        kinfo = Kernel.get_kernel_layout()
+        if kinfo is None:
+            return None
+        phys_kbase = Kernel.v2p(kinfo.text_base)
+        if phys_kbase is None:
+            return None
+        cands = Kernel.p2v(phys_kbase)
+        linear_cands = [x for x in cands if self.PAGE_OFFSET <= x < self.PAGE_OFFSET_END]
+        if len(linear_cands) != 1:
+            return None
+        linear_kbase = linear_cands[0]
+        self.cached_PHYS_OFFSET = AddressUtil.align_address(phys_kbase - (linear_kbase - self.PAGE_OFFSET))
+        return self.cached_PHYS_OFFSET
+
 
 class KernelConstsArm64(KernelConstsBase):
     """A class that manages arm64 constants by version."""
@@ -57302,6 +57324,11 @@ class KernelConstsArm64(KernelConstsBase):
             self.cached_physmap_base = None
             return None
 
+        # physmap_base is used in KGDB mode when pseudo reading physical addresses without page walking.
+        # physmap_base is calculated as PAGE_OFFSET - PHYS_OFFSET, where PHYS_OFFSET is stored in memstart_addr.
+        # However, at this stage, p2v and v2p are not yet available, so they cannot be used to resolve memstart_addr.
+        # Therefore, the address of memstart_addr is obtained directly from the vmlinux symbols.
+
         # Prevent recursion:
         #   read_physmem -> kgdb_use_physmap -> get_ksymaddr -> pagewalk -> read_physmem -> ...
         if not __gef_command_instances__["ksymaddr-remote"].kallsyms:
@@ -57318,6 +57345,32 @@ class KernelConstsArm64(KernelConstsBase):
             PHYS_OFFSET &= self.PHYS_MASK
         self.cached_physmap_base = AddressUtil.align_address(self.PAGE_OFFSET - PHYS_OFFSET)
         return self.cached_physmap_base
+
+    @property
+    def memstart_addr(self):
+        if hasattr(self, "cached_memstart_addr"):
+            return self.cached_memstart_addr
+
+        # When p2v and v2p are available, memstart_addr can be resolved without relying on symbols.
+        if self.PAGE_OFFSET is None:
+            return None
+        kinfo = Kernel.get_kernel_layout()
+        if kinfo is None:
+            return None
+        phys_kbase = Kernel.v2p(kinfo.text_base)
+        if phys_kbase is None:
+            return None
+        cands = Kernel.p2v(phys_kbase)
+        linear_cands = [x for x in cands if self.PAGE_OFFSET <= x < self.PAGE_OFFSET_END]
+        if len(linear_cands) != 1:
+            return None
+        linear_kbase = linear_cands[0]
+        self.cached_memstart_addr = AddressUtil.align_address(phys_kbase - (linear_kbase - self.PAGE_OFFSET))
+        return self.cached_memstart_addr
+
+    @property
+    def PHYS_OFFSET(self):
+        return self.memstart_addr
 
 
 class KernelAddressHeuristicFinder:
@@ -132271,32 +132324,77 @@ class PageCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     _note_ = [
-        "Simplified page structure (CONFIG_SPARSEMEM_VMEMMAP/CONFIG_FLATMEM):",
+        "Simplified page structure:",
         "",
+        "[x86_64 / CONFIG_SPARSEMEM_VMEMMAP]",
         "VMEMMAP_START--------->+-struct page[]-+",
-        "  or                   | pfn#0 page    | --> physmem 0x0000-0x1000",
-        "mem_map                +---------------+",
-        "                       | pfn#1 page    | --> physmem 0x1000-0x2000",
+        "                       | pfn#0 page    | --> physmem 0x0",
+        "                       +---------------+",
+        "                       | pfn#1 page    | --> physmem 0x1000",
         "                       +---------------+",
         "                       | ...           |",
         "                    ^  +---------------+",
-        "sizeof(struct page) |  | pfn#N page    | --> physmem 0xXXX000-0xXXY000",
+        "sizeof(struct page) |  | pfn#N page    | --> ...",
         "                    v  +---------------+",
         "",
-        "* x64/arm64: CONFIG_SPARSEMEM_VMEMMAP; They use `VMEMMAP_START`.",
-        "* x86(when CONFIG_NUMA=n)/arm32: CONFIG_FLATMEM; They use `mem_map`.",
-        "* Add PAGE_OFFSET to the physical address to get the virtual address.",
+        "* x86_64 uses `VMEMMAP_START` directly.",
         "",
-        "Simplified page structure (CONFIG_SPARSEMEM):",
+        "[arm64 / CONFIG_SPARSEMEM_VMEMMAP]",
+        "vmemmap--------------->+-struct page[]-----------+",
+        "                       | pfn#0 page              | --> physmem 0x0",
+        "                       +-------------------------+",
+        "                       | ...                     | --> ...",
+        "VMEMMAP_START--------->+-------------------------+",
+        "                       | pfn#memstart_pfn   page | --> physmem memstart_addr",
+        "                       +-------------------------+",
+        "                       | pfn#memstart_pfn+1 page | --> physmem memstart_addr+0x1000",
+        "                       +-------------------------+",
+        "                       | ...                     |",
+        "                    ^  +-------------------------+",
+        "sizeof(struct page) |  | pfn#memstart_pfn+N page | --> ...",
+        "                    v  +-------------------------+",
+        "",
+        "* Arm64 also uses `VMEMMAP_START`, but `vmemmap = (struct page *)VMEMMAP_START - (memstart_addr >> PAGE_SHIFT)`.",
+        "  So arm64 needs `memstart_pfn` adjustment.",
+        "",
+        "[x86_32 / CONFIG_FLATMEM]",
+        "mem_map--------------->+-struct page[]-+",
+        "                       | pfn#0 page    | --> physmem 0x0",
+        "                       +---------------+",
+        "                       | pfn#1 page    | --> physmem 0x1000",
+        "                       +---------------+",
+        "                       | ...           |",
+        "                    ^  +---------------+",
+        "sizeof(struct page) |  | pfn#N page    | --> ...",
+        "                    v  +---------------+",
+        "",
+        "* x86_32(when CONFIG_NUMA=n) uses `mem_map` directly.",
+        "",
+        "[arm32 / CONFIG_FLATMEM]",
+        "mem_map--------------->+-struct page[]--------------+",
+        "                       | pfn#arch_pfn_offset   page | --> physmem PHYS_OFFSET",
+        "                       +----------------------------+",
+        "                       | pfn#arch_pfn_offset+1 page | --> physmem PHYS_OFFSET+0x1000",
+        "                       +----------------------------+",
+        "                       | ...                        |",
+        "                    ^  +----------------------------+",
+        "sizeof(struct page) |  | pfn#arch_pfn_offset+N page | --> ...",
+        "                    v  +----------------------------+",
+        "",
+        "* arm32 uses `mem_map`.",
+        "* `mem_map` points to the descriptor of pfn#arch_pfn_offset, not pfn#0.",
+        "* `arch_pfn_offset = PHYS_OFFSET >> PAGE_SHIFT`.",
+        "",
+        "[x86_32 / CONFIG_SPARSEMEM]",
         "",
         "+-------------------------------------------------------------------------------+",
         "|                                                                               |",
         "|  +-struct mem_section[]-+                                                     |",
         "|  | section_mem_map      |     +-->+-struct page[]-+                           |",
-        "|  +----------------------+     |   | pfn#0 page    | --> physmem 0xX000-0xY000 |",
+        "|  +----------------------+     |   | pfn#0 page    | --> physmem ...           |",
         "+->| section_mem_map      |-----+   |  flags        | --> section_id (=idx)-----+",
         "   +----------------------+         +---------------+",
-        "   | ...                  |         | pfn#1 page    | --> physmem 0xY000-0xZ000",
+        "   | ...                  |         | pfn#1 page    | --> physmem ...",
         "   +----------------------+         |  flags        |",
         "   | section_mem_map      |         +---------------+",
         "   +----------------------+         | ...           |",
@@ -132305,10 +132403,8 @@ class PageCommand(GenericCommand):
         "                                    |  flags        |  |",
         "                                    +---------------+  v",
         "",
-        "* x86(when CONFIG_NUMA=y): CONFIG_SPARSEMEM; It uses `mem_section[]`.",
-        "* In other words, there are multiple mem_maps.",
+        "* x86(when CONFIG_NUMA=y) uses `mem_section[]`, in other words, there are multiple mem_maps.",
         "* It is possible to obtain which `section_mem_map` to use from `page->flags`.",
-        "* Add PAGE_OFFSET to the physical address to get the virtual address.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -132333,21 +132429,6 @@ class PageCommand(GenericCommand):
                 err("Could not find VMEMMAP_START")
                 return False
 
-            PageCommand.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
-            if self.PAGE_OFFSET is None:
-                err("Could not find PAGE_OFFSET")
-                return False
-
-            PageCommand.phys_base = KernelAddressHeuristicFinder.get_phys_base()
-            if self.phys_base is None:
-                err("Could not find phys_base")
-                return False
-
-            PageCommand.START_KERNEL_map = KernelAddressHeuristicFinder.consts().START_KERNEL_map
-            if self.START_KERNEL_map is None:
-                err("Could not find __START_KERNEL_map")
-                return False
-
             PageCommand.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
             if self.sizeof_struct_page is None:
                 err("Could not find sizeof(struct page)")
@@ -132358,24 +132439,6 @@ class PageCommand(GenericCommand):
             if self.PAGE_OFFSET is None:
                 err("Could not find PAGE_OFFSET")
                 return False
-
-            PageCommand.PAGE_OFFSET_END = KernelAddressHeuristicFinder.get_PAGE_OFFSET_END()
-            if self.PAGE_OFFSET_END is None:
-                err("Could not find PAGE_OFFSET_END")
-                return False
-
-            PageCommand.VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
-            if self.VMALLOC_START is None:
-                err("Could not find VMALLOC_START")
-                return False
-
-            PageCommand.VMALLOC_END = KernelAddressHeuristicFinder.get_VMALLOC_END()
-            if self.VMALLOC_END is None:
-                err("Could not find VMALLOC_END")
-                return False
-
-            PageCommand.LOWMEM_LIMIT = (self.PAGE_OFFSET_END - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-            PageCommand.page_address_htable = KernelAddressHeuristicFinder.get_page_address_htable() # allow None
 
             # Determine whether it is CONFIG_FLATMEM or CONFIG_SPARSEMEM.
             PageCommand.mem_map = KernelAddressHeuristicFinder.get_mem_map()
@@ -132459,37 +132522,22 @@ class PageCommand(GenericCommand):
                 err("Could not find VMEMMAP_START")
                 return False
 
-            PageCommand.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
-            if self.PAGE_OFFSET is None:
-                err("Could not find PAGE_OFFSET")
-                return False
-
             PageCommand.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
             if self.sizeof_struct_page is None:
                 err("Could not find sizeof(struct page)")
                 return False
 
+            memstart_addr = KernelAddressHeuristicFinder.consts().memstart_addr
+            if memstart_addr is None:
+                err("Could not find memstart_addr")
+                return False
+
+            pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
+            uq = lambda a: struct.unpack("<q", a)[0]
+            u2i = lambda a: uq(pQ(a))
+            PageCommand.memstart_addr = u2i(memstart_addr)
+
         elif is_arm32():
-            PageCommand.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
-            if self.PAGE_OFFSET is None:
-                err("Could not find PAGE_OFFSET")
-                return False
-
-            PageCommand.PAGE_OFFSET_END = KernelAddressHeuristicFinder.get_PAGE_OFFSET_END()
-            if self.PAGE_OFFSET_END is None:
-                err("Could not find PAGE_OFFSET_END")
-                return False
-
-            PageCommand.VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
-            if self.VMALLOC_START is None:
-                err("Could not find VMALLOC_START")
-                return False
-
-            PageCommand.VMALLOC_END = KernelAddressHeuristicFinder.get_VMALLOC_END()
-            if self.VMALLOC_END is None:
-                err("Could not find VMALLOC_END")
-                return False
-
             PageCommand.mem_map = KernelAddressHeuristicFinder.get_mem_map()
             if self.mem_map is None:
                 err("Could not find mem_map")
@@ -132500,101 +132548,23 @@ class PageCommand(GenericCommand):
                 err("Could not find sizeof(struct page)")
                 return False
 
-            PageCommand.FIXADDR_START = KernelAddressHeuristicFinder.consts().FIXADDR_START
-            if self.FIXADDR_START is None:
-                err("Could not find FIXADDR_START")
+            PageCommand.PHYS_OFFSET = KernelAddressHeuristicFinder.consts().PHYS_OFFSET
+            if self.PHYS_OFFSET is None:
+                err("Could not find PHYS_OFFSET")
                 return False
-
-            PageCommand.FIXADDR_TOP = KernelAddressHeuristicFinder.consts().FIXADDR_TOP
-            if self.FIXADDR_TOP is None:
-                err("Could not find FIXADDR_TOP")
-                return False
-
-            PageCommand.LOWMEM_LIMIT = (self.PAGE_OFFSET_END - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-            PageCommand.page_address_htable = KernelAddressHeuristicFinder.get_page_address_htable() # allow None
 
         PageCommand.initialized = True
         return True
 
-    def is_vmalloc_addr(self, virt):
-        return self.VMALLOC_START <= virt < self.VMALLOC_END
-
-    def is_fixmap_addr(self, virt):
-        return self.FIXADDR_START <= virt < self.FIXADDR_TOP
-
-    def page2address(self, page):
-        # for highmem
-        if self.page_address_htable is None:
-            return None
-
-        GOLDEN_RATIO_32 = 0x61C88647
-        hash7bits = (((page * GOLDEN_RATIO_32) & 0xffff_ffff) >> (32 - 7))
-        sizeof_cache_align = 0x40
-        page_slot = self.page_address_htable + hash7bits * sizeof_cache_align
-        if not is_double_link_list(page_slot, min_len=1):
-            return None
-
-        """
-        struct page_address_map {
-            struct page *page;
-            void *virtual;
-            struct list_head list;
-        };
-
-        #define PA_HASH_ORDER 7
-        static struct page_address_slot {
-            struct list_head lh; /* List of page_address_maps */
-            spinlock_t lock; /* Protect this bucket's list */
-        } ____cacheline_aligned_in_smp page_address_htable[1<<PA_HASH_ORDER];
-        """
-        info("page_slot: {:#x}".format(page_slot))
-        current = read_int_from_memory(page_slot)
-        while current != page_slot:
-            page_value = read_int_from_memory(current - current_arch.ptrsize * 2)
-            if page_value == page:
-                virt_value = read_int_from_memory(current - current_arch.ptrsize)
-                # found, but...
-                if is_valid_addr(virt_value):
-                    # entry is ok
-                    return virt_value
-                else:
-                    # entry is dead
-                    err("Found but invalid: {:#x}".format(virt_value))
-                    return None
-            current = read_int_from_memory(current)
-        return None
-
-    def search_fixmap(self, target_pfn):
-        maps = Kernel.get_maps() # [vaddr, size, perm]
-        if maps is None:
-            return None
-
-        for vaddr, size, _perm in maps:
-            if not self.is_fixmap_addr(vaddr):
-                continue
-            for v in range(vaddr, vaddr + size, 1 << self.PAGE_SHIFT):
-                p = Kernel.v2p(v)
-                pfn = p >> self.PAGE_SHIFT
-                if (pfn - target_pfn) % 0x10000 == 0:
-                    return v
-        return None
-
-    def page2virt(self, page):
+    def page2phys(self, page):
         if not is_valid_addr(page):
             err("Memory read error")
             return None
 
         if is_x86_64():
-            # page -> pfn
             pfn = (page - self.VMEMMAP_START) // self.sizeof_struct_page
-            if pfn < 0:
-                return None
-            # pfn -> virt
-            virt = (pfn << self.PAGE_SHIFT) + self.PAGE_OFFSET
-
         elif is_x86_32():
             if self.mode == "FLATMEM":
-                # page -> pfn
                 pfn = (page - self.mem_map) // self.sizeof_struct_page
             elif self.mode == "SPARSEMEM":
                 # page -> section_id
@@ -132603,91 +132573,47 @@ class PageCommand(GenericCommand):
                 # section_id -> mem_section
                 # SECTION_NR_TO_ROOT(nr) always returns nr
                 # (nr & SECTION_ROOT_MASK) always returns 0
-                mem_section = self.mem_section + self.sizeof_mem_section * section_id
-                if not is_valid_addr(mem_section):
+                mem_section_i = self.mem_section + self.sizeof_mem_section * section_id
+                if not is_valid_addr(mem_section_i):
                     return None
                 # section -> mem_map
-                section_mem_map = read_int_from_memory(mem_section)
+                section_mem_map = read_int_from_memory(mem_section_i)
                 if section_mem_map == 0:
                     return None
                 mem_map = section_mem_map & self.SECTION_MAP_MASK
                 # page -> pfn
-                pfn = (page - mem_map) // self.sizeof_struct_page
-
-            if pfn < 0:
-                return None
-            # pfn -> virt
-            if pfn < self.LOWMEM_LIMIT:
-                virt = (pfn << self.PAGE_SHIFT) + self.PAGE_OFFSET
-            else:
-                info("Search as HIGHMEM")
-                virt = self.page2address(page)
-
+                section_base_pfn = section_id << self.PFN_SECTION_SHIFT
+                pfn = section_base_pfn + ((page - mem_map) // self.sizeof_struct_page)
         elif is_arm64():
-            # page -> pfn
-            pfn = (page - self.VMEMMAP_START) // self.sizeof_struct_page
-            if pfn < 0:
+            delta = page - self.VMEMMAP_START
+            if delta < 0:
                 return None
-            # pfn -> virt
-            virt = (pfn << self.PAGE_SHIFT) + self.PAGE_OFFSET
-
+            if delta % self.sizeof_struct_page != 0:
+                return None
+            memstart_pfn = self.memstart_addr >> self.PAGE_SHIFT
+            pfn = (delta // self.sizeof_struct_page) + memstart_pfn
         elif is_arm32():
-            # page -> pfn
-            pfn = (page - self.mem_map) // self.sizeof_struct_page
-            if pfn < 0:
+            delta = page - self.mem_map
+            if delta < 0:
                 return None
-            # pfn -> virt
-            if pfn < self.LOWMEM_LIMIT:
-                virt = (pfn << self.PAGE_SHIFT) + self.PAGE_OFFSET
-            else:
-                info("Search as HIGHMEM")
-                virt = self.page2address(page)
-                if virt is None:
-                    info("Search as FIXMAP")
-                    virt = self.search_fixmap(pfn)
+            if delta % self.sizeof_struct_page != 0:
+                return None
+            arch_pfn_offset = self.PHYS_OFFSET >> self.PAGE_SHIFT
+            pfn = (delta // self.sizeof_struct_page) + arch_pfn_offset
 
-        if virt is None:
-            err("Address in invalid range")
+        if pfn < 0:
             return None
+        return pfn << self.PAGE_SHIFT
 
-        virt = AddressUtil.align_address(virt)
-        if not is_valid_addr(virt):
-            err("Address in invalid range")
-            return None
-        return virt
-
-    def virt2page(self, virt):
-        if not is_valid_addr(virt):
-            err("Memory read error")
+    def phys2page(self, phys):
+        pfn = phys >> self.PAGE_SHIFT
+        if pfn < 0:
             return None
 
         if is_x86_64():
-            # virt -> pfn
-            if self.START_KERNEL_map <= virt:
-                pfn = AddressUtil.align_address(virt - self.START_KERNEL_map + self.phys_base) >> self.PAGE_SHIFT
-            else:
-                pfn = (virt - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-            if pfn < 0:
-                return None
-            # pfn -> page
             page = self.VMEMMAP_START + (pfn * self.sizeof_struct_page)
-
         elif is_x86_32():
-            # virt -> pfn
-            if self.is_vmalloc_addr(virt):
-                # for high_memory
-                phys = Kernel.v2p(virt)
-                if phys is None:
-                    err("Address in invalid range")
-                    return None
-                pfn = phys >> self.PAGE_SHIFT
-            else:
-                pfn = (virt - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-            if pfn < 0:
-                return None
-
             if self.mode == "FLATMEM":
-                # pfn -> page
                 page = self.mem_map + (pfn * self.sizeof_struct_page)
             elif self.mode == "SPARSEMEM":
                 # pfn -> section_id
@@ -132695,40 +132621,25 @@ class PageCommand(GenericCommand):
                 # section_id -> mem_section
                 # SECTION_NR_TO_ROOT(nr) always returns nr
                 # (nr & SECTION_ROOT_MASK) always returns 0
-                mem_section = self.mem_section + self.sizeof_mem_section * section_id
-                if not is_valid_addr(mem_section):
+                mem_section_i = self.mem_section + self.sizeof_mem_section * section_id
+                if not is_valid_addr(mem_section_i):
                     return None
                 # section -> mem_map
-                section_mem_map = read_int_from_memory(mem_section)
+                section_mem_map = read_int_from_memory(mem_section_i)
                 if section_mem_map == 0:
                     return None
                 mem_map = section_mem_map & self.SECTION_MAP_MASK
                 # pfn -> page
-                page = mem_map + (pfn * self.sizeof_struct_page)
-
+                section_base_pfn = section_id << self.PFN_SECTION_SHIFT
+                page = mem_map + ((pfn - section_base_pfn) * self.sizeof_struct_page)
         elif is_arm64():
-            # virt -> pfn
-            pfn = (virt - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-            if pfn < 0:
-                return None
-            # pfn -> page
-            page = self.VMEMMAP_START + (pfn * self.sizeof_struct_page)
-
+            memstart_pfn = self.memstart_addr >> self.PAGE_SHIFT
+            page = self.VMEMMAP_START + ((pfn - memstart_pfn) * self.sizeof_struct_page)
         elif is_arm32():
-            # virt -> pfn
-            if self.is_vmalloc_addr(virt):
-                # for high_memory
-                phys = Kernel.v2p(virt)
-                if phys is None:
-                    err("Address in invalid range")
-                    return None
-                pfn = phys >> self.PAGE_SHIFT
-            else:
-                pfn = (virt - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-            if pfn < 0:
+            arch_pfn_offset = self.PHYS_OFFSET >> self.PAGE_SHIFT
+            if pfn < arch_pfn_offset:
                 return None
-            # pfn -> page
-            page = self.mem_map + (pfn * self.sizeof_struct_page)
+            page = self.mem_map + ((pfn - arch_pfn_offset) * self.sizeof_struct_page)
 
         page = AddressUtil.align_address(page)
         if not is_valid_addr(page):
@@ -132748,7 +132659,7 @@ class PageCommand(GenericCommand):
 
 @register_command
 class PageToVirtCommand(PageCommand, BufferingOutput):
-    """Translate from page to virtual address."""
+    """Resolve virtual addresses mapped to the page."""
 
     _cmdline_ = "page to_virt"
     _category_ = "06-d. Qemu-system/KGDB Cooperation - Virt/Phys/Page"
@@ -132760,7 +132671,10 @@ class PageToVirtCommand(PageCommand, BufferingOutput):
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     _syntax_ = parser.format_help()
 
-    _note_ = None
+    _note_ = [
+        "One page may correspond to multiple virtual addresses.",
+    ]
+    _note_ = "\n".join(_note_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -132788,12 +132702,17 @@ class PageToVirtCommand(PageCommand, BufferingOutput):
 
         self.out = []
 
-        # A page may be associated with multiple virtual addresses.
-        vaddr = self.page2virt(args.page)
-        if vaddr is None:
-            err("Failed to resolve")
+        paddr = self.page2phys(args.page)
+        if paddr is None:
+            err("Failed to resolve phys")
             return
-        self.out.append("Page: {:#x} -> Virt: {:#x}".format(args.page, vaddr))
+        # A page may be associated with multiple virtual addresses.
+        vaddrs = Kernel.p2v(paddr)
+        if not vaddrs:
+            err("Failed to resolve virt")
+            return
+        for vaddr in vaddrs:
+            self.out.append("Page: {:#x} -> Virt: {:#x}".format(args.page, vaddr))
 
         self.print_output(check_terminal_size=True)
         return
@@ -132801,7 +132720,7 @@ class PageToVirtCommand(PageCommand, BufferingOutput):
 
 @register_command
 class PageFromVirtCommand(PageCommand, BufferingOutput):
-    """Translate from virtual address to page."""
+    """Resolve the struct page for a virtual address."""
 
     _cmdline_ = "page from_virt"
     _category_ = "06-d. Qemu-system/KGDB Cooperation - Virt/Phys/Page"
@@ -132843,13 +132762,16 @@ class PageFromVirtCommand(PageCommand, BufferingOutput):
 
         vaddr = args.virt
         if vaddr & 0xfff:
-            warn("The address must be 0x1000 aligned, round down and then calculate")
+            warn("The address must be page aligned, round down and then calculate")
             vaddr &= get_pagesize_mask_high()
 
-        # A virtual address is always associated with one physical address.
-        page = self.virt2page(vaddr)
+        paddr = Kernel.v2p(vaddr)
+        if paddr is None:
+            err("Failed to resolve phys")
+            return
+        page = self.phys2page(paddr)
         if page is None:
-            err("Failed to resolve")
+            err("Failed to resolve page")
             return
         self.out.append("Virt: {:#x} -> Page: {:#x}".format(vaddr, page))
 
@@ -132859,7 +132781,7 @@ class PageFromVirtCommand(PageCommand, BufferingOutput):
 
 @register_command
 class PageToPhysCommand(PageCommand, BufferingOutput):
-    """Translate from page to physical address."""
+    """Resolve the physical address for a struct page."""
 
     _cmdline_ = "page to_phys"
     _category_ = "06-d. Qemu-system/KGDB Cooperation - Virt/Phys/Page"
@@ -132899,16 +132821,9 @@ class PageToPhysCommand(PageCommand, BufferingOutput):
 
         self.out = []
 
-        # A page may be associated with multiple virtual addresses.
-        vaddr = self.page2virt(args.page)
-        if vaddr is None:
-            err("Failed to resolve")
-            return
-
-        # Get the physical addresses pointed to by those virtual addresses.
-        paddr = Kernel.v2p(vaddr)
-        if not paddr:
-            err("Failed to resolve")
+        paddr = self.page2phys(args.page)
+        if paddr is None:
+            err("Failed to resolve phys")
             return
         self.out.append("Page: {:#x} -> Phys: {:#x}".format(args.page, paddr))
 
@@ -132918,7 +132833,7 @@ class PageToPhysCommand(PageCommand, BufferingOutput):
 
 @register_command
 class PhysToPageCommand(PageCommand, BufferingOutput):
-    """Translate from physical address to page."""
+    """Resolve the struct page for a physical address."""
 
     _cmdline_ = "page from_phys"
     _category_ = "06-d. Qemu-system/KGDB Cooperation - Virt/Phys/Page"
@@ -132960,24 +132875,14 @@ class PhysToPageCommand(PageCommand, BufferingOutput):
 
         paddr = args.phys
         if paddr & 0xfff:
-            warn("The address must be 0x1000 aligned, round down and then calculate")
+            warn("The address must be page aligned, round down and then calculate")
             paddr &= get_pagesize_mask_high()
 
-        r = Kernel.p2v(paddr)
-        if not r:
-            err("Failed to resolve")
+        page = self.phys2page(paddr)
+        if page is None:
+            err("Failed to resolve page")
             return
-
-        for vaddr in r:
-            # A virtual address is always associated with one page.
-            page = self.virt2page(vaddr)
-            if page is None:
-                err("Failed to resolve")
-                return
-            # Assuming there should be one, all different values will be displayed for certainty.
-            msg = "Phys: {:#x} -> Page: {:#x}".format(paddr, page)
-            if msg not in self.out:
-                self.out.append(msg)
+        self.out.append("Phys: {:#x} -> Page: {:#x}".format(paddr, page))
 
         self.print_output(check_terminal_size=True)
         return
