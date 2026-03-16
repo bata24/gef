@@ -69177,48 +69177,55 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
 
         if is_64bit():
             # struct ctl_dir
-            if "6.10" <= kversion:
-                self.offset_rb_node = 0x58
-            elif "4.9.120" <= kversion < "4.10":
+            if "4.9.120" <= kversion < "4.10":
                 self.offset_rb_node = 0x50
-            elif kversion < "4.11":
+            elif "4.10" <= kversion < "4.11":
                 self.offset_rb_node = 0x48
-            elif kversion < "4.12.2":
+            elif "4.11" <= kversion < "4.12.2":
                 self.offset_rb_node = 0x58
-            else:
+            elif "4.12.2" <= kversion < "6.10":
                 self.offset_rb_node = 0x50
+            elif "6.10" <= kversion:
+                self.offset_rb_node = 0x58
             self.offset_parent = 0x38
             # struct ctl_table
             self.offset_maxlen = 0x10
             self.offset_mode = 0x14
-            if "6.10" <= kversion:
-                self.offset_handler = 0x18
-                self.sizeof_ctl_table = 0x38
-            else:
+            if kversion < "6.10":
                 self.offset_handler = 0x20
                 self.sizeof_ctl_table = 0x40
+            else:
+                self.offset_handler = 0x18
+                self.sizeof_ctl_table = 0x38
         else:
             # struct ctl_dir
-            if "6.10" <= kversion:
-                self.offset_rb_node = 0x30
-            elif "4.9.120" <= kversion < "4.10":
+            if "4.9.120" <= kversion < "4.10":
                 self.offset_rb_node = 0x2c
-            elif kversion < "4.11":
+                self.offset_parent = 0x20
+            elif "4.10" <= kversion < "4.11":
                 self.offset_rb_node = 0x28
-            elif kversion < "4.12.2":
+                self.offset_parent = 0x20
+            elif "4.11" <= kversion < "4.12.2":
                 self.offset_rb_node = 0x30
-            else:
+                self.offset_parent = 0x20
+            elif "4.12.2" <= kversion < "6.6":
                 self.offset_rb_node = 0x2c
-            self.offset_parent = 0x20
+                self.offset_parent = 0x20
+            elif "6.6" <= kversion < "6.10":
+                self.offset_rb_node = 0x30
+                self.offset_parent = 0x24
+            elif "6.10" <= kversion:
+                self.offset_rb_node = 0x34
+                self.offset_parent = 0x24
             # struct ctl_table
             self.offset_maxlen = 0x8
             self.offset_mode = 0xc
-            if "6.10" <= kversion:
-                self.offset_handler = 0x10
-                self.sizeof_ctl_table = 0x20
-            else:
+            if kversion < "6.10":
                 self.offset_handler = 0x14
                 self.sizeof_ctl_table = 0x24
+            else:
+                self.offset_handler = 0x10
+                self.sizeof_ctl_table = 0x20
 
         # struct ctl_table_root
         self.offset_lookup = current_arch.ptrsize + self.offset_rb_node + current_arch.ptrsize
