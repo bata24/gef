@@ -82898,7 +82898,7 @@ class Hash:
         output_words = 4
         final_rounds = 10
 
-    class GOST:
+    class GOST: # codespell:ignore
         block_size = 32
         digest_size = 32
         sbox = None
@@ -83490,7 +83490,7 @@ class Hash:
         def hexdigest(self):
             return self.digest().hex()
 
-    class GOST94cp(GOST):
+    class GOST94cp(GOST): # codespell:ignore
         sbox = [
             [0x0a, 0x04, 0x05, 0x06, 0x08, 0x01, 0x03, 0x07, 0x0d, 0x0c, 0x0e, 0x00, 0x09, 0x02, 0x0b, 0x0f],
             [0x05, 0x0f, 0x04, 0x00, 0x02, 0x0d, 0x0b, 0x09, 0x01, 0x07, 0x06, 0x03, 0x0c, 0x0e, 0x0a, 0x08],
@@ -99116,7 +99116,7 @@ class Hash:
             na = a ^ m
             nb = b ^ m
             nc = c ^ m
-            nd = d ^ m
+            nd = d ^ m # codespell:ignore
             ne = e ^ m
             nf = f ^ m
             ng = g ^ m
@@ -99146,7 +99146,7 @@ class Hash:
                 ^ (b & d & nf)
                 ^ (b & e & g)
                 ^ (nb & f & g)
-                ^ (c & nd & ne)
+                ^ (c & nd & ne) # codespell:ignore
                 ^ (nc & d & f)
                 ^ (d & e & f)
                 ^ (d & ne & g)
@@ -100796,8 +100796,8 @@ class HashCommand(GenericCommand):
         yield ("FNV0a-512", Hash.FNV_512(variant="fnv0a"))
         yield ("FNV0a-1024", Hash.FNV_1024(variant="fnv0a"))
         yield ("FORK256", Hash.FORK256())
-        yield ("GOST", Hash.GOST())
-        yield ("GOST94cp", Hash.GOST94cp())
+        yield ("GOST", Hash.GOST()) # codespell:ignore
+        yield ("GOST94cp", Hash.GOST94cp()) # codespell:ignore
         yield ("HAS-160", Hash.HAS160())
         yield ("HAVAL128,3", Hash.HAVAL(digest_bits=128, passes=3))
         yield ("HAVAL128,4", Hash.HAVAL(digest_bits=128, passes=4))
@@ -101874,7 +101874,7 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "FORK256":
             "290f4a3bc99dd6edc87400af4d4daa10362b0fea41d7cd41710f4e9fe0964428",
         # https://github.com/jonelo/jacksum
-        "GOST":
+        "GOST": # codespell:ignore
             "77b7fa410c9ac58a25f49bca7d0468c9296529315eaca76bd1a10f376d1f4294",
         "GOST94cp":
             "9004294a361a508c586fe53d1f1b02746765e71b765472786e4770d565830a76",
@@ -102085,7 +102085,7 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "c268724928feca7d",
         "CityHash128":
             "a7f9a86a2d60c968bf1498f876dbe279",
-        # https://asecuritysite.com/hash/smh # fp: fingerpint
+        # https://asecuritysite.com/hash/smh # fp: fingerprint
         "FarmHash32 (fp)":
             "ec998320",
         "FarmHash64 (fp)":
