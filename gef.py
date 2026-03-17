@@ -52757,9 +52757,8 @@ class KernelMagicCommand(GenericCommand):
             self.resolve_and_print_kernel(
                 "mem_map (struct page[])", None, maps, KernelAddressHeuristicFinder.get_mem_map,
             )
-        if is_x86_32():
             self.resolve_and_print_kernel(
-                "mem_section", None, maps, KernelAddressHeuristicFinder.get_mem_section,
+                "mem_section (struct page[][])", None, maps, KernelAddressHeuristicFinder.get_mem_section,
             )
         return
 
@@ -55212,8 +55211,13 @@ class KernelAddressHeuristicFinderUtil:
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
 
     @staticmethod
-    def x86_dword_ptr_array_base(res, skip=0, skip_msb_check=False, read_valid=False):
+    def x86_dword_ptr_array4_base(res, skip=0, skip_msb_check=False, read_valid=False):
         regexp = r"DWORD PTR \[.*\*4([+-]0x\w+)\]"
+        return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
+
+    @staticmethod
+    def x86_dword_ptr_array8_base(res, skip=0, skip_msb_check=False, read_valid=False):
+        regexp = r"DWORD PTR \[.*\*8([+-]0x\w+)\]"
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
 
     @staticmethod
@@ -55363,16 +55367,22 @@ class KernelAddressHeuristicFinderUtil:
                     yield w
 
     @staticmethod
-    def arm32_movw_movt(res, skip=0, skip_msb_check=False, read_valid=False):
+    def arm32_movw_movt(res, skip=0, skip_msb_check=False, read_valid=False, allow_cc=False):
         bases = {}
         for line in res.splitlines():
-            m = re.search(r"movw\s+(\w+),.+[;@]\s*(0x\w+)", line)
+            if allow_cc:
+                m = re.search(r"movw(?:cc)?\s+(\w+),.+[;@]\s*(0x\w+)", line)
+            else:
+                m = re.search(r"movw\s+(\w+),.+[;@]\s*(0x\w+)", line)
             if m:
                 reg = m.group(1)
                 v = int(m.group(2), 16)
                 bases[reg] = v
                 continue
-            m = re.search(r"movt\s+(\w+),.+[;@]\s*(0x\w+)", line)
+            if allow_cc:
+                m = re.search(r"movt(?:cc)?\s+(\w+),.+[;@]\s*(0x\w+)", line)
+            else:
+                m = re.search(r"movt\s+(\w+),.+[;@]\s*(0x\w+)", line)
             if m:
                 reg = m.group(1)
                 v = int(m.group(2), 16) << 16
@@ -55388,17 +55398,23 @@ class KernelAddressHeuristicFinderUtil:
                     yield w
 
     @staticmethod
-    def arm32_movw_movt_ldr(res, skip=0, skip_msb_check=False, read_valid=False):
+    def arm32_movw_movt_ldr(res, skip=0, skip_msb_check=False, read_valid=False, allow_cc=False):
         bases = {}
         add1time = {}
         for line in res.splitlines():
-            m = re.search(r"movw\s+(\w+),.+[;@]\s*(0x\w+)", line)
+            if allow_cc:
+                m = re.search(r"movw(?:cc)?\s+(\w+),.+[;@]\s*(0x\w+)", line)
+            else:
+                m = re.search(r"movw\s+(\w+),.+[;@]\s*(0x\w+)", line)
             if m:
                 reg = m.group(1)
                 v = int(m.group(2), 16)
                 bases[reg] = v
                 continue
-            m = re.search(r"movt\s+(\w+),.+[;@]\s*(0x\w+)", line)
+            if allow_cc:
+                m = re.search(r"movt(?:cc)?\s+(\w+),.+[;@]\s*(0x\w+)", line)
+            else:
+                m = re.search(r"movt\s+(\w+),.+[;@]\s*(0x\w+)", line)
             if m:
                 reg = m.group(1)
                 v = int(m.group(2), 16) << 16
@@ -55829,6 +55845,173 @@ class KernelConstsX86(KernelConstsBase):
     def MODULES_LEN(self):
         return self.MODULES_VADDR - self.MODULES_END
 
+    @property
+    def mem_map(self):
+        if hasattr(self, "cached_mem_map"):
+            return self.cached_mem_map
+        self.cached_mem_map = KernelAddressHeuristicFinder.get_mem_map()
+        return self.cached_mem_map
+
+    @property
+    def mem_section(self):
+        if hasattr(self, "cached_mem_section"):
+            return self.cached_mem_section
+        self.cached_mem_section = KernelAddressHeuristicFinder.get_mem_section()
+        return self.cached_mem_section
+
+    @property
+    def CONFIG_FLATMEM(self):
+        return bool(self.mem_map)
+
+    @property
+    def CONFIG_SPARSEMEM(self):
+        return bool(self.mem_section)
+
+    @property
+    def MAX_PHYSMEM_BITS(self):
+        if self.CONFIG_SPARSEMEM:
+            if self.CONFIG_X86_PAE:
+                return 36
+            else:
+                return 32
+        return None
+
+    @property
+    def SECTION_SIZE_BITS(self):
+        if self.CONFIG_SPARSEMEM:
+            if self.CONFIG_X86_PAE:
+                return 29
+            else:
+                return 26
+        return None
+
+    @property
+    def SECTIONS_SHIFT(self):
+        if self.CONFIG_SPARSEMEM:
+            return self.MAX_PHYSMEM_BITS - self.SECTION_SIZE_BITS
+        return 0
+
+    @property
+    def SECTIONS_WIDTH(self):
+        if self.CONFIG_SPARSEMEM:
+            return self.SECTIONS_SHIFT
+        return 0
+
+    @property
+    def SECTIONS_PGOFF(self):
+        return 4 * 8 - self.SECTIONS_WIDTH
+
+    @property
+    def SECTIONS_PGSHIFT(self):
+        return self.SECTIONS_PGOFF * int(self.SECTIONS_WIDTH != 0)
+
+    @property
+    def SECTIONS_MASK(self):
+        return (1 << self.SECTIONS_WIDTH) - 1
+
+    @property
+    def SECTION_HAS_MEM_MAP(self):
+        return 1 << 1
+
+    @property
+    def SECTION_MAP_LAST_BIT(self):
+        if self.kversion < "4.13":
+            return 1 << 2
+        elif "4.13" <= self.kversion < "5.3":
+            return 1 << 3
+        elif "5.3" <= self.kversion < "5.12":
+            return 1 << 4
+        elif "5.12" <= self.kversion < "6.0":
+            return 1 << 5
+        elif "6.0" <= self.kversion:
+            return 1 << 4
+
+    @property
+    def SECTION_MAP_MASK(self):
+        return ~(self.SECTION_MAP_LAST_BIT - 1) & 0xffff_ffff
+
+    @property
+    def NR_MEM_SECTIONS(self):
+        if self.CONFIG_SPARSEMEM:
+            return 1 << self.SECTIONS_SHIFT
+        return None
+
+    @property
+    def PFN_SECTION_SHIFT(self):
+        if self.CONFIG_SPARSEMEM:
+            return self.SECTION_SIZE_BITS - self.PAGE_SHIFT
+        return None
+
+    @property
+    def CONFIG_PAGE_EXTENSION(self):
+        if "3.19" <= self.kversion:
+            addr = Symbol.get_ksymaddr("page_ext_init")
+            return bool(addr)
+        return None
+
+    @property
+    def sizeof_mem_section(self):
+        if not self.CONFIG_SPARSEMEM:
+            return None
+
+        if self.CONFIG_PAGE_EXTENSION:
+            return current_arch.ptrsize * 4
+        return current_arch.ptrsize * 2
+
+    @property
+    def sizeof_struct_page(self):
+        if hasattr(self, "cached_sizeof_struct_page"):
+            return self.cached_sizeof_struct_page
+
+        if not (self.CONFIG_FLATMEM or self.CONFIG_SPARSEMEM):
+            return None
+
+        if self.PAGE_OFFSET is None:
+            return None
+
+        ret = Kernel.get_page_virt_pair()
+        if not ret:
+            return None
+        page, vaddr = ret
+
+        pfn = (vaddr - self.PAGE_OFFSET) >> self.PAGE_SHIFT
+        if pfn == 0:
+            return None
+
+        if self.CONFIG_FLATMEM:
+            base = self.mem_map
+            if base is None:
+                return None
+
+        else:
+            flags = read_int_from_memory(page)
+            section_id = (flags >> self.SECTIONS_PGSHIFT) & self.SECTIONS_MASK
+
+            ms = self.mem_section + self.sizeof_mem_section * section_id
+            if ms is None:
+                return None
+
+            section_mem_map = read_int_from_memory(ms)
+            if (section_mem_map & self.SECTION_HAS_MEM_MAP) == 0:
+                return None
+
+            base = section_mem_map & self.SECTION_MAP_MASK
+            if base == 0:
+                return None
+
+        delta = page - base
+        if delta <= 0:
+            return None
+        if (delta % pfn) != 0:
+            return None
+
+        size = delta // pfn
+        if size == 0:
+            return None
+
+        self.cached_sizeof_struct_page = size
+        return size
+
 
 class KernelConstsX64(KernelConstsBase):
     """A class that manages x64 constants by version."""
@@ -55866,10 +56049,8 @@ class KernelConstsX64(KernelConstsBase):
             return None
         page, vaddr = ret
         pfn = (vaddr - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-        sizeof_struct_page_value = (page - self.VMEMMAP_START) // pfn
-        if sizeof_struct_page_value == 0x3f: # occasionally the calculation may be off by one (why?)
-            sizeof_struct_page_value = 0x40
-        if sizeof_struct_page_value:
+        sizeof_struct_page_value = align_to_ptrsize((page - self.VMEMMAP_START) // pfn)
+        if sizeof_struct_page_value != 0:
             self.cached_sizeof_struct_page = sizeof_struct_page_value
         return sizeof_struct_page_value
 
@@ -56487,30 +56668,6 @@ class KernelConstsArm32(KernelConstsBase):
         return None
 
     @property
-    def mem_map(self):
-        if hasattr(self, "cached_mem_map"):
-            return self.cached_mem_map
-        self.cached_mem_map = KernelAddressHeuristicFinder.get_mem_map()
-        return self.cached_mem_map
-
-    @property
-    def sizeof_struct_page(self):
-        if hasattr(self, "cached_sizeof_struct_page"):
-            return self.cached_sizeof_struct_page
-
-        ret = Kernel.get_page_virt_pair()
-        if not ret:
-            return None
-        page, vaddr = ret
-        pfn = (vaddr - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-        sizeof_struct_page_value = (page - self.mem_map) // pfn
-        if sizeof_struct_page_value == 0x3f: # occasionally the calculation may be off by one (why?)
-            sizeof_struct_page_value = 0x40
-        if sizeof_struct_page_value:
-            self.cached_sizeof_struct_page = sizeof_struct_page_value
-        return sizeof_struct_page_value
-
-    @property
     def PMD_SHIFT(self):
         return 21
 
@@ -56669,6 +56826,172 @@ class KernelConstsArm32(KernelConstsBase):
         linear_kbase = linear_cands[0]
         self.cached_PHYS_OFFSET = AddressUtil.align_address(phys_kbase - (linear_kbase - self.PAGE_OFFSET))
         return self.cached_PHYS_OFFSET
+
+    @property
+    def mem_map(self):
+        if hasattr(self, "cached_mem_map"):
+            return self.cached_mem_map
+        self.cached_mem_map = KernelAddressHeuristicFinder.get_mem_map()
+        return self.cached_mem_map
+
+    @property
+    def mem_section(self):
+        if hasattr(self, "cached_mem_section"):
+            return self.cached_mem_section
+        self.cached_mem_section = KernelAddressHeuristicFinder.get_mem_section()
+        return self.cached_mem_section
+
+    @property
+    def CONFIG_FLATMEM(self):
+        return bool(self.mem_map)
+
+    @property
+    def CONFIG_SPARSEMEM(self):
+        return bool(self.mem_section)
+
+    @property
+    def MAX_PHYSMEM_BITS(self):
+        if self.CONFIG_SPARSEMEM:
+            return 36
+        return None
+
+    @property
+    def SECTION_SIZE_BITS(self):
+        if self.CONFIG_SPARSEMEM:
+            return 28
+        return None
+
+    @property
+    def SECTIONS_SHIFT(self):
+        if self.CONFIG_SPARSEMEM:
+            return self.MAX_PHYSMEM_BITS - self.SECTION_SIZE_BITS
+        return 0
+
+    @property
+    def SECTIONS_WIDTH(self):
+        if self.CONFIG_SPARSEMEM:
+            return self.SECTIONS_SHIFT
+        return 0
+
+    @property
+    def SECTIONS_PGOFF(self):
+        return 4 * 8 - self.SECTIONS_WIDTH
+
+    @property
+    def SECTIONS_PGSHIFT(self):
+        return self.SECTIONS_PGOFF * int(self.SECTIONS_WIDTH != 0)
+
+    @property
+    def SECTIONS_MASK(self):
+        return (1 << self.SECTIONS_WIDTH) - 1
+
+    @property
+    def SECTION_HAS_MEM_MAP(self):
+        return 1 << 1
+
+    @property
+    def SECTION_MAP_LAST_BIT(self):
+        if self.kversion < "4.13":
+            return 1 << 2
+        elif "4.13" <= self.kversion < "5.3":
+            return 1 << 3
+        elif "5.3" <= self.kversion < "5.12":
+            return 1 << 4
+        elif "5.12" <= self.kversion < "6.0":
+            return 1 << 5
+        elif "6.0" <= self.kversion:
+            return 1 << 4
+
+    @property
+    def SECTION_MAP_MASK(self):
+        return ~(self.SECTION_MAP_LAST_BIT - 1) & 0xffff_ffff
+
+    @property
+    def NR_MEM_SECTIONS(self):
+        if self.CONFIG_SPARSEMEM:
+            return 1 << self.SECTIONS_SHIFT
+        return None
+
+    @property
+    def PFN_SECTION_SHIFT(self):
+        if self.CONFIG_SPARSEMEM:
+            return self.SECTION_SIZE_BITS - self.PAGE_SHIFT
+        return None
+
+    @property
+    def PHYS_PFN_OFFSET(self):
+        return self.PHYS_OFFSET >> self.PAGE_SHIFT
+
+    @property
+    def CONFIG_PAGE_EXTENSION(self):
+        if "3.19" <= self.kversion:
+            addr = Symbol.get_ksymaddr("page_ext_init")
+            return bool(addr)
+        return None
+
+    @property
+    def sizeof_mem_section(self):
+        if not self.CONFIG_SPARSEMEM:
+            return None
+
+        if self.CONFIG_PAGE_EXTENSION:
+            return current_arch.ptrsize * 4
+        return current_arch.ptrsize * 2
+
+    @property
+    def sizeof_struct_page(self):
+        if hasattr(self, "cached_sizeof_struct_page"):
+            return self.cached_sizeof_struct_page
+
+        if not (self.CONFIG_FLATMEM or self.CONFIG_SPARSEMEM):
+            return None
+
+        if self.PAGE_OFFSET is None or self.PHYS_PFN_OFFSET is None:
+            return None
+
+        ret = Kernel.get_page_virt_pair()
+        if not ret:
+            return None
+        page, vaddr = ret
+
+        pfn = ((vaddr - self.PAGE_OFFSET) >> self.PAGE_SHIFT) + self.PHYS_PFN_OFFSET
+
+        if self.CONFIG_FLATMEM:
+            base = self.mem_map
+            index = pfn - self.PHYS_PFN_OFFSET
+
+        else:
+            flags = read_int_from_memory(page)
+            section_id = (flags >> self.SECTIONS_PGSHIFT) & self.SECTIONS_MASK
+
+            ms = self.mem_section + self.sizeof_mem_section * section_id
+
+            section_mem_map = read_int_from_memory(ms)
+            if (section_mem_map & self.SECTION_HAS_MEM_MAP) == 0:
+                return None
+
+            base = section_mem_map & self.SECTION_MAP_MASK
+            if base == 0:
+                return None
+
+            index = pfn
+
+        delta = page - base
+        if delta < 0:
+            return None
+
+        if index <= 0:
+            return None
+
+        if (delta % index) != 0:
+            return None
+
+        size = delta // index
+        if size == 0:
+            return None
+
+        self.cached_sizeof_struct_page = size
+        return size
 
 
 class KernelConstsArm64(KernelConstsBase):
@@ -57794,7 +58117,7 @@ class KernelAddressHeuristicFinder:
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_array_base(res)
                 elif is_x86_32():
-                    g = KernelAddressHeuristicFinderUtil.x86_dword_ptr_array_base(res)
+                    g = KernelAddressHeuristicFinderUtil.x86_dword_ptr_array4_base(res)
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
@@ -57990,7 +58313,7 @@ class KernelAddressHeuristicFinder:
             if is_x86_64():
                 g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_array_base(res)
             elif is_x86_32():
-                g = KernelAddressHeuristicFinderUtil.x86_dword_ptr_array_base(res)
+                g = KernelAddressHeuristicFinderUtil.x86_dword_ptr_array4_base(res)
             for x in g:
                 return x
 
@@ -58150,7 +58473,7 @@ class KernelAddressHeuristicFinder:
                     )
                 elif is_x86_32():
                     g = itertools.chain(
-                        KernelAddressHeuristicFinderUtil.x86_dword_ptr_array_base(res),
+                        KernelAddressHeuristicFinderUtil.x86_dword_ptr_array4_base(res),
                         KernelAddressHeuristicFinderUtil.x64_x86_dword_ptr_src(res),
                     )
                 elif is_arm64():
@@ -58724,7 +59047,11 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @switch_to_intel_syntax
     def get_mem_section():
-        if not is_x86_32():
+        if not is_x86_32() and not is_arm32():
+            return None
+
+        # Since mem_map and mem_section are mutually exclusive, make sure that mem_map is not being used
+        if KernelAddressHeuristicFinder.get_mem_map() is not None:
             return None
 
         # plan 1 (directly)
@@ -58735,13 +59062,30 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.kernel_version()
 
-        # plan 2 (available v4.8 ~ v5.15)
-        if kversion and "4.8" <= kversion < "5.15":
-            addr = Symbol.get_ksymaddr("__section_nr")
+        # plan 2 (available v2.4.0 or later)
+        if kversion and "2.4" <= kversion:
+            addr = Symbol.get_ksymaddr("free_pages")
             if addr:
-                res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
-                g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
+                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                if is_x86_32():
+                    # 0xc12f491b <free_pages+27>:  mov    eax,DWORD PTR [eax*8-0x3d19e3a0]
+                    # gef> x/w -0x3d19e3a0
+                    # 0xc2e61c60 <mem_section>:       0xf708000f
+                    g = KernelAddressHeuristicFinderUtil.x86_dword_ptr_array8_base(res)
+                elif is_arm32():
+                    # 0xc0501dd4 <free_pages+8>:   movw    r3, #45144      @ 0xb058
+                    # 0xc0501dd8 <free_pages+12>:  movt    r3, #49664      @ 0xc200
+                    # 0xc0501df0 <free_pages+36>:  movwcc  r2, #17344      @ 0x43c0
+                    # 0xc0501df4 <free_pages+40>:  movtcc  r2, #49707      @ 0xc22b
+                    # gef> x/w 0xc200b058
+                    # 0xc200b058 <__pv_phys_pfn_offset>:   0x00060000
+                    # gef> x/w 0xc22b43c0
+                    # 0xc22b43c0 <mem_section>:   0x00000000
+                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, allow_cc=True)
                 for x in g:
+                    v = read_int_from_memory(x)
+                    if v and not is_valid_addr(v):
+                        continue
                     return x
         return None
 
@@ -58755,7 +59099,10 @@ class KernelAddressHeuristicFinder:
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             addr = Symbol.get_ksymaddr("mem_map")
             if addr:
-                return read_int_from_memory(addr)
+                v = read_int_from_memory(addr)
+                if v != 0:
+                    return v
+                return None
 
         kversion = Kernel.kernel_version()
 
@@ -58763,19 +59110,28 @@ class KernelAddressHeuristicFinder:
         if kversion and "2.4" <= kversion:
             addr = Symbol.get_ksymaddr("free_pages")
             if addr:
-                res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
+                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_32():
                     g = itertools.chain(
+                        # 0xd3bf91d9 <free_pages+13>:  mov    ecx,DWORD PTR ds:0xd4f337c4
+                        # gef> x/w 0xd4f337c4
+                        # 0xd4f337c4 <mem_map>:   0xf67fe000
                         KernelAddressHeuristicFinderUtil.x86_dword_ptr_ds(res),
                         KernelAddressHeuristicFinderUtil.x86_noptr_ds(res),
                     )
                 elif is_arm32():
                     g = itertools.chain(
+                        # 0xc049f880 <free_pages+8>:   movw    r3, #46272      @ 0xb4c0
+                        # 0xc049f884 <free_pages+12>:  movt    r3, #49625      @ 0xc1d9
+                        # gef> x/w 0xc1d9b4c0
+                        # 0xc1d9b4c0 <mem_map>:   0xcbdd9000
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
                 for x in g:
-                    return read_int_from_memory(x)
+                    v = read_int_from_memory(x)
+                    if v != 0:
+                        return v
         return None
 
     @staticmethod
@@ -58926,7 +59282,7 @@ class KernelAddressHeuristicFinder:
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_array_base(res)
                 elif is_x86_32():
-                    g = KernelAddressHeuristicFinderUtil.x86_dword_ptr_array_base(res)
+                    g = KernelAddressHeuristicFinderUtil.x86_dword_ptr_array4_base(res)
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
@@ -131628,72 +131984,6 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             self.insert_region_range(VMALLOC_START, VMALLOC_END, "vmalloc")
         return
 
-    def resolve_mem_map(self):
-        if not is_x86_32() and not is_arm32():
-            return
-
-        self.quiet_info("Resolving mem_map")
-        mem_map = KernelAddressHeuristicFinder.get_mem_map()
-        if not mem_map:
-            if is_x86_32():
-                self.resolve_mem_section() # try mem_section
-            return
-
-        mem_map &= get_pagesize_mask_high()
-        # already there
-        if mem_map in self.regions:
-            self.regions[mem_map].add_description("mem_map(=page[])")
-            return
-        # require division
-        for _key, r in sorted(self.regions.items()):
-            if r.addr_start <= mem_map < r.addr_end:
-                size = r.addr_end - mem_map
-                self.insert_region(mem_map, size, "mem_map(=page[])")
-                return
-        return
-
-    def resolve_mem_section(self):
-        self.quiet_info("Resolving mem_section")
-        mem_section = KernelAddressHeuristicFinder.get_mem_section()
-        if not mem_section:
-            return
-
-        # calc NR_MEM_SECTIONS
-        cr4 = get_register("cr4", use_monitor=True)
-        if (cr4 >> 5) & 1: # PAE
-            MAX_PHYSMEM_BITS = 36
-            SECTION_SIZE_BITS = 29
-        else:
-            MAX_PHYSMEM_BITS = 32
-            SECTION_SIZE_BITS = 26
-        SECTIONS_SHIFT = MAX_PHYSMEM_BITS - SECTION_SIZE_BITS
-        NR_MEM_SECTIONS = 1 << SECTIONS_SHIFT
-
-        # calc sizeof(mem_section)
-        v = read_int_from_memory(mem_section + current_arch.ptrsize * 3)
-        if v == 0: # pad check
-            sizeof_mem_section = current_arch.ptrsize * 4 # CONFIG_PAGE_EXTENSION=y
-        else:
-            sizeof_mem_section = current_arch.ptrsize * 2 # CONFIG_PAGE_EXTENSION=n
-
-        # parse mem_section
-        for i in range(NR_MEM_SECTIONS):
-            section_mem_map = read_int_from_memory(mem_section + sizeof_mem_section * i)
-            section_mem_map &= get_pagesize_mask_high()
-            if not is_valid_addr(section_mem_map):
-                continue
-            # already there
-            if section_mem_map in self.regions:
-                self.regions[section_mem_map].add_description("section_mem_map(=page[])")
-                continue
-            # require division
-            for _key, r in sorted(self.regions.items()):
-                if r.addr_start <= section_mem_map < r.addr_end:
-                    size = r.addr_end - section_mem_map
-                    self.insert_region(section_mem_map, size, "section_mem_map(=page[])")
-                    break
-        return
-
     def resolve_vmemmap(self):
         if is_x86_64() or is_arm64():
             self.quiet_info("Resolving vmemmap")
@@ -131701,8 +131991,44 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             VMEMMAP_END = KernelAddressHeuristicFinder.get_VMEMMAP_END()
             if VMEMMAP_START and VMEMMAP_END:
                 self.insert_region_range(VMEMMAP_START, VMEMMAP_END, "vmemmap(=page[])")
+
         elif is_x86_32() or is_arm32():
-            self.resolve_mem_map()
+            if KernelAddressHeuristicFinder.consts().CONFIG_FLATMEM:
+                self.quiet_info("Resolving mem_map")
+                mem_map = KernelAddressHeuristicFinder.consts().mem_map
+                mem_map &= get_pagesize_mask_high()
+                # already there
+                if mem_map in self.regions:
+                    self.regions[mem_map].add_description("mem_map(=page[])")
+                    return
+                # require division
+                for _key, r in sorted(self.regions.items()):
+                    if r.addr_start <= mem_map < r.addr_end:
+                        size = r.addr_end - mem_map
+                        self.insert_region(mem_map, size, "mem_map(=page[])")
+                        return
+
+            elif KernelAddressHeuristicFinder.consts().CONFIG_SPARSEMEM:
+                self.quiet_info("Resolving mem_section")
+                mem_section = KernelAddressHeuristicFinder.consts().mem_section
+                NR_MEM_SECTIONS = KernelAddressHeuristicFinder.consts().NR_MEM_SECTIONS
+                sizeof_mem_section = KernelAddressHeuristicFinder.consts().sizeof_mem_section
+                # parse mem_section
+                for i in range(NR_MEM_SECTIONS):
+                    section_mem_map = read_int_from_memory(mem_section + sizeof_mem_section * i)
+                    section_mem_map &= get_pagesize_mask_high()
+                    if not is_valid_addr(section_mem_map):
+                        continue
+                    # already there
+                    if section_mem_map in self.regions:
+                        self.regions[section_mem_map].add_description("section_mem_map(=page[])")
+                        continue
+                    # require division
+                    for _key, r in sorted(self.regions.items()):
+                        if r.addr_start <= section_mem_map < r.addr_end:
+                            size = r.addr_end - section_mem_map
+                            self.insert_region(section_mem_map, size, "section_mem_map(=page[])")
+                            break
         return
 
     def resolve_ldt(self):
@@ -132341,13 +132667,13 @@ class PageCommand(GenericCommand):
         "                       | pfn#1 page    | --> physmem 0x1000",
         "                       +---------------+",
         "                       | ...           |",
-        "                    ^  +---------------+",
-        "sizeof(struct page) |  | pfn#N page    | --> ...",
-        "                    v  +---------------+",
+        "                       +---------------+",
+        "                       | pfn#N page    | --> ...",
+        "                       +---------------+",
         "",
-        "* x86_64 uses `VMEMMAP_START` directly.",
         "",
         "[arm64 / CONFIG_SPARSEMEM_VMEMMAP]",
+        "* This pattern uses `VMEMMAP_START`, but it needs `memstart_pfn` adjustment.",
         "vmemmap--------------->+-struct page[]-----------+",
         "                       | pfn#0 page              | --> physmem 0x0",
         "                       +-------------------------+",
@@ -132358,12 +132684,10 @@ class PageCommand(GenericCommand):
         "                       | pfn#memstart_pfn+1 page | --> physmem memstart_addr+0x1000",
         "                       +-------------------------+",
         "                       | ...                     |",
-        "                    ^  +-------------------------+",
-        "sizeof(struct page) |  | pfn#memstart_pfn+N page | --> ...",
-        "                    v  +-------------------------+",
+        "                       +-------------------------+",
+        "                       | pfn#memstart_pfn+N page | --> ...",
+        "                       +-------------------------+",
         "",
-        "* Arm64 also uses `VMEMMAP_START`, but `vmemmap = (struct page *)VMEMMAP_START - (memstart_addr >> PAGE_SHIFT)`.",
-        "  So arm64 needs `memstart_pfn` adjustment.",
         "",
         "[x86_32 / CONFIG_FLATMEM]",
         "mem_map--------------->+-struct page[]-+",
@@ -132372,47 +132696,45 @@ class PageCommand(GenericCommand):
         "                       | pfn#1 page    | --> physmem 0x1000",
         "                       +---------------+",
         "                       | ...           |",
-        "                    ^  +---------------+",
-        "sizeof(struct page) |  | pfn#N page    | --> ...",
-        "                    v  +---------------+",
+        "                       +---------------+",
+        "                       | pfn#N page    | --> ...",
+        "                       +---------------+",
         "",
-        "* x86_32(when CONFIG_NUMA=n) uses `mem_map` directly.",
         "",
         "[arm32 / CONFIG_FLATMEM]",
+        "* `mem_map` starts at pfn#PHYS_PFN_OFFSET, not pfn#0.",
         "mem_map--------------->+-struct page[]--------------+",
-        "                       | pfn#arch_pfn_offset   page | --> physmem PHYS_OFFSET",
+        "                       | pfn#PHYS_PFN_OFFSET   page | --> physmem PHYS_OFFSET",
         "                       +----------------------------+",
-        "                       | pfn#arch_pfn_offset+1 page | --> physmem PHYS_OFFSET+0x1000",
+        "                       | pfn#PHYS_PFN_OFFSET+1 page | --> physmem PHYS_OFFSET+0x1000",
         "                       +----------------------------+",
         "                       | ...                        |",
-        "                    ^  +----------------------------+",
-        "sizeof(struct page) |  | pfn#arch_pfn_offset+N page | --> ...",
-        "                    v  +----------------------------+",
+        "                       +----------------------------+",
+        "                       | pfn#PHYS_PFN_OFFSET+N page | --> ...",
+        "                       +----------------------------+",
         "",
-        "* arm32 uses `mem_map`.",
-        "* `mem_map` points to the descriptor of pfn#arch_pfn_offset, not pfn#0.",
-        "* `arch_pfn_offset = PHYS_OFFSET >> PAGE_SHIFT`.",
         "",
-        "[x86_32 / CONFIG_SPARSEMEM]",
+        "[x86_32 or arm32 / CONFIG_SPARSEMEM]",
+        "* This pattern uses `mem_section[]`, i.e. multiple section-specific mem_maps.",
+        "* `section_id` can be obtained from `page->flags`.",
+        "* `section_mem_map` is encoded and used to locate the page descriptor array.",
+        "+-------------------------------------------------------------------------------------------+",
+        "|                                                                                           |",
+        "|  +-struct mem_section[]-+                                                                 |",
+        "|  | section_mem_map      |     +-->+-struct page[]----------------+                        |",
+        "|  +----------------------+     |   | pfn#section_start_pfn   page | --> physmem ...        |",
+        "+->| section_mem_map      |-----+   |  flags                       | --> section_id (=idx)--+",
+        "   +----------------------+         +------------------------------+",
+        "   | ...                  |         | pfn#section_start_pfn+1 page | --> physmem ...",
+        "   +----------------------+         |  flags                       |",
+        "   | section_mem_map      |         +------------------------------+",
+        "   +----------------------+         | ...                          |",
+        "                                    +------------------------------+",
+        "                                    | pfn#section_start_pfn+N page | --> ...",
+        "                                    |  flags                       |",
+        "                                    +------------------------------+",
         "",
-        "+-------------------------------------------------------------------------------+",
-        "|                                                                               |",
-        "|  +-struct mem_section[]-+                                                     |",
-        "|  | section_mem_map      |     +-->+-struct page[]-+                           |",
-        "|  +----------------------+     |   | pfn#0 page    | --> physmem ...           |",
-        "+->| section_mem_map      |-----+   |  flags        | --> section_id (=idx)-----+",
-        "   +----------------------+         +---------------+",
-        "   | ...                  |         | pfn#1 page    | --> physmem ...",
-        "   +----------------------+         |  flags        |",
-        "   | section_mem_map      |         +---------------+",
-        "   +----------------------+         | ...           |",
-        "                                    +---------------+  ^",
-        "                                    | pfn#N page    |  | sizeof(struct page)",
-        "                                    |  flags        |  |",
-        "                                    +---------------+  v",
-        "",
-        "* x86(when CONFIG_NUMA=y) uses `mem_section[]`, in other words, there are multiple mem_maps.",
-        "* It is possible to obtain which `section_mem_map` to use from `page->flags`.",
+        "* CONFIG_SPARSEMEM_EXTREME is currently unsupported by this command.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -132431,7 +132753,6 @@ class PageCommand(GenericCommand):
         PageCommand.PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
 
         if is_x86_64():
-            # CONFIG_SPARSEMEM_VMEMMAP
             PageCommand.VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
             if self.VMEMMAP_START is None:
                 err("Could not find VMEMMAP_START")
@@ -132443,88 +132764,33 @@ class PageCommand(GenericCommand):
                 return False
 
         elif is_x86_32():
-            PageCommand.PAGE_OFFSET = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
-            if self.PAGE_OFFSET is None:
-                err("Could not find PAGE_OFFSET")
-                return False
+            if KernelAddressHeuristicFinder.consts().CONFIG_FLATMEM:
+                PageCommand.mode = "FLATMEM"
+                PageCommand.mem_map = KernelAddressHeuristicFinder.consts().mem_map
+                sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
+                if sizeof_struct_page is None:
+                    return False
+                PageCommand.sizeof_struct_page = sizeof_struct_page
 
-            # Determine whether it is CONFIG_FLATMEM or CONFIG_SPARSEMEM.
-            PageCommand.mem_map = KernelAddressHeuristicFinder.get_mem_map()
-            PageCommand.mem_section = KernelAddressHeuristicFinder.get_mem_section()
+            elif KernelAddressHeuristicFinder.consts().CONFIG_SPARSEMEM:
+                PageCommand.mode = "SPARSEMEM"
+                PageCommand.mem_section = KernelAddressHeuristicFinder.consts().mem_section
+                sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
+                if sizeof_struct_page is None:
+                    return False
+                PageCommand.sizeof_struct_page = sizeof_struct_page
+                PageCommand.SECTION_HAS_MEM_MAP = KernelAddressHeuristicFinder.consts().SECTION_HAS_MEM_MAP
+                PageCommand.sizeof_mem_section = KernelAddressHeuristicFinder.consts().sizeof_mem_section
+                PageCommand.SECTIONS_PGSHIFT = KernelAddressHeuristicFinder.consts().SECTIONS_PGSHIFT
+                PageCommand.SECTIONS_MASK = KernelAddressHeuristicFinder.consts().SECTIONS_MASK
+                PageCommand.SECTION_MAP_MASK = KernelAddressHeuristicFinder.consts().SECTION_MAP_MASK
+                PageCommand.PFN_SECTION_SHIFT = KernelAddressHeuristicFinder.consts().PFN_SECTION_SHIFT
 
-            if self.mem_map is None and self.mem_section is None:
+            else:
                 err("Could not find mem_map and mem_section")
                 return False
 
-            if self.mem_map:
-                # CONFIG_FLATMEM (when CONFIG_NUMA=n)
-                PageCommand.mode = "FLATMEM"
-
-                # calc sizeof(struct page)
-                ret = Kernel.get_page_virt_pair()
-                if not ret:
-                    err("Could not find valid page/vaddr pair")
-                    return False
-                page, vaddr = ret
-                pfn = (vaddr - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-                PageCommand.sizeof_struct_page = (page - self.mem_map) // pfn
-
-            elif self.mem_section:
-                # CONFIG_SPARSEMEM (when CONFIG_NUMA=y)
-                PageCommand.mode = "SPARSEMEM"
-
-                # PAE check
-                cr4 = get_register("cr4", use_monitor=True)
-                if (cr4 >> 5) & 1: # PAE
-                    MAX_PHYSMEM_BITS = 36
-                    SECTION_SIZE_BITS = 29
-                else:
-                    MAX_PHYSMEM_BITS = 32
-                    SECTION_SIZE_BITS = 26
-                SECTIONS_SHIFT = MAX_PHYSMEM_BITS - SECTION_SIZE_BITS
-                SECTIONS_WIDTH = SECTIONS_SHIFT
-                SECTIONS_PGOFF = 32 - SECTIONS_WIDTH
-                PageCommand.SECTIONS_PGSHIFT = SECTIONS_PGOFF
-                PageCommand.SECTIONS_MASK = (1 << SECTIONS_WIDTH) - 1
-
-                # SECTIONS_PER_ROOT = 1
-                # NR_MEM_SECTIONS = 1 << SECTIONS_SHIFT
-                # NR_SECTION_ROOTS = NR_MEM_SECTIONS // SECTIONS_PER_ROOT
-
-                PageCommand.PFN_SECTION_SHIFT = SECTION_SIZE_BITS - self.PAGE_SHIFT
-
-                SECTION_MAP_LAST_BIT = 1 << 3
-                PageCommand.SECTION_MAP_MASK = ~(SECTION_MAP_LAST_BIT - 1) & 0xffff_ffff
-
-                # calc sizeof(mem_section)
-                v = read_int_from_memory(self.mem_section + current_arch.ptrsize * 3)
-                if v == 0: # pad check
-                    PageCommand.sizeof_mem_section = current_arch.ptrsize * 4 # CONFIG_PAGE_EXTENSION=y
-                else:
-                    PageCommand.sizeof_mem_section = current_arch.ptrsize * 2 # CONFIG_PAGE_EXTENSION=n
-
-                # calc sizeof(struct page)
-                ret = Kernel.get_page_virt_pair()
-                if not ret:
-                    err("Could not find valid page/vaddr pair")
-                    return False
-                page, vaddr = ret
-                flags = read_int_from_memory(page)
-                section_id = (flags >> self.SECTIONS_PGSHIFT) & self.SECTIONS_MASK
-                mem_section = self.mem_section + self.sizeof_mem_section * section_id
-                if not is_valid_addr(mem_section):
-                    err("mem_section is not valid")
-                    return False
-                section_mem_map = read_int_from_memory(mem_section)
-                if section_mem_map == 0:
-                    err("section_mem_map == 0")
-                    return False
-                mem_map = section_mem_map & self.SECTION_MAP_MASK
-                pfn = (vaddr - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-                PageCommand.sizeof_struct_page = (page - mem_map) // pfn
-
         elif is_arm64():
-            # CONFIG_SPARSEMEM_VMEMMAP
             PageCommand.VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
             if self.VMEMMAP_START is None:
                 err("Could not find VMEMMAP_START")
@@ -132546,19 +132812,34 @@ class PageCommand(GenericCommand):
             PageCommand.memstart_addr = u2i(memstart_addr)
 
         elif is_arm32():
-            PageCommand.mem_map = KernelAddressHeuristicFinder.get_mem_map()
-            if self.mem_map is None:
-                err("Could not find mem_map")
-                return False
+            if KernelAddressHeuristicFinder.consts().CONFIG_FLATMEM:
+                PageCommand.mode = "FLATMEM"
+                PageCommand.mem_map = KernelAddressHeuristicFinder.consts().mem_map
+                sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
+                if sizeof_struct_page is None:
+                    err("Could not find sizeof(struct page)")
+                    return False
+                PageCommand.sizeof_struct_page = sizeof_struct_page
+                PageCommand.PHYS_PFN_OFFSET = KernelAddressHeuristicFinder.consts().PHYS_PFN_OFFSET
 
-            PageCommand.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
-            if self.sizeof_struct_page is None:
-                err("Could not find sizeof(struct page)")
-                return False
+            elif KernelAddressHeuristicFinder.consts().CONFIG_SPARSEMEM:
+                PageCommand.mode = "SPARSEMEM"
+                PageCommand.mem_section = KernelAddressHeuristicFinder.consts().mem_section
+                sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
+                if sizeof_struct_page is None:
+                    err("Could not find sizeof(struct page)")
+                    return False
+                PageCommand.sizeof_struct_page = sizeof_struct_page
+                PageCommand.sizeof_mem_section = KernelAddressHeuristicFinder.consts().sizeof_mem_section
+                PageCommand.SECTION_HAS_MEM_MAP = KernelAddressHeuristicFinder.consts().SECTION_HAS_MEM_MAP
+                PageCommand.SECTIONS_PGSHIFT = KernelAddressHeuristicFinder.consts().SECTIONS_PGSHIFT
+                PageCommand.SECTIONS_MASK = KernelAddressHeuristicFinder.consts().SECTIONS_MASK
+                PageCommand.SECTION_MAP_MASK = KernelAddressHeuristicFinder.consts().SECTION_MAP_MASK
+                PageCommand.PFN_SECTION_SHIFT = KernelAddressHeuristicFinder.consts().PFN_SECTION_SHIFT
+                PageCommand.PHYS_PFN_OFFSET = KernelAddressHeuristicFinder.consts().PHYS_PFN_OFFSET
 
-            PageCommand.PHYS_OFFSET = KernelAddressHeuristicFinder.consts().PHYS_OFFSET
-            if self.PHYS_OFFSET is None:
-                err("Could not find PHYS_OFFSET")
+            else:
+                err("Could not find mem_map and mem_section")
                 return False
 
         PageCommand.initialized = True
@@ -132570,28 +132851,44 @@ class PageCommand(GenericCommand):
             return None
 
         if is_x86_64():
-            pfn = (page - self.VMEMMAP_START) // self.sizeof_struct_page
+            delta = page - self.VMEMMAP_START
+            if delta < 0:
+                return None
+            if delta % self.sizeof_struct_page != 0:
+                return None
+            pfn = delta // self.sizeof_struct_page
+
         elif is_x86_32():
             if self.mode == "FLATMEM":
-                pfn = (page - self.mem_map) // self.sizeof_struct_page
+                delta = page - self.mem_map
+                if delta < 0:
+                    return None
+                if delta % self.sizeof_struct_page != 0:
+                    return None
+                pfn = (delta // self.sizeof_struct_page)
+
             elif self.mode == "SPARSEMEM":
-                # page -> section_id
                 flags = read_int_from_memory(page)
                 section_id = (flags >> self.SECTIONS_PGSHIFT) & self.SECTIONS_MASK
-                # section_id -> mem_section
-                # SECTION_NR_TO_ROOT(nr) always returns nr
-                # (nr & SECTION_ROOT_MASK) always returns 0
+
                 mem_section_i = self.mem_section + self.sizeof_mem_section * section_id
                 if not is_valid_addr(mem_section_i):
                     return None
-                # section -> mem_map
-                section_mem_map = read_int_from_memory(mem_section_i)
-                if section_mem_map == 0:
+
+                section_mem_map_i = read_int_from_memory(mem_section_i)
+                if (section_mem_map_i & self.SECTION_HAS_MEM_MAP) == 0:
                     return None
-                mem_map = section_mem_map & self.SECTION_MAP_MASK
-                # page -> pfn
-                section_base_pfn = section_id << self.PFN_SECTION_SHIFT
-                pfn = section_base_pfn + ((page - mem_map) // self.sizeof_struct_page)
+
+                biased_map = section_mem_map_i & self.SECTION_MAP_MASK
+                delta = page - biased_map
+                if delta < 0:
+                    return None
+                if delta % self.sizeof_struct_page != 0:
+                    return None
+                pfn = delta // self.sizeof_struct_page
+            else:
+                return None
+
         elif is_arm64():
             delta = page - self.VMEMMAP_START
             if delta < 0:
@@ -132600,56 +132897,107 @@ class PageCommand(GenericCommand):
                 return None
             memstart_pfn = self.memstart_addr >> self.PAGE_SHIFT
             pfn = (delta // self.sizeof_struct_page) + memstart_pfn
+
         elif is_arm32():
-            delta = page - self.mem_map
-            if delta < 0:
+            if self.mode == "FLATMEM":
+                delta = page - self.mem_map
+                if delta < 0:
+                    return None
+                if delta % self.sizeof_struct_page != 0:
+                    return None
+                pfn = (delta // self.sizeof_struct_page) + self.PHYS_PFN_OFFSET
+
+            elif self.mode == "SPARSEMEM":
+                flags = read_int_from_memory(page)
+                section_id = (flags >> self.SECTIONS_PGSHIFT) & self.SECTIONS_MASK
+
+                mem_section_i = self.mem_section + self.sizeof_mem_section * section_id
+                if not is_valid_addr(mem_section_i):
+                    return None
+
+                section_mem_map_i = read_int_from_memory(mem_section_i)
+                if (section_mem_map_i & self.SECTION_HAS_MEM_MAP) == 0:
+                    return None
+
+                biased_map = section_mem_map_i & self.SECTION_MAP_MASK
+                delta = page - biased_map
+                if delta < 0:
+                    return None
+                if delta % self.sizeof_struct_page != 0:
+                    return None
+                pfn = delta // self.sizeof_struct_page
+            else:
                 return None
-            if delta % self.sizeof_struct_page != 0:
-                return None
-            arch_pfn_offset = self.PHYS_OFFSET >> self.PAGE_SHIFT
-            pfn = (delta // self.sizeof_struct_page) + arch_pfn_offset
+
+        else:
+            return None
 
         if pfn < 0:
             return None
         return pfn << self.PAGE_SHIFT
 
     def phys2page(self, phys):
-        pfn = phys >> self.PAGE_SHIFT
-        if pfn < 0:
+        if phys < 0:
             return None
+        if phys & ((1 << self.PAGE_SHIFT) - 1):
+            return None
+
+        pfn = phys >> self.PAGE_SHIFT
 
         if is_x86_64():
             page = self.VMEMMAP_START + (pfn * self.sizeof_struct_page)
+
         elif is_x86_32():
             if self.mode == "FLATMEM":
+                if pfn < 0:
+                    return None
                 page = self.mem_map + (pfn * self.sizeof_struct_page)
+
             elif self.mode == "SPARSEMEM":
-                # pfn -> section_id
                 section_id = pfn >> self.PFN_SECTION_SHIFT
-                # section_id -> mem_section
-                # SECTION_NR_TO_ROOT(nr) always returns nr
-                # (nr & SECTION_ROOT_MASK) always returns 0
                 mem_section_i = self.mem_section + self.sizeof_mem_section * section_id
                 if not is_valid_addr(mem_section_i):
                     return None
-                # section -> mem_map
-                section_mem_map = read_int_from_memory(mem_section_i)
-                if section_mem_map == 0:
+
+                section_mem_map_i = read_int_from_memory(mem_section_i)
+                if (section_mem_map_i & self.SECTION_HAS_MEM_MAP) == 0:
                     return None
-                mem_map = section_mem_map & self.SECTION_MAP_MASK
-                # pfn -> page
-                section_base_pfn = section_id << self.PFN_SECTION_SHIFT
-                page = mem_map + ((pfn - section_base_pfn) * self.sizeof_struct_page)
+
+                biased_map = section_mem_map_i & self.SECTION_MAP_MASK
+                page = biased_map + (pfn * self.sizeof_struct_page)
+            else:
+                return None
+
         elif is_arm64():
             memstart_pfn = self.memstart_addr >> self.PAGE_SHIFT
-            page = self.VMEMMAP_START + ((pfn - memstart_pfn) * self.sizeof_struct_page)
-        elif is_arm32():
-            arch_pfn_offset = self.PHYS_OFFSET >> self.PAGE_SHIFT
-            if pfn < arch_pfn_offset:
+            if pfn < memstart_pfn:
                 return None
-            page = self.mem_map + ((pfn - arch_pfn_offset) * self.sizeof_struct_page)
+            page = self.VMEMMAP_START + ((pfn - memstart_pfn) * self.sizeof_struct_page)
 
-        page = AddressUtil.align_address(page)
+        elif is_arm32():
+            if self.mode == "FLATMEM":
+                if pfn < self.PHYS_PFN_OFFSET:
+                    return None
+                page = self.mem_map + ((pfn - self.PHYS_PFN_OFFSET) * self.sizeof_struct_page)
+
+            elif self.mode == "SPARSEMEM":
+                section_id = pfn >> self.PFN_SECTION_SHIFT
+                mem_section_i = self.mem_section + self.sizeof_mem_section * section_id
+                if not is_valid_addr(mem_section_i):
+                    return None
+
+                section_mem_map_i = read_int_from_memory(mem_section_i)
+                if (section_mem_map_i & self.SECTION_HAS_MEM_MAP) == 0:
+                    return None
+
+                biased_map = section_mem_map_i & self.SECTION_MAP_MASK
+                page = biased_map + (pfn * self.sizeof_struct_page)
+            else:
+                return None
+
+        else:
+            return None
+
         if not is_valid_addr(page):
             err("Address in invalid range")
             return None
