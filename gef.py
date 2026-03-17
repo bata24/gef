@@ -32975,6 +32975,8 @@ class ContextSourceCommand(GenericCommand):
     _category_ = "01-a. Debugging Support - Context"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("nb_lines", metavar="NB_LINES", nargs="?", type=AddressUtil.parse_address,
+                        help="temporarily overrides context_source.nb_lines.")
     parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
     _syntax_ = parser.format_help()
 
@@ -33066,7 +33068,10 @@ class ContextSourceCommand(GenericCommand):
             "source: {}+{}".format(os.path.normpath(symtab.filename), line_num + 1), redirect,
         )
 
-        nb_lines = Config.get_gef_setting("context_source.nb_lines")
+        if self.args.nb_lines is not None:
+            nb_lines = self.args.nb_lines
+        else:
+            nb_lines = Config.get_gef_setting("context_source.nb_lines")
         past_lines_color = Config.get_gef_setting("theme.context_code_past")
         cur_line_color = Config.get_gef_setting("theme.source_current_line")
         future_lines_color = Config.get_gef_setting("theme.context_code_future")
@@ -33166,6 +33171,8 @@ class ContextTraceCommand(GenericCommand):
     _category_ = "01-a. Debugging Support - Context"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("nb_lines", metavar="NB_LINES", nargs="?", type=AddressUtil.parse_address,
+                        help="temporarily overrides context_trace.nb_lines.")
     parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
     _syntax_ = parser.format_help()
 
@@ -33179,7 +33186,10 @@ class ContextTraceCommand(GenericCommand):
     def context_trace(self, redirect):
         ContextCommand.context_title("trace", redirect)
 
-        nb_lines = Config.get_gef_setting("context_trace.nb_lines")
+        if self.args.nb_lines is not None:
+            nb_lines = self.args.nb_lines
+        else:
+            nb_lines = Config.get_gef_setting("context_trace.nb_lines")
         if nb_lines <= 0:
             return
 
@@ -33297,7 +33307,7 @@ class ContextThreadsCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("nb_lines", metavar="NB_LINES", nargs="?", type=AddressUtil.parse_address,
-                        help="temporarily overrides context-threads.nb_lines.")
+                        help="temporarily overrides context_threads.nb_lines.")
     parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
     _syntax_ = parser.format_help()
 
@@ -33332,9 +33342,6 @@ class ContextThreadsCommand(GenericCommand):
         return "STOPPED"
 
     def context_threads(self, redirect):
-        if is_kgdb():
-            return
-
         if self.args.nb_lines is not None:
             nb_lines = self.args.nb_lines
         else:
