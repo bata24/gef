@@ -15557,7 +15557,7 @@ class SecondBreakpoint(gdb.Breakpoint):
 
 
 @register_command
-class NiCommand(GenericCommand):
+class NextiForQemuUserCommand(GenericCommand):
     """`ni` wrapper for some specific architectures (OpenRISC 1000 and CRIS)."""
 
     _cmdline_ = "nexti-for-qemu-user"
@@ -15646,7 +15646,7 @@ class NiCommand(GenericCommand):
 
 
 @register_command
-class SiCommand(GenericCommand):
+class StepiForQemuUserCommand(GenericCommand):
     """`si` wrapper for some specific architectures (OpenRISC 1000 and CRIS)."""
 
     _cmdline_ = "stepi-for-qemu-user"
@@ -15735,7 +15735,7 @@ class SiCommand(GenericCommand):
 
 
 @register_command
-class ContCommand(GenericCommand):
+class ContinueForQemuUserCommand(GenericCommand):
     """`c` wrapper to resolve the Ctrl+C problem for qemu-user or Intel Pin."""
 
     _cmdline_ = "continue-for-qemu-user"
@@ -15870,6 +15870,64 @@ class ContCommand(GenericCommand):
         except gdb.error:
             exc_type, exc_value, exc_traceback = sys.exc_info()
             err(exc_value)
+        return
+
+
+@register_command
+class StepiForKGDBCommand(GenericCommand):
+    """`si` wrapper for AArch64 KGDB that avoids stepping into pending IRQ handlers."""
+
+    _cmdline_ = "stepi-for-kgdb"
+    _category_ = "01-c. Debugging Support - Basic Command Extension"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    _syntax_ = parser.format_help()
+
+    _note_ = [
+        "Only for AArch64 + kgdb.",
+        "Temporarily masks IRQ before `stepi`, then restores the original state",
+        "unless the stepped instruction intentionally modified DAIF.I.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("kgdb",))
+    @only_if_specific_arch(arch=("ARM64",))
+    def do_invoke(self, args):
+        old_cpsr = get_register("$cpsr")
+        try:
+            instr = read_int32_from_memory(current_arch.pc)
+        except gdb.error:
+            err("Read memory error")
+            return
+
+        irq_mask_bit = 0x80 # DAIF.I
+        gdb.execute("set $cpsr = {:#x}".format(old_cpsr | irq_mask_bit), to_string=True)
+
+        try:
+            gdb.execute("stepi", from_tty=True)
+        except gdb.error:
+            gdb.execute("set $cpsr = {:#x}".format(old_cpsr), to_string=True)
+            raise
+
+        if old_cpsr & irq_mask_bit:
+            return
+
+        new_cpsr = get_register("$cpsr")
+
+        # If the stepped instruction itself modified DAIF.I, preserve that result.
+        if (instr & 0xffff_f0ff) == 0xd503_40df: # MSR DAIFSet/DAIFClr, #imm
+            if (instr & 0x200) == 0:
+                new_cpsr &= ~irq_mask_bit
+        elif (instr & 0xffff_ffe0) == 0xd51b_4220: # MSR DAIF, Xn
+            regval = get_register("$x{:d}".format(instr & 0x1f))
+            if (regval & irq_mask_bit) == 0:
+                new_cpsr &= ~irq_mask_bit
+        else:
+            new_cpsr &= ~irq_mask_bit
+
+        gdb.execute("set $cpsr = {:#x}".format(new_cpsr), to_string=True)
         return
 
 
