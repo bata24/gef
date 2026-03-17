@@ -14989,9 +14989,8 @@ class GenericCommand(gdb.Command):
             self.__doc__ += tab(str(self._aliases_))
             self.__doc__ += "\n"
 
-        self.repeat = False
         self.repeat_count = 0
-        self.__last_command = None
+        self.last_command = None
 
         command_type = kwargs.get("command", gdb.COMMAND_NONE)
         complete_type = kwargs.get("complete", gdb.COMPLETE_NONE)
@@ -15065,14 +15064,12 @@ class GenericCommand(gdb.Command):
 
     def set_repeat_count(self, argv, from_tty):
         if not from_tty:
-            self.repeat = False
             self.repeat_count = 0
             return
 
         command = gdb.execute("show commands", to_string=True).strip().split("\n")[-1]
-        self.repeat = self.__last_command == command
-        self.repeat_count = self.repeat_count + 1 if self.repeat else 0
-        self.__last_command = command
+        self.repeat_count = self.repeat_count + 1 if self.last_command == command else 0
+        self.last_command = command
         return
 
     def quiet_print(self, msg):
