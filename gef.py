@@ -15039,6 +15039,16 @@ class GenericCommand(gdb.Command):
             gef_print("")
             gef_print(Color.colorify("Aliases:", "bold yellow"))
             gef_print("  " + str(self._aliases_))
+
+        this_command_key = self._cmdline_.replace("-", "_").replace(" ", "_").split()
+        configs = [k for k in Config.__gef_config__.keys() if k.split(".")[:-1] == this_command_key]
+        if configs:
+            gef_print("")
+            gef_print(Color.colorify("Configs:", "bold yellow"))
+            max_width = max(len(x) for x in configs)
+            for key in configs:
+                value, _types, desc = Config.__gef_config__[key]
+                gef_print("  {:{:d}} : {:s} [{}]".format(key, max_width, desc, value))
         return
 
     def add_setting(self, name, value, description=""):
