@@ -102458,12 +102458,12 @@ class HashCommand(GenericCommand):
             "MD5": "md5",
             "SHA1": "sha1",
             "MD5-SHA1": "md5-sha1",
-            "SHA224": "sha224",
-            "SHA256": "sha256",
-            "SHA384": "sha384",
-            "SHA512": "sha512",
-            "SHA512/224": "sha512-224", # May not be usable depending on availability of OpenSSL
-            "SHA512/256": "sha512-256", # May not be usable depending on availability of OpenSSL
+            "SHA-224": "sha224",
+            "SHA-256": "sha256",
+            "SHA-384": "sha384",
+            "SHA-512": "sha512",
+            "SHA-512/224": "sha512-224", # May not be usable depending on availability of OpenSSL
+            "SHA-512/256": "sha512-256", # May not be usable depending on availability of OpenSSL
             "SHA3-224": "sha3-224",
             "SHA3-256": "sha3-256",
             "SHA3-384": "sha3-384",
@@ -102508,18 +102508,18 @@ class HashCommand(GenericCommand):
         yield ("BLAKE-256", Hash.BLAKE256())
         yield ("BLAKE-384", Hash.BLAKE384())
         yield ("BLAKE-512", Hash.BLAKE512())
-        yield ("Groestl224", Hash.Groestl224())
-        yield ("Groestl256", Hash.Groestl256())
-        yield ("Groestl384", Hash.Groestl384())
-        yield ("Groestl512", Hash.Groestl512())
-        yield ("JH224", Hash.JH224())
-        yield ("JH256", Hash.JH256())
-        yield ("JH384", Hash.JH384())
-        yield ("JH512", Hash.JH512())
-        yield ("Keccak224", Hash.Keccak224())
-        yield ("Keccak256", Hash.Keccak256())
-        yield ("Keccak384", Hash.Keccak384())
-        yield ("Keccak512", Hash.Keccak512())
+        yield ("Groestl-224", Hash.Groestl224())
+        yield ("Groestl-256", Hash.Groestl256())
+        yield ("Groestl-384", Hash.Groestl384())
+        yield ("Groestl-512", Hash.Groestl512())
+        yield ("JH-224", Hash.JH224())
+        yield ("JH-256", Hash.JH256())
+        yield ("JH-384", Hash.JH384())
+        yield ("JH-512", Hash.JH512())
+        yield ("Keccak-224", Hash.Keccak224())
+        yield ("Keccak-256", Hash.Keccak256())
+        yield ("Keccak-384", Hash.Keccak384())
+        yield ("Keccak-512", Hash.Keccak512())
         yield ("Skein256-256", Hash.Skein256(digest_bits=256))
         yield ("Skein256-512", Hash.Skein256(digest_bits=512))
         yield ("Skein256-1024", Hash.Skein256(digest_bits=1024))
@@ -102532,135 +102532,135 @@ class HashCommand(GenericCommand):
 
         # SHA-3 Round2 candidates
         yield "SHA3 Round2 candidates"
-        yield ("BMW224", Hash.BMW224())
-        yield ("BMW256", Hash.BMW256())
-        yield ("BMW384", Hash.BMW384())
-        yield ("BMW512", Hash.BMW512())
+        yield ("BMW-224", Hash.BMW224())
+        yield ("BMW-256", Hash.BMW256())
+        yield ("BMW-384", Hash.BMW384())
+        yield ("BMW-512", Hash.BMW512())
         yield ("CubeHash10+1/1+10-256", Hash.CubeHash(params="CubeHash10+1/1+10-256"))
         yield ("CubeHash80+8/1+80-256", Hash.CubeHash(params="CubeHash80+8/1+80-256"))
         yield ("CubeHash160+16/32+160-256", Hash.CubeHash(params="CubeHash160+16/32+160-256"))
         yield ("CubeHash10+1/1+10-512", Hash.CubeHash(params="CubeHash10+1/1+10-512"))
         yield ("CubeHash80+8/1+80-512", Hash.CubeHash(params="CubeHash80+8/1+80-512"))
         yield ("CubeHash160+16/32+160-512", Hash.CubeHash(params="CubeHash160+16/32+160-512"))
-        yield ("ECHO224", Hash.ECHO224())
-        yield ("ECHO256", Hash.ECHO256())
-        yield ("ECHO384", Hash.ECHO384())
-        yield ("ECHO512", Hash.ECHO512())
-        yield ("Fugue224", Hash.Fugue224())
-        yield ("Fugue256", Hash.Fugue256())
-        yield ("Fugue384", Hash.Fugue384())
-        yield ("Fugue512", Hash.Fugue512())
-        yield ("Hamsi224", Hash.Hamsi224())
-        yield ("Hamsi256", Hash.Hamsi256())
-        yield ("Hamsi384", Hash.Hamsi384())
-        yield ("Hamsi512", Hash.Hamsi512())
-        yield ("Luffa224", Hash.Luffa224())
-        yield ("Luffa256", Hash.Luffa256())
-        yield ("Luffa384", Hash.Luffa384())
-        yield ("Luffa512", Hash.Luffa512())
-        yield ("Shabal192", Hash.Shabal192())
-        yield ("Shabal224", Hash.Shabal224())
-        yield ("Shabal256", Hash.Shabal256())
-        yield ("Shabal384", Hash.Shabal384())
-        yield ("Shabal512", Hash.Shabal512())
+        yield ("ECHO-224", Hash.ECHO224())
+        yield ("ECHO-256", Hash.ECHO256())
+        yield ("ECHO-384", Hash.ECHO384())
+        yield ("ECHO-512", Hash.ECHO512())
+        yield ("Fugue-224", Hash.Fugue224())
+        yield ("Fugue-256", Hash.Fugue256())
+        yield ("Fugue-384", Hash.Fugue384())
+        yield ("Fugue-512", Hash.Fugue512())
+        yield ("Hamsi-224", Hash.Hamsi224())
+        yield ("Hamsi-256", Hash.Hamsi256())
+        yield ("Hamsi-384", Hash.Hamsi384())
+        yield ("Hamsi-512", Hash.Hamsi512())
+        yield ("Luffa-224", Hash.Luffa224())
+        yield ("Luffa-256", Hash.Luffa256())
+        yield ("Luffa-384", Hash.Luffa384())
+        yield ("Luffa-512", Hash.Luffa512())
+        yield ("Shabal-192", Hash.Shabal192())
+        yield ("Shabal-224", Hash.Shabal224())
+        yield ("Shabal-256", Hash.Shabal256())
+        yield ("Shabal-384", Hash.Shabal384())
+        yield ("Shabal-512", Hash.Shabal512())
         yield ("SHAvite3-224", Hash.SHAvite3_224())
         yield ("SHAvite3-256", Hash.SHAvite3_256())
         yield ("SHAvite3-384", Hash.SHAvite3_384())
         yield ("SHAvite3-512", Hash.SHAvite3_512())
-        yield ("SIMD224", Hash.SIMD224())
-        yield ("SIMD256", Hash.SIMD256())
-        yield ("SIMD384", Hash.SIMD384())
-        yield ("SIMD512", Hash.SIMD512())
+        yield ("SIMD-224", Hash.SIMD224())
+        yield ("SIMD-256", Hash.SIMD256())
+        yield ("SIMD-384", Hash.SIMD384())
+        yield ("SIMD-512", Hash.SIMD512())
 
         # SHA-3 Round1 candidates
         yield "SHA3 Round1 candidates"
-        yield ("Abacus224", Hash.Abacus224())
-        yield ("Abacus256", Hash.Abacus256())
-        yield ("Abacus384", Hash.Abacus384())
-        yield ("Abacus512", Hash.Abacus512())
-        yield ("ARIRANG224", Hash.ARIRANG224())
-        yield ("ARIRANG256", Hash.ARIRANG256())
-        yield ("ARIRANG384", Hash.ARIRANG384())
-        yield ("ARIRANG512", Hash.ARIRANG512())
-        yield ("AURORA224", Hash.AURORA224())
-        yield ("AURORA224M", Hash.AURORA224M())
-        yield ("AURORA256", Hash.AURORA256())
-        yield ("AURORA256M", Hash.AURORA256M())
-        yield ("AURORA384", Hash.AURORA384())
-        yield ("AURORA512", Hash.AURORA512())
-        yield ("Blender224", Hash.Blender224())
-        yield ("Blender256", Hash.Blender256())
-        yield ("Blender384", Hash.Blender384())
-        yield ("Blender384Spec", Hash.Blender384Spec())
-        yield ("Blender512", Hash.Blender512())
-        yield ("BOOLE224", Hash.BOOLE224())
-        yield ("BOOLE256", Hash.BOOLE256())
-        yield ("BOOLE384", Hash.BOOLE384())
-        yield ("BOOLE512", Hash.BOOLE512())
-        yield ("Cheetah224", Hash.Cheetah224())
-        yield ("Cheetah256", Hash.Cheetah256())
-        yield ("Cheetah384", Hash.Cheetah384())
-        yield ("Cheetah512", Hash.Cheetah512())
-        yield ("CHI224", Hash.CHI224())
-        yield ("CHI256", Hash.CHI256())
-        yield ("CHI384", Hash.CHI384())
-        yield ("CHI512", Hash.CHI512())
-        yield ("DCH224", Hash.DCH224())
-        yield ("DCH256", Hash.DCH256())
-        yield ("DCH384", Hash.DCH384())
-        yield ("DCH512", Hash.DCH512())
-        yield ("DynamicSHA224", Hash.DynamicSHA224())
-        yield ("DynamicSHA256", Hash.DynamicSHA256())
-        yield ("DynamicSHA384", Hash.DynamicSHA384())
-        yield ("DynamicSHA512", Hash.DynamicSHA512())
+        yield ("Abacus-224", Hash.Abacus224())
+        yield ("Abacus-256", Hash.Abacus256())
+        yield ("Abacus-384", Hash.Abacus384())
+        yield ("Abacus-512", Hash.Abacus512())
+        yield ("ARIRANG-224", Hash.ARIRANG224())
+        yield ("ARIRANG-256", Hash.ARIRANG256())
+        yield ("ARIRANG-384", Hash.ARIRANG384())
+        yield ("ARIRANG-512", Hash.ARIRANG512())
+        yield ("AURORA-224", Hash.AURORA224())
+        yield ("AURORA-224M", Hash.AURORA224M())
+        yield ("AURORA-256", Hash.AURORA256())
+        yield ("AURORA-256M", Hash.AURORA256M())
+        yield ("AURORA-384", Hash.AURORA384())
+        yield ("AURORA-512", Hash.AURORA512())
+        yield ("Blender-224", Hash.Blender224())
+        yield ("Blender-256", Hash.Blender256())
+        yield ("Blender-384", Hash.Blender384())
+        yield ("Blender-384Spec", Hash.Blender384Spec())
+        yield ("Blender-512", Hash.Blender512())
+        yield ("BOOLE-224", Hash.BOOLE224())
+        yield ("BOOLE-256", Hash.BOOLE256())
+        yield ("BOOLE-384", Hash.BOOLE384())
+        yield ("BOOLE-512", Hash.BOOLE512())
+        yield ("Cheetah-224", Hash.Cheetah224())
+        yield ("Cheetah-256", Hash.Cheetah256())
+        yield ("Cheetah-384", Hash.Cheetah384())
+        yield ("Cheetah-512", Hash.Cheetah512())
+        yield ("CHI-224", Hash.CHI224())
+        yield ("CHI-256", Hash.CHI256())
+        yield ("CHI-384", Hash.CHI384())
+        yield ("CHI-512", Hash.CHI512())
+        yield ("DCH-224", Hash.DCH224())
+        yield ("DCH-256", Hash.DCH256())
+        yield ("DCH-384", Hash.DCH384())
+        yield ("DCH-512", Hash.DCH512())
+        yield ("DynamicSHA-224", Hash.DynamicSHA224())
+        yield ("DynamicSHA-256", Hash.DynamicSHA256())
+        yield ("DynamicSHA-384", Hash.DynamicSHA384())
+        yield ("DynamicSHA-512", Hash.DynamicSHA512())
         yield ("DynamicSHA2-224", Hash.DynamicSHA2_224())
         yield ("DynamicSHA2-256", Hash.DynamicSHA2_256())
         yield ("DynamicSHA2-384", Hash.DynamicSHA2_384())
         yield ("DynamicSHA2-512", Hash.DynamicSHA2_512())
-        yield ("ECOH224", Hash.ECOH224())
-        yield ("ECOH256", Hash.ECOH256())
-        yield ("ECOH384", Hash.ECOH384())
-        yield ("ECOH512", Hash.ECOH512())
-        yield ("EDONR224", Hash.EDONR224())
-        yield ("EDONR256", Hash.EDONR256())
-        yield ("EDONR384", Hash.EDONR384())
-        yield ("EDONR512", Hash.EDONR512())
-        yield ("EnRUPT224", Hash.EnRUPT224())
-        yield ("EnRUPT256", Hash.EnRUPT256())
-        yield ("EnRUPT384", Hash.EnRUPT384())
-        yield ("EnRUPT512", Hash.EnRUPT512())
-        yield ("ESSENCE224", Hash.ESSENCE224())
-        yield ("ESSENCE256", Hash.ESSENCE256())
-        yield ("ESSENCE384", Hash.ESSENCE384())
-        yield ("ESSENCE512", Hash.ESSENCE512())
+        yield ("ECOH-224", Hash.ECOH224())
+        yield ("ECOH-256", Hash.ECOH256())
+        yield ("ECOH-384", Hash.ECOH384())
+        yield ("ECOH-512", Hash.ECOH512())
+        yield ("EDONR-224", Hash.EDONR224())
+        yield ("EDONR-256", Hash.EDONR256())
+        yield ("EDONR-384", Hash.EDONR384())
+        yield ("EDONR-512", Hash.EDONR512())
+        yield ("EnRUPT-224", Hash.EnRUPT224())
+        yield ("EnRUPT-256", Hash.EnRUPT256())
+        yield ("EnRUPT-384", Hash.EnRUPT384())
+        yield ("EnRUPT-512", Hash.EnRUPT512())
+        yield ("ESSENCE-224", Hash.ESSENCE224())
+        yield ("ESSENCE-256", Hash.ESSENCE256())
+        yield ("ESSENCE-384", Hash.ESSENCE384())
+        yield ("ESSENCE-512", Hash.ESSENCE512())
         try:
             # FSB requires a hexadecimal representation of pi.
             # If gmpy2 is available, it can be calculated quickly,
             # but if it is not, it will take a long time, so GEF will skip it.
             __import__("gmpy2")
-            yield ("FSB160", Hash.FSB160())
-            yield ("FSB224", Hash.FSB224())
-            yield ("FSB256", Hash.FSB256())
-            yield ("FSB384", Hash.FSB384())
-            yield ("FSB512", Hash.FSB512())
+            yield ("FSB-160", Hash.FSB160())
+            yield ("FSB-224", Hash.FSB224())
+            yield ("FSB-256", Hash.FSB256())
+            yield ("FSB-384", Hash.FSB384())
+            yield ("FSB-512", Hash.FSB512())
         except ImportError:
             pass
         yield ("Khichidi1-224", Hash.Khichidi1_224())
         yield ("Khichidi1-256", Hash.Khichidi1_256())
         yield ("Khichidi1-384", Hash.Khichidi1_384())
         yield ("Khichidi1-512", Hash.Khichidi1_512())
-        yield ("Lane224", Hash.Lane224())
-        yield ("Lane256", Hash.Lane256())
-        yield ("Lane384", Hash.Lane384())
-        yield ("Lane512", Hash.Lane512())
-        yield ("Lesamnta224", Hash.Lesamnta224())
-        yield ("Lesamnta256", Hash.Lesamnta256())
-        yield ("Lesamnta384", Hash.Lesamnta384())
-        yield ("Lesamnta512", Hash.Lesamnta512())
-        yield ("LUX224", Hash.LUX224())
-        yield ("LUX256", Hash.LUX256())
-        yield ("LUX384", Hash.LUX384())
-        yield ("LUX512", Hash.LUX512())
+        yield ("Lane-224", Hash.Lane224())
+        yield ("Lane-256", Hash.Lane256())
+        yield ("Lane-384", Hash.Lane384())
+        yield ("Lane-512", Hash.Lane512())
+        yield ("Lesamnta-224", Hash.Lesamnta224())
+        yield ("Lesamnta-256", Hash.Lesamnta256())
+        yield ("Lesamnta-384", Hash.Lesamnta384())
+        yield ("Lesamnta-512", Hash.Lesamnta512())
+        yield ("LUX-224", Hash.LUX224())
+        yield ("LUX-256", Hash.LUX256())
+        yield ("LUX-384", Hash.LUX384())
+        yield ("LUX-512", Hash.LUX512())
         yield ("MCSSHA3-224", Hash.MCSSHA3_224())
         yield ("MCSSHA3-256", Hash.MCSSHA3_256())
         yield ("MCSSHA3-384", Hash.MCSSHA3_384())
@@ -102668,18 +102668,18 @@ class HashCommand(GenericCommand):
         yield ("MD6-128", Hash.MD6(d=128))
         yield ("MD6-256", Hash.MD6(d=256))
         yield ("MD6-512", Hash.MD6(d=512))
-        yield ("MeshHash224", Hash.MeshHash224())
-        yield ("MeshHash256", Hash.MeshHash256())
-        yield ("MeshHash384", Hash.MeshHash384())
-        yield ("MeshHash512", Hash.MeshHash512())
-        yield ("NaSHA224", Hash.NaSHA224())
-        yield ("NaSHA256", Hash.NaSHA256())
-        yield ("NaSHA384", Hash.NaSHA384())
-        yield ("NaSHA512", Hash.NaSHA512())
-        yield ("SANDstorm224", Hash.SANDstorm224())
-        yield ("SANDstorm256", Hash.SANDstorm256())
-        yield ("SANDstorm384", Hash.SANDstorm384())
-        yield ("SANDstorm512", Hash.SANDstorm512())
+        yield ("MeshHash-224", Hash.MeshHash224())
+        yield ("MeshHash-256", Hash.MeshHash256())
+        yield ("MeshHash-384", Hash.MeshHash384())
+        yield ("MeshHash-512", Hash.MeshHash512())
+        yield ("NaSHA-224", Hash.NaSHA224())
+        yield ("NaSHA-256", Hash.NaSHA256())
+        yield ("NaSHA-384", Hash.NaSHA384())
+        yield ("NaSHA-512", Hash.NaSHA512())
+        yield ("SANDstorm-224", Hash.SANDstorm224())
+        yield ("SANDstorm-256", Hash.SANDstorm256())
+        yield ("SANDstorm-384", Hash.SANDstorm384())
+        yield ("SANDstorm-512", Hash.SANDstorm512())
 
         # Other (relatively long)
         yield "Relatively long"
@@ -102696,8 +102696,8 @@ class HashCommand(GenericCommand):
         yield ("ED2K-Blue", Hash.ED2KBlue())
         yield ("ED2K-Red", Hash.ED2KRed())
         yield ("ED2K-RedBlue", Hash.ED2KRedBlue())
-        yield ("ESCH256", Hash.ESCH256())
-        yield ("ESCH384", Hash.ESCH384())
+        yield ("ESCH-256", Hash.ESCH256())
+        yield ("ESCH-384", Hash.ESCH384())
         yield ("FNV1-32", Hash.FNV_32())
         yield ("FNV1-64", Hash.FNV_64())
         yield ("FNV1-128", Hash.FNV_128())
@@ -102722,25 +102722,25 @@ class HashCommand(GenericCommand):
         yield ("FNV0a-256", Hash.FNV_256(variant="fnv0a"))
         yield ("FNV0a-512", Hash.FNV_512(variant="fnv0a"))
         yield ("FNV0a-1024", Hash.FNV_1024(variant="fnv0a"))
-        yield ("FORK256", Hash.FORK256())
+        yield ("FORK-256", Hash.FORK256())
         yield ("GOST", Hash.GOST()) # codespell:ignore
         yield ("GOST94cp", Hash.GOST94cp()) # codespell:ignore
         yield ("HAS-160", Hash.HAS160())
-        yield ("HAVAL128,3", Hash.HAVAL(digest_bits=128, passes=3))
-        yield ("HAVAL128,4", Hash.HAVAL(digest_bits=128, passes=4))
-        yield ("HAVAL128,5", Hash.HAVAL(digest_bits=128, passes=5))
-        yield ("HAVAL160,3", Hash.HAVAL(digest_bits=160, passes=3))
-        yield ("HAVAL160,4", Hash.HAVAL(digest_bits=160, passes=4))
-        yield ("HAVAL160,5", Hash.HAVAL(digest_bits=160, passes=5))
-        yield ("HAVAL192,3", Hash.HAVAL(digest_bits=192, passes=3))
-        yield ("HAVAL192,4", Hash.HAVAL(digest_bits=192, passes=4))
-        yield ("HAVAL192,5", Hash.HAVAL(digest_bits=192, passes=5))
-        yield ("HAVAL224,3", Hash.HAVAL(digest_bits=224, passes=3))
-        yield ("HAVAL224,4", Hash.HAVAL(digest_bits=224, passes=4))
-        yield ("HAVAL224,5", Hash.HAVAL(digest_bits=224, passes=5))
-        yield ("HAVAL256,3", Hash.HAVAL(digest_bits=256, passes=3))
-        yield ("HAVAL256,4", Hash.HAVAL(digest_bits=256, passes=4))
-        yield ("HAVAL256,5", Hash.HAVAL(digest_bits=256, passes=5))
+        yield ("HAVAL-128,3", Hash.HAVAL(digest_bits=128, passes=3))
+        yield ("HAVAL-128,4", Hash.HAVAL(digest_bits=128, passes=4))
+        yield ("HAVAL-128,5", Hash.HAVAL(digest_bits=128, passes=5))
+        yield ("HAVAL-160,3", Hash.HAVAL(digest_bits=160, passes=3))
+        yield ("HAVAL-160,4", Hash.HAVAL(digest_bits=160, passes=4))
+        yield ("HAVAL-160,5", Hash.HAVAL(digest_bits=160, passes=5))
+        yield ("HAVAL-192,3", Hash.HAVAL(digest_bits=192, passes=3))
+        yield ("HAVAL-192,4", Hash.HAVAL(digest_bits=192, passes=4))
+        yield ("HAVAL-192,5", Hash.HAVAL(digest_bits=192, passes=5))
+        yield ("HAVAL-224,3", Hash.HAVAL(digest_bits=224, passes=3))
+        yield ("HAVAL-224,4", Hash.HAVAL(digest_bits=224, passes=4))
+        yield ("HAVAL-224,5", Hash.HAVAL(digest_bits=224, passes=5))
+        yield ("HAVAL-256,3", Hash.HAVAL(digest_bits=256, passes=3))
+        yield ("HAVAL-256,4", Hash.HAVAL(digest_bits=256, passes=4))
+        yield ("HAVAL-256,5", Hash.HAVAL(digest_bits=256, passes=5))
         yield ("KangarooTwelve128-128", Hash.KangarooTwelve128(digest_bits=128))
         yield ("KangarooTwelve128-256", Hash.KangarooTwelve128(digest_bits=256))
         yield ("KangarooTwelve128-512", Hash.KangarooTwelve128(digest_bits=512))
@@ -102753,9 +102753,9 @@ class HashCommand(GenericCommand):
         yield ("KMAC256-128", Hash.KMAC256(key=b"", digest_bits=128))
         yield ("KMAC256-256", Hash.KMAC256(key=b"", digest_bits=256))
         yield ("KMAC256-512", Hash.KMAC256(key=b"", digest_bits=512))
-        yield ("Kupyna256", Hash.Kupyna256())
-        yield ("Kupyna384", Hash.Kupyna384())
-        yield ("Kupyna512", Hash.Kupyna512())
+        yield ("Kupyna-256", Hash.Kupyna256())
+        yield ("Kupyna-384", Hash.Kupyna384())
+        yield ("Kupyna-512", Hash.Kupyna512())
         yield ("LSH256-224", Hash.LSH256_224())
         yield ("LSH256-256", Hash.LSH256_256())
         yield ("LSH512-224", Hash.LSH512_224())
@@ -102768,33 +102768,33 @@ class HashCommand(GenericCommand):
         yield ("MDC-2", Hash.MDC2())
         yield ("NTLM hash", Hash.NTLM())
         yield ("Panama", Hash.Panama())
-        yield ("RadioGatun32", Hash.RadioGatun32())
-        yield ("RadioGatun64", Hash.RadioGatun64())
-        yield ("ParallelHash128", Hash.ParallelHash128())
-        yield ("ParallelHash256", Hash.ParallelHash256())
-        yield ("ParallelHashXOF128", Hash.ParallelHashXOF128())
-        yield ("ParallelHashXOF256", Hash.ParallelHashXOF256())
+        yield ("ParallelHash-128", Hash.ParallelHash128())
+        yield ("ParallelHash-256", Hash.ParallelHash256())
+        yield ("ParallelHashXOF-128", Hash.ParallelHashXOF128())
+        yield ("ParallelHashXOF-256", Hash.ParallelHashXOF256())
         yield ("PhotonBeetle", Hash.PhotonBeetle())
+        yield ("RadioGatun-32", Hash.RadioGatun32())
+        yield ("RadioGatun-64", Hash.RadioGatun64())
         yield ("RIPEMD-128", Hash.RIPEMD128())
         yield ("RIPEMD-160", Hash.RIPEMD160())
         yield ("RIPEMD-256", Hash.RIPEMD256())
         yield ("RIPEMD-320", Hash.RIPEMD320())
         yield ("SHA-0", Hash.SHA0())
-        yield ("SHA512/224", Hash.SHA512_224())
-        yield ("SHA512/256", Hash.SHA512_256())
-        yield ("Snefru128", Hash.Snefru128())
-        yield ("Snefru256", Hash.Snefru256())
-        yield ("Streebog256", Hash.Streebog256())
-        yield ("Streebog512", Hash.Streebog512())
-        yield ("TIGER128,3", Hash.TIGER(digest_bits=128, passes=3))
-        yield ("TIGER160,3", Hash.TIGER(digest_bits=160, passes=3))
-        yield ("TIGER192,3", Hash.TIGER(digest_bits=192, passes=3))
-        yield ("TIGER128,4", Hash.TIGER(digest_bits=128, passes=4))
-        yield ("TIGER160,4", Hash.TIGER(digest_bits=160, passes=4))
-        yield ("TIGER192,4", Hash.TIGER(digest_bits=192, passes=4))
-        yield ("TIGER2/128,3", Hash.TIGER(digest_bits=128, passes=3, version=2))
-        yield ("TIGER2/160,3", Hash.TIGER(digest_bits=160, passes=3, version=2))
-        yield ("TIGER2/192,3", Hash.TIGER(digest_bits=192, passes=3, version=2))
+        yield ("SHA-512/224", Hash.SHA512_224())
+        yield ("SHA-512/256", Hash.SHA512_256())
+        yield ("Snefru-128", Hash.Snefru128())
+        yield ("Snefru-256", Hash.Snefru256())
+        yield ("Streebog-256", Hash.Streebog256())
+        yield ("Streebog-512", Hash.Streebog512())
+        yield ("TIGER-128,3", Hash.TIGER(digest_bits=128, passes=3))
+        yield ("TIGER-160,3", Hash.TIGER(digest_bits=160, passes=3))
+        yield ("TIGER-192,3", Hash.TIGER(digest_bits=192, passes=3))
+        yield ("TIGER-128,4", Hash.TIGER(digest_bits=128, passes=4))
+        yield ("TIGER-160,4", Hash.TIGER(digest_bits=160, passes=4))
+        yield ("TIGER-192,4", Hash.TIGER(digest_bits=192, passes=4))
+        yield ("TIGER2-128,3", Hash.TIGER(digest_bits=128, passes=3, version=2))
+        yield ("TIGER2-160,3", Hash.TIGER(digest_bits=160, passes=3, version=2))
+        yield ("TIGER2-192,3", Hash.TIGER(digest_bits=192, passes=3, version=2))
         yield ("TupleHash128-128", Hash.TupleHash128(digest_bits=128))
         yield ("TupleHash128-256", Hash.TupleHash128(digest_bits=256))
         yield ("TupleHash128-512", Hash.TupleHash128(digest_bits=512))
@@ -102815,29 +102815,29 @@ class HashCommand(GenericCommand):
 
         # Other (relatively short)
         yield "Relatively short"
-        yield ("CityHash32", Hash.CityHash32())
-        yield ("CityHash64", Hash.CityHash64())
-        yield ("CityHash128", Hash.CityHash128())
-        yield ("FarmHash32 (fp)", Hash.FarmHash32())
-        yield ("FarmHash64 (fp)", Hash.FarmHash64())
-        yield ("FarmHash128 (fp)", Hash.FarmHash128())
-        yield ("FastHash32", Hash.FastHash32())
-        yield ("FastHash64", Hash.FastHash64())
-        yield ("GxHash32", Hash.GxHash32())
-        yield ("GxHash64", Hash.GxHash64())
-        yield ("GxHash128", Hash.GxHash128())
-        yield ("HalfSipHash32_2_4", Hash.HalfSipHash32_2_4())
-        yield ("HalfSipHash64_2_4", Hash.HalfSipHash64_2_4())
-        yield ("HalfTimeHash64", Hash.HalfTimeHash64())
-        yield ("HalfTimeHash128", Hash.HalfTimeHash128())
-        yield ("HalfTimeHash256", Hash.HalfTimeHash256())
-        yield ("HalfTimeHash512", Hash.HalfTimeHash512())
-        yield ("HighwayHash64", Hash.HighwayHash64())
-        yield ("HighwayHash128", Hash.HighwayHash128())
-        yield ("HighwayHash256", Hash.HighwayHash256())
+        yield ("CityHash-32", Hash.CityHash32())
+        yield ("CityHash-64", Hash.CityHash64())
+        yield ("CityHash-128", Hash.CityHash128())
+        yield ("FarmHash-32 (fp)", Hash.FarmHash32())
+        yield ("FarmHash-64 (fp)", Hash.FarmHash64())
+        yield ("FarmHash-128 (fp)", Hash.FarmHash128())
+        yield ("FastHash-32", Hash.FastHash32())
+        yield ("FastHash-64", Hash.FastHash64())
+        yield ("GxHash-32", Hash.GxHash32())
+        yield ("GxHash-64", Hash.GxHash64())
+        yield ("GxHash-128", Hash.GxHash128())
+        yield ("HalfSipHash-32_2_4", Hash.HalfSipHash32_2_4())
+        yield ("HalfSipHash-64_2_4", Hash.HalfSipHash64_2_4())
+        yield ("HalfTimeHash-64", Hash.HalfTimeHash64())
+        yield ("HalfTimeHash-128", Hash.HalfTimeHash128())
+        yield ("HalfTimeHash-256", Hash.HalfTimeHash256())
+        yield ("HalfTimeHash-512", Hash.HalfTimeHash512())
+        yield ("HighwayHash-64", Hash.HighwayHash64())
+        yield ("HighwayHash-128", Hash.HighwayHash128())
+        yield ("HighwayHash-256", Hash.HighwayHash256())
         yield ("KomiHash", Hash.KomiHash())
-        yield ("MetroHash64", Hash.MetroHash64())
-        yield ("MetroHash128", Hash.MetroHash128())
+        yield ("MetroHash-64", Hash.MetroHash64())
+        yield ("MetroHash-128", Hash.MetroHash128())
         yield ("Murmur1", Hash.MurmurHash1())
         yield ("Murmur2", Hash.MurmurHash2())
         yield ("Murmur2a", Hash.MurmurHash2A())
@@ -102846,22 +102846,22 @@ class HashCommand(GenericCommand):
         yield ("Murmur3a", Hash.MurmurHash3_x86_32())
         yield ("Murmur3c", Hash.MurmurHash3_x86_128())
         yield ("Murmur3f", Hash.MurmurHash3_x64_128())
-        yield ("SipHash64_2_4", Hash.SipHash64_2_4())
-        yield ("SipHash64_1_3", Hash.SipHash64_1_3())
-        yield ("SipHash64_4_8", Hash.SipHash64_4_8())
-        yield ("SipHash128_2_4", Hash.SipHash128_2_4())
-        yield ("SipHash128_4_8", Hash.SipHash128_4_8())
-        yield ("SpookyHash32", Hash.SpookyHash32())
-        yield ("SpookyHash64", Hash.SpookyHash64())
-        yield ("SpookyHash128", Hash.SpookyHash128())
-        yield ("T1HA0_32", Hash.T1HA0_32())
-        yield ("T1HA1_64", Hash.T1HA1_64())
-        yield ("T1HA2_64", Hash.T1HA2_64())
-        yield ("T1HA2_128", Hash.T1HA2_128())
-        yield ("WYHash32", Hash.WYHash32())
-        yield ("WYHash64", Hash.WYHash64())
-        yield ("xxHash32", Hash.XXH32())
-        yield ("xxHash64", Hash.XXH64())
+        yield ("SipHash-64_2_4", Hash.SipHash64_2_4())
+        yield ("SipHash-64_1_3", Hash.SipHash64_1_3())
+        yield ("SipHash-64_4_8", Hash.SipHash64_4_8())
+        yield ("SipHash-128_2_4", Hash.SipHash128_2_4())
+        yield ("SipHash-128_4_8", Hash.SipHash128_4_8())
+        yield ("SpookyHash-32", Hash.SpookyHash32())
+        yield ("SpookyHash-64", Hash.SpookyHash64())
+        yield ("SpookyHash-128", Hash.SpookyHash128())
+        yield ("T1HA0-32", Hash.T1HA0_32())
+        yield ("T1HA1-64", Hash.T1HA1_64())
+        yield ("T1HA2-64", Hash.T1HA2_64())
+        yield ("T1HA2-128", Hash.T1HA2_128())
+        yield ("WYHash-32", Hash.WYHash32())
+        yield ("WYHash-64", Hash.WYHash64())
+        yield ("xxHash-32", Hash.XXH32())
+        yield ("xxHash-64", Hash.XXH64())
         yield ("xxHash3-64", Hash.XXH3_64())
         yield ("xxHash3-128", Hash.XXH3_128())
 
@@ -102900,14 +102900,14 @@ class HashCommand(GenericCommand):
         yield ("SHA1 x3 (hex)", Hash.HASHxN("sha1", N=3, use_hex=True))
         yield ("SHA1 x4 (hex)", Hash.HASHxN("sha1", N=4, use_hex=True))
         yield ("SHA1 x5 (hex)", Hash.HASHxN("sha1", N=5, use_hex=True))
-        yield ("SHA256 x2 (raw)", Hash.HASHxN("sha256", N=2))
-        yield ("SHA256 x3 (raw)", Hash.HASHxN("sha256", N=3))
-        yield ("SHA256 x4 (raw)", Hash.HASHxN("sha256", N=4))
-        yield ("SHA256 x5 (raw)", Hash.HASHxN("sha256", N=5))
-        yield ("SHA256 x2 (hex)", Hash.HASHxN("sha256", N=2, use_hex=True))
-        yield ("SHA256 x3 (hex)", Hash.HASHxN("sha256", N=3, use_hex=True))
-        yield ("SHA256 x4 (hex)", Hash.HASHxN("sha256", N=4, use_hex=True))
-        yield ("SHA256 x5 (hex)", Hash.HASHxN("sha256", N=5, use_hex=True))
+        yield ("SHA-256 x2 (raw)", Hash.HASHxN("sha256", N=2))
+        yield ("SHA-256 x3 (raw)", Hash.HASHxN("sha256", N=3))
+        yield ("SHA-256 x4 (raw)", Hash.HASHxN("sha256", N=4))
+        yield ("SHA-256 x5 (raw)", Hash.HASHxN("sha256", N=5))
+        yield ("SHA-256 x2 (hex)", Hash.HASHxN("sha256", N=2, use_hex=True))
+        yield ("SHA-256 x3 (hex)", Hash.HASHxN("sha256", N=3, use_hex=True))
+        yield ("SHA-256 x4 (hex)", Hash.HASHxN("sha256", N=4, use_hex=True))
+        yield ("SHA-256 x5 (hex)", Hash.HASHxN("sha256", N=5, use_hex=True))
 
         return None
 
@@ -103317,17 +103317,17 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12",
         "MD5-SHA1":
             "9e107d9d372bb6826bd81d3542a419d62fd4e1c67a2d28fced849ee1bb76e7391b93eb12", \
-        "SHA224":
+        "SHA-224":
             "730e109bd7a8a32b1cb9d9a09aa2325d2430587ddbc0c38bad911525",
-        "SHA256":
+        "SHA-256":
             "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592",
-        "SHA384":
+        "SHA-384":
             "ca737f1014a48f4c0b6dd43cb177b0afd9e5169367544c494011e3317dbf9a509cb1e5dc1e85a941bbee3d7f2afbc9b1",
-        "SHA512":
+        "SHA-512":
             "07e547d9586f6a73f73fbac0435ed76951218fb7d0c8d788a309d785436bbb642e93a252a954f23912547d1e8a3b5ed6e1bfd7097821233fa0538f3db854fee6",
-        "SHA512/224":
+        "SHA-512/224":
             "944cd2847fb54558d4775db0485a50003111c8e5daa63fe722c6aa37",
-        "SHA512/256":
+        "SHA-512/256":
             "dd9d67b371519c339ed8dbd25af90e976a1eeefd4ad3d889005e532fc5bef04d",
         "SHA3-224":
             "d15dadceaa4d5d7bb3b48f446421d542e08ad8887305e28d58335795",
@@ -103366,31 +103366,31 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "BLAKE-512":
             "1f7e26f63b6ad25a0896fd978fd050a1766391d2fd0471a77afb975e5034b7ad2d9ccf8dfb47abbbe656e1b82fbc634ba42ce186e8dc5e1ce09a885d41f43451",
         # https://hashing.tools/groestl
-        "Groestl224":
+        "Groestl-224":
             "8ce3ce0f7092cada755be8f614fd6d5e5738ff1f6cd5dabe42404c46",
-        "Groestl256":
+        "Groestl-256":
             "8c7ad62eb26a21297bc39c2d7293b4bd4d3399fa8afab29e970471739e28b301",
-        "Groestl384":
+        "Groestl-384":
             "9330aeb62a1fc0a464dd70ac27b57075e00ae5d627f9bd6ff72952b3857aba2cfbcc4345af9a04fcc13eb346829e4088",
-        "Groestl512":
+        "Groestl-512":
             "badc1f70ccd69e0cf3760c3f93884289da84ec13c70b3d12a53a7a8a4a513f99715d46288f55e1dbf926e6d084a0538e4eebfc91cf2b21452921ccde9131718d",
         # https://hashing.tools/jh
-        "JH224":
+        "JH-224":
             "bb21255e4a6bcbd3ddbf8694df2e7f41b74a69c1a7e1c2d36a3fd405",
-        "JH256":
+        "JH-256":
             "6a049fed5fc6874acfdc4a08b568a4f8cbac27de933496f031015b38961608a0",
-        "JH384":
+        "JH-384":
             "de44fe5f835f5518c603aec9d67363466d9f3a5b54d4cfbd4083b055f95a21a2562abaa59b830b3bc4e023d0b52a1268",
-        "JH512":
+        "JH-512":
             "043f14e7c0775e7b1ef5ad657b1e858250b21e2e61fd699783f8634cb86f3ff938451cabd0c8cdae91d4f659d3f9f6f654f1bfedca117ffba735c15fedda47a3",
         # https://hashing.tools/keccak
-        "Keccak224":
+        "Keccak-224":
             "310aee6b30c47350576ac2873fa89fd190cdc488442f3ef654cf23fe",
-        "Keccak256":
+        "Keccak-256":
             "4d741b6f1eb29cb2a9b9911c82f56fa8d73b04959d3d9d222895df6c0b28aa15",
-        "Keccak384":
+        "Keccak-384":
             "283990fa9d5fb731d786c5bbee94ea4db4910f18c62c03d173fc0a5e494422e8a0b3da7574dae7fa0baf005e504063b3",
-        "Keccak512":
+        "Keccak-512":
             "d135bb84d0439dbac432247ee573a23ea7d3c9deb2a968eb31d47c4fb45f1ef4422d6c531b5b9bd6f449ebcc449ea94d0a8f05f62130fda612da53c79659f609",
         # https://hashing.tools/skein
         "Skein256-256":
@@ -103416,13 +103416,13 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "97dabe7cc46e7be3a054aa605395e43b243654c01ffc14c8b5443488f35d80b504a612f3d29d767106d0d9249aaa4fd99b67a94fb8661a3520004501192d84fa",
         # -------------------- SHA3 Round2 candidates --------------------
         # https://github.com/aidansteele/sphlib
-        "BMW224":
+        "BMW-224":
             "278f7e6db8fd7c9353fc181d840bf20351e3a45229ff42983ac26697",
-        "BMW256":
+        "BMW-256":
             "ca0981a78ac2c97ecb358267f6d8d88216366024ef0d7137938b5a3165898dff",
-        "BMW384":
+        "BMW-384":
             "ca60ffd15eab7f4809f1b8f8daa5687f2192f872cc554303181403626cf5311be3c8f86e49aab330278f8e1b411d3c60",
-        "BMW512":
+        "BMW-512":
             "2998d4cb31323e1169b458ab03a54d0b68e411a3c7cc7612adbf05bf901b8197dfd852c1c0099c09717d2fad3537207e737c6159c31d377d1ab8f5ed1ceeea06",
         # self
         "CubeHash10+1/1+10-256":
@@ -103438,51 +103438,51 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "CubeHash160+16/32+160-512":
             "bdba44a28cd16b774bdf3c9511def1a2baf39d4ef98b92c27cf5e37beb8990b7cdb6575dae1a548330780810618b8a5c351c1368904db7ebdf8857d596083a86",
         # https://github.com/aidansteele/sphlib
-        "ECHO224":
+        "ECHO-224":
             "ea7548f1186079bea3b7002f7651b60cb1fd559191f3dde26700f069",
-        "ECHO256":
+        "ECHO-256":
             "3c3c10b84e818cbddfd71e1aefc6cb9cd7fd1b84acb5765813e716734a97d422",
-        "ECHO384":
+        "ECHO-384":
             "d045abb41ef43012e0436855f10f1a115eeec1f346ff119e86bf96cf427f453b625f0df8ee2b123e335a9a38446702c6",
-        "ECHO512":
+        "ECHO-512":
             "fe61eba97bdfcaa027ded44a5f883fcb900b97449596d7b4a7187c76e71ad750e6117b529bd69992bec015bef862d16d62c384b600cb300d486e565f94202abf",
         # https://github.com/jonelo/jacksum
-        "Fugue224":
+        "Fugue-224":
             "6e8e3280e6e3a4d8fcf27a82ea81d66f66f94b73dc3a85a361740b78",
-        "Fugue256":
+        "Fugue-256":
             "4b2c2011fc9e5f5d6aed35dd20ce151af631db61aad0b2a5e12e17e01538d5ca",
-        "Fugue384":
+        "Fugue-384":
             "3a327a7b4a05f05d0e5a06e2f1eb49a0e837a9e07bf60b5eeefe5fc8ca98cf85578ce856b60d6f3828b81c5eb051ace8",
-        "Fugue512":
+        "Fugue-512":
             "ee1e53e892bedd72d753bd4c9f704201708fb9b79177816051ebca1dc1af7ee928b8996df0862bbea24503be2781b1a036079a88627d4d248f2d0ec77b579b7f",
         # https://github.com/aidansteele/sphlib
-        "Hamsi224":
+        "Hamsi-224":
             "0e0bd268a3c7d9ca55b12a03ae18d4322394178d042d0e28c8b7da9b",
-        "Hamsi256":
+        "Hamsi-256":
             "415e7fa87a20d942012c9b458507c247498043e09381a165a893e4d22c52246c",
-        "Hamsi384":
+        "Hamsi-384":
             "810b536315560820b2a4ebaf4680ba4fd77b577ade9b326029d1d4954b4d203fd9ab519ca8ebf1132369d3926e4e4572",
-        "Hamsi512":
+        "Hamsi-512":
             "d7453c84a10eab2d4eef9d8862ced59e0640fe0f3fb088812a8b71ac5ac68953b213492ce3d83415f22c7033573b66e28417da0cb728a18e8914e08140d0948c",
         # https://github.com/jonelo/jacksum
-        "Luffa224":
+        "Luffa-224":
             "49ac0a3651e0dbf30224e2b0a8b7f24450c8b49f21e6eef9fc7968c3",
-        "Luffa256":
+        "Luffa-256":
             "49ac0a3651e0dbf30224e2b0a8b7f24450c8b49f21e6eef9fc7968c33e25bef7",
-        "Luffa384":
+        "Luffa-384":
             "e67f459e496dfe04a0091a2e2c253e5f48883472dc21dce1d6a0bb0359867fc11815d8e0f868bbfb102f412e24075107",
-        "Luffa512":
+        "Luffa-512":
             "459e2280a7cdb0c721d8d9dbeb9ed339659dc9e7b158e9dd2d328d946cb21474dc9177edfc93602f1aadb31944c795c9b5df859a3dc6132d4f0a4c476aaf797f",
         # https://hashing.tools/shabal
-        "Shabal192":
+        "Shabal-192":
             "c0629db89b2911e0febaabd7618a5da22ad6ea2638e13d40",
-        "Shabal224":
+        "Shabal-224":
             "0afa60c76a61bcc73773ec8e2694862506f7782a088ce8a30ba5e789",
-        "Shabal256":
+        "Shabal-256":
             "cdee2d6e35a1aa235c09e3d1a94e59207459c8da37cfaed0c2d51fab9a59f932",
-        "Shabal384":
+        "Shabal-384":
             "c08623c184f728d3e35c15bd74a27f0480de3a837f3a14bef7df70edc0e4a9500e100092d3e3f3b464ed18cbc1121bc5",
-        "Shabal512":
+        "Shabal-512":
             "f12f6893f4535d360b07ec15be706e5921b0358d736e61cb2e7ffd2157cd119dc1aeecbf2f1ac73552dc052ad4edcf8cbe87073a4db4d1b4f6a31e39edf5a96d",
         # https://github.com/aidansteele/sphlib
         "SHAvite3-224":
@@ -103494,13 +103494,13 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "SHAvite3-512":
             "4dbd97835c4e5cfa14799884a7adc96688dd808ff53d5c4cfe7db89a55ee98d0260791ec0c9b5466482ab3f6f236da7e65e1cb6d1ee624f61a5b2b79f63c4120",
         # https://github.com/aidansteele/sphlib
-        "SIMD224":
+        "SIMD-224":
             "964ff29db5c3d88794c6c488b274d77c52d5ff07509c5aa8d67a14b8",
-        "SIMD256":
+        "SIMD-256":
             "c9deb40282ee7b66a6fc1c8e240ce73aac4252c30b48d247e8d8693ad8ae2e34",
-        "SIMD384":
+        "SIMD-384":
             "f4f9ba9a4e4e870079c69cf61b5e52c39bab522782fda17d093d8757231539f2bfb72c8dbbe36bea8321520f59a2d378",
-        "SIMD512":
+        "SIMD-512":
             "ca493ce78cc2a63b5a48393e61d113d59a930b3e76d062ab58177345c48b59890a08661d04dd6160a1b42d215f1e303d97ab0abb54e65f758f79aee2b182b34b",
         # -------------------- SHA3 Round1 candidates --------------------
         # If the link is dead, use these.
@@ -103509,91 +103509,91 @@ class HashTestCommand(HashCommand, BufferingOutput):
         # https://web.archive.org/web/20170211075442/http://csrc.nist.gov/groups/ST/hash/sha-3/Round3/submissions_rnd3.html
 
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/Abacus.zip
-        "Abacus224":
+        "Abacus-224":
             "2d4c4d46c6198fc5646345f78011e9c07ebf81a354acf40090dab750",
-        "Abacus256":
+        "Abacus-256":
             "666cb308c69caa6d5043292be664218c9b928957703a04a3be89ffabfbbdb00f",
-        "Abacus384":
+        "Abacus-384":
             "e7ee677abdc304988e76d96f1a44fbf9f71b57f1411456f3bd9459061e124919a5f5cc0d986c73694b639b00c8578a26",
-        "Abacus512":
+        "Abacus-512":
             "0e115823ebeb52ed3d8d0280e1ae1c1204f5b74bc4644fc74a21c53fb4358c233a230f9bc012d8471d4acfde2b3ddb529dc5e39fb1315c45adcd90e9edaa41a3",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/ARIRANGUpdate.zip
-        "ARIRANG224":
+        "ARIRANG-224":
             "84c24ed54d07dd09f6168c0f9ebfa79a334e7c26de49d5db26b2623f",
-        "ARIRANG256":
+        "ARIRANG-256":
             "16ac451d0a5af18cad3218e8e6638b46db5637b6221efcc014b3062ade373ed8",
-        "ARIRANG384":
+        "ARIRANG-384":
             "374f750f62f5d75c1a93cda8fff30cead2a5e1985dc4b7a45c9f6f758b48f3269db90a346412914f0c282608c568b870",
-        "ARIRANG512":
+        "ARIRANG-512":
             "e9b2975ddea2a06e1a9d18ae9b8c64c78e3351140b2b1ea8c13f6cc59f42771b7d64ac2f53d3308d8cfa952be0f8e99687e2a8e6fb3878c0d88c32cd956d79c8",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/AURORA.zip
-        "AURORA224":
+        "AURORA-224":
             "906d1d3a48807021fe633a69729f8635a91ae00c0f761cc088bfc5c7",
-        "AURORA224M":
+        "AURORA-224M":
             "6675d1dc85079a3615322dfa4b7c30a1ac1c954c622cf6fda307f5e3",
-        "AURORA256":
+        "AURORA-256":
             "b8ed2c7f4de46220e9f0b8128a80dec4c610db13c8be6f0037ab67a878e44444",
-        "AURORA256M":
+        "AURORA-256M":
             "84e70ab7424da2030b95229895318e371153b20b831860e6453379a079a00f90",
-        "AURORA384":
+        "AURORA-384":
             "9bfb11ee28694460da9cf58edb869c89b6f3bb1e403bcfd820839e5e033de214a06fc7f385f39a985d74e0e25c0ceb8f",
-        "AURORA512":
+        "AURORA-512":
             "ca358e3ebf5b86d933eb29789180d0554b5187acc3aea4d2a9953a56d15b5486c74c210b66af8d71a8d9698d115b71c9915df9e82708fd6667ee3199005f3b7b",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/Blender.zip
-        "Blender224":
+        "Blender-224":
             "f22751ae660fdf910c58e9e0f5411a1f4c75047be98ee0ec227cf9c9",
-        "Blender256":
+        "Blender-256":
             "1e57c8b0a331abc5a89a4ac540f69473be495aa4cbfd1970783d4919d12be26c",
-        "Blender384":
+        "Blender-384":
             "bafe74892a4842b96807fbef086d923ebbe54e3b1d32c366abac2cc2f9a54e97ebf7e6b0826cd402e5854b1ab40baa9b",
-        "Blender384Spec":
+        "Blender-384Spec":
             "d36e625afb6a617a54e195c138504ac85f6cdf17fb1e32e0d48182a1497bd3e5a7fd8f2fed89288f8c87fc9c23a5d27f",
-        "Blender512":
+        "Blender-512":
             "a70415a188effe1092f2c3eb164d2f19f4e09ad739eba9aee7b0c5df751f01bf0ecac5a73c278df009ab7f946461a654d4f893a364894d40d9bb728cea737296",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/BOOLE.zip
-        "BOOLE224":
+        "BOOLE-224":
             "4e8a0e1652f4ad9e6f9a69d22e68501e4d38152a9beb059a1367781f",
-        "BOOLE256":
+        "BOOLE-256":
             "bb6b6b1bc99d2a79ff1c78db3c2933395dde77053ec1a5b48b97ab034534a346",
-        "BOOLE384":
+        "BOOLE-384":
             "9acbd9b59a683e378227ebb02f2b9d1dc8141b7d8f583aa1d12fed2f6a577a36e8116c7010a1a4138baec994165bf5c2",
-        "BOOLE512":
+        "BOOLE-512":
             "ccbae29b9f0315207475991aaefbd873ebc07721a489dfe1aeaf0447a3808fe01966d3cf9cdb6f24377e8925aac446ddc07d5166b61228ce733371228b72ea4a",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/Cheetah.zip
-        "Cheetah224":
+        "Cheetah-224":
             "351e1feb561a84ce5b207a944131e240abda27a23227240790d131b5",
-        "Cheetah256":
+        "Cheetah-256":
             "2076a857145dffe17b2b7003f045daea62ab5efd7f9629897e0d912d55ca1b64",
-        "Cheetah384":
+        "Cheetah-384":
             "501341c228f121fbb1abd3b682c5b23ba7f06987fecedd3d09ca3c9855f611e64e8c6daf13ee0c5e5ef8f4d04e6751fa",
-        "Cheetah512":
+        "Cheetah-512":
             "b6888c9afc8f60cd62252571da8009ae10fa8458778f0fb596deb542fec9e1771171879a4c0e38410e257d119305d201b39c8d4c106c03756ee05e62635c5e7e",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/CHI.zip
-        "CHI224":
+        "CHI-224":
             "b3a3ba88e77c107ed348e077cdfe67fdd915f7bd5396f4463ac916d3",
-        "CHI256":
+        "CHI-256":
             "9473b99489da9a8e6b23a1477c287940125caeab3b3eeeab4d2ac2520a9c1049",
-        "CHI384":
+        "CHI-384":
             "f03857ce38f1b57eb8c23259741913d0728a2be831250df71824c5154cb68970b5c320c3f15904dfb3ff11d2b37dfc5d",
-        "CHI512":
+        "CHI-512":
             "0da90851211d39c54cc6c1ea0ba550877a28d436a8f8afa6108ee63337aa6af85926d5f9a4e11053493f5c260dda1022fb6fc69a407f2bbff6e004325d459d95",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/DCH.zip
-        "DCH224":
+        "DCH-224":
             "c41e268388c7a893269d4a0e8c92a1861cacd0abc5a96dacd29ddd01",
-        "DCH256":
+        "DCH-256":
             "c41e268388c7a893269d4a0e8c92a1861cacd0abc5a96dacd29ddd016f2d28a3",
-        "DCH384":
+        "DCH-384":
             "c41e268388c7a893269d4a0e8c92a1861cacd0abc5a96dacd29ddd016f2d28a388fd581dccfd6cdcf7bf7b1c252c1d01",
-        "DCH512":
+        "DCH-512":
             "c41e268388c7a893269d4a0e8c92a1861cacd0abc5a96dacd29ddd016f2d28a388fd581dccfd6cdcf7bf7b1c252c1d01d9a70791e900449340ed3e964aa7f23a",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/DyamicSHA.zip
-        "DynamicSHA224":
+        "DynamicSHA-224":
             "51c03bad3caca3a8c81b1d617c69c2b4ee0e3bab0933e1a63e2f1629",
-        "DynamicSHA256":
+        "DynamicSHA-256":
             "2d068470cc3877ed6b629a75b9b9927cae15068e8a369322c5a2511e7a9193c8",
-        "DynamicSHA384":
+        "DynamicSHA-384":
             "81e6601ae16b2e908c0efbe4313626d56648763319d38413b4f50fbbb712984ae36e8d1ee970c9da04bb8e2d9bba86ad",
-        "DynamicSHA512":
+        "DynamicSHA-512":
             "8f8063e1c54b851a38d9b2733ef2e02d5e4abe4c71d7040a3af7fc605a5bcc6c87450d326d93c3b90a98298aacac3c4d959766fa825d220e06aca799fa607e59",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/DynamicSHA_2.zip
         "DynamicSHA2-224":
@@ -103605,41 +103605,52 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "DynamicSHA2-512":
             "48d905ed7644bb9dfe721ce5691543a844eeb53560f5cbb3a877fefab28ff639762bece763b8b3cf4cae870f1b25758877277a3b73657497030e77d1c2b46838",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/ECOH.zip
-        "ECOH224":
+        "ECOH-224":
             "98d9adc87f734194b6f6e0e16df18428964acf76b34a816c1bcf3f06",
-        "ECOH256":
+        "ECOH-256":
             "fc81d47498d9adc87f734194b6f6e0e16df18428964acf76b34a816c1bcf3f06",
-        "ECOH384":
+        "ECOH-384":
             "17f8383d44dd29ae3290fda4c7a6ac2550ce82c3f53f736212d07d99e365d12627a79e3c92fc2eb177065ad884bde1da",
-        "ECOH512":
+        "ECOH-512":
             "a7e9114eac54cc2d2014c5c976849739d66ad7f049fcd4047992f0bed1e7022e864cf12a2581254a44163b64156930632e28fca145c612d551507503734cd89c",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/EDON-R.zip
-        "EDONR224":
+        "EDONR-224":
             "8f2cf96634e6be40f2534a9ab9e5ff18070f2ecd0e2040b2d1ebda4a",
-        "EDONR256":
+        "EDONR-256":
             "42201941c0020a52cca6772d31fefddfc4db45deb64c7b7dc9e8e8f82cd7ad1e",
-        "EDONR384":
+        "EDONR-384":
             "8c2bfcee0c7224d576c8153046d684ce1152c2db137228d3dc0dbe9f14f8ce8c32d7f0e3bb19c6de864865f0a8f2f7a6",
-        "EDONR512":
+        "EDONR-512":
             "7d7bc0c23e810d16916f392738c9f58139bea582096517672963aae6608f3945f8ab1a7c6b32823a07b71dca57694230c88a708476696e220da6ca2a6a20ad56",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/EnRUPT.zip
-        "EnRUPT224":
+        "EnRUPT-224":
             "18766355483f44a5789b2ed7d1c2cff79ec56913a7a0d83c80be55f4",
-        "EnRUPT256":
+        "EnRUPT-256":
             "677177abac538e141964d7243ef6ad12ef1963f5471cc768da953340bec91502",
-        "EnRUPT384":
+        "EnRUPT-384":
             "6b2ce288c98e161e8e41c3f5cb50a60eed3e71510c5f2fdc69e92f32ee6a01b57339c2652c875ff70de62d204e5a0906",
-        "EnRUPT512":
+        "EnRUPT-512":
             "394803b9596ef8de269b0186f3926f7dbccc393a99bbebe535a0fb7d7ab8469be0efcdf369f8a45dc1edde5dc5e7474d431daed6e0c1f260286eeba6b1b6eb0f",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/ESSENCE.zip
-        "ESSENCE224":
+        "ESSENCE-224":
             "a7a2791842a881db4abc4f8c0abe8b4c4df56cb7db7130d9b0f39e7c",
-        "ESSENCE256":
+        "ESSENCE-256":
             "5ac3b1d03e501a31f34c94ff418a1b6612b375635de49a96132ae01885d0f33e",
-        "ESSENCE384":
+        "ESSENCE-384":
             "1649cca251bacb951c0f69c8e3822eeeb9871537ef3d4d0517fd392e1b966cb7ff48aa14858cff9619ed1d32b2d750e7",
-        "ESSENCE512":
+        "ESSENCE-512":
             "76b17eb4550e8a544e6a20a4f491d9489f5d875cc87c98ec3bdb9d7cd668628cd71d730ed697db4e9a8dfbf0855a725d14b442fb56b268694d59b5c329cb875f",
+        # https://hashing.tools/fsb
+        "FSB-160":
+            "a25f6e24c6fb67533f0a25233ac5cc09d5793e8a",
+        "FSB-224":
+            "1dd28d92cad63335fcca4c64a5e1133ccaa8c3e6083ad15591280701",
+        "FSB-256":
+            "a0751229aac5aeba6aeb1c0533988302e5084bb11029e7bb0ada7a653491df24",
+        "FSB-384":
+            "4983ecfa3930e3cf61ac4c82695c01a394016b39cf22b5d6dcba447ef8cbcda46ac341ccf5835f331fed0abe73e9bf1c",
+        "FSB-512":
+            "6f87b9dc051330bfb0dd7ad35c05d6a2040e9a6110b06886368934d6ae25694fd9790b1bf1086af9da4b15619609b688fa576376f136adbd3b5a51ae1a1f2158",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/Khichidi-1.zip
         "Khichidi1-224":
             "0d0ae72a091bb130665bb1bfcd159c97e2b62eb0ebb56dca336faa9b",
@@ -103649,23 +103660,32 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "3bbbddb487b42f0f65092f58717da7cf4c4112eff32e3bbf78530f212f40b799220f4408ac00789ae67432848b9157d1",
         "Khichidi1-512":
             "cb516489f37b2d9c26adfd9e99b06e855ac72903fd416dfd0216c5732228e503d961c853b2e80b70bdb6c5178aaf377bb8b755ac8f06bcbc3b31e04849deb59b",
+        # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/LANE.zip
+        "Lane-224":
+            "35ff2f82ede8c86f9ba7823a7d2363805ed72d748a5308a1c5242607",
+        "Lane-256":
+            "710ba632ed2581206fab281eb3ac8a4acd0b3cdfb1af8dc1b7a6b1679e9161e0",
+        "Lane-384":
+            "1d326d45b84a8a0db4733b91f68fa46cd16dc5004e28843b72333ffbcf5a528564558d3e4fe3d7723f46f9c242e4c489",
+        "Lane-512":
+            "bb8fcd93dddc1fe2c283dde8dff248ab69d67368146155cbcfa118e4e81a89d2e3455a5252f0cef43b177ec9d9de656b8c1b5fd7d8088241a7a73688ade0fb56",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/Lesamnta.zip
-        "Lesamnta224":
+        "Lesamnta-224":
             "a99d16d2c059138b050658739b80e6528bb13714f7c6ff54042fa700",
-        "Lesamnta256":
+        "Lesamnta-256":
             "55082b0519ca42ccf44ff280a8dbb35dfc38d232be64ab0709abb38b98ed963d",
-        "Lesamnta384":
+        "Lesamnta-384":
             "5b9c850f8a4b648c3b2c3bd3e81bb03364679a52eaecbea95d47264f7dfb5da88d58754b6613e955ca79b9233c01a494",
-        "Lesamnta512":
+        "Lesamnta-512":
             "4cc281facf12b10b086aa54d5e6293e8491e5cf4434ff1339f778869da59408ac78b59c6773826d66ee6e69bc1fce6036af60ada4b7735eb522cb8553db59e9e",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/LUX.zip
-        "LUX224":
+        "LUX-224":
             "1675a8d124c3d6b8fd51f586e3b2442ea41030f1b5352aa542fd9cad",
-        "LUX256":
+        "LUX-256":
             "1675a8d124c3d6b8fd51f586e3b2442ea41030f1b5352aa542fd9cade855521c",
-        "LUX384":
+        "LUX-384":
             "ef0398a401a0d275e6a6b46a71b376f31eeb66ad2856aa2c5c1537cc8103c06bb83c4b2853a29ffc887b4dbe777987de",
-        "LUX512":
+        "LUX-512":
             "ef0398a401a0d275e6a6b46a71b376f31eeb66ad2856aa2c5c1537cc8103c06bb83c4b2853a29ffc887b4dbe777987deefc5d80e2634a84987b69cfc3f1aa0d1",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/MCSSHA3.zip
         "MCSSHA3-224":
@@ -103676,26 +103696,6 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "a4a166d865205ed2fda693451c703d26e1d68edcd66a9cd123d9b1361b95b1504b92c90873cd0d44e657c946501062f2",
         "MCSSHA3-512":
             "db83972358b44966e8ab3ee23185d8de95c92aa410516d70646b8b144d9e30cb7990be8a752875263dd1e6d7bdac56616b7206a516f208805b1c6459a94a5f22",
-        # https://hashing.tools/fsb
-        "FSB160":
-            "a25f6e24c6fb67533f0a25233ac5cc09d5793e8a",
-        "FSB224":
-            "1dd28d92cad63335fcca4c64a5e1133ccaa8c3e6083ad15591280701",
-        "FSB256":
-            "a0751229aac5aeba6aeb1c0533988302e5084bb11029e7bb0ada7a653491df24",
-        "FSB384":
-            "4983ecfa3930e3cf61ac4c82695c01a394016b39cf22b5d6dcba447ef8cbcda46ac341ccf5835f331fed0abe73e9bf1c",
-        "FSB512":
-            "6f87b9dc051330bfb0dd7ad35c05d6a2040e9a6110b06886368934d6ae25694fd9790b1bf1086af9da4b15619609b688fa576376f136adbd3b5a51ae1a1f2158",
-        # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/LANE.zip
-        "Lane224":
-            "35ff2f82ede8c86f9ba7823a7d2363805ed72d748a5308a1c5242607",
-        "Lane256":
-            "710ba632ed2581206fab281eb3ac8a4acd0b3cdfb1af8dc1b7a6b1679e9161e0",
-        "Lane384":
-            "1d326d45b84a8a0db4733b91f68fa46cd16dc5004e28843b72333ffbcf5a528564558d3e4fe3d7723f46f9c242e4c489",
-        "Lane512":
-            "bb8fcd93dddc1fe2c283dde8dff248ab69d67368146155cbcfa118e4e81a89d2e3455a5252f0cef43b177ec9d9de656b8c1b5fd7d8088241a7a73688ade0fb56",
         # https://www.browserling.com/tools/md6-hash
         "MD6-128":
             "7b428f5ec47e0174faf31dc7c89590c6",
@@ -103704,31 +103704,31 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "MD6-512":
             "dcba0c6593fbd83a0f5f148588baa79530579c1f5e7f19d500fe282d137bff465106f25c9f0619b4082a730683d5f58311c0c1913068e91b0ebdf9ace3ff5b9e",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/MeshHash.zip
-        "MeshHash224":
+        "MeshHash-224":
             "d282dbd98285891d65912cde56bccb031a03187f4b348ec649da9893",
-        "MeshHash256":
+        "MeshHash-256":
             "d7478933b34ee26b1c71d049f8eb3b42e72b142b2c63c6ebb14d87eb9c00506f",
-        "MeshHash384":
+        "MeshHash-384":
             "e79aadab0a169cfd4386188285fb9f62abeb78f1aaa9409f4074228ff48862b7a709bfb2c09a2045b249e54f9f2374f5",
-        "MeshHash512":
+        "MeshHash-512":
             "d479629fe2423dd5ca291731c76f805344d45a3ca5daf7f734d08af8157fcc315968aa9fe10560c57a0a5cef5f3848b4e9ea678f8fd2ce5706226259d76f48b5",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/NaSHA.zip
-        "NaSHA224":
+        "NaSHA-224":
             "32040ebcae67fb698ab2037dcb2d42b4b05405173b44b821ff611fcd",
-        "NaSHA256":
+        "NaSHA-256":
             "7c97fbe05876c7da8bb5eb8fa9ab45d6457e5796fda873b38b3e5e20bdef07aa",
-        "NaSHA384":
+        "NaSHA-384":
             "53ce208a677e8fcfe6c8a42f72e67cf0f9324f7c98651fea2c56a9e16f46fa4a546ec55d3bdd3d65a421e53d0b58b3a2",
-        "NaSHA512":
+        "NaSHA-512":
             "90c2bbf5379133e3468497a711d769afb18549d564063baf047802f5830fecec5be33b0d9d688345344c071341a923c721c9cf8e4a7d53c1dc3048f8f9e12aa9",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/SANDstorm.zip
-        "SANDstorm224":
+        "SANDstorm-224":
             "e2ae7dbf4649c65e0ae19de85b3b4d2565862645146282ec57a64ef4",
-        "SANDstorm256":
+        "SANDstorm-256":
             "607ac39b7cd6c1912e7934cdbbfceeea1fe5e8155a9726b36c96895c93e6056d",
-        "SANDstorm384":
+        "SANDstorm-384":
             "e0fb1925617466e876152d6c632b4751829ee61036d1bccbe0d481ea5b0eab7f0a020c7cb9423cd7382a18b738609e5d",
-        "SANDstorm512":
+        "SANDstorm-512":
             "c50794660a3672279018ec7ab26559bdea6565e191ba892ef4cc579c96fb33804255ad18a4b2f6604b34d5e2a4ca5d4dd1fc6fee882727ac54f6273706ea9ff6",
         # -------------------- relatively long --------------------
         # https://hashing.tools/ascon
@@ -103765,9 +103765,9 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "ED2K-RedBlue":
             "1bee69a46ba811185c194762abaeae901bee69a46ba811185c194762abaeae90",
         # https://github.com/jonelo/jacksum
-        "ESCH256":
+        "ESCH-256":
             "d43f87a0fe60fc5925064880c6116c136b6d94fa24a93dffcb35d178c3af932c",
-        "ESCH384":
+        "ESCH-384":
             "0a8167a616fc8dbca06b877427c15fd27b7db3430f86794742394a5db6838d916843d739ac821c6b0b7df538aa4554ea",
         # https://fnvhash.github.io/fnv-calculator-online/
         "FNV1-32":
@@ -103825,7 +103825,7 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "ebc8ecd5f1fd778166986437d8f535f97fcac598859e7690069a8b5421d8027f720903930562657effffa6000000000000000000000000000000000000000000" \
             "00000000000000000000000000000000030d7c4df25956df4327a342f932d30fcba656d86b64688bb7ada7ffbb83a4bedb3b565c00cbee26ae9b035d7678b22f",
         # https://github.com/jonelo/jacksum
-        "FORK256":
+        "FORK-256":
             "290f4a3bc99dd6edc87400af4d4daa10362b0fea41d7cd41710f4e9fe0964428",
         # https://github.com/jonelo/jacksum
         "GOST": # codespell:ignore
@@ -103836,35 +103836,35 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "HAS-160":
             "abe2b8c711f9e8579aa8eb40757a27b4ef14a7ea",
         # https://www.webutils.pl/index.php?idx=haval
-        "HAVAL128,3":
+        "HAVAL-128,3":
             "713502673d67e5fa557629a71d331945",
-        "HAVAL128,4":
+        "HAVAL-128,4":
             "6eece560a2e8d6b919e81fe91b0e7156",
-        "HAVAL128,5":
+        "HAVAL-128,5":
             "696f02111f2e1da5c21d50eb782b7e8f",
-        "HAVAL160,3":
+        "HAVAL-160,3":
             "b338ac397e8bccadcccd96549cadd4882d834107",
-        "HAVAL160,4":
+        "HAVAL-160,4":
             "6e739d01f5739ceed94da1a115b52d5951280560",
-        "HAVAL160,5":
+        "HAVAL-160,5":
             "ecce9fa8a428866304ff082af2f9062637d36b23",
-        "HAVAL192,3":
+        "HAVAL-192,3":
             "58e6ced002e311172483d434ba738ad033e7fa950e431503",
-        "HAVAL192,4":
+        "HAVAL-192,4":
             "228ee09bc7e36151c6f285f558e6aede66ad38c8341592b9",
-        "HAVAL192,5":
+        "HAVAL-192,5":
             "023d045f75d4bf051fd6e50f7b7417bf9949c4b5d2b4b7ef",
-        "HAVAL224,3":
+        "HAVAL-224,3":
             "e1d5792306f56b22419662b06d1885a66dca3eba01f53274c89aeaeb",
-        "HAVAL224,4":
+        "HAVAL-224,4":
             "dddd6689885f6db4ad91e35a35e1f4498446510df798d4fd54b8654f",
-        "HAVAL224,5":
+        "HAVAL-224,5":
             "03d953298c8e56b46385c6761cd4b2e377889a75c97eaea475421c73",
-        "HAVAL256,3":
+        "HAVAL-256,3":
             "9446028f42b3768a41bd873ca69b0c006341d986613567f39eb61f96ca683300",
-        "HAVAL256,4":
+        "HAVAL-256,4":
             "c0d4c6ea514105fd1a9c38a238553fb7fa21d4127eb1a3035a75ce9d06a83d96",
-        "HAVAL256,5":
+        "HAVAL-256,5":
             "b89c551cdfe2e06dbd4cea2be1bc7d557416c58ebb4d07cbc94e49f710c55be4",
         # https://marekknapek.github.io/hash/
         "KangarooTwelve128-128":
@@ -103894,11 +103894,11 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "KMAC256-512":
             "c212695c45a612147c87e14d70890dd154af5704bbbe6e6f78aa6c08a1560eeccb1c9450a7ab0398625c7bd699557bc5c487a66d92a422626041aaa4a77a34e0",
         # https://github.com/jonelo/jacksum
-        "Kupyna256":
+        "Kupyna-256":
             "996899f2d7422ceaf552475036b2dc120607eff538abf2b8dff471a98a4740c6",
-        "Kupyna384":
+        "Kupyna-384":
             "0956d8afa9653b5231614decb1cceb8162ae5b8ff2dc3b02417f86dc4df621d0ca5b1ff399d494766c93a6d2513cae3a",
-        "Kupyna512":
+        "Kupyna-512":
             "d1b469f43e0963735b6cd08a6e75fc370956d8afa9653b5231614decb1cceb8162ae5b8ff2dc3b02417f86dc4df621d0ca5b1ff399d494766c93a6d2513cae3a",
         # https://github.com/jonelo/jacksum
         "LSH256-224":
@@ -103932,21 +103932,21 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "Panama":
             "5f5ca355b90ac622b0aa7e654ef5f27e9e75111415b48b8afe3add1c6b89cba1",
         # https://github.com/damaki/ksum
-        "ParallelHash128":    # ./bin/ksum --parallelhash128 --output-size=32 --block-size=8 -
+        "ParallelHash-128":    # ./bin/ksum --parallelhash128 --output-size=32 --block-size=8 -
             "a6eb1bcdfd9531a193e65ea9c58a1902fbb51ea575e482ef9096049055db520f",
-        "ParallelHashXOF128": # ./bin/ksum --parallelhash128 --output-size=32 --block-size=8 --xof -
+        "ParallelHashXOF-128": # ./bin/ksum --parallelhash128 --output-size=32 --block-size=8 --xof -
             "762ca8cf752e88ebaf69c5b9c24728b0f63c95a2238cb9196998d282140d2989",
-        "ParallelHash256":    # ./bin/ksum --parallelhash256 --output-size=64 --block-size=8 -
+        "ParallelHash-256":    # ./bin/ksum --parallelhash256 --output-size=64 --block-size=8 -
             "3f975d80fce91ea04f39e66052c6d35fc5bc8222c124063cbdb1328ea584c863bfbd4a41f667dfaf491564d244f1b1fce9c50767555655b3120ca253df50cda0",
-        "ParallelHashXOF256": # ./bin/ksum --parallelhash256 --output-size=64 --block-size=8 --xof -
+        "ParallelHashXOF-256": # ./bin/ksum --parallelhash256 --output-size=64 --block-size=8 --xof -
             "b9fa18ce16f8b6a4da80deee19e3fb24b51cf4e5c3087a79faf7764a5428faa785b9602e569f011dc1f557dc969529d513c166a36bcccc082b0692cd14f515af",
         # https://github.com/jonelo/jacksum
         "PhotonBeetle":
             "5ced20c8d747c62114bf691739821516135aa8413997cf34b4b8e40a25489762",
         # https://github.com/jonelo/jacksum
-        "RadioGatun32":
+        "RadioGatun-32":
             "191589005fec1f2a248f96a16e9553bf38d0aee1648ffa036655ce29c2e229ae",
-        "RadioGatun64":
+        "RadioGatun-64":
             "6219fb8dad92ebe5b2f7d18318f8da13cecbf13289d79f5abf4d253c6904c807",
         # https://www.webutils.pl/index.php?idx=ripemd
         "RIPEMD-128":
@@ -103961,35 +103961,35 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "SHA-0":
             "b03b401ba92d77666221e843feebf8c561cea5f7",
         # https://md5hashing.net/hash/snefru
-        "Snefru128":
+        "Snefru-128":
             "59d9539d0dd96d635b5bdbd1395bb86c",
         # https://md5hashing.net/hash/snefru256
-        "Snefru256":
+        "Snefru-256":
             "674caa75f9d8fd2089856b95e93a4fb42fa6c8702f8980e11d97a142d76cb358",
         # https://asecuritysite.com/hash/gost # codespell:ignore
-        "Streebog256":
+        "Streebog-256":
             "3e7dea7f2384b6c5a3d0e24aaa29c05e89ddd762145030ec22c71a6db8b2c1f4",
-        "Streebog512":
+        "Streebog-512":
             "d2b793a0bb6cb5904828b5b6dcfb443bb8f33efc06ad09368878ae4cdc8245b97e60802469bed1e7c21a64ff0b179a6a1e0bb74d92965450a0adab69162c00fe",
         # https://www.webutils.pl/index.php?idx=tiger
-        "TIGER128,3":
+        "TIGER-128,3":
             "6d12a41e72e644f017b6f0e2f7b44c62",
-        "TIGER160,3":
+        "TIGER-160,3":
             "6d12a41e72e644f017b6f0e2f7b44c6285f06dd5",
-        "TIGER192,3":
+        "TIGER-192,3":
             "6d12a41e72e644f017b6f0e2f7b44c6285f06dd5d2c5b075",
-        "TIGER128,4":
+        "TIGER-128,4":
             "c1f3a704e9f6267e9f75fa47191f83c3",
-        "TIGER160,4":
+        "TIGER-160,4":
             "c1f3a704e9f6267e9f75fa47191f83c354100a04",
-        "TIGER192,4":
+        "TIGER-192,4":
             "c1f3a704e9f6267e9f75fa47191f83c354100a04c4f1dc6f",
         # https://marekknapek.github.io/hash/
-        "TIGER2/128,3":
+        "TIGER2-128,3":
             "976abff8062a2e9dcea3a1ace966ed9c",
-        "TIGER2/160,3":
+        "TIGER2-160,3":
             "976abff8062a2e9dcea3a1ace966ed9c19cb8555",
-        "TIGER2/192,3":
+        "TIGER2-192,3":
             "976abff8062a2e9dcea3a1ace966ed9c19cb85558b4976d8",
         # pycryptodome
         "TupleHash128-128":
@@ -104033,59 +104033,59 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "087376b970c53ed0339a4fe54f4462f0f34e4e50ed09b4314ed24b32ba9822cb",
         # -------------------- relatively short --------------------
         # https://asecuritysite.com/hash/smh
-        "CityHash32":
+        "CityHash-32":
             "a339c810",
-        "CityHash64":
+        "CityHash-64":
             "c268724928feca7d",
-        "CityHash128":
+        "CityHash-128":
             "a7f9a86a2d60c968bf1498f876dbe279",
         # https://asecuritysite.com/hash/smh # fp: fingerprint
-        "FarmHash32 (fp)":
+        "FarmHash-32 (fp)":
             "ec998320",
-        "FarmHash64 (fp)":
+        "FarmHash-64 (fp)":
             "abbe83f33b1b5134",
-        "FarmHash128 (fp)":
+        "FarmHash-128 (fp)":
             "bf1498f876dbe279a7f9a86a2d60c968",
         # https://github.com/ztanml/fast-hash
-        "FastHash32":
+        "FastHash-32":
             "136bd7e4",
-        "FastHash64":
+        "FastHash-64":
             "4611ffb633a627d2",
         # https://github.com/ogxd/gxhash
-        "GxHash32":
+        "GxHash-32":
             "0bc03dd6",
-        "GxHash64":
+        "GxHash-64":
             "0bc03dd6b35d0186",
-        "GxHash128":
+        "GxHash-128":
             "0bc03dd6b35d01867892d3b59509300d",
         # https://pypi.org/project/siphash-cffi/
-        "HalfSipHash32_2_4":
+        "HalfSipHash-32_2_4":
             "ed285d61",
-        "HalfSipHash64_2_4":
+        "HalfSipHash-64_2_4":
             "31f20e6c986fe414",
         # https://asecuritysite.com/hash/smh_Halftime
-        "HalfTimeHash64":
+        "HalfTimeHash-64":
             "45bf6c18f4c47ad1",
-        "HalfTimeHash128":
+        "HalfTimeHash-128":
             "08f19709c03904d6",
-        "HalfTimeHash256":
+        "HalfTimeHash-256":
             "4761c86ed217c2e0",
-        "HalfTimeHash512":
+        "HalfTimeHash-512":
             "8dc86dd14f852fe8",
         # https://asecuritysite.com/hash/smh
-        "HighwayHash64":
+        "HighwayHash-64":
             "552d6e674e35333e",
-        "HighwayHash128":
+        "HighwayHash-128":
             "d59d55e677071404dcded33a97cfee4b",
-        "HighwayHash256":
+        "HighwayHash-256":
             "40e0a9717f9dee85a7c86aadee4e2bd884656a3eec42a8172d340faa3cb127de",
         # https://github.com/avaneev/komihash
         "KomiHash":
             "4d86bedb30f8641c",
         # https://asecuritysite.com/hash/smh
-        "MetroHash64":
+        "MetroHash-64":
             "37b871151974389c", # need byte swap
-        "MetroHash128":
+        "MetroHash-128":
             "97d78a67ac6c62e9870198793485d405", # need byte swap
         # https://asecuritysite.com/hash/smh
         "Murmur1":
@@ -104107,41 +104107,41 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "Murmur3f":
             "6c1b07bc7bbc4be3" "47939ac4a93c437a", # need 8-byte swap
         # https://pypi.org/project/siphash-cffi/
-        "SipHash64_2_4":
+        "SipHash-64_2_4":
             "0de4702506520059",
-        "SipHash64_1_3":
+        "SipHash-64_1_3":
             "1e450cd0d376f68d",
-        "SipHash64_4_8":
+        "SipHash-64_4_8":
             "ed013f3fab3d1abd",
-        "SipHash128_2_4":
+        "SipHash-128_2_4":
             "df8c5ce876c57f25c03f1bb5df591ab2",
-        "SipHash128_4_8":
+        "SipHash-128_4_8":
             "23e0a6e8aae3f2e571ba3536bfbea2ff",
         # https://asecuritysite.com/hash/smh
-        "SpookyHash32":
+        "SpookyHash-32":
             "c79306aa", # need byte swap
-        "SpookyHash64":
+        "SpookyHash-64":
             "c79306aa46e8122b", # need byte swap
-        "SpookyHash128":
+        "SpookyHash-128":
             "c79306aa46e8122b1b340724747e361d",
         # https://asecuritysite.com/hash/smh_t1ha
-        "T1HA0_32":
+        "T1HA0-32":
             "d0e6c0a9",
-        "T1HA1_64":
+        "T1HA1-64":
             "86235f2773f9ada1",
-        "T1HA2_64":
+        "T1HA2-64":
             "1f1d052e973ff69d",
-        "T1HA2_128":
+        "T1HA2-128":
             "5891d221cdf479758dd36078748f9731",
         # https://asecuritysite.com/hash/smh
-        "WYHash32":
+        "WYHash-32":
             "88ca02ad",
-        "WYHash64":
+        "WYHash-64":
             "d986947fb5be3867",
         # https://www.coderstool.com/xxh-hash-generator
-        "xxHash32":
+        "xxHash-32":
             "e85ea4de",
-        "xxHash64":
+        "xxHash-64":
             "0b242d361fda71bc",
         "xxHash3-64":
             "ce7d19a5418fb365",
@@ -104224,21 +104224,21 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "959bb6a982ae22b8dc7476b6a5099df4d449255e",
         "SHA1 x5 (hex)":
             "58464ba20599b425cbf762947a512ffeef6433da",
-        "SHA256 x2 (raw)":
+        "SHA-256 x2 (raw)":
             "6d37795021e544d82b41850edf7aabab9a0ebe274e54a519840c4666f35b3937",
-        "SHA256 x3 (raw)":
+        "SHA-256 x3 (raw)":
             "c9280b1eecf03730cd24fbf25fbb482e0efd423c1d8824f54056cf8390fdf445",
-        "SHA256 x4 (raw)":
+        "SHA-256 x4 (raw)":
             "0059752a917970d20f26f075a203df21a43416a9336fc1a40a7d74cb995898a0",
-        "SHA256 x5 (raw)":
+        "SHA-256 x5 (raw)":
             "03d5962dde4a1fc73e8351e3a659deeebd4b580649d344b8290473ecd5f47bde",
-        "SHA256 x2 (hex)":
+        "SHA-256 x2 (hex)":
             "d5074362d20d3c33a1a3e7235632271c276818ff686e25196cb6d89d98363f43",
-        "SHA256 x3 (hex)":
+        "SHA-256 x3 (hex)":
             "cb990af233d0d01de6f42683086b99b13332f26dc5e8d98991a97659be090b58",
-        "SHA256 x4 (hex)":
+        "SHA-256 x4 (hex)":
             "506d96a7ee221c2881cd0e73d7f9c8923ce26cfa189ffaf447807c3b8519bcf9",
-        "SHA256 x5 (hex)":
+        "SHA-256 x5 (hex)":
             "fb26873649b20d04274ebc569a8b6a06a5d80fcae6025b9631ecb25bc5f22a7c",
     }
 
