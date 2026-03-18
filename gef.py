@@ -392,6 +392,7 @@ class Cache:
 
     @staticmethod
     def cache_wrap(life_time, f, skip_None_cache=False):
+
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
             caches = Cache.__gef_caches__[life_time]
@@ -3944,6 +3945,7 @@ class GlibcHeap:
               0x7d630b7a1738|+0x0078|+015: 0x0000000000000000
         ----- TLS
         """
+
         def get_all_tls():
             orig_thread = gdb.selected_thread()
             orig_frame = gdb.selected_frame()
@@ -5749,6 +5751,7 @@ def xor(a, b=None):
     xor(b"AAA", b"BBB") -> b"\x03\x03\x03"
     xor(["AAA", "BBB", "\x03\x03\x03"]) -> "\0\0\0"
     """
+
     def _xor(a, b):
         if len(a) < len(b):
             a, b = b, a
@@ -6276,6 +6279,7 @@ class Disasm:
         using the capstone disassembler. Return an iterator of Instruction objects.
         This is the backend used by Disasm.gef_disassemble if specified in the config.
         It is also called directly from some commands such as Disasm.capstone_disassemble."""
+
         def cs_insn_to_gef_insn(cs_insn):
             return Instruction(cs_insn.address, cs_insn.mnemonic, cs_insn.op_str, cs_insn.bytes)
 
@@ -6944,6 +6948,7 @@ class RISCV(Architecture):
         return insn.mnemonic in branch_mnemos
 
     def is_branch_taken(self, insn):
+
         def long_to_twos_complement(v):
             """Convert a python long value to its two's complement."""
             if is_32bit():
@@ -8350,6 +8355,7 @@ class PPC(Architecture):
         return ra
 
     def get_tls(self):
+
         def adjust_offset(x):
             TLS_TCB_OFFSET = 0x7000
             if x == 0:
@@ -8411,6 +8417,7 @@ class PPC64(PPC):
             return key, val
 
     def get_tls(self):
+
         def adjust_offset(x):
             TLS_TCB_OFFSET = 0x7000
             if x == 0:
@@ -8891,6 +8898,7 @@ class MIPS(Architecture):
         return ra
 
     def get_tls(self):
+
         def adjust_offset(x):
             TLS_TCB_OFFSET = 0x7000
             if x == 0:
@@ -9726,6 +9734,7 @@ class M68K(Architecture):
         return key, val
 
     def get_tls(self):
+
         def adjust_offset(x):
             TLS_TCB_OFFSET = 0x7000
             if x == 0:
@@ -10488,6 +10497,7 @@ class NIOS2(Architecture):
         return ra
 
     def get_tls(self):
+
         def adjust_offset(x):
             TLS_TCB_OFFSET = 0x7000
             if x == 0:
@@ -12492,6 +12502,7 @@ def only_if_in_kernel_or_kpti_disabled(f):
 
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
+
         def is_kpti_enabled():
             try:
                 s = KernelAddressHeuristicFinder.get_saved_command_line()
@@ -12558,6 +12569,7 @@ def only_if_specific_gdb_mode(mode=()):
     """Decorator wrapper to check if the gdb mode is specific."""
 
     def wrapper(f):
+
         @functools.wraps(f)
         def inner_f(*args, **kwargs):
             dic = {
@@ -12589,6 +12601,7 @@ def exclude_specific_gdb_mode(mode=()):
     """Decorator wrapper to check if the gdb mode is specific."""
 
     def wrapper(f):
+
         @functools.wraps(f)
         def inner_f(*args, **kwargs):
             dic = {
@@ -12617,6 +12630,7 @@ def only_if_specific_arch(arch=()):
     """Decorator wrapper to check if the architecture is specific."""
 
     def wrapper(f):
+
         @functools.wraps(f)
         def inner_f(*args, **kwargs):
             dic = {
@@ -12667,6 +12681,7 @@ def exclude_specific_arch(arch=()):
     """Decorator wrapper to check if the architecture is specific."""
 
     def wrapper(f):
+
         @functools.wraps(f)
         def inner_f(*args, **kwargs):
             dic = {
@@ -14823,10 +14838,12 @@ def only_if_events_supported(event_type):
     """Decorator for checking if GDB supports events without crashing."""
 
     def wrap(f):
+
         def wrapped_f(*args, **kwargs):
             if hasattr(gdb.events, event_type):
                 return f(*args, **kwargs)
             warn("GDB events cannot be set")
+
         return wrapped_f
 
     return wrap
@@ -14956,6 +14973,7 @@ class GenericCommand(gdb.Command):
         pass
 
     def __init__(self, *args, **kwargs):
+
         def tab(lines):
             return "\n".join(["  " + line for line in lines.splitlines()])
 
@@ -15017,6 +15035,7 @@ class GenericCommand(gdb.Command):
         return
 
     def usage(self, simple=False, after_syntax_only=False):
+
         def tab(lines):
             return "\n".join(["  " + line for line in lines.splitlines()])
 
@@ -15825,6 +15844,7 @@ class ContinueForQemuUserCommand(GenericCommand):
         child_pid = os.fork()
 
         if child_pid == 0:
+
             # child
             def sig_handler(_signum, _frame):
                 nonlocal signal_monitoring
@@ -23084,6 +23104,7 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
     _note_ = "\n".join(_note_)
 
     def bins_simple(self, arenas):
+
         def get_size(arena, c, from_base=True):
             if self.args.skip_size:
                 return ""
@@ -28533,6 +28554,7 @@ class KernelChecksecCommand(GenericCommand):
         return
 
     def check_CONFIG_STATIC_USERMODEHELPER(self):
+
         def get_permission(addr):
             maps = Kernel.get_maps()
             if not maps:
@@ -30698,6 +30720,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         return entries
 
     def parse_gcc_except_table(self, gcc_except_table, eh_frame_entries):
+
         def get_lsda_info(eh_frame_entries):
             dic = {}
             is_fde = False
@@ -31979,6 +32002,7 @@ class ContextRegistersCommand(GenericCommand):
         return " ".join(target_registers)
 
     def context_registers_default(self, redirect):
+
         def compact_info_registers():
             res = gdb.execute("info registers", to_string=True)
             lines = []
@@ -39793,6 +39817,7 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
         return None
 
     def show_information(self, allocated):
+
         def get_offset_str(v):
             if v == 0:
                 return ""
@@ -39964,6 +39989,7 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
         return None
 
     def show_information(self, new_loc):
+
         def get_offset_str(v):
             if v == 0:
                 return ""
@@ -40139,6 +40165,7 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
         return None
 
     def show_information(self, to_free):
+
         def get_offset_str(v):
             if v == 0:
                 return ""
@@ -40301,6 +40328,7 @@ class GlibcHeapTracerCommand(GenericCommand):
         return
 
     def setup(self):
+
         def setup_breakpoints(bp_class, name):
             try:
                 address = AddressUtil.parse_address(name)
@@ -52573,6 +52601,7 @@ class KernelMagicCommand(GenericCommand):
         return False
 
     def resolve_and_print_kernel(self, sym, base, maps, external_func=None, to_string=False):
+
         def get_permission(addr, maps):
             if maps is None:
                 return "???"
@@ -54828,6 +54857,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
         return
 
     def bit_reverse(self, value):
+
         def bit_reverse(x, n):
             mask = (1 << n) - 1
             b = "{:0{:d}b}".format(x & mask, n)
@@ -63826,6 +63856,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 ...
             };
             """
+
             def get_next_vma_area_struct(current):
                 return read_int_from_memory(current + current_arch.ptrsize * 2)
 
@@ -66846,6 +66877,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
             return "???"
 
         def iterate_pattern(kind_sep, kind_max, dev_str, sym_start):
+
             def gen():
                 cs = "abcdefghijklmnopqrstuvwxyz"
                 for c in cs:
@@ -66854,6 +66886,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
                     for c2 in cs:
                         yield c1 + c2
                 return
+
             name_list = list(gen())
             kind = minor // kind_sep
             num = minor % kind_sep
@@ -74571,6 +74604,7 @@ class Hash:
             return packed[:nbytes]
 
         def keccak_p1600_12(self, a):
+
             def rol64(x, n):
                 x &= 0xffff_ffff_ffff_ffff
                 n &= 63
@@ -78256,6 +78290,7 @@ class Hash:
         ]
 
         def build_gf_tables():
+
             def gf_mul(a, b):
                 res = 0
                 for _ in range(8):
@@ -78267,6 +78302,7 @@ class Hash:
                         a ^= 0x1b
                     b >>= 1
                 return res
+
             m2, m3, m4, m5, m7 = [], [], [], [], []
             for i in range(256):
                 m2.append(gf_mul(i, 2))
@@ -87149,8 +87185,10 @@ class Hash:
         ]
 
         def build_t_tables(s_box):
+
             def xtime(x):
                 return ((x << 1) ^ 0x1b) & 0xff if (x & 0x80) else (x << 1)
+
             t0, t1, t2, t3 = [], [], [], []
             for b in range(256):
                 s = s_box[b]
@@ -90574,6 +90612,7 @@ class Hash:
             if full < len(mv):
                 buf.extend(mv[full:])
             return self
+
         def digest(self):
             c = self.copy()
             c.finalize()
@@ -108029,6 +108068,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             #     - kmem_cache->freed_slabs_normal (6.1.56 <= kernel)
             #     - kmem_cache->freed_slabs (kernel < 6.1.56)
             #     - kmem_cache->freed_slabs_min
+
             def has_freed_slabs_lists(freed_slabs_normal, freed_slabs_min):
                 return is_double_link_list(freed_slabs_normal) and is_double_link_list(freed_slabs_min)
 
@@ -108929,6 +108969,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return None
 
     def pointer_xor(self, addr, chunk, cache):
+
         def pattern1(addr, chunk, cache):
             return chunk ^ addr ^ cache["random"]
 
@@ -119829,6 +119870,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
     @Cache.cache_this_session
     def class_to_size(self, cl):
+
         def from_exp_mant(m_e, MANTISSA_BITS, LOW_BITS):
             if MANTISSA_BITS > 0:
                 m_e = m_e + 1
@@ -121941,6 +121983,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         return []
 
     def get_roots(self, force_heuristic):
+
         def get_root(root_string):
             # newer version
             try:
@@ -125595,6 +125638,7 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
         return
 
     def find_list_head(self, data, virt_start):
+
         def is_valid_rw_addr(addr):
             return virt_start <= addr < virt_start + len(data)
 
@@ -126070,6 +126114,7 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     def find_reg_shm_list(self, data, virt_start):
+
         def is_valid_rw_addr(addr):
             return virt_start <= addr < virt_start + len(data)
 
@@ -131648,6 +131693,7 @@ class PagewalkArm64Command(PagewalkCommand):
 
         # translate via EL2 mappings
         if self.EL2_VM and self.TargetEL == 1 and self.el2_mappings:
+
             def search_pa(addr):
                 for entry_info in self.el2_mappings:
                     va, entry, sz, cnt, flags = entry_info
@@ -131659,6 +131705,7 @@ class PagewalkArm64Command(PagewalkCommand):
                         return pa + offset, sz - offset
                 else: # not found
                     raise
+
             out = b""
             while size > 0:
                 paddr, available_sz = search_pa(addr)
@@ -131990,6 +132037,7 @@ class PagewalkArm64Command(PagewalkCommand):
                               |    TTBR0_EL2, TTBR1_EL2    |
                               |                            |
     """
+
     def parse_bit_range(self, granule_bits, region_bits):
         IA_LVA_MAX = 52 if self.FEAT_LVA else 48
         if granule_bits == 12: # 4KB granule
@@ -143505,50 +143553,60 @@ class GefVersionCommand(GenericCommand):
         return sys.version.replace("\n", " ")
 
     def capstone_version(self):
+
         @ModuleLoader.load_capstone
         def _capstone_version():
             capstone = sys.modules["capstone"]
             return ".".join(map(str, capstone.cs_version()))
+
         try:
             return _capstone_version()
         except (KeyError, ImportWarning):
             return "Not found"
 
     def keystone_version(self):
+
         @ModuleLoader.load_keystone
         def _keystone_version():
             keystone = sys.modules["keystone"]
             return ".".join(map(str, keystone.ks_version()))
+
         try:
             return _keystone_version()
         except (KeyError, ImportWarning):
             return "Not found"
 
     def unicorn_version(self):
+
         @ModuleLoader.load_unicorn
         def _unicorn_version():
             unicorn = sys.modules["unicorn"]
             return unicorn.__version__
+
         try:
             return _unicorn_version()
         except (KeyError, ImportWarning):
             return "Not found"
 
     def ropper_version(self):
+
         @ModuleLoader.load_ropper
         def _ropper_version():
             ropper = sys.modules["ropper"]
             return ".".join(map(str, ropper.VERSION))
+
         try:
             return _ropper_version()
         except (KeyError, ImportWarning, AttributeError):
             return "Not found"
 
     def angr_version(self):
+
         @ModuleLoader.load_angr
         def _angr_version():
             angr = sys.modules["angr"]
             return angr.__version__
+
         try:
             return _angr_version()
         except (KeyError, ImportWarning, AttributeError):
@@ -144083,6 +144141,7 @@ class GefUtil:
     @Cache.cache_this_session
     def which(program):
         """Locate a command on the filesystem."""
+
         def is_exe(fpath):
             return os.path.isfile(fpath) and os.access(fpath, os.X_OK)
 
@@ -144114,6 +144173,7 @@ class GefUtil:
     @staticmethod
     def show_last_exception():
         """Display the last Python exception."""
+
         def _show_code_line(fname, idx):
             fname = os.path.expanduser(os.path.expandvars(fname))
             __data = open(fname, "r").read().splitlines()
