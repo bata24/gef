@@ -100995,6 +100995,1425 @@ class Hash:
         digest_size = 64
         hashbitlen = 512
 
+    class MeshHashBase:
+        word_size = 8
+        counter_length = 4
+        min_number_of_pipes = 4
+        max_number_of_pipes = 256
+        number_of_extra_pipes = 1
+
+        def __init__(self, data=b""):
+            if self.hashbitlen is None or self.digest_size is None:
+                raise ValueError("hashbitlen and digest_size must be defined")
+            self.number_of_pipes = self.compute_number_of_pipes(self.hashbitlen)
+            self.block_size = self.number_of_pipes * self.word_size
+            self.pipe = [0] * (self.number_of_pipes + 1)
+            self.bit_counter = [0] * self.counter_length
+            self.block_counter = [0] * self.counter_length
+            self.block_round_counter = 0
+            self.data_buffer = bytearray()
+            self.msg_len = 0
+            self.squeezing = False
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.number_of_pipes = self.number_of_pipes
+            other.block_size = self.block_size
+            other.pipe = self.pipe[:]
+            other.bit_counter = self.bit_counter[:]
+            other.block_counter = self.block_counter[:]
+            other.block_round_counter = self.block_round_counter
+            other.data_buffer = bytearray(self.data_buffer)
+            other.msg_len = self.msg_len
+            other.squeezing = self.squeezing
+            return other
+
+        def compute_number_of_pipes(self, hashbitlen):
+            number_of_pipes = (hashbitlen + 63) // 64
+            number_of_pipes += self.number_of_extra_pipes
+            if number_of_pipes < self.min_number_of_pipes:
+                number_of_pipes = self.min_number_of_pipes
+            if number_of_pipes > self.max_number_of_pipes:
+                number_of_pipes = self.max_number_of_pipes
+            return number_of_pipes
+
+        def rot64(self, word, bits):
+            bits &= 63
+            if bits == 0:
+                return word
+            return ((word >> bits) | ((word << (64 - bits)) & 0xffff_ffff_ffff_ffff)) & 0xffff_ffff_ffff_ffff
+
+        def sbox(self, word):
+            word = (word * 0x9e37_79b9_7f4a_7bb9 + 0x5e2d_58d8_b3bc_def7) & 0xffff_ffff_ffff_ffff
+            word = self.rot64(word, 37)
+            word = (word * 0x9e37_79b9_7f4a_7bb9 + 0x5e2d_58d8_b3bc_def7) & 0xffff_ffff_ffff_ffff
+            word = self.rot64(word, 37)
+            return word
+
+        def add_to_counter(self, counter, to_add):
+            carry = 0
+            for i in range(self.counter_length):
+                temp = ((to_add & 0xffff_ffff_ffff_ffff) + carry) & 0xffff_ffff_ffff_ffff
+                counter[i] = (counter[i] + temp) & 0xffff_ffff_ffff_ffff
+                if carry == 1 and temp == 0:
+                    carry = 1
+                elif counter[i] < temp:
+                    carry = 1
+                else:
+                    carry = 0
+                to_add >>= 64
+            return
+
+        def normal_round(self, data_word):
+            pipe = self.pipe
+            number_of_pipes = self.number_of_pipes
+            rot64 = self.rot64
+            sbox = self.sbox
+            xor_step = 0x0101_0101_0101_0101
+
+            pipe[number_of_pipes] = pipe[0]
+            for i in range(number_of_pipes):
+                value = pipe[i] ^ (i * xor_step) ^ data_word
+                value = rot64(value, (i * 37) & 63)
+                value = sbox(value)
+                pipe[i] = (value + pipe[i + 1]) & 0xffff_ffff_ffff_ffff
+
+            self.block_round_counter += 1
+            return
+
+        def final_block_round(self):
+            pipe = self.pipe
+            number_of_pipes = self.number_of_pipes
+            sbox = self.sbox
+            block_counter = self.block_counter
+
+            self.block_round_counter = 0
+            for i in range(number_of_pipes):
+                pipe[i] = sbox(pipe[i] ^ block_counter[i % self.counter_length])
+            self.add_to_counter(block_counter, 1)
+            return
+
+        def process_word(self, data_word):
+            self.normal_round(data_word)
+            if self.block_round_counter == self.number_of_pipes:
+                self.final_block_round()
+            return
+
+        def update(self, data):
+            if self.squeezing:
+                raise ValueError("cannot update after finalize")
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+
+            mv = memoryview(data).cast("B")
+            data_len = len(mv)
+            if data_len == 0:
+                return self
+
+            self.msg_len += data_len
+            self.add_to_counter(self.bit_counter, data_len * 8)
+
+            offset = 0
+
+            if self.data_buffer:
+                needed = 8 - len(self.data_buffer)
+                take = needed
+                if take > data_len:
+                    take = data_len
+                self.data_buffer.extend(mv[:take])
+                offset += take
+                if len(self.data_buffer) == 8:
+                    self.process_word(int.from_bytes(self.data_buffer, "big"))
+                    self.data_buffer.clear()
+
+            remaining = data_len - offset
+            full_len = remaining & ~7
+            end = offset + full_len
+            while offset < end:
+                self.process_word(int.from_bytes(mv[offset:offset + 8], "big"))
+                offset += 8
+
+            if offset < data_len:
+                self.data_buffer.extend(mv[offset:data_len])
+
+            return self
+
+        def finalize(self):
+            if self.squeezing:
+                return
+
+            if self.data_buffer:
+                padded = bytes(self.data_buffer) + (b"\x00" * (8 - len(self.data_buffer)))
+                self.process_word(int.from_bytes(padded, "big"))
+                self.data_buffer.clear()
+
+            if self.block_round_counter != 0:
+                while self.block_round_counter < self.number_of_pipes:
+                    self.normal_round(0)
+                self.final_block_round()
+
+            pipe = self.pipe
+            sbox = self.sbox
+            xor_step = 0x0101_0101_0101_0101
+
+            for counter_word in self.bit_counter:
+                for pipe_index in range(self.number_of_pipes):
+                    pipe[pipe_index] = sbox(pipe[pipe_index] ^ counter_word ^ (pipe_index * xor_step))
+
+            for pipe_index in range(self.number_of_pipes):
+                pipe[pipe_index] = sbox(pipe[pipe_index] ^ self.hashbitlen ^ (pipe_index * xor_step))
+
+            self.squeezing = True
+            return
+
+        def squeeze_bytes(self, size):
+            out = bytearray(size)
+            pipe = self.pipe
+            for i in range(size):
+                self.normal_round(0)
+                temp = 0
+                for j in range(0, self.number_of_pipes, 2):
+                    temp ^= pipe[j]
+                out[i] = temp & 0xff
+                if self.block_round_counter == self.number_of_pipes:
+                    self.final_block_round()
+            return bytes(out)
+
+        def digest(self):
+            other = self.copy()
+            other.finalize()
+            return other.squeeze_bytes(other.digest_size)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+    class MeshHash224(MeshHashBase):
+        digest_size = 28
+        hashbitlen = 224
+
+    class MeshHash256(MeshHashBase):
+        digest_size = 32
+        hashbitlen = 256
+
+    class MeshHash384(MeshHashBase):
+        digest_size = 48
+        hashbitlen = 384
+
+    class MeshHash512(MeshHashBase):
+        digest_size = 64
+        hashbitlen = 512
+
+    class NaSHABase:
+        sbox = (
+            0x8c, 0x90, 0xd9, 0xc1, 0x46, 0x63, 0x53, 0xf1, 0x61, 0x32, 0x15, 0x3e, 0x26, 0x9a, 0x97, 0x2e,
+            0xd8, 0xa0, 0x99, 0x9e, 0xc0, 0x95, 0x67, 0xb7, 0x6d, 0xe0, 0xf3, 0x28, 0x20, 0x86, 0xb6, 0xef,
+            0x4b, 0x31, 0xb5, 0xd2, 0x13, 0x39, 0x6c, 0xa5, 0x03, 0x3f, 0x4d, 0x34, 0xf9, 0xec, 0x8e, 0x17,
+            0xc5, 0x25, 0x3c, 0x89, 0xc9, 0x2b, 0x3a, 0xc2, 0x6e, 0xc6, 0xaa, 0x91, 0x49, 0x18, 0x93, 0xde,
+            0x0d, 0x6f, 0x65, 0xaf, 0x92, 0xa7, 0xf6, 0xa6, 0x40, 0xb9, 0xed, 0xb0, 0xc3, 0xd7, 0x7d, 0x7c,
+            0x54, 0x59, 0xdf, 0x2f, 0xda, 0xa4, 0x05, 0x94, 0x9b, 0x72, 0x01, 0x74, 0xa9, 0xf7, 0x81, 0xe9,
+            0x1f, 0xb3, 0xeb, 0xcf, 0xe8, 0x47, 0x52, 0x36, 0xbc, 0x16, 0x29, 0x76, 0x12, 0xfa, 0x9c, 0x8a,
+            0x5b, 0xa8, 0x43, 0xd1, 0x79, 0x85, 0x42, 0x82, 0xc7, 0xa1, 0x78, 0x4f, 0xe2, 0x35, 0xea, 0xad,
+            0xdc, 0x0e, 0xd3, 0x2d, 0x6a, 0x5a, 0x44, 0xab, 0xc8, 0xe5, 0x37, 0x0a, 0x6b, 0x51, 0xe3, 0x14,
+            0xcd, 0x56, 0x4a, 0xd6, 0x08, 0x83, 0xbb, 0x33, 0xe1, 0x30, 0x4e, 0x24, 0x5e, 0xb4, 0x00, 0x48,
+            0x5f, 0x22, 0x0b, 0x50, 0x3d, 0x80, 0x1a, 0xbf, 0xcc, 0xff, 0x64, 0x87, 0x1b, 0xc4, 0x07, 0xf8,
+            0x0c, 0xd4, 0xac, 0x02, 0x10, 0x84, 0x7e, 0x69, 0x70, 0x60, 0x55, 0x2a, 0x21, 0x57, 0x23, 0x66,
+            0x62, 0x73, 0xcb, 0x41, 0x58, 0x71, 0x77, 0x1c, 0x7b, 0x8f, 0x9f, 0x9d, 0xa3, 0xb1, 0x7f, 0x5d,
+            0xf4, 0x06, 0xae, 0xd5, 0xe6, 0x3b, 0xba, 0xfe, 0x96, 0xe7, 0x0f, 0x45, 0x2c, 0xf0, 0xfc, 0xbd,
+            0xe4, 0x98, 0xfb, 0xca, 0x11, 0xf5, 0xdd, 0x7a, 0x5c, 0xfd, 0xce, 0x88, 0xd0, 0x68, 0x8d, 0x4c,
+            0xbe, 0x04, 0x38, 0x1d, 0x1e, 0xf2, 0x27, 0x19, 0xb2, 0x75, 0xa2, 0xee, 0xdb, 0xb8, 0x09, 0x8b,
+        )
+
+        def __init__(self, data=b""):
+            self.h = list(self.h_init)
+            self.hash_words = list(self.hash_init)
+            self.buf = bytearray()
+            self.msg_len = 0
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.h = list(self.h)
+            other.hash_words = list(self.hash_words)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            while len(self.buf) >= self.block_size:
+                block = bytes(self.buf[:self.block_size])
+                del self.buf[:self.block_size]
+                self.compress(block)
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            out = bytearray()
+            for word in c.hash_words:
+                out.extend(word.to_bytes(8, "big"))
+            return bytes(out[:self.digest_size])
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def u64_to_le_list(self, x):
+            return list(x.to_bytes(8, "little"))
+
+        def u64_from_le_list(self, values):
+            return int.from_bytes(bytes(values), "little")
+
+        def get_f16(self, x, a, b, c):
+            return [x[1] ^ a, x[0] ^ b ^ self.sbox[x[1] ^ c]]
+
+        def get_f32(self, x, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama):
+            y0 = x[2] ^ ((alpha >> 8) & 0xff)
+            y1 = x[3] ^ (alpha & 0xff)
+
+            z = [
+                x[2] ^ ((gama >> 8) & 0xff),
+                x[3] ^ (gama & 0xff),
+            ]
+
+            f = self.get_f16(z, a3, b3, c3)
+            z = self.get_f16(f, a2, b2, c2)
+            f = self.get_f16(z, a1, b1, c1)
+
+            return [
+                y0,
+                y1,
+                x[0] ^ ((beta >> 8) & 0xff) ^ f[0],
+                x[1] ^ (beta & 0xff) ^ f[1],
+            ]
+
+        def get_f64(self, x, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama, a_word, b_word, c_word):
+            y = [
+                x[4] ^ ((a_word >> 24) & 0xff),
+                x[5] ^ ((a_word >> 16) & 0xff),
+                x[6] ^ ((a_word >> 8) & 0xff),
+                x[7] ^ (a_word & 0xff),
+            ]
+
+            z = [
+                x[4] ^ ((c_word >> 24) & 0xff),
+                x[5] ^ ((c_word >> 16) & 0xff),
+                x[6] ^ ((c_word >> 8) & 0xff),
+                x[7] ^ (c_word & 0xff),
+            ]
+
+            f = self.get_f32(z, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama)
+
+            return y + [
+                x[0] ^ ((b_word >> 24) & 0xff) ^ f[0],
+                x[1] ^ ((b_word >> 16) & 0xff) ^ f[1],
+                x[2] ^ ((b_word >> 8) & 0xff) ^ f[2],
+                x[3] ^ (b_word & 0xff) ^ f[3],
+            ]
+
+        def get_q64(self, x, y, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama, a_word, b_word, c_word):
+            z = [xb ^ yb for xb, yb in zip(x, y)]
+            fp = self.get_f64(
+                z[::-1],
+                a1, b1, c1,
+                a2, b2, c2,
+                a3, b3, c3,
+                alpha, beta, gama,
+                a_word, b_word, c_word,
+            )
+            fz = fp[::-1]
+            return [fb ^ yb for fb, yb in zip(fz, y)]
+
+        def ae(self, leader, values, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama, a_word, b_word, c_word):
+            out = [0] * len(values)
+            m1 = leader
+
+            for i, value in enumerate(values):
+                p = (value + m1) & 0xffff_ffff_ffff_ffff
+                m1 = value
+                q = self.get_q64(
+                    self.u64_to_le_list(p),
+                    self.u64_to_le_list(m1),
+                    a1, b1, c1,
+                    a2, b2, c2,
+                    a3, b3, c3,
+                    alpha, beta, gama,
+                    a_word, b_word, c_word,
+                )
+                m1 = self.u64_from_le_list(q)
+                out[i] = m1
+
+            return out
+
+        def rae(self, leader, values, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama, a_word, b_word, c_word):
+            out = [0] * len(values)
+            p = leader
+
+            for i in range(len(values) - 1, -1, -1):
+                p = (p + values[i]) & 0xffff_ffff_ffff_ffff
+                q = self.get_q64(
+                    self.u64_to_le_list(values[i]),
+                    self.u64_to_le_list(p),
+                    a1, b1, c1,
+                    a2, b2, c2,
+                    a3, b3, c3,
+                    alpha, beta, gama,
+                    a_word, b_word, c_word,
+                )
+                p = self.u64_from_le_list(q)
+                out[i] = p
+
+            return out
+
+        def lintr(self, values):
+            values = list(values)
+            last = len(values) - 1
+            t0, t1, t2, t3 = self.lintr_taps
+
+            for _ in range(self.lintr_rounds):
+                pom = values[t0] ^ values[t1] ^ values[t2] ^ values[t3]
+                for i in range(last, 0, -1):
+                    values[i] = values[i - 1]
+                values[0] = pom
+
+            return values
+
+        def swap_64_halves(self, values):
+            return [((x & 0xffff_ffff) << 32) | (x >> 32) for x in values]
+
+        def compile_words(self, message_words):
+            chain_words = len(self.h)
+            x = [0] * (chain_words * 4)
+
+            for k in range(chain_words):
+                x[k << 2] = message_words[k << 1]
+                x[(k << 2) + 1] = self.h[k]
+                x[(k << 2) + 2] = message_words[(k << 1) + 1]
+                x[(k << 2) + 3] = self.hash_words[k]
+
+            x = self.lintr(x)
+
+            l1 = (x[0] + x[1]) & 0xffff_ffff_ffff_ffff
+            l2 = (x[2] + x[3]) & 0xffff_ffff_ffff_ffff
+
+            tmp = (x[4] + x[5]) & 0xffff_ffff_ffff_ffff
+            a1 = (tmp >> 56) & 0xff
+            b1 = (tmp >> 48) & 0xff
+            c1 = (tmp >> 40) & 0xff
+            a2 = (tmp >> 32) & 0xff
+            b2 = (tmp >> 24) & 0xff
+            c2 = (tmp >> 16) & 0xff
+            a3 = (tmp >> 8) & 0xff
+            b3 = tmp & 0xff
+            c3 = a1
+
+            tmp = (x[6] + x[7]) & 0xffff_ffff_ffff_ffff
+            alpha1 = (tmp >> 48) & 0xffff
+            beta1 = (tmp >> 32) & 0xffff
+            gama1 = (tmp >> 16) & 0xffff
+            alpha2 = tmp & 0xffff
+
+            tmp = (x[8] + x[9]) & 0xffff_ffff_ffff_ffff
+            beta2 = (tmp >> 48) & 0xffff
+            gama2 = (tmp >> 32) & 0xffff
+
+            tmp = (x[10] + x[11]) & 0xffff_ffff_ffff_ffff
+            a_word1 = (tmp >> 32) & 0xffff_ffff
+            b_word1 = tmp & 0xffff_ffff
+
+            tmp = (x[12] + x[13]) & 0xffff_ffff_ffff_ffff
+            c_word1 = (tmp >> 32) & 0xffff_ffff
+            a_word2 = tmp & 0xffff_ffff
+
+            tmp = (x[14] + x[15]) & 0xffff_ffff_ffff_ffff
+            b_word2 = (tmp >> 32) & 0xffff_ffff
+            c_word2 = tmp & 0xffff_ffff
+
+            y = self.ae(
+                l2,
+                x,
+                a1, b1, c1,
+                a2, b2, c2,
+                a3, b3, c3,
+                alpha1, beta1, gama1,
+                a_word1, b_word1, c_word1,
+            )
+
+            y = self.swap_64_halves(y)
+
+            x = self.rae(
+                l1,
+                y,
+                a1, b1, c1,
+                a2, b2, c2,
+                a3, b3, c3,
+                alpha2, beta2, gama2,
+                a_word2, b_word2, c_word2,
+            )
+
+            for i in range(chain_words):
+                self.h[i] = x[(i << 2) + 1]
+                self.hash_words[i] = x[(i << 2) + 3]
+
+            return
+
+        def compress(self, block):
+            message_words = [
+                int.from_bytes(block[i:i + 8], "little")
+                for i in range(0, self.block_size, 8)
+            ]
+            self.compile_words(message_words)
+            return
+
+        def finalize(self):
+            total_bits = self.msg_len * 8
+            word_count = self.block_size // 8
+
+            buf = bytearray(self.buf)
+            buf.extend(b"\x00" * (self.block_size - len(buf)))
+
+            words = [
+                int.from_bytes(buf[i:i + 8], "little")
+                for i in range(0, self.block_size, 8)
+            ]
+
+            i = len(self.buf)
+            bit_mod_64 = total_bits % 64
+            word_index = i >> 3
+
+            if bit_mod_64 != 0:
+                words[word_index] &= 0xffff_ffff_ffff_fffe >> (64 - bit_mod_64)
+            else:
+                words[word_index] = 0
+
+            words[word_index] |= 1 << bit_mod_64
+
+            if i > self.block_size - 17:
+                if i < self.block_size - 8:
+                    words[word_count - 1] = 0
+                self.compile_words(words)
+                i = 0
+                words = [0] * word_count
+            else:
+                i = (i >> 3) + 1
+
+            while i < word_count - 2:
+                words[i] = 0
+                i += 1
+
+            words[word_count - 2] = 0
+            words[word_count - 1] = total_bits
+
+            self.compile_words(words)
+            return
+
+    class NaSHA224(NaSHABase):
+        name = "nasha224"
+        block_size = 64
+        digest_size = 28
+        lintr_rounds = 16
+        lintr_taps = (15, 9, 6, 3)
+
+        h_init = (
+            0x6a09_e667_f3bc_c908,
+            0xbb67_ae85_84ca_a73b,
+            0x3c6e_f372_fe94_f82b,
+            0xa54f_f53a_5f1d_36f1,
+        )
+
+        hash_init = (
+            0xcbbb_9d5d_c105_9ed8,
+            0x629a_292a_367c_d507,
+            0x9159_015a_3070_dd17,
+            0x152f_ecd8_f70e_5939,
+        )
+
+    class NaSHA256(NaSHABase):
+        name = "nasha256"
+        block_size = 64
+        digest_size = 32
+        lintr_rounds = 16
+        lintr_taps = (15, 9, 6, 3)
+
+        h_init = (
+            0x510e_527f_ade6_82d1,
+            0x9b05_688c_2b3e_6c1f,
+            0x1f83_d9ab_fb41_bd6b,
+            0x5be0_cd19_137e_2179,
+        )
+
+        hash_init = (
+            0x6733_2667_ffc0_0b31,
+            0x8eb4_4a87_6858_1511,
+            0xdb0c_2e0d_64f9_8fa7,
+            0x47b5_481d_befa_4fa4,
+        )
+
+    class NaSHA384(NaSHABase):
+        name = "nasha384"
+        block_size = 128
+        digest_size = 48
+        lintr_rounds = 32
+        lintr_taps = (31, 24, 14, 6)
+
+        h_init = (
+            0x6a09_e667_f3bc_c908,
+            0xbb67_ae85_84ca_a73b,
+            0x3c6e_f372_fe94_f82b,
+            0xa54f_f53a_5f1d_36f1,
+            0x510e_527f_ade6_82d1,
+            0x9b05_688c_2b3e_6c1f,
+            0x1f83_d9ab_fb41_bd6b,
+            0x5be0_cd19_137e_2179,
+        )
+
+        hash_init = (
+            0xcbbb_9d5d_c105_9ed8,
+            0x629a_292a_367c_d507,
+            0x9159_015a_3070_dd17,
+            0x152f_ecd8_f70e_5939,
+            0x6733_2667_ffc0_0b31,
+            0x8eb4_4a87_6858_1511,
+            0xdb0c_2e0d_64f9_8fa7,
+            0x47b5_481d_befa_4fa4,
+        )
+
+    class NaSHA512(NaSHABase):
+        name = "nasha512"
+        block_size = 128
+        digest_size = 64
+        lintr_rounds = 32
+        lintr_taps = (31, 24, 14, 6)
+
+        h_init = (
+            0x2dd8_a09a_3c4e_3efb,
+            0x061a_77a0_6094_8dcd,
+            0x8a47_ea18_8055_9ce6,
+            0x9f22_535b_2646_07a8,
+            0x2547_d84e_9ccd_e59d,
+            0x9486_eb50_c7d8_037f,
+            0xc0f9_05d7_41c9_cb74,
+            0xad0d_1e41_a985_e51e,
+        )
+
+        hash_init = (
+            0xe076_88dc_6f16_6b73,
+            0x0c34_aa2a_315e_01d5,
+            0xc785_f436_4a0b_98f4,
+            0x53a8_c8ca_56e1_288c,
+            0x3c15_63a9_317c_57a1,
+            0x7734_1eda_d21e_9a40,
+            0xd648_813e_4512_1dbb,
+            0x4cf7_68fc_7df1_1b00,
+        )
+
+    class SANDstorm256Base:
+        block_size = 64
+        extra_rounds = 0
+
+        mask64 = 0xffff_ffff_ffff_ffff
+        aconst_256 = 0xa611_186b
+        bconst_256 = 0xbee8_390d
+        cconst_256 = 0x6135_f68d_4c0c_bb6f
+        dconst_256 = 0x79cc_4519_5cf5_b7a4
+        j3 = 0x3333_3333_3333_3333
+        j5 = 0x5555_5555_5555_5555
+        j6 = 0x6666_6666_6666_6666
+        ms_rot_bits = 27
+        bitmix_rot_bits = 19
+        r_rot_bits = 25
+
+        b = [
+            0x428a_2f98_7137_4491, 0xb5c0_fbcf_e9b5_dba5, 0x3956_c25b_59f1_11f1, 0x923f_82a4_ab1c_5ed5,
+            0xd807_aa98_1283_5b01, 0x2431_85be_550c_7dc3, 0x72be_5d74_80de_b1fe, 0x9bdc_06a7_c19b_f174,
+            0xe49b_69c1_efbe_4786, 0x0fc1_9dc6_240c_a1cc, 0x2de9_2c6f_4a74_84aa, 0x5cb0_a9dc_76f9_88da,
+            0x983e_5152_a831_c66d, 0xb003_27c8_bf59_7fc7, 0xc6e0_0bf3_d5a7_9147, 0x06ca_6351_1429_2967,
+            0x27b7_0a85_2e1b_2138, 0x4d2c_6dfc_5338_0d13, 0x650a_7354_766a_0abb, 0x81c2_c92e_9272_2c85,
+            0xa2bf_e8a1_a81a_664b, 0xc24b_8b70_c76c_51a3, 0xd192_e819_d699_0624, 0xf40e_3585_106a_a070,
+            0x19a4_c116_1e37_6c08,
+        ]
+
+        fsbox = [
+            0x63, 0x7d, 0x75, 0x78, 0xf6, 0x6e, 0x69, 0xc2, 0x38, 0x08, 0x6d, 0x20, 0xf2, 0xda, 0xa5, 0x79,
+            0xda, 0x93, 0xdb, 0x6e, 0xee, 0x4c, 0x51, 0xe7, 0xb5, 0xcd, 0xb8, 0xb4, 0x80, 0xb9, 0x6c, 0xdf,
+            0x97, 0xdc, 0xb1, 0x05, 0x12, 0x1a, 0xd1, 0xeb, 0x1c, 0x8c, 0xcf, 0xda, 0x5d, 0xf5, 0x1f, 0x3a,
+            0x34, 0xf6, 0x11, 0xf0, 0x2c, 0xa3, 0x33, 0xad, 0x3f, 0x2b, 0xba, 0xd9, 0xd7, 0x1a, 0x8c, 0x4a,
+            0x49, 0xc2, 0x6e, 0x59, 0x5f, 0x2b, 0x1c, 0xe7, 0x1a, 0x72, 0x9c, 0xf8, 0x65, 0xae, 0x61, 0xcb,
+            0x03, 0x80, 0x52, 0xbe, 0x74, 0xa9, 0xe7, 0x0c, 0x32, 0x92, 0xe4, 0x62, 0x16, 0x11, 0x06, 0x90,
+            0xb0, 0x8e, 0xc8, 0x98, 0x27, 0x28, 0x55, 0xe2, 0x2d, 0x90, 0x68, 0x14, 0x3c, 0x51, 0xf1, 0xc7,
+            0x21, 0xd2, 0x32, 0xfc, 0xe6, 0xe8, 0x4e, 0x82, 0xc4, 0xcf, 0xa0, 0x5a, 0x6c, 0x82, 0x8d, 0xad,
+            0x4d, 0x8d, 0x91, 0x6f, 0xdb, 0x12, 0xc2, 0x90, 0x4c, 0x2e, 0xf4, 0xb6, 0xe8, 0xd0, 0x97, 0xfc,
+            0xf0, 0x10, 0xdd, 0x4f, 0xb6, 0xbf, 0x06, 0x1f, 0xde, 0x77, 0x22, 0x8f, 0x42, 0xc3, 0x95, 0x44,
+            0x40, 0x93, 0x98, 0xa9, 0xed, 0xa3, 0x82, 0xfb, 0x6a, 0x7a, 0x06, 0xc9, 0x3d, 0x38, 0x4a, 0xd6,
+            0x57, 0x79, 0x85, 0xde, 0x39, 0x60, 0xf8, 0x1e, 0xd4, 0xef, 0x4e, 0x51, 0xd9, 0xc7, 0x10, 0xb7,
+            0x7a, 0xb9, 0xe7, 0xed, 0xd8, 0x63, 0x72, 0x01, 0x20, 0x14, 0xbe, 0xd4, 0x87, 0x70, 0x45, 0x45,
+            0xa0, 0xef, 0x67, 0xb5, 0x9c, 0xd6, 0x20, 0xd9, 0xb9, 0xec, 0x8d, 0x62, 0x5a, 0x1c, 0xc3, 0x41,
+            0x01, 0x19, 0x7a, 0xf2, 0x8d, 0x3c, 0x68, 0x73, 0x73, 0xf7, 0x6d, 0x02, 0x22, 0xb8, 0xc6, 0x30,
+            0x7c, 0x50, 0x7b, 0xfe, 0x4b, 0x13, 0xb4, 0x9f, 0xb9, 0x60, 0xd7, 0xf4, 0x4c, 0xa9, 0x45, 0xe9,
+        ]
+
+        constants_224 = [
+            [0xc105_9ed8_367c_d507, 0x3070_dd17_f70e_5939, 0xffc0_0b31_6858_1511, 0x64f9_8fa7_befa_4fa4],
+            [0x367c_d507_3070_dd17, 0xf70e_5939_ffc0_0b31, 0x6858_1511_64f9_8fa7, 0xbefa_4fa4_c105_9ed8],
+            [0x3070_dd17_f70e_5939, 0xffc0_0b31_6858_1511, 0x64f9_8fa7_befa_4fa4, 0xc105_9ed8_367c_d507],
+            [0xf70e_5939_ffc0_0b31, 0x6858_1511_64f9_8fa7, 0xbefa_4fa4_c105_9ed8, 0x367c_d507_3070_dd17],
+            [0xffc0_0b31_6858_1511, 0x64f9_8fa7_befa_4fa4, 0xc105_9ed8_367c_d507, 0x3070_dd17_f70e_5939],
+        ]
+
+        constants_256 = [
+            [0x6a09_e667_bb67_ae85, 0x3c6e_f372_a54f_f53a, 0x510e_527f_9b05_688c, 0x1f83_d9ab_5be0_cd19],
+            [0xbb67_ae85_3c6e_f372, 0xa54f_f53a_510e_527f, 0x9b05_688c_1f83_d9ab, 0x5be0_cd19_6a09_e667],
+            [0x3c6e_f372_a54f_f53a, 0x510e_527f_9b05_688c, 0x1f83_d9ab_5be0_cd19, 0x6a09_e667_bb67_ae85],
+            [0xa54f_f53a_510e_527f, 0x9b05_688c_1f83_d9ab, 0x5be0_cd19_6a09_e667, 0xbb67_ae85_3c6e_f372],
+            [0x510e_527f_9b05_688c, 0x1f83_d9ab_5be0_cd19, 0x6a09_e667_bb67_ae85, 0x3c6e_f372_a54f_f53a],
+        ]
+
+        def __init__(self, data=b""):
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.piped_bits = 0
+            self.init_compress_flag = 0
+            self.block_iters = [0, 0, 0]
+            self.queued_data = bytearray(64)
+            self.prev_block = [[[0, 0, 0, 0] for _ in range(5)] for _ in range(3)]
+            self.level_one_to_four_const = [[[0, 0, 0, 0] for _ in range(5)] for _ in range(4)]
+            if self.hashbitlen == 224:
+                base = self.constants_224
+            elif self.hashbitlen == 256:
+                base = self.constants_256
+            else:
+                raise ValueError("invalid hash bit length")
+            self.main_constant_input_words = [row[:] for row in base]
+            self.initial_vector_temp_words = [row[:] for row in base]
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.piped_bits = self.piped_bits
+            other.init_compress_flag = self.init_compress_flag
+            other.block_iters = self.block_iters[:]
+            other.queued_data = bytearray(self.queued_data)
+            other.prev_block = [[row[:] for row in level] for level in self.prev_block]
+            other.level_one_to_four_const = [[row[:] for row in level] for level in self.level_one_to_four_const]
+            other.main_constant_input_words = [row[:] for row in self.main_constant_input_words]
+            other.initial_vector_temp_words = [row[:] for row in self.initial_vector_temp_words]
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            self.msg_len += len(data)
+            self.buf.extend(data)
+            while len(self.buf) >= 64:
+                self.queued_data[:] = self.buf[:64]
+                del self.buf[:64]
+                self.piped_bits = 512
+                if self.init_compress_flag == 0:
+                    self.init_compress()
+                else:
+                    self.compress()
+            self.piped_bits = len(self.buf) * 8
+            self.queued_data[:len(self.buf)] = self.buf
+            return self
+
+        def digest(self):
+            other = self.copy()
+            return other.finalize()
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            last = len(self.buf)
+            self.queued_data[:last] = self.buf
+            self.queued_data[last] = 0x80
+            for i in range(last + 1, 64):
+                self.queued_data[i] = 0
+
+            if self.init_compress_flag == 0:
+                self.init_compress()
+                message_words = self.create_message_from_block(self.initial_vector_temp_words)
+                message_length = self.piped_bits
+            else:
+                message_length = (self.block_iters[0] + 1) * 512 + self.piped_bits
+                self.compress()
+                message_words = self.create_message_from_block(self.prev_block[0])
+                if self.block_iters[1] > 0:
+                    self.do_block_mod_mix_ref(message_words, self.prev_block[1])
+                    message_words = self.create_message_from_block(self.prev_block[1])
+                    if self.block_iters[2] > 0:
+                        self.do_block_mod_mix_ref(message_words, self.prev_block[2])
+                        message_words = self.create_message_from_block(self.prev_block[2])
+
+            for i in range(5):
+                for j in range(1, 4, 2):
+                    self.level_one_to_four_const[3][i][j] ^= message_length
+
+            self.do_block_mod_mix_ref(message_words, self.level_one_to_four_const[3])
+
+            out_words = []
+            for i in range(4):
+                out_words.append(
+                    self.level_one_to_four_const[3][1][i]
+                    ^ self.level_one_to_four_const[3][2][i]
+                    ^ self.level_one_to_four_const[3][3][i]
+                    ^ self.level_one_to_four_const[3][4][i]
+                )
+
+            raw = b"".join(word.to_bytes(8, "big") for word in out_words)
+            return raw[:self.digest_size]
+
+        def init_compress(self):
+            self.init_compress_flag = 1
+            message_words = self.create_message_from_queue()
+            self.do_block_mod_mix_ref(message_words, self.initial_vector_temp_words)
+
+            for i in range(4):
+                self.level_one_to_four_const[0][0][i] = self.main_constant_input_words[0][i] ^ self.initial_vector_temp_words[4][i]
+                self.level_one_to_four_const[0][1][i] = self.main_constant_input_words[1][i] ^ self.initial_vector_temp_words[1][i]
+                self.level_one_to_four_const[0][2][i] = self.main_constant_input_words[2][i] ^ self.initial_vector_temp_words[2][i]
+                self.level_one_to_four_const[0][3][i] = self.main_constant_input_words[3][i] ^ self.initial_vector_temp_words[3][i]
+                self.level_one_to_four_const[0][4][i] = self.main_constant_input_words[4][i] ^ self.initial_vector_temp_words[4][i]
+
+            for i in range(5):
+                for j in range(4):
+                    self.level_one_to_four_const[1][i][j] = self.level_one_to_four_const[0][i][j]
+                    self.level_one_to_four_const[2][i][j] = self.level_one_to_four_const[0][i][j]
+                    self.level_one_to_four_const[3][i][j] = self.main_constant_input_words[i][j]
+
+            for i in range(5):
+                self.level_one_to_four_const[1][i][3] ^= self.cconst_256
+                self.level_one_to_four_const[2][i][3] ^= self.dconst_256
+                self.level_one_to_four_const[3][i][3] ^= self.dconst_256
+                self.level_one_to_four_const[3][i][0] = (~self.level_one_to_four_const[3][i][0]) & self.mask64
+                self.level_one_to_four_const[3][i][1] = (~self.level_one_to_four_const[3][i][1]) & self.mask64
+
+            for i in range(3):
+                for j in range(5):
+                    for k in range(4):
+                        self.prev_block[i][j][k] = self.level_one_to_four_const[i][j][k]
+
+            for i in range(2):
+                for j in range(5):
+                    for k in range(1, 4, 2):
+                        self.prev_block[i][j][k] ^= 1
+            return
+
+        def compress(self):
+            message_l1 = self.create_message_from_queue()
+
+            if (self.block_iters[0] % 10) == 0 and self.block_iters[0] > 1:
+                message_l2 = self.create_message_from_block(self.prev_block[0])
+                self.do_block_mod_mix_ref(message_l2, self.prev_block[1])
+
+                level_one_superblock = self.block_iters[0] // 10 + 1
+                for i in range(5):
+                    for j in range(4):
+                        self.prev_block[0][i][j] = self.level_one_to_four_const[0][i][j] ^ (level_one_superblock if (j & 1) else 0)
+
+                self.block_iters[1] += 1
+
+                if (self.block_iters[1] % 100) == 0 and self.block_iters[1] > 1:
+                    message_l3 = self.create_message_from_block(self.prev_block[1])
+                    self.do_block_mod_mix_ref(message_l3, self.prev_block[2])
+
+                    level_two_superblock = self.block_iters[1] // 100 + 1
+                    for i in range(5):
+                        for j in range(4):
+                            self.prev_block[1][i][j] = self.level_one_to_four_const[1][i][j] ^ (level_two_superblock if (j & 1) else 0)
+
+                    self.block_iters[2] += 1
+
+            self.do_block_mod_mix_ref(message_l1, self.prev_block[0])
+            self.block_iters[0] += 1
+            return
+
+        def create_message_from_queue(self):
+            words = []
+            for i in range(8):
+                words.append(int.from_bytes(self.queued_data[i * 8:(i + 1) * 8], "big"))
+            return words
+
+        def create_message_from_block(self, state_words):
+            return [
+                state_words[1][0] ^ state_words[3][0],
+                state_words[1][1] ^ state_words[3][1],
+                state_words[1][2] ^ state_words[3][2],
+                state_words[1][3] ^ state_words[3][3],
+                state_words[2][0] ^ state_words[4][0],
+                state_words[2][1] ^ state_words[4][1],
+                state_words[2][2] ^ state_words[4][2],
+                state_words[2][3] ^ state_words[4][3],
+            ]
+
+        def do_block_mod_mix_ref(self, data_input, prev_block_arr):
+            msd = data_input[:] + [0] * 25
+
+            for i in range(8, 33):
+                value = (
+                    msd[i - 8]
+                    + self.b[i - 8]
+                    + self.g(msd[i - 1])
+                    + self.ch(msd[i - 1], msd[i - 2], msd[i - 3])
+                    + msd[i - 4]
+                ) & self.mask64
+                msd[i] = self.rol64(self.sb(value), self.ms_rot_bits)
+
+            ws = [self.rol64(msd[i], self.bitmix_rot_bits) ^ msd[i + 4] for i in range(4)]
+            ws = self.bit_mix(ws)
+
+            ws = [ws[i] ^ prev_block_arr[0][i] for i in range(4)]
+            ws = self.do_round(ws, 0)
+            ws = self.bit_mix(ws)
+            prev_block_arr[1] = [(prev_block_arr[1][i] ^ ws[i]) & self.mask64 for i in range(4)]
+
+            ws = [prev_block_arr[1][i] ^ msd[14 + i] for i in range(4)]
+            ws = self.do_round(ws, 1)
+            ws = self.bit_mix(ws)
+            prev_block_arr[1] = [(prev_block_arr[2][i] ^ ws[i]) & self.mask64 for i in range(4)]
+
+            ws = [prev_block_arr[1][i] ^ msd[19 + i] for i in range(4)]
+            ws = self.do_round(ws, 2)
+            ws = self.bit_mix(ws)
+            prev_block_arr[2] = [(prev_block_arr[3][i] ^ ws[i]) & self.mask64 for i in range(4)]
+
+            ws = [prev_block_arr[2][i] ^ msd[24 + i] for i in range(4)]
+            ws = self.do_round(ws, 3)
+            ws = self.bit_mix(ws)
+            prev_block_arr[3] = [(prev_block_arr[4][i] ^ ws[i]) & self.mask64 for i in range(4)]
+
+            ws = [prev_block_arr[3][i] ^ msd[29 + i] for i in range(4)]
+            ws = self.do_round(ws, 4)
+            ws = self.bit_mix(ws)
+
+            for _ in range(self.extra_rounds):
+                ws = self.do_round(ws, 4)
+                ws = self.bit_mix(ws)
+
+            prev_block_arr[4] = [value & self.mask64 for value in ws]
+            return
+
+        def bit_mix(self, ws):
+            ws = ws[:]
+            value = (ws[0] ^ ws[2]) & self.j6
+            ws[0] ^= value
+            ws[2] ^= value
+            value = (ws[1] ^ ws[3]) & self.j3
+            ws[1] ^= value
+            ws[3] ^= value
+            value = (ws[0] ^ ws[1]) & self.j5
+            ws[0] ^= value
+            ws[1] ^= value
+            value = (ws[2] ^ ws[3]) & self.j5
+            ws[2] ^= value
+            ws[3] ^= value
+            return ws
+
+        def do_round(self, ws, round_index):
+            ws = ws[:]
+            ws[0] = self.rol64(
+                self.sb((ws[0] + self.f(ws[3]) + self.ch(ws[3], ws[2], ws[1]) + self.b[24 - (4 * round_index)]) & self.mask64),
+                self.r_rot_bits,
+            )
+            ws[1] = self.rol64(
+                self.sb((ws[1] + self.f(ws[0]) + self.ch(ws[0], ws[3], ws[2]) + self.b[23 - (4 * round_index)]) & self.mask64),
+                self.r_rot_bits,
+            )
+            ws[2] = self.rol64(
+                self.sb((ws[2] + self.f(ws[1]) + self.ch(ws[1], ws[0], ws[3]) + self.b[22 - (4 * round_index)]) & self.mask64),
+                self.r_rot_bits,
+            )
+            ws[3] = self.rol64(
+                self.sb((ws[3] + self.f(ws[2]) + self.ch(ws[2], ws[1], ws[0]) + self.b[21 - (4 * round_index)]) & self.mask64),
+                self.r_rot_bits,
+            )
+            return ws
+
+        def rol64(self, value, count):
+            value &= self.mask64
+            return ((value << count) | (value >> (64 - count))) & self.mask64
+
+        def rot32(self, value):
+            value &= self.mask64
+            return ((value << 32) | (value >> 32)) & self.mask64
+
+        def f(self, value):
+            upper = (value >> 32) & 0xffff_ffff
+            lower = value & 0xffff_ffff
+            return (upper * upper + lower * lower) & self.mask64
+
+        def g(self, value):
+            upper = (value >> 32) & 0xffff_ffff
+            lower = value & 0xffff_ffff
+            return (
+                upper * upper
+                + lower * lower
+                + self.rot32((((upper + self.aconst_256) & 0xffff_ffff) * ((lower + self.bconst_256) & 0xffff_ffff)) & self.mask64)
+            ) & self.mask64
+
+        def ch(self, a, b, c):
+            return ((a & b) ^ ((~a) & c)) & self.mask64
+
+        def sb(self, value):
+            value &= self.mask64
+            return value ^ self.fsbox[value & 0xff]
+
+    class SANDstorm224(SANDstorm256Base):
+        digest_size = 28
+        hashbitlen = 224
+
+    class SANDstorm256(SANDstorm256Base):
+        digest_size = 32
+        hashbitlen = 256
+
+    class SANDstorm512Base(SANDstorm256Base):
+        block_size = 128
+        extra_rounds = 0
+
+        mask64 = 0xffff_ffff_ffff_ffff
+        mask128 = 0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff
+        aconst_512 = 0xa611_186b_ae67_496b
+        bconst_512 = 0xbee8_390d_4395_5aed
+        sandwblkc = 0x6135_f68d_4c0c_bb6f_b43b_47a2_4577_8989
+        sandwblkd = 0x79cc_4519_5cf5_b7a4_aec4_e749_6801_dbb9
+        j3_128 = 0x3333_3333_3333_3333_3333_3333_3333_3333
+        j5_128 = 0x5555_5555_5555_5555_5555_5555_5555_5555
+        j6_128 = 0x6666_6666_6666_6666_6666_6666_6666_6666
+        sandwmspick = [4, 14, 19, 24, 29]
+
+        sandwlvlc384 = [
+            0xcbbb_9d5d_c105_9ed8_629a_292a_367c_d507,
+            0x9159_015a_3070_dd17_152f_ecd8_f70e_5939,
+            0x6733_2667_ffc0_0b31_8eb4_4a87_6858_1511,
+            0xdb0c_2e0d_64f9_8fa7_47b5_481d_befa_4fa4,
+            0x629a_292a_367c_d507_9159_015a_3070_dd17,
+            0x152f_ecd8_f70e_5939_6733_2667_ffc0_0b31,
+            0x8eb4_4a87_6858_1511_db0c_2e0d_64f9_8fa7,
+            0x47b5_481d_befa_4fa4_cbbb_9d5d_c105_9ed8,
+            0x9159_015a_3070_dd17_152f_ecd8_f70e_5939,
+            0x6733_2667_ffc0_0b31_8eb4_4a87_6858_1511,
+            0xdb0c_2e0d_64f9_8fa7_47b5_481d_befa_4fa4,
+            0xcbbb_9d5d_c105_9ed8_629a_292a_367c_d507,
+            0x152f_ecd8_f70e_5939_6733_2667_ffc0_0b31,
+            0x8eb4_4a87_6858_1511_db0c_2e0d_64f9_8fa7,
+            0x47b5_481d_befa_4fa4_cbbb_9d5d_c105_9ed8,
+            0x629a_292a_367c_d507_9159_015a_3070_dd17,
+            0x6733_2667_ffc0_0b31_8eb4_4a87_6858_1511,
+            0xdb0c_2e0d_64f9_8fa7_47b5_481d_befa_4fa4,
+            0xcbbb_9d5d_c105_9ed8_629a_292a_367c_d507,
+            0x9159_015a_3070_dd17_152f_ecd8_f70e_5939,
+        ]
+
+        sandwlvlc512 = [
+            0x6a09_e667_f3bc_c908_bb67_ae85_84ca_a73b,
+            0x3c6e_f372_fe94_f82b_a54f_f53a_5f1d_36f1,
+            0x510e_527f_ade6_82d1_9b05_688c_2b3e_6c1f,
+            0x1f83_d9ab_fb41_bd6b_5be0_cd19_137e_2179,
+            0xbb67_ae85_84ca_a73b_3c6e_f372_fe94_f82b,
+            0xa54f_f53a_5f1d_36f1_510e_527f_ade6_82d1,
+            0x9b05_688c_2b3e_6c1f_1f83_d9ab_fb41_bd6b,
+            0x5be0_cd19_137e_2179_6a09_e667_f3bc_c908,
+            0x3c6e_f372_fe94_f82b_a54f_f53a_5f1d_36f1,
+            0x510e_527f_ade6_82d1_9b05_688c_2b3e_6c1f,
+            0x1f83_d9ab_fb41_bd6b_5be0_cd19_137e_2179,
+            0x6a09_e667_f3bc_c908_bb67_ae85_84ca_a73b,
+            0xa54f_f53a_5f1d_36f1_510e_527f_ade6_82d1,
+            0x9b05_688c_2b3e_6c1f_1f83_d9ab_fb41_bd6b,
+            0x5be0_cd19_137e_2179_6a09_e667_f3bc_c908,
+            0xbb67_ae85_84ca_a73b_3c6e_f372_fe94_f82b,
+            0x510e_527f_ade6_82d1_9b05_688c_2b3e_6c1f,
+            0x1f83_d9ab_fb41_bd6b_5be0_cd19_137e_2179,
+            0x6a09_e667_f3bc_c908_bb67_ae85_84ca_a73b,
+            0x3c6e_f372_fe94_f82b_a54f_f53a_5f1d_36f1,
+        ]
+
+        sandwmsc = [
+            0x428a_2f98_d728_ae22_7137_4491_23ef_65cd,
+            0xb5c0_fbcf_ec4d_3b2f_e9b5_dba5_8189_dbbc,
+            0x3956_c25b_f348_b538_59f1_11f1_b605_d019,
+            0x923f_82a4_af19_4f9b_ab1c_5ed5_da6d_8118,
+            0xd807_aa98_a303_0242_1283_5b01_4570_6fbe,
+            0x2431_85be_4ee4_b28c_550c_7dc3_d5ff_b4e2,
+            0x72be_5d74_f27b_896f_80de_b1fe_3b16_96b1,
+            0x9bdc_06a7_25c7_1235_c19b_f174_cf69_2694,
+            0xe49b_69c1_9ef1_4ad2_efbe_4786_384f_25e3,
+            0x0fc1_9dc6_8b8c_d5b5_240c_a1cc_77ac_9c65,
+            0x2de9_2c6f_592b_0275_4a74_84aa_6ea6_e483,
+            0x5cb0_a9dc_bd41_fbd4_76f9_88da_8311_53b5,
+            0x983e_5152_ee66_dfab_a831_c66d_2db4_3210,
+            0xb003_27c8_98fb_213f_bf59_7fc7_beef_0ee4,
+            0xc6e0_0bf3_3da8_8fc2_d5a7_9147_930a_a725,
+            0x06ca_6351_e003_826f_1429_2967_0a0e_6e70,
+            0x27b7_0a85_46d2_2ffc_2e1b_2138_5c26_c926,
+            0x4d2c_6dfc_5ac4_2aed_5338_0d13_9d95_b3df,
+            0x650a_7354_8baf_63de_766a_0abb_3c77_b2a8,
+            0x81c2_c92e_47ed_aee6_9272_2c85_1482_353b,
+            0xa2bf_e8a1_4cf1_0364_a81a_664b_bc42_3001,
+            0xc24b_8b70_d0f8_9791_c76c_51a3_0654_be30,
+            0xd192_e819_d6ef_5218_d699_0624_5565_a910,
+            0xf40e_3585_5771_202a_106a_a070_32bb_d1b8,
+            0x19a4_c116_b8d2_d0c8_1e37_6c08_5141_ab53,
+        ]
+
+        def __init__(self, data=b""):
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.msglen_bits = 0
+            self.mbcnt = 0
+            self.msgbytes = bytearray(128)
+            self.msg = [0] * 8
+            self.blkn1 = 1
+            self.blkn2 = 1
+            self.lvl0flag = 0
+            self.lvl1cnt = 0
+            self.lvl2cnt = 0
+            self.lvl3flag = 0
+            self.prev = [0] * 100
+            if self.hashbitlen == 384:
+                self.lvlc = self.sandwlvlc384
+            elif self.hashbitlen == 512:
+                self.lvlc = self.sandwlvlc512
+            else:
+                raise ValueError("invalid hash bit length")
+            for i in range(20):
+                self.prev[i] = self.lvlc[i]
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.msglen_bits = self.msglen_bits
+            other.mbcnt = self.mbcnt
+            other.msgbytes = bytearray(self.msgbytes)
+            other.msg = self.msg[:]
+            other.blkn1 = self.blkn1
+            other.blkn2 = self.blkn2
+            other.lvl0flag = self.lvl0flag
+            other.lvl1cnt = self.lvl1cnt
+            other.lvl2cnt = self.lvl2cnt
+            other.lvl3flag = self.lvl3flag
+            other.prev = self.prev[:]
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            self.msg_len += len(data)
+            self.msglen_bits = (self.msglen_bits + (len(data) * 8)) & self.mask128
+            self.buf.extend(data)
+            while len(self.buf) >= 128:
+                self.msgbytes[:] = self.buf[:128]
+                del self.buf[:128]
+                self.mbcnt = 128
+                self.sandwdoit()
+            return self
+
+        def digest(self):
+            other = self.copy()
+            return other.finalize()
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            self.msgbytes[:len(self.buf)] = self.buf
+            self.mbcnt = len(self.buf)
+            for i in range(self.mbcnt, 128):
+                self.msgbytes[i] = 0
+            self.mbcnt += 1
+            self.msgbytes[self.mbcnt - 1] |= 0x80
+            self.sandwdoit()
+
+            if not (self.lvl2cnt == 0 and self.blkn2 == 1):
+                if self.lvl1cnt:
+                    if self.lvl2cnt == 100:
+                        for i in range(8):
+                            self.msg[i] = self.x128(self.prev[44 + i], self.prev[52 + i])
+                        if not self.lvl3flag:
+                            for i in range(20):
+                                self.prev[60 + i] = self.x128(self.lvlc[i], self.prev[i + 16 if i < 4 else i])
+                            for i in range(0, 20, 4):
+                                self.prev[63 + i] = self.x128(self.prev[63 + i], self.sandwblkd)
+                        self.sandwcmprs(self.msg, self.prev, 3, self.extra_rounds)
+                        self.lvl2cnt = 0
+                        self.blkn2 = self.a128(self.blkn2, 1)
+                        self.lvl3flag = 1
+
+                    if not self.lvl2cnt:
+                        for i in range(20):
+                            self.prev[40 + i] = self.x128(self.lvlc[i], self.prev[i + 16 if i < 4 else i])
+                        for i in range(0, 20, 4):
+                            self.prev[43 + i] = self.x128(self.prev[43 + i], self.sandwblkc)
+                        for i in range(0, 20, 2):
+                            self.prev[41 + i] = self.x128(self.prev[41 + i], self.blkn2)
+
+                    for i in range(8):
+                        self.msg[i] = self.x128(self.prev[24 + i], self.prev[32 + i])
+                    self.sandwcmprs(self.msg, self.prev, 2, self.extra_rounds)
+                    self.lvl1cnt = 0
+                    self.blkn1 = self.a128(self.blkn1, 1)
+                    self.lvl2cnt += 1
+
+                if self.lvl3flag and self.lvl2cnt:
+                    for i in range(8):
+                        self.msg[i] = self.x128(self.prev[44 + i], self.prev[52 + i])
+                    self.sandwcmprs(self.msg, self.prev, 3, self.extra_rounds)
+                    self.lvl2cnt = 0
+                    self.blkn2 = self.a128(self.blkn2, 1)
+
+            for i in range(20):
+                self.prev[80 + i] = self.lvlc[i]
+            for i in range(0, 20, 4):
+                self.prev[83 + i] = self.x128(self.prev[83 + i], self.sandwblkd)
+            for i in range(0, 20, 2):
+                self.prev[81 + i] = self.x128(self.prev[81 + i], self.msglen_bits)
+            for i in range(20):
+                if not (i & 2):
+                    self.prev[80 + i] = self.c128(self.prev[80 + i])
+
+            if self.lvl1cnt == 0 and self.blkn1 == 1:
+                for i in range(8):
+                    self.msg[i] = self.x128(self.prev[4 + i], self.prev[12 + i])
+            elif self.lvl2cnt == 0 and self.blkn2 == 1:
+                for i in range(8):
+                    self.msg[i] = self.x128(self.prev[24 + i], self.prev[32 + i])
+            elif self.lvl3flag == 0:
+                for i in range(8):
+                    self.msg[i] = self.x128(self.prev[44 + i], self.prev[52 + i])
+            else:
+                for i in range(8):
+                    self.msg[i] = self.x128(self.prev[64 + i], self.prev[72 + i])
+
+            self.sandwcmprs(self.msg, self.prev, 4, self.extra_rounds)
+
+            for i in range(4):
+                self.prev[96 + i] = self.x128(
+                    self.prev[84 + i],
+                    self.x128(
+                        self.prev[88 + i],
+                        self.x128(self.prev[92 + i], self.prev[96 + i]),
+                    ),
+                )
+
+            raw = b"".join(word.to_bytes(16, "big") for word in self.prev[96:100])
+            return raw[:self.digest_size]
+
+        def sandwdoit(self):
+            if self.lvl1cnt == 10:
+                if self.lvl2cnt == 100:
+                    for i in range(8):
+                        self.msg[i] = self.x128(self.prev[44 + i], self.prev[52 + i])
+                    if not self.lvl3flag:
+                        for i in range(20):
+                            self.prev[60 + i] = self.x128(self.lvlc[i], self.prev[i + 16 if i < 4 else i])
+                        for i in range(0, 20, 4):
+                            self.prev[63 + i] = self.x128(self.prev[63 + i], self.sandwblkd)
+                    self.sandwcmprs(self.msg, self.prev, 3, self.extra_rounds)
+                    self.lvl2cnt = 0
+                    self.blkn2 = self.a128(self.blkn2, 1)
+                    self.lvl3flag = 1
+
+                if not self.lvl2cnt:
+                    for i in range(20):
+                        self.prev[40 + i] = self.x128(self.lvlc[i], self.prev[i + 16 if i < 4 else i])
+                    for i in range(0, 20, 4):
+                        self.prev[43 + i] = self.x128(self.prev[43 + i], self.sandwblkc)
+                    for i in range(0, 20, 2):
+                        self.prev[41 + i] = self.x128(self.prev[41 + i], self.blkn2)
+
+                for i in range(8):
+                    self.msg[i] = self.x128(self.prev[24 + i], self.prev[32 + i])
+                self.sandwcmprs(self.msg, self.prev, 2, self.extra_rounds)
+                self.lvl1cnt = 0
+                self.blkn1 = self.a128(self.blkn1, 1)
+                self.lvl2cnt += 1
+
+            for i in range(8):
+                self.msg[i] = 0
+            for i in range(128):
+                self.msg[i >> 4] ^= self.msgbytes[i] << (120 - ((i & 15) << 3))
+            self.mbcnt = 0
+
+            if self.lvl0flag == 0:
+                self.sandwcmprs(self.msg, self.prev, 0, self.extra_rounds)
+                self.lvl0flag = 1
+            else:
+                if not self.lvl1cnt:
+                    for i in range(20):
+                        self.prev[20 + i] = self.x128(self.lvlc[i], self.prev[i + 16 if i < 4 else i])
+                    for i in range(0, 20, 2):
+                        self.prev[21 + i] = self.x128(self.prev[21 + i], self.blkn1)
+                self.sandwcmprs(self.msg, self.prev, 1, self.extra_rounds)
+                self.lvl1cnt += 1
+            return
+
+        def sandwcmprs(self, msg, prev, level, xrnds):
+            ms = msg[:] + [0] * 25
+
+            for i in range(8, 33):
+                ms[i] = self.r128(
+                    self.sb128(
+                        self.a128(
+                            ms[i - 8],
+                            self.a128(
+                                self.sandwmsc[i - 8],
+                                self.a128(
+                                    self.sandwg(ms[i - 1]),
+                                    self.a128(
+                                        self.x128(
+                                            self.b128(ms[i - 1], ms[i - 2]),
+                                            self.b128(self.c128(ms[i - 1]), ms[i - 3]),
+                                        ),
+                                        ms[i - 4],
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                    59,
+                )
+
+            for i in range(4):
+                ms[i + 4] = self.x128(self.r128(ms[i], 37), ms[i + 4])
+
+            temp = self.b128(self.x128(ms[4], ms[6]), self.j6_128)
+            ms[4] = self.x128(ms[4], temp)
+            ms[6] = self.x128(ms[6], temp)
+
+            temp = self.b128(self.x128(ms[5], ms[7]), self.j3_128)
+            ms[5] = self.x128(ms[5], temp)
+            ms[7] = self.x128(ms[7], temp)
+
+            temp = self.b128(self.x128(ms[4], ms[5]), self.j5_128)
+            ms[4] = self.x128(ms[4], temp)
+            ms[5] = self.x128(ms[5], temp)
+
+            temp = self.b128(self.x128(ms[6], ms[7]), self.j5_128)
+            ms[6] = self.x128(ms[6], temp)
+            ms[7] = self.x128(ms[7], temp)
+
+            w = [prev[20 * level + i] for i in range(4)]
+
+            for rnd in range(5):
+                for i in range(4):
+                    w[i] = self.x128(w[i], ms[self.sandwmspick[rnd] + i])
+
+                rounds = 1 if rnd < 4 else (xrnds + 1)
+                for _ in range(rounds):
+                    for i in range(4):
+                        w[i] = self.r128(
+                            self.sb128(
+                                self.a128(
+                                    w[i],
+                                    self.a128(
+                                        self.sandwf(w[(i + 3) & 3]),
+                                        self.a128(
+                                            self.x128(
+                                                self.b128(w[(i + 3) & 3], w[i ^ 2]),
+                                                self.b128(self.c128(w[(i + 3) & 3]), w[(i + 1) & 3]),
+                                            ),
+                                            self.sandwmsc[24 - i - (rnd << 2)],
+                                        ),
+                                    ),
+                                ),
+                            ),
+                            57,
+                        )
+
+                    temp = self.b128(self.x128(w[0], w[2]), self.j6_128)
+                    w[0] = self.x128(w[0], temp)
+                    w[2] = self.x128(w[2], temp)
+
+                    temp = self.b128(self.x128(w[1], w[3]), self.j3_128)
+                    w[1] = self.x128(w[1], temp)
+                    w[3] = self.x128(w[3], temp)
+
+                    temp = self.b128(self.x128(w[0], w[1]), self.j5_128)
+                    w[0] = self.x128(w[0], temp)
+                    w[1] = self.x128(w[1], temp)
+
+                    temp = self.b128(self.x128(w[2], w[3]), self.j5_128)
+                    w[2] = self.x128(w[2], temp)
+                    w[3] = self.x128(w[3], temp)
+
+                if rnd < 4:
+                    for i in range(4):
+                        w[i] = self.x128(w[i], prev[20 * level + 4 * rnd + 4 + i])
+
+                if rnd:
+                    for i in range(4):
+                        prev[20 * level + 4 * rnd + i] = w[i]
+            return
+
+        def a128(self, a, b):
+            return (a + b) & self.mask128
+
+        def x128(self, a, b):
+            return (a ^ b) & self.mask128
+
+        def c128(self, value):
+            return (~value) & self.mask128
+
+        def b128(self, a, b):
+            return a & b
+
+        def r128(self, value, count):
+            count &= 127
+            if count == 0:
+                return value & self.mask128
+            return ((value << count) | (value >> (128 - count))) & self.mask128
+
+        def m128(self, a, b):
+            return (a * b) & self.mask128
+
+        def sandwf(self, value):
+            upper = (value >> 64) & self.mask64
+            lower = value & self.mask64
+            return self.a128(self.m128(upper, upper), self.m128(lower, lower))
+
+        def sandwg(self, value):
+            upper = (value >> 64) & self.mask64
+            lower = value & self.mask64
+            return self.a128(
+                self.m128(upper, upper),
+                self.a128(
+                    self.m128(lower, lower),
+                    self.r128(
+                        self.m128((upper + self.aconst_512) & self.mask64, (lower + self.bconst_512) & self.mask64),
+                        64,
+                    ),
+                ),
+            )
+
+        def sb128(self, value):
+            value &= self.mask128
+            return value ^ self.fsbox[value & 0xff]
+
+    class SANDstorm384(SANDstorm512Base):
+        digest_size = 48
+        hashbitlen = 384
+
+    class SANDstorm512(SANDstorm512Base):
+        digest_size = 64
+        hashbitlen = 512
+
 
 @register_command
 class HashCommand(GenericCommand):
@@ -101249,6 +102668,18 @@ class HashCommand(GenericCommand):
         yield ("MD6-128", Hash.MD6(d=128))
         yield ("MD6-256", Hash.MD6(d=256))
         yield ("MD6-512", Hash.MD6(d=512))
+        yield ("MeshHash224", Hash.MeshHash224())
+        yield ("MeshHash256", Hash.MeshHash256())
+        yield ("MeshHash384", Hash.MeshHash384())
+        yield ("MeshHash512", Hash.MeshHash512())
+        yield ("NaSHA224", Hash.NaSHA224())
+        yield ("NaSHA256", Hash.NaSHA256())
+        yield ("NaSHA384", Hash.NaSHA384())
+        yield ("NaSHA512", Hash.NaSHA512())
+        yield ("SANDstorm224", Hash.SANDstorm224())
+        yield ("SANDstorm256", Hash.SANDstorm256())
+        yield ("SANDstorm384", Hash.SANDstorm384())
+        yield ("SANDstorm512", Hash.SANDstorm512())
 
         # Other (relatively long)
         yield "Relatively long"
@@ -102272,6 +103703,33 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "977592608c45c9923340338450fdcccc21a68888e1e6350e133c5186cd9736ee",
         "MD6-512":
             "dcba0c6593fbd83a0f5f148588baa79530579c1f5e7f19d500fe282d137bff465106f25c9f0619b4082a730683d5f58311c0c1913068e91b0ebdf9ace3ff5b9e",
+        # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/MeshHash.zip
+        "MeshHash224":
+            "d282dbd98285891d65912cde56bccb031a03187f4b348ec649da9893",
+        "MeshHash256":
+            "d7478933b34ee26b1c71d049f8eb3b42e72b142b2c63c6ebb14d87eb9c00506f",
+        "MeshHash384":
+            "e79aadab0a169cfd4386188285fb9f62abeb78f1aaa9409f4074228ff48862b7a709bfb2c09a2045b249e54f9f2374f5",
+        "MeshHash512":
+            "d479629fe2423dd5ca291731c76f805344d45a3ca5daf7f734d08af8157fcc315968aa9fe10560c57a0a5cef5f3848b4e9ea678f8fd2ce5706226259d76f48b5",
+        # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/NaSHA.zip
+        "NaSHA224":
+            "32040ebcae67fb698ab2037dcb2d42b4b05405173b44b821ff611fcd",
+        "NaSHA256":
+            "7c97fbe05876c7da8bb5eb8fa9ab45d6457e5796fda873b38b3e5e20bdef07aa",
+        "NaSHA384":
+            "53ce208a677e8fcfe6c8a42f72e67cf0f9324f7c98651fea2c56a9e16f46fa4a546ec55d3bdd3d65a421e53d0b58b3a2",
+        "NaSHA512":
+            "90c2bbf5379133e3468497a711d769afb18549d564063baf047802f5830fecec5be33b0d9d688345344c071341a923c721c9cf8e4a7d53c1dc3048f8f9e12aa9",
+        # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/SANDstorm.zip
+        "SANDstorm224":
+            "e2ae7dbf4649c65e0ae19de85b3b4d2565862645146282ec57a64ef4",
+        "SANDstorm256":
+            "607ac39b7cd6c1912e7934cdbbfceeea1fe5e8155a9726b36c96895c93e6056d",
+        "SANDstorm384":
+            "e0fb1925617466e876152d6c632b4751829ee61036d1bccbe0d481ea5b0eab7f0a020c7cb9423cd7382a18b738609e5d",
+        "SANDstorm512":
+            "c50794660a3672279018ec7ab26559bdea6565e191ba892ef4cc579c96fb33804255ad18a4b2f6604b34d5e2a4ca5d4dd1fc6fee882727ac54f6273706ea9ff6",
         # -------------------- relatively long --------------------
         # https://hashing.tools/ascon
         "Ascon-Hash":
