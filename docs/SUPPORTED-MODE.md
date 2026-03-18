@@ -157,12 +157,12 @@
     - Debugger (GDB) host
         - x64
     - Debuggee (debugged kernel)
-        - x64
+        - x64, ARM64
 - Notes
     - You need `gdb` version 12.x or later.
-    - This runs very slowly and is not recommended.
+    - This runs very slowly over a serial interface; without a vmlinux with symbols, debugging is effectively impractical.
     - The `Ctrl+C` interrupt does not work; instead, use `echo g > /proc/sysrq-trigger` in the console.
-    - Many commands are unsupported in KGDB mode because creating the memory map would take several hours.
+    - Unlike qemu-system, some commands are unsupported in KGDB mode because it is still under development.
 
 ## With VMware
 - Usage
