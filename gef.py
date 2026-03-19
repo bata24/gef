@@ -98860,12 +98860,9 @@ class Hash:
                 table = []
                 for value in range(256):
                     out = 0
-                    bit = 0
-                    v = value
-                    while bit < 8:
-                        if v & (1 << bit):
+                    for bit in range(8):
+                        if value & (1 << bit):
                             out |= 1 << (bit * 2)
-                        bit += 1
                     table.append(out)
                 return table
 
@@ -98947,9 +98944,8 @@ class Hash:
             return
 
         def decompress_search(self, x):
-            point_decompress = self.point_decompress
             while True:
-                p = point_decompress(x)
+                p = self.point_decompress(x)
                 if p is not None:
                     return p
                 x += 2
@@ -99005,8 +99001,7 @@ class Hash:
                 b >>= 4
                 shift += 4
 
-            r = self.gf_reduce(r)
-            return r
+            return self.gf_reduce(r)
 
         def gf_sqr(self, a):
             table = self.curve.square_table
@@ -99016,18 +99011,14 @@ class Hash:
                 r |= table[a & 0xff] << shift
                 a >>= 8
                 shift += 16
-            r = self.gf_reduce(r)
-            return r
+            return self.gf_reduce(r)
 
         def gf_inv(self, a):
             if a == 0:
                 return 0
 
-            modulus = self.curve.modulus
-            reduce_value = self.gf_reduce
-
             u = a
-            v = modulus
+            v = self.curve.modulus
             g1 = 1
             g2 = 0
 
@@ -99040,63 +99031,44 @@ class Hash:
                 u ^= v << j
                 g1 ^= g2 << j
 
-            g1 = reduce_value(g1)
-            return g1
+            return self.gf_reduce(g1)
 
         def half_trace(self, a):
             z = a
-            gf_sqr = self.gf_sqr
-            i = 1
             limit = (self.curve.m - 1) // 2
-            while i <= limit:
-                z = gf_sqr(gf_sqr(z)) ^ a
-                i += 1
+            for _ in range(limit):
+                z = self.gf_sqr(self.gf_sqr(z)) ^ a
             return z
 
         def point_decompress(self, x):
-            gf_reduce = self.gf_reduce
-            gf_inv = self.gf_inv
-            gf_mul = self.gf_mul
-            gf_sqr = self.gf_sqr
-            half_trace = self.half_trace
-
-            x = gf_reduce(x)
+            x = self.gf_reduce(x)
             if x == 0:
                 return None
 
-            inv_x = gf_inv(x)
-            rhs = x
-            rhs ^= self.curve.a
-            rhs ^= gf_mul(self.curve.b, gf_sqr(inv_x))
+            rhs = x ^ self.curve.a ^ self.gf_mul(self.curve.b, self.gf_sqr(self.gf_inv(x)))
 
-            z = half_trace(rhs)
-            if (gf_sqr(z) ^ z) != rhs:
+            z = self.half_trace(rhs)
+            if (self.gf_sqr(z) ^ z) != rhs:
                 return None
 
             yp = (x >> self.yp_bit) & 1
             if (z & 1) != yp:
                 z ^= 1
 
-            y = gf_mul(x, z)
+            y = self.gf_mul(x, z)
             return (x, y)
 
         def point_double(self, p):
             if p is None:
                 return None
 
-            x1 = p[0]
-            y1 = p[1]
-
+            x1, y1 = p
             if x1 == 0:
                 return None
 
-            gf_mul = self.gf_mul
-            gf_inv = self.gf_inv
-            gf_sqr = self.gf_sqr
-
-            lam = gf_mul(gf_inv(x1), y1) ^ x1
-            x3 = gf_sqr(lam) ^ lam ^ self.curve.a
-            y3 = gf_sqr(x1) ^ gf_mul(x3, lam ^ 1)
+            lam = self.gf_mul(self.gf_inv(x1), y1) ^ x1
+            x3 = self.gf_sqr(lam) ^ lam ^ self.curve.a
+            y3 = self.gf_sqr(x1) ^ self.gf_mul(x3, lam ^ 1)
             return (x3, y3)
 
         def point_add(self, p, q):
@@ -99105,37 +99077,28 @@ class Hash:
             if q is None:
                 return p
 
-            x1 = p[0]
-            y1 = p[1]
-            x2 = q[0]
-            y2 = q[1]
+            x1, y1 = p
+            x2, y2 = q
 
             if x1 == x2:
                 if y1 == y2:
                     return self.point_double(p)
                 return None
 
-            gf_mul = self.gf_mul
-            gf_inv = self.gf_inv
-            gf_sqr = self.gf_sqr
-
-            lam = gf_mul(gf_inv(x1 ^ x2), y1 ^ y2)
-            x3 = gf_sqr(lam) ^ lam ^ x1 ^ x2 ^ self.curve.a
-            y3 = gf_mul(lam, x3 ^ x1) ^ x3 ^ y1
+            lam = self.gf_mul(self.gf_inv(x1 ^ x2), y1 ^ y2)
+            x3 = self.gf_sqr(lam) ^ lam ^ x1 ^ x2 ^ self.curve.a
+            y3 = self.gf_mul(lam, x3 ^ x1) ^ x3 ^ y1
             return (x3, y3)
 
         def scalar_mul(self, k, p):
             r = None
             a = p
-            point_add = self.point_add
-            point_double = self.point_double
-
             while k:
                 if k & 1:
-                    r = point_add(r, a)
+                    r = self.point_add(r, a)
                 k >>= 1
                 if k:
-                    a = point_double(a)
+                    a = self.point_double(a)
             return r
 
     class ECOH224(ECOHBase):
