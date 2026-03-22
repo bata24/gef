@@ -109286,7 +109286,7 @@ class HashTestCommand(HashCommand, BufferingOutput):
         tqdm = GefUtil.get_tqdm()
         hash_funcs = list(self.get_valid_hash_funcs())
         pbar = tqdm(hash_funcs, leave=False, total=len(hash_funcs))
-        for elem in pbar:
+        for i, elem in enumerate(pbar):
             if isinstance(elem, str):
                 category = elem
                 continue
@@ -109308,20 +109308,20 @@ class HashTestCommand(HashCommand, BufferingOutput):
             bit = len(h) * 4
             byte = bit // 8
             elapsed = end_time_real - start_time_real
-            result.append([elapsed, category, hname, bit, byte])
+            result.append([elapsed, i, category, hname, bit, byte])
 
         if self.args.time_with_sort:
-            result = sorted(result, reverse=True)
+            result = sorted(result, key=lambda x: (-x[0], x[1]))
 
         cumulative_time = 0.0
         prev_category = None
-        for elapsed, category, hname, bit, byte in result:
+        for elapsed, _, category, hname, bit, byte in result:
             cumulative_time += elapsed
             if self.args.time:
                 if prev_category != category:
                     self.out.append(titlify(category))
                     prev_category = category
-            self.out.append("{:26s}:[{:4d}b/{:3d}B] {:.5f} sec (total: {:.5f} sec)".format(
+            self.out.append("{:26s}:[{:4d}b/{:3d}B] {:.6f} sec (total: {:.6f} sec)".format(
                 hname, bit, byte, elapsed, cumulative_time,
             ))
         return
