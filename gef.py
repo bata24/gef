@@ -113012,7 +113012,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         allocator = Kernel.get_slab_type()
         if allocator == "SLUB":
             pass
-        elif allocator == "SLUB-TINY":
+        elif allocator == "SLUB_TINY":
             self.quiet_err("Unsupported; You should use `slub-tiny-dump`")
             return
         elif allocator == "SLAB":
@@ -113812,7 +113812,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         if allocator == "SLUB":
             self.quiet_err("Unsupported; You should use `slub-dump`")
             return
-        elif allocator == "SLUB-TINY":
+        elif allocator == "SLUB_TINY":
             pass
         elif allocator == "SLAB":
             self.quiet_err("Unsupported; You should use `slab-dump`")
@@ -114709,7 +114709,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         if allocator == "SLUB":
             self.quiet_err("Unsupported; You should use `slub-dump`")
             return
-        elif allocator == "SLUB-TINY":
+        elif allocator == "SLUB_TINY":
             self.quiet_err("Unsupported; You should use `slub-tiny-dump`")
             return
         elif allocator == "SLAB":
@@ -115121,7 +115121,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         if allocator == "SLUB":
             self.quiet_err("Unsupported; You should use `slub-dump`")
             return
-        elif allocator == "SLUB-TINY":
+        elif allocator == "SLUB_TINY":
             self.quiet_err("Unsupported; You should use `slub-tiny-dump`")
             return
         elif allocator == "SLAB":
