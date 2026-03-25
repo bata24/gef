@@ -69723,7 +69723,9 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
 
         if is_64bit():
             # struct ctl_dir
-            if "4.9.120" <= kversion < "4.10":
+            if kversion < "4.9.120":
+                self.offset_rb_node = 0x48
+            elif "4.9.120" <= kversion < "4.10":
                 self.offset_rb_node = 0x50
             elif "4.10" <= kversion < "4.11":
                 self.offset_rb_node = 0x48
@@ -69745,7 +69747,10 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                 self.sizeof_ctl_table = 0x38
         else:
             # struct ctl_dir
-            if "4.9.120" <= kversion < "4.10":
+            if kversion < "4.9.120":
+                self.offset_rb_node = 0x28
+                self.offset_parent = 0x20
+            elif "4.9.120" <= kversion < "4.10":
                 self.offset_rb_node = 0x2c
                 self.offset_parent = 0x20
             elif "4.10" <= kversion < "4.11":
