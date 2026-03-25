@@ -121145,12 +121145,17 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         if not ret:
             return False
 
-        # the case of both kernel version string are same, but offset are different.
-        version_string_offset = self.version_string_offset
-        if self.get_saved_config(["version_string_offset"]):
-            if self.version_string_offset != version_string_offset:
-                cfg_file_name = self.get_cfg_name()
-                os.remove(cfg_file_name)
+        if self.args.rescan:
+            cfg_file_name = self.get_cfg_name()
+            os.remove(cfg_file_name)
+        else:
+            # the case of both kernel version string are same, but offset are different.
+            current_version_string_offset = self.version_string_offset # keep current
+            if self.get_saved_config(["version_string_offset"]): # load temporarily
+                if self.version_string_offset != current_version_string_offset:
+                    cfg_file_name = self.get_cfg_name()
+                    os.remove(cfg_file_name)
+                    self.version_string_offset = current_version_string_offset # set current again
 
         ret = self.find_kallsyms_token_table()
         if not ret:
@@ -121281,7 +121286,9 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             # It will take a long time to parse if you just use it.
             # Gradually increasing ro_size while searching can speed up several times.
             self.ro_base = kinfo.ro_base
-            base_size = 0x40_0000
+            # This value is a heuristic threshold derived through testing across numerous kernel images.
+            # Unless there is a compelling reason, do not modify it.
+            base_size = 0x10_0000
             step = 0x10_0000
             for candidate_size in range(base_size, kinfo.ro_size, step):
                 self.ro_size = candidate_size
