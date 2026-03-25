@@ -62481,15 +62481,18 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             pass
 
         # slow path
-        offset_mm = offset_tasks + 2 * current_arch.ptrsize
-        r = read_int_from_memory(task_addr + offset_mm)
-        if 0 < r <= 0xffff:
-            # maybe prio, so CONFIG_SMP is y
-            kversion = Kernel.kernel_version()
-            if "3.14" <= kversion:
-                offset_mm = offset_tasks + 10 * current_arch.ptrsize
-            else:
-                offset_mm = offset_tasks + 7 * current_arch.ptrsize
+        kversion = Kernel.kernel_version()
+        if kversion < "6.17":
+            offset_mm = offset_tasks + 2 * current_arch.ptrsize
+            r = read_int_from_memory(task_addr + offset_mm)
+            if 0 < r <= 0xffff:
+                # maybe prio, so CONFIG_SMP is y
+                if "3.14" <= kversion:
+                    offset_mm = offset_tasks + 10 * current_arch.ptrsize
+                else:
+                    offset_mm = offset_tasks + 7 * current_arch.ptrsize
+        else:
+            offset_mm = offset_tasks + 10 * current_arch.ptrsize
         return offset_mm
 
     def get_offset_comm(self, task_addrs):
@@ -62692,6 +62695,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         kstacks_raw = []
         for task in task_addrs:
             kstack = read_int_from_memory(task + offset_stack)
+            if kstack == 0:
+                continue
             kstacks_raw.append(kstack)
 
         # calc kstack size
@@ -62706,7 +62711,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             kstack_size = min(diffs)
 
         # check
-        while True:
+        while kstack_size >= 0x2000:
             for kstack in kstacks_raw:
                 if not is_valid_addr(kstack + kstack_size - current_arch.ptrsize):
                     kstack_size //= 2
@@ -64207,7 +64212,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         [v6.12~]
         struct file {
-            atomic_long_t f_count;
+            atomic_long_t f_count; // v6.12
+            file_ref_t f_ref; // v6.13~v6.14
             spinlock_t f_lock;
             fmode_t f_mode;
             const struct file_operations *f_op;
@@ -64217,6 +64223,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             unsigned int f_flags;
             unsigned int f_iocb_flags;
             const struct cred *f_cred;
+            struct fown_struct *f_owner; // v6.15~
             /* --- cacheline 1 boundary (64 bytes) --- */
             struct path {
                 struct vfsmount *mnt;
@@ -64298,33 +64305,49 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 offset_mnt = 64
             else:
                 """
-                0x811f3180|+0x0000|+000: f_count     : 0x00000004
-                0x811f3184|+0x0004|+001: f_lock      : 0x00000000
-                0x811f3188|+0x0008|+002: f_mode      : 0x004a801d
-                0x811f318c|+0x000c|+003: f_op        : 0x80a0e040  ->  0x00000000
-                0x811f3190|+0x0010|+004: f_mapping   : 0x813a2140  ->  0x813a2050  ->  0x000589ed
-                0x811f3194|+0x0014|+005: private_data: 0x00000000
-                0x811f3198|+0x0018|+006: f_inode     : 0x813a2050  ->  0x000589ed
-                0x811f319c|+0x001c|+007: f_flags     : 0x00020020
-                0x811f31a0|+0x0020|+008: f_iocb_flags: 0x00000000
-                0x811f31a4|+0x0024|+009: f_cred      : 0x81378280  ->  0x00000005
-                0x811f31a8|+0x0028|+010:             : 0x810043d0  ->  0x81402088  ->  0x00210000
-                0x811f31ac|+0x002c|+011:             : 0x814fd990  ->  0x00400008
-                0x811f31b0|+0x0030|+012:             : 0x00000000
-                0x811f31b4|+0x0034|+013:             : 0x00000000
-                0x811f31b8|+0x0038|+014:             : 0x00000000
+                0x811f3180|+0x0000|+000: f_count        : 0x00000004
+                0x811f3184|+0x0004|+001: f_lock         : 0x00000000
+                0x811f3188|+0x0008|+002: f_mode         : 0x004a801d
+                0x811f318c|+0x000c|+003: f_op           : 0x80a0e040  ->  0x00000000
+                0x811f3190|+0x0010|+004: f_mapping      : 0x813a2140  ->  0x813a2050  ->  0x000589ed
+                0x811f3194|+0x0014|+005: private_data   : 0x00000000
+                0x811f3198|+0x0018|+006: f_inode        : 0x813a2050  ->  0x000589ed
+                0x811f319c|+0x001c|+007: f_flags        : 0x00020020
+                0x811f31a0|+0x0020|+008: f_iocb_flags   : 0x00000000
+                0x811f31a4|+0x0024|+009: f_cred         : 0x81378280  ->  0x00000005
+                0x811f31a8|+0x0028|+010: f_path.mnt     : 0x810043d0  ->  0x81402088  ->  0x00210000
+                0x811f31ac|+0x002c|+011: f_path.dentry  : 0x814fd990  ->  0x00400008
+                0x811f31b0|+0x0030|+012: mutex.owner    : 0x00000000
+                0x811f31b4|+0x0034|+013: mutex.wait_lock: 0x00000000
+                0x811f31b8|+0x0038|+014:                : 0x00000000
+
+                pattern of sizeof(lock) == 0:
+                0xc33c7100|+0x0000|+000: f_lock,f_mode         : 0x0c4a801d
+                0xc33c7104|+0x0004|+001: f_op                  : 0xc1f9bee0  ->  0x00000000
+                0xc33c7108|+0x0008|+002: f_mapping             : 0xc3491150  ->  0xc3491068  ->  0x000d89ed
+                0xc33c710c|+0x000c|+003: private_data          : 0x00000000
+                0xc33c7110|+0x0010|+004: f_inode               : 0xc3491068  ->  0x000d89ed
+                0xc33c7114|+0x0014|+005: f_flags               : 0x00008020
+                0xc33c7118|+0x0018|+006: f_iocb_flags          : 0x00000000
+                0xc33c711c|+0x001c|+007: f_cred                : 0xc30ba080  ->  0x00000004
+                0xc33c7120|+0x0020|+008: f_owner               : 0x00000000
+                0xc33c7124|+0x0024|+009: f_path.mnt            : 0xc38b4f10  ->  0xc3459300  ->  0x00100000
+                0xc33c7128|+0x0028|+010: f_path.dentry         : 0xc3459580  ->  0x00200000
+                0xc33c712c|+0x002c|+011: mutex.owner           : 0x00000000
+                0xc33c7130|+0x0030|+012: mutex.wait_{lock,list}: 0xc33c7130  ->  [loop detected]
+                0xc33c7134|+0x0034|+013:                       : 0xc33c7130  ->  [loop detected]
                 """
                 for i in range(16):
-                    cand_offset_mnt = current_arch.ptrsize * (i + 10)
+                    cand_offset_mnt = current_arch.ptrsize * (i + 9)
+                    # f_path.mnt
                     if not is_valid_addr_addr(file + cand_offset_mnt):
                         continue
-                    if not is_valid_addr_addr(file + cand_offset_mnt + current_arch.ptrsize * 1):
+                    # f_path.mnt.mnt_root
+                    x = read_int_from_memory(read_int_from_memory(file + cand_offset_mnt))
+                    if not is_valid_addr(x):
                         continue
-                    if is_valid_addr_addr(file + cand_offset_mnt + current_arch.ptrsize * 2):
-                        continue
-                    if is_valid_addr_addr(file + cand_offset_mnt + current_arch.ptrsize * 3):
-                        continue
-                    if is_valid_addr_addr(file + cand_offset_mnt + current_arch.ptrsize * 4):
+                    # f_path.dentry
+                    if not is_valid_addr_addr(file + cand_offset_mnt + current_arch.ptrsize):
                         continue
                     offset_mnt = cand_offset_mnt
                     break
