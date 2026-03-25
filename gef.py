@@ -119793,7 +119793,12 @@ class KtypesCommand(GenericCommand, BufferingOutput):
     def check_command(self):
         try:
             GefUtil.which("bpftool")
-            GefUtil.which("gcc")
+            if is_x86():
+                GefUtil.which("gcc")
+            elif is_arm64():
+                GefUtil.which("aarch64-linux-gnu-gcc")
+            elif is_arm32():
+                GefUtil.which("arm-linux-gnueabihf-gcc")
         except FileNotFoundError as e:
             err("{}".format(e))
             return False
@@ -119855,7 +119860,7 @@ class KtypesCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
         if not self.check_command():
             return
@@ -119897,10 +119902,25 @@ class KtypesLoadCommand(KtypesCommand):
         # copy vmlinux.h to vmlinux.c
         open(source_path, "wb").write(open(header_path, "rb").read())
 
+        try:
+            if is_x86_64():
+                gcc, opt = GefUtil.which("gcc"), ""
+            elif is_x86_32():
+                gcc, opt = GefUtil.which("gcc"), "-m32"
+            elif is_arm64():
+                gcc, opt = GefUtil.which("aarch64-linux-gnu-gcc"), ""
+            elif is_arm32():
+                gcc, opt = GefUtil.which("arm-linux-gnueabihf-gcc"), ""
+        except FileNotFoundError as e:
+            err("{}".format(e))
+            return None
+
         # build with debug types
-        os.system("{!r} -std=c11 -g -O0 -fno-eliminate-unused-debug-types -c {!r} -o {!r}".format(
-            GefUtil.which("gcc"), source_path, obj_path,
-        ))
+        cmd = "{!r} {:s} -std=c11 -g -O0 -fno-eliminate-unused-debug-types -c {!r} -o {!r}".format(
+            gcc, opt, source_path, obj_path,
+        )
+        info(cmd)
+        os.system(cmd)
 
         if not os.path.exists(obj_path):
             return None
@@ -119910,7 +119930,7 @@ class KtypesLoadCommand(KtypesCommand):
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
         if not self.check_command():
             return
@@ -119925,6 +119945,7 @@ class KtypesLoadCommand(KtypesCommand):
             err("Failed to build")
             return
 
+        info(obj_path)
         gdb.execute("file {:s}".format(obj_path), to_string=True)
         info("Kernel types are loaded successfully")
         return
