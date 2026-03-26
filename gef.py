@@ -61792,7 +61792,7 @@ class Kernel:
             return "{:d}.{:d}.{:d}".format(*self.version_tuple)
 
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session_skip_None_cache
     def kernel_version():
         # fast path
         linux_banner = None
@@ -61840,7 +61840,7 @@ class Kernel:
         return None
 
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session_skip_None_cache
     def kernel_cmdline():
         saved_command_line = None
         if is_kdb():
@@ -62488,6 +62488,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # slow path
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            return None
         if kversion < "6.17":
             offset_mm = offset_tasks + 2 * current_arch.ptrsize
             r = read_int_from_memory(task_addr + offset_mm)
@@ -62649,6 +62651,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         if thread_info is None:
             return None
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            return None
         if is_x86():
             if "5.11" <= kversion:
                 syscall_work = read_int_from_memory(thread_info + current_arch.ptrsize)
@@ -62960,6 +62964,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # slow path
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            return None
         offset_stack_canary = align_to_ptrsize(offset_pid + 4 + 4)
         found = True
         for task in task_addrs:
@@ -63036,6 +63042,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # slow path
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            return None
         if "4.19" <= kversion:
             offset_thread_group = offset_group_leader + current_arch.ptrsize * (1 + 2 + 2 + 1 + (2 * 4))
         else:
@@ -63273,6 +63281,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             return None
 
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            return None
         if kversion < "3.16":
             return None
 
@@ -63328,6 +63338,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             return None
 
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            return None
         if "5.12" <= kversion:
             return offset_bpf_func + current_arch.ptrsize * 2
         elif "4.1" <= kversion:
@@ -63403,6 +63415,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         base = offset_comm + 16 # comm
         base += current_arch.ptrsize # nameidata
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            return None
         if "4.2" <= kversion:
             repeat_times = 6
         else:
@@ -63512,6 +63526,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # slow path
 
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            return None
         if kversion < "6.1.69":
             offset_uid = 4
         elif kversion < "6.2":
@@ -63652,6 +63668,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # slow path
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            return None
         # uid_t:4byte. len([uid,gid,suid,sgid,euid,egid,fsuid,fsgid]) == 8
         uid_gid_size = 4 * 8
         sizeof_securebits = 4
@@ -63834,6 +63852,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
     def get_vm_area_struct(self, mm):
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            return None, None
         if kversion < "6.1":
             """
             struct mm_struct {
@@ -63987,6 +64007,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 continue
 
             vm_area_struct, _ = self.get_vm_area_struct(mm)
+            if vm_area_struct is None:
+                return None
+
             current = vm_area_struct
             while True:
                 x = read_int_from_memory(current)
@@ -64257,10 +64280,10 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             return None
 
         kversion = Kernel.kernel_version()
-
+        if kversion is None:
+            return None
         if kversion < "6.5":
             offset_mnt = current_arch.ptrsize * 2
-
         elif "6.5" <= kversion < "6.12":
             # plan 1
             """
@@ -64723,7 +64746,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # slow path
         kversion = Kernel.kernel_version()
-
+        if kversion is None:
+            return None
         if "5.3" <= kversion:
             # search for signalfd_wqh.list_head
             found = False
@@ -64870,6 +64894,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
     def initialize(self):
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            self.quiet_err("Could not find Linux kernel")
+            return False
 
         # init_task
         if self.args.init_task is not None:
@@ -64899,6 +64926,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # task_struct->mm
         if self.offset_mm is None:
             self.offset_mm = self.get_offset_mm(task_addrs[0], self.offset_tasks)
+        if self.offset_mm is None:
+            self.quiet_err("Could not find task_struct->mm")
+            return False
         self.quiet_info("offsetof(task_struct, mm): {:#x}".format(self.offset_mm))
 
         # task_struct->stack
@@ -64944,6 +64974,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # cred.uid
         if self.offset_uid is None:
             self.offset_uid = self.get_offset_uid(task_addrs[0] + self.offset_cred)
+        if self.offset_uid is None:
+            self.quiet_err("Could not find cred->uid")
+            return False
         self.quiet_info("offsetof(cred, uid): {:#x}".format(self.offset_uid))
 
         # kstack_top->saved_ptregs
@@ -65074,6 +65107,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
             if self.offset_thread_group is None:
                 self.offset_thread_group = self.get_offset_thread_group(self.offset_group_leader)
+            if self.offset_thread_group is None:
+                self.quiet_err("Could not find task_struct->thread_group")
+                return False
             if "6.7" <= kversion:
                 self.quiet_info("offsetof(task_struct, thread_node): {:#x}".format(self.offset_thread_group))
             else:
