@@ -15927,7 +15927,7 @@ class StepiForKGDBCommand(GenericCommand):
         try:
             instr = read_int32_from_memory(current_arch.pc)
         except gdb.error:
-            err("Read memory error")
+            err("Memory read error")
             return
 
         irq_mask_bit = 0x80 # DAIF.I
@@ -28266,7 +28266,7 @@ class KernelChecksecCommand(GenericCommand):
         try:
             val = read_int32_from_memory(kernel_locked_down)
         except gdb.MemoryError:
-            additional = "lockdown_lsm_init: Found, kernel_locked_down: Read memory error"
+            additional = "lockdown_lsm_init: Found, kernel_locked_down: Memory read error"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
             return
 
@@ -38857,15 +38857,15 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
                 return
 
             if not is_valid_addr(stdin):
-                err("stdin: read memory error")
+                err("stdin: memory read error")
                 return
 
             if not is_valid_addr(stdout):
-                err("stdout: read memory error")
+                err("stdout: memory read error")
                 return
 
             if not is_valid_addr(stderr):
-                err("stderr: read memory error")
+                err("stderr: memory read error")
                 return
             struct_io_file_array = [stdin, stdout, stderr]
 
@@ -52616,7 +52616,11 @@ class KernelMagicCommand(GenericCommand):
 
         width = AddressUtil.get_format_address_width()
         if external_func:
-            addr = external_func()
+            try:
+                addr = external_func()
+            except Exception:
+                gef_print("{:42s} {:>{:d}s}".format(sym, "Not found", width))
+                return
             if addr is None:
                 gef_print("{:42s} {:>{:d}s}".format(sym, "Not found", width))
                 return
@@ -52758,7 +52762,7 @@ class KernelMagicCommand(GenericCommand):
         gef_print(titlify("Dynamic resolver"))
         self.resolve_and_print_kernel("kallsyms_lookup_name", text_base, maps)
         if is_x86_64():
-            if "3.16" <= kversion:
+            if kversion and "3.16" <= kversion:
                 gef_print(titlify("vDSO"))
                 self.resolve_and_print_kernel(
                     "vdso_image_64", text_base, maps, KernelAddressHeuristicFinder.get_vdso_image_64,
@@ -52770,13 +52774,13 @@ class KernelMagicCommand(GenericCommand):
                     "vdso_image_x32", text_base, maps, KernelAddressHeuristicFinder.get_vdso_image_x32,
                 )
         elif is_x86_32():
-            if "3.16" <= kversion:
+            if kversion and "3.16" <= kversion:
                 gef_print(titlify("vDSO"))
                 self.resolve_and_print_kernel(
                     "vdso_image_32", text_base, maps, KernelAddressHeuristicFinder.get_vdso_image_32,
                 )
         elif is_arm64():
-            if "5.8" <= kversion:
+            if kversion and "5.8" <= kversion:
                 gef_print(titlify("vDSO"))
                 self.resolve_and_print_kernel(
                     "vdso_info", text_base, maps, KernelAddressHeuristicFinder.get_vdso_info,
@@ -52787,7 +52791,7 @@ class KernelMagicCommand(GenericCommand):
                 self.resolve_and_print_kernel(
                     "vdso32_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso32_start,
                 )
-            elif "5.3" <= kversion:
+            elif kversion and "5.3" <= kversion:
                 gef_print(titlify("vDSO"))
                 self.resolve_and_print_kernel(
                     "vdso_lookup", text_base, maps, KernelAddressHeuristicFinder.get_vdso_lookup,
@@ -52798,13 +52802,13 @@ class KernelMagicCommand(GenericCommand):
                 self.resolve_and_print_kernel(
                     "vdso32_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso32_start,
                 )
-            elif "3.7" <= kversion:
+            elif kversion and "3.7" <= kversion:
                 gef_print(titlify("vDSO"))
                 self.resolve_and_print_kernel(
                     "vdso_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso_start,
                 )
         elif is_arm32():
-            if "4.1" <= kversion:
+            if kversion and "4.1" <= kversion:
                 gef_print(titlify("vDSO"))
                 self.resolve_and_print_kernel(
                     "vdso_start", text_base, maps, KernelAddressHeuristicFinder.get_vdso_start,
@@ -61016,7 +61020,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (from .rodata)
         kinfo = Kernel.get_kernel_layout()
-        if kinfo.ro_base and kinfo.ro_size:
+        if kinfo.ro_base and kinfo.ro_size and is_valid_addr(kinfo.ro_base):
             ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
             if kinfo.rw_base and kinfo.rw_size:
                 rw_data = read_memory(kinfo.rw_base, min(kinfo.rw_size, 0x1000000))
@@ -61606,6 +61610,8 @@ class Kernel:
         for i, (vaddr, size, perm) in enumerate(dic["maps"][text_base_map_index + 1:]):
             if perm == "R--":
                 if dic["ro_base"] is None:
+                    if not is_valid_addr(vaddr):
+                        continue
                     data = read_memory(vaddr, get_pagesize())
                     if b"Linux version" in data:
                         dic["ro_base"] = vaddr
@@ -65532,7 +65538,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                                 self.out.append(ret)
                                 self.out.append("...")
                         else:
-                            self.err_add_out("Read memory error")
+                            self.err_add_out("Memory read error")
 
                         filter_current = filter_prev
 
@@ -68087,9 +68093,16 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
 
         chrdev_addrs = []
         for i in range(255):
-            addr = read_int_from_memory(chrdevs + i * current_arch.ptrsize)
+            chrdevs_i = chrdevs + i * current_arch.ptrsize
+            if not is_valid_addr(chrdevs_i):
+                self.quiet_err("Memory read error")
+                return None
+            addr = read_int_from_memory(chrdevs_i)
             while addr and addr not in chrdev_addrs:
                 chrdev_addrs.append(addr)
+                if not is_valid_addr(addr):
+                    self.quiet_err("Memory read error")
+                    return None
                 addr = read_int_from_memory(addr)
         return chrdev_addrs
 
@@ -69321,6 +69334,9 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
         else:
             self.quiet_info("Wait for memory scan")
             kversion = Kernel.kernel_version()
+            if kversion is None:
+                err("Could not find Linux kernel")
+                return
         self.quiet_info("Kernel version: {:d}.{:d}.{:d}".format(kversion.major, kversion.minor, kversion.patch))
 
         # initialize
@@ -70398,6 +70414,9 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         self.quiet_info("Wait for memory scan")
 
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            err("Could not find Linux kernel")
+            return
         if kversion < "3.3":
             err("Unsupported before v3.3")
             return
@@ -70942,6 +70961,9 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            err("Could not find Linux kernel")
+            return
         if kversion < "4.8":
             err("Unsupported before v4.8")
             return
@@ -71491,10 +71513,16 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
             ro_data = b""
             tqdm = GefUtil.get_tqdm(not self.args.quiet)
             for pos in tqdm(range(0, kinfo.ro_size, 0x1000), leave=False):
+                if not is_valid_addr(kinfo.ro_base + pos):
+                    err("Memory read error")
+                    return
                 ro_data += read_memory(kinfo.ro_base + pos, 0x1000)
                 if ro_data.find(b"IKCFG_ST") >= 0 and ro_data.find(b"IKCFG_ED") >= 0:
                     break
         else:
+            if not is_valid_addr(kinfo.ro_base):
+                err("Memory read error")
+                return
             ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
 
         start_pos = ro_data.find(b"IKCFG_ST")
@@ -71575,7 +71603,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
 
     def search(self, backtrack_info, addr, max_range, depth):
         if depth == 0:
-            if not (self.ktext_start <= addr < self.ktext_end):
+            if not (self.kinfo.text_base <= addr < self.kinfo.text_end):
                 return False
 
             # backtrack
@@ -71640,11 +71668,13 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
         if self.kinfo.has_none or self.kinfo.rwx:
             err("Unsupported environment which has RWX data area")
             return
-        self.ktext_start = self.kinfo.text_base
-        self.ktext_end = self.kinfo.text_end
 
         self.invalid_addrs = {}
         self.out = []
+
+        if not is_valid_addr(self.kinfo.rw_base):
+            err("Memory read error")
+            return
         rw_data = read_memory(self.kinfo.rw_base, self.kinfo.rw_size)
         rw_data = slice_unpack(rw_data, current_arch.ptrsize)
 
@@ -72008,8 +72038,11 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
             return
 
         self.out = []
-        kversion = Kernel.kernel_version()
 
+        kversion = Kernel.kernel_version()
+        if kversion is None:
+            err("Could not find Linux kernel")
+            return
         if "5.10" <= kversion:
             # new structure
             printk_rb_static = KernelAddressHeuristicFinder.get_printk_rb_static()
@@ -115760,6 +115793,9 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         self.quiet_info("Wait for memory scan")
 
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            err("Could not find Linux kernel")
+            return
         if kversion < "3.14":
             self.quiet_err("Unsupported before v3.14")
             return
@@ -117859,7 +117895,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
                         self.out.append(ret)
                         self.out.append("...")
                 else:
-                    self.err_add_out("Read memory error")
+                    self.err_add_out("Memory read error")
                 self.out.append(titlify(""))
         return
 
@@ -117926,6 +117962,9 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
         self.quiet_info("Wait for memory scan")
 
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            err("Could not find Linux kernel")
+            return
         if kversion < "4.20":
             # xarray is introduced from 4.20
             self.quiet_err("Unsupported before v4.20")
@@ -118417,6 +118456,9 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         self.quiet_info("Wait for memory scan")
 
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            err("Could not find Linux kernel")
+            return
         if kversion < "4.20":
             # xarray is introduced from 4.20
             self.quiet_err("Unsupported before v4.20")
@@ -118918,6 +118960,9 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
         self.quiet_info("Wait for memory scan")
 
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            err("Could not find Linux kernel")
+            return
         if kversion < "5.11":
             err("Unsupported before v5.11")
             return
@@ -119341,6 +119386,9 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         self.quiet_info("Wait for memory scan")
 
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            err("Could not find Linux kernel")
+            return
         if kversion < "4.20":
             # xarray is introduced from 4.20
             self.quiet_err("Unsupported before v4.20")
@@ -122188,7 +122236,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
             try:
                 mspan_addr = read_int_from_memory(current)
             except gdb.MemoryError:
-                self.out.append("read memory error")
+                self.out.append("Memory read error")
                 return []
             if not mspan_addr:
                 break
@@ -122205,7 +122253,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         try:
             start_addr = read_int_from_memory(mspan + self.offset_startAddr)
         except gdb.MemoryError:
-            self.out.append("read memory error")
+            self.out.append("Memory read error")
             return None
         if not self.args.verbose and start_addr == 0:
             return None
@@ -137885,6 +137933,10 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         if self.args.include_esp_fixup_stacks and not is_x86_64():
             err("Unsupported --include-esp-fixup-stacks option in this arch")
+            return
+
+        if Kernel.kernel_version() is None:
+            err("Could not find Linux kernel")
             return
 
         # initial regions
