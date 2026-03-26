@@ -121269,7 +121269,8 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
 
         if self.args.rescan:
             cfg_file_name = self.get_cfg_name()
-            os.remove(cfg_file_name)
+            if os.path.exists(cfg_file_name):
+                os.remove(cfg_file_name)
         else:
             # the case of both kernel version string are same, but offset are different.
             current_version_string_offset = self.version_string_offset # keep current
