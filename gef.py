@@ -64549,13 +64549,37 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 struct dentry *mnt_root;
                 struct super_block *mnt_sb;
                 int mnt_flags;
+                struct mnt_idmap *mnt_idmap; // v6.2~
+                struct user_namespace *mnt_userns; // v5.12~v6.1
             } mnt; <-- f_path.mnt points here
             ...
         };
         """
 
-        def is_root(dentry):
-            return dentry == read_int_from_memory(dentry + self.offset_d_parent)
+        def is_root(vfsmnt, dentry):
+            mnt_root = read_int_from_memory(vfsmnt + offset_vfsmount_mnt_root)
+            parent = read_int_from_memory(dentry + self.offset_d_parent)
+            return dentry == mnt_root or parent == dentry
+
+        def is_global_root(mnt):
+            parent = read_int_from_memory(mnt + offset_mount_mnt_parent)
+            return parent == mnt
+
+        def read_dentry_str(dentry):
+            name = read_cstring_from_memory(dentry + self.offset_d_iname)
+            if name:
+                return name
+            name_ptr = read_int_from_memory(dentry + self.offset_d_iname - current_arch.ptrsize * 2)
+            name = read_cstring_from_memory(name_ptr)
+            if name:
+                return name
+            if is_32bit():
+                # In some ARM 32bit environment, there is cases where the value is 8 bytes-aligned
+                name_ptr = read_int_from_memory(dentry + self.offset_d_iname - current_arch.ptrsize * 3)
+                name = read_cstring_from_memory(name_ptr)
+                if name:
+                    return name
+            return ""
 
         offset_vfsmount_mnt_root = 0
         offset_mount_mnt_parent = current_arch.ptrsize * 2
@@ -64569,32 +64593,20 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         mnt = vfsmnt - offset_mount_mnt
 
         while True:
-            mnt_root = read_int_from_memory(vfsmnt + offset_vfsmount_mnt_root)
-            if dentry == mnt_root or is_root(dentry):
-                parent = read_int_from_memory(mnt + offset_mount_mnt_parent)
-
-                # Global root?
-                if mnt != parent:
+            if is_root(vfsmnt, dentry):
+                if is_global_root(mnt):
+                    name = read_dentry_str(dentry)
+                    filepath.append(name)
+                    break
+                else:
                     dentry = read_int_from_memory(mnt + offset_mount_mnt_mountpoint)
-                    mnt = parent
+                    mnt = read_int_from_memory(mnt + offset_mount_mnt_parent)
                     vfsmnt = mnt + offset_mount_mnt
                     continue
-
-                name = read_cstring_from_memory(dentry + self.offset_d_iname)
-                if name is None:
-                    name_ptr = read_int_from_memory(dentry + self.offset_d_iname - current_arch.ptrsize * 2)
-                    name = read_cstring_from_memory(name_ptr)
+            else:
+                name = read_dentry_str(dentry)
                 filepath.append(name)
-                break
-
-            name = read_cstring_from_memory(dentry + self.offset_d_iname)
-            if name is None:
-                name_ptr = read_int_from_memory(dentry + self.offset_d_iname - current_arch.ptrsize * 2)
-                name = read_cstring_from_memory(name_ptr)
-            filepath.append(name)
-
-            parent = read_int_from_memory(dentry + self.offset_d_parent)
-            dentry = parent
+                dentry = read_int_from_memory(dentry + self.offset_d_parent)
 
         filepath = os.path.join(*filepath[::-1])
         if filepath in ["UNIX", "NETLINK", "TCP", "TCPv6", "UDP", "UDPv6", "PACKET"]:
