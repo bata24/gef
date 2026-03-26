@@ -132015,8 +132015,7 @@ class PageMap:
 
         """
         enum teecore_memtypes {
-            MEM_AREA_END = 0,
-            MEM_AREA_TEE_RAM,
+            MEM_AREA_TEE_RAM = 1,
             MEM_AREA_TEE_RAM_RX,
             MEM_AREA_TEE_RAM_RO,
             MEM_AREA_TEE_RAM_RW,
@@ -132024,16 +132023,21 @@ class PageMap:
             MEM_AREA_INIT_RAM_RX,
             MEM_AREA_NEX_RAM_RO,
             MEM_AREA_NEX_RAM_RW,
+            MEM_AREA_NEX_DYN_VASPACE,
+            MEM_AREA_TEE_DYN_VASPACE,
             MEM_AREA_TEE_COHERENT,
             MEM_AREA_TEE_ASAN,
             MEM_AREA_IDENTITY_MAP_RX,
-            MEM_AREA_TA_RAM,
             MEM_AREA_NSEC_SHM,
+            MEM_AREA_NEX_NSEC_SHM,
             MEM_AREA_RAM_NSEC,
             MEM_AREA_RAM_SEC,
+            MEM_AREA_ROM_SEC,
             MEM_AREA_IO_NSEC,
             MEM_AREA_IO_SEC,
             MEM_AREA_EXT_DT,
+            MEM_AREA_MANIFEST_DT,
+            MEM_AREA_TRANSFER_LIST,
             MEM_AREA_RES_VASPACE,
             MEM_AREA_SHM_VASPACE,
             MEM_AREA_TS_VASPACE,
@@ -132055,10 +132059,10 @@ class PageMap:
         maps = []
         old_i = -1
         for i in range(len(data_list) - 4):
-            type = data_list[i] & 0xffff_ffff
-            if 26 < type: # enum teecore_memtypes
-                continue
+            type_ = data_list[i] & 0xffff_ffff
             region_size = (data_list[i] >> 32) & 0xffff_ffff
+            if type_ == 0 or 30 < type_: # enum teecore_memtypes
+                continue
             if region_size & 0xfff or region_size < 0x1000 or 0xffff_f000 < region_size:
                 continue
             pa, va, size, attr = data_list[i + 1:i + 5]
@@ -135003,7 +135007,7 @@ class PagewalkArmCommand(PagewalkCommand):
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     @only_if_specific_arch(arch=("ARM32",))
     def do_invoke(self, args):
-        if args.optee:
+        if args.optee and is_qemu_system():
             self.arm32_optee_exact_pagewalk()
             return
 
@@ -136922,7 +136926,7 @@ class PagewalkArm64Command(PagewalkCommand):
     @only_if_specific_gdb_mode(mode=("qemu-system", "kgdb"))
     @only_if_specific_arch(arch=("ARM64",))
     def do_invoke(self, args):
-        if args.optee:
+        if args.optee and is_qemu_system():
             self.aarch64_optee_pseudo_pagewalk()
             return
 
