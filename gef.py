@@ -115259,6 +115259,29 @@ class SlabContainsCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
+    _note_ = [
+        "Simplified page/slab structure:",
+        "",
+        "+-kmem_cache-+",
+        "| cpu_slab   |--->+-kmem_cache_cpu-+",
+        "| ...        |    | page/slab      |--+",
+        "+------------+    | freelist       |  |",
+        "      ^           +----------------+  |   <---virt/page translate--->",
+        "      |                               v",
+        "      |                         +-page/slab---+               +-0x1000-page-+ <--base (named by GEF)",
+        "      +-------------------------|  slab_cache |               | chunk       |",
+        "      |                         +-page/slab---+               | ...         |",
+        "      +-------------------------|  slab_cache |               +-0x1000-page-+",
+        "      |                         +-page/slab---+               | chunk       |",
+        "      +-------------------------|  slab_cache |               | chunk       | <--user specified address",
+        "                                +-------------+               | ...         |",
+        "                                                              +-0x1000-page-+",
+        "                                                              | chunk       |",
+        "                                                              | ...         |",
+        "                                                              +-------------+",
+    ]
+    _note_ = "\n".join(_note_)
+
     def initialize(self):
         if hasattr(self, "initialized") and self.initialized:
             return True
@@ -115293,6 +115316,13 @@ class SlabContainsCommand(GenericCommand):
         self.kmem_cache_offset_size = int(r.group(1), 16)
         if self.args.verbose:
             info("offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size))
+
+        r = re.search(r"offsetof\(kmem_cache, object_size\): (0x\S+)", res)
+        if not r:
+            return False
+        self.kmem_cache_offset_object_size = int(r.group(1), 16)
+        if self.args.verbose:
+            info("offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size))
 
         if self.allocator in ["SLUB", "SLUB_TINY"]:
             r = re.search(r"offsetof\(kmem_cache, red_left_pad\): (0x\S+)", res)
@@ -115350,8 +115380,8 @@ class SlabContainsCommand(GenericCommand):
     def slab_contains(self):
         current = self.args.address & get_pagesize_mask_high()
         chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
+        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
 
-        kversion = Kernel.kernel_version()
         try:
             while True:
                 page = self.virt2page_wrapper(current)
@@ -115359,10 +115389,7 @@ class SlabContainsCommand(GenericCommand):
                     self.quiet_err("Invalid address")
                     return
 
-                if "5.17" <= kversion:
-                    self.quiet_print("slab: {:#x}".format(page))
-                else:
-                    self.quiet_print("page: {:#x}".format(page))
+                self.quiet_print("{:s}: {:#x}".format(Kernel.slab_page_str(), page))
 
                 page_next = read_int_from_memory(page + self.page_offset_next)
                 if page_next & 1:
@@ -115395,8 +115422,9 @@ class SlabContainsCommand(GenericCommand):
             if slab_cache_name is None:
                 self.quiet_err("This address is not managed by slab (slab_cache_name=\"\")")
                 return
-            slab_cache_name_c = Color.colorify(slab_cache_name, chunk_label_color)
+
             slab_cache_size = read_int32_from_memory(kmem_cache + self.kmem_cache_offset_size)
+            slab_cache_object_size = read_int32_from_memory(kmem_cache + self.kmem_cache_offset_object_size)
 
             if self.allocator in ["SLUB", "SLUB_TINY"]:
                 red_left_pad = read_int_from_memory(kmem_cache + self.kmem_cache_offset_red_left_pad)
@@ -115408,7 +115436,17 @@ class SlabContainsCommand(GenericCommand):
                 gfporder = read_int32_from_memory(kmem_cache + self.kmem_cache_offset_gfporder)
                 num_pages = 1 << gfporder
 
-            msg = ("name: {:s}  size: {:#x}  num_pages: {:#x}".format(slab_cache_name_c, slab_cache_size, num_pages))
+            # `inuse` is not displayed because it is not a reliable reference value.
+            # The value of `slab->inuse` also includes the number of chunks registered in `kmem_cache_cpu->freelist`.
+            # However, what the user actually wants is the number of chunks that are truly in use,
+            # excluding those accounted for by `kmem_cache_cpu->freelist`.
+            # Accurately deriving that value is non-trivial.
+            msg = ("name: {:s}  object_size: {:s} (chunk_size: {:#x})  num_pages: {:#x}".format(
+                Color.colorify(slab_cache_name, chunk_label_color),
+                Color.colorify_hex(slab_cache_object_size, chunk_size_color),
+                slab_cache_size,
+                num_pages,
+            ))
             if (self.args.address - red_left_pad - current) % slab_cache_size != 0:
                 msg += " " + Color.redify("(unaligned?)")
             gef_print(msg)
@@ -115903,20 +115941,24 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-p", "--pcp-index", dest="pcp_index_filter", action="append", type=int,
                         help="filter by specified per-cpu index.")
     parser.add_argument("-P", "--only-pcp", action="store_true", help="dump only per-cpu pages.")
-    parser.add_argument("-F", "--skip-pcp", action="store_true", help="skip dumping per-cpu pages.")
+    parser.add_argument("-F", "--skip-pcp", action="store_true", help="skip dumping per-cpu pages (dump only free_area).")
     parser.add_argument("--cpu", action="append", type=int, help="filter by specific cpu for per-cpu pages.")
     parser.add_argument("-s", "--sort", action="store_true",
-                        help="sort by page address instead of link list order of each size.")
+                        help="sort by page address instead of link list order of each size. overrides -c to 0.")
     parser.add_argument("-S", "--sort-verbose", action="store_true",
-                        help="enable --sort and add used area. filtered areas are treated as used.")
+                        help="enable --sort and add used area. filtered areas are treated as used. overrides -c to 0.")
     parser.add_argument("-Q", "--skip-phys", action="store_true", help="skip virt -> phys translation.")
     parser.add_argument("-M", "--use-physmap", action="store_true",
                         help="use physmap for virt -> phys translation to speed up (when KGDB mode, x64/arm64 only).")
     parser.add_argument("--MIGRATE_PCPTYPES", type=int, choices=[3, 4], default=3,
                         help="use specify value; linux: 3, android: 4 (2023~).")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="show all entries for non-sort mode.")
-    parser.add_argument("-vv", "--vverbose", action="store_true", help="show empty entries too for non-sort mode.")
+    parser.add_argument("-c", "--count", metavar="N", type=AddressUtil.parse_address, default=5,
+                        help="max entries to read per list (default: %(default)s, 0=unlimited). -s/-S/-v/-vv override this to 0.")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="show all entries for non-sort mode. equivalent to -c 0.")
+    parser.add_argument("-vv", "--vverbose", action="store_true",
+                        help="show empty entries too for non-sort mode. overrides -c to 0.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
@@ -116712,10 +116754,14 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             return pcp_title, entries, bool(len(entries))
 
         # parse pcp entries
+        MAX_ENTRIES = self.args.count
         while current != list_i:
             page = current - self.offset_lru
             entry = self.Entry(page, size, is_highmem, self.args, cpu_num=cpu_num)
             entries.append(entry)
+            if MAX_ENTRIES and len(entries) >= MAX_ENTRIES:
+                entries.append(None)  # sentinel for "..."
+                break
             current = read_int_from_memory(current)
         return pcp_title, entries, bool(len(entries))
 
@@ -116756,10 +116802,14 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             return mtype_title, entries, bool(len(entries))
 
         # parse free list
+        MAX_ENTRIES = self.args.count
         while current != free_list:
             page = current - self.offset_lru
             entry = self.Entry(page, size, is_highmem, self.args)
             entries.append(entry)
+            if MAX_ENTRIES and len(entries) >= MAX_ENTRIES:
+                entries.append(None)  # sentinel for "..."
+                break
             current = read_int_from_memory(current)
         return mtype_title, entries, bool(len(entries))
 
@@ -116912,7 +116962,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
                                 continue
                             self.out.append(pcp_title)
                             for i, entry in enumerate(pcp_entries):
-                                if not self.args.verbose and i >= 10:
+                                if self.args.count and i >= self.args.count:
                                     self.out.append("    ...")
                                     break
                                 self.out.append(str(entry))
@@ -116928,7 +116978,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
                                 continue
                             self.out.append(mtype_title)
                             for i, entry in enumerate(free_list):
-                                if not self.args.verbose and i >= 10:
+                                if self.args.count and i >= self.args.count:
                                     self.out.append("    ...")
                                     break
                                 self.out.append(str(entry))
@@ -116955,6 +117005,8 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             self.initialized = False
         self.args.sort = args.sort_verbose or args.sort
         self.args.verbose = args.vverbose or args.verbose
+        if self.args.sort or self.args.verbose:
+            self.args.count = 0
 
         # initialize
         self.quiet_info("Wait for memory scan")
@@ -137680,7 +137732,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                     current += get_pagesize()
                     continue
 
-                r = re.search(r"name: (\S+)  size: \S+  num_pages: (\S+)", res)
+                r = re.search(r"name: (\S+)  .+  num_pages: (\S+)", res)
                 if not r:
                     current += get_pagesize()
                     continue
@@ -141380,7 +141432,7 @@ class KmallocTracerCommand(GenericCommand):
         ret = Kernel.get_slab_contains(vaddr)
         if not ret:
             return None
-        r = re.search(r"name: (\S+)  size: (\S+)", ret)
+        r = re.search(r"name: (\S+)  object_size: (\S+)", ret)
         if not r:
             return None
         slab_cache_name = r.group(1)
