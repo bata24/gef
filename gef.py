@@ -64405,6 +64405,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             seqcount_spinlock_t d_seq;
             struct hlist_bl_node d_hash;
             struct dentry *d_parent;
+                                           // Padding can be added here
             struct qstr {
                 union {
                     struct {
@@ -64466,7 +64467,13 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         offset_d_parent = offset_dname_name - 8 - current_arch.ptrsize
         # skip if padding
-        while not is_valid_addr_addr(dentry + offset_d_parent):
+        while True:
+            if is_valid_addr_addr(dentry + offset_d_parent): # roughly check
+                parent = read_int_from_memory(dentry + offset_d_parent)
+                if (parent & 0b11) == 0: # align check
+                    parent_parent = read_int_from_memory(parent + offset_d_parent)
+                    if is_valid_addr(parent_parent):
+                        break
             offset_d_parent -= current_arch.ptrsize
         return offset_d_parent
 
@@ -64566,16 +64573,19 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             return parent == mnt
 
         def read_dentry_str(dentry):
+            # Try d_shortname (inline name) directly
             name = read_cstring_from_memory(dentry + self.offset_d_iname)
             if name:
                 return name
-            name_ptr = read_int_from_memory(dentry + self.offset_d_iname - current_arch.ptrsize * 2)
-            name = read_cstring_from_memory(name_ptr)
-            if name:
-                return name
-            if is_32bit():
-                # In some ARM 32bit environment, there is cases where the value is 8 bytes-aligned
-                name_ptr = read_int_from_memory(dentry + self.offset_d_iname - current_arch.ptrsize * 3)
+
+            # Try d_name.name pointer (no padding case)
+            # Validate pointer before dereferencing
+            for back in [2, 3]:
+                name_ptr = read_int_from_memory(
+                    dentry + self.offset_d_iname - current_arch.ptrsize * back
+                )
+                if not is_valid_addr(name_ptr) or (name_ptr & 0b11) != 0:
+                    continue
                 name = read_cstring_from_memory(name_ptr)
                 if name:
                     return name
@@ -64644,7 +64654,10 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     seen.append(curr)
                     lwp = curr - self.offset_thread_group
                     lwp_task_addrs.append(lwp)
-                    curr = read_int_from_memory(curr)
+                    try:
+                        curr = read_int_from_memory(curr)
+                    except gdb.MemoryError:
+                        break
         return lwp_task_addrs
 
     def get_offset_nsproxy(self, task_addr, offset_files):
@@ -137573,8 +137586,9 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         kstacks = []
         for line in res.splitlines():
             line = line.split()
-            kstack = int(line[-2], 16)
-            kstacks.append(kstack & 0xffff)
+            if len(line) >= 2:
+                kstack = int(line[-2], 16)
+                kstacks.append(kstack & 0xffff)
 
         # calc kstack size
         kstacks = sorted(set(kstacks))
