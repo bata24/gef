@@ -76703,10 +76703,10 @@ class Hash:
         )
 
         # constants for rounds (left line / right line)
-        K4  = (0x0000_0000, 0x5a82_7999, 0x6ed9_eba1, 0x8f1b_bcdc)
+        K4 = (0x0000_0000, 0x5a82_7999, 0x6ed9_eba1, 0x8f1b_bcdc)
         K4p = (0x50a2_8be6, 0x5c4d_d124, 0x6d70_3ef3, 0x0000_0000)
 
-        K5  = (0x0000_0000, 0x5a82_7999, 0x6ed9_eba1, 0x8f1b_bcdc, 0xa953_fd4e)
+        K5 = (0x0000_0000, 0x5a82_7999, 0x6ed9_eba1, 0x8f1b_bcdc, 0xa953_fd4e)
         K5p = (0x50a2_8be6, 0x5c4d_d124, 0x6d70_3ef3, 0x7a6d_76e9, 0x0000_0000)
 
         def __init__(self, data=b""):
@@ -129581,7 +129581,7 @@ class OpteeTaDumpDirectoryCommand(OpteeTaDumpCommand):
 class OpteeShmListCommand(GenericCommand, BufferingOutput):
     """List dynamic shared-memory buffers currently registered in OP-TEE (for OP-TEE v4.3.0~)."""
 
-    _cmdline_  = "optee-shm-list"
+    _cmdline_ = "optee-shm-list"
     _category_ = "06-j. Qemu-system/KGDB Cooperation - TrustZone"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -147559,7 +147559,7 @@ class GefUtil:
             pass
         return tqdm
 
-    __gef_convenience_vars_index__  = 0 # $_gef1, $_gef2, ...
+    __gef_convenience_vars_index__ = 0 # $_gef1, $_gef2, ...
 
     @staticmethod
     def gef_convenience(value):
