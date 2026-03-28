@@ -78703,7 +78703,7 @@ class Hash:
                 p += 1
             return self.avalanche_xxh64(h64).to_bytes(8, "big")
 
-    class XXH3Base(XXHashBase):
+    class XXH3Base(XXH64):
         def derive_secret(self, seed):
             seed &= 0xffff_ffff_ffff_ffff
             words = [self.u64le(self.default_secret, i * 8) for i in range(24)]
@@ -81033,7 +81033,7 @@ class Hash:
 
             if n <= 16:
                 a = (self.shift_mix(a * self.k1) * self.k1) & self.mask64
-                c = (b * self.k1 + self.hash_len0to16(data)) & self.mask64
+                c = (b * self.k1 + self.cityhash64_len0to16(data)) & self.mask64
                 if n >= 8:
                     d = self.shift_mix(a + self.u64le(data, 0)) & self.mask64
                 else:
@@ -85631,28 +85631,36 @@ class Hash:
 
     class CubeHash:
         try:
-            from cffi import FFI as _FFI
-            _ffi = _FFI()
-            _ffi.cdef("void cube_round(uint32_t *s);")
-            _lib = _ffi.verify("""
-                #include <stdint.h>
-                void cube_round(uint32_t *s) {
-                    int i;
-                    for (i = 0; i < 16; i++) s[i+16] += s[i];
-                    for (i = 0; i < 16; i++) s[i] = (s[i] << 7) | (s[i] >> 25);
-                    for (i = 0; i < 8;  i++) { uint32_t t=s[i]; s[i]=s[i+8]; s[i+8]=t; }
-                    for (i = 0; i < 16; i++) s[i] ^= s[i+16];
-                    { int a[]={16,17,20,21,24,25,28,29};
-                      for (i=0;i<8;i++){uint32_t t=s[a[i]];s[a[i]]=s[a[i]+2];s[a[i]+2]=t;} }
-                    for (i = 0; i < 16; i++) s[i+16] += s[i];
-                    for (i = 0; i < 16; i++) s[i] = (s[i] << 11) | (s[i] >> 21);
-                    { int a[]={0,1,2,3,8,9,10,11};
-                      for (i=0;i<8;i++){uint32_t t=s[a[i]];s[a[i]]=s[a[i]+4];s[a[i]+4]=t;} }
-                    for (i = 0; i < 16; i++) s[i] ^= s[i+16];
-                    { int a[]={16,18,20,22,24,26,28,30};
-                      for (i=0;i<8;i++){uint32_t t=s[a[i]];s[a[i]]=s[a[i]+1];s[a[i]+1]=t;} }
-                }
-            """, extra_compile_args=["-O2"])
+            import cffi
+            ffi = cffi.FFI()
+            ffi.cdef("void cube_round(uint32_t *s);")
+            import warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"reimporting '_cffi__.*' might overwrite older definitions",
+                    category=UserWarning,
+                    module=r"cffi\.vengine_cpy",
+                )
+                lib = ffi.verify("""
+                    #include <stdint.h>
+                    void cube_round(uint32_t *s) {
+                        int i;
+                        for (i = 0; i < 16; i++) s[i+16] += s[i];
+                        for (i = 0; i < 16; i++) s[i] = (s[i] << 7) | (s[i] >> 25);
+                        for (i = 0; i < 8;  i++) { uint32_t t=s[i]; s[i]=s[i+8]; s[i+8]=t; }
+                        for (i = 0; i < 16; i++) s[i] ^= s[i+16];
+                        { int a[]={16,17,20,21,24,25,28,29};
+                          for (i=0;i<8;i++){uint32_t t=s[a[i]];s[a[i]]=s[a[i]+2];s[a[i]+2]=t;} }
+                        for (i = 0; i < 16; i++) s[i+16] += s[i];
+                        for (i = 0; i < 16; i++) s[i] = (s[i] << 11) | (s[i] >> 21);
+                        { int a[]={0,1,2,3,8,9,10,11};
+                          for (i=0;i<8;i++){uint32_t t=s[a[i]];s[a[i]]=s[a[i]+4];s[a[i]+4]=t;} }
+                        for (i = 0; i < 16; i++) s[i] ^= s[i+16];
+                        { int a[]={16,18,20,22,24,26,28,30};
+                          for (i=0;i<8;i++){uint32_t t=s[a[i]];s[a[i]]=s[a[i]+1];s[a[i]+1]=t;} }
+                    }
+                """, extra_compile_args=["-O2"])
             USE_CFFI = True
         except Exception:
             USE_CFFI = False
@@ -85699,7 +85707,7 @@ class Hash:
 
         def init_state(self):
             if self.USE_CFFI:
-                self.cbuf = self._ffi.new("uint32_t[32]")
+                self.cbuf = self.ffi.new("uint32_t[32]")
                 self.state = self.cbuf
             else:
                 self.state = [0] * 32
@@ -85762,7 +85770,7 @@ class Hash:
 
         def round(self):
             if self.USE_CFFI:
-                self._lib.cube_round(self.state)
+                self.lib.cube_round(self.state)
                 return
 
             # --- pure Python ---
@@ -87494,20 +87502,15 @@ class Hash:
             other.overflow = self.overflow
             return other
 
-        def reset(self):
-            self.state = 0
-            self.bufpos = 0
-            self.overflow = False
-            return
-
-        def rol32(self, x, n):
-            x &= 0xffff_ffff
-            n &= 31
-            if n == 0:
-                return x
-            return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
-
         def update_byte(self, data):
+
+            def rol32(x, n):
+                x &= 0xffff_ffff
+                n &= 31
+                if n == 0:
+                    return x
+                return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
+
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
             if len(data) != 1:
@@ -87519,11 +87522,11 @@ class Hash:
                 self.bufpos = 0
 
             state = self.state
-            state = self.rol32(state, 1)
+            state = rol32(state, 1)
 
             if self.overflow:
                 toshift = self.bytehash[self.buf[self.bufpos]]
-                state ^= self.rol32(toshift, self.bshiftn)
+                state ^= rol32(toshift, self.bshiftn)
 
             self.buf[self.bufpos] = b
             self.bufpos += 1
@@ -87577,11 +87580,6 @@ class Hash:
             other.divisors = list(self.divisors)
             return other
 
-        def reset(self):
-            self.total = 0
-            self.i = 0
-            return
-
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
@@ -87594,33 +87592,31 @@ class Hash:
         def finalize(self):
             return
 
-        def value(self):
-            return self.total
-
-        def moddiv_list(self):
-            if not self.divisors:
-                return []
-            tmp = self.total
-            ret = []
-            for div in reversed(self.divisors):
-                if not isinstance(div, int) or div <= 0:
-                    raise ValueError("all divisors must be positive int")
-                ret.append(tmp % div)
-                tmp //= div
-            ret.reverse()
-            return ret
-
-        def moddiv_string(self):
-            if not self.divisors:
-                s = str(self.total)
-                return s
-            parts = [str(x) for x in self.moddiv_list()]
-            s = "/".join(parts)
-            return s
-
         def digest(self):
+
+            def moddiv_list():
+                if not self.divisors:
+                    return []
+                tmp = self.total
+                ret = []
+                for div in reversed(self.divisors):
+                    if not isinstance(div, int) or div <= 0:
+                        raise ValueError("all divisors must be positive int")
+                    ret.append(tmp % div)
+                    tmp //= div
+                ret.reverse()
+                return ret
+
+            def moddiv_string():
+                if not self.divisors:
+                    s = str(self.total)
+                    return s
+                parts = [str(x) for x in self.moddiv_list()]
+                s = "/".join(parts)
+                return s
+
             if self.divisors:
-                return self.moddiv_string().encode("ascii")
+                return moddiv_string().encode("ascii")
             v = self.total
             nbytes = (v.bit_length() + 7) // 8
             if nbytes == 0:
@@ -87632,26 +87628,19 @@ class Hash:
             return h
 
     class LSHBase:
-        word_bits = None
-        ns = None
-        block_size = None  # in bytes
-        digest_size = None  # in bytes
-        iv = None
+        tau = (0x03, 0x02, 0x00, 0x01, 0x07, 0x04, 0x05, 0x06, 0x0b, 0x0a, 0x08, 0x09, 0x0f, 0x0c, 0x0d, 0x0e)
+        sigma = (0x06, 0x04, 0x05, 0x07, 0x0c, 0x0f, 0x0e, 0x0d, 0x02, 0x00, 0x01, 0x03, 0x08, 0x0b, 0x0a, 0x09)
 
-        tau = [0x03, 0x02, 0x00, 0x01, 0x07, 0x04, 0x05, 0x06, 0x0b, 0x0a, 0x08, 0x09, 0x0f, 0x0c, 0x0d, 0x0e]
-        sigma = [0x06, 0x04, 0x05, 0x07, 0x0c, 0x0f, 0x0e, 0x0d, 0x02, 0x00, 0x01, 0x03, 0x08, 0x0b, 0x0a, 0x09]
+        gamma32 = (0x00, 0x08, 0x10, 0x18, 0x18, 0x10, 0x08, 0x00)
+        gamma64 = (0x00, 0x10, 0x20, 0x30, 0x08, 0x18, 0x28, 0x38)
 
-        gamma32 = [0x00, 0x08, 0x10, 0x18, 0x18, 0x10, 0x08, 0x00]
-        gamma64 = [0x00, 0x10, 0x20, 0x30, 0x08, 0x18, 0x28, 0x38]
-
-        sc0_32 = [
-            0x917c_af90, 0x6c1b_10a2, 0x6f35_2943, 0xcf77_8243,
-            0x2ceb_7472, 0x29e9_6ff2, 0x8a9b_a428, 0x2eeb_2642,
-        ]
-        sc0_64 = [
+        sc0_32 = (
+            0x917c_af90, 0x6c1b_10a2, 0x6f35_2943, 0xcf77_8243, 0x2ceb_7472, 0x29e9_6ff2, 0x8a9b_a428, 0x2eeb_2642,
+        )
+        sc0_64 = (
             0x9788_4283_c938_982a, 0xba1f_ca93_533e_2355, 0xc519_a2e8_7aeb_1c03, 0x9a0f_c954_62af_17b1,
             0xfc3d_da8a_b019_a82b, 0x0282_5d07_9a89_5407, 0x79f2_d0a7_ee06_a6f7, 0xd76d_15ee_d9fd_f5fe,
-        ]
+        )
 
         def __init__(self, data=b""):
             if self.word_bits not in (32, 64):
@@ -87664,15 +87653,12 @@ class Hash:
                 raise ValueError("invalid digest_size")
             if not isinstance(self.iv, (list, tuple)) or len(self.iv) != 16:
                 raise ValueError("invalid iv")
-
             self.word_bytes = self.word_bits // 8
             self.mask = (1 << self.word_bits) - 1
-
             self.buf = bytearray()
             self.msg_len = 0
             self.cv = list(self.iv)
             self.sc = self.make_step_constants()
-
             if data:
                 self.update(data)
             return
@@ -87684,11 +87670,9 @@ class Hash:
             other.block_size = self.block_size
             other.digest_size = self.digest_size
             other.iv = self.iv
-
             other.word_bytes = self.word_bytes
             other.mask = self.mask
             other.sc = self.sc
-
             other.buf = bytearray(self.buf)
             other.msg_len = self.msg_len
             other.cv = list(self.cv)
@@ -87698,10 +87682,8 @@ class Hash:
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
             data = bytes(data)
-
             self.msg_len += len(data)
             self.buf.extend(data)
-
             while len(self.buf) >= self.block_size:
                 block = bytes(self.buf[:self.block_size])
                 del self.buf[:self.block_size]
@@ -87711,7 +87693,9 @@ class Hash:
         def digest(self):
             c = self.copy()
             c.finalize()
-            return c.output()
+            h = [(c.cv[i] ^ c.cv[i + 8]) & c.mask for i in range(8)]
+            out = b"".join(int(x).to_bytes(c.word_bytes, "little") for x in h)
+            return out[:c.digest_size]
 
         def hexdigest(self):
             return self.digest().hex()
@@ -87721,37 +87705,17 @@ class Hash:
             self.buf.append(0x80)
             while (len(self.buf) % self.block_size) != 0:
                 self.buf.append(0x00)
-
             while len(self.buf) >= self.block_size:
                 block = bytes(self.buf[:self.block_size])
                 del self.buf[:self.block_size]
                 self.compress(block)
             return
 
-        def output(self):
-            h = [(self.cv[i] ^ self.cv[i + 8]) & self.mask for i in range(8)]
-            out = b"".join(int(x).to_bytes(self.word_bytes, "little") for x in h)
-            return out[:self.digest_size]
-
         def rol(self, x, n):
             x &= self.mask
             if n == 0:
                 return x
             return ((x << n) | (x >> (self.word_bits - n))) & self.mask
-
-        def alpha_beta(self, j):
-            if self.word_bits == 32:
-                if (j & 1) == 0:
-                    return 0x1d, 0x01
-                return 0x05, 0x11
-            if (j & 1) == 0:
-                return 0x17, 0x3b
-            return 0x07, 0x03
-
-        def gamma(self, l):  # noqa: E741
-            if self.word_bits == 32:
-                return self.gamma32[l]
-            return self.gamma64[l]
 
         def make_step_constants(self):
             if self.word_bits == 32:
@@ -87765,61 +87729,76 @@ class Hash:
                 sc.append([(prev[l] + self.rol(prev[l], 8)) & self.mask for l in range(8)])  # noqa: E741
             return sc
 
-        def msg_add(self, x, y):
-            return [x[i] ^ y[i] for i in range(16)]
-
-        def mix_pair(self, j, l, x, y):  # noqa: E741
-            alpha, beta = self.alpha_beta(j)
-            g = self.gamma(l)
-
-            x = (x + y) & self.mask
-            x = self.rol(x, alpha)
-            x ^= self.sc[j][l]
-
-            y = (x + y) & self.mask
-            y = self.rol(y, beta)
-
-            x = (x + y) & self.mask
-            y = self.rol(y, g)
-            return x, y
-
-        def mix(self, j, t):
-            t = list(t)
-            for l in range(8):  # noqa: E741
-                x, y = self.mix_pair(j, l, t[l], t[l + 8])
-                t[l] = x
-                t[l + 8] = y
-            return t
-
-        def word_perm(self, x):
-            return [x[self.sigma[i]] for i in range(16)]
-
-        def step(self, j, t, mj):
-            t = self.msg_add(t, mj)
-            t = self.mix(j, t)
-            t = self.word_perm(t)
-            return t
-
-        def msg_expand(self, m32):
-            sub = [m32[:16], m32[16:32]]
-            for j in range(2, self.ns + 1):
-                prev1 = sub[j - 1]
-                prev2 = sub[j - 2]
-                sub.append([(prev1[l] + prev2[self.tau[l]]) & self.mask for l in range(16)])  # noqa: E741
-            return sub
-
         def compress(self, block):
+
+            def msg_add(x, y):
+                return [x[i] ^ y[i] for i in range(16)]
+
+            def alpha_beta(j):
+                if self.word_bits == 32:
+                    if (j & 1) == 0:
+                        return 0x1d, 0x01
+                    return 0x05, 0x11
+                if (j & 1) == 0:
+                    return 0x17, 0x3b
+                return 0x07, 0x03
+
+            def gamma(l):  # noqa: E741
+                if self.word_bits == 32:
+                    return self.gamma32[l]
+                return self.gamma64[l]
+
+            def mix_pair(j, l, x, y):  # noqa: E741
+                alpha, beta = alpha_beta(j)
+                g = gamma(l)
+
+                x = (x + y) & self.mask
+                x = self.rol(x, alpha)
+                x ^= self.sc[j][l]
+
+                y = (x + y) & self.mask
+                y = self.rol(y, beta)
+
+                x = (x + y) & self.mask
+                y = self.rol(y, g)
+                return x, y
+
+            def mix(j, t):
+                t = list(t)
+                for l in range(8):  # noqa: E741
+                    x, y = mix_pair(j, l, t[l], t[l + 8])
+                    t[l] = x
+                    t[l + 8] = y
+                return t
+
+            def word_perm(x):
+                return [x[self.sigma[i]] for i in range(16)]
+
+            def step(j, t, mj):
+                t = msg_add(t, mj)
+                t = mix(j, t)
+                t = word_perm(t)
+                return t
+
+            def msg_expand(m32):
+                sub = [m32[:16], m32[16:32]]
+                for j in range(2, self.ns + 1):
+                    prev1 = sub[j - 1]
+                    prev2 = sub[j - 2]
+                    sub.append([(prev1[l] + prev2[self.tau[l]]) & self.mask for l in range(16)])  # noqa: E741
+                return sub
+
             if self.word_bits == 32:
                 fmt = "<32I"
             else:
                 fmt = "<32Q"
             m = list(struct.unpack(fmt, block))
 
-            sub = self.msg_expand(m)
+            sub = msg_expand(m)
             t = list(self.cv)
             for j in range(self.ns):
-                t = self.step(j, t, sub[j])
-            self.cv = self.msg_add(t, sub[self.ns])
+                t = step(j, t, sub[j])
+            self.cv = msg_add(t, sub[self.ns])
             return
 
     class LSH256_224(LSHBase):
@@ -87827,84 +87806,176 @@ class Hash:
         ns = 26
         block_size = 128
         digest_size = 28
-        iv = [
+        iv = (
             0x0686_08d3, 0x62d8_f7a7, 0xd766_52ab, 0x4c60_0a43, 0xbdc4_0aa8, 0x1eca_0b68, 0xda1a_89be, 0x3147_d354,
             0x707e_b4f9, 0xf65b_3862, 0x6b0b_2abe, 0x56b8_ec0a, 0xcf23_7286, 0xee0d_1727, 0x3363_6595, 0x8bb8_d05f,
-        ]
+        )
 
     class LSH256_256(LSHBase):
         word_bits = 32
         ns = 26
         block_size = 128
         digest_size = 32
-        iv = [
+        iv = (
             0x46a1_0f1f, 0xfddc_e486, 0xb414_43a8, 0x198e_6b9d, 0x3304_388d, 0xb0f5_a3c7, 0xb360_61c4, 0x7adb_d553,
             0x105d_5378, 0x2f74_de54, 0x5c2f_2d95, 0xf255_3fbe, 0x8051_357a, 0x1386_68c8, 0x47aa_4484, 0xe01a_fb41,
-        ]
+        )
 
     class LSH512_224(LSHBase):
         word_bits = 64
         ns = 28
         block_size = 256
         digest_size = 28
-        iv = [
+        iv = (
             0x0c40_1e9f_e881_3a55, 0x4a5f_4462_68fd_3d35, 0xff13_e452_334f_612a, 0xf822_7661_037e_354a,
             0xa5f2_2372_3c9c_a29d, 0x95d9_65a1_1aed_3979, 0x01e2_3835_b9ab_02cc, 0x52d4_9cba_d5b3_0616,
             0x9e5c_2027_773f_4ed3, 0x66a5_c880_1925_b701, 0x22bb_c85b_4c67_79d9, 0xc131_71a4_2c55_9c23,
             0x31e2_b67d_25be_3813, 0xd522_c4de_ed8e_4d83, 0xa79f_5509_b43f_bafe, 0xe00d_2cd8_8b4b_6c6a,
-        ]
+        )
 
     class LSH512_256(LSHBase):
         word_bits = 64
         ns = 28
         block_size = 256
         digest_size = 32
-        iv = [
+        iv = (
             0x6dc5_7c33_df98_9423, 0xd8ea_7f6e_8342_c199, 0x76df_8356_f860_3ac4, 0x40f1_b44d_e838_223a,
             0x39ff_e7cf_c314_84cd, 0x39c4_326c_c528_1548, 0x8a2f_f85a_3460_45d8, 0xff20_2aa4_6dbd_d61e,
             0xcf78_5b3c_d5fc_db8b, 0x1f03_23b6_4a81_50bf, 0xff75_d972_f29e_a355, 0x2e56_7f30_bf1c_a9e1,
             0xb596_875b_f8ff_6dba, 0xfcca_39b0_89ef_4615, 0xecff_4017_d020_b4b6, 0x7e77_384c_772e_d802,
-        ]
+        )
 
     class LSH512_384(LSHBase):
         word_bits = 64
         ns = 28
         block_size = 256
         digest_size = 48
-        iv = [
+        iv = (
             0x5315_6a66_2928_08f6, 0xb2c4_f362_b204_c2bc, 0xb84b_7213_bfa0_5c4e, 0x976c_eb7c_1b29_9f73,
             0xdf0c_c63c_0570_ae97, 0xda44_41ba_a486_ce3f, 0x6559_f5d9_b5f2_acc2, 0x22da_cf19_b4b5_2a16,
             0xbbcd_acef_de80_953a, 0xc989_1a28_7972_5b3e, 0x7c9f_e633_0237_e440, 0xa30b_a550_553f_7431,
             0xbb08_043f_b34e_3e30, 0xa0de_c48d_5461_8ead, 0x1503_1726_7464_bc57, 0x32d1_501f_de63_dc93,
-        ]
+        )
 
     class LSH512_512(LSHBase):
         word_bits = 64
         ns = 28
         block_size = 256
         digest_size = 64
-        iv = [
+        iv = (
             0xadd5_0f3c_7f07_094e, 0xe3f3_cee8_f941_8a4f, 0xb527_ecde_5b3d_0ae9, 0x2ef6_dec6_8076_f501,
             0x8cb9_94ca_e5ac_a216, 0xfbb9_eae4_bba4_8cc7, 0x650a_5261_7472_5fea, 0x1f9a_61a7_3f8d_8085,
             0xb660_7378_173b_539b, 0x1bc9_9853_b0c0_b9ed, 0xdf72_7fc1_9b18_2d47, 0xdbef_360c_f893_a457,
             0x4981_f5e5_7014_7e80, 0xd00c_4490_ca7d_3e30, 0x5d73_940c_0e4a_e1ec, 0x8940_85e2_edb2_d819,
-        ]
+        )
 
     class FugueBase:
-        block_size = None
-        digest_size = None
         state_words = 36  # Fugue-384/512: 36, Fugue-224/256: 30
-        sbox = None
+
+        @classmethod
+        def ensure_tables(cls):
+            if hasattr(Hash.FugueBase, "T"):
+                return
+
+            def rol8(x, n):
+                x &= 0xff
+                n &= 7
+                return ((x << n) | (x >> (8 - n))) & 0xff
+
+            def gf_mul(a, b):
+                a &= 0xff
+                b &= 0xff
+                res = 0
+                for _ in range(8):
+                    if b & 1:
+                        res ^= a
+                    hi = a & 0x80
+                    a = (a << 1) & 0xff
+                    if hi:
+                        a ^= 0x1b
+                    b >>= 1
+                return res & 0xff
+
+            def gf_pow(a, e):
+                res = 1
+                base = a & 0xff
+                while e:
+                    if e & 1:
+                        res = gf_mul(res, base)
+                    base = gf_mul(base, base)
+                    e >>= 1
+                return res & 0xff
+
+            def linear_map(U):
+                M = ((1, 4, 7, 1), (1, 1, 4, 7), (7, 1, 1, 4), (4, 7, 1, 1))
+                V = [[0] * 4 for _ in range(4)]
+                for i in range(4):
+                    for j in range(4):
+                        acc = 0
+                        for k in range(4):
+                            coeff = M[i][k]
+                            if coeff == 1:
+                                acc ^= U[k][j]
+                            else:
+                                acc ^= gf_mul(U[k][j], coeff)
+                        V[i][j] = acc & 0xff
+                d = [0] * 4
+                for i in range(4):
+                    acc = 0
+                    for j in range(4):
+                        if j != i:
+                            acc ^= U[i][j]
+                    d[i] = acc & 0xff
+                W = [[0] * 4 for _ in range(4)]
+                for i in range(4):
+                    for j in range(4):
+                        coeff = M[j][i]
+                        add = d[i] if coeff == 1 else gf_mul(d[i], coeff)
+                        W[i][j] = (V[i][j] ^ add) & 0xff
+                for i in range(4):
+                    n = i & 3
+                    if n:
+                        W[i] = W[i][n:] + W[i][:n]
+                y0 = ((W[0][0] << 24) | (W[1][0] << 16) | (W[2][0] << 8) | W[3][0]) & 0xffff_ffff
+                y1 = ((W[0][1] << 24) | (W[1][1] << 16) | (W[2][1] << 8) | W[3][1]) & 0xffff_ffff
+                y2 = ((W[0][2] << 24) | (W[1][2] << 16) | (W[2][2] << 8) | W[3][2]) & 0xffff_ffff
+                y3 = ((W[0][3] << 24) | (W[1][3] << 16) | (W[2][3] << 8) | W[3][3]) & 0xffff_ffff
+                return y0, y1, y2, y3
+
+            sbox = [0] * 256
+            for x in range(256):
+                inv = 0 if x == 0 else gf_pow(x, 254)
+                y = inv & 0xff
+                sb = (y ^ rol8(y, 1) ^ rol8(y, 2) ^ rol8(y, 3) ^ rol8(y, 4) ^ 0x63)
+                sbox[x] = sb & 0xff
+
+            Hash.FugueBase.sbox = sbox
+
+            T = [[[0 for _ in range(256)] for _ in range(4)] for _ in range(4)]
+            for c in range(4):
+                for r in range(4):
+                    for val in range(256):
+                        U = [[0]*4 for _ in range(4)]
+                        U[r][c] = sbox[val]
+                        y0, y1, y2, y3 = linear_map(U)
+                        T[c][r][val] = (y0 << 96) | (y1 << 64) | (y2 << 32) | y3
+
+            Hash.FugueBase.T = T
+            return
 
         def __init__(self, data=b""):
+            self.ensure_tables()
             self.S = [0] * 36
             self.bit_count = 0
             self.partial = 0
             self.partial_len = 0
             self.rshift = 0
-
-            self.ensure_tables()
-            self.reset()
+            iv = self.init_val
+            if iv:
+                n = self.state_words
+                off = n - len(iv)
+                for i, v in enumerate(iv):
+                    self.S[off + i] = v & 0xffff_ffff
             if data:
                 self.update(data)
             return
@@ -87918,43 +87989,13 @@ class Hash:
             other.rshift = self.rshift
             return other
 
-        def reset(self):
-            for i in range(36):
-                self.S[i] = 0
-
-            self.bit_count = 0
-            self.partial = 0
-            self.partial_len = 0
-            self.rshift = 0
-
-            iv = self.get_iv()
-            if iv:
-                n = self.state_words
-                off = n - len(iv)
-                for i, v in enumerate(iv):
-                    self.S[off + i] = v & 0xffff_ffff
-            return
-
-        def get_iv(self):
-            return self.init_val
-
-        def encode_be_int(self, x, out, off):
-            x &= 0xffff_ffff
-            out[off + 0] = (x >> 24) & 0xff
-            out[off + 1] = (x >> 16) & 0xff
-            out[off + 2] = (x >> 8) & 0xff
-            out[off + 3] = x & 0xff
-            return
-
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-
             data = bytes(data)
             self.bit_count = (
                 self.bit_count + ((len(data) & 0xffff_ffff_ffff_ffff) << 3)
             ) & 0xffff_ffff_ffff_ffff
-
             for b in data:
                 self.partial = ((self.partial << 8) | (b & 0xff)) & 0xffff_ffff
                 self.partial_len += 1
@@ -87972,12 +88013,10 @@ class Hash:
                 self.process(self.partial)
                 self.partial = 0
                 self.partial_len = 0
-
             high = (self.bit_count >> 32) & 0xffff_ffff
             low = self.bit_count & 0xffff_ffff
             self.process(high)
             self.process(low)
-
             out = bytearray(self.digest_size)
             self.process_final(out)
             return bytes(out)
@@ -88022,35 +88061,6 @@ class Hash:
                 S[i] &= 0xffff_ffff
             return
 
-        def gf_mul(self, a, b):
-            a &= 0xff
-            b &= 0xff
-            res = 0
-            for _ in range(8):
-                if b & 1:
-                    res ^= a
-                hi = a & 0x80
-                a = (a << 1) & 0xff
-                if hi:
-                    a ^= 0x1b
-                b >>= 1
-            return res & 0xff
-
-        def gf_pow(self, a, e):
-            res = 1
-            base = a & 0xff
-            while e:
-                if e & 1:
-                    res = self.gf_mul(res, base)
-                base = self.gf_mul(base, base)
-                e >>= 1
-            return res & 0xff
-
-        def rotl8(self, x, n):
-            x &= 0xff
-            n &= 7
-            return ((x << n) | (x >> (8 - n))) & 0xff
-
         def smix(self, i0, i1, i2, i3):
             S = self.S
             x0 = S[i0]
@@ -88058,7 +88068,7 @@ class Hash:
             x2 = S[i2]
             x3 = S[i3]
 
-            Tp = self.__class__.T
+            Tp = self.T
 
             out = Tp[0][0][(x0 >> 24) & 0xff]
             out ^= Tp[0][1][(x0 >> 16) & 0xff]
@@ -88086,65 +88096,41 @@ class Hash:
             S[i3] = out & 0xffff_ffff
             return
 
-        def ensure_tables(self):
-            if hasattr(self.__class__, "T"):
+        def process_final_common(self, out, state_len, init_rot_mul, cmix_fn, pre_rounds, loop_steps, final_xors, out_words):
+
+            def xor_from_zero(indices):
+                s0 = self.S[0]
+                for idx in indices:
+                    self.S[idx] ^= s0
                 return
 
-            sbox = [0] * 256
-            for x in range(256):
-                inv = 0 if x == 0 else self.gf_pow(x, 254)
-                y = inv & 0xff
-                sb = (y ^ self.rotl8(y, 1) ^ self.rotl8(y, 2) ^ self.rotl8(y, 3) ^ self.rotl8(y, 4) ^ 0x63)
-                sbox[x] = sb & 0xff
+            def encode_words(out, indices):
+                for pos, idx in enumerate(indices):
+                    off = pos * 4
+                    if off >= len(out):
+                        break
+                    x = self.S[idx]
+                    out[off + 0] = (x >> 24) & 0xff
+                    out[off + 1] = (x >> 16) & 0xff
+                    out[off + 2] = (x >> 8) & 0xff
+                    out[off + 3] = x & 0xff
+                return
 
-            self.__class__.sbox = sbox
+            self.ror(init_rot_mul * self.rshift, state_len)
 
-            def linear_map(U):
-                M = ((1, 4, 7, 1), (1, 1, 4, 7), (7, 1, 1, 4), (4, 7, 1, 1))
-                V = [[0] * 4 for _ in range(4)]
-                for i in range(4):
-                    for j in range(4):
-                        acc = 0
-                        for k in range(4):
-                            coeff = M[i][k]
-                            if coeff == 1:
-                                acc ^= U[k][j]
-                            else:
-                                acc ^= self.gf_mul(U[k][j], coeff)
-                        V[i][j] = acc & 0xff
-                d = [0] * 4
-                for i in range(4):
-                    acc = 0
-                    for j in range(4):
-                        if j != i:
-                            acc ^= U[i][j]
-                    d[i] = acc & 0xff
-                W = [[0] * 4 for _ in range(4)]
-                for i in range(4):
-                    for j in range(4):
-                        coeff = M[j][i]
-                        add = d[i] if coeff == 1 else self.gf_mul(d[i], coeff)
-                        W[i][j] = (V[i][j] ^ add) & 0xff
-                for i in range(4):
-                    n = i & 3
-                    if n:
-                        W[i] = W[i][n:] + W[i][:n]
-                y0 = ((W[0][0] << 24) | (W[1][0] << 16) | (W[2][0] << 8) | W[3][0]) & 0xffff_ffff
-                y1 = ((W[0][1] << 24) | (W[1][1] << 16) | (W[2][1] << 8) | W[3][1]) & 0xffff_ffff
-                y2 = ((W[0][2] << 24) | (W[1][2] << 16) | (W[2][2] << 8) | W[3][2]) & 0xffff_ffff
-                y3 = ((W[0][3] << 24) | (W[1][3] << 16) | (W[2][3] << 8) | W[3][3]) & 0xffff_ffff
-                return y0, y1, y2, y3
+            for _ in range(pre_rounds):
+                self.ror(3, state_len)
+                cmix_fn()
+                self.smix(0, 1, 2, 3)
 
-            T = [[[0 for _ in range(256)] for _ in range(4)] for _ in range(4)]
-            for c in range(4):
-                for r in range(4):
-                    for val in range(256):
-                        U = [[0]*4 for _ in range(4)]
-                        U[r][c] = sbox[val]
-                        y0, y1, y2, y3 = linear_map(U)
-                        T[c][r][val] = (y0 << 96) | (y1 << 64) | (y2 << 32) | y3
+            for _ in range(13):
+                for xor_indices, rot in loop_steps:
+                    xor_from_zero(xor_indices)
+                    self.ror(rot, state_len)
+                    self.smix(0, 1, 2, 3)
 
-            self.__class__.T = T
+            xor_from_zero(final_xors)
+            encode_words(out, out_words)
             return
 
     class FugueCore30(FugueBase):
@@ -88259,73 +88245,49 @@ class Hash:
                 S[11] ^= S[0]
                 self.smix(24, 25, 26, 27)
                 self.rshift = 1
-
-            for i in range(30):
-                S[i] &= 0xffff_ffff
             return
 
+        FINAL_LOOP_STEPS = (
+            ((4, 15), 15),
+            ((4, 16), 14),
+        )
+        FINAL_XORS = (4, 15)
+        FINAL_OUT_WORDS = (1, 2, 3, 4, 15, 16, 17, 18)
+
         def process_final(self, out):
-            S = self.S
-
-            self.ror(6 * self.rshift, 30)
-
-            for _ in range(10):
-                self.ror(3, 30)
-                self.cmix30()
-                self.smix(0, 1, 2, 3)
-
-            for _ in range(13):
-                S[4] ^= S[0]
-                S[15] ^= S[0]
-                self.ror(15, 30)
-                self.smix(0, 1, 2, 3)
-
-                S[4] ^= S[0]
-                S[16] ^= S[0]
-                self.ror(14, 30)
-                self.smix(0, 1, 2, 3)
-
-            S[4] ^= S[0]
-            S[15] ^= S[0]
-
-            self.encode_be_int(S[1], out, 0)
-            self.encode_be_int(S[2], out, 4)
-            self.encode_be_int(S[3], out, 8)
-            self.encode_be_int(S[4], out, 12)
-            self.encode_be_int(S[15], out, 16)
-            self.encode_be_int(S[16], out, 20)
-            self.encode_be_int(S[17], out, 24)
-            if len(out) >= 32:
-                self.encode_be_int(S[18], out, 28)
+            self.process_final_common(
+                out=out,
+                state_len=30,
+                init_rot_mul=6,
+                cmix_fn=self.cmix30,
+                pre_rounds=10,
+                loop_steps=self.FINAL_LOOP_STEPS,
+                final_xors=self.FINAL_XORS,
+                out_words=self.FINAL_OUT_WORDS,
+            )
             return
 
     class Fugue224(FugueCore30):
         block_size = 28
         digest_size = 28
-
-        init_val = [
-            0xf4c9_120d, 0x6286_f757, 0xee39_e01c, 0xe074_e3cb,
-            0xa112_7c62, 0x9a43_d215, 0xbd8d_679a,
-        ]
+        init_val = (
+            0xf4c9_120d, 0x6286_f757, 0xee39_e01c, 0xe074_e3cb, 0xa112_7c62, 0x9a43_d215, 0xbd8d_679a,
+        )
 
     class Fugue256(FugueCore30):
         block_size = 32
         digest_size = 32
-
-        init_val = [
-            0xe952_bdde, 0x6671_135f, 0xe0d4_f668, 0xd2b0_b594,
-            0xf96c_621d, 0xfbf9_29de, 0x9149_e899, 0x34f8_c248,
-        ]
+        init_val = (
+            0xe952_bdde, 0x6671_135f, 0xe0d4_f668, 0xd2b0_b594, 0xf96c_621d, 0xfbf9_29de, 0x9149_e899, 0x34f8_c248,
+        )
 
     class Fugue384(FugueBase):
         block_size = 48
         digest_size = 48
-
-        init_val = [
-            0xaa61_ec0d, 0x3125_2e1f, 0xa01d_b4c7, 0x0060_0985,
-            0x215e_f44a, 0x741b_5e9c, 0xfa69_3e9a, 0x473e_b040,
+        init_val = (
+            0xaa61_ec0d, 0x3125_2e1f, 0xa01d_b4c7, 0x0060_0985, 0x215e_f44a, 0x741b_5e9c, 0xfa69_3e9a, 0x473e_b040,
             0xe502_ae8a, 0xa99c_25e0, 0xbc95_517c, 0x5c10_95a1,
-        ]
+        )
 
         def process(self, w):
             S = self.S
@@ -88447,66 +88409,36 @@ class Hash:
                 S[11] ^= S[33]
                 self.smix(27, 28, 29, 30)
                 self.rshift = 1
-
-            for i in range(36):
-                S[i] &= 0xffff_ffff
             return
 
+        FINAL_LOOP_STEPS = (
+            ((4, 12, 24), 12),
+            ((4, 13, 24), 12),
+            ((4, 13, 25), 11),
+        )
+        FINAL_XORS = (4, 12, 24)
+        FINAL_OUT_WORDS = (1, 2, 3, 4, 12, 13, 14, 15, 24, 25, 26, 27)
+
         def process_final(self, out):
-            S = self.S
-
-            self.ror(9 * self.rshift, 36)
-
-            for _ in range(18):
-                self.ror(3, 36)
-                self.cmix36()
-                self.smix(0, 1, 2, 3)
-
-            for _ in range(13):
-                S[4] ^= S[0]
-                S[12] ^= S[0]
-                S[24] ^= S[0]
-                self.ror(12, 36)
-                self.smix(0, 1, 2, 3)
-
-                S[4] ^= S[0]
-                S[13] ^= S[0]
-                S[24] ^= S[0]
-                self.ror(12, 36)
-                self.smix(0, 1, 2, 3)
-
-                S[4] ^= S[0]
-                S[13] ^= S[0]
-                S[25] ^= S[0]
-                self.ror(11, 36)
-                self.smix(0, 1, 2, 3)
-
-            S[4] ^= S[0]
-            S[12] ^= S[0]
-            S[24] ^= S[0]
-
-            self.encode_be_int(S[1], out, 0)
-            self.encode_be_int(S[2], out, 4)
-            self.encode_be_int(S[3], out, 8)
-            self.encode_be_int(S[4], out, 12)
-            self.encode_be_int(S[12], out, 16)
-            self.encode_be_int(S[13], out, 20)
-            self.encode_be_int(S[14], out, 24)
-            self.encode_be_int(S[15], out, 28)
-            self.encode_be_int(S[24], out, 32)
-            self.encode_be_int(S[25], out, 36)
-            self.encode_be_int(S[26], out, 40)
-            self.encode_be_int(S[27], out, 44)
+            self.process_final_common(
+                out=out,
+                state_len=36,
+                init_rot_mul=9,
+                cmix_fn=self.cmix36,
+                pre_rounds=18,
+                loop_steps=self.FINAL_LOOP_STEPS,
+                final_xors=self.FINAL_XORS,
+                out_words=self.FINAL_OUT_WORDS,
+            )
             return
 
     class Fugue512(FugueBase):
         block_size = 64
         digest_size = 64
-
-        init_val = [
+        init_val = (
             0x8807_a57e, 0xe616_af75, 0xc5d3_e4db, 0xac9a_b027, 0xd915_f117, 0xb6ee_cc54, 0x06e8_020b, 0x4a92_efd1,
             0xaac6_e2c9, 0xddb2_1398, 0xcae6_5838, 0x437f_203f, 0x25ea_78e7, 0x951f_ddd6, 0xda6e_d11d, 0xe13e_3567,
-        ]
+        )
 
         def process(self, w):
             S = self.S
@@ -88623,71 +88555,28 @@ class Hash:
                 S[8] ^= S[30]
                 self.smix(24, 25, 26, 27)
                 self.rshift = 1
-
-            for i in range(36):
-                S[i] &= 0xffff_ffff
             return
 
+        FINAL_LOOP_STEPS = (
+            ((4, 9, 18, 27), 9),
+            ((4, 10, 18, 27), 9),
+            ((4, 10, 19, 27), 9),
+            ((4, 10, 19, 28), 8),
+        )
+        FINAL_XORS = (4, 9, 18, 27)
+        FINAL_OUT_WORDS = (1, 2, 3, 4, 9, 10, 11, 12, 18, 19, 20, 21, 27, 28, 29, 30)
+
         def process_final(self, out):
-            S = self.S
-
-            self.ror(12 * self.rshift, 36)
-
-            for _ in range(32):
-                self.ror(3, 36)
-                self.cmix36()
-                self.smix(0, 1, 2, 3)
-
-            for _ in range(13):
-                S[4] ^= S[0]
-                S[9] ^= S[0]
-                S[18] ^= S[0]
-                S[27] ^= S[0]
-                self.ror(9, 36)
-                self.smix(0, 1, 2, 3)
-
-                S[4] ^= S[0]
-                S[10] ^= S[0]
-                S[18] ^= S[0]
-                S[27] ^= S[0]
-                self.ror(9, 36)
-                self.smix(0, 1, 2, 3)
-
-                S[4] ^= S[0]
-                S[10] ^= S[0]
-                S[19] ^= S[0]
-                S[27] ^= S[0]
-                self.ror(9, 36)
-                self.smix(0, 1, 2, 3)
-
-                S[4] ^= S[0]
-                S[10] ^= S[0]
-                S[19] ^= S[0]
-                S[28] ^= S[0]
-                self.ror(8, 36)
-                self.smix(0, 1, 2, 3)
-
-            S[4] ^= S[0]
-            S[9] ^= S[0]
-            S[18] ^= S[0]
-            S[27] ^= S[0]
-
-            self.encode_be_int(S[1], out, 0)
-            self.encode_be_int(S[2], out, 4)
-            self.encode_be_int(S[3], out, 8)
-            self.encode_be_int(S[4], out, 12)
-            self.encode_be_int(S[9], out, 16)
-            self.encode_be_int(S[10], out, 20)
-            self.encode_be_int(S[11], out, 24)
-            self.encode_be_int(S[12], out, 28)
-            self.encode_be_int(S[18], out, 32)
-            self.encode_be_int(S[19], out, 36)
-            self.encode_be_int(S[20], out, 40)
-            self.encode_be_int(S[21], out, 44)
-            self.encode_be_int(S[27], out, 48)
-            self.encode_be_int(S[28], out, 52)
-            self.encode_be_int(S[29], out, 56)
-            self.encode_be_int(S[30], out, 60)
+            self.process_final_common(
+                out=out,
+                state_len=36,
+                init_rot_mul=12,
+                cmix_fn=self.cmix36,
+                pre_rounds=32,
+                loop_steps=self.FINAL_LOOP_STEPS,
+                final_xors=self.FINAL_XORS,
+                out_words=self.FINAL_OUT_WORDS,
+            )
             return
 
     class HamsiBase:
@@ -97514,8 +97403,8 @@ class Hash:
                 nlimbs=nlimbs, m=m, k0=ks_padded[0], k1=ks_padded[1], k2=ks_padded[2], nks=len(ks),
             )
 
-            import cffi as _cffi_module
-            ffi = _cffi_module.FFI()
+            import cffi
+            ffi = cffi.FFI()
             ffi.cdef("""
                 void gf_mul(uint64_t *r, const uint64_t *a, const uint64_t *b);
                 void gf_sqr(uint64_t *r, const uint64_t *a);
