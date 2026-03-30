@@ -31869,6 +31869,8 @@ class ContextRegistersCommand(GenericCommand):
         self.add_setting("redirect", "", "The target tty name to redirect `context regs` to")
         self.add_setting("show_registers_raw", False, "Show the registers pane with raw values (no dereference)")
         self.add_setting("ignore_registers", "", "Space-separated list of registers not to display (e.g., '$cs $ds $gs')")
+        self.add_setting("show_errno", True, "Show errno after a syscall instruction")
+        self.add_setting("show_mmx_xmm_ymm_fpu", True, "Show MMX/XMM/YMM/FPU registers when stopped at a related instruction")
         return
 
     @staticmethod
@@ -31905,6 +31907,9 @@ class ContextRegistersCommand(GenericCommand):
     RE_FINDALL_FPU = re.compile(r"(st\(\d\))")
 
     def context_regs_extra(self, redirect):
+        if not Config.get_gef_setting("context_regs.show_mmx_xmm_ymm_fpu"):
+            return
+
         if not is_x86():
             return
 
@@ -31991,6 +31996,47 @@ class ContextRegistersCommand(GenericCommand):
         self.previous_extra_regs = printed_extra_regs
         return
 
+    def context_regs_syscall_errno(self, redirect):
+        if not Config.get_gef_setting("context_regs.show_errno"):
+            return
+
+        if is_qemu_system() or is_kgdb() or is_kdb() or is_vmware() or is_wine():
+            return
+
+        if current_arch is None:
+            return
+        if current_arch.return_register is None:
+            return
+        if current_arch.ptrsize not in [4, 8]:
+            return
+
+        regvalue = get_register(current_arch.return_register)
+        if not AddressUtil.is_msb_on(regvalue):
+            return
+
+        try:
+            insn_prev = get_insn_prev()
+        except gdb.MemoryError:
+            return
+        if insn_prev is None:
+            return
+        if not current_arch.is_syscall(insn_prev):
+            return
+
+        if current_arch.ptrsize == 4:
+            val = struct.unpack("<i", struct.pack("<I", regvalue))[0]
+        elif current_arch.ptrsize == 8:
+            val = struct.unpack("<q", struct.pack("<Q", regvalue))[0]
+        val = -val
+
+        einfo = ErrnoCommand.get_errno_dict().get(val)
+        if not einfo:
+            return
+
+        line = "{:s}: -{:d} {:s} ({:s})".format(current_arch.return_register, val, einfo[0], einfo[1])
+        gef_print(line, redirect=redirect)
+        return
+
     @Cache.cache_this_session
     def get_target_registers(self):
         if is_x86():
@@ -32074,7 +32120,8 @@ class ContextRegistersCommand(GenericCommand):
         ContextCommand.execute_command("registers {:s} {:s}".format(opt, target_registers), redirect)
 
         # for extra regs
-        self.context_regs_extra(redirect)
+        self.context_regs_extra(redirect) # for x86 only (xmm, ymm, ...)
+        self.context_regs_syscall_errno(redirect)
         return
 
     @parse_args
