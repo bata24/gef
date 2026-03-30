@@ -24174,21 +24174,27 @@ class GlibcHeapTryFreeCommand(GenericCommand):
 
         # make patch info
         # The arguments of free, malloc, realloc, and calloc are at most 2
-        info = self.make_patch_info(caller_address, arg1, arg2)
+        patch_info = self.make_patch_info(caller_address, arg1, arg2)
 
         # modify (registers, memories)
-        for regname, regvalue in info.regs_new.items():
+        for regname, regvalue in patch_info.regs_new.items():
+            if self.args.verbose:
+                info("set {:s}={:#x}".format(regname, regvalue))
             gdb.execute("set {:s}={:#x}".format(regname, regvalue))
         tag = PatchCommand.PatchInfo.get_unique_tag()
-        for patch_addr, patch_code in info.patches.items():
+        for patch_addr, patch_code in patch_info.patches.items():
+            if self.args.verbose:
+                info("patch hex {:#x} {:s}".format(patch_addr, patch_code.hex()))
             PatchCommand.PatchInfo(patch_addr, patch_code, tag=tag).patch(silent=not self.args.verbose)
 
         # execute
-        option = ["-t", hex(info.stop_address), "-A", "-E", "-I"]
+        option = ["-t", hex(patch_info.stop_address), "-A", "-E", "-I"]
         if self.args.skip_emulation:
             option.append("-s")
         res = ""
         try:
+            if self.args.verbose:
+                info("unicorn-emulate {:s}".format(" ".join(option)))
             res = gdb.execute("unicorn-emulate {:s}".format(" ".join(option)), to_string=True)
             if self.args.verbose or self.args.skip_emulation:
                 gef_print(res.rstrip())
@@ -24215,9 +24221,13 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                         gef_print(exc_value)
 
         # revert (registers, memories, thread locking)
-        for regname, regvalue in info.regs_old.items():
+        for regname, regvalue in patch_info.regs_old.items():
+            if self.args.verbose:
+                info("set {:s}={:#x}".format(regname, regvalue))
             gdb.execute("set {:s}={:#x}".format(regname, regvalue))
         PatchCommand.PatchInfo.revert_to_tag(tag, silent=not self.args.verbose)
+        if self.args.verbose:
+            info("patch revert ok")
         return
 
     @parse_args
@@ -72498,11 +72508,14 @@ class ExecAsm:
     WARNING: Disable `-enable-kvm` option for qemu-system; If set, this code will crash the guest OS."""
 
     def __init__(self, target_codes, regs=None, step=None, use_bp=False, debug=False):
-        self.stdout = 1
-        self.debug = debug
-        self.use_bp = use_bp
         self.regs = regs
         self.step = step or 1
+        # Step execution often fails due to an interrupt on ARM64
+        self.use_bp = use_bp
+        # debug print enable
+        self.debug = debug
+        # output is always stdout
+        self.stdout = 1
 
         codes = []
         if target_codes:
@@ -72658,11 +72671,15 @@ class ExecSyscall(ExecAsm):
     """Execute embedded asm for syscall. e.g., ExecSyscall(nr, args).exec_code().
     WARNING: Disable `-enable-kvm` option for qemu-system; If set, this code will crash the guest OS."""
 
-    def __init__(self, nr, args, debug=False):
-        self.stdout = 1
-        self.debug = debug
+    def __init__(self, nr, args, debug=False, use_bp=False):
         self.syscall_nr = nr
         self.syscall_args = args
+        # Step execution often fails due to an interrupt on ARM64
+        self.use_bp = use_bp
+        # debug print enable
+        self.debug = debug
+        # output is always stdout
+        self.stdout = 1
 
         if is_hppa32() or is_hppa64():
             self.step = 3 # syscall, delay slot, trampoline
