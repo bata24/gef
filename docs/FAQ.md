@@ -59,7 +59,7 @@ The variable `GEF_TEMP_DIR` is defined in `gef.py` and can be changed if necessa
 ## What is `install-uv.sh`?
 This is the new installer that creates and uses a Python virtual environment (`venv`) with `uv`.
 
-It installs the same packages as `install.sh`.
+It installs the same packages as `install-no-uv.sh` (previously named simply `install.sh`).
 The key difference is that Python packages are installed into the virtual environment.
 
 By default, it installs into `/root/.gef/.venv-gef`.
@@ -71,7 +71,7 @@ Usage:
 wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sudo sh
 ```
 
-## What is `install.sh`?
+## What is `install-no-uv.sh`?
 This is the old installer that was used before the `uv`-based installation became available.
 
 This installer is not currently recommended, but it still works.
@@ -82,11 +82,11 @@ Usage:
 
 # On Ubuntu 23.04 or later, global Python package installation via pip3 is restricted.
 # Use the --break-system-packages option.
-wget -q https://raw.githubusercontent.com/bata24/gef/dev/install.sh -O- \
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-no-uv.sh -O- \
 | sed -e 's/pip3 install/pip3 install --break-system-packages/g' | sudo sh
 
 # For Ubuntu 22.10 or earlier
-wget -q https://raw.githubusercontent.com/bata24/gef/dev/install.sh -O- | sudo sh
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-no-uv.sh -O- | sudo sh
 ```
 
 ## What is `install-minimal.sh`?
@@ -106,7 +106,7 @@ Notes:
 
 ## What is `gef.venv.conf`?
 This is the path information file required by GEF that is automatically generated when you install GEF using `install-uv.sh`.
-It is not generated if you use `install.sh` or `install-minimal.sh`.
+It is not generated if you use `install-no-uv.sh` or `install-minimal.sh`.
 Place this file in the same directory as `gef.py`.
 
 It contains three pieces of path information:
@@ -135,7 +135,7 @@ There are three installers.
     - Simply download `gef.py` and place it in the appropriate location.
     - Because this method is very simple, it can also be performed manually.
 - Normal install
-    - This is the installation method provided by `install.sh`.
+    - This is the installation method provided by `install-no-uv.sh`.
     - This uses `python3-pip` to install Python packages globally.
     - This is a full installation, so you can use almost all the features that GEF provides.
     - This installer is not currently recommended, but it still works.
