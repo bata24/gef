@@ -139331,12 +139331,18 @@ class PageInfoCommand(GenericCommand):
         refcount = read_int32_from_memory(page_addr + current_arch.ptrsize * 6 + 4)
 
         gef_print("Page        : {:#x}".format(page_addr))
-        gef_print("Virt        : {:#x}".format(virt_addr))
+        if virt_addr is None:
+            gef_print("Virt        : None")
+        else:
+            gef_print("Virt        : {:#x}".format(virt_addr))
 
         gef_print("flags       : {:#x} ({:s})".format(flags, PageInfoCommand.get_flags_str(flags)))
         gef_print("is_tailpage : {}".format(bool(compound_head & 1)))
         gef_print("page_type   : {:#x} ({:s})".format(page_type, PageInfoCommand.get_pagetype_str(page_type)))
-        gef_print("refcount    : {:#x}".format(refcount))
+        if refcount == 0:
+            gef_print("refcount    : {:#x} (freed)".format(refcount))
+        else:
+            gef_print("refcount    : {:#x} (allocated)".format(refcount))
         return
 
     @parse_args
