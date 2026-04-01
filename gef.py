@@ -114553,12 +114553,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
 
         if colour_off:
             chunk_s = Color.colorify_hex(page["s_mem_base"], used_address_color)
-            self.out.append("        {:7s}   {:#04x} {:s} ({:s})".format("layout:", 0, chunk_s, "never-used"))
-            start_idx = 1
-        else:
-            start_idx = 0
+            self.out.append("        {:7s}   ---- {:s} ({:s})".format("layout:", chunk_s, "never-used"))
 
-        for idx, chunk in enumerate(range(page["s_mem"], end_virt, kmem_cache["size"]), start=start_idx):
+        for idx, chunk in enumerate(range(page["s_mem"], end_virt, kmem_cache["size"])):
             if idx in freelist:
                 idxidx = freelist.index(idx)
                 if idxidx == len(freelist) - 1:
@@ -114619,6 +114616,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
 
         tag_s = Color.colorify("array_cache (cpu{:d})".format(cpu), label_active_color)
         if "array_cache" not in kmem_cache:
+            self.out.append("      {:s}: (none)".format(tag_s))
+            return
+        if "address" not in kmem_cache["array_cache"][cpu]:
             self.out.append("      {:s}: (none)".format(tag_s))
             return
         self.out.append("      {:s}: {:#x}".format(tag_s, kmem_cache["array_cache"][cpu]["address"]))
@@ -115275,6 +115275,7 @@ class SlabContainsCommand(GenericCommand):
         if self.args.verbose:
             info("offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size))
 
+        # for aligned check
         if self.allocator in ["SLUB", "SLUB_TINY"]:
             r = re.search(r"offsetof\(kmem_cache, red_left_pad\): (0x\S+)", res)
             if not r:
@@ -115283,6 +115284,15 @@ class SlabContainsCommand(GenericCommand):
             if self.args.verbose:
                 info("offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad))
 
+        if self.allocator == "SLAB":
+            r = re.search(r"offsetof\((?:page|slab), s_mem\): (0x\S+)", res)
+            if not r:
+                return False
+            self.page_offset_s_mem = int(r.group(1), 16)
+            if self.args.verbose:
+                info("offsetof({:s}, s_mem): {:#x}".format(Kernel.slab_page_str(), self.page_offset_s_mem))
+
+        # for slab-virtual
         if is_x86_64():
             r = re.search(r"offsetof\(kmem_cache, freed_slabs_min\): (0x\S+)", res)
             if r:
@@ -115328,6 +115338,56 @@ class SlabContainsCommand(GenericCommand):
             return int(r.group(1), 16)
         return None
 
+    def check_slab_dump(self, target_addr, slab_cache_name):
+
+        def get_freed_addresses(res):
+            freed_addresses = []
+            res = Color.remove_color(res)
+            in_freelist_section = 0
+            for line in res.splitlines():
+                line = line.rstrip()
+                if not in_freelist_section:
+                    if re.match(r"^        (freelist|objects:)", line):
+                        in_freelist_section = 1
+                    elif re.match(r"^        entry:", line):
+                        in_freelist_section = 2
+                elif in_freelist_section == 1:
+                    if not line.startswith("                  0x"):
+                        in_freelist_section = 0
+                elif in_freelist_section == 2:
+                    if not line.startswith("               0x"):
+                        in_freelist_section = 0
+                if in_freelist_section == 1:
+                    r = re.search(r"0x\S+ (0x\S+)", line)
+                    if r:
+                        freed_chunk = int(r.group(1), 16)
+                        freed_addresses.append(freed_chunk)
+                elif in_freelist_section == 2:
+                    r = re.search(r"(0x\S+)", line)
+                    if r:
+                        freed_chunk = int(r.group(1), 16)
+                        freed_addresses.append(freed_chunk)
+            return freed_addresses
+
+        if self.allocator == "SLUB":
+            res = gdb.execute("slub-dump --node --no-pager --quiet {:s}".format(slab_cache_name), to_string=True)
+        elif self.allocator == "SLUB_TINY":
+            res = gdb.execute("slub-tiny-dump --no-pager --quiet {:s}".format(slab_cache_name), to_string=True)
+        elif self.allocator == "SLAB":
+            res = gdb.execute("slab-dump --no-pager --quiet {:s}".format(slab_cache_name), to_string=True)
+        else:
+            return
+
+        freed_addresses = get_freed_addresses(res)
+
+        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
+        if target_addr in freed_addresses:
+            gef_print("status: {:s} (found in freelist)".format(Color.colorify("freed", freed_address_color)))
+        else:
+            gef_print("status: {:s} (not found in freelist)".format(Color.colorify("in-use", used_address_color)))
+        return
+
     def slab_contains(self):
         current = self.args.address & get_pagesize_mask_high()
         chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
@@ -115367,7 +115427,11 @@ class SlabContainsCommand(GenericCommand):
 
                 self.quiet_print("base: {:#x}".format(current))
                 break
+        except (gdb.MemoryError, ZeroDivisionError):
+            self.quiet_err("Memory read error")
+            return
 
+        try:
             slab_cache_name_ptr = read_int_from_memory(kmem_cache + self.kmem_cache_offset_name)
             slab_cache_name = read_cstring_from_memory(slab_cache_name_ptr)
             if slab_cache_name is None:
@@ -115379,16 +115443,19 @@ class SlabContainsCommand(GenericCommand):
 
             if self.allocator in ["SLUB", "SLUB_TINY"]:
                 red_left_pad = read_int_from_memory(kmem_cache + self.kmem_cache_offset_red_left_pad)
+                color_offset = 0
                 x = read_int_from_memory(page + self.page_offset_inuse_objects_frozen)
                 objects = (x >> 16) & 0x7fff
                 num_pages = (slab_cache_size * objects + get_pagesize_mask_low()) // get_pagesize()
             else:
                 red_left_pad = 0
+                s_mem = read_int_from_memory(page + self.page_offset_s_mem)
+                color_offset = s_mem & 0xfff
                 gfporder = read_int32_from_memory(kmem_cache + self.kmem_cache_offset_gfporder)
                 num_pages = 1 << gfporder
 
             # `inuse` is not displayed because it is not a reliable reference value.
-            # The value of `slab->inuse` also includes the number of chunks registered in `kmem_cache_cpu->freelist`.
+            # The value of `slab->inuse` also includes the number of chunks registered in `kmem_cache_cpu->freelist` etc.
             # However, what the user actually wants is the number of chunks that are truly in use,
             # excluding those accounted for by `kmem_cache_cpu->freelist`.
             # Accurately deriving that value is non-trivial.
@@ -115398,10 +115465,15 @@ class SlabContainsCommand(GenericCommand):
                 slab_cache_size,
                 num_pages,
             ))
-            if (self.args.address - red_left_pad - current) % slab_cache_size != 0:
+            aligned = True
+            if (self.args.address - (red_left_pad + color_offset) - current) % slab_cache_size != 0:
                 msg += " " + Color.redify("(unaligned?)")
+                aligned = False
             gef_print(msg)
 
+            # resolve freelist and print chunk status (in-use or freed)
+            if aligned:
+                self.check_slab_dump(self.args.address, slab_cache_name)
         except (gdb.MemoryError, ZeroDivisionError):
             self.quiet_err("Memory read error")
         return
