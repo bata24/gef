@@ -80676,9 +80676,6 @@ class Hash:
             return (s, concat4(y1, y2))
 
     class CityFarmBase:
-        mask32 = 0xffff_ffff
-        mask64 = 0xffff_ffff_ffff_ffff
-
         # CityHash/FarmHash 64-bit constants
         k0 = 0xc3a5_c85c_97cb_3127
         k1 = 0xb492_b66f_be98_f273
@@ -80702,18 +80699,18 @@ class Hash:
             return
 
         def ror32(self, x, r):
-            x &= self.mask32
+            x &= 0xffff_ffff
             r &= 31
             if r == 0:
                 return x
-            return ((x >> r) | (x << (32 - r))) & self.mask32
+            return ((x >> r) | (x << (32 - r))) & 0xffff_ffff
 
         def ror64(self, x, r):
-            x &= self.mask64
+            x &= 0xffff_ffff_ffff_ffff
             r &= 63
             if r == 0:
                 return x
-            return ((x >> r) | (x << (64 - r))) & self.mask64
+            return ((x >> r) | (x << (64 - r))) & 0xffff_ffff_ffff_ffff
 
         def u32le(self, data, off):
             return int.from_bytes(data[off:off + 4], "little", signed=False)
@@ -80722,7 +80719,6 @@ class Hash:
             return int.from_bytes(data[off:off + 8], "little", signed=False)
 
         def bswap32(self, x):
-            x &= self.mask32
             return (
                 ((x & 0x0000_00ff) << 24)
                 | ((x & 0x0000_ff00) << 8)
@@ -80731,7 +80727,6 @@ class Hash:
             )
 
         def bswap64(self, x):
-            x &= self.mask64
             return (
                 ((x & 0x0000_0000_0000_00ff) << 56)
                 | ((x & 0x0000_0000_0000_ff00) << 40)
@@ -80748,27 +80743,27 @@ class Hash:
 
         def hexdigest(self):
             value = self.cityhash32(self.data)
-            return f"{value & self.mask32:08x}"
+            return f"{value:08x}"
 
         def cityhash32_fmix(self, h):
-            h &= self.mask32
+            h &= 0xffff_ffff
             h ^= (h >> 16)
-            h = (h * 0x85eb_ca6b) & self.mask32
+            h = (h * 0x85eb_ca6b) & 0xffff_ffff
             h ^= (h >> 13)
-            h = (h * 0xc2b2_ae35) & self.mask32
+            h = (h * 0xc2b2_ae35) & 0xffff_ffff
             h ^= (h >> 16)
-            return h & self.mask32
+            return h & 0xffff_ffff
 
         def cityhash32_mur(self, a, h):
-            a &= self.mask32
-            h &= self.mask32
-            a = (a * self.c1) & self.mask32
+            a &= 0xffff_ffff
+            h &= 0xffff_ffff
+            a = (a * self.c1) & 0xffff_ffff
             a = self.ror32(a, 17)
-            a = (a * self.c2) & self.mask32
+            a = (a * self.c2) & 0xffff_ffff
             h ^= a
             h = self.ror32(h, 19)
-            h = (h * 5 + 0xe654_6b64) & self.mask32
-            return h & self.mask32
+            h = (h * 5 + 0xe654_6b64) & 0xffff_ffff
+            return h & 0xffff_ffff
 
         def cityhash32_len0to4(self, data, seed):
 
@@ -80777,12 +80772,12 @@ class Hash:
                     return b - 256
                 return b
 
-            b = seed & self.mask32
+            b = seed & 0xffff_ffff
             c = 9
             n = len(data)
             for i in range(n):
-                v = signed_byte(data[i]) & self.mask32
-                b = (b * self.c1 + v) & self.mask32
+                v = signed_byte(data[i]) & 0xffff_ffff
+                b = (b * self.c1 + v) & 0xffff_ffff
                 c ^= b
             return self.cityhash32_fmix(
                 self.cityhash32_mur(
@@ -80791,15 +80786,15 @@ class Hash:
             )
 
         def cityhash32_len5to12(self, data, seed):
-            seed &= self.mask32
+            seed &= 0xffff_ffff
             n = len(data)
-            a = n & self.mask32
-            b = (a * 5) & self.mask32
+            a = n & 0xffff_ffff
+            b = (a * 5) & 0xffff_ffff
             c = 9
-            d = (b + seed) & self.mask32
-            a = (a + self.u32le(data, 0)) & self.mask32
-            b = (b + self.u32le(data, n - 4)) & self.mask32
-            c = (c + self.u32le(data, (n >> 1) & 4)) & self.mask32
+            d = (b + seed) & 0xffff_ffff
+            a = (a + self.u32le(data, 0)) & 0xffff_ffff
+            b = (b + self.u32le(data, n - 4)) & 0xffff_ffff
+            c = (c + self.u32le(data, (n >> 1) & 4)) & 0xffff_ffff
             return self.cityhash32_fmix(
                 self.cityhash32_mur(
                     c, self.cityhash32_mur(
@@ -80816,7 +80811,7 @@ class Hash:
             d = self.u32le(data, n >> 1)
             e = self.u32le(data, 0)
             f = self.u32le(data, n - 4)
-            h = n & self.mask32
+            h = n & 0xffff_ffff
             return self.cityhash32_fmix(
                 self.cityhash32_mur(
                     f, self.cityhash32_mur(
@@ -80842,84 +80837,84 @@ class Hash:
                     return self.cityhash32_len5to12(data, 0)
                 return self.cityhash32_len13to24(data)
 
-            h = n & self.mask32
-            g = (self.c1 * h) & self.mask32
+            h = n & 0xffff_ffff
+            g = (self.c1 * h) & 0xffff_ffff
             f = g
 
-            a0 = (self.ror32(self.u32le(data, n - 4) * self.c1, 17) * self.c2) & self.mask32
-            a1 = (self.ror32(self.u32le(data, n - 8) * self.c1, 17) * self.c2) & self.mask32
-            a2 = (self.ror32(self.u32le(data, n - 16) * self.c1, 17) * self.c2) & self.mask32
-            a3 = (self.ror32(self.u32le(data, n - 12) * self.c1, 17) * self.c2) & self.mask32
-            a4 = (self.ror32(self.u32le(data, n - 20) * self.c1, 17) * self.c2) & self.mask32
+            a0 = (self.ror32(self.u32le(data, n - 4) * self.c1, 17) * self.c2) & 0xffff_ffff
+            a1 = (self.ror32(self.u32le(data, n - 8) * self.c1, 17) * self.c2) & 0xffff_ffff
+            a2 = (self.ror32(self.u32le(data, n - 16) * self.c1, 17) * self.c2) & 0xffff_ffff
+            a3 = (self.ror32(self.u32le(data, n - 12) * self.c1, 17) * self.c2) & 0xffff_ffff
+            a4 = (self.ror32(self.u32le(data, n - 20) * self.c1, 17) * self.c2) & 0xffff_ffff
 
             h ^= a0
             h = self.ror32(h, 19)
-            h = (h * 5 + 0xe654_6b64) & self.mask32
+            h = (h * 5 + 0xe654_6b64) & 0xffff_ffff
             h ^= a2
             h = self.ror32(h, 19)
-            h = (h * 5 + 0xe654_6b64) & self.mask32
+            h = (h * 5 + 0xe654_6b64) & 0xffff_ffff
 
             g ^= a1
             g = self.ror32(g, 19)
-            g = (g * 5 + 0xe654_6b64) & self.mask32
+            g = (g * 5 + 0xe654_6b64) & 0xffff_ffff
             g ^= a3
             g = self.ror32(g, 19)
-            g = (g * 5 + 0xe654_6b64) & self.mask32
+            g = (g * 5 + 0xe654_6b64) & 0xffff_ffff
 
-            f = (f + a4) & self.mask32
+            f = (f + a4) & 0xffff_ffff
             f = self.ror32(f, 19)
-            f = (f * 5 + 0xe654_6b64) & self.mask32
+            f = (f * 5 + 0xe654_6b64) & 0xffff_ffff
 
             iters = (n - 1) // 20
             off = 0
             while iters != 0:
-                a0 = (self.ror32(self.u32le(data, off) * self.c1, 17) * self.c2) & self.mask32
+                a0 = (self.ror32(self.u32le(data, off) * self.c1, 17) * self.c2) & 0xffff_ffff
                 a1 = self.u32le(data, off + 4)
-                a2 = (self.ror32(self.u32le(data, off + 8) * self.c1, 17) * self.c2) & self.mask32
-                a3 = (self.ror32(self.u32le(data, off + 12) * self.c1, 17) * self.c2) & self.mask32
+                a2 = (self.ror32(self.u32le(data, off + 8) * self.c1, 17) * self.c2) & 0xffff_ffff
+                a3 = (self.ror32(self.u32le(data, off + 12) * self.c1, 17) * self.c2) & 0xffff_ffff
                 a4 = self.u32le(data, off + 16)
 
                 h ^= a0
                 h = self.ror32(h, 18)
-                h = (h * 5 + 0xe654_6b64) & self.mask32
+                h = (h * 5 + 0xe654_6b64) & 0xffff_ffff
 
-                f = (f + a1) & self.mask32
+                f = (f + a1) & 0xffff_ffff
                 f = self.ror32(f, 19)
-                f = (f * self.c1) & self.mask32
+                f = (f * self.c1) & 0xffff_ffff
 
-                g = (g + a2) & self.mask32
+                g = (g + a2) & 0xffff_ffff
                 g = self.ror32(g, 18)
-                g = (g * 5 + 0xe654_6b64) & self.mask32
+                g = (g * 5 + 0xe654_6b64) & 0xffff_ffff
 
-                h ^= (a3 + a1) & self.mask32
+                h ^= (a3 + a1) & 0xffff_ffff
                 h = self.ror32(h, 19)
-                h = (h * 5 + 0xe654_6b64) & self.mask32
+                h = (h * 5 + 0xe654_6b64) & 0xffff_ffff
 
                 g ^= a4
-                g = (self.bswap32(g) * 5) & self.mask32
+                g = (self.bswap32(g) * 5) & 0xffff_ffff
 
-                h = (h + a4 * 5) & self.mask32
+                h = (h + a4 * 5) & 0xffff_ffff
                 h = self.bswap32(h)
 
-                f = (f + a0) & self.mask32
+                f = (f + a0) & 0xffff_ffff
                 f, h, g = g, f, h
 
                 off += 20
                 iters -= 1
 
-            g = (self.ror32(g, 11) * self.c1) & self.mask32
-            g = (self.ror32(g, 17) * self.c1) & self.mask32
-            f = (self.ror32(f, 11) * self.c1) & self.mask32
-            f = (self.ror32(f, 17) * self.c1) & self.mask32
+            g = (self.ror32(g, 11) * self.c1) & 0xffff_ffff
+            g = (self.ror32(g, 17) * self.c1) & 0xffff_ffff
+            f = (self.ror32(f, 11) * self.c1) & 0xffff_ffff
+            f = (self.ror32(f, 17) * self.c1) & 0xffff_ffff
 
             h = self.ror32(h + g, 19)
-            h = (h * 5 + 0xe654_6b64) & self.mask32
-            h = (self.ror32(h, 17) * self.c1) & self.mask32
+            h = (h * 5 + 0xe654_6b64) & 0xffff_ffff
+            h = (self.ror32(h, 17) * self.c1) & 0xffff_ffff
 
             h = self.ror32(h + f, 19)
-            h = (h * 5 + 0xe654_6b64) & self.mask32
-            h = (self.ror32(h, 17) * self.c1) & self.mask32
-            return h & self.mask32
+            h = (h * 5 + 0xe654_6b64) & 0xffff_ffff
+            h = (self.ror32(h, 17) * self.c1) & 0xffff_ffff
+            return h & 0xffff_ffff
 
     class CityHash64(CityFarmBase):
         digest_size = 8
@@ -80929,22 +80924,22 @@ class Hash:
                 value = self.cityhash64_with_seed(self.data, self.seed)
             else:
                 value = self.cityhash64(self.data)
-            return f"{value & self.mask64:016x}"
+            return f"{value:016x}"
 
         def shift_mix(self, x):
-            x &= self.mask64
+            x &= 0xffff_ffff_ffff_ffff
             return x ^ (x >> 47)
 
         def cityhash64_len16_mul(self, u, v, mul):
-            u &= self.mask64
-            v &= self.mask64
-            mul &= self.mask64
-            a = ((u ^ v) * mul) & self.mask64
+            u &= 0xffff_ffff_ffff_ffff
+            v &= 0xffff_ffff_ffff_ffff
+            mul &= 0xffff_ffff_ffff_ffff
+            a = ((u ^ v) * mul) & 0xffff_ffff_ffff_ffff
             a ^= (a >> 47)
-            b = ((v ^ a) * mul) & self.mask64
+            b = ((v ^ a) * mul) & 0xffff_ffff_ffff_ffff
             b ^= (b >> 47)
-            b = (b * mul) & self.mask64
-            return b & self.mask64
+            b = (b * mul) & 0xffff_ffff_ffff_ffff
+            return b & 0xffff_ffff_ffff_ffff
 
         def cityhash64_len16(self, u, v):
             return self.cityhash64_len16_mul(u, v, 0x9ddf_ea08_eb38_2d69)
@@ -80952,14 +80947,14 @@ class Hash:
         def cityhash64_len0to16(self, data):
             n = len(data)
             if n >= 8:
-                mul = (self.k2 + n * 2) & self.mask64
-                a = (self.u64le(data, 0) + self.k2) & self.mask64
+                mul = (self.k2 + n * 2) & 0xffff_ffff_ffff_ffff
+                a = (self.u64le(data, 0) + self.k2) & 0xffff_ffff_ffff_ffff
                 b = self.u64le(data, n - 8)
-                c = (self.ror64(b, 37) * mul + a) & self.mask64
-                d = ((self.ror64(a, 25) + b) * mul) & self.mask64
+                c = (self.ror64(b, 37) * mul + a) & 0xffff_ffff_ffff_ffff
+                d = ((self.ror64(a, 25) + b) * mul) & 0xffff_ffff_ffff_ffff
                 return self.cityhash64_len16_mul(c, d, mul)
             if n >= 4:
-                mul = (self.k2 + n * 2) & self.mask64
+                mul = (self.k2 + n * 2) & 0xffff_ffff_ffff_ffff
                 a = self.u32le(data, 0)
                 return self.cityhash64_len16_mul(n + (a << 3), self.u32le(data, n - 4), mul)
             if n > 0:
@@ -80968,16 +80963,16 @@ class Hash:
                 c = data[n - 1]
                 y = a + (b << 8)
                 z = n + (c << 2)
-                return (self.shift_mix((y * self.k2) ^ (z * self.k0)) * self.k2) & self.mask64
-            return self.k2 & self.mask64
+                return (self.shift_mix((y * self.k2) ^ (z * self.k0)) * self.k2) & 0xffff_ffff_ffff_ffff
+            return self.k2 & 0xffff_ffff_ffff_ffff
 
         def cityhash64_len17to32(self, data):
             n = len(data)
-            mul = (self.k2 + n * 2) & self.mask64
-            a = (self.u64le(data, 0) * self.k1) & self.mask64
+            mul = (self.k2 + n * 2) & 0xffff_ffff_ffff_ffff
+            a = (self.u64le(data, 0) * self.k1) & 0xffff_ffff_ffff_ffff
             b = self.u64le(data, 8)
-            c = (self.u64le(data, n - 8) * mul) & self.mask64
-            d = (self.u64le(data, n - 16) * self.k2) & self.mask64
+            c = (self.u64le(data, n - 8) * mul) & 0xffff_ffff_ffff_ffff
+            d = (self.u64le(data, n - 16) * self.k2) & 0xffff_ffff_ffff_ffff
             return self.cityhash64_len16_mul(
                 self.ror64(a + b, 43) + self.ror64(c, 30) + d,
                 a + self.ror64(b + self.k2, 18) + c,
@@ -80986,26 +80981,26 @@ class Hash:
 
         def cityhash64_len33to64(self, data):
             n = len(data)
-            mul = (self.k2 + n * 2) & self.mask64
-            a = (self.u64le(data, 0) * self.k2) & self.mask64
+            mul = (self.k2 + n * 2) & 0xffff_ffff_ffff_ffff
+            a = (self.u64le(data, 0) * self.k2) & 0xffff_ffff_ffff_ffff
             b = self.u64le(data, 8)
             c = self.u64le(data, n - 24)
             d = self.u64le(data, n - 32)
-            e = (self.u64le(data, 16) * self.k2) & self.mask64
-            f = (self.u64le(data, 24) * 9) & self.mask64
+            e = (self.u64le(data, 16) * self.k2) & 0xffff_ffff_ffff_ffff
+            f = (self.u64le(data, 24) * 9) & 0xffff_ffff_ffff_ffff
             g = self.u64le(data, n - 8)
-            h = (self.u64le(data, n - 16) * mul) & self.mask64
+            h = (self.u64le(data, n - 16) * mul) & 0xffff_ffff_ffff_ffff
 
-            u = (self.ror64(a + g, 43) + (self.ror64(b, 30) + c) * 9) & self.mask64
-            v = (((a + g) ^ d) + f + 1) & self.mask64
-            w = (self.bswap64((u + v) * mul) + h) & self.mask64
-            x = (self.ror64(e + f, 42) + c) & self.mask64
-            y = ((self.bswap64((v + w) * mul) + g) * mul) & self.mask64
-            z = (e + f + c) & self.mask64
+            u = (self.ror64(a + g, 43) + (self.ror64(b, 30) + c) * 9) & 0xffff_ffff_ffff_ffff
+            v = (((a + g) ^ d) + f + 1) & 0xffff_ffff_ffff_ffff
+            w = (self.bswap64((u + v) * mul) + h) & 0xffff_ffff_ffff_ffff
+            x = (self.ror64(e + f, 42) + c) & 0xffff_ffff_ffff_ffff
+            y = ((self.bswap64((v + w) * mul) + g) * mul) & 0xffff_ffff_ffff_ffff
+            z = (e + f + c) & 0xffff_ffff_ffff_ffff
 
-            a2 = (self.bswap64((x + z) * mul + y) + b) & self.mask64
-            b2 = (self.shift_mix((z + a2) * mul + d + h) * mul) & self.mask64
-            return (b2 + x) & self.mask64
+            a2 = (self.bswap64((x + z) * mul + y) + b) & 0xffff_ffff_ffff_ffff
+            b2 = (self.shift_mix((z + a2) * mul + d + h) * mul) & 0xffff_ffff_ffff_ffff
+            return (b2 + x) & 0xffff_ffff_ffff_ffff
 
         def cityhash64(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
@@ -81019,20 +81014,20 @@ class Hash:
                 return self.cityhash64_len33to64(data)
 
             x = self.u64le(data, n - 40)
-            y = (self.u64le(data, n - 16) + self.u64le(data, n - 56)) & self.mask64
+            y = (self.u64le(data, n - 16) + self.u64le(data, n - 56)) & 0xffff_ffff_ffff_ffff
             z = self.cityhash64_len16(self.u64le(data, n - 48) + n, self.u64le(data, n - 24))
             v = self.cityhash64_weak_hash_len32_with_seeds(data, n - 64, n, z)
             w = self.cityhash64_weak_hash_len32_with_seeds(data, n - 32, y + self.k1, x)
-            x = (x * self.k1 + self.u64le(data, 0)) & self.mask64
+            x = (x * self.k1 + self.u64le(data, 0)) & 0xffff_ffff_ffff_ffff
 
             length = (n - 1) & ~63
             off = 0
             while length != 0:
-                x = (self.ror64(x + y + v[0] + self.u64le(data, off + 8), 37) * self.k1) & self.mask64
-                y = (self.ror64(y + v[1] + self.u64le(data, off + 48), 42) * self.k1) & self.mask64
+                x = (self.ror64(x + y + v[0] + self.u64le(data, off + 8), 37) * self.k1) & 0xffff_ffff_ffff_ffff
+                y = (self.ror64(y + v[1] + self.u64le(data, off + 48), 42) * self.k1) & 0xffff_ffff_ffff_ffff
                 x ^= w[1]
-                y = (y + v[0] + self.u64le(data, off + 40)) & self.mask64
-                z = (self.ror64(z + w[0], 33) * self.k1) & self.mask64
+                y = (y + v[0] + self.u64le(data, off + 40)) & 0xffff_ffff_ffff_ffff
+                z = (self.ror64(z + w[0], 33) * self.k1) & 0xffff_ffff_ffff_ffff
                 v = self.cityhash64_weak_hash_len32_with_seeds(
                     data, off, v[1] * self.k1, x + w[0],
                 )
@@ -81051,14 +81046,14 @@ class Hash:
         def cityhash64_with_seeds(self, data, seed0, seed1):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            seed0 &= self.mask64
-            seed1 &= self.mask64
+            seed0 &= 0xffff_ffff_ffff_ffff
+            seed1 &= 0xffff_ffff_ffff_ffff
             return self.cityhash64_len16(self.cityhash64(data) - seed0, seed1)
 
         def cityhash64_with_seed(self, data, seed):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            seed &= self.mask64
+            seed &= 0xffff_ffff_ffff_ffff
             return self.cityhash64_with_seeds(data, self.k2, seed)
 
         def cityhash64_weak_hash_len32_with_seeds(self, data, off, a, b):
@@ -81067,12 +81062,12 @@ class Hash:
             y = self.u64le(data, off + 16)
             z = self.u64le(data, off + 24)
 
-            a = (a + w) & self.mask64
+            a = (a + w) & 0xffff_ffff_ffff_ffff
             b = self.ror64(b + a + z, 21)
             c = a
-            a = (a + x + y) & self.mask64
-            b = (b + self.ror64(a, 44)) & self.mask64
-            return ((a + z) & self.mask64, (b + c) & self.mask64)
+            a = (a + x + y) & 0xffff_ffff_ffff_ffff
+            b = (b + self.ror64(a, 44)) & 0xffff_ffff_ffff_ffff
+            return ((a + z) & 0xffff_ffff_ffff_ffff, (b + c) & 0xffff_ffff_ffff_ffff)
 
     class CityHash128(CityHash64):
         digest_size = 16
@@ -81086,41 +81081,41 @@ class Hash:
                 lo, hi = self.cityhash128_with_seed(self.data, seed_lo, seed_hi)
             else:
                 lo, hi = self.cityhash128(self.data)
-            return f"{lo & self.mask64:016x}{hi & self.mask64:016x}"
+            return f"{lo & 0xffff_ffff_ffff_ffff:016x}{hi & 0xffff_ffff_ffff_ffff:016x}"
 
         def cityhash128_murmur(self, data, seed_lo, seed_hi):
-            a = seed_lo & self.mask64
-            b = seed_hi & self.mask64
+            a = seed_lo & 0xffff_ffff_ffff_ffff
+            b = seed_hi & 0xffff_ffff_ffff_ffff
             c = 0
             d = 0
             n = len(data)
 
             if n <= 16:
-                a = (self.shift_mix(a * self.k1) * self.k1) & self.mask64
-                c = (b * self.k1 + self.cityhash64_len0to16(data)) & self.mask64
+                a = (self.shift_mix(a * self.k1) * self.k1) & 0xffff_ffff_ffff_ffff
+                c = (b * self.k1 + self.cityhash64_len0to16(data)) & 0xffff_ffff_ffff_ffff
                 if n >= 8:
-                    d = self.shift_mix(a + self.u64le(data, 0)) & self.mask64
+                    d = self.shift_mix(a + self.u64le(data, 0)) & 0xffff_ffff_ffff_ffff
                 else:
-                    d = self.shift_mix(a + c) & self.mask64
+                    d = self.shift_mix(a + c) & 0xffff_ffff_ffff_ffff
             else:
                 c = self.cityhash64_len16(self.u64le(data, n - 8) + self.k1, a)
                 d = self.cityhash64_len16(b + n, c + self.u64le(data, n - 16))
-                a = (a + d) & self.mask64
+                a = (a + d) & 0xffff_ffff_ffff_ffff
                 off = 0
                 left = n
                 while left > 16:
-                    a ^= (self.shift_mix(self.u64le(data, off) * self.k1) * self.k1) & self.mask64
-                    a = (a * self.k1) & self.mask64
+                    a ^= (self.shift_mix(self.u64le(data, off) * self.k1) * self.k1) & 0xffff_ffff_ffff_ffff
+                    a = (a * self.k1) & 0xffff_ffff_ffff_ffff
                     b ^= a
-                    c ^= (self.shift_mix(self.u64le(data, off + 8) * self.k1) * self.k1) & self.mask64
-                    c = (c * self.k1) & self.mask64
+                    c ^= (self.shift_mix(self.u64le(data, off + 8) * self.k1) * self.k1) & 0xffff_ffff_ffff_ffff
+                    c = (c * self.k1) & 0xffff_ffff_ffff_ffff
                     d ^= c
                     off += 16
                     left -= 16
 
             a = self.cityhash64_len16(a, c)
             b = self.cityhash64_len16(d, b)
-            return ((a ^ b) & self.mask64, self.cityhash64_len16(b, a))
+            return (a ^ b, self.cityhash64_len16(b, a))
 
         def cityhash128_with_seed(self, data, seed_lo, seed_hi):
             if not isinstance(data, (bytes, bytearray, memoryview)):
@@ -81129,23 +81124,23 @@ class Hash:
             if n < 128:
                 return self.cityhash128_murmur(data, seed_lo, seed_hi)
 
-            x = seed_lo & self.mask64
-            y = seed_hi & self.mask64
-            z = (n * self.k1) & self.mask64
+            x = seed_lo & 0xffff_ffff_ffff_ffff
+            y = seed_hi & 0xffff_ffff_ffff_ffff
+            z = (n * self.k1) & 0xffff_ffff_ffff_ffff
 
-            v0 = (self.ror64(y ^ self.k1, 49) * self.k1 + self.u64le(data, 0)) & self.mask64
-            v1 = (self.ror64(v0, 42) * self.k1 + self.u64le(data, 8)) & self.mask64
-            w0 = (self.ror64(y + z, 35) * self.k1 + x) & self.mask64
-            w1 = (self.ror64(x + self.u64le(data, 88), 53) * self.k1) & self.mask64
+            v0 = (self.ror64(y ^ self.k1, 49) * self.k1 + self.u64le(data, 0)) & 0xffff_ffff_ffff_ffff
+            v1 = (self.ror64(v0, 42) * self.k1 + self.u64le(data, 8)) & 0xffff_ffff_ffff_ffff
+            w0 = (self.ror64(y + z, 35) * self.k1 + x) & 0xffff_ffff_ffff_ffff
+            w1 = (self.ror64(x + self.u64le(data, 88), 53) * self.k1) & 0xffff_ffff_ffff_ffff
 
             off = 0
             length = n
             while length >= 128:
-                x = (self.ror64(x + y + v0 + self.u64le(data, off + 8), 37) * self.k1) & self.mask64
-                y = (self.ror64(y + v1 + self.u64le(data, off + 48), 42) * self.k1) & self.mask64
+                x = (self.ror64(x + y + v0 + self.u64le(data, off + 8), 37) * self.k1) & 0xffff_ffff_ffff_ffff
+                y = (self.ror64(y + v1 + self.u64le(data, off + 48), 42) * self.k1) & 0xffff_ffff_ffff_ffff
                 x ^= w1
-                y = (y + v0 + self.u64le(data, off + 40)) & self.mask64
-                z = (self.ror64(z + w0, 33) * self.k1) & self.mask64
+                y = (y + v0 + self.u64le(data, off + 40)) & 0xffff_ffff_ffff_ffff
+                z = (self.ror64(z + w0, 33) * self.k1) & 0xffff_ffff_ffff_ffff
                 v0, v1 = self.cityhash64_weak_hash_len32_with_seeds(
                     data, off, v1 * self.k1, x + w0,
                 )
@@ -81155,11 +81150,11 @@ class Hash:
                 x, z = z, x
                 off += 64
 
-                x = (self.ror64(x + y + v0 + self.u64le(data, off + 8), 37) * self.k1) & self.mask64
-                y = (self.ror64(y + v1 + self.u64le(data, off + 48), 42) * self.k1) & self.mask64
+                x = (self.ror64(x + y + v0 + self.u64le(data, off + 8), 37) * self.k1) & 0xffff_ffff_ffff_ffff
+                y = (self.ror64(y + v1 + self.u64le(data, off + 48), 42) * self.k1) & 0xffff_ffff_ffff_ffff
                 x ^= w1
-                y = (y + v0 + self.u64le(data, off + 40)) & self.mask64
-                z = (self.ror64(z + w0, 33) * self.k1) & self.mask64
+                y = (y + v0 + self.u64le(data, off + 40)) & 0xffff_ffff_ffff_ffff
+                z = (self.ror64(z + w0, 33) * self.k1) & 0xffff_ffff_ffff_ffff
                 v0, v1 = self.cityhash64_weak_hash_len32_with_seeds(
                     data, off, v1 * self.k1, x + w0,
                 )
@@ -81171,26 +81166,26 @@ class Hash:
 
                 length -= 128
 
-            x = (x + self.ror64(v0 + z, 49) * self.k0) & self.mask64
-            y = ((y * self.k0) + self.ror64(w1, 37)) & self.mask64
-            z = ((z * self.k0) + self.ror64(w0, 27)) & self.mask64
-            w0 = (w0 * 9) & self.mask64
-            v0 = (v0 * self.k0) & self.mask64
+            x = (x + self.ror64(v0 + z, 49) * self.k0) & 0xffff_ffff_ffff_ffff
+            y = ((y * self.k0) + self.ror64(w1, 37)) & 0xffff_ffff_ffff_ffff
+            z = ((z * self.k0) + self.ror64(w0, 27)) & 0xffff_ffff_ffff_ffff
+            w0 = (w0 * 9) & 0xffff_ffff_ffff_ffff
+            v0 = (v0 * self.k0) & 0xffff_ffff_ffff_ffff
 
             tail_done = 0
             while tail_done < length:
                 tail_done += 32
-                y = (self.ror64(x + y, 42) * self.k0 + v1) & self.mask64
-                w0 = (w0 + self.u64le(data, off + length - tail_done + 16)) & self.mask64
-                x = (x * self.k0 + w0) & self.mask64
-                z = (z + w1 + self.u64le(data, off + length - tail_done)) & self.mask64
-                w1 = (w1 + v0) & self.mask64
+                y = (self.ror64(x + y, 42) * self.k0 + v1) & 0xffff_ffff_ffff_ffff
+                w0 = (w0 + self.u64le(data, off + length - tail_done + 16)) & 0xffff_ffff_ffff_ffff
+                x = (x * self.k0 + w0) & 0xffff_ffff_ffff_ffff
+                z = (z + w1 + self.u64le(data, off + length - tail_done)) & 0xffff_ffff_ffff_ffff
+                w1 = (w1 + v0) & 0xffff_ffff_ffff_ffff
                 v0, v1 = self.cityhash64_weak_hash_len32_with_seeds(data, off + length - tail_done, v0 + z, v1)
-                v0 = (v0 * self.k0) & self.mask64
+                v0 = (v0 * self.k0) & 0xffff_ffff_ffff_ffff
 
             x = self.cityhash64_len16(x, v0)
             y = self.cityhash64_len16(y + z, w0)
-            lo = (self.cityhash64_len16(x + v1, w1) + y) & self.mask64
+            lo = (self.cityhash64_len16(x + v1, w1) + y) & 0xffff_ffff_ffff_ffff
             hi = self.cityhash64_len16(x + w1, y + v1)
             return (lo, hi)
 
@@ -81200,7 +81195,7 @@ class Hash:
             n = len(data)
             if n >= 16:
                 seed_lo = self.u64le(data, 0)
-                seed_hi = (self.u64le(data, 8) + self.k0) & self.mask64
+                seed_hi = (self.u64le(data, 8) + self.k0) & 0xffff_ffff_ffff_ffff
                 return self.cityhash128_with_seed(data[16:], seed_lo, seed_hi)
             return self.cityhash128_with_seed(data, self.k0, self.k1)
 
@@ -81216,24 +81211,24 @@ class Hash:
                 value = self.farmhash32_with_seed(self.data, self.seed)
             else:
                 value = self.farmhash32(self.data)
-            return f"{value & self.mask32:08x}"
+            return f"{value:08x}"
 
         def farmhash32_len13to24(self, data, seed):
             n = len(data)
-            seed &= self.mask32
+            seed &= 0xffff_ffff
             a = self.u32le(data, (n >> 1) - 4)
             b = self.u32le(data, 4)
             c = self.u32le(data, n - 8)
             d = self.u32le(data, n >> 1)
             e = self.u32le(data, 0)
             f = self.u32le(data, n - 4)
-            h = (d * self.c1 + n + seed) & self.mask32
-            a = (self.ror32(a, 12) + f) & self.mask32
-            h = (self.cityhash32_mur(c, h) + a) & self.mask32
-            a = (self.ror32(a, 3) + c) & self.mask32
-            h = (self.cityhash32_mur(e, h) + a) & self.mask32
-            a = (self.ror32((a + f) & self.mask32, 12) + d) & self.mask32
-            h = (self.cityhash32_mur(b ^ seed, h) + a) & self.mask32
+            h = (d * self.c1 + n + seed) & 0xffff_ffff
+            a = (self.ror32(a, 12) + f) & 0xffff_ffff
+            h = (self.cityhash32_mur(c, h) + a) & 0xffff_ffff
+            a = (self.ror32(a, 3) + c) & 0xffff_ffff
+            h = (self.cityhash32_mur(e, h) + a) & 0xffff_ffff
+            a = (self.ror32((a + f) & 0xffff_ffff, 12) + d) & 0xffff_ffff
+            h = (self.cityhash32_mur(b ^ seed, h) + a) & 0xffff_ffff
             return self.cityhash32_fmix(h)
 
         def farmhash32(self, data):
@@ -81247,28 +81242,28 @@ class Hash:
                     return self.cityhash32_len5to12(data, 0)
                 return self.cityhash32_len0to4(data, 0)
 
-            h = n & self.mask32
-            g = (self.c1 * n) & self.mask32
+            h = n & 0xffff_ffff
+            g = (self.c1 * n) & 0xffff_ffff
             f = g
 
-            a0 = (self.ror32(self.u32le(data, n - 4) * self.c1, 17) * self.c2) & self.mask32
-            a1 = (self.ror32(self.u32le(data, n - 8) * self.c1, 17) * self.c2) & self.mask32
-            a2 = (self.ror32(self.u32le(data, n - 16) * self.c1, 17) * self.c2) & self.mask32
-            a3 = (self.ror32(self.u32le(data, n - 12) * self.c1, 17) * self.c2) & self.mask32
-            a4 = (self.ror32(self.u32le(data, n - 20) * self.c1, 17) * self.c2) & self.mask32
+            a0 = (self.ror32(self.u32le(data, n - 4) * self.c1, 17) * self.c2) & 0xffff_ffff
+            a1 = (self.ror32(self.u32le(data, n - 8) * self.c1, 17) * self.c2) & 0xffff_ffff
+            a2 = (self.ror32(self.u32le(data, n - 16) * self.c1, 17) * self.c2) & 0xffff_ffff
+            a3 = (self.ror32(self.u32le(data, n - 12) * self.c1, 17) * self.c2) & 0xffff_ffff
+            a4 = (self.ror32(self.u32le(data, n - 20) * self.c1, 17) * self.c2) & 0xffff_ffff
 
             h ^= a0
-            h = (self.ror32(h, 19) * 5 + 0xe654_6b64) & self.mask32
+            h = (self.ror32(h, 19) * 5 + 0xe654_6b64) & 0xffff_ffff
             h ^= a2
-            h = (self.ror32(h, 19) * 5 + 0xe654_6b64) & self.mask32
+            h = (self.ror32(h, 19) * 5 + 0xe654_6b64) & 0xffff_ffff
 
             g ^= a1
-            g = (self.ror32(g, 19) * 5 + 0xe654_6b64) & self.mask32
+            g = (self.ror32(g, 19) * 5 + 0xe654_6b64) & 0xffff_ffff
             g ^= a3
-            g = (self.ror32(g, 19) * 5 + 0xe654_6b64) & self.mask32
+            g = (self.ror32(g, 19) * 5 + 0xe654_6b64) & 0xffff_ffff
 
-            f = (f + a4) & self.mask32
-            f = (self.ror32(f, 19) + 113) & self.mask32
+            f = (f + a4) & 0xffff_ffff
+            f = (self.ror32(f, 19) + 113) & 0xffff_ffff
 
             iters = (n - 1) // 20
             off = 0
@@ -81279,36 +81274,36 @@ class Hash:
                 d = self.u32le(data, off + 12)
                 e = self.u32le(data, off + 16)
 
-                h = (h + a) & self.mask32
-                g = (g + b) & self.mask32
-                f = (f + c) & self.mask32
+                h = (h + a) & 0xffff_ffff
+                g = (g + b) & 0xffff_ffff
+                f = (f + c) & 0xffff_ffff
 
-                h = (self.cityhash32_mur(d, h) + e) & self.mask32
-                g = (self.cityhash32_mur(c, g) + a) & self.mask32
-                f = (self.cityhash32_mur(b + e * self.c1, f) + d) & self.mask32
+                h = (self.cityhash32_mur(d, h) + e) & 0xffff_ffff
+                g = (self.cityhash32_mur(c, g) + a) & 0xffff_ffff
+                f = (self.cityhash32_mur(b + e * self.c1, f) + d) & 0xffff_ffff
 
-                f = (f + g) & self.mask32
-                g = (g + f) & self.mask32
+                f = (f + g) & 0xffff_ffff
+                g = (g + f) & 0xffff_ffff
 
                 off += 20
                 iters -= 1
 
-            g = (self.ror32(g, 11) * self.c1) & self.mask32
-            g = (self.ror32(g, 17) * self.c1) & self.mask32
-            f = (self.ror32(f, 11) * self.c1) & self.mask32
-            f = (self.ror32(f, 17) * self.c1) & self.mask32
+            g = (self.ror32(g, 11) * self.c1) & 0xffff_ffff
+            g = (self.ror32(g, 17) * self.c1) & 0xffff_ffff
+            f = (self.ror32(f, 11) * self.c1) & 0xffff_ffff
+            f = (self.ror32(f, 17) * self.c1) & 0xffff_ffff
 
-            h = (self.ror32(h + g, 19) * 5 + 0xe654_6b64) & self.mask32
-            h = (self.ror32(h, 17) * self.c1) & self.mask32
+            h = (self.ror32(h + g, 19) * 5 + 0xe654_6b64) & 0xffff_ffff
+            h = (self.ror32(h, 17) * self.c1) & 0xffff_ffff
 
-            h = (self.ror32(h + f, 19) * 5 + 0xe654_6b64) & self.mask32
-            h = (self.ror32(h, 17) * self.c1) & self.mask32
-            return h & self.mask32
+            h = (self.ror32(h + f, 19) * 5 + 0xe654_6b64) & 0xffff_ffff
+            h = (self.ror32(h, 17) * self.c1) & 0xffff_ffff
+            return h & 0xffff_ffff
 
         def farmhash32_with_seed(self, data, seed):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            seed &= self.mask32
+            seed &= 0xffff_ffff
             n = len(data)
             if n <= 24:
                 if n >= 13:
@@ -81332,21 +81327,21 @@ class Hash:
                 value = self.farmhash64_with_seed(self.data, self.seed)
             else:
                 value = self.farmhash64(self.data)
-            return f"{value & self.mask64:016x}"
+            return f"{value:016x}"
 
         def farmhash64_len33to64(self, data):
             n = len(data)
-            mul = (self.k2 + n * 2) & self.mask64
-            a = (self.u64le(data, 0) * self.k2) & self.mask64
+            mul = (self.k2 + n * 2) & 0xffff_ffff_ffff_ffff
+            a = (self.u64le(data, 0) * self.k2) & 0xffff_ffff_ffff_ffff
             b = self.u64le(data, 8)
-            c = (self.u64le(data, n - 8) * mul) & self.mask64
-            d = (self.u64le(data, n - 16) * self.k2) & self.mask64
-            y = (self.ror64(a + b, 43) + self.ror64(c, 30) + d) & self.mask64
+            c = (self.u64le(data, n - 8) * mul) & 0xffff_ffff_ffff_ffff
+            d = (self.u64le(data, n - 16) * self.k2) & 0xffff_ffff_ffff_ffff
+            y = (self.ror64(a + b, 43) + self.ror64(c, 30) + d) & 0xffff_ffff_ffff_ffff
             z = self.cityhash64_len16_mul(y, a + self.ror64(b + self.k2, 18) + c, mul)
-            e = (self.u64le(data, 16) * mul) & self.mask64
+            e = (self.u64le(data, 16) * mul) & 0xffff_ffff_ffff_ffff
             f = self.u64le(data, 24)
-            g = ((y + self.u64le(data, n - 32)) * mul) & self.mask64
-            h = ((z + self.u64le(data, n - 24)) * mul) & self.mask64
+            g = ((y + self.u64le(data, n - 32)) * mul) & 0xffff_ffff_ffff_ffff
+            h = ((z + self.u64le(data, n - 24)) * mul) & 0xffff_ffff_ffff_ffff
             return self.cityhash64_len16_mul(
                 self.ror64(e + f, 43) + self.ror64(g, 30) + h,
                 e + self.ror64(f + a, 18) + g,
@@ -81365,21 +81360,21 @@ class Hash:
             if n <= 64:
                 return self.farmhash64_len33to64(data)
 
-            x = seed & self.mask64
-            y = (seed * self.k1 + 113) & self.mask64
-            z = (self.shift_mix(y * self.k2 + 113) * self.k2) & self.mask64
+            x = seed & 0xffff_ffff_ffff_ffff
+            y = (seed * self.k1 + 113) & 0xffff_ffff_ffff_ffff
+            z = (self.shift_mix(y * self.k2 + 113) * self.k2) & 0xffff_ffff_ffff_ffff
             v = [0, 0]
             w = [0, 0]
-            x = (x * self.k2 + self.u64le(data, 0)) & self.mask64
+            x = (x * self.k2 + self.u64le(data, 0)) & 0xffff_ffff_ffff_ffff
 
             end = ((n - 1) // 64) * 64
             off = 0
             while off != end:
-                x = (self.ror64(x + y + v[0] + self.u64le(data, off + 8), 37) * self.k1) & self.mask64
-                y = (self.ror64(y + v[1] + self.u64le(data, off + 48), 42) * self.k1) & self.mask64
+                x = (self.ror64(x + y + v[0] + self.u64le(data, off + 8), 37) * self.k1) & 0xffff_ffff_ffff_ffff
+                y = (self.ror64(y + v[1] + self.u64le(data, off + 48), 42) * self.k1) & 0xffff_ffff_ffff_ffff
                 x ^= w[1]
-                y = (y + v[0] + self.u64le(data, off + 40)) & self.mask64
-                z = (self.ror64(z + w[0], 33) * self.k1) & self.mask64
+                y = (y + v[0] + self.u64le(data, off + 40)) & 0xffff_ffff_ffff_ffff
+                z = (self.ror64(z + w[0], 33) * self.k1) & 0xffff_ffff_ffff_ffff
                 v = self.cityhash64_weak_hash_len32_with_seeds(
                     data, off, v[1] * self.k1, x + w[0],
                 )
@@ -81389,18 +81384,18 @@ class Hash:
                 x, z = z, x
                 off += 64
 
-            mul = (self.k1 + ((z & 0xff) << 1)) & self.mask64
+            mul = (self.k1 + ((z & 0xff) << 1)) & 0xffff_ffff_ffff_ffff
             off = n - 64
 
-            w = ((w[0] + ((n - 1) & 63)) & self.mask64, w[1])
-            v = ((v[0] + w[0]) & self.mask64, v[1])
-            w = ((w[0] + v[0]) & self.mask64, w[1])
+            w = ((w[0] + ((n - 1) & 63)) & 0xffff_ffff_ffff_ffff, w[1])
+            v = ((v[0] + w[0]) & 0xffff_ffff_ffff_ffff, v[1])
+            w = ((w[0] + v[0]) & 0xffff_ffff_ffff_ffff, w[1])
 
-            x = (self.ror64(x + y + v[0] + self.u64le(data, off + 8), 37) * mul) & self.mask64
-            y = (self.ror64(y + v[1] + self.u64le(data, off + 48), 42) * mul) & self.mask64
-            x ^= (w[1] * 9) & self.mask64
-            y = (y + (v[0] * 9) + self.u64le(data, off + 40)) & self.mask64
-            z = (self.ror64(z + w[0], 33) * mul) & self.mask64
+            x = (self.ror64(x + y + v[0] + self.u64le(data, off + 8), 37) * mul) & 0xffff_ffff_ffff_ffff
+            y = (self.ror64(y + v[1] + self.u64le(data, off + 48), 42) * mul) & 0xffff_ffff_ffff_ffff
+            x ^= (w[1] * 9) & 0xffff_ffff_ffff_ffff
+            y = (y + (v[0] * 9) + self.u64le(data, off + 40)) & 0xffff_ffff_ffff_ffff
+            z = (self.ror64(z + w[0], 33) * mul) & 0xffff_ffff_ffff_ffff
             v = self.cityhash64_weak_hash_len32_with_seeds(
                 data, off, v[1] * mul, x + w[0],
             )
@@ -81418,14 +81413,14 @@ class Hash:
         def farmhash64_with_seeds(self, data, seed0, seed1):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            seed0 &= self.mask64
-            seed1 &= self.mask64
+            seed0 &= 0xffff_ffff_ffff_ffff
+            seed1 &= 0xffff_ffff_ffff_ffff
             return self.cityhash64_len16(self.farmhash64(data) - seed0, seed1)
 
         def farmhash64_with_seed(self, data, seed):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            seed &= self.mask64
+            seed &= 0xffff_ffff_ffff_ffff
             return self.farmhash64_with_seeds(data, self.k2, seed)
 
     class FarmHash128(CityHash128):
@@ -81440,7 +81435,7 @@ class Hash:
                 lo, hi = self.cityhash128_with_seed(self.data, seed_lo, seed_hi)
             else:
                 lo, hi = self.cityhash128(self.data)
-            return f"{hi & self.mask64:016x}{lo & self.mask64:016x}"
+            return f"{hi:016x}{lo:016x}"
 
     class SipHashBase:
         block_size = 8
@@ -84420,7 +84415,7 @@ class Hash:
             0x07e0_9562_4504_536c, 0x8d70_c431_ac02_a736, 0xc838_6296_5601_dd1b, 0x641c_314b_2b8e_e083,
         )
 
-        C_BYTES = [
+        C_BYTES = (
             bytes.fromhex(
                 "b1085bda1ecadae9ebcb2f81c0657c1f2f6a76432e45d016714eb88d7585c4fc"
                 "4b7ce09192676901a2422a08a460d31505767436cc744d23dd806559f2a64507"
@@ -84469,7 +84464,7 @@ class Hash:
                 "378ee767f11631bad21380b00449b17acda43c32bcdf1d77f82012d430219f9b"
                 "5d80ef9d1891cc86e71da4aa88e12852faf417d5d9b21b9948bc924af11bd720"
             ),
-        ]
+        )
 
         @classmethod
         def ensure_table(cls):
@@ -85049,9 +85044,6 @@ class Hash:
         block_size = 32
         digest_size = 8
 
-        mask32 = 0xffff_ffff
-        mask64 = 0xffff_ffff_ffff_ffff
-
         prime_0 = 0xec99_bf0d_8372_caab
         prime_1 = 0x8243_4fe9_0edc_ef39
         prime_2 = 0xd4f0_6db9_9d67_be4b
@@ -85063,7 +85055,7 @@ class Hash:
         def __init__(self, data=b"", seed=0):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            self.seed = seed & self.mask64
+            self.seed = seed & 0xffff_ffff_ffff_ffff
             self.buf = bytearray()
             if data:
                 self.update(data)
@@ -85087,12 +85079,12 @@ class Hash:
             return self.digest().hex()
 
         def ror32(self, x, n):
-            x &= self.mask32
-            return ((x >> n) | ((x << (32 - n)) & self.mask32)) & self.mask32
+            x &= 0xffff_ffff
+            return ((x >> n) | ((x << (32 - n)) & 0xffff_ffff)) & 0xffff_ffff
 
         def ror64(self, x, n):
-            x &= self.mask64
-            return ((x >> n) | ((x << (64 - n)) & self.mask64)) & self.mask64
+            x &= 0xffff_ffff_ffff_ffff
+            return ((x >> n) | ((x << (64 - n)) & 0xffff_ffff_ffff_ffff)) & 0xffff_ffff_ffff_ffff
 
         def u32le(self, data, off):
             return int.from_bytes(data[off:off + 4], "little")
@@ -85101,9 +85093,9 @@ class Hash:
             return int.from_bytes(data[off:off + 8], "little")
 
         def mul64x64_128(self, a, b):
-            p = (a & self.mask64) * (b & self.mask64)
-            lo = p & self.mask64
-            hi = (p >> 64) & self.mask64
+            p = (a & 0xffff_ffff_ffff_ffff) * (b & 0xffff_ffff_ffff_ffff)
+            lo = p & 0xffff_ffff_ffff_ffff
+            hi = (p >> 64) & 0xffff_ffff_ffff_ffff
             return lo, hi
 
         def mux64(self, v, prime):
@@ -85111,18 +85103,18 @@ class Hash:
             return lo ^ hi
 
         def mixup64(self, a, b, v, prime):
-            lo, hi = self.mul64x64_128((b + v) & self.mask64, prime)
+            lo, hi = self.mul64x64_128(b + v, prime)
             a ^= lo
-            b = (b + hi) & self.mask64
-            return a & self.mask64, b
+            b = (b + hi) & 0xffff_ffff_ffff_ffff
+            return a & 0xffff_ffff_ffff_ffff, b
 
         def t1ha2_update(self, a, b, c, d, w0, w1, w2, w3):
-            d02 = (w0 + self.ror64((w2 + d) & self.mask64, 56)) & self.mask64
-            c13 = (w1 + self.ror64((w3 + c) & self.mask64, 19)) & self.mask64
-            d ^= (b + self.ror64(w1, 38)) & self.mask64
-            c ^= (a + self.ror64(w0, 57)) & self.mask64
-            b ^= (self.prime_6 * ((c13 + w2) & self.mask64)) & self.mask64
-            a ^= (self.prime_5 * ((d02 + w3) & self.mask64)) & self.mask64
+            d02 = (w0 + self.ror64(w2 + d, 56)) & 0xffff_ffff_ffff_ffff
+            c13 = (w1 + self.ror64(w3 + c, 19)) & 0xffff_ffff_ffff_ffff
+            d ^= (b + self.ror64(w1, 38)) & 0xffff_ffff_ffff_ffff
+            c ^= (a + self.ror64(w0, 57)) & 0xffff_ffff_ffff_ffff
+            b ^= (self.prime_6 * ((c13 + w2) & 0xffff_ffff_ffff_ffff)) & 0xffff_ffff_ffff_ffff
+            a ^= (self.prime_5 * ((d02 + w3) & 0xffff_ffff_ffff_ffff)) & 0xffff_ffff_ffff_ffff
             return a, b, c, d
 
     class T1HA0_32(T1HABase):
@@ -85138,20 +85130,20 @@ class Hash:
         prime32_6 = 0xc4bb_3575
 
         def mixup32(self, a, b, v, prime):
-            p = ((b + v) & self.mask32) * prime
-            a ^= p & self.mask32
-            b = (b + ((p >> 32) & self.mask32)) & self.mask32
-            return a & self.mask32, b
+            p = ((b + v) & 0xffff_ffff) * prime
+            a ^= p & 0xffff_ffff
+            b = (b + ((p >> 32) & 0xffff_ffff)) & 0xffff_ffff
+            return a & 0xffff_ffff, b
 
         def t1ha0_32le(self, data, seed):
             length = len(data)
-            a = (self.ror32(length & self.mask32, 17) + (seed & self.mask32)) & self.mask32
-            b = ((length & self.mask32) ^ ((seed >> 32) & self.mask32)) & self.mask32
+            a = (self.ror32(length, 17) + (seed & 0xffff_ffff)) & 0xffff_ffff
+            b = ((length & 0xffff_ffff) ^ ((seed >> 32) & 0xffff_ffff)) & 0xffff_ffff
             off = 0
 
             if length > 16:
-                c = (~a) & self.mask32
-                d = self.ror32(b, 5) & self.mask32
+                c = (~a) & 0xffff_ffff
+                d = self.ror32(b, 5)
                 detent = length - 15
 
                 while off < detent:
@@ -85161,17 +85153,17 @@ class Hash:
                     w3 = self.u32le(data, off + 12)
                     off += 16
 
-                    d13 = (w1 + self.ror32((w3 + d) & self.mask32, 17)) & self.mask32
-                    c02 = (w0 ^ self.ror32((w2 + c) & self.mask32, 11)) & self.mask32
-                    d ^= self.ror32((a + w0) & self.mask32, 3)
-                    c ^= self.ror32((b + w1) & self.mask32, 7)
-                    b = (self.prime32_1 * ((c02 + w3) & self.mask32)) & self.mask32
-                    a = (self.prime32_0 * (d13 ^ w2)) & self.mask32
+                    d13 = (w1 + self.ror32(w3 + d, 17)) & 0xffff_ffff
+                    c02 = (w0 ^ self.ror32(w2 + c, 11)) & 0xffff_ffff
+                    d ^= self.ror32(a + w0, 3)
+                    c ^= self.ror32(b + w1, 7)
+                    b = (self.prime32_1 * ((c02 + w3) & 0xffff_ffff)) & 0xffff_ffff
+                    a = (self.prime32_0 * (d13 ^ w2)) & 0xffff_ffff
 
-                c = (c + a) & self.mask32
-                d = (d + b) & self.mask32
-                a ^= (self.prime32_6 * ((self.ror32(c, 16) + d) & self.mask32)) & self.mask32
-                b ^= (self.prime32_5 * ((c + self.ror32(d, 16)) & self.mask32)) & self.mask32
+                c = (c + a) & 0xffff_ffff
+                d = (d + b) & 0xffff_ffff
+                a ^= (self.prime32_6 * ((self.ror32(c, 16) + d) & 0xffff_ffff)) & 0xffff_ffff
+                b ^= (self.prime32_5 * ((self.ror32(d, 16) + c) & 0xffff_ffff)) & 0xffff_ffff
                 tail = length & 15
             else:
                 tail = length
@@ -85196,18 +85188,16 @@ class Hash:
             return self.final32(a, b)
 
         def final32(self, a, b):
-            l = ((b ^ self.ror32(a, 13)) | ((a & self.mask32) << 32)) & self.mask64  # noqa: E741
-            l = (l * self.prime_0) & self.mask64  # noqa: E741
+            l = ((b ^ self.ror32(a, 13)) | ((a & 0xffff_ffff) << 32)) & 0xffff_ffff_ffff_ffff  # noqa: E741
+            l = (l * self.prime_0) & 0xffff_ffff_ffff_ffff  # noqa: E741
             l ^= l >> 41  # noqa: E741
-            l &= self.mask64  # noqa: E741
-            l = (l * self.prime_4) & self.mask64  # noqa: E741
+            l = (l * self.prime_4) & 0xffff_ffff_ffff_ffff  # noqa: E741
             l ^= l >> 47  # noqa: E741
-            l &= self.mask64  # noqa: E741
-            l = (l * self.prime_6) & self.mask64  # noqa: E741
-            return l & self.mask64
+            l = (l * self.prime_6) & 0xffff_ffff_ffff_ffff  # noqa: E741
+            return l
 
         def digest_bytes(self, data):
-            v = self.t1ha0_32le(data, self.seed) & self.mask32
+            v = self.t1ha0_32le(data, self.seed) & 0xffff_ffff
             return struct.pack(">I", v)
 
     class T1HA1_64(T1HABase):
@@ -85216,14 +85206,14 @@ class Hash:
 
         def t1ha1_le(self, data, seed):
             length = len(data)
-            a = seed & self.mask64
-            b = length & self.mask64
+            a = seed & 0xffff_ffff_ffff_ffff
+            b = length & 0xffff_ffff_ffff_ffff
             off = 0
             tail = length
 
             if tail > 32:
-                c = (self.ror64(tail, 17) + seed) & self.mask64
-                d = (tail ^ self.ror64(seed, 17)) & self.mask64
+                c = (self.ror64(tail, 17) + seed) & 0xffff_ffff_ffff_ffff
+                d = self.ror64(seed, 17) ^ tail
                 detent = tail - 31
 
                 while off < detent:
@@ -85233,39 +85223,39 @@ class Hash:
                     w3 = self.u64le(data, off + 24)
                     off += 32
 
-                    d02 = w0 ^ self.ror64((w2 + d) & self.mask64, 17)
-                    c13 = w1 ^ self.ror64((w3 + c) & self.mask64, 17)
-                    d = (d - (b ^ self.ror64(w1, 31))) & self.mask64
-                    c = (c + (a ^ self.ror64(w0, 41))) & self.mask64
-                    b ^= (self.prime_0 * ((c13 + w2) & self.mask64)) & self.mask64
-                    a ^= (self.prime_1 * ((d02 + w3) & self.mask64)) & self.mask64
+                    d02 = w0 ^ self.ror64(w2 + d, 17)
+                    c13 = w1 ^ self.ror64(w3 + c, 17)
+                    d = (d - (b ^ self.ror64(w1, 31))) & 0xffff_ffff_ffff_ffff
+                    c = (c + (a ^ self.ror64(w0, 41))) & 0xffff_ffff_ffff_ffff
+                    b ^= (self.prime_0 * ((c13 + w2) & 0xffff_ffff_ffff_ffff)) & 0xffff_ffff_ffff_ffff
+                    a ^= (self.prime_1 * ((d02 + w3) & 0xffff_ffff_ffff_ffff)) & 0xffff_ffff_ffff_ffff
 
-                a ^= (self.prime_6 * ((self.ror64(c, 17) + d) & self.mask64)) & self.mask64
-                b ^= (self.prime_5 * ((c + self.ror64(d, 17)) & self.mask64)) & self.mask64
+                a ^= (self.prime_6 * ((self.ror64(c, 17) + d) & 0xffff_ffff_ffff_ffff)) & 0xffff_ffff_ffff_ffff
+                b ^= (self.prime_5 * ((self.ror64(d, 17) + c) & 0xffff_ffff_ffff_ffff)) & 0xffff_ffff_ffff_ffff
                 tail &= 31
 
             tail_off = off
             if tail > 24:
-                b = (b + self.mux64(self.u64le(data, tail_off), self.prime_4)) & self.mask64
+                b = (b + self.mux64(self.u64le(data, tail_off), self.prime_4)) & 0xffff_ffff_ffff_ffff
                 tail_off += 8
             if tail > 16:
-                a = (a + self.mux64(self.u64le(data, tail_off), self.prime_3)) & self.mask64
+                a = (a + self.mux64(self.u64le(data, tail_off), self.prime_3)) & 0xffff_ffff_ffff_ffff
                 tail_off += 8
             if tail > 8:
-                b = (b + self.mux64(self.u64le(data, tail_off), self.prime_2)) & self.mask64
+                b = (b + self.mux64(self.u64le(data, tail_off), self.prime_2)) & 0xffff_ffff_ffff_ffff
                 tail_off += 8
             if tail != 0:
-                a = (a + self.mux64(self.u64le(data + b"\0" * (8 - (tail & 7)), tail_off), self.prime_1)) & self.mask64
+                a = (a + self.mux64(self.u64le(data + b"\0" * (8 - (tail & 7)), tail_off), self.prime_1)) & 0xffff_ffff_ffff_ffff
 
             return self.final_weak_avalanche(a, b)
 
         def mix64(self, v, p):
-            v = (v * p) & self.mask64
-            return (v ^ self.ror64(v, 41)) & self.mask64
+            v = (v * p) & 0xffff_ffff_ffff_ffff
+            return (v ^ self.ror64(v, 41)) & 0xffff_ffff_ffff_ffff
 
         def final_weak_avalanche(self, a, b):
-            r = self.mux64(self.ror64((a + b) & self.mask64, 17), self.prime_4)
-            r = (r + self.mix64(a ^ b, self.prime_0)) & self.mask64
+            r = self.mux64(self.ror64(a + b, 17), self.prime_4)
+            r = (r + self.mix64(a ^ b, self.prime_0)) & 0xffff_ffff_ffff_ffff
             return r
 
         def digest_bytes(self, data):
@@ -85277,19 +85267,19 @@ class Hash:
         digest_size = 8
 
         def t1ha2_squash(self, a, b, c, d):
-            a ^= (self.prime_6 * ((c + self.ror64(d, 23)) & self.mask64)) & self.mask64
-            b ^= (self.prime_5 * ((self.ror64(c, 19) + d) & self.mask64)) & self.mask64
+            a ^= (self.prime_6 * ((self.ror64(d, 23) + c) & 0xffff_ffff_ffff_ffff)) & 0xffff_ffff_ffff_ffff
+            b ^= (self.prime_5 * ((self.ror64(c, 19) + d) & 0xffff_ffff_ffff_ffff)) & 0xffff_ffff_ffff_ffff
             return a, b
 
         def t1ha2_atonce(self, data, seed):
             length = len(data)
-            a = seed & self.mask64
-            b = length & self.mask64
+            a = seed & 0xffff_ffff_ffff_ffff
+            b = length & 0xffff_ffff_ffff_ffff
             off = 0
 
             if length > 32:
-                c = (self.ror64(length, 23) + ((~seed) & self.mask64)) & self.mask64
-                d = (((~length) & self.mask64) + self.ror64(seed, 19)) & self.mask64
+                c = (self.ror64(length, 23) + ((~seed) & 0xffff_ffff_ffff_ffff)) & 0xffff_ffff_ffff_ffff
+                d = (((~length) & 0xffff_ffff_ffff_ffff) + self.ror64(seed, 19)) & 0xffff_ffff_ffff_ffff
                 detent = length - 31
 
                 while off < detent:
@@ -85325,9 +85315,9 @@ class Hash:
             return self.final64(a, b)
 
         def final64(self, a, b):
-            x = ((a + self.ror64(b, 41)) & self.mask64) * self.prime_0
-            y = ((self.ror64(a, 23) + b) & self.mask64) * self.prime_6
-            return self.mux64((x ^ y) & self.mask64, self.prime_5) & self.mask64
+            x = ((self.ror64(b, 41) + a) & 0xffff_ffff_ffff_ffff) * self.prime_0
+            y = ((self.ror64(a, 23) + b) & 0xffff_ffff_ffff_ffff) * self.prime_6
+            return self.mux64((x ^ y) & 0xffff_ffff_ffff_ffff, self.prime_5) & 0xffff_ffff_ffff_ffff
 
         def digest_bytes(self, data):
             v = self.t1ha2_atonce(data, self.seed)
@@ -85339,10 +85329,10 @@ class Hash:
 
         def t1ha2_atonce128(self, data, seed):
             length = len(data)
-            a = seed & self.mask64
-            b = length & self.mask64
-            c = (self.ror64(length, 23) + ((~seed) & self.mask64)) & self.mask64
-            d = (((~length) & self.mask64) + self.ror64(seed, 19)) & self.mask64
+            a = seed & 0xffff_ffff_ffff_ffff
+            b = length & 0xffff_ffff_ffff_ffff
+            c = (self.ror64(length, 23) + ((~seed) & 0xffff_ffff_ffff_ffff)) & 0xffff_ffff_ffff_ffff
+            d = (((~length) & 0xffff_ffff_ffff_ffff) + self.ror64(seed, 19)) & 0xffff_ffff_ffff_ffff
             off = 0
 
             if length > 32:
@@ -85382,8 +85372,8 @@ class Hash:
             b, c = self.mixup64(b, c, self.ror64(d, 23) ^ a, self.prime_6)
             c, d = self.mixup64(c, d, self.ror64(a, 19) ^ b, self.prime_5)
             d, a = self.mixup64(d, a, self.ror64(b, 31) ^ c, self.prime_4)
-            hi = (c + d) & self.mask64
-            lo = (a ^ b) & self.mask64
+            hi = (c + d) & 0xffff_ffff_ffff_ffff
+            lo = (a ^ b) & 0xffff_ffff_ffff_ffff
             return lo, hi
 
         def digest_bytes(self, data):
@@ -85392,7 +85382,6 @@ class Hash:
 
     class KupynaBase:
         matrix = (0x01, 0x01, 0x05, 0x01, 0x08, 0x06, 0x07, 0x04)
-        mask64 = 0xffff_ffff_ffff_ffff
         s0 = (
             0xa8, 0x43, 0x5f, 0x06, 0x6b, 0x75, 0x6c, 0x59, 0x71, 0xdf, 0x87, 0x95, 0x17, 0xf0, 0xd8, 0x09,
             0x6d, 0xf3, 0x1d, 0xcb, 0xc9, 0x4d, 0x2c, 0xaf, 0x79, 0xe0, 0x97, 0xfd, 0x6f, 0x4b, 0x45,
@@ -85466,6 +85455,312 @@ class Hash:
             0xcb, 0xbb, 0x6b, 0x76, 0xba, 0x5a, 0x7d, 0x78, 0x0b, 0x95, 0xe3, 0xad, 0x74, 0x98, 0x3b, 0x36,
             0x64, 0x6d, 0xdc, 0xf0, 0x59, 0xa9, 0x4c, 0x17, 0x7f, 0x91, 0xb8, 0xc9, 0x57, 0x1b, 0xe0, 0x61,
         )
+        C_TEMPLATE = r"""
+        #include <stdint.h>
+        #include <string.h>
+
+        static inline uint64_t load64_le(const uint8_t *p)
+        {
+            return ((uint64_t)p[0]      ) |
+                   ((uint64_t)p[1] <<  8) |
+                   ((uint64_t)p[2] << 16) |
+                   ((uint64_t)p[3] << 24) |
+                   ((uint64_t)p[4] << 32) |
+                   ((uint64_t)p[5] << 40) |
+                   ((uint64_t)p[6] << 48) |
+                   ((uint64_t)p[7] << 56);
+        }
+
+        static inline uint64_t sub_word(
+            uint64_t w,
+            const uint8_t *s0,
+            const uint8_t *s1,
+            const uint8_t *s2,
+            const uint8_t *s3)
+        {
+            return ((uint64_t)s0[(w >>  0) & 0xff])       |
+                   ((uint64_t)s1[(w >>  8) & 0xff] <<  8) |
+                   ((uint64_t)s2[(w >> 16) & 0xff] << 16) |
+                   ((uint64_t)s3[(w >> 24) & 0xff] << 24) |
+                   ((uint64_t)s0[(w >> 32) & 0xff] << 32) |
+                   ((uint64_t)s1[(w >> 40) & 0xff] << 40) |
+                   ((uint64_t)s2[(w >> 48) & 0xff] << 48) |
+                   ((uint64_t)s3[(w >> 56) & 0xff] << 56);
+        }
+
+        static inline void sub_bytes_u64(
+            uint64_t *s,
+            int columns,
+            const uint8_t *s0,
+            const uint8_t *s1,
+            const uint8_t *s2,
+            const uint8_t *s3)
+        {
+            int col;
+            for (col = 0; col < columns; col++) {
+                s[col] = sub_word(s[col], s0, s1, s2, s3);
+            }
+        }
+
+        static inline void shift_rows_u64(uint64_t *s, int columns, int shift7)
+        {
+            uint64_t src[16];
+            int row;
+            int col;
+
+            memcpy(src, s, (size_t)columns * sizeof(uint64_t));
+            for (col = 0; col < columns; col++) {
+                s[col] = 0;
+            }
+
+            for (row = 0; row < 8; row++) {
+                int off = (row == 7) ? shift7 : row;
+                int shift = row * 8;
+                for (col = 0; col < columns; col++) {
+                    int dst_col = (col + off) % columns;
+                    s[dst_col] |= ((src[col] >> shift) & 0xffULL) << shift;
+                }
+            }
+        }
+
+        static inline uint64_t mix_word(
+            uint64_t w,
+            const uint8_t *t4,
+            const uint8_t *t5,
+            const uint8_t *t6,
+            const uint8_t *t7,
+            const uint8_t *t8)
+        {
+            uint64_t b0 = (w >>  0) & 0xff;
+            uint64_t b1 = (w >>  8) & 0xff;
+            uint64_t b2 = (w >> 16) & 0xff;
+            uint64_t b3 = (w >> 24) & 0xff;
+            uint64_t b4 = (w >> 32) & 0xff;
+            uint64_t b5 = (w >> 40) & 0xff;
+            uint64_t b6 = (w >> 48) & 0xff;
+            uint64_t b7 = (w >> 56) & 0xff;
+
+            uint64_t o0 = b0 ^ b1 ^ t5[b2] ^ b3 ^ t8[b4] ^ t6[b5] ^ t7[b6] ^ t4[b7];
+            uint64_t o1 = t4[b0] ^ b1 ^ b2 ^ t5[b3] ^ b4 ^ t8[b5] ^ t6[b6] ^ t7[b7];
+            uint64_t o2 = t7[b0] ^ t4[b1] ^ b2 ^ b3 ^ t5[b4] ^ b5 ^ t8[b6] ^ t6[b7];
+            uint64_t o3 = t6[b0] ^ t7[b1] ^ t4[b2] ^ b3 ^ b4 ^ t5[b5] ^ b6 ^ t8[b7];
+            uint64_t o4 = t8[b0] ^ t6[b1] ^ t7[b2] ^ t4[b3] ^ b4 ^ b5 ^ t5[b6] ^ b7;
+            uint64_t o5 = b0 ^ t8[b1] ^ t6[b2] ^ t7[b3] ^ t4[b4] ^ b5 ^ b6 ^ t5[b7];
+            uint64_t o6 = t5[b0] ^ b1 ^ t8[b2] ^ t6[b3] ^ t7[b4] ^ t4[b5] ^ b6 ^ b7;
+            uint64_t o7 = b0 ^ t5[b1] ^ b2 ^ t8[b3] ^ t6[b4] ^ t7[b5] ^ t4[b6] ^ b7;
+
+            return o0 |
+                   (o1 <<  8) |
+                   (o2 << 16) |
+                   (o3 << 24) |
+                   (o4 << 32) |
+                   (o5 << 40) |
+                   (o6 << 48) |
+                   (o7 << 56);
+        }
+
+        static inline void mix_columns_u64(
+            uint64_t *s,
+            int columns,
+            const uint8_t *t4,
+            const uint8_t *t5,
+            const uint8_t *t6,
+            const uint8_t *t7,
+            const uint8_t *t8)
+        {
+            int col;
+            for (col = 0; col < columns; col++) {
+                s[col] = mix_word(s[col], t4, t5, t6, t7, t8);
+            }
+        }
+
+        static inline void perm_p_u64(
+            uint64_t *s,
+            int columns,
+            int rounds,
+            int shift7,
+            const uint8_t *s0,
+            const uint8_t *s1,
+            const uint8_t *s2,
+            const uint8_t *s3,
+            const uint8_t *t4,
+            const uint8_t *t5,
+            const uint8_t *t6,
+            const uint8_t *t7,
+            const uint8_t *t8)
+        {
+            int rnd;
+            int col;
+
+            for (rnd = 0; rnd < rounds; rnd++) {
+                for (col = 0; col < columns; col++) {
+                    s[col] ^= (uint64_t)((col << 4) ^ rnd);
+                }
+                shift_rows_u64(s, columns, shift7);
+                sub_bytes_u64(s, columns, s0, s1, s2, s3);
+                mix_columns_u64(s, columns, t4, t5, t6, t7, t8);
+            }
+        }
+
+        static inline void perm_q_u64(
+            uint64_t *s,
+            int columns,
+            int rounds,
+            int shift7,
+            const uint8_t *s0,
+            const uint8_t *s1,
+            const uint8_t *s2,
+            const uint8_t *s3,
+            const uint8_t *t4,
+            const uint8_t *t5,
+            const uint8_t *t6,
+            const uint8_t *t7,
+            const uint8_t *t8)
+        {
+            int rnd;
+            int col;
+
+            for (rnd = 0; rnd < rounds; rnd++) {
+                uint64_t rc =
+                    ((((uint64_t)(((columns - 1) << 4) ^ rnd)) << 56) |
+                     0x00f0f0f0f0f0f0f3ULL);
+
+                for (col = 0; col < columns; col++) {
+                    s[col] += rc;
+                    rc -= 0x1000000000000000ULL;
+                }
+
+                shift_rows_u64(s, columns, shift7);
+                sub_bytes_u64(s, columns, s0, s1, s2, s3);
+                mix_columns_u64(s, columns, t4, t5, t6, t7, t8);
+            }
+        }
+
+        void kupyna_process_block(
+            uint64_t *state,
+            const uint8_t *block,
+            int columns,
+            int rounds,
+            int shift7,
+            const uint8_t *s0,
+            const uint8_t *s1,
+            const uint8_t *s2,
+            const uint8_t *s3,
+            const uint8_t *t4,
+            const uint8_t *t5,
+            const uint8_t *t6,
+            const uint8_t *t7,
+            const uint8_t *t8)
+        {
+            uint64_t words[16];
+            uint64_t t1[16];
+            uint64_t t2[16];
+            int i;
+
+            for (i = 0; i < columns; i++) {
+                words[i] = load64_le(block + (i * 8));
+                t1[i] = state[i] ^ words[i];
+                t2[i] = words[i];
+            }
+
+            perm_p_u64(t1, columns, rounds, shift7, s0, s1, s2, s3, t4, t5, t6, t7, t8);
+            perm_q_u64(t2, columns, rounds, shift7, s0, s1, s2, s3, t4, t5, t6, t7, t8);
+
+            for (i = 0; i < columns; i++) {
+                state[i] ^= t1[i] ^ t2[i];
+            }
+        }
+
+        void kupyna_output_transform(
+            uint64_t *state,
+            int columns,
+            int rounds,
+            int shift7,
+            const uint8_t *s0,
+            const uint8_t *s1,
+            const uint8_t *s2,
+            const uint8_t *s3,
+            const uint8_t *t4,
+            const uint8_t *t5,
+            const uint8_t *t6,
+            const uint8_t *t7,
+            const uint8_t *t8)
+        {
+            uint64_t t[16];
+            int i;
+
+            for (i = 0; i < columns; i++) {
+                t[i] = state[i];
+            }
+
+            perm_p_u64(t, columns, rounds, shift7, s0, s1, s2, s3, t4, t5, t6, t7, t8);
+
+            for (i = 0; i < columns; i++) {
+                state[i] ^= t[i];
+            }
+        }
+        """
+
+        @classmethod
+        def build_cffi_lib(cls):
+            if hasattr(Hash.KupynaBase, "cffi_lib_cache"):
+                return Hash.KupynaBase.cffi_lib_cache
+
+            import cffi
+            ffi = cffi.FFI()
+            ffi.cdef("""
+                void kupyna_process_block(
+                    uint64_t *state, const uint8_t *block, int columns, int rounds, int shift7,
+                    const uint8_t *s0, const uint8_t *s1, const uint8_t *s2, const uint8_t *s3,
+                    const uint8_t *t4, const uint8_t *t5, const uint8_t *t6, const uint8_t *t7,
+                    const uint8_t *t8);
+                void kupyna_output_transform(
+                    uint64_t *state, int columns, int rounds, int shift7,
+                    const uint8_t *s0, const uint8_t *s1, const uint8_t *s2, const uint8_t *s3,
+                    const uint8_t *t4, const uint8_t *t5, const uint8_t *t6, const uint8_t *t7,
+                    const uint8_t *t8);
+            """)
+
+            import warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"reimporting '_cffi__.*' might overwrite older definitions",
+                    category=UserWarning,
+                    module=r"cffi\.vengine_cpy",
+                )
+                lib = ffi.verify(cls.C_TEMPLATE, extra_compile_args=["-O2"])
+
+            Hash.KupynaBase.cffi_lib_cache = (ffi, lib)
+            return Hash.KupynaBase.cffi_lib_cache
+
+        def init_cffi_backend(self):
+            try:
+                import cffi  # noqa: F401
+            except ImportError:
+                self.USE_CFFI = False
+                return
+
+            self.USE_CFFI = True
+            self.ffi, self.clib = Hash.KupynaBase.build_cffi_lib()
+
+            def pack_u8(seq):
+                buf = self.ffi.new("uint8_t[]", len(seq))
+                for i, v in enumerate(seq):
+                    buf[i] = v & 0xff
+                return buf
+
+            if not hasattr(Hash.KupynaBase, "c_s0"):
+                Hash.KupynaBase.c_s0 = pack_u8(self.s0)
+                Hash.KupynaBase.c_s1 = pack_u8(self.s1)
+                Hash.KupynaBase.c_s2 = pack_u8(self.s2)
+                Hash.KupynaBase.c_s3 = pack_u8(self.s3)
+                Hash.KupynaBase.c_t4 = pack_u8(self.mul_tables[4])
+                Hash.KupynaBase.c_t5 = pack_u8(self.mul_tables[5])
+                Hash.KupynaBase.c_t6 = pack_u8(self.mul_tables[6])
+                Hash.KupynaBase.c_t7 = pack_u8(self.mul_tables[7])
+                Hash.KupynaBase.c_t8 = pack_u8(self.mul_tables[8])
+            return
 
         @classmethod
         def ensure_tables(cls):
@@ -85505,6 +85800,7 @@ class Hash:
             self.state[0] = self.block_size
             self.buf = bytearray()
             self.msg_len_bits = 0
+            self.init_cffi_backend()
             if data:
                 self.update(data)
             return
@@ -85567,6 +85863,17 @@ class Hash:
             return out
 
         def process_block(self, block):
+            if self.USE_CFFI:
+                state_buf = self.ffi.new("uint64_t[]", [x & 0xffff_ffff_ffff_ffff for x in self.state])
+                block_buf = self.ffi.new("uint8_t[]", bytes(block))
+                self.clib.kupyna_process_block(
+                    state_buf, block_buf, self.columns, self.rounds, self.shift_offsets[7],
+                    self.c_s0, self.c_s1, self.c_s2, self.c_s3, self.c_t4, self.c_t5, self.c_t6, self.c_t7, self.c_t8,
+                )
+                for i in range(self.columns):
+                    self.state[i] = int(state_buf[i])
+                return
+
             columns = self.columns
             state = self.state
             words = [0] * columns
@@ -85584,6 +85891,15 @@ class Hash:
             return
 
         def output_transform(self):
+            if self.USE_CFFI:
+                state_buf = self.ffi.new("uint64_t[]", [x & 0xffff_ffff_ffff_ffff for x in self.state])
+                self.clib.kupyna_output_transform(state_buf, self.columns, self.rounds, self.shift_offsets[7],
+                    self.c_s0, self.c_s1, self.c_s2, self.c_s3, self.c_t4, self.c_t5, self.c_t6, self.c_t7, self.c_t8,
+                )
+                for i in range(self.columns):
+                    self.state[i] = int(state_buf[i])
+                return
+
             t = list(self.state)
             self.perm_p(t)
             for i in range(self.columns):
@@ -85603,8 +85919,8 @@ class Hash:
             for rnd in range(self.rounds):
                 rc = ((((self.columns - 1) << 4) ^ rnd) << 56) | 0x00f0_f0f0_f0f0_f0f3
                 for col in range(self.columns):
-                    s[col] = (s[col] + rc) & self.mask64
-                    rc = (rc - 0x1000_0000_0000_0000) & self.mask64
+                    s[col] = (s[col] + rc) & 0xffff_ffff_ffff_ffff
+                    rc = (rc - 0x1000_0000_0000_0000) & 0xffff_ffff_ffff_ffff
                 self.shift_rows(s)
                 self.sub_bytes(s)
                 self.mix_columns(s)
@@ -88644,26 +88960,19 @@ class Hash:
             return
 
     class HamsiBase:
-        mask32 = 0xffff_ffff
-
-        alpha_n = [
+        alpha_n = (
             0xff00_f0f0, 0xcccc_aaaa, 0xf0f0_cccc, 0xff00_aaaa, 0xcccc_aaaa, 0xf0f0_ff00, 0xaaaa_cccc, 0xf0f0_ff00,
             0xf0f0_cccc, 0xaaaa_ff00, 0xcccc_ff00, 0xaaaa_f0f0, 0xaaaa_f0f0, 0xff00_cccc, 0xcccc_f0f0, 0xff00_aaaa,
             0xcccc_aaaa, 0xff00_f0f0, 0xff00_aaaa, 0xf0f0_cccc, 0xf0f0_ff00, 0xcccc_aaaa, 0xf0f0_ff00, 0xaaaa_cccc,
             0xaaaa_ff00, 0xf0f0_cccc, 0xaaaa_f0f0, 0xcccc_ff00, 0xff00_cccc, 0xaaaa_f0f0, 0xff00_aaaa, 0xcccc_f0f0,
-        ]
-
-        alpha_f = [
+        )
+        alpha_f = (
             0xcaf9_639c, 0x0ff0_f9c0, 0x639c_0ff0, 0xcaf9_f9c0, 0x0ff0_f9c0, 0x639c_caf9, 0xf9c0_0ff0, 0x639c_caf9,
             0x639c_0ff0, 0xf9c0_caf9, 0x0ff0_caf9, 0xf9c0_639c, 0xf9c0_639c, 0xcaf9_0ff0, 0x0ff0_639c, 0xcaf9_f9c0,
             0x0ff0_f9c0, 0xcaf9_639c, 0xcaf9_f9c0, 0x639c_0ff0, 0x639c_caf9, 0x0ff0_f9c0, 0x639c_caf9, 0xf9c0_0ff0,
             0xf9c0_caf9, 0x639c_0ff0, 0xf9c0_639c, 0x0ff0_caf9, 0xcaf9_0ff0, 0xf9c0_639c, 0xcaf9_f9c0, 0x0ff0_639c,
-        ]
-
-        expand_small_tables = None
-        expand_big_tables = None
-
-        t256 = [
+        )
+        t256 = (
             0x7495_1000, 0x5a2b_467e, 0x88fd_1d2b, 0x1ee6_8292, 0xcba9_0000, 0x9027_3769, 0xbbdc_f407, 0xd0f4_af61,
             0xcba9_0000, 0x9027_3769, 0xbbdc_f407, 0xd0f4_af61, 0xbf3c_1000, 0xca0c_7117, 0x3321_e92c, 0xce12_2df3,
             0xe92a_2000, 0xb457_8cfc, 0x11fa_3a57, 0x3dc9_0524, 0x9753_0000, 0x204f_6ed3, 0x77b9_e80f, 0xa1ec_5ec1,
@@ -88696,9 +89005,8 @@ class Hash:
             0x6ba9_0000, 0x40eb_f9aa, 0x9832_1c3d, 0x76ac_c733, 0xbba1_0004, 0xcc9d_76dd, 0x05f7_ac6d, 0xd9e6_eee9,
             0xa8ae_0008, 0x2079_397d, 0xfe73_9301, 0xb8a9_2831, 0x171c_0000, 0xb26e_3344, 0x9e6a_837e, 0x58f8_485f,
             0x171c_0000, 0xb26e_3344, 0x9e6a_837e, 0x58f8_485f, 0xbfb2_0008, 0x9217_0a39, 0x6019_107f, 0xe051_606e,
-        ]
-
-        t512 = [
+        )
+        t512 = (
             0xef0b_0270, 0x3afd_0000, 0x5dae_0000, 0x6949_0000, 0x9b0f_3c06, 0x4405_b5f9, 0x6614_0a51, 0x924f_5d0a,
             0xc96b_0030, 0xe725_0000, 0x2f84_0000, 0x264f_0000, 0x0869_5bf9, 0x6dfc_f137, 0x509f_6984, 0x9e69_af68,
             0xc96b_0030, 0xe725_0000, 0x2f84_0000, 0x264f_0000, 0x0869_5bf9, 0x6dfc_f137, 0x509f_6984, 0x9e69_af68,
@@ -88827,107 +89135,219 @@ class Hash:
             0x7b28_0000, 0x5742_0000, 0xa9e5_0000, 0x6343_00a0, 0x9edb_442f, 0x6d99_95bb, 0x27f8_3b03, 0xc7ff_60f0,
             0x7b28_0000, 0x5742_0000, 0xa9e5_0000, 0x6343_00a0, 0x9edb_442f, 0x6d99_95bb, 0x27f8_3b03, 0xc7ff_60f0,
             0x95bb_0000, 0x8145_0000, 0x3b24_0000, 0x48db_0140, 0x0a8a_6c53, 0x56f5_6eec, 0x62c9_1877, 0xe7e0_0a94,
-        ]
+        )
+        C_TEMPLATE = r"""
+        #include <stdint.h>
+        #include <string.h>
 
-        def __init__(self, data=b""):
-            cls = self.__class__
-            self.h = list(self.iv)
-            self.buf = bytearray()
-            self.msg_len = 0
-            if cls.block_size == 4:
-                if cls.expand_small_tables is None:
-                    cls.build_expand_small_tables()
-                self.compress = self.compress_small
-            elif cls.block_size == 8:
-                if cls.expand_big_tables is None:
-                    cls.build_expand_big_tables()
-                self.compress = self.compress_big
-            if data:
-                self.update(data)
-            return
+        /* ---- sbox (Serpent S0 variant) ---- */
+        static inline void sbox(uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d)
+        {
+            uint32_t t = *a;
+            *a = (*a & *c) ^ *d;
+            *c ^= *b;
+            *c ^= *a;
+            *d = (*d | t) ^ *b;
+            t ^= *c;
+            *b = *d;
+            *d = (*d | t) ^ *a;
+            *a &= *b;
+            t ^= *a;
+            *b ^= *d;
+            *b ^= t;
+            *a = *c;
+            *c = *b;
+            *b = *d;
+            *d = (~t) & 0xffffffffu;
+        }
 
-        def copy(self):
-            other = self.__class__()
-            other.h = list(self.h)
-            other.buf = bytearray(self.buf)
-            other.msg_len = self.msg_len
-            return other
+        /* ---- linear transform ---- */
+        static inline void linear(uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d)
+        {
+            *a = ((*a << 13) | (*a >> 19)) & 0xffffffffu;
+            *c = ((*c <<  3) | (*c >> 29)) & 0xffffffffu;
+            *b ^= *a ^ *c;
+            *d ^= *c ^ ((*a << 3) & 0xffffffffu);
+            *b = ((*b <<  1) | (*b >> 31)) & 0xffffffffu;
+            *d = ((*d <<  7) | (*d >> 25)) & 0xffffffffu;
+            *a ^= *b ^ *d;
+            *c ^= *d ^ ((*b << 7) & 0xffffffffu);
+            *a = ((*a <<  5) | (*a >> 27)) & 0xffffffffu;
+            *c = ((*c << 22) | (*c >> 10)) & 0xffffffffu;
+        }
 
-        def update(self, data):
-            if not isinstance(data, (bytes, bytearray, memoryview)):
-                raise TypeError("data must be bytes-like")
-            if not data:
-                return self
+        /* ====================================================================
+           compress_small  (block_size=4, 3 or 6 rounds, 16-word state)
+           expand_small_tables must be pre-computed by Python and passed as
+           a flat array: 4 * 256 * 8 uint32_t values.
+           ==================================================================== */
+        void compress_small(
+            uint32_t       *h,            /* 8 words, updated in-place          */
+            const uint8_t  *block,        /* 4 bytes                            */
+            int             final_round,
+            const uint32_t *alpha,        /* alpha_f or alpha_n, 0x1c entries   */
+            const uint32_t *tables)       /* 4 * 256 * 8 uint32_t               */
+        {
+            /* expand block byte → 8-word row via precomputed tables */
+            const uint32_t *t0 = tables + (size_t)block[0] * 8;
+            const uint32_t *t1 = tables + 256*8 + (size_t)block[1] * 8;
+            const uint32_t *t2 = tables + 512*8 + (size_t)block[2] * 8;
+            const uint32_t *t3 = tables + 768*8 + (size_t)block[3] * 8;
+            uint32_t m[8];
+            for (int i = 0; i < 8; i++)
+                m[i] = t0[i] ^ t1[i] ^ t2[i] ^ t3[i];
 
-            mv = memoryview(data)
-            self.msg_len += len(mv)
+            uint32_t s0  = m[0], s1  = m[1], s2  = h[0], s3  = h[1];
+            uint32_t s4  = h[2], s5  = h[3], s6  = m[2], s7  = m[3];
+            uint32_t s8  = m[4], s9  = m[5], s10 = h[4], s11 = h[5];
+            uint32_t s12 = h[6], s13 = h[7], s14 = m[6], s15 = m[7];
 
-            bs = self.block_size
-            compress = self.compress
-            buf = self.buf
+            int rounds = final_round ? 6 : 3;
 
-            if buf:
-                need = bs - len(buf)
-                if len(mv) < need:
-                    buf.extend(mv)
-                    return self
+            for (int rc = 0; rc < rounds; rc++) {
+                s0  ^= alpha[0x00]; s1  ^= alpha[0x01] ^ (uint32_t)rc;
+                s2  ^= alpha[0x02]; s3  ^= alpha[0x03];
+                s4  ^= alpha[0x08]; s5  ^= alpha[0x09];
+                s6  ^= alpha[0x0a]; s7  ^= alpha[0x0b];
+                s8  ^= alpha[0x10]; s9  ^= alpha[0x11];
+                s10 ^= alpha[0x12]; s11 ^= alpha[0x13];
+                s12 ^= alpha[0x18]; s13 ^= alpha[0x19];
+                s14 ^= alpha[0x1a]; s15 ^= alpha[0x1b];
 
-                buf.extend(mv[:need])
-                compress(buf, False)
-                buf.clear()
-                mv = mv[need:]
+                sbox(&s0, &s4, &s8,  &s12);
+                sbox(&s1, &s5, &s9,  &s13);
+                sbox(&s2, &s6, &s10, &s14);
+                sbox(&s3, &s7, &s11, &s15);
 
-            full = (len(mv) // bs) * bs
-            for off in range(0, full, bs):
-                compress(mv[off:off + bs], False)
+                linear(&s0, &s5, &s10, &s15);
+                linear(&s1, &s6, &s11, &s12);
+                linear(&s2, &s7, &s8,  &s13);
+                linear(&s3, &s4, &s9,  &s14);
+            }
 
-            if full < len(mv):
-                buf.extend(mv[full:])
-            return self
+            /* Matches Python: h[7]^=s11, h[6]^=s10, h[5]^=s9, h[4]^=s8,
+                              h[3]^=s3,  h[2]^=s2,  h[1]^=s1, h[0]^=s0  */
+            h[0] ^= s0;
+            h[1] ^= s1;
+            h[2] ^= s2;
+            h[3] ^= s3;
+            h[4] ^= s8;
+            h[5] ^= s9;
+            h[6] ^= s10;
+            h[7] ^= s11;
+        }
 
-        def digest(self):
-            c = self.copy()
-            c.finalize()
-            return c.output()
+        /* ====================================================================
+           compress_big  (block_size=8, 6 or 12 rounds, 32-word state)
+           expand_big_tables: 8 * 256 * 16 uint32_t values
+           ==================================================================== */
+        void compress_big(
+            uint32_t       *h,            /* 16 words, updated in-place         */
+            const uint8_t  *block,        /* 8 bytes                            */
+            int             final_round,
+            const uint32_t *alpha,        /* 0x20 entries                       */
+            const uint32_t *tables)       /* 8 * 256 * 16 uint32_t              */
+        {
+            const size_t stride = 256 * 16;
+            const uint32_t *tt[8];
+            for (int i = 0; i < 8; i++)
+                tt[i] = tables + i * stride + (size_t)block[i] * 16;
 
-        def hexdigest(self):
-            return self.digest().hex()
+            uint32_t m[16];
+            for (int i = 0; i < 16; i++)
+                m[i] = tt[0][i] ^ tt[1][i] ^ tt[2][i] ^ tt[3][i]
+                     ^ tt[4][i] ^ tt[5][i] ^ tt[6][i] ^ tt[7][i];
 
-        def finalize(self):
-            bit_len = self.msg_len * 8
+            uint32_t s00=m[0],  s01=m[1],  s02=h[0],  s03=h[1];
+            uint32_t s04=m[2],  s05=m[3],  s06=h[2],  s07=h[3];
+            uint32_t s08=h[4],  s09=h[5],  s0a=m[4],  s0b=m[5];
+            uint32_t s0c=h[6],  s0d=h[7],  s0e=m[6],  s0f=m[7];
+            uint32_t s10=m[8],  s11=m[9],  s12=h[8],  s13=h[9];
+            uint32_t s14=m[10], s15=m[11], s16=h[10], s17=h[11];
+            uint32_t s18=h[12], s19=h[13], s1a=m[12], s1b=m[13];
+            uint32_t s1c=h[14], s1d=h[15], s1e=m[14], s1f=m[15];
 
-            if self.block_size == 4:
-                pad = self.buf + b"\x80" + (b"\x00" * (3 - len(self.buf))) + bit_len.to_bytes(8, "big")
-                self.compress(pad[0:4], False)
-                self.compress(pad[4:8], False)
-                self.compress(pad[8:12], True)
-            elif self.block_size == 8:
-                pad = self.buf + b"\x80" + (b"\x00" * (7 - len(self.buf)))
-                self.compress(pad, False)
-                self.compress(bit_len.to_bytes(8, "big"), True)
-            else:
-                raise ValueError("invalid block_size")
+            int rounds = final_round ? 12 : 6;
 
-            self.buf = bytearray()
-            return
+            for (int rc = 0; rc < rounds; rc++) {
+                s00 ^= alpha[0x00]; s01 ^= alpha[0x01] ^ (uint32_t)rc;
+                s02 ^= alpha[0x02]; s03 ^= alpha[0x03];
+                s04 ^= alpha[0x04]; s05 ^= alpha[0x05];
+                s06 ^= alpha[0x06]; s07 ^= alpha[0x07];
+                s08 ^= alpha[0x08]; s09 ^= alpha[0x09];
+                s0a ^= alpha[0x0a]; s0b ^= alpha[0x0b];
+                s0c ^= alpha[0x0c]; s0d ^= alpha[0x0d];
+                s0e ^= alpha[0x0e]; s0f ^= alpha[0x0f];
+                s10 ^= alpha[0x10]; s11 ^= alpha[0x11];
+                s12 ^= alpha[0x12]; s13 ^= alpha[0x13];
+                s14 ^= alpha[0x14]; s15 ^= alpha[0x15];
+                s16 ^= alpha[0x16]; s17 ^= alpha[0x17];
+                s18 ^= alpha[0x18]; s19 ^= alpha[0x19];
+                s1a ^= alpha[0x1a]; s1b ^= alpha[0x1b];
+                s1c ^= alpha[0x1c]; s1d ^= alpha[0x1d];
+                s1e ^= alpha[0x1e]; s1f ^= alpha[0x1f];
 
-        def output(self):
-            if self.block_size == 4:
-                words = self.h[:self.digest_size >> 2]
-            elif self.digest_size == 48:
-                h = self.h
-                words = [h[0], h[1], h[3], h[4], h[5], h[6], h[8], h[9], h[10], h[12], h[13], h[15]]
-            else:
-                words = self.h
-            return self.pack_words_be(words)
+                sbox(&s00,&s08,&s10,&s18); sbox(&s01,&s09,&s11,&s19);
+                sbox(&s02,&s0a,&s12,&s1a); sbox(&s03,&s0b,&s13,&s1b);
+                sbox(&s04,&s0c,&s14,&s1c); sbox(&s05,&s0d,&s15,&s1d);
+                sbox(&s06,&s0e,&s16,&s1e); sbox(&s07,&s0f,&s17,&s1f);
 
-        def pack_words_be(self, words):
-            return struct.pack(">" + ("I" * len(words)), *words)
+                linear(&s00,&s09,&s12,&s1b); linear(&s01,&s0a,&s13,&s1c);
+                linear(&s02,&s0b,&s14,&s1d); linear(&s03,&s0c,&s15,&s1e);
+                linear(&s04,&s0d,&s16,&s1f); linear(&s05,&s0e,&s17,&s18);
+                linear(&s06,&s0f,&s10,&s19); linear(&s07,&s08,&s11,&s1a);
+
+                linear(&s00,&s02,&s05,&s07);
+                linear(&s10,&s13,&s15,&s16);
+                linear(&s09,&s0b,&s0c,&s0e);
+                linear(&s19,&s1a,&s1c,&s1f);
+            }
+
+            h[0]  ^= s00; h[1]  ^= s01; h[2]  ^= s02; h[3]  ^= s03;
+            h[4]  ^= s04; h[5]  ^= s05; h[6]  ^= s06; h[7]  ^= s07;
+            h[8]  ^= s10; h[9]  ^= s11; h[10] ^= s12; h[11] ^= s13;
+            h[12] ^= s14; h[13] ^= s15; h[14] ^= s16; h[15] ^= s17;
+        }
+        """
+
+        @classmethod
+        def build_cffi_lib(cls):
+            if hasattr(Hash.HamsiBase, "cffi_lib_cache"):
+                return Hash.HamsiBase.cffi_lib_cache
+
+            import cffi
+            ffi = cffi.FFI()
+            ffi.cdef("""
+                void compress_small(
+                    uint32_t       *h,
+                    const uint8_t  *block,
+                    int             final_round,
+                    const uint32_t *alpha,
+                    const uint32_t *tables);
+                void compress_big(
+                    uint32_t       *h,
+                    const uint8_t  *block,
+                    int             final_round,
+                    const uint32_t *alpha,
+                    const uint32_t *tables);
+            """)
+            import warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"reimporting '_cffi__.*' might overwrite older definitions",
+                    category=UserWarning,
+                    module=r"cffi\.vengine_cpy",
+                )
+                lib = ffi.verify(cls.C_TEMPLATE, extra_compile_args=["-O2"])
+
+            Hash.HamsiBase.cffi_lib_cache = (ffi, lib)
+            return Hash.HamsiBase.cffi_lib_cache
 
         @classmethod
         def build_expand_small_tables(cls):
-            if cls.expand_small_tables is not None:
-                return cls.expand_small_tables
+            if hasattr(Hash.HamsiBase, "expand_small_tables"):
+                return
 
             tables = []
             t = cls.t256
@@ -88946,14 +89366,13 @@ class Hash:
                         off += 8
                     pos.append(tuple(acc))
                 tables.append(tuple(pos))
-
-            cls.expand_small_tables = tuple(tables)
-            return cls.expand_small_tables
+            Hash.HamsiBase.expand_small_tables = tuple(tables)
+            return
 
         @classmethod
         def build_expand_big_tables(cls):
-            if cls.expand_big_tables is not None:
-                return cls.expand_big_tables
+            if hasattr(Hash.HamsiBase, "expand_big_tables"):
+                return
 
             tables = []
             t = cls.t512
@@ -88972,12 +89391,122 @@ class Hash:
                         off += 16
                     pos.append(tuple(acc))
                 tables.append(tuple(pos))
+            Hash.HamsiBase.expand_big_tables = tuple(tables)
+            return
 
-            cls.expand_big_tables = tuple(tables)
-            return cls.expand_big_tables
+        def __init__(self, data=b""):
+            self.h = list(self.iv)
+            self.buf = bytearray()
+            self.msg_len = 0
+            if self.block_size == 4:
+                self.build_expand_small_tables()
+                self.compress = self.compress_small
+            elif self.block_size == 8:
+                self.build_expand_big_tables()
+                self.compress = self.compress_big
+            self.init_cffi_backend()
+            if data:
+                self.update(data)
+            return
 
-        def rotl32(self, x, n):
-            return ((x << n) | (x >> (32 - n))) & self.mask32
+        def copy(self):
+            other = self.__class__()
+            other.h = list(self.h)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            if not data:
+                return self
+            mv = memoryview(data)
+            self.msg_len += len(mv)
+            if self.buf:
+                need = self.block_size - len(self.buf)
+                if len(mv) < need:
+                    self.buf.extend(mv)
+                    return self
+                self.buf.extend(mv[:need])
+                self.compress(self.buf, False)
+                self.buf.clear()
+                mv = mv[need:]
+            full = (len(mv) // self.block_size) * self.block_size
+            for off in range(0, full, self.block_size):
+                self.compress(mv[off:off + self.block_size], False)
+            if full < len(mv):
+                self.buf.extend(mv[full:])
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.output()
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            bit_len = self.msg_len * 8
+            if self.block_size == 4:
+                pad = self.buf + b"\x80" + (b"\x00" * (3 - len(self.buf))) + bit_len.to_bytes(8, "big")
+                self.compress(pad[0:4], False)
+                self.compress(pad[4:8], False)
+                self.compress(pad[8:12], True)
+            elif self.block_size == 8:
+                pad = self.buf + b"\x80" + (b"\x00" * (7 - len(self.buf)))
+                self.compress(pad, False)
+                self.compress(bit_len.to_bytes(8, "big"), True)
+            else:
+                raise ValueError("invalid block_size")
+            self.buf = bytearray()
+            return
+
+        def output(self):
+            if self.block_size == 4:
+                words = self.h[:self.digest_size >> 2]
+            elif self.digest_size == 48:
+                h = self.h
+                words = [h[0], h[1], h[3], h[4], h[5], h[6], h[8], h[9], h[10], h[12], h[13], h[15]]
+            else:
+                words = self.h
+            return struct.pack(">" + ("I" * len(words)), *words)
+
+        def init_cffi_backend(self):
+            try:
+                import cffi  # noqa: F401
+            except ImportError:
+                self.USE_CFFI = False
+                return
+
+            self.USE_CFFI = True
+            self.ffi, self.clib = Hash.HamsiBase.build_cffi_lib()
+
+            def pack_alpha(alpha_seq):
+                buf = self.ffi.new("uint32_t[]", len(alpha_seq))
+                for i, v in enumerate(alpha_seq):
+                    buf[i] = v & 0xffff_ffff
+                return buf
+
+            def pack_tables(tables, size):
+                total_words = size * 256 * (size * 2)
+                buf = self.ffi.new("uint32_t[]", total_words)
+                pos = 0
+                for t in tables:
+                    for row in t:
+                        for v in row:
+                            buf[pos] = v & 0xffff_ffff
+                            pos += 1
+                return buf
+
+            self.c_alpha_n = pack_alpha(self.alpha_n)
+            self.c_alpha_f = pack_alpha(self.alpha_f)
+            if self.block_size == 4:
+                self.c_tables = pack_tables(self.expand_small_tables, 4)
+            elif self.block_size == 8:
+                self.c_tables = pack_tables(self.expand_big_tables, 8)
+            return
 
         def sbox(self, a, b, c, d):
             t = a
@@ -88995,63 +89524,44 @@ class Hash:
             a = c
             c = b
             b = d
-            d = (~t) & self.mask32
+            d = (~t) & 0xffff_ffff
             return a, b, c, d
 
         def linear(self, a, b, c, d):
-            mask32 = self.mask32
-            a = (((a << 13) | (a >> 19)) & mask32)
-            c = (((c << 3) | (c >> 29)) & mask32)
+            a = (((a << 13) | (a >> 19)) & 0xffff_ffff)
+            c = (((c << 3) | (c >> 29)) & 0xffff_ffff)
             b ^= a ^ c
-            d ^= c ^ ((a << 3) & mask32)
-            b = (((b << 1) | (b >> 31)) & mask32)
-            d = (((d << 7) | (d >> 25)) & mask32)
+            d ^= c ^ ((a << 3) & 0xffff_ffff)
+            b = (((b << 1) | (b >> 31)) & 0xffff_ffff)
+            d = (((d << 7) | (d >> 25)) & 0xffff_ffff)
             a ^= b ^ d
-            c ^= d ^ ((b << 7) & mask32)
-            a = (((a << 5) | (a >> 27)) & mask32)
-            c = (((c << 22) | (c >> 10)) & mask32)
+            c ^= d ^ ((b << 7) & 0xffff_ffff)
+            a = (((a << 5) | (a >> 27)) & 0xffff_ffff)
+            c = (((c << 22) | (c >> 10)) & 0xffff_ffff)
             return a, b, c, d
 
-        def compress(self, block, final_round):
-            if self.block_size == 4:
-                self.compress_small(block, final_round)
-            elif self.block_size == 8:
-                self.compress_big(block, final_round)
-            else:
-                raise ValueError("invalid block_size")
-            return
-
         def compress_small(self, block, final_round):
-            t0, t1, t2, t3 = self.__class__.expand_small_tables
-            a0 = t0[block[0]]
-            a1 = t1[block[1]]
-            a2 = t2[block[2]]
-            a3 = t3[block[3]]
-            m0 = a0[0] ^ a1[0] ^ a2[0] ^ a3[0]
-            m1 = a0[1] ^ a1[1] ^ a2[1] ^ a3[1]
-            m2 = a0[2] ^ a1[2] ^ a2[2] ^ a3[2]
-            m3 = a0[3] ^ a1[3] ^ a2[3] ^ a3[3]
-            m4 = a0[4] ^ a1[4] ^ a2[4] ^ a3[4]
-            m5 = a0[5] ^ a1[5] ^ a2[5] ^ a3[5]
-            m6 = a0[6] ^ a1[6] ^ a2[6] ^ a3[6]
-            m7 = a0[7] ^ a1[7] ^ a2[7] ^ a3[7]
-            c0, c1, c2, c3, c4, c5, c6, c7 = self.h
-            s0 = m0
-            s1 = m1
-            s2 = c0
-            s3 = c1
-            s4 = c2
-            s5 = c3
-            s6 = m2
-            s7 = m3
-            s8 = m4
-            s9 = m5
-            s10 = c4
-            s11 = c5
-            s12 = c6
-            s13 = c7
-            s14 = m6
-            s15 = m7
+            if self.USE_CFFI:
+                hbuf = self.ffi.new("uint32_t[]", len(self.h))
+                for i, v in enumerate(self.h):
+                    hbuf[i] = v
+                blk = self.ffi.new("uint8_t[]", bytes(block))
+                alpha = self.c_alpha_f if final_round else self.c_alpha_n
+                self.clib.compress_small(hbuf, blk, int(final_round), alpha, self.c_tables)
+                for i in range(len(self.h)):
+                    self.h[i] = hbuf[i]
+                return
+
+            # --- pure Python ---
+            t0, t1, t2, t3 = type(self).expand_small_tables
+            a0, a1, a2, a3 = t0[block[0]], t1[block[1]], t2[block[2]], t3[block[3]]
+            m = [x0 ^ x1 ^ x2 ^ x3 for x0, x1, x2, x3 in zip(a0, a1, a2, a3)]
+            h = self.h
+
+            s0, s1, s2, s3 = m[0], m[1], h[0], h[1]
+            s4, s5, s6, s7 = h[2], h[3], m[2], m[3]
+            s8, s9, s10, s11 = m[4], m[5], h[4], h[5]
+            s12, s13, s14, s15 = h[6], h[7], m[6], m[7]
 
             alpha = self.alpha_f if final_round else self.alpha_n
             rounds = 6 if final_round else 3
@@ -89084,76 +89594,43 @@ class Hash:
                 s2, s7, s8, s13 = self.linear(s2, s7, s8, s13)
                 s3, s4, s9, s14 = self.linear(s3, s4, s9, s14)
 
-            self.h[7] = self.h[7] ^ s11
-            self.h[6] = self.h[6] ^ s10
-            self.h[5] = self.h[5] ^ s9
-            self.h[4] = self.h[4] ^ s8
-            self.h[3] = self.h[3] ^ s3
-            self.h[2] = self.h[2] ^ s2
-            self.h[1] = self.h[1] ^ s1
-            self.h[0] = self.h[0] ^ s0
+            h[7] ^= s11
+            h[6] ^= s10
+            h[5] ^= s9
+            h[4] ^= s8
+            h[3] ^= s3
+            h[2] ^= s2
+            h[1] ^= s1
+            h[0] ^= s0
             return
 
         def compress_big(self, block, final_round):
-            t0, t1, t2, t3, t4, t5, t6, t7 = self.__class__.expand_big_tables
-            a0 = t0[block[0]]
-            a1 = t1[block[1]]
-            a2 = t2[block[2]]
-            a3 = t3[block[3]]
-            a4 = t4[block[4]]
-            a5 = t5[block[5]]
-            a6 = t6[block[6]]
-            a7 = t7[block[7]]
-            m0 = a0[0] ^ a1[0] ^ a2[0] ^ a3[0] ^ a4[0] ^ a5[0] ^ a6[0] ^ a7[0]
-            m1 = a0[1] ^ a1[1] ^ a2[1] ^ a3[1] ^ a4[1] ^ a5[1] ^ a6[1] ^ a7[1]
-            m2 = a0[2] ^ a1[2] ^ a2[2] ^ a3[2] ^ a4[2] ^ a5[2] ^ a6[2] ^ a7[2]
-            m3 = a0[3] ^ a1[3] ^ a2[3] ^ a3[3] ^ a4[3] ^ a5[3] ^ a6[3] ^ a7[3]
-            m4 = a0[4] ^ a1[4] ^ a2[4] ^ a3[4] ^ a4[4] ^ a5[4] ^ a6[4] ^ a7[4]
-            m5 = a0[5] ^ a1[5] ^ a2[5] ^ a3[5] ^ a4[5] ^ a5[5] ^ a6[5] ^ a7[5]
-            m6 = a0[6] ^ a1[6] ^ a2[6] ^ a3[6] ^ a4[6] ^ a5[6] ^ a6[6] ^ a7[6]
-            m7 = a0[7] ^ a1[7] ^ a2[7] ^ a3[7] ^ a4[7] ^ a5[7] ^ a6[7] ^ a7[7]
-            m8 = a0[8] ^ a1[8] ^ a2[8] ^ a3[8] ^ a4[8] ^ a5[8] ^ a6[8] ^ a7[8]
-            m9 = a0[9] ^ a1[9] ^ a2[9] ^ a3[9] ^ a4[9] ^ a5[9] ^ a6[9] ^ a7[9]
-            m10 = a0[10] ^ a1[10] ^ a2[10] ^ a3[10] ^ a4[10] ^ a5[10] ^ a6[10] ^ a7[10]
-            m11 = a0[11] ^ a1[11] ^ a2[11] ^ a3[11] ^ a4[11] ^ a5[11] ^ a6[11] ^ a7[11]
-            m12 = a0[12] ^ a1[12] ^ a2[12] ^ a3[12] ^ a4[12] ^ a5[12] ^ a6[12] ^ a7[12]
-            m13 = a0[13] ^ a1[13] ^ a2[13] ^ a3[13] ^ a4[13] ^ a5[13] ^ a6[13] ^ a7[13]
-            m14 = a0[14] ^ a1[14] ^ a2[14] ^ a3[14] ^ a4[14] ^ a5[14] ^ a6[14] ^ a7[14]
-            m15 = a0[15] ^ a1[15] ^ a2[15] ^ a3[15] ^ a4[15] ^ a5[15] ^ a6[15] ^ a7[15]
-            c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15 = self.h
+            if self.USE_CFFI:
+                hbuf = self.ffi.new("uint32_t[]", len(self.h))
+                for i, v in enumerate(self.h):
+                    hbuf[i] = v
+                blk = self.ffi.new("uint8_t[]", bytes(block))
+                alpha = self.c_alpha_f if final_round else self.c_alpha_n
+                self.clib.compress_big(hbuf, blk, int(final_round), alpha, self.c_tables)
+                for i in range(len(self.h)):
+                    self.h[i] = hbuf[i]
+                return
 
-            s00 = m0
-            s01 = m1
-            s02 = c0
-            s03 = c1
-            s04 = m2
-            s05 = m3
-            s06 = c2
-            s07 = c3
-            s08 = c4
-            s09 = c5
-            s0a = m4
-            s0b = m5
-            s0c = c6
-            s0d = c7
-            s0e = m6
-            s0f = m7
-            s10 = m8
-            s11 = m9
-            s12 = c8
-            s13 = c9
-            s14 = m10
-            s15 = m11
-            s16 = c10
-            s17 = c11
-            s18 = c12
-            s19 = c13
-            s1a = m12
-            s1b = m13
-            s1c = c14
-            s1d = c15
-            s1e = m14
-            s1f = m15
+            # --- pure Python ---
+            t0, t1, t2, t3, t4, t5, t6, t7 = self.__class__.expand_big_tables
+            a0, a1, a2, a3 = t0[block[0]], t1[block[1]], t2[block[2]], t3[block[3]]
+            a4, a5, a6, a7 = t4[block[4]], t5[block[5]], t6[block[6]], t7[block[7]]
+            m = [x0 ^ x1 ^ x2 ^ x3 ^ x4 ^ x5 ^ x6 ^ x7 for x0, x1, x2, x3, x4, x5, x6, x7 in zip(a0, a1, a2, a3, a4, a5, a6, a7)]
+            h = self.h
+
+            s00, s01, s02, s03 = m[0], m[1], h[0], h[1]
+            s04, s05, s06, s07 = m[2], m[3], h[2], h[3]
+            s08, s09, s0a, s0b = h[4], h[5], m[4], m[5]
+            s0c, s0d, s0e, s0f = h[6], h[7], m[6], m[7]
+            s10, s11, s12, s13 = m[8], m[9], h[8], h[9]
+            s14, s15, s16, s17 = m[10], m[11], h[10], h[11]
+            s18, s19, s1a, s1b = h[12], h[13], m[12], m[13]
+            s1c, s1d, s1e, s1f = h[14], h[15], m[14], m[15]
 
             alpha = self.alpha_f if final_round else self.alpha_n
             rounds = 12 if final_round else 6
@@ -89215,113 +89692,130 @@ class Hash:
                 s09, s0b, s0c, s0e = self.linear(s09, s0b, s0c, s0e)
                 s19, s1a, s1c, s1f = self.linear(s19, s1a, s1c, s1f)
 
-            self.h[15] = self.h[15] ^ s17
-            self.h[14] = self.h[14] ^ s16
-            self.h[13] = self.h[13] ^ s15
-            self.h[12] = self.h[12] ^ s14
-            self.h[11] = self.h[11] ^ s13
-            self.h[10] = self.h[10] ^ s12
-            self.h[9] = self.h[9] ^ s11
-            self.h[8] = self.h[8] ^ s10
-            self.h[7] = self.h[7] ^ s07
-            self.h[6] = self.h[6] ^ s06
-            self.h[5] = self.h[5] ^ s05
-            self.h[4] = self.h[4] ^ s04
-            self.h[3] = self.h[3] ^ s03
-            self.h[2] = self.h[2] ^ s02
-            self.h[1] = self.h[1] ^ s01
-            self.h[0] = self.h[0] ^ s00
+            h[15] ^= s17
+            h[14] ^= s16
+            h[13] ^= s15
+            h[12] ^= s14
+            h[11] ^= s13
+            h[10] ^= s12
+            h[9] ^= s11
+            h[8] ^= s10
+            h[7] ^= s07
+            h[6] ^= s06
+            h[5] ^= s05
+            h[4] ^= s04
+            h[3] ^= s03
+            h[2] ^= s02
+            h[1] ^= s01
+            h[0] ^= s00
             return
 
     class Hamsi224(HamsiBase):
         block_size = 4
         digest_size = 28
-        iv = [
+        iv = (
             0xc396_7a67, 0xc3bc_6c20, 0x4bc3_bcc3, 0xa7c3_bc6b, 0x2c20_4b61, 0x7468_6f6c, 0x6965_6b65, 0x2055_6e69,
-        ]
+        )
 
     class Hamsi256(HamsiBase):
         block_size = 4
         digest_size = 32
-        iv = [
+        iv = (
             0x7665_7273, 0x6974_6569, 0x7420_4c65, 0x7576_656e, 0x2c20_4465, 0x7061_7274, 0x656d_656e, 0x7420_456c,
-        ]
+        )
 
     class Hamsi384(HamsiBase):
         block_size = 8
         digest_size = 48
-        iv = [
+        iv = (
             0x656b_7472, 0x6f74_6563, 0x686e_6965, 0x6b2c_2043, 0x6f6d_7075, 0x7465_7220, 0x5365_6375, 0x7269_7479,
             0x2061_6e64, 0x2049_6e64, 0x7573_7472, 0x6961_6c20, 0x4372_7970, 0x746f_6772, 0x6170_6879, 0x2c20_4b61,
-        ]
+        )
 
     class Hamsi512(HamsiBase):
         block_size = 8
         digest_size = 64
-        iv = [
+        iv = (
             0x7374_6565, 0x6c70_6172, 0x6b20_4172, 0x656e_6265, 0x7267_2031, 0x302c_2062, 0x7573_2032, 0x3434_362c,
             0x2042_2d33, 0x3030_3120, 0x4c65_7576, 0x656e_2d48, 0x6576_6572, 0x6c65_652c, 0x2042_656c, 0x6769_756d,
-        ]
+        )
 
     class LuffaBase:
         block_size = 0x20  # 256 bits
-        digest_size = None
-        w = None  # number of 256-bit blocks (3/4/5)
-
-        mask32 = 0xffff_ffff
-
         # Appendix A: Starting Variables
-        V = [
-            [0x6d25_1e69, 0x44b0_51e0, 0x4eaa_6fb4, 0xdbf7_8465, 0x6e29_2011, 0x9015_2df4, 0xee05_8139, 0xdef6_10bb],
-            [0xc3b4_4b95, 0xd9d2_f256, 0x70ee_e9a0, 0xde09_9fa3, 0x5d9b_0557, 0x8fc9_44b3, 0xcf1c_cf0e, 0x746c_d581],
-            [0xf7ef_c89d, 0x5dba_5781, 0x0401_6ce5, 0xad65_9c05, 0x0306_194f, 0x666d_1836, 0x24aa_230a, 0x8b26_4ae7],
-            [0x8580_75d5, 0x36d7_9cce, 0xe571_f7d7, 0x204b_1f67, 0x3587_0c6a, 0x57e9_e923, 0x14bc_b808, 0x7cde_72ce],
-            [0x6c68_e9be, 0x5ec4_1e22, 0xc825_b7c7, 0xaffb_4363, 0xf5df_3999, 0x0fc6_88f1, 0xb072_24cc, 0x03e8_6cea],
-        ]
-
+        V = (
+            (0x6d25_1e69, 0x44b0_51e0, 0x4eaa_6fb4, 0xdbf7_8465, 0x6e29_2011, 0x9015_2df4, 0xee05_8139, 0xdef6_10bb),
+            (0xc3b4_4b95, 0xd9d2_f256, 0x70ee_e9a0, 0xde09_9fa3, 0x5d9b_0557, 0x8fc9_44b3, 0xcf1c_cf0e, 0x746c_d581),
+            (0xf7ef_c89d, 0x5dba_5781, 0x0401_6ce5, 0xad65_9c05, 0x0306_194f, 0x666d_1836, 0x24aa_230a, 0x8b26_4ae7),
+            (0x8580_75d5, 0x36d7_9cce, 0xe571_f7d7, 0x204b_1f67, 0x3587_0c6a, 0x57e9_e923, 0x14bc_b808, 0x7cde_72ce),
+            (0x6c68_e9be, 0x5ec4_1e22, 0xc825_b7c7, 0xaffb_4363, 0xf5df_3999, 0x0fc6_88f1, 0xb072_24cc, 0x03e8_6cea),
+        )
         # Appendix B-1: Constant generator initial values (c^(0)_{j,L}, c^(0)_{j,R})
-        C_INIT = [
-            [0x181c_ca53, 0x380c_de06],
-            [0x5b6f_0876, 0xf16f_8594],
-            [0x7e10_6ce9, 0x3897_9cb0],
-            [0xbb62_f364, 0x92e9_3c29],
-            [0x9a02_5047, 0xcff2_a940],
-        ]
-
+        C_INIT = (
+            (0x181c_ca53, 0x380c_de06),
+            (0x5b6f_0876, 0xf16f_8594),
+            (0x7e10_6ce9, 0x3897_9cb0),
+            (0xbb62_f364, 0x92e9_3c29),
+            (0x9a02_5047, 0xcff2_a940),
+        )
         # Section 3.2.1: Message Injection matrices (coefficients in GF(2^8))
         MI_MAT = {
-            0x03: [
-                [0x03, 0x02, 0x02, 0x01],
-                [0x02, 0x03, 0x02, 0x02],
-                [0x02, 0x02, 0x03, 0x04],
-            ],
-            0x04: [
-                [0x04, 0x06, 0x06, 0x07, 0x01],
-                [0x07, 0x04, 0x06, 0x06, 0x02],
-                [0x06, 0x07, 0x04, 0x06, 0x04],
-                [0x06, 0x06, 0x07, 0x04, 0x08],
-            ],
-            0x05: [
-                [0x0f, 0x08, 0x0a, 0x0a, 0x08, 0x01],
-                [0x08, 0x0f, 0x08, 0x0a, 0x0a, 0x02],
-                [0x0a, 0x08, 0x0f, 0x08, 0x0a, 0x04],
-                [0x0a, 0x0a, 0x08, 0x0f, 0x08, 0x08],
-                [0x08, 0x0a, 0x0a, 0x08, 0x0f, 0x10],
-            ],
+            0x03: (
+                (0x03, 0x02, 0x02, 0x01),
+                (0x02, 0x03, 0x02, 0x02),
+                (0x02, 0x02, 0x03, 0x04),
+            ),
+            0x04: (
+                (0x04, 0x06, 0x06, 0x07, 0x01),
+                (0x07, 0x04, 0x06, 0x06, 0x02),
+                (0x06, 0x07, 0x04, 0x06, 0x04),
+                (0x06, 0x06, 0x07, 0x04, 0x08),
+            ),
+            0x05: (
+                (0x0f, 0x08, 0x0a, 0x0a, 0x08, 0x01),
+                (0x08, 0x0f, 0x08, 0x0a, 0x0a, 0x02),
+                (0x0a, 0x08, 0x0f, 0x08, 0x0a, 0x04),
+                (0x0a, 0x0a, 0x08, 0x0f, 0x08, 0x08),
+                (0x08, 0x0a, 0x0a, 0x08, 0x0f, 0x10),
+            ),
         }
+
+        def build_step_constants(self, w):
+
+            def step_const_gen(tl, tr):
+                # Section 4.4: one step of constant generator (pseudo code in the spec)
+                c = (tl >> 31) & 1
+                tl2 = ((tl << 1) | (tr >> 31)) & 0xffff_ffff
+                tr2 = (tr << 1) & 0xffff_ffff
+                if c == 1:
+                    tl2 ^= 0xc4d6_496c
+                    tr2 ^= 0x55c6_1c8d
+                # SWAP(tl, tr)
+                tl3, tr3 = tr2, tl2
+                step_const = tr3
+                return tl3, tr3, step_const
+
+            # Section 4.4: generates (c_{j,0}, c_{j,4}) for r=0..7 using the constant generator
+            out = []
+            for j in range(w):
+                tl, tr = self.C_INIT[j]
+                jconst = []
+                for _r in range(8):
+                    tl, tr, c0 = step_const_gen(tl, tr)
+                    tl, tr, c4 = step_const_gen(tl, tr)
+                    jconst.append((c0, c4))
+                out.append(jconst)
+            return out
 
         def __init__(self, data=b""):
             if self.w is None or self.digest_size is None:
                 raise ValueError("LuffaBase must be subclassed with w and digest_size")
-
             self.H = [list(self.V[i]) for i in range(self.w)]
             self.buf = bytearray()
             self.msg_len = 0
             self.step_const = self.build_step_constants(self.w)
-
             if data:
                 self.update(data)
-
             return
 
         def copy(self):
@@ -89335,16 +89829,13 @@ class Hash:
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes or bytearray")
-
             data = bytes(data)
             self.msg_len += len(data)
             self.buf.extend(data)
-
             while len(self.buf) >= self.block_size:
                 block = bytes(self.buf[:self.block_size])
                 del self.buf[:self.block_size]
                 self.compress(block)
-
             return self
 
         def digest(self):
@@ -89360,22 +89851,18 @@ class Hash:
             self.buf.append(0x80)
             while (len(self.buf) % self.block_size) != 0:
                 self.buf.append(0x00)
-
             while len(self.buf) >= self.block_size:
                 block = bytes(self.buf[:self.block_size])
                 del self.buf[:self.block_size]
                 self.compress(block)
-
             return
 
         def compress(self, block):
             if not isinstance(block, (bytes, bytearray, memoryview)):
                 raise TypeError("block must be bytes or bytearray")
-
             block = bytes(block)
             if len(block) != self.block_size:
                 raise ValueError("block must be 32 bytes")
-
             m = list(struct.unpack(">8I", block))
             self.round_function(m)
             return
@@ -89383,10 +89870,8 @@ class Hash:
         def output_digest_bytes(self):
             # Section 3.3: finalization (blank round + OF, then additional rounds with 0 as needed)
             zero_m = [0] * 8
-
             self.round_function(zero_m)
             z0 = self.output_function()
-
             words = []
             if self.digest_size == 0x1c:
                 words.extend(z0[:7])
@@ -89404,7 +89889,6 @@ class Hash:
                 words.extend(z1[:8])
             else:
                 raise ValueError("unsupported digest size")
-
             out = b"".join(struct.pack(">I", w) for w in words)
             return out
 
@@ -89424,7 +89908,6 @@ class Hash:
         def message_injection(self, m):
             mat = self.MI_MAT[self.w]
             inputs = [self.H[j] for j in range(self.w)] + [m]
-
             outs = []
             for row in mat:
                 acc = [0] * 8
@@ -89438,147 +89921,89 @@ class Hash:
                     for k in range(8):
                         acc[k] ^= term[k]
                 outs.append(acc)
-
             return outs
 
         def scalar_mul(self, vec, coeff):
+
+            def mul2(a):
+                # Appendix E: multiplication by x in GF(2^8)^32 (phi(x)=x^8+x^4+x^3+x+1)
+                tmp = a[7]
+                b0 = tmp
+                b1 = a[0] ^ tmp
+                b2 = a[1]
+                b3 = a[2] ^ tmp
+                b4 = a[3] ^ tmp
+                b5 = a[4]
+                b6 = a[5]
+                b7 = a[6]
+                return [b0, b1, b2, b3, b4, b5, b6, b7]
+
             coeff &= 0xff
             if coeff == 0:
                 return [0] * 8
             if coeff == 1:
                 return list(vec)
-
             res = [0] * 8
             tmp = list(vec)
             for i in range(8):
                 if (coeff >> i) & 1:
                     for k in range(8):
                         res[k] ^= tmp[k]
-                tmp = self.mul2(tmp)
-
+                tmp = mul2(tmp)
             return res
 
-        def mul2(self, a):
-            # Appendix E: multiplication by x in GF(2^8)^32 (phi(x)=x^8+x^4+x^3+x+1)
-            tmp = a[7]
-            b0 = tmp
-            b1 = a[0] ^ tmp
-            b2 = a[1]
-            b3 = a[2] ^ tmp
-            b4 = a[3] ^ tmp
-            b5 = a[4]
-            b6 = a[5]
-            b7 = a[6]
-            return [b0, b1, b2, b3, b4, b5, b6, b7]
-
-        def rol32(self, x, n):
-            n &= 31
-            x &= self.mask32
-            return ((x << n) | (x >> (32 - n))) & self.mask32
-
-        def mixword(self, xk, xk4):
-            # Section 4.3 (sigma1=2,sigma2=14,sigma3=10,sigma4=1), rotations
-            yk4 = xk4 ^ xk
-            yk = self.rol32(xk, 2)
-            yk ^= yk4
-
-            yk4 = self.rol32(yk4, 14)
-            yk4 ^= yk
-
-            yk = self.rol32(yk, 10)
-            yk ^= yk4
-
-            yk4 = self.rol32(yk4, 1)
-            return yk, yk4
-
-        def subcrumb(self, a0, a1, a2, a3):
-            # Appendix D Table 4: bit-sliced Sbox schedule
-            r0 = a0
-            r1 = a1
-            r2 = a2
-            r3 = a3
-            r4 = r0
-
-            r0 = r0 | r1
-            r2 = r2 ^ r3
-
-            r1 = (~r1) & self.mask32
-            r0 = r0 ^ r3
-            r3 = r3 & r4
-
-            r1 = r1 ^ r3
-            r3 = r3 ^ r2
-            r2 = r2 & r0
-
-            r0 = (~r0) & self.mask32
-            r2 = r2 ^ r1
-            r1 = r1 | r3
-
-            r4 = r4 ^ r1
-            r3 = r3 ^ r2
-            r2 = r2 & r1
-
-            r1 = r1 ^ r0
-
-            x0 = r4
-            x1 = r1
-            x2 = r2
-            x3 = r3
-            return x0, x1, x2, x3
-
         def permute(self, words, j):
-            # Section 4.1: Permute(a, j) = Q_j
-            a = [w & self.mask32 for w in words]
 
+            def rol32(x, n):
+                return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
+
+            def mixword(xk, xk4):
+                # Section 4.3 (sigma1=2,sigma2=14,sigma3=10,sigma4=1), rotations
+                yk4 = xk4 ^ xk
+                yk = rol32(xk, 2)
+                yk ^= yk4
+                yk4 = rol32(yk4, 14)
+                yk4 ^= yk
+                yk = rol32(yk, 10)
+                yk ^= yk4
+                yk4 = rol32(yk4, 1)
+                return yk, yk4
+
+            def subcrumb(r0, r1, r2, r3):
+                # Appendix D Table 4: bit-sliced Sbox schedule
+                r4 = r0
+                r0 |= r1
+                r2 ^= r3
+                r1 = (~r1) & 0xffff_ffff
+                r0 ^= r3
+                r3 &= r4
+                r1 ^= r3
+                r3 ^= r2
+                r2 &= r0
+                r0 = (~r0) & 0xffff_ffff
+                r2 ^= r1
+                r1 |= r3
+                r4 ^= r1
+                r3 ^= r2
+                r2 &= r1
+                r1 ^= r0
+                return r4, r1, r2, r3
+
+            # Section 4.1: Permute(a, j) = Q_j
+            a = [w & 0xffff_ffff for w in words]
             # Section 4.5: tweak (rotate least significant four words by j bits to the left)
             for k in range(4, 8):
-                a[k] = self.rol32(a[k], j)
-
+                a[k] = rol32(a[k], j)
             for r in range(8):
-                a[0], a[1], a[2], a[3] = self.subcrumb(a[0], a[1], a[2], a[3])
+                a[0], a[1], a[2], a[3] = subcrumb(a[0], a[1], a[2], a[3])
                 # IMPORTANT: the latter four words are input to SubCrumb in different order
-                a[5], a[6], a[7], a[4] = self.subcrumb(a[5], a[6], a[7], a[4])
-
+                a[5], a[6], a[7], a[4] = subcrumb(a[5], a[6], a[7], a[4])
                 for k in range(4):
-                    a[k], a[k + 4] = self.mixword(a[k], a[k + 4])
-
+                    a[k], a[k + 4] = mixword(a[k], a[k + 4])
                 c0, c4 = self.step_const[j][r]
                 a[0] ^= c0
                 a[4] ^= c4
-
             return a
-
-        def build_step_constants(self, w):
-            # Section 4.4: generates (c_{j,0}, c_{j,4}) for r=0..7 using the constant generator
-            out = []
-            for j in range(w):
-                tl, tr = self.C_INIT[j]
-                jconst = []
-                for _r in range(8):
-                    tl, tr, c0 = self.step_const_gen(tl, tr)
-                    tl, tr, c4 = self.step_const_gen(tl, tr)
-                    jconst.append((c0, c4))
-                out.append(jconst)
-
-            return out
-
-        def step_const_gen(self, tl, tr):
-            # Section 4.4: one step of constant generator (pseudo code in the spec)
-            tl &= self.mask32
-            tr &= self.mask32
-
-            c = (tl >> 31) & 1
-            tl2 = ((tl << 1) | (tr >> 31)) & self.mask32
-            tr2 = (tr << 1) & self.mask32
-
-            if c == 1:
-                tl2 ^= 0xc4d6_496c
-                tr2 ^= 0x55c6_1c8d
-
-            # SWAP(tl, tr)
-            tl3, tr3 = tr2, tl2
-            step_const = tr3
-            return tl3, tr3, step_const
 
     class Luffa224(LuffaBase):
         digest_size = 0x1c
@@ -89597,14 +90022,11 @@ class Hash:
         w = 0x05
 
     class ESCHBase:
-        rcon = [
-            0xb7e1_5162, 0xbf71_5880, 0x38b4_da56, 0x324e_7738,
-            0xbb11_85eb, 0x4f7c_7b57, 0xcfbf_a1c8, 0xc2b3_293d,
-        ]
-
+        rcon = (
+            0xb7e1_5162, 0xbf71_5880, 0x38b4_da56, 0x324e_7738, 0xbb11_85eb, 0x4f7c_7b57, 0xcfbf_a1c8, 0xc2b3_293d,
+        )
         const_m0 = 0x01_00_00_00
         const_m1 = 0x02_00_00_00
-        mask32 = 0xffff_ffff
         pack4 = struct.Struct("<4I")
         unpack4 = struct.Struct("<4I")
 
@@ -89626,30 +90048,24 @@ class Hash:
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-
             mv = memoryview(data)
             data_len = len(mv)
             self.msg_len += data_len
-
             block_size = self.block_size
             off = 0
-
             if self.buf:
                 need = block_size - len(self.buf)
                 if data_len <= need:
                     self.buf.extend(mv)
                     return self
-
                 self.buf.extend(mv[:need])
                 self.absorb_block(self.buf)
                 self.buf.clear()
                 off = need
-
             limit = data_len - block_size
             while off < limit:
                 self.absorb_block(mv[off:off + block_size])
                 off += block_size
-
             if off < data_len:
                 self.buf.extend(mv[off:])
             return self
@@ -89673,7 +90089,6 @@ class Hash:
                     self.buf.extend(b"\x00" * pad_len)
                 last = self.buf
                 const_m = self.const_m0
-
             self.absorb_last_block(last, const_m)
             self.buf.clear()
             return
@@ -89683,7 +90098,6 @@ class Hash:
             need = self.digest_size
             pack4 = self.pack4.pack
             state = self.state
-
             out.extend(pack4(state[0], state[1], state[2], state[3]))
             while len(out) < need:
                 self.sparkle(self.slim_steps)
@@ -89691,48 +90105,34 @@ class Hash:
                 out.extend(pack4(state[0], state[1], state[2], state[3]))
             return bytes(out[:need])
 
-        def rot32(self, x, n):
-            mask32 = self.mask32
-            x &= mask32
-            return ((x >> n) | ((x << (32 - n)) & mask32)) & mask32
-
-        def ell(self, x):
-            mask32 = self.mask32
-            x &= mask32
-            x ^= (x << 16) & mask32
-            return ((x >> 16) | ((x << 16) & mask32)) & mask32
-
         def alzette(self, x, y, c):
-            mask32 = self.mask32
-
-            x = (x + ((y >> 31) | ((y << 1) & mask32))) & mask32
-            y ^= ((x >> 24) | ((x << 8) & mask32))
+            x = (x + ((y >> 31) | ((y << 1) & 0xffff_ffff))) & 0xffff_ffff
+            y ^= ((x >> 24) | ((x << 8) & 0xffff_ffff))
             x ^= c
 
-            x = (x + ((y >> 17) | ((y << 15) & mask32))) & mask32
-            y ^= ((x >> 17) | ((x << 15) & mask32))
+            x = (x + ((y >> 17) | ((y << 15) & 0xffff_ffff))) & 0xffff_ffff
+            y ^= ((x >> 17) | ((x << 15) & 0xffff_ffff))
             x ^= c
 
-            x = (x + y) & mask32
-            y ^= ((x >> 31) | ((x << 1) & mask32))
+            x = (x + y) & 0xffff_ffff
+            y ^= ((x >> 31) | ((x << 1) & 0xffff_ffff))
             x ^= c
 
-            x = (x + ((y >> 24) | ((y << 8) & mask32))) & mask32
-            y ^= ((x >> 16) | ((x << 16) & mask32))
+            x = (x + ((y >> 24) | ((y << 8) & 0xffff_ffff))) & 0xffff_ffff
+            y ^= ((x >> 16) | ((x << 16) & 0xffff_ffff))
             x ^= c
             return x, y
 
         def inject_block_xor(self, block):
             w0, w1, w2, w3 = self.unpack4.unpack(block)
             state = self.state
-            mask32 = self.mask32
 
             tx = w0 ^ w2
             ty = w1 ^ w3
-            tx ^= (tx << 16) & mask32
-            ty ^= (ty << 16) & mask32
-            lx = ((tx >> 16) | ((tx << 16) & mask32)) & mask32
-            ly = ((ty >> 16) | ((ty << 16) & mask32)) & mask32
+            tx ^= (tx << 16) & 0xffff_ffff
+            ty ^= (ty << 16) & 0xffff_ffff
+            lx = ((tx >> 16) | ((tx << 16) & 0xffff_ffff)) & 0xffff_ffff
+            ly = ((ty >> 16) | ((ty << 16) & 0xffff_ffff)) & 0xffff_ffff
 
             state[0] ^= w0 ^ ly
             state[1] ^= w1 ^ lx
@@ -89760,42 +90160,20 @@ class Hash:
         def sparkle_6(self, steps):
             state = self.state
             rcon = self.rcon
-            mask32 = self.mask32
 
             for s in range(steps):
                 state[1] ^= rcon[s & 7]
                 state[3] ^= s
 
-                x, y = self.alzette(state[0], state[1], rcon[0])
-                state[0] = x
-                state[1] = y
-
-                x, y = self.alzette(state[2], state[3], rcon[1])
-                state[2] = x
-                state[3] = y
-
-                x, y = self.alzette(state[4], state[5], rcon[2])
-                state[4] = x
-                state[5] = y
-
-                x, y = self.alzette(state[6], state[7], rcon[3])
-                state[6] = x
-                state[7] = y
-
-                x, y = self.alzette(state[8], state[9], rcon[4])
-                state[8] = x
-                state[9] = y
-
-                x, y = self.alzette(state[10], state[11], rcon[5])
-                state[10] = x
-                state[11] = y
+                for i in range(6):
+                    state[i * 2], state[i * 2 + 1] = self.alzette(state[i * 2], state[i * 2 + 1], rcon[i])
 
                 tx = state[0] ^ state[2] ^ state[4]
                 ty = state[1] ^ state[3] ^ state[5]
-                tx ^= (tx << 16) & mask32
-                ty ^= (ty << 16) & mask32
-                tx = ((tx >> 16) | ((tx << 16) & mask32)) & mask32
-                ty = ((ty >> 16) | ((ty << 16) & mask32)) & mask32
+                tx ^= (tx << 16) & 0xffff_ffff
+                ty ^= (ty << 16) & 0xffff_ffff
+                tx = ((tx >> 16) | ((tx << 16) & 0xffff_ffff)) & 0xffff_ffff
+                ty = ((ty >> 16) | ((ty << 16) & 0xffff_ffff)) & 0xffff_ffff
 
                 s0 = state[0]
                 s1 = state[1]
@@ -89827,50 +90205,20 @@ class Hash:
         def sparkle_8(self, steps):
             state = self.state
             rcon = self.rcon
-            mask32 = self.mask32
 
             for s in range(steps):
                 state[1] ^= rcon[s & 7]
                 state[3] ^= s
 
-                x, y = self.alzette(state[0], state[1], rcon[0])
-                state[0] = x
-                state[1] = y
-
-                x, y = self.alzette(state[2], state[3], rcon[1])
-                state[2] = x
-                state[3] = y
-
-                x, y = self.alzette(state[4], state[5], rcon[2])
-                state[4] = x
-                state[5] = y
-
-                x, y = self.alzette(state[6], state[7], rcon[3])
-                state[6] = x
-                state[7] = y
-
-                x, y = self.alzette(state[8], state[9], rcon[4])
-                state[8] = x
-                state[9] = y
-
-                x, y = self.alzette(state[10], state[11], rcon[5])
-                state[10] = x
-                state[11] = y
-
-                x, y = self.alzette(state[12], state[13], rcon[6])
-                state[12] = x
-                state[13] = y
-
-                x, y = self.alzette(state[14], state[15], rcon[7])
-                state[14] = x
-                state[15] = y
+                for i in range(8):
+                    state[i * 2], state[i * 2 + 1] = self.alzette(state[i * 2], state[i * 2 + 1], rcon[i])
 
                 tx = state[0] ^ state[2] ^ state[4] ^ state[6]
                 ty = state[1] ^ state[3] ^ state[5] ^ state[7]
-                tx ^= (tx << 16) & mask32
-                ty ^= (ty << 16) & mask32
-                tx = ((tx >> 16) | ((tx << 16) & mask32)) & mask32
-                ty = ((ty >> 16) | ((ty << 16) & mask32)) & mask32
+                tx ^= (tx << 16) & 0xffff_ffff
+                ty ^= (ty << 16) & 0xffff_ffff
+                tx = ((tx >> 16) | ((tx << 16) & 0xffff_ffff)) & 0xffff_ffff
+                ty = ((ty >> 16) | ((ty << 16) & 0xffff_ffff)) & 0xffff_ffff
 
                 s0 = state[0]
                 s1 = state[1]
@@ -97534,7 +97882,7 @@ class Hash:
             self.counter = 0
             self.q = None
             self.curve = self.ECOHCurve(*self.curve_const)
-            self.init_backend()
+            self.init_cffi_backend()
             if data:
                 self.update(data)
             return
@@ -97615,7 +97963,7 @@ class Hash:
                 x += 2
             return
 
-        def init_backend(self):
+        def init_cffi_backend(self):
             try:
                 import cffi  # noqa: F401
             except ImportError:
@@ -97646,7 +97994,7 @@ class Hash:
         def int_to_limbs(self, value):
             arr = self.ffi.new("uint64_t[]", self.nlimbs)
             for i in range(self.nlimbs):
-                arr[i] = (value >> (64 * i)) & 0xFFFFFFFFFFFFFFFF
+                arr[i] = (value >> (64 * i)) & 0xffff_ffff_ffff_ffff
             return arr
 
         def limbs_to_int(self, arr):
