@@ -259,6 +259,15 @@ Notes:
 - The GEF installer installs `seccomp-tools` if neither `ceccomp` nor `seccomp-tools` is found. I recommend `ceccomp`, but its build is not simple. Install it manually if needed.
 - The GEF installer does no longer install `vmlinux-to-elf` because in many cases you can use `ks-apply` instead.
 
+## Is there a lighter version with fewer features?
+There is no such version. But you can adjust it yourself.
+
+1. Split into classes using `dev/split/split.py`
+2. Edit `dev/split/save/gef-splitted.py` and remove unnecessary commands and architectures
+3. Recombine with `dev/split/de-split.py`
+4. `dev/split/gef-reconstructed.py` is generated
+
+
 # About the Host Environment
 
 ## Does GEF work properly on operating systems other than Ubuntu?
@@ -719,6 +728,11 @@ Here are some notes:
 
 ## `pi current_arch` is always `None`.
 Use `pi get_current_arch()`.
+
+## Is there an easy way to get an overview of the code?
+Try splitting it by class with `dev/split/split.py`.
+
+`dev/split/save/gef-splitted.py` is broken and doesn't work as a python script, but it is very useful for getting an overview of the code.
 
 
 # About the Development Schedule

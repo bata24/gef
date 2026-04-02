@@ -151,7 +151,7 @@ def function_groups_from_file(path):
             rw_dic[name] = rng
             continue
 
-        if re.match(r"^is_[A-Za-z0-9_]+$", name):
+        if re.match(r"^is_[A-Za-z0-9_]+$", name) or name in ["kgdb_has_system_registers"]:
             checker_dic[name] = rng
             continue
 
