@@ -90279,70 +90279,339 @@ class Hash:
         m_w = 4
 
     class SIMDBase:
-        block_size = None
-        digest_size = None
-        lanes = None
-        iv_words = None
-        out_words = None
+        P = (
+            0x04, 0x06, 0x00, 0x02, 0x07, 0x05, 0x03, 0x01, 0x0f, 0x0b, 0x0c, 0x08, 0x09, 0x0d, 0x0a, 0x0e,
+            0x11, 0x12, 0x17, 0x14, 0x16, 0x15, 0x10, 0x13, 0x1e, 0x18, 0x19, 0x1f, 0x1b, 0x1d, 0x1c, 0x1a,
+        )
+        round_pis = (
+            (0x03, 0x17, 0x11, 0x1b),
+            (0x1c, 0x13, 0x16, 0x07),
+            (0x1d, 0x09, 0x0f, 0x05),
+            (0x04, 0x0d, 0x0a, 0x19),
+        )
+        C_TEMPLATE = r"""
+        #include <stdint.h>
 
-        root = None
-        order = None
-        ntt_n = None
-        z_stride = None
-        const_exps = None
+        static uint32_t rol32(uint32_t x, int n) {
+            return ((x << n) | (x >> (32 - n))) & 0xffffffffU;
+        }
 
-        root_pows = None
-        ntt_rows_normal = None
-        ntt_rows_final = None
-        p_xor_table = None
+        static int lift257(int v) {
+            if (v > 0x80) {
+                return v - 0x101;
+            }
+            return v;
+        }
 
-        P = [
+        static uint32_t pack_code(int x, int y, int c) {
+            uint32_t lo = ((uint32_t)(c * lift257(x))) & 0xffffU;
+            uint32_t hi = ((uint32_t)(c * lift257(y))) & 0xffffU;
+            return lo | (hi << 16);
+        }
+
+        static const uint8_t perm_table[32] = {
             0x04, 0x06, 0x00, 0x02, 0x07, 0x05, 0x03, 0x01,
             0x0f, 0x0b, 0x0c, 0x08, 0x09, 0x0d, 0x0a, 0x0e,
             0x11, 0x12, 0x17, 0x14, 0x16, 0x15, 0x10, 0x13,
             0x1e, 0x18, 0x19, 0x1f, 0x1b, 0x1d, 0x1c, 0x1a,
-        ]
+        };
 
-        round_pis = [
-            [0x03, 0x17, 0x11, 0x1b],
-            [0x1c, 0x13, 0x16, 0x07],
-            [0x1d, 0x09, 0x0f, 0x05],
-            [0x04, 0x0d, 0x0a, 0x19],
-        ]
+        static const uint8_t round_pis[4][4] = {
+            {0x03, 0x17, 0x11, 0x1b},
+            {0x1c, 0x13, 0x16, 0x07},
+            {0x1d, 0x09, 0x0f, 0x05},
+            {0x04, 0x0d, 0x0a, 0x19},
+        };
+
+        static void step_if(
+            uint32_t *a,
+            uint32_t *b,
+            uint32_t *c,
+            uint32_t *d,
+            const uint32_t *w_vec,
+            int lanes,
+            int r,
+            int s,
+            int p
+        ) {
+            uint32_t new_a[8];
+            uint32_t new_b[8];
+            uint32_t new_c[8];
+            uint32_t new_d[8];
+            int j;
+
+            for (j = 0; j < lanes; j++) {
+                uint32_t phi = c[j] ^ (a[j] & (b[j] ^ c[j]));
+                uint32_t t = (d[j] + w_vec[j] + phi) & 0xffffffffU;
+                uint32_t u = 0;
+
+                t = rol32(t, s);
+                u = rol32(a[j ^ p], r);
+
+                new_a[j] = (t + u) & 0xffffffffU;
+                new_b[j] = rol32(a[j], r);
+                new_c[j] = b[j];
+                new_d[j] = c[j];
+            }
+
+            for (j = 0; j < lanes; j++) {
+                a[j] = new_a[j];
+                b[j] = new_b[j];
+                c[j] = new_c[j];
+                d[j] = new_d[j];
+            }
+        }
+
+        static void step_maj(
+            uint32_t *a,
+            uint32_t *b,
+            uint32_t *c,
+            uint32_t *d,
+            const uint32_t *w_vec,
+            int lanes,
+            int r,
+            int s,
+            int p
+        ) {
+            uint32_t new_a[8];
+            uint32_t new_b[8];
+            uint32_t new_c[8];
+            uint32_t new_d[8];
+            int j;
+
+            for (j = 0; j < lanes; j++) {
+                uint32_t phi = (a[j] & b[j]) | (c[j] & (a[j] | b[j]));
+                uint32_t t = (d[j] + w_vec[j] + phi) & 0xffffffffU;
+                uint32_t u = 0;
+
+                t = rol32(t, s);
+                u = rol32(a[j ^ p], r);
+
+                new_a[j] = (t + u) & 0xffffffffU;
+                new_b[j] = rol32(a[j], r);
+                new_c[j] = b[j];
+                new_d[j] = c[j];
+            }
+
+            for (j = 0; j < lanes; j++) {
+                a[j] = new_a[j];
+                b[j] = new_b[j];
+                c[j] = new_c[j];
+                d[j] = new_d[j];
+            }
+        }
+
+        static void compress_generic(
+            uint32_t       *state,
+            const uint8_t  *block,
+            int             final_flag,
+            const uint16_t *rows_normal,
+            const uint16_t *rows_final,
+            const uint8_t  *p_xor_table,
+            int             lanes,
+            int             block_size,
+            int             ntt_n,
+            int             z_stride
+        ) {
+            const uint16_t *rows = final_flag ? rows_final : rows_normal;
+            int row_stride = block_size + 1;
+            int half_n = ntt_n / 2;
+            int offset0 = ntt_n + half_n - 1;
+            int offset1 = ntt_n - 1;
+
+            int y[256];
+            uint32_t z[32][8];
+            uint32_t w[32][8];
+            uint32_t m_words[32];
+            uint32_t a[8];
+            uint32_t b[8];
+            uint32_t c[8];
+            uint32_t d[8];
+
+            int i = 0;
+            int j = 0;
+
+            for (i = 0; i < ntt_n; i++) {
+                int acc = rows[i * row_stride + block_size];
+                for (j = 0; j < block_size; j++) {
+                    acc += ((int)block[j]) * ((int)rows[i * row_stride + j]);
+                }
+                y[i] = acc % 0x101;
+            }
+
+            for (i = 0; i < 32; i++) {
+                int base = z_stride * i;
+                for (j = 0; j < lanes; j++) {
+                    int idx = base + 2 * j;
+
+                    if (i <= 15) {
+                        z[i][j] = pack_code(y[idx], y[idx + 1], 0xb9);
+                    } else if (i <= 23) {
+                        z[i][j] = pack_code(y[idx - ntt_n], y[idx - half_n], 0xe9);
+                    } else {
+                        z[i][j] = pack_code(y[idx - offset0], y[idx - offset1], 0xe9);
+                    }
+                }
+            }
+
+            for (i = 0; i < 32; i++) {
+                int src = perm_table[i];
+                for (j = 0; j < lanes; j++) {
+                    w[i][j] = z[src][j];
+                }
+            }
+
+            for (i = 0; i < lanes * 4; i++) {
+                int off = i * 4;
+                m_words[i] = (
+                    ((uint32_t)block[off + 0]) |
+                    ((uint32_t)block[off + 1] << 8) |
+                    ((uint32_t)block[off + 2] << 16) |
+                    ((uint32_t)block[off + 3] << 24)
+                );
+            }
+
+            for (j = 0; j < lanes; j++) {
+                a[j] = state[j] ^ m_words[j];
+                b[j] = state[lanes + j] ^ m_words[lanes + j];
+                c[j] = state[(lanes * 2) + j] ^ m_words[(lanes * 2) + j];
+                d[j] = state[(lanes * 3) + j] ^ m_words[(lanes * 3) + j];
+            }
+
+            {
+                int step_index = 0;
+
+                for (i = 0; i < 4; i++) {
+                    int pi0 = round_pis[i][0];
+                    int pi1 = round_pis[i][1];
+                    int pi2 = round_pis[i][2];
+                    int pi3 = round_pis[i][3];
+
+                    step_if(a, b, c, d, w[step_index], lanes, pi0, pi1, p_xor_table[step_index]);
+                    step_index++;
+                    step_if(a, b, c, d, w[step_index], lanes, pi1, pi2, p_xor_table[step_index]);
+                    step_index++;
+                    step_if(a, b, c, d, w[step_index], lanes, pi2, pi3, p_xor_table[step_index]);
+                    step_index++;
+                    step_if(a, b, c, d, w[step_index], lanes, pi3, pi0, p_xor_table[step_index]);
+                    step_index++;
+
+                    step_maj(a, b, c, d, w[step_index], lanes, pi0, pi1, p_xor_table[step_index]);
+                    step_index++;
+                    step_maj(a, b, c, d, w[step_index], lanes, pi1, pi2, p_xor_table[step_index]);
+                    step_index++;
+                    step_maj(a, b, c, d, w[step_index], lanes, pi2, pi3, p_xor_table[step_index]);
+                    step_index++;
+                    step_maj(a, b, c, d, w[step_index], lanes, pi3, pi0, p_xor_table[step_index]);
+                    step_index++;
+                }
+
+                step_if(a, b, c, d, state, lanes, 0x04, 0x0d, p_xor_table[step_index]);
+                step_index++;
+                step_if(a, b, c, d, state + lanes, lanes, 0x0d, 0x0a, p_xor_table[step_index]);
+                step_index++;
+                step_if(a, b, c, d, state + (lanes * 2), lanes, 0x0a, 0x19, p_xor_table[step_index]);
+                step_index++;
+                step_if(a, b, c, d, state + (lanes * 3), lanes, 0x19, 0x04, p_xor_table[step_index]);
+            }
+
+            for (j = 0; j < lanes; j++) {
+                state[j] = a[j];
+                state[lanes + j] = b[j];
+                state[(lanes * 2) + j] = c[j];
+                state[(lanes * 3) + j] = d[j];
+            }
+        }
+
+        void compress_small(
+            uint32_t       *state,
+            const uint8_t  *block,
+            int             final_flag,
+            const uint16_t *rows_normal,
+            const uint16_t *rows_final,
+            const uint8_t  *p_xor_table
+        ) {
+            compress_generic(state, block, final_flag, rows_normal, rows_final, p_xor_table, 4, 64, 128, 8);
+        }
+
+        void compress_big(
+            uint32_t       *state,
+            const uint8_t  *block,
+            int             final_flag,
+            const uint16_t *rows_normal,
+            const uint16_t *rows_final,
+            const uint8_t  *p_xor_table
+        ) {
+            compress_generic(state, block, final_flag, rows_normal, rows_final, p_xor_table, 8, 128, 256, 16);
+        }
+        """
 
         def __init__(self, data=b""):
-            self.prepare_constants()
             self.state = list(self.iv_words)
             self.buf = bytearray()
             self.msg_len = 0
+            self.prepare_constants()
+            self.init_cffi_backend()
             if data:
                 self.update(data)
             return
 
+        @classmethod
+        def build_cffi_lib(cls):
+            if hasattr(Hash.SIMDBase, "cffi_lib_cache"):
+                return Hash.SIMDBase.cffi_lib_cache
+
+            import cffi
+            ffi = cffi.FFI()
+            ffi.cdef("""
+                void compress_small(
+                    uint32_t       *state,
+                    const uint8_t  *block,
+                    int             final_flag,
+                    const uint16_t *rows_normal,
+                    const uint16_t *rows_final,
+                    const uint8_t  *p_xor_table);
+                void compress_big(
+                    uint32_t       *state,
+                    const uint8_t  *block,
+                    int             final_flag,
+                    const uint16_t *rows_normal,
+                    const uint16_t *rows_final,
+                    const uint8_t  *p_xor_table);
+            """)
+
+            import warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"reimporting '_cffi__.*' might overwrite older definitions",
+                    category=UserWarning,
+                    module=r"cffi\.vengine_cpy",
+                )
+                lib = ffi.verify(cls.C_TEMPLATE, extra_compile_args=["-O2"])
+
+            Hash.SIMDBase.cffi_lib_cache = (ffi, lib)
+            return Hash.SIMDBase.cffi_lib_cache
+
         def prepare_constants(self):
             cls = self.__class__
-            if cls.root_pows is None:
-                root_pows = [0x01] * cls.order
-                for i in range(0x01, cls.order):
-                    root_pows[i] = (root_pows[i - 1] * cls.root) % 0x101
+            if not hasattr(cls, "root_pows"):
+                root_pows = [1] * self.order
+                for i in range(1, self.order):
+                    root_pows[i] = (root_pows[i - 1] * self.root) % 0x101
                 cls.root_pows = root_pows
-
-            if cls.ntt_rows_normal is None:
-                root_pows = cls.root_pows
-                ntt_rows_normal = [None] * cls.ntt_n
-                ntt_rows_final = [None] * cls.ntt_n
-
-                for i in range(cls.ntt_n):
-                    row = [0] * cls.block_size
-                    for j in range(cls.block_size):
-                        row[j] = root_pows[(i * j) % cls.order]
-
-                    add_normal = root_pows[(cls.const_exps[0] * i) % cls.order]
-                    add_final = add_normal + root_pows[(cls.const_exps[1] * i) % cls.order]
-
+            if not hasattr(cls, "ntt_rows_normal"):
+                root_pows = self.root_pows
+                ntt_rows_normal = [None] * self.ntt_n
+                ntt_rows_final = [None] * self.ntt_n
+                for i in range(self.ntt_n):
+                    row = [0] * self.block_size
+                    for j in range(self.block_size):
+                        row[j] = root_pows[(i * j) % self.order]
+                    add_normal = root_pows[(self.const_exps[0] * i) % self.order]
+                    add_final = add_normal + root_pows[(self.const_exps[1] * i) % self.order]
                     ntt_rows_normal[i] = (tuple(row), add_normal)
                     ntt_rows_final[i] = (tuple(row), add_final)
-
                 cls.ntt_rows_normal = tuple(ntt_rows_normal)
                 cls.ntt_rows_final = tuple(ntt_rows_final)
             return
@@ -90382,174 +90651,214 @@ class Hash:
                 block = self.buf[:self.block_size]
                 del self.buf[:self.block_size]
                 self.compress(block, 0)
-
             bit_len = self.msg_len * 8
-            bit_len = bit_len % (0x01 << (self.block_size * 8))
+            bit_len = bit_len % (1 << (self.block_size * 8))
             length_block = bit_len.to_bytes(self.block_size, "little")
-            self.compress(length_block, 0x01)
+            self.compress(length_block, 1)
             return
 
-        def rotl32(self, x, n):
-            return ((x << n) | (x >> (0x20 - n))) & 0xffff_ffff
-
-        def ntt(self, block, final_flag):
-            if final_flag:
-                rows = self.__class__.ntt_rows_final
-            else:
-                rows = self.__class__.ntt_rows_normal
-
-            y = [0] * self.ntt_n
-            for i in range(self.ntt_n):
-                coeffs, add_const = rows[i]
-                acc = add_const
-                for j in range(self.block_size):
-                    acc += block[j] * coeffs[j]
-                y[i] = acc % 0x101
-            return y
-
-        def lift257(self, v):
-            if v > 0x80:
-                return v - 0x101
-            return v
-
-        def inner_code(self, v, c):
-            return (c * self.lift257(v)) & 0xffff
-
-        def pack_code(self, x, y, c):
-            lo = self.inner_code(x, c)
-            hi = self.inner_code(y, c)
-            return lo | (hi << 0x10)
-
-        def message_expansion(self, block, final_flag):
-            y = self.ntt(block, final_flag)
-            z = [None] * 0x20
-            lanes = self.lanes
-            z_stride = self.z_stride
-            ntt_n = self.ntt_n
-            half_n = ntt_n // 0x02
-            pack_code = self.pack_code
-
-            for i in range(0x20):
-                row = [0] * lanes
-                base = z_stride * i
-
-                if i <= 0x0f:
-                    for j in range(lanes):
-                        idx = base + 0x02 * j
-                        row[j] = pack_code(y[idx], y[idx + 0x01], 0xb9)
-                elif i <= 0x17:
-                    for j in range(lanes):
-                        idx = base + 0x02 * j
-                        row[j] = pack_code(
-                            y[idx - ntt_n],
-                            y[idx - half_n],
-                            0xe9,
-                        )
-                else:
-                    offset0 = ntt_n + half_n - 0x01
-                    offset1 = ntt_n - 0x01
-                    for j in range(lanes):
-                        idx = base + 0x02 * j
-                        row[j] = pack_code(
-                            y[idx - offset0],
-                            y[idx - offset1],
-                            0xe9,
-                        )
-                z[i] = row
-
-            w = [None] * 0x20
-            for i in range(0x20):
-                w[i] = z[self.P[i]]
-            return w
-
-        def step_if(self, a, b, c, d, w_vec, r, s, p):
-            new_a = [0] * self.lanes
-            new_b = [0] * self.lanes
-            new_c = [0] * self.lanes
-            new_d = [0] * self.lanes
-            for j in range(self.lanes):
-                phi = c[j] ^ (a[j] & (b[j] ^ c[j]))
-                t = (d[j] + w_vec[j] + phi) & 0xffff_ffff
-                t = self.rotl32(t, s)
-                u = self.rotl32(a[j ^ p], r)
-                new_a[j] = (t + u) & 0xffff_ffff
-                new_b[j] = self.rotl32(a[j], r)
-                new_c[j] = b[j]
-                new_d[j] = c[j]
-            return new_a, new_b, new_c, new_d
-
-        def step_maj(self, a, b, c, d, w_vec, r, s, p):
-            new_a = [0] * self.lanes
-            new_b = [0] * self.lanes
-            new_c = [0] * self.lanes
-            new_d = [0] * self.lanes
-            for j in range(self.lanes):
-                phi = (a[j] & b[j]) | (c[j] & (a[j] | b[j]))
-                t = (d[j] + w_vec[j] + phi) & 0xffff_ffff
-                t = self.rotl32(t, s)
-                u = self.rotl32(a[j ^ p], r)
-                new_a[j] = (t + u) & 0xffff_ffff
-                new_b[j] = self.rotl32(a[j], r)
-                new_c[j] = b[j]
-                new_d[j] = c[j]
-            return new_a, new_b, new_c, new_d
-
         def compress(self, block, final_flag):
+
+            def ntt(block, rows):
+                y = [0] * self.ntt_n
+                for i in range(self.ntt_n):
+                    coeffs, add_const = rows[i]
+                    acc = add_const
+                    for j in range(self.block_size):
+                        acc += block[j] * coeffs[j]
+                    y[i] = acc % 0x101
+                return y
+
+            def lift257(v):
+                if v > 0x80:
+                    return v - 0x101
+                return v
+
+            def pack_code(x, y, c):
+                lo = (c * lift257(x)) & 0xffff
+                hi = (c * lift257(y)) & 0xffff
+                return lo | (hi << 0x10)
+
+            def message_expansion(block, final_flag):
+                if final_flag:
+                    y = ntt(block, self.ntt_rows_final)
+                else:
+                    y = ntt(block, self.ntt_rows_normal)
+                z = [None] * 32
+                lanes = self.lanes
+                z_stride = self.z_stride
+                ntt_n = self.ntt_n
+                half_n = ntt_n // 2
+
+                for i in range(32):
+                    row = [0] * lanes
+                    base = z_stride * i
+
+                    if i <= 15:
+                        for j in range(lanes):
+                            idx = base + 2 * j
+                            row[j] = pack_code(y[idx], y[idx + 1], 0xb9)
+                    elif i <= 23:
+                        for j in range(lanes):
+                            idx = base + 2 * j
+                            row[j] = pack_code(y[idx - ntt_n], y[idx - half_n], 0xe9)
+                    else:
+                        offset0 = ntt_n + half_n - 1
+                        offset1 = ntt_n - 1
+                        for j in range(lanes):
+                            idx = base + 2 * j
+                            row[j] = pack_code(y[idx - offset0], y[idx - offset1], 0xe9)
+                    z[i] = row
+
+                w = [None] * 32
+                for i in range(32):
+                    w[i] = z[self.P[i]]
+                return w
+
+            def rol32(x, n):
+                return ((x << n) | (x >> (0x20 - n))) & 0xffff_ffff
+
+            def step_if(a, b, c, d, w_vec, r, s, p):
+                new_a = [0] * self.lanes
+                new_b = [0] * self.lanes
+                new_c = [0] * self.lanes
+                new_d = [0] * self.lanes
+                for j in range(self.lanes):
+                    phi = c[j] ^ (a[j] & (b[j] ^ c[j]))
+                    t = (d[j] + w_vec[j] + phi) & 0xffff_ffff
+                    t = rol32(t, s)
+                    u = rol32(a[j ^ p], r)
+                    new_a[j] = (t + u) & 0xffff_ffff
+                    new_b[j] = rol32(a[j], r)
+                    new_c[j] = b[j]
+                    new_d[j] = c[j]
+                return new_a, new_b, new_c, new_d
+
+            def step_maj(a, b, c, d, w_vec, r, s, p):
+                new_a = [0] * self.lanes
+                new_b = [0] * self.lanes
+                new_c = [0] * self.lanes
+                new_d = [0] * self.lanes
+                for j in range(self.lanes):
+                    phi = (a[j] & b[j]) | (c[j] & (a[j] | b[j]))
+                    t = (d[j] + w_vec[j] + phi) & 0xffff_ffff
+                    t = rol32(t, s)
+                    u = rol32(a[j ^ p], r)
+                    new_a[j] = (t + u) & 0xffff_ffff
+                    new_b[j] = rol32(a[j], r)
+                    new_c[j] = b[j]
+                    new_d[j] = c[j]
+                return new_a, new_b, new_c, new_d
+
             if len(block) != self.block_size:
                 raise ValueError("invalid block size")
-            w = self.message_expansion(block, final_flag)
-            m_words = struct.unpack("<" + "I" * (self.lanes * 0x04), block)
-            s_words = [0] * (self.lanes * 0x04)
-            for i in range(self.lanes * 0x04):
+
+            if self.USE_CFFI:
+                state_buf = self.ffi.new("uint32_t[]", self.state)
+                block_buf = self.ffi.new("uint8_t[]", bytes(block))
+                if self.lanes == 4:
+                    clib_compress = self.clib.compress_small
+                else:
+                    clib_compress = self.clib.compress_big
+                clib_compress(state_buf, block_buf, int(final_flag), self.c_rows_normal, self.c_rows_final, self.c_p_xor_table)
+                self.state = [state_buf[i] for i in range(self.lanes * 4)]
+                return
+
+            w = message_expansion(block, final_flag)
+            m_words = struct.unpack("<" + "I" * (self.lanes * 4), block)
+            s_words = [0] * (self.lanes * 4)
+            for i in range(self.lanes * 4):
                 s_words[i] = self.state[i] ^ m_words[i]
             lanes = self.lanes
 
-            a = list(s_words[0x00 : lanes])
-            b = list(s_words[lanes : lanes * 0x02])
-            c = list(s_words[lanes * 0x02 : lanes * 0x03])
-            d = list(s_words[lanes * 0x03 : lanes * 0x04])
+            a = list(s_words[0 : lanes])
+            b = list(s_words[lanes : lanes * 2])
+            c = list(s_words[lanes * 2 : lanes * 3])
+            d = list(s_words[lanes * 3 : lanes * 4])
             ptab = self.p_xor_table
             step_index = 0
-            for rnd in range(0x04):
+            for rnd in range(4):
                 pi0, pi1, pi2, pi3 = self.round_pis[rnd]
 
-                a, b, c, d = self.step_if(a, b, c, d, w[step_index], pi0, pi1, ptab[step_index])
-                step_index += 0x01
-                a, b, c, d = self.step_if(a, b, c, d, w[step_index], pi1, pi2, ptab[step_index])
-                step_index += 0x01
-                a, b, c, d = self.step_if(a, b, c, d, w[step_index], pi2, pi3, ptab[step_index])
-                step_index += 0x01
-                a, b, c, d = self.step_if(a, b, c, d, w[step_index], pi3, pi0, ptab[step_index])
-                step_index += 0x01
+                a, b, c, d = step_if(a, b, c, d, w[step_index], pi0, pi1, ptab[step_index])
+                step_index += 1
+                a, b, c, d = step_if(a, b, c, d, w[step_index], pi1, pi2, ptab[step_index])
+                step_index += 1
+                a, b, c, d = step_if(a, b, c, d, w[step_index], pi2, pi3, ptab[step_index])
+                step_index += 1
+                a, b, c, d = step_if(a, b, c, d, w[step_index], pi3, pi0, ptab[step_index])
+                step_index += 1
 
-                a, b, c, d = self.step_maj(a, b, c, d, w[step_index], pi0, pi1, ptab[step_index])
-                step_index += 0x01
-                a, b, c, d = self.step_maj(a, b, c, d, w[step_index], pi1, pi2, ptab[step_index])
-                step_index += 0x01
-                a, b, c, d = self.step_maj(a, b, c, d, w[step_index], pi2, pi3, ptab[step_index])
-                step_index += 0x01
-                a, b, c, d = self.step_maj(a, b, c, d, w[step_index], pi3, pi0, ptab[step_index])
-                step_index += 0x01
+                a, b, c, d = step_maj(a, b, c, d, w[step_index], pi0, pi1, ptab[step_index])
+                step_index += 1
+                a, b, c, d = step_maj(a, b, c, d, w[step_index], pi1, pi2, ptab[step_index])
+                step_index += 1
+                a, b, c, d = step_maj(a, b, c, d, w[step_index], pi2, pi3, ptab[step_index])
+                step_index += 1
+                a, b, c, d = step_maj(a, b, c, d, w[step_index], pi3, pi0, ptab[step_index])
+                step_index += 1
 
-            iv_a = self.state[0x00 : lanes]
-            iv_b = self.state[lanes : lanes * 0x02]
-            iv_c = self.state[lanes * 0x02 : lanes * 0x03]
-            iv_d = self.state[lanes * 0x03 : lanes * 0x04]
+            iv_a = self.state[0 : lanes]
+            iv_b = self.state[lanes : lanes * 2]
+            iv_c = self.state[lanes * 2 : lanes * 3]
+            iv_d = self.state[lanes * 3 : lanes * 4]
 
-            a, b, c, d = self.step_if(a, b, c, d, iv_a, 0x04, 0x0d, ptab[step_index])
-            step_index += 0x01
-            a, b, c, d = self.step_if(a, b, c, d, iv_b, 0x0d, 0x0a, ptab[step_index])
-            step_index += 0x01
-            a, b, c, d = self.step_if(a, b, c, d, iv_c, 0x0a, 0x19, ptab[step_index])
-            step_index += 0x01
-            a, b, c, d = self.step_if(a, b, c, d, iv_d, 0x19, 0x04, ptab[step_index])
+            a, b, c, d = step_if(a, b, c, d, iv_a, 0x04, 0x0d, ptab[step_index])
+            step_index += 1
+            a, b, c, d = step_if(a, b, c, d, iv_b, 0x0d, 0x0a, ptab[step_index])
+            step_index += 1
+            a, b, c, d = step_if(a, b, c, d, iv_c, 0x0a, 0x19, ptab[step_index])
+            step_index += 1
+            a, b, c, d = step_if(a, b, c, d, iv_d, 0x19, 0x04, ptab[step_index])
             self.state = list(a + b + c + d)
+            return
+
+        def init_cffi_backend(self):
+            try:
+                import cffi  # noqa: F401
+            except ImportError:
+                self.USE_CFFI = False
+                return
+
+            def flatten_ntt_rows(rows):
+                flat = []
+                for coeffs, add_const in rows:
+                    flat.extend(coeffs)
+                    flat.append(add_const)
+                return tuple(flat)
+
+            try:
+                self.ffi, self.clib = Hash.SIMDBase.build_cffi_lib()
+                if self.lanes == 4:
+                    if not hasattr(Hash.SIMDBase, "cffi_rows_small_normal"):
+                        Hash.SIMDBase.cffi_rows_small_normal = flatten_ntt_rows(self.ntt_rows_normal)
+                        Hash.SIMDBase.cffi_rows_small_final = flatten_ntt_rows(self.ntt_rows_final)
+                        Hash.SIMDBase.cffi_p_xor_small = tuple(self.p_xor_table)
+                    self.c_rows_normal = self.ffi.new("uint16_t[]", Hash.SIMDBase.cffi_rows_small_normal)
+                    self.c_rows_final = self.ffi.new("uint16_t[]", Hash.SIMDBase.cffi_rows_small_final)
+                    self.c_p_xor_table = self.ffi.new("uint8_t[]", Hash.SIMDBase.cffi_p_xor_small)
+                elif self.lanes == 8:
+                    if not hasattr(Hash.SIMDBase, "cffi_rows_big_normal"):
+                        Hash.SIMDBase.cffi_rows_big_normal = flatten_ntt_rows(self.ntt_rows_normal)
+                        Hash.SIMDBase.cffi_rows_big_final = flatten_ntt_rows(self.ntt_rows_final)
+                        Hash.SIMDBase.cffi_p_xor_big = tuple(self.p_xor_table)
+                    self.c_rows_normal = self.ffi.new("uint16_t[]", Hash.SIMDBase.cffi_rows_big_normal)
+                    self.c_rows_final = self.ffi.new("uint16_t[]", Hash.SIMDBase.cffi_rows_big_final)
+                    self.c_p_xor_table = self.ffi.new("uint8_t[]", Hash.SIMDBase.cffi_p_xor_big)
+                else:
+                    self.USE_CFFI = False
+                    return
+            except Exception:
+                self.USE_CFFI = False
+                return
+
+            self.USE_CFFI = True
             return
 
     class SIMD224(SIMDBase):
         block_size = 0x40
-        digest_size = 0x1c
-        lanes = 0x04
+        digest_size = 28
+        lanes = 4
 
         ntt_n = 0x80
         order = 0x80
@@ -90557,7 +90866,7 @@ class Hash:
         root = 0x8b
         const_exps = [0x7f, 0x7d]
 
-        out_words = 0x07
+        out_words = 7
         p_xor_table = (
             0x01, 0x02, 0x03, 0x01, 0x02, 0x03, 0x01, 0x02, 0x03,
             0x01, 0x02, 0x03, 0x01, 0x02, 0x03, 0x01, 0x02, 0x03,
@@ -90571,8 +90880,8 @@ class Hash:
 
     class SIMD256(SIMDBase):
         block_size = 0x40
-        digest_size = 0x20
-        lanes = 0x04
+        digest_size = 32
+        lanes = 4
 
         ntt_n = 0x80
         order = 0x80
@@ -90580,7 +90889,7 @@ class Hash:
         root = 0x8b
         const_exps = [0x7f, 0x7d]
 
-        out_words = 0x08
+        out_words = 8
         p_xor_table = (
             0x01, 0x02, 0x03, 0x01, 0x02, 0x03, 0x01, 0x02, 0x03,
             0x01, 0x02, 0x03, 0x01, 0x02, 0x03, 0x01, 0x02, 0x03,
@@ -90594,8 +90903,8 @@ class Hash:
 
     class SIMD384(SIMDBase):
         block_size = 0x80
-        digest_size = 0x30
-        lanes = 0x08
+        digest_size = 48
+        lanes = 8
 
         ntt_n = 0x100
         order = 0x100
@@ -90603,7 +90912,7 @@ class Hash:
         root = 0x29
         const_exps = [0xff, 0xfd]
 
-        out_words = 0x0c
+        out_words = 12
         p_xor_table = (
             0x01, 0x06, 0x02, 0x03, 0x05, 0x07, 0x04,
             0x01, 0x06, 0x02, 0x03, 0x05, 0x07, 0x04,
@@ -90621,8 +90930,8 @@ class Hash:
 
     class SIMD512(SIMDBase):
         block_size = 0x80
-        digest_size = 0x40
-        lanes = 0x08
+        digest_size = 64
+        lanes = 8
 
         ntt_n = 0x100
         order = 0x100
@@ -90630,7 +90939,7 @@ class Hash:
         root = 0x29
         const_exps = [0xff, 0xfd]
 
-        out_words = 0x10
+        out_words = 16
         p_xor_table = (
             0x01, 0x06, 0x02, 0x03, 0x05, 0x07, 0x04,
             0x01, 0x06, 0x02, 0x03, 0x05, 0x07, 0x04,
