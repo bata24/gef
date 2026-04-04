@@ -90956,15 +90956,7 @@ class Hash:
         )
 
     class BMWHBase:
-        block_size = None
-        digest_size = None
-
-        word_bits = None
-        out_words = None
-        iv = None
-        final_const = None
-
-        W_SCHEDULE = [
+        W_SCHEDULE = (
             (5, "-", 7, "+", 10, "+", 13, "+", 14),
             (6, "-", 8, "+", 11, "+", 14, "-", 15),
             (0, "+", 7, "+", 9, "-", 12, "+", 15),
@@ -90981,11 +90973,10 @@ class Hash:
             (2, "+", 4, "+", 7, "+", 10, "+", 11),
             (3, "-", 5, "+", 8, "-", 11, "-", 12),
             (12, "-", 4, "-", 6, "-", 9, "+", 13),
-        ]
-
+        )
         # For i16=16..31: (j0m, j1m, j3m, j4m, j7m, j10m, j11m)
         # j1m/j4m/j11m are rotation amounts.
-        M16_TABLE = [
+        M16_TABLE = (
             (0, 1, 3, 4, 7, 10, 11),
             (1, 2, 4, 5, 8, 11, 12),
             (2, 3, 5, 6, 9, 12, 13),
@@ -91002,16 +90993,15 @@ class Hash:
             (13, 14, 0, 1, 4, 7, 8),
             (14, 15, 1, 2, 5, 8, 9),
             (15, 16, 2, 3, 6, 9, 10),
-        ]
+        )
 
         def __init__(self, data=b""):
             if self.word_bits not in (32, 64):
                 raise ValueError("invalid word_bits")
-            if self.iv is None or len(self.iv) != 16:
+            if len(self.iv) != 16:
                 raise ValueError("iv missing/invalid")
-            if self.final_const is None or len(self.final_const) != 16:
+            if len(self.final_const) != 16:
                 raise ValueError("final_const missing/invalid")
-
             self.H = list(self.iv)
             self.buf = bytearray()
             self.msg_len = 0  # in bytes
@@ -91032,10 +91022,8 @@ class Hash:
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
             data = bytes(data)
-
             self.msg_len += len(data)
             self.buf.extend(data)
-
             while len(self.buf) >= self.block_size:
                 block = bytes(self.buf[:self.block_size])
                 del self.buf[:self.block_size]
@@ -91072,7 +91060,6 @@ class Hash:
                     struct.pack_into("<Q", block2, i * 8, w)
 
             h1 = self.compress(bytes(block2), list(self.final_const))
-
             start = 16 - self.out_words
             out = bytearray()
             if self.word_bits == 32:
@@ -91085,224 +91072,140 @@ class Hash:
             self.result_bytes = bytes(out[:self.digest_size])
             return
 
-        def t(self, x):
-            if self.word_bits == 32:
-                return x & 0xffff_ffff
-            return x & 0xffff_ffff_ffff_ffff
-
-        def rol(self, x, n):
-            if self.word_bits == 32:
-                n &= 31
-                x &= 0xffff_ffff
-                return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
-            n &= 63
-            x &= 0xffff_ffff_ffff_ffff
-            return ((x << n) | (x >> (64 - n))) & 0xffff_ffff_ffff_ffff
-
-        def ss0(self, x):
-            return self.t((x >> 1) ^ self.t(x << 3) ^ self.rol(x, 4) ^ self.rol(x, 19))
-
-        def ss1(self, x):
-            return self.t((x >> 1) ^ self.t(x << 2) ^ self.rol(x, 8) ^ self.rol(x, 23))
-
-        def ss2(self, x):
-            return self.t((x >> 2) ^ self.t(x << 1) ^ self.rol(x, 12) ^ self.rol(x, 25))
-
-        def ss3(self, x):
-            return self.t((x >> 2) ^ self.t(x << 2) ^ self.rol(x, 15) ^ self.rol(x, 29))
-
-        def ss4(self, x):
-            return self.t((x >> 1) ^ x)
-
-        def ss5(self, x):
-            return self.t((x >> 2) ^ x)
-
-        def rs1(self, x):
-            return self.rol(x, 3)
-
-        def rs2(self, x):
-            return self.rol(x, 7)
-
-        def rs3(self, x):
-            return self.rol(x, 13)
-
-        def rs4(self, x):
-            return self.rol(x, 16)
-
-        def rs5(self, x):
-            return self.rol(x, 19)
-
-        def rs6(self, x):
-            return self.rol(x, 23)
-
-        def rs7(self, x):
-            return self.rol(x, 27)
-
-        def sb0(self, x):
-            return self.t((x >> 1) ^ self.t(x << 3) ^ self.rol(x, 4) ^ self.rol(x, 37))
-
-        def sb1(self, x):
-            return self.t((x >> 1) ^ self.t(x << 2) ^ self.rol(x, 13) ^ self.rol(x, 43))
-
-        def sb2(self, x):
-            return self.t((x >> 2) ^ self.t(x << 1) ^ self.rol(x, 19) ^ self.rol(x, 53))
-
-        def sb3(self, x):
-            return self.t((x >> 2) ^ self.t(x << 2) ^ self.rol(x, 28) ^ self.rol(x, 59))
-
-        def sb4(self, x):
-            return self.t((x >> 1) ^ x)
-
-        def sb5(self, x):
-            return self.t((x >> 2) ^ x)
-
-        def rb1(self, x):
-            return self.rol(x, 5)
-
-        def rb2(self, x):
-            return self.rol(x, 11)
-
-        def rb3(self, x):
-            return self.rol(x, 27)
-
-        def rb4(self, x):
-            return self.rol(x, 32)
-
-        def rb5(self, x):
-            return self.rol(x, 37)
-
-        def rb6(self, x):
-            return self.rol(x, 43)
-
-        def rb7(self, x):
-            return self.rol(x, 53)
-
-        def add_elt(self, M, H, i16):
-            j0m, j1m, j3m, j4m, j7m, j10m, j11m = self.M16_TABLE[i16 - 16]
-            if self.word_bits == 32:
-                k = self.t(i16 * 0x0555_5555)
-            else:
-                k = self.t(i16 * 0x0555_5555_5555_5555)
-            v = self.t(self.rol(M[j0m], j1m) + self.rol(M[j3m], j4m) - self.rol(M[j10m], j11m) + k)
-            return v ^ H[j7m]
-
-        def make_w(self, M, H, entry):
-            i0, op01, i1, op12, i2, op23, i3, op34, i4 = entry
-            x0 = M[i0] ^ H[i0]
-            x1 = M[i1] ^ H[i1]
-            x2 = M[i2] ^ H[i2]
-            x3 = M[i3] ^ H[i3]
-            x4 = M[i4] ^ H[i4]
-
-            res = x0
-            for op, val in [(op01, x1), (op12, x2), (op23, x3), (op34, x4)]:
-                if op == "+":
-                    res = res + val
-                else:
-                    res = res - val
-            return self.t(res)
-
-        def expand1(self, Q, M, H, i16):
-            base = i16 - 16
-            if self.word_bits == 32:
-                funcs = [self.ss1, self.ss2, self.ss3, self.ss0] * 4
-            else:
-                funcs = [self.sb1, self.sb2, self.sb3, self.sb0] * 4
-
-            s = 0
-            for k in range(16):
-                s += funcs[k](Q[base + k])
-            s += self.add_elt(M, H, i16)
-            return self.t(s)
-
-        def expand2(self, Q, M, H, i16):
-            base = i16 - 16
-            if self.word_bits == 32:
-                s = (
-                    Q[base + 0]
-                    + self.rs1(Q[base + 1])
-                    + Q[base + 2]
-                    + self.rs2(Q[base + 3])
-                    + Q[base + 4]
-                    + self.rs3(Q[base + 5])
-                    + Q[base + 6]
-                    + self.rs4(Q[base + 7])
-                    + Q[base + 8]
-                    + self.rs5(Q[base + 9])
-                    + Q[base + 10]
-                    + self.rs6(Q[base + 11])
-                    + Q[base + 12]
-                    + self.rs7(Q[base + 13])
-                    + self.ss4(Q[base + 14])
-                    + self.ss5(Q[base + 15])
-                    + self.add_elt(M, H, i16)
-                )
-                return self.t(s)
-
-            s = (
-                Q[base + 0]
-                + self.rb1(Q[base + 1])
-                + Q[base + 2]
-                + self.rb2(Q[base + 3])
-                + Q[base + 4]
-                + self.rb3(Q[base + 5])
-                + Q[base + 6]
-                + self.rb4(Q[base + 7])
-                + Q[base + 8]
-                + self.rb5(Q[base + 9])
-                + Q[base + 10]
-                + self.rb6(Q[base + 11])
-                + Q[base + 12]
-                + self.rb7(Q[base + 13])
-                + self.sb4(Q[base + 14])
-                + self.sb5(Q[base + 15])
-                + self.add_elt(M, H, i16)
-            )
-            return self.t(s)
-
         def compress(self, block, H):
+
+            def align(x):
+                if self.word_bits == 32:
+                    return x & 0xffff_ffff
+                return x & 0xffff_ffff_ffff_ffff
+
+            def rol(x, n):
+                if self.word_bits == 32:
+                    n &= 31
+                    x &= 0xffff_ffff
+                    return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
+                n &= 63
+                x &= 0xffff_ffff_ffff_ffff
+                return ((x << n) | (x >> (64 - n))) & 0xffff_ffff_ffff_ffff
+
+            def add_elt(M, H, i16):
+                j0m, j1m, j3m, j4m, j7m, j10m, j11m = self.M16_TABLE[i16 - 16]
+                if self.word_bits == 32:
+                    k = align(i16 * 0x0555_5555)
+                else:
+                    k = align(i16 * 0x0555_5555_5555_5555)
+                v = align(rol(M[j0m], j1m) + rol(M[j3m], j4m) - rol(M[j10m], j11m) + k)
+                return v ^ H[j7m]
+
+            def make_w(M, H, entry):
+                i0, op01, i1, op12, i2, op23, i3, op34, i4 = entry
+                res = M[i0] ^ H[i0]
+                for op, val in [(op01, M[i1] ^ H[i1]), (op12, M[i2] ^ H[i2]), (op23, M[i3] ^ H[i3]), (op34, M[i4] ^ H[i4])]:
+                    if op == "+":
+                        res = res + val
+                    else:
+                        res = res - val
+                return align(res)
+
+            def expand1(Q, M, H, i16):
+                base = i16 - 16
+                if self.word_bits == 32:
+                    funcs = [ss1, ss2, ss3, ss0] * 4
+                else:
+                    funcs = [sb1, sb2, sb3, sb0] * 4
+                s = 0
+                for k in range(16):
+                    s += funcs[k](Q[base + k])
+                s += add_elt(M, H, i16)
+                return align(s)
+
+            def expand2(Q, M, H, i16):
+                base = i16 - 16
+                if self.word_bits == 32:
+                    s = (
+                        Q[base + 0] + rol(Q[base + 1], 3) + Q[base + 2] + rol(Q[base + 3], 7)
+                        + Q[base + 4] + rol(Q[base + 5], 13) + Q[base + 6] + rol(Q[base + 7], 16)
+                        + Q[base + 8] + rol(Q[base + 9], 19) + Q[base + 10] + rol(Q[base + 11], 23)
+                        + Q[base + 12] + rol(Q[base + 13], 27) + ((Q[base + 14] >> 1) ^ Q[base + 14])
+                        + ((Q[base + 15] >> 2) ^ Q[base + 15]) + add_elt(M, H, i16)
+                    )
+                else:
+                    s = (
+                        Q[base + 0] + rol(Q[base + 1], 5) + Q[base + 2] + rol(Q[base + 3], 11)
+                        + Q[base + 4] + rol(Q[base + 5], 27) + Q[base + 6] + rol(Q[base + 7], 32)
+                        + Q[base + 8] + rol(Q[base + 9], 37) + Q[base + 10] + rol(Q[base + 11], 43)
+                        + Q[base + 12] + rol(Q[base + 13], 53) + ((Q[base + 14] >> 1) ^ Q[base + 14])
+                        + ((Q[base + 15] >> 2) ^ Q[base + 15]) + add_elt(M, H, i16)
+                    )
+                return align(s)
+
+            def ss0(x):
+                return align((x >> 1) ^ (x << 3) ^ rol(x, 4) ^ rol(x, 19))
+
+            def ss1(x):
+                return align((x >> 1) ^ (x << 2) ^ rol(x, 8) ^ rol(x, 23))
+
+            def ss2(x):
+                return align((x >> 2) ^ (x << 1) ^ rol(x, 12) ^ rol(x, 25))
+
+            def ss3(x):
+                return align((x >> 2) ^ (x << 2) ^ rol(x, 15) ^ rol(x, 29))
+
+            def ss4(x):
+                return align((x >> 1) ^ x)
+
+            def sb0(x):
+                return align((x >> 1) ^ (x << 3) ^ rol(x, 4) ^ rol(x, 37))
+
+            def sb1(x):
+                return align((x >> 1) ^ (x << 2) ^ rol(x, 13) ^ rol(x, 43))
+
+            def sb2(x):
+                return align((x >> 2) ^ (x << 1) ^ rol(x, 19) ^ rol(x, 53))
+
+            def sb3(x):
+                return align((x >> 2) ^ (x << 2) ^ rol(x, 28) ^ rol(x, 59))
+
+            def sb4(x):
+                return align((x >> 1) ^ x)
+
             if self.word_bits == 32:
+                init_funcs = [ss0, ss1, ss2, ss3, ss4]
                 M = list(struct.unpack("<16I", block))
             else:
+                init_funcs = [sb0, sb1, sb2, sb3, sb4]
                 M = list(struct.unpack("<16Q", block))
 
-            W = [self.make_w(M, H, e) for e in self.W_SCHEDULE]
-
             Q = [0] * 32
-            if self.word_bits == 32:
-                init_funcs = [self.ss0, self.ss1, self.ss2, self.ss3, self.ss4]
-            else:
-                init_funcs = [self.sb0, self.sb1, self.sb2, self.sb3, self.sb4]
-
+            W = [make_w(M, H, e) for e in self.W_SCHEDULE]
             for j in range(15):
-                Q[j] = self.t(init_funcs[j % 5](W[j]) + H[(j + 1) & 15])
-            Q[15] = self.t(init_funcs[0](W[15]) + H[0])
-
-            Q[16] = self.expand1(Q, M, H, 16)
-            Q[17] = self.expand1(Q, M, H, 17)
+                Q[j] = align(init_funcs[j % 5](W[j]) + H[(j + 1) & 15])
+            Q[15] = align(init_funcs[0](W[15]) + H[0])
+            Q[16] = expand1(Q, M, H, 16)
+            Q[17] = expand1(Q, M, H, 17)
             for j in range(18, 32):
-                Q[j] = self.expand2(Q, M, H, j)
+                Q[j] = expand2(Q, M, H, j)
 
             xl = Q[16] ^ Q[17] ^ Q[18] ^ Q[19] ^ Q[20] ^ Q[21] ^ Q[22] ^ Q[23]
             xh = xl ^ Q[24] ^ Q[25] ^ Q[26] ^ Q[27] ^ Q[28] ^ Q[29] ^ Q[30] ^ Q[31]
 
             dh = [0] * 16
-            dh[0] = self.t(((xh << 5) ^ (Q[16] >> 5) ^ M[0]) + (xl ^ Q[24] ^ Q[0]))
-            dh[1] = self.t(((xh >> 7) ^ (Q[17] << 8) ^ M[1]) + (xl ^ Q[25] ^ Q[1]))
-            dh[2] = self.t(((xh >> 5) ^ (Q[18] << 5) ^ M[2]) + (xl ^ Q[26] ^ Q[2]))
-            dh[3] = self.t(((xh >> 1) ^ (Q[19] << 5) ^ M[3]) + (xl ^ Q[27] ^ Q[3]))
-            dh[4] = self.t(((xh >> 3) ^ (Q[20] << 0) ^ M[4]) + (xl ^ Q[28] ^ Q[4]))
-            dh[5] = self.t(((xh << 6) ^ (Q[21] >> 6) ^ M[5]) + (xl ^ Q[29] ^ Q[5]))
-            dh[6] = self.t(((xh >> 4) ^ (Q[22] << 6) ^ M[6]) + (xl ^ Q[30] ^ Q[6]))
-            dh[7] = self.t(((xh >> 11) ^ (Q[23] << 2) ^ M[7]) + (xl ^ Q[31] ^ Q[7]))
-            dh[8] = self.t(self.rol(dh[4], 9) + (xh ^ Q[24] ^ M[8]) + ((xl << 8) ^ Q[23] ^ Q[8]))
-            dh[9] = self.t(self.rol(dh[5], 10) + (xh ^ Q[25] ^ M[9]) + ((xl >> 6) ^ Q[16] ^ Q[9]))
-            dh[10] = self.t(self.rol(dh[6], 11) + (xh ^ Q[26] ^ M[10]) + ((xl << 6) ^ Q[17] ^ Q[10]))
-            dh[11] = self.t(self.rol(dh[7], 12) + (xh ^ Q[27] ^ M[11]) + ((xl << 4) ^ Q[18] ^ Q[11]))
-            dh[12] = self.t(self.rol(dh[0], 13) + (xh ^ Q[28] ^ M[12]) + ((xl >> 3) ^ Q[19] ^ Q[12]))
-            dh[13] = self.t(self.rol(dh[1], 14) + (xh ^ Q[29] ^ M[13]) + ((xl >> 4) ^ Q[20] ^ Q[13]))
-            dh[14] = self.t(self.rol(dh[2], 15) + (xh ^ Q[30] ^ M[14]) + ((xl >> 7) ^ Q[21] ^ Q[14]))
-            dh[15] = self.t(self.rol(dh[3], 16) + (xh ^ Q[31] ^ M[15]) + ((xl >> 2) ^ Q[22] ^ Q[15]))
+            dh[0] = align(((xh << 5) ^ (Q[16] >> 5) ^ M[0]) + (xl ^ Q[24] ^ Q[0]))
+            dh[1] = align(((xh >> 7) ^ (Q[17] << 8) ^ M[1]) + (xl ^ Q[25] ^ Q[1]))
+            dh[2] = align(((xh >> 5) ^ (Q[18] << 5) ^ M[2]) + (xl ^ Q[26] ^ Q[2]))
+            dh[3] = align(((xh >> 1) ^ (Q[19] << 5) ^ M[3]) + (xl ^ Q[27] ^ Q[3]))
+            dh[4] = align(((xh >> 3) ^ (Q[20] << 0) ^ M[4]) + (xl ^ Q[28] ^ Q[4]))
+            dh[5] = align(((xh << 6) ^ (Q[21] >> 6) ^ M[5]) + (xl ^ Q[29] ^ Q[5]))
+            dh[6] = align(((xh >> 4) ^ (Q[22] << 6) ^ M[6]) + (xl ^ Q[30] ^ Q[6]))
+            dh[7] = align(((xh >> 11) ^ (Q[23] << 2) ^ M[7]) + (xl ^ Q[31] ^ Q[7]))
+            dh[8] = align(rol(dh[4], 9) + (xh ^ Q[24] ^ M[8]) + ((xl << 8) ^ Q[23] ^ Q[8]))
+            dh[9] = align(rol(dh[5], 10) + (xh ^ Q[25] ^ M[9]) + ((xl >> 6) ^ Q[16] ^ Q[9]))
+            dh[10] = align(rol(dh[6], 11) + (xh ^ Q[26] ^ M[10]) + ((xl << 6) ^ Q[17] ^ Q[10]))
+            dh[11] = align(rol(dh[7], 12) + (xh ^ Q[27] ^ M[11]) + ((xl << 4) ^ Q[18] ^ Q[11]))
+            dh[12] = align(rol(dh[0], 13) + (xh ^ Q[28] ^ M[12]) + ((xl >> 3) ^ Q[19] ^ Q[12]))
+            dh[13] = align(rol(dh[1], 14) + (xh ^ Q[29] ^ M[13]) + ((xl >> 4) ^ Q[20] ^ Q[13]))
+            dh[14] = align(rol(dh[2], 15) + (xh ^ Q[30] ^ M[14]) + ((xl >> 7) ^ Q[21] ^ Q[14]))
+            dh[15] = align(rol(dh[3], 16) + (xh ^ Q[31] ^ M[15]) + ((xl >> 2) ^ Q[22] ^ Q[15]))
             return dh
 
     class BMW224(BMWHBase):
@@ -91310,72 +91213,64 @@ class Hash:
         digest_size = 28
         word_bits = 32
         out_words = 7
-
-        iv = [
+        iv = (
             0x0001_0203, 0x0405_0607, 0x0809_0a0b, 0x0c0d_0e0f, 0x1011_1213, 0x1415_1617, 0x1819_1a1b, 0x1c1d_1e1f,
             0x2021_2223, 0x2425_2627, 0x2829_2a2b, 0x2c2d_2e2f, 0x3031_3233, 0x3435_3637, 0x3839_3a3b, 0x3c3d_3e3f,
-        ]
-
-        final_const = [
+        )
+        final_const = (
             0xaaaa_aaa0, 0xaaaa_aaa1, 0xaaaa_aaa2, 0xaaaa_aaa3, 0xaaaa_aaa4, 0xaaaa_aaa5, 0xaaaa_aaa6, 0xaaaa_aaa7,
             0xaaaa_aaa8, 0xaaaa_aaa9, 0xaaaa_aaaa, 0xaaaa_aaab, 0xaaaa_aaac, 0xaaaa_aaad, 0xaaaa_aaae, 0xaaaa_aaaf,
-        ]
+        )
 
     class BMW256(BMWHBase):
         block_size = 64
         digest_size = 32
         word_bits = 32
         out_words = 8
-
-        iv = [
+        iv = (
             0x4041_4243, 0x4445_4647, 0x4849_4a4b, 0x4c4d_4e4f, 0x5051_5253, 0x5455_5657, 0x5859_5a5b, 0x5c5d_5e5f,
             0x6061_6263, 0x6465_6667, 0x6869_6a6b, 0x6c6d_6e6f, 0x7071_7273, 0x7475_7677, 0x7879_7a7b, 0x7c7d_7e7f,
-        ]
-
-        final_const = [
+        )
+        final_const = (
             0xaaaa_aaa0, 0xaaaa_aaa1, 0xaaaa_aaa2, 0xaaaa_aaa3, 0xaaaa_aaa4, 0xaaaa_aaa5, 0xaaaa_aaa6, 0xaaaa_aaa7,
             0xaaaa_aaa8, 0xaaaa_aaa9, 0xaaaa_aaaa, 0xaaaa_aaab, 0xaaaa_aaac, 0xaaaa_aaad, 0xaaaa_aaae, 0xaaaa_aaaf,
-        ]
+        )
 
     class BMW384(BMWHBase):
         block_size = 128
         digest_size = 48
         word_bits = 64
         out_words = 6
-
-        iv = [
+        iv = (
             0x0001_0203_0405_0607, 0x0809_0a0b_0c0d_0e0f, 0x1011_1213_1415_1617, 0x1819_1a1b_1c1d_1e1f,
             0x2021_2223_2425_2627, 0x2829_2a2b_2c2d_2e2f, 0x3031_3233_3435_3637, 0x3839_3a3b_3c3d_3e3f,
             0x4041_4243_4445_4647, 0x4849_4a4b_4c4d_4e4f, 0x5051_5253_5455_5657, 0x5859_5a5b_5c5d_5e5f,
             0x6061_6263_6465_6667, 0x6869_6a6b_6c6d_6e6f, 0x7071_7273_7475_7677, 0x7879_7a7b_7c7d_7e7f,
-        ]
-
-        final_const = [
+        )
+        final_const = (
             0xaaaa_aaaa_aaaa_aaa0, 0xaaaa_aaaa_aaaa_aaa1, 0xaaaa_aaaa_aaaa_aaa2, 0xaaaa_aaaa_aaaa_aaa3,
             0xaaaa_aaaa_aaaa_aaa4, 0xaaaa_aaaa_aaaa_aaa5, 0xaaaa_aaaa_aaaa_aaa6, 0xaaaa_aaaa_aaaa_aaa7,
             0xaaaa_aaaa_aaaa_aaa8, 0xaaaa_aaaa_aaaa_aaa9, 0xaaaa_aaaa_aaaa_aaaa, 0xaaaa_aaaa_aaaa_aaab,
             0xaaaa_aaaa_aaaa_aaac, 0xaaaa_aaaa_aaaa_aaad, 0xaaaa_aaaa_aaaa_aaae, 0xaaaa_aaaa_aaaa_aaaf,
-        ]
+        )
 
     class BMW512(BMWHBase):
         block_size = 128
         digest_size = 64
         word_bits = 64
         out_words = 8
-
-        iv = [
+        iv = (
             0x8081_8283_8485_8687, 0x8889_8a8b_8c8d_8e8f, 0x9091_9293_9495_9697, 0x9899_9a9b_9c9d_9e9f,
             0xa0a1_a2a3_a4a5_a6a7, 0xa8a9_aaab_acad_aeaf, 0xb0b1_b2b3_b4b5_b6b7, 0xb8b9_babb_bcbd_bebf,
             0xc0c1_c2c3_c4c5_c6c7, 0xc8c9_cacb_cccd_cecf, 0xd0d1_d2d3_d4d5_d6d7, 0xd8d9_dadb_dcdd_dedf,
             0xe0e1_e2e3_e4e5_e6e7, 0xe8e9_eaeb_eced_eeef, 0xf0f1_f2f3_f4f5_f6f7, 0xf8f9_fafb_fcfd_feff,
-        ]
-
-        final_const = [
+        )
+        final_const = (
             0xaaaa_aaaa_aaaa_aaa0, 0xaaaa_aaaa_aaaa_aaa1, 0xaaaa_aaaa_aaaa_aaa2, 0xaaaa_aaaa_aaaa_aaa3,
             0xaaaa_aaaa_aaaa_aaa4, 0xaaaa_aaaa_aaaa_aaa5, 0xaaaa_aaaa_aaaa_aaa6, 0xaaaa_aaaa_aaaa_aaa7,
             0xaaaa_aaaa_aaaa_aaa8, 0xaaaa_aaaa_aaaa_aaa9, 0xaaaa_aaaa_aaaa_aaaa, 0xaaaa_aaaa_aaaa_aaab,
             0xaaaa_aaaa_aaaa_aaac, 0xaaaa_aaaa_aaaa_aaad, 0xaaaa_aaaa_aaaa_aaae, 0xaaaa_aaaa_aaaa_aaaf,
-        ]
+        )
 
     class RadioGatunBase:
         digest_size = 0x20  # 256 bits
