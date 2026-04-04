@@ -85472,11 +85472,7 @@ class Hash:
         }
 
         static inline uint64_t sub_word(
-            uint64_t w,
-            const uint8_t *s0,
-            const uint8_t *s1,
-            const uint8_t *s2,
-            const uint8_t *s3)
+            uint64_t w, const uint8_t *s0, const uint8_t *s1, const uint8_t *s2, const uint8_t *s3)
         {
             return ((uint64_t)s0[(w >>  0) & 0xff])       |
                    ((uint64_t)s1[(w >>  8) & 0xff] <<  8) |
@@ -85489,12 +85485,7 @@ class Hash:
         }
 
         static inline void sub_bytes_u64(
-            uint64_t *s,
-            int columns,
-            const uint8_t *s0,
-            const uint8_t *s1,
-            const uint8_t *s2,
-            const uint8_t *s3)
+            uint64_t *s, int columns, const uint8_t *s0, const uint8_t *s1, const uint8_t *s2, const uint8_t *s3)
         {
             int col;
             for (col = 0; col < columns; col++) {
@@ -85524,12 +85515,8 @@ class Hash:
         }
 
         static inline uint64_t mix_word(
-            uint64_t w,
-            const uint8_t *t4,
-            const uint8_t *t5,
-            const uint8_t *t6,
-            const uint8_t *t7,
-            const uint8_t *t8)
+            uint64_t w, const uint8_t *t4, const uint8_t *t5,
+            const uint8_t *t6, const uint8_t *t7, const uint8_t *t8)
         {
             uint64_t b0 = (w >>  0) & 0xff;
             uint64_t b1 = (w >>  8) & 0xff;
@@ -85549,24 +85536,12 @@ class Hash:
             uint64_t o6 = t5[b0] ^ b1 ^ t8[b2] ^ t6[b3] ^ t7[b4] ^ t4[b5] ^ b6 ^ b7;
             uint64_t o7 = b0 ^ t5[b1] ^ b2 ^ t8[b3] ^ t6[b4] ^ t7[b5] ^ t4[b6] ^ b7;
 
-            return o0 |
-                   (o1 <<  8) |
-                   (o2 << 16) |
-                   (o3 << 24) |
-                   (o4 << 32) |
-                   (o5 << 40) |
-                   (o6 << 48) |
-                   (o7 << 56);
+            return o0 | (o1 <<  8) | (o2 << 16) | (o3 << 24) | (o4 << 32) | (o5 << 40) | (o6 << 48) | (o7 << 56);
         }
 
         static inline void mix_columns_u64(
-            uint64_t *s,
-            int columns,
-            const uint8_t *t4,
-            const uint8_t *t5,
-            const uint8_t *t6,
-            const uint8_t *t7,
-            const uint8_t *t8)
+            uint64_t *s, int columns, const uint8_t *t4, const uint8_t *t5,
+            const uint8_t *t6, const uint8_t *t7, const uint8_t *t8)
         {
             int col;
             for (col = 0; col < columns; col++) {
@@ -85575,19 +85550,9 @@ class Hash:
         }
 
         static inline void perm_p_u64(
-            uint64_t *s,
-            int columns,
-            int rounds,
-            int shift7,
-            const uint8_t *s0,
-            const uint8_t *s1,
-            const uint8_t *s2,
-            const uint8_t *s3,
-            const uint8_t *t4,
-            const uint8_t *t5,
-            const uint8_t *t6,
-            const uint8_t *t7,
-            const uint8_t *t8)
+            uint64_t *s, int columns, int rounds, int shift7,
+            const uint8_t *s0, const uint8_t *s1, const uint8_t *s2, const uint8_t *s3, const uint8_t *t4,
+            const uint8_t *t5, const uint8_t *t6, const uint8_t *t7, const uint8_t *t8)
         {
             int rnd;
             int col;
@@ -85603,19 +85568,9 @@ class Hash:
         }
 
         static inline void perm_q_u64(
-            uint64_t *s,
-            int columns,
-            int rounds,
-            int shift7,
-            const uint8_t *s0,
-            const uint8_t *s1,
-            const uint8_t *s2,
-            const uint8_t *s3,
-            const uint8_t *t4,
-            const uint8_t *t5,
-            const uint8_t *t6,
-            const uint8_t *t7,
-            const uint8_t *t8)
+            uint64_t *s, int columns, int rounds, int shift7,
+            const uint8_t *s0, const uint8_t *s1, const uint8_t *s2, const uint8_t *s3, const uint8_t *t4,
+            const uint8_t *t5, const uint8_t *t6, const uint8_t *t7, const uint8_t *t8)
         {
             int rnd;
             int col;
@@ -85637,20 +85592,9 @@ class Hash:
         }
 
         void kupyna_process_block(
-            uint64_t *state,
-            const uint8_t *block,
-            int columns,
-            int rounds,
-            int shift7,
-            const uint8_t *s0,
-            const uint8_t *s1,
-            const uint8_t *s2,
-            const uint8_t *s3,
-            const uint8_t *t4,
-            const uint8_t *t5,
-            const uint8_t *t6,
-            const uint8_t *t7,
-            const uint8_t *t8)
+            uint64_t *state, const uint8_t *block, int columns, int rounds, int shift7,
+            const uint8_t *s0, const uint8_t *s1, const uint8_t *s2, const uint8_t *s3, const uint8_t *t4,
+            const uint8_t *t5, const uint8_t *t6, const uint8_t *t7, const uint8_t *t8)
         {
             uint64_t words[16];
             uint64_t t1[16];
@@ -85672,19 +85616,9 @@ class Hash:
         }
 
         void kupyna_output_transform(
-            uint64_t *state,
-            int columns,
-            int rounds,
-            int shift7,
-            const uint8_t *s0,
-            const uint8_t *s1,
-            const uint8_t *s2,
-            const uint8_t *s3,
-            const uint8_t *t4,
-            const uint8_t *t5,
-            const uint8_t *t6,
-            const uint8_t *t7,
-            const uint8_t *t8)
+            uint64_t *state, int columns, int rounds, int shift7,
+            const uint8_t *s0, const uint8_t *s1, const uint8_t *s2, const uint8_t *s3, const uint8_t *t4,
+            const uint8_t *t5, const uint8_t *t6, const uint8_t *t7, const uint8_t *t8)
         {
             uint64_t t[16];
             int i;
@@ -85700,66 +85634,78 @@ class Hash:
             }
         }
         """
-
-        @classmethod
-        def build_cffi_lib(cls):
-            if hasattr(Hash.KupynaBase, "cffi_lib_cache"):
-                return Hash.KupynaBase.cffi_lib_cache
-
-            import cffi
-            ffi = cffi.FFI()
-            ffi.cdef("""
-                void kupyna_process_block(
-                    uint64_t *state, const uint8_t *block, int columns, int rounds, int shift7,
-                    const uint8_t *s0, const uint8_t *s1, const uint8_t *s2, const uint8_t *s3,
-                    const uint8_t *t4, const uint8_t *t5, const uint8_t *t6, const uint8_t *t7,
-                    const uint8_t *t8);
-                void kupyna_output_transform(
-                    uint64_t *state, int columns, int rounds, int shift7,
-                    const uint8_t *s0, const uint8_t *s1, const uint8_t *s2, const uint8_t *s3,
-                    const uint8_t *t4, const uint8_t *t5, const uint8_t *t6, const uint8_t *t7,
-                    const uint8_t *t8);
-            """)
-
-            import warnings
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r"reimporting '_cffi__.*' might overwrite older definitions",
-                    category=UserWarning,
-                    module=r"cffi\.vengine_cpy",
-                )
-                lib = ffi.verify(cls.C_TEMPLATE, extra_compile_args=["-O2"])
-
-            Hash.KupynaBase.cffi_lib_cache = (ffi, lib)
-            return Hash.KupynaBase.cffi_lib_cache
+        DEF_TEMPLATE = r"""
+        void kupyna_process_block(
+            uint64_t *state, const uint8_t *block, int columns, int rounds, int shift7,
+            const uint8_t *s0, const uint8_t *s1, const uint8_t *s2, const uint8_t *s3,
+            const uint8_t *t4, const uint8_t *t5, const uint8_t *t6, const uint8_t *t7, const uint8_t *t8);
+        void kupyna_output_transform(
+            uint64_t *state, int columns, int rounds, int shift7,
+            const uint8_t *s0, const uint8_t *s1, const uint8_t *s2, const uint8_t *s3,
+            const uint8_t *t4, const uint8_t *t5, const uint8_t *t6, const uint8_t *t7, const uint8_t *t8);
+        """
 
         def init_cffi_backend(self):
             try:
-                import cffi  # noqa: F401
+                import cffi
+                import warnings
             except ImportError:
                 self.USE_CFFI = False
                 return
 
-            self.USE_CFFI = True
-            self.ffi, self.clib = Hash.KupynaBase.build_cffi_lib()
+            key = self.__class__
+            base_class = Hash.KupynaBase
 
+            if not hasattr(base_class, "cffi_cache"):
+                base_class.cffi_cache = {}
+
+            # fast return
+            if base_class in base_class.cffi_cache:
+                ffi, lib = base_class.cffi_cache[base_class]
+            else:
+                try:
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings(
+                            "ignore",
+                            message=r"reimporting '_cffi__.*' might overwrite older definitions",
+                            category=UserWarning,
+                            module=r"cffi\.vengine_cpy",
+                        )
+                        ffi = cffi.FFI()
+                        ffi.cdef(base_class.DEF_TEMPLATE)
+                        lib = ffi.verify(base_class.C_TEMPLATE, extra_compile_args=["-O2"])
+                    base_class.cffi_cache[base_class] = (ffi, lib)
+                except Exception:
+                    self.USE_CFFI = False
+                    return
+
+            # Different for each class
             def pack_u8(seq):
-                buf = self.ffi.new("uint8_t[]", len(seq))
+                buf = ffi.new("uint8_t[]", len(seq))
                 for i, v in enumerate(seq):
                     buf[i] = v & 0xff
                 return buf
 
-            if not hasattr(Hash.KupynaBase, "c_s0"):
-                Hash.KupynaBase.c_s0 = pack_u8(self.s0)
-                Hash.KupynaBase.c_s1 = pack_u8(self.s1)
-                Hash.KupynaBase.c_s2 = pack_u8(self.s2)
-                Hash.KupynaBase.c_s3 = pack_u8(self.s3)
-                Hash.KupynaBase.c_t4 = pack_u8(self.mul_tables[4])
-                Hash.KupynaBase.c_t5 = pack_u8(self.mul_tables[5])
-                Hash.KupynaBase.c_t6 = pack_u8(self.mul_tables[6])
-                Hash.KupynaBase.c_t7 = pack_u8(self.mul_tables[7])
-                Hash.KupynaBase.c_t8 = pack_u8(self.mul_tables[8])
+            try:
+                c_s0 = pack_u8(self.s0)
+                c_s1 = pack_u8(self.s1)
+                c_s2 = pack_u8(self.s2)
+                c_s3 = pack_u8(self.s3)
+                c_t4 = pack_u8(self.mul_tables[4])
+                c_t5 = pack_u8(self.mul_tables[5])
+                c_t6 = pack_u8(self.mul_tables[6])
+                c_t7 = pack_u8(self.mul_tables[7])
+                c_t8 = pack_u8(self.mul_tables[8])
+            except Exception:
+                self.USE_CFFI = False
+                return
+
+            # add to cache
+            cffi_obj = collections.namedtuple("CFFI", "ffi lib c_s0 c_s1 c_s2 c_s3 c_t4 c_t5 c_t6 c_t7 c_t8")(
+                ffi, lib, c_s0, c_s1, c_s2, c_s3, c_t4, c_t5, c_t6, c_t7, c_t8,
+            )
+            self.cffi = base_class.cffi_cache[key] = cffi_obj
+            self.USE_CFFI = True
             return
 
         @classmethod
@@ -85791,7 +85737,6 @@ class Hash:
             return
 
         def __init__(self, data=b""):
-            self.ensure_tables()
             if self.columns == 8:
                 self.shift_offsets = (0, 1, 2, 3, 4, 5, 6, 7)
             else:
@@ -85800,6 +85745,7 @@ class Hash:
             self.state[0] = self.block_size
             self.buf = bytearray()
             self.msg_len_bits = 0
+            self.ensure_tables()
             self.init_cffi_backend()
             if data:
                 self.update(data)
@@ -85864,11 +85810,12 @@ class Hash:
 
         def process_block(self, block):
             if self.USE_CFFI:
-                state_buf = self.ffi.new("uint64_t[]", [x & 0xffff_ffff_ffff_ffff for x in self.state])
-                block_buf = self.ffi.new("uint8_t[]", bytes(block))
-                self.clib.kupyna_process_block(
+                state_buf = self.cffi.ffi.new("uint64_t[]", [x & 0xffff_ffff_ffff_ffff for x in self.state])
+                block_buf = self.cffi.ffi.new("uint8_t[]", bytes(block))
+                self.cffi.lib.kupyna_process_block(
                     state_buf, block_buf, self.columns, self.rounds, self.shift_offsets[7],
-                    self.c_s0, self.c_s1, self.c_s2, self.c_s3, self.c_t4, self.c_t5, self.c_t6, self.c_t7, self.c_t8,
+                    self.cffi.c_s0, self.cffi.c_s1, self.cffi.c_s2, self.cffi.c_s3,
+                    self.cffi.c_t4, self.cffi.c_t5, self.cffi.c_t6, self.cffi.c_t7, self.cffi.c_t8,
                 )
                 for i in range(self.columns):
                     self.state[i] = int(state_buf[i])
@@ -85892,9 +85839,10 @@ class Hash:
 
         def output_transform(self):
             if self.USE_CFFI:
-                state_buf = self.ffi.new("uint64_t[]", [x & 0xffff_ffff_ffff_ffff for x in self.state])
-                self.clib.kupyna_output_transform(state_buf, self.columns, self.rounds, self.shift_offsets[7],
-                    self.c_s0, self.c_s1, self.c_s2, self.c_s3, self.c_t4, self.c_t5, self.c_t6, self.c_t7, self.c_t8,
+                state_buf = self.cffi.ffi.new("uint64_t[]", [x & 0xffff_ffff_ffff_ffff for x in self.state])
+                self.cffi.lib.kupyna_output_transform(state_buf, self.columns, self.rounds, self.shift_offsets[7],
+                    self.cffi.c_s0, self.cffi.c_s1, self.cffi.c_s2, self.cffi.c_s3,
+                    self.cffi.c_t4, self.cffi.c_t5, self.cffi.c_t6, self.cffi.c_t7, self.cffi.c_t8,
                 )
                 for i in range(self.columns):
                     self.state[i] = int(state_buf[i])
@@ -86010,40 +85958,90 @@ class Hash:
         rounds = 14
 
     class CubeHash:
-        try:
-            import cffi
-            ffi = cffi.FFI()
-            ffi.cdef("void cube_round(uint32_t *s);")
-            import warnings
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r"reimporting '_cffi__.*' might overwrite older definitions",
-                    category=UserWarning,
-                    module=r"cffi\.vengine_cpy",
-                )
-                lib = ffi.verify("""
-                    #include <stdint.h>
-                    void cube_round(uint32_t *s) {
-                        int i;
-                        for (i = 0; i < 16; i++) s[i+16] += s[i];
-                        for (i = 0; i < 16; i++) s[i] = (s[i] << 7) | (s[i] >> 25);
-                        for (i = 0; i < 8;  i++) { uint32_t t=s[i]; s[i]=s[i+8]; s[i+8]=t; }
-                        for (i = 0; i < 16; i++) s[i] ^= s[i+16];
-                        { int a[]={16,17,20,21,24,25,28,29};
-                          for (i=0;i<8;i++){uint32_t t=s[a[i]];s[a[i]]=s[a[i]+2];s[a[i]+2]=t;} }
-                        for (i = 0; i < 16; i++) s[i+16] += s[i];
-                        for (i = 0; i < 16; i++) s[i] = (s[i] << 11) | (s[i] >> 21);
-                        { int a[]={0,1,2,3,8,9,10,11};
-                          for (i=0;i<8;i++){uint32_t t=s[a[i]];s[a[i]]=s[a[i]+4];s[a[i]+4]=t;} }
-                        for (i = 0; i < 16; i++) s[i] ^= s[i+16];
-                        { int a[]={16,18,20,22,24,26,28,30};
-                          for (i=0;i<8;i++){uint32_t t=s[a[i]];s[a[i]]=s[a[i]+1];s[a[i]+1]=t;} }
-                    }
-                """, extra_compile_args=["-O2"])
-            USE_CFFI = True
-        except Exception:
-            USE_CFFI = False
+        C_TEMPLATE = r"""
+        #include <stdint.h>
+
+        void cube_round(uint32_t *s)
+        {
+            int i;
+            for (i = 0; i < 16; i++) s[i + 16] += s[i];
+            for (i = 0; i < 16; i++) s[i] = (s[i] << 7) | (s[i] >> 25);
+            for (i = 0; i < 8; i++) { uint32_t t = s[i]; s[i] = s[i + 8]; s[i + 8] = t; }
+            for (i = 0; i < 16; i++) s[i] ^= s[i + 16];
+            {
+                int a[] = {16, 17, 20, 21, 24, 25, 28, 29};
+                for (i = 0; i < 8; i++) { uint32_t t = s[a[i]]; s[a[i]] = s[a[i] + 2]; s[a[i] + 2] = t; }
+            }
+            for (i = 0; i < 16; i++) s[i + 16] += s[i];
+            for (i = 0; i < 16; i++) s[i] = (s[i] << 11) | (s[i] >> 21);
+            {
+                int a[] = {0, 1, 2, 3, 8, 9, 10,11};
+                for (i = 0; i < 8; i++) { uint32_t t = s[a[i]]; s[a[i]] = s[a[i] + 4]; s[a[i] + 4] = t; }
+            }
+            for (i = 0; i < 16; i++) s[i] ^= s[i + 16];
+            {
+                int a[] = {16, 18, 20, 22, 24, 26, 28, 30};
+                for (i = 0; i < 8; i++) { uint32_t t = s[a[i]]; s[a[i]] = s[a[i] + 1]; s[a[i] + 1] = t; }
+            }
+        }
+
+        void cube_transform(uint32_t *s, int n_rounds)
+        {
+            int i;
+            for (i = 0; i < n_rounds; i++) {
+                cube_round(s);
+            }
+            return;
+        }
+        """
+        DEF_TEMPLATE = r"""
+        void cube_round(uint32_t *s);
+        void cube_transform(uint32_t *s, int n_rounds);
+        """
+
+        def init_cffi_backend(self):
+            try:
+                import cffi
+                import warnings
+            except ImportError:
+                self.USE_CFFI = False
+                return
+
+            key = self.__class__
+            base_class = Hash.CubeHash
+
+            if not hasattr(base_class, "cffi_cache"):
+                base_class.cffi_cache = {}
+
+            # fast return
+            if key in base_class.cffi_cache:
+                self.cffi = base_class.cffi_cache[key]
+                self.USE_CFFI = True
+                return
+
+            # ffi, lib
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=r"reimporting '_cffi__.*' might overwrite older definitions",
+                        category=UserWarning,
+                        module=r"cffi\.vengine_cpy",
+                    )
+                    ffi = cffi.FFI()
+                    ffi.cdef(base_class.DEF_TEMPLATE)
+                    lib = ffi.verify(base_class.C_TEMPLATE, extra_compile_args=["-O2"])
+            except Exception:
+                self.USE_CFFI = False
+                return
+
+            # add to cache
+            cffi_obj = collections.namedtuple("CFFI", "ffi lib")(
+                ffi, lib,
+            )
+            self.cffi = base_class.cffi_cache[key] = cffi_obj
+            self.USE_CFFI = True
+            return
 
         def __init__(self, data=b"", params="CubeHash160+16/32+160-256"):
             if not isinstance(data, (bytes, bytearray, memoryview)):
@@ -86052,6 +86050,7 @@ class Hash:
             self.msg_len = 0
             self.finalized = False
             self.set_params(params)
+            self.init_cffi_backend()
             self.init_state()
             if data:
                 self.update(data)
@@ -86087,8 +86086,7 @@ class Hash:
 
         def init_state(self):
             if self.USE_CFFI:
-                self.cbuf = self.ffi.new("uint32_t[32]")
-                self.state = self.cbuf
+                self.state = self.cffi.ffi.new("uint32_t[32]")
             else:
                 self.state = [0] * 32
             self.state[0] = self.h // 8
@@ -86148,38 +86146,34 @@ class Hash:
         def hexdigest(self):
             return self.digest().hex()
 
-        def round(self):
+        def transform(self, n_rounds):
             if self.USE_CFFI:
-                self.lib.cube_round(self.state)
+                self.cffi.lib.cube_transform(self.state, n_rounds)
                 return
 
             # --- pure Python ---
             state = self.state
-            for i in range(16):
-                state[i + 16] = (state[i] + state[i + 16]) & 0xffff_ffff
-            for i in range(16):
-                state[i] = ((state[i] << 7) | (state[i] >> 25)) & 0xffff_ffff
-            for i in range(8):
-                state[i], state[i + 8] = state[i + 8], state[i]
-            for i in range(16):
-                state[i] ^= state[i + 16]
-            for i in [16, 17, 20, 21, 24, 25, 28, 29]:
-                state[i], state[i + 2] = state[i + 2], state[i]
-            for i in range(16):
-                state[i + 16] = (state[i] + state[i + 16]) & 0xffff_ffff
-            for i in range(16):
-                state[i] = ((state[i] << 11) | (state[i] >> 21)) & 0xffff_ffff
-            for i in [0, 1, 2, 3, 8, 9, 10, 11]:
-                state[i], state[i + 4] = state[i + 4], state[i]
-            for i in range(16):
-                state[i] ^= state[i + 16]
-            for i in [16, 18, 20, 22, 24, 26, 28, 30]:
-                state[i], state[i + 1] = state[i + 1], state[i]
-            return
-
-        def transform(self, n_rounds):
             for _ in range(n_rounds):
-                self.round()
+                for i in range(16):
+                    state[i + 16] = (state[i] + state[i + 16]) & 0xffff_ffff
+                for i in range(16):
+                    state[i] = ((state[i] << 7) | (state[i] >> 25)) & 0xffff_ffff
+                for i in range(8):
+                    state[i], state[i + 8] = state[i + 8], state[i]
+                for i in range(16):
+                    state[i] ^= state[i + 16]
+                for i in [16, 17, 20, 21, 24, 25, 28, 29]:
+                    state[i], state[i + 2] = state[i + 2], state[i]
+                for i in range(16):
+                    state[i + 16] = (state[i] + state[i + 16]) & 0xffff_ffff
+                for i in range(16):
+                    state[i] = ((state[i] << 11) | (state[i] >> 21)) & 0xffff_ffff
+                for i in [0, 1, 2, 3, 8, 9, 10, 11]:
+                    state[i], state[i + 4] = state[i + 4], state[i]
+                for i in range(16):
+                    state[i] ^= state[i + 16]
+                for i in [16, 18, 20, 22, 24, 26, 28, 30]:
+                    state[i], state[i + 1] = state[i + 1], state[i]
             return
 
         def xor_block(self, block):
@@ -87708,7 +87702,7 @@ class Hash:
 
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
-                raise TypeError("data must be bytes or bytearray")
+                raise TypeError("data must be bytes-like")
             self.buf.extend(data)
             self.msg_len += len(data)
             return self
@@ -89140,7 +89134,6 @@ class Hash:
         #include <stdint.h>
         #include <string.h>
 
-        /* ---- sbox (Serpent S0 variant) ---- */
         static inline void sbox(uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d)
         {
             uint32_t t = *a;
@@ -89161,7 +89154,6 @@ class Hash:
             *d = (~t) & 0xffffffffu;
         }
 
-        /* ---- linear transform ---- */
         static inline void linear(uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d)
         {
             *a = ((*a << 13) | (*a >> 19)) & 0xffffffffu;
@@ -89175,20 +89167,9 @@ class Hash:
             *a = ((*a <<  5) | (*a >> 27)) & 0xffffffffu;
             *c = ((*c << 22) | (*c >> 10)) & 0xffffffffu;
         }
-
-        /* ====================================================================
-           compress_small  (block_size=4, 3 or 6 rounds, 16-word state)
-           expand_small_tables must be pre-computed by Python and passed as
-           a flat array: 4 * 256 * 8 uint32_t values.
-           ==================================================================== */
         void compress_small(
-            uint32_t       *h,            /* 8 words, updated in-place          */
-            const uint8_t  *block,        /* 4 bytes                            */
-            int             final_round,
-            const uint32_t *alpha,        /* alpha_f or alpha_n, 0x1c entries   */
-            const uint32_t *tables)       /* 4 * 256 * 8 uint32_t               */
+            uint32_t *h, const uint8_t *block, int final_round, const uint32_t *alpha, const uint32_t *tables)
         {
-            /* expand block byte → 8-word row via precomputed tables */
             const uint32_t *t0 = tables + (size_t)block[0] * 8;
             const uint32_t *t1 = tables + 256*8 + (size_t)block[1] * 8;
             const uint32_t *t2 = tables + 512*8 + (size_t)block[2] * 8;
@@ -89225,8 +89206,6 @@ class Hash:
                 linear(&s3, &s4, &s9,  &s14);
             }
 
-            /* Matches Python: h[7]^=s11, h[6]^=s10, h[5]^=s9, h[4]^=s8,
-                              h[3]^=s3,  h[2]^=s2,  h[1]^=s1, h[0]^=s0  */
             h[0] ^= s0;
             h[1] ^= s1;
             h[2] ^= s2;
@@ -89237,16 +89216,8 @@ class Hash:
             h[7] ^= s11;
         }
 
-        /* ====================================================================
-           compress_big  (block_size=8, 6 or 12 rounds, 32-word state)
-           expand_big_tables: 8 * 256 * 16 uint32_t values
-           ==================================================================== */
         void compress_big(
-            uint32_t       *h,            /* 16 words, updated in-place         */
-            const uint8_t  *block,        /* 8 bytes                            */
-            int             final_round,
-            const uint32_t *alpha,        /* 0x20 entries                       */
-            const uint32_t *tables)       /* 8 * 256 * 16 uint32_t              */
+            uint32_t *h, const uint8_t *block, int final_round, const uint32_t *alpha, const uint32_t *tables)
         {
             const size_t stride = 256 * 16;
             const uint32_t *tt[8];
@@ -89309,40 +89280,88 @@ class Hash:
             h[12] ^= s14; h[13] ^= s15; h[14] ^= s16; h[15] ^= s17;
         }
         """
+        DEF_TEMPLATE = r"""
+        void compress_small(uint32_t *h, const uint8_t *block, int final_round,
+            const uint32_t *alpha, const uint32_t *tables);
+        void compress_big(uint32_t *h, const uint8_t *block, int final_round,
+            const uint32_t *alpha, const uint32_t *tables);
+        """
 
-        @classmethod
-        def build_cffi_lib(cls):
-            if hasattr(Hash.HamsiBase, "cffi_lib_cache"):
-                return Hash.HamsiBase.cffi_lib_cache
+        def init_cffi_backend(self):
+            try:
+                import cffi
+                import warnings
+            except ImportError:
+                self.USE_CFFI = False
+                return
 
-            import cffi
-            ffi = cffi.FFI()
-            ffi.cdef("""
-                void compress_small(
-                    uint32_t       *h,
-                    const uint8_t  *block,
-                    int             final_round,
-                    const uint32_t *alpha,
-                    const uint32_t *tables);
-                void compress_big(
-                    uint32_t       *h,
-                    const uint8_t  *block,
-                    int             final_round,
-                    const uint32_t *alpha,
-                    const uint32_t *tables);
-            """)
-            import warnings
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r"reimporting '_cffi__.*' might overwrite older definitions",
-                    category=UserWarning,
-                    module=r"cffi\.vengine_cpy",
-                )
-                lib = ffi.verify(cls.C_TEMPLATE, extra_compile_args=["-O2"])
+            key = self.__class__
+            base_class = Hash.HamsiBase
 
-            Hash.HamsiBase.cffi_lib_cache = (ffi, lib)
-            return Hash.HamsiBase.cffi_lib_cache
+            if not hasattr(base_class, "cffi_cache"):
+                base_class.cffi_cache = {}
+
+            # fast return
+            if key in base_class.cffi_cache:
+                self.cffi = base_class.cffi_cache[key]
+                self.USE_CFFI = True
+                return
+
+            # ffi, lib
+            if base_class in base_class.cffi_cache:
+                ffi, lib = base_class.cffi_cache[base_class]
+            else:
+                try:
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings(
+                            "ignore",
+                            message=r"reimporting '_cffi__.*' might overwrite older definitions",
+                            category=UserWarning,
+                            module=r"cffi\.vengine_cpy",
+                        )
+                        ffi = cffi.FFI()
+                        ffi.cdef(base_class.DEF_TEMPLATE)
+                        lib = ffi.verify(base_class.C_TEMPLATE, extra_compile_args=["-O2"])
+                    base_class.cffi_cache[base_class] = (ffi, lib)
+                except Exception:
+                    self.USE_CFFI = False
+                    return
+
+            # Different for each class
+            def pack_alpha(alpha_seq):
+                buf = ffi.new("uint32_t[]", len(alpha_seq))
+                for i, v in enumerate(alpha_seq):
+                    buf[i] = v & 0xffff_ffff
+                return buf
+
+            def pack_tables(tables, size):
+                total_words = size * 256 * (size * 2)
+                buf = ffi.new("uint32_t[]", total_words)
+                pos = 0
+                for t in tables:
+                    for row in t:
+                        for v in row:
+                            buf[pos] = v & 0xffff_ffff
+                            pos += 1
+                return buf
+            try:
+                alpha_n = pack_alpha(self.alpha_n)
+                alpha_f = pack_alpha(self.alpha_f)
+                if self.block_size == 4:
+                    tables = pack_tables(self.expand_small_tables, 4)
+                elif self.block_size == 8:
+                    tables = pack_tables(self.expand_big_tables, 8)
+            except Exception:
+                self.USE_CFFI = False
+                return
+
+            # add to cache
+            cffi_obj = collections.namedtuple("CFFI", "ffi lib alpha_n alpha_f tables")(
+                ffi, lib, alpha_n, alpha_f, tables,
+            )
+            self.cffi = base_class.cffi_cache[key] = cffi_obj
+            self.USE_CFFI = True
+            return
 
         @classmethod
         def build_expand_small_tables(cls):
@@ -89473,41 +89492,6 @@ class Hash:
                 words = self.h
             return struct.pack(">" + ("I" * len(words)), *words)
 
-        def init_cffi_backend(self):
-            try:
-                import cffi  # noqa: F401
-            except ImportError:
-                self.USE_CFFI = False
-                return
-
-            self.USE_CFFI = True
-            self.ffi, self.clib = Hash.HamsiBase.build_cffi_lib()
-
-            def pack_alpha(alpha_seq):
-                buf = self.ffi.new("uint32_t[]", len(alpha_seq))
-                for i, v in enumerate(alpha_seq):
-                    buf[i] = v & 0xffff_ffff
-                return buf
-
-            def pack_tables(tables, size):
-                total_words = size * 256 * (size * 2)
-                buf = self.ffi.new("uint32_t[]", total_words)
-                pos = 0
-                for t in tables:
-                    for row in t:
-                        for v in row:
-                            buf[pos] = v & 0xffff_ffff
-                            pos += 1
-                return buf
-
-            self.c_alpha_n = pack_alpha(self.alpha_n)
-            self.c_alpha_f = pack_alpha(self.alpha_f)
-            if self.block_size == 4:
-                self.c_tables = pack_tables(self.expand_small_tables, 4)
-            elif self.block_size == 8:
-                self.c_tables = pack_tables(self.expand_big_tables, 8)
-            return
-
         def sbox(self, a, b, c, d):
             t = a
             a = (a & c) ^ d
@@ -89542,18 +89526,18 @@ class Hash:
 
         def compress_small(self, block, final_round):
             if self.USE_CFFI:
-                hbuf = self.ffi.new("uint32_t[]", len(self.h))
+                hbuf = self.cffi.ffi.new("uint32_t[]", len(self.h))
                 for i, v in enumerate(self.h):
                     hbuf[i] = v
-                blk = self.ffi.new("uint8_t[]", bytes(block))
-                alpha = self.c_alpha_f if final_round else self.c_alpha_n
-                self.clib.compress_small(hbuf, blk, int(final_round), alpha, self.c_tables)
+                blk = self.cffi.ffi.new("uint8_t[]", bytes(block))
+                alpha = self.cffi.alpha_f if final_round else self.cffi.alpha_n
+                self.cffi.lib.compress_small(hbuf, blk, int(final_round), alpha, self.cffi.tables)
                 for i in range(len(self.h)):
                     self.h[i] = hbuf[i]
                 return
 
             # --- pure Python ---
-            t0, t1, t2, t3 = type(self).expand_small_tables
+            t0, t1, t2, t3 = self.expand_small_tables
             a0, a1, a2, a3 = t0[block[0]], t1[block[1]], t2[block[2]], t3[block[3]]
             m = [x0 ^ x1 ^ x2 ^ x3 for x0, x1, x2, x3 in zip(a0, a1, a2, a3)]
             h = self.h
@@ -89606,18 +89590,18 @@ class Hash:
 
         def compress_big(self, block, final_round):
             if self.USE_CFFI:
-                hbuf = self.ffi.new("uint32_t[]", len(self.h))
+                hbuf = self.cffi.ffi.new("uint32_t[]", len(self.h))
                 for i, v in enumerate(self.h):
                     hbuf[i] = v
-                blk = self.ffi.new("uint8_t[]", bytes(block))
-                alpha = self.c_alpha_f if final_round else self.c_alpha_n
-                self.clib.compress_big(hbuf, blk, int(final_round), alpha, self.c_tables)
+                blk = self.cffi.ffi.new("uint8_t[]", bytes(block))
+                alpha = self.cffi.alpha_f if final_round else self.cffi.alpha_n
+                self.cffi.lib.compress_big(hbuf, blk, int(final_round), alpha, self.cffi.tables)
                 for i in range(len(self.h)):
                     self.h[i] = hbuf[i]
                 return
 
             # --- pure Python ---
-            t0, t1, t2, t3, t4, t5, t6, t7 = self.__class__.expand_big_tables
+            t0, t1, t2, t3, t4, t5, t6, t7 = self.expand_big_tables
             a0, a1, a2, a3 = t0[block[0]], t1[block[1]], t2[block[2]], t3[block[3]]
             a4, a5, a6, a7 = t4[block[4]], t5[block[5]], t6[block[6]], t7[block[7]]
             m = [x0 ^ x1 ^ x2 ^ x3 ^ x4 ^ x5 ^ x6 ^ x7 for x0, x1, x2, x3, x4, x5, x6, x7 in zip(a0, a1, a2, a3, a4, a5, a6, a7)]
@@ -89779,33 +89763,280 @@ class Hash:
                 (0x08, 0x0a, 0x0a, 0x08, 0x0f, 0x10),
             ),
         }
+        C_TEMPLATE = r"""
+        #include <stdint.h>
 
-        def build_step_constants(self, w):
+        static uint32_t rol32(uint32_t x, int n)
+        {
+            return ((x << n) | (x >> (32 - n))) & 0xffffffffU;
+        }
 
-            def step_const_gen(tl, tr):
-                # Section 4.4: one step of constant generator (pseudo code in the spec)
-                c = (tl >> 31) & 1
-                tl2 = ((tl << 1) | (tr >> 31)) & 0xffff_ffff
-                tr2 = (tr << 1) & 0xffff_ffff
-                if c == 1:
-                    tl2 ^= 0xc4d6_496c
-                    tr2 ^= 0x55c6_1c8d
-                # SWAP(tl, tr)
-                tl3, tr3 = tr2, tl2
-                step_const = tr3
-                return tl3, tr3, step_const
+        static void scalar_mul(const uint32_t *vec, unsigned int coeff, uint32_t *out)
+        {
+            uint32_t tmp[8];
+            uint32_t res[8];
+            int i, k;
 
-            # Section 4.4: generates (c_{j,0}, c_{j,4}) for r=0..7 using the constant generator
-            out = []
-            for j in range(w):
-                tl, tr = self.C_INIT[j]
-                jconst = []
-                for _r in range(8):
-                    tl, tr, c0 = step_const_gen(tl, tr)
-                    tl, tr, c4 = step_const_gen(tl, tr)
-                    jconst.append((c0, c4))
-                out.append(jconst)
-            return out
+            coeff &= 0xffU;
+            for (k = 0; k < 8; k++) {
+                tmp[k] = vec[k];
+                res[k] = 0;
+            }
+            if (coeff == 0) {
+                for (k = 0; k < 8; k++) {
+                    out[k] = 0;
+                }
+                return;
+            }
+            if (coeff == 1) {
+                for (k = 0; k < 8; k++) {
+                    out[k] = vec[k];
+                }
+                return;
+            }
+            for (i = 0; i < 8; i++) {
+                if ((coeff >> i) & 1U) {
+                    for (k = 0; k < 8; k++) {
+                        res[k] ^= tmp[k];
+                    }
+                }
+                {
+                    uint32_t a0 = tmp[0];
+                    uint32_t a1 = tmp[1];
+                    uint32_t a2 = tmp[2];
+                    uint32_t a3 = tmp[3];
+                    uint32_t a4 = tmp[4];
+                    uint32_t a5 = tmp[5];
+                    uint32_t a6 = tmp[6];
+                    uint32_t a7 = tmp[7];
+                    uint32_t t = a7;
+                    tmp[0] = t;
+                    tmp[1] = a0 ^ t;
+                    tmp[2] = a1;
+                    tmp[3] = a2 ^ t;
+                    tmp[4] = a3 ^ t;
+                    tmp[5] = a4;
+                    tmp[6] = a5;
+                    tmp[7] = a6;
+                }
+            }
+            for (k = 0; k < 8; k++) {
+                out[k] = res[k];
+            }
+        }
+
+        static void subcrumb(uint32_t *r0, uint32_t *r1, uint32_t *r2, uint32_t *r3)
+        {
+            uint32_t t4 = *r0;
+            *r0 |= *r1;
+            *r2 ^= *r3;
+            *r1 = (~(*r1)) & 0xffffffffU;
+            *r0 ^= *r3;
+            *r3 &= t4;
+            *r1 ^= *r3;
+            *r3 ^= *r2;
+            *r2 &= *r0;
+            *r0 = (~(*r0)) & 0xffffffffU;
+            *r2 ^= *r1;
+            *r1 |= *r3;
+            t4 ^= *r1;
+            *r3 ^= *r2;
+            *r2 &= *r1;
+            *r1 ^= *r0;
+            *r0 = t4;
+        }
+
+        static void mixword(uint32_t *xk, uint32_t *xk4)
+        {
+            uint32_t yk4 = *xk4 ^ *xk;
+            uint32_t yk = rol32(*xk, 2);
+            yk ^= yk4;
+            yk4 = rol32(yk4, 14);
+            yk4 ^= yk;
+            yk = rol32(yk, 10);
+            yk ^= yk4;
+            yk4 = rol32(yk4, 1);
+            *xk = yk;
+            *xk4 = yk4;
+        }
+
+        void luffa_round(uint32_t *state, const uint32_t *m, int w, const uint32_t *step_const, const uint8_t *mi_mat)
+        {
+            uint32_t xs[5][8];
+            uint32_t term[8];
+            int j, k, idx, r;
+            int input_count = w + 1;
+
+            for (j = 0; j < w; j++) {
+                for (k = 0; k < 8; k++) {
+                    xs[j][k] = 0;
+                }
+                for (idx = 0; idx < input_count; idx++) {
+                    unsigned int coeff = mi_mat[j * input_count + idx];
+                    const uint32_t *vec;
+                    if (coeff == 0) {
+                        continue;
+                    }
+                    if (idx < w) {
+                        vec = state + (idx * 8);
+                    } else {
+                        vec = m;
+                    }
+                    if (coeff == 1) {
+                        for (k = 0; k < 8; k++) {
+                            xs[j][k] ^= vec[k];
+                        }
+                    } else {
+                        scalar_mul(vec, coeff, term);
+                        for (k = 0; k < 8; k++) {
+                            xs[j][k] ^= term[k];
+                        }
+                    }
+                }
+            }
+
+            for (j = 0; j < w; j++) {
+                uint32_t a[8];
+                for (k = 0; k < 8; k++) {
+                    a[k] = xs[j][k] & 0xffffffffU;
+                }
+                for (k = 4; k < 8; k++) {
+                    if (j != 0) {
+                        a[k] = rol32(a[k], j);
+                    }
+                }
+                for (r = 0; r < 8; r++) {
+                    uint32_t t0, t1, t2, t3;
+
+                    subcrumb(&a[0], &a[1], &a[2], &a[3]);
+                    t0 = a[5];
+                    t1 = a[6];
+                    t2 = a[7];
+                    t3 = a[4];
+                    subcrumb(&t0, &t1, &t2, &t3);
+                    a[5] = t0;
+                    a[6] = t1;
+                    a[7] = t2;
+                    a[4] = t3;
+
+                    for (k = 0; k < 4; k++) {
+                        mixword(&a[k], &a[k + 4]);
+                    }
+                    a[0] ^= step_const[j * 16 + (r * 2) + 0];
+                    a[4] ^= step_const[j * 16 + (r * 2) + 1];
+                }
+                for (k = 0; k < 8; k++) {
+                    state[j * 8 + k] = a[k];
+                }
+            }
+        }
+        """
+        DEF_TEMPLATE = r"""
+        void luffa_round(uint32_t *state, const uint32_t *m, int w, const uint32_t *step_const, const uint8_t *mi_mat);
+        """
+
+        def init_cffi_backend(self):
+            try:
+                import cffi
+                import warnings
+            except ImportError:
+                self.USE_CFFI = False
+                return
+
+            key = self.__class__
+            base_class = Hash.LuffaBase
+
+            if not hasattr(base_class, "cffi_cache"):
+                base_class.cffi_cache = {}
+
+            # fast return
+            if key in base_class.cffi_cache:
+                self.cffi = base_class.cffi_cache[key]
+                self.USE_CFFI = True
+                return
+
+            # ffi, lib
+            if base_class in base_class.cffi_cache:
+                ffi, lib = base_class.cffi_cache[base_class]
+            else:
+                try:
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings(
+                            "ignore",
+                            message=r"reimporting '_cffi__.*' might overwrite older definitions",
+                            category=UserWarning,
+                            module=r"cffi\.vengine_cpy",
+                        )
+                        ffi = cffi.FFI()
+                        ffi.cdef(base_class.DEF_TEMPLATE)
+                        lib = ffi.verify(base_class.C_TEMPLATE, extra_compile_args=["-O2"])
+                    base_class.cffi_cache[base_class] = (ffi, lib)
+                except Exception:
+                    self.USE_CFFI = False
+                    return
+
+            # Different for each class
+            try:
+                step_const = ffi.new("uint32_t[]", self.step_const_flat)
+                mi_mat = ffi.new("uint8_t[]", self.mi_mat_flat)
+            except Exception:
+                self.USE_CFFI = False
+                return
+
+            # add to cache
+            cffi_obj = collections.namedtuple("CFFI", "ffi lib step_const mi_mat")(
+                ffi, lib, step_const, mi_mat,
+            )
+            self.cffi = base_class.cffi_cache[key] = cffi_obj
+            self.USE_CFFI = True
+            return
+
+        @classmethod
+        def prepare_constants(cls):
+            if not hasattr(cls, "step_const"):
+                # Section 4.4: generates (c_{j,0}, c_{j,4}) for r=0..7 using the constant generator
+                out = []
+                for j in range(cls.w):
+                    tl, tr = cls.C_INIT[j]
+                    jconst = []
+                    for _ in range(8):
+                        # Section 4.4: one step of constant generator (pseudo code in the spec)
+                        c = (tl >> 31) & 1
+                        tl2 = ((tl << 1) | (tr >> 31)) & 0xffff_ffff
+                        tr2 = (tr << 1) & 0xffff_ffff
+                        if c == 1:
+                            tl2 ^= 0xc4d6_496c
+                            tr2 ^= 0x55c6_1c8d
+                        tl, tr = tr2, tl2
+                        c0 = tr
+
+                        c = (tl >> 31) & 1
+                        tl2 = ((tl << 1) | (tr >> 31)) & 0xffff_ffff
+                        tr2 = (tr << 1) & 0xffff_ffff
+                        if c == 1:
+                            tl2 ^= 0xc4d6_496c
+                            tr2 ^= 0x55c6_1c8d
+                        tl, tr = tr2, tl2
+                        c4 = tr
+                        jconst.append((c0, c4))
+                    out.append(tuple(jconst))
+                cls.step_const = tuple(out)
+
+            if not hasattr(cls, "step_const_flat"):
+                step_const_flat = []
+                for j in range(cls.w):
+                    for r in range(8):
+                        c0, c4 = cls.step_const[j][r]
+                        step_const_flat.append(c0)
+                        step_const_flat.append(c4)
+                cls.step_const_flat = tuple(step_const_flat)
+
+            if not hasattr(cls, "mi_mat_flat"):
+                mi_mat_flat = []
+                for row in cls.MI_MAT[cls.w]:
+                    mi_mat_flat.extend(row)
+                cls.mi_mat_flat = bytes(mi_mat_flat)
+            return
 
         def __init__(self, data=b""):
             if self.w is None or self.digest_size is None:
@@ -89813,22 +90044,22 @@ class Hash:
             self.H = [list(self.V[i]) for i in range(self.w)]
             self.buf = bytearray()
             self.msg_len = 0
-            self.step_const = self.build_step_constants(self.w)
+            self.prepare_constants()
+            self.init_cffi_backend()
             if data:
                 self.update(data)
             return
 
         def copy(self):
             other = self.__class__()
-            other.H = [list(b) for b in self.H]
+            other.H = [list(block) for block in self.H]
             other.buf = bytearray(self.buf)
             other.msg_len = self.msg_len
-            other.step_const = self.step_const
             return other
 
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
-                raise TypeError("data must be bytes or bytearray")
+                raise TypeError("data must be bytes-like")
             data = bytes(data)
             self.msg_len += len(data)
             self.buf.extend(data)
@@ -89859,7 +90090,7 @@ class Hash:
 
         def compress(self, block):
             if not isinstance(block, (bytes, bytearray, memoryview)):
-                raise TypeError("block must be bytes or bytearray")
+                raise TypeError("block must be bytes-like")
             block = bytes(block)
             if len(block) != self.block_size:
                 raise ValueError("block must be 32 bytes")
@@ -89900,6 +90131,19 @@ class Hash:
             return z
 
         def round_function(self, m):
+            if self.USE_CFFI:
+                state_flat = []
+                for j in range(self.w):
+                    state_flat.extend(self.H[j])
+                state_buf = self.cffi.ffi.new("uint32_t[]", state_flat)
+                m_buf = self.cffi.ffi.new("uint32_t[]", m)
+                self.cffi.lib.luffa_round(state_buf, m_buf, self.w, self.cffi.step_const, self.cffi.mi_mat)
+                for j in range(self.w):
+                    base = j * 8
+                    self.H[j] = [int(state_buf[base + k]) for k in range(8)]
+                return
+
+            # --- pure Python ---
             xs = self.message_injection(m)
             for j in range(self.w):
                 self.H[j] = self.permute(xs[j], j)
@@ -89924,20 +90168,6 @@ class Hash:
             return outs
 
         def scalar_mul(self, vec, coeff):
-
-            def mul2(a):
-                # Appendix E: multiplication by x in GF(2^8)^32 (phi(x)=x^8+x^4+x^3+x+1)
-                tmp = a[7]
-                b0 = tmp
-                b1 = a[0] ^ tmp
-                b2 = a[1]
-                b3 = a[2] ^ tmp
-                b4 = a[3] ^ tmp
-                b5 = a[4]
-                b6 = a[5]
-                b7 = a[6]
-                return [b0, b1, b2, b3, b4, b5, b6, b7]
-
             coeff &= 0xff
             if coeff == 0:
                 return [0] * 8
@@ -89949,7 +90179,9 @@ class Hash:
                 if (coeff >> i) & 1:
                     for k in range(8):
                         res[k] ^= tmp[k]
-                tmp = mul2(tmp)
+                # Appendix E: multiplication by x in GF(2^8)^32 (phi(x)=x^8+x^4+x^3+x+1)
+                t = tmp[7]
+                tmp = [t, tmp[0] ^ t, tmp[1], tmp[2] ^ t, tmp[3] ^ t, tmp[4], tmp[5], tmp[6]]
             return res
 
         def permute(self, words, j):
@@ -90292,52 +90524,38 @@ class Hash:
         C_TEMPLATE = r"""
         #include <stdint.h>
 
-        static uint32_t rol32(uint32_t x, int n) {
+        static uint32_t rol32(uint32_t x, int n)
+        {
             return ((x << n) | (x >> (32 - n))) & 0xffffffffU;
         }
 
-        static int lift257(int v) {
-            if (v > 0x80) {
+        static int lift257(int v)
+        {
+            if (v > 0x80)
                 return v - 0x101;
-            }
             return v;
         }
 
-        static uint32_t pack_code(int x, int y, int c) {
+        static uint32_t pack_code(int x, int y, int c)
+        {
             uint32_t lo = ((uint32_t)(c * lift257(x))) & 0xffffU;
             uint32_t hi = ((uint32_t)(c * lift257(y))) & 0xffffU;
             return lo | (hi << 16);
         }
 
         static const uint8_t perm_table[32] = {
-            0x04, 0x06, 0x00, 0x02, 0x07, 0x05, 0x03, 0x01,
-            0x0f, 0x0b, 0x0c, 0x08, 0x09, 0x0d, 0x0a, 0x0e,
-            0x11, 0x12, 0x17, 0x14, 0x16, 0x15, 0x10, 0x13,
-            0x1e, 0x18, 0x19, 0x1f, 0x1b, 0x1d, 0x1c, 0x1a,
+            0x04, 0x06, 0x00, 0x02, 0x07, 0x05, 0x03, 0x01, 0x0f, 0x0b, 0x0c, 0x08, 0x09, 0x0d, 0x0a, 0x0e,
+            0x11, 0x12, 0x17, 0x14, 0x16, 0x15, 0x10, 0x13, 0x1e, 0x18, 0x19, 0x1f, 0x1b, 0x1d, 0x1c, 0x1a,
         };
 
         static const uint8_t round_pis[4][4] = {
-            {0x03, 0x17, 0x11, 0x1b},
-            {0x1c, 0x13, 0x16, 0x07},
-            {0x1d, 0x09, 0x0f, 0x05},
-            {0x04, 0x0d, 0x0a, 0x19},
+            {0x03, 0x17, 0x11, 0x1b}, {0x1c, 0x13, 0x16, 0x07}, {0x1d, 0x09, 0x0f, 0x05}, {0x04, 0x0d, 0x0a, 0x19},
         };
 
         static void step_if(
-            uint32_t *a,
-            uint32_t *b,
-            uint32_t *c,
-            uint32_t *d,
-            const uint32_t *w_vec,
-            int lanes,
-            int r,
-            int s,
-            int p
-        ) {
-            uint32_t new_a[8];
-            uint32_t new_b[8];
-            uint32_t new_c[8];
-            uint32_t new_d[8];
+            uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d, const uint32_t *w_vec, int lanes, int r, int s, int p)
+        {
+            uint32_t new_a[8], new_b[8], new_c[8], new_d[8];
             int j;
 
             for (j = 0; j < lanes; j++) {
@@ -90363,16 +90581,8 @@ class Hash:
         }
 
         static void step_maj(
-            uint32_t *a,
-            uint32_t *b,
-            uint32_t *c,
-            uint32_t *d,
-            const uint32_t *w_vec,
-            int lanes,
-            int r,
-            int s,
-            int p
-        ) {
+            uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d, const uint32_t *w_vec, int lanes, int r, int s, int p)
+        {
             uint32_t new_a[8];
             uint32_t new_b[8];
             uint32_t new_c[8];
@@ -90402,17 +90612,9 @@ class Hash:
         }
 
         static void compress_generic(
-            uint32_t       *state,
-            const uint8_t  *block,
-            int             final_flag,
-            const uint16_t *rows_normal,
-            const uint16_t *rows_final,
-            const uint8_t  *p_xor_table,
-            int             lanes,
-            int             block_size,
-            int             ntt_n,
-            int             z_stride
-        ) {
+            uint32_t *state, const uint8_t *block, int final_flag, const uint16_t *rows_normal,
+            const uint16_t *rows_final, const uint8_t *p_xor_table, int lanes, int block_size, int ntt_n, int z_stride)
+        {
             const uint16_t *rows = final_flag ? rows_final : rows_normal;
             int row_stride = block_size + 1;
             int half_n = ntt_n / 2;
@@ -90423,10 +90625,7 @@ class Hash:
             uint32_t z[32][8];
             uint32_t w[32][8];
             uint32_t m_words[32];
-            uint32_t a[8];
-            uint32_t b[8];
-            uint32_t c[8];
-            uint32_t d[8];
+            uint32_t a[8], b[8], c[8], d[8];
 
             int i = 0;
             int j = 0;
@@ -90524,74 +90723,96 @@ class Hash:
         }
 
         void compress_small(
-            uint32_t       *state,
-            const uint8_t  *block,
-            int             final_flag,
-            const uint16_t *rows_normal,
-            const uint16_t *rows_final,
-            const uint8_t  *p_xor_table
-        ) {
+            uint32_t *state, const uint8_t *block, int final_flag, const uint16_t *rows_normal,
+            const uint16_t *rows_final, const uint8_t *p_xor_table)
+        {
             compress_generic(state, block, final_flag, rows_normal, rows_final, p_xor_table, 4, 64, 128, 8);
         }
 
         void compress_big(
-            uint32_t       *state,
-            const uint8_t  *block,
-            int             final_flag,
-            const uint16_t *rows_normal,
-            const uint16_t *rows_final,
-            const uint8_t  *p_xor_table
-        ) {
+            uint32_t *state, const uint8_t *block, int final_flag, const uint16_t *rows_normal,
+            const uint16_t *rows_final, const uint8_t *p_xor_table)
+        {
             compress_generic(state, block, final_flag, rows_normal, rows_final, p_xor_table, 8, 128, 256, 16);
         }
         """
+        DEF_TEMPLATE = r"""
+        void compress_small(
+            uint32_t *state, const uint8_t *block, int final_flag, const uint16_t *rows_normal,
+            const uint16_t *rows_final, const uint8_t  *p_xor_table);
+        void compress_big(
+            uint32_t *state, const uint8_t *block, int final_flag, const uint16_t *rows_normal,
+            const uint16_t *rows_final, const uint8_t *p_xor_table);
+        """
 
-        def __init__(self, data=b""):
-            self.state = list(self.iv_words)
-            self.buf = bytearray()
-            self.msg_len = 0
-            self.prepare_constants()
-            self.init_cffi_backend()
-            if data:
-                self.update(data)
+        def init_cffi_backend(self):
+            try:
+                import cffi
+                import warnings
+            except ImportError:
+                self.USE_CFFI = False
+                return
+
+            key = self.__class__
+            base_class = Hash.SIMDBase
+
+            if not hasattr(base_class, "cffi_cache"):
+                base_class.cffi_cache = {}
+
+            # fast return
+            if key in base_class.cffi_cache:
+                self.cffi = base_class.cffi_cache[key]
+                self.USE_CFFI = True
+                return
+
+            # ffi, lib
+            if base_class in base_class.cffi_cache:
+                ffi, lib = base_class.cffi_cache[base_class]
+            else:
+                try:
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings(
+                            "ignore",
+                            message=r"reimporting '_cffi__.*' might overwrite older definitions",
+                            category=UserWarning,
+                            module=r"cffi\.vengine_cpy",
+                        )
+                        ffi = cffi.FFI()
+                        ffi.cdef(base_class.DEF_TEMPLATE)
+                        lib = ffi.verify(base_class.C_TEMPLATE, extra_compile_args=["-O2"])
+                    base_class.cffi_cache[base_class] = (ffi, lib)
+                except Exception:
+                    self.USE_CFFI = False
+                    return
+
+            # Different for each class
+            def flatten_ntt_rows(rows):
+                flat = []
+                for coeffs, add_const in rows:
+                    flat.extend(coeffs)
+                    flat.append(add_const)
+                return tuple(flat)
+
+            try:
+                if self.lanes == 4:
+                    rows_normal = ffi.new("uint16_t[]", flatten_ntt_rows(self.ntt_rows_normal))
+                    rows_final = ffi.new("uint16_t[]", flatten_ntt_rows(self.ntt_rows_final))
+                    p_xor_table = ffi.new("uint8_t[]", tuple(self.p_xor_table))
+                elif self.lanes == 8:
+                    rows_normal = ffi.new("uint16_t[]", flatten_ntt_rows(self.ntt_rows_normal))
+                    rows_final = ffi.new("uint16_t[]", flatten_ntt_rows(self.ntt_rows_final))
+                    p_xor_table = ffi.new("uint8_t[]", tuple(self.p_xor_table))
+            except Exception:
+                self.USE_CFFI = False
+                return
+
+            # add to cache
+            cffi_obj = collections.namedtuple("CFFI", "ffi lib rows_normal rows_final p_xor_table")(
+                ffi, lib, rows_normal, rows_final, p_xor_table,
+            )
+            self.cffi = base_class.cffi_cache[key] = cffi_obj
+            self.USE_CFFI = True
             return
-
-        @classmethod
-        def build_cffi_lib(cls):
-            if hasattr(Hash.SIMDBase, "cffi_lib_cache"):
-                return Hash.SIMDBase.cffi_lib_cache
-
-            import cffi
-            ffi = cffi.FFI()
-            ffi.cdef("""
-                void compress_small(
-                    uint32_t       *state,
-                    const uint8_t  *block,
-                    int             final_flag,
-                    const uint16_t *rows_normal,
-                    const uint16_t *rows_final,
-                    const uint8_t  *p_xor_table);
-                void compress_big(
-                    uint32_t       *state,
-                    const uint8_t  *block,
-                    int             final_flag,
-                    const uint16_t *rows_normal,
-                    const uint16_t *rows_final,
-                    const uint8_t  *p_xor_table);
-            """)
-
-            import warnings
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r"reimporting '_cffi__.*' might overwrite older definitions",
-                    category=UserWarning,
-                    module=r"cffi\.vengine_cpy",
-                )
-                lib = ffi.verify(cls.C_TEMPLATE, extra_compile_args=["-O2"])
-
-            Hash.SIMDBase.cffi_lib_cache = (ffi, lib)
-            return Hash.SIMDBase.cffi_lib_cache
 
         def prepare_constants(self):
             cls = self.__class__
@@ -90614,6 +90835,16 @@ class Hash:
                     ntt_rows_final[i] = (tuple(row), add_final)
                 cls.ntt_rows_normal = tuple(ntt_rows_normal)
                 cls.ntt_rows_final = tuple(ntt_rows_final)
+            return
+
+        def __init__(self, data=b""):
+            self.state = list(self.iv_words)
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.prepare_constants()
+            self.init_cffi_backend()
+            if data:
+                self.update(data)
             return
 
         def copy(self):
@@ -90754,13 +90985,16 @@ class Hash:
                 raise ValueError("invalid block size")
 
             if self.USE_CFFI:
-                state_buf = self.ffi.new("uint32_t[]", self.state)
-                block_buf = self.ffi.new("uint8_t[]", bytes(block))
+                state_buf = self.cffi.ffi.new("uint32_t[]", self.state)
+                block_buf = self.cffi.ffi.new("uint8_t[]", bytes(block))
                 if self.lanes == 4:
-                    clib_compress = self.clib.compress_small
+                    clib_compress = self.cffi.lib.compress_small
                 else:
-                    clib_compress = self.clib.compress_big
-                clib_compress(state_buf, block_buf, int(final_flag), self.c_rows_normal, self.c_rows_final, self.c_p_xor_table)
+                    clib_compress = self.cffi.lib.compress_big
+                clib_compress(
+                    state_buf, block_buf, int(final_flag),
+                    self.cffi.rows_normal, self.cffi.rows_final, self.cffi.p_xor_table,
+                )
                 self.state = [state_buf[i] for i in range(self.lanes * 4)]
                 return
 
@@ -90811,48 +91045,6 @@ class Hash:
             step_index += 1
             a, b, c, d = step_if(a, b, c, d, iv_d, 0x19, 0x04, ptab[step_index])
             self.state = list(a + b + c + d)
-            return
-
-        def init_cffi_backend(self):
-            try:
-                import cffi  # noqa: F401
-            except ImportError:
-                self.USE_CFFI = False
-                return
-
-            def flatten_ntt_rows(rows):
-                flat = []
-                for coeffs, add_const in rows:
-                    flat.extend(coeffs)
-                    flat.append(add_const)
-                return tuple(flat)
-
-            try:
-                self.ffi, self.clib = Hash.SIMDBase.build_cffi_lib()
-                if self.lanes == 4:
-                    if not hasattr(Hash.SIMDBase, "cffi_rows_small_normal"):
-                        Hash.SIMDBase.cffi_rows_small_normal = flatten_ntt_rows(self.ntt_rows_normal)
-                        Hash.SIMDBase.cffi_rows_small_final = flatten_ntt_rows(self.ntt_rows_final)
-                        Hash.SIMDBase.cffi_p_xor_small = tuple(self.p_xor_table)
-                    self.c_rows_normal = self.ffi.new("uint16_t[]", Hash.SIMDBase.cffi_rows_small_normal)
-                    self.c_rows_final = self.ffi.new("uint16_t[]", Hash.SIMDBase.cffi_rows_small_final)
-                    self.c_p_xor_table = self.ffi.new("uint8_t[]", Hash.SIMDBase.cffi_p_xor_small)
-                elif self.lanes == 8:
-                    if not hasattr(Hash.SIMDBase, "cffi_rows_big_normal"):
-                        Hash.SIMDBase.cffi_rows_big_normal = flatten_ntt_rows(self.ntt_rows_normal)
-                        Hash.SIMDBase.cffi_rows_big_final = flatten_ntt_rows(self.ntt_rows_final)
-                        Hash.SIMDBase.cffi_p_xor_big = tuple(self.p_xor_table)
-                    self.c_rows_normal = self.ffi.new("uint16_t[]", Hash.SIMDBase.cffi_rows_big_normal)
-                    self.c_rows_final = self.ffi.new("uint16_t[]", Hash.SIMDBase.cffi_rows_big_final)
-                    self.c_p_xor_table = self.ffi.new("uint8_t[]", Hash.SIMDBase.cffi_p_xor_big)
-                else:
-                    self.USE_CFFI = False
-                    return
-            except Exception:
-                self.USE_CFFI = False
-                return
-
-            self.USE_CFFI = True
             return
 
     class SIMD224(SIMDBase):
@@ -97669,56 +97861,98 @@ class Hash:
         #include <string.h>
         #include <stdlib.h>
 
-        #define NLIMBS  {nlimbs}
-        #define GF_M    {m}
-        #define GF_K0   {k0}
-        #define GF_K1   {k1}
-        #define GF_K2   {k2}
-        #define GF_NKS  {nks}
+        #define NLIMBS          REPLACE_NLIMBS
+        #define GF_M            REPLACE_M
+        #define GF_K0           REPLACE_K0
+        #define GF_K1           REPLACE_K1
+        #define GF_K2           REPLACE_K2
+        #define GF_NKS          REPLACE_NKS
+        #define HASH_BLOCK_SIZE REPLACE_BLOCK_SIZE
+        #define CLEN_BITS       REPLACE_CLEN_BITS
+        #define YP_BIT          REPLACE_YP_BIT
+        #define COUNTER_LIMBS   REPLACE_COUNTER_LIMBS
+        #define CHECKSUM_LIMBS  REPLACE_CHECKSUM_LIMBS
 
         typedef uint64_t Limb;
         typedef Limb GFElem[NLIMBS];
         typedef Limb GFElem2[NLIMBS * 2];
 
-        /* ---- helpers ---- */
-        static void gfe_zero(GFElem r) {{
+        static void gfe_zero(GFElem r) {
             memset(r, 0, sizeof(GFElem));
-        }}
-        static void gfe_copy(GFElem dst, const GFElem src) {{
+        }
+
+        static void gfe_copy(GFElem dst, const GFElem src) {
             memcpy(dst, src, sizeof(GFElem));
-        }}
-        static int gfe_is_zero(const GFElem a) {{
+        }
+
+        static int gfe_is_zero(const GFElem a) {
             for (int i = 0; i < NLIMBS; i++) if (a[i]) return 0;
             return 1;
-        }}
-        static int gfe_eq(const GFElem a, const GFElem b) {{
+        }
+
+        static int gfe_eq(const GFElem a, const GFElem b) {
             for (int i = 0; i < NLIMBS; i++) if (a[i] != b[i]) return 0;
             return 1;
-        }}
+        }
 
-        static int gf2_getbit(const Limb *a, int i) {{
+        static int gf2_getbit(const Limb *a, int i) {
             return (int)((a[i >> 6] >> (i & 63)) & 1);
-        }}
+        }
 
-        /* ---- reduction mod f(x) = x^m + x^k0 [+ x^k1 [+ x^k2]] + 1 ---- */
-        /* Reduce double-width limb array (NLIMBS*2) into GFElem */
-        static void gf_reduce_wide(GFElem r, const GFElem2 x) {{
-            /* Work on a scratch copy */
+        static void limbs_from_bytes_be(Limb *dst, int dst_limbs, const uint8_t *src, int len) {
+            memset(dst, 0, sizeof(Limb) * dst_limbs);
+            for (int bi = 0; bi < len; bi++) {
+                int src_idx = len - 1 - bi;
+                dst[bi >> 3] |= (Limb)src[src_idx] << ((bi & 7) * 8);
+            }
+        }
+
+        static void limbs_xor_shifted(Limb *dst, int dst_limbs, const Limb *src, int src_limbs, int bit_offset) {
+            int wshift = bit_offset >> 6;
+            int bshift = bit_offset & 63;
+            for (int i = 0; i < src_limbs; i++) {
+                int dst_idx = i + wshift;
+                if (dst_idx >= dst_limbs) {
+                    break;
+                }
+                dst[dst_idx] ^= src[i] << bshift;
+                if (bshift != 0 && dst_idx + 1 < dst_limbs) {
+                    dst[dst_idx + 1] ^= src[i] >> (64 - bshift);
+                }
+            }
+        }
+
+        static void limbs_add_small(Limb *a, int n, Limb v) {
+            Limb carry = v;
+            for (int i = 0; i < n && carry; i++) {
+                Limb old = a[i];
+                a[i] += carry;
+                carry = (a[i] < old) ? 1 : 0;
+            }
+        }
+
+        static void limbs_rshift1(Limb *dst, const Limb *src, int n) {
+            Limb carry = 0;
+            for (int i = n - 1; i >= 0; i--) {
+                Limb next_carry = src[i] << 63;
+                dst[i] = (src[i] >> 1) | carry;
+                carry = next_carry;
+            }
+        }
+
+        static void gf_reduce_wide(GFElem r, const GFElem2 x) {
             Limb t[NLIMBS * 2];
             memcpy(t, x, sizeof(t));
 
-            for (int bit = (NLIMBS * 2 * 64) - 1; bit >= GF_M; bit--) {{
-                if (!gf2_getbit(t, bit)) continue;
-                /* clear bit */
+            for (int bit = (NLIMBS * 2 * 64) - 1; bit >= GF_M; bit--) {
+                if (!gf2_getbit(t, bit))
+                    continue;
                 t[bit >> 6] ^= (Limb)1 << (bit & 63);
                 int d = bit - GF_M;
-                /* XOR at d (for x^0 = 1) */
                 t[d >> 6] ^= (Limb)1 << (d & 63);
-                /* XOR at d+k0 */
                 int pos;
                 pos = d + GF_K0;
                 t[pos >> 6] ^= (Limb)1 << (pos & 63);
-                /* optional extra ks */
         #if GF_NKS >= 2
                 pos = d + GF_K1;
                 t[pos >> 6] ^= (Limb)1 << (pos & 63);
@@ -97727,77 +97961,74 @@ class Hash:
                 pos = d + GF_K2;
                 t[pos >> 6] ^= (Limb)1 << (pos & 63);
         #endif
-            }}
+            }
             memcpy(r, t, sizeof(GFElem));
-        }}
+        }
 
-        /* ---- GF multiply ---- */
-        void gf_mul(GFElem r, const GFElem a, const GFElem b) {{
+        void gf_mul(GFElem r, const GFElem a, const GFElem b)
+        {
             GFElem2 acc;
             memset(acc, 0, sizeof(acc));
 
-            for (int wi = 0; wi < NLIMBS; wi++) {{
+            for (int wi = 0; wi < NLIMBS; wi++) {
                 Limb bw = b[wi];
-                if (!bw) {{
+                if (!bw) {
                     continue;
-                }}
+                }
 
-                for (int bit = 0; bit < 64; bit++) {{
-                    if (((bw >> bit) & 1) == 0) {{
+                for (int bit = 0; bit < 64; bit++) {
+                    if (((bw >> bit) & 1) == 0) {
                         continue;
-                    }}
+                    }
 
                     int shift = wi * 64 + bit;
                     int wshift = shift >> 6;
                     int bshift = shift & 63;
 
-                    for (int j = 0; j < NLIMBS; j++) {{
+                    for (int j = 0; j < NLIMBS; j++) {
                         int dst = j + wshift;
-                        if (dst >= NLIMBS * 2) {{
+                        if (dst >= NLIMBS * 2) {
                             break;
-                        }}
+                        }
                         acc[dst] ^= a[j] << bshift;
-                        if (bshift != 0 && dst + 1 < NLIMBS * 2) {{
+                        if (bshift != 0 && dst + 1 < NLIMBS * 2) {
                             acc[dst + 1] ^= a[j] >> (64 - bshift);
-                        }}
-                    }}
-                }}
-            }}
+                        }
+                    }
+                }
+            }
             gf_reduce_wide(r, acc);
-        }}
+        }
 
-        /* ---- GF square ---- */
-        void gf_sqr(GFElem r, const GFElem a) {{
+        void gf_sqr(GFElem r, const GFElem a)
+        {
             GFElem2 wide;
             memset(wide, 0, sizeof(wide));
-            /* bit interleaving: square = spread each bit to every other position */
-            for (int i = 0; i < NLIMBS; i++) {{
+            for (int i = 0; i < NLIMBS; i++) {
                 Limb w = a[i];
                 Limb lo = 0, hi = 0;
-                for (int b = 0; b < 32; b++) {{
+                for (int b = 0; b < 32; b++) {
                     if ((w >> b) & 1) lo |= (Limb)1 << (b * 2);
-                }}
-                for (int b = 0; b < 32; b++) {{
+                }
+                for (int b = 0; b < 32; b++) {
                     if ((w >> (b + 32)) & 1) hi |= (Limb)1 << (b * 2);
-                }}
-                wide[i * 2]     ^= lo;
+                }
+                wide[i * 2] ^= lo;
                 wide[i * 2 + 1] ^= hi;
-            }}
+            }
             gf_reduce_wide(r, wide);
-        }}
+        }
 
-        /* ---- GF inverse (extended Euclidean over GF(2^m)) ---- */
-        void gf_inv(GFElem r, const GFElem a) {{
-            if (gfe_is_zero(a)) {{
+        void gf_inv(GFElem r, const GFElem a) {
+            if (gfe_is_zero(a)) {
                 gfe_zero(r);
                 return;
-            }}
+            }
 
-            /* We need the modulus polynomial as a limb array (m+1 bits) */
             Limb mod[NLIMBS + 1];
             memset(mod, 0, sizeof(mod));
             mod[GF_M >> 6] |= (Limb)1 << (GF_M & 63);
-            {{
+            {
                 int pos;
                 pos = GF_K0; mod[pos >> 6] |= (Limb)1 << (pos & 63);
         #if GF_NKS >= 2
@@ -97806,10 +98037,9 @@ class Hash:
         #if GF_NKS >= 3
                 pos = GF_K2; mod[pos >> 6] |= (Limb)1 << (pos & 63);
         #endif
-                mod[0] |= 1;  /* +1 */
-            }}
+                mod[0] |= 1;
+            }
 
-            /* u = a, v = modulus, g1 = 1, g2 = 0 */
             Limb u[NLIMBS + 1], v[NLIMBS + 1];
             Limb g1[NLIMBS + 1], g2[NLIMBS + 1];
             memset(u, 0, sizeof(u));  memcpy(u, a, sizeof(GFElem));
@@ -97817,30 +98047,28 @@ class Hash:
             memset(g1, 0, sizeof(g1)); g1[0] = 1;
             memset(g2, 0, sizeof(g2));
 
-            while (1) {{
-                /* check if u == 1 */
+            while (1) {
                 int u_is_one = (u[0] == 1);
-                for (int i = 1; i <= NLIMBS; i++) if (u[i]) {{ u_is_one = 0; break; }}
+                for (int i = 1; i <= NLIMBS; i++) if (u[i]) { u_is_one = 0; break; }
                 if (u_is_one) break;
 
                 int lu = 0, lv = 0;
-                for (int i = NLIMBS; i >= 0; i--) {{
-                    if (u[i] && !lu) {{
+                for (int i = NLIMBS; i >= 0; i--) {
+                    if (u[i] && !lu) {
                         Limb w = u[i]; int b = 0;
-                        while (w) {{ b++; w >>= 1; }}
+                        while (w) { b++; w >>= 1; }
                         lu = i * 64 + b;
-                    }}
-                    if (v[i] && !lv) {{
+                    }
+                    if (v[i] && !lv) {
                         Limb w = v[i]; int b = 0;
-                        while (w) {{ b++; w >>= 1; }}
+                        while (w) { b++; w >>= 1; }
                         lv = i * 64 + b;
-                    }}
+                    }
                     if (lu && lv) break;
-                }}
+                }
 
                 int j = lu - lv;
-                if (j < 0) {{
-                    /* swap u,v */
+                if (j < 0) {
                     Limb tmpbuf[NLIMBS + 1];
                     memcpy(tmpbuf, u, sizeof(tmpbuf));
                     memcpy(u, v, sizeof(tmpbuf));
@@ -97849,56 +98077,48 @@ class Hash:
                     memcpy(g1, g2, sizeof(tmpbuf));
                     memcpy(g2, tmpbuf, sizeof(tmpbuf));
                     j = -j;
-                }}
+                }
 
-                /* u ^= v << j */
                 int wshift = j >> 6, bshift = j & 63;
-                for (int i = NLIMBS; i >= 0; i--) {{
+                for (int i = NLIMBS; i >= 0; i--) {
                     if (i - wshift >= 0)
                         u[i] ^= v[i - wshift] << bshift;
                     if (bshift && i - wshift - 1 >= 0)
                         u[i] ^= v[i - wshift - 1] >> (64 - bshift);
-                }}
-                for (int i = NLIMBS; i >= 0; i--) {{
+                }
+                for (int i = NLIMBS; i >= 0; i--) {
                     if (i - wshift >= 0)
                         g1[i] ^= g2[i - wshift] << bshift;
                     if (bshift && i - wshift - 1 >= 0)
                         g1[i] ^= g2[i - wshift - 1] >> (64 - bshift);
-                }}
-            }}
+                }
+            }
 
-            /* reduce g1 mod f */
             GFElem2 wide;
             memset(wide, 0, sizeof(wide));
             memcpy(wide, g1, (NLIMBS + 1) * sizeof(Limb));
             gf_reduce_wide(r, wide);
-        }}
+        }
 
-        /* ---- half_trace ---- */
-        void half_trace(GFElem r, const GFElem a) {{
-            /* z = a; for _ in range((m-1)//2): z = z^4 ^ a */
+        void half_trace(GFElem r, const GFElem a) {
             GFElem z, tmp;
             gfe_copy(z, a);
             int limit = (GF_M - 1) / 2;
-            for (int i = 0; i < limit; i++) {{
+            for (int i = 0; i < limit; i++) {
                 gf_sqr(tmp, z);
                 gf_sqr(z, tmp);
                 for (int j = 0; j < NLIMBS; j++) z[j] ^= a[j];
-            }}
+            }
             gfe_copy(r, z);
-        }}
+        }
 
-        /* ---- point_decompress ---- */
-        /* Returns 1 on success (rx, ry set), 0 on failure */
-        int point_decompress(GFElem rx, GFElem ry,
-                             const GFElem x_in,
-                             const GFElem curve_a, const GFElem curve_b,
-                             int yp_bit) {{
+        int point_decompress(
+            GFElem rx, GFElem ry, const GFElem x_in, const GFElem curve_a, const GFElem curve_b, int yp_bit)
+        {
             GFElem x;
             gfe_copy(x, x_in);
             if (gfe_is_zero(x)) return 0;
 
-            /* rhs = x + a + b * (1/x)^2 */
             GFElem inv_x, sq_inv_x, b_term, rhs;
             gf_inv(inv_x, x);
             gf_sqr(sq_inv_x, inv_x);
@@ -97906,40 +98126,32 @@ class Hash:
             for (int i = 0; i < NLIMBS; i++)
                 rhs[i] = x[i] ^ curve_a[i] ^ b_term[i];
 
-            /* z = half_trace(rhs) */
             GFElem z;
             half_trace(z, rhs);
 
-            /* check: z^2 + z == rhs */
             GFElem z2, lhs;
             gf_sqr(z2, z);
             for (int i = 0; i < NLIMBS; i++) lhs[i] = z2[i] ^ z[i];
             if (!gfe_eq(lhs, rhs)) return 0;
 
-            /* adjust z parity */
             int yp = gf2_getbit(x, yp_bit) & 1;
             if ((z[0] & 1) != (Limb)yp) z[0] ^= 1;
 
-            /* y = x * z */
             gfe_copy(rx, x);
             gf_mul(ry, x, z);
             return 1;
-        }}
+        }
 
-        /* ---- EC point add ---- */
-        /* inf flags: 0 = finite point, 1 = point at infinity */
-        /* returns new inf flag */
-        int point_add(GFElem rx, GFElem ry,
-                      const GFElem p1x, const GFElem p1y, int p1inf,
-                      const GFElem p2x, const GFElem p2y, int p2inf,
-                      const GFElem curve_a) {{
-            if (p1inf) {{ gfe_copy(rx, p2x); gfe_copy(ry, p2y); return p2inf; }}
-            if (p2inf) {{ gfe_copy(rx, p1x); gfe_copy(ry, p1y); return 0; }}
+        int point_add(
+            GFElem rx, GFElem ry, const GFElem p1x, const GFElem p1y, int p1inf,
+            const GFElem p2x, const GFElem p2y, int p2inf, const GFElem curve_a)
+        {
+            if (p1inf) { gfe_copy(rx, p2x); gfe_copy(ry, p2y); return p2inf; }
+            if (p2inf) { gfe_copy(rx, p1x); gfe_copy(ry, p1y); return 0; }
 
-            if (gfe_eq(p1x, p2x)) {{
-                if (gfe_eq(p1y, p2y)) {{
-                    /* double */
-                    if (gfe_is_zero(p1x)) {{ gfe_zero(rx); gfe_zero(ry); return 1; }}
+            if (gfe_eq(p1x, p2x)) {
+                if (gfe_eq(p1y, p2y)) {
+                    if (gfe_is_zero(p1x)) { gfe_zero(rx); gfe_zero(ry); return 1; }
                     GFElem inv_x1, lam, lam_sq, x3, y3, tmp;
                     gf_inv(inv_x1, p1x);
                     gf_mul(lam, inv_x1, p1y);
@@ -97955,10 +98167,9 @@ class Hash:
                     for (int i = 0; i < NLIMBS; i++) y3[i] ^= tmp[i];
                     gfe_copy(rx, x3); gfe_copy(ry, y3);
                     return 0;
-                }}
-                /* p1 + (-p1) = inf */
+                }
                 gfe_zero(rx); gfe_zero(ry); return 1;
-            }}
+            }
 
             GFElem dx, dy, inv_dx, lam, lam_sq, x3, y3, tmp;
             for (int i = 0; i < NLIMBS; i++) dx[i] = p1x[i] ^ p2x[i];
@@ -97974,83 +98185,168 @@ class Hash:
             for (int i = 0; i < NLIMBS; i++) y3[i] = tmp[i] ^ x3[i] ^ p1y[i];
             gfe_copy(rx, x3); gfe_copy(ry, y3);
             return 0;
-        }}
+        }
 
-        /* ---- scalar_mul ---- */
-        /* k is given as byte array kbytes of length klen (big-endian) */
-        /* returns 0 if result is point at infinity */
-        int scalar_mul(GFElem rx, GFElem ry,
-                       const uint8_t *kbytes, int klen,
-                       const GFElem px, const GFElem py,
-                       const GFElem curve_a) {{
+        int scalar_mul(
+            GFElem rx, GFElem ry, const uint8_t *kbytes, int klen,
+            const GFElem px, const GFElem py, const GFElem curve_a)
+        {
             GFElem ax, ay, qx, qy;
             gfe_copy(ax, px); gfe_copy(ay, py);
             gfe_zero(qx); gfe_zero(qy);
             int qinf = 1;
 
-            /* process bits of k from LSB */
             int total_bits = klen * 8;
-            for (int i = 0; i < total_bits; i++) {{
+            for (int i = 0; i < total_bits; i++) {
                 int byte_idx = klen - 1 - (i >> 3);
                 int bit = (kbytes[byte_idx] >> (i & 7)) & 1;
-                if (bit) {{
+                if (bit) {
                     GFElem tx, ty;
                     int tinf = point_add(tx, ty, qx, qy, qinf, ax, ay, 0, curve_a);
                     gfe_copy(qx, tx); gfe_copy(qy, ty); qinf = tinf;
-                }}
-                if (i + 1 < total_bits) {{
+                }
+                if (i + 1 < total_bits) {
                     GFElem tx, ty;
                     int ainf = point_add(tx, ty, ax, ay, 0, ax, ay, 0, curve_a);
                     gfe_copy(ax, tx); gfe_copy(ay, ty);
                     if (ainf) break;
-                }}
-            }}
+                }
+            }
             gfe_copy(rx, qx); gfe_copy(ry, qy);
             return !qinf;
-        }}
+        }
+
+        int scalar_mul_limbs(
+            GFElem rx, GFElem ry, const GFElem k,
+            const GFElem px, const GFElem py, const GFElem curve_a)
+        {
+            GFElem ax, ay, qx, qy;
+            gfe_copy(ax, px); gfe_copy(ay, py);
+            gfe_zero(qx); gfe_zero(qy);
+            int qinf = 1;
+
+            for (int i = 0; i < NLIMBS * 64; i++) {
+                if (gf2_getbit(k, i)) {
+                    GFElem tx, ty;
+                    int tinf = point_add(tx, ty, qx, qy, qinf, ax, ay, 0, curve_a);
+                    gfe_copy(qx, tx); gfe_copy(qy, ty); qinf = tinf;
+                }
+                if (i + 1 < NLIMBS * 64) {
+                    GFElem tx, ty;
+                    int ainf = point_add(tx, ty, ax, ay, 0, ax, ay, 0, curve_a);
+                    gfe_copy(ax, tx); gfe_copy(ay, ty);
+                    if (ainf) break;
+                }
+            }
+            gfe_copy(rx, qx); gfe_copy(ry, qy);
+            return !qinf;
+        }
+
+        int decompress_search(
+            GFElem rx, GFElem ry, const GFElem x_in,
+            const GFElem curve_a, const GFElem curve_b, int yp_bit)
+        {
+            GFElem x;
+            gfe_copy(x, x_in);
+            while (1) {
+                if (point_decompress(rx, ry, x, curve_a, curve_b, yp_bit)) {
+                    return 1;
+                }
+                limbs_add_small(x, NLIMBS, 2);
+            }
+        }
+
+        void process_block_state(
+            GFElem qx, GFElem qy, int *qinf,
+            Limb *checksum, Limb *counter,
+            const uint8_t *block,
+            const GFElem curve_a, const GFElem curve_b)
+        {
+            Limb blk[CHECKSUM_LIMBS];
+            GFElem x, px, py;
+
+            limbs_from_bytes_be(blk, CHECKSUM_LIMBS, block, HASH_BLOCK_SIZE);
+            for (int i = 0; i < CHECKSUM_LIMBS; i++) {
+                checksum[i] ^= blk[i];
+            }
+
+            gfe_zero(x);
+            x[0] = 1;
+            limbs_xor_shifted(x, NLIMBS, counter, COUNTER_LIMBS, CLEN_BITS);
+            limbs_xor_shifted(x, NLIMBS, blk, CHECKSUM_LIMBS, CLEN_BITS * 2);
+
+            decompress_search(px, py, x, curve_a, curve_b, YP_BIT);
+            *qinf = point_add(qx, qy, qx, qy, *qinf, px, py, 0, curve_a);
+            limbs_add_small(counter, COUNTER_LIMBS, 1);
+        }
+
+        void process_blocks_state(
+            GFElem qx, GFElem qy, int *qinf, Limb *checksum, Limb *counter,
+            const uint8_t *blocks, int nblocks, const GFElem curve_a, const GFElem curve_b)
+        {
+            for (int i = 0; i < nblocks; i++) {
+                process_block_state(
+                    qx, qy, qinf, checksum, counter,
+                    blocks + (i * HASH_BLOCK_SIZE),
+                    curve_a, curve_b
+                );
+            }
+        }
+
+        int finalize_hash_state(
+            GFElem qx, GFElem qy, int *qinf, Limb *checksum, Limb *counter,
+            const uint8_t *tail, int tail_len, const Limb *msg_len_bits,
+            const GFElem curve_a, const GFElem curve_b, const GFElem gx, const GFElem gy)
+        {
+            uint8_t block[HASH_BLOCK_SIZE];
+            GFElem x, px, py, sx, sy, k;
+
+            memset(block, 0, sizeof(block));
+            if (tail_len > 0) {
+                memcpy(block, tail, tail_len);
+            }
+            block[tail_len] = 0x80;
+
+            process_block_state(qx, qy, qinf, checksum, counter, block, curve_a, curve_b);
+
+            gfe_zero(x);
+            x[0] = 1;
+            limbs_xor_shifted(x, NLIMBS, msg_len_bits, COUNTER_LIMBS, CLEN_BITS);
+            limbs_xor_shifted(x, NLIMBS, checksum, CHECKSUM_LIMBS, CLEN_BITS * 2);
+
+            decompress_search(px, py, x, curve_a, curve_b, YP_BIT);
+            *qinf = point_add(qx, qy, qx, qy, *qinf, px, py, 0, curve_a);
+            if (*qinf) {
+                return 0;
+            }
+
+            limbs_rshift1(k, qx, NLIMBS);
+            if (!scalar_mul_limbs(sx, sy, k, gx, gy, curve_a)) {
+                return 0;
+            }
+            *qinf = point_add(qx, qy, qx, qy, *qinf, sx, sy, 0, curve_a);
+            return !*qinf;
+        }
         """
-
-        @classmethod
-        def build_cffi_lib(cls, m, ks, nlimbs):
-            # Pad ks to length 3
-            ks_padded = list(ks) + [0] * (3 - len(ks))
-
-            source = cls.C_TEMPLATE.format(
-                nlimbs=nlimbs, m=m, k0=ks_padded[0], k1=ks_padded[1], k2=ks_padded[2], nks=len(ks),
-            )
-
-            import cffi
-            ffi = cffi.FFI()
-            ffi.cdef("""
-                void gf_mul(uint64_t *r, const uint64_t *a, const uint64_t *b);
-                void gf_sqr(uint64_t *r, const uint64_t *a);
-                void gf_inv(uint64_t *r, const uint64_t *a);
-                void half_trace(uint64_t *r, const uint64_t *a);
-                int  point_decompress(uint64_t *rx, uint64_t *ry,
-                                      const uint64_t *x_in,
-                                      const uint64_t *curve_a, const uint64_t *curve_b,
-                                      int yp_bit);
-                int  point_add(uint64_t *rx, uint64_t *ry,
-                               const uint64_t *p1x, const uint64_t *p1y, int p1inf,
-                               const uint64_t *p2x, const uint64_t *p2y, int p2inf,
-                               const uint64_t *curve_a);
-                int  scalar_mul(uint64_t *rx, uint64_t *ry,
-                                const uint8_t *kbytes, int klen,
-                                const uint64_t *px, const uint64_t *py,
-                                const uint64_t *curve_a);
-            """)
-            import warnings
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r"reimporting '_cffi__.*' might overwrite older definitions",
-                    category=UserWarning,
-                    module=r"cffi\.vengine_cpy",
-                )
-                lib = ffi.verify(source, extra_compile_args=["-O2"])
-            return ffi, lib
-
-        cffi_cache = {}
+        DEF_TEMPLATE = r"""
+        void gf_mul(uint64_t *r, const uint64_t *a, const uint64_t *b);
+        void gf_sqr(uint64_t *r, const uint64_t *a);
+        void gf_inv(uint64_t *r, const uint64_t *a);
+        void half_trace(uint64_t *r, const uint64_t *a);
+        int  point_decompress(uint64_t *rx, uint64_t *ry, const uint64_t *x_in,
+            const uint64_t *curve_a, const uint64_t *curve_b, int yp_bit);
+        int  point_add(uint64_t *rx, uint64_t *ry, const uint64_t *p1x, const uint64_t *p1y, int p1inf,
+            const uint64_t *p2x, const uint64_t *p2y, int p2inf, const uint64_t *curve_a);
+        int  scalar_mul(uint64_t *rx, uint64_t *ry, const uint8_t *kbytes, int klen,
+            const uint64_t *px, const uint64_t *py, const uint64_t *curve_a);
+        void process_block_state(uint64_t *qx, uint64_t *qy, int *qinf, uint64_t *checksum, uint64_t *counter,
+            const uint8_t *block, const uint64_t *curve_a, const uint64_t *curve_b);
+        void process_blocks_state(uint64_t *qx, uint64_t *qy, int *qinf, uint64_t *checksum, uint64_t *counter,
+            const uint8_t *blocks, int nblocks, const uint64_t *curve_a, const uint64_t *curve_b);
+        int  finalize_hash_state(uint64_t *qx, uint64_t *qy, int *qinf, uint64_t *checksum, uint64_t *counter,
+            const uint8_t *tail, int tail_len, const uint64_t *msg_len_bits,
+            const uint64_t *curve_a, const uint64_t *curve_b, const uint64_t *gx, const uint64_t *gy);
+        """
 
         class ECOHCurve:
             def __init__(self, m, ks, a, b, gx, gy):
@@ -98079,6 +98375,86 @@ class Hash:
                     table.append(out)
                 return table
 
+        def init_cffi_backend(self):
+            try:
+                import cffi
+                import warnings
+            except ImportError:
+                self.USE_CFFI = False
+                return
+
+            key = self.__class__
+            base_class = Hash.ECOHBase
+
+            if not hasattr(base_class, "cffi_cache"):
+                base_class.cffi_cache = {}
+
+            # fast return
+            if key in base_class.cffi_cache:
+                self.cffi = base_class.cffi_cache[key]
+                self.USE_CFFI = True
+                return
+
+            # ffi, lib
+            ks_padded = list(self.curve.ks) + [0] * (3 - len(self.curve.ks))
+            nlimbs = (self.curve.m + 63) // 64 + 1  # one extra limb for overflow headroom
+            counter_limbs = (self.clen_bits + 63) // 64
+            checksum_limbs = self.block_size // 8
+            C_TEMPLATE = base_class.C_TEMPLATE
+            C_TEMPLATE = C_TEMPLATE.replace("REPLACE_NLIMBS", f"({nlimbs})")
+            C_TEMPLATE = C_TEMPLATE.replace("REPLACE_M", f"({self.curve.m})")
+            C_TEMPLATE = C_TEMPLATE.replace("REPLACE_K0", f"({ks_padded[0]})")
+            C_TEMPLATE = C_TEMPLATE.replace("REPLACE_K1", f"({ks_padded[1]})")
+            C_TEMPLATE = C_TEMPLATE.replace("REPLACE_K2", f"({ks_padded[2]})")
+            C_TEMPLATE = C_TEMPLATE.replace("REPLACE_NKS", f"({len(self.curve.ks)})")
+            C_TEMPLATE = C_TEMPLATE.replace("REPLACE_BLOCK_SIZE", f"({self.block_size})")
+            C_TEMPLATE = C_TEMPLATE.replace("REPLACE_CLEN_BITS", f"({self.clen_bits})")
+            C_TEMPLATE = C_TEMPLATE.replace("REPLACE_YP_BIT", f"({self.yp_bit})")
+            C_TEMPLATE = C_TEMPLATE.replace("REPLACE_COUNTER_LIMBS", f"({counter_limbs})")
+            C_TEMPLATE = C_TEMPLATE.replace("REPLACE_CHECKSUM_LIMBS", f"({checksum_limbs})")
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=r"reimporting '_cffi__.*' might overwrite older definitions",
+                        category=UserWarning,
+                        module=r"cffi\.vengine_cpy",
+                    )
+                    ffi = cffi.FFI()
+                    ffi.cdef(base_class.DEF_TEMPLATE)
+                    lib = ffi.verify(C_TEMPLATE, extra_compile_args=["-O2"])
+            except Exception:
+                self.USE_CFFI = False
+                return
+
+            # Different for each class
+            def to_limbs(value, size):
+                arr = ffi.new("uint64_t[]", size)
+                for i in range(size):
+                    arr[i] = (value >> (64 * i)) & 0xffff_ffff_ffff_ffff
+                return arr
+
+            try:
+                curve_a = to_limbs(self.curve.a, nlimbs)
+                curve_b = to_limbs(self.curve.b, nlimbs)
+                gx = to_limbs(self.curve.g[0], nlimbs)
+                gy = to_limbs(self.curve.g[1], nlimbs)
+                qx = ffi.new("uint64_t[]", nlimbs)
+                qy = ffi.new("uint64_t[]", nlimbs)
+            except Exception:
+                self.USE_CFFI = False
+                return
+
+            # add to cache
+            cffi_obj = collections.namedtuple("CFFI",
+                "ffi lib nlimbs counter_limbs checksum_limbs curve_a curve_b gx gy qx qy")(
+                ffi, lib, nlimbs, counter_limbs, checksum_limbs,
+                curve_a, curve_b, gx, gy, qx, qy,
+            )
+            self.cffi = base_class.cffi_cache[key] = cffi_obj
+            self.USE_CFFI = True
+            return
+
         def __init__(self, data=b""):
             self.buf = bytearray()
             self.msg_len = 0
@@ -98087,6 +98463,11 @@ class Hash:
             self.q = None
             self.curve = self.ECOHCurve(*self.curve_const)
             self.init_cffi_backend()
+            if self.USE_CFFI:
+                self.cffi_qinf = self.cffi.ffi.new("int *", 1)
+                self.cffi_qinf[0] = 1
+                self.cffi_checksum = self.cffi.ffi.new("uint64_t[]", self.cffi.checksum_limbs)
+                self.cffi_counter = self.cffi.ffi.new("uint64_t[]", self.cffi.counter_limbs)
             if data:
                 self.update(data)
             return
@@ -98099,10 +98480,11 @@ class Hash:
             other.counter = self.counter
             other.q = None if self.q is None else (self.q[0], self.q[1])
             other.USE_CFFI = self.USE_CFFI
-            if self.USE_CFFI:
-                other.ffi = self.ffi
-                other.clib = self.clib
-                other.nlimbs = self.nlimbs
+            if other.USE_CFFI:
+                other.cffi = self.cffi
+                other.cffi_qinf = other.cffi.ffi.new("int *", self.cffi_qinf[0])
+                other.cffi_checksum = other.cffi.ffi.new("uint64_t[]", list(self.cffi_checksum))
+                other.cffi_counter = other.cffi.ffi.new("uint64_t[]", list(self.cffi_counter))
             return other
 
         def update(self, data):
@@ -98111,6 +98493,21 @@ class Hash:
             data = bytes(data)
             self.msg_len += len(data)
             self.buf.extend(data)
+
+            if self.USE_CFFI:
+                full_len = (len(self.buf) // self.block_size) * self.block_size
+                if full_len:
+                    blocks = bytes(self.buf[:full_len])
+                    del self.buf[:full_len]
+                    block_buf = self.cffi.ffi.new("uint8_t[]", blocks)
+                    self.cffi.lib.process_blocks_state(
+                        self.cffi.qx, self.cffi.qy, self.cffi_qinf, self.cffi_checksum, self.cffi_counter,
+                        block_buf, full_len // self.block_size, self.cffi.curve_a, self.cffi.curve_b,
+                    )
+                    self.counter += full_len // self.block_size
+                return self
+
+            # --- pure Python ---
             while len(self.buf) >= self.block_size:
                 block = bytes(self.buf[:self.block_size])
                 del self.buf[:self.block_size]
@@ -98131,17 +98528,43 @@ class Hash:
             if (self.msg_len * 8) >= (1 << self.clen_bits):
                 raise OverflowError("message too long for ECOH length field")
 
+            def int_to_limbs(value, nlimbs):
+                arr = self.cffi.ffi.new("uint64_t[]", nlimbs)
+                for i in range(nlimbs):
+                    arr[i] = (value >> (64 * i)) & 0xffff_ffff_ffff_ffff
+                return arr
+
+            def limbs_to_int(arr, nlimbs):
+                result = 0
+                for i in range(nlimbs - 1, -1, -1):
+                    result = (result << 64) | int(arr[i])
+                return result
+
+            if self.USE_CFFI:
+                msg_len_bits = int_to_limbs(self.msg_len * 8, self.cffi.counter_limbs)
+                tail_bytes = bytes(self.buf)
+                tail = self.cffi.ffi.new("uint8_t[]", tail_bytes or b"\x00")
+                self.cffi.lib.finalize_hash_state(
+                    self.cffi.qx, self.cffi.qy, self.cffi_qinf, self.cffi_checksum, self.cffi_counter,
+                    tail, len(tail_bytes), msg_len_bits, self.cffi.curve_a, self.cffi.curve_b, self.cffi.gx, self.cffi.gy,
+                )
+                self.buf = bytearray()
+                self.counter += 1
+                if self.cffi_qinf[0]:
+                    self.q = None
+                else:
+                    self.q = (limbs_to_int(self.cffi.qx, self.cffi.nlimbs), limbs_to_int(self.cffi.qy, self.cffi.nlimbs))
+                return
+
+            # --- pure Python ---
             pad_len = self.block_size - len(self.buf) - 1
             block = bytes(self.buf) + b"\x80" + (b"\x00" * pad_len)
             self.process_block(block)
-
             x = 1
             x |= (self.msg_len * 8) << self.clen_bits
             x |= self.checksum << (2 * self.clen_bits)
-
             p = self.decompress_search(x)
             self.q = self.point_add(self.q, p)
-
             k = self.q[0] >> 1
             self.q = self.point_add(self.q, self.scalar_mul(k, self.curve.g))
             return
@@ -98149,11 +98572,9 @@ class Hash:
         def process_block(self, block):
             n = int.from_bytes(block, "big")
             self.checksum ^= n
-
             x = 1
             x |= self.counter << self.clen_bits
             x |= n << (2 * self.clen_bits)
-
             p = self.decompress_search(x)
             self.q = self.point_add(self.q, p)
             self.counter += 1
@@ -98167,51 +98588,10 @@ class Hash:
                 x += 2
             return
 
-        def init_cffi_backend(self):
-            try:
-                import cffi  # noqa: F401
-            except ImportError:
-                self.USE_CFFI = False
-                return
-
-            m, ks = self.curve.m, self.curve.ks
-            cache_key = (m, ks)
-
-            entry = Hash.ECOHBase.cffi_cache.get(cache_key)
-            if entry is None and cache_key not in Hash.ECOHBase.cffi_cache:
-                nlimbs = (m + 63) // 64 + 1  # one extra limb for overflow headroom
-                try:
-                    entry = Hash.ECOHBase.build_cffi_lib(m, ks, nlimbs)
-                    entry = (*entry, nlimbs)
-                except Exception:
-                    entry = None
-                Hash.ECOHBase.cffi_cache[cache_key] = entry
-
-            if entry is None:
-                self.USE_CFFI = False
-                return
-
-            self.USE_CFFI = True
-            self.ffi, self.clib, self.nlimbs = entry
-            return
-
-        def int_to_limbs(self, value):
-            arr = self.ffi.new("uint64_t[]", self.nlimbs)
-            for i in range(self.nlimbs):
-                arr[i] = (value >> (64 * i)) & 0xffff_ffff_ffff_ffff
-            return arr
-
-        def limbs_to_int(self, arr):
-            result = 0
-            for i in range(self.nlimbs - 1, -1, -1):
-                result = (result << 64) | int(arr[i])
-            return result
-
         def gf_reduce(self, x):
             m = self.curve.m
             ks = self.curve.ks
             low_mask = self.curve.low_mask
-
             while x.bit_length() > m:
                 hi = x >> m
                 x = (x & low_mask) ^ hi
@@ -98220,46 +98600,27 @@ class Hash:
             return x
 
         def gf_mul(self, a, b):
-            if self.USE_CFFI:
-                ra = self.int_to_limbs(a)
-                rb = self.int_to_limbs(b)
-                rr = self.ffi.new("uint64_t[]", self.nlimbs)
-                self.clib.gf_mul(rr, ra, rb)
-                return self.limbs_to_int(rr)
-
-            # --- pure Python ---
             if a == 0 or b == 0:
                 return 0
             if a < b:
                 a, b = b, a
-
             a1 = a
             a2 = a << 1
             a4 = a << 2
             a8 = a << 3
-
             table = (
                 0, a1, a2, a1 ^ a2, a4, a1 ^ a4, a2 ^ a4, a1 ^ a2 ^ a4,
                 a8, a1 ^ a8, a2 ^ a8, a1 ^ a2 ^ a8, a4 ^ a8, a1 ^ a4 ^ a8, a2 ^ a4 ^ a8, a1 ^ a2 ^ a4 ^ a8,
             )
-
             r = 0
             shift = 0
             while b:
                 r ^= table[b & 0xf] << shift
                 b >>= 4
                 shift += 4
-
             return self.gf_reduce(r)
 
         def gf_sqr(self, a):
-            if self.USE_CFFI:
-                ra = self.int_to_limbs(a)
-                rr = self.ffi.new("uint64_t[]", self.nlimbs)
-                self.clib.gf_sqr(rr, ra)
-                return self.limbs_to_int(rr)
-
-            # --- pure Python ---
             table = self.curve.square_table
             r = 0
             shift = 0
@@ -98270,38 +98631,21 @@ class Hash:
             return self.gf_reduce(r)
 
         def gf_inv(self, a):
-            if self.USE_CFFI:
-                ra = self.int_to_limbs(a)
-                rr = self.ffi.new("uint64_t[]", self.nlimbs)
-                self.clib.gf_inv(rr, ra)
-                return self.limbs_to_int(rr)
-
-            # --- pure Python ---
             if a == 0:
                 return 0
-
             u = a
             v = self.curve.modulus
             g1 = 1
             g2 = 0
-
             while u != 1:
                 j = u.bit_length() - v.bit_length()
                 if j < 0:
                     u, v, g1, g2, j = v, u, g2, g1, -j
                 u  ^= v << j
                 g1 ^= g2 << j
-
             return self.gf_reduce(g1)
 
         def half_trace(self, a):
-            if self.USE_CFFI:
-                ra = self.int_to_limbs(a)
-                rr = self.ffi.new("uint64_t[]", self.nlimbs)
-                self.clib.half_trace(rr, ra)
-                return self.limbs_to_int(rr)
-
-            # --- pure Python ---
             z = a
             limit = (self.curve.m - 1) // 2
             for _ in range(limit):
@@ -98310,105 +98654,46 @@ class Hash:
 
         def point_decompress(self, x):
             x = self.gf_reduce(x)
-
-            if self.USE_CFFI:
-                rx = self.ffi.new("uint64_t[]", self.nlimbs)
-                ry = self.ffi.new("uint64_t[]", self.nlimbs)
-                xin = self.int_to_limbs(x)
-                ca = self.int_to_limbs(self.curve.a)
-                cb = self.int_to_limbs(self.curve.b)
-                ok = self.clib.point_decompress(rx, ry, xin, ca, cb, self.yp_bit)
-                if not ok:
-                    return None
-                return (self.limbs_to_int(rx), self.limbs_to_int(ry))
-
-            # --- pure Python ---
             if x == 0:
                 return None
-
             rhs = x ^ self.curve.a ^ self.gf_mul(self.curve.b, self.gf_sqr(self.gf_inv(x)))
-
             z = self.half_trace(rhs)
             if (self.gf_sqr(z) ^ z) != rhs:
                 return None
-
             yp = (x >> self.yp_bit) & 1
             if (z & 1) != yp:
                 z ^= 1
-
             y = self.gf_mul(x, z)
             return (x, y)
 
         def point_double(self, p):
             if p is None:
                 return None
-
             x1, y1 = p
             if x1 == 0:
                 return None
-
             lam = self.gf_mul(self.gf_inv(x1), y1) ^ x1
             x3 = self.gf_sqr(lam) ^ lam ^ self.curve.a
             y3 = self.gf_sqr(x1) ^ self.gf_mul(x3, lam ^ 1)
             return (x3, y3)
 
         def point_add(self, p, q):
-            if self.USE_CFFI:
-                if p is None:
-                    p1x, p1y, p1inf = 0, 0, 1
-                else:
-                    p1x, p1y, p1inf = p[0], p[1], 0
-                if q is None:
-                    p2x, p2y, p2inf = 0, 0, 1
-                else:
-                    p2x, p2y, p2inf = q[0], q[1], 0
-                rx = self.ffi.new("uint64_t[]", self.nlimbs)
-                ry = self.ffi.new("uint64_t[]", self.nlimbs)
-                ca = self.int_to_limbs(self.curve.a)
-                r1x = self.int_to_limbs(p1x)
-                r1y = self.int_to_limbs(p1y)
-                r2x = self.int_to_limbs(p2x)
-                r2y = self.int_to_limbs(p2y)
-                rinf = self.clib.point_add(rx, ry, r1x, r1y, p1inf, r2x, r2y, p2inf, ca)
-                if rinf:
-                    return None
-                return (self.limbs_to_int(rx), self.limbs_to_int(ry))
-
-            # --- pure Python ---
             if p is None:
                 return q
             if q is None:
                 return p
-
             x1, y1 = p
             x2, y2 = q
-
             if x1 == x2:
                 if y1 == y2:
                     return self.point_double(p)
                 return None
-
             lam = self.gf_mul(self.gf_inv(x1 ^ x2), y1 ^ y2)
             x3 = self.gf_sqr(lam) ^ lam ^ x1 ^ x2 ^ self.curve.a
             y3 = self.gf_mul(lam, x3 ^ x1) ^ x3 ^ y1
             return (x3, y3)
 
         def scalar_mul(self, k, p):
-            if self.USE_CFFI:
-                klen = (k.bit_length() + 7) // 8 or 1
-                kbytes = k.to_bytes(klen, "big")
-                kbuf = self.ffi.new("uint8_t[]", kbytes)
-                rx = self.ffi.new("uint64_t[]", self.nlimbs)
-                ry = self.ffi.new("uint64_t[]", self.nlimbs)
-                px = self.int_to_limbs(p[0])
-                py = self.int_to_limbs(p[1])
-                ca = self.int_to_limbs(self.curve.a)
-                ok = self.clib.scalar_mul(rx, ry, kbuf, klen, px, py, ca)
-                if not ok:
-                    return None
-                return (self.limbs_to_int(rx), self.limbs_to_int(ry))
-
-            # --- pure Python ---
             r = None
             a = p
             while k:
@@ -108624,21 +108909,29 @@ class HashTestCommand(HashCommand, BufferingOutput):
             bit = len(h) * 4
             byte = bit // 8
             elapsed = end_time_real - start_time_real
-            result.append([elapsed, i, category, hname, bit, byte])
+
+            if hasattr(hfunc, "USE_CFFI"):
+                if hfunc.USE_CFFI:
+                    cffi = " (CFFI=True)"
+                else:
+                    cffi = " (CFFI=False)"
+            else:
+                cffi = ""
+            result.append([elapsed, i, category, hname, bit, byte, cffi])
 
         if self.args.time_with_sort:
             result = sorted(result, key=lambda x: (-x[0], x[1]))
 
         cumulative_time = 0.0
         prev_category = None
-        for elapsed, _, category, hname, bit, byte in result:
+        for elapsed, _, category, hname, bit, byte, cffi in result:
             cumulative_time += elapsed
             if self.args.time:
                 if prev_category != category:
                     self.out.append(titlify(category))
                     prev_category = category
-            self.out.append("{:26s}:[{:4d}b/{:3d}B] {:.6f} sec (total: {:.6f} sec)".format(
-                hname, bit, byte, elapsed, cumulative_time,
+            self.out.append("{:26s}:[{:4d}b/{:3d}B] {:.6f} sec (total: {:.6f} sec){:s}".format(
+                hname, bit, byte, elapsed, cumulative_time, cffi
             ))
         return
 
