@@ -93561,60 +93561,54 @@ class Hash:
             return out
 
     class VSH1024:
-        block_size = 0x83  # logical block size in bits (131)
+        block_size = 0x83
         digest_size = 0x80
+        n = int(
+            "1350664108659952233496032162788059699388814756056670275244851438515"
+            "265106048595338339402871505719094417982072821644715513736804197039641917430464965"
+            "892742562393410208643832021103729587257623585096431105640735015081875106765946292"
+            "05563685529475213500852879416377328533906109750544334999811150056977236890927563"
+        )
+        primes = (
+            0x2, 0x3, 0x5, 0x7, 0xb, 0xd, 0x11, 0x13, 0x17, 0x1d, 0x1f, 0x25, 0x29, 0x2b, 0x2f, 0x35, 0x3b,
+            0x3d, 0x43, 0x47, 0x49, 0x4f, 0x53, 0x59, 0x61, 0x65, 0x67, 0x6b, 0x6d, 0x71, 0x7f, 0x83, 0x89,
+            0x8b, 0x95, 0x97, 0x9d, 0xa3, 0xa7, 0xad, 0xb3, 0xb5, 0xbf, 0xc1, 0xc5, 0xc7, 0xd3, 0xdf, 0xe3,
+            0xe5, 0xe9, 0xef, 0xf1, 0xfb, 0x101, 0x107, 0x10d, 0x10f, 0x115, 0x119, 0x11b, 0x125, 0x133, 0x137,
+            0x139, 0x13d, 0x14b, 0x151, 0x15b, 0x15d, 0x161, 0x167, 0x16f, 0x175, 0x17b, 0x17f, 0x185, 0x18d,
+            0x191, 0x199, 0x1a3, 0x1a5, 0x1af, 0x1b1, 0x1b7, 0x1bb, 0x1c1, 0x1c9, 0x1cd, 0x1cf, 0x1d3, 0x1df,
+            0x1e7, 0x1eb, 0x1f3, 0x1f7, 0x1fd, 0x209, 0x20b, 0x21d, 0x223, 0x22d, 0x233, 0x239, 0x23b, 0x241,
+            0x24b, 0x251, 0x257, 0x259, 0x25f, 0x265, 0x269, 0x26b, 0x277, 0x281, 0x283, 0x287, 0x28d, 0x293,
+            0x295, 0x2a1, 0x2a5, 0x2ab, 0x2b3, 0x2bd, 0x2c5, 0x2cf, 0x2d7, 0x2dd, 0x2e3,
+        )
+        k = 0x83
+        block_size = 0x83
 
         def __init__(self, data=b""):
-            self.n = int(
-                "1350664108659952233496032162788059699388814756056670275244851438515"
-                "265106048595338339402871505719094417982072821644715513736804197039641917430464965"
-                "892742562393410208643832021103729587257623585096431105640735015081875106765946292"
-                "05563685529475213500852879416377328533906109750544334999811150056977236890927563"
-            )
-
-            self.primes = []
-            self.k = 0
             self.x = 0x1
             self.bit_buf = []
             self.msg_len_bits = 0
-
-            self.init_params()
-
             if data:
                 self.update(data)
             return
 
-        def init_params(self):
-            self.primes = self.generate_primes_for_modulus(self.n)
-            self.k = len(self.primes)
-            self.block_size = self.k
-            return
-
         def copy(self):
             other = self.__class__()
-            other.n = self.n
-            other.primes = list(self.primes)
-            other.k = self.k
             other.x = self.x
             other.bit_buf = list(self.bit_buf)
             other.msg_len_bits = self.msg_len_bits
-            other.block_size = self.block_size
             return other
 
         def update(self, data):
             data = bytes(data)
-
             for b in data:
                 bit = 0x80
-                while bit != 0x0:
+                while bit != 0:
                     if b & bit:
-                        self.bit_buf.append(0x1)
+                        self.bit_buf.append(1)
                     else:
-                        self.bit_buf.append(0x0)
-
-                    self.msg_len_bits += 0x1
-                    bit >>= 0x1
-
+                        self.bit_buf.append(0)
+                    self.msg_len_bits += 1
+                    bit >>= 1
                     if len(self.bit_buf) >= self.k:
                         block_bits = self.bit_buf[:self.k]
                         del self.bit_buf[:self.k]
@@ -93630,15 +93624,12 @@ class Hash:
             return self.digest().hex()
 
         def finalize(self):
-            # Pad remaining message bits with zeros to a full VSH block
             if len(self.bit_buf) != 0:
                 block_bits = list(self.bit_buf)
                 while len(block_bits) < self.k:
                     block_bits.append(0x0)
                 self.compress(block_bits)
                 self.bit_buf = []
-
-            # Final length block (little-endian bit order on the integer bit length)
             length_bits = []
             value = self.msg_len_bits
             i = 0
@@ -93646,67 +93637,180 @@ class Hash:
                 length_bits.append(value & 0x1)
                 value >>= 0x1
                 i += 0x1
-
             self.compress(length_bits)
             return
 
         def compress(self, block_bits):
-            mul = 0x1
+            mul = 1
             i = 0
             while i < self.k:
                 if block_bits[i]:
                     mul *= self.primes[i]
-                i += 0x1
-
+                i += 1
             self.x = (self.x * self.x * mul) % self.n
             return
-
-        def generate_primes_for_modulus(self, n):
-            primes = []
-            primorial = 0x1
-            cand = 0x2
-
-            while True:
-                if self.is_prime(cand):
-                    next_primorial = primorial * cand
-                    if next_primorial < n:
-                        primes.append(cand)
-                        primorial = next_primorial
-                    else:
-                        break
-
-                if cand == 0x2:
-                    cand = 0x3
-                else:
-                    cand += 0x2
-
-            return primes
-
-        def is_prime(self, x):
-            if x < 0x2:
-                return False
-            if x == 0x2:
-                return True
-            if (x & 0x1) == 0x0:
-                return False
-
-            d = 0x3
-            while d * d <= x:
-                if (x % d) == 0x0:
-                    return False
-                d += 0x2
-
-            return True
 
     class Xoodyak:
         block_size = 16
         digest_size = 32
-
         round_constants = (
-            0x0000_0058, 0x0000_0038, 0x0000_03c0, 0x0000_00d0,
-            0x0000_0120, 0x0000_0014, 0x0000_0060, 0x0000_002c,
-            0x0000_0380, 0x0000_00f0, 0x0000_01a0, 0x0000_0012,
+            0x0058, 0x0038, 0x03c0, 0x00d0, 0x0120, 0x0014, 0x0060, 0x002c, 0x0380, 0x00f0, 0x01a0, 0x0012,
         )
+        C_TEMPLATE = r"""
+        #include <stdint.h>
+
+        static uint32_t rol32(uint32_t x, int n)
+        {
+            return ((x << n) | (x >> (32 - n))) & 0xffffffffU;
+        }
+
+        static void plane_shift(const uint32_t *plane, uint32_t *out, int t, int v)
+        {
+            int x = 0;
+
+            for (x = 0; x < 4; x++) {
+                out[x] = rol32(plane[(x - t) & 3], v);
+            }
+        }
+
+        void xoodoo_permute(uint8_t *state)
+        {
+            static const uint32_t round_constants[12] = {
+                0x00000058U, 0x00000038U, 0x000003c0U, 0x000000d0U,
+                0x00000120U, 0x00000014U, 0x00000060U, 0x0000002cU,
+                0x00000380U, 0x000000f0U, 0x000001a0U, 0x00000012U,
+            };
+
+            uint32_t a[12];
+            uint32_t p[4];
+            uint32_t e[4];
+            uint32_t e2[4];
+            uint32_t a1[4];
+            uint32_t a2[4];
+            uint32_t b0[4];
+            uint32_t b1[4];
+            uint32_t b2[4];
+            int i = 0;
+            int x = 0;
+
+            for (i = 0; i < 12; i++) {
+                int start = i * 4;
+                a[i] = (
+                    ((uint32_t)state[start + 0]) |
+                    ((uint32_t)state[start + 1] << 8) |
+                    ((uint32_t)state[start + 2] << 16) |
+                    ((uint32_t)state[start + 3] << 24)
+                );
+            }
+
+            for (i = 0; i < 12; i++) {
+                uint32_t rc = round_constants[i];
+
+                for (x = 0; x < 4; x++) {
+                    p[x] = a[x] ^ a[4 + x] ^ a[8 + x];
+                }
+
+                plane_shift(p, e, 1, 5);
+                plane_shift(p, e2, 1, 14);
+
+                for (x = 0; x < 4; x++) {
+                    e[x] ^= e2[x];
+                }
+
+                for (x = 0; x < 4; x++) {
+                    a[x] ^= e[x];
+                    a[4 + x] ^= e[x];
+                    a[8 + x] ^= e[x];
+                }
+
+                plane_shift(a + 4, a1, 1, 0);
+                plane_shift(a + 8, a2, 0, 11);
+
+                for (x = 0; x < 4; x++) {
+                    a[4 + x] = a1[x];
+                    a[8 + x] = a2[x];
+                }
+
+                a[0] ^= rc;
+
+                for (x = 0; x < 4; x++) {
+                    b0[x] = (a[4 + x] ^ 0xffffffffU) & a[8 + x];
+                    b1[x] = (a[8 + x] ^ 0xffffffffU) & a[x];
+                    b2[x] = (a[x] ^ 0xffffffffU) & a[4 + x];
+                }
+
+                for (x = 0; x < 4; x++) {
+                    a[x] ^= b0[x];
+                    a[4 + x] ^= b1[x];
+                    a[8 + x] ^= b2[x];
+                }
+
+                plane_shift(a + 4, a1, 0, 1);
+                plane_shift(a + 8, a2, 2, 8);
+
+                for (x = 0; x < 4; x++) {
+                    a[4 + x] = a1[x];
+                    a[8 + x] = a2[x];
+                }
+            }
+
+            for (i = 0; i < 12; i++) {
+                int start = i * 4;
+                uint32_t word = a[i];
+
+                state[start + 0] = word & 0xffU;
+                state[start + 1] = (word >> 8) & 0xffU;
+                state[start + 2] = (word >> 16) & 0xffU;
+                state[start + 3] = (word >> 24) & 0xffU;
+            }
+        }
+        """
+        DEF_TEMPLATE = r"""
+        void xoodoo_permute(uint8_t *state);
+        """
+
+        def init_cffi_backend(self):
+            try:
+                import cffi
+                import warnings
+            except ImportError:
+                self.USE_CFFI = False
+                return
+
+            key = self.__class__
+            base_class = Hash.Xoodyak
+
+            if not hasattr(base_class, "cffi_cache"):
+                base_class.cffi_cache = {}
+
+            # fast return
+            if key in base_class.cffi_cache:
+                self.cffi = base_class.cffi_cache[key]
+                self.USE_CFFI = True
+                return
+
+            # ffi, lib
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=r"reimporting '_cffi__.*' might overwrite older definitions",
+                        category=UserWarning,
+                        module=r"cffi\.vengine_cpy",
+                    )
+                    ffi = cffi.FFI()
+                    ffi.cdef(base_class.DEF_TEMPLATE)
+                    lib = ffi.verify(base_class.C_TEMPLATE, extra_compile_args=["-O2"])
+            except Exception:
+                self.USE_CFFI = False
+                return
+
+            cffi_obj = collections.namedtuple("CFFI", "ffi lib")(
+                ffi, lib,
+            )
+            self.cffi = base_class.cffi_cache[key] = cffi_obj
+            self.USE_CFFI = True
+            return
 
         def __init__(self, data=b""):
             self.state = bytearray(48)
@@ -93715,6 +93819,7 @@ class Hash:
             self.phase = "up"
             self.absorb_started = False
             self.finalized = False
+            self.init_cffi_backend()
             if data:
                 self.update(data)
             return
@@ -93734,10 +93839,8 @@ class Hash:
                 raise ValueError("hash object already finalized")
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-
             self.msg_len += len(data)
             self.buf.extend(data)
-
             while len(self.buf) >= self.block_size:
                 chunk = bytes(self.buf[:self.block_size])
                 del self.buf[:self.block_size]
@@ -93755,19 +93858,16 @@ class Hash:
         def finalize(self):
             if self.finalized:
                 return
-
             if len(self.buf) != 0 or not self.absorb_started:
                 chunk = bytes(self.buf)
                 self.buf.clear()
                 self.absorb_chunk(chunk)
-
             self.finalized = True
             return
 
         def absorb_chunk(self, chunk):
             if self.phase != "up":
                 self.up(0, 0x00)
-
             if self.absorb_started:
                 self.down(chunk, 0x00)
             else:
@@ -93788,67 +93888,62 @@ class Hash:
             while i < n:
                 self.state[i] ^= xi[i]
                 i += 1
-
             self.state[n] ^= 0x01
             self.state[47] ^= (c_d & 0x01)
             self.phase = "down"
             return
 
         def up(self, yi_len, c_u):
-            self.permute()
-            self.phase = "up"
-            return bytes(self.state[:yi_len])
+            if self.USE_CFFI:
+                state_buf = self.cffi.ffi.new("uint8_t[]", bytes(self.state))
+                self.cffi.lib.xoodoo_permute(state_buf)
+                self.state = bytearray(state_buf[i] for i in range(48))
+                self.phase = "up"
+                return bytes(self.state[:yi_len])
 
-        def rol32(self, x, n):
-            return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
+            def rol32(x, n):
+                return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
 
-        def plane_shift(self, plane, t, v):
-            out = [0, 0, 0, 0]
-            x = 0
-            while x < 4:
-                out[x] = self.rol32(plane[(x - t) & 3], v)
-                x += 1
-            return out
+            def plane_shift(plane, t, v):
+                out = [0, 0, 0, 0]
+                x = 0
+                while x < 4:
+                    out[x] = rol32(plane[(x - t) & 3], v)
+                    x += 1
+                return out
 
-        def permute(self):
             a = []
             i = 0
             while i < 12:
                 start = i * 4
                 a.append(int.from_bytes(self.state[start:start + 4], "little"))
                 i += 1
-
             for rc in self.round_constants:
                 p = [0, 0, 0, 0]
                 x = 0
                 while x < 4:
                     p[x] = a[x] ^ a[4 + x] ^ a[8 + x]
                     x += 1
-
-                e = self.plane_shift(p, 1, 5)
-                e2 = self.plane_shift(p, 1, 14)
+                e = plane_shift(p, 1, 5)
+                e2 = plane_shift(p, 1, 14)
                 x = 0
                 while x < 4:
                     e[x] ^= e2[x]
                     x += 1
-
                 x = 0
                 while x < 4:
                     a[x] ^= e[x]
                     a[4 + x] ^= e[x]
                     a[8 + x] ^= e[x]
                     x += 1
-
-                a1 = self.plane_shift(a[4:8], 1, 0)
-                a2 = self.plane_shift(a[8:12], 0, 11)
+                a1 = plane_shift(a[4:8], 1, 0)
+                a2 = plane_shift(a[8:12], 0, 11)
                 x = 0
                 while x < 4:
                     a[4 + x] = a1[x]
                     a[8 + x] = a2[x]
                     x += 1
-
                 a[0] ^= rc
-
                 b0 = [0, 0, 0, 0]
                 b1 = [0, 0, 0, 0]
                 b2 = [0, 0, 0, 0]
@@ -93858,34 +93953,31 @@ class Hash:
                     b1[x] = (a[8 + x] ^ 0xffff_ffff) & a[x]
                     b2[x] = (a[x] ^ 0xffff_ffff) & a[4 + x]
                     x += 1
-
                 x = 0
                 while x < 4:
                     a[x] ^= b0[x]
                     a[4 + x] ^= b1[x]
                     a[8 + x] ^= b2[x]
                     x += 1
-
-                a1 = self.plane_shift(a[4:8], 0, 1)
-                a2 = self.plane_shift(a[8:12], 2, 8)
+                a1 = plane_shift(a[4:8], 0, 1)
+                a2 = plane_shift(a[8:12], 2, 8)
                 x = 0
                 while x < 4:
                     a[4 + x] = a1[x]
                     a[8 + x] = a2[x]
                     x += 1
-
             i = 0
             while i < 12:
                 start = i * 4
                 self.state[start:start + 4] = a[i].to_bytes(4, "little")
                 i += 1
-            return
+
+            self.phase = "up"
+            return bytes(self.state[:yi_len])
 
     class GxHashBase:
         block_size = 16
-        digest_size = None
-
-        sbox = [
+        sbox = (
             0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
             0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
             0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
@@ -93902,13 +93994,12 @@ class Hash:
             0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
             0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
             0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
-        ]
-
-        keys_u32 = [
-            0xf278_4542, 0xb09d_3e21, 0x89c2_22e5, 0xfc3b_c28e,
-            0x03fc_e279, 0xcb6b_2e9b, 0xb361_dc58, 0x3913_2bd9,
-            0xd001_2e32, 0x689d_2b7d, 0x5544_b1b7, 0xc78b_122b,
-        ]
+        )
+        keys = (
+            (0x42, 0x45, 0x78, 0xf2, 0x21, 0x3e, 0x9d, 0xb0, 0xe5, 0x22, 0xc2, 0x89, 0x8e, 0xc2, 0x3b, 0xfc),
+            (0x79, 0xe2, 0xfc, 0x03, 0x9b, 0x2e, 0x6b, 0xcb, 0x58, 0xdc, 0x61, 0xb3, 0xd9, 0x2b, 0x13, 0x39),
+            (0x32, 0x2e, 0x01, 0xd0, 0x7d, 0x2b, 0x9d, 0x68, 0xb7, 0xb1, 0x44, 0x55, 0x2b, 0x12, 0x8b, 0xc7),
+        )
 
         def __init__(self, data=b"", seed=0):
             self.seed = int(seed)
@@ -93950,45 +94041,18 @@ class Hash:
             return
 
         def gxhash_state(self, data, seed):
+
+            def create_seed(seed):
+                seed64 = int(seed) & 0xffff_ffff_ffff_ffff
+                lane = list(struct.pack("<Q", seed64))
+                return lane + lane
+
             state = self.compress_all(data)
-            state = self.aes_encrypt(state, self.create_seed(seed))
-            state = self.finalize_hash_state(state)
+            state = self.aes_encrypt(state, create_seed(seed))
+            state = self.aes_encrypt(state, self.keys[0])
+            state = self.aes_encrypt(state, self.keys[1])
+            state = self.aes_encrypt_last(state, self.keys[2])
             return bytes(state)
-
-        def finalize_hash_state(self, state):
-            state = self.aes_encrypt(state, self.load_key_state(0))
-            state = self.aes_encrypt(state, self.load_key_state(4))
-            state = self.aes_encrypt_last(state, self.load_key_state(8))
-            return state
-
-        def load_key_state(self, offset_u32):
-            chunk = self.keys_u32[offset_u32:offset_u32 + 4]
-            return list(struct.pack("<4I", *chunk))
-
-        def create_empty(self):
-            return [0] * 16
-
-        def create_seed(self, seed):
-            seed64 = int(seed) & 0xffff_ffff_ffff_ffff
-            lane = list(struct.pack("<Q", seed64))
-            return lane + lane
-
-        def get_partial(self, data):
-            length = len(data)
-            vector = list(data[:16]) + [0] * (16 - length)
-            out = []
-            for x in vector:
-                out.append((x + length) & 0xff)
-            return out
-
-        def load_unaligned(self, data, offset):
-            return list(data[offset:offset + 16])
-
-        def add_epi8(self, a, b):
-            out = []
-            for i in range(16):
-                out.append((a[i] + b[i]) & 0xff)
-            return out
 
         def xor_bytes(self, a, b):
             out = []
@@ -94010,13 +94074,14 @@ class Hash:
                     out[4 * col + row] = state[4 * src_col + row]
             return out
 
-        def xtime(self, x):
-            x = x << 1
-            if x & 0x100:
-                x ^= 0x11b
-            return x & 0xff
-
         def mix_columns(self, state):
+
+            def xtime(x):
+                x = x << 1
+                if x & 0x100:
+                    x ^= 0x11b
+                return x & 0xff
+
             out = [0] * 16
             for col in range(4):
                 i = col * 4
@@ -94024,17 +94089,14 @@ class Hash:
                 a1 = state[i + 1]
                 a2 = state[i + 2]
                 a3 = state[i + 3]
-
-                m2a0 = self.xtime(a0)
-                m2a1 = self.xtime(a1)
-                m2a2 = self.xtime(a2)
-                m2a3 = self.xtime(a3)
-
+                m2a0 = xtime(a0)
+                m2a1 = xtime(a1)
+                m2a2 = xtime(a2)
+                m2a3 = xtime(a3)
                 m3a0 = m2a0 ^ a0
                 m3a1 = m2a1 ^ a1
                 m3a2 = m2a2 ^ a2
                 m3a3 = m2a3 ^ a3
-
                 out[i + 0] = m2a0 ^ m3a1 ^ a2 ^ a3
                 out[i + 1] = a0 ^ m2a1 ^ m3a2 ^ a3
                 out[i + 2] = a0 ^ a1 ^ m2a2 ^ m3a3
@@ -94054,92 +94116,95 @@ class Hash:
             state = self.xor_bytes(state, keys)
             return state
 
-        def compress_8(self, data, ptr, end_address, hash_vector, length):
-            t1 = self.create_empty()
-            t2 = self.create_empty()
-            lane1 = hash_vector[:]
-            lane2 = hash_vector[:]
-            k0 = self.load_key_state(0)
-            k1 = self.load_key_state(4)
-
-            while ptr < end_address:
-                v0 = self.load_unaligned(data, ptr + 0x00)
-                v1 = self.load_unaligned(data, ptr + 0x10)
-                v2 = self.load_unaligned(data, ptr + 0x20)
-                v3 = self.load_unaligned(data, ptr + 0x30)
-                v4 = self.load_unaligned(data, ptr + 0x40)
-                v5 = self.load_unaligned(data, ptr + 0x50)
-                v6 = self.load_unaligned(data, ptr + 0x60)
-                v7 = self.load_unaligned(data, ptr + 0x70)
-                ptr += 0x80
-
-                tmp1 = self.aes_encrypt(v0, v2)
-                tmp2 = self.aes_encrypt(v1, v3)
-                tmp1 = self.aes_encrypt(tmp1, v4)
-                tmp2 = self.aes_encrypt(tmp2, v5)
-                tmp1 = self.aes_encrypt(tmp1, v6)
-                tmp2 = self.aes_encrypt(tmp2, v7)
-
-                t1 = self.add_epi8(t1, k0)
-                t2 = self.add_epi8(t2, k1)
-                lane1 = self.aes_encrypt_last(self.aes_encrypt(tmp1, t1), lane1)
-                lane2 = self.aes_encrypt_last(self.aes_encrypt(tmp2, t2), lane2)
-
-            len_vec = list(struct.pack("<I", length & 0xffff_ffff)) * 4
-            lane1 = self.add_epi8(lane1, len_vec)
-            lane2 = self.add_epi8(lane2, len_vec)
-            return self.aes_encrypt(lane1, lane2)
-
         def compress_many(self, data, ptr, end_address, hash_vector, length):
+
+            def add_epi8(a, b):
+                out = []
+                for i in range(16):
+                    out.append((a[i] + b[i]) & 0xff)
+                return out
+
+            def compress_8(data, ptr, end_address, hash_vector, length):
+                t1 = [0] * 16
+                t2 = [0] * 16
+                lane1 = hash_vector[:]
+                lane2 = hash_vector[:]
+                k0 = self.keys[0]
+                k1 = self.keys[1]
+                while ptr < end_address:
+                    v0 = list(data[ptr + 0x00:ptr + 0x10])
+                    v1 = list(data[ptr + 0x10:ptr + 0x20])
+                    v2 = list(data[ptr + 0x20:ptr + 0x30])
+                    v3 = list(data[ptr + 0x30:ptr + 0x40])
+                    v4 = list(data[ptr + 0x40:ptr + 0x50])
+                    v5 = list(data[ptr + 0x50:ptr + 0x60])
+                    v6 = list(data[ptr + 0x60:ptr + 0x70])
+                    v7 = list(data[ptr + 0x70:ptr + 0x80])
+                    ptr += 0x80
+                    tmp1 = self.aes_encrypt(v0, v2)
+                    tmp2 = self.aes_encrypt(v1, v3)
+                    tmp1 = self.aes_encrypt(tmp1, v4)
+                    tmp2 = self.aes_encrypt(tmp2, v5)
+                    tmp1 = self.aes_encrypt(tmp1, v6)
+                    tmp2 = self.aes_encrypt(tmp2, v7)
+                    t1 = add_epi8(t1, k0)
+                    t2 = add_epi8(t2, k1)
+                    lane1 = self.aes_encrypt_last(self.aes_encrypt(tmp1, t1), lane1)
+                    lane2 = self.aes_encrypt_last(self.aes_encrypt(tmp2, t2), lane2)
+                len_vec = list(struct.pack("<I", length & 0xffff_ffff)) * 4
+                lane1 = add_epi8(lane1, len_vec)
+                lane2 = add_epi8(lane2, len_vec)
+                return self.aes_encrypt(lane1, lane2)
+
             unroll_factor = 8
             remaining_bytes = end_address - ptr
             unrollable_blocks_count = (remaining_bytes // (self.block_size * unroll_factor)) * unroll_factor
             remaining_bytes = remaining_bytes - unrollable_blocks_count * self.block_size
             stop_ptr = ptr + remaining_bytes
-
             state = hash_vector[:]
             while ptr < stop_ptr:
-                v0 = self.load_unaligned(data, ptr)
+                v0 = list(data[ptr:ptr + 0x10])
                 ptr += self.block_size
                 state = self.aes_encrypt(state, v0)
-
-            state = self.compress_8(data, ptr, end_address, state, length)
+            state = compress_8(data, ptr, end_address, state, length)
             return state
 
         def compress_all(self, data):
+
+            def get_partial(data):
+                length = len(data)
+                vector = list(data[:16]) + [0] * (16 - length)
+                out = []
+                for x in vector:
+                    out.append((x + length) & 0xff)
+                return out
+
             length = len(data)
             if length == 0:
-                return self.create_empty()
+                return [0] * 16
             if length <= self.block_size:
-                return self.get_partial(data)
-
+                return get_partial(data)
             end_address = length
             extra_bytes_count = length % self.block_size
-
             if extra_bytes_count == 0:
-                hash_vector = self.load_unaligned(data, 0)
+                hash_vector = list(data[:0x10])
                 ptr = self.block_size
             else:
-                hash_vector = self.get_partial(data[:extra_bytes_count])
+                hash_vector = get_partial(data[:extra_bytes_count])
                 ptr = extra_bytes_count
-
-            v0 = self.load_unaligned(data, ptr)
+            v0 = list(data[ptr:ptr + 0x10])
             ptr += self.block_size
-
             if length > self.block_size * 2:
-                v = self.load_unaligned(data, ptr)
+                v = list(data[ptr:ptr + 0x10])
                 ptr += self.block_size
                 v0 = self.aes_encrypt(v0, v)
-
                 if length > self.block_size * 3:
-                    v = self.load_unaligned(data, ptr)
+                    v = list(data[ptr:ptr + 0x10])
                     ptr += self.block_size
                     v0 = self.aes_encrypt(v0, v)
-
                     if length > self.block_size * 4:
                         hash_vector = self.compress_many(data, ptr, end_address, hash_vector, length)
-
-            mixed = self.aes_encrypt(self.aes_encrypt(v0, self.load_key_state(0)), self.load_key_state(4))
+            mixed = self.aes_encrypt(self.aes_encrypt(v0, self.keys[0]), self.keys[1])
             return self.aes_encrypt_last(hash_vector, mixed)
 
     class GxHash32(GxHashBase):
@@ -94154,9 +94219,6 @@ class Hash:
     class KomiHash:
         block_size = 64
         digest_size = 8
-
-        mask64 = 0xffff_ffff_ffff_ffff
-
         ival1 = 0x243f_6a88_85a3_08d3
         ival2 = 0x1319_8a2e_0370_7344
         ival3 = 0xa409_3822_299f_31d0
@@ -94165,7 +94227,6 @@ class Hash:
         ival6 = 0xbe54_66cf_34e9_0c6c
         ival7 = 0xc0ac_29b7_c97c_50dd
         ival8 = 0x3f84_d5b5_b547_0917
-
         val01 = 0x5555_5555_5555_5555
         val10 = 0xaaaa_aaaa_aaaa_aaaa
 
@@ -94199,138 +94260,117 @@ class Hash:
         def hexdigest(self):
             return self.digest().hex()
 
-        def load32le(self, data, pos):
-            return int.from_bytes(data[pos:pos + 4], "little")
-
-        def load64le(self, data, pos):
-            return int.from_bytes(data[pos:pos + 8], "little")
-
-        def m128(self, u, v, rha):
-            prod = u * v
-            rl = prod & self.mask64
-            rha = (rha + (prod >> 64)) & self.mask64
-            return rl, rha
-
-        def hash_round(self, seed1, seed5):
-            seed1, seed5 = self.m128(seed1, seed5, seed5)
-            seed1 ^= seed5
-            return seed1, seed5
-
-        def hash16(self, data, pos, seed1, seed5):
-            u = self.load64le(data, pos) ^ seed1
-            v = self.load64le(data, pos + 8) ^ seed5
-            seed1, seed5 = self.m128(u, v, seed5)
-            seed1 ^= seed5
-            return seed1, seed5
-
-        def hash_fin(self, r1h, r2h, seed1, seed5):
-            seed1, seed5 = self.m128(r1h, r2h, seed5)
-            seed1 ^= seed5
-            seed1, seed5 = self.hash_round(seed1, seed5)
-            return seed1
-
-        def epi(self, data, pos, msg_len, seed1, seed5):
-            if msg_len > 31:
-                seed1, seed5 = self.hash16(data, pos, seed1, seed5)
-                seed1, seed5 = self.hash16(data, pos + 16, seed1, seed5)
-                msg_len -= 32
-                pos += 32
-
-            if msg_len > 15:
-                seed1, seed5 = self.hash16(data, pos, seed1, seed5)
-                msg_len -= 16
-                pos += 16
-
-            ml8 = msg_len * 8
-
-            if msg_len < 8:
-                ml8 ^= 56
-                r1h = (self.load64le(data, pos + msg_len - 8) >> 8) | (1 << 56)
-                r2h = seed5
-                r1h = (r1h >> ml8) ^ seed1
-            else:
-                r2h = (self.load64le(data, pos + msg_len - 8) >> 8) | (1 << 56)
-                ml8 ^= 120
-                r1h = self.load64le(data, pos) ^ seed1
-                r2h = (r2h >> ml8) ^ seed5
-
-            return self.hash_fin(r1h, r2h, seed1, seed5)
-
         def hash_bytes(self, data, use_seed=0):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
             if not isinstance(use_seed, int):
                 raise TypeError("use_seed must be int")
 
+            def u32le(data, pos):
+                return int.from_bytes(data[pos:pos + 4], "little")
+
+            def u64le(data, pos):
+                return int.from_bytes(data[pos:pos + 8], "little")
+
+            def m128(u, v, rha):
+                prod = u * v
+                rl = prod & 0xffff_ffff_ffff_ffff
+                rha = (rha + (prod >> 64)) & 0xffff_ffff_ffff_ffff
+                return rl, rha
+
+            def hash16(data, pos, seed1, seed5):
+                u = u64le(data, pos) ^ seed1
+                v = u64le(data, pos + 8) ^ seed5
+                seed1, seed5 = m128(u, v, seed5)
+                seed1 ^= seed5
+                return seed1, seed5
+
+            def hash_round(seed1, seed5):
+                seed1, seed5 = m128(seed1, seed5, seed5)
+                seed1 ^= seed5
+                return seed1, seed5
+
+            def hash_fin(r1h, r2h, seed1, seed5):
+                seed1, seed5 = m128(r1h, r2h, seed5)
+                seed1 ^= seed5
+                seed1, seed5 = hash_round(seed1, seed5)
+                return seed1
+
+            def epi(data, pos, msg_len, seed1, seed5):
+                if msg_len > 31:
+                    seed1, seed5 = hash16(data, pos, seed1, seed5)
+                    seed1, seed5 = hash16(data, pos + 16, seed1, seed5)
+                    msg_len -= 32
+                    pos += 32
+                if msg_len > 15:
+                    seed1, seed5 = hash16(data, pos, seed1, seed5)
+                    msg_len -= 16
+                    pos += 16
+                ml8 = msg_len * 8
+                if msg_len < 8:
+                    ml8 ^= 56
+                    r1h = (u64le(data, pos + msg_len - 8) >> 8) | (1 << 56)
+                    r2h = seed5
+                    r1h = (r1h >> ml8) ^ seed1
+                else:
+                    r2h = (u64le(data, pos + msg_len - 8) >> 8) | (1 << 56)
+                    ml8 ^= 120
+                    r1h = u64le(data, pos) ^ seed1
+                    r2h = (r2h >> ml8) ^ seed5
+                return hash_fin(r1h, r2h, seed1, seed5)
+
             data = bytes(data)
             msg_len = len(data)
-
             seed1 = self.ival1 ^ (use_seed & self.val01)
             seed5 = self.ival5 ^ (use_seed & self.val10)
-
-            seed1, seed5 = self.hash_round(seed1, seed5)
-
+            seed1, seed5 = hash_round(seed1, seed5)
             if msg_len < 16:
                 r1h = seed1
                 r2h = seed5
-
                 if msg_len > 7:
-                    r1h ^= self.load64le(data, 0)
-
+                    r1h ^= u64le(data, 0)
                     if msg_len < 12:
                         ml8 = msg_len * 8
-                        m = (
-                            data[msg_len - 3]
-                            | (data[msg_len - 2] << 8)
-                            | (data[msg_len - 1] << 16)
-                            | (1 << 24)
-                        )
+                        m = (data[msg_len - 3] | (data[msg_len - 2] << 8) | (data[msg_len - 1] << 16) | (1 << 24))
                         ml8 ^= 88
                         r2h ^= m >> ml8
                     else:
                         mhs = 128 - msg_len * 8
-                        mh = (self.load32le(data, msg_len - 4) | (1 << 32)) >> mhs
-                        ml = self.load32le(data, 8)
+                        mh = (u32le(data, msg_len - 4) | (1 << 32)) >> mhs
+                        ml = u32le(data, 8)
                         r2h ^= (mh << 32) | ml
-
                 elif msg_len != 0:
                     ml8 = msg_len * 8
-
                     if msg_len < 4:
                         r1h ^= 1 << ml8
                         r1h ^= data[0]
-
                         if msg_len != 1:
                             r1h ^= data[1] << 8
-
                             if msg_len != 2:
                                 r1h ^= data[2] << 16
                     else:
                         mhs = 64 - ml8
-                        mh = (self.load32le(data, msg_len - 4) | (1 << 32)) >> mhs
-                        ml = self.load32le(data, 0)
+                        mh = (u32le(data, msg_len - 4) | (1 << 32)) >> mhs
+                        ml = u32le(data, 0)
                         r1h ^= (mh << 32) | ml
-
-                return self.hash_fin(r1h, r2h, seed1, seed5)
+                return hash_fin(r1h, r2h, seed1, seed5)
 
             pos = 0
-
             if msg_len <= 31:
-                seed1, seed5 = self.hash16(data, pos, seed1, seed5)
+                seed1, seed5 = hash16(data, pos, seed1, seed5)
                 ml8 = msg_len * 8
-
                 if msg_len < 24:
                     ml8 ^= 184
-                    r1h = (self.load64le(data, pos + msg_len - 8) >> 8) | (1 << 56)
+                    r1h = (u64le(data, pos + msg_len - 8) >> 8) | (1 << 56)
                     r2h = seed5
                     r1h = (r1h >> ml8) ^ seed1
-                    return self.hash_fin(r1h, r2h, seed1, seed5)
+                    return hash_fin(r1h, r2h, seed1, seed5)
 
-                r2h = (self.load64le(data, pos + msg_len - 8) >> 8) | (1 << 56)
+                r2h = (u64le(data, pos + msg_len - 8) >> 8) | (1 << 56)
                 ml8 ^= 248
-                r1h = self.load64le(data, pos + 16) ^ seed1
+                r1h = u64le(data, pos + 16) ^ seed1
                 r2h = (r2h >> ml8) ^ seed5
-                return self.hash_fin(r1h, r2h, seed1, seed5)
+                return hash_fin(r1h, r2h, seed1, seed5)
 
             if msg_len > 63:
                 seed2 = self.ival2 ^ seed1
@@ -94339,48 +94379,38 @@ class Hash:
                 seed6 = self.ival6 ^ seed5
                 seed7 = self.ival7 ^ seed5
                 seed8 = self.ival8 ^ seed5
-
                 while msg_len > 63:
-                    seed1, seed5 = self.m128(
-                        self.load64le(data, pos) ^ seed1,
-                        self.load64le(data, pos + 32) ^ seed5,
+                    seed1, seed5 = m128(
+                        u64le(data, pos) ^ seed1,
+                        u64le(data, pos + 32) ^ seed5,
                         seed5,
                     )
-                    seed2, seed6 = self.m128(
-                        self.load64le(data, pos + 8) ^ seed2,
-                        self.load64le(data, pos + 40) ^ seed6,
+                    seed2, seed6 = m128(
+                        u64le(data, pos + 8) ^ seed2,
+                        u64le(data, pos + 40) ^ seed6,
                         seed6,
                     )
-                    seed3, seed7 = self.m128(
-                        self.load64le(data, pos + 16) ^ seed3,
-                        self.load64le(data, pos + 48) ^ seed7,
+                    seed3, seed7 = m128(
+                        u64le(data, pos + 16) ^ seed3,
+                        u64le(data, pos + 48) ^ seed7,
                         seed7,
                     )
-                    seed4, seed8 = self.m128(
-                        self.load64le(data, pos + 24) ^ seed4,
-                        self.load64le(data, pos + 56) ^ seed8,
+                    seed4, seed8 = m128(
+                        u64le(data, pos + 24) ^ seed4,
+                        u64le(data, pos + 56) ^ seed8,
                         seed8,
                     )
-
                     pos += 64
                     msg_len -= 64
-
                     seed4 ^= seed7
                     seed1 ^= seed8
                     seed3 ^= seed6
                     seed2 ^= seed5
-
                 seed5 ^= seed6 ^ seed7 ^ seed8
                 seed1 ^= seed2 ^ seed3 ^ seed4
-
-            return self.epi(data, pos, msg_len, seed1, seed5)
+            return epi(data, pos, msg_len, seed1, seed5)
 
     class ParallelHashBase:
-        security_bits = None
-        default_digest_bits = None
-        inner_digest_bits = None
-        xof_mode = False
-
         keccak_round_constants = (
             0x0000_0000_0000_0001, 0x0000_0000_0000_8082, 0x8000_0000_0000_808a, 0x8000_0000_8000_8000,
             0x0000_0000_0000_808b, 0x0000_0000_8000_0001, 0x8000_0000_8000_8081, 0x8000_0000_0000_8009,
@@ -94389,34 +94419,419 @@ class Hash:
             0x8000_0000_0000_8002, 0x8000_0000_0000_0080, 0x0000_0000_0000_800a, 0x8000_0000_8000_000a,
             0x8000_0000_8000_8081, 0x8000_0000_0000_8080, 0x0000_0000_8000_0001, 0x8000_0000_8000_8008,
         )
+        C_TEMPLATE = r"""
+        #include <stdint.h>
+        #include <stddef.h>
+        #include <stdlib.h>
+        #include <string.h>
+
+        static uint64_t rol64(uint64_t x, int n)
+        {
+            return ((x << n) | (x >> (64 - n))) & 0xffffffffffffffffULL;
+        }
+
+        static uint64_t load64_le(const uint8_t *src)
+        {
+            return (
+                ((uint64_t)src[0]) |
+                ((uint64_t)src[1] << 8) |
+                ((uint64_t)src[2] << 16) |
+                ((uint64_t)src[3] << 24) |
+                ((uint64_t)src[4] << 32) |
+                ((uint64_t)src[5] << 40) |
+                ((uint64_t)src[6] << 48) |
+                ((uint64_t)src[7] << 56)
+            );
+        }
+
+        static void store64_le(uint8_t *dst, uint64_t value)
+        {
+            dst[0] = (uint8_t)(value & 0xffU);
+            dst[1] = (uint8_t)((value >> 8) & 0xffU);
+            dst[2] = (uint8_t)((value >> 16) & 0xffU);
+            dst[3] = (uint8_t)((value >> 24) & 0xffU);
+            dst[4] = (uint8_t)((value >> 32) & 0xffU);
+            dst[5] = (uint8_t)((value >> 40) & 0xffU);
+            dst[6] = (uint8_t)((value >> 48) & 0xffU);
+            dst[7] = (uint8_t)((value >> 56) & 0xffU);
+        }
+
+        static int encoded_length_u64(uint64_t value)
+        {
+            int n = 1;
+
+            while ((value >> (8 * n)) != 0 && n < 8) {
+                n++;
+            }
+            return n + 1;
+        }
+
+        static int write_left_encode_u64(uint8_t *dst, uint64_t value)
+        {
+            int n = 1;
+            int i = 0;
+
+            while ((value >> (8 * n)) != 0 && n < 8) {
+                n++;
+            }
+            dst[0] = (uint8_t)n;
+            for (i = 0; i < n; i++) {
+                dst[1 + i] = (uint8_t)((value >> (8 * (n - 1 - i))) & 0xffU);
+            }
+            return n + 1;
+        }
+
+        static void keccak_absorb_block(uint64_t *state, const uint8_t *block, int rate_bytes)
+        {
+            int lanes = rate_bytes / 8;
+            int i = 0;
+
+            for (i = 0; i < lanes; i++) {
+                state[i] ^= load64_le(block + (i * 8));
+            }
+        }
+
+        static void keccak_absorb_padded(
+            uint64_t *state, const uint8_t *tail, size_t tail_len, int rate_bytes, uint8_t domain_suffix)
+        {
+            uint8_t block[168];
+            size_t i = 0;
+
+            for (i = 0; i < (size_t)rate_bytes; i++) {
+                block[i] = 0;
+            }
+            for (i = 0; i < tail_len; i++) {
+                block[i] = tail[i];
+            }
+            block[tail_len] ^= domain_suffix;
+            block[rate_bytes - 1] ^= 0x80;
+            keccak_absorb_block(state, block, rate_bytes);
+        }
+
+        static void keccak_squeeze_block(const uint64_t *state, uint8_t *out, int out_len)
+        {
+            int full_lanes = out_len / 8;
+            int remain = out_len % 8;
+            int i = 0;
+
+            for (i = 0; i < full_lanes; i++) {
+                store64_le(out + (i * 8), state[i]);
+            }
+            if (remain != 0) {
+                uint8_t temp[8];
+                store64_le(temp, state[full_lanes]);
+                for (i = 0; i < remain; i++) {
+                    out[(full_lanes * 8) + i] = temp[i];
+                }
+            }
+        }
+
+        static void keccak_f1600(uint64_t *state)
+        {
+            uint64_t A00 = state[0], A01 = state[1], A02 = state[2], A03 = state[3], A04 = state[4];
+            uint64_t A05 = state[5], A06 = state[6], A07 = state[7], A08 = state[8], A09 = state[9];
+            uint64_t A10 = state[10], A11 = state[11], A12 = state[12], A13 = state[13], A14 = state[14];
+            uint64_t A15 = state[15], A16 = state[16], A17 = state[17], A18 = state[18], A19 = state[19];
+            uint64_t A20 = state[20], A21 = state[21], A22 = state[22], A23 = state[23], A24 = state[24];
+            static const uint64_t round_constants[24] = {
+                0x0000000000000001ULL, 0x0000000000008082ULL, 0x800000000000808aULL, 0x8000000080008000ULL,
+                0x000000000000808bULL, 0x0000000080000001ULL, 0x8000000080008081ULL, 0x8000000000008009ULL,
+                0x000000000000008aULL, 0x0000000000000088ULL, 0x0000000080008009ULL, 0x000000008000000aULL,
+                0x000000008000808bULL, 0x800000000000008bULL, 0x8000000000008089ULL, 0x8000000000008003ULL,
+                0x8000000000008002ULL, 0x8000000000000080ULL, 0x000000000000800aULL, 0x800000008000000aULL,
+                0x8000000080008081ULL, 0x8000000000008080ULL, 0x0000000080000001ULL, 0x8000000080008008ULL,
+            };
+            int round_index = 0;
+
+            for (round_index = 0; round_index < 24; round_index++) {
+                uint64_t rc = round_constants[round_index];
+                uint64_t C0 = A00 ^ A05 ^ A10 ^ A15 ^ A20;
+                uint64_t C1 = A01 ^ A06 ^ A11 ^ A16 ^ A21;
+                uint64_t C2 = A02 ^ A07 ^ A12 ^ A17 ^ A22;
+                uint64_t C3 = A03 ^ A08 ^ A13 ^ A18 ^ A23;
+                uint64_t C4 = A04 ^ A09 ^ A14 ^ A19 ^ A24;
+                uint64_t D0 = C4 ^ rol64(C1, 1);
+                uint64_t D1 = C0 ^ rol64(C2, 1);
+                uint64_t D2 = C1 ^ rol64(C3, 1);
+                uint64_t D3 = C2 ^ rol64(C4, 1);
+                uint64_t D4 = C3 ^ rol64(C0, 1);
+                uint64_t B00 = 0, B01 = 0, B02 = 0, B03 = 0, B04 = 0;
+                uint64_t B05 = 0, B06 = 0, B07 = 0, B08 = 0, B09 = 0;
+                uint64_t B10 = 0, B11 = 0, B12 = 0, B13 = 0, B14 = 0;
+                uint64_t B15 = 0, B16 = 0, B17 = 0, B18 = 0, B19 = 0;
+                uint64_t B20 = 0, B21 = 0, B22 = 0, B23 = 0, B24 = 0;
+
+                A00 ^= D0;
+                A05 ^= D0;
+                A10 ^= D0;
+                A15 ^= D0;
+                A20 ^= D0;
+                A01 ^= D1;
+                A06 ^= D1;
+                A11 ^= D1;
+                A16 ^= D1;
+                A21 ^= D1;
+                A02 ^= D2;
+                A07 ^= D2;
+                A12 ^= D2;
+                A17 ^= D2;
+                A22 ^= D2;
+                A03 ^= D3;
+                A08 ^= D3;
+                A13 ^= D3;
+                A18 ^= D3;
+                A23 ^= D3;
+                A04 ^= D4;
+                A09 ^= D4;
+                A14 ^= D4;
+                A19 ^= D4;
+                A24 ^= D4;
+
+                B00 = A00;
+                B01 = rol64(A06, 44);
+                B02 = rol64(A12, 43);
+                B03 = rol64(A18, 21);
+                B04 = rol64(A24, 14);
+                B05 = rol64(A03, 28);
+                B06 = rol64(A09, 20);
+                B07 = rol64(A10, 3);
+                B08 = rol64(A16, 45);
+                B09 = rol64(A22, 61);
+                B10 = rol64(A01, 1);
+                B11 = rol64(A07, 6);
+                B12 = rol64(A13, 25);
+                B13 = rol64(A19, 8);
+                B14 = rol64(A20, 18);
+                B15 = rol64(A04, 27);
+                B16 = rol64(A05, 36);
+                B17 = rol64(A11, 10);
+                B18 = rol64(A17, 15);
+                B19 = rol64(A23, 56);
+                B20 = rol64(A02, 62);
+                B21 = rol64(A08, 55);
+                B22 = rol64(A14, 39);
+                B23 = rol64(A15, 41);
+                B24 = rol64(A21, 2);
+
+                A00 = B00 ^ ((~B01) & B02);
+                A01 = B01 ^ ((~B02) & B03);
+                A02 = B02 ^ ((~B03) & B04);
+                A03 = B03 ^ ((~B04) & B00);
+                A04 = B04 ^ ((~B00) & B01);
+                A05 = B05 ^ ((~B06) & B07);
+                A06 = B06 ^ ((~B07) & B08);
+                A07 = B07 ^ ((~B08) & B09);
+                A08 = B08 ^ ((~B09) & B05);
+                A09 = B09 ^ ((~B05) & B06);
+                A10 = B10 ^ ((~B11) & B12);
+                A11 = B11 ^ ((~B12) & B13);
+                A12 = B12 ^ ((~B13) & B14);
+                A13 = B13 ^ ((~B14) & B10);
+                A14 = B14 ^ ((~B10) & B11);
+                A15 = B15 ^ ((~B16) & B17);
+                A16 = B16 ^ ((~B17) & B18);
+                A17 = B17 ^ ((~B18) & B19);
+                A18 = B18 ^ ((~B19) & B15);
+                A19 = B19 ^ ((~B15) & B16);
+                A20 = B20 ^ ((~B21) & B22);
+                A21 = B21 ^ ((~B22) & B23);
+                A22 = B22 ^ ((~B23) & B24);
+                A23 = B23 ^ ((~B24) & B20);
+                A24 = B24 ^ ((~B20) & B21);
+
+                A00 ^= rc;
+            }
+
+            state[0] = A00; state[1] = A01; state[2] = A02; state[3] = A03; state[4] = A04;
+            state[5] = A05; state[6] = A06; state[7] = A07; state[8] = A08; state[9] = A09;
+            state[10] = A10; state[11] = A11; state[12] = A12; state[13] = A13; state[14] = A14;
+            state[15] = A15; state[16] = A16; state[17] = A17; state[18] = A18; state[19] = A19;
+            state[20] = A20; state[21] = A21; state[22] = A22; state[23] = A23; state[24] = A24;
+        }
+
+        void keccak_xof_run(
+            const uint8_t *data, size_t data_len, uint64_t out_bits, int rate_bytes, uint8_t domain_suffix, uint8_t *out)
+        {
+            uint64_t state[25];
+            size_t offset = 0;
+            size_t out_len = (size_t)((out_bits + 7) / 8);
+            size_t written = 0;
+            int i = 0;
+
+            for (i = 0; i < 25; i++) {
+                state[i] = 0;
+            }
+
+            while ((offset + (size_t)rate_bytes) <= data_len) {
+                keccak_absorb_block(state, data + offset, rate_bytes);
+                keccak_f1600(state);
+                offset += (size_t)rate_bytes;
+            }
+
+            keccak_absorb_padded(state, data + offset, data_len - offset, rate_bytes, domain_suffix);
+            keccak_f1600(state);
+
+            while (written < out_len) {
+                int chunk_len = rate_bytes;
+
+                if ((size_t)chunk_len > (out_len - written)) {
+                    chunk_len = (int)(out_len - written);
+                }
+                keccak_squeeze_block(state, out + written, chunk_len);
+                written += (size_t)chunk_len;
+                if (written < out_len) {
+                    keccak_f1600(state);
+                }
+            }
+
+            if ((out_bits & 7ULL) != 0 && out_len > 0) {
+                out[out_len - 1] &= (uint8_t)((0xffU << (8 - (out_bits & 7ULL))) & 0xffU);
+            }
+        }
+
+        int cshake_run(
+            const uint8_t *data, size_t data_len, uint64_t out_bits,
+            const uint8_t *function_name, size_t function_name_len,
+            const uint8_t *customization, size_t customization_len,
+            int security_bits, uint8_t *out)
+        {
+            int rate_bytes = 0;
+
+            if (security_bits == 128) {
+                rate_bytes = 168;
+            } else if (security_bits == 256) {
+                rate_bytes = 136;
+            } else {
+                return 0;
+            }
+
+            if (function_name_len == 0 && customization_len == 0) {
+                keccak_xof_run(data, data_len, out_bits, rate_bytes, 0x1fU, out);
+                return 1;
+            }
+
+            {
+                uint64_t function_bits = (uint64_t)function_name_len * 8ULL;
+                uint64_t customization_bits = (uint64_t)customization_len * 8ULL;
+                size_t core_len = 0;
+                size_t prefix_len = 0;
+                size_t padded_len = 0;
+                size_t total_len = 0;
+                size_t cursor = 0;
+                uint8_t *buffer = NULL;
+
+                core_len += (size_t)encoded_length_u64(function_bits) + function_name_len;
+                core_len += (size_t)encoded_length_u64(customization_bits) + customization_len;
+                prefix_len = (size_t)encoded_length_u64((uint64_t)rate_bytes) + core_len;
+                padded_len = ((prefix_len + (size_t)rate_bytes - 1) / (size_t)rate_bytes) * (size_t)rate_bytes;
+                total_len = padded_len + data_len;
+
+                buffer = (uint8_t *)malloc(total_len == 0 ? 1 : total_len);
+                if (buffer == NULL) {
+                    return 0;
+                }
+
+                cursor += (size_t)write_left_encode_u64(buffer + cursor, (uint64_t)rate_bytes);
+                cursor += (size_t)write_left_encode_u64(buffer + cursor, function_bits);
+                if (function_name_len != 0) {
+                    memcpy(buffer + cursor, function_name, function_name_len);
+                    cursor += function_name_len;
+                }
+                cursor += (size_t)write_left_encode_u64(buffer + cursor, customization_bits);
+                if (customization_len != 0) {
+                    memcpy(buffer + cursor, customization, customization_len);
+                    cursor += customization_len;
+                }
+                while ((cursor % (size_t)rate_bytes) != 0) {
+                    buffer[cursor] = 0;
+                    cursor++;
+                }
+                if (data_len != 0) {
+                    memcpy(buffer + cursor, data, data_len);
+                }
+                keccak_xof_run(buffer, total_len, out_bits, rate_bytes, 0x04U, out);
+                free(buffer);
+            }
+            return 1;
+        }
+        """
+        DEF_TEMPLATE = r"""
+        void keccak_xof_run(
+            const uint8_t *data, size_t data_len, uint64_t out_bits, int rate_bytes, uint8_t domain_suffix, uint8_t *out);
+        int cshake_run(
+            const uint8_t *data, size_t data_len, uint64_t out_bits,
+            const uint8_t *function_name, size_t function_name_len,
+            const uint8_t *customization, size_t customization_len,
+            int security_bits, uint8_t *out);
+        """
+
+        def init_cffi_backend(self):
+            try:
+                import cffi
+                import warnings
+            except ImportError:
+                self.USE_CFFI = False
+                return
+
+            key = self.__class__
+            base_class = Hash.ParallelHashBase
+
+            if not hasattr(base_class, "cffi_cache"):
+                base_class.cffi_cache = {}
+
+            # fast return
+            if key in base_class.cffi_cache:
+                self.cffi = base_class.cffi_cache[key]
+                self.USE_CFFI = True
+                return
+
+            # ffi, lib
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=r"reimporting '_cffi__.*' might overwrite older definitions",
+                        category=UserWarning,
+                        module=r"cffi\.vengine_cpy",
+                    )
+                    ffi = cffi.FFI()
+                    ffi.cdef(base_class.DEF_TEMPLATE)
+                    lib = ffi.verify(base_class.C_TEMPLATE, extra_compile_args=["-O2"])
+            except Exception:
+                self.USE_CFFI = False
+                return
+
+            # add to cache
+            cffi_obj = collections.namedtuple("CFFI", "ffi lib")(
+                ffi, lib,
+            )
+            self.cffi = base_class.cffi_cache[key] = cffi_obj
+            self.USE_CFFI = True
+            return
 
         def __init__(self, data=b"", block_size=8, digest_bits=None, customization=b""):
             if not isinstance(block_size, int):
                 raise TypeError("block_size must be int")
             if block_size <= 0:
                 raise ValueError("block_size must be > 0")
-
             if digest_bits is None:
                 digest_bits = self.default_digest_bits
             if not isinstance(digest_bits, int):
                 raise TypeError("digest_bits must be int")
             if digest_bits < 0:
                 raise ValueError("digest_bits must be >= 0")
-
             if not isinstance(customization, (bytes, bytearray, memoryview)):
                 raise TypeError("customization must be bytes-like")
-
             self.block_size = block_size
             self.digest_bits = digest_bits
             self.digest_size = (digest_bits + 7) // 8
             self.customization = bytes(customization)
-
             self.buf = bytearray()
             self.msg_len = 0
             self.n_blocks = 0
             self.z = bytearray()
             self.z.extend(self.left_encode(self.block_size))
-
+            self.init_cffi_backend()
             if data:
                 self.update(data)
             return
@@ -94436,16 +94851,13 @@ class Hash:
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-
             data_view = memoryview(data)
             self.msg_len += len(data_view)
             self.buf.extend(data_view)
-
             while len(self.buf) >= self.block_size:
                 block = bytes(self.buf[:self.block_size])
                 del self.buf[:self.block_size]
                 self.process_block(block)
-
             return self
 
         def digest(self):
@@ -94460,46 +94872,35 @@ class Hash:
                 block = bytes(self.buf)
                 self.buf.clear()
                 self.process_block(block)
-
             new_x = bytearray(self.z)
             new_x.extend(self.right_encode(self.n_blocks))
-
             if self.xof_mode:
                 new_x.extend(self.right_encode(0))
             else:
                 new_x.extend(self.right_encode(self.digest_bits))
-
-            out = self.cshake(
-                bytes(new_x),
-                self.digest_bits,
-                b"ParallelHash",
-                self.customization,
-                self.security_bits,
-            )
+            out = self.cshake(bytes(new_x), self.digest_bits, b"ParallelHash", self.customization, self.security_bits)
             return out
 
         def process_block(self, block):
-            self.z.extend(self.inner_hash(block))
+
+            def inner_hash(block):
+                out_len = (self.inner_digest_bits + 7) // 8
+                if self.security_bits == 128:
+                    out = hashlib.shake_128(block).digest(out_len)
+                elif self.security_bits == 256:
+                    out = hashlib.shake_256(block).digest(out_len)
+                else:
+                    raise ValueError("invalid security_bits")
+                if (self.inner_digest_bits % 8) != 0 and len(out) != 0:
+                    out_mut = bytearray(out)
+                    keep_bits = self.inner_digest_bits % 8
+                    out_mut[-1] &= (0xff << (8 - keep_bits)) & 0xff
+                    return bytes(out_mut)
+                return out
+
+            self.z.extend(inner_hash(block))
             self.n_blocks += 1
             return
-
-        def inner_hash(self, block):
-            out_len = (self.inner_digest_bits + 7) // 8
-
-            if self.security_bits == 128:
-                out = hashlib.shake_128(block).digest(out_len)
-            elif self.security_bits == 256:
-                out = hashlib.shake_256(block).digest(out_len)
-            else:
-                raise ValueError("invalid security_bits")
-
-            if (self.inner_digest_bits % 8) != 0 and len(out) != 0:
-                out_mut = bytearray(out)
-                keep_bits = self.inner_digest_bits % 8
-                out_mut[-1] &= (0xff << (8 - keep_bits)) & 0xff
-                return bytes(out_mut)
-
-            return out
 
         def cshake(self, data, out_bits, function_name, customization, security_bits):
             if not isinstance(data, (bytes, bytearray, memoryview)):
@@ -94509,9 +94910,29 @@ class Hash:
             if not isinstance(customization, (bytes, bytearray, memoryview)):
                 raise TypeError("customization must be bytes-like")
 
+            def encode_string(data):
+                if not isinstance(data, (bytes, bytearray, memoryview)):
+                    raise TypeError("data must be bytes-like")
+                data = bytes(data)
+                return self.left_encode(len(data) * 8) + data
+
             data = bytes(data)
             function_name = bytes(function_name)
             customization = bytes(customization)
+
+            if self.USE_CFFI and out_bits <= 0xffff_ffff_ffff_ffff:
+                out_len = (out_bits + 7) // 8
+                data_buf = self.cffi.ffi.NULL if len(data) == 0 else self.cffi.ffi.new("uint8_t[]", data)
+                function_name_buf = self.cffi.ffi.NULL if len(function_name) == 0 else self.cffi.ffi.new("uint8_t[]", function_name)
+                customization_buf = self.cffi.ffi.NULL if len(customization) == 0 else self.cffi.ffi.new("uint8_t[]", customization)
+                out_buf = self.cffi.ffi.new("uint8_t[]", max(out_len, 1))
+                rc = self.cffi.lib.cshake_run(
+                    data_buf, len(data), out_bits, function_name_buf,
+                    len(function_name), customization_buf, len(customization), security_bits, out_buf,
+                )
+                if rc == 0:
+                    raise ValueError("invalid security_bits")
+                return bytes(self.cffi.ffi.buffer(out_buf, out_len))
 
             if security_bits == 128:
                 rate_bytes = 168
@@ -94519,14 +94940,9 @@ class Hash:
                 rate_bytes = 136
             else:
                 raise ValueError("security_bits must be 128 or 256")
-
             if len(function_name) == 0 and len(customization) == 0:
                 return self.keccak_xof(data, out_bits, rate_bytes, 0x1f)
-
-            prefix = self.bytepad(
-                self.encode_string(function_name) + self.encode_string(customization),
-                rate_bytes,
-            )
+            prefix = self.bytepad(encode_string(function_name) + encode_string(customization), rate_bytes)
             return self.keccak_xof(prefix + data, out_bits, rate_bytes, 0x04)
 
         def keccak_xof(self, data, out_bits, rate_bytes, domain_suffix):
@@ -94544,45 +94960,43 @@ class Hash:
                 raise TypeError("domain_suffix must be int")
             if domain_suffix < 0 or domain_suffix > 0xff:
                 raise ValueError("domain_suffix must be a byte")
-
             data = bytes(data)
-            state = [0] * 25
 
+            if self.USE_CFFI and out_bits <= 0xffff_ffff_ffff_ffff:
+                out_len = (out_bits + 7) // 8
+                data_buf = self.cffi.ffi.NULL if len(data) == 0 else self.cffi.ffi.new("uint8_t[]", data)
+                out_buf = self.cffi.ffi.new("uint8_t[]", max(out_len, 1))
+                self.cffi.lib.keccak_xof_run(data_buf, len(data), out_bits, rate_bytes, domain_suffix, out_buf)
+                return bytes(self.cffi.ffi.buffer(out_buf, out_len))
+
+            state = [0] * 25
             offset = 0
             while offset + rate_bytes <= len(data):
                 block = data[offset:offset + rate_bytes]
                 self.keccak_absorb_block(state, block, rate_bytes)
                 self.keccak_f1600(state)
                 offset += rate_bytes
-
             tail = data[offset:]
             self.keccak_absorb_padded(state, tail, rate_bytes, domain_suffix)
             self.keccak_f1600(state)
-
             out_len = (out_bits + 7) // 8
             out = bytearray()
-
             while len(out) < out_len:
                 out.extend(self.keccak_squeeze_block(state, rate_bytes))
                 if len(out) >= out_len:
                     break
                 self.keccak_f1600(state)
-
             out = out[:out_len]
-
             if (out_bits % 8) != 0 and len(out) > 0:
                 keep_bits = out_bits % 8
                 out[-1] &= (0xff << (8 - keep_bits)) & 0xff
-
             return bytes(out)
 
         def keccak_absorb_block(self, state, block, rate_bytes):
             lanes = rate_bytes // 8
-
             for i in range(lanes):
                 lane = int.from_bytes(block[i * 8:(i + 1) * 8], "little")
                 state[i] ^= lane
-
             return
 
         def keccak_absorb_padded(self, state, tail, rate_bytes, domain_suffix):
@@ -94596,15 +95010,9 @@ class Hash:
         def keccak_squeeze_block(self, state, rate_bytes):
             lanes = rate_bytes // 8
             out = bytearray()
-
             for i in range(lanes):
                 out.extend(state[i].to_bytes(8, "little"))
-
             return bytes(out)
-
-        def rol64(self, x, n):
-            x &= 0xffff_ffff_ffff_ffff
-            return ((x << n) | (x >> (64 - n))) & 0xffff_ffff_ffff_ffff
 
         def keccak_f1600(self, state):
             A = state
@@ -94726,11 +95134,9 @@ class Hash:
                 raise TypeError("value must be int")
             if value < 0:
                 raise ValueError("value must be >= 0")
-
             n = 1
             while value >= (1 << (8 * n)):
                 n += 1
-
             return bytes([n]) + value.to_bytes(n, "big")
 
         def right_encode(self, value):
@@ -94738,18 +95144,10 @@ class Hash:
                 raise TypeError("value must be int")
             if value < 0:
                 raise ValueError("value must be >= 0")
-
             n = 1
             while value >= (1 << (8 * n)):
                 n += 1
-
             return value.to_bytes(n, "big") + bytes([n])
-
-        def encode_string(self, data):
-            if not isinstance(data, (bytes, bytearray, memoryview)):
-                raise TypeError("data must be bytes-like")
-            data = bytes(data)
-            return self.left_encode(len(data) * 8) + data
 
         def bytepad(self, data, width):
             if not isinstance(data, (bytes, bytearray, memoryview)):
@@ -94758,15 +95156,12 @@ class Hash:
                 raise TypeError("width must be int")
             if width <= 0:
                 raise ValueError("width must be > 0")
-
             data = bytes(data)
             out = bytearray()
             out.extend(self.left_encode(width))
             out.extend(data)
-
             while (len(out) % width) != 0:
                 out.append(0x00)
-
             return bytes(out)
 
     class ParallelHash128(ParallelHashBase):
