@@ -77655,7 +77655,244 @@ class Hash:
 
     class JHBase:
         block_size = 64
-        digest_size = None
+        C_TEMPLATE = r"""
+        #include <stdint.h>
+
+        static const uint8_t sbox0[16] = {
+            0x9, 0x0, 0x4, 0xb, 0xd, 0xc, 0x3, 0xf, 0x1, 0xa, 0x2, 0x6, 0x7, 0x5, 0x8, 0xe,
+        };
+
+        static const uint8_t sbox1[16] = {
+            0x3, 0xc, 0x6, 0xd, 0x5, 0x7, 0x1, 0x9, 0xf, 0x2, 0x0, 0x4, 0xb, 0xa, 0xe, 0x8,
+        };
+
+        static const uint8_t round_constant_init[64] = {
+            0x6, 0xa, 0x0, 0x9, 0xe, 0x6, 0x6, 0x7, 0xf, 0x3, 0xb, 0xc, 0xc, 0x9, 0x0, 0x8,
+            0xb, 0x2, 0xf, 0xb, 0x1, 0x3, 0x6, 0x6, 0xe, 0xa, 0x9, 0x5, 0x7, 0xd, 0x3, 0xe,
+            0x3, 0xa, 0xd, 0xe, 0xc, 0x1, 0x7, 0x5, 0x1, 0x2, 0x7, 0x7, 0x5, 0x0, 0x9, 0x9,
+            0xd, 0xa, 0x2, 0xf, 0x5, 0x9, 0x0, 0xb, 0x0, 0x6, 0x6, 0x7, 0x3, 0x2, 0x2, 0xa,
+        };
+
+        static const uint8_t inv_perm[256] = {
+            0x00, 0x03, 0x04, 0x07, 0x08, 0x0b, 0x0c, 0x0f, 0x10, 0x13, 0x14, 0x17, 0x18, 0x1b, 0x1c, 0x1f,
+            0x20, 0x23, 0x24, 0x27, 0x28, 0x2b, 0x2c, 0x2f, 0x30, 0x33, 0x34, 0x37, 0x38, 0x3b, 0x3c, 0x3f,
+            0x40, 0x43, 0x44, 0x47, 0x48, 0x4b, 0x4c, 0x4f, 0x50, 0x53, 0x54, 0x57, 0x58, 0x5b, 0x5c, 0x5f,
+            0x60, 0x63, 0x64, 0x67, 0x68, 0x6b, 0x6c, 0x6f, 0x70, 0x73, 0x74, 0x77, 0x78, 0x7b, 0x7c, 0x7f,
+            0x80, 0x83, 0x84, 0x87, 0x88, 0x8b, 0x8c, 0x8f, 0x90, 0x93, 0x94, 0x97, 0x98, 0x9b, 0x9c, 0x9f,
+            0xa0, 0xa3, 0xa4, 0xa7, 0xa8, 0xab, 0xac, 0xaf, 0xb0, 0xb3, 0xb4, 0xb7, 0xb8, 0xbb, 0xbc, 0xbf,
+            0xc0, 0xc3, 0xc4, 0xc7, 0xc8, 0xcb, 0xcc, 0xcf, 0xd0, 0xd3, 0xd4, 0xd7, 0xd8, 0xdb, 0xdc, 0xdf,
+            0xe0, 0xe3, 0xe4, 0xe7, 0xe8, 0xeb, 0xec, 0xef, 0xf0, 0xf3, 0xf4, 0xf7, 0xf8, 0xfb, 0xfc, 0xff,
+            0x02, 0x01, 0x06, 0x05, 0x0a, 0x09, 0x0e, 0x0d, 0x12, 0x11, 0x16, 0x15, 0x1a, 0x19, 0x1e, 0x1d,
+            0x22, 0x21, 0x26, 0x25, 0x2a, 0x29, 0x2e, 0x2d, 0x32, 0x31, 0x36, 0x35, 0x3a, 0x39, 0x3e, 0x3d,
+            0x42, 0x41, 0x46, 0x45, 0x4a, 0x49, 0x4e, 0x4d, 0x52, 0x51, 0x56, 0x55, 0x5a, 0x59, 0x5e, 0x5d,
+            0x62, 0x61, 0x66, 0x65, 0x6a, 0x69, 0x6e, 0x6d, 0x72, 0x71, 0x76, 0x75, 0x7a, 0x79, 0x7e, 0x7d,
+            0x82, 0x81, 0x86, 0x85, 0x8a, 0x89, 0x8e, 0x8d, 0x92, 0x91, 0x96, 0x95, 0x9a, 0x99, 0x9e, 0x9d,
+            0xa2, 0xa1, 0xa6, 0xa5, 0xaa, 0xa9, 0xae, 0xad, 0xb2, 0xb1, 0xb6, 0xb5, 0xba, 0xb9, 0xbe, 0xbd,
+            0xc2, 0xc1, 0xc6, 0xc5, 0xca, 0xc9, 0xce, 0xcd, 0xd2, 0xd1, 0xd6, 0xd5, 0xda, 0xd9, 0xde, 0xdd,
+            0xe2, 0xe1, 0xe6, 0xe5, 0xea, 0xe9, 0xee, 0xed, 0xf2, 0xf1, 0xf6, 0xf5, 0xfa, 0xf9, 0xfe, 0xfd,
+        };
+
+        static void l_transform_pair(uint8_t a, uint8_t b, uint8_t *ta, uint8_t *tb)
+        {
+            uint8_t tb_local = 0;
+            uint8_t ta_local = 0;
+
+            tb_local = (uint8_t)(b ^ ((((a << 1) ^ (a >> 3) ^ ((a >> 2) & 0x2)) & 0x0f)));
+            ta_local = (uint8_t)(a ^ ((((tb_local << 1) ^ (tb_local >> 3) ^ ((tb_local >> 2) & 0x2)) & 0x0f)));
+
+            *ta = (uint8_t)(ta_local & 0x0f);
+            *tb = (uint8_t)(tb_local & 0x0f);
+        }
+
+        static void update_round_constant(uint8_t *rc)
+        {
+            uint8_t tem[64];
+            uint8_t new_rc[64];
+            int i = 0;
+
+            for (i = 0; i < 64; i++) {
+                tem[i] = sbox0[rc[i]];
+            }
+
+            for (i = 0; i < 64; i += 2) {
+                l_transform_pair(tem[i], tem[i + 1], &tem[i], &tem[i + 1]);
+            }
+
+            for (i = 0; i < 64; i += 4) {
+                uint8_t t = tem[i + 2];
+                tem[i + 2] = tem[i + 3];
+                tem[i + 3] = t;
+            }
+
+            for (i = 0; i < 32; i++) {
+                new_rc[i] = tem[i << 1];
+                new_rc[i + 32] = tem[(i << 1) + 1];
+            }
+
+            for (i = 32; i < 64; i += 2) {
+                uint8_t t = new_rc[i];
+                new_rc[i] = new_rc[i + 1];
+                new_rc[i + 1] = t;
+            }
+
+            for (i = 0; i < 64; i++) {
+                rc[i] = new_rc[i];
+            }
+        }
+
+        static void e8_initialgroup(const uint8_t *h, uint8_t *a)
+        {
+            int i = 0;
+
+            for (i = 0; i < 128; i++) {
+                int sh = 7 - (i & 7);
+                int b = i >> 3;
+                int b2 = (i + 128) >> 3;
+
+                a[i * 2] = (uint8_t)(
+                    (((h[b] >> sh) & 1) << 3) |
+                    (((h[b + 32] >> sh) & 1) << 2) |
+                    (((h[b + 64] >> sh) & 1) << 1) |
+                    ((h[b + 96] >> sh) & 1)
+                );
+
+                a[(i * 2) + 1] = (uint8_t)(
+                    (((h[b2] >> sh) & 1) << 3) |
+                    (((h[b2 + 32] >> sh) & 1) << 2) |
+                    (((h[b2 + 64] >> sh) & 1) << 1) |
+                    ((h[b2 + 96] >> sh) & 1)
+                );
+            }
+        }
+
+        static void e8_finaldegroup(uint8_t *h, const uint8_t *a)
+        {
+            int i = 0;
+
+            for (i = 0; i < 128; i++) {
+                h[i] = 0;
+            }
+
+            for (i = 0; i < 128; i++) {
+                uint8_t v0 = a[i << 1];
+                uint8_t v1 = a[(i << 1) + 1];
+                int sh = 7 - (i & 7);
+                int b = i >> 3;
+                int b2 = (i + 128) >> 3;
+
+                h[b] |= (uint8_t)(((v0 >> 3) & 1) << sh);
+                h[b + 32] |= (uint8_t)(((v0 >> 2) & 1) << sh);
+                h[b + 64] |= (uint8_t)(((v0 >> 1) & 1) << sh);
+                h[b + 96] |= (uint8_t)((v0 & 1) << sh);
+
+                h[b2] |= (uint8_t)(((v1 >> 3) & 1) << sh);
+                h[b2 + 32] |= (uint8_t)(((v1 >> 2) & 1) << sh);
+                h[b2 + 64] |= (uint8_t)(((v1 >> 1) & 1) << sh);
+                h[b2 + 96] |= (uint8_t)((v1 & 1) << sh);
+            }
+        }
+
+        static void e8_core(uint8_t *h)
+        {
+            uint8_t a[256];
+            uint8_t tem[256];
+            uint8_t new_a[256];
+            uint8_t rc[64];
+            int rnd = 0;
+            int i = 0;
+
+            e8_initialgroup(h, a);
+
+            for (i = 0; i < 64; i++) {
+                rc[i] = round_constant_init[i];
+            }
+
+            for (rnd = 0; rnd < 42; rnd++) {
+                for (i = 0; i < 256; i++) {
+                    int rc_bit = (rc[i >> 2] >> (3 - (i & 3))) & 1;
+                    tem[i] = rc_bit ? sbox1[a[i]] : sbox0[a[i]];
+                }
+
+                for (i = 0; i < 256; i += 2) {
+                    l_transform_pair(tem[i], tem[i + 1], &tem[i], &tem[i + 1]);
+                }
+
+                for (i = 0; i < 256; i++) {
+                    new_a[i] = tem[inv_perm[i]];
+                }
+
+                for (i = 0; i < 256; i++) {
+                    a[i] = new_a[i];
+                }
+
+                update_round_constant(rc);
+            }
+
+            e8_finaldegroup(h, a);
+        }
+
+        void f8(uint8_t *h, const uint8_t *block)
+        {
+            int i = 0;
+
+            for (i = 0; i < 64; i++) {
+                h[i] ^= block[i];
+            }
+
+            e8_core(h);
+
+            for (i = 0; i < 64; i++) {
+                h[i + 64] ^= block[i];
+            }
+        }
+        """
+        DEF_TEMPLATE = r"""
+        void f8(uint8_t *h, const uint8_t *block);
+        """
+
+        def init_cffi_backend(self):
+            try:
+                import cffi
+                import warnings
+            except ImportError:
+                self.USE_CFFI = False
+                return
+
+            key = self.__class__
+            base_class = Hash.JHBase
+
+            if not hasattr(base_class, "cffi_cache"):
+                base_class.cffi_cache = {}
+
+            # fast return
+            if key in base_class.cffi_cache:
+                self.cffi = base_class.cffi_cache[key]
+                self.USE_CFFI = True
+                return
+
+            # ffi, lib
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=r"reimporting '_cffi__.*' might overwrite older definitions",
+                        category=UserWarning,
+                        module=r"cffi\.vengine_cpy",
+                    )
+                    ffi = cffi.FFI()
+                    ffi.cdef(base_class.DEF_TEMPLATE)
+                    lib = ffi.verify(base_class.C_TEMPLATE, extra_compile_args=["-O2"])
+            except Exception:
+                self.USE_CFFI = False
+                return
+
+            # add to cache
+            cffi_obj = collections.namedtuple("CFFI", "ffi lib")(
+                ffi, lib,
+            )
+            self.cffi = base_class.cffi_cache[key] = cffi_obj
+            self.USE_CFFI = True
+            return
 
         @classmethod
         def ensure_table(cls):
@@ -77737,12 +77974,11 @@ class Hash:
             self.A = [0] * 256
             self.roundconstant = [0] * 64
             self.buffer = bytearray(64)
-
             hashbitlen = self.digest_size * 8
             self.H[0] = (hashbitlen >> 8) & 0xff
             self.H[1] = hashbitlen & 0xff
             self.ensure_table()
-
+            self.init_cffi_backend()
             self.f8()
             if data:
                 self.update(data)
@@ -77763,7 +77999,6 @@ class Hash:
                 raise TypeError("data must be bytes-like")
             if not data:
                 return self
-
             self.databitlen += len(data) * 8
             off = 0
             while off < len(data):
@@ -77772,7 +78007,6 @@ class Hash:
                 self.buffer[buf_bytes:buf_bytes + take] = data[off:off + take]
                 self.datasize_in_buffer += take * 8
                 off += take
-
                 if self.datasize_in_buffer == 512:
                     self.f8()
                     self.datasize_in_buffer = 0
@@ -77800,13 +78034,11 @@ class Hash:
 
             if (self.datasize_in_buffer & 7) != 0:
                 raise ValueError("internal error: datasize_in_buffer not multiple of 8")
-
             bytepos = ((self.databitlen & 0x1_ff) >> 3)
             for i in range(bytepos, 64):
                 self.buffer[i] = 0
             self.buffer[bytepos] |= 1 << (7 - (self.databitlen & 7))
             self.f8()
-
             for i in range(64):
                 self.buffer[i] = 0
             x = self.databitlen & 0xffff_ffff_ffff_ffff
@@ -77819,7 +78051,6 @@ class Hash:
             self.buffer[57] = (x >> 48) & 0xff
             self.buffer[56] = (x >> 56) & 0xff
             self.f8()
-
             self.datasize_in_buffer = 0
             return
 
@@ -77831,63 +78062,70 @@ class Hash:
         def hexdigest(self):
             return self.digest().hex()
 
-        def e8_initialgroup(self):
-            H = self.H
-            A = self.A
-            for i in range(128):
-                sh = 7 - (i & 7)
-                b = i >> 3
-                A[i * 2] = ((H[b] >> sh) & 1) << 3 | \
-                           ((H[b + 32] >> sh) & 1) << 2 | \
-                           ((H[b + 64] >> sh) & 1) << 1 | \
-                           ((H[b + 96] >> sh) & 1)
-                b2 = (i + 128) >> 3
-                A[i * 2 + 1] = ((H[b2] >> sh) & 1) << 3 | \
-                               ((H[b2 + 32] >> sh) & 1) << 2 | \
-                               ((H[b2 + 64] >> sh) & 1) << 1 | \
-                               ((H[b2 + 96] >> sh) & 1)
-            return
-
-        def e8_finaldegroup(self):
-            A = self.A
-            H = bytearray(128)
-            for i in range(128):
-                v0 = A[i << 1]
-                v1 = A[(i << 1) + 1]
-                sh = 7 - (i & 7)
-                b = i >> 3
-                H[b] |= ((v0 >> 3) & 1) << sh
-                H[b + 32] |= ((v0 >> 2) & 1) << sh
-                H[b + 64] |= ((v0 >> 1) & 1) << sh
-                H[b + 96] |= (v0 & 1) << sh
-
-                b2 = (i + 128) >> 3
-                H[b2] |= ((v1 >> 3) & 1) << sh
-                H[b2 + 32] |= ((v1 >> 2) & 1) << sh
-                H[b2 + 64] |= ((v1 >> 1) & 1) << sh
-                H[b2 + 96] |= (v1 & 1) << sh
-            self.H = H
-            return
-
-        def e8(self):
-            self.e8_initialgroup()
-            A = self.A
-            L = self.L_TRANSF
-            INV = self.INV_P
-            for rnd in range(42):
-                sboxes = self.SBOX_RND[rnd]
-                tem = [s[a] for s, a in zip(sboxes, A)]
-                for i in range(0, 256, 2):
-                    tem[i], tem[i + 1] = L[tem[i]][tem[i + 1]]
-                A = [tem[i] for i in INV]
-            self.A = A
-            self.e8_finaldegroup()
-            return
-
         def f8(self):
+            if self.USE_CFFI:
+                h_buf = self.cffi.ffi.new("uint8_t[]", bytes(self.H))
+                block_buf = self.cffi.ffi.new("uint8_t[]", bytes(self.buffer))
+                self.cffi.lib.f8(h_buf, block_buf)
+                self.H = bytearray(self.cffi.ffi.buffer(h_buf, 128)[:])
+                return
+
+            def e8_initialgroup():
+                A = self.A
+                H = self.H
+                for i in range(128):
+                    sh = 7 - (i & 7)
+                    b = i >> 3
+                    A[i * 2] = ((H[b] >> sh) & 1) << 3 | \
+                               ((H[b + 32] >> sh) & 1) << 2 | \
+                               ((H[b + 64] >> sh) & 1) << 1 | \
+                               ((H[b + 96] >> sh) & 1)
+                    b2 = (i + 128) >> 3
+                    A[i * 2 + 1] = ((H[b2] >> sh) & 1) << 3 | \
+                                   ((H[b2 + 32] >> sh) & 1) << 2 | \
+                                   ((H[b2 + 64] >> sh) & 1) << 1 | \
+                                   ((H[b2 + 96] >> sh) & 1)
+                return A
+
+            def e8_finaldegroup():
+                A = self.A
+                H = bytearray(128)
+                for i in range(128):
+                    v0 = A[i << 1]
+                    v1 = A[(i << 1) + 1]
+                    sh = 7 - (i & 7)
+                    b = i >> 3
+                    H[b] |= ((v0 >> 3) & 1) << sh
+                    H[b + 32] |= ((v0 >> 2) & 1) << sh
+                    H[b + 64] |= ((v0 >> 1) & 1) << sh
+                    H[b + 96] |= (v0 & 1) << sh
+
+                    b2 = (i + 128) >> 3
+                    H[b2] |= ((v1 >> 3) & 1) << sh
+                    H[b2 + 32] |= ((v1 >> 2) & 1) << sh
+                    H[b2 + 64] |= ((v1 >> 1) & 1) << sh
+                    H[b2 + 96] |= (v1 & 1) << sh
+                self.H = H
+                return
+
+            def e8():
+                e8_initialgroup()
+                A = self.A
+                L = self.L_TRANSF
+                INV = self.INV_P
+                for rnd in range(42):
+                    sboxes = self.SBOX_RND[rnd]
+                    tem = [s[a] for s, a in zip(sboxes, A)]
+                    for i in range(0, 256, 2):
+                        tem[i], tem[i + 1] = L[tem[i]][tem[i + 1]]
+                    A = [tem[i] for i in INV]
+                self.A = A
+                e8_finaldegroup()
+                return
+
             for i in range(64):
                 self.H[i] ^= self.buffer[i]
-            self.e8()
+            e8()
             for i in range(64):
                 self.H[i + 64] ^= self.buffer[i]
             return
@@ -91465,27 +91703,21 @@ class Hash:
         )
 
     class RadioGatunBase:
-        digest_size = 0x20  # 256 bits
-        block_size = None
-        word_bits = None
-        rotate = None
-        blank_rounds = 0x10  # nb = 16
+        digest_size = 0x20
+        blank_rounds = 0x10
 
         def __init__(self, data=b""):
             if self.word_bits is None or self.rotate is None:
                 raise ValueError("word_bits and rotate must be set in subclasses")
-
-            self.word_bytes = self.word_bits // 0x08
+            self.word_bytes = self.word_bits // 8
             if self.block_size is None:
-                self.block_size = self.word_bytes * 0x03
-
-            self.word_mask = (0x01 << self.word_bits) - 0x01
-            self.mill = [0x00] * 0x13  # 19
-            self.belt = [0x00] * (0x0d * 0x03)  # 13 stages * 3 words
+                self.block_size = self.word_bytes * 3
+            self.word_mask = (1 << self.word_bits) - 1
+            self.mill = [0] * 0x13
+            self.belt = [0] * (13 * 3)
             self.buf = bytearray()
             self.is_finalized = False
-            self.phase = 0x00
-
+            self.phase = 0
             if data:
                 self.update(data)
             return
@@ -91504,7 +91736,6 @@ class Hash:
                 raise ValueError("hash object already finalized")
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-
             self.buf.extend(data)
             while len(self.buf) >= self.block_size:
                 block = bytes(self.buf[: self.block_size])
@@ -91523,129 +91754,106 @@ class Hash:
         def finalize(self):
             if self.is_finalized:
                 return
-
             data = bytes(self.buf) + b"\x01"
             self.buf = bytearray()
-
             rem = len(data) % self.block_size
             if rem != 0:
                 data += b"\x00" * (self.block_size - rem)
-
-            for off in range(0x00, len(data), self.block_size):
+            for off in range(0, len(data), self.block_size):
                 self.absorb_block(data[off : off + self.block_size])
-
             for _ in range(self.blank_rounds):
                 self.beltmill()
-
             self.is_finalized = True
-            self.phase = 0x00
+            self.phase = 0
             return
 
         def squeeze(self, nbytes):
+
+            def get_word():
+                if self.phase == 0:
+                    self.beltmill()
+                    self.phase = 1
+                out = self.mill[self.phase]
+                self.phase += 1
+                if self.phase > 2:
+                    self.phase = 0
+                return out
+
             if not self.is_finalized:
                 self.finalize()
-
             out = bytearray()
             while len(out) < nbytes:
-                w = self.get_word()
+                w = get_word()
                 out.extend(w.to_bytes(self.word_bytes, "little"))
             return bytes(out[:nbytes])
 
-        def get_word(self):
-            if self.phase == 0x00:
-                self.beltmill()
-                self.phase = 0x01
-
-            out = self.mill[self.phase]
-            self.phase += 0x01
-            if self.phase > 0x02:
-                self.phase = 0x00
-            return out
-
-        def rotr(self, x, r):
-            if r == 0x00:
-                return x
-            return ((x >> r) | (x << (self.word_bits - r))) & self.word_mask
-
-        def not_word(self, x):
-            return x ^ self.word_mask
-
-        def mill_func(self, mill):
-            A = [0x00] * 0x13
-            for i in range(0x13):
-                A[i] = mill[i] ^ (mill[(i + 0x01) % 0x13] | self.not_word(mill[(i + 0x02) % 0x13]))
-
-            a = [0x00] * 0x13
-            for i in range(0x13):
-                a[i] = self.rotr(A[(0x07 * i) % 0x13], self.rotate[i])
-
-            for i in range(0x13):
-                A[i] = a[i] ^ a[(i + 0x01) % 0x13] ^ a[(i + 0x04) % 0x13]
-
-            A[0x00] ^= 0x01
-            return A
-
         def beltmill(self):
+
+            def ror(x, r):
+                if r == 0:
+                    return x
+                return ((x >> r) | (x << (self.word_bits - r))) & self.word_mask
+
+            def mill_func(mill):
+                A = [0] * 19
+                for i in range(19):
+                    A[i] = mill[i] ^ (mill[(i + 1) % 19] | (mill[(i + 2) % 19] ^ self.word_mask))
+                a = [0] * 19
+                for i in range(19):
+                    a[i] = ror(A[(7 * i) % 19], self.rotate[i])
+                for i in range(19):
+                    A[i] = a[i] ^ a[(i + 1) % 19] ^ a[(i + 4) % 19]
+                A[0] ^= 1
+                return A
+
             old_belt = self.belt
             old_mill = self.mill
-
-            new_belt = [0x00] * (0x0d * 0x03)
-
-            # Belt rotation (errata-correct direction): B[i] = b[i - 1 mod 13]
-            for i in range(0x0d):
-                src = (i - 0x01) % 0x0d
-                new_belt[i * 0x03 : (i + 0x01) * 0x03] = old_belt[src * 0x03 : (src + 0x01) * 0x03]
-
-            # Mill to belt feedforward
-            for i in range(0x0c):
-                stage = i + 0x01
-                word = i % 0x03
-                new_belt[stage * 0x03 + word] ^= old_mill[i + 0x01]
-
-            new_mill = self.mill_func(old_mill)
-
-            # Belt to mill feedforward (uses old belt stage 12)
-            base = 0x0c * 0x03
-            new_mill[0x0d] ^= old_belt[base + 0x00]
-            new_mill[0x0e] ^= old_belt[base + 0x01]
-            new_mill[0x0f] ^= old_belt[base + 0x02]
-
+            new_belt = [0] * (13 * 3)
+            for i in range(13):
+                src = (i - 1) % 13
+                new_belt[i * 3 : (i + 1) * 3] = old_belt[src * 3 : (src + 1) * 3]
+            for i in range(12):
+                stage = i + 1
+                word = i % 3
+                new_belt[stage * 3 + word] ^= old_mill[i + 1]
+            new_mill = mill_func(old_mill)
+            base = 12 * 3
+            new_mill[13] ^= old_belt[base + 0]
+            new_mill[14] ^= old_belt[base + 1]
+            new_mill[15] ^= old_belt[base + 2]
             self.belt = new_belt
             self.mill = new_mill
             return
 
         def absorb_block(self, block):
             w = self.word_bytes
-            p0 = int.from_bytes(block[0x00 * w : 0x01 * w], "little")
-            p1 = int.from_bytes(block[0x01 * w : 0x02 * w], "little")
-            p2 = int.from_bytes(block[0x02 * w : 0x03 * w], "little")
-
-            # Input mapping Fi: XOR into belt stage 0 and mill[16..18]
-            self.belt[0x00] ^= p0
-            self.belt[0x01] ^= p1
-            self.belt[0x02] ^= p2
-            self.mill[0x10] ^= p0
-            self.mill[0x11] ^= p1
-            self.mill[0x12] ^= p2
-
+            p0 = int.from_bytes(block[0 * w:1 * w], "little")
+            p1 = int.from_bytes(block[1 * w:2 * w], "little")
+            p2 = int.from_bytes(block[2 * w:3 * w], "little")
+            self.belt[0] ^= p0
+            self.belt[1] ^= p1
+            self.belt[2] ^= p2
+            self.mill[16] ^= p0
+            self.mill[17] ^= p1
+            self.mill[18] ^= p2
             self.beltmill()
             return
 
     class RadioGatun32(RadioGatunBase):
         block_size = 0x0c
         word_bits = 0x20
-        rotate = [
+        rotate = (
             0x00, 0x01, 0x03, 0x06, 0x0a, 0x0f, 0x15, 0x1c, 0x04, 0x0d,
             0x17, 0x02, 0x0e, 0x1b, 0x09, 0x18, 0x08, 0x19, 0x0b,
-        ]
+        )
 
     class RadioGatun64(RadioGatunBase):
         block_size = 0x18
         word_bits = 0x40
-        rotate = [
+        rotate = (
             0x00, 0x01, 0x03, 0x06, 0x0a, 0x0f, 0x15, 0x1c, 0x24, 0x2d,
             0x37, 0x02, 0x0e, 0x1b, 0x29, 0x38, 0x08, 0x19, 0x2b,
-        ]
+        )
 
     class ED2KBase:
         block_size = 64
@@ -91675,7 +91883,6 @@ class Hash:
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
             data = bytes(data)
-
             pos = 0
             total = len(data)
             while pos < total:
@@ -91683,12 +91890,10 @@ class Hash:
                 take = total - pos
                 if take > free:
                     take = free
-
                 part = data[pos:pos + take]
                 self.chunk_hasher.update(part)
                 self.chunk_len += take
                 pos += take
-
                 if self.chunk_len == self.chunk_size:
                     self.hash_chunk()
             return self
@@ -91713,10 +91918,6 @@ class Hash:
             chunk_hash = self.chunk_hasher.digest()
             self.chunk_hasher = Hash.MD4()
             self.chunk_len = 0
-            self.add_chunk_hash(chunk_hash)
-            return
-
-        def add_chunk_hash(self, chunk_hash):
             if self.chunk_count == 0:
                 self.first_chunk_hash = bytes(chunk_hash)
             self.chunk_count += 1
@@ -91730,7 +91931,6 @@ class Hash:
             if self.chunk_count == 0:
                 self.hash_chunk()
                 return bytes(self.first_chunk_hash)
-
             self.hash_chunk()
             return self.list_digest()
 
@@ -91738,14 +91938,11 @@ class Hash:
             if self.chunk_count == 0:
                 self.hash_chunk()
                 return bytes(self.first_chunk_hash)
-
             if self.chunk_len != 0:
                 self.hash_chunk()
                 return self.list_digest()
-
             if self.chunk_count == 1:
                 return bytes(self.first_chunk_hash)
-
             return self.list_digest()
 
         def finalize_redblue(self):
@@ -91753,17 +91950,14 @@ class Hash:
                 self.hash_chunk()
                 one = bytes(self.first_chunk_hash)
                 return one + one
-
             if self.chunk_len != 0:
                 self.hash_chunk()
                 one = self.list_digest()
                 return one + one
-
             if self.chunk_count == 1:
                 blue = bytes(self.first_chunk_hash)
             else:
                 blue = self.list_digest()
-
             self.hash_chunk()
             red = self.list_digest()
             return red + blue
@@ -91783,127 +91977,404 @@ class Hash:
     class MDC2:
         block_size = 8
         digest_size = 16
+        IP = (
+            0x3a, 0x32, 0x2a, 0x22, 0x1a, 0x12, 0x0a, 0x02, 0x3c, 0x34, 0x2c, 0x24, 0x1c, 0x14, 0x0c, 0x04,
+            0x3e, 0x36, 0x2e, 0x26, 0x1e, 0x16, 0x0e, 0x06, 0x40, 0x38, 0x30, 0x28, 0x20, 0x18, 0x10, 0x08,
+            0x39, 0x31, 0x29, 0x21, 0x19, 0x11, 0x09, 0x01, 0x3b, 0x33, 0x2b, 0x23, 0x1b, 0x13, 0x0b, 0x03,
+            0x3d, 0x35, 0x2d, 0x25, 0x1d, 0x15, 0x0d, 0x05, 0x3f, 0x37, 0x2f, 0x27, 0x1f, 0x17, 0x0f, 0x07,
+        )
+        FP = (
+            0x28, 0x08, 0x30, 0x10, 0x38, 0x18, 0x40, 0x20, 0x27, 0x07, 0x2f, 0x0f, 0x37, 0x17, 0x3f, 0x1f,
+            0x26, 0x06, 0x2e, 0x0e, 0x36, 0x16, 0x3e, 0x1e, 0x25, 0x05, 0x2d, 0x0d, 0x35, 0x15, 0x3d, 0x1d,
+            0x24, 0x04, 0x2c, 0x0c, 0x34, 0x14, 0x3c, 0x1c, 0x23, 0x03, 0x2b, 0x0b, 0x33, 0x13, 0x3b, 0x1b,
+            0x22, 0x02, 0x2a, 0x0a, 0x32, 0x12, 0x3a, 0x1a, 0x21, 0x01, 0x29, 0x09, 0x31, 0x11, 0x39, 0x19,
+        )
+        E = (
+            0x20, 0x01, 0x02, 0x03, 0x04, 0x05, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x08, 0x09, 0x0a, 0x0b,
+            0x0c, 0x0d, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x14, 0x15,
+            0x16, 0x17, 0x18, 0x19, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x01,
+        )
+        P = (
+            0x10, 0x07, 0x14, 0x15, 0x1d, 0x0c, 0x1c, 0x11, 0x01, 0x0f, 0x17, 0x1a, 0x05, 0x12, 0x1f, 0x0a,
+            0x02, 0x08, 0x18, 0x0e, 0x20, 0x1b, 0x03, 0x09, 0x13, 0x0d, 0x1e, 0x06, 0x16, 0x0b, 0x04, 0x19,
+        )
+        PC1 = (
+            0x39, 0x31, 0x29, 0x21, 0x19, 0x11, 0x09, 0x01, 0x3a, 0x32, 0x2a, 0x22, 0x1a, 0x12, 0x0a, 0x02,
+            0x3b, 0x33, 0x2b, 0x23, 0x1b, 0x13, 0x0b, 0x03, 0x3c, 0x34, 0x2c, 0x24, 0x3f, 0x37, 0x2f, 0x27,
+            0x1f, 0x17, 0x0f, 0x07, 0x3e, 0x36, 0x2e, 0x26, 0x1e, 0x16, 0x0e, 0x06, 0x3d, 0x35, 0x2d, 0x25,
+            0x1d, 0x15, 0x0d, 0x05, 0x1c, 0x14, 0x0c, 0x04,
+        )
+        PC2 = (
+            0x0e, 0x11, 0x0b, 0x18, 0x01, 0x05, 0x03, 0x1c, 0x0f, 0x06, 0x15, 0x0a, 0x17, 0x13, 0x0c, 0x04,
+            0x1a, 0x08, 0x10, 0x07, 0x1b, 0x14, 0x0d, 0x02, 0x29, 0x34, 0x1f, 0x25, 0x2f, 0x37, 0x1e, 0x28,
+            0x33, 0x2d, 0x21, 0x30, 0x2c, 0x31, 0x27, 0x38, 0x22, 0x35, 0x2e, 0x2a, 0x32, 0x24, 0x1d, 0x20,
+        )
+        SHIFTS = (
+            0x01, 0x01, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x01, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x01,
+        )
+        SBOX = (
+            (
+                (0x0e, 0x04, 0x0d, 0x01, 0x02, 0x0f, 0x0b, 0x08, 0x03, 0x0a, 0x06, 0x0c, 0x05, 0x09, 0x00, 0x07),
+                (0x00, 0x0f, 0x07, 0x04, 0x0e, 0x02, 0x0d, 0x01, 0x0a, 0x06, 0x0c, 0x0b, 0x09, 0x05, 0x03, 0x08),
+                (0x04, 0x01, 0x0e, 0x08, 0x0d, 0x06, 0x02, 0x0b, 0x0f, 0x0c, 0x09, 0x07, 0x03, 0x0a, 0x05, 0x00),
+                (0x0f, 0x0c, 0x08, 0x02, 0x04, 0x09, 0x01, 0x07, 0x05, 0x0b, 0x03, 0x0e, 0x0a, 0x00, 0x06, 0x0d),
+            ),
+            (
+                (0x0f, 0x01, 0x08, 0x0e, 0x06, 0x0b, 0x03, 0x04, 0x09, 0x07, 0x02, 0x0d, 0x0c, 0x00, 0x05, 0x0a),
+                (0x03, 0x0d, 0x04, 0x07, 0x0f, 0x02, 0x08, 0x0e, 0x0c, 0x00, 0x01, 0x0a, 0x06, 0x09, 0x0b, 0x05),
+                (0x00, 0x0e, 0x07, 0x0b, 0x0a, 0x04, 0x0d, 0x01, 0x05, 0x08, 0x0c, 0x06, 0x09, 0x03, 0x02, 0x0f),
+                (0x0d, 0x08, 0x0a, 0x01, 0x03, 0x0f, 0x04, 0x02, 0x0b, 0x06, 0x07, 0x0c, 0x00, 0x05, 0x0e, 0x09),
+            ),
+            (
+                (0x0a, 0x00, 0x09, 0x0e, 0x06, 0x03, 0x0f, 0x05, 0x01, 0x0d, 0x0c, 0x07, 0x0b, 0x04, 0x02, 0x08),
+                (0x0d, 0x07, 0x00, 0x09, 0x03, 0x04, 0x06, 0x0a, 0x02, 0x08, 0x05, 0x0e, 0x0c, 0x0b, 0x0f, 0x01),
+                (0x0d, 0x06, 0x04, 0x09, 0x08, 0x0f, 0x03, 0x00, 0x0b, 0x01, 0x02, 0x0c, 0x05, 0x0a, 0x0e, 0x07),
+                (0x01, 0x0a, 0x0d, 0x00, 0x06, 0x09, 0x08, 0x07, 0x04, 0x0f, 0x0e, 0x03, 0x0b, 0x05, 0x02, 0x0c),
+            ),
+            (
+                (0x07, 0x0d, 0x0e, 0x03, 0x00, 0x06, 0x09, 0x0a, 0x01, 0x02, 0x08, 0x05, 0x0b, 0x0c, 0x04, 0x0f),
+                (0x0d, 0x08, 0x0b, 0x05, 0x06, 0x0f, 0x00, 0x03, 0x04, 0x07, 0x02, 0x0c, 0x01, 0x0a, 0x0e, 0x09),
+                (0x0a, 0x06, 0x09, 0x00, 0x0c, 0x0b, 0x07, 0x0d, 0x0f, 0x01, 0x03, 0x0e, 0x05, 0x02, 0x08, 0x04),
+                (0x03, 0x0f, 0x00, 0x06, 0x0a, 0x01, 0x0d, 0x08, 0x09, 0x04, 0x05, 0x0b, 0x0c, 0x07, 0x02, 0x0e),
+            ),
+            (
+                (0x02, 0x0c, 0x04, 0x01, 0x07, 0x0a, 0x0b, 0x06, 0x08, 0x05, 0x03, 0x0f, 0x0d, 0x00, 0x0e, 0x09),
+                (0x0e, 0x0b, 0x02, 0x0c, 0x04, 0x07, 0x0d, 0x01, 0x05, 0x00, 0x0f, 0x0a, 0x03, 0x09, 0x08, 0x06),
+                (0x04, 0x02, 0x01, 0x0b, 0x0a, 0x0d, 0x07, 0x08, 0x0f, 0x09, 0x0c, 0x05, 0x06, 0x03, 0x00, 0x0e),
+                (0x0b, 0x08, 0x0c, 0x07, 0x01, 0x0e, 0x02, 0x0d, 0x06, 0x0f, 0x00, 0x09, 0x0a, 0x04, 0x05, 0x03),
+            ),
+            (
+                (0x0c, 0x01, 0x0a, 0x0f, 0x09, 0x02, 0x06, 0x08, 0x00, 0x0d, 0x03, 0x04, 0x0e, 0x07, 0x05, 0x0b),
+                (0x0a, 0x0f, 0x04, 0x02, 0x07, 0x0c, 0x09, 0x05, 0x06, 0x01, 0x0d, 0x0e, 0x00, 0x0b, 0x03, 0x08),
+                (0x09, 0x0e, 0x0f, 0x05, 0x02, 0x08, 0x0c, 0x03, 0x07, 0x00, 0x04, 0x0a, 0x01, 0x0d, 0x0b, 0x06),
+                (0x04, 0x03, 0x02, 0x0c, 0x09, 0x05, 0x0f, 0x0a, 0x0b, 0x0e, 0x01, 0x07, 0x06, 0x00, 0x08, 0x0d),
+            ),
+            (
+                (0x04, 0x0b, 0x02, 0x0e, 0x0f, 0x00, 0x08, 0x0d, 0x03, 0x0c, 0x09, 0x07, 0x05, 0x0a, 0x06, 0x01),
+                (0x0d, 0x00, 0x0b, 0x07, 0x04, 0x09, 0x01, 0x0a, 0x0e, 0x03, 0x05, 0x0c, 0x02, 0x0f, 0x08, 0x06),
+                (0x01, 0x04, 0x0b, 0x0d, 0x0c, 0x03, 0x07, 0x0e, 0x0a, 0x0f, 0x06, 0x08, 0x00, 0x05, 0x09, 0x02),
+                (0x06, 0x0b, 0x0d, 0x08, 0x01, 0x04, 0x0a, 0x07, 0x09, 0x05, 0x00, 0x0f, 0x0e, 0x02, 0x03, 0x0c),
+            ),
+            (
+                (0x0d, 0x02, 0x08, 0x04, 0x06, 0x0f, 0x0b, 0x01, 0x0a, 0x09, 0x03, 0x0e, 0x05, 0x00, 0x0c, 0x07),
+                (0x01, 0x0f, 0x0d, 0x08, 0x0a, 0x03, 0x07, 0x04, 0x0c, 0x05, 0x06, 0x0b, 0x00, 0x0e, 0x09, 0x02),
+                (0x07, 0x0b, 0x04, 0x01, 0x09, 0x0c, 0x0e, 0x02, 0x00, 0x06, 0x0a, 0x0d, 0x0f, 0x03, 0x05, 0x08),
+                (0x02, 0x01, 0x0e, 0x07, 0x04, 0x0a, 0x08, 0x0d, 0x0f, 0x0c, 0x09, 0x00, 0x03, 0x05, 0x06, 0x0b),
+            ),
+        )
+        C_TEMPLATE = r"""
+        #include <stdint.h>
 
-        IP = [
-            0x3a, 0x32, 0x2a, 0x22, 0x1a, 0x12, 0xa, 0x2,
-            0x3c, 0x34, 0x2c, 0x24, 0x1c, 0x14, 0xc, 0x4,
-            0x3e, 0x36, 0x2e, 0x26, 0x1e, 0x16, 0xe, 0x6,
-            0x40, 0x38, 0x30, 0x28, 0x20, 0x18, 0x10, 0x8,
-            0x39, 0x31, 0x29, 0x21, 0x19, 0x11, 0x9, 0x1,
-            0x3b, 0x33, 0x2b, 0x23, 0x1b, 0x13, 0xb, 0x3,
-            0x3d, 0x35, 0x2d, 0x25, 0x1d, 0x15, 0xd, 0x5,
-            0x3f, 0x37, 0x2f, 0x27, 0x1f, 0x17, 0xf, 0x7,
-        ]
+        static uint64_t fast_permute64(uint64_t value, const uint64_t *tables)
+        {
+            return (
+                tables[(0 * 256) + ((value >> 56) & 0xffULL)] ^
+                tables[(1 * 256) + ((value >> 48) & 0xffULL)] ^
+                tables[(2 * 256) + ((value >> 40) & 0xffULL)] ^
+                tables[(3 * 256) + ((value >> 32) & 0xffULL)] ^
+                tables[(4 * 256) + ((value >> 24) & 0xffULL)] ^
+                tables[(5 * 256) + ((value >> 16) & 0xffULL)] ^
+                tables[(6 * 256) + ((value >> 8) & 0xffULL)] ^
+                tables[(7 * 256) + (value & 0xffULL)]
+            );
+        }
 
-        FP = [
-            0x28, 0x8, 0x30, 0x10, 0x38, 0x18, 0x40, 0x20,
-            0x27, 0x7, 0x2f, 0xf, 0x37, 0x17, 0x3f, 0x1f,
-            0x26, 0x6, 0x2e, 0xe, 0x36, 0x16, 0x3e, 0x1e,
-            0x25, 0x5, 0x2d, 0xd, 0x35, 0x15, 0x3d, 0x1d,
-            0x24, 0x4, 0x2c, 0xc, 0x34, 0x14, 0x3c, 0x1c,
-            0x23, 0x3, 0x2b, 0xb, 0x33, 0x13, 0x3b, 0x1b,
-            0x22, 0x2, 0x2a, 0xa, 0x32, 0x12, 0x3a, 0x1a,
-            0x21, 0x1, 0x29, 0x9, 0x31, 0x11, 0x39, 0x19,
-        ]
+        static uint64_t fast_permute56(uint64_t value, const uint64_t *tables)
+        {
+            return (
+                tables[(0 * 256) + ((value >> 48) & 0xffULL)] ^
+                tables[(1 * 256) + ((value >> 40) & 0xffULL)] ^
+                tables[(2 * 256) + ((value >> 32) & 0xffULL)] ^
+                tables[(3 * 256) + ((value >> 24) & 0xffULL)] ^
+                tables[(4 * 256) + ((value >> 16) & 0xffULL)] ^
+                tables[(5 * 256) + ((value >> 8) & 0xffULL)] ^
+                tables[(6 * 256) + (value & 0xffULL)]
+            );
+        }
 
-        E = [
-            0x20, 0x1, 0x2, 0x3, 0x4, 0x5, 0x4, 0x5,
-            0x6, 0x7, 0x8, 0x9, 0x8, 0x9, 0xa, 0xb,
-            0xc, 0xd, 0xc, 0xd, 0xe, 0xf, 0x10, 0x11,
-            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x14, 0x15,
-            0x16, 0x17, 0x18, 0x19, 0x18, 0x19, 0x1a, 0x1b,
-            0x1c, 0x1d, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x1,
-        ]
+        static uint64_t fast_permute32(uint32_t value, const uint64_t *tables)
+        {
+            return (
+                tables[(0 * 256) + ((value >> 24) & 0xffU)] ^
+                tables[(1 * 256) + ((value >> 16) & 0xffU)] ^
+                tables[(2 * 256) + ((value >> 8) & 0xffU)] ^
+                tables[(3 * 256) + (value & 0xffU)]
+            );
+        }
 
-        P = [
-            0x10, 0x7, 0x14, 0x15, 0x1d, 0xc, 0x1c, 0x11,
-            0x1, 0xf, 0x17, 0x1a, 0x5, 0x12, 0x1f, 0xa,
-            0x2, 0x8, 0x18, 0xe, 0x20, 0x1b, 0x3, 0x9,
-            0x13, 0xd, 0x1e, 0x6, 0x16, 0xb, 0x4, 0x19,
-        ]
+        static uint32_t rol28(uint32_t x, int n)
+        {
+            return ((x << n) | (x >> (28 - n))) & 0x0fffffffU;
+        }
 
-        PC1 = [
-            0x39, 0x31, 0x29, 0x21, 0x19, 0x11, 0x9, 0x1,
-            0x3a, 0x32, 0x2a, 0x22, 0x1a, 0x12, 0xa, 0x2,
-            0x3b, 0x33, 0x2b, 0x23, 0x1b, 0x13, 0xb, 0x3,
-            0x3c, 0x34, 0x2c, 0x24, 0x3f, 0x37, 0x2f, 0x27,
-            0x1f, 0x17, 0xf, 0x7, 0x3e, 0x36, 0x2e, 0x26,
-            0x1e, 0x16, 0xe, 0x6, 0x3d, 0x35, 0x2d, 0x25,
-            0x1d, 0x15, 0xd, 0x5, 0x1c, 0x14, 0xc, 0x4,
-        ]
+        static uint8_t set_odd_parity_byte(uint8_t value)
+        {
+            uint8_t x = value & 0xfeU;
+            uint8_t y = x;
+            int ones = 0;
 
-        PC2 = [
-            0xe, 0x11, 0xb, 0x18, 0x1, 0x5, 0x3, 0x1c,
-            0xf, 0x6, 0x15, 0xa, 0x17, 0x13, 0xc, 0x4,
-            0x1a, 0x8, 0x10, 0x7, 0x1b, 0x14, 0xd, 0x2,
-            0x29, 0x34, 0x1f, 0x25, 0x2f, 0x37, 0x1e, 0x28,
-            0x33, 0x2d, 0x21, 0x30, 0x2c, 0x31, 0x27, 0x38,
-            0x22, 0x35, 0x2e, 0x2a, 0x32, 0x24, 0x1d, 0x20,
-        ]
+            while (y != 0) {
+                ones += (y & 0x01U);
+                y >>= 1;
+            }
 
-        SHIFTS = [
-            0x1, 0x1, 0x2, 0x2, 0x2, 0x2, 0x2, 0x2,
-            0x1, 0x2, 0x2, 0x2, 0x2, 0x2, 0x2, 0x1,
-        ]
+            if ((ones & 1) == 0)
+                x |= 0x01U;
+            return x;
+        }
 
-        SBOX = [
-            [
-                [0xe, 0x4, 0xd, 0x1, 0x2, 0xf, 0xb, 0x8, 0x3, 0xa, 0x6, 0xc, 0x5, 0x9, 0x0, 0x7],
-                [0x0, 0xf, 0x7, 0x4, 0xe, 0x2, 0xd, 0x1, 0xa, 0x6, 0xc, 0xb, 0x9, 0x5, 0x3, 0x8],
-                [0x4, 0x1, 0xe, 0x8, 0xd, 0x6, 0x2, 0xb, 0xf, 0xc, 0x9, 0x7, 0x3, 0xa, 0x5, 0x0],
-                [0xf, 0xc, 0x8, 0x2, 0x4, 0x9, 0x1, 0x7, 0x5, 0xb, 0x3, 0xe, 0xa, 0x0, 0x6, 0xd],
-            ],
-            [
-                [0xf, 0x1, 0x8, 0xe, 0x6, 0xb, 0x3, 0x4, 0x9, 0x7, 0x2, 0xd, 0xc, 0x0, 0x5, 0xa],
-                [0x3, 0xd, 0x4, 0x7, 0xf, 0x2, 0x8, 0xe, 0xc, 0x0, 0x1, 0xa, 0x6, 0x9, 0xb, 0x5],
-                [0x0, 0xe, 0x7, 0xb, 0xa, 0x4, 0xd, 0x1, 0x5, 0x8, 0xc, 0x6, 0x9, 0x3, 0x2, 0xf],
-                [0xd, 0x8, 0xa, 0x1, 0x3, 0xf, 0x4, 0x2, 0xb, 0x6, 0x7, 0xc, 0x0, 0x5, 0xe, 0x9],
-            ],
-            [
-                [0xa, 0x0, 0x9, 0xe, 0x6, 0x3, 0xf, 0x5, 0x1, 0xd, 0xc, 0x7, 0xb, 0x4, 0x2, 0x8],
-                [0xd, 0x7, 0x0, 0x9, 0x3, 0x4, 0x6, 0xa, 0x2, 0x8, 0x5, 0xe, 0xc, 0xb, 0xf, 0x1],
-                [0xd, 0x6, 0x4, 0x9, 0x8, 0xf, 0x3, 0x0, 0xb, 0x1, 0x2, 0xc, 0x5, 0xa, 0xe, 0x7],
-                [0x1, 0xa, 0xd, 0x0, 0x6, 0x9, 0x8, 0x7, 0x4, 0xf, 0xe, 0x3, 0xb, 0x5, 0x2, 0xc],
-            ],
-            [
-                [0x7, 0xd, 0xe, 0x3, 0x0, 0x6, 0x9, 0xa, 0x1, 0x2, 0x8, 0x5, 0xb, 0xc, 0x4, 0xf],
-                [0xd, 0x8, 0xb, 0x5, 0x6, 0xf, 0x0, 0x3, 0x4, 0x7, 0x2, 0xc, 0x1, 0xa, 0xe, 0x9],
-                [0xa, 0x6, 0x9, 0x0, 0xc, 0xb, 0x7, 0xd, 0xf, 0x1, 0x3, 0xe, 0x5, 0x2, 0x8, 0x4],
-                [0x3, 0xf, 0x0, 0x6, 0xa, 0x1, 0xd, 0x8, 0x9, 0x4, 0x5, 0xb, 0xc, 0x7, 0x2, 0xe],
-            ],
-            [
-                [0x2, 0xc, 0x4, 0x1, 0x7, 0xa, 0xb, 0x6, 0x8, 0x5, 0x3, 0xf, 0xd, 0x0, 0xe, 0x9],
-                [0xe, 0xb, 0x2, 0xc, 0x4, 0x7, 0xd, 0x1, 0x5, 0x0, 0xf, 0xa, 0x3, 0x9, 0x8, 0x6],
-                [0x4, 0x2, 0x1, 0xb, 0xa, 0xd, 0x7, 0x8, 0xf, 0x9, 0xc, 0x5, 0x6, 0x3, 0x0, 0xe],
-                [0xb, 0x8, 0xc, 0x7, 0x1, 0xe, 0x2, 0xd, 0x6, 0xf, 0x0, 0x9, 0xa, 0x4, 0x5, 0x3],
-            ],
-            [
-                [0xc, 0x1, 0xa, 0xf, 0x9, 0x2, 0x6, 0x8, 0x0, 0xd, 0x3, 0x4, 0xe, 0x7, 0x5, 0xb],
-                [0xa, 0xf, 0x4, 0x2, 0x7, 0xc, 0x9, 0x5, 0x6, 0x1, 0xd, 0xe, 0x0, 0xb, 0x3, 0x8],
-                [0x9, 0xe, 0xf, 0x5, 0x2, 0x8, 0xc, 0x3, 0x7, 0x0, 0x4, 0xa, 0x1, 0xd, 0xb, 0x6],
-                [0x4, 0x3, 0x2, 0xc, 0x9, 0x5, 0xf, 0xa, 0xb, 0xe, 0x1, 0x7, 0x6, 0x0, 0x8, 0xd],
-            ],
-            [
-                [0x4, 0xb, 0x2, 0xe, 0xf, 0x0, 0x8, 0xd, 0x3, 0xc, 0x9, 0x7, 0x5, 0xa, 0x6, 0x1],
-                [0xd, 0x0, 0xb, 0x7, 0x4, 0x9, 0x1, 0xa, 0xe, 0x3, 0x5, 0xc, 0x2, 0xf, 0x8, 0x6],
-                [0x1, 0x4, 0xb, 0xd, 0xc, 0x3, 0x7, 0xe, 0xa, 0xf, 0x6, 0x8, 0x0, 0x5, 0x9, 0x2],
-                [0x6, 0xb, 0xd, 0x8, 0x1, 0x4, 0xa, 0x7, 0x9, 0x5, 0x0, 0xf, 0xe, 0x2, 0x3, 0xc],
-            ],
-            [
-                [0xd, 0x2, 0x8, 0x4, 0x6, 0xf, 0xb, 0x1, 0xa, 0x9, 0x3, 0xe, 0x5, 0x0, 0xc, 0x7],
-                [0x1, 0xf, 0xd, 0x8, 0xa, 0x3, 0x7, 0x4, 0xc, 0x5, 0x6, 0xb, 0x0, 0xe, 0x9, 0x2],
-                [0x7, 0xb, 0x4, 0x1, 0x9, 0xc, 0xe, 0x2, 0x0, 0x6, 0xa, 0xd, 0xf, 0x3, 0x5, 0x8],
-                [0x2, 0x1, 0xe, 0x7, 0x4, 0xa, 0x8, 0xd, 0xf, 0xc, 0x9, 0x0, 0x3, 0x5, 0x6, 0xb],
-            ],
-        ]
+        static void set_odd_parity(uint8_t *data, int size)
+        {
+            int i = 0;
+
+            for (i = 0; i < size; i++) {
+                data[i] = set_odd_parity_byte(data[i]);
+            }
+        }
+
+        static void des_subkeys(
+            const uint8_t *key, const uint64_t *pc1_tables, const uint64_t *pc2_tables, uint64_t *subkeys)
+        {
+            uint8_t shift_table[16] = {
+                0x01, 0x01, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02,
+                0x01, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x01,
+            };
+            uint64_t k = 0;
+            uint64_t k56 = 0;
+            uint32_t c = 0;
+            uint32_t d = 0;
+            int i = 0;
+
+            for (i = 0; i < 8; i++) {
+                k = (k << 8) | (uint64_t)key[i];
+            }
+
+            k56 = fast_permute64(k, pc1_tables);
+            c = (uint32_t)(k56 >> 28);
+            d = (uint32_t)(k56 & 0x0fffffffU);
+
+            for (i = 0; i < 16; i++) {
+                uint64_t cd = 0;
+                c = rol28(c, shift_table[i]);
+                d = rol28(d, shift_table[i]);
+                cd = (((uint64_t)c) << 28) | (uint64_t)d;
+                subkeys[i] = fast_permute56(cd, pc2_tables);
+            }
+        }
+
+        static uint32_t des_f(uint32_t r, uint64_t subkey, const uint64_t *e_tables, const uint32_t *sp_tables)
+        {
+            uint64_t x = fast_permute32(r, e_tables) ^ subkey;
+
+            return (
+                sp_tables[(0 * 64) + ((x >> 42) & 0x3fULL)] ^
+                sp_tables[(1 * 64) + ((x >> 36) & 0x3fULL)] ^
+                sp_tables[(2 * 64) + ((x >> 30) & 0x3fULL)] ^
+                sp_tables[(3 * 64) + ((x >> 24) & 0x3fULL)] ^
+                sp_tables[(4 * 64) + ((x >> 18) & 0x3fULL)] ^
+                sp_tables[(5 * 64) + ((x >> 12) & 0x3fULL)] ^
+                sp_tables[(6 * 64) + ((x >> 6) & 0x3fULL)] ^
+                sp_tables[(7 * 64) + (x & 0x3fULL)]
+            );
+        }
+
+        static void des_encrypt_block(
+            const uint8_t *block, const uint8_t *key, const uint64_t *ip_tables, const uint64_t *fp_tables,
+            const uint64_t *pc1_tables, const uint64_t *pc2_tables, const uint64_t *e_tables,
+            const uint32_t *sp_tables, uint8_t *out)
+        {
+            uint64_t subkeys[16];
+            uint64_t x = 0;
+            uint64_t y = 0;
+            uint32_t l = 0;
+            uint32_t r = 0;
+            int i = 0;
+
+            des_subkeys(key, pc1_tables, pc2_tables, subkeys);
+
+            for (i = 0; i < 8; i++) {
+                x = (x << 8) | (uint64_t)block[i];
+            }
+
+            x = fast_permute64(x, ip_tables);
+            l = (uint32_t)(x >> 32);
+            r = (uint32_t)(x & 0xffffffffU);
+
+            for (i = 0; i < 16; i++) {
+                uint32_t nl = r;
+                uint32_t nr = l ^ des_f(r, subkeys[i], e_tables, sp_tables);
+                l = nl;
+                r = nr;
+            }
+
+            y = (((uint64_t)r) << 32) | (uint64_t)l;
+            y = fast_permute64(y, fp_tables);
+
+            for (i = 7; i >= 0; i--) {
+                out[i] = (uint8_t)(y & 0xffULL);
+                y >>= 8;
+            }
+        }
+
+        void compress(
+            uint8_t *h, uint8_t *hh, const uint8_t *block, const uint64_t *ip_tables, const uint64_t *fp_tables,
+            const uint64_t *pc1_tables, const uint64_t *pc2_tables, const uint64_t *e_tables,
+            const uint32_t *sp_tables)
+        {
+            uint8_t h_key[8];
+            uint8_t hh_key[8];
+            uint8_t d[8];
+            uint8_t dd[8];
+            int i = 0;
+
+            for (i = 0; i < 8; i++) {
+                h_key[i] = h[i];
+                hh_key[i] = hh[i];
+            }
+
+            h_key[0] = (uint8_t)((h_key[0] & 0x9fU) | 0x40U);
+            hh_key[0] = (uint8_t)((hh_key[0] & 0x9fU) | 0x20U);
+
+            set_odd_parity(h_key, 8);
+            set_odd_parity(hh_key, 8);
+
+            des_encrypt_block(block, h_key, ip_tables, fp_tables, pc1_tables, pc2_tables, e_tables, sp_tables, d);
+            des_encrypt_block(block, hh_key, ip_tables, fp_tables, pc1_tables, pc2_tables, e_tables, sp_tables, dd);
+
+            for (i = 0; i < 4; i++) {
+                h[i] = (uint8_t)(block[i] ^ d[i]);
+                hh[i] = (uint8_t)(block[i] ^ dd[i]);
+            }
+
+            for (i = 4; i < 8; i++) {
+                h[i] = (uint8_t)(block[i] ^ dd[i]);
+                hh[i] = (uint8_t)(block[i] ^ d[i]);
+            }
+        }
+        """
+        DEF_TEMPLATE = r"""
+        void compress(
+            uint8_t *h, uint8_t *hh, const uint8_t *block, const uint64_t *ip_tables, const uint64_t *fp_tables,
+            const uint64_t *pc1_tables, const uint64_t *pc2_tables, const uint64_t *e_tables,
+            const uint32_t *sp_tables);
+        """
+
+        def init_cffi_backend(self):
+            try:
+                import cffi
+                import warnings
+            except ImportError:
+                self.USE_CFFI = False
+                return
+
+            key = self.__class__
+            base_class = Hash.MDC2
+
+            if not hasattr(base_class, "cffi_cache"):
+                base_class.cffi_cache = {}
+
+            # fast return
+            if key in base_class.cffi_cache:
+                self.cffi = base_class.cffi_cache[key]
+                self.USE_CFFI = True
+                return
+
+            # ffi, lib
+            if base_class in base_class.cffi_cache:
+                ffi, lib = base_class.cffi_cache[base_class]
+            else:
+                try:
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings(
+                            "ignore",
+                            message=r"reimporting '_cffi__.*' might overwrite older definitions",
+                            category=UserWarning,
+                            module=r"cffi\.vengine_cpy",
+                        )
+                        ffi = cffi.FFI()
+                        ffi.cdef(base_class.DEF_TEMPLATE)
+                        lib = ffi.verify(base_class.C_TEMPLATE, extra_compile_args=["-O2"])
+                    base_class.cffi_cache[base_class] = (ffi, lib)
+                except Exception:
+                    self.USE_CFFI = False
+                    return
+
+            # Different for each class
+            def flatten_tables(tables):
+                flat = []
+                for row in tables:
+                    flat.extend(row)
+                return tuple(flat)
+
+            try:
+                ip_tables = ffi.new("uint64_t[]", flatten_tables(self.IP_tables))
+                fp_tables = ffi.new("uint64_t[]", flatten_tables(self.FP_tables))
+                pc1_tables = ffi.new("uint64_t[]", flatten_tables(self.PC1_tables))
+                pc2_tables = ffi.new("uint64_t[]", flatten_tables(self.PC2_tables))
+                e_tables = ffi.new("uint64_t[]", flatten_tables(self.E_tables))
+                sp_tables = ffi.new("uint32_t[]", flatten_tables(self.SP_tables))
+            except Exception:
+                self.USE_CFFI = False
+                return
+
+            # add to cache
+            cffi_obj = collections.namedtuple("CFFI", "ffi lib ip_tables fp_tables pc1_tables pc2_tables e_tables sp_tables")(
+                ffi, lib, ip_tables, fp_tables, pc1_tables, pc2_tables, e_tables, sp_tables,
+            )
+            self.cffi = base_class.cffi_cache[key] = cffi_obj
+            self.USE_CFFI = True
+            return
+
+        @classmethod
+        def ensure_tables(cls):
+            if hasattr(cls, "IP_tables"):
+                return
+
+            def build_perm_tables(table, in_bits):
+                num_chunks = in_bits // 8
+                tables = [[0] * 256 for _ in range(num_chunks)]
+                out_bits = len(table)
+                for chunk in range(num_chunks):
+                    for val in range(256):
+                        out = 0
+                        for i, pos in enumerate(table):
+                            bit_idx = pos - 1
+                            if (bit_idx // 8) == chunk:
+                                bit = (val >> (7 - (bit_idx % 8))) & 1
+                                out |= (bit << (out_bits - 1 - i))
+                        tables[chunk][val] = out
+                return tables
+
+            cls.IP_tables = build_perm_tables(cls.IP, 64)
+            cls.FP_tables = build_perm_tables(cls.FP, 64)
+            cls.PC1_tables = build_perm_tables(cls.PC1, 64)
+            cls.PC2_tables = build_perm_tables(cls.PC2, 56)
+            cls.E_tables = build_perm_tables(cls.E, 32)
+
+            SP_tables = [[0] * 64 for _ in range(8)]
+            for i in range(8):
+                for val in range(64):
+                    row = ((val & 0x20) >> 4) | (val & 0x1)
+                    col = (val >> 1) & 0x0f
+                    sval = cls.SBOX[i][row][col]
+                    out = 0
+                    for b in range(4):
+                        bit_val = (sval >> (3 - b)) & 1
+                        in_pos = i * 4 + b + 1
+                        out_idx = cls.P.index(in_pos)
+                        out |= (bit_val << (31 - out_idx))
+                    SP_tables[i][val] = out
+            cls.SP_tables = SP_tables
+            return
 
         def __init__(self, data=b""):
-            self.ensure_tables()
             self.h = bytearray([0x52] * 8)
             self.hh = bytearray([0x25] * 8)
             self.buf = bytearray()
-            self.msg_len = 0  # in bytes
-            self.pad_type = 0x1
+            self.msg_len = 0
+            self.pad_type = 1
+            self.ensure_tables()
+            self.init_cffi_backend()
             if data:
                 self.update(data)
             return
@@ -91938,8 +92409,8 @@ class Hash:
             return self.digest().hex()
 
         def finalize(self):
-            if (len(self.buf) > 0) or (self.pad_type == 0x2):
-                if self.pad_type == 0x2:
+            if (len(self.buf) > 0) or (self.pad_type == 2):
+                if self.pad_type == 2:
                     self.buf.append(0x80)
                 while len(self.buf) < 8:
                     self.buf.append(0x00)
@@ -91948,10 +92419,43 @@ class Hash:
             return
 
         def compress(self, block):
+            if len(block) != 8:
+                raise ValueError("invalid block size")
+
+            if self.USE_CFFI:
+                h_buf = self.cffi.ffi.new("uint8_t[]", bytes(self.h))
+                hh_buf = self.cffi.ffi.new("uint8_t[]", bytes(self.hh))
+                block_buf = self.cffi.ffi.new("uint8_t[]", bytes(block))
+                self.cffi.lib.compress(
+                    h_buf, hh_buf, block_buf,
+                    self.cffi.ip_tables, self.cffi.fp_tables,
+                    self.cffi.pc1_tables, self.cffi.pc2_tables, self.cffi.e_tables,
+                    self.cffi.sp_tables,
+                )
+                self.h = bytearray(bytes(self.cffi.ffi.buffer(h_buf, 8)))
+                self.hh = bytearray(bytes(self.cffi.ffi.buffer(hh_buf, 8)))
+                return
+
+            def set_odd_parity(data):
+                for i in range(len(data)):
+                    data[i] = set_odd_parity_byte(data[i])
+                return
+
+            def set_odd_parity_byte(value):
+                x = value & 0xfe
+                ones = 0
+                y = x
+                while y != 0:
+                    ones += y & 0x1
+                    y >>= 1
+                if (ones % 2) == 0:
+                    x |= 0x1
+                return x
+
             self.h[0] = (self.h[0] & 0x9f) | 0x40
             self.hh[0] = (self.hh[0] & 0x9f) | 0x20
-            self.set_odd_parity(self.h)
-            self.set_odd_parity(self.hh)
+            set_odd_parity(self.h)
+            set_odd_parity(self.hh)
             d = self.des_encrypt_block(block, bytes(self.h))
             dd = self.des_encrypt_block(block, bytes(self.hh))
             h = bytearray(8)
@@ -91966,169 +92470,101 @@ class Hash:
             self.hh = hh
             return
 
-        def set_odd_parity(self, data):
-            for i in range(len(data)):
-                data[i] = self.set_odd_parity_byte(data[i])
-            return
-
-        def set_odd_parity_byte(self, value):
-            x = value & 0xfe
-            ones = 0
-            y = x
-            while y != 0:
-                ones += y & 0x1
-                y >>= 1
-            if (ones % 2) == 0:
-                x |= 0x1
-            return x
-
-        def ensure_tables(self):
-            if hasattr(self.__class__, "IP_tables"):
-                return
-
-            def build_perm_tables(table, in_bits):
-                num_chunks = in_bits // 8
-                tables = [[0] * 256 for _ in range(num_chunks)]
-                out_bits = len(table)
-                for chunk in range(num_chunks):
-                    for val in range(256):
-                        out = 0
-                        for i, pos in enumerate(table):
-                            bit_idx = pos - 1
-                            if (bit_idx // 8) == chunk:
-                                bit = (val >> (7 - (bit_idx % 8))) & 1
-                                out |= (bit << (out_bits - 1 - i))
-                        tables[chunk][val] = out
-                return tables
-
-            cls = self.__class__
-            cls.IP_tables = build_perm_tables(cls.IP, 64)
-            cls.FP_tables = build_perm_tables(cls.FP, 64)
-            cls.PC1_tables = build_perm_tables(cls.PC1, 64)
-            cls.PC2_tables = build_perm_tables(cls.PC2, 56)
-            cls.E_tables = build_perm_tables(cls.E, 32)
-
-            SP_tables = [[0] * 64 for _ in range(8)]
-            for i in range(8):
-                for val in range(64):
-                    row = ((val & 0x20) >> 4) | (val & 0x1)
-                    col = (val >> 1) & 0x0f
-                    sval = cls.SBOX[i][row][col]
-                    out = 0
-                    for b in range(4):
-                        bit_val = (sval >> (3 - b)) & 1
-                        in_pos = i * 4 + b + 1
-                        out_idx = cls.P.index(in_pos)
-                        out |= (bit_val << (31 - out_idx))
-                    SP_tables[i][val] = out
-            cls.SP_tables = SP_tables
-            return
-
-        def fast_permute64(self, value, tables):
-            return (
-                tables[0][(value >> 56) & 0xff] ^
-                tables[1][(value >> 48) & 0xff] ^
-                tables[2][(value >> 40) & 0xff] ^
-                tables[3][(value >> 32) & 0xff] ^
-                tables[4][(value >> 24) & 0xff] ^
-                tables[5][(value >> 16) & 0xff] ^
-                tables[6][(value >> 8) & 0xff] ^
-                tables[7][value & 0xff]
-            )
-
-        def fast_permute56(self, value, tables):
-            return (
-                tables[0][(value >> 48) & 0xff] ^
-                tables[1][(value >> 40) & 0xff] ^
-                tables[2][(value >> 32) & 0xff] ^
-                tables[3][(value >> 24) & 0xff] ^
-                tables[4][(value >> 16) & 0xff] ^
-                tables[5][(value >> 8) & 0xff] ^
-                tables[6][value & 0xff]
-            )
-
-        def fast_permute32(self, value, tables):
-            return (
-                tables[0][(value >> 24) & 0xff] ^
-                tables[1][(value >> 16) & 0xff] ^
-                tables[2][(value >> 8) & 0xff] ^
-                tables[3][value & 0xff]
-            )
-
         def des_encrypt_block(self, block, key):
-            subkeys = self.des_subkeys(key)
+
+            def fast_permute64(value, tables):
+                return (
+                    tables[0][(value >> 56) & 0xff] ^
+                    tables[1][(value >> 48) & 0xff] ^
+                    tables[2][(value >> 40) & 0xff] ^
+                    tables[3][(value >> 32) & 0xff] ^
+                    tables[4][(value >> 24) & 0xff] ^
+                    tables[5][(value >> 16) & 0xff] ^
+                    tables[6][(value >> 8) & 0xff] ^
+                    tables[7][value & 0xff]
+                )
+
+            def fast_permute56(value, tables):
+                return (
+                    tables[0][(value >> 48) & 0xff] ^
+                    tables[1][(value >> 40) & 0xff] ^
+                    tables[2][(value >> 32) & 0xff] ^
+                    tables[3][(value >> 24) & 0xff] ^
+                    tables[4][(value >> 16) & 0xff] ^
+                    tables[5][(value >> 8) & 0xff] ^
+                    tables[6][value & 0xff]
+                )
+
+            def fast_permute32(value, tables):
+                return (
+                    tables[0][(value >> 24) & 0xff] ^
+                    tables[1][(value >> 16) & 0xff] ^
+                    tables[2][(value >> 8) & 0xff] ^
+                    tables[3][value & 0xff]
+                )
+
+            def rol28(x, n):
+                return ((x << n) | (x >> (28 - n))) & 0x0fff_ffff
+
+            def des_subkeys(key):
+                k = int.from_bytes(key, "big")
+                k56 = fast_permute64(k, self.PC1_tables)
+                c = k56 >> 28
+                d = k56 & 0x0fff_ffff
+                subkeys = []
+                for shift in self.SHIFTS:
+                    c = rol28(c, shift)
+                    d = rol28(d, shift)
+                    cd = (c << 28) | d
+                    subkeys.append(fast_permute56(cd, self.PC2_tables))
+                return subkeys
+
+            def des_f(r, subkey):
+                x = fast_permute32(r, self.E_tables) ^ subkey
+                SP = self.SP_tables
+                return (
+                    SP[0][(x >> 42) & 0x3f] ^
+                    SP[1][(x >> 36) & 0x3f] ^
+                    SP[2][(x >> 30) & 0x3f] ^
+                    SP[3][(x >> 24) & 0x3f] ^
+                    SP[4][(x >> 18) & 0x3f] ^
+                    SP[5][(x >> 12) & 0x3f] ^
+                    SP[6][(x >> 6) & 0x3f] ^
+                    SP[7][x & 0x3f]
+                )
+
+            subkeys = des_subkeys(key)
             x = int.from_bytes(block, "big")
-            x = self.fast_permute64(x, self.__class__.IP_tables)
+            x = fast_permute64(x, self.IP_tables)
             l = x >> 32  # noqa: E741
             r = x & 0xffff_ffff
             for subkey in subkeys:
                 nl = r
-                nr = l ^ self.des_f(r, subkey)
+                nr = l ^ des_f(r, subkey)
                 l = nl  # noqa: E741
                 r = nr
             y = (r << 32) | l
-            y = self.fast_permute64(y, self.__class__.FP_tables)
+            y = fast_permute64(y, self.FP_tables)
             return y.to_bytes(8, "big")
 
-        def des_subkeys(self, key):
-            k = int.from_bytes(key, "big")
-            k56 = self.fast_permute64(k, self.__class__.PC1_tables)
-            c = k56 >> 28
-            d = k56 & 0x0fff_ffff
-            subkeys = []
-            for shift in self.SHIFTS:
-                c = self.rol28(c, shift)
-                d = self.rol28(d, shift)
-                cd = (c << 28) | d
-                subkeys.append(self.fast_permute56(cd, self.__class__.PC2_tables))
-            return subkeys
-
-        def rol28(self, x, n):
-            return ((x << n) | (x >> (28 - n))) & 0x0fff_ffff
-
-        def des_f(self, r, subkey):
-            x = self.fast_permute32(r, self.__class__.E_tables) ^ subkey
-            SP = self.__class__.SP_tables
-            return (
-                SP[0][(x >> 42) & 0x3f] ^
-                SP[1][(x >> 36) & 0x3f] ^
-                SP[2][(x >> 30) & 0x3f] ^
-                SP[3][(x >> 24) & 0x3f] ^
-                SP[4][(x >> 18) & 0x3f] ^
-                SP[5][(x >> 12) & 0x3f] ^
-                SP[6][(x >> 6) & 0x3f] ^
-                SP[7][x & 0x3f]
-            )
-
     class MarsupilamiFourteen:
-        block_size = 136
+        block_size = 0x88
         digest_size = 64
-        mask64 = 0xffff_ffff_ffff_ffff
-        node_block_size = 8192
-
+        node_block_size = 0x2000
         single = bytes([0x07])
         intermediate = bytes([0x0b])
         final = bytes([0xff, 0xff, 0x06])
         first = bytes([0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
-
-        round_constants = [
-            0x0000_0000_0000_0001, 0x0000_0000_0000_8082,
-            0x8000_0000_0000_808a, 0x8000_0000_8000_8000,
-            0x0000_0000_0000_808b, 0x0000_0000_8000_0001,
-            0x8000_0000_8000_8081, 0x8000_0000_0000_8009,
-            0x0000_0000_0000_008a, 0x0000_0000_0000_0088,
-            0x0000_0000_8000_8009, 0x0000_0000_8000_000a,
-            0x0000_0000_8000_808b, 0x8000_0000_0000_008b,
-            0x8000_0000_0000_8089, 0x8000_0000_0000_8003,
-            0x8000_0000_0000_8002, 0x8000_0000_0000_0080,
-            0x0000_0000_0000_800a, 0x8000_0000_8000_000a,
-            0x8000_0000_8000_8081, 0x8000_0000_0000_8080,
-            0x0000_0000_8000_0001, 0x8000_0000_8000_8008,
-        ]
+        round_constants = (
+            0x0000_0000_0000_0001, 0x0000_0000_0000_8082, 0x8000_0000_0000_808a, 0x8000_0000_8000_8000,
+            0x0000_0000_0000_808b, 0x0000_0000_8000_0001, 0x8000_0000_8000_8081, 0x8000_0000_0000_8009,
+            0x0000_0000_0000_008a, 0x0000_0000_0000_0088, 0x0000_0000_8000_8009, 0x0000_0000_8000_000a,
+            0x0000_0000_8000_808b, 0x8000_0000_0000_008b, 0x8000_0000_0000_8089, 0x8000_0000_0000_8003,
+            0x8000_0000_0000_8002, 0x8000_0000_0000_0080, 0x0000_0000_0000_800a, 0x8000_0000_8000_000a,
+            0x8000_0000_8000_8081, 0x8000_0000_0000_8080, 0x0000_0000_8000_0001, 0x8000_0000_8000_8008,
+        )
 
         class KangarooSponge:
-            mask64 = 0xffff_ffff_ffff_ffff
-
             def __init__(self, strength, rounds, round_constants):
                 self.strength = strength
                 self.rounds = rounds
@@ -92161,7 +92597,6 @@ class Hash:
             def absorb(self, data, off, length):
                 if self.squeezing:
                     raise ValueError("attempt to absorb while squeezing")
-
                 count = 0
                 while count < length:
                     if self.bytes_in_queue == 0 and count <= (length - self.rate_bytes):
@@ -92176,7 +92611,6 @@ class Hash:
                             data[off + count:off + count + partial_block]
                         self.bytes_in_queue += partial_block
                         count += partial_block
-
                         if self.bytes_in_queue == self.rate_bytes:
                             self.kangaroo_absorb(self.queue, 0)
                             self.bytes_in_queue = 0
@@ -92195,14 +92629,12 @@ class Hash:
             def squeeze(self, out, off, output_length):
                 if not self.squeezing:
                     self.pad_and_switch_to_squeezing_phase()
-
                 i = 0
                 while i < output_length:
                     if self.bytes_in_queue == 0:
                         self.kangaroo_permutation()
                         self.kangaroo_extract()
                         self.bytes_in_queue = self.rate_bytes
-
                     partial_block = min(self.bytes_in_queue, output_length - i)
                     src = self.rate_bytes - self.bytes_in_queue
                     out[off + i:off + i + partial_block] = self.queue[src:src + partial_block]
@@ -92228,134 +92660,43 @@ class Hash:
                     off += 8
                 return
 
-            def rol64(self, x, n):
-                return ((x << n) | (x >> (64 - n))) & self.mask64
-
-            def inv64(self, x):
-                return x ^ self.mask64
-
             def kangaroo_permutation(self):
+
+                def rol64(x, n):
+                    return ((x << n) | (x >> (64 - n))) & 0xffff_ffff_ffff_ffff
+
+                rc = (
+                    (10, 1, 1), (1, 6, 44), (6, 9, 20), (9, 22, 61), (22, 14, 39), (14, 20, 18), (20, 2, 62), (2, 12, 43),
+                    (12, 13, 25), (13, 19, 8), (19, 23, 56), (23, 15, 41), (15, 4, 27), (4, 24, 14), (24, 21, 2), (21, 8, 55),
+                    (8, 16, 45), (16, 5, 36), (5, 3, 28), (3, 18, 21), (18, 17, 15), (17, 11, 10), (11, 7, 6), (7, 10, 3),
+                )
                 a = self.state
-                a00, a01, a02, a03, a04 = a[0], a[1], a[2], a[3], a[4]
-                a05, a06, a07, a08, a09 = a[5], a[6], a[7], a[8], a[9]
-                a10, a11, a12, a13, a14 = a[10], a[11], a[12], a[13], a[14]
-                a15, a16, a17, a18, a19 = a[15], a[16], a[17], a[18], a[19]
-                a20, a21, a22, a23, a24 = a[20], a[21], a[22], a[23], a[24]
-
                 base = len(self.round_constants) - self.rounds
-
                 for i in range(self.rounds):
-                    c0 = a00 ^ a05 ^ a10 ^ a15 ^ a20
-                    c1 = a01 ^ a06 ^ a11 ^ a16 ^ a21
-                    c2 = a02 ^ a07 ^ a12 ^ a17 ^ a22
-                    c3 = a03 ^ a08 ^ a13 ^ a18 ^ a23
-                    c4 = a04 ^ a09 ^ a14 ^ a19 ^ a24
+                    c = [0] * 5
+                    for j in range(5):
+                        c[j] = a[j] ^ a[j + 5] ^ a[j + 10] ^ a[j + 15] ^ a[j + 20]
+                    d = [0] * 5
+                    for j in range(5):
+                        d[(j + 1) % 5] = rol64(c[(j + 1) % 5], 1) ^ c[(j + 4) % 5]
+                    for j in range(5):
+                        a[j] ^= d[(j + 1) % 5]
+                        a[j + 5] ^= d[(j + 1) % 5]
+                        a[j + 10] ^= d[(j + 1) % 5]
+                        a[j + 15] ^= d[(j + 1) % 5]
+                        a[j + 20] ^= d[(j + 1) % 5]
+                    new_a = a[::]
+                    for dst, src, ri in rc:
+                        new_a[dst] = rol64(a[src], ri)
+                    a = new_a
+                    new_a = [0] * 25
+                    for k in [0, 5, 10, 15, 20]:
+                        for j in range(5):
+                            new_a[k + j] = a[k + j] ^ ((a[k + (j + 1) % 5] ^ 0xffff_ffff_ffff_ffff) & a[k + (j + 2) % 5])
+                    a = new_a
+                    a[0] ^= self.round_constants[base + i]
 
-                    d1 = self.rol64(c1, 1) ^ c4
-                    d2 = self.rol64(c2, 1) ^ c0
-                    d3 = self.rol64(c3, 1) ^ c1
-                    d4 = self.rol64(c4, 1) ^ c2
-                    d0 = self.rol64(c0, 1) ^ c3
-
-                    a00 ^= d1
-                    a05 ^= d1
-                    a10 ^= d1
-                    a15 ^= d1
-                    a20 ^= d1
-                    a01 ^= d2
-                    a06 ^= d2
-                    a11 ^= d2
-                    a16 ^= d2
-                    a21 ^= d2
-                    a02 ^= d3
-                    a07 ^= d3
-                    a12 ^= d3
-                    a17 ^= d3
-                    a22 ^= d3
-                    a03 ^= d4
-                    a08 ^= d4
-                    a13 ^= d4
-                    a18 ^= d4
-                    a23 ^= d4
-                    a04 ^= d0
-                    a09 ^= d0
-                    a14 ^= d0
-                    a19 ^= d0
-                    a24 ^= d0
-
-                    c1 = self.rol64(a01, 1)
-                    a01 = self.rol64(a06, 44)
-                    a06 = self.rol64(a09, 20)
-                    a09 = self.rol64(a22, 61)
-                    a22 = self.rol64(a14, 39)
-                    a14 = self.rol64(a20, 18)
-                    a20 = self.rol64(a02, 62)
-                    a02 = self.rol64(a12, 43)
-                    a12 = self.rol64(a13, 25)
-                    a13 = self.rol64(a19, 8)
-                    a19 = self.rol64(a23, 56)
-                    a23 = self.rol64(a15, 41)
-                    a15 = self.rol64(a04, 27)
-                    a04 = self.rol64(a24, 14)
-                    a24 = self.rol64(a21, 2)
-                    a21 = self.rol64(a08, 55)
-                    a08 = self.rol64(a16, 45)
-                    a16 = self.rol64(a05, 36)
-                    a05 = self.rol64(a03, 28)
-                    a03 = self.rol64(a18, 21)
-                    a18 = self.rol64(a17, 15)
-                    a17 = self.rol64(a11, 10)
-                    a11 = self.rol64(a07, 6)
-                    a07 = self.rol64(a10, 3)
-                    a10 = c1
-
-                    c0 = a00 ^ (self.inv64(a01) & a02)
-                    c1 = a01 ^ (self.inv64(a02) & a03)
-                    a02 ^= self.inv64(a03) & a04
-                    a03 ^= self.inv64(a04) & a00
-                    a04 ^= self.inv64(a00) & a01
-                    a00 = c0
-                    a01 = c1
-
-                    c0 = a05 ^ (self.inv64(a06) & a07)
-                    c1 = a06 ^ (self.inv64(a07) & a08)
-                    a07 ^= self.inv64(a08) & a09
-                    a08 ^= self.inv64(a09) & a05
-                    a09 ^= self.inv64(a05) & a06
-                    a05 = c0
-                    a06 = c1
-
-                    c0 = a10 ^ (self.inv64(a11) & a12)
-                    c1 = a11 ^ (self.inv64(a12) & a13)
-                    a12 ^= self.inv64(a13) & a14
-                    a13 ^= self.inv64(a14) & a10
-                    a14 ^= self.inv64(a10) & a11
-                    a10 = c0
-                    a11 = c1
-
-                    c0 = a15 ^ (self.inv64(a16) & a17)
-                    c1 = a16 ^ (self.inv64(a17) & a18)
-                    a17 ^= self.inv64(a18) & a19
-                    a18 ^= self.inv64(a19) & a15
-                    a19 ^= self.inv64(a15) & a16
-                    a15 = c0
-                    a16 = c1
-
-                    c0 = a20 ^ (self.inv64(a21) & a22)
-                    c1 = a21 ^ (self.inv64(a22) & a23)
-                    a22 ^= self.inv64(a23) & a24
-                    a23 ^= self.inv64(a24) & a20
-                    a24 ^= self.inv64(a20) & a21
-                    a20 = c0
-                    a21 = c1
-
-                    a00 ^= self.round_constants[base + i]
-
-                a[0], a[1], a[2], a[3], a[4] = a00, a01, a02, a03, a04
-                a[5], a[6], a[7], a[8], a[9] = a05, a06, a07, a08, a09
-                a[10], a[11], a[12], a[13], a[14] = a10, a11, a12, a13, a14
-                a[15], a[16], a[17], a[18], a[19] = a15, a16, a17, a18, a19
-                a[20], a[21], a[22], a[23], a[24] = a20, a21, a22, a23, a24
+                self.state = a
                 return
 
         def __init__(self, data=b"", digest_size=64, personal=b""):
@@ -92371,7 +92712,6 @@ class Hash:
             self.processed = 0
             self.msg_len = 0
             self.build_personal(personal)
-
             if data:
                 self.update(data)
             return
@@ -92421,7 +92761,6 @@ class Hash:
                 raise TypeError("data must be bytes-like")
             if self.squeezing:
                 raise ValueError("attempt to absorb while squeezing")
-
             data = bytes(data)
             self.msg_len += len(data)
             self.process_data(data, 0, len(data))
@@ -92430,37 +92769,23 @@ class Hash:
         def process_data(self, data, off, length):
             if self.squeezing:
                 raise ValueError("attempt to absorb while squeezing")
-
             sponge = self.tree if self.curr_node == 0 else self.leaf
             space = self.node_block_size - self.processed
-
             if space >= length:
                 sponge.absorb(data, off, length)
                 self.processed += length
                 return
-
             if space > 0:
                 sponge.absorb(data, off, space)
                 self.processed += space
-
             processed = space
             while processed < length:
                 if self.processed == self.node_block_size:
                     self.switch_leaf(True)
-
                 data_len = min(length - processed, self.node_block_size)
                 self.leaf.absorb(data, off + processed, data_len)
                 self.processed += data_len
                 processed += data_len
-            return
-
-        def reset(self):
-            self.tree.init_sponge()
-            self.leaf.init_sponge()
-            self.squeezing = False
-            self.curr_node = 0
-            self.processed = 0
-            self.msg_len = 0
             return
 
         def switch_leaf(self, more_to_come):
@@ -92481,23 +92806,15 @@ class Hash:
         def switch_to_squeezing(self):
             self.process_data(self.personal, 0, len(self.personal))
             if self.curr_node == 0:
-                self.switch_single()
+                self.tree.absorb(self.single, 0, len(self.single))
+                self.tree.pad_and_switch_to_squeezing_phase()
             else:
-                self.switch_final()
+                self.switch_leaf(False)
+                node_count_encoded = self.length_encode(self.curr_node)
+                self.tree.absorb(node_count_encoded, 0, len(node_count_encoded))
+                self.tree.absorb(self.final, 0, len(self.final))
+                self.tree.pad_and_switch_to_squeezing_phase()
             self.squeezing = True
-            return
-
-        def switch_single(self):
-            self.tree.absorb(self.single, 0, len(self.single))
-            self.tree.pad_and_switch_to_squeezing_phase()
-            return
-
-        def switch_final(self):
-            self.switch_leaf(False)
-            node_count_encoded = self.length_encode(self.curr_node)
-            self.tree.absorb(node_count_encoded, 0, len(node_count_encoded))
-            self.tree.absorb(self.final, 0, len(self.final))
-            self.tree.pad_and_switch_to_squeezing_phase()
             return
 
         def finalize(self):
@@ -92510,7 +92827,6 @@ class Hash:
                 raise ValueError("invalid output length")
             if not self.squeezing:
                 self.switch_to_squeezing()
-
             out = bytearray(length)
             self.tree.squeeze(out, 0, length)
             return bytes(out)
@@ -92581,69 +92897,58 @@ class Hash:
             self.buf.clear()
             return
 
-        def rol32(self, x, n):
-            x &= 0xffff_ffff
-            return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
-
-        def decode_block(self, block):
-            return list(struct.unpack("<8I", block))
-
-        def gamma(self, a):
-            g = [0] * 17
-            for i in range(17):
-                g[i] = (a[i] ^ (a[(i + 1) % 17] | (~a[(i + 2) % 17]))) & 0xffff_ffff
-            return g
-
-        def pi(self, g):
-            p = [0] * 17
-            p[0] = g[0]
-            p[1] = self.rol32(g[7], 1)
-            p[2] = self.rol32(g[14], 3)
-            p[3] = self.rol32(g[4], 6)
-            p[4] = self.rol32(g[11], 10)
-            p[5] = self.rol32(g[1], 15)
-            p[6] = self.rol32(g[8], 21)
-            p[7] = self.rol32(g[15], 28)
-            p[8] = self.rol32(g[5], 4)
-            p[9] = self.rol32(g[12], 13)
-            p[10] = self.rol32(g[2], 23)
-            p[11] = self.rol32(g[9], 2)
-            p[12] = self.rol32(g[16], 14)
-            p[13] = self.rol32(g[6], 27)
-            p[14] = self.rol32(g[13], 9)
-            p[15] = self.rol32(g[3], 24)
-            p[16] = self.rol32(g[10], 8)
-            return p
-
-        def theta(self, p):
-            t = [0] * 17
-            for i in range(17):
-                t[i] = p[i] ^ p[(i + 1) % 17] ^ p[(i + 4) % 17]
-            return t
-
         def step(self, inw1, inw2):
+
+            def rol32(x, n):
+                x &= 0xffff_ffff
+                return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
+
+            def gamma(a):
+                g = [0] * 17
+                for i in range(17):
+                    g[i] = (a[i] ^ (a[(i + 1) % 17] | (~a[(i + 2) % 17]))) & 0xffff_ffff
+                return g
+
+            def pi(g):
+                p = [0] * 17
+                p[0] = g[0]
+                p[1] = rol32(g[7], 1)
+                p[2] = rol32(g[14], 3)
+                p[3] = rol32(g[4], 6)
+                p[4] = rol32(g[11], 10)
+                p[5] = rol32(g[1], 15)
+                p[6] = rol32(g[8], 21)
+                p[7] = rol32(g[15], 28)
+                p[8] = rol32(g[5], 4)
+                p[9] = rol32(g[12], 13)
+                p[10] = rol32(g[2], 23)
+                p[11] = rol32(g[9], 2)
+                p[12] = rol32(g[16], 14)
+                p[13] = rol32(g[6], 27)
+                p[14] = rol32(g[13], 9)
+                p[15] = rol32(g[3], 24)
+                p[16] = rol32(g[10], 8)
+                return p
+
+            def theta(p):
+                t = [0] * 17
+                for i in range(17):
+                    t[i] = p[i] ^ p[(i + 1) % 17] ^ p[(i + 4) % 17]
+                return t
+
             a = list(self.state)
             ptr0 = self.buffer_ptr
             ptr24 = (ptr0 - 8) & 31
             ptr31 = (ptr0 - 1) & 31
 
-            pairs = (
-                (0, 2),
-                (1, 3),
-                (2, 4),
-                (3, 5),
-                (4, 6),
-                (5, 7),
-                (6, 0),
-                (7, 1),
-            )
+            pairs = ((0, 2), (1, 3), (2, 4), (3, 5), (4, 6), (5, 7), (6, 0), (7, 1))
             for n0, n2 in pairs:
                 self.buffer[ptr24][n0] ^= self.buffer[ptr31][n2]
                 self.buffer[ptr31][n2] ^= inw1[n2]
 
-            g = self.gamma(a)
-            p = self.pi(g)
-            t = self.theta(p)
+            g = gamma(a)
+            p = pi(g)
+            t = theta(p)
 
             ptr16 = ptr0 ^ 16
             next_state = [0] * 17
@@ -92658,7 +92963,7 @@ class Hash:
             return
 
         def push(self, block):
-            x = self.decode_block(block)
+            x = list(struct.unpack("<8I", block))
             self.step(x, x)
             return
 
@@ -92674,62 +92979,349 @@ class Hash:
     class PhotonBeetle:
         block_size = 4
         digest_size = 32
+        sbox = (
+            0x0c, 0x05, 0x06, 0x0b, 0x09, 0x00, 0x0a, 0x0d, 0x03, 0x0e, 0x0f, 0x08, 0x04, 0x07, 0x01, 0x02,
+        )
+        rc = (
+            (0x01, 0x00, 0x02, 0x06, 0x0e, 0x0f, 0x0d, 0x09),
+            (0x03, 0x02, 0x00, 0x04, 0x0c, 0x0d, 0x0f, 0x0b),
+            (0x07, 0x06, 0x04, 0x00, 0x08, 0x09, 0x0b, 0x0f),
+            (0x0e, 0x0f, 0x0d, 0x09, 0x01, 0x00, 0x02, 0x06),
+            (0x0d, 0x0c, 0x0e, 0x0a, 0x02, 0x03, 0x01, 0x05),
+            (0x0b, 0x0a, 0x08, 0x0c, 0x04, 0x05, 0x07, 0x03),
+            (0x06, 0x07, 0x05, 0x01, 0x09, 0x08, 0x0a, 0x0e),
+            (0x0c, 0x0d, 0x0f, 0x0b, 0x03, 0x02, 0x00, 0x04),
+            (0x09, 0x08, 0x0a, 0x0e, 0x06, 0x07, 0x05, 0x01),
+            (0x02, 0x03, 0x01, 0x05, 0x0d, 0x0c, 0x0e, 0x0a),
+            (0x05, 0x04, 0x06, 0x02, 0x0a, 0x0b, 0x09, 0x0d),
+            (0x0a, 0x0b, 0x09, 0x0d, 0x05, 0x04, 0x06, 0x02),
+        )
+        C_TEMPLATE = r"""
+        #include <stddef.h>
+        #include <stdint.h>
 
-        sbox = [
-            0x0c, 0x05, 0x06, 0x0b,
-            0x09, 0x00, 0x0a, 0x0d,
-            0x03, 0x0e, 0x0f, 0x08,
-            0x04, 0x07, 0x01, 0x02,
-        ]
+        static int mix_pair_index(int r, int pair_index, int a, int b)
+        {
+            return ((((r * 4) + pair_index) * 16 + a) * 16) + b;
+        }
 
-        rc = [
-            [0x01, 0x00, 0x02, 0x06, 0x0e, 0x0f, 0x0d, 0x09],
-            [0x03, 0x02, 0x00, 0x04, 0x0c, 0x0d, 0x0f, 0x0b],
-            [0x07, 0x06, 0x04, 0x00, 0x08, 0x09, 0x0b, 0x0f],
-            [0x0e, 0x0f, 0x0d, 0x09, 0x01, 0x00, 0x02, 0x06],
-            [0x0d, 0x0c, 0x0e, 0x0a, 0x02, 0x03, 0x01, 0x05],
-            [0x0b, 0x0a, 0x08, 0x0c, 0x04, 0x05, 0x07, 0x03],
-            [0x06, 0x07, 0x05, 0x01, 0x09, 0x08, 0x0a, 0x0e],
-            [0x0c, 0x0d, 0x0f, 0x0b, 0x03, 0x02, 0x00, 0x04],
-            [0x09, 0x08, 0x0a, 0x0e, 0x06, 0x07, 0x05, 0x01],
-            [0x02, 0x03, 0x01, 0x05, 0x0d, 0x0c, 0x0e, 0x0a],
-            [0x05, 0x04, 0x06, 0x02, 0x0a, 0x0b, 0x09, 0x0d],
-            [0x0a, 0x0b, 0x09, 0x0d, 0x05, 0x04, 0x06, 0x02],
-        ]
+        static uint8_t mix_pair_at(const uint8_t *mix_pair, int r, int pair_index, int a, int b)
+        {
+            return mix_pair[mix_pair_index(r, pair_index, a, b)];
+        }
 
-        gf16_mul_table = None
-        m8 = None
-        MIX_VAL = None
-        MIX_PAIR = None
-        NIBBLE_SPLIT = None
-        NIBBLE_PACK = None
+        static void photon256(uint8_t *state, const uint8_t *sbox, const uint8_t *rc, const uint8_t *mix_pair)
+        {
+            uint8_t m[64];
+            uint8_t n[64];
+            int i = 0;
+            int j = 0;
+            int rnd = 0;
 
-        def __init__(self, data=b""):
-            self.buf = bytearray()
-            self.msg_len = 0
-            self.finalized = False
-            self.result = b""
-            self.init_tables()
-            if data:
-                self.update(data)
+            for (i = 0, j = 0; i < 32; i++, j += 2) {
+                m[j] = (uint8_t)(state[i] & 0x0f);
+                m[j + 1] = (uint8_t)(state[i] >> 4);
+            }
+
+            for (rnd = 0; rnd < 12; rnd++) {
+                const uint8_t *rc_row = rc + (rnd * 8);
+                int r = 0;
+                int c = 0;
+
+                m[0] ^= rc_row[0];
+                m[8] ^= rc_row[1];
+                m[16] ^= rc_row[2];
+                m[24] ^= rc_row[3];
+                m[32] ^= rc_row[4];
+                m[40] ^= rc_row[5];
+                m[48] ^= rc_row[6];
+                m[56] ^= rc_row[7];
+
+                for (r = 0; r < 8; r++) {
+                    int base = r << 3;
+                    int shift = r;
+
+                    for (c = 0; c < 8; c++) {
+                        n[base + c] = sbox[m[base + ((c + shift) & 7)]];
+                    }
+                }
+
+                for (c = 0; c < 8; c++) {
+                    int p0a = n[c];
+                    int p0b = n[8 + c];
+                    int p1a = n[16 + c];
+                    int p1b = n[24 + c];
+                    int p2a = n[32 + c];
+                    int p2b = n[40 + c];
+                    int p3a = n[48 + c];
+                    int p3b = n[56 + c];
+
+                    m[c] =
+                        mix_pair_at(mix_pair, 0, 0, p0a, p0b) ^
+                        mix_pair_at(mix_pair, 0, 1, p1a, p1b) ^
+                        mix_pair_at(mix_pair, 0, 2, p2a, p2b) ^
+                        mix_pair_at(mix_pair, 0, 3, p3a, p3b);
+                    m[8 + c] =
+                        mix_pair_at(mix_pair, 1, 0, p0a, p0b) ^
+                        mix_pair_at(mix_pair, 1, 1, p1a, p1b) ^
+                        mix_pair_at(mix_pair, 1, 2, p2a, p2b) ^
+                        mix_pair_at(mix_pair, 1, 3, p3a, p3b);
+                    m[16 + c] =
+                        mix_pair_at(mix_pair, 2, 0, p0a, p0b) ^
+                        mix_pair_at(mix_pair, 2, 1, p1a, p1b) ^
+                        mix_pair_at(mix_pair, 2, 2, p2a, p2b) ^
+                        mix_pair_at(mix_pair, 2, 3, p3a, p3b);
+                    m[24 + c] =
+                        mix_pair_at(mix_pair, 3, 0, p0a, p0b) ^
+                        mix_pair_at(mix_pair, 3, 1, p1a, p1b) ^
+                        mix_pair_at(mix_pair, 3, 2, p2a, p2b) ^
+                        mix_pair_at(mix_pair, 3, 3, p3a, p3b);
+                    m[32 + c] =
+                        mix_pair_at(mix_pair, 4, 0, p0a, p0b) ^
+                        mix_pair_at(mix_pair, 4, 1, p1a, p1b) ^
+                        mix_pair_at(mix_pair, 4, 2, p2a, p2b) ^
+                        mix_pair_at(mix_pair, 4, 3, p3a, p3b);
+                    m[40 + c] =
+                        mix_pair_at(mix_pair, 5, 0, p0a, p0b) ^
+                        mix_pair_at(mix_pair, 5, 1, p1a, p1b) ^
+                        mix_pair_at(mix_pair, 5, 2, p2a, p2b) ^
+                        mix_pair_at(mix_pair, 5, 3, p3a, p3b);
+                    m[48 + c] =
+                        mix_pair_at(mix_pair, 6, 0, p0a, p0b) ^
+                        mix_pair_at(mix_pair, 6, 1, p1a, p1b) ^
+                        mix_pair_at(mix_pair, 6, 2, p2a, p2b) ^
+                        mix_pair_at(mix_pair, 6, 3, p3a, p3b);
+                    m[56 + c] =
+                        mix_pair_at(mix_pair, 7, 0, p0a, p0b) ^
+                        mix_pair_at(mix_pair, 7, 1, p1a, p1b) ^
+                        mix_pair_at(mix_pair, 7, 2, p2a, p2b) ^
+                        mix_pair_at(mix_pair, 7, 3, p3a, p3b);
+                }
+            }
+
+            for (i = 0, j = 0; i < 32; i++, j += 2) {
+                state[i] = (uint8_t)(m[j] | (m[j + 1] << 4));
+            }
+        }
+
+        static void gen_tag(uint8_t *state, uint8_t *out, const uint8_t *sbox, const uint8_t *rc, const uint8_t *mix_pair)
+        {
+            int i = 0;
+
+            photon256(state, sbox, rc, mix_pair);
+            for (i = 0; i < 16; i++) {
+                out[i] = state[i];
+            }
+
+            photon256(state, sbox, rc, mix_pair);
+            for (i = 0; i < 16; i++) {
+                out[16 + i] = state[i];
+            }
+        }
+
+        static void absorb4(
+            uint8_t *state, const uint8_t *msg, size_t msg_len, int c0, const uint8_t *sbox, const uint8_t *rc,
+            const uint8_t *mix_pair)
+        {
+            size_t off = 0;
+            size_t full = (msg_len / 4) * 4;
+            size_t rem = 0;
+            size_t i = 0;
+
+            while (off < full) {
+                photon256(state, sbox, rc, mix_pair);
+                state[0] ^= msg[off];
+                state[1] ^= msg[off + 1];
+                state[2] ^= msg[off + 2];
+                state[3] ^= msg[off + 3];
+                off += 4;
+            }
+
+            rem = msg_len - off;
+            if (rem > 0) {
+                photon256(state, sbox, rc, mix_pair);
+                for (i = 0; i < rem; i++) {
+                    state[i] ^= msg[off + i];
+                }
+                state[rem] ^= 0x01;
+            }
+
+            state[31] ^= (uint8_t)(c0 << 5);
+        }
+
+        void hash_bytes(
+            const uint8_t *msg, size_t msg_len, uint8_t *out, const uint8_t *sbox, const uint8_t *rc,
+            const uint8_t *mix_pair)
+        {
+            uint8_t state[32];
+            size_t i = 0;
+
+            for (i = 0; i < 32; i++) {
+                state[i] = 0;
+            }
+
+            if (msg_len == 0) {
+                state[31] ^= (uint8_t)(0x01 << 5);
+                gen_tag(state, out, sbox, rc, mix_pair);
+                return;
+            }
+
+            if (msg_len <= 16) {
+                for (i = 0; i < msg_len; i++) {
+                    state[i] = msg[i];
+                }
+                if (msg_len < 16) {
+                    state[msg_len] ^= 0x01;
+                    state[31] ^= (uint8_t)(0x01 << 5);
+                } else {
+                    state[31] ^= (uint8_t)(0x02 << 5);
+                }
+                gen_tag(state, out, sbox, rc, mix_pair);
+                return;
+            }
+
+            for (i = 0; i < 16; i++) {
+                state[i] = msg[i];
+            }
+
+            if (((msg_len - 16) % 4) == 0) {
+                absorb4(state, msg + 16, msg_len - 16, 0x01, sbox, rc, mix_pair);
+            } else {
+                absorb4(state, msg + 16, msg_len - 16, 0x02, sbox, rc, mix_pair);
+            }
+            gen_tag(state, out, sbox, rc, mix_pair);
+        }
+        """
+        DEF_TEMPLATE = r"""
+        void hash_bytes(
+            const uint8_t *msg, size_t msg_len, uint8_t *out, const uint8_t *sbox, const uint8_t *rc,
+            const uint8_t *mix_pair);
+        """
+
+        def init_cffi_backend(self):
+            try:
+                import cffi
+                import warnings
+            except ImportError:
+                self.USE_CFFI = False
+                return
+
+            key = self.__class__
+            base_class = Hash.PhotonBeetle
+
+            if not hasattr(base_class, "cffi_cache"):
+                base_class.cffi_cache = {}
+
+            # fast return
+            if key in base_class.cffi_cache:
+                self.cffi = base_class.cffi_cache[key]
+                self.USE_CFFI = True
+                return
+
+            # ffi, lib
+            if base_class in base_class.cffi_cache:
+                ffi, lib = base_class.cffi_cache[base_class]
+            else:
+                try:
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings(
+                            "ignore",
+                            message=r"reimporting '_cffi__.*' might overwrite older definitions",
+                            category=UserWarning,
+                            module=r"cffi\.vengine_cpy",
+                        )
+                        ffi = cffi.FFI()
+                        ffi.cdef(base_class.DEF_TEMPLATE)
+                        lib = ffi.verify(base_class.C_TEMPLATE, extra_compile_args=["-O2"])
+                    base_class.cffi_cache[base_class] = (ffi, lib)
+                except Exception:
+                    self.USE_CFFI = False
+                    return
+
+            # Different for each class
+            def flatten_mix_pair(mix_pair):
+                flat = []
+                for r in mix_pair:
+                    for pair_tab in r:
+                        for row in pair_tab:
+                            flat.extend(row)
+                return tuple(flat)
+
+            def flatten_rc(rc):
+                flat = []
+                for row in rc:
+                    flat.extend(row)
+                return tuple(flat)
+
+            try:
+                sbox = ffi.new("uint8_t[]", tuple(self.sbox))
+                rc = ffi.new("uint8_t[]", flatten_rc(self.rc))
+                mix_pair = ffi.new("uint8_t[]", flatten_mix_pair(self.MIX_PAIR))
+            except Exception:
+                self.USE_CFFI = False
+                return
+
+            # add to cache
+            cffi_obj = collections.namedtuple("CFFI", "ffi lib sbox rc mix_pair")(
+                ffi, lib, sbox, rc, mix_pair,
+            )
+            self.cffi = base_class.cffi_cache[key] = cffi_obj
+            self.USE_CFFI = True
             return
 
-        def init_tables(self):
-            cls = self.__class__
+        @classmethod
+        def ensure_tables(cls):
 
-            if cls.gf16_mul_table is None:
+            def gf16_mul(a, b):
+                x = a
+                y = b
+                z = 0
+                for _ in range(4):
+                    if (y & 0x01) != 0:
+                        z ^= x
+                    carry = x & 0x08
+                    x = (x << 1) & 0x0f
+                    if carry != 0:
+                        x ^= 0x03
+                    y >>= 1
+                return z
+
+            def gf16_matrix_mul(tab, a, b):
+                out = [[0 for j in range(8)] for i in range(8)]
+                for i in range(8):
+                    for j in range(8):
+                        v = 0
+                        for k in range(8):
+                            v ^= tab[a[i][k]][b[k][j]]
+                        out[i][j] = v
+                return out
+
+            if not hasattr(cls, "gf16_mul_table"):
                 tab = []
                 for a in range(16):
                     row = []
                     for b in range(16):
-                        row.append(self.gf16_mul(a, b))
+                        row.append(gf16_mul(a, b))
                     tab.append(tuple(row))
                 cls.gf16_mul_table = tuple(tab)
 
-            if cls.m8 is None:
-                cls.m8 = self.compute_m8()
+            if not hasattr(cls, "m8"):
+                m = (
+                    (0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00),
+                    (0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00),
+                    (0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00),
+                    (0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00),
+                    (0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00),
+                    (0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00),
+                    (0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01),
+                    (0x02, 0x04, 0x02, 0x0b, 0x02, 0x08, 0x05, 0x06),
+                )
+                m2 = gf16_matrix_mul(cls.gf16_mul_table, m, m)
+                m4 = gf16_matrix_mul(cls.gf16_mul_table, m2, m2)
+                m8 = gf16_matrix_mul(cls.gf16_mul_table, m4, m4)
+                cls.m8 = m8
 
-            if cls.MIX_VAL is None:
+            if not hasattr(cls, "MIX_VAL"):
                 tab = cls.gf16_mul_table
                 m8 = cls.m8
                 mix_val = []
@@ -92744,7 +93336,7 @@ class Hash:
                     mix_val.append(tuple(row))
                 cls.MIX_VAL = tuple(mix_val)
 
-            if cls.MIX_PAIR is None:
+            if not hasattr(cls, "MIX_PAIR"):
                 mix_val = cls.MIX_VAL
                 mix_pair = []
                 for r in range(8):
@@ -92765,13 +93357,13 @@ class Hash:
                     mix_pair.append(tuple(row))
                 cls.MIX_PAIR = tuple(mix_pair)
 
-            if cls.NIBBLE_SPLIT is None:
+            if not hasattr(cls, "NIBBLE_SPLIT"):
                 split = []
                 for b in range(256):
                     split.append((b & 0x0f, b >> 4))
                 cls.NIBBLE_SPLIT = tuple(split)
 
-            if cls.NIBBLE_PACK is None:
+            if not hasattr(cls, "NIBBLE_PACK"):
                 pack = []
                 for lo in range(16):
                     row = []
@@ -92779,6 +93371,17 @@ class Hash:
                         row.append(lo | (hi << 4))
                     pack.append(tuple(row))
                 cls.NIBBLE_PACK = tuple(pack)
+            return
+
+        def __init__(self, data=b""):
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.finalized = False
+            self.result = b""
+            self.ensure_tables()
+            self.init_cffi_backend()
+            if data:
+                self.update(data)
             return
 
         def copy(self):
@@ -92812,12 +93415,133 @@ class Hash:
             return
 
         def hash_bytes(self, msg):
+            if self.USE_CFFI:
+                if len(msg) != 0:
+                    msg_buf = self.cffi.ffi.new("uint8_t[]", bytes(msg))
+                else:
+                    msg_buf = self.cffi.ffi.NULL
+                out_buf = self.cffi.ffi.new("uint8_t[]", self.digest_size)
+                self.cffi.lib.hash_bytes(
+                    msg_buf, len(msg), out_buf, self.cffi.sbox, self.cffi.rc, self.cffi.mix_pair,
+                )
+                return bytes(self.cffi.ffi.buffer(out_buf, self.digest_size))
+
+            def photon256(state):
+                split = self.NIBBLE_SPLIT
+                pack = self.NIBBLE_PACK
+                mix_pair = self.MIX_PAIR
+                rc = self.rc
+                sbox = self.sbox
+
+                m = [0] * 64
+                n = [0] * 64
+
+                i = 0
+                j = 0
+                while i < 32:
+                    lo, hi = split[state[i]]
+                    m[j] = lo
+                    m[j + 1] = hi
+                    i += 1
+                    j += 2
+
+                rnd = 0
+                while rnd < 12:
+                    rc_r = rc[rnd]
+                    m[0] ^= rc_r[0]
+                    m[8] ^= rc_r[1]
+                    m[16] ^= rc_r[2]
+                    m[24] ^= rc_r[3]
+                    m[32] ^= rc_r[4]
+                    m[40] ^= rc_r[5]
+                    m[48] ^= rc_r[6]
+                    m[56] ^= rc_r[7]
+
+                    r = 0
+                    while r < 8:
+                        base = r << 3
+                        shift = r
+                        c = 0
+                        while c < 8:
+                            n[base + c] = sbox[m[base + ((c + shift) & 7)]]
+                            c += 1
+                        r += 1
+
+                    row0 = mix_pair[0]
+                    row1 = mix_pair[1]
+                    row2 = mix_pair[2]
+                    row3 = mix_pair[3]
+                    row4 = mix_pair[4]
+                    row5 = mix_pair[5]
+                    row6 = mix_pair[6]
+                    row7 = mix_pair[7]
+
+                    c = 0
+                    while c < 8:
+                        p0a = n[c]
+                        p0b = n[8 + c]
+                        p1a = n[16 + c]
+                        p1b = n[24 + c]
+                        p2a = n[32 + c]
+                        p2b = n[40 + c]
+                        p3a = n[48 + c]
+                        p3b = n[56 + c]
+
+                        m[c] = row0[0][p0a][p0b] ^ row0[1][p1a][p1b] ^ row0[2][p2a][p2b] ^ row0[3][p3a][p3b]
+                        m[8 + c] = row1[0][p0a][p0b] ^ row1[1][p1a][p1b] ^ row1[2][p2a][p2b] ^ row1[3][p3a][p3b]
+                        m[16 + c] = row2[0][p0a][p0b] ^ row2[1][p1a][p1b] ^ row2[2][p2a][p2b] ^ row2[3][p3a][p3b]
+                        m[24 + c] = row3[0][p0a][p0b] ^ row3[1][p1a][p1b] ^ row3[2][p2a][p2b] ^ row3[3][p3a][p3b]
+                        m[32 + c] = row4[0][p0a][p0b] ^ row4[1][p1a][p1b] ^ row4[2][p2a][p2b] ^ row4[3][p3a][p3b]
+                        m[40 + c] = row5[0][p0a][p0b] ^ row5[1][p1a][p1b] ^ row5[2][p2a][p2b] ^ row5[3][p3a][p3b]
+                        m[48 + c] = row6[0][p0a][p0b] ^ row6[1][p1a][p1b] ^ row6[2][p2a][p2b] ^ row6[3][p3a][p3b]
+                        m[56 + c] = row7[0][p0a][p0b] ^ row7[1][p1a][p1b] ^ row7[2][p2a][p2b] ^ row7[3][p3a][p3b]
+                        c += 1
+
+                    rnd += 1
+
+                i = 0
+                j = 0
+                while i < 32:
+                    state[i] = pack[m[j]][m[j + 1]]
+                    i += 1
+                    j += 2
+                return
+
+            def gen_tag(state):
+                photon256(state)
+                out = bytearray(32)
+                out[0:16] = state[0:16]
+                photon256(state)
+                out[16:32] = state[0:16]
+                return bytes(out)
+
+            def absorb4(state, msg, c0):
+                off = 0
+                full = (len(msg) // 4) * 4
+                while off < full:
+                    photon256(state)
+                    state[0] ^= msg[off]
+                    state[1] ^= msg[off + 1]
+                    state[2] ^= msg[off + 2]
+                    state[3] ^= msg[off + 3]
+                    off += 4
+                rem = len(msg) - off
+                if rem > 0:
+                    photon256(state)
+                    i = 0
+                    while i < rem:
+                        state[i] ^= msg[off + i]
+                        i += 1
+                    state[rem] ^= 0x01
+                state[31] ^= (c0 << 5)
+                return
+
             state = bytearray(32)
             mlen = len(msg)
 
             if mlen == 0:
                 state[31] ^= (0x01 << 5)
-                out = self.gen_tag(state)
+                out = gen_tag(state)
                 return out
 
             if mlen <= 16:
@@ -92826,184 +93550,15 @@ class Hash:
                     state[mlen] ^= 0x01
                 c0 = 0x01 if mlen < 16 else 0x02
                 state[31] ^= (c0 << 5)
-                out = self.gen_tag(state)
+                out = gen_tag(state)
                 return out
 
             state[0:16] = msg[0:16]
             rem = msg[16:]
             c0 = 0x01 if (len(rem) % 4) == 0 else 0x02
-            self.absorb4(state, rem, c0)
-            out = self.gen_tag(state)
+            absorb4(state, rem, c0)
+            out = gen_tag(state)
             return out
-
-        def gen_tag(self, state):
-            self.photon256(state)
-
-            out = bytearray(32)
-            out[0:16] = state[0:16]
-
-            self.photon256(state)
-            out[16:32] = state[0:16]
-
-            return bytes(out)
-
-        def absorb4(self, state, msg, c0):
-            off = 0
-            full = (len(msg) // 4) * 4
-
-            while off < full:
-                self.photon256(state)
-                state[0] ^= msg[off]
-                state[1] ^= msg[off + 1]
-                state[2] ^= msg[off + 2]
-                state[3] ^= msg[off + 3]
-                off += 4
-
-            rem = len(msg) - off
-            if rem > 0:
-                self.photon256(state)
-                i = 0
-                while i < rem:
-                    state[i] ^= msg[off + i]
-                    i += 1
-                state[rem] ^= 0x01
-
-            state[31] ^= (c0 << 5)
-            return
-
-        def photon256(self, state):
-            split = self.__class__.NIBBLE_SPLIT
-            pack = self.__class__.NIBBLE_PACK
-            mix_pair = self.__class__.MIX_PAIR
-            rc = self.rc
-            sbox = self.sbox
-
-            m = [0] * 64
-            n = [0] * 64
-
-            i = 0
-            j = 0
-            while i < 32:
-                lo, hi = split[state[i]]
-                m[j] = lo
-                m[j + 1] = hi
-                i += 1
-                j += 2
-
-            rnd = 0
-            while rnd < 12:
-                rc_r = rc[rnd]
-                m[0] ^= rc_r[0]
-                m[8] ^= rc_r[1]
-                m[16] ^= rc_r[2]
-                m[24] ^= rc_r[3]
-                m[32] ^= rc_r[4]
-                m[40] ^= rc_r[5]
-                m[48] ^= rc_r[6]
-                m[56] ^= rc_r[7]
-
-                r = 0
-                while r < 8:
-                    base = r << 3
-                    shift = r
-                    c = 0
-                    while c < 8:
-                        n[base + c] = sbox[m[base + ((c + shift) & 7)]]
-                        c += 1
-                    r += 1
-
-                row0 = mix_pair[0]
-                row1 = mix_pair[1]
-                row2 = mix_pair[2]
-                row3 = mix_pair[3]
-                row4 = mix_pair[4]
-                row5 = mix_pair[5]
-                row6 = mix_pair[6]
-                row7 = mix_pair[7]
-
-                c = 0
-                while c < 8:
-                    p0a = n[c]
-                    p0b = n[8 + c]
-                    p1a = n[16 + c]
-                    p1b = n[24 + c]
-                    p2a = n[32 + c]
-                    p2b = n[40 + c]
-                    p3a = n[48 + c]
-                    p3b = n[56 + c]
-
-                    m[c] = row0[0][p0a][p0b] ^ row0[1][p1a][p1b] ^ row0[2][p2a][p2b] ^ row0[3][p3a][p3b]
-                    m[8 + c] = row1[0][p0a][p0b] ^ row1[1][p1a][p1b] ^ row1[2][p2a][p2b] ^ row1[3][p3a][p3b]
-                    m[16 + c] = row2[0][p0a][p0b] ^ row2[1][p1a][p1b] ^ row2[2][p2a][p2b] ^ row2[3][p3a][p3b]
-                    m[24 + c] = row3[0][p0a][p0b] ^ row3[1][p1a][p1b] ^ row3[2][p2a][p2b] ^ row3[3][p3a][p3b]
-                    m[32 + c] = row4[0][p0a][p0b] ^ row4[1][p1a][p1b] ^ row4[2][p2a][p2b] ^ row4[3][p3a][p3b]
-                    m[40 + c] = row5[0][p0a][p0b] ^ row5[1][p1a][p1b] ^ row5[2][p2a][p2b] ^ row5[3][p3a][p3b]
-                    m[48 + c] = row6[0][p0a][p0b] ^ row6[1][p1a][p1b] ^ row6[2][p2a][p2b] ^ row6[3][p3a][p3b]
-                    m[56 + c] = row7[0][p0a][p0b] ^ row7[1][p1a][p1b] ^ row7[2][p2a][p2b] ^ row7[3][p3a][p3b]
-                    c += 1
-
-                rnd += 1
-
-            i = 0
-            j = 0
-            while i < 32:
-                state[i] = pack[m[j]][m[j + 1]]
-                i += 1
-                j += 2
-            return
-
-        def gf16_mul(self, a, b):
-            x = a
-            y = b
-            z = 0
-
-            for _ in range(4):
-                if (y & 0x01) != 0:
-                    z ^= x
-
-                carry = x & 0x08
-                x = (x << 1) & 0x0f
-                if carry != 0:
-                    x ^= 0x03
-
-                y >>= 1
-
-            return z
-
-        def gf16_matrix_mul(self, a, b):
-            tab = self.gf16_mul_table
-            out = [[0 for j in range(8)] for i in range(8)]
-
-            for i in range(8):
-                for j in range(8):
-                    v = 0
-                    for k in range(8):
-                        v ^= tab[a[i][k]][b[k][j]]
-                    out[i][j] = v
-
-            return out
-
-        def gf16_matrix_square(self, m):
-            out = self.gf16_matrix_mul(m, m)
-            return out
-
-        def compute_m8(self):
-            m = [
-                [0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-                [0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00],
-                [0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00],
-                [0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00],
-                [0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00],
-                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00],
-                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
-                [0x02, 0x04, 0x02, 0x0b, 0x02, 0x08, 0x05, 0x06],
-            ]
-
-            m2 = self.gf16_matrix_square(m)
-            m4 = self.gf16_matrix_square(m2)
-            m8 = self.gf16_matrix_square(m4)
-
-            return m8
 
     class VSH1024:
         block_size = 0x83  # logical block size in bits (131)
