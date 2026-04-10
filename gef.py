@@ -110802,7 +110802,7 @@ class CrcValueCommand(CrcCommand):
 
 
 @register_command
-class Crc32revCommand(GenericCommand, BufferingOutput):
+class Crc32revCommand(GenericCommand):
     """Perform CRC32 reverse calculation limited to ASCII character range."""
 
     _cmdline_ = "crc32rev"
@@ -110833,11 +110833,22 @@ class Crc32revCommand(GenericCommand, BufferingOutput):
         "xfer",
         "koopman", "k",
     ], default="", help="quick parameter presets, explicit flags override preset values.")
-    parser.add_argument("--list", action="store_true", help="print CRC presets.")
+    parser.add_argument("-l", "--list", action="store_true", help="print CRC presets.")
     parser.add_argument("wanted_crc", metavar="WANTED_CRC", nargs="?", type=lambda x: int(x, 16),
                         help="target CRC value (hex).")
     parser.add_argument("--prefix", default="", help="prefix string (ASCII).")
     parser.add_argument("--suffix", default="", help="suffix string (ASCII).")
+    parser.add_argument("--prefix-hex", default="", help="prefix string (HEX).")
+    parser.add_argument("--suffix-hex", default="", help="suffix string (HEX).")
+    parser.add_argument("--charset", default="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_",
+                        help="the character set for bruteforce (default: %(default)s).")
+    parser.add_argument("-b", "--bridge-length", type=AddressUtil.parse_address,
+                        help="specific bridge length.")
+    parser.add_argument("-c", dest="cont", action="store_true", help="do not terminate midway.")
+    parser.add_argument("-k", "--known", nargs=2, action="append", metavar=("IDX", "CHAR"),
+                        help="specified known fixed value.")
+    parser.add_argument("-K", "--known-hex", nargs=2, action="append", metavar=("IDX", "HEX_CHAR"),
+                        help="specified known fixed value.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
@@ -110845,9 +110856,15 @@ class Crc32revCommand(GenericCommand, BufferingOutput):
         "{0:s} --list",
         "{0:s} 0x41414141",
         "{0:s} 0x41414141 --prefix AAAA --suffix BBBB",
+        "{0:s} 0x41414141 --prefix flag{{ --suffix-hex 7d00 -b 8 -k 1 A -k 3 A",
         "{0:s} 0x41414141 --preset mpeg2",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "wanted_crc == crc(prefix + bridge + suffix).",
+    ]
+    _note_ = "\n".join(_note_)
 
     preset_dic = {
         # https://reveng.sourceforge.io/crc-catalogue/all.htm
@@ -110890,14 +110907,14 @@ class Crc32revCommand(GenericCommand, BufferingOutput):
     def print_preset_dict(self):
         fmt = "{:<10s}  {:<10s}  {:<10s}  {:<10s}  {:<10s}  {:5s}  {:6s}  {:5s}"
         legend = ["name", "poly", "rpoly", "init_value", "xorout", "refin", "refout", "alias"]
-        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+        gef_print(GefUtil.make_legend(fmt.format(*legend)))
 
         for k, v in self.preset_dic.items():
             if v[5]:
                 alias = "(alias)"
             else:
                 alias = ""
-            self.out.append("{:10s}  {:#010x}  {:#010x}  {:#010x}  {:#010x}  {!s:5s}  {!s:6s}  {:s}".format(
+            gef_print("{:10s}  {:#010x}  {:#010x}  {:#010x}  {:#010x}  {!s:5s}  {!s:6s}  {:s}".format(
                 k or "''", v[0], self.reflect32(v[0]), v[1], v[2], v[3], v[4], alias),
             )
         return
@@ -110998,7 +111015,7 @@ class Crc32revCommand(GenericCommand, BufferingOutput):
         crc = self.calc_forward(crc, msg_bytes)
         return crc ^ self.CRC.xorout
 
-    def find_bridge(self, init_value, wanted_crc, prefix, suffix):
+    def find_bridge_tail(self, init_value, wanted_crc, prefix, suffix):
         """Compute a 4-byte bridge so that CRC(prefix + bridge + suffix) == wanted_crc."""
         # forward state after prefix (raw)
         fwd_crc = self.calc_forward(init_value, prefix)
@@ -111026,47 +111043,104 @@ class Crc32revCommand(GenericCommand, BufferingOutput):
         assert self.calc_crc32(test_seq) == wanted_crc
         return bridge_bytes
 
-    def find_reverse(self, prefix, suffix):
-        """Search ASCII-only bridges of length 4..6(+7)."""
+    def build_known_map(self):
+        """Build map from --known and --known-hex."""
+        known_map = {}
+        for raw_idx, raw_char in self.args.known or []:
+            idx = int(raw_idx, 0)
+            if idx < 0:
+                err("known IDX must be >= 0")
+                return None
+            bs = String.str2bytes(raw_char)
+            if len(bs) != 1:
+                err("known CHAR must be exactly 1 byte")
+                return None
+            b = bs[0]
+            if idx in known_map and known_map[idx] != b:
+                err("conflicting known values for index {}".format(idx))
+                return None
+            known_map[idx] = b
+
+        for raw_idx, hex_char in self.args.known_hex or []:
+            idx = int(raw_idx, 0)
+            if idx < 0:
+                err("known IDX must be >= 0")
+                return None
+            bs = GefUtil.fromhex_ignore_invalid(hex_char)
+            if bs is None:
+                err("Invalid HEX_CHAR")
+                return None
+            if len(bs) != 1:
+                err("known HEX_CHAR must be exactly 1 byte")
+                return None
+            b = bs[0]
+            if idx in known_map and known_map[idx] != b:
+                err("conflicting known values for index {}".format(idx))
+                return None
+            known_map[idx] = b
+        return known_map
+
+    def build_known_constraints(self, bridge_length, charset, known_map):
+        """Return per-position choices for head and fixed-byte checks for tail."""
+        tail_length = 4
+        head_length = bridge_length - tail_length
+        head_choices = [charset for _ in range(head_length)]
+        tail_checks = []
+        for idx, b in known_map.items():
+            if idx >= bridge_length:
+                return None
+            if b not in charset:
+                return None
+            if idx < head_length:
+                head_choices[idx] = (b,)
+            else:
+                tail_checks.append((idx - head_length, b))
+        return head_choices, tuple(tail_checks)
+
+    def find_reverse(self, prefix, suffix, lengths, charset, known_map):
+        """Search charset-limited bridges of lengths."""
         self.build_crc()
         self.build_tables()
 
         init_value = self.CRC.init_value
         wanted_crc = self.args.wanted_crc & 0xffff_ffff
 
-        ascii_range = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_"
-        solutions = []
+        found = False
+        for bridge_length in lengths:
+            #            bridge
+            #          ~~~~~~~~~~~
+            # prefix + head + tail + suffix
+            # ~~~~~~~~~~~~~   ~~~~
+            #  new_prefix     4bytes
+            constraints = self.build_known_constraints(bridge_length, charset, known_map)
+            if constraints is None:
+                continue
+            head_choices, tail_checks = constraints
 
-        # 4 bytes
-        bridge = self.find_bridge(init_value, wanted_crc, prefix, suffix)
-        if all(c in ascii_range for c in bridge):
-            solutions.append(bridge)
-        # 5 bytes
-        for b in ascii_range:
-            new_prefix = prefix + [b]
-            bridge = self.find_bridge(init_value, wanted_crc, new_prefix, suffix)
-            if all(c in ascii_range for c in bridge):
-                solutions.append([b] + bridge)
-        # 6 bytes
-        for b1 in ascii_range:
-            for b2 in ascii_range:
-                new_prefix = prefix + [b1, b2]
-                bridge = self.find_bridge(init_value, wanted_crc, new_prefix, suffix)
-                if all(c in ascii_range for c in bridge):
-                    solutions.append([b1, b2] + bridge)
+            for head in itertools.product(*head_choices):
+                head = list(head)
+                new_prefix = prefix + head
+                tail = list(self.find_bridge_tail(init_value, wanted_crc, new_prefix, suffix))
 
-        if solutions:
-            return solutions
+                if not all(c in charset for c in tail):
+                    continue
 
-        # 7 bytes
-        for b1 in ascii_range:
-            for b2 in ascii_range:
-                for b3 in ascii_range:
-                    new_prefix = prefix + [b1, b2, b3]
-                    bridge = self.find_bridge(init_value, wanted_crc, new_prefix, suffix)
-                    if all(c in ascii_range for c in bridge):
-                        solutions.append([b1, b2, b3] + bridge)
-        return solutions
+                if not all(tail[pos] == b for pos, b in tail_checks):
+                    continue
+
+                bridge = head + tail
+                msg = prefix + bridge + suffix
+                crc = self.calc_crc32(msg)
+                gef_print("{}: CRC32({}) = {:#010x}".format(bytes(bridge), bytes(msg), crc))
+                found |= True
+
+            if found:
+                if bridge_length >= 6 and not self.args.cont:
+                    break
+
+        if not found:
+            err("No bridge found under given constraints.")
+        return
 
     @parse_args
     def do_invoke(self, args):
@@ -111074,25 +111148,59 @@ class Crc32revCommand(GenericCommand, BufferingOutput):
             self.usage()
             return
 
-        self.out = []
-
         if self.args.list:
             self.print_preset_dict()
-            self.print_output(check_terminal_size=True)
             return
 
-        prefix = [ord(c) for c in self.args.prefix]
-        suffix = [ord(c) for c in self.args.suffix]
-
-        sols = self.find_reverse(prefix, suffix)
-        if sols:
-            for sol in sols:
-                msg = prefix + sol + suffix
-                crc = self.calc_crc32(msg)
-                self.out.append("{}: CRC32({}) = {:#010x}".format(bytes(sol), bytes(msg), crc))
+        if self.args.bridge_length is not None:
+            if self.args.bridge_length < 4:
+                err("bridge_length must be >= 4")
+                return
+            lengths = (self.args.bridge_length,)
         else:
-            self.err_add_out("No ASCII-only bridge found under given constraints.")
-        self.print_output(check_terminal_size=True)
+            max_length = 10
+            lengths = range(4, max_length + 1)
+
+        if args.prefix and args.prefix_hex:
+            err("duplicate prefix")
+            return
+        if args.suffix and args.suffix_hex:
+            err("duplicate suffix")
+            return
+
+        if args.prefix_hex:
+            prefix = GefUtil.fromhex_ignore_invalid(args.prefix_hex)
+            if prefix is None:
+                err("Invalid prefix")
+                return
+            prefix = list(prefix)
+        else:
+            prefix = [ord(c) for c in self.args.prefix]
+
+        if args.suffix_hex:
+            suffix = GefUtil.fromhex_ignore_invalid(args.suffix_hex)
+            if suffix is None:
+                err("Invalid suffix")
+                return
+            suffix = list(suffix)
+        else:
+            suffix = [ord(c) for c in self.args.suffix]
+
+        if prefix:
+            info("prefix: {}".format(bytes(prefix)))
+        if suffix:
+            info("suffix: {}".format(bytes(suffix)))
+
+        known_map = self.build_known_map()
+        if known_map is None:
+            return
+
+        charset = tuple(String.str2bytes(self.args.charset))
+        if not charset:
+            err("charset must not be empty")
+            return
+
+        self.find_reverse(prefix, suffix, lengths, charset, known_map)
         return
 
 
