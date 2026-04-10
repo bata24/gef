@@ -110586,9 +110586,6 @@ class CrcCommand(GenericCommand, BufferingOutput):
             def width(self):
                 return 32
 
-            def bytewidth(self):
-                return 4
-
         for cname in ["Crc32K", "Crc32Koopman"]:
             if self.args.filter and not any(filt.search(cname) for filt in self.args.filter):
                 continue
@@ -110596,8 +110593,13 @@ class CrcCommand(GenericCommand, BufferingOutput):
         return None
 
     def make_line(self, cname, cfunc, crc):
-        bit = cfunc.width()
-        byte = cfunc.bytewidth()
+        if hasattr(cfunc, "_width"):
+            bit = cfunc._width
+        elif hasattr(cfunc, "width"):
+            bit = cfunc.width()
+        else:
+            bit = len(crc) * 8
+        byte = (bit + 7) // 8
         line = "{:20s}:[{:2d}b/{:2d}B] {:s}".format(cname, bit, byte, crc)
         return line
 
