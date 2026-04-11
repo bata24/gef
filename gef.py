@@ -68491,7 +68491,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
     _note_ = [
         "This command requires CONFIG_RANDSTRUCT=n.",
         "",
-        "Currently it supports from 3.0 to 6.16.",
+        "Currently it supports from 3.0 to 7,0-rc7.",
         "",
         "Supported structure:",
     ]
@@ -68699,6 +68699,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "removexattr",                             None,      "4.9.0"],
             ["func_ptr", "fiemap",                                  None,      None],
             ["func_ptr", "update_time",                             "3.5.0",   None],
+            ["func_ptr", "sync_lazytime",                           "7.0.0",   None],
             ["func_ptr", "atomic_open",                             "3.6.0",   None],
             ["func_ptr", "tmpfile",                                 "3.11.0",  None],
             ["func_ptr", "get_acl",                                 "6.2.0",   None],
@@ -68806,7 +68807,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "thaw_super",                              "3.19.0",  None],
             ["func_ptr", "unfreeze_fs",                             None,      None],
             ["func_ptr", "statfs",                                  None,      None],
-            ["func_ptr", "remount_fs",                              None,      None],
+            ["func_ptr", "remount_fs",                              None,      "7.0.0"],
             ["func_ptr", "umount_begin",                            None,      None],
             ["func_ptr", "show_options",                            None,      None],
             ["func_ptr", "show_devname",                            None,      None],
@@ -68820,6 +68821,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "free_cached_objects",                     "3.1.0",   None],
             ["func_ptr", "remove_bdev",                             "6.17.0",  None],
             ["func_ptr", "shutdown",                                "6.5.0",   None],
+            ["func_ptr", "report_error",                            "7.0.0",   None],
         ]
         self.members["super_operations"] = adapt_to_kernel_version(super_operations)
 
@@ -69312,6 +69314,8 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "update_altmodes",                         "5.6.0",   None],
             ["func_ptr", "update_connector",                        "6.10.0",  None],
             ["func_ptr", "connector_status",                        "6.10.0",  None],
+            ["func_ptr", "add_partner_altmodes",                    "7.0.0",   None],
+            ["func_ptr", "remove_partner_altmodes",                 "7.0.0",   None],
         ]
         self.members["ucsi_operations"] = adapt_to_kernel_version(ucsi_operations)
 
@@ -69335,7 +69339,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "apply_scheme",                            "5.18.0",  None],
             ["func_ptr", "target_valid",                            "5.18.0",  None],
             ["func_ptr", "cleanup_target",                          "6.17.0",  None],
-            ["func_ptr", "cleanup",                                 "5.18.0",  None],
+            ["func_ptr", "cleanup",                                 "5.18.0",  "7.0.0"],
         ]
         self.members["damon_operations"] = adapt_to_kernel_version(damon_operations)
 
