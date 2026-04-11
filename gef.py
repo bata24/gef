@@ -61969,12 +61969,27 @@ class Kernel:
             kversion = Kernel.kernel_version()
             if kversion < "6.2":
                 return "SLUB"
-            else:
+            elif kversion < "7.0":
                 # care for both deactivate_slab and deactivate_slab.cold
                 if gdb.execute("ksymaddr-remote --quiet --no-pager deactivate_slab", to_string=True):
                     return "SLUB"
                 else:
                     return "SLUB_TINY"
+            else: # kversion >= "7.0"
+                # If CONFIG_SLUB_TINY=y, calculate_sheaf_capacity is a small function that returns 0.
+                calculate_sheaf_capacity = Symbol.get_ksymaddr("calculate_sheaf_capacity")
+                if calculate_sheaf_capacity is None:
+                    return "Unknown"
+                kallsyms = __gef_command_instances__["ksymaddr-remote"].kallsyms
+                for i, (addr, _, _) in enumerate(kallsyms):
+                    if addr == calculate_sheaf_capacity:
+                        next_func = kallsyms[i + 1][0]
+                        calculate_sheaf_capacity_size = next_func - calculate_sheaf_capacity
+                        if calculate_sheaf_capacity_size <= 0x20:
+                            return "SLUB_TINY"
+                        else:
+                            return "SLUB"
+                return "SLUB" # default
 
         # care for both cache_reap and cache_reap.cold
         if gdb.execute("ksymaddr-remote --quiet --no-pager cache_reap", to_string=True):
