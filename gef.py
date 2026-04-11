@@ -122619,11 +122619,12 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         token_table = self.get_token_table()
         possible_symbol_types = "-?ABCDGINPRSTUVWabcdginprstuvw" # from `man nm`
         dp = []
+        step = 4
 
         position = self.offset_kallsyms_names
         # kallsyms_names should be aligned.
         # This optimization is based on experience and is applied for now.
-        position += -position % current_arch.ptrsize
+        position += -position % step
 
         while True:
             if position < 0:
@@ -122635,7 +122636,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             token_index = self.kernel_img[position + 1]
             symbol_type = token_table[token_index][0]
             if symbol_type not in possible_symbol_types:
-                position -= current_arch.ptrsize
+                position -= step
                 continue
 
             # 2: check the table (kallsyms_names) entirely.
@@ -122731,7 +122732,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
                 #                     dp[0]=0
                 # when we see 0x0c(*), next element is 0x00(**).
                 # In this case, here, len(dp) == 15 (dp[15] does not exist, but dp[14] exists).
-                # dp[-(0xc + 1)] is dp[2]. d[2] is 0, not -1, so dp[15] is valid. If dp[2] is -1, dp[15] is invalid.
+                # dp[-(0xc + 1)] is dp[2]. dp[2] is 0, not -1, so dp[15] is valid. If dp[2] is -1, dp[15] is invalid.
                 offset_of_next_element = -symbol_size - 1
                 if is_big_symbol:
                     offset_of_next_element -= 1
@@ -122744,7 +122745,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             num_symbols = dp[-1]
             if num_symbols < 256:
                 # It is judged as NG because there are too few symbols.
-                position -= current_arch.ptrsize
+                position -= step
                 continue
 
             # 3: Find num_symbols from memory.
@@ -122758,7 +122759,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             start = max(0, position - MAX_ALIGNMENT)
             needle = self.kernel_img.rfind(seq_to_find, start, position)
             if needle == -1:
-                position -= current_arch.ptrsize
+                position -= step
                 continue
 
             # it seems ok.
@@ -122795,7 +122796,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         - kallsyms_token_table
         - kallsyms_token_index
         - kallsyms_offsets (v6.4~, CONFIG_KALLSYMS_BASE_RELATIVE=y)
-        - kallsyms_relative_base (v6.4~, CONFIG_KALLSYMS_BASE_RELATIVE=y)
+        - kallsyms_relative_base (v6.4~v6.19, CONFIG_KALLSYMS_BASE_RELATIVE=y)
         - kallsyms_seqs_of_names (v6.9~)
         - ...
 
@@ -122863,81 +122864,96 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         offset_byte_size = 4
         address_byte_size = current_arch.ptrsize
 
-        # get relative_base_address
-        if self.kernel_version < (6, 4, 0):
-            # ignore the 0 immediately above offset_kallsyms_num_syms.
-            position = self.offset_kallsyms_num_syms
-            while True:
-                previous_word = self.kernel_img[position - address_byte_size:position]
-                if previous_word != b"\0" * address_byte_size:
-                    break
+        if self.kernel_version < (7, 0, 0):
+            # get relative_base_address
+            if self.kernel_version < (6, 4, 0):
+                # ignore the 0 immediately above offset_kallsyms_num_syms.
+                position = self.offset_kallsyms_num_syms
+                while True:
+                    previous_word = self.kernel_img[position - address_byte_size:position]
+                    if previous_word != b"\0" * address_byte_size:
+                        break
+                    position -= address_byte_size
+
+                # Go backward by num_symbols.
                 position -= address_byte_size
 
-            # Go backward by num_symbols.
-            position -= address_byte_size
+                # read from kallsyms_relative_base
+                relative_base_address = int.from_bytes(self.kernel_img[position:position + address_byte_size], endian_str)
 
-            # read from kallsyms_relative_base
-            relative_base_address = int.from_bytes(self.kernel_img[position:position + address_byte_size], endian_str)
+                if relative_base_address and (relative_base_address & get_pagesize_mask_low()) == 0:
+                    """
+                    some environment has invalid address as relative_base_address.
+                    so don't use the logic of is_valid_addr(relative_base_address).
 
-            if relative_base_address and (relative_base_address & get_pagesize_mask_low()) == 0:
-                """
-                some environment has invalid address as relative_base_address.
-                so don't use the logic of is_valid_addr(relative_base_address).
+                    gef> hexdump -n qword 0xffffafc5c2adb260-0x10 0x20
+                    0xffffafc5c2adb250:    0xffffafc5c1750000 0x0000000000028193    |  ..u.............  |
+                    0xffffafc5c2adb260:    0x6474107414bc5404 0x6c7463be6270d277    |  .T..t.tdw.pb.ctl  |
+                    gef> x/16xg 0xffffafc5c1750000
+                    0xffffafc5c1750000:     Cannot access memory at address 0xffffafc5c1750000
+                    """
+                    while True:
+                        previous_word = self.kernel_img[position - offset_byte_size:position]
+                        if previous_word != b"\0" * offset_byte_size:
+                            break
+                        position -= offset_byte_size
+                    position -= self.num_symbols * offset_byte_size
 
-                gef> hexdump -n qword 0xffffafc5c2adb260-0x10 0x20
-                0xffffafc5c2adb250:    0xffffafc5c1750000 0x0000000000028193    |  ..u.............  |
-                0xffffafc5c2adb260:    0x6474107414bc5404 0x6c7463be6270d277    |  .T..t.tdw.pb.ctl  |
-                gef> x/16xg 0xffffafc5c1750000
-                0xffffafc5c1750000:     Cannot access memory at address 0xffffafc5c1750000
-                """
-                while True:
-                    previous_word = self.kernel_img[position - offset_byte_size:position]
-                    if previous_word != b"\0" * offset_byte_size:
-                        break
-                    position -= offset_byte_size
-                position -= self.num_symbols * offset_byte_size
+            else: # kernel_version >= (6, 4):
+                position = self.offset_kallsyms_token_index + 0x200
+                position_relative_base = align(position + self.num_symbols * offset_byte_size, current_arch.ptrsize)
+                relative_base_address_data = self.kernel_img[position_relative_base:position_relative_base + address_byte_size]
+                if len(relative_base_address_data) == 0:
+                    self.verbose_err("kernel_img is not long enough.")
+                    return False
+                relative_base_address = int.from_bytes(relative_base_address_data, endian_str)
+                if not (relative_base_address and (relative_base_address & get_pagesize_mask_low()) == 0):
+                    return True
 
-        else: # kernel_version >= (6, 4):
-            position = self.offset_kallsyms_token_index + 0x200
-            position_relative_base = align(position + self.num_symbols * offset_byte_size, current_arch.ptrsize)
-            relative_base_address_data = self.kernel_img[position_relative_base:position_relative_base + address_byte_size]
-            if len(relative_base_address_data) == 0:
-                self.verbose_err("kernel_img is not long enough.")
-                return False
-            relative_base_address = int.from_bytes(relative_base_address_data, endian_str)
-            if not (relative_base_address and (relative_base_address & get_pagesize_mask_low()) == 0):
+            # Getting here means that the relative_address and position have been detected correctly.
+            self.verbose_info("relative_base_address: {:#x}".format(relative_base_address))
+
+            # Try to parse addresses or offsets.
+            fmt = "{:s}{:d}i".format(endianness_marker, self.num_symbols) # signed int
+            kallsyms_offsets_data = self.kernel_img[position:position + self.num_symbols * offset_byte_size]
+            ksym_offsets = struct.unpack(fmt, kallsyms_offsets_data)
+
+            # Check the ratio of the negative value
+            number_of_negative_items = len([offset for offset in ksym_offsets if offset < 0])
+            if number_of_negative_items / len(ksym_offsets) >= 0.5:
+                # the case CONFIG_KALLSYMS_ABSOLUTE_PERCPU=y.
+                kernel_addresses = []
+                for offset in ksym_offsets:
+                    if offset < 0:
+                        x = relative_base_address - 1 - offset
+                        kernel_addresses.append(x)
+                    else:
+                        kernel_addresses.append(offset)
+            else:
+                # the case CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n.
+                kernel_addresses = []
+                for offset in ksym_offsets:
+                    x = offset + relative_base_address
+                    kernel_addresses.append(x)
+
+            # Check the ratio of the null value.
+            number_of_null_items = kernel_addresses.count(0)
+            if number_of_null_items / len(kernel_addresses) >= 0.2:
                 return True
 
-        # Getting here means that the relative_address and position have been detected correctly.
-        self.verbose_info("relative_base_address: {:#x}".format(relative_base_address))
+        else: # kernel_version >= (7, 0):
+            position = self.offset_kallsyms_token_index + 0x200
 
-        # Try to parse addresses or offsets.
-        fmt = "{:s}{:d}i".format(endianness_marker, self.num_symbols) # signed int
-        kallsyms_offsets_data = self.kernel_img[position:position + self.num_symbols * offset_byte_size]
-        ksym_offsets = struct.unpack(fmt, kallsyms_offsets_data)
+            # Try to parse addresses or offsets.
+            fmt = "{:s}{:d}i".format(endianness_marker, self.num_symbols) # signed int
+            kallsyms_offsets_data = self.kernel_img[position:position + self.num_symbols * offset_byte_size]
+            ksym_offsets = struct.unpack(fmt, kallsyms_offsets_data)
 
-        # Check the ratio of the negative value
-        number_of_negative_items = len([offset for offset in ksym_offsets if offset < 0])
-        if number_of_negative_items / len(ksym_offsets) >= 0.5:
-            # the case CONFIG_KALLSYMS_ABSOLUTE_PERCPU=y.
+            # 7.0+: offset_to_ptr style, no kallsyms_relative_base. CONFIG_KALLSYMS_ABSOLUTE_PERCPU is removed.
             kernel_addresses = []
-            for offset in ksym_offsets:
-                if offset < 0:
-                    x = relative_base_address - 1 - offset
-                    kernel_addresses.append(x)
-                else:
-                    kernel_addresses.append(offset)
-        else:
-            # the case CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n.
-            kernel_addresses = []
-            for offset in ksym_offsets:
-                x = offset + relative_base_address
-                kernel_addresses.append(x)
-
-        # Check the ratio of the null value.
-        number_of_null_items = kernel_addresses.count(0)
-        if number_of_null_items / len(kernel_addresses) >= 0.2:
-            return True
+            for i, offset in enumerate(ksym_offsets):
+                element_va = self.ro_base + position + i * offset_byte_size
+                kernel_addresses.append(element_va + offset)
 
         # It seems ok.
         self.offset_kallsyms_addresses_or_offsets = position
@@ -123055,8 +123071,9 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
                 return False
 
         if not self.offset_kallsyms_addresses_or_offsets:
-            # the case CONFIG_KALLSYMS_BASE_RELATIVE=n.
-            self.find_kallsyms_addresses()
+            if self.kernel_version < (7, 0):
+                # the case CONFIG_KALLSYMS_BASE_RELATIVE=n.
+                self.find_kallsyms_addresses()
 
         self.save_config("version_string")
         self.save_config("version_string_offset")
