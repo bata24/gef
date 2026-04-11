@@ -121759,7 +121759,7 @@ class KtypesLoadCommand(KtypesCommand):
             return None
 
         # build with debug types
-        cmd = "{!r} {:s} -std=c11 -g -O0 -fno-eliminate-unused-debug-types -c {!r} -o {!r}".format(
+        cmd = "{!r} {:s} -std=c11 -g -O0 -fno-eliminate-unused-debug-types -w -c {!r} -o {!r}".format(
             gcc, opt, source_path, obj_path,
         )
         info(cmd)
