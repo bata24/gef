@@ -12293,7 +12293,7 @@ def is_supported_physmode():
 
 def enable_phys():
     if is_qemu_system():
-        response = gdb.execute("maintenance packet Qqemu.PhyMemMode:1", to_string=True, from_tty=False)
+        gdb.execute("maintenance packet Qqemu.PhyMemMode:1", to_string=True, from_tty=False)
         response = gdb.execute("maintenance packet qqemu.PhyMemMode", to_string=True, from_tty=False)
         gdb.execute("maintenance flush dcache", to_string=True)
         return 'received: "1"' in response
@@ -12305,7 +12305,7 @@ def enable_phys():
 
 def disable_phys():
     if is_qemu_system():
-        response = gdb.execute("maintenance packet Qqemu.PhyMemMode:0", to_string=True, from_tty=False)
+        gdb.execute("maintenance packet Qqemu.PhyMemMode:0", to_string=True, from_tty=False)
         response = gdb.execute("maintenance packet qqemu.PhyMemMode", to_string=True, from_tty=False)
         gdb.execute("maintenance flush dcache", to_string=True)
         return 'received: "0"' in response
