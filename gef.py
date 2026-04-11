@@ -74278,8 +74278,6 @@ class Hash:
     class SHA512TruncBase:
         block_size = 128
         digest_size = None
-
-        # SHA-512 round constants
         K = (
             0x428a_2f98_d728_ae22, 0x7137_4491_23ef_65cd, 0xb5c0_fbcf_ec4d_3b2f, 0xe9b5_dba5_8189_dbbc,
             0x3956_c25b_f348_b538, 0x59f1_11f1_b605_d019, 0x923f_82a4_af19_4f9b, 0xab1c_5ed5_da6d_8118,
@@ -74308,7 +74306,6 @@ class Hash:
                 raise ValueError("digest_size must be set in subclass")
             self.buf = bytearray()
             self.msg_len = 0  # in bytes
-
             self.h0 = self.initial_state[0]
             self.h1 = self.initial_state[1]
             self.h2 = self.initial_state[2]
@@ -74317,7 +74314,6 @@ class Hash:
             self.h5 = self.initial_state[5]
             self.h6 = self.initial_state[6]
             self.h7 = self.initial_state[7]
-
             if data:
                 self.update(data)
             return
@@ -74357,8 +74353,6 @@ class Hash:
             return self.digest().hex()
 
         def finalize(self):
-            # Padding: append 0x80, then 0x00* until length ≡ 112 (mod 128),
-            # then append message length in bits as 128-bit big-endian.
             bit_len = self.msg_len * 8
             self.buf.append(0x80)
             while (len(self.buf) % 128) != 112:
@@ -74370,39 +74364,40 @@ class Hash:
                 self.compress(block)
             return
 
-        def rotr64(self, x, n):
-            x &= 0xffff_ffff_ffff_ffff
-            n &= 63
-            if n == 0:
-                return x
-            return ((x >> n) | (x << (64 - n))) & 0xffff_ffff_ffff_ffff
-
-        def shr64(self, x, n):
-            x &= 0xffff_ffff_ffff_ffff
-            return (x >> n) & 0xffff_ffff_ffff_ffff
-
-        def ch(self, x, y, z):
-            return (x & y) ^ ((~x) & z)
-
-        def maj(self, x, y, z):
-            return (x & y) ^ (x & z) ^ (y & z)
-
-        def big_sigma0(self, x):
-            return self.rotr64(x, 28) ^ self.rotr64(x, 34) ^ self.rotr64(x, 39)
-
-        def big_sigma1(self, x):
-            return self.rotr64(x, 14) ^ self.rotr64(x, 18) ^ self.rotr64(x, 41)
-
-        def small_sigma0(self, x):
-            return self.rotr64(x, 1) ^ self.rotr64(x, 8) ^ self.shr64(x, 7)
-
-        def small_sigma1(self, x):
-            return self.rotr64(x, 19) ^ self.rotr64(x, 61) ^ self.shr64(x, 6)
-
         def compress(self, block):
+
+            def ror64(x, n):
+                x &= 0xffff_ffff_ffff_ffff
+                n &= 63
+                if n == 0:
+                    return x
+                return ((x >> n) | (x << (64 - n))) & 0xffff_ffff_ffff_ffff
+
+            def shr64(x, n):
+                x &= 0xffff_ffff_ffff_ffff
+                return (x >> n) & 0xffff_ffff_ffff_ffff
+
+            def ch(x, y, z):
+                return (x & y) ^ ((~x) & z)
+
+            def maj(x, y, z):
+                return (x & y) ^ (x & z) ^ (y & z)
+
+            def small_sigma0(x):
+                return ror64(x, 1) ^ ror64(x, 8) ^ shr64(x, 7)
+
+            def small_sigma1(x):
+                return ror64(x, 19) ^ ror64(x, 61) ^ shr64(x, 6)
+
+            def big_sigma0(x):
+                return ror64(x, 28) ^ ror64(x, 34) ^ ror64(x, 39)
+
+            def big_sigma1(x):
+                return ror64(x, 14) ^ ror64(x, 18) ^ ror64(x, 41)
+
             w = list(struct.unpack(">16Q", block))
             for i in range(16, 80):
-                v = (self.small_sigma1(w[i - 2]) + w[i - 7] + self.small_sigma0(w[i - 15]) + w[i - 16]) & 0xffff_ffff_ffff_ffff
+                v = (small_sigma1(w[i - 2]) + w[i - 7] + small_sigma0(w[i - 15]) + w[i - 16]) & 0xffff_ffff_ffff_ffff
                 w.append(v)
 
             a = self.h0
@@ -74415,8 +74410,8 @@ class Hash:
             h = self.h7
 
             for i in range(80):
-                t1 = (h + self.big_sigma1(e) + self.ch(e, f, g) + self.K[i] + w[i]) & 0xffff_ffff_ffff_ffff
-                t2 = (self.big_sigma0(a) + self.maj(a, b, c)) & 0xffff_ffff_ffff_ffff
+                t1 = (h + big_sigma1(e) + ch(e, f, g) + self.K[i] + w[i]) & 0xffff_ffff_ffff_ffff
+                t2 = (big_sigma0(a) + maj(a, b, c)) & 0xffff_ffff_ffff_ffff
                 h = g
                 g = f
                 f = e
@@ -75891,7 +75886,7 @@ class Hash:
             return self.digest().hex()
 
         def finalize(self):
-            # Padding: append 0x80, then 0x00* until length ≡ 56 (mod 64),
+            # Padding: append 0x80, then 0x00* until length = 56 (mod 64),
             # then append message length in bits as 64-bit big-endian.
             bit_len = self.msg_len * 8
             self.buf.append(0x80)
@@ -77452,18 +77447,18 @@ class Hash:
 
         def g(self, v, a, b, c, d, x, y):
 
-            def rotr32(x, n):
+            def ror32(x, n):
                 x &= 0xffff_ffff
                 return ((x >> n) | (x << (32 - n))) & 0xffff_ffff
 
             v[a] = (v[a] + v[b] + x) & 0xffff_ffff
-            v[d] = rotr32(v[d] ^ v[a], 16)
+            v[d] = ror32(v[d] ^ v[a], 16)
             v[c] = (v[c] + v[d]) & 0xffff_ffff
-            v[b] = rotr32(v[b] ^ v[c], 12)
+            v[b] = ror32(v[b] ^ v[c], 12)
             v[a] = (v[a] + v[b] + y) & 0xffff_ffff
-            v[d] = rotr32(v[d] ^ v[a], 8)
+            v[d] = ror32(v[d] ^ v[a], 8)
             v[c] = (v[c] + v[d]) & 0xffff_ffff
-            v[b] = rotr32(v[b] ^ v[c], 7)
+            v[b] = ror32(v[b] ^ v[c], 7)
             return
 
         def compress(self, cv, block_words, counter, block_len, flags):
