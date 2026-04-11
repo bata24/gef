@@ -17,11 +17,13 @@ def init():
 
     which("clang-format")
 
-    global K_DIR, GEF_DIR, GEF_PATH, GEF_TMP_PATH
+    global K_DIR, GEF_DIR, GEF_PATH, GEF_TMP_PATH, TMP_A, TMP_B
     K_DIR = sys.argv[1]
     GEF_DIR = sys.argv[2]
     GEF_PATH = os.path.join(sys.argv[2], "gef.py")
     GEF_TMP_PATH = GEF_PATH + ".tmp"
+    TMP_A = "/tmp/gef/a"
+    TMP_B = "/tmp/gef/b"
 
     if not os.path.exists(K_DIR):
         print("[-] Not found {:s}".format(K_DIR))
@@ -32,16 +34,13 @@ def init():
         exit()
 
     if os.path.exists(GEF_TMP_PATH):
-        print("[-] Found {:s} already.".format(GEF_TMP_PATH))
-        exit()
+        os.unlink(GEF_TMP_PATH)
 
-    if os.path.exists("/tmp/a"):
-        print("[-] Found {:s} already.".format("/tmp/a"))
-        exit()
+    if os.path.exists(TMP_A):
+        os.unlink(TMP_A)
 
-    if os.path.exists("/tmp/b"):
-        print("[-] Found {:s} already.".format("/tmp/b"))
-        exit()
+    if os.path.exists(TMP_B):
+        os.unlink(TMP_B)
 
     shutil.copyfile(GEF_PATH, GEF_TMP_PATH)
     return
@@ -58,10 +57,10 @@ def print_patch_result():
     return
 
 def cleanup():
-    if os.path.exists("/tmp/a"):
-        os.unlink("/tmp/a")
-    if os.path.exists("/tmp/b"):
-        os.unlink("/tmp/b")
+    if os.path.exists(TMP_A):
+        os.unlink(TMP_A)
+    if os.path.exists(TMP_B):
+        os.unlink(TMP_B)
     return
 
 ################################################################################
@@ -478,10 +477,10 @@ def loongarch_syscall_tbl_update():
     new_tbl = get_new_tbl_by_cmds(
         r"""
         cd {:s}
-        gcc -I `pwd`/include/uapi/ -E -D__SYSCALL=SYSCALL arch/loongarch/include/uapi/asm/unistd.h | grep ^SYSCALL | sed -e 's/SYSCALL(//;s/[,)]//g' > /tmp/a
-        grep -oP "__NR\S+\s+\d+$" include/uapi/asm-generic/unistd.h | grep -v __NR_sync_file_range2 > /tmp/b
-        join -2 2 -o 1.1,1.10,2.1,1.2 -e loongarch /tmp/a /tmp/b 2>/dev/null | sed -e 's/\(__NR_\|__NR3264_\)//g' | column -t
-        """.format(K_DIR)
+        gcc -I `pwd`/include/uapi/ -E -D__SYSCALL=SYSCALL arch/loongarch/include/uapi/asm/unistd.h | grep ^SYSCALL | sed -e 's/SYSCALL(//;s/[,)]//g' > {:s}
+        grep -oP "__NR\S+\s+\d+$" include/uapi/asm-generic/unistd.h | grep -v __NR_sync_file_range2 > {:s}
+        join -2 2 -o 1.1,1.10,2.1,1.2 -e loongarch {:s} {:s} 2>/dev/null | sed -e 's/\(__NR_\|__NR3264_\)//g' | column -t
+        """.format(K_DIR, TMP_A, TMP_B, TMP_A, TMP_B)
     )
     old_tbl, s, e = get_gef_defs('loongarch_syscall_tbl = """', '"""')
     print_diff(old_tbl, new_tbl)

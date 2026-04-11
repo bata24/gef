@@ -40483,6 +40483,7 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
         '{0:s} -a X86 -m 64       "^writev?"  # amd64',
         '{0:s} -a X86 -m 32       "^writev?"  # i386 on amd64',
         '{0:s} -a X86 -m N32      "^writev?"  # i386 native',
+        '{0:s} -a X86 -m x32      "^writev?"  # x32 mode',
         '{0:s} -a ARM64 -m ARM    "^writev?"  # arm64',
         '{0:s} -a ARM -m 32       "^writev?"  # arm32 on arm64',
         '{0:s} -a ARM -m N32      "^writev?"  # arm32 native',
@@ -40514,7 +40515,7 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    def make_output(self, syscall_table, syscall_num, syscall_name_pattern):
+    def make_output(self, syscall_table, syscall_num, syscall_name_pattern, skip_x32):
         self.out.append(titlify("arch={:s}, mode={:s}".format(syscall_table.arch, syscall_table.mode)))
 
         fmt = "{:<17}{:s}"
@@ -40526,6 +40527,13 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
                 continue
             if syscall_num is not None and entry.nr != syscall_num:
                 continue
+            if syscall_table.arch == "X86" and syscall_table.mode == "64":
+                if skip_x32:
+                    if entry.nr >= 0x4000_0000:
+                        continue
+                else:
+                    if entry.nr < 0x4000_0000:
+                        continue
             params = ""
             if self.args.verbose:
                 params = "(" + ", ".join(entry.args_full) + ");"
@@ -40536,6 +40544,7 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         syscall_num = None
         syscall_name_pattern = ".*"
+        skip_x32 = True
 
         target_arch = args.arch
         target_mode = args.mode
@@ -40597,6 +40606,10 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
                 target_arch = "M68K"
                 target_mode = "32"
 
+        if target_arch == "X86" and target_mode == "x32":
+            target_mode = "64"
+            skip_x32 = False
+
         try:
             syscall_num = int(args.search_pattern, 0)
         except ValueError:
@@ -40609,18 +40622,12 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
             return
 
         self.out = []
-        self.make_output(syscall_table, syscall_num, syscall_name_pattern)
+        self.make_output(syscall_table, syscall_num, syscall_name_pattern, skip_x32)
         self.print_output(check_terminal_size=True)
         return
 
 
-# System call table (linux-6.10)
-
-# [How to make]
-# clang-format --style='{BasedOnStyle: Google, ColumnLimit: 1000}' FILENAME | grep ^asmlinkage
-#   `!` at the beginning of the line: manually fixed the argument information
-#   `#` at the beginning of the line: excluded for reasons such as duplication
-
+# System call table (linux-7.0-rc7; How to make: see dev/update-syscalls/update-syscalls.py)
 # include/linux/syscalls.h
 syscall_defs = """
 asmlinkage long sys_io_setup(unsigned nr_reqs, aio_context_t __user *ctx);
@@ -40837,7 +40844,7 @@ asmlinkage long sys_setrlimit(unsigned int resource, struct rlimit __user *rlim)
 asmlinkage long sys_getrusage(int who, struct rusage __user *ru);
 asmlinkage long sys_umask(int mask);
 asmlinkage long sys_prctl(int option, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5);
-asmlinkage long sys_getcpu(unsigned __user *cpu, unsigned __user *node, struct getcpu_cache __user *cache);
+asmlinkage long sys_getcpu(unsigned __user *cpu, unsigned __user *node, void __user *cache);
 asmlinkage long sys_gettimeofday(struct __kernel_old_timeval __user *tv, struct timezone __user *tz);
 asmlinkage long sys_settimeofday(struct __kernel_old_timeval __user *tv, struct timezone __user *tz);
 asmlinkage long sys_adjtimex(struct __kernel_timex __user *txc_p);
@@ -40962,6 +40969,7 @@ asmlinkage long sys_pkey_alloc(unsigned long flags, unsigned long init_val);
 asmlinkage long sys_pkey_free(int pkey);
 asmlinkage long sys_statx(int dfd, const char __user *path, unsigned flags, unsigned mask, struct statx __user *buffer);
 asmlinkage long sys_rseq(struct rseq __user *rseq, uint32_t rseq_len, int flags, uint32_t sig);
+asmlinkage long sys_rseq_slice_yield(void);
 asmlinkage long sys_open_tree(int dfd, const char __user *path, unsigned flags);
 asmlinkage long sys_open_tree_attr(int dfd, const char __user *path, unsigned flags, struct mount_attr __user *uattr, size_t usize);
 asmlinkage long sys_move_mount(int from_dfd, const char __user *from_path, int to_dfd, const char __user *to_path, unsigned int ms_flags);
@@ -41585,6 +41593,7 @@ x64_syscall_tbl = """
 468     common  file_getattr            sys_file_getattr
 469     common  file_setattr            sys_file_setattr
 470     common  listns                  sys_listns
+471     common  rseq_slice_yield        sys_rseq_slice_yield
 512     x32     rt_sigaction            compat_sys_rt_sigaction
 513     x32     rt_sigreturn            compat_sys_x32_rt_sigreturn
 514     x32     ioctl                   compat_sys_ioctl
@@ -42087,6 +42096,7 @@ x86_syscall_tbl = """
 468     i386    file_getattr            sys_file_getattr
 469     i386    file_setattr            sys_file_setattr
 470     i386    listns                  sys_listns
+471     i386    rseq_slice_yield        sys_rseq_slice_yield
 """
 
 
@@ -42487,6 +42497,7 @@ arm64_syscall_tbl = """
 468     common  file_getattr                    sys_file_getattr
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
+471     common  rseq_slice_yield                sys_rseq_slice_yield
 """
 
 
@@ -42916,6 +42927,7 @@ arm_compat_syscall_tbl = """
 468     common  file_getattr                    sys_file_getattr
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
+471     common  rseq_slice_yield                sys_rseq_slice_yield
 """
 
 
@@ -43357,6 +43369,7 @@ arm_native_syscall_tbl = """
 468     common  file_getattr                    sys_file_getattr
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
+471     common  rseq_slice_yield                sys_rseq_slice_yield
 """
 
 
@@ -43807,6 +43820,7 @@ mips_o32_syscall_tbl = """
 468     o32     file_getattr                    sys_file_getattr
 469     o32     file_setattr                    sys_file_setattr
 470     o32     listns                          sys_listns
+471     o32     rseq_slice_yield                sys_rseq_slice_yield
 """
 
 
@@ -44211,6 +44225,7 @@ mips_n32_syscall_tbl = """
 468     n32     file_getattr                    sys_file_getattr
 469     n32     file_setattr                    sys_file_setattr
 470     n32     listns                          sys_listns
+471     n32     rseq_slice_yield                sys_rseq_slice_yield
 """
 
 
@@ -44591,6 +44606,7 @@ mips_n64_syscall_tbl = """
 468     n64     file_getattr                    sys_file_getattr
 469     n64     file_setattr                    sys_file_setattr
 470     n64     listns                          sys_listns
+471     n64     rseq_slice_yield                sys_rseq_slice_yield
 """
 
 
@@ -45146,6 +45162,7 @@ ppc_syscall_tbl = """
 468     common  file_getattr                    sys_file_getattr
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
+471     nospu   rseq_slice_yield                sys_rseq_slice_yield
 """
 
 
@@ -45623,6 +45640,7 @@ sparc_syscall_tbl = """
 432     common  fsmount                         sys_fsmount
 433     common  fspick                          sys_fspick
 434     common  pidfd_open                      sys_pidfd_open
+435     common  clone3                          __sys_clone3
 436     common  close_range                     sys_close_range
 437     common  openat2                 sys_openat2
 438     common  pidfd_getfd                     sys_pidfd_getfd
@@ -45657,6 +45675,7 @@ sparc_syscall_tbl = """
 468     common  file_getattr                    sys_file_getattr
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
+471     common  rseq_slice_yield                sys_rseq_slice_yield
 """
 
 
@@ -46060,6 +46079,7 @@ s390x_syscall_tbl = """
 468     common  file_getattr                    sys_file_getattr
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
+471     common  rseq_slice_yield                sys_rseq_slice_yield
 """
 
 
@@ -46501,6 +46521,7 @@ sh4_syscall_tbl = """
 468     common  file_getattr                    sys_file_getattr
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
+471     common  rseq_slice_yield                sys_rseq_slice_yield
 """
 
 
@@ -46949,6 +46970,7 @@ m68k_syscall_tbl = """
 468     common  file_getattr                    sys_file_getattr
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
+471     common  rseq_slice_yield                sys_rseq_slice_yield
 """
 
 
@@ -47453,6 +47475,7 @@ alpha_syscall_tbl = """
 578     common  file_getattr                    sys_file_getattr
 579     common  file_setattr                    sys_file_setattr
 580     common  listns                          sys_listns
+581     common  rseq_slice_yield                sys_rseq_slice_yield
 """
 
 
@@ -47902,6 +47925,7 @@ hppa_syscall_tbl = """
 468     common  file_getattr                    sys_file_getattr
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
+471     common  rseq_slice_yield                sys_rseq_slice_yield
 """
 
 
@@ -48379,6 +48403,7 @@ microblaze_syscall_tbl = """
 468     common  file_getattr                    sys_file_getattr
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
+471     common  rseq_slice_yield                sys_rseq_slice_yield
 """
 
 
@@ -48801,6 +48826,7 @@ xtensa_syscall_tbl = """
 468     common  file_getattr                    sys_file_getattr
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
+471     common  rseq_slice_yield                sys_rseq_slice_yield
 """
 
 
@@ -50579,6 +50605,9 @@ class Syscall:
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
                 "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
+            "__sys_clone3": [
+                "struct clone_args __user *uargs", "size_t size",
+            ], #
         }
 
         syscall_list = []
@@ -50666,6 +50695,9 @@ class Syscall:
                 "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
                 "const char __user *pathname",
             ], # fs/notify/fanotify/fanotify_user.c
+            "__sys_clone3": [
+                "struct clone_args __user *uargs", "size_t size",
+            ], #
         }
 
         syscall_list = []
@@ -51970,13 +52002,16 @@ class SyscallArgsCommand(GenericCommand):
             arch = current_arch.arch
             mode = current_arch.mode
 
+        if arch == "X86" and mode == "64" and nr >= 0x4000_0000:
+            mode = "x32"
+
         # header
         info("Detected syscall (arch:{:s}, mode:{:s})".format(arch, mode))
         if syscall_name and args_full is not None:
             gef_print("    " + Color.colorify("{}({})".format(syscall_name, ", ".join(args_full)), "bold yellow"))
         fmt = "{:<20} {:<20} {}"
         legend = ["Parameter", "Register", "Value"]
-        info(GefUtil.make_legend(fmt.format(*legend)))
+        gef_print("    " + GefUtil.make_legend(fmt.format(*legend)))
 
         # ret
         for ret in ret_regs:
