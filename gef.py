@@ -61198,9 +61198,11 @@ class KernelAddressHeuristicFinder:
                 return x
 
         kversion = Kernel.kernel_version()
+        if kversion and "6.10" <= kversion:
+            return None
 
-        # plan 2 (available v5.10 or later)
-        if kversion and "5.10" <= kversion:
+        # plan 2 (available v5.10 ~ v6.9)
+        if kversion and "5.10" <= kversion < "6.10":
             addr = Symbol.get_ksymaddr("dma_buf_file_release")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
@@ -61211,7 +61213,10 @@ class KernelAddressHeuristicFinder:
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
                 elif is_arm32():
-                    g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
                 for x in g:
                     # here, x points &db_list.lock
                     v = x - current_arch.ptrsize * 2
@@ -61230,12 +61235,115 @@ class KernelAddressHeuristicFinder:
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
                 elif is_arm32():
-                    g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
                 for x in g:
                     # here, x points &db_list.lock
                     v = x - current_arch.ptrsize * 2
                     if is_double_link_list(v):
                         return v
+        return None
+
+    @staticmethod
+    @switch_to_intel_syntax
+    def get_debugfs_list():
+        # need DMA_SHARED_BUFFER=y
+
+        # plan 1 (directly)
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            x = Symbol.get_ksymaddr("debugfs_list")
+            if x:
+                return x
+
+        kversion = Kernel.kernel_version()
+
+        # plan 2 (available v6.10 ~ v6.15)
+        if kversion and "6.10" <= kversion < "6.16":
+            addr = Symbol.get_ksymaddr("dma_buf_file_release")
+            if addr:
+                res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
+                if is_x86_64():
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+                elif is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+                elif is_arm64():
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
+                elif is_arm32():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
+                direction = TlsCommand.get_direction()
+                # x64/x86:
+                #   debugfs_list
+                #   debugfs_list_mutex
+                # arm64/arm32:
+                #   debugfs_list_mutex
+                #   debugfs_list
+                for x in g:
+                    if is_x86():
+                        count = 1
+                    else:
+                        count = 2
+                    for i in range(2, 30):
+                        v = x + current_arch.ptrsize * direction * i
+                        # here, x points &debugfs_list_mutex
+                        if is_double_link_list(v):
+                            count -= 1
+                            if count == 0:
+                                return v
+        return None
+
+    @staticmethod
+    @switch_to_intel_syntax
+    def get_dmabuf_list():
+        # need DMA_SHARED_BUFFER=y
+
+        # plan 1 (directly)
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            x = Symbol.get_ksymaddr("dmabuf_list")
+            if x:
+                return x
+
+        kversion = Kernel.kernel_version()
+
+        # plan 2 (available v6.16 or later)
+        if kversion and "6.16" <= kversion:
+            addr = Symbol.get_ksymaddr("dma_buf_file_release")
+            if addr:
+                res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
+                if is_x86_64():
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+                elif is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+                elif is_arm64():
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
+                elif is_arm32():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
+                direction = TlsCommand.get_direction()
+                # x64/x86:
+                #   debugfs_list
+                #   debugfs_list_mutex
+                # arm64/arm32:
+                #   debugfs_list_mutex
+                #   debugfs_list
+                for x in g:
+                    if is_x86():
+                        count = 1
+                    else:
+                        count = 2
+                    for i in range(2, 30):
+                        v = x + current_arch.ptrsize * direction * i
+                        # here, x points &debugfs_list_mutex
+                        if is_double_link_list(v):
+                            count -= 1
+                            if count == 0:
+                                return v
         return None
 
     @staticmethod
@@ -120573,19 +120681,19 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
     _note_ = [
         "Simplified DMA-BUF structure:",
         "",
-        "                 +-dma_buf-----+      +-dma_buf-----+",
-        "                 | size        |      | size        |",
-        "                 | file        |      | file        |",
-        "                 | ...         |      | ...         |",
-        "                 | exp_name    |      | exp_name    |",
-        "                 | name        |      | name        |",
-        "+---------+      | ...         |      | ...         |",
-        "| db_list |----->| list_node   |----->| list_node   |-->...",
-        "+---------+      | priv        |--+   | priv        |",
-        "                 | ...         |  |   | ...         |",
-        "                 +-------------+  |   +-------------+",
-        "                                  |",
-        "     +----------------------------+",
+        "                     +-dma_buf-----+      +-dma_buf-----+",
+        "                     | size        |      | size        |",
+        "                     | file        |      | file        |",
+        "                     | ...         |      | ...         |",
+        "                     | exp_name    |      | exp_name    |",
+        "                     | name        |      | name        |",
+        "+---------+          | ...         |      | ...         |",
+        "| db_list |--------->| list_node   |----->| list_node   |-->...",
+        "+---------+          | priv        |--+   | priv        |",
+        " v6.10+:debugfs_list | ...         |  |   | ...         |",
+        " v6.16+:dmabuf_list  +-------------+  |   +-------------+",
+        "                                      |",
+        "     +--------------------------------+",
         "     |",
         "     +--->+-system_heap_buffer-+  +-->+-scatterlist--+",
         "          | ...                |  |   | page_link    |----->+------+",
@@ -120604,11 +120712,26 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
     _note_ = "\n".join(_note_)
 
     def initialize(self):
-        self.db_list = KernelAddressHeuristicFinder.get_db_list()
+        kversion = Kernel.kernel_version()
+        if kversion is None:
+            err("Could not find kernel version")
+            return False
+        if "5.10" <= kversion < "6.10":
+            self.db_list = KernelAddressHeuristicFinder.get_db_list()
+        elif "6.10" <= kversion < "6.16":
+            self.db_list = KernelAddressHeuristicFinder.get_debugfs_list()
+        else:
+            self.db_list = KernelAddressHeuristicFinder.get_dmabuf_list()
         if self.db_list is None:
             err("Could not find db_list (maybe DMA_SHARED_BUFFER=n)")
             return False
-        self.quiet_info("db_list: {:#x}".format(self.db_list))
+
+        if "5.10" <= kversion < "6.10":
+            self.quiet_info("db_list: {:#x}".format(self.db_list))
+        elif "6.10" <= kversion < "6.16":
+            self.quiet_info("debugfs_list: {:#x}".format(self.db_list))
+        else:
+            self.quiet_info("dmabuf_list: {:#x}".format(self.db_list))
 
         first_dma_buf = read_int_from_memory(self.db_list)
         if first_dma_buf == self.db_list:
