@@ -58682,6 +58682,8 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
                 for x in g:
+                    if not is_valid_addr(x):
+                        continue
                     cpu0 = read_int_from_memory(x)
                     if cpu0 and (cpu0 & 0xfff) == 0:
                         return x
@@ -62069,6 +62071,19 @@ class Kernel:
             return None
 
     @staticmethod
+    def get_func_size_kallsyms(func_name):
+        first_func = Symbol.get_ksymaddr(func_name)
+        if first_func is None:
+            return None
+        kallsyms = __gef_command_instances__["ksymaddr-remote"].kallsyms
+        for i, (addr, _, _) in enumerate(kallsyms):
+            if addr == first_func:
+                next_func = kallsyms[i + 1][0]
+                first_func_size = next_func - first_func
+                return first_func_size
+        return None
+
+    @staticmethod
     @Cache.cache_this_session
     def get_slab_type():
         # Cases where ksymaddr-remote is not working properly
@@ -62087,19 +62102,13 @@ class Kernel:
                     return "SLUB_TINY"
             else: # kversion >= "7.0"
                 # If CONFIG_SLUB_TINY=y, calculate_sheaf_capacity is a small function that returns 0.
-                calculate_sheaf_capacity = Symbol.get_ksymaddr("calculate_sheaf_capacity")
-                if calculate_sheaf_capacity is None:
+                calculate_sheaf_capacity_size = Kernel.get_func_size_kallsyms("calculate_sheaf_capacity")
+                if calculate_sheaf_capacity_size is None:
                     return "Unknown"
-                kallsyms = __gef_command_instances__["ksymaddr-remote"].kallsyms
-                for i, (addr, _, _) in enumerate(kallsyms):
-                    if addr == calculate_sheaf_capacity:
-                        next_func = kallsyms[i + 1][0]
-                        calculate_sheaf_capacity_size = next_func - calculate_sheaf_capacity
-                        if calculate_sheaf_capacity_size <= 0x20:
-                            return "SLUB_TINY"
-                        else:
-                            return "SLUB"
-                return "SLUB" # default
+                if calculate_sheaf_capacity_size <= 0x20:
+                    return "SLUB_TINY"
+                else:
+                    return "SLUB"
 
         # care for both cache_reap and cache_reap.cold
         if gdb.execute("ksymaddr-remote --quiet --no-pager cache_reap", to_string=True):
@@ -72166,6 +72175,18 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
             current += current_arch.ptrsize
             return desc
 
+        kversion = Kernel.kernel_version()
+        if "7.0" <= kversion:
+            pmsg_load_execution_ctx_size = Kernel.get_func_size_kallsyms("pmsg_load_execution_ctx")
+            if pmsg_load_execution_ctx_size and pmsg_load_execution_ctx_size >= 0x20:
+                # CONFIG_PRINTK_EXECUTION_CTX=y
+                sizeof_info = align_to_ptrsize(8 + 8 + 2 + 1 + 1 + 4 + 4 + 16 + 16 + 48)
+            else:
+                # CONFIG_PRINTK_EXECUTION_CTX=n
+                sizeof_info = 8 + 8 + 2 + 1 + 1 + 4 + 16 + 48
+        else:
+            sizeof_info = 8 + 8 + 2 + 1 + 1 + 4 + 16 + 48
+
         def read_info_i(infos_addr, seq):
             """
             struct printk_info {
@@ -72176,10 +72197,16 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
                 u8 flags:5;     /* internal record flags */
                 u8 level:3;     /* syslog level */
                 u32 caller_id;  /* thread id or processor id */
-                struct dev_printk_info dev_info;
+            #ifdef CONFIG_PRINTK_EXECUTION_CTX // v7.0~
+                u32 caller_id2; /* caller_id complement */
+                char comm[TASK_COMM_LEN]; // 16
+            #endif
+                struct dev_printk_info {
+                    char subsystem[PRINTK_INFO_SUBSYSTEM_LEN]; // 16
+                    char device[PRINTK_INFO_DEVICE_LEN]; // 48
+                } dev_info;
             };
             """
-            sizeof_info = 8 + 8 + 2 + 1 + 1 + 4 + 16 + 48
             current = infos_addr + sizeof_info * seq
             if not is_valid_addr(current):
                 return False
@@ -72212,6 +72239,11 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
 
         info("Wait for reading records...")
 
+        DESC_RESERVED = 0
+        DESC_COMMITTED = 1
+        DESC_FINALIZED = 2
+        DESC_REUSABLE = 3
+
         seq = 0
         while True:
             # prb_read
@@ -72227,16 +72259,21 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
             # - Determine whether it is the last entry based on the state and seq values.
             if (id_based_desc["state_var"] & state_var_id_mask) != id: # desc_miss
                 break
-            if get_desc_state(id_based_desc["state_var"]) in [0, 1]: # desc_reserved, desc_commited
+            state = get_desc_state(id_based_desc["state_var"])
+            if state == DESC_RESERVED:
+                break
+            if state == DESC_REUSABLE:
+                if (id_based_desc["text_blk_lpos"]["begin"], id_based_desc["text_blk_lpos"]["next"]) == (1, 1):
+                    break
+                seq += 1
+                continue
+            if state not in (DESC_COMMITTED, DESC_FINALIZED):
                 break
             if id_based_info["seq"] != seq:
                 if seq == 0:
                     # ring buffer is already looping
                     seq = id_based_info["seq"]
                 else:
-                    break
-            if get_desc_state(id_based_desc["state_var"]) == 2: # desc_reusable
-                if (id_based_desc["text_blk_lpos"]["begin"], id_based_desc["text_blk_lpos"]["next"]) == (1, 1):
                     break
 
             # copy_data, get_data
