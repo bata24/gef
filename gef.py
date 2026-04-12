@@ -58085,6 +58085,8 @@ class KernelAddressHeuristicFinder:
                     for x in g:
                         # There are cases where init_pid_ns is falsely detected as init_task.
                         # The initial value of kref is 2, so exclude this.
+                        if not is_valid_addr(x):
+                            continue
                         if read_int_from_memory(x) == 2:
                             continue
                         return x
@@ -64774,6 +64776,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             struct files_struct *files;
         #ifdef CONFIG_IO_URING
             struct io_uring_task *io_uring;
+            struct io_restriction *io_uring_restrict; // v7.0~
         #endif
             struct nsproxy *nsproxy;
             struct signal_struct *signal;
@@ -64791,13 +64794,20 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             pass
 
         # slow path
-        offset_nsproxy = offset_files + current_arch.ptrsize
+        kversion = Kernel.kernel_version()
+        if kversion is None:
+            return None
+        offset_nsproxy = offset_files + current_arch.ptrsize # or io_uring
         v = read_int_from_memory(task_addr + offset_nsproxy + current_arch.ptrsize * 3) # blocked
         if not is_valid_addr(v):
             # CONFIG_IO_URING=n
             return offset_nsproxy
         # CONFIG_IO_URING=y
-        return offset_nsproxy + current_arch.ptrsize
+        if kversion < "7.0":
+            offset_nsproxy += current_arch.ptrsize
+        else:
+            offset_nsproxy += current_arch.ptrsize * 2
+        return offset_nsproxy
 
     def get_offset_sighand(self, task_addr, offset_files):
         """
@@ -64806,6 +64816,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             struct files_struct *files;
         #ifdef CONFIG_IO_URING
             struct io_uring_task *io_uring;
+            struct io_restriction *io_uring_restrict; // v7.0~
         #endif
             struct nsproxy *nsproxy;
             struct signal_struct *signal;
@@ -64823,11 +64834,19 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             pass
 
         # slow path
-        offset_sighand = offset_files + current_arch.ptrsize * 3
-        if not is_valid_addr(read_int_from_memory(task_addr + offset_sighand + current_arch.ptrsize)): # blocked
+        kversion = Kernel.kernel_version()
+        if kversion is None:
+            return None
+        offset_sighand = offset_files + current_arch.ptrsize * 3 # or nsproxy
+        v = read_int_from_memory(task_addr + offset_sighand + current_arch.ptrsize) # blocked
+        if not is_valid_addr(v):
             # CONFIG_IO_URING=n
             return offset_sighand
         # CONFIG_IO_URING=y
+        if kversion < "7.0":
+            offset_sighand += current_arch.ptrsize
+        else:
+            offset_sighand += current_arch.ptrsize * 2
         return offset_sighand + current_arch.ptrsize
 
     def get_offset_action(self, sighand):
