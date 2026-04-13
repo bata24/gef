@@ -71607,29 +71607,29 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
     @staticmethod
     def get_flags_str(flags_value):
         flags_dic = {
-            0x80000000: "IORESOURCE_BUSY",
-            0x40000000: "IORESOURCE_AUTO",
-            0x20000000: "IORESOURCE_UNSET",
-            0x10000000: "IORESOURCE_DISABLED",
-            0x08000000: "IORESOURCE_EXCLUSIVE",
-            0x04000000: "IORESOURCE_SYSRAM_MERGEABLE",
-            0x02000000: "IORESOURCE_SYSRAM_DRIVER_MANAGED",
-            0x01000000: "IORESOURCE_SYSRAM",
-            0x00400000: "IORESOURCE_MUXED",
-            0x00200000: "IORESOURCE_WINDOW",
-            0x00100000: "IORESOURCE_MEM_64",
-            0x00080000: "IORESOURCE_STARTALIGN",
-            0x00040000: "IORESOURCE_SIZEALIGN",
-            0x00020000: "IORESOURCE_SHADOWABLE",
-            0x00010000: "IORESOURCE_RANGELENGTH",
-            0x00008000: "IORESOURCE_CACHEABLE",
-            0x00004000: "IORESOURCE_READONLY",
-            0x00002000: "IORESOURCE_PREFETCH",
-            0x00001000: "IORESOURCE_BUS",
-            0x00000800: "IORESOURCE_DMA",
-            0x00000400: "IORESOURCE_IRQ",
-            0x00000200: "IORESOURCE_MEM",
-            0x00000100: "IORESOURCE_IO",
+            0x8000_0000: "IORESOURCE_BUSY",
+            0x4000_0000: "IORESOURCE_AUTO",
+            0x2000_0000: "IORESOURCE_UNSET",
+            0x1000_0000: "IORESOURCE_DISABLED",
+            0x0800_0000: "IORESOURCE_EXCLUSIVE",
+            0x0400_0000: "IORESOURCE_SYSRAM_MERGEABLE",
+            0x0200_0000: "IORESOURCE_SYSRAM_DRIVER_MANAGED",
+            0x0100_0000: "IORESOURCE_SYSRAM",
+            0x0040_0000: "IORESOURCE_MUXED",
+            0x0020_0000: "IORESOURCE_WINDOW",
+            0x0010_0000: "IORESOURCE_MEM_64",
+            0x0008_0000: "IORESOURCE_STARTALIGN",
+            0x0004_0000: "IORESOURCE_SIZEALIGN",
+            0x0002_0000: "IORESOURCE_SHADOWABLE",
+            0x0001_0000: "IORESOURCE_RANGELENGTH",
+            0x0000_8000: "IORESOURCE_CACHEABLE",
+            0x0000_4000: "IORESOURCE_READONLY",
+            0x0000_2000: "IORESOURCE_PREFETCH",
+            0x0000_1000: "IORESOURCE_BUS",
+            0x0000_0800: "IORESOURCE_DMA",
+            0x0000_0400: "IORESOURCE_IRQ",
+            0x0000_0200: "IORESOURCE_MEM",
+            0x0000_0100: "IORESOURCE_IO",
         }
         flags = []
         for k, v in flags_dic.items():
@@ -114043,36 +114043,136 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
     @staticmethod
     def get_flags_str(flags_value):
-        flags_dic = {
-            0x80000000: "__OBJECT_POISON",
-            0x40000000: "__CMPXCHG_DOUBLE",
-            0x20000000: "SLAB_SKIP_KFENCE",
-            0x10000000: "SLAB_NO_USER_FLAGS",
-            0x08000000: "SLAB_KASAN",
-            0x04000000: "SLAB_ACCOUNT",
-            0x02000000: "SLAB_FAILSLAB",
-            0x01000000: "SLAB_NOTRACK",
-            0x00800000: "SLAB_NOLEAKTRACE",
-            0x00400000: "SLAB_DEBUG_OBJECTS",
-            0x00200000: "SLAB_TRACE",
-            0x00100000: "SLAB_MEM_SPREAD",
-            0x00080000: "SLAB_TYPESAFE_BY_RCU",
-            0x00040000: "SLAB_PANIC",
-            0x00020000: "SLAB_RECLAIM_ACCOUNT",
-            0x00010000: "SLAB_STORE_USER",
-            0x00008000: "SLAB_CACHE_DMA32",
-            0x00004000: "SLAB_CACHE_DMA",
-            0x00002000: "SLAB_HWCACHE_ALIGN",
-            0x00001000: "SLAB_KMALLOC",
-            0x00000800: "SLAB_POISON",
-            0x00000400: "SLAB_RED_ZONE",
-            0x00000200: "SLAB_DEBUG_INITIAL", # kernel < v2.6.22
-            0x00000100: "SLAB_CONSISTENCY_CHECKS",
-        }
+        kversion = Kernel.kernel_version()
+        if kversion < "4.6":
+            flags_dic = {
+                0x8000_0000: "__OBJECT_POISON", # v3.1 <= kernel
+                0x4000_0000: "__CMPXCHG_DOUBLE", # v3.1 <= kernel
+                #0x2000_0000: "",
+                #0x1000_0000: "",
+                #0x0800_0000: "",
+                0x0400_0000: "SLAB_ACCOUNT", # v4.5 <= kernel
+                0x0200_0000: "SLAB_FAILSLAB",
+                0x0100_0000: "SLAB_NOTRACK",
+                0x0080_0000: "SLAB_NOLEAKTRACE",
+                0x0040_0000: "SLAB_DEBUG_OBJECTS",
+                0x0020_0000: "SLAB_TRACE",
+                0x0010_0000: "SLAB_MEM_SPREAD",
+                0x0008_0000: "SLAB_DESTROY_BY_RCU",
+                0x0004_0000: "SLAB_PANIC",
+                0x0002_0000: "SLAB_RECLAIM_ACCOUNT",
+                0x0001_0000: "SLAB_STORE_USER",
+                #0x0000_8000: "",
+                0x0000_4000: "SLAB_CACHE_DMA",
+                0x0000_2000: "SLAB_HWCACHE_ALIGN",
+                #0x0000_1000: "",
+                0x0000_0800: "SLAB_POISON",
+                0x0000_0400: "SLAB_RED_ZONE",
+                0x0000_0200: "SLAB_DEBUG_INITIAL", # kernel < v2.6.22
+                0x0000_0100: "SLAB_DEBUG_FREE",
+            }
+        elif kversion < "4.12":
+            flags_dic = {
+                0x8000_0000: "__OBJECT_POISON",
+                0x4000_0000: "__CMPXCHG_DOUBLE",
+                #0x2000_0000: "",
+                #0x1000_0000: "",
+                0x0800_0000: "SLAB_KASAN", # v4.6 <= kernel
+                0x0400_0000: "SLAB_ACCOUNT",
+                0x0200_0000: "SLAB_FAILSLAB",
+                0x0100_0000: "SLAB_NOTRACK",
+                0x0080_0000: "SLAB_NOLEAKTRACE",
+                0x0040_0000: "SLAB_DEBUG_OBJECTS",
+                0x0020_0000: "SLAB_TRACE",
+                0x0010_0000: "SLAB_MEM_SPREAD",
+                0x0008_0000: "SLAB_DESTROY_BY_RCU",
+                0x0004_0000: "SLAB_PANIC",
+                0x0002_0000: "SLAB_RECLAIM_ACCOUNT",
+                0x0001_0000: "SLAB_STORE_USER",
+                #0x0000_8000: "",
+                0x0000_4000: "SLAB_CACHE_DMA",
+                0x0000_2000: "SLAB_HWCACHE_ALIGN",
+                #0x0000_1000: "",
+                0x0000_0800: "SLAB_POISON",
+                0x0000_0400: "SLAB_RED_ZONE",
+                #0x0000_0200: "",
+                0x0000_0100: "SLAB_CONSISTENCY_CHECKS", # v4.6 <= kernel
+            }
+        elif kversion < "5.19":
+            flags_dic = {
+                0x8000_0000: "__OBJECT_POISON",
+                0x4000_0000: "__CMPXCHG_DOUBLE",
+                #0x2000_0000: "",
+                0x1000_0000: "SLAB_DEACTIVATED", # v5.3 <= kernel < v5.18
+                0x0800_0000: "SLAB_KASAN",
+                0x0400_0000: "SLAB_ACCOUNT",
+                0x0200_0000: "SLAB_FAILSLAB",
+                0x0100_0000: "SLAB_NOTRACK", # kernel < v4.14.21
+                0x0080_0000: "SLAB_NOLEAKTRACE",
+                0x0040_0000: "SLAB_DEBUG_OBJECTS",
+                0x0020_0000: "SLAB_TRACE",
+                0x0010_0000: "SLAB_MEM_SPREAD",
+                0x0008_0000: "SLAB_TYPESAFE_BY_RCU", # v4.12 <= kernel
+                0x0004_0000: "SLAB_PANIC",
+                0x0002_0000: "SLAB_RECLAIM_ACCOUNT",
+                0x0001_0000: "SLAB_STORE_USER",
+                0x0000_8000: "SLAB_CACHE_DMA32", # v4.19.33 <= kernel < v4.20, v5.0 <= kernel
+                0x0000_4000: "SLAB_CACHE_DMA",
+                0x0000_2000: "SLAB_HWCACHE_ALIGN",
+                #0x0000_1000: "",
+                0x0000_0800: "SLAB_POISON",
+                0x0000_0400: "SLAB_RED_ZONE",
+                #0x0000_0200: "",
+                0x0000_0100: "SLAB_CONSISTENCY_CHECKS",
+            }
+        elif kversion < "6.9":
+            flags_dic = {
+                0x8000_0000: "__OBJECT_POISON",
+                0x4000_0000: "__CMPXCHG_DOUBLE",
+                0x2000_0000: "SLAB_SKIP_KFENCE", # v6.1 <= kernel
+                0x1000_0000: "SLAB_NO_USER_FLAGS", # v5.19 <= kernel
+                0x0800_0000: "SLAB_KASAN",
+                0x0400_0000: "SLAB_ACCOUNT",
+                0x0200_0000: "SLAB_FAILSLAB",
+                0x0100_0000: "SLAB_NO_MERGE", # v6.5 <= kernel
+                0x0080_0000: "SLAB_NOLEAKTRACE",
+                0x0040_0000: "SLAB_DEBUG_OBJECTS",
+                0x0020_0000: "SLAB_TRACE",
+                0x0010_0000: "SLAB_MEM_SPREAD",
+                0x0008_0000: "SLAB_TYPESAFE_BY_RCU",
+                0x0004_0000: "SLAB_PANIC",
+                0x0002_0000: "SLAB_RECLAIM_ACCOUNT",
+                0x0001_0000: "SLAB_STORE_USER",
+                0x0000_8000: "SLAB_CACHE_DMA32",
+                0x0000_4000: "SLAB_CACHE_DMA",
+                0x0000_2000: "SLAB_HWCACHE_ALIGN",
+                0x0000_1000: "SKAB_KMALLOC", # v6.1 <= kernel
+                0x0000_0800: "SLAB_POISON",
+                0x0000_0400: "SLAB_RED_ZONE",
+                #0x0000_0200: "",
+                0x0000_0100: "SLAB_CONSISTENCY_CHECKS",
+            }
+        else:
+            flags_dic = {
+                0x0000_0400: "SLAB_TRACE",
+                0x0000_0200: "SLAB_TYPESAFE_BY_RCU",
+                0x0000_0100: "SLAB_PANIC",
+                0x0000_0080: "SLAB_STORE_USER",
+                0x0000_0040: "SLAB_CACHE_DMA32",
+                0x0000_0020: "SLAB_CACHE_DMA",
+                0x0000_0010: "SLAB_HWCACHE_ALIGN",
+                0x0000_0008: "SLAB_KMALLOC",
+                0x0000_0004: "SLAB_POISON",
+                0x0000_0002: "SLAB_RED_ZONE",
+                0x0000_0001: "SLAB_CONSISTENCY_CHECKS",
+            }
         flags = []
+        unparsed_flags = flags_value
         for k, v in flags_dic.items():
             if flags_value & k:
                 flags.append(v)
+                unparsed_flags &= ~k
+        flags.append(hex(unparsed_flags))
 
         flags_str = " | ".join(flags)
         if flags_str == "":
@@ -114411,7 +114511,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         if not is_valid_addr(sheaf["address"]):
             return sheaf
         sheaf["kmem_cache"] = read_int_from_memory(sheaf["address"] + self.slab_sheaf_offset_kmem_cache)
-        assert sheaf["kmem_cache"] == kmem_cache_addr
+        assert sheaf["kmem_cache"] in [0, kmem_cache_addr]
         sheaf["size"] = read_int32_from_memory(sheaf["address"] + self.slab_sheaf_offset_size)
         sheaf["objects"] = []
         for i in range(sheaf["size"]):
@@ -121783,16 +121883,16 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
 
     def get_flags(self, flags_value):
         flags_dic = {
-            0x00000001: "VM_IOREMAP",
-            0x00000002: "VM_ALLOC",
-            0x00000004: "VM_MAP",
-            0x00000008: "VM_USERMAP",
-            0x00000010: "VM_DMA_COHERENT",
-            0x00000020: "VM_UNINITIALIZED",
-            0x00000040: "VM_NO_GUARD",
-            0x00000080: "VM_KASAN",
-            0x00000100: "VM_FLUSH_RESET_PERMS",
-            0x00000200: "VM_MAP_PUT_PAGES",
+            0x0000_0001: "VM_IOREMAP",
+            0x0000_0002: "VM_ALLOC",
+            0x0000_0004: "VM_MAP",
+            0x0000_0008: "VM_USERMAP",
+            0x0000_0010: "VM_DMA_COHERENT",
+            0x0000_0020: "VM_UNINITIALIZED",
+            0x0000_0040: "VM_NO_GUARD",
+            0x0000_0080: "VM_KASAN",
+            0x0000_0100: "VM_FLUSH_RESET_PERMS",
+            0x0000_0200: "VM_MAP_PUT_PAGES",
         }
         flags = []
         for k, v in flags_dic.items():
