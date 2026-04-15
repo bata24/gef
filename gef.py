@@ -99563,33 +99563,25 @@ class Hash:
         word_mask = 0xffff_ffff
         q_const_a = 0xaaaa_aaaa
         q_const_b = 0x5555_5555
-        rot1 = [4, 8, 13, 17, 22, 24, 29]
-        rot2 = [5, 9, 11, 15, 20, 25, 27]
+        rot1 = (4, 8, 13, 17, 22, 24, 29)
+        rot2 = (5, 9, 11, 15, 20, 25, 27)
         word_format = "I"
-        init_pipe = [
-            0x0001_0203, 0x0405_0607, 0x0809_0a0b, 0x0c0d_0e0f,
-            0x1011_1213, 0x1415_1617, 0x1819_1a1b, 0x1c1d_1e1f,
-            0x2021_2223, 0x2425_2627, 0x2829_2a2b, 0x2c2d_2e2f,
-            0x3031_3233, 0x2435_3637, 0x3839_3a3b, 0x3c3d_3e3f,
-            0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
-            0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
-            0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
-            0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
-        ]
+        init_pipe = (
+            0x0001_0203, 0x0405_0607, 0x0809_0a0b, 0x0c0d_0e0f, 0x1011_1213, 0x1415_1617, 0x1819_1a1b, 0x1c1d_1e1f,
+            0x2021_2223, 0x2425_2627, 0x2829_2a2b, 0x2c2d_2e2f, 0x3031_3233, 0x2435_3637, 0x3839_3a3b, 0x3c3d_3e3f,
+            0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
+            0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
+        )
         out_offset_words = 9
 
     class EDONR256(EDONR224):
         digest_size = 32
-        init_pipe = [
-            0x4041_4243, 0x4445_4647, 0x4849_4a4b, 0x4c4d_4e4f,
-            0x5051_5253, 0x5455_5657, 0x5859_5a5b, 0x5c5d_5e5f,
-            0x6061_6263, 0x6465_6667, 0x6869_6a6b, 0x6c6d_6e6f,
-            0x7071_7273, 0x7475_7677, 0x7879_7a7b, 0x7c7d_7e7f,
-            0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
-            0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
-            0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
-            0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
-        ]
+        init_pipe = (
+            0x4041_4243, 0x4445_4647, 0x4849_4a4b, 0x4c4d_4e4f, 0x5051_5253, 0x5455_5657, 0x5859_5a5b, 0x5c5d_5e5f,
+            0x6061_6263, 0x6465_6667, 0x6869_6a6b, 0x6c6d_6e6f, 0x7071_7273, 0x7475_7677, 0x7879_7a7b, 0x7c7d_7e7f,
+            0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
+            0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
+        )
         out_offset_words = 8
 
     class EDONR384(EDONRBase):
@@ -99599,10 +99591,10 @@ class Hash:
         word_mask = 0xffff_ffff_ffff_ffff
         q_const_a = 0xaaaa_aaaa_aaaa_aaaa
         q_const_b = 0x5555_5555_5555_5555
-        rot1 = [5, 15, 22, 31, 40, 50, 59]
-        rot2 = [10, 19, 29, 36, 44, 48, 55]
+        rot1 = (5, 15, 22, 31, 40, 50, 59)
+        rot2 = (10, 19, 29, 36, 44, 48, 55)
         word_format = "Q"
-        init_pipe = [
+        init_pipe = (
             0x0001_0203_0405_0607, 0x0809_0a0b_0c0d_0e0f, 0x1011_1213_1415_1617, 0x1819_1a1b_1c1d_1e1f,
             0x2021_2223_2425_2627, 0x2829_2a2b_2c2d_2e2f, 0x3031_3233_2435_3637, 0x3839_3a3b_3c3d_3e3f,
             0x4041_4243_4445_4647, 0x4849_4a4b_4c4d_4e4f, 0x5051_5253_5455_5657, 0x5859_5a5b_5c5d_5e5f,
@@ -99611,12 +99603,12 @@ class Hash:
             0x0000_0000_0000_0000, 0x0000_0000_0000_0000, 0x0000_0000_0000_0000, 0x0000_0000_0000_0000,
             0x0000_0000_0000_0000, 0x0000_0000_0000_0000, 0x0000_0000_0000_0000, 0x0000_0000_0000_0000,
             0x0000_0000_0000_0000, 0x0000_0000_0000_0000, 0x0000_0000_0000_0000, 0x0000_0000_0000_0000,
-        ]
+        )
         out_offset_words = 10
 
     class EDONR512(EDONR384):
         digest_size = 64
-        init_pipe = [
+        init_pipe = (
             0x8081_8283_8485_8687, 0x8889_8a8b_8c8d_8e8f, 0x9091_9293_9495_9697, 0x9899_9a9b_9c9d_9e9f,
             0xa0a1_a2a3_a4a5_a6a7, 0xa8a9_aaab_acad_aeaf, 0xb0b1_b2b3_b4b5_b6b7, 0xb8b9_babb_bcbd_bebf,
             0xc0c1_c2c3_c4c5_c6c7, 0xc8c9_cacb_cccd_cecf, 0xd0d1_d2d3_d4d5_d6d7, 0xd8d9_dadb_dcdd_dedf,
@@ -99625,7 +99617,7 @@ class Hash:
             0x0000_0000_0000_0000, 0x0000_0000_0000_0000, 0x0000_0000_0000_0000, 0x0000_0000_0000_0000,
             0x0000_0000_0000_0000, 0x0000_0000_0000_0000, 0x0000_0000_0000_0000, 0x0000_0000_0000_0000,
             0x0000_0000_0000_0000, 0x0000_0000_0000_0000, 0x0000_0000_0000_0000, 0x0000_0000_0000_0000,
-        ]
+        )
         out_offset_words = 8
 
     class EnRUPTBase:
@@ -99682,53 +99674,41 @@ class Hash:
         def hexdigest(self):
             return self.digest().hex()
 
-        def rotr(self, x, n):
-            return ((x >> n) | (x << (self.word_bits - n))) & self.word_mask
-
-        def ir1(self):
-            r = self.r
-            h = self.state_words
-            p = self.parallelism
-            a = (r // p * p + (r + 1) % p) % h
-            b = (r + 2 * p) % h
-            f = self.rotr(
-                ((self.x[a] * 2) ^ self.x[b] ^ self.d[r % p] ^ r) & self.word_mask,
-                self.word_bits // 4,
-            )
-            f = (f * 9) & self.word_mask
-            self.x[(r + p) % h] ^= f
-            self.d[r % p] ^= f ^ self.x[(h * p // 2 + p % 2 + r) % h]
-            self.r = (r + 1) & self.word_mask
-            return
-
-        def enr2s(self, word):
-            for _ in range(2 * self.security_parameter):
-                self.ir1()
-            self.d[self.parallelism - 1] ^= word
-            return
-
         def absorb_word(self, word):
-            self.enr2s(word)
+
+            def ror(x, n):
+                return ((x >> n) | (x << (self.word_bits - n))) & self.word_mask
+
+            for _ in range(2 * self.security_parameter):
+                r = self.r
+                h = self.state_words
+                p = self.parallelism
+                a = (r // p * p + (r + 1) % p) % h
+                b = (r + 2 * p) % h
+                f = ror(
+                    ((self.x[a] * 2) ^ self.x[b] ^ self.d[r % p] ^ r) & self.word_mask,
+                    self.word_bits // 4,
+                )
+                f = (f * 9) & self.word_mask
+                self.x[(r + p) % h] ^= f
+                self.d[r % p] ^= f ^ self.x[(h * p // 2 + p % 2 + r) % h]
+                self.r = (r + 1) & self.word_mask
+            self.d[self.parallelism - 1] ^= word
             return
 
         def finalize(self):
             if self.finalized:
                 return
-
             padded = bytearray(self.buf)
             padded.append(0x80)
             while len(padded) % self.word_bytes != 0:
                 padded.append(0x00)
-
             for i in range(0, len(padded), self.word_bytes):
                 word = int.from_bytes(padded[i:i + self.word_bytes], "big")
                 self.absorb_word(word)
-
             self.absorb_word(self.hashbitlen)
-
             for _ in range(self.state_words):
                 self.absorb_word(0)
-
             self.buf.clear()
             self.finalized = True
             return
@@ -99737,11 +99717,9 @@ class Hash:
             out = bytearray()
             full_words = self.hashbitlen // self.word_bits
             remain_bits = self.hashbitlen % self.word_bits
-
             for _ in range(full_words):
                 self.absorb_word(0)
                 out.extend(self.d[self.parallelism - 1].to_bytes(self.word_bytes, "big"))
-
             if remain_bits:
                 self.absorb_word(0)
                 out.extend(
@@ -99749,7 +99727,6 @@ class Hash:
                         : (remain_bits + 7) // 8
                     ]
                 )
-
             return bytes(out)
 
     class EnRUPT224(EnRUPTBase):
@@ -99769,30 +99746,352 @@ class Hash:
         hashbitlen = 512
 
     class ESSENCEBase:
-        md_block_size = 1_048_576
+        md_block_size = 0x10_0000
         compress_steps = 32
         hash_tree_level = 0
         organizational_small_constant = 0xb7e1_5162
         organizational_big_constant = 0x8aed_2a6a_bf71_5880
-
-        expansion_of_pi_32 = [
+        expansion_of_pi_32 = (
             0x85a3_08d3, 0x243f_6a88, 0x0370_7344, 0x1319_8a2e,
             0x299f_31d0, 0xa409_3822, 0xec4e_6c89, 0x082e_fa98,
-        ]
-
-        expansion_of_pi_64 = [
+        )
+        expansion_of_pi_64 = (
             0x243f_6a88_85a3_08d3, 0x1319_8a2e_0370_7344, 0xa409_3822_299f_31d0, 0x082e_fa98_ec4e_6c89,
             0x4528_21e6_38d0_1377, 0xbe54_66cf_34e9_0c6c, 0xc0ac_29b7_c97c_50dd, 0x3f84_d5b5_b547_0917,
-        ]
+        )
+        C_TEMPLATE = r"""
+        #include <stdint.h>
 
-        l32_table = None
-        l64_table = None
+        static uint32_t essence_load_le32(const uint8_t *p)
+        {
+            return ((uint32_t)p[0])
+                | ((uint32_t)p[1] << 8)
+                | ((uint32_t)p[2] << 16)
+                | ((uint32_t)p[3] << 24);
+        }
+
+        static uint64_t essence_load_le64(const uint8_t *p)
+        {
+            return ((uint64_t)p[0])
+                | ((uint64_t)p[1] << 8)
+                | ((uint64_t)p[2] << 16)
+                | ((uint64_t)p[3] << 24)
+                | ((uint64_t)p[4] << 32)
+                | ((uint64_t)p[5] << 40)
+                | ((uint64_t)p[6] << 48)
+                | ((uint64_t)p[7] << 56);
+        }
+
+        static uint32_t essence_l32(uint32_t value, const uint32_t *table)
+        {
+            int i;
+            for (i = 0; i < 4; i++) {
+                value = table[value >> 24] ^ (value << 8);
+            }
+            return value;
+        }
+
+        static uint64_t essence_l64(uint64_t value, const uint64_t *table)
+        {
+            int i;
+            for (i = 0; i < 8; i++) {
+                value = table[value >> 56] ^ (value << 8);
+            }
+            return value;
+        }
+
+        static uint32_t essence_f32(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g)
+        {
+            uint32_t na = ~a;
+            uint32_t nb = ~b;
+            uint32_t nc = ~c;
+            uint32_t nd = ~d;
+            uint32_t ne = ~e;
+            uint32_t nf = ~f;
+            uint32_t ng = ~g;
+
+            return (
+                (a & nb & c & d & e & f & ng)
+                ^ (a & b & c & e & nf & g)
+                ^ (a & b & d & ne & g)
+                ^ (a & b & e & f & g)
+                ^ (a & nb & d & e & f)
+                ^ (a & c & e & f & g)
+                ^ (a & nc & d & f & ng)
+                ^ (a & d & e & nf & g)
+                ^ (b & c & d & f & g)
+                ^ (b & d & e & nf & g)
+                ^ (c & d & e & f & ng)
+                ^ (a & b & nc & g)
+                ^ (na & b & c & nf)
+                ^ (b & c & ne & g)
+                ^ (b & nc & d & e)
+                ^ (a & b & f)
+                ^ (a & nb & e)
+                ^ (a & c & g)
+                ^ (a & d & ng)
+                ^ (a & e & g)
+                ^ (na & e & f)
+                ^ (b & d & nf)
+                ^ (b & e & g)
+                ^ (nb & f & g)
+                ^ (c & nd & ne)
+                ^ (nc & d & f)
+                ^ (d & e & f)
+                ^ (d & ne & g)
+                ^ (d & f & g)
+                ^ na
+                ^ b
+                ^ f
+            );
+        }
+
+        static uint64_t essence_f64(uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e, uint64_t f, uint64_t g)
+        {
+            uint64_t na = ~a;
+            uint64_t nb = ~b;
+            uint64_t nc = ~c;
+            uint64_t nd = ~d;
+            uint64_t ne = ~e;
+            uint64_t nf = ~f;
+            uint64_t ng = ~g;
+
+            return (
+                (a & nb & c & d & e & f & ng)
+                ^ (a & b & c & e & nf & g)
+                ^ (a & b & d & ne & g)
+                ^ (a & b & e & f & g)
+                ^ (a & nb & d & e & f)
+                ^ (a & c & e & f & g)
+                ^ (a & nc & d & f & ng)
+                ^ (a & d & e & nf & g)
+                ^ (b & c & d & f & g)
+                ^ (b & d & e & nf & g)
+                ^ (c & d & e & f & ng)
+                ^ (a & b & nc & g)
+                ^ (na & b & c & nf)
+                ^ (b & c & ne & g)
+                ^ (b & nc & d & e)
+                ^ (a & b & f)
+                ^ (a & nb & e)
+                ^ (a & c & g)
+                ^ (a & d & ng)
+                ^ (a & e & g)
+                ^ (na & e & f)
+                ^ (b & d & nf)
+                ^ (b & e & g)
+                ^ (nb & f & g)
+                ^ (c & nd & ne)
+                ^ (nc & d & f)
+                ^ (d & e & f)
+                ^ (d & ne & g)
+                ^ (d & f & g)
+                ^ na
+                ^ b
+                ^ f
+            );
+        }
+
+        void essence_compress_32(uint32_t *chain_vars, const uint8_t *block, int compress_steps, const uint32_t *l_table)
+        {
+            uint32_t k0 = essence_load_le32(block + 0);
+            uint32_t k1 = essence_load_le32(block + 4);
+            uint32_t k2 = essence_load_le32(block + 8);
+            uint32_t k3 = essence_load_le32(block + 12);
+            uint32_t k4 = essence_load_le32(block + 16);
+            uint32_t k5 = essence_load_le32(block + 20);
+            uint32_t k6 = essence_load_le32(block + 24);
+            uint32_t k7 = essence_load_le32(block + 28);
+            uint32_t r0 = chain_vars[0];
+            uint32_t r1 = chain_vars[1];
+            uint32_t r2 = chain_vars[2];
+            uint32_t r3 = chain_vars[3];
+            uint32_t r4 = chain_vars[4];
+            uint32_t r5 = chain_vars[5];
+            uint32_t r6 = chain_vars[6];
+            uint32_t r7 = chain_vars[7];
+            uint32_t r0_orig = r0;
+            uint32_t r1_orig = r1;
+            uint32_t r2_orig = r2;
+            uint32_t r3_orig = r3;
+            uint32_t r4_orig = r4;
+            uint32_t r5_orig = r5;
+            uint32_t r6_orig = r6;
+            uint32_t r7_orig = r7;
+            int i;
+
+            for (i = 0; i < compress_steps; i++) {
+                uint32_t tmp_r = essence_l32(r0, l_table);
+                uint32_t tmp_k = essence_l32(k0, l_table);
+                uint32_t f_r = essence_f32(r6, r5, r4, r3, r2, r1, r0);
+                uint32_t f_k = essence_f32(k6, k5, k4, k3, k2, k1, k0);
+
+                tmp_r ^= f_r ^ r7 ^ k7;
+                tmp_k ^= f_k ^ k7;
+                r7 = r6; k7 = k6;
+                r6 = r5; k6 = k5;
+                r5 = r4; k5 = k4;
+                r4 = r3; k4 = k3;
+                r3 = r2; k3 = k2;
+                r2 = r1; k2 = k1;
+                r1 = r0; k1 = k0;
+                r0 = tmp_r; k0 = tmp_k;
+            }
+
+            chain_vars[0] = r0 ^ r0_orig;
+            chain_vars[1] = r1 ^ r1_orig;
+            chain_vars[2] = r2 ^ r2_orig;
+            chain_vars[3] = r3 ^ r3_orig;
+            chain_vars[4] = r4 ^ r4_orig;
+            chain_vars[5] = r5 ^ r5_orig;
+            chain_vars[6] = r6 ^ r6_orig;
+            chain_vars[7] = r7 ^ r7_orig;
+            return;
+        }
+
+        void essence_compress_64(uint64_t *chain_vars, const uint8_t *block, int compress_steps, const uint64_t *l_table)
+        {
+            uint64_t k0 = essence_load_le64(block + 0);
+            uint64_t k1 = essence_load_le64(block + 8);
+            uint64_t k2 = essence_load_le64(block + 16);
+            uint64_t k3 = essence_load_le64(block + 24);
+            uint64_t k4 = essence_load_le64(block + 32);
+            uint64_t k5 = essence_load_le64(block + 40);
+            uint64_t k6 = essence_load_le64(block + 48);
+            uint64_t k7 = essence_load_le64(block + 56);
+            uint64_t r0 = chain_vars[0];
+            uint64_t r1 = chain_vars[1];
+            uint64_t r2 = chain_vars[2];
+            uint64_t r3 = chain_vars[3];
+            uint64_t r4 = chain_vars[4];
+            uint64_t r5 = chain_vars[5];
+            uint64_t r6 = chain_vars[6];
+            uint64_t r7 = chain_vars[7];
+            uint64_t r0_orig = r0;
+            uint64_t r1_orig = r1;
+            uint64_t r2_orig = r2;
+            uint64_t r3_orig = r3;
+            uint64_t r4_orig = r4;
+            uint64_t r5_orig = r5;
+            uint64_t r6_orig = r6;
+            uint64_t r7_orig = r7;
+            int i;
+
+            for (i = 0; i < compress_steps; i++) {
+                uint64_t tmp_r = essence_l64(r0, l_table);
+                uint64_t tmp_k = essence_l64(k0, l_table);
+                uint64_t f_r = essence_f64(r6, r5, r4, r3, r2, r1, r0);
+                uint64_t f_k = essence_f64(k6, k5, k4, k3, k2, k1, k0);
+
+                tmp_r ^= f_r ^ r7 ^ k7;
+                tmp_k ^= f_k ^ k7;
+                r7 = r6; k7 = k6;
+                r6 = r5; k6 = k5;
+                r5 = r4; k5 = k4;
+                r4 = r3; k4 = k3;
+                r3 = r2; k3 = k2;
+                r2 = r1; k2 = k1;
+                r1 = r0; k1 = k0;
+                r0 = tmp_r; k0 = tmp_k;
+            }
+
+            chain_vars[0] = r0 ^ r0_orig;
+            chain_vars[1] = r1 ^ r1_orig;
+            chain_vars[2] = r2 ^ r2_orig;
+            chain_vars[3] = r3 ^ r3_orig;
+            chain_vars[4] = r4 ^ r4_orig;
+            chain_vars[5] = r5 ^ r5_orig;
+            chain_vars[6] = r6 ^ r6_orig;
+            chain_vars[7] = r7 ^ r7_orig;
+            return;
+        }
+        """
+        DEF_TEMPLATE = r"""
+        void essence_compress_32(uint32_t *chain_vars, const uint8_t *block, int compress_steps, const uint32_t *l_table);
+        void essence_compress_64(uint64_t *chain_vars, const uint8_t *block, int compress_steps, const uint64_t *l_table);
+        """
+
+        def init_cffi_backend(self):
+            try:
+                import cffi
+                import warnings
+            except ImportError:
+                self.USE_CFFI = False
+                return
+
+            key = self.__class__
+            base_class = Hash.ESSENCEBase
+
+            if not hasattr(base_class, "cffi_cache"):
+                base_class.cffi_cache = {}
+
+            # fast return
+            if key in base_class.cffi_cache:
+                self.cffi = base_class.cffi_cache[key]
+                self.USE_CFFI = True
+                return
+
+            # ffi, lib
+            if base_class in base_class.cffi_cache:
+                ffi, lib = base_class.cffi_cache[base_class]
+            else:
+                try:
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings(
+                            "ignore",
+                            message=r"reimporting '_cffi__.*' might overwrite older definitions",
+                            category=UserWarning,
+                            module=r"cffi\.vengine_cpy",
+                        )
+                        ffi = cffi.FFI()
+                        ffi.cdef(base_class.DEF_TEMPLATE)
+                        lib = ffi.verify(base_class.C_TEMPLATE, extra_compile_args=["-O2"])
+                    base_class.cffi_cache[base_class] = (ffi, lib)
+                except Exception:
+                    self.USE_CFFI = False
+                    return
+
+            # Different for each class
+            def pack_u32(seq):
+                buf = ffi.new("uint32_t[]", len(seq))
+                for i, v in enumerate(seq):
+                    buf[i] = v & 0xffff_ffff
+                return buf
+
+            def pack_u64(seq):
+                buf = ffi.new("uint64_t[]", len(seq))
+                for i, v in enumerate(seq):
+                    buf[i] = v & 0xffff_ffff_ffff_ffff
+                return buf
+
+            try:
+                if self.word_bits == 64:
+                    l_table = pack_u64(self.l64_table)
+                else:
+                    l_table = pack_u32(self.l32_table)
+            except Exception:
+                self.USE_CFFI = False
+                return
+
+            # add to cache
+            cffi_obj = collections.namedtuple("CFFI", "ffi lib l_table")(
+                ffi, lib, l_table,
+            )
+            self.cffi = base_class.cffi_cache[key] = cffi_obj
+            self.USE_CFFI = True
+            return
 
         def __init__(self, data=b""):
-            self.word_bits = 32 if self.block_size == 32 else 64
+            if self.block_size == 32:
+                self.word_bits = 32
+            else:
+                self.word_bits = 64
             self.word_mask = (1 << self.word_bits) - 1
             self.chunk_size = self.block_size
-            self.running_hash = self.init_running_hash()
+            if self.word_bits == 64:
+                self.running_hash = list(self.expansion_of_pi_64)
+            else:
+                self.running_hash = list(self.expansion_of_pi_32)
             self.mdbiv_init = self.init_mdbiv()
             self.chain_vars = [0] * 8
             self.buf = bytearray()
@@ -99801,42 +100100,38 @@ class Hash:
             self.within_md_block = False
             self.current_md_block_datalen = 0
             self.ensure_tables()
+            self.init_cffi_backend()
             if data:
                 self.update(data)
             return
 
         @classmethod
         def ensure_tables(cls):
-            if cls.l32_table is None:
-                cls.l32_table = cls.generate_l_table(32, 0x814a_3b35)
-            if cls.l64_table is None:
-                cls.l64_table = cls.generate_l_table(64, 0xb0a6_5313_e696_6997)
+
+            def generate_l_table(bits, poly):
+                mask = (1 << bits) - 1
+                top = 1 << (bits - 1)
+                shift = bits - 8
+                table = []
+                value = 0
+                while value < 256:
+                    x = value << shift
+                    i = 0
+                    while i < 8:
+                        if x & top:
+                            x = ((x << 1) & mask) ^ poly
+                        else:
+                            x = (x << 1) & mask
+                        i += 1
+                    table.append(x)
+                    value += 1
+                return table
+
+            if hasattr(Hash.ESSENCEBase, "l32_table"):
+                return
+            Hash.ESSENCEBase.l32_table = generate_l_table(32, 0x814a_3b35)
+            Hash.ESSENCEBase.l64_table = generate_l_table(64, 0xb0a6_5313_e696_6997)
             return
-
-        @classmethod
-        def generate_l_table(cls, bits, poly):
-            mask = (1 << bits) - 1
-            top = 1 << (bits - 1)
-            shift = bits - 8
-            table = []
-            value = 0
-            while value < 256:
-                x = value << shift
-                i = 0
-                while i < 8:
-                    if x & top:
-                        x = ((x << 1) & mask) ^ poly
-                    else:
-                        x = (x << 1) & mask
-                    i += 1
-                table.append(x)
-                value += 1
-            return table
-
-        def init_running_hash(self):
-            if self.word_bits == 64:
-                return list(self.expansion_of_pi_64)
-            return list(self.expansion_of_pi_32)
 
         def init_mdbiv(self):
             if self.word_bits == 64:
@@ -99853,18 +100148,19 @@ class Hash:
                     self.expansion_of_pi_64[6],
                     self.expansion_of_pi_64[7],
                 ]
-            return [
-                0,
-                0,
-                self.md_block_size & 0xffff_ffff,
-                (self.md_block_size >> 32) & 0xffff_ffff,
-                (self.hashbitlen & 0xffff)
-                | (self.compress_steps << 16)
-                | (self.hash_tree_level << 24),
-                self.organizational_small_constant,
-                self.organizational_big_constant & 0xffff_ffff,
-                (self.organizational_big_constant >> 32) & 0xffff_ffff,
-            ]
+            else:
+                return [
+                    0,
+                    0,
+                    self.md_block_size & 0xffff_ffff,
+                    (self.md_block_size >> 32) & 0xffff_ffff,
+                    (self.hashbitlen & 0xffff)
+                    | (self.compress_steps << 16)
+                    | (self.hash_tree_level << 24),
+                    self.organizational_small_constant,
+                    self.organizational_big_constant & 0xffff_ffff,
+                    (self.organizational_big_constant >> 32) & 0xffff_ffff,
+                ]
 
         def copy(self):
             other = self.__class__()
@@ -99878,17 +100174,12 @@ class Hash:
             other.current_md_block_datalen = self.current_md_block_datalen
             return other
 
-        def normalize_data(self, data):
+        def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            return bytes(data)
+            data = bytes(data)
 
-        def update(self, data):
-            data = self.normalize_data(data)
-            return self.update_bits(data, len(data) * 8)
-
-        def update_bits(self, data, databitlen):
-            data = self.normalize_data(data)
+            databitlen = len(data) * 8
             if databitlen < 0:
                 raise ValueError("databitlen must be >= 0")
 
@@ -99902,11 +100193,21 @@ class Hash:
             if (self.buf_bitlen % 8) != 0:
                 raise ValueError("cannot append after non-byte-aligned update")
 
+            def append_partial(data, databitlen):
+                full_bytes = databitlen >> 3
+                tail_bits = databitlen & 7
+                if full_bytes > 0:
+                    self.buf.extend(data[:full_bytes])
+                if tail_bits != 0:
+                    self.buf.append(data[full_bytes] & (0xff << (8 - tail_bits)))
+                self.buf_bitlen += databitlen
+                return
+
             chunk_bits = self.chunk_size * 8
             offset = 0
 
             if (self.buf_bitlen + databitlen) < chunk_bits:
-                self.append_partial(data[:data_bytelen], databitlen)
+                append_partial(data[:data_bytelen], databitlen)
                 return self
 
             if self.buf_bitlen > 0:
@@ -99939,15 +100240,13 @@ class Hash:
 
             return self
 
-        def append_partial(self, data, databitlen):
-            full_bytes = databitlen >> 3
-            tail_bits = databitlen & 7
-            if full_bytes > 0:
-                self.buf.extend(data[:full_bytes])
-            if tail_bits != 0:
-                self.buf.append(data[full_bytes] & (0xff << (8 - tail_bits)))
-            self.buf_bitlen += databitlen
-            return
+        def digest(self):
+            other = self.copy()
+            other.finalize()
+            return other.output_bytes()
+
+        def hexdigest(self):
+            return self.digest().hex()
 
         def init_chain_vars(self):
             block_number = (self.last_md_block_number + 1) & 0xffff_ffff_ffff_ffff
@@ -99994,69 +100293,24 @@ class Hash:
                     out.extend(value.to_bytes(4, "little"))
             return bytes(out)
 
-        def l_func(self, value):
-            if self.word_bits == 64:
-                table = self.l64_table
-                shift = 56
-                count = 8
-            else:
-                table = self.l32_table
-                shift = 24
-                count = 4
-
-            i = 0
-            while i < count:
-                value = table[value >> shift] ^ ((value << 8) & self.word_mask)
-                i += 1
-            return value
-
-        def f_func(self, a, b, c, d, e, f, g):
-            m = self.word_mask
-            na = a ^ m
-            nb = b ^ m
-            nc = c ^ m
-            nd = d ^ m  # codespell:ignore
-            ne = e ^ m
-            nf = f ^ m
-            ng = g ^ m
-
-            result = (
-                (a & nb & c & d & e & f & ng)
-                ^ (a & b & c & e & nf & g)
-                ^ (a & b & d & ne & g)
-                ^ (a & b & e & f & g)
-                ^ (a & nb & d & e & f)
-                ^ (a & c & e & f & g)
-                ^ (a & nc & d & f & ng)
-                ^ (a & d & e & nf & g)
-                ^ (b & c & d & f & g)
-                ^ (b & d & e & nf & g)
-                ^ (c & d & e & f & ng)
-                ^ (a & b & nc & g)
-                ^ (na & b & c & nf)
-                ^ (b & c & ne & g)
-                ^ (b & nc & d & e)
-                ^ (a & b & f)
-                ^ (a & nb & e)
-                ^ (a & c & g)
-                ^ (a & d & ng)
-                ^ (a & e & g)
-                ^ (na & e & f)
-                ^ (b & d & nf)
-                ^ (b & e & g)
-                ^ (nb & f & g)
-                ^ (c & nd & ne)  # codespell:ignore
-                ^ (nc & d & f)
-                ^ (d & e & f)
-                ^ (d & ne & g)
-                ^ (d & f & g)
-                ^ na
-                ^ b
-                ^ f
-            )
-            return result & m
-
         def compress_words(self, chain_vars, block):
+            if self.USE_CFFI:
+                ffi = self.cffi.ffi
+                c_block = ffi.new("uint8_t[]", bytes(block))
+                if self.word_bits == 64:
+                    c_chain_vars = ffi.new("uint64_t[8]")
+                    for i, value in enumerate(chain_vars):
+                        c_chain_vars[i] = value & 0xffff_ffff_ffff_ffff
+                    self.cffi.lib.essence_compress_64(c_chain_vars, c_block, self.compress_steps, self.cffi.l_table)
+                else:
+                    c_chain_vars = ffi.new("uint32_t[8]")
+                    for i, value in enumerate(chain_vars):
+                        c_chain_vars[i] = value & 0xffff_ffff
+                    self.cffi.lib.essence_compress_32(c_chain_vars, c_block, self.compress_steps, self.cffi.l_table)
+                for i in range(8):
+                    chain_vars[i] = int(c_chain_vars[i])
+                return
+
             if self.word_bits == 64:
                 k0, k1, k2, k3, k4, k5, k6, k7 = struct.unpack("<8Q", block)
             else:
@@ -100072,61 +100326,110 @@ class Hash:
             r6_orig = r6
             r7_orig = r7
 
+            def l_func(value):
+                if self.word_bits == 64:
+                    table = self.l64_table
+                    shift = 56
+                    count = 8
+                else:
+                    table = self.l32_table
+                    shift = 24
+                    count = 4
+
+                i = 0
+                while i < count:
+                    value = table[value >> shift] ^ ((value << 8) & self.word_mask)
+                    i += 1
+                return value
+
+            def f_func(a, b, c, d, e, f, g):
+                m = self.word_mask
+                na = a ^ m
+                nb = b ^ m
+                nc = c ^ m
+                nd = d ^ m  # codespell:ignore
+                ne = e ^ m
+                nf = f ^ m
+                ng = g ^ m
+
+                result = (
+                    (a & nb & c & d & e & f & ng)
+                    ^ (a & b & c & e & nf & g)
+                    ^ (a & b & d & ne & g)
+                    ^ (a & b & e & f & g)
+                    ^ (a & nb & d & e & f)
+                    ^ (a & c & e & f & g)
+                    ^ (a & nc & d & f & ng)
+                    ^ (a & d & e & nf & g)
+                    ^ (b & c & d & f & g)
+                    ^ (b & d & e & nf & g)
+                    ^ (c & d & e & f & ng)
+                    ^ (a & b & nc & g)
+                    ^ (na & b & c & nf)
+                    ^ (b & c & ne & g)
+                    ^ (b & nc & d & e)
+                    ^ (a & b & f)
+                    ^ (a & nb & e)
+                    ^ (a & c & g)
+                    ^ (a & d & ng)
+                    ^ (a & e & g)
+                    ^ (na & e & f)
+                    ^ (b & d & nf)
+                    ^ (b & e & g)
+                    ^ (nb & f & g)
+                    ^ (c & nd & ne)  # codespell:ignore
+                    ^ (nc & d & f)
+                    ^ (d & e & f)
+                    ^ (d & ne & g)
+                    ^ (d & f & g)
+                    ^ na
+                    ^ b
+                    ^ f
+                )
+                return result & m
+
             i = 0
             while i < self.compress_steps:
-                tmp_r = self.l_func(r0)
-                tmp_k = self.l_func(k0)
-                f_r = self.f_func(r6, r5, r4, r3, r2, r1, r0)
-                f_k = self.f_func(k6, k5, k4, k3, k2, k1, k0)
+                tmp_r = l_func(r0)
+                tmp_k = l_func(k0)
+                f_r = f_func(r6, r5, r4, r3, r2, r1, r0)
+                f_k = f_func(k6, k5, k4, k3, k2, k1, k0)
 
                 tmp_r ^= f_r ^ r7 ^ k7
                 tmp_k ^= f_k ^ k7
-
-                r7 = r6
-                k7 = k6
-                r6 = r5
-                k6 = k5
-                r5 = r4
-                k5 = k4
-                r4 = r3
-                k4 = k3
-                r3 = r2
-                k3 = k2
-                r2 = r1
-                k2 = k1
-                r1 = r0
-                k1 = k0
-                r0 = tmp_r
-                k0 = tmp_k
+                r7, k7 = r6, k6
+                r6, k6 = r5, k5
+                r5, k5 = r4, k4
+                r4, k4 = r3, k3
+                r3, k3 = r2, k2
+                r2, k2 = r1, k1
+                r1, k1 = r0, k0
+                r0, k0 = tmp_r, tmp_k
                 i += 1
 
-            chain_vars[0] = (r0 ^ r0_orig) & self.word_mask
-            chain_vars[1] = (r1 ^ r1_orig) & self.word_mask
-            chain_vars[2] = (r2 ^ r2_orig) & self.word_mask
-            chain_vars[3] = (r3 ^ r3_orig) & self.word_mask
-            chain_vars[4] = (r4 ^ r4_orig) & self.word_mask
-            chain_vars[5] = (r5 ^ r5_orig) & self.word_mask
-            chain_vars[6] = (r6 ^ r6_orig) & self.word_mask
-            chain_vars[7] = (r7 ^ r7_orig) & self.word_mask
+            chain_vars[0] = r0 ^ r0_orig
+            chain_vars[1] = r1 ^ r1_orig
+            chain_vars[2] = r2 ^ r2_orig
+            chain_vars[3] = r3 ^ r3_orig
+            chain_vars[4] = r4 ^ r4_orig
+            chain_vars[5] = r5 ^ r5_orig
+            chain_vars[6] = r6 ^ r6_orig
+            chain_vars[7] = r7 ^ r7_orig
             return
 
         def finalize(self):
             if self.buf_bitlen > 0:
                 if not self.within_md_block:
                     self.init_chain_vars()
-
                 block = bytearray(self.chunk_size)
                 block[:len(self.buf)] = self.buf
                 self.compress_words(self.chain_vars, bytes(block))
                 self.current_md_block_datalen += self.buf_bitlen
                 self.buf.clear()
                 self.buf_bitlen = 0
-
             last_block_data_bitlen = self.current_md_block_datalen
-
             if self.within_md_block:
                 self.merge_tree()
-
             final_block = list(self.mdbiv_init)
             if self.word_bits == 64:
                 final_block[0] = self.last_md_block_number & 0xffff_ffff_ffff_ffff
@@ -100136,33 +100439,22 @@ class Hash:
                 final_block[1] = (self.last_md_block_number >> 32) & 0xffff_ffff
                 final_block[6] = last_block_data_bitlen & 0xffff_ffff
                 final_block[7] = (last_block_data_bitlen >> 32) & 0xffff_ffff
-
             self.compress_words(self.running_hash, self.words_to_bytes(final_block))
             return
 
         def output_bytes(self):
             num_bytes = (self.hashbitlen + 7) >> 3
             out = bytearray()
-
             if self.word_bits == 64:
                 for value in self.running_hash:
                     out.extend(value.to_bytes(8, "little"))
             else:
                 for value in self.running_hash:
                     out.extend(value.to_bytes(4, "little"))
-
             out = out[:num_bytes]
             if (self.hashbitlen & 7) != 0:
                 out[-1] &= 0xff << (8 - (self.hashbitlen & 7))
             return bytes(out)
-
-        def digest(self):
-            other = self.copy()
-            other.finalize()
-            return other.output_bytes()
-
-        def hexdigest(self):
-            return self.digest().hex()
 
     class ESSENCE224(ESSENCEBase):
         block_size = 32
