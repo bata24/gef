@@ -55060,9 +55060,9 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             for i in range(0x100):
                 xored = b"".join(bytes([x ^ i]) for x in value)
                 if 0x20 <= i < 0x7f:
-                    self.out.append("xor-{:02X}({:s}):      {!s}".format(i, chr(i), xored))
+                    self.out.append("xor-{:02X}({:s}):      {!s} {!s}".format(i, chr(i), xored.hex(), xored))
                 else:
-                    self.out.append("xor-{:02X}:         {!s}".format(i, xored))
+                    self.out.append("xor-{:02X}:         {!s} {!s}".format(i, xored.hex(), xored))
         except (binascii.Error, ValueError):
             pass
         return
@@ -55077,9 +55077,9 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             for i in range(0x100):
                 added = b"".join(bytes([(x + i) & 0xff]) for x in value)
                 if 0x20 <= i < 0x7f:
-                    self.out.append("add-{:02X}({:s}):      {!s}".format(i, chr(i), added))
+                    self.out.append("add-{:02X}({:s}):      {!s} {!s}".format(i, chr(i), added.hex(), added))
                 else:
-                    self.out.append("add-{:02X}:         {!s}".format(i, added))
+                    self.out.append("add-{:02X}:         {!s} {!s}".format(i, added.hex(), added))
         except (binascii.Error, ValueError):
             pass
         return
@@ -55093,7 +55093,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify("unhex - ROL (for each byte)"))
             for i in range(9):
                 rored = b"".join(bytes([((x << i) | x >> (8 - i)) & 0xff]) for x in value)
-                self.out.append("rol-{:02X}:         {!s}".format(i, rored))
+                self.out.append("rol-{:02X}:         {!s} {!s}".format(i, rored.hex(), rored))
         except (binascii.Error, ValueError):
             pass
         return
@@ -55113,7 +55113,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
                 rored = bits[i:] + bits[:i]
                 rored = [int("".join(x), 2) for x in slicer(rored, 8)]
                 rored = bytes(rored)
-                self.out.append("rol-{:02X}:         {!s}".format(i, rored))
+                self.out.append("rol-{:02X}:         {!s} {!s}".format(i, rored.hex(), rored))
         except ValueError:
             pass
         return
@@ -55139,7 +55139,8 @@ class ConvertCommand(GenericCommand, BufferingOutput):
                             x -= ord("z")
                             x += ord("a") - 1
                     slided.append(x)
-                self.out.append("caesar-{:02d}:      {!s}".format(i, bytes(slided)))
+                slided = bytes(slided)
+                self.out.append("caesar-{:02d}:      {!s} {!s}".format(i, slided.hex(), slided))
         except (binascii.Error, ValueError):
             pass
         return
@@ -55151,9 +55152,9 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             for i in range(0x100):
                 xored = b"".join(bytes([x ^ i]) for x in value)
                 if 0x20 <= i < 0x7f:
-                    self.out.append("xor-{:02X}({:s}):      {!s}".format(i, chr(i), xored))
+                    self.out.append("xor-{:02X}({:s}):      {!s} {!s}".format(i, chr(i), xored.hex(), xored))
                 else:
-                    self.out.append("xor-{:02X}:         {!s}".format(i, xored))
+                    self.out.append("xor-{:02X}:         {!s} {!s}".format(i, xored.hex(), xored))
         except ValueError:
             pass
         return
@@ -55165,9 +55166,9 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             for i in range(0x100):
                 added = b"".join(bytes([(x + i) & 0xff]) for x in value)
                 if 0x20 <= i < 0x7f:
-                    self.out.append("add-{:02X}({:s}):      {!s}".format(i, chr(i), added))
+                    self.out.append("add-{:02X}({:s}):      {!s} {!s}".format(i, chr(i), added.hex(), added))
                 else:
-                    self.out.append("add-{:02X}:         {!s}".format(i, added))
+                    self.out.append("add-{:02X}:         {!s} {!s}".format(i, added.hex(), added))
         except ValueError:
             pass
         return
@@ -55178,7 +55179,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify("str - ROL (for each byte)"))
             for i in range(9):
                 rored = b"".join(bytes([((x << i) | x >> (8 - i)) & 0xff]) for x in value)
-                self.out.append("rol-{:02X}:         {!s}".format(i, rored))
+                self.out.append("rol-{:02X}:         {!s} {!s}".format(i, rored.hex(), rored))
         except ValueError:
             pass
         return
@@ -55195,7 +55196,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
                 rored = bits[i:] + bits[:i]
                 rored = [int("".join(x), 2) for x in slicer(rored, 8)]
                 rored = bytes(rored)
-                self.out.append("rol-{:02X}:         {!s}".format(i, rored))
+                self.out.append("rol-{:02X}:         {!s} {!s}".format(i, rored.hex(), rored))
         except ValueError:
             pass
         return
@@ -55218,7 +55219,8 @@ class ConvertCommand(GenericCommand, BufferingOutput):
                             x -= ord("z")
                             x += ord("a") - 1
                     slided.append(x)
-                self.out.append("caesar-{:02d}:      {!s}".format(i, bytes(slided)))
+                slided = bytes(slided)
+                self.out.append("caesar-{:02d}:      {!s} {!s}".format(i, slided.hex(), slided))
         except ValueError:
             pass
         return
