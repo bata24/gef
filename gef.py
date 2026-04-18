@@ -1211,7 +1211,7 @@ class Address:
     def dereference(self):
         # Even if the valid flag is not set, it still dereferences.
         # This is because the valid flag is not set during kernel debugging.
-        value = AddressUtil.align_address(self.value)
+        value = AddressUtil.normalize_address(self.value)
         derefed = AddressUtil.dereference(value)
         if derefed is None:
             return None
@@ -1286,7 +1286,7 @@ class AddressUtil:
         if isinstance(addr, str):
             addr = int(addr, 16)
 
-        addr = AddressUtil.align_address(addr, memalign_size)
+        addr = AddressUtil.normalize_address(addr, memalign_size)
         if memalign_size == 4:
             return "{:#010x}".format(addr)
         elif memalign_size == 2:
@@ -1303,8 +1303,8 @@ class AddressUtil:
         return "{:#014x}".format(addr)
 
     @staticmethod
-    def align_address(addr, memalign_size=None):
-        """Align the provided address to the process's native length.
+    def normalize_address(addr, memalign_size=None):
+        """Normalize the provided address to the process's native length.
         e.g., 0x1_2345_6789 -> 0x2345_6789 (for 32-bit arch)"""
         # if qemu-xxx(32bit arch) runs on x86-64 machine, memalign_size does not match
         # AddressUtil.get_memory_alignment(), so use the value forcibly if memalign_size is not None
@@ -4856,10 +4856,10 @@ class GlibcHeap:
                 self.chunk_base_address = addr
                 self.address = addr + 2 * self.ptrsize
             else:
-                self.chunk_base_address = AddressUtil.align_address(addr - 2 * self.ptrsize)
+                self.chunk_base_address = AddressUtil.normalize_address(addr - 2 * self.ptrsize)
                 self.address = addr
 
-            self.size_addr = AddressUtil.align_address(self.address - self.ptrsize)
+            self.size_addr = AddressUtil.normalize_address(self.address - self.ptrsize)
             self.prev_size_addr = self.chunk_base_address
             return
 
@@ -25672,7 +25672,7 @@ class RegistersCommand(GenericCommand):
             except gdb.error:
                 # In the qiling framework, it may fail just by doing hasattr (e.g., bndstatus)
                 continue
-            value = AddressUtil.align_address(int(reg), memalign_size=reg_len)
+            value = AddressUtil.normalize_address(int(reg), memalign_size=reg_len)
 
             # colorling
             color = self.get_regname_color(regname, value)
@@ -32759,7 +32759,7 @@ class ContextMemoryAccessCommand(GenericCommand):
             # $rip/$eip points next instruction
             offset = offset.replace("$rip", "$rip+{:#x}".format(codesize))
             offset = AddressUtil.parse_address(offset)
-            addr = AddressUtil.align_address(fsgs_val + offset)
+            addr = AddressUtil.normalize_address(fsgs_val + offset)
             ContextCommand.context_title("memory access: {:s} = {:#x}".format(code, addr), redirect)
             self.is_context_title_written = True
             ContextCommand.execute_command("dereference {:#x} 4 --no-pager".format(addr), redirect)
@@ -33890,7 +33890,7 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
         if is_x86_16():
             memalign_size = 2.5
 
-        read_from = AddressUtil.align_address(args.location, memalign_size=memalign_size) + min(from_idx, to_idx)
+        read_from = AddressUtil.normalize_address(args.location, memalign_size=memalign_size) + min(from_idx, to_idx)
         mem = self.read_memory(read_from, args.count)
         if mem is None:
             err("Cannot access memory")
@@ -35428,7 +35428,7 @@ class DereferenceCommand(GenericCommand):
         if is_x86_16():
             memalign_size = 2.5
 
-        current_address = AddressUtil.align_address(addr + offset, memalign_size=memalign_size)
+        current_address = AddressUtil.normalize_address(addr + offset, memalign_size=memalign_size)
 
         addrs, error = AddressUtil.recursive_dereference(current_address, phys=phys)
         if len(addrs) == 1 and not error: # cannot access this area
@@ -38213,7 +38213,7 @@ class DestructorDumpCommand(GenericCommand):
 
         # user specified
         if offset_tls_dtor_list:
-            tls_dtor_list = AddressUtil.align_address(current_arch.get_tls() + offset_tls_dtor_list)
+            tls_dtor_list = AddressUtil.normalize_address(current_arch.get_tls() + offset_tls_dtor_list)
 
         # method 1 (directly)
         if tls_dtor_list is None:
@@ -38330,7 +38330,7 @@ class DestructorDumpCommand(GenericCommand):
         fns_size = ptrsize * 4 # flavor, fn, arg, dso_handle
 
         for i in range(idx.value, -1, -1):
-            addr = AddressUtil.align_address(current + fns_size * i)
+            addr = AddressUtil.normalize_address(current + fns_size * i)
             try:
                 flavor, fn, arg, dso_handle = read_fns(addr)
             except gdb.MemoryError:
@@ -55346,7 +55346,7 @@ class KernelAddressHeuristicFinderUtil:
             m = re.search(regexp, line)
             if not m:
                 continue
-            v = AddressUtil.align_address(int(m.group(1), 16))
+            v = AddressUtil.normalize_address(int(m.group(1), 16))
             if not skip_msb_check and not AddressUtil.is_msb_on(v):
                 continue
             if read_valid and not is_valid_addr_addr(v): # not is_valid_addr, but is_valid_addr_addr
@@ -55471,7 +55471,7 @@ class KernelAddressHeuristicFinderUtil:
                 srcreg = m.group(1)
                 v = int(m.group(2), 0)
                 if srcreg in bases:
-                    w = AddressUtil.align_address(bases[srcreg] + v)
+                    w = AddressUtil.normalize_address(bases[srcreg] + v)
                     if not skip_msb_check and not AddressUtil.is_msb_on(w):
                         continue
                     if read_valid and not is_valid_addr_addr(w):
@@ -55496,7 +55496,7 @@ class KernelAddressHeuristicFinderUtil:
                 srcreg = m.group(2)
                 v = int(m.group(3), 16)
                 if srcreg in bases:
-                    w = AddressUtil.align_address(bases[srcreg] + v)
+                    w = AddressUtil.normalize_address(bases[srcreg] + v)
                     if not skip_msb_check and not AddressUtil.is_msb_on(w):
                         continue
                     if read_valid and not is_valid_addr_addr(w):
@@ -55523,7 +55523,7 @@ class KernelAddressHeuristicFinderUtil:
                 srcreg = m.group(2)
                 v = int(m.group(3), 16)
                 if srcreg in add1time:
-                    w = AddressUtil.align_address(add1time[srcreg] + v)
+                    w = AddressUtil.normalize_address(add1time[srcreg] + v)
                     if not skip_msb_check or AddressUtil.is_msb_on(w):
                         if not read_valid or is_valid_addr_addr(w):
                             if skip <= 0:
@@ -55557,7 +55557,7 @@ class KernelAddressHeuristicFinderUtil:
                 srcreg = m.group(1)
                 v = int(m.group(2), 0)
                 if srcreg in add1time:
-                    w = AddressUtil.align_address(add1time[srcreg] + v)
+                    w = AddressUtil.normalize_address(add1time[srcreg] + v)
                     if not skip_msb_check and not AddressUtil.is_msb_on(w):
                         continue
                     if read_valid and not is_valid_addr_addr(w):
@@ -55588,7 +55588,7 @@ class KernelAddressHeuristicFinderUtil:
                 reg = m.group(1)
                 v = int(m.group(2), 16) << 16
                 if reg in bases:
-                    w = AddressUtil.align_address(bases[reg] + v)
+                    w = AddressUtil.normalize_address(bases[reg] + v)
                     if not skip_msb_check and not AddressUtil.is_msb_on(w):
                         continue
                     if read_valid and not is_valid_addr_addr(w):
@@ -55627,7 +55627,7 @@ class KernelAddressHeuristicFinderUtil:
                 reg = m.group(1)
                 v = int(m.group(2), 0)
                 if reg in add1time:
-                    w = AddressUtil.align_address(add1time[reg] + v)
+                    w = AddressUtil.normalize_address(add1time[reg] + v)
                     if not skip_msb_check and not AddressUtil.is_msb_on(w):
                         continue
                     if read_valid and not is_valid_addr_addr(w):
@@ -55660,7 +55660,7 @@ class KernelAddressHeuristicFinderUtil:
                 reg = m.group(1)
                 v = int(m.group(2), 0)
                 if reg in add1time:
-                    w = AddressUtil.align_address(add1time[reg] + v)
+                    w = AddressUtil.normalize_address(add1time[reg] + v)
                     if not skip_msb_check and not AddressUtil.is_msb_on(w):
                         continue
                     if read_valid and not is_valid_addr_addr(w):
@@ -55680,8 +55680,8 @@ class KernelAddressHeuristicFinderUtil:
         for line in res.splitlines():
             m = re.search(r"ldr\s+\w+,\s*\[pc,\s*#(\d+)\]", line)
             if m:
-                ofs = AddressUtil.align_address(int(m.group(1), 0))
-                pos = AddressUtil.align_address(int(line.split()[0].replace(":", ""), 16))
+                ofs = AddressUtil.normalize_address(int(m.group(1), 0))
+                pos = AddressUtil.normalize_address(int(line.split()[0].replace(":", ""), 16))
                 v = read_int_from_memory(pos + 4 * 2 + ofs)
                 if is_valid_addr(v):
                     if skip <= 0:
@@ -55690,7 +55690,7 @@ class KernelAddressHeuristicFinderUtil:
                     continue
             m = re.search(r"ldr\s+\w+,\s*\[pc\]", line)
             if m:
-                pos = AddressUtil.align_address(int(line.split()[0].replace(":", ""), 16))
+                pos = AddressUtil.normalize_address(int(line.split()[0].replace(":", ""), 16))
                 v = read_int_from_memory(pos + 4 * 2)
                 if is_valid_addr(v):
                     if read_valid and not is_valid_addr_addr(v):
@@ -55707,17 +55707,17 @@ class KernelAddressHeuristicFinderUtil:
             m = re.search(r"ldr\s+(\w+),\s*\[pc,\s*#(\d+)\]", line)
             if m:
                 reg = m.group(1)
-                ofs = AddressUtil.align_address(int(m.group(2), 0))
-                pos = AddressUtil.align_address(int(line.split()[0].replace(":", ""), 16))
+                ofs = AddressUtil.normalize_address(int(m.group(2), 0))
+                pos = AddressUtil.normalize_address(int(line.split()[0].replace(":", ""), 16))
                 v = read_int_from_memory(pos + 4 * 2 + ofs)
                 bases[reg] = v
                 continue
             m = re.search(r"ldr\s+\w+,\s*\[(\w+),\s*#(\d*)\]", line)
             if m:
                 reg = m.group(1)
-                ofs = AddressUtil.align_address(int(m.group(2), 0))
+                ofs = AddressUtil.normalize_address(int(m.group(2), 0))
                 if reg in bases:
-                    w = AddressUtil.align_address(bases[reg] + ofs)
+                    w = AddressUtil.normalize_address(bases[reg] + ofs)
                     if skip <= 0:
                         yield w
                     skip -= 1
@@ -55726,7 +55726,7 @@ class KernelAddressHeuristicFinderUtil:
             if m:
                 reg = m.group(1)
                 if reg in bases:
-                    w = AddressUtil.align_address(bases[reg])
+                    w = AddressUtil.normalize_address(bases[reg])
                     if read_valid and not is_valid_addr_addr(w):
                         continue
                     if skip <= 0:
@@ -55863,7 +55863,7 @@ class KernelConstsX86(KernelConstsBase):
         if hasattr(self, "cached_high_memory"):
             return self.cached_high_memory
 
-        max_hm = AddressUtil.align_address(-128 << 20)
+        max_hm = AddressUtil.normalize_address(-128 << 20)
         vmalloc_start = KernelAddressHeuristicFinder._get_VMALLOC_START()
         if vmalloc_start is None:
             self.cached_high_memory = max_hm
@@ -56445,7 +56445,7 @@ class KernelConstsX64(KernelConstsBase):
     def LDT_BASE_ADDR(self):
         if "4.14" <= self.kversion:
             ldt_base_addr = self.LDT_PGD_ENTRY << self.PGDIR_SHIFT
-            return AddressUtil.align_address(ldt_base_addr)
+            return AddressUtil.normalize_address(ldt_base_addr)
         return None
 
     @property
@@ -56650,14 +56650,14 @@ class KernelConstsX64(KernelConstsBase):
     def VSYSCALL_START(self):
         if "3.0" <= self.kversion < "3.16":
             vsyscall_start = (-10 << 20)
-            return AddressUtil.align_address(vsyscall_start)
+            return AddressUtil.normalize_address(vsyscall_start)
         return None
 
     @property
     def VSYSCALL_END(self):
         if "3.0" <= self.kversion < "3.16":
             vsyscall_end = (-2 << 20)
-            return AddressUtil.align_address(vsyscall_end)
+            return AddressUtil.normalize_address(vsyscall_end)
         return None
 
     @property
@@ -56666,7 +56666,7 @@ class KernelConstsX64(KernelConstsBase):
             return self.VSYSCALL_START
         elif "3.16" <= self.kversion:
             vsyscall_addr = (-10 << 20)
-            return AddressUtil.align_address(vsyscall_addr)
+            return AddressUtil.normalize_address(vsyscall_addr)
         return None
 
     @property
@@ -56781,10 +56781,10 @@ class KernelConstsX64(KernelConstsBase):
     def ESPFIX_BASE_ADDR(self):
         if "3.0" <= self.kversion < "4.12":
             espfix_base_addr = self.ESPFIX_PGD_ENTRY << self.PGDIR_SHIFT
-            return AddressUtil.align_address(espfix_base_addr)
+            return AddressUtil.normalize_address(espfix_base_addr)
         elif "4.12" <= self.kversion:
             espfix_base_addr = self.ESPFIX_PGD_ENTRY << self.P4D_SHIFT
-            return AddressUtil.align_address(espfix_base_addr)
+            return AddressUtil.normalize_address(espfix_base_addr)
         return None
 
     @property # noqa
@@ -56803,7 +56803,7 @@ class KernelConstsX64(KernelConstsBase):
     def CPU_ENTRY_AREA_BASE(self):
         if "4.14" <= self.kversion:
             cpu_entry_area_base = self.CPU_ENTRY_AREA_PGD << self.P4D_SHIFT
-            return AddressUtil.align_address(cpu_entry_area_base)
+            return AddressUtil.normalize_address(cpu_entry_area_base)
         return None
 
     @property
@@ -56816,14 +56816,14 @@ class KernelConstsX64(KernelConstsBase):
     def EFI_VA_START(self):
         if "3.19" <= self.kversion:
             efi_va_start = -4 * (1 << 30)
-            return AddressUtil.align_address(efi_va_start)
+            return AddressUtil.normalize_address(efi_va_start)
         return None
 
     @property # noqa
     def EFI_VA_END(self):
         if "3.19" <= self.kversion:
             efi_va_end = -68 * (1 << 30)
-            return AddressUtil.align_address(efi_va_end)
+            return AddressUtil.normalize_address(efi_va_end)
         return None
 
 
@@ -57025,7 +57025,7 @@ class KernelConstsArm32(KernelConstsBase):
         if len(linear_cands) != 1:
             return None
         linear_kbase = linear_cands[0]
-        self.cached_PHYS_OFFSET = AddressUtil.align_address(phys_kbase - (linear_kbase - self.PAGE_OFFSET))
+        self.cached_PHYS_OFFSET = AddressUtil.normalize_address(phys_kbase - (linear_kbase - self.PAGE_OFFSET))
         return self.cached_PHYS_OFFSET
 
     @property
@@ -57326,13 +57326,13 @@ class KernelConstsArm64(KernelConstsBase):
     def _PAGE_END(self, va):
         if "5.4" <= self.kversion:
             _page_end = -(1 << (va - 1))
-            return AddressUtil.align_address(_page_end)
+            return AddressUtil.normalize_address(_page_end)
         return None
 
     def _PAGE_OFFSET(self, va):
         if "5.4" <= self.kversion:
             _page_offset = -(1 << va)
-            return AddressUtil.align_address(_page_offset)
+            return AddressUtil.normalize_address(_page_offset)
         return None
 
     @property
@@ -57556,12 +57556,12 @@ class KernelConstsArm64(KernelConstsBase):
             return 0xffff_ffff_ffff_ffff - (1 << self.VA_BITS) + 1
         elif "4.5" <= self.kversion < "4.9":
             va_start = 0xffff_ffff_ffff_ffff << self.VA_BITS
-            return AddressUtil.align_address(va_start)
+            return AddressUtil.normalize_address(va_start)
         elif "4.9" <= self.kversion < "4.10":
             return 0xffff_ffff_ffff_ffff - (1 << self.VA_BITS) + 1
         elif "4.10" <= self.kversion < "4.13":
             va_start = 0xffff_ffff_ffff_ffff << self.VA_BITS
-            return AddressUtil.align_address(va_start)
+            return AddressUtil.normalize_address(va_start)
         elif "4.13" <= self.kversion < "5.4":
             return 0xffff_ffff_ffff_ffff - (1 << self.VA_BITS) + 1
         return None
@@ -57570,17 +57570,17 @@ class KernelConstsArm64(KernelConstsBase):
     def PAGE_OFFSET(self):
         if "3.17" <= self.kversion < "4.4":
             page_offset = 0xffff_ffff_ffff_ffff << (self.VA_BITS - 1)
-            return AddressUtil.align_address(page_offset)
+            return AddressUtil.normalize_address(page_offset)
         elif "4.4" <= self.kversion < "4.5":
             return 0xffff_ffff_ffff_ffff - (1 << (self.VA_BITS - 1)) + 1
         elif "4.5" <= self.kversion < "4.9":
             page_offset = 0xffff_ffff_ffff_ffff << (self.VA_BITS - 1)
-            return AddressUtil.align_address(page_offset)
+            return AddressUtil.normalize_address(page_offset)
         elif "4.9" <= self.kversion < "4.10":
             return 0xffff_ffff_ffff_ffff - (1 << (self.VA_BITS - 1)) + 1
         elif "4.10" <= self.kversion < "4.13":
             page_offset = 0xffff_ffff_ffff_ffff << (self.VA_BITS - 1)
-            return AddressUtil.align_address(page_offset)
+            return AddressUtil.normalize_address(page_offset)
         elif "4.13" <= self.kversion < "5.4":
             return 0xffff_ffff_ffff_ffff - (1 << (self.VA_BITS - 1)) + 1
         elif "5.4" <= self.kversion:
@@ -57657,10 +57657,10 @@ class KernelConstsArm64(KernelConstsBase):
             return self.PAGE_OFFSET - self.VMEMMAP_SIZE
         elif "5.4" <= self.kversion < "5.11":
             vmemmap_start = -self.VMEMMAP_SIZE - self.SZ_2M
-            return AddressUtil.align_address(vmemmap_start)
+            return AddressUtil.normalize_address(vmemmap_start)
         elif "5.11" <= self.kversion < "6.9":
             vmemmap_start = -(1 << (self.VA_BITS - self.VMEMMAP_SHIFT))
-            return AddressUtil.align_address(vmemmap_start)
+            return AddressUtil.normalize_address(vmemmap_start)
         elif "6.9" <= self.kversion:
             return self.VMEMMAP_END - self.VMEMMAP_SIZE
         return None
@@ -57671,7 +57671,7 @@ class KernelConstsArm64(KernelConstsBase):
             return self.VMEMMAP_START + self.VMEMMAP_SIZE
         elif "6.9" <= self.kversion:
             vmemmap_end = -self.SZ_1G
-            return AddressUtil.align_address(vmemmap_end)
+            return AddressUtil.normalize_address(vmemmap_end)
         return None
 
     @property
@@ -57712,7 +57712,7 @@ class KernelConstsArm64(KernelConstsBase):
             return self.VMEMMAP_START - self.SZ_32M
         elif "6.9" <= self.kversion:
             fixaddr_top = -self.SZ_8M
-            return AddressUtil.align_address(fixaddr_top)
+            return AddressUtil.normalize_address(fixaddr_top)
         return None
 
     @property
@@ -57801,7 +57801,7 @@ class KernelConstsArm64(KernelConstsBase):
     def VMALLOC_START(self):
         if "3.17" <= self.kversion < "4.4":
             vmalloc_start = 0xffff_ffff_ffff_ffff << self.VA_BITS
-            return AddressUtil.align_address(vmalloc_start)
+            return AddressUtil.normalize_address(vmalloc_start)
         elif "4.4" <= self.kversion < "4.6":
             if not self.CONFIG_KASAN:
                 return self.VA_START
@@ -57817,7 +57817,7 @@ class KernelConstsArm64(KernelConstsBase):
             return self.PAGE_OFFSET - self.PUD_SIZE - self.VMEMMAP_SIZE - self.SZ_64K
         elif "5.4" <= self.kversion < "5.11":
             vmalloc_end = -self.PUD_SIZE - self.VMEMMAP_SIZE - self.SZ_64K
-            return AddressUtil.align_address(vmalloc_end)
+            return AddressUtil.normalize_address(vmalloc_end)
         elif "5.11" <= self.kversion < "6.9":
             return self.VMEMMAP_START - self.SZ_256M
         elif "6.9" <= self.kversion:
@@ -57867,7 +57867,7 @@ class KernelConstsArm64(KernelConstsBase):
         PHYS_OFFSET = read_int_from_memory(memstart_addr)
         if "6.12" <= self.kversion:
             PHYS_OFFSET &= self.PHYS_MASK
-        self.cached_physmap_base = AddressUtil.align_address(self.PAGE_OFFSET - PHYS_OFFSET)
+        self.cached_physmap_base = AddressUtil.normalize_address(self.PAGE_OFFSET - PHYS_OFFSET)
         return self.cached_physmap_base
 
     @property
@@ -57889,7 +57889,7 @@ class KernelConstsArm64(KernelConstsBase):
         if len(linear_cands) != 1:
             return None
         linear_kbase = linear_cands[0]
-        self.cached_memstart_addr = AddressUtil.align_address(phys_kbase - (linear_kbase - self.PAGE_OFFSET))
+        self.cached_memstart_addr = AddressUtil.normalize_address(phys_kbase - (linear_kbase - self.PAGE_OFFSET))
         return self.cached_memstart_addr
 
     @property
@@ -58146,7 +58146,7 @@ class KernelAddressHeuristicFinder:
                     p = KernelAddressHeuristicFinder.get_per_cpu_offset()
                     if p and is_valid_addr(p):
                         cpu_base = read_int_from_memory(p)
-                        current_ptr = AddressUtil.align_address(cpu_base + current_task)
+                        current_ptr = AddressUtil.normalize_address(cpu_base + current_task)
                         current = read_int_from_memory(current_ptr)
         if current:
             offset_tasks = get_offset_tasks(current)
@@ -62474,7 +62474,7 @@ class KernelCurrentCommand(GenericCommand):
             self.quiet_info("current_task: {:#x}".format(current_task))
             task_offset = current_task
             for i, cpu_base in enumerate(cpu_bases):
-                task = read_int_from_memory(AddressUtil.align_address(cpu_base + task_offset))
+                task = read_int_from_memory(AddressUtil.normalize_address(cpu_base + task_offset))
                 if not is_valid_addr(task):
                     break
                 gef_print("current (cpu{:d}): {:#x} {:s}".format(i, task, self.get_comm_str(task)))
@@ -70924,7 +70924,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         if self.cpu_offset == []:
             self.per_cpu_timer_bases = [self.timer_bases]
         else:
-            self.per_cpu_timer_bases = [AddressUtil.align_address(x + self.timer_bases) for x in self.cpu_offset]
+            self.per_cpu_timer_bases = [AddressUtil.normalize_address(x + self.timer_bases) for x in self.cpu_offset]
 
         # len(timer_bases)
         if Symbol.get_ksymaddr("sysctl_timer_migration"):
@@ -70984,7 +70984,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         if self.cpu_offset == []:
             self.per_cpu_hrtimer_cpu_bases = [self.hrtimer_bases]
         else:
-            self.per_cpu_hrtimer_cpu_bases = [AddressUtil.align_address(x + self.hrtimer_bases) for x in self.cpu_offset]
+            self.per_cpu_hrtimer_cpu_bases = [AddressUtil.normalize_address(x + self.hrtimer_bases) for x in self.cpu_offset]
 
         """
         struct hrtimer_cpu_base {
@@ -71934,7 +71934,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
 
         for offset in range(0, max_range + current_arch.ptrsize, current_arch.ptrsize):
             # align to 32bit / 64bit
-            cur = AddressUtil.align_address(addr + offset)
+            cur = AddressUtil.normalize_address(addr + offset)
             # is aligned?
             if cur & 0x7 != 0:
                 continue
@@ -112581,7 +112581,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     seen.append(val)
 
                 for cpuoff in self.cpu_offset: # allow []
-                    if not is_valid_addr(AddressUtil.align_address(val + cpuoff)):
+                    if not is_valid_addr(AddressUtil.normalize_address(val + cpuoff)):
                         found = False
                         break
 
@@ -113126,7 +113126,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             slub_percpu_sheaves = cpu_sheaves + self.cpu_offset[cpu]
         else:
             slub_percpu_sheaves = cpu_sheaves
-        return AddressUtil.align_address(slub_percpu_sheaves)
+        return AddressUtil.normalize_address(slub_percpu_sheaves)
 
     def resolve_slub_percpu_sheaves_offset_main(self):
         self.slub_percpu_sheaves_offset_main = None
@@ -113976,7 +113976,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             kmem_cache_cpu = cpu_slab + self.cpu_offset[cpu]
         else:
             kmem_cache_cpu = cpu_slab
-        return AddressUtil.align_address(kmem_cache_cpu)
+        return AddressUtil.normalize_address(kmem_cache_cpu)
 
     def page2virt(self, page, kmem_cache, freelist_fastpath=()):
         if self.slab_virtual_enabled:
@@ -116165,7 +116165,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             cpu_cache = read_int_from_memory(addr + self.kmem_cache_offset_cpu_cache)
             if len(self.cpu_offset) > 0:
                 # __percpu
-                return AddressUtil.align_address(cpu_cache + self.cpu_offset[cpu])
+                return AddressUtil.normalize_address(cpu_cache + self.cpu_offset[cpu])
             else:
                 # not __percpu
                 return cpu_cache
@@ -118317,7 +118317,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             per_cpu_pageset = read_int_from_memory(self.nodes[0] + self.offset_per_cpu_pageset)
         else:
             per_cpu_pageset = read_int_from_memory(self.nodes[0] + self.offset_per_cpu_pageset) + self.cpu_offset[0]
-            per_cpu_pageset = AddressUtil.align_address(per_cpu_pageset)
+            per_cpu_pageset = AddressUtil.normalize_address(per_cpu_pageset)
         self.resolve_per_cpu_pages_offset_lists(per_cpu_pageset)
         self.quiet_info("offsetof(per_cpu_pages, lists): {:#x}".format(self.offset_lists))
 
@@ -118578,7 +118578,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         if self.cpu_offset is None:
             per_cpu_pageset = [per_cpu_pageset]
         else:
-            per_cpu_pageset = [AddressUtil.align_address(cpuoff + per_cpu_pageset) for cpuoff in self.cpu_offset]
+            per_cpu_pageset = [AddressUtil.normalize_address(cpuoff + per_cpu_pageset) for cpuoff in self.cpu_offset]
 
         # parse each cpu
         tqdm = GefUtil.get_tqdm(not self.args.quiet)
@@ -127703,7 +127703,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         ptrsize = current_arch.ptrsize
         slot_span = {}
         slot_span["addr"] = current = addr
-        slot_span["super_page_addr"] = AddressUtil.align_address(
+        slot_span["super_page_addr"] = AddressUtil.normalize_address(
             (slot_span["addr"] & get_pagesize_mask_high()) - self.root.metadata_offset_,
         )
         slot_span["partition_page_index"] = (slot_span["addr"] & get_pagesize_mask_low()) // 0x20
@@ -128867,10 +128867,10 @@ class uClibcNgHeap:
                 self.chunk_base_address = addr
                 self.address = addr + 2 * self.ptrsize
             else:
-                self.chunk_base_address = AddressUtil.align_address(addr - 2 * self.ptrsize)
+                self.chunk_base_address = AddressUtil.normalize_address(addr - 2 * self.ptrsize)
                 self.address = addr
 
-            self.size_addr = AddressUtil.align_address(self.address - self.ptrsize)
+            self.size_addr = AddressUtil.normalize_address(self.address - self.ptrsize)
             return
 
         def get_chunk_size(self):
@@ -146205,7 +146205,7 @@ class WalkLinkListCommand(GenericCommand, BufferingOutput):
         idx = 1
         while True:
             try:
-                flink = read_int_from_memory(AddressUtil.align_address(current + offset))
+                flink = read_int_from_memory(AddressUtil.normalize_address(current + offset))
             except gdb.MemoryError:
                 self.err_add_out("memory corrupted")
                 return
