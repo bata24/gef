@@ -62228,9 +62228,12 @@ class Kernel:
     @staticmethod
     def page2virt(page):
         ret = gdb.execute("page2virt {:#x}".format(page), to_string=True)
-        r = re.search(r"Virt: (\S+)", ret)
-        if r:
-            return int(r.group(1), 16)
+        for line in ret.splitlines():
+            r = re.search(r"Virt: (\S+)", line)
+            if r:
+                virt = int(r.group(1), 16)
+                if AddressUtil.is_msb_on(virt):
+                    return virt
         return None
 
     @staticmethod
@@ -141212,25 +141215,109 @@ class PageInfoCommand(GenericCommand):
             flags_str = flags_dic.get(type_value, "none")
         return flags_str
 
-    def dump_page_info(self, page_addr, virt_addr):
-        flags = read_int_from_memory(page_addr)
-        compound_head = read_int32_from_memory(page_addr + current_arch.ptrsize * 1)
-        page_type = read_int32_from_memory(page_addr + current_arch.ptrsize * 6)
-        refcount = read_int32_from_memory(page_addr + current_arch.ptrsize * 6 + 4)
+    def u32_to_s32(self, val):
+        val &= 0xffffffff
+        if val & 0x80000000:
+            return val - 0x100000000
+        return val
 
-        gef_print("Page        : {:#x}".format(page_addr))
-        if virt_addr is None:
-            gef_print("Virt        : None")
-        else:
-            gef_print("Virt        : {:#x}".format(virt_addr))
+    def get_head_page(self, page_addr):
+        compound_info = read_int_from_memory(page_addr + current_arch.ptrsize * 1)
+        if (compound_info & 1) == 0:
+            return page_addr
 
-        gef_print("flags       : {:#x} ({:s})".format(flags, PageInfoCommand.get_flags_str(flags)))
-        gef_print("is_tailpage : {}".format(bool(compound_head & 1)))
-        gef_print("page_type   : {:#x} ({:s})".format(page_type, PageInfoCommand.get_pagetype_str(page_type)))
-        if refcount == 0:
-            gef_print("refcount    : {:#x} (freed)".format(refcount))
+        # Old encoding: compound_info == head_page | 1
+        head_page = AddressUtil.normalize_address(compound_info - 1)
+        if head_page != page_addr and is_valid_addr(head_page):
+            return head_page
+
+        # New encoding: compound_info == mask | 1
+        head_page = page_addr & compound_info
+        if head_page != page_addr and is_valid_addr(head_page):
+            return head_page
+        return None
+
+    def get_slot6_kind(self, slot6_raw):
+        slot6_s32 = self.u32_to_s32(slot6_raw)
+        pgty_mapcount_underflow_shifted = self.u32_to_s32(0xff << 24)
+        if slot6_s32 < pgty_mapcount_underflow_shifted:
+            return "type"
+        return "mapcount"
+
+    def get_userspace_mapcount_info(self, slot6_raw, slot6_kind):
+        if slot6_kind != "mapcount":
+            return None, None, None
+
+        mapcount_raw_s32 = self.u32_to_s32(slot6_raw)
+        userspace_mapcount = mapcount_raw_s32 + 1
+
+        # Defensive clamp. In normal cases, _mapcount raw starts at -1,
+        # so decoded mapcount should never be negative.
+        if userspace_mapcount < 0:
+            userspace_mapcount = 0
+
+        userspace_mapped = userspace_mapcount > 0
+        return mapcount_raw_s32, userspace_mapcount, userspace_mapped
+
+    def is_buddy_free(self, slot6_raw, slot6_kind):
+        if slot6_kind != "type":
+            return False
+        kversion = Kernel.kernel_version()
+        if "4.18" <= kversion < "6.11":
+            return bool((~slot6_raw) & 0x0000_0080)
+        if "6.11" <= kversion < "6.12":
+            return bool((~slot6_raw) & 0x4000_0000)
+        if "6.12" <= kversion:
+            return ((slot6_raw >> 24) & 0xff) == 0xf0
+        return False
+
+    def dump_page_info(self, page_addr, virt_addr, user_virt_addr):
+        info_page_addr = self.get_head_page(page_addr)
+        if info_page_addr is None:
+            err("Failed to resolve compound head page")
+            return
+        is_tailpage = info_page_addr != page_addr
+
+        flags = read_int_from_memory(info_page_addr)
+        slot6_raw = read_int32_from_memory(info_page_addr + current_arch.ptrsize * 6)
+        slot6_kind = self.get_slot6_kind(slot6_raw)
+        mapcount_raw_s32, userspace_mapcount, userspace_mapped = self.get_userspace_mapcount_info(slot6_raw, slot6_kind)
+        refcount = read_int32_from_memory(info_page_addr + current_arch.ptrsize * 6 + 4)
+        buddy_free = self.is_buddy_free(slot6_raw, slot6_kind)
+
+        if user_virt_addr is not None:
+            gef_print("Virt            : {:s}".format(
+                Color.boldify(AddressUtil.format_address(user_virt_addr)),
+            ))
+        gef_print("Page            : {:s}".format(AddressUtil.format_address(page_addr)))
+        gef_print("Direct-map virt : {:s}".format(
+            Color.boldify(AddressUtil.format_address(virt_addr)),
+        ))
+
+        gef_print("flags           : {:s} ({:s})".format(
+            AddressUtil.format_address(flags), PageInfoCommand.get_flags_str(flags),
+        ))
+        gef_print("is_tailpage     : {}".format(is_tailpage))
+        if is_tailpage:
+            gef_print("head_page       : {:s}".format(AddressUtil.format_address(info_page_addr)))
+
+        gef_print("slot6_kind      : {:s}".format(slot6_kind))
+        if slot6_kind == "type":
+            gef_print("  page_type          : {:#x} ({:s})".format(
+                slot6_raw & 0xffffffff,
+                PageInfoCommand.get_pagetype_str(slot6_raw),
+            ))
+            gef_print("  userspace_mapped   : N/A")
+            gef_print("  userspace_mapcount : N/A")
         else:
-            gef_print("refcount    : {:#x} (allocated)".format(refcount))
+            gef_print("  mapcountraw        : {:#x}".format(slot6_raw & 0xffffffff))
+            gef_print("  userspace_mapped   : {}".format(userspace_mapped))
+            gef_print("  userspace_mapcount : {:#x}".format(userspace_mapcount))
+
+        gef_print("in_buddy_list   : {}".format(buddy_free))
+        if not buddy_free:
+            gef_print("  free_status        : unknown (PCP free pages are not checked)")
+        gef_print("refcount        : {:#x}".format(refcount))
         return
 
     @parse_args
@@ -141244,17 +141331,25 @@ class PageInfoCommand(GenericCommand):
             return
 
         if args.virt is not None:
-            virt_addr = args.virt & get_pagesize_mask_high()
-            page_addr = Kernel.virt2page(args.virt & get_pagesize_mask_high())
+            user_virt_addr = args.virt & get_pagesize_mask_high()
+            page_addr = Kernel.virt2page(user_virt_addr)
+            if page_addr is None:
+                err("Invalid virt address")
+                return
         else:
+            user_virt_addr = None
             page_addr = args.page
-            virt_addr = Kernel.page2virt(args.page)
 
         if not is_valid_addr(page_addr):
             err("Invalid page address")
             return
 
-        self.dump_page_info(page_addr, virt_addr)
+        virt_addr = Kernel.page2virt(page_addr)
+        if virt_addr is None:
+            err("Invalid page address")
+            return
+
+        self.dump_page_info(page_addr, virt_addr, user_virt_addr)
         return
 
 
