@@ -78813,7 +78813,7 @@ class Hash:
         )
         perm = (0x00, 0x09, 0x02, 0x0d, 0x06, 0x0b, 0x04, 0x0f, 0x0a, 0x07, 0x0c, 0x03, 0x0e, 0x05, 0x08, 0x01)
 
-    class ShabalBBase:
+    class ShabalBase:
         block_size = 64
         digest_size = None
 
@@ -78991,19 +78991,19 @@ class Hash:
             self.incr_counter()
             return
 
-    class Shabal192(ShabalBBase):
+    class Shabal192(ShabalBase):
         digest_size = 24
 
-    class Shabal224(ShabalBBase):
+    class Shabal224(ShabalBase):
         digest_size = 28
 
-    class Shabal256(ShabalBBase):
+    class Shabal256(ShabalBase):
         digest_size = 32
 
-    class Shabal384(ShabalBBase):
+    class Shabal384(ShabalBase):
         digest_size = 48
 
-    class Shabal512(ShabalBBase):
+    class Shabal512(ShabalBase):
         digest_size = 64
 
     class XXHashBase:
