@@ -35528,15 +35528,13 @@ class DereferenceCommand(GenericCommand):
             if not is_valid_addr(current_address):
                 continue
             v = read_int_from_memory(current_address)
-            ret = Kernel.get_slab_contains(
-                v, allow_unaligned=self.args.slab_contains_unaligned, keep_color=True,
-            )
+            ret = Kernel.get_slab_contains(v, allow_unaligned=self.args.slab_contains_unaligned)
             if ret:
                 tag = self.tags_dict.get(idx, "")
                 if tag:
                     tag += ", "
                 tag += ret.split()[1]
-                if "unaligned?" in ret:
+                if "remarks: unaligned" in ret:
                     tag += "(unaligned)"
                 self.tags_dict[idx] = tag
                 self.max_tag_width = max(self.max_tag_width, len(Color.remove_color(tag)))
@@ -62194,11 +62192,12 @@ class Kernel:
         ret = gdb.execute("slab-contains --quiet {:#x}".format(addr), to_string=True).strip()
         if not ret:
             return None
-        if not allow_unaligned and "(unaligned?)" in ret:
+        ret_plain = Color.remove_color(ret)
+        if not allow_unaligned and "remarks: unaligned" in ret_plain:
             return None
         if keep_color:
             return ret
-        return Color.remove_color(ret)
+        return ret_plain
 
     @staticmethod
     @Cache.cache_until_next
@@ -64522,12 +64521,13 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             slab: 0xfffff93f800474c0
             kmem_cache: 0xffff9f4981048c00
             base: 0xffff9f49811d3000
-            name: mnt_cache  size: 0x140  num_pages: 0x1 (unaligned?)
+            name: mnt_cache  size: 0x140  num_pages: 0x1
+            remarks: unaligned
             """
             for i in range(0x40):
                 cand_offset_mnt = current_arch.ptrsize * i
                 mnt = read_int_from_memory(file + cand_offset_mnt)
-                # f_path.mnt points in the middle of the chunk, so the "unaligned?" warning is not a problem
+                # f_path.mnt points in the middle of the chunk, so the "unaligned" warning is not a problem
                 ret = Kernel.get_slab_contains(mnt, allow_unaligned=True)
                 if not ret:
                     continue
@@ -117170,9 +117170,13 @@ class SlabContainsCommand(GenericCommand):
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
         used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
         if target_addr in freed_addresses:
-            gef_print("status: {:s} (found in freelist)".format(Color.colorify("freed", freed_address_color)))
+            self.quiet_print("status: {:s} (found object base in freelist)".format(
+                Color.colorify("freed", freed_address_color),
+            ))
         else:
-            gef_print("status: {:s} (not found in freelist)".format(Color.colorify("in-use", used_address_color)))
+            self.quiet_print("status: {:s} (not found object base in freelist)".format(
+                Color.colorify("in-use", used_address_color),
+            ))
         return
 
     def slab_contains(self):
@@ -117192,7 +117196,6 @@ class SlabContainsCommand(GenericCommand):
                 page_next = read_int_from_memory(page + self.page_offset_next)
                 if page_next & 1:
                     current -= get_pagesize()
-                    self.quiet_warn("Detected invalid value, continue exploring...")
                     continue
 
                 kmem_cache = read_int_from_memory(page + self.page_offset_slab_cache)
@@ -117200,18 +117203,15 @@ class SlabContainsCommand(GenericCommand):
                     self.quiet_err("This address is not managed by slab (kmem_cache=0)")
                     return
 
-                self.quiet_print("kmem_cache: {:#x}".format(kmem_cache))
-
                 if (kmem_cache & get_pagesize_mask_high()) == 0xdead_0000_0000_0000:
                     current -= get_pagesize()
-                    self.quiet_warn("Detected invalid value, continue exploring...")
                     continue
 
                 if kmem_cache & 1:
                     current -= get_pagesize()
-                    self.quiet_warn("Detected invalid value, continue exploring...")
                     continue
 
+                self.quiet_print("kmem_cache: {:#x}".format(kmem_cache))
                 self.quiet_print("base: {:#x}".format(current))
                 break
         except (gdb.MemoryError, ZeroDivisionError):
@@ -117237,7 +117237,7 @@ class SlabContainsCommand(GenericCommand):
             else:
                 red_left_pad = 0
                 s_mem = read_int_from_memory(page + self.page_offset_s_mem)
-                color_offset = s_mem & 0xfff
+                color_offset = s_mem & get_pagesize_mask_low()
                 gfporder = read_int32_from_memory(kmem_cache + self.kmem_cache_offset_gfporder)
                 num_pages = 1 << gfporder
 
@@ -117246,21 +117246,29 @@ class SlabContainsCommand(GenericCommand):
             # However, what the user actually wants is the number of chunks that are truly in use,
             # excluding those accounted for by `kmem_cache_cpu->freelist`.
             # Accurately deriving that value is non-trivial.
-            msg = ("name: {:s}  object_size: {:s} (chunk_size: {:#x})  num_pages: {:#x}".format(
+            gef_print("name: {:s}  object_size: {:s} (chunk_size: {:#x})  num_pages: {:#x}".format(
                 Color.colorify(slab_cache_name, chunk_label_color),
                 Color.colorify_hex(slab_cache_object_size, chunk_size_color),
-                slab_cache_size,
-                num_pages,
+                slab_cache_size, num_pages,
             ))
-            aligned = True
-            if (self.args.address - (red_left_pad + color_offset) - current) % slab_cache_size != 0:
-                msg += " " + Color.redify("(unaligned?)")
-                aligned = False
-            gef_print(msg)
+
+            first_object = current + red_left_pad + color_offset
+            delta = self.args.address - first_object
+
+            if delta < 0:
+                gef_print("remarks: {:s}".format(Color.redify("before first object")))
+                return
+
+            object_base = first_object + (delta // slab_cache_size) * slab_cache_size
+            object_offset = delta % slab_cache_size
+
+            self.quiet_print("object_base: {:#x}".format(object_base))
+
+            if object_offset != 0:
+                gef_print("remarks: {:s} (offset: +{:#x})".format(Color.redify("unaligned"), object_offset))
 
             # resolve freelist and print chunk status (in-use or freed)
-            if aligned:
-                self.check_slab_dump(self.args.address, slab_cache_name)
+            self.check_slab_dump(object_base, slab_cache_name)
         except (gdb.MemoryError, ZeroDivisionError):
             self.quiet_err("Memory read error")
         return
