@@ -6902,7 +6902,7 @@ class RISCV(Architecture):
     has_delay_slot = False
     has_syscall_delay_slot = False
     has_ret_delay_slot = False
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = True
 
     keystone_support = False
@@ -7187,7 +7187,7 @@ class ARM(Architecture):
     has_delay_slot = False
     has_syscall_delay_slot = False
     has_ret_delay_slot = False
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = True
 
     keystone_support = True
@@ -7636,7 +7636,7 @@ class X86(Architecture):
     has_delay_slot = False
     has_syscall_delay_slot = False
     has_ret_delay_slot = False
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = True
 
     keystone_support = True
@@ -8198,7 +8198,7 @@ class PPC(Architecture):
     has_delay_slot = False
     has_syscall_delay_slot = False
     has_ret_delay_slot = False
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = True
 
     keystone_support = True
@@ -8473,7 +8473,7 @@ class SPARC(Architecture):
     has_delay_slot = True
     has_syscall_delay_slot = True
     has_ret_delay_slot = True
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = True
 
     keystone_support = True
@@ -8764,7 +8764,7 @@ class MIPS(Architecture):
     has_delay_slot = True
     has_syscall_delay_slot = True
     has_ret_delay_slot = True
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = True
 
     keystone_support = True
@@ -9028,7 +9028,7 @@ class S390X(Architecture):
     has_delay_slot = False
     has_syscall_delay_slot = True
     has_ret_delay_slot = False
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = True
 
     keystone_support = True
@@ -9414,7 +9414,7 @@ class SH4(Architecture):
     has_delay_slot = True
     has_syscall_delay_slot = True
     has_ret_delay_slot = True
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = True
 
     keystone_support = False
@@ -9538,7 +9538,7 @@ class M68K(Architecture):
     has_delay_slot = False
     has_syscall_delay_slot = True
     has_ret_delay_slot = False
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = True
 
     keystone_support = False
@@ -9796,7 +9796,7 @@ class ALPHA(Architecture):
     has_delay_slot = False
     has_syscall_delay_slot = False
     has_ret_delay_slot = False
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = True
 
     keystone_support = False
@@ -9934,7 +9934,7 @@ class HPPA(Architecture):
     has_delay_slot = True
     has_syscall_delay_slot = True
     has_ret_delay_slot = True
-    stack_grow_down = True
+    stack_grow_down = False
     tls_supported = True
 
     keystone_support = False
@@ -10296,7 +10296,7 @@ class OR1K(Architecture):
     has_delay_slot = True
     has_syscall_delay_slot = True
     has_ret_delay_slot = True
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = True
 
     keystone_support = False
@@ -10413,7 +10413,7 @@ class NIOS2(Architecture):
     has_delay_slot = False
     has_syscall_delay_slot = False
     has_ret_delay_slot = False
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = True
 
     keystone_support = False
@@ -10548,7 +10548,7 @@ class MICROBLAZE(Architecture):
     has_delay_slot = True
     has_syscall_delay_slot = True
     has_ret_delay_slot = True
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = True
 
     keystone_support = False
@@ -10684,7 +10684,7 @@ class XTENSA(Architecture):
     has_delay_slot = False
     has_syscall_delay_slot = False
     has_ret_delay_slot = False
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = True
 
     keystone_support = False
@@ -10892,7 +10892,7 @@ class CRIS(Architecture):
     has_delay_slot = True
     has_syscall_delay_slot = True
     has_ret_delay_slot = True
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = False
 
     keystone_support = False
@@ -11040,7 +11040,7 @@ class LOONGARCH64(Architecture):
     has_delay_slot = False
     has_syscall_delay_slot = False
     has_ret_delay_slot = False
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = True
 
     keystone_support = False
@@ -11198,7 +11198,7 @@ class ARC(Architecture):
     has_delay_slot = True # if op includes `.d`
     has_syscall_delay_slot = False
     has_ret_delay_slot = True # if op includes `.d`
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = True
 
     keystone_support = False
@@ -11512,7 +11512,7 @@ class CSKY(Architecture):
     has_delay_slot = False
     has_syscall_delay_slot = False
     has_ret_delay_slot = False
-    stack_grow_down = False
+    stack_grow_down = True
     tls_supported = True
 
     keystone_support = False
@@ -11645,7 +11645,7 @@ class CSKY(Architecture):
 #    #has_delay_slot = False
 #    #has_syscall_delay_slot = False
 #    #has_ret_delay_slot = False
-#    #stack_grow_down = False
+#    #stack_grow_down = True
 #    #tls_supported = False
 #
 #    #keystone_support = False
@@ -32198,7 +32198,7 @@ class ContextStackCommand(GenericCommand):
                 err("Cannot read memory from $SP (corrupted stack pointer?)", redirect=redirect)
             return
 
-        if current_arch.stack_grow_down:
+        if not current_arch.stack_grow_down:
             nb_lines *= -1
 
         ContextCommand.execute_command(
@@ -146680,7 +146680,7 @@ class StackFrameCommand(GenericCommand):
         stack_lo = int(frame.read_register("sp"))
         results = []
 
-        if not current_arch.stack_grow_down:
+        if current_arch.stack_grow_down:
             addr_lo = stack_lo
             addr_hi = stack_hi
         else:
@@ -146693,7 +146693,7 @@ class StackFrameCommand(GenericCommand):
                 pprint_str += " ($savedip)"
             results.append(pprint_str)
 
-        if current_arch.stack_grow_down:
+        if not current_arch.stack_grow_down:
             results.reverse()
             gef_print(titlify("Stack top (higher address)"))
         else:
@@ -146702,7 +146702,7 @@ class StackFrameCommand(GenericCommand):
         for res in results:
             gef_print(res)
 
-        if current_arch.stack_grow_down:
+        if not current_arch.stack_grow_down:
             gef_print(titlify("Stack bottom (lower address)"))
         else:
             gef_print(titlify("Stack bottom (higher address)"))
