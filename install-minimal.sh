@@ -1,4 +1,5 @@
-#!/bin/sh -ex
+#!/bin/sh
+set -ex
 
 echo "[+] Initialize"
 GDBINIT_PATH="/root/.gdbinit"

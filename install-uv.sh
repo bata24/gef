@@ -1,4 +1,5 @@
-#!/bin/sh -ex
+#!/bin/sh
+set -ex
 
 echo "[+] Initialize"
 GDBINIT_PATH="/root/.gdbinit"
@@ -55,6 +56,7 @@ fi
 . "${GEF_VENV_PATH}/bin/activate"
 
 echo "[+] pip3"
+uv pip install "filebytes @ git+https://github.com/sashs/filebytes.git" # for Ubuntu 26.04
 uv pip install setuptools crccheck unicorn capstone ropper keystone-engine tqdm magika codext angr pillow pyzbar
 
 # The GEF installer installs `seccomp-tools` if neither `ceccomp` nor `seccomp-tools` is found.

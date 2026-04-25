@@ -1,4 +1,5 @@
-#!/bin/sh -ex
+#!/bin/sh
+set -ex
 
 echo "[+] Initialize"
 GDBINIT_PATH="/root/.gdbinit"
@@ -40,6 +41,7 @@ fi
 #apt-get install -y binwalk
 
 echo "[+] pip3"
+pip3 install "filebytes @ git+https://github.com/sashs/filebytes.git" # for Ubuntu 26.04
 pip3 install setuptools crccheck unicorn capstone ropper keystone-engine tqdm magika codext angr pillow pyzbar
 
 # The GEF installer installs `seccomp-tools` if neither `ceccomp` nor `seccomp-tools` is found.
