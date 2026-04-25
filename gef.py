@@ -117017,6 +117017,7 @@ class SlabContainsCommand(GenericCommand):
         "                                                              | chunk       |",
         "                                                              | ...         |",
         "                                                              +-------------+",
+        "* Compound pages and huge pages are not supported.",
     ]
     _note_ = "\n".join(_note_)
 
