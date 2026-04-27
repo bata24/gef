@@ -66203,7 +66203,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
 
         struct module_memory {
             void *base;
-            void *rw_copy; // v6.13~
+            void *rw_copy; // v6.13~6.14
             bool is_rox;   // v6.13~
             unsigned int size;
         #ifdef CONFIG_MODULES_TREE_LOOKUP
@@ -66228,10 +66228,22 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         MOD_INIT_DATA = 5 # noqa: F841
         MOD_INIT_RODATA = 6 # noqa: F841
         MOD_MEM_NUM_TYPES = 7 # noqa: F841
+
+        kversion = Kernel.kernel_version()
+        if kversion < "6.13":
+            offset_size = current_arch.ptrsize # void*
+        elif "6.13" <= kversion < "6.15":
+            offset_size = current_arch.ptrsize * 2 + 4 # void*, void*, bool
+        else:
+            offset_size = current_arch.ptrsize + 4 # void*, bool
+        sizeof_module_memory_min = align_to_ptrsize(offset_size + 4)
+        sizeof_mod_tree_node = current_arch.ptrsize * 7
+        sizeof_module_memory_max = sizeof_module_memory_min + sizeof_mod_tree_node
+
         # TODO: only handles non init module type
         for i in range(300):
             offset_mem = i * current_arch.ptrsize
-            for sizeof_module_memory in (8, 0x48, 0x50):
+            for sizeof_module_memory in (sizeof_module_memory_min, sizeof_module_memory_max):
                 valid = True
                 for module in module_addrs:
                     for mem_type in (MOD_TEXT, MOD_DATA, MOD_RODATA):
@@ -66246,10 +66258,6 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                             valid = False
                             break
                         # size check
-                        if sizeof_module_memory == 0x50:
-                            offset_size = current_arch.ptrsize * 2 + 4 # void*, void*, bool
-                        else:
-                            offset_size = current_arch.ptrsize # void*
                         cand_size = read_int32_from_memory(mem_ptr + offset_size)
                         if cand_size == 0 or cand_size > 0x10_0000:
                             valid = False
