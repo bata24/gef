@@ -66942,34 +66942,136 @@ class KernelModuleLoadCommand(GenericCommand):
 
         # slow_path
         for i in range(300):
+            cached_sect_attrs = []
             offset_sect_attrs = current_arch.ptrsize * i
-            valid = True
             for module in module_addrs:
                 # access check
                 if not is_valid_addr(module + offset_sect_attrs):
-                    valid = False
                     break
                 sect_attrs = read_int_from_memory(module + offset_sect_attrs)
-                if not is_valid_addr(sect_attrs):
-                    valid = False
+                if not self.is_valid_sect_attrs(sect_attrs):
                     break
-                firstname = read_int_from_memory(sect_attrs + self.offset_firstname)
-                if not is_valid_addr(firstname):
-                    valid = False
+                cached_sect_attrs.append(sect_attrs)
+            else:
+                self.quiet_info("offsetof(module, sect_attrs): {:#x}".format(offset_sect_attrs))
+                return offset_sect_attrs, cached_sect_attrs
+
+        self.quiet_err("Not found module->sect_attrs")
+        return None, None
+
+    def is_valid_sect_attrs(self, sect_attrs):
+        if not is_valid_addr(sect_attrs) or sect_attrs & 7:
+            return False
+        for offset in range(40):
+            attribute_list = read_int_from_memory(sect_attrs + offset * current_arch.ptrsize)
+            if self.is_valid_attribute_list(attribute_list):
+                return True
+        return False
+
+    def is_valid_attribute_list(self, attribute_list):
+        found = 0
+        while True:
+            if not is_valid_addr(attribute_list):
+                return False
+            attribute = read_int_from_memory(attribute_list)
+            # self.quiet_info("attribute: {:#x}".format(attribute))
+            if attribute == 0:
+                break
+            if not is_valid_addr(attribute):
+                return False
+            nameptr = read_int_from_memory(attribute)
+            if not self.is_valid_sectname(nameptr):
+                return False
+            # self.quiet_info("name: {:s}".format(read_cstring_from_memory(nameptr)))
+            found += 1
+            attribute_list += current_arch.ptrsize
+        # self.quiet_info("attr list: {:#x}".format(attribute_list))
+        # self.quiet_info("found: {}".format(found))
+        return found > 0
+
+    def is_valid_sectname(self, nameptr):
+        if not is_valid_addr(nameptr):
+            return False
+        sectname = read_cstring_from_memory(nameptr)
+        if sectname is None or not sectname.startswith((".", "__")):
+            if sectname and len(sectname) >= 4:
+                self.quiet_info(
+                    "possible section name (rejected for not starting with . or __): {:s}".format(sectname),
+                )
+            return False
+        return True
+
+    def get_offset_attrs(self):
+        for i in range(10):
+            cached_attribute_list = []
+            offset_attrs = current_arch.ptrsize * i
+            for sect_attrs in self.cached_sect_attrs:
+                attribute_list = read_int_from_memory(sect_attrs + offset_attrs)
+                if not self.is_valid_attribute_list(attribute_list):
                     break
-                sectname = read_cstring_from_memory(firstname)
-                # well formed kernel module sections *should* only start with these prefixes
-                # might be better to do a length based heuristic?
-                if sectname is None or not sectname.startswith((".", "__")):
-                    if sectname and len(sectname) >= 4:
-                        self.quiet_info(
-                            "possible section name (rejected for not starting with . or __): {:s}".format(sectname),
-                        )
-                    valid = False
-                    break
-            if valid:
-                return offset_sect_attrs
-        return None
+                cached_attribute_list.append(attribute_list)
+            else:
+                self.quiet_info("offsetof(sect_attrs, attrs): {:#x}".format(offset_attrs))
+                return offset_attrs, cached_attribute_list
+
+        self.quiet_err("Not found sect_attrs->attrs")
+        return None, None
+
+    def get_offset_address(self):
+        def is_executable(x):
+            maps = Kernel.get_maps()
+            for start, size, perm in maps:
+                if start <= x and x < start + size:
+                    return perm.endswith("X")
+            return False
+
+        executable_sections = [
+            ".text",
+            ".init.text",
+            ".exit.text",
+        ]
+
+        data_sections = [
+            ".data",
+            ".bss",
+            ".init.data",
+            ".exit.data",
+        ]
+
+        for i in range(30):
+            offset_address = current_arch.ptrsize * i
+            for attribute_list in self.cached_attribute_list:
+                valid_executable_section = False
+                valid_data_section = False
+                while True:
+                    attribute = read_int_from_memory(attribute_list)
+                    if attribute == 0:
+                        break
+                    nameptr = read_int_from_memory(attribute)
+                    name = read_cstring_from_memory(nameptr)
+                    addr = read_int_from_memory(attribute + offset_address)
+
+                    # # This check doesnt actually work because
+                    # # its not guaranteed that the kmod data
+                    # # is faulted in yet.
+                    # if not is_valid_addr(addr):
+                    #     valid = False
+                    #     break
+
+                    if name in executable_sections and is_executable(addr):
+                        valid_executable_section = True
+                    elif name in data_sections and not is_executable(addr):
+                        valid_data_section = True
+                    if valid_executable_section and valid_data_section:
+                        break
+                    attribute_list += current_arch.ptrsize
+                if not valid_executable_section or not valid_data_section: break
+            else:
+                self.quiet_info("offsetof(attribute, address): {:#x}".format(offset_address))
+                return offset_address
+
+        # this field doesnt *really* exists but idk what to call it
+        self.quiet_err("Not found attribute->address")
 
     def initialize(self):
         if hasattr(self, "initialized"):
@@ -67006,43 +67108,22 @@ class KernelModuleLoadCommand(GenericCommand):
             return False
         self.quiet_info("offsetof(module, name): {:#x}".format(self.offset_name))
 
-        # module->{nsections,firstname}
-        if kversion < "3.11":
-            self.offset_nsections = current_arch.ptrsize * 3
-            self.offset_firstname = current_arch.ptrsize * 4
-        elif kversion < "4.4":
-            self.offset_nsections = current_arch.ptrsize * 4
-            self.offset_firstname = current_arch.ptrsize * 5
-        elif kversion < "6.13":
-            self.offset_nsections = current_arch.ptrsize * 5
-            self.offset_firstname = current_arch.ptrsize * 6
-        else:
-            self.offset_nsections = current_arch.ptrsize * 6
-            self.offset_firstname = current_arch.ptrsize * 7
-
-        # module->{address,module_sect_attr}
-        if kversion < "5.7":
-            self.offset_address = self.offset_firstname + current_arch.ptrsize * 8
-            self.sizeof_module_sect_attr = current_arch.ptrsize * 9
-        elif kversion < "5.12":
-            self.offset_address = self.offset_firstname + current_arch.ptrsize * 7
-            self.sizeof_module_sect_attr = current_arch.ptrsize * 8
-        elif kversion < "6.7":
-            self.offset_address = self.offset_firstname + current_arch.ptrsize * 8
-            self.sizeof_module_sect_attr = current_arch.ptrsize * 9
-        elif kversion < "6.13":
-            self.offset_address = self.offset_firstname + current_arch.ptrsize * 9
-            self.sizeof_module_sect_attr = current_arch.ptrsize * 10
-        else:
-            self.offset_address = self.offset_firstname + current_arch.ptrsize * 11
-            self.sizeof_module_sect_attr = current_arch.ptrsize * 12
-
         # module->sect_attrs
-        self.offset_sect_attrs = self.get_offset_sect_attrs(self.module_addrs)
+        self.offset_sect_attrs, self.cached_sect_attrs = self.get_offset_sect_attrs(self.module_addrs)
         if self.offset_sect_attrs is None:
             self.quiet_err("Could not find module->sect_attrs")
             return False
         self.quiet_info("offsetof(module, sect_attrs): {:#x}".format(self.offset_sect_attrs))
+
+        self.offset_attrs, self.cached_attribute_list = self.get_offset_attrs()
+        if self.offset_attrs is None:
+            self.quiet_err("Could not find module->sect_attrs->attrs[]")
+            return False
+
+        self.offset_address = self.get_offset_address()
+        if self.offset_address is None:
+            self.quiet_err("Could not find offset of bin_attribute.private (section address)")
+            return False
 
         self.initialized = True
         return True
@@ -67055,17 +67136,21 @@ class KernelModuleLoadCommand(GenericCommand):
 
             # get nsections
             sect_attrs = read_int_from_memory(module + self.offset_sect_attrs)
-            nsections = read_int_from_memory(sect_attrs + self.offset_nsections) & 0xffff_ffff
-            self.quiet_info("nsections = {}".format(nsections))
+            attribute_list = read_int_from_memory(sect_attrs + self.offset_attrs)
 
             # get each section name and address
             sections = []
-            for i in range(nsections):
-                name_ptr = read_int_from_memory(sect_attrs + self.offset_firstname + self.sizeof_module_sect_attr * i)
-                name = read_cstring_from_memory(name_ptr)
-                addr = read_int_from_memory(sect_attrs + self.offset_address + self.sizeof_module_sect_attr * i)
+            while True:
+                attribute = read_int_from_memory(attribute_list)
+                if attribute == 0:
+                    break
+                nameptr = read_int_from_memory(attribute)
+                name = read_cstring_from_memory(nameptr)
+                # self.quiet_info("attr={:#x}".format(attribute))
+                addr = read_int_from_memory(attribute + self.offset_address)
                 self.quiet_info("name={:s}, addr={:#x}".format(name, addr))
                 sections.append((name, addr))
+                attribute_list += current_arch.ptrsize
 
                 # unneeded, but for convenience
                 gdb.execute("set ${:s} = {:#x}".format(name.replace(".", "").replace("-", ""), addr))
