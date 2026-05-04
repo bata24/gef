@@ -66936,7 +66936,13 @@ class KernelModuleLoadCommand(GenericCommand):
         """
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).sect_attrs"))
+            offset_sect_attrs = to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).sect_attrs"))
+            # Taking for granted the information we get is accurate we can reliably retrieve module->sect_attrs
+            cached_sect_attrs = []
+            for module in module_addrs:
+                sect_attrs = read_int_from_memory(module + offset_sect_attrs)
+                cached_sect_attrs.append(sect_attrs)
+            return offset_sect_attrs, cached_sect_attrs
         except gdb.error:
             pass
 
