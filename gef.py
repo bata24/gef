@@ -66959,10 +66959,8 @@ class KernelModuleLoadCommand(GenericCommand):
                     break
                 cached_sect_attrs.append(sect_attrs)
             else:
-                self.quiet_info("offsetof(module, sect_attrs): {:#x}".format(offset_sect_attrs))
                 return offset_sect_attrs, cached_sect_attrs
 
-        self.quiet_err("Not found module->sect_attrs")
         return None, None
 
     def is_valid_sect_attrs(self, sect_attrs):
@@ -66999,10 +66997,10 @@ class KernelModuleLoadCommand(GenericCommand):
         if not is_valid_addr(nameptr):
             return False
         sectname = read_cstring_from_memory(nameptr)
-        if sectname is None or not sectname.startswith((".", "__")):
+        if sectname is None or not sectname.startswith((".", "__", "_")):
             if sectname and len(sectname) >= 4:
                 self.quiet_info(
-                    "possible section name (rejected for not starting with . or __): {:s}".format(sectname),
+                    "possible section name (rejected for not starting with \".\", \"__\" or \"_\"): {:s}".format(sectname),
                 )
             return False
         return True
@@ -67017,7 +67015,6 @@ class KernelModuleLoadCommand(GenericCommand):
                     break
                 cached_attribute_list.append(attribute_list)
             else:
-                self.quiet_info("offsetof(sect_attrs, attrs): {:#x}".format(offset_attrs))
                 return offset_attrs, cached_attribute_list
 
         self.quiet_err("Not found sect_attrs->attrs")
@@ -67039,6 +67036,7 @@ class KernelModuleLoadCommand(GenericCommand):
 
         data_sections = [
             ".data",
+            ".rodata"
             ".bss",
             ".init.data",
             ".exit.data",
@@ -67071,13 +67069,9 @@ class KernelModuleLoadCommand(GenericCommand):
                     if valid_executable_section and valid_data_section:
                         break
                     attribute_list += current_arch.ptrsize
-                if not valid_executable_section or not valid_data_section: break
-            else:
-                self.quiet_info("offsetof(attribute, address): {:#x}".format(offset_address))
-                return offset_address
-
-        # this field doesnt *really* exists but idk what to call it
-        self.quiet_err("Not found attribute->address")
+                if valid_executable_section and valid_data_section:
+                    return offset_address
+        return None
 
     def initialize(self):
         if hasattr(self, "initialized"):
@@ -67125,11 +67119,13 @@ class KernelModuleLoadCommand(GenericCommand):
         if self.offset_attrs is None:
             self.quiet_err("Could not find module->sect_attrs->attrs[]")
             return False
+        self.quiet_info("offsetof(sect_attrs, attrs): {:#x}".format(self.offset_attrs))
 
         self.offset_address = self.get_offset_address()
         if self.offset_address is None:
             self.quiet_err("Could not find offset of bin_attribute.private (section address)")
             return False
+        self.quiet_info("offsetof(attribute, address): {:#x}".format(self.offset_address))
 
         self.initialized = True
         return True
