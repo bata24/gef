@@ -42,7 +42,7 @@ fi
 
 echo "[+] pip3"
 pip3 install "filebytes @ git+https://github.com/sashs/filebytes.git" # for Ubuntu 26.04
-pip3 install setuptools crccheck unicorn capstone ropper keystone-engine tqdm magika codext angr pillow pyzbar
+pip3 install setuptools crccheck unicorn capstone ropper keystone-engine tqdm magika codext angr pillow pyzbar cffi gmpy2
 
 # The GEF installer installs `seccomp-tools` if neither `ceccomp` nor `seccomp-tools` is found.
 # I recomend `ceccomp`, but its build is not simple. Install it manually if needed.

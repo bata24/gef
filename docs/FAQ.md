@@ -248,6 +248,7 @@ To use these commands fully, you need to manually install the necessary packages
 |`base-n-encode`|-|`codext`|-|
 |`crc`|-|`crccheck`|-|
 |`hash`(FSB hash) |-|`gmpy2`|-|
+|`hash`(for faster) |-|`cffi`|-|
 |`uefi-ovmf-info`|-|`crccheck`|-|
 |`filetype-memory`|`file`|`magika`|-|
 |`ropper`|-|`ropper`|-|
