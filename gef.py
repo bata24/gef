@@ -82997,8 +82997,6 @@ class Hash:
     class GOST:  # codespell:ignore
         block_size = 32
         digest_size = 32
-        sbox = None
-
         sbox = (
             [0x04, 0x0a, 0x09, 0x02, 0x0d, 0x08, 0x00, 0x0e, 0x06, 0x0b, 0x01, 0x0c, 0x07, 0x0f, 0x05, 0x03],
             [0x0e, 0x0b, 0x04, 0x0c, 0x06, 0x0d, 0x0f, 0x0a, 0x02, 0x03, 0x08, 0x01, 0x00, 0x07, 0x05, 0x09],
@@ -83011,8 +83009,6 @@ class Hash:
         )
 
         def __init__(self, data=b""):
-            if self.sbox is None:
-                raise ValueError("sbox must be defined in subclass")
             self.hash = [0] * 8
             self.sum = [0] * 8
             self.message = bytearray(32)
@@ -101657,8 +101653,6 @@ class Hash:
         number_of_extra_pipes = 1
 
         def __init__(self, data=b""):
-            if self.hashbitlen is None or self.digest_size is None:
-                raise ValueError("hashbitlen and digest_size must be defined")
             self.number_of_pipes = self.compute_number_of_pipes(self.hashbitlen)
             self.block_size = self.number_of_pipes * self.word_size
             self.pipe = [0] * (self.number_of_pipes + 1)
@@ -101694,7 +101688,7 @@ class Hash:
                 number_of_pipes = self.max_number_of_pipes
             return number_of_pipes
 
-        def rot64(self, word, bits):
+        def ror64(self, word, bits):
             bits &= 63
             if bits == 0:
                 return word
@@ -101702,9 +101696,9 @@ class Hash:
 
         def sbox(self, word):
             word = (word * 0x9e37_79b9_7f4a_7bb9 + 0x5e2d_58d8_b3bc_def7) & 0xffff_ffff_ffff_ffff
-            word = self.rot64(word, 37)
+            word = self.ror64(word, 37)
             word = (word * 0x9e37_79b9_7f4a_7bb9 + 0x5e2d_58d8_b3bc_def7) & 0xffff_ffff_ffff_ffff
-            word = self.rot64(word, 37)
+            word = self.ror64(word, 37)
             return word
 
         def add_to_counter(self, counter, to_add):
@@ -101724,14 +101718,14 @@ class Hash:
         def normal_round(self, data_word):
             pipe = self.pipe
             number_of_pipes = self.number_of_pipes
-            rot64 = self.rot64
+            ror64 = self.ror64
             sbox = self.sbox
             xor_step = 0x0101_0101_0101_0101
 
             pipe[number_of_pipes] = pipe[0]
             for i in range(number_of_pipes):
                 value = pipe[i] ^ (i * xor_step) ^ data_word
-                value = rot64(value, (i * 37) & 63)
+                value = ror64(value, (i * 37) & 63)
                 value = sbox(value)
                 pipe[i] = (value + pipe[i + 1]) & 0xffff_ffff_ffff_ffff
 
@@ -101920,130 +101914,103 @@ class Hash:
         def hexdigest(self):
             return self.digest().hex()
 
-        def u64_to_le_list(self, x):
-            return list(x.to_bytes(8, "little"))
-
-        def u64_from_le_list(self, values):
-            return int.from_bytes(bytes(values), "little")
-
-        def get_f16(self, x, a, b, c):
-            return [x[1] ^ a, x[0] ^ b ^ self.sbox[x[1] ^ c]]
-
-        def get_f32(self, x, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama):
-            y0 = x[2] ^ ((alpha >> 8) & 0xff)
-            y1 = x[3] ^ (alpha & 0xff)
-
-            z = [
-                x[2] ^ ((gama >> 8) & 0xff),
-                x[3] ^ (gama & 0xff),
-            ]
-
-            f = self.get_f16(z, a3, b3, c3)
-            z = self.get_f16(f, a2, b2, c2)
-            f = self.get_f16(z, a1, b1, c1)
-
-            return [
-                y0,
-                y1,
-                x[0] ^ ((beta >> 8) & 0xff) ^ f[0],
-                x[1] ^ (beta & 0xff) ^ f[1],
-            ]
-
-        def get_f64(self, x, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama, a_word, b_word, c_word):
-            y = [
-                x[4] ^ ((a_word >> 24) & 0xff),
-                x[5] ^ ((a_word >> 16) & 0xff),
-                x[6] ^ ((a_word >> 8) & 0xff),
-                x[7] ^ (a_word & 0xff),
-            ]
-
-            z = [
-                x[4] ^ ((c_word >> 24) & 0xff),
-                x[5] ^ ((c_word >> 16) & 0xff),
-                x[6] ^ ((c_word >> 8) & 0xff),
-                x[7] ^ (c_word & 0xff),
-            ]
-
-            f = self.get_f32(z, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama)
-
-            return y + [
-                x[0] ^ ((b_word >> 24) & 0xff) ^ f[0],
-                x[1] ^ ((b_word >> 16) & 0xff) ^ f[1],
-                x[2] ^ ((b_word >> 8) & 0xff) ^ f[2],
-                x[3] ^ (b_word & 0xff) ^ f[3],
-            ]
-
         def get_q64(self, x, y, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama, a_word, b_word, c_word):
+
+            def get_f16(x, a, b, c):
+                return [x[1] ^ a, x[0] ^ b ^ self.sbox[x[1] ^ c]]
+
+            def get_f32(x, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama):
+                y0 = x[2] ^ ((alpha >> 8) & 0xff)
+                y1 = x[3] ^ (alpha & 0xff)
+                z = [
+                    x[2] ^ ((gama >> 8) & 0xff),
+                    x[3] ^ (gama & 0xff),
+                ]
+                f = get_f16(z, a3, b3, c3)
+                z = get_f16(f, a2, b2, c2)
+                f = get_f16(z, a1, b1, c1)
+                return [y0, y1, x[0] ^ ((beta >> 8) & 0xff) ^ f[0], x[1] ^ (beta & 0xff) ^ f[1]]
+
+            def get_f64(x, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama, a_word, b_word, c_word):
+                y = [
+                    x[4] ^ ((a_word >> 24) & 0xff),
+                    x[5] ^ ((a_word >> 16) & 0xff),
+                    x[6] ^ ((a_word >> 8) & 0xff),
+                    x[7] ^ (a_word & 0xff),
+                ]
+                z = [
+                    x[4] ^ ((c_word >> 24) & 0xff),
+                    x[5] ^ ((c_word >> 16) & 0xff),
+                    x[6] ^ ((c_word >> 8) & 0xff),
+                    x[7] ^ (c_word & 0xff),
+                ]
+                f = get_f32(z, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama)
+                return y + [
+                    x[0] ^ ((b_word >> 24) & 0xff) ^ f[0],
+                    x[1] ^ ((b_word >> 16) & 0xff) ^ f[1],
+                    x[2] ^ ((b_word >> 8) & 0xff) ^ f[2],
+                    x[3] ^ (b_word & 0xff) ^ f[3],
+                ]
+
             z = [xb ^ yb for xb, yb in zip(x, y)]
-            fp = self.get_f64(
-                z[::-1],
-                a1, b1, c1,
-                a2, b2, c2,
-                a3, b3, c3,
-                alpha, beta, gama,
-                a_word, b_word, c_word,
-            )
+            fp = get_f64(z[::-1], a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama, a_word, b_word, c_word)
             fz = fp[::-1]
             return [fb ^ yb for fb, yb in zip(fz, y)]
 
-        def ae(self, leader, values, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama, a_word, b_word, c_word):
-            out = [0] * len(values)
-            m1 = leader
-
-            for i, value in enumerate(values):
-                p = (value + m1) & 0xffff_ffff_ffff_ffff
-                m1 = value
-                q = self.get_q64(
-                    self.u64_to_le_list(p),
-                    self.u64_to_le_list(m1),
-                    a1, b1, c1,
-                    a2, b2, c2,
-                    a3, b3, c3,
-                    alpha, beta, gama,
-                    a_word, b_word, c_word,
-                )
-                m1 = self.u64_from_le_list(q)
-                out[i] = m1
-
-            return out
-
-        def rae(self, leader, values, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama, a_word, b_word, c_word):
-            out = [0] * len(values)
-            p = leader
-
-            for i in range(len(values) - 1, -1, -1):
-                p = (p + values[i]) & 0xffff_ffff_ffff_ffff
-                q = self.get_q64(
-                    self.u64_to_le_list(values[i]),
-                    self.u64_to_le_list(p),
-                    a1, b1, c1,
-                    a2, b2, c2,
-                    a3, b3, c3,
-                    alpha, beta, gama,
-                    a_word, b_word, c_word,
-                )
-                p = self.u64_from_le_list(q)
-                out[i] = p
-
-            return out
-
-        def lintr(self, values):
-            values = list(values)
-            last = len(values) - 1
-            t0, t1, t2, t3 = self.lintr_taps
-
-            for _ in range(self.lintr_rounds):
-                pom = values[t0] ^ values[t1] ^ values[t2] ^ values[t3]
-                for i in range(last, 0, -1):
-                    values[i] = values[i - 1]
-                values[0] = pom
-
-            return values
-
-        def swap_64_halves(self, values):
-            return [((x & 0xffff_ffff) << 32) | (x >> 32) for x in values]
-
         def compile_words(self, message_words):
+
+            def lintr(values):
+                values = list(values)
+                last = len(values) - 1
+                t0, t1, t2, t3 = self.lintr_taps
+                for _ in range(self.lintr_rounds):
+                    pom = values[t0] ^ values[t1] ^ values[t2] ^ values[t3]
+                    for i in range(last, 0, -1):
+                        values[i] = values[i - 1]
+                    values[0] = pom
+                return values
+
+            def ae(leader, values, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama, a_word, b_word, c_word):
+                out = [0] * len(values)
+                m1 = leader
+
+                for i, value in enumerate(values):
+                    p = (value + m1) & 0xffff_ffff_ffff_ffff
+                    m1 = value
+                    q = self.get_q64(
+                        list(p.to_bytes(8, "little")),
+                        list(m1.to_bytes(8, "little")),
+                        a1, b1, c1,
+                        a2, b2, c2,
+                        a3, b3, c3,
+                        alpha, beta, gama,
+                        a_word, b_word, c_word,
+                    )
+                    m1 = int.from_bytes(bytes(q), "little")
+                    out[i] = m1
+
+                return out
+
+            def rae(leader, values, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha, beta, gama, a_word, b_word, c_word):
+                out = [0] * len(values)
+                p = leader
+
+                for i in range(len(values) - 1, -1, -1):
+                    p = (p + values[i]) & 0xffff_ffff_ffff_ffff
+                    q = self.get_q64(
+                        list(values[i].to_bytes(8, "little")),
+                        list(p.to_bytes(8, "little")),
+                        a1, b1, c1,
+                        a2, b2, c2,
+                        a3, b3, c3,
+                        alpha, beta, gama,
+                        a_word, b_word, c_word,
+                    )
+                    p = int.from_bytes(bytes(q), "little")
+                    out[i] = p
+
+                return out
+
             chain_words = len(self.h)
             x = [0] * (chain_words * 4)
 
@@ -102053,7 +102020,7 @@ class Hash:
                 x[(k << 2) + 2] = message_words[(k << 1) + 1]
                 x[(k << 2) + 3] = self.hash_words[k]
 
-            x = self.lintr(x)
+            x = lintr(x)
 
             l1 = (x[0] + x[1]) & 0xffff_ffff_ffff_ffff
             l2 = (x[2] + x[3]) & 0xffff_ffff_ffff_ffff
@@ -102091,32 +102058,13 @@ class Hash:
             b_word2 = (tmp >> 32) & 0xffff_ffff
             c_word2 = tmp & 0xffff_ffff
 
-            y = self.ae(
-                l2,
-                x,
-                a1, b1, c1,
-                a2, b2, c2,
-                a3, b3, c3,
-                alpha1, beta1, gama1,
-                a_word1, b_word1, c_word1,
-            )
-
-            y = self.swap_64_halves(y)
-
-            x = self.rae(
-                l1,
-                y,
-                a1, b1, c1,
-                a2, b2, c2,
-                a3, b3, c3,
-                alpha2, beta2, gama2,
-                a_word2, b_word2, c_word2,
-            )
+            y = ae(l2, x, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha1, beta1, gama1, a_word1, b_word1, c_word1)
+            y = [((x & 0xffff_ffff) << 32) | (x >> 32) for x in y]
+            x = rae(l1, y, a1, b1, c1, a2, b2, c2, a3, b3, c3, alpha2, beta2, gama2, a_word2, b_word2, c_word2)
 
             for i in range(chain_words):
                 self.h[i] = x[(i << 2) + 1]
                 self.hash_words[i] = x[(i << 2) + 3]
-
             return
 
         def compress(self, block):
@@ -102170,110 +102118,60 @@ class Hash:
             return
 
     class NaSHA224(NaSHABase):
-        name = "nasha224"
         block_size = 64
         digest_size = 28
         lintr_rounds = 16
         lintr_taps = (15, 9, 6, 3)
-
         h_init = (
-            0x6a09_e667_f3bc_c908,
-            0xbb67_ae85_84ca_a73b,
-            0x3c6e_f372_fe94_f82b,
-            0xa54f_f53a_5f1d_36f1,
+            0x6a09_e667_f3bc_c908, 0xbb67_ae85_84ca_a73b, 0x3c6e_f372_fe94_f82b, 0xa54f_f53a_5f1d_36f1,
         )
-
         hash_init = (
-            0xcbbb_9d5d_c105_9ed8,
-            0x629a_292a_367c_d507,
-            0x9159_015a_3070_dd17,
-            0x152f_ecd8_f70e_5939,
+            0xcbbb_9d5d_c105_9ed8, 0x629a_292a_367c_d507, 0x9159_015a_3070_dd17, 0x152f_ecd8_f70e_5939,
         )
 
     class NaSHA256(NaSHABase):
-        name = "nasha256"
         block_size = 64
         digest_size = 32
         lintr_rounds = 16
         lintr_taps = (15, 9, 6, 3)
-
         h_init = (
-            0x510e_527f_ade6_82d1,
-            0x9b05_688c_2b3e_6c1f,
-            0x1f83_d9ab_fb41_bd6b,
-            0x5be0_cd19_137e_2179,
+            0x510e_527f_ade6_82d1, 0x9b05_688c_2b3e_6c1f, 0x1f83_d9ab_fb41_bd6b, 0x5be0_cd19_137e_2179,
         )
-
         hash_init = (
-            0x6733_2667_ffc0_0b31,
-            0x8eb4_4a87_6858_1511,
-            0xdb0c_2e0d_64f9_8fa7,
-            0x47b5_481d_befa_4fa4,
+            0x6733_2667_ffc0_0b31, 0x8eb4_4a87_6858_1511, 0xdb0c_2e0d_64f9_8fa7, 0x47b5_481d_befa_4fa4,
         )
 
     class NaSHA384(NaSHABase):
-        name = "nasha384"
         block_size = 128
         digest_size = 48
         lintr_rounds = 32
         lintr_taps = (31, 24, 14, 6)
-
         h_init = (
-            0x6a09_e667_f3bc_c908,
-            0xbb67_ae85_84ca_a73b,
-            0x3c6e_f372_fe94_f82b,
-            0xa54f_f53a_5f1d_36f1,
-            0x510e_527f_ade6_82d1,
-            0x9b05_688c_2b3e_6c1f,
-            0x1f83_d9ab_fb41_bd6b,
-            0x5be0_cd19_137e_2179,
+            0x6a09_e667_f3bc_c908, 0xbb67_ae85_84ca_a73b, 0x3c6e_f372_fe94_f82b, 0xa54f_f53a_5f1d_36f1,
+            0x510e_527f_ade6_82d1, 0x9b05_688c_2b3e_6c1f, 0x1f83_d9ab_fb41_bd6b, 0x5be0_cd19_137e_2179,
         )
-
         hash_init = (
-            0xcbbb_9d5d_c105_9ed8,
-            0x629a_292a_367c_d507,
-            0x9159_015a_3070_dd17,
-            0x152f_ecd8_f70e_5939,
-            0x6733_2667_ffc0_0b31,
-            0x8eb4_4a87_6858_1511,
-            0xdb0c_2e0d_64f9_8fa7,
-            0x47b5_481d_befa_4fa4,
+            0xcbbb_9d5d_c105_9ed8, 0x629a_292a_367c_d507, 0x9159_015a_3070_dd17, 0x152f_ecd8_f70e_5939,
+            0x6733_2667_ffc0_0b31, 0x8eb4_4a87_6858_1511, 0xdb0c_2e0d_64f9_8fa7, 0x47b5_481d_befa_4fa4,
         )
 
     class NaSHA512(NaSHABase):
-        name = "nasha512"
         block_size = 128
         digest_size = 64
         lintr_rounds = 32
         lintr_taps = (31, 24, 14, 6)
-
         h_init = (
-            0x2dd8_a09a_3c4e_3efb,
-            0x061a_77a0_6094_8dcd,
-            0x8a47_ea18_8055_9ce6,
-            0x9f22_535b_2646_07a8,
-            0x2547_d84e_9ccd_e59d,
-            0x9486_eb50_c7d8_037f,
-            0xc0f9_05d7_41c9_cb74,
-            0xad0d_1e41_a985_e51e,
+            0x2dd8_a09a_3c4e_3efb, 0x061a_77a0_6094_8dcd, 0x8a47_ea18_8055_9ce6, 0x9f22_535b_2646_07a8,
+            0x2547_d84e_9ccd_e59d, 0x9486_eb50_c7d8_037f, 0xc0f9_05d7_41c9_cb74, 0xad0d_1e41_a985_e51e,
         )
-
         hash_init = (
-            0xe076_88dc_6f16_6b73,
-            0x0c34_aa2a_315e_01d5,
-            0xc785_f436_4a0b_98f4,
-            0x53a8_c8ca_56e1_288c,
-            0x3c15_63a9_317c_57a1,
-            0x7734_1eda_d21e_9a40,
-            0xd648_813e_4512_1dbb,
-            0x4cf7_68fc_7df1_1b00,
+            0xe076_88dc_6f16_6b73, 0x0c34_aa2a_315e_01d5, 0xc785_f436_4a0b_98f4, 0x53a8_c8ca_56e1_288c,
+            0x3c15_63a9_317c_57a1, 0x7734_1eda_d21e_9a40, 0xd648_813e_4512_1dbb, 0x4cf7_68fc_7df1_1b00,
         )
 
     class SANDstorm256Base:
         block_size = 64
         extra_rounds = 0
-
-        mask64 = 0xffff_ffff_ffff_ffff
         aconst_256 = 0xa611_186b
         bconst_256 = 0xbee8_390d
         cconst_256 = 0x6135_f68d_4c0c_bb6f
@@ -102284,8 +102182,7 @@ class Hash:
         ms_rot_bits = 27
         bitmix_rot_bits = 19
         r_rot_bits = 25
-
-        b = [
+        b = (
             0x428a_2f98_7137_4491, 0xb5c0_fbcf_e9b5_dba5, 0x3956_c25b_59f1_11f1, 0x923f_82a4_ab1c_5ed5,
             0xd807_aa98_1283_5b01, 0x2431_85be_550c_7dc3, 0x72be_5d74_80de_b1fe, 0x9bdc_06a7_c19b_f174,
             0xe49b_69c1_efbe_4786, 0x0fc1_9dc6_240c_a1cc, 0x2de9_2c6f_4a74_84aa, 0x5cb0_a9dc_76f9_88da,
@@ -102293,9 +102190,8 @@ class Hash:
             0x27b7_0a85_2e1b_2138, 0x4d2c_6dfc_5338_0d13, 0x650a_7354_766a_0abb, 0x81c2_c92e_9272_2c85,
             0xa2bf_e8a1_a81a_664b, 0xc24b_8b70_c76c_51a3, 0xd192_e819_d699_0624, 0xf40e_3585_106a_a070,
             0x19a4_c116_1e37_6c08,
-        ]
-
-        fsbox = [
+        )
+        fsbox = (
             0x63, 0x7d, 0x75, 0x78, 0xf6, 0x6e, 0x69, 0xc2, 0x38, 0x08, 0x6d, 0x20, 0xf2, 0xda, 0xa5, 0x79,
             0xda, 0x93, 0xdb, 0x6e, 0xee, 0x4c, 0x51, 0xe7, 0xb5, 0xcd, 0xb8, 0xb4, 0x80, 0xb9, 0x6c, 0xdf,
             0x97, 0xdc, 0xb1, 0x05, 0x12, 0x1a, 0xd1, 0xeb, 0x1c, 0x8c, 0xcf, 0xda, 0x5d, 0xf5, 0x1f, 0x3a,
@@ -102312,23 +102208,21 @@ class Hash:
             0xa0, 0xef, 0x67, 0xb5, 0x9c, 0xd6, 0x20, 0xd9, 0xb9, 0xec, 0x8d, 0x62, 0x5a, 0x1c, 0xc3, 0x41,
             0x01, 0x19, 0x7a, 0xf2, 0x8d, 0x3c, 0x68, 0x73, 0x73, 0xf7, 0x6d, 0x02, 0x22, 0xb8, 0xc6, 0x30,
             0x7c, 0x50, 0x7b, 0xfe, 0x4b, 0x13, 0xb4, 0x9f, 0xb9, 0x60, 0xd7, 0xf4, 0x4c, 0xa9, 0x45, 0xe9,
-        ]
-
-        constants_224 = [
-            [0xc105_9ed8_367c_d507, 0x3070_dd17_f70e_5939, 0xffc0_0b31_6858_1511, 0x64f9_8fa7_befa_4fa4],
-            [0x367c_d507_3070_dd17, 0xf70e_5939_ffc0_0b31, 0x6858_1511_64f9_8fa7, 0xbefa_4fa4_c105_9ed8],
-            [0x3070_dd17_f70e_5939, 0xffc0_0b31_6858_1511, 0x64f9_8fa7_befa_4fa4, 0xc105_9ed8_367c_d507],
-            [0xf70e_5939_ffc0_0b31, 0x6858_1511_64f9_8fa7, 0xbefa_4fa4_c105_9ed8, 0x367c_d507_3070_dd17],
-            [0xffc0_0b31_6858_1511, 0x64f9_8fa7_befa_4fa4, 0xc105_9ed8_367c_d507, 0x3070_dd17_f70e_5939],
-        ]
-
-        constants_256 = [
-            [0x6a09_e667_bb67_ae85, 0x3c6e_f372_a54f_f53a, 0x510e_527f_9b05_688c, 0x1f83_d9ab_5be0_cd19],
-            [0xbb67_ae85_3c6e_f372, 0xa54f_f53a_510e_527f, 0x9b05_688c_1f83_d9ab, 0x5be0_cd19_6a09_e667],
-            [0x3c6e_f372_a54f_f53a, 0x510e_527f_9b05_688c, 0x1f83_d9ab_5be0_cd19, 0x6a09_e667_bb67_ae85],
-            [0xa54f_f53a_510e_527f, 0x9b05_688c_1f83_d9ab, 0x5be0_cd19_6a09_e667, 0xbb67_ae85_3c6e_f372],
-            [0x510e_527f_9b05_688c, 0x1f83_d9ab_5be0_cd19, 0x6a09_e667_bb67_ae85, 0x3c6e_f372_a54f_f53a],
-        ]
+        )
+        constants_224 = (
+            (0xc105_9ed8_367c_d507, 0x3070_dd17_f70e_5939, 0xffc0_0b31_6858_1511, 0x64f9_8fa7_befa_4fa4),
+            (0x367c_d507_3070_dd17, 0xf70e_5939_ffc0_0b31, 0x6858_1511_64f9_8fa7, 0xbefa_4fa4_c105_9ed8),
+            (0x3070_dd17_f70e_5939, 0xffc0_0b31_6858_1511, 0x64f9_8fa7_befa_4fa4, 0xc105_9ed8_367c_d507),
+            (0xf70e_5939_ffc0_0b31, 0x6858_1511_64f9_8fa7, 0xbefa_4fa4_c105_9ed8, 0x367c_d507_3070_dd17),
+            (0xffc0_0b31_6858_1511, 0x64f9_8fa7_befa_4fa4, 0xc105_9ed8_367c_d507, 0x3070_dd17_f70e_5939),
+        )
+        constants_256 = (
+            (0x6a09_e667_bb67_ae85, 0x3c6e_f372_a54f_f53a, 0x510e_527f_9b05_688c, 0x1f83_d9ab_5be0_cd19),
+            (0xbb67_ae85_3c6e_f372, 0xa54f_f53a_510e_527f, 0x9b05_688c_1f83_d9ab, 0x5be0_cd19_6a09_e667),
+            (0x3c6e_f372_a54f_f53a, 0x510e_527f_9b05_688c, 0x1f83_d9ab_5be0_cd19, 0x6a09_e667_bb67_ae85),
+            (0xa54f_f53a_510e_527f, 0x9b05_688c_1f83_d9ab, 0x5be0_cd19_6a09_e667, 0xbb67_ae85_3c6e_f372),
+            (0x510e_527f_9b05_688c, 0x1f83_d9ab_5be0_cd19, 0x6a09_e667_bb67_ae85, 0x3c6e_f372_a54f_f53a),
+        )
 
         def __init__(self, data=b""):
             self.buf = bytearray()
@@ -102452,8 +102346,8 @@ class Hash:
                 self.level_one_to_four_const[1][i][3] ^= self.cconst_256
                 self.level_one_to_four_const[2][i][3] ^= self.dconst_256
                 self.level_one_to_four_const[3][i][3] ^= self.dconst_256
-                self.level_one_to_four_const[3][i][0] = (~self.level_one_to_four_const[3][i][0]) & self.mask64
-                self.level_one_to_four_const[3][i][1] = (~self.level_one_to_four_const[3][i][1]) & self.mask64
+                self.level_one_to_four_const[3][i][0] = (~self.level_one_to_four_const[3][i][0]) & 0xffff_ffff_ffff_ffff
+                self.level_one_to_four_const[3][i][1] = (~self.level_one_to_four_const[3][i][1]) & 0xffff_ffff_ffff_ffff
 
             for i in range(3):
                 for j in range(5):
@@ -102514,116 +102408,113 @@ class Hash:
             ]
 
         def do_block_mod_mix_ref(self, data_input, prev_block_arr):
+
+            def rol64(value, count):
+                value &= 0xffff_ffff_ffff_ffff
+                return ((value << count) | (value >> (64 - count))) & 0xffff_ffff_ffff_ffff
+
+            def f(value):
+                upper = (value >> 32) & 0xffff_ffff
+                lower = value & 0xffff_ffff
+                return (upper * upper + lower * lower) & 0xffff_ffff_ffff_ffff
+
+            def g(value):
+                upper = (value >> 32) & 0xffff_ffff
+                lower = value & 0xffff_ffff
+                return (
+                    upper * upper
+                    + lower * lower
+                    + rol64((((upper + self.aconst_256) & 0xffff_ffff) * ((lower + self.bconst_256) & 0xffff_ffff)), 32)
+                ) & 0xffff_ffff_ffff_ffff
+
+            def bit_mix(ws):
+                ws = ws[:]
+                value = (ws[0] ^ ws[2]) & self.j6
+                ws[0] ^= value
+                ws[2] ^= value
+                value = (ws[1] ^ ws[3]) & self.j3
+                ws[1] ^= value
+                ws[3] ^= value
+                value = (ws[0] ^ ws[1]) & self.j5
+                ws[0] ^= value
+                ws[1] ^= value
+                value = (ws[2] ^ ws[3]) & self.j5
+                ws[2] ^= value
+                ws[3] ^= value
+                return ws
+
+            def ch(a, b, c):
+                return ((a & b) ^ ((~a) & c)) & 0xffff_ffff_ffff_ffff
+
+            def sb(value):
+                value &= 0xffff_ffff_ffff_ffff
+                return value ^ self.fsbox[value & 0xff]
+
+            def do_round(ws, round_index):
+                ws = ws[:]
+                ws[0] = rol64(
+                    sb((ws[0] + f(ws[3]) + ch(ws[3], ws[2], ws[1]) + self.b[24 - (4 * round_index)])),
+                    self.r_rot_bits,
+                )
+                ws[1] = rol64(
+                    sb((ws[1] + f(ws[0]) + ch(ws[0], ws[3], ws[2]) + self.b[23 - (4 * round_index)])),
+                    self.r_rot_bits,
+                )
+                ws[2] = rol64(
+                    sb((ws[2] + f(ws[1]) + ch(ws[1], ws[0], ws[3]) + self.b[22 - (4 * round_index)])),
+                    self.r_rot_bits,
+                )
+                ws[3] = rol64(
+                    sb((ws[3] + f(ws[2]) + ch(ws[2], ws[1], ws[0]) + self.b[21 - (4 * round_index)])),
+                    self.r_rot_bits,
+                )
+                return ws
+
             msd = data_input[:] + [0] * 25
 
             for i in range(8, 33):
                 value = (
                     msd[i - 8]
                     + self.b[i - 8]
-                    + self.g(msd[i - 1])
-                    + self.ch(msd[i - 1], msd[i - 2], msd[i - 3])
+                    + g(msd[i - 1])
+                    + ch(msd[i - 1], msd[i - 2], msd[i - 3])
                     + msd[i - 4]
-                ) & self.mask64
-                msd[i] = self.rol64(self.sb(value), self.ms_rot_bits)
+                ) & 0xffff_ffff_ffff_ffff
+                msd[i] = rol64(sb(value), self.ms_rot_bits)
 
-            ws = [self.rol64(msd[i], self.bitmix_rot_bits) ^ msd[i + 4] for i in range(4)]
-            ws = self.bit_mix(ws)
+            ws = [rol64(msd[i], self.bitmix_rot_bits) ^ msd[i + 4] for i in range(4)]
+            ws = bit_mix(ws)
 
             ws = [ws[i] ^ prev_block_arr[0][i] for i in range(4)]
-            ws = self.do_round(ws, 0)
-            ws = self.bit_mix(ws)
-            prev_block_arr[1] = [(prev_block_arr[1][i] ^ ws[i]) & self.mask64 for i in range(4)]
+            ws = do_round(ws, 0)
+            ws = bit_mix(ws)
+            prev_block_arr[1] = [(prev_block_arr[1][i] ^ ws[i]) for i in range(4)]
 
             ws = [prev_block_arr[1][i] ^ msd[14 + i] for i in range(4)]
-            ws = self.do_round(ws, 1)
-            ws = self.bit_mix(ws)
-            prev_block_arr[1] = [(prev_block_arr[2][i] ^ ws[i]) & self.mask64 for i in range(4)]
+            ws = do_round(ws, 1)
+            ws = bit_mix(ws)
+            prev_block_arr[1] = [(prev_block_arr[2][i] ^ ws[i]) for i in range(4)]
 
             ws = [prev_block_arr[1][i] ^ msd[19 + i] for i in range(4)]
-            ws = self.do_round(ws, 2)
-            ws = self.bit_mix(ws)
-            prev_block_arr[2] = [(prev_block_arr[3][i] ^ ws[i]) & self.mask64 for i in range(4)]
+            ws = do_round(ws, 2)
+            ws = bit_mix(ws)
+            prev_block_arr[2] = [(prev_block_arr[3][i] ^ ws[i]) for i in range(4)]
 
             ws = [prev_block_arr[2][i] ^ msd[24 + i] for i in range(4)]
-            ws = self.do_round(ws, 3)
-            ws = self.bit_mix(ws)
-            prev_block_arr[3] = [(prev_block_arr[4][i] ^ ws[i]) & self.mask64 for i in range(4)]
+            ws = do_round(ws, 3)
+            ws = bit_mix(ws)
+            prev_block_arr[3] = [(prev_block_arr[4][i] ^ ws[i]) for i in range(4)]
 
             ws = [prev_block_arr[3][i] ^ msd[29 + i] for i in range(4)]
-            ws = self.do_round(ws, 4)
-            ws = self.bit_mix(ws)
+            ws = do_round(ws, 4)
+            ws = bit_mix(ws)
 
             for _ in range(self.extra_rounds):
-                ws = self.do_round(ws, 4)
-                ws = self.bit_mix(ws)
+                ws = do_round(ws, 4)
+                ws = bit_mix(ws)
 
-            prev_block_arr[4] = [value & self.mask64 for value in ws]
+            prev_block_arr[4] = ws
             return
-
-        def bit_mix(self, ws):
-            ws = ws[:]
-            value = (ws[0] ^ ws[2]) & self.j6
-            ws[0] ^= value
-            ws[2] ^= value
-            value = (ws[1] ^ ws[3]) & self.j3
-            ws[1] ^= value
-            ws[3] ^= value
-            value = (ws[0] ^ ws[1]) & self.j5
-            ws[0] ^= value
-            ws[1] ^= value
-            value = (ws[2] ^ ws[3]) & self.j5
-            ws[2] ^= value
-            ws[3] ^= value
-            return ws
-
-        def do_round(self, ws, round_index):
-            ws = ws[:]
-            ws[0] = self.rol64(
-                self.sb((ws[0] + self.f(ws[3]) + self.ch(ws[3], ws[2], ws[1]) + self.b[24 - (4 * round_index)]) & self.mask64),
-                self.r_rot_bits,
-            )
-            ws[1] = self.rol64(
-                self.sb((ws[1] + self.f(ws[0]) + self.ch(ws[0], ws[3], ws[2]) + self.b[23 - (4 * round_index)]) & self.mask64),
-                self.r_rot_bits,
-            )
-            ws[2] = self.rol64(
-                self.sb((ws[2] + self.f(ws[1]) + self.ch(ws[1], ws[0], ws[3]) + self.b[22 - (4 * round_index)]) & self.mask64),
-                self.r_rot_bits,
-            )
-            ws[3] = self.rol64(
-                self.sb((ws[3] + self.f(ws[2]) + self.ch(ws[2], ws[1], ws[0]) + self.b[21 - (4 * round_index)]) & self.mask64),
-                self.r_rot_bits,
-            )
-            return ws
-
-        def rol64(self, value, count):
-            value &= self.mask64
-            return ((value << count) | (value >> (64 - count))) & self.mask64
-
-        def rot32(self, value):
-            value &= self.mask64
-            return ((value << 32) | (value >> 32)) & self.mask64
-
-        def f(self, value):
-            upper = (value >> 32) & 0xffff_ffff
-            lower = value & 0xffff_ffff
-            return (upper * upper + lower * lower) & self.mask64
-
-        def g(self, value):
-            upper = (value >> 32) & 0xffff_ffff
-            lower = value & 0xffff_ffff
-            return (
-                upper * upper
-                + lower * lower
-                + self.rot32((((upper + self.aconst_256) & 0xffff_ffff) * ((lower + self.bconst_256) & 0xffff_ffff)) & self.mask64)
-            ) & self.mask64
-
-        def ch(self, a, b, c):
-            return ((a & b) ^ ((~a) & c)) & self.mask64
-
-        def sb(self, value):
-            value &= self.mask64
-            return value ^ self.fsbox[value & 0xff]
 
     class SANDstorm224(SANDstorm256Base):
         digest_size = 28
@@ -102636,9 +102527,6 @@ class Hash:
     class SANDstorm512Base(SANDstorm256Base):
         block_size = 128
         extra_rounds = 0
-
-        mask64 = 0xffff_ffff_ffff_ffff
-        mask128 = 0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff
         aconst_512 = 0xa611_186b_ae67_496b
         bconst_512 = 0xbee8_390d_4395_5aed
         sandwblkc = 0x6135_f68d_4c0c_bb6f_b43b_47a2_4577_8989
@@ -102646,81 +102534,46 @@ class Hash:
         j3_128 = 0x3333_3333_3333_3333_3333_3333_3333_3333
         j5_128 = 0x5555_5555_5555_5555_5555_5555_5555_5555
         j6_128 = 0x6666_6666_6666_6666_6666_6666_6666_6666
-        sandwmspick = [4, 14, 19, 24, 29]
-
-        sandwlvlc384 = [
-            0xcbbb_9d5d_c105_9ed8_629a_292a_367c_d507,
-            0x9159_015a_3070_dd17_152f_ecd8_f70e_5939,
-            0x6733_2667_ffc0_0b31_8eb4_4a87_6858_1511,
-            0xdb0c_2e0d_64f9_8fa7_47b5_481d_befa_4fa4,
-            0x629a_292a_367c_d507_9159_015a_3070_dd17,
-            0x152f_ecd8_f70e_5939_6733_2667_ffc0_0b31,
-            0x8eb4_4a87_6858_1511_db0c_2e0d_64f9_8fa7,
-            0x47b5_481d_befa_4fa4_cbbb_9d5d_c105_9ed8,
-            0x9159_015a_3070_dd17_152f_ecd8_f70e_5939,
-            0x6733_2667_ffc0_0b31_8eb4_4a87_6858_1511,
-            0xdb0c_2e0d_64f9_8fa7_47b5_481d_befa_4fa4,
-            0xcbbb_9d5d_c105_9ed8_629a_292a_367c_d507,
-            0x152f_ecd8_f70e_5939_6733_2667_ffc0_0b31,
-            0x8eb4_4a87_6858_1511_db0c_2e0d_64f9_8fa7,
-            0x47b5_481d_befa_4fa4_cbbb_9d5d_c105_9ed8,
-            0x629a_292a_367c_d507_9159_015a_3070_dd17,
-            0x6733_2667_ffc0_0b31_8eb4_4a87_6858_1511,
-            0xdb0c_2e0d_64f9_8fa7_47b5_481d_befa_4fa4,
-            0xcbbb_9d5d_c105_9ed8_629a_292a_367c_d507,
-            0x9159_015a_3070_dd17_152f_ecd8_f70e_5939,
-        ]
-
-        sandwlvlc512 = [
-            0x6a09_e667_f3bc_c908_bb67_ae85_84ca_a73b,
-            0x3c6e_f372_fe94_f82b_a54f_f53a_5f1d_36f1,
-            0x510e_527f_ade6_82d1_9b05_688c_2b3e_6c1f,
-            0x1f83_d9ab_fb41_bd6b_5be0_cd19_137e_2179,
-            0xbb67_ae85_84ca_a73b_3c6e_f372_fe94_f82b,
-            0xa54f_f53a_5f1d_36f1_510e_527f_ade6_82d1,
-            0x9b05_688c_2b3e_6c1f_1f83_d9ab_fb41_bd6b,
-            0x5be0_cd19_137e_2179_6a09_e667_f3bc_c908,
-            0x3c6e_f372_fe94_f82b_a54f_f53a_5f1d_36f1,
-            0x510e_527f_ade6_82d1_9b05_688c_2b3e_6c1f,
-            0x1f83_d9ab_fb41_bd6b_5be0_cd19_137e_2179,
-            0x6a09_e667_f3bc_c908_bb67_ae85_84ca_a73b,
-            0xa54f_f53a_5f1d_36f1_510e_527f_ade6_82d1,
-            0x9b05_688c_2b3e_6c1f_1f83_d9ab_fb41_bd6b,
-            0x5be0_cd19_137e_2179_6a09_e667_f3bc_c908,
-            0xbb67_ae85_84ca_a73b_3c6e_f372_fe94_f82b,
-            0x510e_527f_ade6_82d1_9b05_688c_2b3e_6c1f,
-            0x1f83_d9ab_fb41_bd6b_5be0_cd19_137e_2179,
-            0x6a09_e667_f3bc_c908_bb67_ae85_84ca_a73b,
-            0x3c6e_f372_fe94_f82b_a54f_f53a_5f1d_36f1,
-        ]
-
-        sandwmsc = [
-            0x428a_2f98_d728_ae22_7137_4491_23ef_65cd,
-            0xb5c0_fbcf_ec4d_3b2f_e9b5_dba5_8189_dbbc,
-            0x3956_c25b_f348_b538_59f1_11f1_b605_d019,
-            0x923f_82a4_af19_4f9b_ab1c_5ed5_da6d_8118,
-            0xd807_aa98_a303_0242_1283_5b01_4570_6fbe,
-            0x2431_85be_4ee4_b28c_550c_7dc3_d5ff_b4e2,
-            0x72be_5d74_f27b_896f_80de_b1fe_3b16_96b1,
-            0x9bdc_06a7_25c7_1235_c19b_f174_cf69_2694,
-            0xe49b_69c1_9ef1_4ad2_efbe_4786_384f_25e3,
-            0x0fc1_9dc6_8b8c_d5b5_240c_a1cc_77ac_9c65,
-            0x2de9_2c6f_592b_0275_4a74_84aa_6ea6_e483,
-            0x5cb0_a9dc_bd41_fbd4_76f9_88da_8311_53b5,
-            0x983e_5152_ee66_dfab_a831_c66d_2db4_3210,
-            0xb003_27c8_98fb_213f_bf59_7fc7_beef_0ee4,
-            0xc6e0_0bf3_3da8_8fc2_d5a7_9147_930a_a725,
-            0x06ca_6351_e003_826f_1429_2967_0a0e_6e70,
-            0x27b7_0a85_46d2_2ffc_2e1b_2138_5c26_c926,
-            0x4d2c_6dfc_5ac4_2aed_5338_0d13_9d95_b3df,
-            0x650a_7354_8baf_63de_766a_0abb_3c77_b2a8,
-            0x81c2_c92e_47ed_aee6_9272_2c85_1482_353b,
-            0xa2bf_e8a1_4cf1_0364_a81a_664b_bc42_3001,
-            0xc24b_8b70_d0f8_9791_c76c_51a3_0654_be30,
-            0xd192_e819_d6ef_5218_d699_0624_5565_a910,
-            0xf40e_3585_5771_202a_106a_a070_32bb_d1b8,
+        sandwmspick = (4, 14, 19, 24, 29)
+        sandwlvlc384 = (
+            0xcbbb_9d5d_c105_9ed8_629a_292a_367c_d507, 0x9159_015a_3070_dd17_152f_ecd8_f70e_5939,
+            0x6733_2667_ffc0_0b31_8eb4_4a87_6858_1511, 0xdb0c_2e0d_64f9_8fa7_47b5_481d_befa_4fa4,
+            0x629a_292a_367c_d507_9159_015a_3070_dd17, 0x152f_ecd8_f70e_5939_6733_2667_ffc0_0b31,
+            0x8eb4_4a87_6858_1511_db0c_2e0d_64f9_8fa7, 0x47b5_481d_befa_4fa4_cbbb_9d5d_c105_9ed8,
+            0x9159_015a_3070_dd17_152f_ecd8_f70e_5939, 0x6733_2667_ffc0_0b31_8eb4_4a87_6858_1511,
+            0xdb0c_2e0d_64f9_8fa7_47b5_481d_befa_4fa4, 0xcbbb_9d5d_c105_9ed8_629a_292a_367c_d507,
+            0x152f_ecd8_f70e_5939_6733_2667_ffc0_0b31, 0x8eb4_4a87_6858_1511_db0c_2e0d_64f9_8fa7,
+            0x47b5_481d_befa_4fa4_cbbb_9d5d_c105_9ed8, 0x629a_292a_367c_d507_9159_015a_3070_dd17,
+            0x6733_2667_ffc0_0b31_8eb4_4a87_6858_1511, 0xdb0c_2e0d_64f9_8fa7_47b5_481d_befa_4fa4,
+            0xcbbb_9d5d_c105_9ed8_629a_292a_367c_d507, 0x9159_015a_3070_dd17_152f_ecd8_f70e_5939,
+        )
+        sandwlvlc512 = (
+            0x6a09_e667_f3bc_c908_bb67_ae85_84ca_a73b, 0x3c6e_f372_fe94_f82b_a54f_f53a_5f1d_36f1,
+            0x510e_527f_ade6_82d1_9b05_688c_2b3e_6c1f, 0x1f83_d9ab_fb41_bd6b_5be0_cd19_137e_2179,
+            0xbb67_ae85_84ca_a73b_3c6e_f372_fe94_f82b, 0xa54f_f53a_5f1d_36f1_510e_527f_ade6_82d1,
+            0x9b05_688c_2b3e_6c1f_1f83_d9ab_fb41_bd6b, 0x5be0_cd19_137e_2179_6a09_e667_f3bc_c908,
+            0x3c6e_f372_fe94_f82b_a54f_f53a_5f1d_36f1, 0x510e_527f_ade6_82d1_9b05_688c_2b3e_6c1f,
+            0x1f83_d9ab_fb41_bd6b_5be0_cd19_137e_2179, 0x6a09_e667_f3bc_c908_bb67_ae85_84ca_a73b,
+            0xa54f_f53a_5f1d_36f1_510e_527f_ade6_82d1, 0x9b05_688c_2b3e_6c1f_1f83_d9ab_fb41_bd6b,
+            0x5be0_cd19_137e_2179_6a09_e667_f3bc_c908, 0xbb67_ae85_84ca_a73b_3c6e_f372_fe94_f82b,
+            0x510e_527f_ade6_82d1_9b05_688c_2b3e_6c1f, 0x1f83_d9ab_fb41_bd6b_5be0_cd19_137e_2179,
+            0x6a09_e667_f3bc_c908_bb67_ae85_84ca_a73b, 0x3c6e_f372_fe94_f82b_a54f_f53a_5f1d_36f1,
+        )
+        sandwmsc = (
+            0x428a_2f98_d728_ae22_7137_4491_23ef_65cd, 0xb5c0_fbcf_ec4d_3b2f_e9b5_dba5_8189_dbbc,
+            0x3956_c25b_f348_b538_59f1_11f1_b605_d019, 0x923f_82a4_af19_4f9b_ab1c_5ed5_da6d_8118,
+            0xd807_aa98_a303_0242_1283_5b01_4570_6fbe, 0x2431_85be_4ee4_b28c_550c_7dc3_d5ff_b4e2,
+            0x72be_5d74_f27b_896f_80de_b1fe_3b16_96b1, 0x9bdc_06a7_25c7_1235_c19b_f174_cf69_2694,
+            0xe49b_69c1_9ef1_4ad2_efbe_4786_384f_25e3, 0x0fc1_9dc6_8b8c_d5b5_240c_a1cc_77ac_9c65,
+            0x2de9_2c6f_592b_0275_4a74_84aa_6ea6_e483, 0x5cb0_a9dc_bd41_fbd4_76f9_88da_8311_53b5,
+            0x983e_5152_ee66_dfab_a831_c66d_2db4_3210, 0xb003_27c8_98fb_213f_bf59_7fc7_beef_0ee4,
+            0xc6e0_0bf3_3da8_8fc2_d5a7_9147_930a_a725, 0x06ca_6351_e003_826f_1429_2967_0a0e_6e70,
+            0x27b7_0a85_46d2_2ffc_2e1b_2138_5c26_c926, 0x4d2c_6dfc_5ac4_2aed_5338_0d13_9d95_b3df,
+            0x650a_7354_8baf_63de_766a_0abb_3c77_b2a8, 0x81c2_c92e_47ed_aee6_9272_2c85_1482_353b,
+            0xa2bf_e8a1_4cf1_0364_a81a_664b_bc42_3001, 0xc24b_8b70_d0f8_9791_c76c_51a3_0654_be30,
+            0xd192_e819_d6ef_5218_d699_0624_5565_a910, 0xf40e_3585_5771_202a_106a_a070_32bb_d1b8,
             0x19a4_c116_b8d2_d0c8_1e37_6c08_5141_ab53,
-        ]
+        )
 
         def __init__(self, data=b""):
             self.buf = bytearray()
@@ -102770,7 +102623,7 @@ class Hash:
                 raise TypeError("data must be bytes-like")
             data = bytes(data)
             self.msg_len += len(data)
-            self.msglen_bits = (self.msglen_bits + (len(data) * 8)) & self.mask128
+            self.msglen_bits = (self.msglen_bits + (len(data) * 8)) & 0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff
             self.buf.extend(data)
             while len(self.buf) >= 128:
                 self.msgbytes[:] = self.buf[:128]
@@ -102919,26 +102772,44 @@ class Hash:
             return
 
         def sandwcmprs(self, msg, prev, level, xrnds):
+
+            def sandwg(value):
+                upper = (value >> 64) & 0xffff_ffff_ffff_ffff
+                lower = value & 0xffff_ffff_ffff_ffff
+                return self.a128(
+                    self.m128(upper, upper),
+                    self.m128(lower, lower),
+                    self.r128(
+                        self.m128(
+                            (upper + self.aconst_512) & 0xffff_ffff_ffff_ffff,
+                            (lower + self.bconst_512) & 0xffff_ffff_ffff_ffff,
+                        ), 64,
+                    ),
+                )
+
+            def sandwf(value):
+                upper = (value >> 64) & 0xffff_ffff_ffff_ffff
+                lower = value & 0xffff_ffff_ffff_ffff
+                return self.a128(self.m128(upper, upper), self.m128(lower, lower))
+
+            def sb128(value):
+                value &= 0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff
+                return value ^ self.fsbox[value & 0xff]
+
             ms = msg[:] + [0] * 25
 
             for i in range(8, 33):
                 ms[i] = self.r128(
-                    self.sb128(
+                    sb128(
                         self.a128(
                             ms[i - 8],
-                            self.a128(
-                                self.sandwmsc[i - 8],
-                                self.a128(
-                                    self.sandwg(ms[i - 1]),
-                                    self.a128(
-                                        self.x128(
-                                            self.b128(ms[i - 1], ms[i - 2]),
-                                            self.b128(self.c128(ms[i - 1]), ms[i - 3]),
-                                        ),
-                                        ms[i - 4],
-                                    ),
-                                ),
+                            self.sandwmsc[i - 8],
+                            sandwg(ms[i - 1]),
+                            self.x128(
+                                self.b128(ms[i - 1], ms[i - 2]),
+                                self.b128(self.c128(ms[i - 1]), ms[i - 3]),
                             ),
+                            ms[i - 4],
                         ),
                     ),
                     59,
@@ -102973,19 +102844,15 @@ class Hash:
                 for _ in range(rounds):
                     for i in range(4):
                         w[i] = self.r128(
-                            self.sb128(
+                            sb128(
                                 self.a128(
                                     w[i],
-                                    self.a128(
-                                        self.sandwf(w[(i + 3) & 3]),
-                                        self.a128(
-                                            self.x128(
-                                                self.b128(w[(i + 3) & 3], w[i ^ 2]),
-                                                self.b128(self.c128(w[(i + 3) & 3]), w[(i + 1) & 3]),
-                                            ),
-                                            self.sandwmsc[24 - i - (rnd << 2)],
-                                        ),
+                                    sandwf(w[(i + 3) & 3]),
+                                    self.x128(
+                                        self.b128(w[(i + 3) & 3], w[i ^ 2]),
+                                        self.b128(self.c128(w[(i + 3) & 3]), w[(i + 1) & 3]),
                                     ),
+                                    self.sandwmsc[24 - i - (rnd << 2)],
                                 ),
                             ),
                             57,
@@ -103016,14 +102883,14 @@ class Hash:
                         prev[20 * level + 4 * rnd + i] = w[i]
             return
 
-        def a128(self, a, b):
-            return (a + b) & self.mask128
+        def a128(self, *args):
+            return sum(args) & 0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff
 
         def x128(self, a, b):
-            return (a ^ b) & self.mask128
+            return a ^ b
 
         def c128(self, value):
-            return (~value) & self.mask128
+            return (~value) & 0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff
 
         def b128(self, a, b):
             return a & b
@@ -103031,34 +102898,11 @@ class Hash:
         def r128(self, value, count):
             count &= 127
             if count == 0:
-                return value & self.mask128
-            return ((value << count) | (value >> (128 - count))) & self.mask128
+                return value & 0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff
+            return ((value << count) | (value >> (128 - count))) & 0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff
 
         def m128(self, a, b):
-            return (a * b) & self.mask128
-
-        def sandwf(self, value):
-            upper = (value >> 64) & self.mask64
-            lower = value & self.mask64
-            return self.a128(self.m128(upper, upper), self.m128(lower, lower))
-
-        def sandwg(self, value):
-            upper = (value >> 64) & self.mask64
-            lower = value & self.mask64
-            return self.a128(
-                self.m128(upper, upper),
-                self.a128(
-                    self.m128(lower, lower),
-                    self.r128(
-                        self.m128((upper + self.aconst_512) & self.mask64, (lower + self.bconst_512) & self.mask64),
-                        64,
-                    ),
-                ),
-            )
-
-        def sb128(self, value):
-            value &= self.mask128
-            return value ^ self.fsbox[value & 0xff]
+            return (a * b) & 0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff
 
     class SANDstorm384(SANDstorm512Base):
         digest_size = 48
@@ -103070,10 +102914,6 @@ class Hash:
 
     class SarmalBase:
         block_size = 128
-        hashbitlen = None
-        digest_size = None
-        MASK64 = 0xffff_ffff_ffff_ffff
-
         S = (
             0x3a, 0x5b, 0xf2, 0xf, 0xe4, 0xad, 0x29, 0x91, 0xc5, 0x47, 0xb8, 0x63, 0x8c, 0x10, 0xde, 0x76,
             0x2c, 0x75, 0x89, 0x40, 0xa3, 0xe1, 0x32, 0x6d, 0xbb, 0xe, 0xc6, 0x94, 0xfa, 0xdf, 0x17, 0x58,
@@ -103092,85 +102932,47 @@ class Hash:
             0xb0, 0xf1, 0x57, 0x6c, 0x18, 0xd5, 0xce, 0x4b, 0x2d, 0x92, 0x34, 0x6, 0x7f, 0xea, 0xa9, 0x83,
             0xb, 0xaa, 0xd8, 0x3d, 0x77, 0x5f, 0x46, 0xc0, 0x9c, 0x24, 0x62, 0xbe, 0x15, 0x81, 0xf3, 0xe9,
         )
-
         MDS = (
-            (1, 6, 8, 9, 6, 9, 5, 1),
-            (1, 1, 6, 8, 9, 6, 9, 5),
-            (5, 1, 1, 6, 8, 9, 6, 9),
-            (9, 5, 1, 1, 6, 8, 9, 6),
-            (6, 9, 5, 1, 1, 6, 8, 9),
-            (9, 6, 9, 5, 1, 1, 6, 8),
-            (8, 9, 6, 9, 5, 1, 1, 6),
-            (6, 8, 9, 6, 9, 5, 1, 1),
+            (1, 6, 8, 9, 6, 9, 5, 1), (1, 1, 6, 8, 9, 6, 9, 5), (5, 1, 1, 6, 8, 9, 6, 9), (9, 5, 1, 1, 6, 8, 9, 6),
+            (6, 9, 5, 1, 1, 6, 8, 9), (9, 6, 9, 5, 1, 1, 6, 8), (8, 9, 6, 9, 5, 1, 1, 6), (6, 8, 9, 6, 9, 5, 1, 1),
         )
-
-        SIGMA0 = (
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-        )
-        SIGMA1 = (
-            1, 14, 15, 10, 12, 2, 7, 4, 13, 8, 3, 9, 11, 5, 0, 6,
-        )
-        SIGMA2 = (
-            11, 4, 10, 7, 14, 9, 13, 1, 6, 5, 8, 2, 3, 15, 12, 0,
-        )
-        SIGMA3 = (
-            8, 2, 0, 5, 10, 3, 14, 13, 12, 7, 1, 15, 9, 4, 6, 11,
-        )
-        SIGMA4 = (
-            2, 8, 5, 7, 11, 1, 12, 4, 6, 14, 15, 10, 0, 13, 9, 3,
-        )
-        SIGMA5 = (
-            13, 14, 2, 1, 10, 12, 11, 7, 5, 3, 9, 15, 8, 4, 0, 6,
-        )
-        SIGMA6 = (
-            3, 13, 4, 0, 5, 6, 2, 10, 9, 8, 7, 11, 12, 15, 1, 14,
-        )
-        SIGMA7 = (
-            6, 3, 11, 14, 4, 0, 5, 8, 7, 13, 2, 12, 10, 1, 15, 9,
-        )
-        SIGMA3_5 = (
-            13, 10, 3, 2, 8, 11, 1, 5, 9, 12, 0, 4, 15, 6, 7, 14,
-        )
-        SIGMA7_5 = (
-            15, 7, 9, 12, 3, 13, 10, 0, 4, 6, 1, 14, 2, 5, 8, 11,
-        )
-
+        SIGMA0 = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
+        SIGMA1 = (1, 14, 15, 10, 12, 2, 7, 4, 13, 8, 3, 9, 11, 5, 0, 6)
+        SIGMA2 = (11, 4, 10, 7, 14, 9, 13, 1, 6, 5, 8, 2, 3, 15, 12, 0)
+        SIGMA3 = (8, 2, 0, 5, 10, 3, 14, 13, 12, 7, 1, 15, 9, 4, 6, 11)
+        SIGMA4 = (2, 8, 5, 7, 11, 1, 12, 4, 6, 14, 15, 10, 0, 13, 9, 3)
+        SIGMA5 = (13, 14, 2, 1, 10, 12, 11, 7, 5, 3, 9, 15, 8, 4, 0, 6)
+        SIGMA6 = (3, 13, 4, 0, 5, 6, 2, 10, 9, 8, 7, 11, 12, 15, 1, 14)
+        SIGMA7 = (6, 3, 11, 14, 4, 0, 5, 8, 7, 13, 2, 12, 10, 1, 15, 9)
+        SIGMA3_5 = (13, 10, 3, 2, 8, 11, 1, 5, 9, 12, 0, 4, 15, 6, 7, 14)
+        SIGMA7_5 = (15, 7, 9, 12, 3, 13, 10, 0, 4, 6, 1, 14, 2, 5, 8, 11)
         LEFT_SIGMAS_COMMON = (SIGMA0, SIGMA1, SIGMA2, SIGMA3)
         RIGHT_SIGMAS_COMMON = (SIGMA4, SIGMA5, SIGMA6, SIGMA7)
-
-        G_TABLES = None
-
-        INIT_H = ()
-        INIT_C = ()
         INIT_S = (0, 0, 0, 0)
-
-        def __init__(self, data=b""):
-            if self.hashbitlen is None or self.digest_size is None:
-                raise TypeError("SarmalBase must be subclassed")
-            self.ensure_tables()
-            self.h = list(self.INIT_H)
-            self.c = list(self.INIT_C)
-            self.s = list(self.INIT_S)
-            self.t = 0
-            self.msg_len = 0
-            self.buf = bytearray()
-            if data:
-                self.update(data)
-            return
 
         @classmethod
         def ensure_tables(cls):
-            if cls.G_TABLES is not None:
+            if hasattr(Hash.SarmalBase, "G_TABLES"):
                 return
+
+            def gf_multiply(a, b):
+                result = 0
+                while b:
+                    if b & 1:
+                        result ^= a
+                    a <<= 1
+                    if a & 0x100:
+                        a ^= 0x11d
+                    b >>= 1
+                return result
 
             constants = (1, 5, 6, 8, 9)
             mul_tables = {}
             for constant in constants:
                 table = []
                 for value in range(256):
-                    table.append(cls.gf_multiply(value, constant))
+                    table.append(gf_multiply(value, constant))
                 mul_tables[constant] = tuple(table)
-
             tables = []
             for pos in range(8):
                 pos_table = []
@@ -103182,21 +102984,22 @@ class Hash:
                         word = (word << 8) | out_byte
                     pos_table.append(word)
                 tables.append(tuple(pos_table))
-
-            cls.G_TABLES = tuple(tables)
+            Hash.SarmalBase.G_TABLES = tuple(tables)
             return
 
-        @classmethod
-        def gf_multiply(cls, a, b):
-            result = 0
-            while b:
-                if b & 1:
-                    result ^= a
-                a <<= 1
-                if a & 0x100:
-                    a ^= 0x11d
-                b >>= 1
-            return result
+        def __init__(self, data=b""):
+            if self.hashbitlen is None or self.digest_size is None:
+                raise TypeError("SarmalBase must be subclassed")
+            self.h = list(self.INIT_H)
+            self.c = list(self.INIT_C)
+            self.s = list(self.INIT_S)
+            self.t = 0
+            self.msg_len = 0
+            self.buf = bytearray()
+            self.ensure_tables()
+            if data:
+                self.update(data)
+            return
 
         def copy(self):
             other = self.__class__()
@@ -103268,64 +103071,58 @@ class Hash:
             self.buf.clear()
             return
 
-        def g_func(self, value):
-            tables = self.G_TABLES
-            result = (
-                tables[0][(value >> 56) & 0xff] ^
-                tables[1][(value >> 48) & 0xff] ^
-                tables[2][(value >> 40) & 0xff] ^
-                tables[3][(value >> 32) & 0xff] ^
-                tables[4][(value >> 24) & 0xff] ^
-                tables[5][(value >> 16) & 0xff] ^
-                tables[6][(value >> 8) & 0xff] ^
-                tables[7][value & 0xff]
-            )
-            return result
-
-        def mix(self, state, a, b, c, d):
-            out1 = state[0] ^ a
-            temp1 = self.g_func(out1)
-
-            out2 = temp1 ^ state[1]
-
-            temp2 = state[2] ^ b
-            out3 = (temp1 + temp2) & self.MASK64
-
-            out4 = (state[3] - temp1) & self.MASK64
-
-            out5 = state[4] ^ c
-            temp2 = self.g_func(out5)
-
-            out6 = temp2 ^ state[5]
-
-            temp1 = state[6] ^ d
-            out7 = (temp2 + temp1) & self.MASK64
-
-            out0 = (state[7] - temp2) & self.MASK64
-
-            return [out0, out1, out2, out3, out4, out5, out6, out7]
-
-        def apply_sigmas(self, state, message_words, sigmas):
-            current = state
-            for sigma in sigmas:
-                current = self.mix(current, message_words[sigma[0]], message_words[sigma[1]], message_words[sigma[2]], message_words[sigma[3]])
-                current = self.mix(current, message_words[sigma[4]], message_words[sigma[5]], message_words[sigma[6]], message_words[sigma[7]])
-                current = self.mix(current, message_words[sigma[8]], message_words[sigma[9]], message_words[sigma[10]], message_words[sigma[11]])
-                current = self.mix(current, message_words[sigma[12]], message_words[sigma[13]], message_words[sigma[14]], message_words[sigma[15]])
-            return current
-
         def compress(self, block):
+
+            def g_func(value):
+                tables = self.G_TABLES
+                result = (
+                    tables[0][(value >> 56) & 0xff] ^
+                    tables[1][(value >> 48) & 0xff] ^
+                    tables[2][(value >> 40) & 0xff] ^
+                    tables[3][(value >> 32) & 0xff] ^
+                    tables[4][(value >> 24) & 0xff] ^
+                    tables[5][(value >> 16) & 0xff] ^
+                    tables[6][(value >> 8) & 0xff] ^
+                    tables[7][value & 0xff]
+                )
+                return result
+
+            def mix(state, a, b, c, d):
+                out1 = state[0] ^ a
+                temp1 = g_func(out1)
+                out2 = temp1 ^ state[1]
+                temp2 = state[2] ^ b
+                out3 = (temp1 + temp2) & 0xffff_ffff_ffff_ffff
+                out4 = (state[3] - temp1) & 0xffff_ffff_ffff_ffff
+                out5 = state[4] ^ c
+                temp2 = g_func(out5)
+                out6 = temp2 ^ state[5]
+                temp1 = state[6] ^ d
+                out7 = (temp2 + temp1) & 0xffff_ffff_ffff_ffff
+                out0 = (state[7] - temp2) & 0xffff_ffff_ffff_ffff
+                return [out0, out1, out2, out3, out4, out5, out6, out7]
+
+            def apply_sigmas(state, message_words, sigmas):
+                current = state
+                mw = message_words
+                for sigma in sigmas:
+                    current = mix(current, mw[sigma[0]], mw[sigma[1]], mw[sigma[2]], mw[sigma[3]])
+                    current = mix(current, mw[sigma[4]], mw[sigma[5]], mw[sigma[6]], mw[sigma[7]])
+                    current = mix(current, mw[sigma[8]], mw[sigma[9]], mw[sigma[10]], mw[sigma[11]])
+                    current = mix(current, mw[sigma[12]], mw[sigma[13]], mw[sigma[14]], mw[sigma[15]])
+                return current
+
             message_words = [int.from_bytes(block[i * 8:(i + 1) * 8], "big") for i in range(16)]
 
             left = [self.h[0], self.h[1], self.h[2], self.h[3], self.s[0], self.s[1], self.c[0], self.t]
             right = [self.h[4], self.h[5], self.h[6], self.h[7], self.s[2], self.s[3], self.c[1], self.t]
 
-            left = self.apply_sigmas(left, message_words, self.LEFT_SIGMAS_COMMON)
-            right = self.apply_sigmas(right, message_words, self.RIGHT_SIGMAS_COMMON)
+            left = apply_sigmas(left, message_words, self.LEFT_SIGMAS_COMMON)
+            right = apply_sigmas(right, message_words, self.RIGHT_SIGMAS_COMMON)
 
-            if self.hashbitlen == 384 or self.hashbitlen == 512:
-                left = self.apply_sigmas(left, message_words, (self.SIGMA3_5,))
-                right = self.apply_sigmas(right, message_words, (self.SIGMA7_5,))
+            if self.hashbitlen in (384, 512):
+                left = apply_sigmas(left, message_words, (self.SIGMA3_5,))
+                right = apply_sigmas(right, message_words, (self.SIGMA7_5,))
 
             for i in range(8):
                 right[i] ^= left[i]
@@ -103346,7 +103143,6 @@ class Hash:
         INIT_C = (
             0xb9e1_22e6_138c_3ae6, 0xde5e_de3b_d42d_b730,
         )
-        INIT_S = (0, 0, 0, 0)
 
     class Sarmal256(SarmalBase):
         hashbitlen = 256
@@ -103358,7 +103154,6 @@ class Hash:
         INIT_C = (
             0xf06a_d7ae_9717_877e, 0x8583_9d6e_ffbd_7dc6,
         )
-        INIT_S = (0, 0, 0, 0)
 
     class Sarmal384(SarmalBase):
         hashbitlen = 384
@@ -103370,7 +103165,6 @@ class Hash:
         INIT_C = (
             0xe0d5_af5d_2e2f_0efd, 0xb07_3add_ff7a_fb8c,
         )
-        INIT_S = (0, 0, 0, 0)
 
     class Sarmal512(SarmalBase):
         hashbitlen = 512
@@ -103382,13 +103176,9 @@ class Hash:
         INIT_C = (
             0x9216_d5d9_8979_fb1b, 0xd131_0ba6_98df_b5ac,
         )
-        INIT_S = (0, 0, 0, 0)
 
     class SgailBase:
         block_size = 512
-        digest_size = None
-        word_modulus_64 = 0xffff_ffff_ffff_ffff
-
         centre_rounds_for_digest_bits = {
             224: 4,
             256: 4,
@@ -103399,7 +103189,6 @@ class Hash:
             1536: 8,
             2048: 8,
         }
-
         sbox_0 = (
             0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
             0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
@@ -103418,7 +103207,6 @@ class Hash:
             0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
             0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
         )
-
         rc_u64 = (
             0x25d479d8f6e8def7, 0xe3fe501ab6794c3b, 0x976ce0bd04c006ba, 0xc1a94fb6409f60c4,
             0x5e5c9ec2196a2463, 0x68fb6faf3e6c53b5, 0x1339b2eb3b52ec6f, 0x6dfc511f9b30952c,
@@ -103437,7 +103225,6 @@ class Hash:
             0x226800bb57b8e0af, 0x2464369bf009b91e, 0x5563911d59dfa6aa, 0x78c14389d95a537f,
             0x207d5ba202e5b9c5, 0x832603766295cfa9, 0x11c819684e734a41, 0xb3472dca7b14a94a,
         )
-
         mds_8x8s_0 = (
             (0x21f3791f6e74254d, 0x65083159466497f2, 0xebbac2d6e7de8c60, 0x513280cab631cae9,
              0xb402d78f03fd68cf, 0x61c19b2e9c642ecc, 0x3184c30c965fb1e0, 0xceebe6d38d5e4e14,
@@ -103952,7 +103739,6 @@ class Hash:
              0xcacce4767c334662, 0x8dfb47b59af4df48, 0x4eb53072abb55d06, 0x756fe829401dcdd2,
              0xb17038e549e16423, 0x26cb8f101f4882bc, 0xd3c06cdade80e990, 0x42e771622ee651e6),
         )
-
         mds_16x8s_lhs_0 = (
             (0x5b276bb177f7aa23, 0x97fdd3eb617c344b, 0xd87e1412d8315e60, 0x45c97c76da29fc38,
              0x087d41fdd8df20b2, 0x5ae48d27490b50bb, 0x05276d8424c9d053, 0x5f42d683c4956fe3,
@@ -104979,7 +104765,6 @@ class Hash:
              0x0111c0a9a0715e00, 0xc3f433bbfb5e46d2, 0xafe013a30de78e26, 0xdd0e24b79b03a31b,
              0x69e6883af93ca504, 0x2af968c9df400dd9, 0x43f3f9c04b2a9237, 0x4579bd2653b7f1ee),
         )
-
         mds_16x8s_rhs_0 = (
             (0x7b5405da4f5ed4e4, 0xf8fd84b900031246, 0xfb022fed7aa7ceaa, 0xdb162985e2acfc02,
              0x74f753304c9b4fbe, 0xab2fa79df052dad2, 0xcfa9d1a1b5259ad5, 0x806286258a8a459d,
@@ -106008,8 +105793,6 @@ class Hash:
         )
 
         def __init__(self, data=b""):
-            if self.digest_size is None:
-                raise ValueError("digest_size must be defined in subclasses")
             self.hashbitlen = self.digest_size * 8
             self.centre_rounds = self.centre_rounds_for_digest_bits[self.hashbitlen]
             self.secret_key = [0, 0, 0, 0]
@@ -106073,7 +105856,7 @@ class Hash:
 
         def rol64(self, x, n):
             n &= 0x3f
-            return ((x << n) | (x >> (64 - n))) & self.word_modulus_64
+            return ((x << n) | (x >> (64 - n))) & 0xffff_ffff_ffff_ffff
 
         def bytes_to_words_le(self, data):
             if len(data) % 8 != 0:
@@ -106087,54 +105870,33 @@ class Hash:
                 return b""
             return struct.pack("<%dQ" % len(words), *words)
 
-        def single_mds_8x8s(self, input_vector):
-            tables = self.mds_8x8s_0
-            result = 0
-            result ^= tables[0][input_vector[0]]
-            result ^= tables[1][input_vector[1]]
-            result ^= tables[2][input_vector[2]]
-            result ^= tables[3][input_vector[3]]
-            result ^= tables[4][input_vector[4]]
-            result ^= tables[5][input_vector[5]]
-            result ^= tables[6][input_vector[6]]
-            result ^= tables[7][input_vector[7]]
-            return result
-
-        def single_mds_16x8s(self, input_vector):
-            lhs_tables = self.mds_16x8s_lhs_0
-            rhs_tables = self.mds_16x8s_rhs_0
-            lhs = 0
-            rhs = 0
-            for i in range(16):
-                b = input_vector[i]
-                lhs ^= lhs_tables[i][b]
-                rhs ^= rhs_tables[i][b]
-            return lhs, rhs
-
         def xor_key_with_state(self, state_array, round_key):
             for i in range(32):
                 state_array[i] ^= round_key[i]
             return
 
         def full_mds_state_update(self, state_array, key_array):
+
+            def single_mds_16x8s(input_vector):
+                lhs_tables = self.mds_16x8s_lhs_0
+                rhs_tables = self.mds_16x8s_rhs_0
+                lhs = 0
+                rhs = 0
+                for i in range(16):
+                    b = input_vector[i]
+                    lhs ^= lhs_tables[i][b]
+                    rhs ^= rhs_tables[i][b]
+                return lhs, rhs
+
             self.xor_key_with_state(state_array, key_array)
             state_bytes = self.words_to_bytes_le(state_array)
             out_state_array = [0] * 32
             for i in range(16):
                 start = i * 16
-                lhs, rhs = self.single_mds_16x8s(state_bytes[start:start + 16])
+                lhs, rhs = single_mds_16x8s(state_bytes[start:start + 16])
                 out_state_array[i * 2] = lhs
                 out_state_array[i * 2 + 1] = rhs
             return out_state_array
-
-        def permutate_xlate_buffer(self, xlate_array, key_array, initial_j):
-            sbox = self.sbox_0
-            counter_j = sbox[initial_j]
-            for counter_i in range(256):
-                counter_j = sbox[(counter_j + xlate_array[counter_j] + key_array[counter_i]) & 0xff]
-                s_counter_i = sbox[counter_i]
-                xlate_array[s_counter_i], xlate_array[counter_j] = xlate_array[counter_j], xlate_array[s_counter_i]
-            return
 
         def xlate_state_mds_8x8s(self, in_state_bytes, xlate_array):
             tables = self.mds_8x8s_0
@@ -106154,136 +105916,140 @@ class Hash:
             return out_state_array
 
         def process_preliminary_key(self, final_block_bit_count):
+
+            def single_mds_8x8s(input_vector):
+                tables = self.mds_8x8s_0
+                result = 0
+                result ^= tables[0][input_vector[0]]
+                result ^= tables[1][input_vector[1]]
+                result ^= tables[2][input_vector[2]]
+                result ^= tables[3][input_vector[3]]
+                result ^= tables[4][input_vector[4]]
+                result ^= tables[5][input_vector[5]]
+                result ^= tables[6][input_vector[6]]
+                result ^= tables[7][input_vector[7]]
+                return result
+
             preliminary_key = [0] * 8
-
             current_word = self.serial_number
-            preliminary_key[0] = self.single_mds_8x8s(current_word.to_bytes(8, "little"))
-
-            current_word = (self.secret_key[0] + preliminary_key[0]) & self.word_modulus_64
-            preliminary_key[1] = self.single_mds_8x8s(current_word.to_bytes(8, "little"))
-
-            current_word = (self.block_count_low_word + preliminary_key[1]) & self.word_modulus_64
-            preliminary_key[2] = self.single_mds_8x8s(current_word.to_bytes(8, "little"))
-
-            current_word = (self.secret_key[1] + preliminary_key[2]) & self.word_modulus_64
-            preliminary_key[3] = self.single_mds_8x8s(current_word.to_bytes(8, "little"))
-
-            current_word = (final_block_bit_count + preliminary_key[3]) & self.word_modulus_64
-            preliminary_key[4] = self.single_mds_8x8s(current_word.to_bytes(8, "little"))
-
-            current_word = (self.secret_key[2] + preliminary_key[4]) & self.word_modulus_64
-            preliminary_key[5] = self.single_mds_8x8s(current_word.to_bytes(8, "little"))
-
-            current_word = (self.block_count_high_word + preliminary_key[5]) & self.word_modulus_64
-            preliminary_key[6] = self.single_mds_8x8s(current_word.to_bytes(8, "little"))
-
-            current_word = (self.secret_key[3] + preliminary_key[6]) & self.word_modulus_64
-            preliminary_key[7] = self.single_mds_8x8s(current_word.to_bytes(8, "little"))
-
+            preliminary_key[0] = single_mds_8x8s(current_word.to_bytes(8, "little"))
+            current_word = (self.secret_key[0] + preliminary_key[0]) & 0xffff_ffff_ffff_ffff
+            preliminary_key[1] = single_mds_8x8s(current_word.to_bytes(8, "little"))
+            current_word = (self.block_count_low_word + preliminary_key[1]) & 0xffff_ffff_ffff_ffff
+            preliminary_key[2] = single_mds_8x8s(current_word.to_bytes(8, "little"))
+            current_word = (self.secret_key[1] + preliminary_key[2]) & 0xffff_ffff_ffff_ffff
+            preliminary_key[3] = single_mds_8x8s(current_word.to_bytes(8, "little"))
+            current_word = (final_block_bit_count + preliminary_key[3]) & 0xffff_ffff_ffff_ffff
+            preliminary_key[4] = single_mds_8x8s(current_word.to_bytes(8, "little"))
+            current_word = (self.secret_key[2] + preliminary_key[4]) & 0xffff_ffff_ffff_ffff
+            preliminary_key[5] = single_mds_8x8s(current_word.to_bytes(8, "little"))
+            current_word = (self.block_count_high_word + preliminary_key[5]) & 0xffff_ffff_ffff_ffff
+            preliminary_key[6] = single_mds_8x8s(current_word.to_bytes(8, "little"))
+            current_word = (self.secret_key[3] + preliminary_key[6]) & 0xffff_ffff_ffff_ffff
+            preliminary_key[7] = single_mds_8x8s(current_word.to_bytes(8, "little"))
             for i in range(8):
                 previous = preliminary_key[i - 1]
-                preliminary_key[i] = (preliminary_key[i] + previous) & self.word_modulus_64
-
+                preliminary_key[i] = (preliminary_key[i] + previous) & 0xffff_ffff_ffff_ffff
             return preliminary_key
 
         def pht_a_diffuse(self, state_array):
-            state_array[0] = (state_array[0] + state_array[17]) & self.word_modulus_64
-            state_array[17] = (state_array[17] + state_array[0]) & self.word_modulus_64
+            state_array[0] = (state_array[0] + state_array[17]) & 0xffff_ffff_ffff_ffff
+            state_array[17] = (state_array[17] + state_array[0]) & 0xffff_ffff_ffff_ffff
 
-            state_array[2] = (state_array[2] + state_array[19]) & self.word_modulus_64
-            state_array[19] = (state_array[19] + state_array[2]) & self.word_modulus_64
+            state_array[2] = (state_array[2] + state_array[19]) & 0xffff_ffff_ffff_ffff
+            state_array[19] = (state_array[19] + state_array[2]) & 0xffff_ffff_ffff_ffff
 
-            state_array[4] = (state_array[4] + state_array[21]) & self.word_modulus_64
-            state_array[21] = (state_array[21] + state_array[4]) & self.word_modulus_64
+            state_array[4] = (state_array[4] + state_array[21]) & 0xffff_ffff_ffff_ffff
+            state_array[21] = (state_array[21] + state_array[4]) & 0xffff_ffff_ffff_ffff
 
-            state_array[6] = (state_array[6] + state_array[23]) & self.word_modulus_64
-            state_array[23] = (state_array[23] + state_array[6]) & self.word_modulus_64
+            state_array[6] = (state_array[6] + state_array[23]) & 0xffff_ffff_ffff_ffff
+            state_array[23] = (state_array[23] + state_array[6]) & 0xffff_ffff_ffff_ffff
 
-            state_array[8] = (state_array[8] + state_array[25]) & self.word_modulus_64
-            state_array[25] = (state_array[25] + state_array[8]) & self.word_modulus_64
+            state_array[8] = (state_array[8] + state_array[25]) & 0xffff_ffff_ffff_ffff
+            state_array[25] = (state_array[25] + state_array[8]) & 0xffff_ffff_ffff_ffff
 
-            state_array[10] = (state_array[10] + state_array[27]) & self.word_modulus_64
-            state_array[27] = (state_array[27] + state_array[10]) & self.word_modulus_64
+            state_array[10] = (state_array[10] + state_array[27]) & 0xffff_ffff_ffff_ffff
+            state_array[27] = (state_array[27] + state_array[10]) & 0xffff_ffff_ffff_ffff
 
-            state_array[12] = (state_array[12] + state_array[29]) & self.word_modulus_64
-            state_array[29] = (state_array[29] + state_array[12]) & self.word_modulus_64
+            state_array[12] = (state_array[12] + state_array[29]) & 0xffff_ffff_ffff_ffff
+            state_array[29] = (state_array[29] + state_array[12]) & 0xffff_ffff_ffff_ffff
 
-            state_array[14] = (state_array[14] + state_array[31]) & self.word_modulus_64
-            state_array[31] = (state_array[31] + state_array[14]) & self.word_modulus_64
+            state_array[14] = (state_array[14] + state_array[31]) & 0xffff_ffff_ffff_ffff
+            state_array[31] = (state_array[31] + state_array[14]) & 0xffff_ffff_ffff_ffff
 
-            state_array[9] = (state_array[9] + state_array[16]) & self.word_modulus_64
-            state_array[16] = (state_array[16] + state_array[9]) & self.word_modulus_64
+            state_array[9] = (state_array[9] + state_array[16]) & 0xffff_ffff_ffff_ffff
+            state_array[16] = (state_array[16] + state_array[9]) & 0xffff_ffff_ffff_ffff
 
-            state_array[11] = (state_array[11] + state_array[18]) & self.word_modulus_64
-            state_array[18] = (state_array[18] + state_array[11]) & self.word_modulus_64
+            state_array[11] = (state_array[11] + state_array[18]) & 0xffff_ffff_ffff_ffff
+            state_array[18] = (state_array[18] + state_array[11]) & 0xffff_ffff_ffff_ffff
 
-            state_array[13] = (state_array[13] + state_array[20]) & self.word_modulus_64
-            state_array[20] = (state_array[20] + state_array[13]) & self.word_modulus_64
+            state_array[13] = (state_array[13] + state_array[20]) & 0xffff_ffff_ffff_ffff
+            state_array[20] = (state_array[20] + state_array[13]) & 0xffff_ffff_ffff_ffff
 
-            state_array[15] = (state_array[15] + state_array[22]) & self.word_modulus_64
-            state_array[22] = (state_array[22] + state_array[15]) & self.word_modulus_64
+            state_array[15] = (state_array[15] + state_array[22]) & 0xffff_ffff_ffff_ffff
+            state_array[22] = (state_array[22] + state_array[15]) & 0xffff_ffff_ffff_ffff
 
-            state_array[1] = (state_array[1] + state_array[24]) & self.word_modulus_64
-            state_array[24] = (state_array[24] + state_array[1]) & self.word_modulus_64
+            state_array[1] = (state_array[1] + state_array[24]) & 0xffff_ffff_ffff_ffff
+            state_array[24] = (state_array[24] + state_array[1]) & 0xffff_ffff_ffff_ffff
 
-            state_array[3] = (state_array[3] + state_array[26]) & self.word_modulus_64
-            state_array[26] = (state_array[26] + state_array[3]) & self.word_modulus_64
+            state_array[3] = (state_array[3] + state_array[26]) & 0xffff_ffff_ffff_ffff
+            state_array[26] = (state_array[26] + state_array[3]) & 0xffff_ffff_ffff_ffff
 
-            state_array[5] = (state_array[5] + state_array[28]) & self.word_modulus_64
-            state_array[28] = (state_array[28] + state_array[5]) & self.word_modulus_64
+            state_array[5] = (state_array[5] + state_array[28]) & 0xffff_ffff_ffff_ffff
+            state_array[28] = (state_array[28] + state_array[5]) & 0xffff_ffff_ffff_ffff
 
-            state_array[7] = (state_array[7] + state_array[30]) & self.word_modulus_64
-            state_array[30] = (state_array[30] + state_array[7]) & self.word_modulus_64
+            state_array[7] = (state_array[7] + state_array[30]) & 0xffff_ffff_ffff_ffff
+            state_array[30] = (state_array[30] + state_array[7]) & 0xffff_ffff_ffff_ffff
             return
 
         def pht_b_diffuse(self, state_array):
-            state_array[0] = (state_array[0] + state_array[3]) & self.word_modulus_64
-            state_array[3] = (state_array[3] + state_array[0]) & self.word_modulus_64
+            state_array[0] = (state_array[0] + state_array[3]) & 0xffff_ffff_ffff_ffff
+            state_array[3] = (state_array[3] + state_array[0]) & 0xffff_ffff_ffff_ffff
 
-            state_array[2] = (state_array[2] + state_array[7]) & self.word_modulus_64
-            state_array[7] = (state_array[7] + state_array[2]) & self.word_modulus_64
+            state_array[2] = (state_array[2] + state_array[7]) & 0xffff_ffff_ffff_ffff
+            state_array[7] = (state_array[7] + state_array[2]) & 0xffff_ffff_ffff_ffff
 
-            state_array[4] = (state_array[4] + state_array[1]) & self.word_modulus_64
-            state_array[1] = (state_array[1] + state_array[4]) & self.word_modulus_64
+            state_array[4] = (state_array[4] + state_array[1]) & 0xffff_ffff_ffff_ffff
+            state_array[1] = (state_array[1] + state_array[4]) & 0xffff_ffff_ffff_ffff
 
-            state_array[6] = (state_array[6] + state_array[5]) & self.word_modulus_64
-            state_array[5] = (state_array[5] + state_array[6]) & self.word_modulus_64
+            state_array[6] = (state_array[6] + state_array[5]) & 0xffff_ffff_ffff_ffff
+            state_array[5] = (state_array[5] + state_array[6]) & 0xffff_ffff_ffff_ffff
 
-            state_array[8] = (state_array[8] + state_array[11]) & self.word_modulus_64
-            state_array[11] = (state_array[11] + state_array[8]) & self.word_modulus_64
+            state_array[8] = (state_array[8] + state_array[11]) & 0xffff_ffff_ffff_ffff
+            state_array[11] = (state_array[11] + state_array[8]) & 0xffff_ffff_ffff_ffff
 
-            state_array[10] = (state_array[10] + state_array[15]) & self.word_modulus_64
-            state_array[15] = (state_array[15] + state_array[10]) & self.word_modulus_64
+            state_array[10] = (state_array[10] + state_array[15]) & 0xffff_ffff_ffff_ffff
+            state_array[15] = (state_array[15] + state_array[10]) & 0xffff_ffff_ffff_ffff
 
-            state_array[12] = (state_array[12] + state_array[9]) & self.word_modulus_64
-            state_array[9] = (state_array[9] + state_array[12]) & self.word_modulus_64
+            state_array[12] = (state_array[12] + state_array[9]) & 0xffff_ffff_ffff_ffff
+            state_array[9] = (state_array[9] + state_array[12]) & 0xffff_ffff_ffff_ffff
 
-            state_array[14] = (state_array[14] + state_array[13]) & self.word_modulus_64
-            state_array[13] = (state_array[13] + state_array[14]) & self.word_modulus_64
+            state_array[14] = (state_array[14] + state_array[13]) & 0xffff_ffff_ffff_ffff
+            state_array[13] = (state_array[13] + state_array[14]) & 0xffff_ffff_ffff_ffff
 
-            state_array[16] = (state_array[16] + state_array[19]) & self.word_modulus_64
-            state_array[19] = (state_array[19] + state_array[16]) & self.word_modulus_64
+            state_array[16] = (state_array[16] + state_array[19]) & 0xffff_ffff_ffff_ffff
+            state_array[19] = (state_array[19] + state_array[16]) & 0xffff_ffff_ffff_ffff
 
-            state_array[18] = (state_array[18] + state_array[23]) & self.word_modulus_64
-            state_array[23] = (state_array[23] + state_array[18]) & self.word_modulus_64
+            state_array[18] = (state_array[18] + state_array[23]) & 0xffff_ffff_ffff_ffff
+            state_array[23] = (state_array[23] + state_array[18]) & 0xffff_ffff_ffff_ffff
 
-            state_array[20] = (state_array[20] + state_array[17]) & self.word_modulus_64
-            state_array[17] = (state_array[17] + state_array[20]) & self.word_modulus_64
+            state_array[20] = (state_array[20] + state_array[17]) & 0xffff_ffff_ffff_ffff
+            state_array[17] = (state_array[17] + state_array[20]) & 0xffff_ffff_ffff_ffff
 
-            state_array[22] = (state_array[22] + state_array[21]) & self.word_modulus_64
-            state_array[21] = (state_array[21] + state_array[22]) & self.word_modulus_64
+            state_array[22] = (state_array[22] + state_array[21]) & 0xffff_ffff_ffff_ffff
+            state_array[21] = (state_array[21] + state_array[22]) & 0xffff_ffff_ffff_ffff
 
-            state_array[24] = (state_array[24] + state_array[27]) & self.word_modulus_64
-            state_array[27] = (state_array[27] + state_array[24]) & self.word_modulus_64
+            state_array[24] = (state_array[24] + state_array[27]) & 0xffff_ffff_ffff_ffff
+            state_array[27] = (state_array[27] + state_array[24]) & 0xffff_ffff_ffff_ffff
 
-            state_array[26] = (state_array[26] + state_array[31]) & self.word_modulus_64
-            state_array[31] = (state_array[31] + state_array[26]) & self.word_modulus_64
+            state_array[26] = (state_array[26] + state_array[31]) & 0xffff_ffff_ffff_ffff
+            state_array[31] = (state_array[31] + state_array[26]) & 0xffff_ffff_ffff_ffff
 
-            state_array[28] = (state_array[28] + state_array[25]) & self.word_modulus_64
-            state_array[25] = (state_array[25] + state_array[28]) & self.word_modulus_64
+            state_array[28] = (state_array[28] + state_array[25]) & 0xffff_ffff_ffff_ffff
+            state_array[25] = (state_array[25] + state_array[28]) & 0xffff_ffff_ffff_ffff
 
-            state_array[30] = (state_array[30] + state_array[29]) & self.word_modulus_64
-            state_array[29] = (state_array[29] + state_array[30]) & self.word_modulus_64
+            state_array[30] = (state_array[30] + state_array[29]) & 0xffff_ffff_ffff_ffff
+            state_array[29] = (state_array[29] + state_array[30]) & 0xffff_ffff_ffff_ffff
             return
 
         def quad_diffuse_q0(self, state_array):
@@ -106295,23 +106061,23 @@ class Hash:
             qdx2 = 27
             qdx3 = 36
 
-            state_array[0] = (state_array[0] + self.rol64(state_array[0] ^ state_array[14], qd0r0)) & self.word_modulus_64
-            state_array[2] = (state_array[2] + self.rol64(state_array[2] ^ state_array[0], qd0r1)) & self.word_modulus_64
-            state_array[4] = (state_array[4] + self.rol64(state_array[4] ^ state_array[2], qd0r2)) & self.word_modulus_64
-            state_array[6] = (state_array[6] + self.rol64(state_array[6] ^ state_array[4], qd0r0)) & self.word_modulus_64
-            state_array[8] = (state_array[8] + self.rol64(state_array[8] ^ state_array[6], qd0r1)) & self.word_modulus_64
-            state_array[10] = (state_array[10] + self.rol64(state_array[10] ^ state_array[8], qd0r2)) & self.word_modulus_64
-            state_array[12] = (state_array[12] + self.rol64(state_array[12] ^ state_array[10], qd0r0)) & self.word_modulus_64
-            state_array[14] = (state_array[14] + self.rol64(state_array[14] ^ state_array[12], qd0r1)) & self.word_modulus_64
+            state_array[0] = (state_array[0] + self.rol64(state_array[0] ^ state_array[14], qd0r0)) & 0xffff_ffff_ffff_ffff
+            state_array[2] = (state_array[2] + self.rol64(state_array[2] ^ state_array[0], qd0r1)) & 0xffff_ffff_ffff_ffff
+            state_array[4] = (state_array[4] + self.rol64(state_array[4] ^ state_array[2], qd0r2)) & 0xffff_ffff_ffff_ffff
+            state_array[6] = (state_array[6] + self.rol64(state_array[6] ^ state_array[4], qd0r0)) & 0xffff_ffff_ffff_ffff
+            state_array[8] = (state_array[8] + self.rol64(state_array[8] ^ state_array[6], qd0r1)) & 0xffff_ffff_ffff_ffff
+            state_array[10] = (state_array[10] + self.rol64(state_array[10] ^ state_array[8], qd0r2)) & 0xffff_ffff_ffff_ffff
+            state_array[12] = (state_array[12] + self.rol64(state_array[12] ^ state_array[10], qd0r0)) & 0xffff_ffff_ffff_ffff
+            state_array[14] = (state_array[14] + self.rol64(state_array[14] ^ state_array[12], qd0r1)) & 0xffff_ffff_ffff_ffff
 
-            state_array[0] ^= self.rol64((state_array[0] + state_array[14]) & self.word_modulus_64, qd0r2)
-            state_array[2] ^= self.rol64((state_array[2] + state_array[0]) & self.word_modulus_64, qd0r0)
-            state_array[4] ^= self.rol64((state_array[4] + state_array[2]) & self.word_modulus_64, qd0r1)
-            state_array[6] ^= self.rol64((state_array[6] + state_array[4]) & self.word_modulus_64, qd0r2)
-            state_array[8] ^= self.rol64((state_array[8] + state_array[6]) & self.word_modulus_64, qd0r0)
-            state_array[10] ^= self.rol64((state_array[10] + state_array[8]) & self.word_modulus_64, qd0r1)
-            state_array[12] ^= self.rol64((state_array[12] + state_array[10]) & self.word_modulus_64, qd0r2)
-            state_array[14] ^= self.rol64((state_array[14] + state_array[12]) & self.word_modulus_64, qd0r0)
+            state_array[0] ^= self.rol64((state_array[0] + state_array[14]) & 0xffff_ffff_ffff_ffff, qd0r2)
+            state_array[2] ^= self.rol64((state_array[2] + state_array[0]) & 0xffff_ffff_ffff_ffff, qd0r0)
+            state_array[4] ^= self.rol64((state_array[4] + state_array[2]) & 0xffff_ffff_ffff_ffff, qd0r1)
+            state_array[6] ^= self.rol64((state_array[6] + state_array[4]) & 0xffff_ffff_ffff_ffff, qd0r2)
+            state_array[8] ^= self.rol64((state_array[8] + state_array[6]) & 0xffff_ffff_ffff_ffff, qd0r0)
+            state_array[10] ^= self.rol64((state_array[10] + state_array[8]) & 0xffff_ffff_ffff_ffff, qd0r1)
+            state_array[12] ^= self.rol64((state_array[12] + state_array[10]) & 0xffff_ffff_ffff_ffff, qd0r2)
+            state_array[14] ^= self.rol64((state_array[14] + state_array[12]) & 0xffff_ffff_ffff_ffff, qd0r0)
 
             state_array[1] ^= self.rol64(state_array[0], qdx1)
             state_array[3] ^= self.rol64(state_array[2], qdx1)
@@ -106349,23 +106115,23 @@ class Hash:
             qdx2 = 27
             qdx3 = 36
 
-            state_array[1] = (state_array[1] + self.rol64(state_array[1] ^ state_array[15], qd1r0)) & self.word_modulus_64
-            state_array[3] = (state_array[3] + self.rol64(state_array[3] ^ state_array[1], qd1r1)) & self.word_modulus_64
-            state_array[5] = (state_array[5] + self.rol64(state_array[5] ^ state_array[3], qd1r2)) & self.word_modulus_64
-            state_array[7] = (state_array[7] + self.rol64(state_array[7] ^ state_array[5], qd1r0)) & self.word_modulus_64
-            state_array[9] = (state_array[9] + self.rol64(state_array[9] ^ state_array[7], qd1r1)) & self.word_modulus_64
-            state_array[11] = (state_array[11] + self.rol64(state_array[11] ^ state_array[9], qd1r2)) & self.word_modulus_64
-            state_array[13] = (state_array[13] + self.rol64(state_array[13] ^ state_array[11], qd1r0)) & self.word_modulus_64
-            state_array[15] = (state_array[15] + self.rol64(state_array[15] ^ state_array[13], qd1r1)) & self.word_modulus_64
+            state_array[1] = (state_array[1] + self.rol64(state_array[1] ^ state_array[15], qd1r0)) & 0xffff_ffff_ffff_ffff
+            state_array[3] = (state_array[3] + self.rol64(state_array[3] ^ state_array[1], qd1r1)) & 0xffff_ffff_ffff_ffff
+            state_array[5] = (state_array[5] + self.rol64(state_array[5] ^ state_array[3], qd1r2)) & 0xffff_ffff_ffff_ffff
+            state_array[7] = (state_array[7] + self.rol64(state_array[7] ^ state_array[5], qd1r0)) & 0xffff_ffff_ffff_ffff
+            state_array[9] = (state_array[9] + self.rol64(state_array[9] ^ state_array[7], qd1r1)) & 0xffff_ffff_ffff_ffff
+            state_array[11] = (state_array[11] + self.rol64(state_array[11] ^ state_array[9], qd1r2)) & 0xffff_ffff_ffff_ffff
+            state_array[13] = (state_array[13] + self.rol64(state_array[13] ^ state_array[11], qd1r0)) & 0xffff_ffff_ffff_ffff
+            state_array[15] = (state_array[15] + self.rol64(state_array[15] ^ state_array[13], qd1r1)) & 0xffff_ffff_ffff_ffff
 
-            state_array[1] ^= self.rol64((state_array[1] + state_array[15]) & self.word_modulus_64, qd1r2)
-            state_array[3] ^= self.rol64((state_array[3] + state_array[1]) & self.word_modulus_64, qd1r0)
-            state_array[5] ^= self.rol64((state_array[5] + state_array[3]) & self.word_modulus_64, qd1r1)
-            state_array[7] ^= self.rol64((state_array[7] + state_array[5]) & self.word_modulus_64, qd1r2)
-            state_array[9] ^= self.rol64((state_array[9] + state_array[7]) & self.word_modulus_64, qd1r0)
-            state_array[11] ^= self.rol64((state_array[11] + state_array[9]) & self.word_modulus_64, qd1r1)
-            state_array[13] ^= self.rol64((state_array[13] + state_array[11]) & self.word_modulus_64, qd1r2)
-            state_array[15] ^= self.rol64((state_array[15] + state_array[13]) & self.word_modulus_64, qd1r0)
+            state_array[1] ^= self.rol64((state_array[1] + state_array[15]) & 0xffff_ffff_ffff_ffff, qd1r2)
+            state_array[3] ^= self.rol64((state_array[3] + state_array[1]) & 0xffff_ffff_ffff_ffff, qd1r0)
+            state_array[5] ^= self.rol64((state_array[5] + state_array[3]) & 0xffff_ffff_ffff_ffff, qd1r1)
+            state_array[7] ^= self.rol64((state_array[7] + state_array[5]) & 0xffff_ffff_ffff_ffff, qd1r2)
+            state_array[9] ^= self.rol64((state_array[9] + state_array[7]) & 0xffff_ffff_ffff_ffff, qd1r0)
+            state_array[11] ^= self.rol64((state_array[11] + state_array[9]) & 0xffff_ffff_ffff_ffff, qd1r1)
+            state_array[13] ^= self.rol64((state_array[13] + state_array[11]) & 0xffff_ffff_ffff_ffff, qd1r2)
+            state_array[15] ^= self.rol64((state_array[15] + state_array[13]) & 0xffff_ffff_ffff_ffff, qd1r0)
 
             state_array[0] ^= self.rol64(state_array[1], qdx0)
             state_array[2] ^= self.rol64(state_array[3], qdx0)
@@ -106406,23 +106172,23 @@ class Hash:
             qdx1 = 18
             qdx3 = 36
 
-            state_array[16] = (state_array[16] + self.rol64(state_array[16] ^ state_array[30], qd2r0)) & self.word_modulus_64
-            state_array[18] = (state_array[18] + self.rol64(state_array[18] ^ state_array[16], qd2r1)) & self.word_modulus_64
-            state_array[20] = (state_array[20] + self.rol64(state_array[20] ^ state_array[18], qd2r2)) & self.word_modulus_64
-            state_array[22] = (state_array[22] + self.rol64(state_array[22] ^ state_array[20], qd2r0)) & self.word_modulus_64
-            state_array[24] = (state_array[24] + self.rol64(state_array[24] ^ state_array[22], qd2r1)) & self.word_modulus_64
-            state_array[26] = (state_array[26] + self.rol64(state_array[26] ^ state_array[24], qd2r2)) & self.word_modulus_64
-            state_array[28] = (state_array[28] + self.rol64(state_array[28] ^ state_array[26], qd2r0)) & self.word_modulus_64
-            state_array[30] = (state_array[30] + self.rol64(state_array[30] ^ state_array[28], qd2r1)) & self.word_modulus_64
+            state_array[16] = (state_array[16] + self.rol64(state_array[16] ^ state_array[30], qd2r0)) & 0xffff_ffff_ffff_ffff
+            state_array[18] = (state_array[18] + self.rol64(state_array[18] ^ state_array[16], qd2r1)) & 0xffff_ffff_ffff_ffff
+            state_array[20] = (state_array[20] + self.rol64(state_array[20] ^ state_array[18], qd2r2)) & 0xffff_ffff_ffff_ffff
+            state_array[22] = (state_array[22] + self.rol64(state_array[22] ^ state_array[20], qd2r0)) & 0xffff_ffff_ffff_ffff
+            state_array[24] = (state_array[24] + self.rol64(state_array[24] ^ state_array[22], qd2r1)) & 0xffff_ffff_ffff_ffff
+            state_array[26] = (state_array[26] + self.rol64(state_array[26] ^ state_array[24], qd2r2)) & 0xffff_ffff_ffff_ffff
+            state_array[28] = (state_array[28] + self.rol64(state_array[28] ^ state_array[26], qd2r0)) & 0xffff_ffff_ffff_ffff
+            state_array[30] = (state_array[30] + self.rol64(state_array[30] ^ state_array[28], qd2r1)) & 0xffff_ffff_ffff_ffff
 
-            state_array[16] ^= self.rol64((state_array[16] + state_array[30]) & self.word_modulus_64, qd3r2)
-            state_array[18] ^= self.rol64((state_array[18] + state_array[16]) & self.word_modulus_64, qd3r0)
-            state_array[20] ^= self.rol64((state_array[20] + state_array[18]) & self.word_modulus_64, qd3r1)
-            state_array[22] ^= self.rol64((state_array[22] + state_array[20]) & self.word_modulus_64, qd3r2)
-            state_array[24] ^= self.rol64((state_array[24] + state_array[22]) & self.word_modulus_64, qd3r0)
-            state_array[26] ^= self.rol64((state_array[26] + state_array[24]) & self.word_modulus_64, qd3r1)
-            state_array[28] ^= self.rol64((state_array[28] + state_array[26]) & self.word_modulus_64, qd3r2)
-            state_array[30] ^= self.rol64((state_array[30] + state_array[28]) & self.word_modulus_64, qd3r0)
+            state_array[16] ^= self.rol64((state_array[16] + state_array[30]) & 0xffff_ffff_ffff_ffff, qd3r2)
+            state_array[18] ^= self.rol64((state_array[18] + state_array[16]) & 0xffff_ffff_ffff_ffff, qd3r0)
+            state_array[20] ^= self.rol64((state_array[20] + state_array[18]) & 0xffff_ffff_ffff_ffff, qd3r1)
+            state_array[22] ^= self.rol64((state_array[22] + state_array[20]) & 0xffff_ffff_ffff_ffff, qd3r2)
+            state_array[24] ^= self.rol64((state_array[24] + state_array[22]) & 0xffff_ffff_ffff_ffff, qd3r0)
+            state_array[26] ^= self.rol64((state_array[26] + state_array[24]) & 0xffff_ffff_ffff_ffff, qd3r1)
+            state_array[28] ^= self.rol64((state_array[28] + state_array[26]) & 0xffff_ffff_ffff_ffff, qd3r2)
+            state_array[30] ^= self.rol64((state_array[30] + state_array[28]) & 0xffff_ffff_ffff_ffff, qd3r0)
 
             state_array[0] ^= self.rol64(state_array[16], qdx0)
             state_array[2] ^= self.rol64(state_array[18], qdx0)
@@ -106460,23 +106226,23 @@ class Hash:
             qdx1 = 18
             qdx2 = 27
 
-            state_array[17] = (state_array[17] + self.rol64(state_array[17] ^ state_array[31], qd3r0)) & self.word_modulus_64
-            state_array[19] = (state_array[19] + self.rol64(state_array[19] ^ state_array[17], qd3r1)) & self.word_modulus_64
-            state_array[21] = (state_array[21] + self.rol64(state_array[21] ^ state_array[19], qd3r2)) & self.word_modulus_64
-            state_array[23] = (state_array[23] + self.rol64(state_array[23] ^ state_array[21], qd3r0)) & self.word_modulus_64
-            state_array[25] = (state_array[25] + self.rol64(state_array[25] ^ state_array[23], qd3r1)) & self.word_modulus_64
-            state_array[27] = (state_array[27] + self.rol64(state_array[27] ^ state_array[25], qd3r2)) & self.word_modulus_64
-            state_array[29] = (state_array[29] + self.rol64(state_array[29] ^ state_array[27], qd3r0)) & self.word_modulus_64
-            state_array[31] = (state_array[31] + self.rol64(state_array[31] ^ state_array[29], qd3r1)) & self.word_modulus_64
+            state_array[17] = (state_array[17] + self.rol64(state_array[17] ^ state_array[31], qd3r0)) & 0xffff_ffff_ffff_ffff
+            state_array[19] = (state_array[19] + self.rol64(state_array[19] ^ state_array[17], qd3r1)) & 0xffff_ffff_ffff_ffff
+            state_array[21] = (state_array[21] + self.rol64(state_array[21] ^ state_array[19], qd3r2)) & 0xffff_ffff_ffff_ffff
+            state_array[23] = (state_array[23] + self.rol64(state_array[23] ^ state_array[21], qd3r0)) & 0xffff_ffff_ffff_ffff
+            state_array[25] = (state_array[25] + self.rol64(state_array[25] ^ state_array[23], qd3r1)) & 0xffff_ffff_ffff_ffff
+            state_array[27] = (state_array[27] + self.rol64(state_array[27] ^ state_array[25], qd3r2)) & 0xffff_ffff_ffff_ffff
+            state_array[29] = (state_array[29] + self.rol64(state_array[29] ^ state_array[27], qd3r0)) & 0xffff_ffff_ffff_ffff
+            state_array[31] = (state_array[31] + self.rol64(state_array[31] ^ state_array[29], qd3r1)) & 0xffff_ffff_ffff_ffff
 
-            state_array[17] ^= self.rol64((state_array[17] + state_array[31]) & self.word_modulus_64, qd3r2)
-            state_array[19] ^= self.rol64((state_array[19] + state_array[17]) & self.word_modulus_64, qd3r0)
-            state_array[21] ^= self.rol64((state_array[21] + state_array[19]) & self.word_modulus_64, qd3r1)
-            state_array[23] ^= self.rol64((state_array[23] + state_array[21]) & self.word_modulus_64, qd3r2)
-            state_array[25] ^= self.rol64((state_array[25] + state_array[23]) & self.word_modulus_64, qd3r0)
-            state_array[27] ^= self.rol64((state_array[27] + state_array[25]) & self.word_modulus_64, qd3r1)
-            state_array[29] ^= self.rol64((state_array[29] + state_array[27]) & self.word_modulus_64, qd3r2)
-            state_array[31] ^= self.rol64((state_array[31] + state_array[29]) & self.word_modulus_64, qd3r0)
+            state_array[17] ^= self.rol64((state_array[17] + state_array[31]) & 0xffff_ffff_ffff_ffff, qd3r2)
+            state_array[19] ^= self.rol64((state_array[19] + state_array[17]) & 0xffff_ffff_ffff_ffff, qd3r0)
+            state_array[21] ^= self.rol64((state_array[21] + state_array[19]) & 0xffff_ffff_ffff_ffff, qd3r1)
+            state_array[23] ^= self.rol64((state_array[23] + state_array[21]) & 0xffff_ffff_ffff_ffff, qd3r2)
+            state_array[25] ^= self.rol64((state_array[25] + state_array[23]) & 0xffff_ffff_ffff_ffff, qd3r0)
+            state_array[27] ^= self.rol64((state_array[27] + state_array[25]) & 0xffff_ffff_ffff_ffff, qd3r1)
+            state_array[29] ^= self.rol64((state_array[29] + state_array[27]) & 0xffff_ffff_ffff_ffff, qd3r2)
+            state_array[31] ^= self.rol64((state_array[31] + state_array[29]) & 0xffff_ffff_ffff_ffff, qd3r0)
 
             state_array[0] ^= self.rol64(state_array[17], qdx0)
             state_array[2] ^= self.rol64(state_array[19], qdx0)
@@ -106526,205 +106292,215 @@ class Hash:
             principle_key_left = self.process_principle_key_single_1_rounds(message_block_left, preliminary_key)
             principle_key_right = self.process_principle_key_single_1_rounds(message_block_right, preliminary_key)
             for i in range(32):
-                principle_key_left[i] = (principle_key_left[i] + principle_key_right[i]) & self.word_modulus_64
+                principle_key_left[i] = (principle_key_left[i] + principle_key_right[i]) & 0xffff_ffff_ffff_ffff
             principle_key = self.process_principle_key_single_1_rounds(principle_key_left, preliminary_key)
             return principle_key
 
-        def key_extract_x4(self, principle_key_extract, preliminary_key, round_index):
-            rc = self.rc_u64
-            local_round_index_0 = round_index & 0x3f
-            local_round_index_1 = (round_index + 1) & 0x3f
-            local_round_index_2 = (round_index + 2) & 0x3f
-            local_round_index_3 = (round_index + 3) & 0x3f
-            local_round_index_4 = (round_index + 4) & 0x3f
-            local_round_index_5 = (round_index + 5) & 0x3f
-            local_round_index_6 = (round_index + 6) & 0x3f
-            local_round_index_7 = (round_index + 7) & 0x3f
-
-            ke_rotate_1 = (3 + round_index) & 0x3f
-            ke_rotate_2 = (17 + round_index) & 0x3f
-            ke_rotate_3 = (29 + round_index) & 0x3f
-
-            round_key = [0] * 32
-            round_key[0] = principle_key_extract[0] ^ preliminary_key[0] ^ rc[local_round_index_0]
-            round_key[2] = principle_key_extract[1] ^ preliminary_key[1] ^ rc[local_round_index_1]
-            round_key[4] = principle_key_extract[2] ^ preliminary_key[2] ^ rc[local_round_index_2]
-            round_key[6] = principle_key_extract[3] ^ preliminary_key[3] ^ rc[local_round_index_3]
-            round_key[8] = principle_key_extract[4] ^ preliminary_key[4] ^ rc[local_round_index_4]
-            round_key[10] = principle_key_extract[5] ^ preliminary_key[5] ^ rc[local_round_index_5]
-            round_key[12] = principle_key_extract[6] ^ preliminary_key[6] ^ rc[local_round_index_6]
-            round_key[14] = principle_key_extract[7] ^ preliminary_key[7] ^ rc[local_round_index_7]
-
-            round_key[1] = self.rol64(round_key[2], ke_rotate_1)
-            round_key[3] = self.rol64(round_key[0], ke_rotate_1)
-            round_key[5] = self.rol64(round_key[6], ke_rotate_1)
-            round_key[7] = self.rol64(round_key[4], ke_rotate_1)
-            round_key[9] = self.rol64(round_key[10], ke_rotate_1)
-            round_key[11] = self.rol64(round_key[8], ke_rotate_1)
-            round_key[13] = self.rol64(round_key[14], ke_rotate_1)
-            round_key[15] = self.rol64(round_key[12], ke_rotate_1)
-
-            round_key[16] = self.rol64(round_key[6], ke_rotate_2)
-            round_key[18] = self.rol64(round_key[4], ke_rotate_2)
-            round_key[20] = self.rol64(round_key[2], ke_rotate_2)
-            round_key[22] = self.rol64(round_key[0], ke_rotate_2)
-            round_key[24] = self.rol64(round_key[14], ke_rotate_2)
-            round_key[26] = self.rol64(round_key[12], ke_rotate_2)
-            round_key[28] = self.rol64(round_key[10], ke_rotate_2)
-            round_key[30] = self.rol64(round_key[8], ke_rotate_2)
-
-            round_key[17] = self.rol64(round_key[14], ke_rotate_3)
-            round_key[19] = self.rol64(round_key[12], ke_rotate_3)
-            round_key[21] = self.rol64(round_key[10], ke_rotate_3)
-            round_key[23] = self.rol64(round_key[8], ke_rotate_3)
-            round_key[25] = self.rol64(round_key[6], ke_rotate_3)
-            round_key[27] = self.rol64(round_key[4], ke_rotate_3)
-            round_key[29] = self.rol64(round_key[2], ke_rotate_3)
-            round_key[31] = self.rol64(round_key[0], ke_rotate_3)
-            return round_key
-
-        def key_extract_x2(self, principle_key_extract, preliminary_key, round_index):
-            rc = self.rc_u64
-            local_round_index_0 = round_index & 0x3f
-            local_round_index_1 = (round_index + 1) & 0x3f
-            local_round_index_2 = (round_index + 2) & 0x3f
-            local_round_index_3 = (round_index + 3) & 0x3f
-            local_round_index_4 = (round_index + 4) & 0x3f
-            local_round_index_5 = (round_index + 5) & 0x3f
-            local_round_index_6 = (round_index + 6) & 0x3f
-            local_round_index_7 = (round_index + 7) & 0x3f
-
-            ke_rotate_1 = (3 + round_index) & 0x3f
-            ke_rotate_2 = (17 + round_index) & 0x3f
-            ke_rotate_3 = (29 + round_index) & 0x3f
-
-            round_key = [0] * 32
-            round_key[0] = principle_key_extract[0] ^ preliminary_key[0] ^ rc[local_round_index_0]
-            round_key[2] = principle_key_extract[1] ^ preliminary_key[1] ^ rc[local_round_index_1]
-            round_key[4] = principle_key_extract[2] ^ preliminary_key[2] ^ rc[local_round_index_2]
-            round_key[6] = principle_key_extract[3] ^ preliminary_key[3] ^ rc[local_round_index_3]
-            round_key[8] = principle_key_extract[4] ^ preliminary_key[4] ^ rc[local_round_index_4]
-            round_key[10] = principle_key_extract[5] ^ preliminary_key[5] ^ rc[local_round_index_5]
-            round_key[12] = principle_key_extract[6] ^ preliminary_key[6] ^ rc[local_round_index_6]
-            round_key[14] = principle_key_extract[7] ^ preliminary_key[7] ^ rc[local_round_index_7]
-
-            round_key[1] = self.rol64(principle_key_extract[8], ke_rotate_1)
-            round_key[3] = self.rol64(principle_key_extract[9], ke_rotate_1)
-            round_key[5] = self.rol64(principle_key_extract[10], ke_rotate_1)
-            round_key[7] = self.rol64(principle_key_extract[11], ke_rotate_1)
-            round_key[9] = self.rol64(principle_key_extract[12], ke_rotate_1)
-            round_key[11] = self.rol64(principle_key_extract[13], ke_rotate_1)
-            round_key[13] = self.rol64(principle_key_extract[14], ke_rotate_1)
-            round_key[15] = self.rol64(principle_key_extract[15], ke_rotate_1)
-
-            round_key[16] = self.rol64(round_key[2], ke_rotate_2)
-            round_key[18] = self.rol64(round_key[0], ke_rotate_2)
-            round_key[20] = self.rol64(round_key[6], ke_rotate_2)
-            round_key[22] = self.rol64(round_key[4], ke_rotate_2)
-            round_key[24] = self.rol64(round_key[10], ke_rotate_2)
-            round_key[26] = self.rol64(round_key[8], ke_rotate_2)
-            round_key[28] = self.rol64(round_key[14], ke_rotate_2)
-            round_key[30] = self.rol64(round_key[12], ke_rotate_2)
-
-            round_key[17] = self.rol64(round_key[7], ke_rotate_3)
-            round_key[19] = self.rol64(round_key[5], ke_rotate_3)
-            round_key[21] = self.rol64(round_key[3], ke_rotate_3)
-            round_key[23] = self.rol64(round_key[1], ke_rotate_3)
-            round_key[25] = self.rol64(round_key[15], ke_rotate_3)
-            round_key[27] = self.rol64(round_key[13], ke_rotate_3)
-            round_key[29] = self.rol64(round_key[11], ke_rotate_3)
-            round_key[31] = self.rol64(round_key[9], ke_rotate_3)
-            return round_key
-
-        def key_extract_pre_whitening(self, principle_key_extract, preliminary_key):
-            round_key = [0] * 32
-            round_key[0] = principle_key_extract[0] ^ preliminary_key[0]
-            round_key[2] = principle_key_extract[2] ^ preliminary_key[1]
-            round_key[4] = principle_key_extract[4] ^ preliminary_key[2]
-            round_key[6] = principle_key_extract[6] ^ preliminary_key[3]
-            round_key[8] = principle_key_extract[8] ^ preliminary_key[4]
-            round_key[10] = principle_key_extract[10] ^ preliminary_key[5]
-            round_key[12] = principle_key_extract[12] ^ preliminary_key[6]
-            round_key[14] = principle_key_extract[14] ^ preliminary_key[7]
-
-            round_key[1] = principle_key_extract[1] ^ preliminary_key[7]
-            round_key[3] = principle_key_extract[3] ^ preliminary_key[6]
-            round_key[5] = principle_key_extract[5] ^ preliminary_key[5]
-            round_key[7] = principle_key_extract[7] ^ preliminary_key[4]
-            round_key[9] = principle_key_extract[9] ^ preliminary_key[3]
-            round_key[11] = principle_key_extract[11] ^ preliminary_key[2]
-            round_key[13] = principle_key_extract[13] ^ preliminary_key[1]
-            round_key[15] = principle_key_extract[15] ^ preliminary_key[0]
-
-            round_key[16] = principle_key_extract[16]
-            round_key[18] = principle_key_extract[18]
-            round_key[20] = principle_key_extract[20]
-            round_key[22] = principle_key_extract[22]
-            round_key[24] = principle_key_extract[24]
-            round_key[26] = principle_key_extract[26]
-            round_key[28] = principle_key_extract[28]
-            round_key[30] = principle_key_extract[30]
-
-            round_key[17] = principle_key_extract[17]
-            round_key[19] = principle_key_extract[19]
-            round_key[21] = principle_key_extract[21]
-            round_key[23] = principle_key_extract[23]
-            round_key[25] = principle_key_extract[25]
-            round_key[27] = principle_key_extract[27]
-            round_key[29] = principle_key_extract[29]
-            round_key[31] = principle_key_extract[31]
-
-            self.pht_a_diffuse(round_key)
-            return round_key
-
-        def key_extract_post_whitening(self, principle_key_extract, preliminary_key):
-            round_key = [0] * 32
-            round_key[0] = principle_key_extract[0] ^ preliminary_key[0]
-            round_key[2] = principle_key_extract[2] ^ preliminary_key[1]
-            round_key[4] = principle_key_extract[4] ^ preliminary_key[2]
-            round_key[6] = principle_key_extract[6] ^ preliminary_key[3]
-            round_key[8] = principle_key_extract[8] ^ preliminary_key[4]
-            round_key[10] = principle_key_extract[10] ^ preliminary_key[5]
-            round_key[12] = principle_key_extract[12] ^ preliminary_key[6]
-            round_key[14] = principle_key_extract[14] ^ preliminary_key[7]
-
-            round_key[1] = principle_key_extract[1] ^ preliminary_key[7]
-            round_key[3] = principle_key_extract[3] ^ preliminary_key[6]
-            round_key[5] = principle_key_extract[5] ^ preliminary_key[5]
-            round_key[7] = principle_key_extract[7] ^ preliminary_key[4]
-            round_key[9] = principle_key_extract[9] ^ preliminary_key[3]
-            round_key[11] = principle_key_extract[11] ^ preliminary_key[2]
-            round_key[13] = principle_key_extract[13] ^ preliminary_key[1]
-            round_key[15] = principle_key_extract[15] ^ preliminary_key[0]
-
-            round_key[16] = principle_key_extract[16]
-            round_key[18] = principle_key_extract[18]
-            round_key[20] = principle_key_extract[20]
-            round_key[22] = principle_key_extract[22]
-            round_key[24] = principle_key_extract[24]
-            round_key[26] = principle_key_extract[26]
-            round_key[28] = principle_key_extract[28]
-            round_key[30] = principle_key_extract[30]
-
-            round_key[17] = principle_key_extract[17]
-            round_key[19] = principle_key_extract[19]
-            round_key[21] = principle_key_extract[21]
-            round_key[23] = principle_key_extract[23]
-            round_key[25] = principle_key_extract[25]
-            round_key[27] = principle_key_extract[27]
-            round_key[29] = principle_key_extract[29]
-            round_key[31] = principle_key_extract[31]
-
-            self.pht_b_diffuse(round_key)
-            return round_key
-
         def update_chaining_state_generic(self, preliminary_key, principle_key, block_count_low_word, schedule):
+
+            def key_extract_x4(principle_key_extract, preliminary_key, round_index):
+                rc = self.rc_u64
+                local_round_index_0 = round_index & 0x3f
+                local_round_index_1 = (round_index + 1) & 0x3f
+                local_round_index_2 = (round_index + 2) & 0x3f
+                local_round_index_3 = (round_index + 3) & 0x3f
+                local_round_index_4 = (round_index + 4) & 0x3f
+                local_round_index_5 = (round_index + 5) & 0x3f
+                local_round_index_6 = (round_index + 6) & 0x3f
+                local_round_index_7 = (round_index + 7) & 0x3f
+
+                ke_rotate_1 = (3 + round_index) & 0x3f
+                ke_rotate_2 = (17 + round_index) & 0x3f
+                ke_rotate_3 = (29 + round_index) & 0x3f
+
+                round_key = [0] * 32
+                round_key[0] = principle_key_extract[0] ^ preliminary_key[0] ^ rc[local_round_index_0]
+                round_key[2] = principle_key_extract[1] ^ preliminary_key[1] ^ rc[local_round_index_1]
+                round_key[4] = principle_key_extract[2] ^ preliminary_key[2] ^ rc[local_round_index_2]
+                round_key[6] = principle_key_extract[3] ^ preliminary_key[3] ^ rc[local_round_index_3]
+                round_key[8] = principle_key_extract[4] ^ preliminary_key[4] ^ rc[local_round_index_4]
+                round_key[10] = principle_key_extract[5] ^ preliminary_key[5] ^ rc[local_round_index_5]
+                round_key[12] = principle_key_extract[6] ^ preliminary_key[6] ^ rc[local_round_index_6]
+                round_key[14] = principle_key_extract[7] ^ preliminary_key[7] ^ rc[local_round_index_7]
+
+                round_key[1] = self.rol64(round_key[2], ke_rotate_1)
+                round_key[3] = self.rol64(round_key[0], ke_rotate_1)
+                round_key[5] = self.rol64(round_key[6], ke_rotate_1)
+                round_key[7] = self.rol64(round_key[4], ke_rotate_1)
+                round_key[9] = self.rol64(round_key[10], ke_rotate_1)
+                round_key[11] = self.rol64(round_key[8], ke_rotate_1)
+                round_key[13] = self.rol64(round_key[14], ke_rotate_1)
+                round_key[15] = self.rol64(round_key[12], ke_rotate_1)
+
+                round_key[16] = self.rol64(round_key[6], ke_rotate_2)
+                round_key[18] = self.rol64(round_key[4], ke_rotate_2)
+                round_key[20] = self.rol64(round_key[2], ke_rotate_2)
+                round_key[22] = self.rol64(round_key[0], ke_rotate_2)
+                round_key[24] = self.rol64(round_key[14], ke_rotate_2)
+                round_key[26] = self.rol64(round_key[12], ke_rotate_2)
+                round_key[28] = self.rol64(round_key[10], ke_rotate_2)
+                round_key[30] = self.rol64(round_key[8], ke_rotate_2)
+
+                round_key[17] = self.rol64(round_key[14], ke_rotate_3)
+                round_key[19] = self.rol64(round_key[12], ke_rotate_3)
+                round_key[21] = self.rol64(round_key[10], ke_rotate_3)
+                round_key[23] = self.rol64(round_key[8], ke_rotate_3)
+                round_key[25] = self.rol64(round_key[6], ke_rotate_3)
+                round_key[27] = self.rol64(round_key[4], ke_rotate_3)
+                round_key[29] = self.rol64(round_key[2], ke_rotate_3)
+                round_key[31] = self.rol64(round_key[0], ke_rotate_3)
+                return round_key
+
+            def key_extract_x2(principle_key_extract, preliminary_key, round_index):
+                rc = self.rc_u64
+                local_round_index_0 = round_index & 0x3f
+                local_round_index_1 = (round_index + 1) & 0x3f
+                local_round_index_2 = (round_index + 2) & 0x3f
+                local_round_index_3 = (round_index + 3) & 0x3f
+                local_round_index_4 = (round_index + 4) & 0x3f
+                local_round_index_5 = (round_index + 5) & 0x3f
+                local_round_index_6 = (round_index + 6) & 0x3f
+                local_round_index_7 = (round_index + 7) & 0x3f
+
+                ke_rotate_1 = (3 + round_index) & 0x3f
+                ke_rotate_2 = (17 + round_index) & 0x3f
+                ke_rotate_3 = (29 + round_index) & 0x3f
+
+                round_key = [0] * 32
+                round_key[0] = principle_key_extract[0] ^ preliminary_key[0] ^ rc[local_round_index_0]
+                round_key[2] = principle_key_extract[1] ^ preliminary_key[1] ^ rc[local_round_index_1]
+                round_key[4] = principle_key_extract[2] ^ preliminary_key[2] ^ rc[local_round_index_2]
+                round_key[6] = principle_key_extract[3] ^ preliminary_key[3] ^ rc[local_round_index_3]
+                round_key[8] = principle_key_extract[4] ^ preliminary_key[4] ^ rc[local_round_index_4]
+                round_key[10] = principle_key_extract[5] ^ preliminary_key[5] ^ rc[local_round_index_5]
+                round_key[12] = principle_key_extract[6] ^ preliminary_key[6] ^ rc[local_round_index_6]
+                round_key[14] = principle_key_extract[7] ^ preliminary_key[7] ^ rc[local_round_index_7]
+
+                round_key[1] = self.rol64(principle_key_extract[8], ke_rotate_1)
+                round_key[3] = self.rol64(principle_key_extract[9], ke_rotate_1)
+                round_key[5] = self.rol64(principle_key_extract[10], ke_rotate_1)
+                round_key[7] = self.rol64(principle_key_extract[11], ke_rotate_1)
+                round_key[9] = self.rol64(principle_key_extract[12], ke_rotate_1)
+                round_key[11] = self.rol64(principle_key_extract[13], ke_rotate_1)
+                round_key[13] = self.rol64(principle_key_extract[14], ke_rotate_1)
+                round_key[15] = self.rol64(principle_key_extract[15], ke_rotate_1)
+
+                round_key[16] = self.rol64(round_key[2], ke_rotate_2)
+                round_key[18] = self.rol64(round_key[0], ke_rotate_2)
+                round_key[20] = self.rol64(round_key[6], ke_rotate_2)
+                round_key[22] = self.rol64(round_key[4], ke_rotate_2)
+                round_key[24] = self.rol64(round_key[10], ke_rotate_2)
+                round_key[26] = self.rol64(round_key[8], ke_rotate_2)
+                round_key[28] = self.rol64(round_key[14], ke_rotate_2)
+                round_key[30] = self.rol64(round_key[12], ke_rotate_2)
+
+                round_key[17] = self.rol64(round_key[7], ke_rotate_3)
+                round_key[19] = self.rol64(round_key[5], ke_rotate_3)
+                round_key[21] = self.rol64(round_key[3], ke_rotate_3)
+                round_key[23] = self.rol64(round_key[1], ke_rotate_3)
+                round_key[25] = self.rol64(round_key[15], ke_rotate_3)
+                round_key[27] = self.rol64(round_key[13], ke_rotate_3)
+                round_key[29] = self.rol64(round_key[11], ke_rotate_3)
+                round_key[31] = self.rol64(round_key[9], ke_rotate_3)
+                return round_key
+
+            def key_extract_pre_whitening(principle_key_extract, preliminary_key):
+                round_key = [0] * 32
+                round_key[0] = principle_key_extract[0] ^ preliminary_key[0]
+                round_key[2] = principle_key_extract[2] ^ preliminary_key[1]
+                round_key[4] = principle_key_extract[4] ^ preliminary_key[2]
+                round_key[6] = principle_key_extract[6] ^ preliminary_key[3]
+                round_key[8] = principle_key_extract[8] ^ preliminary_key[4]
+                round_key[10] = principle_key_extract[10] ^ preliminary_key[5]
+                round_key[12] = principle_key_extract[12] ^ preliminary_key[6]
+                round_key[14] = principle_key_extract[14] ^ preliminary_key[7]
+
+                round_key[1] = principle_key_extract[1] ^ preliminary_key[7]
+                round_key[3] = principle_key_extract[3] ^ preliminary_key[6]
+                round_key[5] = principle_key_extract[5] ^ preliminary_key[5]
+                round_key[7] = principle_key_extract[7] ^ preliminary_key[4]
+                round_key[9] = principle_key_extract[9] ^ preliminary_key[3]
+                round_key[11] = principle_key_extract[11] ^ preliminary_key[2]
+                round_key[13] = principle_key_extract[13] ^ preliminary_key[1]
+                round_key[15] = principle_key_extract[15] ^ preliminary_key[0]
+
+                round_key[16] = principle_key_extract[16]
+                round_key[18] = principle_key_extract[18]
+                round_key[20] = principle_key_extract[20]
+                round_key[22] = principle_key_extract[22]
+                round_key[24] = principle_key_extract[24]
+                round_key[26] = principle_key_extract[26]
+                round_key[28] = principle_key_extract[28]
+                round_key[30] = principle_key_extract[30]
+
+                round_key[17] = principle_key_extract[17]
+                round_key[19] = principle_key_extract[19]
+                round_key[21] = principle_key_extract[21]
+                round_key[23] = principle_key_extract[23]
+                round_key[25] = principle_key_extract[25]
+                round_key[27] = principle_key_extract[27]
+                round_key[29] = principle_key_extract[29]
+                round_key[31] = principle_key_extract[31]
+
+                self.pht_a_diffuse(round_key)
+                return round_key
+
+            def key_extract_post_whitening(principle_key_extract, preliminary_key):
+                round_key = [0] * 32
+                round_key[0] = principle_key_extract[0] ^ preliminary_key[0]
+                round_key[2] = principle_key_extract[2] ^ preliminary_key[1]
+                round_key[4] = principle_key_extract[4] ^ preliminary_key[2]
+                round_key[6] = principle_key_extract[6] ^ preliminary_key[3]
+                round_key[8] = principle_key_extract[8] ^ preliminary_key[4]
+                round_key[10] = principle_key_extract[10] ^ preliminary_key[5]
+                round_key[12] = principle_key_extract[12] ^ preliminary_key[6]
+                round_key[14] = principle_key_extract[14] ^ preliminary_key[7]
+
+                round_key[1] = principle_key_extract[1] ^ preliminary_key[7]
+                round_key[3] = principle_key_extract[3] ^ preliminary_key[6]
+                round_key[5] = principle_key_extract[5] ^ preliminary_key[5]
+                round_key[7] = principle_key_extract[7] ^ preliminary_key[4]
+                round_key[9] = principle_key_extract[9] ^ preliminary_key[3]
+                round_key[11] = principle_key_extract[11] ^ preliminary_key[2]
+                round_key[13] = principle_key_extract[13] ^ preliminary_key[1]
+                round_key[15] = principle_key_extract[15] ^ preliminary_key[0]
+
+                round_key[16] = principle_key_extract[16]
+                round_key[18] = principle_key_extract[18]
+                round_key[20] = principle_key_extract[20]
+                round_key[22] = principle_key_extract[22]
+                round_key[24] = principle_key_extract[24]
+                round_key[26] = principle_key_extract[26]
+                round_key[28] = principle_key_extract[28]
+                round_key[30] = principle_key_extract[30]
+
+                round_key[17] = principle_key_extract[17]
+                round_key[19] = principle_key_extract[19]
+                round_key[21] = principle_key_extract[21]
+                round_key[23] = principle_key_extract[23]
+                round_key[25] = principle_key_extract[25]
+                round_key[27] = principle_key_extract[27]
+                round_key[29] = principle_key_extract[29]
+                round_key[31] = principle_key_extract[31]
+
+                self.pht_b_diffuse(round_key)
+                return round_key
+
+            def permutate_xlate_buffer(xlate_array, key_array, initial_j):
+                sbox = self.sbox_0
+                counter_j = sbox[initial_j]
+                for counter_i in range(256):
+                    counter_j = sbox[(counter_j + xlate_array[counter_j] + key_array[counter_i]) & 0xff]
+                    s_counter_i = sbox[counter_i]
+                    xlate_array[s_counter_i], xlate_array[counter_j] = xlate_array[counter_j], xlate_array[s_counter_i]
+                return
+
             xlate_array = bytearray(self.sbox_0)
             chaining_state_array = list(self.state_array)
 
-            self.permutate_xlate_buffer(xlate_array, self.words_to_bytes_le(principle_key), block_count_low_word & 0xff)
+            permutate_xlate_buffer(xlate_array, self.words_to_bytes_le(principle_key), block_count_low_word & 0xff)
 
-            round_key = self.key_extract_pre_whitening(principle_key, preliminary_key)
+            round_key = key_extract_pre_whitening(principle_key, preliminary_key)
             self.xor_key_with_state(self.state_array, round_key)
 
             centre_state_array = self.xlate_state_mds_8x8s(self.words_to_bytes_le(self.state_array), xlate_array)
@@ -106745,9 +106521,9 @@ class Hash:
                 self.pht_b_diffuse(state)
 
                 if kind == "x2":
-                    round_key = self.key_extract_x2(principle_key[offset:offset + 16], preliminary_key, round_index)
+                    round_key = key_extract_x2(principle_key[offset:offset + 16], preliminary_key, round_index)
                 else:
-                    round_key = self.key_extract_x4(principle_key[offset:offset + 8], preliminary_key, round_index)
+                    round_key = key_extract_x4(principle_key[offset:offset + 8], preliminary_key, round_index)
 
                 out_state = self.full_mds_state_update(state, round_key)
                 if next_is_state_array:
@@ -106759,7 +106535,7 @@ class Hash:
                 next_is_state_array = not next_is_state_array
 
             self.state_array = self.xlate_state_mds_8x8s(self.words_to_bytes_le(centre_state_array), xlate_array)
-            round_key = self.key_extract_post_whitening(principle_key, preliminary_key)
+            round_key = key_extract_post_whitening(principle_key, preliminary_key)
             self.xor_key_with_state(self.state_array, round_key)
             self.xor_key_with_state(self.state_array, chaining_state_array)
             return
@@ -106806,26 +106582,27 @@ class Hash:
             self.update_chaining_state(preliminary_key, principle_key)
 
             if self.block_count_low_word & 1:
-                self.block_count_high_word = (self.block_count_high_word + 1) & self.word_modulus_64
-            self.block_count_low_word = (self.block_count_low_word + 1) & self.word_modulus_64
+                self.block_count_high_word = (self.block_count_high_word + 1) & 0xffff_ffff_ffff_ffff
+            self.block_count_low_word = (self.block_count_low_word + 1) & 0xffff_ffff_ffff_ffff
             return
 
-        def finalise_chaining_state(self):
-            state_array = list(self.state_array)
-            if self.hashbitlen <= 512:
-                state_array[0] ^= state_array[1] ^ state_array[16] ^ state_array[17]
-                state_array[2] ^= state_array[3] ^ state_array[18] ^ state_array[19]
-                state_array[4] ^= state_array[5] ^ state_array[20] ^ state_array[21]
-                state_array[6] ^= state_array[7] ^ state_array[22] ^ state_array[23]
-                state_array[8] ^= state_array[9] ^ state_array[24] ^ state_array[25]
-                state_array[10] ^= state_array[11] ^ state_array[26] ^ state_array[27]
-                state_array[12] ^= state_array[13] ^ state_array[28] ^ state_array[29]
-                state_array[14] ^= state_array[15] ^ state_array[30] ^ state_array[31]
-            result = self.words_to_bytes_le(state_array)[:self.digest_size]
-            self.state_array = [0] * 32
-            return result
-
         def process_final_block(self, tail):
+
+            def finalise_chaining_state():
+                state_array = list(self.state_array)
+                if self.hashbitlen <= 512:
+                    state_array[0] ^= state_array[1] ^ state_array[16] ^ state_array[17]
+                    state_array[2] ^= state_array[3] ^ state_array[18] ^ state_array[19]
+                    state_array[4] ^= state_array[5] ^ state_array[20] ^ state_array[21]
+                    state_array[6] ^= state_array[7] ^ state_array[22] ^ state_array[23]
+                    state_array[8] ^= state_array[9] ^ state_array[24] ^ state_array[25]
+                    state_array[10] ^= state_array[11] ^ state_array[26] ^ state_array[27]
+                    state_array[12] ^= state_array[13] ^ state_array[28] ^ state_array[29]
+                    state_array[14] ^= state_array[15] ^ state_array[30] ^ state_array[31]
+                result = self.words_to_bytes_le(state_array)[:self.digest_size]
+                self.state_array = [0] * 32
+                return result
+
             if len(tail) > self.block_size:
                 raise ValueError("tail too large")
             final_block_bit_count = len(tail) * 8
@@ -106839,7 +106616,7 @@ class Hash:
                 principle_key = self.process_principle_key_pair_1_rounds(padded_words[:32], padded_words[32:], preliminary_key)
 
             self.update_chaining_state(preliminary_key, principle_key)
-            self.final_bytes = self.finalise_chaining_state()
+            self.final_bytes = finalise_chaining_state()
 
             self.secret_key = [0, 0, 0, 0]
             self.block_count_high_word = 0
@@ -106874,9 +106651,6 @@ class Hash:
 
     class SHAMATABase:
         block_size = 16
-        digest_size = None
-        hashbitlen = None
-
         sbox = (
             0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
             0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
@@ -106896,35 +106670,31 @@ class Hash:
             0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
         )
 
-        mul2_table = None
-        mul3_table = None
-
         @classmethod
         def ensure_tables(cls):
-            if cls.mul2_table is None:
-                mul2 = []
-                mul3 = []
-                for x in range(256):
-                    y = ((x << 1) & 0xff) ^ (0x1b if (x & 0x80) else 0x00)
-                    mul2.append(y)
-                    mul3.append(y ^ x)
-                cls.mul2_table = tuple(mul2)
-                cls.mul3_table = tuple(mul3)
+            if hasattr(Hash.SHAMATABase, "mul2_table"):
+                return
+            mul2 = []
+            mul3 = []
+            for x in range(256):
+                y = ((x << 1) & 0xff) ^ (0x1b if (x & 0x80) else 0x00)
+                mul2.append(y)
+                mul3.append(y ^ x)
+            Hash.SHAMATABase.mul2_table = tuple(mul2)
+            Hash.SHAMATABase.mul3_table = tuple(mul3)
             return
 
         def __init__(self, data=b""):
-            self.__class__.ensure_tables()
             self.B = [[0, 0, 0, 0] for _ in range(4)]
             self.K = [[0, 0, 0, 0] for _ in range(12)]
             self.r = 1 if self.hashbitlen <= 256 else 2
             self.buf = bytearray()
             self.msg_len = 0
             self.block_count = 0
-
+            self.ensure_tables()
             iv = b"\x00" * 14 + self.hashbitlen.to_bytes(2, "big")
             for i in range(8):
                 self.process_block(iv, i + 1)
-
             if data:
                 self.update(data)
             return
@@ -106942,10 +106712,8 @@ class Hash:
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-
             data = bytes(data)
             self.msg_len += len(data)
-
             if self.buf:
                 need = self.block_size - len(self.buf)
                 self.buf.extend(data[:need])
@@ -106954,17 +106722,14 @@ class Hash:
                     self.block_count += 1
                     self.process_block(bytes(self.buf), self.block_count)
                     self.buf.clear()
-
             offset = 0
             limit = len(data) - (len(data) % self.block_size)
             while offset < limit:
                 self.block_count += 1
                 self.process_block(data[offset:offset + self.block_size], self.block_count)
                 offset += self.block_size
-
             if offset < len(data):
                 self.buf.extend(data[offset:])
-
             return self
 
         def digest(self):
@@ -106979,7 +106744,6 @@ class Hash:
             bit_len = self.msg_len * 8
             processed = self.block_count
             rem = bytes(self.buf)
-
             if len(rem) <= 7:
                 block = rem + b"\x80" + (b"\x00" * (7 - len(rem))) + bit_len.to_bytes(8, "big")
                 processed += 1
@@ -106988,38 +106752,58 @@ class Hash:
                 block1 = rem + b"\x80" + (b"\x00" * (15 - len(rem)))
                 processed += 1
                 self.process_block(block1, processed)
-
                 block2 = (b"\x00" * 8) + bit_len.to_bytes(8, "big")
                 processed += 1
                 self.process_block(block2, processed)
-
             count_block = (b"\x00" * 8) + processed.to_bytes(8, "big")
             for i in range(32):
                 self.process_block(count_block, i + 1)
-
             self.buf.clear()
             return
 
         def produce_output(self):
             out = bytearray(self.digest_size)
             for i in range(self.digest_size):
-                out[self.digest_size - 1 - i] = (
-                    self.B[3 - (i // 16)][3 - ((i // 4) % 4)] >> ((8 * i) % 32)
-                ) & 0xff
+                out[self.digest_size - 1 - i] = (self.B[3 - (i // 16)][3 - ((i // 4) % 4)] >> ((8 * i) % 32)) & 0xff
             return bytes(out)
 
         def process_block(self, data, blockno):
-            self.load_data_block(data, blockno)
-            self.clock_register(self.r)
-            return
 
-        def load_data_block(self, data, blockno):
-            mul2 = self.__class__.mul2_table
-            mul3 = self.__class__.mul3_table
+            def arf(words):
+                sbox = self.sbox
+                mul2 = self.mul2_table
+                mul3 = self.mul3_table
+                state = [[0, 0, 0, 0] for _ in range(4)]
+                for i in range(4):
+                    word = words[i]
+                    state[0][i] = (word >> 24) & 0xff
+                    state[1][i] = (word >> 16) & 0xff
+                    state[2][i] = (word >> 8) & 0xff
+                    state[3][i] = word & 0xff
+                for i in range(4):
+                    for j in range(4):
+                        state[i][j] = sbox[state[i][j]]
+                state[1] = state[1][1:] + state[1][:1]
+                state[2] = state[2][2:] + state[2][:2]
+                state[3] = state[3][3:] + state[3][:3]
+                out = [0, 0, 0, 0]
+                for i in range(4):
+                    a = state[0][i]
+                    b = state[1][i]
+                    c = state[2][i]
+                    d = state[3][i]
+                    out[i] = (
+                        ((mul2[a] ^ mul3[b] ^ c ^ d) << 24)
+                        | ((a ^ mul2[b] ^ mul3[c] ^ d) << 16)
+                        | ((a ^ b ^ mul2[c] ^ mul3[d]) << 8)
+                        | (mul3[a] ^ b ^ c ^ mul2[d])
+                    )
+                return out
 
+            mul2 = self.mul2_table
+            mul3 = self.mul3_table
             p = [0, 0, 0, 0]
             q = [0, 0, 0, 0]
-
             for i in range(4):
                 a = data[i]
                 b = data[i + 4]
@@ -107031,7 +106815,6 @@ class Hash:
                     | ((a ^ b ^ mul2[c] ^ mul3[d]) << 8)
                     | (mul3[a] ^ b ^ c ^ mul2[d])
                 )
-
             for i in range(4):
                 a = data[4 * i]
                 b = data[4 * i + 1]
@@ -107043,97 +106826,47 @@ class Hash:
                     | ((a ^ b ^ mul2[c] ^ mul3[d]) << 8)
                     | (mul3[a] ^ b ^ c ^ mul2[d])
                 )
-
             p2 = [p[2], p[3], q[0], q[1]]
             q2 = [q[2], q[3], p[0], p[1]]
-
             self.B[2][0] ^= p[0]
             self.B[2][1] ^= p[1]
             self.B[2][2] ^= p[2] ^ (blockno >> 32)
             self.B[2][3] ^= p[3] ^ (blockno & 0xffff_ffff)
-
             self.B[3][0] ^= q[0]
             self.B[3][1] ^= q[1]
             self.B[3][2] ^= q[2] ^ (blockno >> 32)
             self.B[3][3] ^= q[3] ^ (blockno & 0xffff_ffff)
-
             self.K[3][0] ^= p2[0]
             self.K[3][1] ^= p2[1]
             self.K[3][2] ^= p2[2]
             self.K[3][3] ^= p2[3]
-
             self.K[5][0] ^= q[0]
             self.K[5][1] ^= q[1]
             self.K[5][2] ^= q[2]
             self.K[5][3] ^= q[3]
-
             self.K[7][0] ^= p[0]
             self.K[7][1] ^= p[1]
             self.K[7][2] ^= p[2]
             self.K[7][3] ^= p[3]
-
             self.K[11][0] ^= q2[0]
             self.K[11][1] ^= q2[1]
             self.K[11][2] ^= q2[2]
             self.K[11][3] ^= q2[3]
-            return
 
-        def clock_register(self, r):
             for _ in range(2):
                 tmp = self.B[2][:]
-                for _ in range(r):
-                    tmp = self.arf(tmp)
-
+                for _ in range(self.r):
+                    tmp = arf(tmp)
                 feed_k = [tmp[i] ^ self.B[0][i] for i in range(4)]
                 feed_b = [(feed_k[i] ^ self.K[9][i]) ^ self.K[0][i] for i in range(4)]
-
                 self.B[0] = self.B[1][:]
                 self.B[1] = self.B[2][:]
                 self.B[2] = self.B[3][:]
                 self.B[3] = feed_b
-
                 for i in range(11):
                     self.K[i] = self.K[i + 1][:]
                 self.K[11] = feed_k
-
             return
-
-        def arf(self, words):
-            sbox = self.__class__.sbox
-            mul2 = self.__class__.mul2_table
-            mul3 = self.__class__.mul3_table
-
-            state = [[0, 0, 0, 0] for _ in range(4)]
-
-            for i in range(4):
-                word = words[i]
-                state[0][i] = (word >> 24) & 0xff
-                state[1][i] = (word >> 16) & 0xff
-                state[2][i] = (word >> 8) & 0xff
-                state[3][i] = word & 0xff
-
-            for i in range(4):
-                for j in range(4):
-                    state[i][j] = sbox[state[i][j]]
-
-            state[1] = state[1][1:] + state[1][:1]
-            state[2] = state[2][2:] + state[2][:2]
-            state[3] = state[3][3:] + state[3][:3]
-
-            out = [0, 0, 0, 0]
-            for i in range(4):
-                a = state[0][i]
-                b = state[1][i]
-                c = state[2][i]
-                d = state[3][i]
-                out[i] = (
-                    ((mul2[a] ^ mul3[b] ^ c ^ d) << 24)
-                    | ((a ^ mul2[b] ^ mul3[c] ^ d) << 16)
-                    | ((a ^ b ^ mul2[c] ^ mul3[d]) << 8)
-                    | (mul3[a] ^ b ^ c ^ mul2[d])
-                )
-
-            return out
 
     class SHAMATA224(SHAMATABase):
         digest_size = 28
@@ -107153,49 +106886,49 @@ class Hash:
 
     class SpectralHashBase:
         block_size = 64
-        digest_size = None
-        hashbitlen = None
-
-        X_INVERSE_TABLE = [0, 1, 15, 10, 8, 6, 5, 9, 4, 7, 3, 14, 13, 12, 11, 2]
-        AFFINE_TRANSFORM_TABLE = [7, 0, 8, 2, 12, 4, 13, 11, 10, 3, 14, 15, 6, 1, 5, 9]
-
+        X_INVERSE_TABLE = (0, 1, 15, 10, 8, 6, 5, 9, 4, 7, 3, 14, 13, 12, 11, 2)
+        AFFINE_TRANSFORM_TABLE = (7, 0, 8, 2, 12, 4, 13, 11, 10, 3, 14, 15, 6, 1, 5, 9)
         SG_TABLES = {
-            128: [0x01, 0x02, 0x04, 0x08],
-            160: [0x03, 0x02, 0x04, 0x08],
-            192: [0x03, 0x06, 0x04, 0x08],
-            224: [0x03, 0x06, 0x0c, 0x08],
-            256: [0x03, 0x07, 0x0c, 0x08],
-            288: [0x03, 0x07, 0x0e, 0x08],
-            320: [0x03, 0x07, 0x0e, 0x0c],
-            352: [0x07, 0x07, 0x0e, 0x0c],
-            384: [0x07, 0x0f, 0x0e, 0x0c],
-            416: [0x07, 0x0f, 0x0f, 0x0c],
-            448: [0x07, 0x0f, 0x0f, 0x0e],
-            480: [0x0f, 0x0f, 0x0f, 0x0e],
-            512: [0x0f, 0x0f, 0x0f, 0x0f],
+            128: (0x01, 0x02, 0x04, 0x08),
+            160: (0x03, 0x02, 0x04, 0x08),
+            192: (0x03, 0x06, 0x04, 0x08),
+            224: (0x03, 0x06, 0x0c, 0x08),
+            256: (0x03, 0x07, 0x0c, 0x08),
+            288: (0x03, 0x07, 0x0e, 0x08),
+            320: (0x03, 0x07, 0x0e, 0x0c),
+            352: (0x07, 0x07, 0x0e, 0x0c),
+            384: (0x07, 0x0f, 0x0e, 0x0c),
+            416: (0x07, 0x0f, 0x0f, 0x0c),
+            448: (0x07, 0x0f, 0x0f, 0x0e),
+            480: (0x0f, 0x0f, 0x0f, 0x0e),
+            512: (0x0f, 0x0f, 0x0f, 0x0f),
         }
 
-        IJ_COLUMNS = []
-        IK_ROWS = []
-        JK_ROWS = []
-
         @classmethod
-        def build_tables(cls):
-            if cls.IJ_COLUMNS:
+        def ensure_tables(cls):
+            if hasattr(Hash.SpectralHashBase, "IJ_COLUMNS"):
                 return
+
+            IJ_COLUMNS = []
             for i in range(4):
                 for j in range(4):
-                    cls.IJ_COLUMNS.append([(i << 5) | (j << 3) | k for k in range(8)])
+                    IJ_COLUMNS.append([(i << 5) | (j << 3) | k for k in range(8)])
+            Hash.SpectralHashBase.IJ_COLUMNS = IJ_COLUMNS
+
+            IK_ROWS = []
             for i in range(4):
                 for k in range(8):
-                    cls.IK_ROWS.append([(i << 5) | (j << 3) | k for j in range(4)])
+                    IK_ROWS.append([(i << 5) | (j << 3) | k for j in range(4)])
+            Hash.SpectralHashBase.IK_ROWS = IK_ROWS
+
+            JK_ROWS = []
             for j in range(4):
                 for k in range(8):
-                    cls.JK_ROWS.append([(i << 5) | (j << 3) | k for i in range(4)])
+                    JK_ROWS.append([(i << 5) | (j << 3) | k for i in range(4)])
+            Hash.SpectralHashBase.JK_ROWS = JK_ROWS
             return
 
         def __init__(self, data=b""):
-            self.__class__.build_tables()
             if self.hashbitlen is None:
                 raise ValueError("hashbitlen must be set in subclass")
             self.digest_size = self.hashbitlen // 8
@@ -107205,6 +106938,7 @@ class Hash:
             self.buf = bytearray()
             self.msg_len = 0
             self.started = False
+            self.ensure_tables()
             if data:
                 self.update(data)
             return
@@ -107241,276 +106975,269 @@ class Hash:
             return self.digest().hex()
 
         def process_block(self, block, apply_initial_swap):
-            self.fill_s_prism(block)
+
+            def fill_s_prism(block):
+                out = self.s_prism
+                n = 0
+                for b in block:
+                    out[n] = b >> 4
+                    out[n + 1] = b & 0x0f
+                    n += 2
+                return
+
+            def initial_swap_control():
+                p = self.p_prism
+                s = self.s_prism
+                for i in range(4):
+                    base_i = i << 5
+                    for j in range(4):
+                        base = base_i | (j << 3)
+                        for k in range(8):
+                            idx = base | k
+                            st = s[idx]
+                            sh = st >> 2
+                            sl = st & 0x03
+                            idx2 = (sh << 5) | (sl << 3) | k
+                            p[idx], p[idx2] = p[idx2], p[idx]
+                return
+
+            fill_s_prism(block)
             if apply_initial_swap:
-                self.initial_swap_control()
+                initial_swap_control()
             self.compress()
             return
 
-        def fill_s_prism(self, block):
-            out = self.s_prism
-            n = 0
-            for b in block:
-                out[n] = b >> 4
-                out[n + 1] = b & 0x0f
-                n += 2
-            return
-
-        def initial_swap_control(self):
-            p = self.p_prism
-            s = self.s_prism
-            for i in range(4):
-                base_i = i << 5
-                for j in range(4):
-                    base = base_i | (j << 3)
-                    for k in range(8):
-                        idx = base | k
-                        st = s[idx]
-                        sh = st >> 2
-                        sl = st & 0x03
-                        idx2 = (sh << 5) | (sl << 3) | k
-                        p[idx], p[idx2] = p[idx2], p[idx]
-            return
-
-        def affine_transform(self):
-            table = self.AFFINE_TRANSFORM_TABLE
-            s = self.s_prism
-            for idx in range(128):
-                s[idx] = table[s[idx]]
-            return
-
-        def k1_swap(self):
-            s = self.s_prism
-            p = self.p_prism
-            for i in range(4):
-                base_i = i << 5
-                for j in range(4):
-                    base = base_i | (j << 3)
-                    current = s[base] ^ s[base | 4]
-                    for b in range(4):
-                        if ((current >> b) & 1) == 0:
-                            a = base | b
-                            z = base | (7 - b)
-                            p[a], p[z] = p[z], p[a]
-            return
-
-        def k2_swap(self):
-            s = self.s_prism
-            p = self.p_prism
-            for i in range(4):
-                base_i = i << 5
-                for j in range(4):
-                    base = base_i | (j << 3)
-                    current = s[base | 1]
-                    if (current & 1) == 0:
-                        p[base | 0], p[base | 1] = p[base | 1], p[base | 0]
-                    if ((current >> 1) & 1) == 0:
-                        p[base | 2], p[base | 3] = p[base | 3], p[base | 2]
-                    if ((current >> 2) & 1) == 0:
-                        p[base | 1], p[base | 2] = p[base | 2], p[base | 1]
-                    if ((current >> 3) & 1) == 0:
-                        p[base | 0], p[base | 3] = p[base | 3], p[base | 0]
-            for i in range(4):
-                base_i = i << 5
-                for j in range(4):
-                    base = base_i | (j << 3)
-                    current = s[base | 5]
-                    if (current & 1) == 0:
-                        p[base | 4], p[base | 5] = p[base | 5], p[base | 4]
-                    if ((current >> 1) & 1) == 0:
-                        p[base | 6], p[base | 7] = p[base | 7], p[base | 6]
-                    if ((current >> 2) & 1) == 0:
-                        p[base | 5], p[base | 6] = p[base | 6], p[base | 5]
-                    if ((current >> 3) & 1) == 0:
-                        p[base | 4], p[base | 7] = p[base | 7], p[base | 4]
-            return
-
-        def four_point_dft(self, a0, a1, a2, a3):
-            a = a0 + a2
-            b = a0 - a2
-            c = a1 + a3
-            d = a1 - a3
-            return [
-                (a + c) % 17,
-                (b + d * 4) % 17,
-                (a - c) % 17,
-                (b - d * 4) % 17,
-            ]
-
-        def eight_point_dft(self, c0, c1, c2, c3, c4, c5, c6, c7):
-            t20 = c0 + c4
-            t21 = c0 - c4
-            t22 = c2 + c6
-            t23 = (c2 - c6) * 4
-            t24 = c1 + c5
-            t25 = c1 - c5
-            t26 = c3 + c7
-            t27 = (c3 - c7) * 4
-
-            t0 = t20 + t22
-            t1 = t21 + t23
-            t2 = t20 - t22
-            t3 = t21 - t23
-
-            t4 = t24 + t26
-            t5 = (t25 + t27) * 2
-            t6 = (t24 - t26) * 4
-            t7 = (t25 - t27) * 8
-
-            return [
-                (t0 + t4) % 17,
-                (t1 + t5) % 17,
-                (t2 + t6) % 17,
-                (t3 + t7) % 17,
-                (t0 - t4) % 17,
-                (t1 - t5) % 17,
-                (t2 - t6) % 17,
-                (t3 - t7) % 17,
-            ]
-
-        def apply_k_dft(self):
-            s = self.s_prism
-            for idxs in self.IJ_COLUMNS:
-                out = self.eight_point_dft(
-                    s[idxs[0]], s[idxs[1]], s[idxs[2]], s[idxs[3]],
-                    s[idxs[4]], s[idxs[5]], s[idxs[6]], s[idxs[7]],
-                )
-                for idx, val in zip(idxs, out):
-                    s[idx] = val
-            return
-
-        def j_swap(self):
-            s = self.s_prism
-            p = self.p_prism
-            for i in range(4):
-                base_i = i << 5
-                for k in range(8):
-                    current = s[base_i | 16 | k]
-                    if (((current >> 0) & 1) ^ (k & 1)) == 0:
-                        a = base_i | 0 | k
-                        b = base_i | 8 | k
-                        p[a], p[b] = p[b], p[a]
-                    if (((current >> 1) & 1) ^ ((k >> 1) & 1)) == 0:
-                        a = base_i | 16 | k
-                        b = base_i | 24 | k
-                        p[a], p[b] = p[b], p[a]
-                    if (((current >> 2) & 1) ^ ((k >> 2) & 1)) == 0:
-                        a = base_i | 8 | k
-                        b = base_i | 16 | k
-                        p[a], p[b] = p[b], p[a]
-                    if (((current >> 3) & 1) ^ (i & 1)) == 0:
-                        a = base_i | 0 | k
-                        b = base_i | 24 | k
-                        p[a], p[b] = p[b], p[a]
-            return
-
-        def apply_j_dft(self):
-            s = self.s_prism
-            for idxs in self.IK_ROWS:
-                out = self.four_point_dft(
-                    s[idxs[0]], s[idxs[1]], s[idxs[2]], s[idxs[3]],
-                )
-                for idx, val in zip(idxs, out):
-                    s[idx] = val
-            return
-
-        def i_swap(self):
-            s = self.s_prism
-            p = self.p_prism
-            for j in range(4):
-                base_j = j << 3
-                for k in range(8):
-                    current = s[96 | base_j | k]
-                    if (((current >> 0) & 1) ^ (k & 1)) == 0:
-                        a = 0 | base_j | k
-                        b = 32 | base_j | k
-                        p[a], p[b] = p[b], p[a]
-                    if (((current >> 1) & 1) ^ ((k >> 1) & 1)) == 0:
-                        a = 64 | base_j | k
-                        b = 96 | base_j | k
-                        p[a], p[b] = p[b], p[a]
-                    if (((current >> 2) & 1) ^ ((k >> 2) & 1)) == 0:
-                        a = 32 | base_j | k
-                        b = 64 | base_j | k
-                        p[a], p[b] = p[b], p[a]
-                    if (((current >> 3) & 1) ^ (j & 1)) == 0:
-                        a = 0 | base_j | k
-                        b = 96 | base_j | k
-                        p[a], p[b] = p[b], p[a]
-            return
-
-        def apply_i_dft(self):
-            s = self.s_prism
-            for idxs in self.JK_ROWS:
-                out = self.four_point_dft(
-                    s[idxs[0]], s[idxs[1]], s[idxs[2]], s[idxs[3]],
-                )
-                for idx, val in zip(idxs, out):
-                    s[idx] = val
-            return
-
-        def nlst(self):
-            s = self.s_prism
-            p = self.p_prism
-            h = self.h_prism
-            xinv = self.X_INVERSE_TABLE
-            new_s = [0] * 128
-            for idx in range(128):
-                stemp = s[idx]
-                ptemp = p[idx]
-                sp = stemp & 0x0f
-                pl = ptemp & 0x0f
-                ph = ((stemp & 0x10) >> 1) | ((ptemp >> 4) & 0x07)
-                spp = s[ptemp] & 0x0f
-                new_s[idx] = xinv[sp ^ pl] ^ xinv[spp ^ ph] ^ h[idx]
-            self.s_prism = new_s
-            self.h_prism = new_s[:]
-            return
-
-        def rubic_rot(self):
-            p = self.p_prism
-            new_p = [0] * 128
-            for i in range(4):
-                base_i = i << 5
-                for j in range(4):
-                    base = base_i | (j << 3)
-                    for k in range(8):
-                        idx = base | k
-                        if (k & 3) == 0:
-                            new_p[idx] = p[idx]
-                        elif (k & 3) == 1:
-                            new_p[idx] = p[((3 - j) << 5) | (i << 3) | k]
-                        elif (k & 3) == 2:
-                            new_p[idx] = p[(j << 5) | (i << 3) | k]
-                        else:
-                            new_p[idx] = p[(j << 5) | ((3 - i) << 3) | k]
-            self.p_prism = new_p
-            return
-
         def compress(self):
-            self.affine_transform()
-            self.k1_swap()
-            self.k2_swap()
-            self.apply_k_dft()
-            self.j_swap()
-            self.apply_j_dft()
-            self.i_swap()
-            self.apply_i_dft()
-            self.nlst()
-            self.rubic_rot()
-            return
 
-        def pad_block_from_buffer(self):
-            buf = bytearray(self.buf)
-            bit_len = self.msg_len * 8
-            buf.append(0x80)
-            while (len(buf) % 64) != 56:
-                buf.append(0x00)
-            buf.extend(bit_len.to_bytes(8, "big"))
-            return [bytes(buf[i:i + 64]) for i in range(0, len(buf), 64)]
+            def affine_transform():
+                table = self.AFFINE_TRANSFORM_TABLE
+                s = self.s_prism
+                for idx in range(128):
+                    s[idx] = table[s[idx]]
+                return
+
+            def k1_swap():
+                s = self.s_prism
+                p = self.p_prism
+                for i in range(4):
+                    base_i = i << 5
+                    for j in range(4):
+                        base = base_i | (j << 3)
+                        current = s[base] ^ s[base | 4]
+                        for b in range(4):
+                            if ((current >> b) & 1) == 0:
+                                a = base | b
+                                z = base | (7 - b)
+                                p[a], p[z] = p[z], p[a]
+                return
+
+            def k2_swap():
+                s = self.s_prism
+                p = self.p_prism
+                for i in range(4):
+                    base_i = i << 5
+                    for j in range(4):
+                        base = base_i | (j << 3)
+                        current = s[base | 1]
+                        if (current & 1) == 0:
+                            p[base | 0], p[base | 1] = p[base | 1], p[base | 0]
+                        if ((current >> 1) & 1) == 0:
+                            p[base | 2], p[base | 3] = p[base | 3], p[base | 2]
+                        if ((current >> 2) & 1) == 0:
+                            p[base | 1], p[base | 2] = p[base | 2], p[base | 1]
+                        if ((current >> 3) & 1) == 0:
+                            p[base | 0], p[base | 3] = p[base | 3], p[base | 0]
+                for i in range(4):
+                    base_i = i << 5
+                    for j in range(4):
+                        base = base_i | (j << 3)
+                        current = s[base | 5]
+                        if (current & 1) == 0:
+                            p[base | 4], p[base | 5] = p[base | 5], p[base | 4]
+                        if ((current >> 1) & 1) == 0:
+                            p[base | 6], p[base | 7] = p[base | 7], p[base | 6]
+                        if ((current >> 2) & 1) == 0:
+                            p[base | 5], p[base | 6] = p[base | 6], p[base | 5]
+                        if ((current >> 3) & 1) == 0:
+                            p[base | 4], p[base | 7] = p[base | 7], p[base | 4]
+                return
+
+            def j_swap():
+                s = self.s_prism
+                p = self.p_prism
+                for i in range(4):
+                    base_i = i << 5
+                    for k in range(8):
+                        current = s[base_i | 16 | k]
+                        if (((current >> 0) & 1) ^ (k & 1)) == 0:
+                            a = base_i | 0 | k
+                            b = base_i | 8 | k
+                            p[a], p[b] = p[b], p[a]
+                        if (((current >> 1) & 1) ^ ((k >> 1) & 1)) == 0:
+                            a = base_i | 16 | k
+                            b = base_i | 24 | k
+                            p[a], p[b] = p[b], p[a]
+                        if (((current >> 2) & 1) ^ ((k >> 2) & 1)) == 0:
+                            a = base_i | 8 | k
+                            b = base_i | 16 | k
+                            p[a], p[b] = p[b], p[a]
+                        if (((current >> 3) & 1) ^ (i & 1)) == 0:
+                            a = base_i | 0 | k
+                            b = base_i | 24 | k
+                            p[a], p[b] = p[b], p[a]
+                return
+
+            def i_swap():
+                s = self.s_prism
+                p = self.p_prism
+                for j in range(4):
+                    base_j = j << 3
+                    for k in range(8):
+                        current = s[96 | base_j | k]
+                        if (((current >> 0) & 1) ^ (k & 1)) == 0:
+                            a = 0 | base_j | k
+                            b = 32 | base_j | k
+                            p[a], p[b] = p[b], p[a]
+                        if (((current >> 1) & 1) ^ ((k >> 1) & 1)) == 0:
+                            a = 64 | base_j | k
+                            b = 96 | base_j | k
+                            p[a], p[b] = p[b], p[a]
+                        if (((current >> 2) & 1) ^ ((k >> 2) & 1)) == 0:
+                            a = 32 | base_j | k
+                            b = 64 | base_j | k
+                            p[a], p[b] = p[b], p[a]
+                        if (((current >> 3) & 1) ^ (j & 1)) == 0:
+                            a = 0 | base_j | k
+                            b = 96 | base_j | k
+                            p[a], p[b] = p[b], p[a]
+                return
+
+            def eight_point_dft(c0, c1, c2, c3, c4, c5, c6, c7):
+                t20 = c0 + c4
+                t21 = c0 - c4
+                t22 = c2 + c6
+                t23 = (c2 - c6) * 4
+                t24 = c1 + c5
+                t25 = c1 - c5
+                t26 = c3 + c7
+                t27 = (c3 - c7) * 4
+
+                t0 = t20 + t22
+                t1 = t21 + t23
+                t2 = t20 - t22
+                t3 = t21 - t23
+
+                t4 = t24 + t26
+                t5 = (t25 + t27) * 2
+                t6 = (t24 - t26) * 4
+                t7 = (t25 - t27) * 8
+
+                return [
+                    (t0 + t4) % 17, (t1 + t5) % 17, (t2 + t6) % 17, (t3 + t7) % 17,
+                    (t0 - t4) % 17, (t1 - t5) % 17, (t2 - t6) % 17, (t3 - t7) % 17,
+                ]
+
+            def four_point_dft(a0, a1, a2, a3):
+                a = a0 + a2
+                b = a0 - a2
+                c = a1 + a3
+                d = a1 - a3
+                return [
+                    (a + c) % 17,
+                    (b + d * 4) % 17,
+                    (a - c) % 17,
+                    (b - d * 4) % 17,
+                ]
+
+            def apply_k_dft():
+                s = self.s_prism
+                for idxs in self.IJ_COLUMNS:
+                    out = eight_point_dft(
+                        s[idxs[0]], s[idxs[1]], s[idxs[2]], s[idxs[3]],
+                        s[idxs[4]], s[idxs[5]], s[idxs[6]], s[idxs[7]],
+                    )
+                    for idx, val in zip(idxs, out):
+                        s[idx] = val
+                return
+
+            def apply_j_dft():
+                s = self.s_prism
+                for idxs in self.IK_ROWS:
+                    out = four_point_dft(s[idxs[0]], s[idxs[1]], s[idxs[2]], s[idxs[3]])
+                    for idx, val in zip(idxs, out):
+                        s[idx] = val
+                return
+
+            def apply_i_dft():
+                s = self.s_prism
+                for idxs in self.JK_ROWS:
+                    out = four_point_dft(s[idxs[0]], s[idxs[1]], s[idxs[2]], s[idxs[3]])
+                    for idx, val in zip(idxs, out):
+                        s[idx] = val
+                return
+
+            def nlst():
+                s = self.s_prism
+                p = self.p_prism
+                h = self.h_prism
+                xinv = self.X_INVERSE_TABLE
+                new_s = [0] * 128
+                for idx in range(128):
+                    stemp = s[idx]
+                    ptemp = p[idx]
+                    sp = stemp & 0x0f
+                    pl = ptemp & 0x0f
+                    ph = ((stemp & 0x10) >> 1) | ((ptemp >> 4) & 0x07)
+                    spp = s[ptemp] & 0x0f
+                    new_s[idx] = xinv[sp ^ pl] ^ xinv[spp ^ ph] ^ h[idx]
+                self.s_prism = new_s
+                self.h_prism = new_s[:]
+                return
+
+            def rubic_rot():
+                p = self.p_prism
+                new_p = [0] * 128
+                for i in range(4):
+                    base_i = i << 5
+                    for j in range(4):
+                        base = base_i | (j << 3)
+                        for k in range(8):
+                            idx = base | k
+                            if (k & 3) == 0:
+                                new_p[idx] = p[idx]
+                            elif (k & 3) == 1:
+                                new_p[idx] = p[((3 - j) << 5) | (i << 3) | k]
+                            elif (k & 3) == 2:
+                                new_p[idx] = p[(j << 5) | (i << 3) | k]
+                            else:
+                                new_p[idx] = p[(j << 5) | ((3 - i) << 3) | k]
+                self.p_prism = new_p
+                return
+
+            affine_transform()
+            k1_swap()
+            k2_swap()
+            apply_k_dft()
+            j_swap()
+            apply_j_dft()
+            i_swap()
+            apply_i_dft()
+            nlst()
+            rubic_rot()
+            return
 
         def finalize(self):
-            blocks = self.pad_block_from_buffer()
+
+            def pad_block_from_buffer():
+                buf = bytearray(self.buf)
+                bit_len = self.msg_len * 8
+                buf.append(0x80)
+                while (len(buf) % 64) != 56:
+                    buf.append(0x00)
+                buf.extend(bit_len.to_bytes(8, "big"))
+                return [bytes(buf[i:i + 64]) for i in range(0, len(buf), 64)]
+
+            blocks = pad_block_from_buffer()
             if not blocks:
                 return
             if len(self.buf) != 0:
@@ -107521,16 +107248,17 @@ class Hash:
                     self.process_block(blocks[0], apply_initial_swap=True)
             return
 
-        def mark_bits(self):
-            sg = self.SG_TABLES[self.hashbitlen]
-            marks = [0] * 128
-            p = self.p_prism
-            for idx in range(128):
-                marks[idx] = sg[p[idx] & 0x03]
-            return marks
-
         def make_digest(self):
-            marks = self.mark_bits()
+
+            def mark_bits():
+                sg = self.SG_TABLES[self.hashbitlen]
+                marks = [0] * 128
+                p = self.p_prism
+                for idx in range(128):
+                    marks[idx] = sg[p[idx] & 0x03]
+                return marks
+
+            marks = mark_bits()
             out = bytearray(self.digest_size)
             bit_num = 0
             byte_num = 0
