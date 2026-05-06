@@ -66123,7 +66123,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             pass
 
         # slow_path
-        for i in range(0x100):
+        for i in range(0x10):
             offset_name = i * current_arch.ptrsize
             valid = True
             for module in module_addrs:
@@ -66881,7 +66881,7 @@ class KernelModuleLoadCommand(GenericCommand):
 
         return None
 
-    def get_offset_sect_attrs(self, module_addrs):
+    def get_offset_sect_attrs(self, module_addr):
         """
         struct attribute {
             const char *name;
@@ -66938,28 +66938,21 @@ class KernelModuleLoadCommand(GenericCommand):
         try:
             offset_sect_attrs = to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).sect_attrs"))
             # Taking for granted the information we get is accurate we can reliably retrieve module->sect_attrs
-            cached_sect_attrs = []
-            for module in module_addrs:
-                sect_attrs = read_int_from_memory(module + offset_sect_attrs)
-                cached_sect_attrs.append(sect_attrs)
-            return offset_sect_attrs, cached_sect_attrs
+            sect_attrs = read_int_from_memory(module_addr + offset_sect_attrs)
+            return offset_sect_attrs, sect_attrs
         except gdb.error:
             pass
 
         # slow_path
-        for i in range(300):
-            cached_sect_attrs = []
+        for i in range(0x100):
             offset_sect_attrs = current_arch.ptrsize * i
-            for module in module_addrs:
-                # access check
-                if not is_valid_addr(module + offset_sect_attrs):
-                    break
-                sect_attrs = read_int_from_memory(module + offset_sect_attrs)
-                if not self.is_valid_sect_attrs(sect_attrs):
-                    break
-                cached_sect_attrs.append(sect_attrs)
-            else:
-                return offset_sect_attrs, cached_sect_attrs
+            # access check
+            if not is_valid_addr(module_addr + offset_sect_attrs):
+                continue
+            sect_attrs = read_int_from_memory(module_addr + offset_sect_attrs)
+            if not self.is_valid_sect_attrs(sect_attrs):
+                continue
+            return offset_sect_attrs, sect_attrs
 
         return None, None
 
@@ -66978,7 +66971,6 @@ class KernelModuleLoadCommand(GenericCommand):
             if not is_valid_addr(attribute_list):
                 return False
             attribute = read_int_from_memory(attribute_list)
-            # self.quiet_info("attribute: {:#x}".format(attribute))
             if attribute == 0:
                 break
             if not is_valid_addr(attribute):
@@ -66986,11 +66978,8 @@ class KernelModuleLoadCommand(GenericCommand):
             nameptr = read_int_from_memory(attribute)
             if not self.is_valid_sectname(nameptr):
                 return False
-            # self.quiet_info("name: {:s}".format(read_cstring_from_memory(nameptr)))
             found += 1
             attribute_list += current_arch.ptrsize
-        # self.quiet_info("attr list: {:#x}".format(attribute_list))
-        # self.quiet_info("found: {}".format(found))
         return found > 0
 
     def is_valid_sectname(self, nameptr):
@@ -67006,71 +66995,74 @@ class KernelModuleLoadCommand(GenericCommand):
         return True
 
     def get_offset_attrs(self):
-        for i in range(10):
-            cached_attribute_list = []
+        for i in range(0x10):
             offset_attrs = current_arch.ptrsize * i
-            for sect_attrs in self.cached_sect_attrs:
-                attribute_list = read_int_from_memory(sect_attrs + offset_attrs)
-                if not self.is_valid_attribute_list(attribute_list):
-                    break
-                cached_attribute_list.append(attribute_list)
-            else:
-                return offset_attrs, cached_attribute_list
+            attribute_list = read_int_from_memory(self.cached_sect_attrs + offset_attrs)
+            if not self.is_valid_attribute_list(attribute_list):
+                continue
+            return offset_attrs, attribute_list
 
         self.quiet_err("Not found sect_attrs->attrs")
         return None, None
 
     def get_offset_address(self):
-        def is_executable(x):
-            maps = Kernel.get_maps()
-            for start, size, perm in maps:
-                if start <= x and x < start + size:
-                    return perm.endswith("X")
-            return False
+        def maybe_pointer(addr):
+            return ((addr >> ((current_arch.ptrsize * 8) - 1)) & 1) == 1
+        attr_list = []
+        curr_attr = self.cached_attribute_list
+        while True:
+            attribute = read_int_from_memory(curr_attr)
+            if attribute == 0:
+                break
+            attr_list.append(attribute)
+            curr_attr += current_arch.ptrsize
 
-        executable_sections = [
-            ".text",
-            ".init.text",
-            ".exit.text",
-        ]
+        # Find size of struct bin_attribute by pointer arithmetic from list (assuming they are contiguous and in order)
+        bin_attr_size = attr_list[1] - attr_list[0]
 
-        data_sections = [
-            ".data",
-            ".rodata"
-            ".bss",
-            ".init.data",
-            ".exit.data",
-        ]
+        # Statistical analysis to find pointers that differ across every structure
+        # First we find potential pointers and save their count and offset
+        offset_map = {}
+        for attr in attr_list:
+            data = read_memory(attr, bin_attr_size)
+            for offset in range(0, bin_attr_size, current_arch.ptrsize):
+                word = int.from_bytes(data[offset:offset + current_arch.ptrsize], "little")
+                if not maybe_pointer(word):
+                    continue
+                if offset not in offset_map:
+                    offset_map[offset] = {}
+                if word not in offset_map[offset]:
+                    offset_map[offset][word] = 1
+                else:
+                    offset_map[offset][word] += 1
+                # Remove pointers to strings if possible
+                try:
+                    if len(read_cstring_from_memory(word)) > 4:
+                        del offset_map[offset][word]
+                except:
+                    pass
 
-        for i in range(30):
-            offset_address = current_arch.ptrsize * i
-            for attribute_list in self.cached_attribute_list:
-                valid_executable_section = False
-                valid_data_section = False
-                while True:
-                    attribute = read_int_from_memory(attribute_list)
-                    if attribute == 0:
-                        break
-                    nameptr = read_int_from_memory(attribute)
-                    name = read_cstring_from_memory(nameptr)
-                    addr = read_int_from_memory(attribute + offset_address)
 
-                    # # This check doesnt actually work because
-                    # # its not guaranteed that the kmod data
-                    # # is faulted in yet.
-                    # if not is_valid_addr(addr):
-                    #     valid = False
-                    #     break
+        # Find the best candidate to avoid name pointers that are not deleted (don't know why that happens)
+        max_len = 0
+        offset_addr = None
+        for offset, words in offset_map.items():
+            for val, count in words.items():
+                if count > 1:
+                    break
+            else:
+                if len(words) > max_len:
+                    max_len = len(words)
+                    offset_addr = offset
+        if max_len != 0:
+            return offset_addr
 
-                    if name in executable_sections and is_executable(addr):
-                        valid_executable_section = True
-                    elif name in data_sections and not is_executable(addr):
-                        valid_data_section = True
-                    if valid_executable_section and valid_data_section:
-                        break
-                    attribute_list += current_arch.ptrsize
-                if valid_executable_section and valid_data_section:
-                    return offset_address
+        return None
+
+    def get_requested_module(self, module_addrs):
+        for module in module_addrs:
+            if read_cstring_from_memory(module + self.offset_name) == self.args.name:
+                return module
         return None
 
     def initialize(self):
@@ -67108,8 +67100,15 @@ class KernelModuleLoadCommand(GenericCommand):
             return False
         self.quiet_info("offsetof(module, name): {:#x}".format(self.offset_name))
 
+        # Find requested module
+        self.req_module = self.get_requested_module(self.module_addrs)
+        if self.req_module is None:
+            self.quiet_err("Could not find requested module")
+            return False
+        self.quiet_info(f"module: {hex(self.req_module)}")
+
         # module->sect_attrs
-        self.offset_sect_attrs, self.cached_sect_attrs = self.get_offset_sect_attrs(self.module_addrs)
+        self.offset_sect_attrs, self.cached_sect_attrs = self.get_offset_sect_attrs(self.req_module)
         if self.offset_sect_attrs is None:
             self.quiet_err("Could not find module->sect_attrs")
             return False
