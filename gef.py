@@ -66956,21 +66956,40 @@ class KernelModuleLoadCommand(GenericCommand):
 
         return None, None
 
+    """
+    This function looks for the module->sect_attrs.grp.{attrs,bin_attrs} field,
+    which is an array of pointers to the various structures `bin_attribute`
+    that represent a the various sections. The array is guaranteed to terminate
+    with a NULL pointer therefore we can safely use a while True to iterate the
+    array in `is_valid_attribute_arr`.
+    On recent systems module->sect_attrs.grp.attrs is 0 and the array of
+    pointers is found in module->sect_attrs.grp.bin_attrs instead, but the
+    logic is the same.
+    """
     def is_valid_sect_attrs(self, sect_attrs):
-        if not is_valid_addr(sect_attrs) or sect_attrs & 7:
+        if not is_valid_addr(sect_attrs):
+            return False
+        # Check that the pointer is properly aligned
+        if current_arch.ptrsize == 8 and sect_attrs & 7:
+            return False
+        if current_arch.ptrsize == 4 and sect_attrs & 3:
             return False
         for offset in range(40):
-            attribute_list = read_int_from_memory(sect_attrs + offset * current_arch.ptrsize)
-            if self.is_valid_attribute_list(attribute_list):
+            attribute_arr_ptr = read_int_from_memory(sect_attrs + offset * current_arch.ptrsize)
+            if self.is_valid_attribute_arr(attribute_arr_ptr):
                 return True
         return False
 
-    def is_valid_attribute_list(self, attribute_list):
+    @Cache.cache_until_next
+    def is_valid_attribute_arr(self, attribute_arr_ptr):
         found = 0
         while True:
-            if not is_valid_addr(attribute_list):
+            if found > 0x200:
+                # If we got to this point we can definitely return
+                break
+            if not is_valid_addr(attribute_arr_ptr):
                 return False
-            attribute = read_int_from_memory(attribute_list)
+            attribute = read_int_from_memory(attribute_arr_ptr)
             if attribute == 0:
                 break
             if not is_valid_addr(attribute):
@@ -66979,7 +66998,7 @@ class KernelModuleLoadCommand(GenericCommand):
             if not self.is_valid_sectname(nameptr):
                 return False
             found += 1
-            attribute_list += current_arch.ptrsize
+            attribute_arr_ptr += current_arch.ptrsize
         return found > 0
 
     def is_valid_sectname(self, nameptr):
@@ -66994,40 +67013,81 @@ class KernelModuleLoadCommand(GenericCommand):
             return False
         return True
 
-    def get_offset_attrs(self):
-        for i in range(0x10):
-            offset_attrs = current_arch.ptrsize * i
-            attribute_list = read_int_from_memory(self.cached_sect_attrs + offset_attrs)
-            if not self.is_valid_attribute_list(attribute_list):
-                continue
-            return offset_attrs, attribute_list
+    def get_offset_bin_attrs(self):
+        # TODO:
+        #   For the fast path we can add a check on the kernel version to find
+        #   the offset of "&((struct attribute_group*)0).{attrs,bin_attrs}"
 
-        self.quiet_err("Not found sect_attrs->attrs")
+        # Fast path
+        try:
+            offset_bin_attrs = to_unsigned_long(gdb.parse_and_eval("&((struct attribute_group*)0).bin_attrs"))
+            attrs_arr_ptr = read_int_from_memory(self.cached_sect_attrs + offset_bin_attrs)
+            return offset_bin_attrs, attrs_arr_ptr
+        except gdb.error:
+            pass
+
+        # Slow path
+        for i in range(0x10):
+            offset_bin_attrs = current_arch.ptrsize * i
+            attrs_arr_ptr = read_int_from_memory(self.cached_sect_attrs + offset_bin_attrs)
+            if not self.is_valid_attribute_arr(attrs_arr_ptr):
+                continue
+            return offset_bin_attrs, attrs_arr_ptr
+
         return None, None
 
+    """
+    This functions aims at locating bin_attribute->private which stores the    |
+    address of where the section resides in memory. To do so is performs a
+    statistical analysis on the various structure bin_attribute to identify
+    pointers that are different for each one. If there is a specific offset
+    where a pointer is present and different for every struct bin_attribute it
+    is very probable that the offset is that of the private field.
+    """
     def get_offset_address(self):
-        def maybe_pointer(addr):
-            return ((addr >> ((current_arch.ptrsize * 8) - 1)) & 1) == 1
-        attr_list = []
-        curr_attr = self.cached_attribute_list
+        # Fast path
+        try:
+            offset_addr = to_unsigned_long(gdb.parse_and_eval("&((struct bin_attribute*)0).private"))
+            return offset_addr
+        except gdb.error:
+            pass
+
+        # Slow path
+        attrs_arr = []
+        curr_attr = self.cached_attribute_arr_ptr
         while True:
             attribute = read_int_from_memory(curr_attr)
             if attribute == 0:
                 break
-            attr_list.append(attribute)
+            attrs_arr.append(attribute)
             curr_attr += current_arch.ptrsize
 
+        if len(attrs_arr) < 2:
+            self.quiet_err("module->sect_attrs.grp.bin_attrs has too few elements")
+            return None
+
         # Find size of struct bin_attribute by pointer arithmetic from list (assuming they are contiguous and in order)
-        bin_attr_size = attr_list[1] - attr_list[0]
+        attrs_arr.sort()
+        bin_attr_size_map = {}
+        for i in range(len(attrs_arr) - 1):
+            tmp_size = attrs_arr[i+1] - attrs_arr[i]
+            if tmp_size not in bin_attr_size_map:
+                bin_attr_size_map[tmp_size] = 1
+            else:
+                bin_attr_size_map[tmp_size] += 1
+
+        bin_attr_size = max(bin_attr_size_map, key=bin_attr_size_map.get)
 
         # Statistical analysis to find pointers that differ across every structure
         # First we find potential pointers and save their count and offset
         offset_map = {}
-        for attr in attr_list:
+        for attr in attrs_arr:
             data = read_memory(attr, bin_attr_size)
             for offset in range(0, bin_attr_size, current_arch.ptrsize):
                 word = int.from_bytes(data[offset:offset + current_arch.ptrsize], "little")
-                if not maybe_pointer(word):
+                # TODO: Find a way to distinguish attrs.attr.{key,skey} from pointers
+                #   Maybe we could skip the initial fields by using bin_attribute.size?
+                if not AddressUtil.is_msb_on(word):
                     continue
                 if offset not in offset_map:
                     offset_map[offset] = {}
@@ -67037,11 +67097,13 @@ class KernelModuleLoadCommand(GenericCommand):
                     offset_map[offset][word] += 1
                 # Remove pointers to strings if possible
                 try:
-                    if len(read_cstring_from_memory(word)) > 4:
+                    maybe_string = read_cstring_from_memory(word)
+                    if maybe_string is None:
+                        continue
+                    if len(maybe_string) > 4:
                         del offset_map[offset][word]
-                except:
+                except gdb.error:
                     pass
-
 
         # Find the best candidate to avoid name pointers that are not deleted (don't know why that happens)
         max_len = 0
@@ -67114,17 +67176,17 @@ class KernelModuleLoadCommand(GenericCommand):
             return False
         self.quiet_info("offsetof(module, sect_attrs): {:#x}".format(self.offset_sect_attrs))
 
-        self.offset_attrs, self.cached_attribute_list = self.get_offset_attrs()
+        self.offset_attrs, self.cached_attribute_arr_ptr = self.get_offset_bin_attrs()
         if self.offset_attrs is None:
-            self.quiet_err("Could not find module->sect_attrs->attrs[]")
+            self.quiet_err("Could not find module->sect_attrs->grp.bin_attrs")
             return False
-        self.quiet_info("offsetof(sect_attrs, attrs): {:#x}".format(self.offset_attrs))
+        self.quiet_info("offsetof(module_sect_attrs, grp.bin_attrs): {:#x}".format(self.offset_attrs))
 
         self.offset_address = self.get_offset_address()
         if self.offset_address is None:
             self.quiet_err("Could not find offset of bin_attribute.private (section address)")
             return False
-        self.quiet_info("offsetof(attribute, address): {:#x}".format(self.offset_address))
+        self.quiet_info("offsetof(bin_attribute, private): {:#x}".format(self.offset_address))
 
         self.initialized = True
         return True
