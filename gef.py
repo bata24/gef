@@ -74508,7 +74508,6 @@ class MemoryInsertCommand(GenericCommand):
 class Hash:
     class SHA512TruncBase:
         block_size = 128
-        digest_size = None
         K = (
             0x428a_2f98_d728_ae22, 0x7137_4491_23ef_65cd, 0xb5c0_fbcf_ec4d_3b2f, 0xe9b5_dba5_8189_dbbc,
             0x3956_c25b_f348_b538, 0x59f1_11f1_b605_d019, 0x923f_82a4_af19_4f9b, 0xab1c_5ed5_da6d_8118,
@@ -74533,8 +74532,8 @@ class Hash:
         )
 
         def __init__(self, data=b""):
-            if self.digest_size is None:
-                raise ValueError("digest_size must be set in subclass")
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.buf = bytearray()
             self.msg_len = 0  # in bytes
             self.h0 = self.initial_state[0]
@@ -74696,6 +74695,9 @@ class Hash:
         )
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.block_size = self.rate_bytes
             self.state = [0] * 25
             self.buf = bytearray()
@@ -74819,19 +74821,19 @@ class Hash:
 
     class Keccak224(KeccakBase):
         rate_bytes = 144
-        digest_size = 28
+        digest_bits = 224
 
     class Keccak256(KeccakBase):
         rate_bytes = 136
-        digest_size = 32
+        digest_bits = 256
 
     class Keccak384(KeccakBase):
         rate_bytes = 104
-        digest_size = 48
+        digest_bits = 384
 
     class Keccak512(KeccakBase):
         rate_bytes = 72
-        digest_size = 64
+        digest_bits = 512
 
     class TurboShakeBase:
         # Keccak-p[1600,12] with little-endian 64-bit lanes
@@ -74848,23 +74850,25 @@ class Hash:
             0x8000_0000_8000_8081, 0x8000_0000_0000_8080, 0x0000_0000_8000_0001, 0x8000_0000_8000_8008,
         )
 
-        def __init__(self, data=b"", digest_bits=128):
-            self.digest_size = digest_bits // 8
+        def __init__(self, data=b"", digest_bits=None):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            if digest_bits is not None:
+                self.digest_bits = digest_bits
+            self.digest_size = self.digest_bits // 8
             self.block_size = self.rate_bytes
             self.state = [0] * 25
             self.buf = bytearray()
             self.msg_len = 0
-
             lane_count = self.rate_bytes // 8
             self.lane_unpack = struct.Struct("<" + ("Q" * lane_count))
             self.lane_pack = struct.Struct("<" + ("Q" * lane_count))
-
             if data:
                 self.update(data)
             return
 
         def copy(self):
-            other = self.__class__(digest_bits=self.digest_size * 8)
+            other = self.__class__(digest_bits=self.digest_bits)
             other.state = list(self.state)
             other.buf = bytearray(self.buf)
             other.msg_len = self.msg_len
@@ -74897,7 +74901,6 @@ class Hash:
             # Keep only the tail.
             if full_len != len(mv):
                 self.buf.extend(mv[full_len:])
-
             return self
 
         def digest(self):
@@ -74912,11 +74915,9 @@ class Hash:
         def finalize(self):
             # update() invariant: self.buf length is always < rate_bytes.
             self.buf.append(self.domain)
-
             rem = len(self.buf) % self.rate_bytes
             if rem != 0:
                 self.buf.extend(b"\x00" * (self.rate_bytes - rem))
-
             self.buf[-1] ^= 0x80
 
             # Exactly one block should exist here.
@@ -74927,10 +74928,8 @@ class Hash:
         def absorb(self, block):
             values = self.lane_unpack.unpack_from(block)
             state = self.state
-
             for i, v in enumerate(values):
                 state[i] = (state[i] ^ v) & 0xffff_ffff_ffff_ffff
-
             self.keccak_p1600_12(state)
             return
 
@@ -74993,10 +74992,12 @@ class Hash:
             return
 
     class TurboShake128(TurboShakeBase):
-        rate_bytes = 168  # 1344 bits
+        rate_bytes = 168
+        digest_bits = 128
 
     class TurboShake256(TurboShakeBase):
-        rate_bytes = 136  # 1088 bits
+        rate_bytes = 136
+        digest_bits = 256
 
     class KangarooTwelveBase:
         # Keccak-p[1600,12] parameters
@@ -75013,12 +75014,14 @@ class Hash:
         # K12 chunk size (bytes)
         chunk_size = 8192
 
-        def __init__(self, data=b"", custom=b"", digest_bits=128):
+        def __init__(self, data=b"", custom=b"", digest_bits=None):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
             if not isinstance(custom, (bytes, bytearray, memoryview)):
                 raise TypeError("custom must be bytes-like")
-            self.digest_size = digest_bits // 8
+            if digest_bits is not None:
+                self.digest_bits = digest_bits
+            self.digest_size = self.digest_bits // 8
             self.block_size = self.chunk_size
             self.buf = bytearray()
             self.msg_len = 0  # in bytes
@@ -75028,7 +75031,7 @@ class Hash:
             return
 
         def copy(self):
-            other = self.__class__(b"", custom=self.custom, digest_bits=self.digest_size * 8)
+            other = self.__class__(b"", custom=self.custom, digest_bits=self.digest_bits)
             other.buf = bytearray(self.buf)
             other.msg_len = self.msg_len
             return other
@@ -75177,10 +75180,12 @@ class Hash:
     class KangarooTwelve128(KangarooTwelveBase):
         rate_bytes = 168  # TurboSHAKE128 rate
         cv_len = 32  # KT128 chaining value length
+        digest_bits = 128
 
     class KangarooTwelve256(KangarooTwelveBase):
         rate_bytes = 136  # TurboSHAKE256 rate
         cv_len = 64  # KT256 chaining value length
+        digest_bits = 256
 
     class KMACBase:
         rho = (
@@ -75206,13 +75211,9 @@ class Hash:
             key = bytes(key)
             data = bytes(data)
             custom = bytes(custom)
-
             if digest_bits is not None:
-                digest_size = digest_bits // 8
-                if digest_size < 1:
-                    raise ValueError("digest_size must be a positive integer")
-                self.digest_size = digest_size
-
+                self.digest_bits = digest_bits
+            self.digest_size = self.digest_bits // 8
             self.key = key
             self.custom = custom
             self.buf = bytearray()
@@ -75222,7 +75223,7 @@ class Hash:
             return
 
         def copy(self):
-            other = self.__class__(self.key, b"", self.custom, self.digest_size * 8)
+            other = self.__class__(key=self.key, data=b"", custom=self.custom, digest_bits=self.digest_bits)
             other.buf = bytearray(self.buf)
             other.msg_len = self.msg_len
             return other
@@ -76073,6 +76074,8 @@ class Hash:
         digest_size = 20
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             # Initial values are the same as SHA-1
             self.h0 = 0x674_52301
             self.h1 = 0xefc_dab89
@@ -76180,51 +76183,37 @@ class Hash:
         block_size = 64
         digest_size = 64
 
-        def __init__(self, data=b""):
-            self.ensure_tables()
-            self.h = [0] * 8
-            self.buf = b""
-            self.count = 0  # total bytes processed
-            if data != b"":
-                self.update(data)
-            return
-
-        def gf_mul(self, a, b):
-            # GF(2^8) with p(x)=x^8+x^4+x^3+x^2+1 (0x11d)
-            a &= 0xff
-            b &= 0xff
-            res = 0
-            for _ in range(8):
-                if b & 1:
-                    res ^= a
-                b >>= 1
-                carry = a & 0x80
-                a = (a << 1) & 0xff
-                if carry:
-                    # reduce by 0x11d; after shift xor with low 8 bits 0x1d
-                    a ^= 0x1d
-            res &= 0xff
-            return res
-
-        def ensure_tables(self):
-            if hasattr(self, "t_table") and hasattr(self, "rc_table"):
+        @classmethod
+        def ensure_tables(cls):
+            if hasattr(cls, "t_table") and hasattr(cls, "rc_table"):
                 return
-            if not hasattr(self, "sbox") or not hasattr(self, "mds_row0"):
-                raise ValueError("sbox/mds_row0 must be set in subclass")
-            if len(self.sbox) != 256:
-                raise ValueError("sbox must have length 256")
-            if len(self.mds_row0) != 8:
-                raise ValueError("mds_row0 must have length 8")
+
+            def gf_mul(a, b):
+                # GF(2^8) with p(x)=x^8+x^4+x^3+x^2+1 (0x11d)
+                a &= 0xff
+                b &= 0xff
+                res = 0
+                for _ in range(8):
+                    if b & 1:
+                        res ^= a
+                    b >>= 1
+                    carry = a & 0x80
+                    a = (a << 1) & 0xff
+                    if carry:
+                        # reduce by 0x11d; after shift xor with low 8 bits 0x1d
+                        a ^= 0x1d
+                res &= 0xff
+                return res
 
             # t[x] = pack8( mds_row0[i] * sbox[x] ) as u64 big-endian
             t = [0] * 256
             for x in range(256):
-                s = self.sbox[x] & 0xff
+                s = cls.sbox[x] & 0xff
                 w = 0
                 for i in range(8):
-                    w = (w << 8) | self.gf_mul(self.mds_row0[i], s)
+                    w = (w << 8) | gf_mul(cls.mds_row0[i], s)
                 t[x] = w & 0xffff_ffff_ffff_ffff
-            self.t_table = t
+            cls.t_table = t
 
             # rc[r] = pack8( sbox[8*r : 8*r+8] ) as u64 big-endian
             rc = [0] * 10
@@ -76232,9 +76221,20 @@ class Hash:
                 w = 0
                 base = 8 * r
                 for i in range(8):
-                    w = (w << 8) | (self.sbox[base + i] & 0xff)
+                    w = (w << 8) | (cls.sbox[base + i] & 0xff)
                 rc[r] = w & 0xffff_ffff_ffff_ffff
-            self.rc_table = rc
+            cls.rc_table = rc
+            return
+
+        def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.ensure_tables()
+            self.h = [0] * 8
+            self.buf = b""
+            self.count = 0  # total bytes processed
+            if data != b"":
+                self.update(data)
             return
 
         def copy(self):
@@ -76345,7 +76345,26 @@ class Hash:
         # new mixrows
         mds_row0 = (0x01, 0x01, 0x04, 0x01, 0x08, 0x05, 0x02, 0x09)
 
-    class WhirlpoolT(Whirlpool):
+    class WhirlpoolT(WhirlpoolBase):
+        # new sbox
+        sbox = (
+            0x18, 0x23, 0xc6, 0xe8, 0x87, 0xb8, 0x01, 0x4f, 0x36, 0xa6, 0xd2, 0xf5, 0x79, 0x6f, 0x91, 0x52,
+            0x60, 0xbc, 0x9b, 0x8e, 0xa3, 0x0c, 0x7b, 0x35, 0x1d, 0xe0, 0xd7, 0xc2, 0x2e, 0x4b, 0xfe, 0x57,
+            0x15, 0x77, 0x37, 0xe5, 0x9f, 0xf0, 0x4a, 0xda, 0x58, 0xc9, 0x29, 0x0a, 0xb1, 0xa0, 0x6b, 0x85,
+            0xbd, 0x5d, 0x10, 0xf4, 0xcb, 0x3e, 0x05, 0x67, 0xe4, 0x27, 0x41, 0x8b, 0xa7, 0x7d, 0x95, 0xd8,
+            0xfb, 0xee, 0x7c, 0x66, 0xdd, 0x17, 0x47, 0x9e, 0xca, 0x2d, 0xbf, 0x07, 0xad, 0x5a, 0x83, 0x33,
+            0x63, 0x02, 0xaa, 0x71, 0xc8, 0x19, 0x49, 0xd9, 0xf2, 0xe3, 0x5b, 0x88, 0x9a, 0x26, 0x32, 0xb0,
+            0xe9, 0x0f, 0xd5, 0x80, 0xbe, 0xcd, 0x34, 0x48, 0xff, 0x7a, 0x90, 0x5f, 0x20, 0x68, 0x1a, 0xae,
+            0xb4, 0x54, 0x93, 0x22, 0x64, 0xf1, 0x73, 0x12, 0x40, 0x08, 0xc3, 0xec, 0xdb, 0xa1, 0x8d, 0x3d,
+            0x97, 0x00, 0xcf, 0x2b, 0x76, 0x82, 0xd6, 0x1b, 0xb5, 0xaf, 0x6a, 0x50, 0x45, 0xf3, 0x30, 0xef,
+            0x3f, 0x55, 0xa2, 0xea, 0x65, 0xba, 0x2f, 0xc0, 0xde, 0x1c, 0xfd, 0x4d, 0x92, 0x75, 0x06, 0x8a,
+            0xb2, 0xe6, 0x0e, 0x1f, 0x62, 0xd4, 0xa8, 0x96, 0xf9, 0xc5, 0x25, 0x59, 0x84, 0x72, 0x39, 0x4c,
+            0x5e, 0x78, 0x38, 0x8c, 0xd1, 0xa5, 0xe2, 0x61, 0xb3, 0x21, 0x9c, 0x1e, 0x43, 0xc7, 0xfc, 0x04,
+            0x51, 0x99, 0x6d, 0x0d, 0xfa, 0xdf, 0x7e, 0x24, 0x3b, 0xab, 0xce, 0x11, 0x8f, 0x4e, 0xb7, 0xeb,
+            0x3c, 0x81, 0x94, 0xf7, 0xb9, 0x13, 0x2c, 0xd3, 0xe7, 0x6e, 0xc4, 0x03, 0x56, 0x44, 0x7f, 0xa9,
+            0x2a, 0xbb, 0xc1, 0x53, 0xdc, 0x0b, 0x9d, 0x6c, 0x31, 0x74, 0xf6, 0x46, 0xac, 0x89, 0x14, 0xe1,
+            0x16, 0x3a, 0x69, 0x09, 0x70, 0xb6, 0xd0, 0xed, 0xcc, 0x42, 0x98, 0xa4, 0x28, 0x5c, 0xf8, 0x86,
+        )
         # old mixrows
         mds_row0 = (0x01, 0x01, 0x03, 0x01, 0x05, 0x08, 0x09, 0x05)
 
@@ -76374,6 +76393,8 @@ class Hash:
 
     class HASHxN:
         def __init__(self, name, N, data=b"", use_hex=False):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.name = name
             self.N = N
             self.hash = self.get_hash_func(name)
@@ -76410,6 +76431,8 @@ class Hash:
         digest_size = 16
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.buf = bytearray()
             self.msg_len = 0  # in bytes (kept for consistency)
             self.state = [0] * 48
@@ -76500,6 +76523,8 @@ class Hash:
         digest_size = 16
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.a = 0x6745_2301
             self.b = 0xefcd_ab89
             self.c = 0x98ba_dcfe
@@ -76645,6 +76670,8 @@ class Hash:
         digest_size = 32
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.md4 = Hash.MD4()
             if data:
                 self.update(data)
@@ -76677,22 +76704,21 @@ class Hash:
         def hexdigest(self):
             return self.md4.hexdigest()
 
-    class MD6:
-        def __init__(self, d=256, key=b"", L=64, r=None):
-            if not (1 <= int(d) <= 512):
-                raise ValueError("d must be in [1, 512]")
+    class MD6Base:
+        def __init__(self, key=b"", L=64, r=None):
             if not (0 <= len(key) <= 64):
                 raise ValueError("key length must be in [0, 64] bytes")
             if int(L) < 0:
                 raise ValueError("L must be non-negative")
+            if not isinstance(key, (bytes, bytearray, memoryview)):
+                raise TypeError("key must be bytes-like")
 
-            self.d = int(d)
-            self.digest_size = self.d // 8
+            self.digest_size = self.digest_bits // 8
             self.key = bytes(key)
             self.L = int(L)
 
             if r is None:
-                base = 40 + ((self.d + 3) // 4)  # 40 + ceil(d/4)
+                base = 40 + ((self.digest_bits + 3) // 4)
                 if len(self.key) != 0:
                     self.r = max(80, base)
                 else:
@@ -76703,32 +76729,23 @@ class Hash:
                 self.r = int(r)
 
             self.buffer = b""
-
             self.w = 64
             self.n = 89
             self.c = 16
             self.b = 64
-            self.mask64 = 0xffff_ffff_ffff_ffff
-
             self.t0 = 0x11
             self.t1 = 0x12
             self.t2 = 0x15
             self.t3 = 0x1f
             self.t4 = 0x43
-
-            self.rshift = (
-                0x0a, 0x05, 0x0d, 0x0a, 0x0b, 0x0c, 0x02, 0x07, 0x0e, 0x0f, 0x07, 0x0d, 0x0b, 0x07, 0x06, 0x0c,
-            )
-            self.lshift = (
-                0x0b, 0x18, 0x09, 0x10, 0x0f, 0x09, 0x1b, 0x0f, 0x06, 0x02, 0x1d, 0x08, 0x0f, 0x05, 0x1f, 0x09,
-            )
+            self.rshift = (0x0a, 0x05, 0x0d, 0x0a, 0x0b, 0x0c, 0x02, 0x07, 0x0e, 0x0f, 0x07, 0x0d, 0x0b, 0x07, 0x06, 0x0c)
+            self.lshift = (0x0b, 0x18, 0x09, 0x10, 0x0f, 0x09, 0x1b, 0x0f, 0x06, 0x02, 0x1d, 0x08, 0x0f, 0x05, 0x1f, 0x09)
             self.Q = [
                 0x7311_c281_2425_cfa0, 0x6432_2864_34aa_c8e7, 0xb604_50e9_ef68_b7c1, 0xe8fb_2390_8d9f_06f1,
                 0xdd2e_76cb_a691_e5bf, 0x0cd0_d63b_2c30_bc41, 0x1f8c_cf68_2305_8f8a, 0x54e5_ed5b_88e3_775d,
                 0x4ad1_2aae_0a6d_6031, 0x3e7f_16bb_8822_2e0d, 0x8af8_671d_3fb5_0c2c, 0x995a_d117_8bd2_5c31,
                 0xc878_c1dd_04c4_b633, 0x3b72_066c_7a15_52ac, 0x0d6f_3522_631e_ffcb,
             ]
-
             self.S0 = 0x0123_4567_89ab_cdef
             self.Sstar = 0x7311_c281_2425_cfa0
             return
@@ -76740,7 +76757,7 @@ class Hash:
             return self
 
         def copy(self):
-            other = self.__class__(d=self.d, key=self.key, L=self.L, r=self.r)
+            other = self.__class__(key=self.key, L=self.L, r=self.r)
             other.buffer = self.buffer
             return other
 
@@ -76752,8 +76769,8 @@ class Hash:
 
         def rol64(self, x, n):
             n &= 63
-            x &= self.mask64
-            return ((x << n) & self.mask64) | (x >> (64 - n))
+            x &= 0xffff_ffff_ffff_ffff
+            return ((x << n) & 0xffff_ffff_ffff_ffff) | (x >> (64 - n))
 
         def pack_control(self, r, L, z, p, keylen, d):
             # Control word V layout (high-order 4 bits are zero):
@@ -76765,12 +76782,12 @@ class Hash:
             p &= (1 << 16) - 1
             keylen &= (1 << 8) - 1
             d &= (1 << 12) - 1
-            return ((r << 48) | (L << 40) | (z << 36) | (p << 20) | (keylen << 12) | d) & self.mask64
+            return ((r << 48) | (L << 40) | (z << 36) | (p << 20) | (keylen << 12) | d) & 0xffff_ffff_ffff_ffff
 
         def pack_node_id(self, ell, i):
             # Unique node ID U layout:
             # high-order byte is ell, remaining 7 bytes is index i
-            return (((ell & 0xff) << 56) | (i & ((1 << 56) - 1))) & self.mask64
+            return (((ell & 0xff) << 56) | (i & ((1 << 56) - 1))) & 0xffff_ffff_ffff_ffff
 
         def bytes_to_words_be(self, data, count):
             out = []
@@ -76782,7 +76799,7 @@ class Hash:
             return out
 
         def words_to_bytes_be(self, words):
-            return b"".join((w & self.mask64).to_bytes(8, "big") for w in words)
+            return b"".join((w & 0xffff_ffff_ffff_ffff).to_bytes(8, "big") for w in words)
 
         def make_key_words(self):
             kp = self.key + b"\x00" * (64 - len(self.key))
@@ -76793,43 +76810,35 @@ class Hash:
             # S'_{j+1} = (S'_j <<< 1) xor (S'_j & S*)
             # Use rotate-left by 1 (<<<).
             S = []
-            x = self.S0 & self.mask64
+            x = self.S0 & 0xffff_ffff_ffff_ffff
             for _ in range(r):
                 S.append(x)
                 x = self.rol64(x, 1) ^ (x & self.Sstar)
-                x &= self.mask64
+                x &= 0xffff_ffff_ffff_ffff
             return S
 
         def compress(self, N_words, r):
             # N_words length must be 89 (15 Q + 8 K + 1 U + 1 V + 64 B)
             if len(N_words) != self.n:
                 raise ValueError("N_words must be length 89")
-
             t = 16 * r
             A = list(N_words)
-
             Sround = self.make_round_constants(r)
-
             for i in range(self.n, self.n + t):
                 step = i - self.n  # 0..t-1
                 ridx = step & 0x0f
                 round_idx = step >> 4
-
                 x = Sround[round_idx]
                 x ^= A[i - self.n]
                 x ^= A[i - self.t0]
                 x ^= (A[i - self.t1] & A[i - self.t2])
                 x ^= (A[i - self.t3] & A[i - self.t4])
-                x &= self.mask64
-
+                x &= 0xffff_ffff_ffff_ffff
                 x ^= (x >> self.rshift[ridx])
-                x &= self.mask64
-
-                y = x ^ ((x << self.lshift[ridx]) & self.mask64)
-                y &= self.mask64
-
+                x &= 0xffff_ffff_ffff_ffff
+                y = x ^ ((x << self.lshift[ridx]) & 0xffff_ffff_ffff_ffff)
+                y &= 0xffff_ffff_ffff_ffff
                 A.append(y)
-
             # Output last 16 words
             return A[-self.c:]
 
@@ -76859,7 +76868,7 @@ class Hash:
                 B_words = self.bytes_to_words_be(Bi, 64)
 
                 p = pad_bits if (i == j - 1) else 0
-                V = self.pack_control(self.r, self.L, z_all, p, keylen, self.d)
+                V = self.pack_control(self.r, self.L, z_all, p, keylen, self.digest_bits)
                 U = self.pack_node_id(ell, i)
 
                 N = self.Q + K_words + [U, V] + B_words
@@ -76876,22 +76885,16 @@ class Hash:
             # SEQ operator (Figure 2.6): sequential MD-like; returns d-bit hash
             block_words = 48
             block_bytes = block_words * 8  # 384 bytes
-
             m_bits = len(M_bytes) * 8
-
             j = (len(M_bytes) + block_bytes - 1) // block_bytes
             if j < 1:
                 j = 1
-
             total_bytes = j * block_bytes
             pad_bits = total_bytes * 8 - m_bits  # 0..3072
             Mp = M_bytes + b"\x00" * (total_bytes - len(M_bytes))
-
             K_words = self.make_key_words()
             keylen = len(self.key)
-
             C_prev = [0x00] * self.c  # 16-word IV of zeros
-
             ell = self.L + 1
             for i in range(j):
                 Bi = Mp[i * block_bytes:(i + 1) * block_bytes]
@@ -76900,7 +76903,7 @@ class Hash:
                 z = 1 if (i == j - 1) else 0
                 p = pad_bits if (i == j - 1) else 0
 
-                V = self.pack_control(self.r, self.L, z, p, keylen, self.d)
+                V = self.pack_control(self.r, self.L, z, p, keylen, self.digest_bits)
                 U = self.pack_node_id(ell, i)
 
                 # B is 64 words = C_{i-1} (16) || B_i (48)
@@ -76910,7 +76913,7 @@ class Hash:
 
             # Return last d bits of C_{j-1}
             full = self.words_to_bytes_be(C_prev)  # 128 bytes (1024 bits)
-            return self.last_bits(full, self.d)
+            return self.last_bits(full, self.digest_bits)
 
         def last_bits(self, data, d_bits):
             # Return the last d_bits of data (data is a big-endian bitstring).
@@ -76919,11 +76922,9 @@ class Hash:
             total_bits = len(data) * 8
             if d_bits > total_bits:
                 raise ValueError("d_bits larger than available bits")
-
             # Fast path for byte-aligned
             if (d_bits & 7) == 0:
                 return data[-(d_bits // 8):]
-
             # Bit-level extraction
             keep_bytes = (d_bits + 7) // 8
             tail = data[-keep_bytes:]
@@ -76936,32 +76937,32 @@ class Hash:
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
             M = bytes(data)
-
             # Main level-by-level loop (Figure 2.4):
             # ell starts at 0, then increments; if ell == L+1 -> SEQ on previous
             ell = 0
             M_ell_minus_1 = M
-
             while True:
                 ell += 1
                 if ell == self.L + 1:
                     return self.seq(M_ell_minus_1)
-
                 M_ell = self.par(M_ell_minus_1, ell)
-
                 # If M_ell is exactly c words (16 words) long, return last d bits of M_ell
                 if len(M_ell) == self.c * 8:
-                    return self.last_bits(M_ell, self.d)
-
+                    return self.last_bits(M_ell, self.digest_bits)
                 M_ell_minus_1 = M_ell
             raise
 
+    class MD6_128(MD6Base):
+        digest_bits = 128
+
+    class MD6_256(MD6Base):
+        digest_bits = 256
+
+    class MD6_512(MD6Base):
+        digest_bits = 512
+
     class RIPEMDBase:
         block_size = 64
-        digest_size = None  # bytes
-        init_state_words = None  # little-endian words
-        rounds = None  # 4 for 128/160/256, 5 for 320
-
         # RIPEMD message word order and rotation amounts (base tables; 128/160/256 use first 64, 320 uses full 80)
         r = (
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
@@ -76991,15 +76992,16 @@ class Hash:
             0x0f, 0x05, 0x08, 0x0b, 0x0e, 0x0e, 0x06, 0x0e, 0x06, 0x09, 0x0c, 0x09, 0x0c, 0x05, 0x0f, 0x08,
             0x08, 0x05, 0x0c, 0x09, 0x0c, 0x05, 0x0e, 0x06, 0x08, 0x0d, 0x06, 0x05, 0x0f, 0x0d, 0x0b, 0x0b,
         )
-
         # constants for rounds (left line / right line)
         K4 = (0x0000_0000, 0x5a82_7999, 0x6ed9_eba1, 0x8f1b_bcdc)
         K4p = (0x50a2_8be6, 0x5c4d_d124, 0x6d70_3ef3, 0x0000_0000)
-
         K5 = (0x0000_0000, 0x5a82_7999, 0x6ed9_eba1, 0x8f1b_bcdc, 0xa953_fd4e)
         K5p = (0x50a2_8be6, 0x5c4d_d124, 0x6d70_3ef3, 0x7a6d_76e9, 0x0000_0000)
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.h = self.init_state_words[:]
             self.buf = b""
             self.total = 0
@@ -77043,10 +77045,10 @@ class Hash:
                 return x ^ y ^ z                 # F
 
         def update(self, data):
-            if not data:
-                return self
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
+            if not data:
+                return self
             self.total += len(data)
             self.buf += bytes(data)
             while len(self.buf) >= 64:
@@ -77076,7 +77078,7 @@ class Hash:
             return self.digest().hex()
 
     class RIPEMD128(RIPEMDBase):
-        digest_size = 16
+        digest_bits = 128
         init_state_words = (
             0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476,
         )
@@ -77118,7 +77120,7 @@ class Hash:
             return
 
     class RIPEMD160(RIPEMDBase):
-        digest_size = 20
+        digest_bits = 160
         init_state_words = (
             0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476, 0xc3d2_e1f0,
         )
@@ -77159,7 +77161,7 @@ class Hash:
             return
 
     class RIPEMD256(RIPEMDBase):
-        digest_size = 32
+        digest_bits = 256
         init_state_words = (
             0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476, 0x7654_3210, 0xfedc_ba98, 0x89ab_cdef, 0x0123_4567,
         )
@@ -77212,7 +77214,7 @@ class Hash:
             return
 
     class RIPEMD320(RIPEMD256):
-        digest_size = 40
+        digest_bits = 320
         init_state_words = (
             0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476, 0xc3d2_e1f0,
             0x7654_3210, 0xfedc_ba98, 0x89ab_cdef, 0x0123_4567, 0x3c2d_1e0f,
@@ -77286,6 +77288,9 @@ class Hash:
         )
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.h = list(self.iv)
             self.buf = b""
             self.total = 0
@@ -77390,10 +77395,10 @@ class Hash:
             return
 
         def update(self, data):
-            if not data:
-                return self
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
+            if not data:
+                return self
 
             mv = memoryview(data)
             self.total += len(mv)
@@ -77465,8 +77470,8 @@ class Hash:
             return self.digest().hex()
 
     class BLAKE224(BLAKEBase):
+        digest_bits = 224
         block_size = 64
-        digest_size = 28
         word_bits = 32
         rounds = 14
         pad_delim = 0x00
@@ -77481,8 +77486,8 @@ class Hash:
         )
 
     class BLAKE256(BLAKEBase):
+        digest_bits = 256
         block_size = 64
-        digest_size = 32
         word_bits = 32
         rounds = 14
         pad_delim = 0x01
@@ -77497,8 +77502,8 @@ class Hash:
         )
 
     class BLAKE384(BLAKEBase):
+        digest_bits = 384
         block_size = 128
-        digest_size = 48
         word_bits = 64
         rounds = 16
         pad_delim = 0x00
@@ -77516,8 +77521,8 @@ class Hash:
         )
 
     class BLAKE512(BLAKEBase):
+        digest_bits = 512
         block_size = 128
-        digest_size = 64
         word_bits = 64
         rounds = 16
         pad_delim = 0x01
@@ -77535,11 +77540,12 @@ class Hash:
         )
 
     class BLAKE2pBase:
-        block_size = 0x0200
+        block_size = 512
 
         def __init__(self, data=b""):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.buf = bytearray()
             self.msg_len = 0
             self.block_index = 0
@@ -77628,42 +77634,41 @@ class Hash:
             return self.digest().hex()
 
     class BLAKE2sp(BLAKE2pBase):
-        parallelism = 0x08
-        leaf_block_size = 0x40
-        digest_size = 0x20
-        inner_size = 0x20
+        digest_bits = 256
+        parallelism = 8
+        leaf_block_size = 64
+        inner_size = 32
         blake2_func = hashlib.blake2s
 
     class BLAKE2bp(BLAKE2pBase):
-        parallelism = 0x04
-        leaf_block_size = 0x80
-        digest_size = 0x40
-        inner_size = 0x40
+        digest_bits = 512
+        parallelism = 4
+        leaf_block_size = 128
+        inner_size = 64
         blake2_func = hashlib.blake2b
 
     class BLAKE3:
         # BLAKE3 (default, unkeyed) / 256-bit output by default
+        digest_bits = 256
         block_size = 64
-        digest_size = 32
         block_len = 64
         chunk_len = 1024
-
         # flags
         chunk_start = 0x01
         chunk_end = 0x02
         parent = 0x04
         root = 0x08
-
         # IV == BLAKE2s IV (BLAKE3 also uses this)
         iv = (
             0x6a09_e667, 0xbb67_ae85, 0x3c6e_f372, 0xa54f_f53a, 0x510e_527f, 0x9b05_688c, 0x1f83_d9ab, 0x5be0_cd19,
         )
-
         msg_perm = (
             0x02, 0x06, 0x03, 0x0a, 0x07, 0x00, 0x04, 0x0d, 0x01, 0x0b, 0x0c, 0x05, 0x09, 0x0e, 0x0f, 0x08,
         )
 
-        def __init__(self, data=b"", digest_bits=256):
+        def __init__(self, data=b"", digest_bits=None):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.key_words = list(self.iv)  # default unkeyed hash uses IV as key
             self.flags = 0
             self.chunk_counter = 0
@@ -77671,7 +77676,9 @@ class Hash:
             self.cs_cv = self.key_words[:]
             self.cs_block = bytearray()
             self.cs_blocks_compressed = 0  # number of full 64-byte blocks already compressed in this chunk (0..15)
-            self.digest_size = digest_bits // 8  # It can also be specified when issuing a digest
+            if digest_bits is not None:
+                self.digest_bits = digest_bits
+            self.digest_size = self.digest_bits // 8
             if data:
                 self.update(data)
             return
@@ -77765,10 +77772,10 @@ class Hash:
             return
 
         def update(self, data):
-            if not data:
-                return self
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
+            if not data:
+                return self
 
             mv = memoryview(data)
             off = 0
@@ -77854,7 +77861,7 @@ class Hash:
                 raise ValueError("length must be a non-negative int")
 
             # clone state
-            clone = self.__class__()
+            clone = self.__class__(digest_bits=self.digest_bits)
             clone.key_words = self.key_words[:]
             clone.flags = self.flags
             clone.chunk_counter = self.chunk_counter
@@ -78190,19 +78197,17 @@ class Hash:
             return
 
         def __init__(self, data=b""):
-            if self.digest_size is None:
-                raise ValueError("digest_size must be set in subclass")
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.databitlen = 0
             self.datasize_in_buffer = 0  # bits
             self.H = bytearray(128)
             self.A = [0] * 256
             self.roundconstant = [0] * 64
             self.buffer = bytearray(64)
-            hashbitlen = self.digest_size * 8
-            self.H[0] = (hashbitlen >> 8) & 0xff
-            self.H[1] = hashbitlen & 0xff
+            self.H[0] = (self.digest_bits >> 8) & 0xff
+            self.H[1] = self.digest_bits & 0xff
             self.ensure_table()
             self.init_cffi_backend()
             self.f8()
@@ -78357,16 +78362,16 @@ class Hash:
             return
 
     class JH224(JHBase):
-        digest_size = 28
+        digest_bits = 224
 
     class JH256(JHBase):
-        digest_size = 32
+        digest_bits= 256
 
     class JH384(JHBase):
-        digest_size = 48
+        digest_bits = 384
 
     class JH512(JHBase):
-        digest_size = 64
+        digest_bits = 512
 
     class GroestlBase:
         sbox = (
@@ -78423,6 +78428,7 @@ class Hash:
         def __init__(self, data=b""):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.buf = bytearray()
             self.msg_len = 0
             self.ensure_table()
@@ -78565,28 +78571,28 @@ class Hash:
 
     class Groestl224(GroestlBase):
         block_size = 64
-        digest_size = 28
+        digest_bits = 224
         rounds = 10
         sigma_p = (0, 1, 2, 3, 4, 5, 6, 7)
         sigma_q = (1, 3, 5, 7, 0, 2, 4, 6)
 
     class Groestl256(GroestlBase):
         block_size = 64
-        digest_size = 32
+        digest_bits = 256
         rounds = 10
         sigma_p = (0, 1, 2, 3, 4, 5, 6, 7)
         sigma_q = (1, 3, 5, 7, 0, 2, 4, 6)
 
     class Groestl384(GroestlBase):
         block_size = 128
-        digest_size = 48
+        digest_bits = 384
         rounds = 14
         sigma_p = (0, 1, 2, 3, 4, 5, 6, 11)
         sigma_q = (1, 3, 5, 11, 0, 2, 4, 6)
 
     class Groestl512(GroestlBase):
         block_size = 128
-        digest_size = 64
+        digest_bits = 512
         rounds = 14
         sigma_p = (0, 1, 2, 3, 4, 5, 6, 11)
         sigma_q = (1, 3, 5, 11, 0, 2, 4, 6)
@@ -78774,9 +78780,9 @@ class Hash:
             return sub
 
     class Skein256(SkeinBBase):
-        block_size = 0x20
-        word_count = 0x04
-        rounds = 0x48
+        block_size = 32
+        word_count = 4
+        rounds = 72
         rotation = (
             (0x0e, 0x10),
             (0x34, 0x39),
@@ -78790,9 +78796,9 @@ class Hash:
         perm = (0x00, 0x03, 0x02, 0x01)
 
     class Skein512(SkeinBBase):
-        block_size = 0x40
-        word_count = 0x08
-        rounds = 0x48
+        block_size = 64
+        word_count = 8
+        rounds = 72
         rotation = (
             (0x2e, 0x24, 0x13, 0x25),
             (0x21, 0x1b, 0x0e, 0x2a),
@@ -78806,9 +78812,9 @@ class Hash:
         perm = (0x02, 0x01, 0x04, 0x07, 0x06, 0x05, 0x00, 0x03)
 
     class Skein1024(SkeinBBase):
-        block_size = 0x80
-        word_count = 0x10
-        rounds = 0x50
+        block_size = 128
+        word_count = 16
+        rounds = 80
         rotation = (
             (0x18, 0x0d, 0x08, 0x2f, 0x08, 0x11, 0x16, 0x25),
             (0x26, 0x13, 0x0a, 0x37, 0x31, 0x12, 0x17, 0x34),
@@ -78823,8 +78829,6 @@ class Hash:
 
     class ShabalBase:
         block_size = 64
-        digest_size = None
-
         shabal_block_words = 16
         shabal_param_r = 12
         shabal_param_p = 3
@@ -78834,8 +78838,6 @@ class Hash:
         o3 = 6
 
         def __init__(self, data=b""):
-            if self.digest_size is None:
-                raise ValueError("digest_size must be set in derived class")
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
             self.a = [0] * self.shabal_param_r
@@ -78909,11 +78911,11 @@ class Hash:
             return
 
         def init_state(self):
-            hashbitlen = self.digest_size * 8
+            digest_bits = self.digest_size * 8
             m = [0] * self.shabal_block_words
             for j in range(0, 2 * self.shabal_block_words, self.shabal_block_words):
                 for i in range(self.shabal_block_words):
-                    m[i] = hashbitlen + j + i
+                    m[i] = digest_bits + j + i
                 self.input_block_add(m)
                 self.xor_counter()
                 self.apply_perm(m)
@@ -79583,14 +79585,9 @@ class Hash:
             return pack128(low, high)
 
     class FNVBase:
-        bits = None
-        fnv_prime = None
-        offset_basis = None
-        variant = None  # "fnv0", "fnv0a", "fnv1", "fnv1a"
-
-        def __init__(self, data=b"", basis=None, variant="fnv1"):
-            if self.bits is None or self.fnv_prime is None or self.offset_basis is None:
-                raise ValueError("FNVBase must be subclassed with constants")
+        def __init__(self, data=b"", basis=None, variant="fnv1"): # "fnv0", "fnv0a", "fnv1", "fnv1a"
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.variant = variant
             self.mask = (1 << self.bits) - 1
             if basis is None:
@@ -80757,6 +80754,8 @@ class Hash:
         digest_size = 32  # 256 bits
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             # IV0 (same as SHA-256 IV)
             self.h0 = 0x6a09_e667
             self.h1 = 0xbb67_ae85
@@ -82710,6 +82709,8 @@ class Hash:
         final_rounds = 0
 
         def __init__(self, data=b"", key=None):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.key = self.normalize_key(key)
             self.mul0 = [0, 0, 0, 0]
             self.mul1 = [0, 0, 0, 0]
@@ -83009,6 +83010,8 @@ class Hash:
         )
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.hash = [0] * 8
             self.sum = [0] * 8
             self.message = bytearray(32)
@@ -84047,6 +84050,8 @@ class Hash:
         )
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.h0 = 0x6745_2301
             self.h1 = 0xefcd_ab89
             self.h2 = 0x98ba_dcfe
@@ -84720,6 +84725,8 @@ class Hash:
         )
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.chunk_size = (16 - self.output_words) * 4
             self.h = [0] * self.output_words
             self.buf = bytearray()
@@ -85237,6 +85244,8 @@ class Hash:
         digest_size = 4
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.b = 378551
             self.a = 63689
             self.hash = 0
@@ -85262,6 +85271,8 @@ class Hash:
         digest_size = 4
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.hash = 1315423911
             if data:
                 self.update(data)
@@ -85284,6 +85295,8 @@ class Hash:
         digest_size = 4
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.hash = 0
             if data:
                 self.update(data)
@@ -85309,6 +85322,8 @@ class Hash:
         digest_size = 4
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.hash = 0
             if data:
                 self.update(data)
@@ -85334,6 +85349,8 @@ class Hash:
         digest_size = 4
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.seed = 131
             self.hash = 0
             if data:
@@ -85357,6 +85374,8 @@ class Hash:
         digest_size = 4
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.hash = 0
             if data:
                 self.update(data)
@@ -85379,6 +85398,8 @@ class Hash:
         digest_size = 4
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.hash = 5381
             if data:
                 self.update(data)
@@ -85401,6 +85422,8 @@ class Hash:
         digest_size = 4
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.buf = bytearray()
             if data:
                 self.update(data)
@@ -85425,6 +85448,8 @@ class Hash:
         digest_size = 4
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.hash = 0xaaaa_aaaa
             if data:
                 self.update(data)
@@ -85451,6 +85476,8 @@ class Hash:
         digest_size = 4
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.hash = 0
             if data:
                 self.update(data)
@@ -85479,6 +85506,8 @@ class Hash:
         digest_size = 4
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.a = 1
             self.b = 0
             if data:
@@ -86197,6 +86226,8 @@ class Hash:
             return
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             if self.columns == 8:
                 self.shift_offsets = (0, 1, 2, 3, 4, 5, 6, 7)
             else:
@@ -86688,7 +86719,8 @@ class Hash:
             return
 
         def __init__(self, data=b"", salt=b""):
-            self.ensure_tables()
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             if not isinstance(salt, (bytes, bytearray, memoryview)):
                 raise TypeError("salt must be bytes-like")
             if len(salt) not in (0, 16):
@@ -86702,6 +86734,7 @@ class Hash:
             self.total_bits = 0
             word = self.hash_size.to_bytes(2, "little") + b"\x00" * 14
             self.v = bytearray(word * self.cv_words)
+            self.ensure_tables()
             if data:
                 self.update(data)
             return
@@ -87076,6 +87109,7 @@ class Hash:
         def __init__(self, data=b""):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             data = bytes(data)
             self.init_state()
             self.h = bytearray(self.output_bytes)
@@ -87087,12 +87121,6 @@ class Hash:
 
         def init_state(self):
             self.pi_data = self.FSBPiBin().make_pi_bin()
-
-            if self.block_size is None or self.digest_size is None:
-                raise RuntimeError("invalid parameters")
-            if self.n is None or self.w is None or self.r is None or self.p is None or self.s is None:
-                raise RuntimeError("invalid parameters")
-
             if (self.r % 8) != 0:
                 raise RuntimeError("r must be multiple of 8")
             if (self.p <= self.r) is False:
@@ -87205,8 +87233,8 @@ class Hash:
             return
 
     class FSB160(FSBBase):
-        block_size = 0x3c
-        digest_size = 0x14
+        block_size = 60
+        digest_bits = 160
         n = 0x14_0000
         w = 0x50
         r = 0x280
@@ -87214,8 +87242,8 @@ class Hash:
         s = 0x460
 
     class FSB224(FSBBase):
-        block_size = 0x54
-        digest_size = 0x1c
+        block_size = 84
+        digest_bits = 224
         n = 0x1c_0000
         w = 0x70
         r = 0x380
@@ -87223,8 +87251,8 @@ class Hash:
         s = 0x620
 
     class FSB256(FSBBase):
-        block_size = 0x60
-        digest_size = 0x20
+        block_size = 96
+        digest_bits = 256
         n = 0x20_0000
         w = 0x80
         r = 0x400
@@ -87232,8 +87260,8 @@ class Hash:
         s = 0x700
 
     class FSB384(FSBBase):
-        block_size = 0x73
-        digest_size = 0x30
+        block_size = 115
+        digest_bits = 384
         n = 0x17_0000
         w = 0xb8
         r = 0x5c0
@@ -87241,8 +87269,8 @@ class Hash:
         s = 0x958
 
     class FSB512(FSBBase):
-        block_size = 0x9b
-        digest_size = 0x40
+        block_size = 155
+        digest_bits = 512
         n = 0x1f_0000
         w = 0xf8
         r = 0x7c0
@@ -87269,11 +87297,10 @@ class Hash:
             0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
         )
 
-        def __init__(self, data=b"", salt=0):
+        def __init__(self, data=b""):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            if salt != 0:
-                raise ValueError("only salt=0 is supported")
+            self.digest_size = self.digest_bits // 8
             self.h = list(self.iv)
             self.buf = bytearray(self.block_size)
             self.ptr = 0
@@ -87599,30 +87626,30 @@ class Hash:
             return self.digest().hex()
 
     class SHAvite3_224(SHAvite3Base):
-        block_size = 0x40
-        digest_size = 0x1c
+        block_size = 64
+        digest_bits = 224
         iv = (
             0x6774_f31c, 0x990a_e210, 0xc87d_4274, 0xc954_6371, 0x62b2_aea8, 0x4b58_01d8, 0x1b70_2860, 0x842f_3017,
         )
 
     class SHAvite3_256(SHAvite3Base):
-        block_size = 0x40
-        digest_size = 0x20
+        block_size = 64
+        digest_bits = 256
         iv = (
             0x49bb_3e47, 0x2674_860d, 0xa8b3_92ac, 0x021a_c4e6, 0x4092_83cf, 0x620e_5d86, 0x6d92_9dcb, 0x96cc_2a8b,
         )
 
     class SHAvite3_384(SHAvite3Base):
-        block_size = 0x80
-        digest_size = 0x30
+        block_size = 128
+        digest_bits = 384
         iv = (
             0x83df_1545, 0xf9aa_ec13, 0xf480_3cb0, 0x11fe_1f47, 0xda6c_d269, 0x4f53_fcd7, 0x9505_29a2, 0x9790_8147,
             0xb0a4_d7af, 0x2b91_32bf, 0x226e_607d, 0x3c0f_8d7c, 0x487b_3f0f, 0x0436_3e22, 0x0155_c99c, 0xec2e_20d3,
         )
 
     class SHAvite3_512(SHAvite3Base):
-        block_size = 0x80
-        digest_size = 0x40
+        block_size = 128
+        digest_bits = 512
         iv = (
             0x72fc_cdd8, 0x79ca_4727, 0x128a_077b, 0x40d5_5aec, 0xd190_1a06, 0x430a_e307, 0xb29f_5cd1, 0xdf07_fbfc,
             0x8e45_d73d, 0x681a_b538, 0xbde8_6578, 0xdd57_7e47, 0xe275_eade, 0x502d_9fcd, 0xb935_7178, 0x022a_4b9a,
@@ -87687,7 +87714,9 @@ class Hash:
             return
 
         def __init__(self, data=b''):
-            self.hashbitlen = self.digest_size * 8
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.databitcount = 0
             self.finalized = False
             self.final_digest = None
@@ -87701,11 +87730,11 @@ class Hash:
             self.hash = bytearray(64)
             self.buffer = bytearray(128)
             self.buffer[0] = 2
-            self.buffer[1] = (self.hashbitlen >> 24) & 0xff
-            self.buffer[2] = (self.hashbitlen >> 16) & 0xff
-            self.buffer[3] = (self.hashbitlen >> 8) & 0xff
-            self.buffer[4] = (self.hashbitlen >> 0) & 0xff
-            if self.hashbitlen <= 256:
+            self.buffer[1] = (self.digest_bits >> 24) & 0xff
+            self.buffer[2] = (self.digest_bits >> 16) & 0xff
+            self.buffer[3] = (self.digest_bits >> 8) & 0xff
+            self.buffer[4] = (self.digest_bits >> 0) & 0xff
+            if self.digest_bits <= 256:
                 self.lane256_transform(self.buffer, 0)
             else:
                 self.lane512_transform(self.buffer, 0)
@@ -88091,25 +88120,27 @@ class Hash:
             return
 
     class Lane224(LaneBase):
-        digest_size = 0x1c
-        block_size = 0x40
+        digest_bits = 224
+        block_size = 64
 
     class Lane256(LaneBase):
-        digest_size = 0x20
-        block_size = 0x40
+        digest_bits = 256
+        block_size = 64
 
     class Lane384(LaneBase):
-        digest_size = 0x30
-        block_size = 0x80
+        digest_bits = 384
+        block_size = 128
 
     class Lane512(LaneBase):
-        digest_size = 0x40
-        block_size = 0x80
+        digest_bits = 512
+        block_size = 128
 
     class FastHashBase:
         block_size = 8
 
         def __init__(self, data=b"", seed=0):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.buf = bytearray()
             self.msg_len = 0
             self.seed = seed
@@ -88201,6 +88232,8 @@ class Hash:
         digest_size = 4
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.buf = bytearray()
             self.msg_len = 0
             self.value = 0
@@ -88317,6 +88350,8 @@ class Hash:
         def __init__(self, n=64, data=b""):
             if not isinstance(n, int) or n <= 0:
                 raise ValueError("n must be a positive int")
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.n = n
             self.block_size = n
             self.bshiftn = n % 32
@@ -88397,6 +88432,8 @@ class Hash:
         )
 
         def __init__(self, data=b"", divisors=None):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.total = 0
             self.i = 0
             if divisors is None:
@@ -88477,6 +88514,8 @@ class Hash:
         )
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             if self.word_bits not in (32, 64):
                 raise ValueError("invalid word_bits")
             if self.ns not in (26, 28):
@@ -88798,6 +88837,8 @@ class Hash:
             return
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.ensure_tables()
             self.S = [0] * 36
             self.bit_count = 0
@@ -89874,6 +89915,8 @@ class Hash:
             return
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.h = list(self.iv)
             self.buf = bytearray()
             self.msg_len = 0
@@ -90185,7 +90228,7 @@ class Hash:
         )
 
     class LuffaBase:
-        block_size = 0x20  # 256 bits
+        block_size = 32
         # Appendix A: Starting Variables
         V = (
             (0x6d25_1e69, 0x44b0_51e0, 0x4eaa_6fb4, 0xdbf7_8465, 0x6e29_2011, 0x9015_2df4, 0xee05_8139, 0xdef6_10bb),
@@ -90499,8 +90542,9 @@ class Hash:
             return
 
         def __init__(self, data=b""):
-            if self.w is None or self.digest_size is None:
-                raise ValueError("LuffaBase must be subclassed with w and digest_size")
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.H = [list(self.V[i]) for i in range(self.w)]
             self.buf = bytearray()
             self.msg_len = 0
@@ -90698,20 +90742,20 @@ class Hash:
             return a
 
     class Luffa224(LuffaBase):
-        digest_size = 0x1c
-        w = 0x03
+        digest_bits = 224
+        w = 3
 
     class Luffa256(LuffaBase):
-        digest_size = 0x20
-        w = 0x03
+        digest_bits = 256
+        w = 3
 
     class Luffa384(LuffaBase):
-        digest_size = 0x30
-        w = 0x04
+        digest_bits = 384
+        w = 4
 
     class Luffa512(LuffaBase):
-        digest_size = 0x40
-        w = 0x05
+        digest_bits = 512
+        w = 5
 
     class ESCHBase:
         rcon = (
@@ -90723,6 +90767,8 @@ class Hash:
         unpack4 = struct.Struct("<4I")
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.state = [0] * (2 * self.branches)
             self.buf = bytearray()
             self.msg_len = 0
@@ -91298,6 +91344,8 @@ class Hash:
             return
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.state = list(self.iv_words)
             self.buf = bytearray()
             self.msg_len = 0
@@ -91648,6 +91696,8 @@ class Hash:
         )
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             if self.word_bits not in (32, 64):
                 raise ValueError("invalid word_bits")
             if len(self.iv) != 16:
@@ -91925,12 +91975,12 @@ class Hash:
         )
 
     class RadioGatunBase:
-        digest_size = 0x20
-        blank_rounds = 0x10
+        digest_size = 32
+        blank_rounds = 16
 
         def __init__(self, data=b""):
-            if self.word_bits is None or self.rotate is None:
-                raise ValueError("word_bits and rotate must be set in subclasses")
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.word_bytes = self.word_bits // 8
             if self.block_size is None:
                 self.block_size = self.word_bytes * 3
@@ -92062,20 +92112,14 @@ class Hash:
             return
 
     class RadioGatun32(RadioGatunBase):
-        block_size = 0x0c
-        word_bits = 0x20
-        rotate = (
-            0x00, 0x01, 0x03, 0x06, 0x0a, 0x0f, 0x15, 0x1c, 0x04, 0x0d,
-            0x17, 0x02, 0x0e, 0x1b, 0x09, 0x18, 0x08, 0x19, 0x0b,
-        )
+        block_size = 12
+        word_bits = 32
+        rotate = (0x00, 0x01, 0x03, 0x06, 0x0a, 0x0f, 0x15, 0x1c, 0x04, 0x0d, 0x17, 0x02, 0x0e, 0x1b, 0x09, 0x18, 0x08, 0x19, 0x0b)
 
     class RadioGatun64(RadioGatunBase):
-        block_size = 0x18
-        word_bits = 0x40
-        rotate = (
-            0x00, 0x01, 0x03, 0x06, 0x0a, 0x0f, 0x15, 0x1c, 0x24, 0x2d,
-            0x37, 0x02, 0x0e, 0x1b, 0x29, 0x38, 0x08, 0x19, 0x2b,
-        )
+        block_size = 24
+        word_bits = 64
+        rotate = (0x00, 0x01, 0x03, 0x06, 0x0a, 0x0f, 0x15, 0x1c, 0x24, 0x2d, 0x37, 0x02, 0x0e, 0x1b, 0x29, 0x38, 0x08, 0x19, 0x2b)
 
     class ED2KBase:
         block_size = 64
@@ -92083,6 +92127,8 @@ class Hash:
         chunk_size = 9_728_000
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.chunk_hasher = Hash.MD4()
             self.chunk_len = 0
             self.list_hasher = Hash.MD4()
@@ -92590,6 +92636,8 @@ class Hash:
             return
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.h = bytearray([0x52] * 8)
             self.hh = bytearray([0x25] * 8)
             self.buf = bytearray()
@@ -92922,6 +92970,8 @@ class Hash:
                 return
 
         def __init__(self, data=b"", digest_size=64, personal=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.strength = 256
             self.rounds = 14
             self.output_size = digest_size
@@ -93067,6 +93117,8 @@ class Hash:
         digest_size = 32
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.state = [0] * 17
             self.buffer = [[0] * 8 for _ in range(32)]
             self.buffer_ptr = 0
@@ -93596,6 +93648,8 @@ class Hash:
             return
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.buf = bytearray()
             self.msg_len = 0
             self.finalized = False
@@ -93784,7 +93838,7 @@ class Hash:
 
     class VSH1024:
         block_size = 0x83
-        digest_size = 0x80
+        digest_size = 128
         n = int(
             "1350664108659952233496032162788059699388814756056670275244851438515"
             "265106048595338339402871505719094417982072821644715513736804197039641917430464965"
@@ -93803,9 +93857,11 @@ class Hash:
             0x295, 0x2a1, 0x2a5, 0x2ab, 0x2b3, 0x2bd, 0x2c5, 0x2cf, 0x2d7, 0x2dd, 0x2e3,
         )
         k = 0x83
-        block_size = 0x83
+        block_size = 131
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.x = 0x1
             self.bit_buf = []
             self.msg_len_bits = 0
@@ -94035,6 +94091,8 @@ class Hash:
             return
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.state = bytearray(48)
             self.buf = bytearray()
             self.msg_len = 0
@@ -94224,6 +94282,8 @@ class Hash:
         )
 
         def __init__(self, data=b"", seed=0):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.seed = int(seed)
             self.buf = bytearray()
             self.msg_len = 0
@@ -94453,6 +94513,8 @@ class Hash:
         val10 = 0xaaaa_aaaa_aaaa_aaaa
 
         def __init__(self, data=b"", seed=0):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             if not isinstance(seed, int):
                 raise TypeError("seed must be int")
             self.seed = seed
@@ -95032,6 +95094,8 @@ class Hash:
             return
 
         def __init__(self, data=b"", block_size=8, digest_bits=None, customization=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             if not isinstance(block_size, int):
                 raise TypeError("block_size must be int")
             if block_size <= 0:
@@ -95439,6 +95503,8 @@ class Hash:
         )
 
         def __init__(self, data=b"", salt=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             if not isinstance(salt, (bytes, bytearray, memoryview)):
                 raise TypeError("salt must be bytes-like")
             self.salt = bytes(salt)
@@ -95682,6 +95748,8 @@ class Hash:
             return
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.ensure_tables()
             self.h = list(self.iv_words)
             self.buf = bytearray()
@@ -96069,6 +96137,8 @@ class Hash:
             return
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.ensure_tables()
             self.h = [self.init_fill] * 64
             self.blk_num = [0x00] * 8
@@ -96640,6 +96710,8 @@ class Hash:
         first_block_size = 13
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.word_bytes = self.word_bits // 8
             self.mask = (1 << self.word_bits) - 1
             self.word = list(self.iv_words)
@@ -96898,6 +96970,8 @@ class Hash:
         initsum = 0x6996_c53a
 
         def __init__(self, data=b"", digest_bits=None):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             if digest_bits is None:
                 if not hasattr(self, "default_digest_bits"):
                     raise ValueError("digest_bits is required")
@@ -97138,6 +97212,9 @@ class Hash:
             return
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.data = bytearray()
             self.ensure_mul_tables()
             if data:
@@ -97392,8 +97469,8 @@ class Hash:
             def set_length_and_digest(block, databitlen):
                 for i in range(1, 9):
                     block[self.block_size - 11 + i] = (databitlen >> (64 - 8 * i)) & 0xff
-                block[self.block_size - 2] = (self.hashbitlen >> 8) & 0xff
-                block[self.block_size - 1] = self.hashbitlen & 0xff
+                block[self.block_size - 2] = (self.digest_bits >> 8) & 0xff
+                block[self.block_size - 1] = self.digest_bits & 0xff
                 return
 
             if len(data) > ((1 << 64) - 1) // 8:
@@ -97407,7 +97484,7 @@ class Hash:
                 block = bytes(data[start:start + self.block_size])
                 if len(block) != self.block_size:
                     raise ValueError("internal block underflow")
-                if self.hashbitlen <= 256:
+                if self.digest_bits <= 256:
                     self.compress32(a, block, done_length)
                 else:
                     self.compress64(a, block, done_length)
@@ -97424,19 +97501,19 @@ class Hash:
                 if rem_len < self.block_size - 10:
                     set_length_and_digest(rs, databitlen)
                     last_block_permutation(a)
-                    if self.hashbitlen <= 256:
+                    if self.digest_bits <= 256:
                         self.compress32(a, bytes(rs), done_length)
                     else:
                         self.compress64(a, bytes(rs), done_length)
                 else:
-                    if self.hashbitlen <= 256:
+                    if self.digest_bits <= 256:
                         self.compress32(a, bytes(rs), done_length)
                     else:
                         self.compress64(a, bytes(rs), done_length)
                     rs = bytearray(self.block_size)
                     last_block_permutation(a)
                     set_length_and_digest(rs, databitlen)
-                    if self.hashbitlen <= 256:
+                    if self.digest_bits <= 256:
                         self.compress32(a, bytes(rs), done_length + 1)
                     else:
                         self.compress64(a, bytes(rs), done_length + 1)
@@ -97444,17 +97521,17 @@ class Hash:
                 rs[0] = 0x80
                 set_length_and_digest(rs, databitlen)
                 last_block_permutation(a)
-                if self.hashbitlen <= 256:
+                if self.digest_bits <= 256:
                     self.compress32(a, bytes(rs), done_length)
                 else:
                     self.compress64(a, bytes(rs), done_length)
             out = bytearray(self.digest_size)
-            if self.hashbitlen <= 256:
-                for j in range(self.hashbitlen // 32):
+            if self.digest_bits <= 256:
+                for j in range(self.digest_bits // 32):
                     for i in range(4):
                         out[4 * j + 3 - i] = a[i][j]
             else:
-                for j in range(self.hashbitlen // 64):
+                for j in range(self.digest_bits // 64):
                     for i in range(8):
                         out[8 * j + 7 - i] = a[i][j]
             return bytes(out)
@@ -97464,23 +97541,19 @@ class Hash:
             return out
 
     class Cheetah224(CheetahBase):
-        digest_size = 28
-        hashbitlen = 224
+        digest_bits = 224
         n_rows = 4
 
     class Cheetah256(CheetahBase):
-        digest_size = 32
-        hashbitlen = 256
+        digest_bits = 256
         n_rows = 4
 
     class Cheetah384(CheetahBase):
-        digest_size = 48
-        hashbitlen = 384
+        digest_bits = 384
         n_rows = 8
 
     class Cheetah512(CheetahBase):
-        digest_size = 64
-        hashbitlen = 512
+        digest_bits = 512
         n_rows = 8
 
     class CHIBase:
@@ -97512,6 +97585,8 @@ class Hash:
         hash_bit_len = None
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.buf = bytearray()
             self.msg_len = 0
             self.finalized = False
@@ -97919,7 +97994,6 @@ class Hash:
                 int.from_bytes(bytes(self.sbox_table[round_index * 64:(round_index + 1) * 64]), "big")
                 for round_index in range(4)
             )
-
             mul_tables = []
             for coeff in self.transform_table:
                 row = bytearray(256)
@@ -97940,8 +98014,10 @@ class Hash:
             Hash.DCHBase.round_tables = tuple(tuple(row) for row in round_tables)
             return
 
-        def __init__(self, data=b"", data_bitlen=None):
-            self.hashbitlen = self.digest_size * 8
+        def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.num_unprocessed = 0
             self.unprocessed = bytearray(self.block_size)
             self.curr = bytearray(64)
@@ -97958,10 +98034,7 @@ class Hash:
             self.move = 0x60
             self.ensure_tables()
             if data:
-                if data_bitlen is None:
-                    self.update(data)
-                else:
-                    self.update_bits(data, data_bitlen)
+                self.update(data)
             return
 
         def copy(self):
@@ -97981,16 +98054,10 @@ class Hash:
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            self.update_bits(data, len(data) * 8)
-            return self
 
-        def update_bits(self, data, databitlen):
-            if not isinstance(data, (bytes, bytearray, memoryview)):
-                raise TypeError("data must be bytes-like")
+            databitlen = len(data) * 8
             if databitlen < 0:
                 raise ValueError("databitlen must be >= 0")
-            if databitlen > len(data) * 8:
-                raise ValueError("databitlen exceeds input size")
             if databitlen == 0:
                 return self
             if isinstance(data, bytes):
@@ -98101,19 +98168,21 @@ class Hash:
             return
 
     class DCH224(DCHBase):
-        digest_size = 28
+        digest_bits = 224
 
     class DCH256(DCHBase):
-        digest_size = 32
+        digest_bits = 256
 
     class DCH384(DCHBase):
-        digest_size = 48
+        digest_bits = 384
 
     class DCH512(DCHBase):
-        digest_size = 64
+        digest_bits = 512
 
     class DynamicSHABase:
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.state = list(self.iv)
             self.buf = bytearray()
             self.msg_len = 0
@@ -98262,6 +98331,8 @@ class Hash:
 
     class DynamicSHA2Base:
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.state = list(self.iv)
             self.buf = bytearray()
             self.msg_len = 0
@@ -99098,6 +99169,8 @@ class Hash:
             return
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.buf = bytearray()
             self.msg_len = 0
             self.checksum = 0
@@ -99399,6 +99472,8 @@ class Hash:
 
     class EDONRBase:
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.double_pipe = list(self.init_pipe)
             self.buf = bytearray()
             self.msg_bits = 0
@@ -99635,11 +99710,13 @@ class Hash:
         security_parameter = 4
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.word_bytes = self.word_bits // 8
-            self.word_mask = (1 << self.word_bits) - 1
             self.state_words = (
                 (
-                    self.hashbitlen * 2
+                    self.digest_bits * 2
                     + self.word_bits * self.parallelism
                     - 1
                 )
@@ -99686,7 +99763,7 @@ class Hash:
         def absorb_word(self, word):
 
             def ror(x, n):
-                return ((x >> n) | (x << (self.word_bits - n))) & self.word_mask
+                return ((x >> n) | (x << (self.word_bits - n))) & 0xffff_ffff_ffff_ffff
 
             for _ in range(2 * self.security_parameter):
                 r = self.r
@@ -99695,13 +99772,13 @@ class Hash:
                 a = (r // p * p + (r + 1) % p) % h
                 b = (r + 2 * p) % h
                 f = ror(
-                    ((self.x[a] * 2) ^ self.x[b] ^ self.d[r % p] ^ r) & self.word_mask,
+                    ((self.x[a] * 2) ^ self.x[b] ^ self.d[r % p] ^ r) & 0xffff_ffff_ffff_ffff,
                     self.word_bits // 4,
                 )
-                f = (f * 9) & self.word_mask
+                f = (f * 9) & 0xffff_ffff_ffff_ffff
                 self.x[(r + p) % h] ^= f
                 self.d[r % p] ^= f ^ self.x[(h * p // 2 + p % 2 + r) % h]
-                self.r = (r + 1) & self.word_mask
+                self.r = (r + 1) & 0xffff_ffff_ffff_ffff
             self.d[self.parallelism - 1] ^= word
             return
 
@@ -99715,7 +99792,7 @@ class Hash:
             for i in range(0, len(padded), self.word_bytes):
                 word = int.from_bytes(padded[i:i + self.word_bytes], "big")
                 self.absorb_word(word)
-            self.absorb_word(self.hashbitlen)
+            self.absorb_word(self.digest_bits)
             for _ in range(self.state_words):
                 self.absorb_word(0)
             self.buf.clear()
@@ -99724,8 +99801,8 @@ class Hash:
 
         def squeeze(self):
             out = bytearray()
-            full_words = self.hashbitlen // self.word_bits
-            remain_bits = self.hashbitlen % self.word_bits
+            full_words = self.digest_bits // self.word_bits
+            remain_bits = self.digest_bits % self.word_bits
             for _ in range(full_words):
                 self.absorb_word(0)
                 out.extend(self.d[self.parallelism - 1].to_bytes(self.word_bytes, "big"))
@@ -99739,20 +99816,16 @@ class Hash:
             return bytes(out)
 
     class EnRUPT224(EnRUPTBase):
-        digest_size = 28
-        hashbitlen = 224
+        digest_bits = 224
 
     class EnRUPT256(EnRUPTBase):
-        digest_size = 32
-        hashbitlen = 256
+        digest_bits = 256
 
     class EnRUPT384(EnRUPTBase):
-        digest_size = 48
-        hashbitlen = 384
+        digest_bits = 384
 
     class EnRUPT512(EnRUPTBase):
-        digest_size = 64
-        hashbitlen = 512
+        digest_bits = 512
 
     class ESSENCEBase:
         md_block_size = 0x10_0000
@@ -100091,16 +100164,19 @@ class Hash:
             return
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             if self.block_size == 32:
                 self.word_bits = 32
+                self.word_mask = 0xffff_ffff
+                self.chunk_size = 32
+                self.running_hash = list(self.expansion_of_pi_32)
             else:
                 self.word_bits = 64
-            self.word_mask = (1 << self.word_bits) - 1
-            self.chunk_size = self.block_size
-            if self.word_bits == 64:
+                self.word_mask = 0xffff_ffff_ffff_ffff
+                self.chunk_size = 64
                 self.running_hash = list(self.expansion_of_pi_64)
-            else:
-                self.running_hash = list(self.expansion_of_pi_32)
             self.mdbiv_init = self.init_mdbiv()
             self.chain_vars = [0] * 8
             self.buf = bytearray()
@@ -100147,7 +100223,7 @@ class Hash:
                 return [
                     0,
                     self.md_block_size,
-                    (self.hashbitlen & 0xffff)
+                    (self.digest_bits & 0xffff)
                     | (self.compress_steps << 16)
                     | (self.hash_tree_level << 24)
                     | (self.organizational_small_constant << 32),
@@ -100163,7 +100239,7 @@ class Hash:
                     0,
                     self.md_block_size & 0xffff_ffff,
                     (self.md_block_size >> 32) & 0xffff_ffff,
-                    (self.hashbitlen & 0xffff)
+                    (self.digest_bits & 0xffff)
                     | (self.compress_steps << 16)
                     | (self.hash_tree_level << 24),
                     self.organizational_small_constant,
@@ -100452,7 +100528,7 @@ class Hash:
             return
 
         def output_bytes(self):
-            num_bytes = (self.hashbitlen + 7) >> 3
+            num_bytes = (self.digest_bits + 7) >> 3
             out = bytearray()
             if self.word_bits == 64:
                 for value in self.running_hash:
@@ -100461,32 +100537,30 @@ class Hash:
                 for value in self.running_hash:
                     out.extend(value.to_bytes(4, "little"))
             out = out[:num_bytes]
-            if (self.hashbitlen & 7) != 0:
-                out[-1] &= 0xff << (8 - (self.hashbitlen & 7))
+            if (self.digest_bits & 7) != 0:
+                out[-1] &= 0xff << (8 - (self.digest_bits & 7))
             return bytes(out)
 
     class ESSENCE224(ESSENCEBase):
         block_size = 32
-        digest_size = 28
-        hashbitlen = 224
+        digest_bits = 224
 
     class ESSENCE256(ESSENCEBase):
         block_size = 32
-        digest_size = 32
-        hashbitlen = 256
+        digest_bits = 256
 
     class ESSENCE384(ESSENCEBase):
         block_size = 64
-        digest_size = 48
-        hashbitlen = 384
+        digest_bits = 384
 
     class ESSENCE512(ESSENCEBase):
         block_size = 64
-        digest_size = 64
-        hashbitlen = 512
+        digest_bits = 512
 
     class Khichidi1Base:
         def __init__(self, data=b"", data_bit_length=None):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.block_size = self.digest_size
             self.total_bits = 0
             self.num_words = self.digest_size // 4
@@ -100776,6 +100850,8 @@ class Hash:
         )
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.buf = bytearray()
             self.msg_len = 0
             self.hash_words = self.initial_hash_words()
@@ -101239,6 +101315,9 @@ class Hash:
             return
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.cr = [bytearray(8) for _ in range(self.mrows)]
             self.bf = [bytearray(16) for _ in range(self.mrows)]
             self.buf = bytearray()
@@ -101281,7 +101360,7 @@ class Hash:
             rem = self.final_bytes()
             self.compress(rem)
             length_block = self.total_bits.to_bytes(8, "big")
-            if self.hashbitlen <= 256:
+            if self.digest_bits <= 256:
                 self.compress(length_block[:4])
                 self.compress(length_block[4:])
             else:
@@ -101290,12 +101369,12 @@ class Hash:
             for _ in range(16):
                 self.compress(zero)
             out = bytearray()
-            if self.hashbitlen <= 256:
-                for _ in range(self.hashbitlen // 32):
+            if self.digest_bits <= 256:
+                for _ in range(self.digest_bits // 32):
                     self.compress(zero)
                     out.extend((self.cr[3][3], self.cr[2][3], self.cr[1][3], self.cr[0][3]))
             else:
-                for _ in range(self.hashbitlen // 64):
+                for _ in range(self.digest_bits // 64):
                     self.compress(zero)
                     out.extend((
                         self.cr[7][3], self.cr[6][3], self.cr[5][3], self.cr[4][3],
@@ -101455,26 +101534,22 @@ class Hash:
 
     class LUX224(LUXBase):
         block_size = 4
-        digest_size = 28
-        hashbitlen = 224
+        digest_bits = 224
         mrows = 4
 
     class LUX256(LUXBase):
         block_size = 4
-        digest_size = 32
-        hashbitlen = 256
+        digest_bits = 256
         mrows = 4
 
     class LUX384(LUXBase):
         block_size = 8
-        digest_size = 48
-        hashbitlen = 384
+        digest_bits = 384
         mrows = 8
 
     class LUX512(LUXBase):
         block_size = 8
-        digest_size = 64
-        hashbitlen = 512
+        digest_bits = 512
         mrows = 8
 
     class MCSSHA3Base:
@@ -101498,19 +101573,17 @@ class Hash:
             0xc5, 0xa7, 0xf0, 0x6d, 0x1c, 0x64, 0x0e, 0x04, 0x40, 0x1e, 0x8d, 0xe5, 0x3f, 0xb2, 0x65, 0x5f,
         )
 
-        def __init__(self, data=b"", bit_length=None):
-            if self.hashbitlen not in (224, 256, 384, 512):
-                raise ValueError("invalid hashbitlen")
-            n = (self.hashbitlen >> 3) - 1
+        def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
+            n = (self.digest_bits >> 3) - 1
             self.points = [0, 1, n - 3, n]
             self.partial_bits = 0
             self.partial_byte = 0
             self.state = bytearray(range(n + 1))
             if data:
-                if bit_length is None:
-                    self.update(data)
-                else:
-                    self.update_bits(data, bit_length)
+                self.update(data)
             return
 
         def copy(self):
@@ -101536,7 +101609,7 @@ class Hash:
             x1, x2, x3, x4 = self.points
             bits = self.partial_bits
             last = self.partial_byte
-            n = (self.hashbitlen >> 3) - 8
+            n = (self.digest_bits >> 3) - 8
             state_len = n + 8
             full_bytes = (bit_length + bits) >> 3
             state = self.state
@@ -101589,9 +101662,9 @@ class Hash:
             x1, x2, x3, x4 = self.points
             bits = self.partial_bits
             last = self.partial_byte
-            n = (self.hashbitlen >> 3) - 8
+            n = (self.digest_bits >> 3) - 8
             state_len = n + 8
-            final_len = self.hashbitlen >> 1
+            final_len = self.digest_bits >> 1
             state = self.state
             sbox = self.sbox
             repeated = bytes(state[:state_len]) * 4
@@ -101630,20 +101703,16 @@ class Hash:
             return result
 
     class MCSSHA3_224(MCSSHA3Base):
-        digest_size = 28
-        hashbitlen = 224
+        digest_bits = 224
 
     class MCSSHA3_256(MCSSHA3Base):
-        digest_size = 32
-        hashbitlen = 256
+        digest_bits = 256
 
     class MCSSHA3_384(MCSSHA3Base):
-        digest_size = 48
-        hashbitlen = 384
+        digest_bits = 384
 
     class MCSSHA3_512(MCSSHA3Base):
-        digest_size = 64
-        hashbitlen = 512
+        digest_bits = 512
 
     class MeshHashBase:
         word_size = 8
@@ -101653,7 +101722,10 @@ class Hash:
         number_of_extra_pipes = 1
 
         def __init__(self, data=b""):
-            self.number_of_pipes = self.compute_number_of_pipes(self.hashbitlen)
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
+            self.number_of_pipes = self.compute_number_of_pipes(self.digest_bits)
             self.block_size = self.number_of_pipes * self.word_size
             self.pipe = [0] * (self.number_of_pipes + 1)
             self.bit_counter = [0] * self.counter_length
@@ -101679,8 +101751,8 @@ class Hash:
             other.squeezing = self.squeezing
             return other
 
-        def compute_number_of_pipes(self, hashbitlen):
-            number_of_pipes = (hashbitlen + 63) // 64
+        def compute_number_of_pipes(self, digest_bits):
+            number_of_pipes = (digest_bits + 63) // 64
             number_of_pipes += self.number_of_extra_pipes
             if number_of_pipes < self.min_number_of_pipes:
                 number_of_pipes = self.min_number_of_pipes
@@ -101812,7 +101884,7 @@ class Hash:
                     pipe[pipe_index] = sbox(pipe[pipe_index] ^ counter_word ^ (pipe_index * xor_step))
 
             for pipe_index in range(self.number_of_pipes):
-                pipe[pipe_index] = sbox(pipe[pipe_index] ^ self.hashbitlen ^ (pipe_index * xor_step))
+                pipe[pipe_index] = sbox(pipe[pipe_index] ^ self.digest_bits ^ (pipe_index * xor_step))
 
             self.squeezing = True
             return
@@ -101839,20 +101911,16 @@ class Hash:
             return self.digest().hex()
 
     class MeshHash224(MeshHashBase):
-        digest_size = 28
-        hashbitlen = 224
+        digest_bits = 224
 
     class MeshHash256(MeshHashBase):
-        digest_size = 32
-        hashbitlen = 256
+        digest_bits = 256
 
     class MeshHash384(MeshHashBase):
-        digest_size = 48
-        hashbitlen = 384
+        digest_bits = 384
 
     class MeshHash512(MeshHashBase):
-        digest_size = 64
-        hashbitlen = 512
+        digest_bits = 512
 
     class NaSHABase:
         sbox = (
@@ -101875,6 +101943,8 @@ class Hash:
         )
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.h = list(self.h_init)
             self.hash_words = list(self.hash_init)
             self.buf = bytearray()
@@ -102225,6 +102295,9 @@ class Hash:
         )
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.buf = bytearray()
             self.msg_len = 0
             self.piped_bits = 0
@@ -102233,9 +102306,9 @@ class Hash:
             self.queued_data = bytearray(64)
             self.prev_block = [[[0, 0, 0, 0] for _ in range(5)] for _ in range(3)]
             self.level_one_to_four_const = [[[0, 0, 0, 0] for _ in range(5)] for _ in range(4)]
-            if self.hashbitlen == 224:
+            if self.digest_bits == 224:
                 base = self.constants_224
-            elif self.hashbitlen == 256:
+            elif self.digest_bits == 256:
                 base = self.constants_256
             else:
                 raise ValueError("invalid hash bit length")
@@ -102517,12 +102590,10 @@ class Hash:
             return
 
     class SANDstorm224(SANDstorm256Base):
-        digest_size = 28
-        hashbitlen = 224
+        digest_bits = 224
 
     class SANDstorm256(SANDstorm256Base):
-        digest_size = 32
-        hashbitlen = 256
+        digest_bits = 256
 
     class SANDstorm512Base(SANDstorm256Base):
         block_size = 128
@@ -102576,6 +102647,9 @@ class Hash:
         )
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.buf = bytearray()
             self.msg_len = 0
             self.msglen_bits = 0
@@ -102589,9 +102663,9 @@ class Hash:
             self.lvl2cnt = 0
             self.lvl3flag = 0
             self.prev = [0] * 100
-            if self.hashbitlen == 384:
+            if self.digest_bits == 384:
                 self.lvlc = self.sandwlvlc384
-            elif self.hashbitlen == 512:
+            elif self.digest_bits == 512:
                 self.lvlc = self.sandwlvlc512
             else:
                 raise ValueError("invalid hash bit length")
@@ -102905,12 +102979,10 @@ class Hash:
             return (a * b) & 0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff
 
     class SANDstorm384(SANDstorm512Base):
-        digest_size = 48
-        hashbitlen = 384
+        digest_bits = 384
 
     class SANDstorm512(SANDstorm512Base):
-        digest_size = 64
-        hashbitlen = 512
+        digest_bits = 512
 
     class SarmalBase:
         block_size = 128
@@ -102988,8 +103060,9 @@ class Hash:
             return
 
         def __init__(self, data=b""):
-            if self.hashbitlen is None or self.digest_size is None:
-                raise TypeError("SarmalBase must be subclassed")
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.h = list(self.INIT_H)
             self.c = list(self.INIT_C)
             self.s = list(self.INIT_S)
@@ -103033,7 +103106,7 @@ class Hash:
 
         def output_digest(self):
             state_bytes = b"".join(word.to_bytes(8, "big") for word in self.h)
-            if self.hashbitlen == 224:
+            if self.digest_bits == 224:
                 return state_bytes[-28:]
             return state_bytes[:self.digest_size]
 
@@ -103052,19 +103125,19 @@ class Hash:
                 self.compress(bytes(block))
                 block = bytearray(119)
 
-            if self.hashbitlen == 224:
+            if self.digest_bits == 224:
                 block.append(0xe0)
-            elif self.hashbitlen == 256:
+            elif self.digest_bits == 256:
                 block[118] |= 0x01
                 block.append(0x00)
-            elif self.hashbitlen == 384:
+            elif self.digest_bits == 384:
                 block[118] |= 0x01
                 block.append(0x80)
-            elif self.hashbitlen == 512:
+            elif self.digest_bits == 512:
                 block[118] |= 0x02
                 block.append(0x00)
             else:
-                raise ValueError("unsupported hashbitlen")
+                raise ValueError("unsupported digest_bits")
 
             block.extend(messagebitlen.to_bytes(8, "big"))
             self.compress(bytes(block))
@@ -103120,7 +103193,7 @@ class Hash:
             left = apply_sigmas(left, message_words, self.LEFT_SIGMAS_COMMON)
             right = apply_sigmas(right, message_words, self.RIGHT_SIGMAS_COMMON)
 
-            if self.hashbitlen in (384, 512):
+            if self.digest_bits in (384, 512):
                 left = apply_sigmas(left, message_words, (self.SIGMA3_5,))
                 right = apply_sigmas(right, message_words, (self.SIGMA7_5,))
 
@@ -103134,8 +103207,7 @@ class Hash:
             return
 
     class Sarmal224(SarmalBase):
-        hashbitlen = 224
-        digest_size = 28
+        digest_bits = 224
         INIT_H = (
             0xbb67_ae85_84ca_a73b, 0x2574_2d70_78b8_3b89, 0x25d8_34cc_53da_4798, 0xc720_a648_6e45_a6e2,
             0x490b_cfd9_5ef1_5dbd, 0xa993_0aae_1222_8f87, 0xcc4c_f24d_a3a1_ec68, 0xd0cd_33a0_1ad9_a383,
@@ -103145,8 +103217,7 @@ class Hash:
         )
 
     class Sarmal256(SarmalBase):
-        hashbitlen = 256
-        digest_size = 32
+        digest_bits = 256
         INIT_H = (
             0x9e37_79b9_7f4a_7c15, 0xf39c_c060_5ced_c834, 0x1082_276b_f3a2_7251, 0xf86c_6a11_d0c1_8e95,
             0x2767_f0b1_53d2_7b7f, 0x0347_045b_5bf1_827f, 0x0188_6f09_2840_3002, 0xc1d6_4ba4_0f33_5e36,
@@ -103156,8 +103227,7 @@ class Hash:
         )
 
     class Sarmal384(SarmalBase):
-        hashbitlen = 384
-        digest_size = 48
+        digest_bits = 384
         INIT_H = (
             0x3c6e_f372_fe94_f82b, 0xe739_80c0_b9db_9068, 0x2104_4ed7_e744_e4a3, 0xf0d8_d423_a183_1d2a,
             0x4ecf_e162_a7a4_f6fe, 0x068e_08b6_b7e3_04fe, 0x0310_de12_5080_6005, 0x83ac_9748_1e66_bc6d,
@@ -103167,8 +103237,7 @@ class Hash:
         )
 
     class Sarmal512(SarmalBase):
-        hashbitlen = 512
-        digest_size = 64
+        digest_bits = 512
         INIT_H = (
             0x243f_6a88_85a3_08d3, 0x1319_8a2e_0370_7344, 0xa409_3822_299f_31d0, 0x082e_fa98_ec4e_6c89,
             0x4528_21e6_38d0_1377, 0xbe54_66cf_34e9_0c6c, 0xc0ac_29b7_c97c_50dd, 0x3f84_d5b5_b547_0917,
@@ -105793,8 +105862,10 @@ class Hash:
         )
 
         def __init__(self, data=b""):
-            self.hashbitlen = self.digest_size * 8
-            self.centre_rounds = self.centre_rounds_for_digest_bits[self.hashbitlen]
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
+            self.centre_rounds = self.centre_rounds_for_digest_bits[self.digest_bits]
             self.secret_key = [0, 0, 0, 0]
             self.serial_number = 0
             self.block_count_high_word = 0
@@ -106590,7 +106661,7 @@ class Hash:
 
             def finalise_chaining_state():
                 state_array = list(self.state_array)
-                if self.hashbitlen <= 512:
+                if self.digest_bits <= 512:
                     state_array[0] ^= state_array[1] ^ state_array[16] ^ state_array[17]
                     state_array[2] ^= state_array[3] ^ state_array[18] ^ state_array[19]
                     state_array[4] ^= state_array[5] ^ state_array[20] ^ state_array[21]
@@ -106626,28 +106697,28 @@ class Hash:
             return
 
     class Sgail224(SgailBase):
-        digest_size = 28
+        digest_bits = 224
 
     class Sgail256(SgailBase):
-        digest_size = 32
+        digest_bits = 256
 
     class Sgail384(SgailBase):
-        digest_size = 48
+        digest_bits = 384
 
     class Sgail512(SgailBase):
-        digest_size = 64
+        digest_bits = 512
 
     class Sgail768(SgailBase):
-        digest_size = 96
+        digest_bits = 768
 
     class Sgail1024(SgailBase):
-        digest_size = 128
+        digest_bits = 1024
 
     class Sgail1536(SgailBase):
-        digest_size = 192
+        digest_bits = 1536
 
     class Sgail2048(SgailBase):
-        digest_size = 256
+        digest_bits = 2048
 
     class SHAMATABase:
         block_size = 16
@@ -106685,14 +106756,17 @@ class Hash:
             return
 
         def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.B = [[0, 0, 0, 0] for _ in range(4)]
             self.K = [[0, 0, 0, 0] for _ in range(12)]
-            self.r = 1 if self.hashbitlen <= 256 else 2
+            self.r = 1 if self.digest_bits <= 256 else 2
             self.buf = bytearray()
             self.msg_len = 0
             self.block_count = 0
             self.ensure_tables()
-            iv = b"\x00" * 14 + self.hashbitlen.to_bytes(2, "big")
+            iv = b"\x00" * 14 + self.digest_bits.to_bytes(2, "big")
             for i in range(8):
                 self.process_block(iv, i + 1)
             if data:
@@ -106869,20 +106943,16 @@ class Hash:
             return
 
     class SHAMATA224(SHAMATABase):
-        digest_size = 28
-        hashbitlen = 224
+        digest_bits = 224
 
     class SHAMATA256(SHAMATABase):
-        digest_size = 32
-        hashbitlen = 256
+        digest_bits = 256
 
     class SHAMATA384(SHAMATABase):
-        digest_size = 48
-        hashbitlen = 384
+        digest_bits = 384
 
     class SHAMATA512(SHAMATABase):
-        digest_size = 64
-        hashbitlen = 512
+        digest_bits = 512
 
     class SpectralHashBase:
         block_size = 64
@@ -106929,9 +106999,9 @@ class Hash:
             return
 
         def __init__(self, data=b""):
-            if self.hashbitlen is None:
-                raise ValueError("hashbitlen must be set in subclass")
-            self.digest_size = self.hashbitlen // 8
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.s_prism = [0] * 128
             self.p_prism = list(range(128))
             self.h_prism = [0] * 128
@@ -107251,7 +107321,7 @@ class Hash:
         def make_digest(self):
 
             def mark_bits():
-                sg = self.SG_TABLES[self.hashbitlen]
+                sg = self.SG_TABLES[self.digest_bits]
                 marks = [0] * 128
                 p = self.p_prism
                 for idx in range(128):
@@ -110266,9 +110336,9 @@ class HashCommand(GenericCommand):
         yield ("MCSSHA3-256", Hash.MCSSHA3_256())
         yield ("MCSSHA3-384", Hash.MCSSHA3_384())
         yield ("MCSSHA3-512", Hash.MCSSHA3_512())
-        yield ("MD6-128", Hash.MD6(d=128))
-        yield ("MD6-256", Hash.MD6(d=256))
-        yield ("MD6-512", Hash.MD6(d=512))
+        yield ("MD6-128", Hash.MD6_128())
+        yield ("MD6-256", Hash.MD6_256())
+        yield ("MD6-512", Hash.MD6_512())
         yield ("MeshHash-224", Hash.MeshHash224())
         yield ("MeshHash-256", Hash.MeshHash256())
         yield ("MeshHash-384", Hash.MeshHash384())
