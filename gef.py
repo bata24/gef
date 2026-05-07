@@ -66883,55 +66883,15 @@ class KernelModuleLoadCommand(GenericCommand):
 
     def get_offset_sect_attrs(self, module_addr):
         """
-        struct attribute {
-            const char *name;
-            umode_t mode;
-        #ifdef CONFIG_DEBUG_LOCK_ALLOC
-            bool ignore_lockdep:1;
-            struct lock_class_key *key;
-            struct lock_class_key skey;
+        struct module {
+            ...
+        #ifdef CONFIG_KALLSYMS
+            struct mod_kallsyms __rcu *kallsyms;
+            struct mod_kallsyms core_kallsyms;
+            struct module_sect_attrs *sect_attrs;
+            struct module_notes_attrs *notes_attrs;
         #endif
-        };
-
-        struct module_sect_attrs {
-            struct attribute_group {
-                const char *name;
-                umode_t (*is_visible)(struct kobject *, struct attribute *, int);
-                umode_t (*is_bin_visible)(struct kobject *, struct bin_attribute *, int); // v4.4~
-                size_t (*bin_size)(struct kobject *, const struct bin_attribute *, int); // v6.13~
-                struct attribute **attrs;
-                struct bin_attribute **bin_attrs; // v3.11~v6.12
-                union {
-                    struct bin_attribute **bin_attrs;
-                    const struct bin_attribute *const *bin_attrs_new;
-                }; // v6.13~
-            } grp;
-            unsigned int nsections;
-            struct module_sect_attr {
-                struct bin_attribute { // v5.7~
-                    struct attribute attr;
-                    size_t size;
-                    void *private;
-                    struct address_space *(*f_mapping)(void); // v5.15~
-                    struct address_space *mapping; // v5.12~5.14
-                    ssize_t (*read)(struct file *, struct kobject *, struct bin_attribute *, char *, loff_t, size_t);
-                    ssize_t (*read_new)(struct file *, struct kobject *, const struct bin_attribute *, char *, loff_t, size_t); // v6.13~
-                    ssize_t (*write)(struct file *, struct kobject *, struct bin_attribute *, char *, loff_t, size_t);
-                    ssize_t (*write_new)(struct file *, struct kobject *, const struct bin_attribute *, char *, loff_t, size_t); // v6.13~
-                    loff_t (*llseek)(struct file *, struct kobject *, struct bin_attribute *, loff_t, int); // v6.7~
-                    int (*mmap)(struct file *, struct kobject *, struct bin_attribute *attr, struct vm_area_struct *vma);
-                } battr;
-                struct module_attribute { // ~v5.6
-                    struct attribute attr;
-                    ssize_t (*show)(struct module_attribute *, struct module_kobject *, char *);
-                    ssize_t (*store)(struct module_attribute *, struct module_kobject *, const char *, size_t count);
-                    void (*setup)(struct module *, const char *);
-                    int (*test)(struct module *);
-                    void (*free)(struct module *);
-                } mattr;
-                char *name; // ~v5.6
-                unsigned long address;
-            } attrs[];
+            ...
         };
         """
         # fast path
@@ -66970,9 +66930,7 @@ class KernelModuleLoadCommand(GenericCommand):
         if not is_valid_addr(sect_attrs):
             return False
         # Check that the pointer is properly aligned
-        if current_arch.ptrsize == 8 and sect_attrs & 7:
-            return False
-        if current_arch.ptrsize == 4 and sect_attrs & 3:
+        if sect_attrs & (current_arch.ptrsize - 1):
             return False
         for offset in range(40):
             attribute_arr_ptr = read_int_from_memory(sect_attrs + offset * current_arch.ptrsize)
@@ -66982,6 +66940,63 @@ class KernelModuleLoadCommand(GenericCommand):
 
     @Cache.cache_until_next
     def is_valid_attribute_arr(self, attribute_arr_ptr):
+        """
+        struct module_sect_attrs {
+            struct attribute_group {
+                const char *name;
+                umode_t (*is_visible)(struct kobject *, struct attribute *, int);
+                umode_t (*is_bin_visible)(struct kobject *, struct bin_attribute *, int); // v4.4~
+                size_t (*bin_size)(struct kobject *, const struct bin_attribute *, int); // v6.13~
+                struct attribute **attrs;                          <--- here
+                struct bin_attribute **bin_attrs; // v3.11~v6.12   <--- here
+                union {
+                    struct bin_attribute **bin_attrs;              <--- here
+                    const struct bin_attribute *const *bin_attrs_new;
+                }; // v6.13~
+            } grp;
+            unsigned int nsections; // ~v6.13
+            struct module_sect_attr {
+                struct bin_attribute battr; // v5.7~
+                struct module_attribute mattr; // ~v5.6
+                char *name; // ~v5.6
+                unsigned long address;
+            } attrs[]; // ~v6.13
+            struct bin_attribute attrs[]; // v6.14~
+        };
+
+        struct attribute {
+            const char *name;
+            umode_t mode;
+        #ifdef CONFIG_DEBUG_LOCK_ALLOC
+            bool ignore_lockdep:1;
+            struct lock_class_key *key;
+            struct lock_class_key skey;
+        #endif
+        };
+
+        struct bin_attribute { // v5.7~
+            struct attribute attr;
+            size_t size;
+            void *private;
+            struct address_space *(*f_mapping)(void); // v5.15~
+            struct address_space *mapping; // v5.12~5.14
+            ssize_t (*read)(struct file *, struct kobject *, struct bin_attribute *, char *, loff_t, size_t);
+            ssize_t (*read_new)(struct file *, struct kobject *, const struct bin_attribute *, char *, loff_t, size_t); // v6.13~6.17
+            ssize_t (*write)(struct file *, struct kobject *, struct bin_attribute *, char *, loff_t, size_t);
+            ssize_t (*write_new)(struct file *, struct kobject *, const struct bin_attribute *, char *, loff_t, size_t); // v6.13~6.17
+            loff_t (*llseek)(struct file *, struct kobject *, struct bin_attribute *, loff_t, int); // v6.7~
+            int (*mmap)(struct file *, struct kobject *, struct bin_attribute *attr, struct vm_area_struct *vma);
+        };
+
+        struct module_attribute { // ~v5.6
+            struct attribute attr;
+            ssize_t (*show)(struct module_attribute *, struct module_kobject *, char *);
+            ssize_t (*store)(struct module_attribute *, struct module_kobject *, const char *, size_t count);
+            void (*setup)(struct module *, const char *);
+            int (*test)(struct module *);
+            void (*free)(struct module *);
+        };
+        """
         found = 0
         while True:
             if found > 0x200:
@@ -67014,19 +67029,30 @@ class KernelModuleLoadCommand(GenericCommand):
         return True
 
     def get_offset_bin_attrs(self):
-        # TODO:
-        #   For the fast path we can add a check on the kernel version to find
-        #   the offset of "&((struct attribute_group*)0).{attrs,bin_attrs}"
+        kversion = Kernel.kernel_version()
 
-        # Fast path
+        # fast path
         try:
-            offset_bin_attrs = to_unsigned_long(gdb.parse_and_eval("&((struct attribute_group*)0).bin_attrs"))
-            attrs_arr_ptr = read_int_from_memory(self.cached_sect_attrs + offset_bin_attrs)
-            return offset_bin_attrs, attrs_arr_ptr
+            if kversion < "3.11":
+                offset_attrs = to_unsigned_long(gdb.parse_and_eval("&((struct attribute_group*)0).attrs"))
+                attrs_arr_ptr = read_int_from_memory(self.cached_sect_attrs + offset_attrs)
+                return offset_attrs, attrs_arr_ptr
+            else:
+                # It is possible to use attrs or bin_attrs, so check both.
+                offset_attrs = to_unsigned_long(gdb.parse_and_eval("&((struct attribute_group*)0).attrs"))
+                attrs_arr_ptr = read_int_from_memory(self.cached_sect_attrs + offset_attrs)
+                if is_valid_addr(attrs_arr_ptr):
+                    return offset_attrs, attrs_arr_ptr
+
+                # Avoid relying on GDB's handling of anonymous union members in 6.14+.
+                # bin_attrs/bin_attrs_new is immediately after attrs.
+                offset_bin_attrs = offset_attrs + current_arch.ptrsize
+                attrs_arr_ptr = read_int_from_memory(self.cached_sect_attrs + offset_bin_attrs)
+                return offset_bin_attrs, attrs_arr_ptr
         except gdb.error:
             pass
 
-        # Slow path
+        # slow path
         for i in range(0x10):
             offset_bin_attrs = current_arch.ptrsize * i
             attrs_arr_ptr = read_int_from_memory(self.cached_sect_attrs + offset_bin_attrs)
@@ -67037,22 +67063,25 @@ class KernelModuleLoadCommand(GenericCommand):
         return None, None
 
     """
-    This functions aims at locating bin_attribute->private which stores the    |
-    address of where the section resides in memory. To do so is performs a
-    statistical analysis on the various structure bin_attribute to identify
-    pointers that are different for each one. If there is a specific offset
-    where a pointer is present and different for every struct bin_attribute it
-    is very probable that the offset is that of the private field.
+    This function aims at locating module_sect_attr->address or bin_attribute->private,
+    which stores the address of where the section resides in memory. To do so, it
+    performs a statistical analysis on the various section attribute structures to
+    identify pointer-sized values that are different for each one. If there is a
+    specific offset where a pointer is present and different for every structure,
+    it is very probable that the offset is that of the section address field.
     """
     def get_offset_address(self):
-        # Fast path
+        kversion = Kernel.kernel_version()
+
+        # fast path
         try:
-            offset_addr = to_unsigned_long(gdb.parse_and_eval("&((struct bin_attribute*)0).private"))
-            return offset_addr
+            if kversion < "6.14":
+                return to_unsigned_long(gdb.parse_and_eval("&((struct module_sect_attr*)0).address"))
+            return to_unsigned_long(gdb.parse_and_eval("&((struct bin_attribute*)0).private"))
         except gdb.error:
             pass
 
-        # Slow path
+        # slow path
         attrs_arr = []
         curr_attr = self.cached_attribute_arr_ptr
         while True:
@@ -67070,12 +67099,14 @@ class KernelModuleLoadCommand(GenericCommand):
         attrs_arr.sort()
         bin_attr_size_map = {}
         for i in range(len(attrs_arr) - 1):
-            tmp_size = attrs_arr[i+1] - attrs_arr[i]
+            tmp_size = attrs_arr[i + 1] - attrs_arr[i]
             if tmp_size not in bin_attr_size_map:
                 bin_attr_size_map[tmp_size] = 1
             else:
                 bin_attr_size_map[tmp_size] += 1
 
+        # ~6.13: sizeof(bin_attribute)
+        # 6.14~: sizeof(module_sect_attr)
         bin_attr_size = max(bin_attr_size_map, key=bin_attr_size_map.get)
 
         # Statistical analysis to find pointers that differ across every structure
@@ -67102,22 +67133,23 @@ class KernelModuleLoadCommand(GenericCommand):
                         continue
                     if len(maybe_string) > 4:
                         del offset_map[offset][word]
-                except gdb.error:
+                except gdb.MemoryError:
                     pass
 
         # Find the best candidate to avoid name pointers that are not deleted (don't know why that happens)
         max_len = 0
-        offset_addr = None
+        offset_address = None
         for offset, words in offset_map.items():
             for _val, count in words.items():
+                # If multiple identical pointers are found, they are not `address` and `private`.
                 if count > 1:
                     break
             else:
                 if len(words) > max_len:
                     max_len = len(words)
-                    offset_addr = offset
+                    offset_address = offset
         if max_len != 0:
-            return offset_addr
+            return offset_address
 
         return None
 
@@ -67178,15 +67210,21 @@ class KernelModuleLoadCommand(GenericCommand):
 
         self.offset_attrs, self.cached_attribute_arr_ptr = self.get_offset_bin_attrs()
         if self.offset_attrs is None:
-            self.quiet_err("Could not find module->sect_attrs->grp.bin_attrs")
+            self.quiet_err("Could not find module->sect_attrs.grp.{attrs,bin_attrs}")
             return False
-        self.quiet_info("offsetof(module_sect_attrs, grp.bin_attrs): {:#x}".format(self.offset_attrs))
+        self.quiet_info("offsetof(module_sect_attrs, grp.{attrs,bin_attrs}): {:#x}".format(self.offset_attrs))
 
         self.offset_address = self.get_offset_address()
         if self.offset_address is None:
-            self.quiet_err("Could not find offset of bin_attribute.private (section address)")
+            if kversion < "6.14":
+                self.quiet_err("Could not find offset of module_sect_attr.address (section address)")
+            else:
+                self.quiet_err("Could not find offset of bin_attribute.private (section address)")
             return False
-        self.quiet_info("offsetof(bin_attribute, private): {:#x}".format(self.offset_address))
+        if kversion < "6.14":
+            self.quiet_info("offsetof(module_sect_attr, address): {:#x}".format(self.offset_address))
+        else:
+            self.quiet_info("offsetof(bin_attribute, private): {:#x}".format(self.offset_address))
 
         self.initialized = True
         return True
