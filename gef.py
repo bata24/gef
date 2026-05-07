@@ -66123,7 +66123,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             pass
 
         # slow_path
-        for i in range(0x100):
+        for i in range(0x10):
             offset_name = i * current_arch.ptrsize
             valid = True
             for module in module_addrs:
@@ -66881,7 +66881,7 @@ class KernelModuleLoadCommand(GenericCommand):
 
         return None
 
-    def get_offset_sect_attrs(self, module_addrs):
+    def get_offset_sect_attrs(self, module_addr):
         """
         struct attribute {
             const char *name;
@@ -66936,39 +66936,195 @@ class KernelModuleLoadCommand(GenericCommand):
         """
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).sect_attrs"))
+            offset_sect_attrs = to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).sect_attrs"))
+            # Taking for granted the information we get is accurate we can reliably retrieve module->sect_attrs
+            sect_attrs = read_int_from_memory(module_addr + offset_sect_attrs)
+            return offset_sect_attrs, sect_attrs
         except gdb.error:
             pass
 
         # slow_path
-        for i in range(300):
+        for i in range(0x100):
             offset_sect_attrs = current_arch.ptrsize * i
-            valid = True
-            for module in module_addrs:
-                # access check
-                if not is_valid_addr(module + offset_sect_attrs):
-                    valid = False
+            # access check
+            if not is_valid_addr(module_addr + offset_sect_attrs):
+                continue
+            sect_attrs = read_int_from_memory(module_addr + offset_sect_attrs)
+            if not self.is_valid_sect_attrs(sect_attrs):
+                continue
+            return offset_sect_attrs, sect_attrs
+
+        return None, None
+
+    """
+    This function looks for the module->sect_attrs.grp.{attrs,bin_attrs} field,
+    which is an array of pointers to the various structures `bin_attribute`
+    that represent a the various sections. The array is guaranteed to terminate
+    with a NULL pointer therefore we can safely use a while True to iterate the
+    array in `is_valid_attribute_arr`.
+    On recent systems module->sect_attrs.grp.attrs is 0 and the array of
+    pointers is found in module->sect_attrs.grp.bin_attrs instead, but the
+    logic is the same.
+    """
+    def is_valid_sect_attrs(self, sect_attrs):
+        if not is_valid_addr(sect_attrs):
+            return False
+        # Check that the pointer is properly aligned
+        if current_arch.ptrsize == 8 and sect_attrs & 7:
+            return False
+        if current_arch.ptrsize == 4 and sect_attrs & 3:
+            return False
+        for offset in range(40):
+            attribute_arr_ptr = read_int_from_memory(sect_attrs + offset * current_arch.ptrsize)
+            if self.is_valid_attribute_arr(attribute_arr_ptr):
+                return True
+        return False
+
+    @Cache.cache_until_next
+    def is_valid_attribute_arr(self, attribute_arr_ptr):
+        found = 0
+        while True:
+            if found > 0x200:
+                # If we got to this point we can definitely return
+                break
+            if not is_valid_addr(attribute_arr_ptr):
+                return False
+            attribute = read_int_from_memory(attribute_arr_ptr)
+            if attribute == 0:
+                break
+            if not is_valid_addr(attribute):
+                return False
+            nameptr = read_int_from_memory(attribute)
+            if not self.is_valid_sectname(nameptr):
+                return False
+            found += 1
+            attribute_arr_ptr += current_arch.ptrsize
+        return found > 0
+
+    def is_valid_sectname(self, nameptr):
+        if not is_valid_addr(nameptr):
+            return False
+        sectname = read_cstring_from_memory(nameptr)
+        if sectname is None or not sectname.startswith((".", "__", "_")):
+            if sectname and len(sectname) >= 4:
+                self.quiet_info(
+                    "possible section name (rejected for not starting with \".\", \"__\" or \"_\"): {:s}".format(sectname),
+                )
+            return False
+        return True
+
+    def get_offset_bin_attrs(self):
+        # TODO:
+        #   For the fast path we can add a check on the kernel version to find
+        #   the offset of "&((struct attribute_group*)0).{attrs,bin_attrs}"
+
+        # Fast path
+        try:
+            offset_bin_attrs = to_unsigned_long(gdb.parse_and_eval("&((struct attribute_group*)0).bin_attrs"))
+            attrs_arr_ptr = read_int_from_memory(self.cached_sect_attrs + offset_bin_attrs)
+            return offset_bin_attrs, attrs_arr_ptr
+        except gdb.error:
+            pass
+
+        # Slow path
+        for i in range(0x10):
+            offset_bin_attrs = current_arch.ptrsize * i
+            attrs_arr_ptr = read_int_from_memory(self.cached_sect_attrs + offset_bin_attrs)
+            if not self.is_valid_attribute_arr(attrs_arr_ptr):
+                continue
+            return offset_bin_attrs, attrs_arr_ptr
+
+        return None, None
+
+    """
+    This functions aims at locating bin_attribute->private which stores the    |
+    address of where the section resides in memory. To do so is performs a
+    statistical analysis on the various structure bin_attribute to identify
+    pointers that are different for each one. If there is a specific offset
+    where a pointer is present and different for every struct bin_attribute it
+    is very probable that the offset is that of the private field.
+    """
+    def get_offset_address(self):
+        # Fast path
+        try:
+            offset_addr = to_unsigned_long(gdb.parse_and_eval("&((struct bin_attribute*)0).private"))
+            return offset_addr
+        except gdb.error:
+            pass
+
+        # Slow path
+        attrs_arr = []
+        curr_attr = self.cached_attribute_arr_ptr
+        while True:
+            attribute = read_int_from_memory(curr_attr)
+            if attribute == 0:
+                break
+            attrs_arr.append(attribute)
+            curr_attr += current_arch.ptrsize
+
+        if len(attrs_arr) < 2:
+            self.quiet_err("module->sect_attrs.grp.bin_attrs has too few elements")
+            return None
+
+        # Find size of struct bin_attribute by pointer arithmetic from list (assuming they are contiguous and in order)
+        attrs_arr.sort()
+        bin_attr_size_map = {}
+        for i in range(len(attrs_arr) - 1):
+            tmp_size = attrs_arr[i+1] - attrs_arr[i]
+            if tmp_size not in bin_attr_size_map:
+                bin_attr_size_map[tmp_size] = 1
+            else:
+                bin_attr_size_map[tmp_size] += 1
+
+        bin_attr_size = max(bin_attr_size_map, key=bin_attr_size_map.get)
+
+        # Statistical analysis to find pointers that differ across every structure
+        # First we find potential pointers and save their count and offset
+        offset_map = {}
+        for attr in attrs_arr:
+            data = read_memory(attr, bin_attr_size)
+            for offset in range(0, bin_attr_size, current_arch.ptrsize):
+                word = int.from_bytes(data[offset:offset + current_arch.ptrsize], "little")
+                # TODO: Find a way to distinguish attrs.attr.{key,skey} from pointers
+                #   Maybe we could skip the initial fields by using bin_attribute.size?
+                if not AddressUtil.is_msb_on(word):
+                    continue
+                if offset not in offset_map:
+                    offset_map[offset] = {}
+                if word not in offset_map[offset]:
+                    offset_map[offset][word] = 1
+                else:
+                    offset_map[offset][word] += 1
+                # Remove pointers to strings if possible
+                try:
+                    maybe_string = read_cstring_from_memory(word)
+                    if maybe_string is None:
+                        continue
+                    if len(maybe_string) > 4:
+                        del offset_map[offset][word]
+                except gdb.error:
+                    pass
+
+        # Find the best candidate to avoid name pointers that are not deleted (don't know why that happens)
+        max_len = 0
+        offset_addr = None
+        for offset, words in offset_map.items():
+            for _val, count in words.items():
+                if count > 1:
                     break
-                sect_attrs = read_int_from_memory(module + offset_sect_attrs)
-                if not is_valid_addr(sect_attrs):
-                    valid = False
-                    break
-                firstname = read_int_from_memory(sect_attrs + self.offset_firstname)
-                if not is_valid_addr(firstname):
-                    valid = False
-                    break
-                sectname = read_cstring_from_memory(firstname)
-                # well formed kernel module sections *should* only start with these prefixes
-                # might be better to do a length based heuristic?
-                if sectname is None or not sectname.startswith((".", "__")):
-                    if sectname and len(sectname) >= 4:
-                        self.quiet_info(
-                            "possible section name (rejected for not starting with . or __): {:s}".format(sectname),
-                        )
-                    valid = False
-                    break
-            if valid:
-                return offset_sect_attrs
+            else:
+                if len(words) > max_len:
+                    max_len = len(words)
+                    offset_addr = offset
+        if max_len != 0:
+            return offset_addr
+
+        return None
+
+    def get_requested_module(self, module_addrs):
+        for module in module_addrs:
+            if read_cstring_from_memory(module + self.offset_name) == self.args.name:
+                return module
         return None
 
     def initialize(self):
@@ -67006,43 +67162,31 @@ class KernelModuleLoadCommand(GenericCommand):
             return False
         self.quiet_info("offsetof(module, name): {:#x}".format(self.offset_name))
 
-        # module->{nsections,firstname}
-        if kversion < "3.11":
-            self.offset_nsections = current_arch.ptrsize * 3
-            self.offset_firstname = current_arch.ptrsize * 4
-        elif kversion < "4.4":
-            self.offset_nsections = current_arch.ptrsize * 4
-            self.offset_firstname = current_arch.ptrsize * 5
-        elif kversion < "6.13":
-            self.offset_nsections = current_arch.ptrsize * 5
-            self.offset_firstname = current_arch.ptrsize * 6
-        else:
-            self.offset_nsections = current_arch.ptrsize * 6
-            self.offset_firstname = current_arch.ptrsize * 7
-
-        # module->{address,module_sect_attr}
-        if kversion < "5.7":
-            self.offset_address = self.offset_firstname + current_arch.ptrsize * 8
-            self.sizeof_module_sect_attr = current_arch.ptrsize * 9
-        elif kversion < "5.12":
-            self.offset_address = self.offset_firstname + current_arch.ptrsize * 7
-            self.sizeof_module_sect_attr = current_arch.ptrsize * 8
-        elif kversion < "6.7":
-            self.offset_address = self.offset_firstname + current_arch.ptrsize * 8
-            self.sizeof_module_sect_attr = current_arch.ptrsize * 9
-        elif kversion < "6.13":
-            self.offset_address = self.offset_firstname + current_arch.ptrsize * 9
-            self.sizeof_module_sect_attr = current_arch.ptrsize * 10
-        else:
-            self.offset_address = self.offset_firstname + current_arch.ptrsize * 11
-            self.sizeof_module_sect_attr = current_arch.ptrsize * 12
+        # Find requested module
+        self.req_module = self.get_requested_module(self.module_addrs)
+        if self.req_module is None:
+            self.quiet_err("Could not find requested module")
+            return False
+        self.quiet_info(f"module: {hex(self.req_module)}")
 
         # module->sect_attrs
-        self.offset_sect_attrs = self.get_offset_sect_attrs(self.module_addrs)
+        self.offset_sect_attrs, self.cached_sect_attrs = self.get_offset_sect_attrs(self.req_module)
         if self.offset_sect_attrs is None:
             self.quiet_err("Could not find module->sect_attrs")
             return False
         self.quiet_info("offsetof(module, sect_attrs): {:#x}".format(self.offset_sect_attrs))
+
+        self.offset_attrs, self.cached_attribute_arr_ptr = self.get_offset_bin_attrs()
+        if self.offset_attrs is None:
+            self.quiet_err("Could not find module->sect_attrs->grp.bin_attrs")
+            return False
+        self.quiet_info("offsetof(module_sect_attrs, grp.bin_attrs): {:#x}".format(self.offset_attrs))
+
+        self.offset_address = self.get_offset_address()
+        if self.offset_address is None:
+            self.quiet_err("Could not find offset of bin_attribute.private (section address)")
+            return False
+        self.quiet_info("offsetof(bin_attribute, private): {:#x}".format(self.offset_address))
 
         self.initialized = True
         return True
@@ -67055,17 +67199,21 @@ class KernelModuleLoadCommand(GenericCommand):
 
             # get nsections
             sect_attrs = read_int_from_memory(module + self.offset_sect_attrs)
-            nsections = read_int_from_memory(sect_attrs + self.offset_nsections) & 0xffff_ffff
-            self.quiet_info("nsections = {}".format(nsections))
+            attribute_list = read_int_from_memory(sect_attrs + self.offset_attrs)
 
             # get each section name and address
             sections = []
-            for i in range(nsections):
-                name_ptr = read_int_from_memory(sect_attrs + self.offset_firstname + self.sizeof_module_sect_attr * i)
-                name = read_cstring_from_memory(name_ptr)
-                addr = read_int_from_memory(sect_attrs + self.offset_address + self.sizeof_module_sect_attr * i)
+            while True:
+                attribute = read_int_from_memory(attribute_list)
+                if attribute == 0:
+                    break
+                nameptr = read_int_from_memory(attribute)
+                name = read_cstring_from_memory(nameptr)
+                # self.quiet_info("attr={:#x}".format(attribute))
+                addr = read_int_from_memory(attribute + self.offset_address)
                 self.quiet_info("name={:s}, addr={:#x}".format(name, addr))
                 sections.append((name, addr))
+                attribute_list += current_arch.ptrsize
 
                 # unneeded, but for convenience
                 gdb.execute("set ${:s} = {:#x}".format(name.replace(".", "").replace("-", ""), addr))
