@@ -67109,7 +67109,7 @@ class KernelModuleLoadCommand(GenericCommand):
         max_len = 0
         offset_addr = None
         for offset, words in offset_map.items():
-            for val, count in words.items():
+            for _val, count in words.items():
                 if count > 1:
                     break
             else:
