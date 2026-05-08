@@ -67105,8 +67105,9 @@ class KernelModuleLoadCommand(GenericCommand):
             else:
                 bin_attr_size_map[tmp_size] += 1
 
-        # ~6.13: sizeof(bin_attribute)
-        # 6.14~: sizeof(module_sect_attr)
+        # in fact:
+        # ~6.13: sizeof(module_sect_attr)
+        # 6.14~: sizeof(bin_attribute)
         bin_attr_size = max(bin_attr_size_map, key=bin_attr_size_map.get)
 
         # Statistical analysis to find pointers that differ across every structure
@@ -67208,12 +67209,15 @@ class KernelModuleLoadCommand(GenericCommand):
             return False
         self.quiet_info("offsetof(module, sect_attrs): {:#x}".format(self.offset_sect_attrs))
 
+        # sect_attrs.grp.{attrs,bin_attrs}
         self.offset_attrs, self.cached_attribute_arr_ptr = self.get_offset_bin_attrs()
         if self.offset_attrs is None:
             self.quiet_err("Could not find module->sect_attrs.grp.{attrs,bin_attrs}")
             return False
         self.quiet_info("offsetof(module_sect_attrs, grp.{attrs,bin_attrs}): {:#x}".format(self.offset_attrs))
 
+        # ~6.13: module_sect_attr.address
+        # 6.14~: bin_attribute.private
         self.offset_address = self.get_offset_address()
         if self.offset_address is None:
             if kversion < "6.14":
