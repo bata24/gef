@@ -347,7 +347,7 @@ Fetch and place the `glibc` sources locally as shown below.
 
     # common
     cd /usr/lib/debug && apt update && apt source libc6
-    echo "directory /usr/lib/debug/glibc-2.39" >> ~/.gdbinit
+    echo "directory $(ls -d /usr/lib/debug/glibc-2.??)" >> ~/.gdbinit
     # You need to adjust the version for your environment.
     ```
 
@@ -523,12 +523,16 @@ If it still does not work, please report it on the issue page.
 The `ks-apply` command is unnecessary. Run `kload <vmlinux_path>`.
 
 Below is a summary of each.
-|Component|How GDB uses it|How GEF uses it|
-|:---|:---|:---|
-|`vmlinux` debuginfo|- Loaded via `add-symbol-file`<br>- Or `kload` (easy wrapper with `kbase`)<br>- Essential for source-level debugging|- Used by some commands if available<br>- Can be viewed with `dt`|
-|`vmlinux` symbols|- Loaded via `add-symbol-file`<br>- Or `kload` (easy wrapper with `kbase`)<br>- Provides kernel symbol resolution|- Accessible after `ksymaddr-remote`<br>- Addresses will be automatically rebased|
-|Memory-resident `debuginfo`<br>(if `CONFIG_DEBUG_INFO_BTF=y`)|- Not available by default<br>- Accessible via `ktypes-load`|- Used by some commands if available after `ktypes-load`<br>- Can be viewed with `dt`|
-|Memory-resident `kallsyms`<br>(if `CONFIG_KALLSYMS=y`)|- Not available by default<br>- Accessible via `ks-apply`|- Accessible after `ksymaddr-remote`<br>- Used by various GEF commands internally|
+|Component|How GDB uses it|How GEF uses it|Recommended command|
+|:---|:---|:---|:---|
+|`vmlinux` debuginfo|- Loaded via `add-symbol-file`<br>- Or `kload` (easy wrapper with `kbase`)<br>- Essential for source-level debugging|- Used by some commands if available<br>- Can be viewed with `dt`|`kload <vmlinux>`|
+|`vmlinux` symbols|- Loaded via `add-symbol-file`<br>- Or `kload` (easy wrapper with `kbase`)<br>- Provides kernel symbol resolution|- Accessible after `ks`<br>- Addresses will be automatically rebased|`kload <vmlinux>` then `ks`|
+|Memory-resident `debuginfo`<br>(if `CONFIG_DEBUG_INFO_BTF=y`)|- Not available by default<br>- Accessible via `kt-load`|- Used by some commands if available after `kt-load`<br>- Can be viewed with `dt`|`kt-load`|
+|Memory-resident `kallsyms`<br>(if `CONFIG_KALLSYMS=y`)|- Not available by default<br>- Accessible via `ks-apply`|- Accessible after `ks`<br>- Used by various GEF commands internally|`ks-apply`|
+
+- `ks`: the alias for `ksymaddr-remote`
+- `ks-apply`: the alias for `ksymaddr-remote-apply`
+- `kt-load`: the alias for `ktypes-load`
 
 ## The kernel-related commands are unstable; sometimes they work fine, sometimes they don't. / The output of `ksymaddr-remote` seems odd.
 This may be due to the GEF's caching mechanism.

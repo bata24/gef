@@ -157,10 +157,11 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - Supported on x64/x86/ARM64/ARM + `SLUB` + no-symbol + kASLR.
     - Supported regardless of whether `CONFIG_SLAB_FREELIST_HARDENED` is `y` or `n`.
     - Supported regardless of whether `CONFIG_SLAB_VIRTUAL` is `y` or `n` (x64 only).
-    - It supports `sheaf/barn` mechanism for linux 6.18~.
     - It supports dumping partial pages (`-v`) and NUMA node pages (`-vv`).
     - Since `page_to_virt` is difficult to implement, it will heuristically determine the virtual address from the free-list.
     - ![](images/slub-dump.png)
+    - It supports `sheaf/barn` mechanism for linux 6.18~.
+    - ![](images/slub-dump-sheaves.png)
 - `slab-dump`: dumps slab free-list.
     - Supported on x64/x86/ARM64/ARM + `SLAB` + no-symbol + kASLR.
     - ![](images/slab-dump.png)
@@ -186,6 +187,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `slab-virtual`: displays the transformation between slab-meta and its slab-data/`struct page` address (for `CONFIG_SLAB_VIRTUAL=y`).
     - ![](images/slab-virtual.png)
 - `pageinfo`: dumps `struct page->{flags,page_type}`.
+    - ![](images/pageinfo.png)
 - `highmem-dump`: dumps `HighMem` mappings.
     - ![](images/highmem-dump.png)
 - `kchecksec`: checks kernel security.
@@ -461,9 +463,13 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - It supports some new options:
         - `--is-addr`
         - `--is-not-addr`
+        - `--perm`
         - `--is-zero`
         - `--is-not-zero`
+        - `--mask-hits`
+        - `--no-mask-hits`
         - `--tag`
+        - `--frame-split`
         - `--uniq`
         - `--interval`
         - `--depth`
@@ -655,7 +661,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/walk-link-list.png)
 - `hexdump-flexible`: displays the hexdump with user defined format.
     - ![](images/hexdump-flexible.png)
-- `hash`: calculates various hashes, or show known-collisions.
+- `hash`: calculates various (450+) hashes, or show known-collisions.
     - ![](images/hash.png)
 - `crc`: calculates various CRCs.
     - ![](images/crc.png)
@@ -813,6 +819,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `vdump`: visualizes memory data like an image.
     - ![](images/vdump.png)
 - `freq-analysis`: visualizes the frequency of occurrence of each byte.
+    - ![](images/freq-analysis.png)
 - `qemu-system-memory-region-dump`: dumps memory regions for `qemu-system`.
     - ![](images/qemu-system-memory-region-dump.png)
 - `find-syscall`: searches the syscall gadget.
