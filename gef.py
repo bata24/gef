@@ -85280,6 +85280,7 @@ class Hash:
         def __init__(self, data=b""):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.x0, self.x1, self.x2, self.x3, self.x4 = self.init_state
             self.buf = bytearray()
             self.msg_len = 0
@@ -85403,28 +85404,28 @@ class Hash:
             return
 
     class Ascon(AsconBase):
-        digest_size = 32
+        digest_bits = 256
         b_rounds = 12
         init_state = (
             0xee93_98aa_db67_f03d, 0x8bb2_1831_c60f_1002, 0xb48a_92db_98d5_da62, 0x4318_9921_b8f8_e3e8, 0x348f_a5c9_d525_e140,
         )
 
     class AsconA(AsconBase):
-        digest_size = 32
+        digest_bits = 256
         b_rounds = 8
         init_state = (
             0x0147_0194_fc65_28a6, 0x738e_c38a_c0ad_ffa7, 0x2ec8_e329_6c76_384c, 0xd6f6_a54d_7f52_377d, 0xa13c_42a2_23be_8d87,
         )
 
     class AsconX(AsconBase):
-        digest_size = 128
+        digest_bits = 1024
         b_rounds = 12
         init_state = (
             0xb57e_273b_814c_d416, 0x2b51_0425_62ae_2420, 0x66a3_a776_8ddf_2218, 0x5aad_0a7a_8153_650c, 0x4f3e_0e32_5394_93b6,
         )
 
     class AsconXA(AsconBase):
-        digest_size = 128
+        digest_bits = 1024
         b_rounds = 8
         init_state = (
             0x4490_6568_b77b_9832, 0xcd8d_6cae_5345_5532, 0xf7b5_2127_5642_2129, 0x2468_85e1_de0d_225b, 0xa8cb_5ce3_3449_973f,
@@ -91894,6 +91895,7 @@ class Hash:
                 raise ValueError("iv missing/invalid")
             if len(self.final_const) != 16:
                 raise ValueError("final_const missing/invalid")
+            self.digest_size = self.digest_bits // 8
             self.H = list(self.iv)
             self.buf = bytearray()
             self.msg_len = 0  # in bytes
@@ -92102,7 +92104,7 @@ class Hash:
 
     class BMW224(BMWHBase):
         block_size = 64
-        digest_size = 28
+        digest_bits = 224
         word_bits = 32
         out_words = 7
         iv = (
@@ -92116,7 +92118,7 @@ class Hash:
 
     class BMW256(BMWHBase):
         block_size = 64
-        digest_size = 32
+        digest_bits = 256
         word_bits = 32
         out_words = 8
         iv = (
@@ -92130,7 +92132,7 @@ class Hash:
 
     class BMW384(BMWHBase):
         block_size = 128
-        digest_size = 48
+        digest_bits = 384
         word_bits = 64
         out_words = 6
         iv = (
@@ -92148,7 +92150,7 @@ class Hash:
 
     class BMW512(BMWHBase):
         block_size = 128
-        digest_size = 64
+        digest_bits = 512
         word_bits = 64
         out_words = 8
         iv = (
@@ -95697,6 +95699,7 @@ class Hash:
                 raise TypeError("data must be bytes-like")
             if not isinstance(salt, (bytes, bytearray, memoryview)):
                 raise TypeError("salt must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.salt = bytes(salt)
             self.init_state()
             self.absorb_pretrain()
@@ -95854,21 +95857,19 @@ class Hash:
             return out_byte
 
     class Abacus224(AbacusBase):
-        digest_size = 28
+        digest_bits = 224
 
     class Abacus256(AbacusBase):
-        digest_size = 32
+        digest_bits = 256
 
     class Abacus384(AbacusBase):
-        digest_size = 48
+        digest_bits = 384
 
     class Abacus512(AbacusBase):
-        digest_size = 64
+        digest_bits = 512
 
     class ARIRANGBase:
         block_size = 64
-        digest_words = 8
-        digest_size = 32
         iv_words = (
             0x6a09_e667, 0xbb67_ae85, 0x3c6e_f372, 0xa54f_f53a, 0x510e_527f, 0x9b05_688c, 0x1f83_d9ab, 0x5be0_cd19,
         )
@@ -95940,6 +95941,7 @@ class Hash:
         def __init__(self, data=b""):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.ensure_tables()
             self.h = list(self.iv_words)
             self.buf = bytearray()
@@ -96100,19 +96102,18 @@ class Hash:
             return
 
     class ARIRANG224(ARIRANGBase):
+        digest_bits = 224
         digest_words = 7
-        digest_size = 28
         iv_words = (
             0xcbbb_9d5d, 0x629a_292a, 0x9159_015a, 0x152f_ecd8, 0x6733_2667, 0x8eb4_4a87, 0xdb0c_2e0d, 0x47b5_481d,
         )
 
     class ARIRANG256(ARIRANGBase):
-        pass
+        digest_bits = 256
+        digest_words = 8
 
     class ARIRANG64Base(ARIRANGBase):
         block_size = 128
-        digest_words = 8
-        digest_size = 64
         iv_words = (
             0x6a09_e667_f3bc_c908, 0xbb67_ae85_84ca_a73b, 0x3c6e_f372_fe94_f82b, 0xa54f_f53a_5f1d_36f1,
             0x510e_527f_ade6_82d1, 0x9b05_688c_2b3e_6c1f, 0x1f83_d9ab_fb41_bd6b, 0x5be0_cd19_137e_2179,
@@ -96254,15 +96255,16 @@ class Hash:
             return
 
     class ARIRANG384(ARIRANG64Base):
+        digest_bits = 384
         digest_words = 6
-        digest_size = 48
         iv_words = (
             0xcbbb_9d5d_c105_9ed8, 0x629a_292a_367c_d507, 0x9159_015a_3070_dd17, 0x152f_ecd8_f70e_5939,
             0x6733_2667_ffc0_0b31, 0x8eb4_4a87_6858_1511, 0xdb0c_2e0d_64f9_8fa7, 0x47b5_481d_befa_4fa4,
         )
 
     class ARIRANG512(ARIRANG64Base):
-        pass
+        digest_bits = 512
+        digest_words = 8
 
     class AURORABase:
         block_size = 64
@@ -96329,6 +96331,7 @@ class Hash:
         def __init__(self, data=b""):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
             self.ensure_tables()
             self.h = [self.init_fill] * 64
             self.blk_num = [0x00] * 8
@@ -96828,14 +96831,14 @@ class Hash:
             return bytes(self.h[:32])
 
     class AURORA256(AURORABase):
-        digest_size = 32
+        digest_bits = 256
         init_fill = 0x00
         con_iv = (0x6a, 0x09, 0xbb, 0x67)
         con_mask = (0x42, 0x8a, 0x71, 0x37, 0x26, 0x11, 0x3e, 0xe8)
         mode = "256"
 
     class AURORA224(AURORA256):
-        digest_size = 28
+        digest_bits = 224
         init_fill = 0xff
 
         def truncate_digest(self, out):
@@ -96851,14 +96854,14 @@ class Hash:
             return bytes(dst)
 
     class AURORA512(AURORABase):
-        digest_size = 64
+        digest_bits = 512
         init_fill = 0x00
         con_iv = (0x51, 0x0e, 0x9b, 0x05)
         con_mask = (0x39, 0x56, 0x59, 0xf1, 0x9d, 0x8a, 0xab, 0x97)
         mode = "512"
 
     class AURORA384(AURORA512):
-        digest_size = 48
+        digest_bits = 384
         init_fill = 0xff
 
         def truncate_digest(self, out):
@@ -96874,14 +96877,14 @@ class Hash:
             return bytes(dst)
 
     class AURORA256M(AURORABase):
-        digest_size = 32
+        digest_bits = 256
         init_fill = 0x00
         con_iv = (0x3c, 0x6e, 0xa5, 0x4f)
         con_mask = (0xb5, 0xc0, 0xe9, 0xb5, 0x61, 0x35, 0x79, 0xcc)
         mode = "256m"
 
     class AURORA224M(AURORA256M):
-        digest_size = 28
+        digest_bits = 224
         init_fill = 0xff
 
         def truncate_digest(self, out):
