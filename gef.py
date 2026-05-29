@@ -110342,6 +110342,644 @@ class Hash:
     class Waterfall512(Waterfall):
         digest_bits = 512
 
+    class ACEH256:
+        block_size = 8
+        digest_size = 32
+
+        sc0 = (0x50, 0x5c, 0x91, 0x8d, 0x53, 0x60, 0x68, 0xe1, 0xf6, 0x9d, 0x40, 0x4f, 0xbe, 0x5b, 0xe9, 0x7f)
+        sc1 = (0x28, 0xae, 0x48, 0xc6, 0xa9, 0x30, 0x34, 0x70, 0x7b, 0xce, 0x20, 0x27, 0x5f, 0xad, 0x74, 0x3f)
+        sc2 = (0x14, 0x57, 0x24, 0x63, 0x54, 0x18, 0x9a, 0x38, 0xbd, 0x67, 0x10, 0x13, 0x2f, 0xd6, 0xba, 0x1f)
+        rc0 = (0x07, 0x0a, 0x9b, 0xe0, 0xd1, 0x1a, 0x22, 0xf7, 0x62, 0x96, 0x71, 0xaa, 0x2b, 0xe9, 0xcf, 0xb7)
+        rc1 = (0x53, 0x5d, 0x49, 0x7f, 0xbe, 0x1d, 0x28, 0x6c, 0x82, 0x47, 0x6b, 0x88, 0xdc, 0x8b, 0x59, 0xc6)
+        rc2 = (0x43, 0xe4, 0x5e, 0xcc, 0x32, 0x4e, 0x75, 0x25, 0xfd, 0xf9, 0x76, 0xa0, 0xb0, 0x09, 0x1e, 0xad)
+
+        def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.state = self.initial_state()
+            self.buf = bytearray()
+            self.msg_len = 0
+            if data:
+                self.update(data)
+            return
+
+        def initial_state(self):
+            return self.permutation_words(0, 0x8040_4000_0000_0000, 0, 0, 0)
+
+        def copy(self):
+            other = self.__class__()
+            other.state = self.state
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            self.msg_len += len(data)
+            if not data:
+                return self
+
+            if self.buf:
+                data = bytes(self.buf) + data
+                self.buf.clear()
+
+            full_len = len(data) - (len(data) % 8)
+            if full_len == 0:
+                self.buf.extend(data)
+                return self
+
+            a, b, c, d, e = self.state
+            permutation_words = self.permutation_words
+            for pos in range(0, full_len, 8):
+                block = data[pos:pos + 8]
+                a ^= int.from_bytes(block[:4], "big") << 32
+                c ^= int.from_bytes(block[4:], "big") << 32
+                a, b, c, d, e = permutation_words(a, b, c, d, e)
+
+            self.state = (a, b, c, d, e)
+            self.buf.extend(data[full_len:])
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.squeeze()
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            block = bytes(self.buf) + b"\x80" + b"\x00" * (7 - len(self.buf))
+            a, b, c, d, e = self.state
+            a ^= int.from_bytes(block[:4], "big") << 32
+            c ^= int.from_bytes(block[4:], "big") << 32
+            self.state = self.permutation_words(a, b, c, d, e)
+            self.buf.clear()
+            return
+
+        def squeeze(self):
+            a, b, c, d, e = self.state
+            out = bytearray()
+            permutation_words = self.permutation_words
+            for i in range(4):
+                out.extend(((a >> 32) & 0xffff_ffff).to_bytes(4, "big"))
+                out.extend(((c >> 32) & 0xffff_ffff).to_bytes(4, "big"))
+                if i != 3:
+                    a, b, c, d, e = permutation_words(a, b, c, d, e)
+            return bytes(out)
+
+        def simeck64(self, word, rc):
+
+            def rol32(x, n):
+                return ((x << n) & 0xffff_ffff) | (x >> (32 - n))
+
+            x = word >> 32
+            y = word & 0xffff_ffff
+            for i in range(8):
+                bit = (rc >> i) & 1
+                x, y = rol32(x, 1) ^ (rol32(x, 5) & x) ^ y ^ 0xffff_fffe ^ bit, x
+            return (x << 32) | y
+
+        def permutation_words(self, a, b, c, d, e):
+            sc0 = self.sc0
+            sc1 = self.sc1
+            sc2 = self.sc2
+            rc0 = self.rc0
+            rc1 = self.rc1
+            rc2 = self.rc2
+            simeck64 = self.simeck64
+
+            for i in range(16):
+                fa = simeck64(a, rc0[i])
+                fc = simeck64(c, rc1[i])
+                fe = simeck64(e, rc2[i])
+                a, b, c, d, e = (
+                    d ^ fe ^ (0xffff_ffff_ffff_ff00 | sc1[i]),
+                    fc,
+                    fa,
+                    fa ^ fe ^ (0xffff_ffff_ffff_ff00 | sc2[i]),
+                    b ^ fc ^ (0xffff_ffff_ffff_ff00 | sc0[i]),
+                )
+            return a, b, c, d, e
+
+    class AtelopusBase:
+        skk1 = (
+            0xd9, 0x28, 0x6a, 0x0c, 0x02, 0x72, 0x62, 0x13, 0x29, 0x93, 0xdc, 0x61, 0xc2, 0x23, 0xab, 0x69,
+            0x0a, 0xeb, 0x50, 0x38, 0xb2, 0xfd, 0x15, 0x27, 0xbb, 0x1a, 0x0b, 0xcf, 0x1b, 0xe4, 0x65, 0xdb,
+            0xb0, 0x24, 0xbc, 0x7d, 0x79, 0x2d, 0x31, 0xed, 0xca, 0x6d, 0x85, 0x05, 0x46, 0x6c, 0x41, 0xc3,
+            0x8a, 0x48, 0x3a, 0xa8, 0x3c, 0x25, 0xa1, 0x97, 0x6e, 0x60, 0xc6, 0x42, 0xae, 0x7e, 0x76, 0x0d,
+            0xad, 0xc0, 0x89, 0x8b, 0x09, 0x5f, 0x04, 0xd4, 0x4d, 0x64, 0x92, 0xbf, 0x32, 0x19, 0x3b, 0x75,
+            0xe9, 0x00, 0x22, 0x63, 0xd0, 0xf3, 0x47, 0x5a, 0x35, 0x08, 0xa0, 0xde, 0x8f, 0xb1, 0x77, 0xe6,
+            0x7b, 0x2e, 0x91, 0x88, 0x18, 0xa6, 0x2f, 0x87, 0xf4, 0x8c, 0xc4, 0x95, 0x86, 0x3f, 0x3d, 0x57,
+            0x1d, 0xd6, 0xc1, 0x06, 0x82, 0xb8, 0x2a, 0xbe, 0xf2, 0x81, 0x34, 0xce, 0x21, 0xfa, 0xf7, 0x9b,
+            0x56, 0x54, 0x17, 0xa5, 0x58, 0xb4, 0xef, 0x51, 0x10, 0xa2, 0xdf, 0x12, 0x53, 0xec, 0x99, 0xba,
+            0xea, 0xc8, 0x20, 0x5b, 0xd8, 0x73, 0x84, 0x2b, 0xda, 0xd7, 0x6b, 0x03, 0xf8, 0xfb, 0x2c, 0x33,
+            0xd3, 0xe2, 0x0f, 0xc9, 0x3e, 0x14, 0xf0, 0x16, 0xa3, 0xe7, 0x39, 0xf6, 0xff, 0x01, 0xb7, 0xe3,
+            0xf5, 0x4c, 0x1e, 0x9a, 0xbd, 0x90, 0x71, 0xa4, 0xd1, 0x83, 0x68, 0x7a, 0x9c, 0x8e, 0x98, 0xe0,
+            0x36, 0x43, 0x7c, 0x4e, 0x7f, 0x5e, 0xaf, 0x44, 0xa7, 0x67, 0x30, 0xdd, 0xcd, 0x94, 0x96, 0x4f,
+            0x07, 0xb5, 0xe1, 0xcc, 0xf1, 0xb3, 0x4b, 0x9e, 0xe5, 0x9d, 0xd2, 0xe8, 0xa9, 0x8d, 0x66, 0x80,
+            0xf9, 0xee, 0xd5, 0x78, 0x6f, 0x40, 0xaa, 0x5d, 0x55, 0x52, 0x1c, 0xfc, 0x74, 0x70, 0xcb, 0x11,
+            0xc5, 0xfe, 0x0e, 0xb9, 0x49, 0x5c, 0x1f, 0x26, 0xc7, 0x9f, 0x37, 0x59, 0x45, 0x4a, 0xb6, 0xac,
+        )
+
+        iter_count = 2
+
+        def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            if self.digest_bits & 7:
+                raise ValueError("digest_bits must be a multiple of 8")
+            self.digest_size = self.digest_bits >> 3
+            self.size4 = self.digest_size
+            self.bs4 = self.block_size
+            self.bs41 = self.bs4 - 1
+            self.bs = self.bs4 >> 2
+            self.bs1 = self.bs - 1
+            self.bs2 = self.bs >> 1
+            self.size = self.size4 >> 2
+            self.size1 = self.size - 1
+            self.buf = bytearray()
+            self.reset()
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.buf = bytearray(self.buf)
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.buf.extend(bytes(data))
+            return self
+
+        def digest(self):
+            other = self.copy()
+            return other.hash(bytes(other.buf))
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            return self.digest()
+
+        def reset(self):
+            self.kk1 = list(Hash.AtelopusBase.skk1)
+            self.val1 = self.bytes_to_word([self.kk1[0], self.kk1[64], self.kk1[128], self.kk1[192]])
+            self.val2 = self.bytes_to_word([self.kk1[32], self.kk1[96], self.kk1[160], self.kk1[224]])
+            return
+
+        def bytes_to_word(self, values):
+            return ((values[0] << 24) | (values[1] << 16) | (values[2] << 8) | values[3]) & 0xffff_ffff
+
+        def word_to_bytes(self, word):
+            word &= 0xffff_ffff
+            return bytes(((word >> 24) & 0xff, (word >> 16) & 0xff, (word >> 8) & 0xff, word & 0xff))
+
+        def bytes_to_words(self, block, count):
+            return [self.bytes_to_word(block[i * 4:i * 4 + 4]) for i in range(count)]
+
+        def words_to_bytes(self, words, count):
+            out = bytearray()
+            for i in range(count):
+                out.extend(self.word_to_bytes(words[i]))
+            return bytes(out)
+
+        def f1(self, value):
+            value &= 0xffff_ffff
+            return ((value & 0x55aa_55aa) | (~value & 0xaa55_aa55)) & 0xffff_ffff
+
+        def f2(self, value):
+            value &= 0xffff_ffff
+            return ((value & 0xaa55_aa55) | (~value & 0x55aa_55aa)) & 0xffff_ffff
+
+        def g1(self, value):
+            value &= 0xffff_ffff
+            return ((value << 5) | ((value & 0xf800_0000) >> 27)) & 0xffff_ffff
+
+        def g2(self, value):
+            value &= 0xffff_ffff
+            return ((value >> 5) | ((value & 0x0000_001f) << 27)) & 0xffff_ffff
+
+        def h1(self, word):
+            word &= 0xffff_ffff
+            return ((word ^ (word >> 24)) + ((word >> 16) ^ (word >> 8))) & 0xff
+
+        def h2(self, word):
+            word &= 0xffff_ffff
+            return ((word + (word >> 16)) ^ ((word >> 8) + (word >> 24))) & 0xff
+
+        def kk(self, value):
+            value &= 0xffff_ffff
+            kk1 = self.kk1
+            return (kk1[value & 0xff] | (kk1[(value >> 8) & 0xff] << 8) | (kk1[(value >> 16) & 0xff] << 16) |
+                    (kk1[(value >> 24) & 0xff] << 24)) & 0xffff_ffff
+
+        def swap(self, value1, value2):
+            value1 &= 0xffff_ffff
+            value2 &= 0xffff_ffff
+            kk1 = self.kk1
+            for shift in (24, 16, 8, 0):
+                index1 = (value1 >> shift) & 0xff
+                index2 = (value2 >> shift) & 0xff
+                kk1[index1], kk1[index2] = kk1[index2], kk1[index1]
+            return
+
+        def xoripe(self, words1, words2, len1, len2=None):
+            if len2 is None:
+                for i in range(len1):
+                    words1[i] ^= self.kk(words2[i])
+                return
+            if len1 > len2:
+                len21 = len2 - 1
+                for i in range(len1):
+                    words1[i] ^= self.kk(words2[i & len21])
+                return
+            len11 = len1 - 1
+            for i in range(len2):
+                words1[i & len11] ^= self.kk(words2[i])
+            return
+
+        def init_array(self, words):
+            pos1 = 0
+            pos2 = self.bs >> 2
+            pos3 = self.bs >> 1
+            pos4 = pos2 + pos3
+            val1 = (self.val1 ^ self.bs) & 0xffff_ffff
+            val2 = (self.val2 + self.f1(self.bs & 0xff)) & 0xffff_ffff
+            val3 = self.bytes_to_word([self.kk1[16], self.kk1[80], self.kk1[144], self.kk1[208]])
+            val3 = (val3 ^ self.f2(self.bs & 0xff)) & 0xffff_ffff
+            val4 = self.bytes_to_word([self.kk1[48], self.kk1[112], self.kk1[176], self.kk1[240]])
+            val4 = (val4 + (self.bs & 0xff)) & 0xffff_ffff
+            max_count = (self.bs << 1) if (self.bs << 1) > 256 else 256
+
+            for i in range(0, max_count, 4):
+                words[pos1] = (words[pos1] ^ val1) & 0xffff_ffff
+                words[pos1] = (words[pos1] + self.kk(val2)) & 0xffff_ffff
+                words[pos2] = (words[pos2] ^ val2) & 0xffff_ffff
+                words[pos2] = (words[pos2] + self.kk(val3)) & 0xffff_ffff
+                words[pos3] = (words[pos3] ^ val3) & 0xffff_ffff
+                words[pos3] = (words[pos3] + self.kk(val4)) & 0xffff_ffff
+                words[pos4] = (words[pos4] ^ val4) & 0xffff_ffff
+                words[pos4] = (words[pos4] + self.kk(val1)) & 0xffff_ffff
+
+                val1 = (val1 ^ words[pos1]) & 0xffff_ffff
+                val1 = (val1 + self.f1(words[pos2])) & 0xffff_ffff
+                val1 = (val1 ^ self.kk(words[pos3])) & 0xffff_ffff
+                val2 = (val2 ^ words[pos2]) & 0xffff_ffff
+                val2 = (val2 + self.f2(words[pos3])) & 0xffff_ffff
+                val2 = (val2 ^ self.kk(words[pos4])) & 0xffff_ffff
+                val3 = (val3 ^ words[pos3]) & 0xffff_ffff
+                val3 = (val3 + self.f1(words[pos4])) & 0xffff_ffff
+                val3 = (val3 ^ self.kk(words[pos1])) & 0xffff_ffff
+                val4 = (val4 ^ words[pos4]) & 0xffff_ffff
+                val4 = (val4 + self.f2(words[pos1])) & 0xffff_ffff
+                val4 = (val4 ^ self.kk(words[pos2])) & 0xffff_ffff
+
+                temp1 = self.bytes_to_word([i & 0xff, (i + 1) & 0xff, (i + 2) & 0xff, (i + 3) & 0xff])
+                self.swap(temp1, self.g1((val1 + val2) & 0xffff_ffff) ^ self.g1((val3 + val4) & 0xffff_ffff))
+                pos1 = (pos1 + 1) & self.bs1
+                pos2 = (pos2 + 1) & self.bs1
+                pos3 = (pos3 + 1) & self.bs1
+                pos4 = (pos4 + 1) & self.bs1
+
+            self.val1 = ((val1 ^ val2) + val3) & 0xffff_ffff
+            self.val2 = ((val2 + val3) ^ val4) & 0xffff_ffff
+            return
+
+        def hash_primitive(self, data_words, result_words):
+            words = data_words[:self.bs]
+            val1 = self.val1
+            val2 = self.val2
+
+            for k in range(self.iter_count):
+                if k == 1:
+                    words[0] ^= self.kk(self.size)
+                ix = self.h1(self.f1(val1) ^ self.kk(val2)) & self.bs1
+                ix1 = (ix + self.bs2) & self.bs1
+                incr1 = self.h1(self.kk(val1) ^ val2) & self.bs1
+                incr2 = self.h2((val1 + self.kk(val2)) & 0xffff_ffff) & self.bs1
+                pos1 = self.h1(val1) & self.bs1
+                pos2 = self.h2(self.f2(val2)) & self.bs1
+                if incr1 == incr2 and pos1 == pos2:
+                    pos2 = (pos2 + 1) & self.bs1
+
+                for i in range(self.bs):
+                    if pos1 == pos2:
+                        temp1 = words[pos1]
+                        val1 = (val1 ^ self.kk(temp1)) & 0xffff_ffff
+                        val1 = (val1 + words[ix]) & 0xffff_ffff
+                        val2 = (val2 ^ self.f1(val1)) & 0xffff_ffff
+                        val2 = (val2 + temp1) & 0xffff_ffff
+                        val2 = (val2 ^ words[ix1]) & 0xffff_ffff
+                        temp1 = (temp1 ^ self.kk(val1)) & 0xffff_ffff
+                        words[pos1] = (temp1 + self.kk(val2)) & 0xffff_ffff
+                        self.swap(temp1, val2)
+                    else:
+                        temp1 = words[pos1]
+                        temp2 = words[pos2]
+                        val1 = (val1 ^ self.kk(temp1)) & 0xffff_ffff
+                        val1 = (val1 + words[ix]) & 0xffff_ffff
+                        val2 = (val2 ^ self.f1(val1)) & 0xffff_ffff
+                        val2 = (val2 + temp2) & 0xffff_ffff
+                        val2 = (val2 ^ words[ix1]) & 0xffff_ffff
+                        words[pos2] = (temp2 + self.kk(val2)) & 0xffff_ffff
+                        words[pos1] = (temp1 ^ self.kk(val1)) & 0xffff_ffff
+                        self.swap(words[pos1], val2)
+                    if i < self.bs1:
+                        ix = (ix + 1) & self.bs1
+                        ix1 = (ix1 + 1) & self.bs1
+                        pos1 = (pos1 + incr1) & self.bs1
+                        pos2 = (pos2 + incr2) & self.bs1
+
+            incr1 = self.h1(self.kk(val1) ^ val2) & self.bs1
+            incr2 = self.h2((val1 + self.kk(val2)) & 0xffff_ffff) & self.bs1
+            pos1 = self.h1(val1) & self.bs1
+            pos2 = self.h2(self.f2(val2)) & self.bs1
+            if incr1 == incr2 and pos1 == pos2:
+                pos2 = (pos2 + 1) & self.bs1
+            ik = self.h1((self.kk(self.f1(val1)) + val2) & 0xffff_ffff) & self.size1
+            pk = self.h1(self.f1(val1) ^ self.kk(val2)) & self.size1
+            max_count = self.size if self.bs2 < self.size else self.bs2 + 1
+            over = False
+            sz = self.size - self.bs
+            i = 0
+            k = pk
+            ix = self.bs2
+            for _ix1 in range(max_count):
+                temp1 = words[pos1]
+                val1 = (val1 ^ self.kk(temp1)) & 0xffff_ffff
+                val1 = (val1 + words[i]) & 0xffff_ffff
+                val2 = (val2 ^ self.f2(val1)) & 0xffff_ffff
+                if over:
+                    result_words[k] = (result_words[k] + val2) & 0xffff_ffff
+                else:
+                    result_words[k] = val2
+                val2 = (val2 + words[pos2]) & 0xffff_ffff
+                val2 = (val2 ^ words[ix]) & 0xffff_ffff
+                if sz > 0:
+                    words[i] = (words[i] ^ self.kk(val2)) & 0xffff_ffff
+                    words[ix] = (words[ix] + self.f1(val1)) & 0xffff_ffff
+                self.swap(temp1 ^ self.kk(val1), val2)
+                i = (i + 1) & self.bs1
+                if i == 0:
+                    sz -= self.bs
+                k = (k + ik) & self.size1
+                if k == pk:
+                    over = True
+                ix = (ix + 1) & self.bs1
+                pos1 = (pos1 + incr1) & self.bs1
+                pos2 = (pos2 + incr2) & self.bs1
+
+            incr1 = self.h1(self.kk(val1)) & self.bs1
+            incr2 = self.h2(self.kk(val2)) & self.size1
+            i = self.h1(self.f1(val1)) & self.bs1
+            k = self.h2(val2) & self.size1
+            max_count = self.size if self.bs < self.size else self.bs
+            for _ix in range(max_count):
+                temp1 = data_words[i]
+                val1 = (val1 + self.kk(temp1)) & 0xffff_ffff
+                val2 = (val2 ^ self.f1((val1 + temp1) & 0xffff_ffff)) & 0xffff_ffff
+                result_words[k] ^= val2
+                i = (i + incr1) & self.bs1
+                k = (k + incr2) & self.size1
+
+            self.val1 = val1
+            self.val2 = val2
+            return
+
+        def hash(self, data):
+            self.reset()
+            result_words = [0] * self.size
+            length = len(data)
+            if length <= self.bs4:
+                block = bytearray(self.bs4)
+                for i in range(self.bs4 - length):
+                    block[length + i] = self.kk1[i]
+                block[:length] = data
+                block1 = bytearray(block)
+                temp = length
+                block1[0] ^= temp & 0xff
+                temp >>= 8
+                block1[1] ^= temp & 0xff
+                words = self.bytes_to_words(block, self.bs)
+                words1 = self.bytes_to_words(block1, self.bs)
+                self.init_array(words1)
+                self.hash_primitive(words, result_words)
+                self.xoripe(result_words, words1, self.size, self.bs)
+                return self.words_to_bytes(result_words, self.size)
+
+            pos = 0
+            block_count = length // self.bs4
+            init_done = False
+            words1 = None
+            for _j in range(block_count):
+                if not init_done:
+                    block1 = bytearray(data[:self.bs4])
+                    temp = length
+                    block1[0] ^= temp & 0xff
+                    for i in range(1, 8):
+                        temp >>= 8
+                        block1[i] ^= temp & 0xff
+                    words1 = self.bytes_to_words(block1, self.bs)
+                    self.init_array(words1)
+                block = bytearray(data[pos:pos + self.bs4])
+                words = self.bytes_to_words(block, self.bs)
+                self.hash_primitive(words, result_words)
+                if not init_done:
+                    self.xoripe(result_words, words1, self.size, self.bs)
+                    init_done = True
+                else:
+                    self.xoripe(result_words, words1, self.size)
+                words1 = result_words[:]
+                pos += self.bs4
+
+            remaining = length & self.bs41
+            if remaining > 0:
+                block = bytearray(self.bs4)
+                for i in range(self.bs4 - remaining):
+                    block[remaining + i] = self.kk1[i]
+                block[:remaining] = data[:remaining]
+                words = self.bytes_to_words(block, self.bs)
+                self.hash_primitive(words, result_words)
+                self.xoripe(result_words, words1, self.size)
+            return self.words_to_bytes(result_words, self.size)
+
+    class Atelopus32(AtelopusBase):
+        block_size = 128
+        digest_bits = 256
+
+    class Atelopus64(AtelopusBase):
+        block_size = 256
+        digest_bits = 512
+
+    class BashBase:
+        state_size = 192
+        round_constants = (
+            0x3bf5_080a_c8ba_94b1, 0xc1d1_659c_1bbd_92f6, 0x60e8_b2ce_0dde_c97b, 0xec5f_b8fe_790f_bc13,
+            0xaa04_3de6_4367_06a7, 0x8929_ff6a_5e53_5bfd, 0x98bf_1e2c_50c9_7550, 0x4c5f_8f16_2864_baa8,
+            0x262f_c78b_1432_5d54, 0x1317_e3c5_8a19_2eaa, 0x098b_f1e2_c50c_9755, 0xd8ee_1968_1d66_9304,
+            0x6c77_0cb4_0eb3_4982, 0x363b_865a_0759_a4c1, 0xc736_22b4_7c4c_0ace, 0x639b_115a_3e26_0567,
+            0xede6_6934_60f3_da1d, 0xaad8_d503_4f99_35a0, 0x556c_6a81_a7cc_9ad0, 0x2ab6_3540_d3e6_4d68,
+            0x155b_1aa0_69f3_26b4, 0x0aad_8d50_34f9_935a, 0x0556_c6a8_1a7c_c9ad, 0xde80_82cd_72de_bc78,
+        )
+        box_rotations = (
+            (8, 53, 14, 1), (56, 51, 34, 7), (8, 37, 46, 49), (56, 3, 2, 23),
+            (8, 21, 14, 33), (56, 19, 34, 39), (8, 5, 46, 17), (56, 35, 2, 55),
+        )
+
+        @classmethod
+        def ensure_tables(cls):
+            if hasattr(Hash.BashBase, "permutations"):
+                return
+            p0 = tuple(range(24))
+
+            def p1idx(x):
+                if x < 8:
+                    return 8 + (x + 2 * (x & 1) + 7) % 8
+                if x < 16:
+                    return 8 + (x ^ 1)
+                return (5 * x + 6) % 8
+
+            p1 = tuple(p1idx(x) for x in range(24))
+            p2 = tuple(p1idx(p1idx(x)) for x in range(24))
+            p3 = tuple(8 * (x // 8) + (x % 8 + 4) % 8 for x in range(24))
+            p4 = tuple(p1idx(p3[x]) for x in range(24))
+            p5 = tuple(p1idx(p1idx(p3[x])) for x in range(24))
+            Hash.BashBase.permutations = (p0, p1, p2, p3, p4, p5)
+            return
+
+        def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            if self.digest_bits % 8:
+                raise ValueError("digest_bits must be a multiple of 8")
+            self.digest_size = self.digest_bits // 8
+            self.block_size = self.state_size - 2 * self.digest_size
+            self.state = bytearray(self.state_size)
+            self.state[self.state_size - 8] = self.digest_size
+            self.buf_len = self.block_size
+            self.pos = 0
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.state = bytearray(self.state)
+            other.buf_len = self.buf_len
+            other.pos = self.pos
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            state = self.state
+            pos = self.pos
+            block_size = self.block_size
+            data_len = len(data)
+            offset = 0
+            if pos:
+                take = min(block_size - pos, data_len)
+                state[pos:pos + take] = data[:take]
+                pos += take
+                offset += take
+                if pos == block_size:
+                    state = self.bashf(state)
+                    pos = 0
+            while offset + block_size <= data_len:
+                state[:block_size] = data[offset:offset + block_size]
+                state = self.bashf(state)
+                offset += block_size
+            if offset < data_len:
+                take = data_len - offset
+                state[:take] = data[offset:]
+                pos = take
+            self.state = state
+            self.pos = pos
+            return self
+
+        def finalize(self):
+            state = self.state
+            pos = self.pos
+            block_size = self.block_size
+            if pos:
+                state[pos:block_size] = b"\x00" * (block_size - pos)
+                state[pos] = 0x40
+            else:
+                state[:block_size] = b"\x00" * block_size
+                state[0] = 0x40
+            self.state = self.bashf(state)
+            self.pos = 0
+            return
+
+        def digest(self):
+            other = self.copy()
+            other.finalize()
+            return bytes(other.state[:self.digest_size])
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def bashs(self, w0, w1, w2, m1, n1, m2, n2):
+
+            def rot64(x, n):
+                return ((x << n) | (x >> (64 - n))) & 0xffff_ffff_ffff_ffff
+
+            t2 = rot64(w0, m1)
+            w0 ^= w1 ^ w2
+            t1 = w1 ^ rot64(w0, n1)
+            w1 = t1 ^ t2
+            w2 ^= rot64(w2, m2) ^ rot64(t1, n2)
+            t1 = w0 | w2
+            t2 = w0 & w1
+            t0 = (~w2) & 0xffff_ffff_ffff_ffff
+            t0 |= w1
+            w0 ^= t0
+            w1 ^= t1
+            w2 ^= t2
+            return w0, w1, w2
+
+        def bashround(self, words, permutation, next_permutation, const):
+            rotations = self.box_rotations
+            bashs = self.bashs
+            for pos in range(8):
+                m1, n1, m2, n2 = rotations[pos]
+                i0 = permutation[pos]
+                i1 = permutation[pos + 8]
+                i2 = permutation[pos + 16]
+                words[i0], words[i1], words[i2] = bashs(words[i0], words[i1], words[i2], m1, n1, m2, n2)
+            words[next_permutation[23]] ^= const
+            return
+
+        def bashf(self, state):
+            self.ensure_tables()
+            words = [int.from_bytes(state[i:i + 8], "little") for i in range(0, self.state_size, 8)]
+            permutations = self.permutations
+            round_constants = self.round_constants
+            bashround = self.bashround
+            for i in range(24):
+                pindex = i % 6
+                bashround(words, permutations[pindex], permutations[(pindex + 1) % 6], round_constants[i])
+            result = bytearray()
+            for word in words:
+                result.extend(word.to_bytes(8, "little"))
+            return result
+
+    class Bash256(BashBase):
+        digest_bits = 256
+
+    class Bash384(BashBase):
+        digest_bits = 384
+
+    class Bash512(BashBase):
+        digest_bits = 512
+
 
 @register_command
 class HashCommand(GenericCommand):
@@ -110671,10 +111309,16 @@ class HashCommand(GenericCommand):
 
         # Other (relatively long)
         yield "Relatively long"
+        yield ("ACE-H-256", Hash.ACEH256())
         yield ("Ascon-Hash", Hash.Ascon())
         yield ("Ascon-HashA", Hash.AsconA())
         yield ("Ascon-Xof", Hash.AsconX())
         yield ("Ascon-XofA", Hash.AsconXA())
+        yield ("Atelopus32", Hash.Atelopus32())
+        yield ("Atelopus64", Hash.Atelopus64())
+        yield ("Bash256", Hash.Bash256())
+        yield ("Bash384", Hash.Bash384())
+        yield ("Bash512", Hash.Bash512())
         yield ("BelT Hash", Hash.BELT())
         yield ("BLAKE2sp", Hash.BLAKE2sp())
         yield ("BLAKE2bp", Hash.BLAKE2bp())
@@ -111859,6 +112503,14 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "Waterfall-512":
             "10ae5fe3bcf34b9aef17538d1f27ba2434675c9f307fcb95947763c15b3f16b2a80367dd42fcde0e5410a647e5b67883cdc54974b59aaa2d34dbc3c8586ca64f",
         # -------------------- relatively long --------------------
+        # https://csrc.nist.gov/CSRC/media/Projects/lightweight-cryptography/documents/round-2/spec-doc-rnd2/ace-spec-round2.pdf
+        "ACE-H-256":
+            "eec3f993d242a2973fc9b8c92e1b358686a73c63f179db9c3b4515a86aa7458a",
+        # https://bench.cr.yp.to/supercop/supercop-20260330.tar.xz
+        "Atelopus32":
+            "153e36e449f2c058de23e69b7b36312c1e02472b4571161ea8fcbac6c26a8f82",
+        "Atelopus64":
+            "51d27e64407ba26d55bf0cdd13fa86b11869290d0e0b65e0294370f54273b532c76126ea8c6f22178e59a9377a6fc71f82150d7972c03c7ff370bc56b176dd8f",
         # https://hashing.tools/ascon
         "Ascon-Hash":
             "3375fb43372c49cbd48ac5bb6774e7cf5702f537b2cf854628edae1bd280059e",
@@ -111870,6 +112522,13 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "Ascon-XofA":
             "5c32bbe73bd8ea9191435d72cc973a2bb2d8f40410de6188e06c65b78401759c30a3f1b24ea251b12d468d729aad6570883b82438e798020d0ebb3e920490629" \
             "051c64fe2ddb2ff14b89e9d2352cfda9bbffe4601d0e5bffb6c4b8165c44172cc0dc76430d7a38fbb5b57134936c53648989c49e79052fb1040a8b0a7f43e0ad",
+        # https://apmi.bsu.by/assets/files/std/bash-spec24.pdf
+        "Bash256":
+            "0f5b5ad80c410e46cc9cc6de516b8c61e0d41bb4b5ed3233b3c665b7e9214314",
+        "Bash384":
+            "5d16b5f290ad1c420059ef13ce7392eef80384debcfa6942c84eb2d3801c7bcb6971f407bbaed3765ad85a40c1e2df22",
+        "Bash512":
+            "26e1ae4b486e47b8eae332c4162ffc380851a73a03bcc42267a9df502531b67685f73b3b27359af8950c4c18521cd0e6b7323f96ee1e29016bef5dd45c112b8b",
         # https://hashing.tools/belt
         "BelT Hash":
             "b0333d1bb3c391893a5a1df907eaf2b5cc60e993bd4fa0cdd865d09a243183cd",
