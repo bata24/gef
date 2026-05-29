@@ -5,6 +5,9 @@ import os
 import re
 import sys
 
+def module_path_to_file_path(save_dir, module_path):
+    return os.path.join(save_dir, *module_path.split(".")) + ".py"
+
 def reconstruct():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     save_dir = os.path.join(base_dir, "save")
@@ -39,7 +42,7 @@ def reconstruct():
         m = import_re.match(line)
         if m:
             module_path = m.group(1)
-            file_path = os.path.join(save_dir, *module_path.split(".")) + ".py"
+            file_path = module_path_to_file_path(save_dir, module_path)
 
             if os.path.exists(file_path):
                 with open(file_path, "r", encoding="utf-8") as f:

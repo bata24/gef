@@ -288,6 +288,13 @@ def write_hash_groups(path, save_dir, hash_info):
     return group_imports
 
 
+def is_syscall_class_name(name):
+    return name.startswith("Syscall") and not name.endswith("Command")
+
+def is_breakpoint_class_name(name):
+    return name.endswith("Breakpoint")
+
+
 def collapse_blank_lines_between_from_imports(lines):
     result = []
     i = 0
@@ -352,6 +359,12 @@ def split_gef(path, class_dic, global_dic, function_groups, save_dir):
             if name.endswith("Command"):
                 file_path = os.path.join(save_dir, "lib", "command", name + ".py")
                 new_gef.append(f"from lib.command.{name} import {name}")
+            elif is_syscall_class_name(name):
+                file_path = os.path.join(save_dir, "lib", "syscall", name + ".py")
+                new_gef.append(f"from lib.syscall.{name} import {name}")
+            elif is_breakpoint_class_name(name):
+                file_path = os.path.join(save_dir, "lib", "bp", name + ".py")
+                new_gef.append(f"from lib.bp.{name} import {name}")
             elif (s + 1) < len(lines) and ("GEF representation of " in lines[s + 1]) and ("architecture." in lines[s + 1]):
                 file_path = os.path.join(save_dir, "lib", "arch", name + ".py")
                 new_gef.append(f"from lib.arch.{name} import {name}")
@@ -422,6 +435,8 @@ if __name__ == "__main__":
         os.mkdir(os.path.join(save_dir, "lib"))
     if not os.path.exists(os.path.join(save_dir, "lib", "command")):
         os.mkdir(os.path.join(save_dir, "lib", "command"))
+    if not os.path.exists(os.path.join(save_dir, "lib", "bp")):
+        os.mkdir(os.path.join(save_dir, "lib", "bp"))
     if not os.path.exists(os.path.join(save_dir, "lib", "arch")):
         os.mkdir(os.path.join(save_dir, "lib", "arch"))
     if not os.path.exists(os.path.join(save_dir, "lib", "syscall")):
