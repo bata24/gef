@@ -67214,7 +67214,7 @@ class KernelModuleLoadCommand(GenericCommand):
         if self.offset_attrs is None:
             self.quiet_err("Could not find module->sect_attrs.grp.{attrs,bin_attrs}")
             return False
-        self.quiet_info("offsetof(module_sect_attrs, grp.{attrs,bin_attrs}): {:#x}".format(self.offset_attrs))
+        self.quiet_info("offsetof(module_sect_attrs, grp.{{attrs,bin_attrs}}): {:#x}".format(self.offset_attrs))
 
         # ~6.13: module_sect_attr.address
         # 6.14~: bin_attribute.private
@@ -100083,7 +100083,7 @@ class Hash:
             uint32_t na = ~a;
             uint32_t nb = ~b;
             uint32_t nc = ~c;
-            uint32_t nd = ~d;
+            uint32_t nd = ~d; /* codespell:ignore */
             uint32_t ne = ~e;
             uint32_t nf = ~f;
             uint32_t ng = ~g;
@@ -100113,7 +100113,7 @@ class Hash:
                 ^ (b & d & nf)
                 ^ (b & e & g)
                 ^ (nb & f & g)
-                ^ (c & nd & ne)
+                ^ (c & nd & ne) /* codespell:ignore */
                 ^ (nc & d & f)
                 ^ (d & e & f)
                 ^ (d & ne & g)
@@ -100129,7 +100129,7 @@ class Hash:
             uint64_t na = ~a;
             uint64_t nb = ~b;
             uint64_t nc = ~c;
-            uint64_t nd = ~d;
+            uint64_t nd = ~d; /* codespell:ignore */
             uint64_t ne = ~e;
             uint64_t nf = ~f;
             uint64_t ng = ~g;
@@ -100159,7 +100159,7 @@ class Hash:
                 ^ (b & d & nf)
                 ^ (b & e & g)
                 ^ (nb & f & g)
-                ^ (c & nd & ne)
+                ^ (c & nd & ne) /* codespell:ignore */
                 ^ (nc & d & f)
                 ^ (d & e & f)
                 ^ (d & ne & g)
@@ -109611,7 +109611,7 @@ class Hash:
             data[off + 7] = (val >> 56) & 0xff
             return
 
-        def padd(self, data, rcon, length):
+        def padd(self, data, rcon, length): # codespell:ignore
             out = bytearray(length)
             for off in range(0, length, 8):
                 self.write64(out, off, (self.read64(data, off) + self.read64(rcon, off)) & 0xffff_ffff_ffff_ffff)
@@ -109715,9 +109715,9 @@ class Hash:
                 state_a = bytearray(block)
                 state_b = bytearray(block)
                 for j in range(rounds):
-                    key_a = self.sbox_bytes(self.padd(key_a, rcon[j], 16))
+                    key_a = self.sbox_bytes(self.padd(key_a, rcon[j], 16)) # codespell:ignore
                     self.rijndael_round_128(key_a, state_a)
-                    key_b = self.sbox_bytes(self.padd(key_b, rcon[j], 16))
+                    key_b = self.sbox_bytes(self.padd(key_b, rcon[j], 16)) # codespell:ignore
                     self.rijndael_round_128(key_b, state_b)
                 a = self.pxor(state_a, block)
                 b = self.pxor(state_b, block)
@@ -109738,9 +109738,9 @@ class Hash:
             state_a = bytearray(block)
             state_b = bytearray(block)
             for j in range(rounds):
-                key_a = self.sbox_bytes(self.padd(key_a, rcon[j], 16))
+                key_a = self.sbox_bytes(self.padd(key_a, rcon[j], 16)) # codespell:ignore
                 self.rijndael_round_128(key_a, state_a)
-                key_b = self.sbox_bytes(self.padd(key_b, rcon[j], 16))
+                key_b = self.sbox_bytes(self.padd(key_b, rcon[j], 16)) # codespell:ignore
                 self.rijndael_round_128(key_b, state_b)
             a = self.pxor(state_a, block)
             b = self.pxor(state_b, block)
@@ -109752,9 +109752,9 @@ class Hash:
                 state_a = bytearray(block)
                 state_b = bytearray(block)
                 for j in range(rounds):
-                    key_a = self.sbox_bytes(self.padd(key_a, rcon[j], 16))
+                    key_a = self.sbox_bytes(self.padd(key_a, rcon[j], 16)) # codespell:ignore
                     self.rijndael_round_128(key_a, state_a)
-                    key_b = self.sbox_bytes(self.padd(key_b, rcon[j], 16))
+                    key_b = self.sbox_bytes(self.padd(key_b, rcon[j], 16)) # codespell:ignore
                     self.rijndael_round_128(key_b, state_b)
                 a = self.pxor(state_a, block)
                 b = self.pxor(state_b, block)
@@ -109776,9 +109776,9 @@ class Hash:
                 state_a = bytearray(block)
                 state_b = bytearray(block)
                 for j in range(rounds):
-                    key_a = self.sbox_bytes(self.padd(key_a, rcon[j], 32))
+                    key_a = self.sbox_bytes(self.padd(key_a, rcon[j], 32)) # codespell:ignore
                     self.rijndael_round_256(key_a, state_a)
-                    key_b = self.sbox_bytes(self.padd(key_b, rcon[j], 32))
+                    key_b = self.sbox_bytes(self.padd(key_b, rcon[j], 32)) # codespell:ignore
                     self.rijndael_round_256(key_b, state_b)
                 a = self.pxor(state_a, block)
                 b = self.pxor(state_b, block)
@@ -109799,9 +109799,9 @@ class Hash:
             state_a = bytearray(block)
             state_b = bytearray(block)
             for j in range(rounds):
-                key_a = self.sbox_bytes(self.padd(key_a, rcon[j], 32))
+                key_a = self.sbox_bytes(self.padd(key_a, rcon[j], 32)) # codespell:ignore
                 self.rijndael_round_256(key_a, state_a)
-                key_b = self.sbox_bytes(self.padd(key_b, rcon[j], 32))
+                key_b = self.sbox_bytes(self.padd(key_b, rcon[j], 32)) # codespell:ignore
                 self.rijndael_round_256(key_b, state_b)
             a = self.pxor(state_a, block)
             b = self.pxor(state_b, block)
@@ -109813,9 +109813,9 @@ class Hash:
                 state_a = bytearray(block)
                 state_b = bytearray(block)
                 for j in range(rounds):
-                    key_a = self.sbox_bytes(self.padd(key_a, rcon[j], 32))
+                    key_a = self.sbox_bytes(self.padd(key_a, rcon[j], 32)) # codespell:ignore
                     self.rijndael_round_256(key_a, state_a)
-                    key_b = self.sbox_bytes(self.padd(key_b, rcon[j], 32))
+                    key_b = self.sbox_bytes(self.padd(key_b, rcon[j], 32)) # codespell:ignore
                     self.rijndael_round_256(key_b, state_b)
                 a = self.pxor(state_a, block)
                 b = self.pxor(state_b, block)
@@ -110196,7 +110196,7 @@ class Hash:
 
             return self
 
-        def final_step(self, workin, pool):
+        def final_step(self, workin, pool): # codespell:ignore
             stream1_len = self.stream1_len
             apply_xbox = self.apply_xbox
             xbox = self.xbox
@@ -110204,10 +110204,10 @@ class Hash:
 
             for i in range(stream1_len):
                 workout[i] = (
-                    (workin[i] & 0x1414_1414)
-                    | (workin[(i + 3) % stream1_len] & 0x2828_2828)
-                    | (workin[(i + 7) % stream1_len] & 0x4242_4242)
-                    | (workin[(i + 12) % stream1_len] & 0x8181_8181)
+                    (workin[i] & 0x1414_1414) # codespell:ignore
+                    | (workin[(i + 3) % stream1_len] & 0x2828_2828) # codespell:ignore
+                    | (workin[(i + 7) % stream1_len] & 0x4242_4242) # codespell:ignore
+                    | (workin[(i + 12) % stream1_len] & 0x8181_8181) # codespell:ignore
                 )
 
             for i in range(stream1_len):
