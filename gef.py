@@ -69156,6 +69156,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             # type       name                                            minver     maxver
             ["func_ptr", "open",                                         None,      None],
             ["func_ptr", "close",                                        None,      None],
+            ["func_ptr", "mapped",                                       "7.1.0",   None],
             ["func_ptr", "may_split",                                    "5.11.0",  None],
             ["func_ptr", "split",                                        "4.14.0",  "5.10.187"],
             ["func_ptr", "mremap",                                       "4.3.9",   None],
@@ -69176,6 +69177,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "find_normal_page (CONFIG_FIND_NORMAL_PAGE=y)", "6.18.0",  None],
             ["func_ptr", "remap_pages",                                  "3.17.0",  "4.0.0"],
             ["func_ptr", "remap_pages",                                  "3.7.0",   "3.16.59"],
+            ["ptr",      "uffd_ops (CONFIG_USERFAULTFD=y)",              "7.1.0",   None],
         ]
         self.members["vm_operations_struct"] = adapt_to_kernel_version(vm_operations_struct)
 
@@ -69495,7 +69497,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "restore_context",                         "4.20.0",  None],
             ["func_ptr", "recalc_rate",                             "3.4.0",   None],
             ["func_ptr", "recalc",                                  None,      "3.4.0"],
-            ["func_ptr", "round_rate",                              "3.4.0",   None],
+            ["func_ptr", "round_rate",                              "3.4.0",   "7.0.10"],
             ["func_ptr", "determine_rate",                          "3.12.0",  None],
             ["func_ptr", "set_parent",                              "3.4.0",   None],
             ["func_ptr", "get_parent",                              "3.4.0",   None],
@@ -69568,6 +69570,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "ndo_select_queue",                                    None,      None],
             ["func_ptr", "ndo_change_rx_flags",                                 None,      None],
             ["func_ptr", "ndo_set_rx_mode",                                     None,      None],
+            ["func_ptr", "ndo_set_rx_mode_async",                               "7.1.0",   None],
             ["func_ptr", "ndo_set_multicast_list",                              None,      "3.2.0"],
             ["func_ptr", "ndo_set_mac_address",                                 None,      None],
             ["func_ptr", "ndo_validate_addr",                                   None,      None],

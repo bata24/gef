@@ -2,12 +2,14 @@ import argparse
 import os
 import subprocess
 import re
-import tarfile
 import difflib
 
+
 class KernelVersion:
-    def __init__(self, version_string):
+    def __init__(self, version_string, download_dir="../download", extract_dir="."):
         self.version_string = version_string
+        self.download_dir = download_dir
+        self.extract_dir = extract_dir
         try:
             major, minor, patch, rc = self.to_version_tuple(version_string)
         except Exception as err:
@@ -20,18 +22,18 @@ class KernelVersion:
         return
 
     def to_version_tuple(self, v):
-        r = re.match(r"(\d+)\.(\d+)-rc(\d+)", v)
+        r = re.fullmatch(r"(\d+)\.(\d+)-rc(\d+)", v)
         if r:
             return int(r.group(1)), int(r.group(2)), 0, int(r.group(3))
 
-        r = re.match(r"(\d+)\.(\d+)\.(\d+)", v)
+        r = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", v)
         if r:
             return int(r.group(1)), int(r.group(2)), int(r.group(3)), 0
 
-        r = re.match(r"(\d+)\.(\d+)", v)
+        r = re.fullmatch(r"(\d+)\.(\d+)", v)
         if r:
             return int(r.group(1)), int(r.group(2)), 0, 0
-        raise
+        raise ValueError("Invalid kernel version: {:s}".format(v))
 
     def __str__(self):
         if self.rc > 0:
@@ -40,7 +42,6 @@ class KernelVersion:
             return "{:d}.{:d}".format(self.major, self.minor)
         else:
             return "{:d}.{:d}.{:d}".format(self.major, self.minor, self.patch)
-        raise
 
     @property
     def dirname(self):
@@ -57,6 +58,16 @@ class KernelVersion:
         if self.rc > 0:
             return "https://git.kernel.org/torvalds/t/{:s}".format(self.filename)
         return "https://cdn.kernel.org/pub/linux/kernel/v{:d}.x/{:s}".format(self.major, self.filename)
+
+    def tarball_path(self):
+        return os.path.join(self.download_dir, self.filename)
+
+    def member_path(self, filename):
+        return os.path.join(self.dirname, filename)
+
+    def extracted_path(self, filename):
+        return os.path.join(self.extract_dir, self.member_path(filename))
+
 
 Entries = {
     "address_space_operations": ["include/linux/fs.h"],
@@ -95,23 +106,30 @@ Entries = {
     "vm_operations_struct": ["include/linux/mm.h"],
 }
 
-def doit(args, version):
-    if not os.path.exists(version.filename):
-        r = os.system("wget {:s}".format(version.url))
-        if r != 0:
-            print("Failed to downloard")
-            raise
+
+def doit(version):
+    os.makedirs(version.download_dir, exist_ok=True)
+    os.makedirs(version.extract_dir, exist_ok=True)
+
+    tarball_path = version.tarball_path()
+    if not os.path.exists(tarball_path):
+        r = subprocess.run(["wget", version.url, "-O", tarball_path])
+        if r.returncode != 0:
+            if os.path.exists(tarball_path):
+                os.remove(tarball_path)
+            raise RuntimeError("Failed to download")
 
     ops = {}
     for struct_name, filenames in Entries.items():
         found = False
         for filename in filenames:
-            filepath = os.path.join(version.dirname, filename)
+            filepath = version.extracted_path(filename)
+            member_path = version.member_path(filename)
 
             if not os.path.exists(filepath):
                 print("[+] Extracting... {:s}".format(filepath))
-                r = os.system("tar xf {:s} '{:s}'".format(version.filename, filepath))
-                if r != 0:
+                r = subprocess.run(["tar", "xf", tarball_path, "-C", version.extract_dir, member_path])
+                if r.returncode != 0:
                     print("Failed to extract")
                     continue
 
@@ -139,14 +157,22 @@ def doit(args, version):
             ops[struct_name] = [filepath, ["Not found"]]
     return ops
 
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("version", metavar="VERSION", type=KernelVersion, help="target version")
-    parser.add_argument("version2", metavar="VERSION2", nargs="?", type=KernelVersion, help="target version for diff")
+    parser.add_argument("-d", "--download-dir", default="../download", help="download directory")
+    parser.add_argument("-e", "--extract-dir", default=".", help="extract directory")
+    parser.add_argument("version", metavar="VERSION", help="target version")
+    parser.add_argument("version2", metavar="VERSION2", nargs="?", help="target version for diff")
     args = parser.parse_args()
 
-    if not args.version2:
-        ops = doit(args, args.version)
+    version = KernelVersion(args.version, args.download_dir, args.extract_dir)
+    version2 = None
+    if args.version2:
+        version2 = KernelVersion(args.version2, args.download_dir, args.extract_dir)
+
+    if not version2:
+        ops = doit(version)
         assert len(ops) == len(Entries)
 
         for struct_name, [filepath, lines] in ops.items():
@@ -154,8 +180,8 @@ def main():
             for line in lines:
                 print(line)
     else:
-        ops1 = doit(args, args.version)
-        ops2 = doit(args, args.version2)
+        ops1 = doit(version)
+        ops2 = doit(version2)
         assert len(ops1) == len(ops2) == len(Entries)
 
         for struct_name in Entries.keys():
@@ -170,6 +196,7 @@ def main():
                 else:
                     print(line)
     return
+
 
 if __name__ == "__main__":
     main()

@@ -3,9 +3,12 @@ import os
 import subprocess
 import re
 
+
 class KernelVersion:
-    def __init__(self, version_string):
+    def __init__(self, version_string, download_dir="../download", extract_dir="."):
         self.version_string = version_string
+        self.download_dir = download_dir
+        self.extract_dir = extract_dir
         try:
             major, minor, patch, rc = self.to_version_tuple(version_string)
         except Exception as err:
@@ -18,18 +21,18 @@ class KernelVersion:
         return
 
     def to_version_tuple(self, v):
-        r = re.match(r"(\d+)\.(\d+)-rc(\d+)", v)
+        r = re.fullmatch(r"(\d+)\.(\d+)-rc(\d+)", v)
         if r:
             return int(r.group(1)), int(r.group(2)), 0, int(r.group(3))
 
-        r = re.match(r"(\d+)\.(\d+)\.(\d+)", v)
+        r = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", v)
         if r:
             return int(r.group(1)), int(r.group(2)), int(r.group(3)), 0
 
-        r = re.match(r"(\d+)\.(\d+)", v)
+        r = re.fullmatch(r"(\d+)\.(\d+)", v)
         if r:
             return int(r.group(1)), int(r.group(2)), 0, 0
-        raise
+        raise ValueError("Invalid kernel version: {:s}".format(v))
 
     def __str__(self):
         if self.rc > 0:
@@ -38,7 +41,6 @@ class KernelVersion:
             return "{:d}.{:d}".format(self.major, self.minor)
         else:
             return "{:d}.{:d}.{:d}".format(self.major, self.minor, self.patch)
-        raise
 
     @property
     def dirname(self):
@@ -55,6 +57,16 @@ class KernelVersion:
         if self.rc > 0:
             return "https://git.kernel.org/torvalds/t/{:s}".format(self.filename)
         return "https://cdn.kernel.org/pub/linux/kernel/v{:d}.x/{:s}".format(self.major, self.filename)
+
+    def tarball_path(self):
+        return os.path.join(self.download_dir, self.filename)
+
+    def member_path(self, filename):
+        return os.path.join(self.dirname, filename)
+
+    def extracted_path(self, filename):
+        return os.path.join(self.extract_dir, self.member_path(filename))
+
 
 def check_black_list(line):
     black_list = [
@@ -77,17 +89,33 @@ def check_black_list(line):
             return True
     return False
 
+
 def doit(args, version):
-    if not os.path.exists(version.filename):
-        os.system("wget {:s}".format(version.url))
+    os.makedirs(version.download_dir, exist_ok=True)
+    os.makedirs(version.extract_dir, exist_ok=True)
 
-    if not os.path.exists(version.dirname):
+    tarball_path = version.tarball_path()
+    if not os.path.exists(tarball_path):
+        r = subprocess.run(["wget", version.url, "-O", tarball_path])
+        if r.returncode != 0:
+            if os.path.exists(tarball_path):
+                os.remove(tarball_path)
+            raise RuntimeError("Failed to download")
+
+    mm_path = version.extracted_path("mm")
+    if not os.path.exists(mm_path):
         print("[+] Extracting...")
-        os.system("tar xf {:s} '{:s}/mm/'".format(version.filename, version.dirname))
+        member_path = version.member_path("mm")
+        r = subprocess.run(["tar", "xf", tarball_path, "-C", version.extract_dir, member_path])
+        if r.returncode != 0:
+            raise RuntimeError("Failed to extract")
 
-    os.chdir(os.path.join(version.dirname, "mm"))
-    ret = subprocess.getoutput("grep -r EXPORT_SYMBOL |egrep 'kmalloc|krealloc|kfree|kmem_cache_alloc'")
-    os.chdir("../..")
+    cwd = os.getcwd()
+    try:
+        os.chdir(version.extracted_path("mm"))
+        ret = subprocess.getoutput("grep -r EXPORT_SYMBOL |egrep 'kmalloc|krealloc|kfree|kmem_cache_alloc'")
+    finally:
+        os.chdir(cwd)
 
     lines = []
     for line in ret.splitlines():
@@ -99,34 +127,43 @@ def doit(args, version):
         lines.append(line)
     return sorted(set(lines))
 
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("version", metavar="VERSION", type=KernelVersion, help="target version")
-    parser.add_argument("version2", metavar="VERSION2", nargs="?", type=KernelVersion, help="target version for diff")
+    parser.add_argument("-d", "--download-dir", default="../download", help="download directory")
+    parser.add_argument("-e", "--extract-dir", default=".", help="extract directory")
+    parser.add_argument("version", metavar="VERSION", help="target version")
+    parser.add_argument("version2", metavar="VERSION2", nargs="?", help="target version for diff")
     parser.add_argument("-s", "--simple", action="store_true", help="omit source filename")
     args = parser.parse_args()
 
-    if not args.version2:
-        lines = doit(args, args.version)
+    version = KernelVersion(args.version, args.download_dir, args.extract_dir)
+    version2 = None
+    if args.version2:
+        version2 = KernelVersion(args.version2, args.download_dir, args.extract_dir)
+
+    if not version2:
+        lines = doit(args, version)
         for line in lines:
             print(line)
     else:
-        lines = doit(args, args.version)
-        lines2 = doit(args, args.version2)
+        lines = doit(args, version)
+        lines2 = doit(args, version2)
 
-        print("#" * 30 + args.version.dirname)
+        print("#" * 30 + version.dirname)
 
         for line in lines:
             if line in lines2:
                 continue
             print(line)
 
-        print("#" * 30 + args.version2.dirname)
+        print("#" * 30 + version2.dirname)
 
         for line in lines2:
             if line in lines:
                 continue
             print(line)
+
 
 if __name__ == "__main__":
     main()
