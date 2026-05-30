@@ -150402,6 +150402,30 @@ class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
 
 
 @register_command
+class XrefToStringCommand(GenericCommand):
+    """Find xref to specified string (shortcut for `xref-telescope STRING 2`)."""
+
+    _cmdline_ = "xref-to-string"
+    _category_ = "03-a. Memory - Search"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("string", metavar="STRING", help="search string.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    @parse_args
+    @only_if_gdb_running
+    def do_invoke(self, args):
+        info("Redirect to `xref-telescope STRING 2`")
+
+        no_pager = ""
+        if args.no_pager:
+            no_pager = "--no-pager"
+        gdb.execute("xref-telescope {:s} {!r} 2".format(no_pager, args.string))
+        return
+
+
+@register_command
 class BytearrayCommand(GenericCommand):
     """Generate a bytearray to be compared with possible badchars (ported from mona.py)."""
 
