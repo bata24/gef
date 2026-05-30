@@ -18505,6 +18505,456 @@ class HijackFdCommand(GenericCommand):
 
 
 @register_command
+class XtapCommand(GenericCommand):
+    """Tap read/write syscalls on specific file descriptors and hexdump the transferred data."""
+
+    _cmdline_ = "xtap"
+    _category_ = "01-g. Debugging Support - Syscall"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("fd", metavar="FD", nargs="+", type=AddressUtil.parse_address,
+                        help="the file descriptor(s) to tap.")
+    parser.add_argument("--max", dest="maxlen", type=AddressUtil.parse_address,
+                        help="limit the number of bytes to hexdump per transfer.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} 0               # tap stdin",
+        "{0:s} 4               # tap fd 4 (e.g. a socket)",
+        "{0:s} 0 1 2           # tap stdin/stdout/stderr",
+        "{0:s} 4 --max 0x40    # tap fd 4, dump at most 0x40 bytes per transfer",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "Hooked syscalls:",
+        "  read-like: read, recvfrom, recvmsg, recvmmsg, recvmmsg_time64, pread64, preadv, preadv2, readv",
+        "  write-like: write, sendto, sendmsg, sendmmsg, pwrite64, pwritev, pwritev2, writev",
+        "",
+        "- Relies on `catch syscall`.",
+        "- Auto-continues; stops on a user breakpoint or Ctrl+C.",
+        "- qemu-user is unsupported: its gdbstub does not update the return-value register",
+        "  at syscall-return, so read-like sizes are wrong. Use a native target.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    syscall_spec = {
+        "read":             ("in",  "buf"),
+        "recvfrom":         ("in",  "buf"),
+        "pread64":          ("in",  "buf"),
+        "readv":            ("in",  "iovec"),
+        "preadv":           ("in",  "iovec"),
+        "preadv2":          ("in",  "iovec"),
+        "recvmsg":          ("in",  "msghdr"),
+        "recvmmsg":         ("in",  "mmsghdr"),
+        "recvmmsg_time64":  ("in",  "mmsghdr"),
+        "write":            ("out", "buf"),
+        "sendto":           ("out", "buf"),
+        "pwrite64":         ("out", "buf"),
+        "writev":           ("out", "iovec"),
+        "pwritev":          ("out", "iovec"),
+        "pwritev2":         ("out", "iovec"),
+        "sendmsg":          ("out", "msghdr"),
+        "sendmmsg":         ("out", "mmsghdr"),
+    }
+
+    def read_iovec_array(self, vec_addr, vlen):
+        """Return a list of (base, length) tuples from a struct iovec array."""
+        entries = []
+        cur = vec_addr
+        for _ in range(vlen):
+            iov_base = read_int_from_memory(cur)
+            iov_len = read_int_from_memory(cur + current_arch.ptrsize)
+            entries.append((iov_base, iov_len))
+            cur += current_arch.ptrsize * 2
+        return entries
+
+    def gather_iovec_bytes(self, entries, limit):
+        """Concatenate bytes described by iovec entries, capped at `limit` bytes total."""
+        data = bytearray()
+        for base, length in entries:
+            if limit is not None and len(data) >= limit:
+                break
+            want = length
+            if limit is not None:
+                want = min(want, limit - len(data))
+            if want <= 0:
+                continue
+            try:
+                data += read_memory(base, want)
+            except gdb.error:
+                break
+        return bytes(data)
+
+    def read_msghdr(self, msg_addr):
+        """Return iovec entries from a struct msghdr.
+
+        struct msghdr layout:
+          void*         msg_name        off 0
+          socklen_t     msg_namelen     off ptrsize       (padded to ptrsize)
+          struct iovec* msg_iov         off ptrsize*2
+          size_t        msg_iovlen      off ptrsize*3
+          ...
+        """
+        msg_iov = read_int_from_memory(msg_addr + current_arch.ptrsize * 2)
+        msg_iovlen = read_int_from_memory(msg_addr + current_arch.ptrsize * 3)
+        return self.read_iovec_array(msg_iov, msg_iovlen)
+
+    def read_mmsghdr_entries(self, mmsg_addr, vlen):
+        """Return a flat list of iovec entries across a struct mmsghdr array.
+
+        struct mmsghdr layout:
+          struct msghdr msg_hdr     off 0
+          unsigned int  msg_len     off sizeof(struct msghdr)
+
+        sizeof(struct msghdr) is 7 pointers:
+          msg_name, msg_namelen(+pad), msg_iov, msg_iovlen, msg_control, msg_controllen(+pad),
+          msg_flags(+pad). We step by that stride.
+        """
+        msghdr_size = current_arch.ptrsize * 7
+        mmsghdr_stride = msghdr_size + current_arch.ptrsize  # msg_len is unsigned int but padded to ptrsize
+        entries = []
+        cur = mmsg_addr
+        for _ in range(vlen):
+            entries += self.read_msghdr(cur)
+            cur += mmsghdr_stride
+        return entries
+
+    def extract_entry_data(self, name, arg_regs):
+        """Read data for write-like syscalls at entry. Returns (label, bytes) or None."""
+        kind = self.syscall_spec[name][1]
+
+        if kind == "buf":
+            # buf is 2nd arg, count is 3rd arg
+            buf = get_register(arg_regs[1])
+            count = get_register(arg_regs[2])
+            if self.maxlen is not None:
+                count = min(count, self.maxlen)
+            try:
+                data = read_memory(buf, count)
+            except gdb.error:
+                return None
+            return ("buf={:#x} count={:#x}".format(buf, count), data)
+
+        if kind == "iovec":
+            # iov is 2nd arg, iovcnt is 3rd arg
+            iov = get_register(arg_regs[1])
+            iovcnt = get_register(arg_regs[2])
+            entries = self.read_iovec_array(iov, iovcnt)
+            data = self.gather_iovec_bytes(entries, self.maxlen)
+            return ("iov={:#x} iovcnt={:#x}".format(iov, iovcnt), data)
+
+        if kind == "msghdr":
+            # msg is 2nd arg
+            msg = get_register(arg_regs[1])
+            entries = self.read_msghdr(msg)
+            data = self.gather_iovec_bytes(entries, self.maxlen)
+            return ("msghdr={:#x}".format(msg), data)
+
+        if kind == "mmsghdr":
+            # msgvec is 2nd arg, vlen is 3rd arg
+            msgvec = get_register(arg_regs[1])
+            vlen = get_register(arg_regs[2])
+            entries = self.read_mmsghdr_entries(msgvec, vlen)
+            data = self.gather_iovec_bytes(entries, self.maxlen)
+            return ("mmsghdr={:#x} vlen={:#x}".format(msgvec, vlen), data)
+
+        return None
+
+    def extract_exit_data(self, name, entry_args, retval):
+        """Read data for read-like syscalls at exit. Returns (label, bytes) or None.
+        `retval` is the number of bytes actually transferred. `entry_args` carries
+        the argument register values captured at entry.
+        """
+        kind = self.syscall_spec[name][1]
+
+        if retval is None or retval <= 0:
+            return ("returned {}".format(retval if retval is not None else "?"), b"")
+
+        limit = retval
+        if self.maxlen is not None:
+            limit = min(limit, self.maxlen)
+
+        if kind == "buf":
+            buf = entry_args[1]
+            try:
+                data = read_memory(buf, limit)
+            except gdb.error:
+                return None
+            return ("buf={:#x} ret={:#x}".format(buf, retval), data)
+
+        if kind == "iovec":
+            iov = entry_args[1]
+            iovcnt = entry_args[2]
+            entries = self.read_iovec_array(iov, iovcnt)
+            data = self.gather_iovec_bytes(entries, limit)
+            return ("iov={:#x} ret={:#x}".format(iov, retval), data)
+
+        if kind == "msghdr":
+            msg = entry_args[1]
+            entries = self.read_msghdr(msg)
+            data = self.gather_iovec_bytes(entries, limit)
+            return ("msghdr={:#x} ret={:#x}".format(msg, retval), data)
+
+        return None
+
+    def entry_fd(self, arg_regs):
+        """All hooked syscalls take fd as their first argument."""
+        return get_register(arg_regs[0])
+
+    def close_stdout_stderr(self):
+        self.stdout = 1
+        self.stdout_bak = os.dup(self.stdout)
+        f = open("/dev/null")
+        os.dup2(f.fileno(), self.stdout)
+        f.close()
+
+        self.stderr = 2
+        self.stderr_bak = os.dup(self.stderr)
+        f = open("/dev/null")
+        os.dup2(f.fileno(), self.stderr)
+        f.close()
+        return
+
+    def revert_stdout_stderr(self):
+        os.dup2(self.stdout_bak, self.stdout)
+        os.close(self.stdout_bak)
+        os.dup2(self.stderr_bak, self.stderr)
+        os.close(self.stderr_bak)
+        return
+
+    def force_write_stdout(self, msg):
+        open("/proc/self/fd/0", "wb").write(msg)
+        return
+
+    def dump_transfer(self, name, direction, fd, label, data):
+        arrow = "<-" if direction == "in" else "->"
+        head = "[fd {:d}] {:s} {:s} {:s}".format(fd, name, arrow, label)
+        lines = [titlify(head)]
+        if data:
+            lines.append(hexdump(data, base=0))
+        else:
+            lines.append("(no data)")
+        self.force_write_stdout(String.str2bytes("\n".join(lines) + "\n"))
+        return
+
+    def setup_catchpoints(self):
+        """Set a catch syscall for every supported+available syscall. Returns count set."""
+        for name in self.syscall_spec:
+            # only attempt syscalls the running target actually knows
+            if self.syscall_table and name not in self.syscall_table.name_table:
+                warn("syscall '{:s}' is unknown on this target, skipped".format(name))
+                continue
+            try:
+                res = gdb.execute("catch syscall {:s}".format(name), to_string=True)
+            except gdb.error as e:
+                warn("could not set catch syscall '{:s}': {}".format(name, e))
+                continue
+            # gdb prints e.g. "Catchpoint 3 (syscall 'read' [0])"
+            num = None
+            for tok in res.split():
+                if tok.isdigit():
+                    num = int(tok)
+                    break
+            if num is None:
+                warn("catch syscall '{:s}' did not return a catchpoint number, skipped".format(name))
+                # best-effort: it may still have been created; try to clean up later via name match is unreliable,
+                # so leave it. but do not track an unknown number.
+                continue
+            self.catch_numbers.append(num)
+            self.hooked_names.append(name)
+            self.hooked_set.add(name)
+        return len(self.catch_numbers)
+
+    def teardown_catchpoints(self):
+        for num in self.catch_numbers:
+            try:
+                gdb.execute("delete {:d}".format(num), to_string=True)
+            except gdb.error:
+                pass
+        self.catch_numbers = []
+        return
+
+    def syscall_nr_register(self):
+        if is_x86_64():
+            return "$orig_rax"
+        if is_x86_32():
+            return "$orig_eax"
+        return None
+
+    def current_syscall_number(self):
+        """Return the syscall number at the current catch-syscall stop, or None."""
+        regname = self.syscall_nr_register()
+        if regname is None:
+            return None
+        try:
+            nr = get_register(regname)
+        except Exception:
+            nr = None
+        return nr
+
+    def current_syscall_name(self):
+        """Return the name of the syscall at the current catch-syscall stop, or None."""
+        if self.syscall_table is None:
+            return None
+        nr = self.current_syscall_number()
+        if nr is None:
+            return None
+        entry = self.syscall_table.nr_table.get(nr, None)
+        if entry is None:
+            return None
+        return entry.name
+
+    def identify_stop(self):
+        """Determine if the current stop is one of our tapped syscalls."""
+        try:
+            tid = gdb.selected_thread().num
+        except Exception:
+            tid = 0
+
+        pending_name = self.in_syscall_by_thread.get(tid, None)
+        if pending_name is not None:
+            # this stop is the return matching the previous entry on this thread
+            self.in_syscall_by_thread[tid] = None
+            if pending_name not in self.hooked_set:
+                return None
+            return pending_name, False
+
+        # this stop is an entry: resolve the syscall name now and remember it
+        name = self.current_syscall_name()
+        self.in_syscall_by_thread[tid] = name
+        if name is None or name not in self.hooked_set:
+            return None
+        return name, True
+
+    def handle_entry(self, name):
+        try:
+            tid = gdb.selected_thread().num
+        except Exception:
+            tid = 0
+        entry = self.syscall_table.name_table[name]
+        arg_regs = entry.arg_regs
+        fd = self.entry_fd(arg_regs)
+        if fd not in self.target_fds:
+            self.pending_by_thread.pop(tid, None)
+            return
+        direction = self.syscall_spec[name][0]
+        if direction == "out":
+            # write-like: buffer is ready now, dump immediately, nothing to wait for
+            extracted = self.extract_entry_data(name, arg_regs)
+            if extracted is not None:
+                label, data = extracted
+                self.dump_transfer(name, direction, fd, label, data)
+            self.pending_by_thread.pop(tid, None)
+        else:
+            # read-like: snapshot args now (they may be clobbered by exit) and wait for the return
+            arg_values = [get_register(r) for r in arg_regs]
+            self.pending_by_thread[tid] = {"name": name, "fd": fd, "arg_values": arg_values}
+        return
+
+    def handle_return(self, name):
+        try:
+            tid = gdb.selected_thread().num
+        except Exception:
+            tid = 0
+        pending = self.pending_by_thread.pop(tid, None)
+        if pending is None or pending["name"] != name:
+            return
+        entry = self.syscall_table.name_table[name]
+        retval = get_register(entry.ret_regs[0])
+        # ret value is signed; treat large unsigned as negative error
+        if retval >= (1 << (current_arch.ptrsize * 8 - 1)):
+            retval = retval - (1 << (current_arch.ptrsize * 8))
+        direction = self.syscall_spec[name][0]
+        fd = pending["fd"]
+        extracted = self.extract_exit_data(name, pending["arg_values"], retval)
+        if extracted is not None:
+            label, data = extracted
+            self.dump_transfer(name, direction, fd, label, data)
+        return
+
+    def trace(self):
+        bp_was_hit = False
+        inferior_exited = False
+        EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
+        self.close_stdout_stderr()
+        try:
+            while True:
+                gdb.execute("continue", to_string=True)
+                if not is_alive():
+                    inferior_exited = True
+                    break
+                hit = self.identify_stop()
+                if hit is None:
+                    # stopped for some other reason (user breakpoint, signal, etc.)
+                    bp_was_hit = True
+                    break
+                name, is_entry = hit
+                if is_entry:
+                    self.handle_entry(name)
+                else:
+                    self.handle_return(name)
+        except KeyboardInterrupt:
+            bp_was_hit = True
+        except gdb.error as e:
+            self.err = e
+        finally:
+            self.revert_stdout_stderr()
+            EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
+        if inferior_exited:
+            info("Inferior exited")
+        return bp_was_hit
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "qemu-user", "kgdb", "vmware", "wine"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    def do_invoke(self, args):
+        self.target_fds = list(args.fd)
+        self.maxlen = args.maxlen
+        self.catch_numbers = []
+        self.hooked_names = []
+        self.hooked_set = set()
+        self.in_syscall_by_thread = {}
+        self.pending_by_thread = {}
+        self.err = None
+
+        if self.current_syscall_number() is None:
+            err("Failed to get {:s}".format(self.syscall_nr_register()))
+            return
+
+        self.syscall_table = Syscall.get_syscall_table()
+        if self.syscall_table is None:
+            err("Could not obtain the syscall table for this target")
+            return
+
+        count = self.setup_catchpoints()
+        if count == 0:
+            err("Could not set any catch syscall; this target/gdb does not support syscall catchpoints")
+            return
+
+        info("Tapping fd {:s} on {:d} syscalls: {:s}".format(
+            ", ".join(str(x) for x in self.target_fds),
+            count,
+            ", ".join(self.hooked_names),
+        ))
+        info("Running with auto-continue. Stop with a breakpoint or Ctrl+C.")
+
+        try:
+            bp_was_hit = self.trace()
+        finally:
+            self.teardown_catchpoints()
+            Cache.reset_gef_caches()
+            warn("xtap stopped, catchpoints removed")
+
+        if self.err:
+            err("{}".format(self.err))
+        elif bp_was_hit and is_alive():
+            gdb.execute("context")
+        return
+
+
+@register_command
 class ScanSectionCommand(GenericCommand):
     """Find memory addresses mapped across different regions."""
 

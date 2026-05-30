@@ -828,6 +828,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/fpchain.png)
 - `stepi-for-kgdb`: is wrapper for AArch64 KGDB that avoids stepping into pending IRQ handlers.
 - `xskip`: skips instructions easily.
+- `xtap`: taps read/write syscalls on specific file descriptors and hexdump the transferred data.
 
 ### Other
 - The category is introduced in `gef help`.
