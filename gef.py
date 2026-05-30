@@ -145443,7 +145443,7 @@ class XSkipCommand(GenericCommand):
             warn("Since this is a delay slot enabled architecture, there may be side effects. Please be careful.")
 
         pc = current_arch.pc
-        for i in range(args.count):
+        for _ in range(args.count):
             pc = Disasm.gef_instruction_n(pc, 1).address
         gdb.execute("set $pc = {:#x}".format(pc))
         gdb.execute("context")
