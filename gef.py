@@ -72712,7 +72712,7 @@ class StringsCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-r", "--range", type=AddressUtil.parse_address, default=0x40,
                         help="search range for recursively. (default: %(default)s)")
     parser.add_argument("-s", "--skip-save", action="store_true", help="do not save the output.")
-    parser.add_argument("-m", "--minlen", type=int, default=8, help="minimum string length (default: %(default)s)")
+    parser.add_argument("-m", "--minlen", type=int, default=7, help="minimum string length (default: %(default)s)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
@@ -72787,6 +72787,9 @@ class StringsCommand(GenericCommand, BufferingOutput):
     @only_if_gdb_running
     def do_invoke(self, args):
         if args.end_location:
+            if args.end_location < args.location:
+                err("Invalid END_LOCATION")
+                return
             first_range = args.end_location - args.location
         else:
             loc = ProcessMap.lookup_address(args.location)
