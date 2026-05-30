@@ -145416,6 +145416,38 @@ class XUntilCommand(GenericCommand):
 
 
 @register_command
+class XSkipCommand(GenericCommand):
+    """Skip instructions easily."""
+
+    _cmdline_ = "xskip"
+    _category_ = "01-d. Debugging Support - Execution"
+    _repeat_ = True
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("count", nargs="?", default=1, type=AddressUtil.parse_address,
+                        help="the count to skip.")
+    _syntax_ = parser.format_help()
+
+    @parse_args
+    @only_if_gdb_running
+    @require_arch_set
+    def do_invoke(self, args):
+        if args.count <= 0:
+            err("Invalid count")
+            return
+
+        if current_arch.has_delay_slot or current_arch.has_syscall_delay_slot or current_arch.has_ret_delay_slot:
+            warn("Since this is a delay slot enabled architecture, there may be side effects. Please be careful.")
+
+        pc = current_arch.pc
+        for i in range(args.count):
+            pc = Disasm.gef_instruction_n(pc, 1).address
+        gdb.execute("set $pc = {:#x}".format(pc))
+        gdb.execute("context")
+        return
+
+
+@register_command
 class ExecUntilCommand(GenericCommand):
     """The base command to execute until specific condition."""
 

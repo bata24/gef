@@ -827,6 +827,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `fpchain`: dumps chains from `__IO_list_all`.
     - ![](images/fpchain.png)
 - `stepi-for-kgdb`: is wrapper for AArch64 KGDB that avoids stepping into pending IRQ handlers.
+- `xskip`: skips instructions easily.
 
 ### Other
 - The category is introduced in `gef help`.
