@@ -1161,6 +1161,24 @@ class Address:
             line_color += " " + Config.get_gef_setting("theme.address_rwx")
         return Color.colorify(value, line_color)
 
+    def is_in_readable(self): # noqa
+        if self.section is None:
+            return False
+        r = hasattr(self.section, "is_readable") and self.section.is_readable()
+        return r
+
+    def is_in_writable(self):
+        if self.section is None:
+            return False
+        w = hasattr(self.section, "is_writable") and self.section.is_writable()
+        return w
+
+    def is_in_executable(self):
+        if self.section is None:
+            return False
+        x = hasattr(self.section, "is_executable") and self.section.is_executable()
+        return x
+
     def is_rwx(self):
         if self.section is None:
             return False
@@ -1185,12 +1203,6 @@ class Address:
         a = hasattr(self.info, "name") and isinstance(self.info.name, str) and ".text" in self.info.name
         e = hasattr(self.section, "is_executable") and self.section.is_executable()
         return a or e
-
-    def is_in_writable(self):
-        if self.section is None:
-            return False
-        w = hasattr(self.section, "is_writable") and self.section.is_writable()
-        return w
 
     def is_in_readonly(self):
         if self.section is None:
@@ -29310,6 +29322,172 @@ class KernelChecksecCommand(GenericCommand):
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.print_security_properties_qemu_system()
+        return
+
+
+@register_command
+class ExploitableCommand(GenericCommand):
+    """Heuristically classify the exploitability of the current crash."""
+
+    _cmdline_ = "exploitable"
+    _category_ = "02-f. Process Information - Security"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="show every signal/heuristic detail that fed the risk rating.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "{:s}".format(_cmdline_)
+
+    _note_ = [
+        "Inspects the current stop (a fatal signal) and gives an MSEC !exploitable-style",
+        "rating: EXPLOITABLE / PROBABLY_EXPLOITABLE / PROBABLY_NOT_EXPLOITABLE / UNKNOWN.",
+        "It is a heuristic triage hint (signal, $_siginfo fault address, $pc mapping, and",
+        "faulting instruction class), not a proof. Userland x86/x86-64 only.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    RISK = {
+        "exploitable": "EXPLOITABLE",
+        "probably": "PROBABLY_EXPLOITABLE",
+        "probably_not": "PROBABLY_NOT_EXPLOITABLE",
+        "unknown": "UNKNOWN",
+    }
+
+    def risk_color(self, key):
+        text = self.RISK[key]
+        if key == "exploitable":
+            return Color.redify(text)
+        if key == "probably":
+            return Color.yellowify(text)
+        if key == "probably_not":
+            return Color.greenify(text)
+        return Color.grayify(text)
+
+    def current_signal_name(self):
+        """Return the stop signal name (e.g. 'SIGSEGV')"""
+        try:
+            res = gdb.execute("info program", to_string=True).splitlines()
+        except gdb.error:
+            return None
+        for line in res:
+            line = line.strip()
+            if line.startswith("It stopped with signal "):
+                return line.replace("It stopped with signal ", "").split(",", 1)[0].strip()
+        return None
+
+    def fault_address(self):
+        """Return the faulting address from siginfo, or None if unavailable."""
+
+        # $_siginfo is a gdb convenience variable whose siginfo type is built into gdb,
+        # so the member access works even on stripped binaries (it does not rely on the
+        # target's debug symbols). It has no memory address, so there is no raw-memory
+        # fallback; we just try the known member paths.
+        for expr in ("$_siginfo._sifields._sigfault.si_addr", "$_siginfo.si_addr"):
+            try:
+                return AddressUtil.normalize_address(int(gdb.parse_and_eval(expr)))
+            except Exception:
+                continue
+        return None
+
+    def near_null(self, addr):
+        """A fault very close to 0 usually means a NULL-pointer deref (rarely exploitable)."""
+        if addr is None:
+            return False
+        return addr < 0x1000
+
+    def insn_is_control_transfer(self, insn):
+        """True if the $pc instruction is a call/jmp/ret-style control transfer."""
+        if insn is None:
+            return False
+        return (current_arch.is_call(insn) or current_arch.is_jump(insn)
+                or current_arch.is_ret(insn))
+
+    def classify(self):
+        """Return (risk_key, headline) and fill self.details."""
+        signame = self.current_signal_name()
+        pc = current_arch.pc
+        sp = current_arch.sp
+        fault = self.fault_address()
+        pc_addr = Address(pc)
+        pc_mapped = pc_addr.section is not None
+        pc_exec = pc_addr.is_in_executable()
+        try:
+            insn = get_insn()
+        except Exception:
+            insn = None
+
+        self.details.append("signal: {}".format(signame if signame else "none/unknown"))
+        self.details.append("$pc = {:#x} (mapped={}, executable={})".format(pc, pc_mapped, pc_exec))
+        self.details.append("$sp = {:#x}".format(sp))
+        if fault is not None:
+            fault_addr = Address(fault)
+            self.details.append("fault address (si_addr) = {:#x} (mapped={}, writable={})".format(
+                fault, fault_addr.section is not None, fault_addr.is_in_writable()))
+        else:
+            self.details.append("fault address (si_addr) = unavailable")
+
+        if signame is None:
+            return "unknown", "Not stopped by a signal; nothing to triage."
+
+        if signame in ("SIGSEGV", "SIGILL", "SIGBUS") and pc_mapped is False:
+            self.details.append("=> $pc points to unmapped memory: corrupted/controlled control flow.")
+            return "exploitable", "Execution reached an unmapped address ($pc not in any mapping)."
+
+        if signame in ("SIGSEGV", "SIGILL", "SIGBUS") and pc_mapped and not pc_exec:
+            self.details.append("=> $pc is in a non-executable mapping: control flow corrupted.")
+            return "exploitable", "$pc is in a non-executable mapping (corrupted control flow)."
+
+        if signame == "SIGILL":
+            self.details.append("=> SIGILL: illegal instruction executed.")
+            return "exploitable", "Illegal instruction executed (SIGILL)."
+
+        if signame == "SIGSEGV" and fault is not None and fault == pc:
+            self.details.append("=> fault address equals $pc: bad instruction fetch (controlled execution).")
+            return "exploitable", "Faulted fetching an instruction at $pc (controlled jump target)."
+
+        if signame == "SIGSEGV" and self.insn_is_control_transfer(insn):
+            if current_arch.is_ret(insn):
+                self.details.append("=> faulting instruction is RET: possibly a corrupted return address.")
+                return "exploitable", "RET to a faulting address (possible return-address corruption)."
+            self.details.append("=> faulting instruction is a call/jmp to a faulting target.")
+            return "probably", "Indirect call/jump to a faulting target (possible pointer corruption)."
+
+        if signame == "SIGABRT":
+            self.details.append("=> SIGABRT: libc aborted (stack canary / heap check / assert).")
+            return "probably", "Process aborted by libc (corruption check or failed assertion)."
+
+        if signame == "SIGSEGV" and self.near_null(fault):
+            self.details.append("=> near-NULL fault address: typically a NULL-pointer dereference.")
+            return "probably_not", "Near-NULL dereference (commonly not exploitable)."
+
+        if signame == "SIGSEGV" and fault is not None and not self.near_null(fault):
+            self.details.append("=> SIGSEGV at a non-trivial address: possible controlled read/write.")
+            return "probably", "Access violation at a non-NULL address (possible controlled access)."
+
+        if signame in ("SIGFPE", "SIGBUS"):
+            self.details.append("=> arithmetic or bus error: typically not directly exploitable.")
+            return "probably_not", "{} is usually not directly exploitable.".format(signame)
+
+        self.details.append("=> no specific heuristic matched.")
+        return "unknown", "Could not classify this stop with the available heuristics."
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    def do_invoke(self, args):
+        self.details = []
+        key, headline = self.classify()
+
+        gef_print(titlify("exploitability triage"))
+        gef_print("Risk: {} (HEURISTIC)".format(self.risk_color(key)))
+        gef_print("Reason: {}".format(headline))
+
+        if args.verbose:
+            gef_print(titlify("details"))
+            for line in self.details:
+                gef_print("  {}".format(line))
         return
 
 
