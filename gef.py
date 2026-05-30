@@ -146226,11 +146226,30 @@ class CallTraceCommand(ExecUntilCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-a", "--print-args", action="store_true",
                         help="dump arguments, return value, and syscall args.")
+    parser.add_argument("-s", "--syscall-only", action="store_true",
+                        help="trace syscall only.")
+    parser.add_argument("-N", "--no-file-output", action="store_true",
+                        help="disable writing trace output to a file.")
     _syntax_ = parser.format_help()
     _example_ = None
 
     def __init__(self):
         super().__init__(prefix=False)
+        return
+
+    def write_trace(self, msg):
+        if isinstance(msg, str):
+            msg = String.str2bytes(msg)
+
+        self.force_write_stdout(msg)
+
+        if self.args.no_file_output:
+            return
+
+        msg = String.bytes2str(msg)
+        msg = Color.remove_color(msg)
+        self.output_fd.write(msg)
+        self.output_fd.flush()
         return
 
     def print_insn(self, insn, indent):
@@ -146243,7 +146262,7 @@ class CallTraceCommand(ExecUntilCommand):
         color_func = colors_table[(indent // 2) % len(colors_table)]
         insn_b = String.str2bytes(color_func(str(insn)))
         msg = b" " * indent + insn_b + b"\n"
-        self.force_write_stdout(msg)
+        self.write_trace(msg)
         return
 
     def print_insn_call(self, insn, indent):
@@ -146251,7 +146270,7 @@ class CallTraceCommand(ExecUntilCommand):
         if self.args.print_args:
             res = gdb.execute("registers {:s}".format(" ".join(current_arch.function_parameters)), to_string=True)
             res = "\n".join(" " * indent + x for x in res.splitlines()) + "\n"
-            self.force_write_stdout(String.str2bytes(res))
+            self.write_trace(res)
         return
 
     def print_insn_ret(self, insn, indent):
@@ -146259,7 +146278,7 @@ class CallTraceCommand(ExecUntilCommand):
         if self.args.print_args:
             res = gdb.execute("registers {:s}".format(current_arch.return_register), to_string=True)
             res = "\n".join(" " * indent + x for x in res.splitlines()) + "\n"
-            self.force_write_stdout(String.str2bytes(res))
+            self.write_trace(res)
         return
 
     def print_insn_syscall(self, insn, indent):
@@ -146267,7 +146286,19 @@ class CallTraceCommand(ExecUntilCommand):
         if self.args.print_args:
             res = gdb.execute("syscall-args", to_string=True)
             res = "\n".join(" " * indent + x for x in res.splitlines()) + "\n"
-            self.force_write_stdout(String.str2bytes(res))
+            self.write_trace(res)
+        return
+
+    def print_syscall_ret(self, indent):
+        if not self.args.print_args:
+            return
+
+        msg = " " * indent + "[+] Syscall return\n"
+        self.write_trace(msg)
+
+        res = gdb.execute("registers {:s}".format(current_arch.return_register), to_string=True)
+        res = "\n".join(" " * indent + x for x in res.splitlines()) + "\n"
+        self.write_trace(res)
         return
 
     def call_trace(self):
@@ -146278,6 +146309,7 @@ class CallTraceCommand(ExecUntilCommand):
 
         prev_addr = -1
         next_should_print = False # flag to dump instructions to which calls and rets are jumped
+        pending_syscall_ret_indent = None
         print_indent = 0
         try:
             while True:
@@ -146291,6 +146323,12 @@ class CallTraceCommand(ExecUntilCommand):
                 gdb.execute("si") # use si wrapper
                 insn = get_insn()
 
+                # print syscall ret
+                if pending_syscall_ret_indent is not None:
+                    self.print_syscall_ret(pending_syscall_ret_indent)
+                    pending_syscall_ret_indent = None
+
+                # print normal insn
                 if next_should_print:
                     next_should_print = False
                     self.print_insn(insn, print_indent)
@@ -146314,20 +146352,24 @@ class CallTraceCommand(ExecUntilCommand):
                         break
                     insn = get_insn()
 
-                # call or ret
+                # call or ret or syscall
                 if current_arch.is_call(insn):
-                    if not printed_already:
-                        self.print_insn_call(insn, print_indent)
-                    next_should_print = True
-                    print_indent += 2
+                    if not self.args.syscall_only:
+                        if not printed_already:
+                            self.print_insn_call(insn, print_indent)
+                        next_should_print = True
+                        print_indent += 2
                 elif current_arch.is_ret(insn):
-                    if not printed_already:
-                        self.print_insn_ret(insn, print_indent)
-                    next_should_print = True
-                    print_indent = max(print_indent - 2, 0)
+                    if not self.args.syscall_only:
+                        if not printed_already:
+                            self.print_insn_ret(insn, print_indent)
+                        next_should_print = True
+                        print_indent = max(print_indent - 2, 0)
                 elif current_arch.is_syscall(insn):
                     if not printed_already:
                         self.print_insn_syscall(insn, print_indent)
+                    if self.args.print_args:
+                        pending_syscall_ret_indent = print_indent
 
         except KeyboardInterrupt:
             pass
@@ -146353,7 +146395,15 @@ class CallTraceCommand(ExecUntilCommand):
     @only_if_gdb_running
     @require_arch_set
     def do_invoke(self, args):
+        if not self.args.no_file_output:
+            fd, fname = GefUtil.mkstemp(prefix="call-trace", suffix=".log")
+            self.output_fd = os.fdopen(fd, "w")
+
         self.call_trace()
+
+        if not self.args.no_file_output:
+            self.output_fd.close()
+            info("Saved to {!r}".format(fname))
         return
 
 
