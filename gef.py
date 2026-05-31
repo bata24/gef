@@ -34602,6 +34602,7 @@ class HexdumpFlexibleCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-t", "--tag", nargs=2, action="append", metavar=("IDX", "TAG"),
                         help="display with tags.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
 
     _example_ = [
         '{0:s} "2Q2I2H2B" $rsp 4  # "Show qword*2, dword*2, short*2, byte*2" from $rsp and repeat 4 times',
@@ -152079,6 +152080,7 @@ class GefCommand(GenericCommand):
     subparsers.add_parser("version")
     subparsers.add_parser("check-update")
     subparsers.add_parser("tmux-setup")
+    subparsers.add_parser("dump-commands")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -153000,6 +153002,154 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
         if args.sort:
             self.out = sorted(self.out)
         self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class GefDumpCommandsCommand(GenericCommand):
+    """Dump GEF command documentation as Markdown."""
+
+    _cmdline_ = "gef dump-commands"
+    _category_ = "99. GEF Maintenance Command"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("output", metavar="OUTPUT", nargs="?", default="COMMANDS.md",
+                        help="output file path. (default: %(default)s)")
+    _syntax_ = parser.format_help()
+
+    def normalize_text(self, value):
+        """Normalize a value for Markdown output."""
+        if value is None:
+            return ""
+
+        text = str(value).strip()
+        return text
+
+    def make_code_block(self, value, lang="text"):
+        """Render a fenced Markdown code block."""
+        text = self.normalize_text(value)
+        if not text:
+            return ""
+
+        fence = "```"
+        while fence in text:
+            fence += "`"
+
+        return "{:s}{:s}\n{:s}\n{:s}".format(fence, lang, text, fence)
+
+    def make_inline_code(self, value):
+        """Render inline Markdown code."""
+        text = self.normalize_text(value)
+        if not text:
+            return ""
+
+        return "`{:s}`".format(text.replace("`", "\\`"))
+
+    def get_aliases(self, instance):
+        """Return aliases as a normalized list."""
+        aliases = getattr(instance, "_aliases_", [])
+
+        if aliases is None:
+            return []
+
+        if isinstance(aliases, str):
+            if aliases:
+                return [aliases]
+            return []
+
+        if hasattr(aliases, "__iter__"):
+            return [str(alias) for alias in aliases]
+
+        return [str(aliases)]
+
+    def get_summary(self, instance):
+        summary = getattr(instance.__class__, "__doc__", "")
+        return self.normalize_text(summary)
+
+    def render_command(self, command_name, instance):
+        """Render a single command as Markdown."""
+        syntax = getattr(instance, "_syntax_", None)
+        example = getattr(instance, "_example_", None)
+        note = getattr(instance, "_note_", None)
+        aliases = self.get_aliases(instance)
+        summary = self.get_summary(instance)
+
+        lines = []
+        lines.append("## {:s}".format(command_name))
+        lines.append("")
+
+        if summary:
+            lines.append(summary)
+            lines.append("")
+
+        if aliases:
+            rendered_aliases = ", ".join(self.make_inline_code(alias) for alias in aliases)
+            lines.append("- Alias: {:s}".format(rendered_aliases))
+
+        lines.append("")
+
+        if syntax:
+            lines.append("### Syntax")
+            lines.append("")
+            lines.append(self.make_code_block(syntax, "text"))
+            lines.append("")
+
+        if example:
+            lines.append("### Examples")
+            lines.append("")
+            lines.append(self.make_code_block(example, "gdb"))
+            lines.append("")
+
+        if note:
+            lines.append("### Notes")
+            lines.append("")
+            lines.append(self.make_code_block(note, "text"))
+            lines.append("")
+
+        return "\n".join(lines).rstrip()
+
+    def render_commands(self):
+        """Render all registered GEF commands as Markdown."""
+        lines = []
+        lines.append("# GEF Commands")
+        lines.append("")
+
+        commands = []
+        categories = set()
+        for command_name, instance in __gef_command_instances__.items():
+            if not getattr(instance, "_cmdline_", None):
+                continue
+            category = instance._category_
+            categories.add(category)
+            commands.append((category, command_name, instance))
+        commands = sorted(commands, key=lambda item: (item[0], item[1]))
+
+        lines.append("## Table of contents")
+        lines.append("")
+        for cat_orig in sorted(list(categories)):
+            cat = cat_orig[::]
+            cat = cat.replace(" ", "-")
+            cat = cat.replace("/", "")
+            cat = cat.replace(".", "")
+            cat = cat.lower()
+            lines.append("- [{:s}](#{:s})".format(cat_orig, cat))
+        lines.append("")
+
+        prev_category = None
+        for category, command_name, instance in commands:
+            if category != prev_category:
+                lines.append("# {:s}".format(category))
+                prev_category = category
+            lines.append(self.render_command(command_name, instance))
+            lines.append("")
+
+        return "\n".join(lines).rstrip() + "\n"
+
+    @parse_args
+    def do_invoke(self, args):
+        output = self.render_commands()
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(output)
         return
 
 

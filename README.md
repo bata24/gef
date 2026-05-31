@@ -797,6 +797,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/gef-avail-comm-list.png)
 - `gef set-arch`: sets a specific architecture to GEF.
 - `gef check-update`: checks for GEF updates.
+- `gef dump-commands`: dumps GEF command documentation as Markdown.
 - `binwalk-memory`: scans memory by `binwalk`.
     - ![](images/binwalk-memory.png)
 - `filetype-memory`: scans memory by `file` and `magika`.
