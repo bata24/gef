@@ -12538,7 +12538,7 @@ def only_if_in_kernel_or_kpti_disabled(f):
 
 
 def only_if_kvm_disabled(f):
-    """Decorator wrapper to check if there is not -enable-kvm option."""
+    """Decorator wrapper to check if there is not `-enable-kvm` option."""
 
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
@@ -12551,7 +12551,7 @@ def only_if_kvm_disabled(f):
 
 
 def only_if_smp_disabled(f):
-    """Decorator wrapper to check if there is not -smp N option."""
+    """Decorator wrapper to check if there is not `-smp N` option."""
 
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
@@ -28163,7 +28163,7 @@ class KernelChecksecCommand(GenericCommand):
         # CET MSR
         if (cr4 >> 23) & 1:
             if is_kvm_enabled():
-                additional = "for more precisely, use `msr MSR_IA32_S_CET` without --enable-kvm"
+                additional = "for more precisely, use `msr MSR_IA32_S_CET` without `-enable-kvm`"
                 gef_print("{:<40s}: {:s} ({:s})".format("CET SHSTK (MSR_IA32_S_CET bit 0)", Color.grayify("Unknown"), additional))
                 gef_print("{:<40s}: {:s} ({:s})".format("CET IBT (MSR_IA32_S_CET bit 2)", Color.grayify("Unknown"), additional))
             else:
@@ -62487,7 +62487,7 @@ class Kernel:
                     return Kinfo(*dic.values())
 
         # 2a. search for the kernel RO base
-        # If the -enable-kvm option for qemu-system is not enabled,
+        # If the `-enable-kvm` option for qemu-system is not enabled,
         # there might be multiple 'r-- but non-.rodata' regions between .text and .rodata.
         #   [  .text    ]
         #   [  .text    ]
@@ -137065,7 +137065,7 @@ class MsrCommand(GenericCommand):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "Disable`-enable-kvm` option for qemu-system.",
+        "Disable `-enable-kvm` option for qemu-system.",
     ]
     _note_ = "\n".join(_note_)
 

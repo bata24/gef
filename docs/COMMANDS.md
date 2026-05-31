@@ -7189,7 +7189,7 @@ msr 0xc0000080 0xd01  # write msr
 ### Notes
 
 ```text
-Disable`-enable-kvm` option for qemu-system.
+Disable `-enable-kvm` option for qemu-system.
 ```
 
 ## qreg
