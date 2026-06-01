@@ -373,46 +373,54 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `tcmalloc-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list (x64 only).
     - ![](images/tcmalloc-dump.png)
     - How to test:
-        - Execute as `LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc.so ./a.out`.
+        - Run your test program with `LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc.so ./a.out`.
 - `musl-heap-dump`: dumps Musl-Libc v1.2.5 heap chunks (x64/x86 only).
     - ![](images/musl-heap-dump.png)
     - How to test:
-        - Get and extract the latest source from https://musl.libc.org/
+        - Get and extract the upstream source from https://musl.libc.org/
         - Build with `./configure && make install`.
-        - Build as `/usr/local/musl/bin/musl-gcc test.c`.
+        - Then build with `/usr/local/musl/bin/musl-gcc test.c`.
 - `go-heap-dump`: dumps Go Language v1.24.4 mheap (x64 only).
     - ![](images/go-heap-dump.png)
 - `tlsf-heap-dump`: dumps TLSF (Two-Level Segregated Fit) v2.4.6 free-list (x64 only).
     - ![](images/tlsf-heap-dump.png)
     - How to test (x64):
-        - Get and extract the latest source from http://www.gii.upv.es/tlsf/
+        - Get and extract the upstream source from http://www.gii.upv.es/tlsf/
         - Build with `cd TLSF-2.4.6/src && make && cd ../examples && make` then use `test1` etc.
 - `hoard-heap-dump`: dumps Hoard v3.2 (2025/12/31) free-list (x64 only).
     - ![](images/hoard-heap-dump.png)
     - How to test (x64):
-        - Get and extract the latest source from https://github.com/emeryberger/Hoard
+        - Get and extract the upstream source from https://github.com/emeryberger/Hoard
         - Build with `cd Hoard/src && make`.
-        - Execute as `LD_PRELOAD=/PATH/TO/libhoard.so ./a.out`.
+        - Run your test program with `LD_PRELOAD=/PATH/TO/libhoard.so ./a.out`.
 - `mimalloc-heap-dump`: dumps mimalloc free-list (x64 only).
     - ![](images/mimalloc-heap-dump.png)
     - How to test (x64):
-        - Get and extract the latest source from https://github.com/microsoft/mimalloc
+        - Get and extract the upstream source from https://github.com/microsoft/mimalloc
         - Build with `mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Debug .. && make`.
-        - Execute as `LD_PRELOAD=/PATH/TO/libmimalloc.so ./a.out`.
+        - Run your test program with `LD_PRELOAD=/PATH/TO/libmimalloc.so ./a.out`.
 - `scalloc-heap-dump`: dumps scalloc free-list (x64 only).
     - ![](images/scalloc-heap-dump.png)
     - How to test (x64):
-        - Get and extract the latest source from https://github.com/cksystemsgroup/scalloc
+        - Get and extract the upstream source from https://github.com/cksystemsgroup/scalloc
         - Fix the bug with `sed -i -e 's/\(strncat(.*\), 1);/\1, 2);/' src/log.h`.
         - Build with `gyp --depth . scalloc.gyp && make`.
         - Enable overcommit with `echo 1 > /proc/sys/vm/overcommit_memory`.
-        - Execute as `LD_PRELOAD=/PATH/TO/libscalloc.so ./a.out`.
+        - Run your test program with `LD_PRELOAD=/PATH/TO/libscalloc.so ./a.out`.
 - `snmalloc-heap-dump`: dumps snmalloc free-list (x64 only).
-    * ![](https://raw.githubusercontent.com/bata24/gef/dev/images/snmalloc-heap-dump.png)
+    * ![](images/snmalloc-heap-dump.png)
     * How to test (x64):
-        - Get and extract the latest source from https://github.com/microsoft/snmalloc
+        - Get and extract the upstream source from https://github.com/microsoft/snmalloc
         - Build with `mkdir build && cd build && cmake -G Ninja .. -DCMAKE_BUILD_TYPE=Debug && ninja`.
-        - Execute as `LD_PRELOAD=/PATH/TO/libsnmallocshim.so ./a.out`.
+        - Run your test program with `LD_PRELOAD=/PATH/TO/libsnmallocshim.so ./a.out`.
+- `ssmalloc-heap-dump`: dumps ssmalloc free-list (x64 only).
+    * ![](images/ssmalloc-heap-dump.png)
+    * How to test (x64):
+        - Get and extract the upstream source from https://github.com/Naruil/SSMalloc
+        - Patch `new_delete.cpp` because the original source uses dynamic exception specifications, which are rejected by C++17 and later:
+            - `sed -i -e 's/ throw *(std::bad_alloc)//g' -e 's/^void operator delete(void \*ptr)$/void operator delete(void *ptr) noexcept/' -e 's/^void operator delete\[\](void \*ptr)$/void operator delete[](void *ptr) noexcept/' new_delete.cpp`
+        - Build with `make`
+        - Run your test program with `LD_PRELOAD=/PATH/TO/libssmalloc.so ./a.out`.
 - `optee-bget-dump`: dumps bget allocator of OPTEE-Trusted-App.
     - ![](images/optee-bget-dump.png)
 - `v8`: displays v8 (Chromium and `d8`) tagged object.

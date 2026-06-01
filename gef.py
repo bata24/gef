@@ -132528,6 +132528,693 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
+    """SSMalloc heap free-list viewer (x64 only)."""
+
+    _cmdline_ = "ssmalloc-heap-dump"
+    _category_ = "05-c. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--local_heap", type=AddressUtil.parse_address,
+                        help="use specific address for local_heap.")
+    parser.add_argument("--global_pool", type=AddressUtil.parse_address,
+                        help="use specific address for global_pool.")
+    parser.add_argument("-a", "--all", action="store_true", help="dump all local_heap.")
+    parser.add_argument("-g", "--global", dest="global_pool_queue", action="store_true",
+                        help="dump global_pool queues.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display also empty freelists.")
+    _syntax_ = parser.format_help()
+
+    _note_ = [
+        "Simplified SSMalloc structure:",
+        "",
+        "+-lheap_t(local heap)------------------+",
+        "| free_head (completely free dchunks)  |------> dchunk_t --> dchunk_t --> ...",
+        "| foreground[] (active dchunk)         |---+",
+        "| background[] (non-full dchunks)      |<--|--> dchunk_t <-> dchunk_t <-> ...",
+        "| block_bufs[] (remote-free buffer)    |   |",
+        "| need_gc[] (remote-free dchunks)      |   |",
+        "+--------------------------------------+   |",
+        "                                           |",
+        "  +----------------------------------------+",
+        "  |",
+        "  v                                    [local free objects]",
+        "+-dchunk_t-------------+               +-object-+  +-object-+",
+        "| ...                  |       +------>| next   |->| next   |->...",
+        "| size_cls             |       |       +--------+  +--------+",
+        "| ...                  |       |",
+        "| free_head            |-------+       [unused / bump area]",
+        "| block_size           |               +-object-+  +-object-+",
+        "| free_mem             |-------------->|        |  |        |...",
+        "| remote_free_head     |-------+       +--------+  +--------+",
+        "+----------------------+       |",
+        "                               |       [remote free objects]",
+        "                               |       +-object-+  +-object-+",
+        "                               +------>| next   |->| next   |->...",
+        "                                       +--------+  +--------+",
+        "",
+        "* `local_heap` is the per-thread entry point.",
+        "* `lheap_t.free_head` is completely free chunks kept by the local heap.",
+        "* `lheap_t.foreground[size_cls]` points to the active `dchunk_t` for that size class.",
+        "* `lheap_t.background[size_cls]` is a doubly linked list of non-full dchunks.",
+        "* `dchunk_t.free_head` is locally freed objects.",
+        "* Allocation from a `dchunk_t` pops `free_head` first; if it is empty, allocation advances `free_mem`.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def initialize(self):
+        if hasattr(self, "initialized") and self.initialized:
+            return True
+
+        # SSMalloc/include-x86_64/cpu.h
+        self.PAGE_SIZE = 0x1000
+        self.CHUNK_DATA_SIZE = 0x10 * self.PAGE_SIZE
+        self.DEFAULT_BLOCK_CLASS = 100
+        self.MAX_CORE_ID = 8
+        self.BLOCK_BUF_CNT = 16
+        #self.LARGE_CLASS = 100
+        self.DUMMY_CLASS = 101
+        #self.LARGE_OWNER = 0xdead
+        self.ABA_ADDR_BIT = 48
+        self.ABA_ADDR_MASK = (1 << self.ABA_ADDR_BIT) - 1
+
+        # queue.h / double-list.h derived sizes on x86_64
+        #self.sizeof_linked_list_elem = 0x18
+        self.sizeof_linked_list = 0x10
+        #self.sizeof_seq_queue = current_arch.ptrsize
+        self.sizeof_queue = 0x40
+        self.sizeof_obj_buf = 0x20
+        self.sizeof_dchunk = 0x100
+        self.CHUNK_SIZE = self.CHUNK_DATA_SIZE + self.sizeof_dchunk
+        self.MAX_FREE_CHUNK = (4 * 0x100000) // self.CHUNK_SIZE
+
+        # dchunk_t offsets
+        self.offset_dchunk_next = current_arch.ptrsize
+        self.offset_dchunk_prev = current_arch.ptrsize * 2
+        self.offset_dchunk_numa_node = 0x18
+        self.offset_dchunk_owner = 0x40
+        self.offset_dchunk_size_cls = 0x48
+        self.offset_dchunk_state = 0x80
+        self.offset_dchunk_free_blk_cnt = 0x84
+        self.offset_dchunk_blk_cnt = 0x88
+        self.offset_dchunk_free_head = 0x90
+        self.offset_dchunk_block_size = 0x98
+        self.offset_dchunk_free_mem = 0xa0
+        self.offset_dchunk_remote_free_head = 0xc0
+
+        # lheap_t offsets
+        self.offset_lheap_numa_node = 0x18
+        self.offset_lheap_free_head = 0x20
+        self.offset_lheap_free_cnt = 0x28
+        self.offset_lheap_foreground = 0x30
+        self.offset_lheap_background = 0x350
+        self.offset_lheap_dummy_chunk = 0x9c0
+        self.offset_lheap_block_bufs = 0xac0
+        self.offset_lheap_need_gc = 0xcc0
+
+        # obj_buf_t offsets
+        self.offset_obj_buf_dc = 0x0
+        self.offset_obj_buf_first = 0x8
+        self.offset_obj_buf_free_head = 0x10
+        self.offset_obj_buf_count = 0x18
+
+        # gpool_t offsets, pthread_mutex_t is 0x28 bytes on Linux/x86_64 glibc
+        self.offset_gpool_pool_start = 0x28
+        self.offset_gpool_pool_end = 0x30
+        self.offset_gpool_free_start = 0x38
+        self.offset_gpool_free_dc_head = 0x40
+        self.offset_gpool_free_lh_head = 0x240
+        self.offset_gpool_released_dc_head = 0x440
+
+        self.state_names = {
+            0: "FOREGROUND",
+            1: "BACKGROUND",
+            2: "FULL",
+        }
+        self.class_to_size_list = self.build_class_to_size_list()
+        self.initialized = True
+        return True
+
+    def build_class_to_size_list(self):
+        try:
+            cls2size = AddressUtil.parse_address("&cls2size")
+            class_to_size_list = []
+            for size_cls in range(self.DEFAULT_BLOCK_CLASS):
+                size = read_int32_from_memory(cls2size + (size_cls * 4))
+                class_to_size_list.append(size)
+            if any(class_to_size_list):
+                return class_to_size_list
+        except gdb.error:
+            pass
+        except gdb.MemoryError:
+            pass
+
+        class_to_size_list = []
+        for size in range(8, 64 + 1, 4):
+            class_to_size_list.append(size)
+        for size in range(64 + 16, 128 + 1, 16):
+            class_to_size_list.append(size)
+        for size in range(128 + 32, 256 + 1, 32):
+            class_to_size_list.append(size)
+        size = 256
+        while size < 65536:
+            class_to_size_list.append(size + (size >> 1))
+            class_to_size_list.append(size << 1)
+            size <<= 1
+        while len(class_to_size_list) < self.DEFAULT_BLOCK_CLASS:
+            class_to_size_list.append(0)
+        return class_to_size_list
+
+    def class_to_size(self, size_cls):
+        if size_cls < 0 or size_cls >= len(self.class_to_size_list):
+            return 0
+        return self.class_to_size_list[size_cls]
+
+    def decode_aba_address(self, value):
+        return value & self.ABA_ADDR_MASK
+
+    def decode_aba_count(self, value):
+        return value >> self.ABA_ADDR_BIT
+
+    def get_state_name(self, state):
+        return self.state_names.get(state, "Unknown")
+
+    def is_chunk_aligned(self, addr):
+        if addr == 0:
+            return False
+        return (addr % self.CHUNK_SIZE) == 0
+
+    def is_lheap_candidate(self, addr):
+        if addr == 0:
+            return False
+        if not is_valid_addr(addr):
+            return False
+        if not self.is_chunk_aligned(addr):
+            return False
+        try:
+            numa_node = read_int32_from_memory(addr + self.offset_lheap_numa_node)
+            free_cnt = read_int32_from_memory(addr + self.offset_lheap_free_cnt)
+            foreground = read_int_from_memory(addr + self.offset_lheap_foreground)
+        except gdb.MemoryError:
+            return False
+        if numa_node >= self.MAX_CORE_ID:
+            return False
+        if free_cnt > self.MAX_FREE_CHUNK:
+            return False
+        dummy_chunk = addr + self.offset_lheap_dummy_chunk
+        if foreground == dummy_chunk:
+            return True
+        if is_valid_addr(foreground) and self.is_chunk_aligned(foreground):
+            return True
+        return False
+
+    def get_current_local_heap_heuristic(self):
+        tls = current_arch.get_tls()
+        for i in range(-0x40, 0x41):
+            addr = tls + (current_arch.ptrsize * i)
+            try:
+                val = read_int_from_memory(addr)
+            except gdb.MemoryError:
+                continue
+            if self.is_lheap_candidate(val):
+                return val
+        return None
+
+    def get_current_local_heap(self):
+        try:
+            local_heap_ptr = AddressUtil.parse_address("&local_heap")
+            local_heap = read_int_from_memory(local_heap_ptr)
+            if self.is_lheap_candidate(local_heap):
+                return local_heap
+        except gdb.error:
+            pass
+        except gdb.MemoryError:
+            pass
+        return self.get_current_local_heap_heuristic()
+
+    def get_local_heap_list(self, all_thread=False):
+        if self.args.local_heap:
+            return [(gdb.selected_thread().num, self.args.local_heap)]
+
+        if all_thread:
+            orig_thread = gdb.selected_thread()
+            orig_frame = gdb.selected_frame()
+            local_heaps = []
+            for thread in gdb.selected_inferior().threads():
+                thread.switch()
+                local_heap = self.get_current_local_heap()
+                if local_heap:
+                    local_heaps.append((thread.num, local_heap))
+            orig_thread.switch()
+            orig_frame.select()
+            return local_heaps
+
+        local_heap = self.get_current_local_heap()
+        if local_heap:
+            return [(gdb.selected_thread().num, local_heap)]
+        return None
+
+    def get_global_pool(self):
+        if self.args.global_pool:
+            return self.args.global_pool
+        try:
+            return AddressUtil.parse_address("&global_pool")
+        except gdb.error:
+            pass
+        return None
+
+    def read_dchunk(self, addr):
+        dic = {}
+        dic["addr"] = addr
+        dic["next"] = read_int_from_memory(addr + self.offset_dchunk_next)
+        dic["prev"] = read_int_from_memory(addr + self.offset_dchunk_prev)
+        dic["numa_node"] = read_int32_from_memory(addr + self.offset_dchunk_numa_node)
+        dic["owner"] = read_int_from_memory(addr + self.offset_dchunk_owner)
+        dic["size_cls"] = read_int32_from_memory(addr + self.offset_dchunk_size_cls)
+        dic["state"] = read_int32_from_memory(addr + self.offset_dchunk_state)
+        dic["free_blk_cnt"] = read_int32_from_memory(addr + self.offset_dchunk_free_blk_cnt)
+        dic["blk_cnt"] = read_int32_from_memory(addr + self.offset_dchunk_blk_cnt)
+        dic["free_head"] = read_int_from_memory(addr + self.offset_dchunk_free_head)
+        dic["block_size"] = read_int32_from_memory(addr + self.offset_dchunk_block_size)
+        dic["free_mem"] = read_int_from_memory(addr + self.offset_dchunk_free_mem)
+        dic["remote_head_raw"] = read_int_from_memory(addr + self.offset_dchunk_remote_free_head)
+        dic["remote_head"] = self.decode_aba_address(dic["remote_head_raw"])
+        dic["remote_count"] = self.decode_aba_count(dic["remote_head_raw"])
+        Dchunk = collections.namedtuple("Dchunk", dic.keys())
+        dchunk = Dchunk(*dic.values())
+        return dchunk
+
+    def read_lheap(self, addr):
+        dic = {}
+        dic["addr"] = addr
+        dic["numa_node"] = read_int32_from_memory(addr + self.offset_lheap_numa_node)
+        dic["free_head"] = read_int_from_memory(addr + self.offset_lheap_free_head)
+        dic["free_cnt"] = read_int32_from_memory(addr + self.offset_lheap_free_cnt)
+        Lheap = collections.namedtuple("Lheap", dic.keys())
+        lheap = Lheap(*dic.values())
+        return lheap
+
+    def read_obj_buf(self, addr):
+        dic = {}
+        dic["addr"] = addr
+        dic["dc"] = read_int_from_memory(addr + self.offset_obj_buf_dc)
+        dic["first"] = read_int_from_memory(addr + self.offset_obj_buf_first)
+        dic["free_head"] = read_int_from_memory(addr + self.offset_obj_buf_free_head)
+        dic["count"] = read_int32_from_memory(addr + self.offset_obj_buf_count)
+        ObjBuf = collections.namedtuple("ObjBuf", dic.keys())
+        obj_buf = ObjBuf(*dic.values())
+        return obj_buf
+
+    def read_gpool(self, addr):
+        dic = {}
+        dic["addr"] = addr
+        dic["pool_start"] = read_int_from_memory(addr + self.offset_gpool_pool_start)
+        dic["pool_end"] = read_int_from_memory(addr + self.offset_gpool_pool_end)
+        dic["free_start"] = read_int_from_memory(addr + self.offset_gpool_free_start)
+        Gpool = collections.namedtuple("Gpool", dic.keys())
+        gpool = Gpool(*dic.values())
+        return gpool
+
+    def parse_single_link_list(self, head, next_offset=0, decode_head=False, dchunk=None):
+        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+
+        cur = self.decode_aba_address(head) if decode_head else head
+        seen = []
+        while True:
+            if cur == 0:
+                seen.append(cur)
+                break
+            if not is_valid_addr(cur):
+                seen.append(cur)
+                return seen, Color.colorify("(corrupted)", corrupted_msg_color)
+            if cur in seen:
+                seen.append(cur)
+                return seen, Color.colorify("(loop detected)", corrupted_msg_color)
+            if dchunk:
+                if cur < dchunk.addr + self.sizeof_dchunk or dchunk.addr + self.CHUNK_SIZE <= cur:
+                    seen.append(cur)
+                    return seen, Color.colorify("(corrupted: out of range)", corrupted_msg_color)
+                if dchunk.block_size and ((cur - (dchunk.addr + self.sizeof_dchunk)) % dchunk.block_size) != 0:
+                    seen.append(cur)
+                    return seen, Color.colorify("(corrupted: not aligned)", corrupted_msg_color)
+            seen.append(cur)
+            try:
+                cur = read_int_from_memory(cur + next_offset)
+            except gdb.MemoryError:
+                seen.append(0)
+                return seen, Color.colorify("(corrupted: invalid next)", corrupted_msg_color)
+        return seen, None
+
+    def parse_double_link_list(self, head):
+        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+
+        cur = head
+        seen = []
+        while cur != 0:
+            if not is_valid_addr(cur):
+                seen.append(cur)
+                return seen, Color.colorify("(corrupted)", corrupted_msg_color)
+            if cur in seen:
+                seen.append(cur)
+                return seen, Color.colorify("(loop detected)", corrupted_msg_color)
+            seen.append(cur)
+            cur = read_int_from_memory(cur + self.offset_dchunk_next)
+
+        for i, chunk in enumerate(seen):
+            prev = read_int_from_memory(chunk + self.offset_dchunk_prev)
+            if i == 0:
+                if prev != 0:
+                    return seen, Color.colorify("(corrupted: invalid prev)", corrupted_msg_color)
+            elif prev != seen[i - 1]:
+                return seen, Color.colorify("(corrupted: invalid prev)", corrupted_msg_color)
+        return seen, None
+
+    def append_freelist(self, title, addr, free_list, error=None, expected_count=None):
+        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+
+        if not self.args.verbose:
+            if free_list == [0] and error is None:
+                return 0
+
+        count = sum(1 for obj in free_list if obj != 0)
+
+        if addr is None:
+            self.out.append("{:s}:".format(title))
+        else:
+            self.out.append("{:s} @ {!s}:".format(title, ProcessMap.lookup_address(addr)))
+
+        for i, obj in enumerate(free_list):
+            obj_str = Color.colorify_hex(obj, freed_address_color)
+
+            if not self.args.verbose:
+                if 4 <= i < len(free_list) - 5:
+                    if i == 4:
+                        self.out.append(" ...")
+                    continue
+
+            if obj == 0:
+                if error:
+                    self.out.append(" -> {:s} {:s}".format(obj_str, error))
+                elif expected_count is None:
+                    self.out.append(" -> {:s} (num: {:#x})".format(obj_str, count))
+                else:
+                    self.out.append(" -> {:s} (num: {:#x}, expected: {:#x})".format(
+                        obj_str, count, expected_count,
+                    ))
+                continue
+
+            if i == len(free_list) - 1 and error:
+                self.out.append(" -> {:s} {:s}".format(obj_str, error))
+            else:
+                self.out.append(" -> {:s}".format(obj_str))
+        return count
+
+    def dump_dchunk(self, dchunk_addr, title=None, dump_remote=True):
+        if dchunk_addr == 0:
+            return False
+
+        dchunk = self.read_dchunk(dchunk_addr)
+        if dchunk.size_cls == self.DUMMY_CLASS:
+            if self.args.verbose:
+                self.out.append("{:s} @ {:#x}: dummy_chunk".format(title or "dchunk", dchunk_addr))
+            return False
+
+        if dchunk.size_cls >= len(self.class_to_size_list):
+            size = 0
+        else:
+            size = self.class_to_size(dchunk.size_cls)
+
+        free_list, error = self.parse_single_link_list(dchunk.free_head, dchunk=dchunk)
+        remote_list, remote_error = self.parse_single_link_list(dchunk.remote_head, dchunk=dchunk)
+        has_local = free_list != [0] or error is not None
+        has_remote = remote_list != [0] or remote_error is not None
+        has_bump = dchunk.free_blk_cnt > 0
+        if not self.args.verbose and not has_local and not has_remote and not has_bump:
+            return False
+
+        self.out.append(titlify("{:s} @ {:#x}".format(title or "dchunk", dchunk.addr)))
+        self.out.append("owner: {!s}, state: {:s}, numa_node: {:#x}".format(
+            ProcessMap.lookup_address(dchunk.owner),
+            self.get_state_name(dchunk.state),
+            dchunk.numa_node,
+        ))
+        self.out.append("size_cls: {:#x}, size: {:#x}, block_size: {:#x}, free_blk_cnt: {:#x}, blk_cnt: {:#x}".format(
+            dchunk.size_cls,
+            size,
+            dchunk.block_size,
+            dchunk.free_blk_cnt,
+            dchunk.blk_cnt,
+        ))
+        self.out.append("free_mem: {!s}".format(ProcessMap.lookup_address(dchunk.free_mem)))
+
+        local_count = self.append_freelist(
+            "free_head",
+            dchunk.addr + self.offset_dchunk_free_head,
+            free_list,
+            error,
+        )
+        if dchunk.free_blk_cnt >= local_count:
+            bump_count = dchunk.free_blk_cnt - local_count
+            self.out.append("bump/free_mem available estimate: {:#x}".format(bump_count))
+
+        if dump_remote:
+            self.append_freelist(
+                "remote_free_head raw={:#x}, count={:#x}".format(dchunk.remote_head_raw, dchunk.remote_count),
+                dchunk.addr + self.offset_dchunk_remote_free_head,
+                remote_list,
+                remote_error,
+                expected_count=dchunk.remote_count,
+            )
+        return True
+
+    def dump_lheap_free_chunks(self, lheap):
+        self.out.append(titlify("local_heap.free_head @ {:#x}".format(
+            lheap.addr + self.offset_lheap_free_head,
+        )))
+        free_chunks, error = self.parse_single_link_list(lheap.free_head)
+        self.append_freelist("free chunks", lheap.addr + self.offset_lheap_free_head, free_chunks, error, lheap.free_cnt)
+        return
+
+    def dump_foreground(self, lheap):
+        self.out.append(titlify("local_heap.foreground[{:d}] @ {:#x}".format(
+            self.DEFAULT_BLOCK_CLASS,
+            lheap.addr + self.offset_lheap_foreground,
+        )))
+
+        printed_flag = False
+        for size_cls in range(self.DEFAULT_BLOCK_CLASS):
+            size = self.class_to_size(size_cls)
+            if not self.args.verbose and size == 0:
+                continue
+            entry = lheap.addr + self.offset_lheap_foreground + (current_arch.ptrsize * size_cls)
+            dchunk_addr = read_int_from_memory(entry)
+            if dchunk_addr == lheap.addr + self.offset_lheap_dummy_chunk:
+                if self.args.verbose:
+                    self.out.append("foreground[{:#x}, size={:#x}] @ {!s}: dummy_chunk".format(
+                        size_cls, size, ProcessMap.lookup_address(entry),
+                    ))
+                    printed_flag = True
+                continue
+            if dchunk_addr == 0:
+                if self.args.verbose:
+                    self.out.append("foreground[{:#x}, size={:#x}] @ {!s}: 0x0".format(
+                        size_cls, size, ProcessMap.lookup_address(entry),
+                    ))
+                    printed_flag = True
+                continue
+            printed_flag |= self.dump_dchunk(
+                dchunk_addr,
+                title="foreground[{:#x}, size={:#x}]".format(size_cls, size),
+            )
+
+        if printed_flag is False:
+            self.out.append("Nothing to dump")
+        return
+
+    def dump_background(self, lheap):
+        self.out.append(titlify("local_heap.background[{:d}] @ {:#x}".format(
+            self.DEFAULT_BLOCK_CLASS,
+            lheap.addr + self.offset_lheap_background,
+        )))
+
+        printed_flag = False
+        for size_cls in range(self.DEFAULT_BLOCK_CLASS):
+            size = self.class_to_size(size_cls)
+            if not self.args.verbose and size == 0:
+                continue
+            entry = lheap.addr + self.offset_lheap_background + (self.sizeof_linked_list * size_cls)
+            head = read_int_from_memory(entry)
+            dchunk_list, error = self.parse_double_link_list(head)
+            if not self.args.verbose and dchunk_list == [] and error is None:
+                continue
+
+            self.out.append("background[{:#x}, size={:#x}] @ {!s}:".format(
+                size_cls, size, ProcessMap.lookup_address(entry),
+            ))
+            if error:
+                self.out.append(" {:s}".format(error))
+            if dchunk_list == []:
+                self.out.append(" -> 0x0")
+            for dchunk_addr in dchunk_list:
+                self.dump_dchunk(
+                    dchunk_addr,
+                    title="background[{:#x}, size={:#x}]".format(size_cls, size),
+                )
+            printed_flag = True
+
+        if printed_flag is False:
+            self.out.append("Nothing to dump")
+        return
+
+    def dump_need_gc(self, lheap):
+        self.out.append(titlify("local_heap.need_gc[{:d}] @ {:#x}".format(
+            self.DEFAULT_BLOCK_CLASS,
+            lheap.addr + self.offset_lheap_need_gc,
+        )))
+
+        printed_flag = False
+        for size_cls in range(self.DEFAULT_BLOCK_CLASS):
+            size = self.class_to_size(size_cls)
+            if not self.args.verbose and size == 0:
+                continue
+            entry = lheap.addr + self.offset_lheap_need_gc + (self.sizeof_queue * size_cls)
+            head = read_int_from_memory(entry)
+            dchunk_list, error = self.parse_single_link_list(head)
+            if not self.args.verbose and dchunk_list == [0] and error is None:
+                continue
+
+            self.out.append("need_gc[{:#x}, size={:#x}] @ {!s}:".format(
+                size_cls, size, ProcessMap.lookup_address(entry),
+            ))
+            if error:
+                self.out.append(" {:s}".format(error))
+            for dchunk_addr in dchunk_list:
+                if dchunk_addr == 0:
+                    self.out.append(" -> 0x0")
+                    continue
+                self.dump_dchunk(
+                    dchunk_addr,
+                    title="need_gc[{:#x}, size={:#x}]".format(size_cls, size),
+                )
+            printed_flag = True
+
+        if printed_flag is False:
+            self.out.append("Nothing to dump")
+        return
+
+    def dump_block_bufs(self, lheap):
+        self.out.append(titlify("local_heap.block_bufs[{:d}] @ {:#x}".format(
+            self.BLOCK_BUF_CNT,
+            lheap.addr + self.offset_lheap_block_bufs,
+        )))
+
+        printed_flag = False
+        for index in range(self.BLOCK_BUF_CNT):
+            entry = lheap.addr + self.offset_lheap_block_bufs + (self.sizeof_obj_buf * index)
+            obj_buf = self.read_obj_buf(entry)
+            if not self.args.verbose and obj_buf.count == 0:
+                continue
+
+            self.out.append("block_bufs[{:#x}] @ {!s}: dc={!s}, first={!s}, count={:#x}".format(
+                index,
+                ProcessMap.lookup_address(entry),
+                ProcessMap.lookup_address(obj_buf.dc),
+                ProcessMap.lookup_address(obj_buf.first),
+                obj_buf.count,
+            ))
+
+            dchunk = None
+            if obj_buf.dc and is_valid_addr(obj_buf.dc):
+                try:
+                    dchunk = self.read_dchunk(obj_buf.dc)
+                except gdb.MemoryError:
+                    dchunk = None
+            free_list, error = self.parse_single_link_list(obj_buf.free_head, dchunk=dchunk)
+            self.append_freelist(
+                "free_head",
+                obj_buf.addr + self.offset_obj_buf_free_head,
+                free_list,
+                error,
+                expected_count=obj_buf.count,
+            )
+            printed_flag = True
+
+        if printed_flag is False:
+            self.out.append("Nothing to dump")
+        return
+
+    def dump_lheap(self, local_heap, thread_num):
+        lheap = self.read_lheap(local_heap)
+        self.out.append(titlify("local_heap @ {:#x} (Thread Id:{:d})".format(
+            lheap.addr,
+            thread_num,
+        ), color="bold", msg_color="bold"))
+        self.out.append("numa_node: {:#x}, free_cnt: {:#x}".format(lheap.numa_node, lheap.free_cnt))
+        self.dump_lheap_free_chunks(lheap)
+        self.dump_foreground(lheap)
+        self.dump_background(lheap)
+        self.dump_need_gc(lheap)
+        self.dump_block_bufs(lheap)
+        return
+
+    def dump_global_queue(self, title, queue_addr, decode_head=True):
+        head = read_int_from_memory(queue_addr)
+        free_list, error = self.parse_single_link_list(head, decode_head=decode_head)
+        self.append_freelist(title, queue_addr, free_list, error)
+        return
+
+    def dump_global_pool(self, global_pool):
+        gpool = self.read_gpool(global_pool)
+        self.out.append(titlify("global_pool @ {:#x}".format(global_pool), color="bold", msg_color="bold"))
+        self.out.append("pool_start: {!s}".format(ProcessMap.lookup_address(gpool.pool_start)))
+        self.out.append("pool_end: {!s}".format(ProcessMap.lookup_address(gpool.pool_end)))
+        self.out.append("free_start: {!s}".format(ProcessMap.lookup_address(gpool.free_start)))
+
+        for index in range(self.MAX_CORE_ID):
+            queue_addr = global_pool + self.offset_gpool_free_dc_head + (self.sizeof_queue * index)
+            self.dump_global_queue("free_dc_head[{:#x}]".format(index), queue_addr)
+        for index in range(self.MAX_CORE_ID):
+            queue_addr = global_pool + self.offset_gpool_free_lh_head + (self.sizeof_queue * index)
+            self.dump_global_queue("free_lh_head[{:#x}]".format(index), queue_addr)
+        for index in range(self.MAX_CORE_ID):
+            queue_addr = global_pool + self.offset_gpool_released_dc_head + (self.sizeof_queue * index)
+            self.dump_global_queue("released_dc_head[{:#x}]".format(index), queue_addr)
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @only_if_specific_arch(arch=("x86_64",))
+    def do_invoke(self, args):
+        self.out = []
+        if self.initialize() is False:
+            return
+
+        local_heap_list = self.get_local_heap_list(args.all)
+        if not local_heap_list:
+            self.quiet_err("Could not find local_heap")
+            return
+
+        for thread_num, local_heap in local_heap_list:
+            if not self.is_lheap_candidate(local_heap):
+                self.quiet_err("Invalid local_heap: {:#x}".format(local_heap))
+                continue
+            self.dump_lheap(local_heap, thread_num)
+
+        if args.global_pool_queue:
+            global_pool = self.get_global_pool()
+            if global_pool is None:
+                self.quiet_err("Could not find global_pool")
+            else:
+                self.dump_global_pool(global_pool)
+
+        self.print_output()
+        return
+
+
+@register_command
 class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
     """musl v1.2.5 (src/malloc/mallocng) heap reusable chunks viewer (x64/x86 only)."""
 
