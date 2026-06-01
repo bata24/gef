@@ -277,9 +277,7 @@ Dereference recursively from an address and display information.
 ### Syntax
 
 ```text
-usage: dereference [-h] [-a] [-A] [-P PERM] [-z] [-Z] [-m MASK [VALUE ...]] [-M MASK [VALUE ...]] [-t IDX TAG] [-T TAG_OFFSET] [-r] [-f]
-                   [-u] [-i INTERVAL] [-d DEPTH] [-D DEPTH_NB_LINES] [-p] [-l] [-s] [-S] [-q] [-Q] [-n]
-                   [LOCATION] [NB_LINES]
+usage: dereference [-h] [-a] [-A] [-P PERM] [-z] [-Z] [-m MASK [VALUE ...]] [-M MASK [VALUE ...]] [-t IDX TAG] [-T TAG_OFFSET] [-r] [-f] [-u] [-i INTERVAL] [-d DEPTH] [-D DEPTH_NB_LINES] [-p] [-l] [-s] [-S] [-q] [-Q] [-n] [LOCATION] [NB_LINES]
 
 positional arguments:
   LOCATION              the memory address to dump. (default: current_arch.sp)
@@ -757,8 +755,7 @@ The base command to execute until specific condition.
 ### Syntax
 
 ```text
-usage: exec-until [-h]
-                  {call,jmp,syscall,ret,all-branch,indirect-branch,memaccess,keyword,cond,user-code,libc-code,secure-world,region-change} ...
+usage: exec-until [-h] {call,jmp,syscall,ret,all-branch,indirect-branch,memaccess,keyword,cond,user-code,libc-code,secure-world,region-change} ...
 
 options:
   -h, --help            show this help message and exit
@@ -3371,9 +3368,7 @@ Search for a pattern in memory.
 ### Syntax
 
 ```text
-usage: search-pattern [-h] [--hex | --hex-regex] [-d] [-b] [-a ALIGNED] [-p PERM] [-i INTERVAL] [-l LIMIT] [-s MAX_REGION_SIZE] [--phys]
-                      [-k | -u] [-v] [-q] [-Q] [-S]
-                      PATTERN [SECTION_OR_START_ADDR] [SIZE]
+usage: search-pattern [-h] [--hex | --hex-regex] [-d] [-b] [-a ALIGNED] [-p PERM] [-i INTERVAL] [-l LIMIT] [-s MAX_REGION_SIZE] [--phys] [-k | -u] [-v] [-q] [-Q] [-S] PATTERN [SECTION_OR_START_ADDR] [SIZE]
 
 positional arguments:
   PATTERN               search target value. "double-escaped string" or 0xXXXXXXXX style.
@@ -5380,9 +5375,7 @@ Visualize memory data like an image.
 ### Syntax
 
 ```text
-usage: vdump [-h] [-d] [-w WIDTH] [-c {r,g,b}] [-n] [-A] [-Ab AUTO_INCLEMENT_BEGIN_WIDTH] [-Ae AUTO_INCLEMENT_END_WIDTH]
-             [-As AUTO_INCLEMENT_STEP_WIDTH]
-             LOCATION [SIZE]
+usage: vdump [-h] [-d] [-w WIDTH] [-c {r,g,b}] [-n] [-A] [-Ab AUTO_INCLEMENT_BEGIN_WIDTH] [-Ae AUTO_INCLEMENT_END_WIDTH] [-As AUTO_INCLEMENT_STEP_WIDTH] LOCATION [SIZE]
 
 positional arguments:
   LOCATION              start address to dump.
@@ -5642,8 +5635,7 @@ The base command to get information about the Glibc heap structure.
 ### Syntax
 
 ```text
-usage: heap [-h]
-            {arena,arenas,bins,bins-simple,chunk,chunks,top,try-free,try-malloc,try-realloc,try-calloc,tcache-index-helper,find-fake-fast,extract-heap-addr,calc-protected-fd,visual-heap,dump-image,tracer,parse,snapshot,snapshot-compare} ...
+usage: heap [-h] {arena,arenas,bins,bins-simple,chunk,chunks,top,try-free,try-malloc,try-realloc,try-calloc,tcache-index-helper,find-fake-fast,extract-heap-addr,calc-protected-fd,visual-heap,dump-image,tracer,parse,snapshot,snapshot-compare} ...
 
 options:
   -h, --help            show this help message and exit
@@ -6497,75 +6489,75 @@ Chromium mainline is too fast to develop. So if parse is failed, you need fix th
 
 Simplified partition alloc structure:
 
- +-root-----------------+
- | ...                  |    +---->+-extent------------+  +-->+-extent------------+  +-> ...
- | next_super_page_     |    |     | next              |--+   | next              |--+
- | next_partition_page_ |    |     +-------------------+      +-------------------+
- | ...                  |    |
- | first_extent_        |----+
- | direct_map_list_     |--------->+-direct_map_extent-+  +-->+-direct_map_extent-+  +-> ...
- | ...                  |          | bucket            |  |   | bucket            |  |
- |                      |          | next_extent       |--+   | next_extent       |--+
- |                      |          +-------------------+      +-------------------+
- |                      |
- +-bucket[0](0x20)------+
- | head                 |--------->+-slot_span---------+  +-->+-slot_span---------+  +-> ...
- | slot_size            |<---------| bucket            |  |   | bucket            |  |
- | ...                  |    +-----| freelist_head     |  |   | freelist_head     |  |
- +-bucket[1](0x20)------+    |     | next_slot_span    |--+   | next_slot_span    |--+
- | head                 |    |     +-------------------+      +-------------------+
- | slot_size            |    |
- | ...                  |    |
- +----------------------+    +---->+-slot--------------+
- | ...                  |          | next              |---+
- |                      |          | (freed)           |   |
- +----------------------+          +-slot--------------+   |
-                                   |                   |   |
-                                   | (used)            |   |
-                                   +-slot--------------+<--+
-                               +---| next              |
-                               |   | (freed)           |
-                               |   +-slot--------------+
-                               |   |                   |
-                               |   | (used)            |
-                               +-->+-slot--------------+
-                                   | next              |---> NULL
-                                   | (freed)           |
-                                   +-slot--------------+
-                                   |                   |
-                                   |                   |
-                                   +-------------------+
++-root-----------------+
+| ...                  |    +---->+-extent------------+  +-->+-extent------------+  +-> ...
+| next_super_page_     |    |     | next              |--+   | next              |--+
+| next_partition_page_ |    |     +-------------------+      +-------------------+
+| ...                  |    |
+| first_extent_        |----+
+| direct_map_list_     |--------->+-direct_map_extent-+  +-->+-direct_map_extent-+  +-> ...
+| ...                  |          | bucket            |  |   | bucket            |  |
+|                      |          | next_extent       |--+   | next_extent       |--+
+|                      |          +-------------------+      +-------------------+
+|                      |
++-bucket[0](0x20)------+
+| head                 |--------->+-slot_span---------+  +-->+-slot_span---------+  +-> ...
+| slot_size            |<---------| bucket            |  |   | bucket            |  |
+| ...                  |    +-----| freelist_head     |  |   | freelist_head     |  |
++-bucket[1](0x20)------+    |     | next_slot_span    |--+   | next_slot_span    |--+
+| head                 |    |     +-------------------+      +-------------------+
+| slot_size            |    |
+| ...                  |    |
++----------------------+    +---->+-slot--------------+
+| ...                  |          | next              |---+
+|                      |          | (freed)           |   |
++----------------------+          +-slot--------------+   |
+                                  |                   |   |
+                                  | (used)            |   |
+                                  +-slot--------------+<--+
+                              +---| next              |
+                              |   | (freed)           |
+                              |   +-slot--------------+
+                              |   |                   |
+                              |   | (used)            |
+                              +-->+-slot--------------+
+                                  | next              |---> NULL
+                                  | (freed)           |
+                                  +-slot--------------+
+                                  |                   |
+                                  |                   |
+                                  +-------------------+
 
 `extent`, `slot_span` and `slot` are in super_page.
 
-      [~v144.x]                    [v145.x~; PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)=y]
-      +-super_page-(2MB)-----+      +-super_page(for meta)-+ +-super_page(for chunk)+
- 4KB  | Guard Page           |      | Guard Page           | | Guard Page           |
-      +----------------------+      +----------------------+ +----------------------+
- 4KB  | extent * 1           |      | extend * 1           | | Unused               |
-      | slot_span * 126      |      | slot_span * 126      | |                      |
-      | unused * 1           |      | unused * 1           | |                      |
-      +----------------------+      +----------------------+ +----------------------+
- 8KB  | Guard Page           |      | Guard Page           | | Guard Page           |
-      +----------------------+      +----------------------+ +----------------------+
- 16KB | Partition Page #1    |      | ...                  | | Partition Page #1    |
-      |   slot               |      |                      | |   slot               |
-      |   slot               |      |                      | |   slot               |
-      |   ...                |      |                      | |   ...                |
-      +----------------------+      |                      | +----------------------+
-      | ...                  |      |                      | | ...                  |
-      +----------------------+      |                      | +----------------------|
- 16KB | Partition Page #126  |      |                      | | Partition Page #126  |
-      |   slot               |      |                      | |   slot               |
-      |   slot               |      |                      | |   slot               |
-      |   ...                |      |                      | |   ...                |
-      +----------------------+      +----------------------+ +----------------------+
- 12KB | Unused               |      | Unused               | | Unused               |
-      +----------------------+      +----------------------+ +----------------------+
-  4KB | Guard Page           |      | Guard Page           | | Guard Page           |
-      +----------------------+      +----------------------+ +----------------------+
+     [~v144.x]                    [v145.x~; PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)=y]
+     +-super_page-(2MB)-----+      +-super_page(for meta)-+ +-super_page(for chunk)+
+4KB  | Guard Page           |      | Guard Page           | | Guard Page           |
+     +----------------------+      +----------------------+ +----------------------+
+4KB  | extent * 1           |      | extend * 1           | | Unused               |
+     | slot_span * 126      |      | slot_span * 126      | |                      |
+     | unused * 1           |      | unused * 1           | |                      |
+     +----------------------+      +----------------------+ +----------------------+
+8KB  | Guard Page           |      | Guard Page           | | Guard Page           |
+     +----------------------+      +----------------------+ +----------------------+
+16KB | Partition Page #1    |      | ...                  | | Partition Page #1    |
+     |   slot               |      |                      | |   slot               |
+     |   slot               |      |                      | |   slot               |
+     |   ...                |      |                      | |   ...                |
+     +----------------------+      |                      | +----------------------+
+     | ...                  |      |                      | | ...                  |
+     +----------------------+      |                      | +----------------------|
+16KB | Partition Page #126  |      |                      | | Partition Page #126  |
+     |   slot               |      |                      | |   slot               |
+     |   slot               |      |                      | |   slot               |
+     |   ...                |      |                      | |   ...                |
+     +----------------------+      +----------------------+ +----------------------+
+12KB | Unused               |      | Unused               | | Unused               |
+     +----------------------+      +----------------------+ +----------------------+
+ 4KB | Guard Page           |      | Guard Page           | | Guard Page           |
+     +----------------------+      +----------------------+ +----------------------+
 
-                                    * super_page_for_meta - metadata_offset_ == super_page_for_chunk
+                                   * super_page_for_meta - metadata_offset_ == super_page_for_chunk
 ```
 
 ## v8
@@ -6676,15 +6668,63 @@ go language v1.24.4 mheap dumper (x64 only).
 ### Syntax
 
 ```text
-usage: go-heap-dump [-h] [--mheap MHEAP] [--mspan MSPAN] [-d] [-n] [-v]
+usage: go-heap-dump [-h] [-hh] [--mheap MHEAP] [--mspan MSPAN] [-d] [-n] [-v]
 
 options:
-  -h, --help      show this help message and exit
-  --mheap MHEAP   the address of runtime.mheap_.
-  --mspan MSPAN   the address of the target mspan.
-  -d, --dump      with hexdump.
-  -n, --no-pager  do not use the pager.
-  -v, --verbose   display also empty slots.
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  --mheap MHEAP       the address of runtime.mheap_.
+  --mspan MSPAN       the address of the target mspan.
+  -d, --dump          with hexdump.
+  -n, --no-pager      do not use the pager.
+  -v, --verbose       display also empty slots.
+```
+
+### Notes
+
+```text
+Simplified Go heap structure:
+
++-runtime.mheap_-+
+| ...            |
+| allspans       |
+|  array         |--->+-mspan*[]--+
+|  len           |    | [0]       |----+
+|  cap           |    | [1]       |----|----+
+| ...            |    | ...       |    |    |
+| arenas         |    +-----------+    |    |
+| ...            |                     |    |
+| central        |                     |    |
+| ...            |                     |    |
++----------------+                     |    |
+                                       |    v
+ +-------------------------------------+   ...
+ |
+ v
++-mspan-------+         +-mspan-------+
+| next        |-------->| next        |-------->...
+| prev        |<--------| prev        |<--------...
+| startAddr   |---+     | startAddr   |---+
+| npages      |   |     | npages      |   |
+| nelems      |   |     | nelems      |   |
+| allocBits   |---|--+  | allocBits   |---|--+
+| spanClass   |   |  |  | spanClass   |   |  |
++-------------+   |  |  +-------------+   |  |
+                  |  v                    |  v
+                  | +-gcBits------+       | +-gcBits------+
+                  | | bit[0]      |       | | bit[0]      |
+                  | | bit[1]      |       | | bit[1]      |
+                  | | ...         |       | | ...         |
+                  | +-------------+       | +-------------+
+                  v                       v
+                +-object-+ +-object-+   +-object-+ +-object-+
+                | chunk  | | chunk  |   | chunk  | | chunk  |
+                +--------+ +--------+   +--------+ +--------+
+
+* `allspans` is used as the entry point for this command.
+* `spanClass >> 1` is used as the size class, and the size class is converted to chunk size.
+* `allocBits` is used to distinguish allocated/free objects in a span.
+* `arenas`, `central`, and walking from `mspan.next` are currently unsupported.
 ```
 
 ## hoard-heap-dump
@@ -6695,13 +6735,55 @@ Hoard v3.2 (2025/12/31) heap free-list viewer (x64 only).
 ### Syntax
 
 ```text
-usage: hoard-heap-dump [-h] [-b SUPERBLOCK] [-n]
+usage: hoard-heap-dump [-h] [-hh] [-b SUPERBLOCK] [-n]
 
 options:
   -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
   -b, --superblock SUPERBLOCK
                         the address of superblock.
   -n, --no-pager        do not use the pager.
+```
+
+### Notes
+
+```text
+Simplified Hoard structure:
+
+                                  +-SmallHeap-+
+                                  | ...       |
+                                  +-----------+
+                                        ^
+                                        |
+     +-superblock-------------------+   |      +-superblock--+   +-superblock--+
+     | vtable                       |   |      | vtable      |   | vtable      |
+     | magic                        |   |      | magic       |   | magic       |
+     | objectSize                   |   |      | objectSize  |   | objectSize  |
+     | totalObjects                 |   |      | ...         |   | ...         |
+     | owner                        |---+      | prev        |<->| prev        |<-> ...
+...<-> prev                         |<-------->| next        |   | next        |
+     | next                         |--------->| ...         |   | ...         |
+     | reapableObjects              |          | freeList    |   | freeList    |
+     | objectsFree                  |          | start       |   | start       |
+     | start                        |--+       | position    |   | position    |
+     | position                     |  |       +-------------+   +-------------+
+     | freeList                     |--|--+
+     +------------------------------+  |  |
+                                       |  |       [free object freelist]
+                                       |  |        +-object--+  +-object--+
+                                       |  +------->| next    |->| next    |->NULL
+                                       |           +---------+  +---------+
+                                       |
+                                       |          [unused objects]
+                                       |           +-object--+  +-object--+
+                                       +---------->|         |  |         |  ...
+                                                   +---------+  +---------+
+
+* This command scans anonymous writable mappings and detects superblocks by vtable and magic.
+* `--superblock` can be used to specify superblocks manually.
+* `_freeList` is used first; if it is empty, TLS-held freelist heads are searched as candidates.
+* Before allocating from the freelist, Hoard consumes unused objects from `position`.
+* `reapableObjects` is displayed as the number of unused objects left.
 ```
 
 ## mimalloc-heap-dump
@@ -6767,13 +6849,59 @@ scalloc heap free-list viewer (x64 only).
 ### Syntax
 
 ```text
-usage: scalloc-heap-dump [-h] [--object_space OBJECT_SPACE] [-n]
+usage: scalloc-heap-dump [-h] [-hh] [--object_space OBJECT_SPACE] [-n]
 
 options:
   -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
   --object_space OBJECT_SPACE
                         use specific address for object_space.
   -n, --no-pager        do not use the pager.
+```
+
+### Notes
+
+```text
+Simplified scalloc structure:
+
++-Arena(object_space)-+
+| name_               |--->"object"
+| start_              |------+
+| end_                |------|---->Span[N]
+| len_                |      |
+| current_            |------|---->Span[i]
++---------------------+      |
+                             |
+  +--------------------------+
+  v
++-Span[0]-------------+                +-Span[1]-------------+
+| span_link_.next_    |--------------->| span_link_.next_    |---->...
+| span_link_.prev_    |<---------------| span_link_.prev_    |<----...
+| owner_              |                | owner_              |
+| epoch_              |                | epoch_              |
+| size_class_         |                | size_class_         |
+| local_free_list_    |-----+          | local_free_list_    |-----+
+| remote_free_list_   |--+  |          | remote_free_list_   |--+  |
++---------------------+  |  |          +---------------------+  |  |
+                         |  |                                   |  |
+   +---------------------+  |             +---------------------+  |
+   |                        |             |                        |
+   |  +---------------------+             |  +---------------------+
+   |  |                                   |  |
+   |  |  +-object-+   +-object-+          |  |  +-object-+   +-object-+
+   |  +->| next   |-->| next   |-->...    |  +->| next   |-->| next   |-->...
+   |     +--------+   +--------+          |     +--------+   +--------+
+   |                                      |
+   |     +-object-+   +-object-+          |     +-object-+   +-object-+
+   +---->| next   |-->| next   |-->...    +---->| next   |-->| next   |-->...
+         +--------+   +--------+                +--------+   +--------+
+
+* `object_space` is used as the default arena pointer.
+* Spans are walked from `Arena.start_` to `Arena.current_` by `kVirtualSpanSize`.
+* `size_class_` is converted to object size and capacity by fixed tables.
+* `local_free_list_.list_` points to the local free-list.
+* `local_free_list_.bump_pointer_` points to the next unused object area (top).
+* `remote_free_list_.top_` is a tagged pointer and is decoded before dumping.
 ```
 
 ## snmalloc-heap-dump
@@ -6805,6 +6933,67 @@ This command dumps the following four categories:
     - The end of the list may not be dumped correctly.
 - remote_alloc: Message queue for allocations being returned to this allocator.
     - Currently status: WIP.
+```
+
+## ssmalloc-heap-dump
+
+SSMalloc heap free-list viewer (x64 only).
+
+
+### Syntax
+
+```text
+usage: ssmalloc-heap-dump [-h] [-hh] [--local_heap LOCAL_HEAP] [--global_pool GLOBAL_POOL] [-a] [-g] [-n] [-v]
+
+options:
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+  --local_heap LOCAL_HEAP
+                        use specific address for local_heap.
+  --global_pool GLOBAL_POOL
+                        use specific address for global_pool.
+  -a, --all             dump all local_heap.
+  -g, --global          dump global_pool queues.
+  -n, --no-pager        do not use the pager.
+  -v, --verbose         display also empty freelists.
+```
+
+### Notes
+
+```text
+Simplified SSMalloc structure:
+
++-lheap_t(local heap)------------------+
+| free_head (completely free dchunks)  |------> dchunk_t --> dchunk_t --> ...
+| foreground[] (active dchunk)         |---+
+| background[] (non-full dchunks)      |<--|--> dchunk_t <-> dchunk_t <-> ...
+| block_bufs[] (remote-free buffer)    |   |
+| need_gc[] (remote-free dchunks)      |   |
++--------------------------------------+   |
+                                           |
+  +----------------------------------------+
+  |
+  v                                    [local free objects]
++-dchunk_t-------------+               +-object-+  +-object-+
+| ...                  |       +------>| next   |->| next   |->...
+| size_cls             |       |       +--------+  +--------+
+| ...                  |       |
+| free_head            |-------+       [unused / bump area]
+| block_size           |               +-object-+  +-object-+
+| free_mem             |-------------->|        |  |        |...
+| remote_free_head     |-------+       +--------+  +--------+
++----------------------+       |
+                               |       [remote free objects]
+                               |       +-object-+  +-object-+
+                               +------>| next   |->| next   |->...
+                                       +--------+  +--------+
+
+* `local_heap` is the per-thread entry point.
+* `lheap_t.free_head` is completely free chunks kept by the local heap.
+* `lheap_t.foreground[size_cls]` points to the active `dchunk_t` for that size class.
+* `lheap_t.background[size_cls]` is a doubly linked list of non-full dchunks.
+* `dchunk_t.free_head` is locally freed objects.
+* Allocation from a `dchunk_t` pops `free_head` first; if it is empty, allocation advances `free_mem`.
 ```
 
 ## tcmalloc-dump
@@ -6841,13 +7030,45 @@ TLSF (Two-Level Segregated Fit) v2.4.6 free-list viewer (x64 only).
 ### Syntax
 
 ```text
-usage: tlsf-heap-dump [-h] [--pool POOL] [-n] [-v]
+usage: tlsf-heap-dump [-h] [-hh] [--pool POOL] [-n] [-v]
 
 options:
-  -h, --help      show this help message and exit
-  --pool POOL     the address of memory pool.
-  -n, --no-pager  do not use the pager.
-  -v, --verbose   display also empty slots.
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  --pool POOL         the address of memory pool.
+  -n, --no-pager      do not use the pager.
+  -v, --verbose       display also empty slots.
+```
+
+### Notes
+
+```text
+Simplified TLSF structure:
+
++-TLSF_struct------+
+| tlsf_signature   |
+| lock             |
+| used_size        |
+| max_size         |     +-area_info_t-+    +-area_info_t-+
+| area_head        |---->| next        |--->| next        |->...
+| fl_bitmap        |     | end         |    | end         |
+| sl_bitmap[]      |     +-------------+    +-------------+
+| matrix[][]       |---+
++------------------+   |
+                       | matrix[fl][sl]
+                       |
+                       +--->+-bhdr_t------+    +-bhdr_t------+
+                            | prev_hdr    |    | prev_hdr    |
+                            | size        |    | size        |
+                       ...<-| prev        |<---| prev        |
+                            | next        |--->| next        |->...
+                            +-------------+    +-------------+
+
+* `mp` is used as the default pool pointer.
+* `--pool` can be used to specify a TLSF pool (arena_info_t) manually.
+* `fl_bitmap` and `sl_bitmap[]` show which free-list classes are non-empty.
+* `matrix[fl][sl]` points to a doubly linked free-list of `bhdr_t` chunks.
+* Allocated chunks are not linked from `matrix[][]`, so this command dumps free chunks only.
 ```
 
 ## uclibc-ng-heap-dump
@@ -6999,8 +7220,7 @@ Dump pagetable for ARM64 Cortex-A (ARM v8.7 base).
 ### Syntax
 
 ```text
-usage: pagewalk arm64 [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [--optee] [-0] [-1] [-D] [-c] [-n] [-q]
-                      [TARGET_EL]
+usage: pagewalk arm64 [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [--optee] [-0] [-1] [-D] [-c] [-n] [-q] [TARGET_EL]
 
 positional arguments:
   TARGET_EL             target Exception Level. (default: current EL)
@@ -7062,8 +7282,7 @@ Dump pagetable for x64/x86.
 ### Syntax
 
 ```text
-usage: pagewalk x64 [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [-i] [-U] [--cr3 USER_SPECIFIED_CR3]
-                    [--cr4 USER_SPECIFIED_CR4] [--ept] [-D] [-c] [-n] [-q]
+usage: pagewalk x64 [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [-i] [-U] [--cr3 USER_SPECIFIED_CR3] [--cr4 USER_SPECIFIED_CR4] [--ept] [-D] [-c] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
@@ -7822,8 +8041,7 @@ Resolve kernel symbols from kallsyms table.
 ### Syntax
 
 ```text
-usage: ksymaddr-remote [-h] [-t TYPE] [-e] [-r] [-s] [--vmlinux-file VMLINUX_FILE] [-I] [--print-saved-config] [-n] [-v] [-q]
-                       [KEYWORD ...]
+usage: ksymaddr-remote [-h] [-t TYPE] [-e] [-r] [-s] [--vmlinux-file VMLINUX_FILE] [-I] [--print-saved-config] [-n] [-v] [-q] [KEYWORD ...]
 
 positional arguments:
   KEYWORD               filter by specific symbol name.
@@ -8007,8 +8225,7 @@ Display process list.
 ### Syntax
 
 ```text
-usage: ktask [-h] [-hh] [-f FILTER] [-T TASK_FILTER] [-m] [-r] [-i] [-t] [-F] [-s] [-S] [-N] [-u] [--init-task INIT_TASK] [--meta] [--all]
-             [-n] [-q]
+usage: ktask [-h] [-hh] [-f FILTER] [-T TASK_FILTER] [-m] [-r] [-i] [-t] [-F] [-s] [-S] [-N] [-u] [--init-task INIT_TASK] [--meta] [--all] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
@@ -9037,8 +9254,7 @@ Dump the zone of the page allocator (buddy allocator) free-list.
 ### Syntax
 
 ```text
-usage: buddy-dump [-h] [-hh] [-z {DMA,DMA32,Normal,HighMem,Movable,Device}] [-o ORDER_FILTER] [-m MTYPE_FILTER] [-p PCP_INDEX_FILTER] [-P]
-                  [-F] [--cpu CPU] [-s] [-S] [-Q] [-M] [--MIGRATE_PCPTYPES {3,4}] [-r] [-c N] [-v] [-vv] [-n] [-q]
+usage: buddy-dump [-h] [-hh] [-z {DMA,DMA32,Normal,HighMem,Movable,Device}] [-o ORDER_FILTER] [-m MTYPE_FILTER] [-p PCP_INDEX_FILTER] [-P] [-F] [--cpu CPU] [-s] [-S] [-Q] [-M] [--MIGRATE_PCPTYPES {3,4}] [-r] [-c N] [-v] [-vv] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
@@ -9203,9 +9419,7 @@ Dump SLAB free-list reachable from slab_caches.
 ### Syntax
 
 ```text
-usage: slab-dump [-h] [-hh] [-l] [-L] [--meta] [--cpu CPU] [-R] [-s] [--skip-partial] [--skip-full] [--skip-free] [--hexdump-used SIZE]
-                 [--hexdump-freed SIZE] [--telescope-used SIZE] [--telescope-freed SIZE] [-r] [-n] [-q]
-                 [SLAB_CACHE_NAME ...]
+usage: slab-dump [-h] [-hh] [-l] [-L] [--meta] [--cpu CPU] [-R] [-s] [--skip-partial] [--skip-full] [--skip-free] [--hexdump-used SIZE] [--hexdump-freed SIZE] [--telescope-used SIZE] [--telescope-freed SIZE] [-r] [-n] [-q] [SLAB_CACHE_NAME ...]
 
 positional arguments:
   SLAB_CACHE_NAME       filter by specific slab cache name.
@@ -9362,10 +9576,8 @@ Dump SLUB free-list reachable from slab_caches.
 ### Syntax
 
 ```text
-usage: slub-dump [-h] [-hh] [-hs] [-l] [-L] [--meta] [--cpu CPU] [-R] [-s] [-v] [-vv] [--only-partial | --only-node] [--skip-sheaf]
-                 [--hexdump-used SIZE] [--hexdump-freed SIZE] [--telescope-used SIZE] [--telescope-freed SIZE] [--slub-debug-y] [-r] [-n]
-                 [-q] [--tlbflush-queue] [--skip-page2virt] [--no-xor] [--no-byte-swap] [--offset-random OFFSET_RANDOM]
-                 [--offset-node OFFSET_NODE]
+usage: slub-dump [-h] [-hh] [-hs] [-l] [-L] [--meta] [--cpu CPU] [-R] [-s] [-v] [-vv] [--only-partial | --only-node] [--skip-sheaf] [--hexdump-used SIZE] [--hexdump-freed SIZE] [--telescope-used SIZE] [--telescope-freed SIZE] [--slub-debug-y] [-r] [-n] [-q] [--tlbflush-queue] [--skip-page2virt] [--no-xor]
+                 [--no-byte-swap] [--offset-random OFFSET_RANDOM] [--offset-node OFFSET_NODE]
                  [SLUB_CACHE_NAME ...]
 
 positional arguments:
@@ -9528,9 +9740,7 @@ Dump SLUB-TINY free-list reachable from slab_caches.
 ### Syntax
 
 ```text
-usage: slub-tiny-dump [-h] [-hh] [-l] [-L] [--meta] [-R] [-s] [--hexdump-used SIZE] [--hexdump-freed SIZE] [--telescope-used SIZE]
-                      [--telescope-freed SIZE] [-r] [-n] [-q] [--skip-page2virt]
-                      [SLUB_CACHE_NAME ...]
+usage: slub-tiny-dump [-h] [-hh] [-l] [-L] [--meta] [-R] [-s] [--hexdump-used SIZE] [--hexdump-freed SIZE] [--telescope-used SIZE] [--telescope-freed SIZE] [-r] [-n] [-q] [--skip-page2virt] [SLUB_CACHE_NAME ...]
 
 positional arguments:
   SLUB_CACHE_NAME       filter by specific slub cache name.
@@ -10475,9 +10685,8 @@ Perform CRC32 reverse calculation limited to ASCII character range.
 
 ```text
 usage: crc32rev [-h] [-p POLY] [--poly-reflected] [-i INIT_VALUE] [-o XOROUT] [--refin] [--no-refin] [--refout] [--no-refout]
-                [--preset {,base,ieee,isohdlc,adccp,v42,xz,pkzip,aixm,q,autosar,base91d,d,bzip2,aal5,dectb,b,cdromedc,cksum,posix,iscsi,base91c,castagnoli,interlaken,c,nvme,jamcrc,mef,mpeg2,ether,xfer,koopman,k}]
-                [-l] [--prefix PREFIX] [--suffix SUFFIX] [--prefix-hex PREFIX_HEX] [--suffix-hex SUFFIX_HEX] [--charset CHARSET]
-                [-b BRIDGE_LENGTH] [-c] [-k IDX CHAR] [-K IDX HEX_CHAR] [-n]
+                [--preset {,base,ieee,isohdlc,adccp,v42,xz,pkzip,aixm,q,autosar,base91d,d,bzip2,aal5,dectb,b,cdromedc,cksum,posix,iscsi,base91c,castagnoli,interlaken,c,nvme,jamcrc,mef,mpeg2,ether,xfer,koopman,k}] [-l] [--prefix PREFIX] [--suffix SUFFIX] [--prefix-hex PREFIX_HEX] [--suffix-hex SUFFIX_HEX]
+                [--charset CHARSET] [-b BRIDGE_LENGTH] [-c] [-k IDX CHAR] [-K IDX HEX_CHAR] [-n]
                 [WANTED_CRC]
 
 positional arguments:
@@ -10784,8 +10993,7 @@ The base command of GEF maintenance.
 ### Syntax
 
 ```text
-usage: gef [-h]
-           {missing,config,save,restore,reload,reset-breakpoint,reset-cache,arch-list,raise-exception,pyobj-list,avail-comm-list,set-arch,status,version,check-update,tmux-setup,dump-commands} ...
+usage: gef [-h] {missing,config,save,restore,reload,reset-breakpoint,reset-cache,arch-list,raise-exception,pyobj-list,avail-comm-list,set-arch,status,version,check-update,tmux-setup,dump-commands} ...
 
 options:
   -h, --help            show this help message and exit

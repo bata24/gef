@@ -128230,15 +128230,62 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
     _cmdline_ = "go-heap-dump"
     _category_ = "05-c. Heap - Other"
 
-    # TODO: arena, central, mspan->next
+    # TODO: arena, central, mspan.next
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("--mheap", type=AddressUtil.parse_address, help="the address of runtime.mheap_.")
     parser.add_argument("--mspan", type=AddressUtil.parse_address, help="the address of the target mspan.")
     parser.add_argument("-d", "--dump", action="store_true", help="with hexdump.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-v", "--verbose", action="store_true", help="display also empty slots.")
     _syntax_ = parser.format_help()
+
+    _note_ = [
+        "Simplified Go heap structure:",
+        "",
+        "+-runtime.mheap_-+",
+        "| ...            |",
+        "| allspans       |",
+        "|  array         |--->+-mspan*[]--+",
+        "|  len           |    | [0]       |----+",
+        "|  cap           |    | [1]       |----|----+",
+        "| ...            |    | ...       |    |    |",
+        "| arenas         |    +-----------+    |    |",
+        "| ...            |                     |    |",
+        "| central        |                     |    |",
+        "| ...            |                     |    |",
+        "+----------------+                     |    |",
+        "                                       |    v",
+        " +-------------------------------------+   ...",
+        " |",
+        " v",
+        "+-mspan-------+         +-mspan-------+",
+        "| next        |-------->| next        |-------->...",
+        "| prev        |<--------| prev        |<--------...",
+        "| startAddr   |---+     | startAddr   |---+",
+        "| npages      |   |     | npages      |   |",
+        "| nelems      |   |     | nelems      |   |",
+        "| allocBits   |---|--+  | allocBits   |---|--+",
+        "| spanClass   |   |  |  | spanClass   |   |  |",
+        "+-------------+   |  |  +-------------+   |  |",
+        "                  |  v                    |  v",
+        "                  | +-gcBits------+       | +-gcBits------+",
+        "                  | | bit[0]      |       | | bit[0]      |",
+        "                  | | bit[1]      |       | | bit[1]      |",
+        "                  | | ...         |       | | ...         |",
+        "                  | +-------------+       | +-------------+",
+        "                  v                       v",
+        "                +-object-+ +-object-+   +-object-+ +-object-+",
+        "                | chunk  | | chunk  |   | chunk  | | chunk  |",
+        "                +--------+ +--------+   +--------+ +--------+",
+        "",
+        "* `allspans` is used as the entry point for this command.",
+        "* `spanClass >> 1` is used as the size class, and the size class is converted to chunk size.",
+        "* `allocBits` is used to distinguish allocated/free objects in a span.",
+        "* `arenas`, `central`, and walking from `mspan.next` are currently unsupported.",
+    ]
+    _note_ = "\n".join(_note_)
 
     class_to_size_dic = [
         0x0,    0x8,    0x10,   0x18,
@@ -128502,10 +128549,41 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
     _category_ = "05-c. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("--pool", type=AddressUtil.parse_address, help="the address of memory pool.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-v", "--verbose", action="store_true", help="display also empty slots.")
     _syntax_ = parser.format_help()
+
+    _note_ = [
+        "Simplified TLSF structure:",
+        "",
+        "+-TLSF_struct------+",
+        "| tlsf_signature   |",
+        "| lock             |",
+        "| used_size        |",
+        "| max_size         |     +-area_info_t-+    +-area_info_t-+",
+        "| area_head        |---->| next        |--->| next        |->...",
+        "| fl_bitmap        |     | end         |    | end         |",
+        "| sl_bitmap[]      |     +-------------+    +-------------+",
+        "| matrix[][]       |---+",
+        "+------------------+   |",
+        "                       | matrix[fl][sl]",
+        "                       |",
+        "                       +--->+-bhdr_t------+    +-bhdr_t------+",
+        "                            | prev_hdr    |    | prev_hdr    |",
+        "                            | size        |    | size        |",
+        "                       ...<-| prev        |<---| prev        |",
+        "                            | next        |--->| next        |->...",
+        "                            +-------------+    +-------------+",
+        "",
+        "* `mp` is used as the default pool pointer.",
+        "* `--pool` can be used to specify a TLSF pool (arena_info_t) manually.",
+        "* `fl_bitmap` and `sl_bitmap[]` show which free-list classes are non-empty.",
+        "* `matrix[fl][sl]` points to a doubly linked free-list of `bhdr_t` chunks.",
+        "* Allocated chunks are not linked from `matrix[][]`, so this command dumps free chunks only.",
+    ]
+    _note_ = "\n".join(_note_)
 
     def __init__(self):
         super().__init__()
@@ -128699,10 +128777,51 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
     _category_ = "05-c. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("-b", "--superblock", type=AddressUtil.parse_address, action="append",
                         help="the address of superblock.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
+
+    _note_ = [
+        "Simplified Hoard structure:",
+        "",
+        "                                  +-SmallHeap-+",
+        "                                  | ...       |",
+        "                                  +-----------+",
+        "                                        ^",
+        "                                        |",
+        "     +-superblock-------------------+   |      +-superblock--+   +-superblock--+",
+        "     | vtable                       |   |      | vtable      |   | vtable      |",
+        "     | magic                        |   |      | magic       |   | magic       |",
+        "     | objectSize                   |   |      | objectSize  |   | objectSize  |",
+        "     | totalObjects                 |   |      | ...         |   | ...         |",
+        "     | owner                        |---+      | prev        |<->| prev        |<-> ...",
+        "...<-> prev                         |<-------->| next        |   | next        |",
+        "     | next                         |--------->| ...         |   | ...         |",
+        "     | reapableObjects              |          | freeList    |   | freeList    |",
+        "     | objectsFree                  |          | start       |   | start       |",
+        "     | start                        |--+       | position    |   | position    |",
+        "     | position                     |  |       +-------------+   +-------------+",
+        "     | freeList                     |--|--+",
+        "     +------------------------------+  |  |",
+        "                                       |  |       [free object freelist]",
+        "                                       |  |        +-object--+  +-object--+",
+        "                                       |  +------->| next    |->| next    |->NULL",
+        "                                       |           +---------+  +---------+",
+        "                                       |",
+        "                                       |          [unused objects]",
+        "                                       |           +-object--+  +-object--+",
+        "                                       +---------->|         |  |         |  ...",
+        "                                                   +---------+  +---------+",
+        "",
+        "* This command scans anonymous writable mappings and detects superblocks by vtable and magic.",
+        "* `--superblock` can be used to specify superblocks manually.",
+        "* `_freeList` is used first; if it is empty, TLS-held freelist heads are searched as candidates.",
+        "* Before allocating from the freelist, Hoard consumes unused objects from `position`.",
+        "* `reapableObjects` is displayed as the number of unused objects left.",
+    ]
+    _note_ = "\n".join(_note_)
 
     def get_super_blocks(self):
         super_blocks = []
@@ -131248,75 +131367,75 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         "",
         "Simplified partition alloc structure:",
         "",
-        " +-root-----------------+",
-        " | ...                  |    +---->+-extent------------+  +-->+-extent------------+  +-> ...",
-        " | next_super_page_     |    |     | next              |--+   | next              |--+",
-        " | next_partition_page_ |    |     +-------------------+      +-------------------+",
-        " | ...                  |    |",
-        " | first_extent_        |----+",
-        " | direct_map_list_     |--------->+-direct_map_extent-+  +-->+-direct_map_extent-+  +-> ...",
-        " | ...                  |          | bucket            |  |   | bucket            |  |",
-        " |                      |          | next_extent       |--+   | next_extent       |--+",
-        " |                      |          +-------------------+      +-------------------+",
-        " |                      |",
-        " +-bucket[0](0x20)------+",
-        " | head                 |--------->+-slot_span---------+  +-->+-slot_span---------+  +-> ...",
-        " | slot_size            |<---------| bucket            |  |   | bucket            |  |",
-        " | ...                  |    +-----| freelist_head     |  |   | freelist_head     |  |",
-        " +-bucket[1](0x20)------+    |     | next_slot_span    |--+   | next_slot_span    |--+",
-        " | head                 |    |     +-------------------+      +-------------------+",
-        " | slot_size            |    |",
-        " | ...                  |    |",
-        " +----------------------+    +---->+-slot--------------+",
-        " | ...                  |          | next              |---+",
-        " |                      |          | (freed)           |   |",
-        " +----------------------+          +-slot--------------+   |",
-        "                                   |                   |   |",
-        "                                   | (used)            |   |",
-        "                                   +-slot--------------+<--+",
-        "                               +---| next              |",
-        "                               |   | (freed)           |",
-        "                               |   +-slot--------------+",
-        "                               |   |                   |",
-        "                               |   | (used)            |",
-        "                               +-->+-slot--------------+",
-        "                                   | next              |---> NULL",
-        "                                   | (freed)           |",
-        "                                   +-slot--------------+",
-        "                                   |                   |",
-        "                                   |                   |",
-        "                                   +-------------------+",
+        "+-root-----------------+",
+        "| ...                  |    +---->+-extent------------+  +-->+-extent------------+  +-> ...",
+        "| next_super_page_     |    |     | next              |--+   | next              |--+",
+        "| next_partition_page_ |    |     +-------------------+      +-------------------+",
+        "| ...                  |    |",
+        "| first_extent_        |----+",
+        "| direct_map_list_     |--------->+-direct_map_extent-+  +-->+-direct_map_extent-+  +-> ...",
+        "| ...                  |          | bucket            |  |   | bucket            |  |",
+        "|                      |          | next_extent       |--+   | next_extent       |--+",
+        "|                      |          +-------------------+      +-------------------+",
+        "|                      |",
+        "+-bucket[0](0x20)------+",
+        "| head                 |--------->+-slot_span---------+  +-->+-slot_span---------+  +-> ...",
+        "| slot_size            |<---------| bucket            |  |   | bucket            |  |",
+        "| ...                  |    +-----| freelist_head     |  |   | freelist_head     |  |",
+        "+-bucket[1](0x20)------+    |     | next_slot_span    |--+   | next_slot_span    |--+",
+        "| head                 |    |     +-------------------+      +-------------------+",
+        "| slot_size            |    |",
+        "| ...                  |    |",
+        "+----------------------+    +---->+-slot--------------+",
+        "| ...                  |          | next              |---+",
+        "|                      |          | (freed)           |   |",
+        "+----------------------+          +-slot--------------+   |",
+        "                                  |                   |   |",
+        "                                  | (used)            |   |",
+        "                                  +-slot--------------+<--+",
+        "                              +---| next              |",
+        "                              |   | (freed)           |",
+        "                              |   +-slot--------------+",
+        "                              |   |                   |",
+        "                              |   | (used)            |",
+        "                              +-->+-slot--------------+",
+        "                                  | next              |---> NULL",
+        "                                  | (freed)           |",
+        "                                  +-slot--------------+",
+        "                                  |                   |",
+        "                                  |                   |",
+        "                                  +-------------------+",
         "",
         "`extent`, `slot_span` and `slot` are in super_page.",
         "",
-        "      [~v144.x]                    [v145.x~; PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)=y]",
-        "      +-super_page-(2MB)-----+      +-super_page(for meta)-+ +-super_page(for chunk)+",
-        " 4KB  | Guard Page           |      | Guard Page           | | Guard Page           |",
-        "      +----------------------+      +----------------------+ +----------------------+",
-        " 4KB  | extent * 1           |      | extend * 1           | | Unused               |",
-        "      | slot_span * 126      |      | slot_span * 126      | |                      |",
-        "      | unused * 1           |      | unused * 1           | |                      |",
-        "      +----------------------+      +----------------------+ +----------------------+",
-        " 8KB  | Guard Page           |      | Guard Page           | | Guard Page           |",
-        "      +----------------------+      +----------------------+ +----------------------+",
-        " 16KB | Partition Page #1    |      | ...                  | | Partition Page #1    |",
-        "      |   slot               |      |                      | |   slot               |",
-        "      |   slot               |      |                      | |   slot               |",
-        "      |   ...                |      |                      | |   ...                |",
-        "      +----------------------+      |                      | +----------------------+",
-        "      | ...                  |      |                      | | ...                  |",
-        "      +----------------------+      |                      | +----------------------|",
-        " 16KB | Partition Page #126  |      |                      | | Partition Page #126  |",
-        "      |   slot               |      |                      | |   slot               |",
-        "      |   slot               |      |                      | |   slot               |",
-        "      |   ...                |      |                      | |   ...                |",
-        "      +----------------------+      +----------------------+ +----------------------+",
-        " 12KB | Unused               |      | Unused               | | Unused               |",
-        "      +----------------------+      +----------------------+ +----------------------+",
-        "  4KB | Guard Page           |      | Guard Page           | | Guard Page           |",
-        "      +----------------------+      +----------------------+ +----------------------+",
+        "     [~v144.x]                    [v145.x~; PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)=y]",
+        "     +-super_page-(2MB)-----+      +-super_page(for meta)-+ +-super_page(for chunk)+",
+        "4KB  | Guard Page           |      | Guard Page           | | Guard Page           |",
+        "     +----------------------+      +----------------------+ +----------------------+",
+        "4KB  | extent * 1           |      | extend * 1           | | Unused               |",
+        "     | slot_span * 126      |      | slot_span * 126      | |                      |",
+        "     | unused * 1           |      | unused * 1           | |                      |",
+        "     +----------------------+      +----------------------+ +----------------------+",
+        "8KB  | Guard Page           |      | Guard Page           | | Guard Page           |",
+        "     +----------------------+      +----------------------+ +----------------------+",
+        "16KB | Partition Page #1    |      | ...                  | | Partition Page #1    |",
+        "     |   slot               |      |                      | |   slot               |",
+        "     |   slot               |      |                      | |   slot               |",
+        "     |   ...                |      |                      | |   ...                |",
+        "     +----------------------+      |                      | +----------------------+",
+        "     | ...                  |      |                      | | ...                  |",
+        "     +----------------------+      |                      | +----------------------|",
+        "16KB | Partition Page #126  |      |                      | | Partition Page #126  |",
+        "     |   slot               |      |                      | |   slot               |",
+        "     |   slot               |      |                      | |   slot               |",
+        "     |   ...                |      |                      | |   ...                |",
+        "     +----------------------+      +----------------------+ +----------------------+",
+        "12KB | Unused               |      | Unused               | | Unused               |",
+        "     +----------------------+      +----------------------+ +----------------------+",
+        " 4KB | Guard Page           |      | Guard Page           | | Guard Page           |",
+        "     +----------------------+      +----------------------+ +----------------------+",
         "",
-        "                                    * super_page_for_meta - metadata_offset_ == super_page_for_chunk",
+        "                                   * super_page_for_meta - metadata_offset_ == super_page_for_chunk",
     ]
     _note_ = "\n".join(_note_)
 
@@ -132312,10 +132431,55 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
     _category_ = "05-c. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("--object_space", type=AddressUtil.parse_address,
                         help="use specific address for object_space.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
+
+    _note_ = [
+        "Simplified scalloc structure:",
+        "",
+        "+-Arena(object_space)-+",
+        "| name_               |--->\"object\"",
+        "| start_              |------+",
+        "| end_                |------|---->Span[N]",
+        "| len_                |      |",
+        "| current_            |------|---->Span[i]",
+        "+---------------------+      |",
+        "                             |",
+        "  +--------------------------+",
+        "  v",
+        "+-Span[0]-------------+                +-Span[1]-------------+",
+        "| span_link_.next_    |--------------->| span_link_.next_    |---->...",
+        "| span_link_.prev_    |<---------------| span_link_.prev_    |<----...",
+        "| owner_              |                | owner_              |",
+        "| epoch_              |                | epoch_              |",
+        "| size_class_         |                | size_class_         |",
+        "| local_free_list_    |-----+          | local_free_list_    |-----+",
+        "| remote_free_list_   |--+  |          | remote_free_list_   |--+  |",
+        "+---------------------+  |  |          +---------------------+  |  |",
+        "                         |  |                                   |  |",
+        "   +---------------------+  |             +---------------------+  |",
+        "   |                        |             |                        |",
+        "   |  +---------------------+             |  +---------------------+",
+        "   |  |                                   |  |",
+        "   |  |  +-object-+   +-object-+          |  |  +-object-+   +-object-+",
+        "   |  +->| next   |-->| next   |-->...    |  +->| next   |-->| next   |-->...",
+        "   |     +--------+   +--------+          |     +--------+   +--------+",
+        "   |                                      |",
+        "   |     +-object-+   +-object-+          |     +-object-+   +-object-+",
+        "   +---->| next   |-->| next   |-->...    +---->| next   |-->| next   |-->...",
+        "         +--------+   +--------+                +--------+   +--------+",
+        "",
+        "* `object_space` is used as the default arena pointer.",
+        "* Spans are walked from `Arena.start_` to `Arena.current_` by `kVirtualSpanSize`.",
+        "* `size_class_` is converted to object size and capacity by fixed tables.",
+        "* `local_free_list_.list_` points to the local free-list.",
+        "* `local_free_list_.bump_pointer_` points to the next unused object area (top).",
+        "* `remote_free_list_.top_` is a tagged pointer and is decoded before dumping.",
+    ]
+    _note_ = "\n".join(_note_)
 
     def class_to_objects(self, cl):
         # number of objects in each span
@@ -153813,7 +153977,7 @@ class GefDumpCommandsCommand(GenericCommand):
 
         lines.append("## Table of contents")
         lines.append("")
-        for cat_orig in sorted(list(categories)):
+        for cat_orig in sorted(categories):
             cat = cat_orig[::]
             cat = cat.replace(" ", "-")
             cat = cat.replace("/", "")
