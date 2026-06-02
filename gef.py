@@ -11929,21 +11929,22 @@ def read_cstring_from_memory(addr, max_length=None):
     return ustr
 
 
-def read_physmem(paddr, size):
+def read_physmem(paddr, size, already_physmode=False):
     """Return a `size` long byte array with the copy of the physical memory at `paddr`."""
 
     def transparent_read(paddr, size):
-        # switch virt/phys mode
-        orig_mode = QemuMonitor.get_current_mmu_mode()
         try:
-            if orig_mode == "virt":
-                enable_phys()
-            out = read_memory(paddr, size)
-            if orig_mode == "virt":
-                disable_phys()
-            return out
-        except gdb.MemoryError:
-            if orig_mode == "virt":
+            switched = False
+            if QemuMonitor.get_current_mmu_mode() == "virt":
+                # switch virt/phys mode
+                switched = enable_phys() is True
+                if not switched:
+                    return None
+            return read_memory(paddr, size)
+        except Exception:
+            pass
+        finally:
+            if switched:
                 disable_phys()
         return None
 
@@ -12035,6 +12036,12 @@ def read_physmem(paddr, size):
     if size == 0:
         return b""
 
+    if already_physmode:
+        try:
+            return read_memory(paddr, size)
+        except gdb.MemoryError:
+            pass
+
     if is_qemu_system():
         out = qemu_system_proc_mem(paddr, size)
         if out:
@@ -12061,21 +12068,22 @@ def read_physmem(paddr, size):
     return None
 
 
-def write_physmem(paddr, data):
+def write_physmem(paddr, data, already_physmode=False):
     """Write `data` at physical memory address `paddr`."""
 
     def transparent_write(paddr, data):
-        # switch virt/phys mode
-        orig_mode = QemuMonitor.get_current_mmu_mode()
         try:
-            if orig_mode == "virt":
-                enable_phys()
-            out = write_memory(paddr, data)
-            if orig_mode == "virt":
-                disable_phys()
-            return out
+            switched = False
+            if QemuMonitor.get_current_mmu_mode() == "virt":
+                # switch virt/phys mode
+                switched = enable_phys() is True
+                if not switched:
+                    return None
+            return write_memory(paddr, data)
         except Exception:
-            if orig_mode == "virt":
+            pass
+        finally:
+            if switched:
                 disable_phys()
         return None
 
@@ -12083,6 +12091,12 @@ def write_physmem(paddr, data):
 
     if len(data) == 0:
         return 0
+
+    if already_physmode:
+        try:
+            return write_memory(paddr, data)
+        except gdb.MemoryError:
+            pass
 
     if not is_qemu_system() and not is_vmware(): # kgdb is unsupported
         return None
