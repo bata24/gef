@@ -6794,16 +6794,13 @@ mimalloc heap free-list viewer (x64 only).
 ### Syntax
 
 ```text
-usage: mimalloc-heap-dump [-h] [-m MI_HEAP_MAIN] (--v21x | --v22x | --v30x) [-d] [-D] [-n]
+usage: mimalloc-heap-dump [-h] [-hh] [-m MI_HEAP_MAIN] [-D] [-n]
 
 options:
   -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
   -m, --mi-heap-main MI_HEAP_MAIN
                         the address of _mi_heap_main (v2.x) / heap_main (v3.x).
-  --v21x                for mimalloc v2.1.x.
-  --v22x                for mimalloc v2.2.x.
-  --v30x                for mimalloc v3.0.x.
-  -d, --use-decode      use pointer decoding (for debug build).
   -D, --dump-chunk      dump each chunks.
   -n, --no-pager        do not use the pager.
 ```
@@ -6811,13 +6808,50 @@ options:
 ### Notes
 
 ```text
-In mimalloc, the member offsets of important structures vary depending on the version.
-You should be able to check the version with a command like `strings libmimalloc.so | grep git`.
-If you cannot determine it, please choose an option that can successfully decode it.
+Simplified mimalloc structure:
 
-For _mi_heap_main (v2.x) or heap_main (v3.x), GEF tries to resolve the address from symbol.
-If symbols are not available, GEF scans the TLS area for automatic detection.
-If, for some reason, detection fails, please specify the address manually.
++-mi_heap_t(_mi_heap_main / heap_main)-+
+| ...                                  |
+| next                                 |----> mi_heap_t --> ...
+| pages_free_direct[130] (v2.x/v3.0.x) |------+
+| theap / theaps (v3.1.x~)             |---+  |
++--------------------------------------+   |  |
+                                           |  |
+  +----------------------------------------+  |
+  |                                           |
+  v                                           |
++-mi_theap_t(v3.1.x~)------------------+      |
+| heap                                 |      |
+| ...                                  |      |
+| tnext / hnext                        |      |
+| pages_free_direct[130]               |------+
+| pages[]                              |      |
++--------------------------------------+      |
+                                              |
+  +-------------------------------------------+
+  |
+  v
++-mi_page_t-------------+               +-block-+  +-block-+
+| capacity              |       +------>| next  |->| next  |->...
+| used                  |       |       +-------+  +-------+
+| block_size/xblock_size|       |
+| page_start (v2.1.3~)  |---+   |       [page blocks]
+| keys[0]               |   |   |       +-block-+  +-block-+
+| keys[1]               |   +---------->|       |  |       | ...
+| free                  |-------+       +-------+  +-------+
+| local_free            |-------+
+| xthread_free          |       |       +-block-+  +-block-+
+| xheap / theap / heap  |       +------>| next  |->| next  |->...
+| next                  |               +-------+  +-------+
+| prev                  |
++-----------------------+
+
+* In mimalloc, the member offsets of important structures vary depending on the version.
+* You should be able to check the version with a command like `strings libmimalloc.so | grep git`.
+* If you cannot determine it, please choose an option that can successfully decode it.
+
+* For `_mi_heap_main` (v2.x) or `heap_main` (v3.x), GEF tries to resolve the address from symbol.
+* If symbols are not available, GEF scans the TLS area for automatic detection.
 ```
 
 ## musl-heap-dump
