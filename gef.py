@@ -133917,7 +133917,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
-    """musl v1.2.5 (src/malloc/mallocng) heap reusable chunks viewer (x64/x86 only)."""
+    """musl v1.2.6 (src/malloc/mallocng) heap reusable chunks viewer (x64/x86 only)."""
 
     # See https://h-noson.hatenablog.jp/entry/2021/05/03/161933#-177pts-mooosl
     _cmdline_ = "musl-heap-dump"
@@ -133931,6 +133931,45 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-v", "--verbose", action="store_true", help="also dump an empty active index.")
     _syntax_ = parser.format_help()
+
+    _note_ = [
+        "Simplified musl mallocng structure:",
+        "",
+        "+-malloc_context------+",
+        "| ...                 |",
+        "| active[0] ----------|----+",
+        "| active[1]           |    |",
+        "| ...                 |    |",
+        "| active[47]          |    |",
+        "| free_meta_head      |    |",
+        "| avail_meta          |    |",
+        "| meta_area_head      |    |",
+        "| meta_area_tail      |    |",
+        "+---------------------+    |",
+        "                           v",
+        "                 +-meta-------------+      +-meta-------------+",
+        "                 | avail_mask       |      | avail_mask       |",
+        "                 | freed_mask       |      | freed_mask       |",
+        "                 | sizeclass        |      | sizeclass        |",
+        "                 | last_idx         |      | last_idx         |",
+        "                 | freeable         |      | freeable         |",
+        "                 | maplen           |      | maplen           |",
+        "        ...<---->| prev / next      |<---->| prev / next      |<----> ...",
+        "                 | mem              |--+   | mem              |--+",
+        "                 +------------------+  |   +------------------+  |",
+        "                                       v                         v",
+        "                              +-group-------------+      +-group-------------+",
+        "                              | meta              |      | meta              |",
+        "                              | active_idx        |      | active_idx        |",
+        "                              | pad               |      | pad               |",
+        "                              | storage[]         |      | storage[]         |",
+        "                              |  chunk[0]         |      |  chunk[0]         |",
+        "                              |  chunk[1]         |      |  chunk[1]         |",
+        "                              |  chunk[2]         |      |  chunk[2]         |",
+        "                              |  ...              |      |  ...              |",
+        "                              +-------------------+      +-------------------+",
+    ]
+    _note_ = "\n".join(_note_)
 
     def __init__(self):
         super().__init__(complete="use_user_complete")
@@ -134349,6 +134388,8 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         self.out.append("  2. Search most right 'F' and return it")
         self.out.append("  3. If nothing is found, create new meta")
 
+        management_color = Config.get_gef_setting("theme.heap_management_address")
+
         # iterate __malloc_context.active
         for idx in range(48):
             if self.args.active_idx is not None and idx != self.args.active_idx:
@@ -134358,7 +134399,6 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                 continue
 
             self.out.append(titlify("active[{:2d}] (chunk_size={:#x})".format(idx, self.class_to_size(idx))))
-            management_color = Config.get_gef_setting("theme.heap_management_address")
 
             # iterate list of meta
             seen = []
