@@ -7032,16 +7032,17 @@ Simplified SSMalloc structure:
 
 ## tcmalloc-dump
 
-tcmalloc (google-perftools-2.16) free-list viewer (x64 only).
+tcmalloc (google-perftools/gperftools) free-list viewer (x64 only).
 
 
 ### Syntax
 
 ```text
-usage: tcmalloc-dump [-h] [-c] [-f] [-n] [-q]
+usage: tcmalloc-dump [-h] [-hh] [-c] [-f] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
   -c, --central         show central cache instead of thread caches.
   -f, --force-heuristic
                         use heuristic detection.
@@ -7054,6 +7055,38 @@ options:
 ```gdb
 tcmalloc-dump            # print freelist of thread cache for all thread
 tcmalloc-dump --central  # print freelist of central cache
+```
+
+### Notes
+
+```text
+Simplified tcmalloc/gperftools heap structure:
+
+Static Area (Central Cache)
++------------------------------+
+| Static::sizemap_             |
+|  class_to_size_[class]       |
++------------------------------+
+| Static::central_cache_[128]  |
+|  CentralFreeList[class]      |
+|   empty_ / nonempty_         |
+|   tc_slots_[slot].head       |---> free obj -> free obj -> NULL
+|   used_slots_                |
++------------------------------+
+| Static::pageheap_            |
++------------------------------+
+
+Thread cache list
++----------------------------+  +-->+-ThreadCache---------+       +-ThreadCache---------+
+| ThreadCache::thread_heaps_ |--+   | list_[128]          |    +->| list_[128]          |    +-> ...
++----------------------------+      |  FreeList::list_    |--+ |  |  FreeList::list_    |--+ |
+                                    |  FreeList::length_  |  | |  |  FreeList::length_  |  | |
+                                    |  FreeList::size_    |  | |  |  FreeList::size_    |  | |
+                                    | next_               |----+  | next_               |----+
+                                    | prev_               |  |    | prev_               |  |
+                                    +---------------------+  |    +---------------------+  |
+                                                             v                             v
+                                                         free obj -> free obj -> NULL     ...
 ```
 
 ## tlsf-heap-dump

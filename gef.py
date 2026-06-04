@@ -127716,12 +127716,13 @@ class VmlinuxToElfApplyCommand(GenericCommand):
 
 @register_command
 class TcmallocDumpCommand(GenericCommand, BufferingOutput):
-    """tcmalloc (google-perftools-2.16) free-list viewer (x64 only)."""
+    """tcmalloc (google-perftools/gperftools) free-list viewer (x64 only)."""
 
     _cmdline_ = "tcmalloc-dump"
     _category_ = "05-c. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("-c", "--central", action="store_true",
                         help="show central cache instead of thread caches.")
     parser.add_argument("-f", "--force-heuristic", action="store_true", help="use heuristic detection.")
@@ -127735,21 +127736,36 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    def __init__(self):
-        super().__init__(complete="use_user_complete")
-        return
-
-    def complete(self, text, word): # noqa
-        if text.strip() in self.modes:
-            # already matched
-            return []
-
-        if text == "":
-            # no prefix
-            return [s for s in self.modes if ((word is None) or (s and word in s))]
-
-        # finally, look for possible values for given prefix
-        return [s for s in self.modes if s and s.startswith(text.strip())]
+    _note_ = [
+        "Simplified tcmalloc/gperftools heap structure:",
+        "",
+        "Static Area (Central Cache)",
+        "+------------------------------+",
+        "| Static::sizemap_             |",
+        "|  class_to_size_[class]       |",
+        "+------------------------------+",
+        "| Static::central_cache_[128]  |",
+        "|  CentralFreeList[class]      |",
+        "|   empty_ / nonempty_         |",
+        "|   tc_slots_[slot].head       |---> free obj -> free obj -> NULL",
+        "|   used_slots_                |",
+        "+------------------------------+",
+        "| Static::pageheap_            |",
+        "+------------------------------+",
+        "",
+        "Thread cache list",
+        "+----------------------------+  +-->+-ThreadCache---------+       +-ThreadCache---------+",
+        "| ThreadCache::thread_heaps_ |--+   | list_[128]          |    +->| list_[128]          |    +-> ...",
+        "+----------------------------+      |  FreeList::list_    |--+ |  |  FreeList::list_    |--+ |",
+        "                                    |  FreeList::length_  |  | |  |  FreeList::length_  |  | |",
+        "                                    |  FreeList::size_    |  | |  |  FreeList::size_    |  | |",
+        "                                    | next_               |----+  | next_               |----+",
+        "                                    | prev_               |  |    | prev_               |  |",
+        "                                    +---------------------+  |    +---------------------+  |",
+        "                                                             v                             v",
+        "                                                         free obj -> free obj -> NULL     ...",
+    ]
+    _note_ = "\n".join(_note_)
 
     def initialize(self):
         """
@@ -127833,6 +127849,8 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
         self.CentralCache_offset_size_class_ = 0x8
         self.CentralCache_offset_tc_slots_ = 0x80
         self.CentralCache_offset_used_slots_ = 0x480
+        self.sizeof_TCEntry = 0x10
+        self.TCEntry_offset_head = 0x0
 
         # for central cache
         """
@@ -127957,20 +127975,23 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
         offset_prev1 = 0x28
         offset_next2 = 0x50
         offset_prev2 = 0x58
+        pagesize = get_pagesize()
 
         for m in ProcessMap.get_process_maps():
             if "[heap]" in m.path:
                 continue
             if m.permission != Permission.READ | Permission.WRITE:
                 continue
-            for current_page in range(m.page_start, m.page_end, get_pagesize()):
+            for current_page in range(m.page_start, m.page_end, pagesize):
                 # fast check
-                x = read_memory(current_page, get_pagesize())
+                if not is_valid_addr(current_page):
+                    continue
+                x = read_memory(current_page, pagesize)
                 if set(x) == {0}:
                     continue
 
                 # exact check
-                for current in range(current_page, current_page + get_pagesize(), current_arch.ptrsize):
+                for current in range(current_page, current_page + pagesize, current_arch.ptrsize):
                     error = False
                     for i in range(self.CentralCache_array_count):
                         base = current + self.sizeof_CentralCache * i
@@ -128146,7 +128167,7 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("heap_key: {:#x} (xor chunk->fd)".format(heap_key))
 
         for thread_heap in thread_heaps:
-            self.out.append(titlify('thread cache @ {:#x}'.format(thread_heap)))
+            self.out.append(titlify("thread cache @ {:#x}".format(thread_heap)))
             freelist = thread_heap + self.ThreadCache_offset_freelist_array
             for i in range(self.ThreadCache_freelist_slot_count):
                 self.dump_thread_heap_freelist_single(freelist, i)
@@ -128157,7 +128178,8 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
 
-        chunk = read_int_from_memory(freelist + self.FreeList_offset_list)
+        chunk = read_int_from_memory(freelist + self.TCEntry_offset_head)
+
         if chunk != 0: # freelist exists
             seen = []
             out = []
@@ -128218,7 +128240,7 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
             ))
             tc_slots = central_cache_i + self.CentralCache_offset_tc_slots_ # &central_cache[i].tc_slots_
             for j in range(min(used_slots, self.CentralCache_freelist_slot_count)):
-                addr = tc_slots + j * 0x10 # &central_cache[i].tc_slots_[j]
+                addr = tc_slots + j * self.sizeof_TCEntry # &central_cache[i].tc_slots_[j]
                 self.dump_central_cache_freelist_single(addr, i, j)
         return
 
