@@ -78424,6 +78424,145 @@ class Hash:
             0xba7c_9045_f12c_7f99, 0x24a1_9947_b391_6cf7, 0x0801_f2e2_858e_fc16, 0x6369_20d8_7157_4e69,
         )
 
+    class BBLAKEBase:
+        def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.ensure_tables()
+            self.left = self.create_left()
+            self.right = self.create_right()
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.block_index = 0
+            self.finalized = False
+            self.final_digest = None
+            if data:
+                self.update(data)
+            return
+
+        @classmethod
+        def ensure_tables(cls):
+            return
+
+        def create_core(self):
+            return getattr(Hash, self.core_name)()
+
+        def copy_core(self, h):
+            other = h.__class__()
+            other.h = h.h[:]
+            other.buf = h.buf
+            other.total = h.total
+            other.processed = h.processed
+            return other
+
+        def create_left(self):
+            h = self.create_core()
+            if hasattr(self.__class__, "left_iv"):
+                h.h = list(self.__class__.left_iv)
+            if hasattr(self.__class__, "left_prefix"):
+                h.update(self.__class__.left_prefix)
+            return h
+
+        def create_right(self):
+            h = self.create_core()
+            if hasattr(self.__class__, "right_iv"):
+                h.h = list(self.__class__.right_iv)
+            if hasattr(self.__class__, "right_prefix"):
+                h.update(self.__class__.right_prefix)
+            return h
+
+        def copy(self):
+            other = self.__class__()
+            other.left = self.copy_core(self.left)
+            other.right = self.copy_core(self.right)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.block_index = self.block_index
+            other.finalized = self.finalized
+            other.final_digest = None if self.final_digest is None else bytes(self.final_digest)
+            return other
+
+        def update(self, data):
+            if self.finalized:
+                raise ValueError("hash object already finalized")
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            if not data:
+                return self
+
+            self.msg_len += len(data)
+            self.buf.extend(data)
+
+            bs = self.branch_block_size
+            left = self.left
+            right = self.right
+            block_index = self.block_index
+            buf = self.buf
+
+            while len(buf) >= bs:
+                block = bytes(buf[:bs])
+                del buf[:bs]
+                if block_index & 1:
+                    right.update(block)
+                else:
+                    left.update(block)
+                block_index += 1
+
+            self.block_index = block_index
+            return self
+
+        def finalize(self):
+            if self.finalized:
+                return
+
+            if self.buf:
+                if self.block_index & 1:
+                    self.right.update(bytes(self.buf))
+                else:
+                    self.left.update(bytes(self.buf))
+                self.buf.clear()
+
+            h = self.create_core()
+            h.update(self.left.digest())
+            h.update(self.right.digest())
+            self.final_digest = h.digest()
+            self.finalized = True
+            return
+
+        def digest(self):
+            if self.finalized:
+                return bytes(self.final_digest)
+            c = self.copy()
+            c.finalize()
+            return bytes(c.final_digest)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+    class BBLAKE256(BBLAKEBase):
+        block_size = 64
+        digest_size = 32
+        branch_block_size = 64
+        core_name = "BLAKE256"
+        left_prefix = b"\x00" * 64
+        right_prefix = b"\x01" + b"\x00" * 63
+
+    class BBLAKE512(BBLAKEBase):
+        block_size = 128
+        digest_size = 64
+        branch_block_size = 128
+        core_name = "BLAKE512"
+
+        @classmethod
+        def ensure_tables(cls):
+            if hasattr(Hash.BBLAKE512, "left_iv"):
+                return
+            left_digest = Hash.BLAKE512(b"\x00").digest()
+            right_digest = Hash.BLAKE512(b"\x01").digest()
+            Hash.BBLAKE512.left_iv = tuple(int.from_bytes(left_digest[i:i + 8], "big") for i in range(0, 64, 8))
+            Hash.BBLAKE512.right_iv = tuple(int.from_bytes(right_digest[i:i + 8], "big") for i in range(0, 64, 8))
+            return
+
     class BLAKE2pBase:
         block_size = 512
 
@@ -111903,6 +112042,8 @@ class HashCommand(GenericCommand):
         yield ("Bash384", Hash.Bash384())
         yield ("Bash512", Hash.Bash512())
         yield ("BelT Hash", Hash.BELT())
+        yield ("BBLAKE256", Hash.BBLAKE256())
+        yield ("BBLAKE512", Hash.BBLAKE512())
         yield ("BLAKE2sp", Hash.BLAKE2sp())
         yield ("BLAKE2bp", Hash.BLAKE2bp())
         yield ("BLAKE3-128", Hash.BLAKE3(digest_bits=128))
@@ -113117,6 +113258,11 @@ class HashTestCommand(HashCommand, BufferingOutput):
         # https://hashing.tools/belt
         "BelT Hash":
             "b0333d1bb3c391893a5a1df907eaf2b5cc60e993bd4fa0cdd865d09a243183cd",
+        # https://github.com/jedisct1/supercop/tree/master/crypto_hash
+        "BBLAKE256":
+            "0f4f7aadbb8b4951fc3e97befe13d03560a978974f8b31f8ef29d6a9fbfe84d0",
+        "BBLAKE512":
+            "d38c99109a43e42d79fdbf0c1b179947aed856ea365e22a22cab549ecebb939e7e1b520e11917dd985635f3aefbd8385f8ad3c842a70c8f5bcf1ab11cf74cdc9",
         # https://github.com/jonelo/jacksum
         "BLAKE2sp":
             "cf192976714bb648e72b29fa90e6bf0fbc5bf2efe7d5c26ed8ff34e855368691",
