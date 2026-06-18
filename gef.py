@@ -112513,6 +112513,8 @@ class HashTestCommand(HashCommand, BufferingOutput):
                         help="measure and sort the time taken to compute the hash using large bytes of data.")
     parser.add_argument("--size", type=AddressUtil.parse_address, default=0x1000,
                         help="the data size of 'AAAA...' to measure the time taken to compute the hash.")
+    parser.add_argument("--no-cffi", action="store_true",
+                        help="disable CFFI accelerated hash implementations during this test.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
@@ -113701,13 +113703,58 @@ class HashTestCommand(HashCommand, BufferingOutput):
             ))
         return
 
+    def disable_hash_cffi(self):
+        import contextlib
+
+        def disabled_init_cffi_backend(hash_obj):
+            hash_obj.USE_CFFI = False
+            return
+
+        @contextlib.contextmanager
+        def manager():
+            saved_methods = []
+            seen_classes = set()
+
+            def walk_hash_classes(cls):
+                cls_id = id(cls)
+                if cls_id in seen_classes:
+                    return
+                seen_classes.add(cls_id)
+
+                if "init_cffi_backend" in cls.__dict__:
+                    saved_methods.append((cls, cls.__dict__["init_cffi_backend"]))
+                    cls.init_cffi_backend = disabled_init_cffi_backend
+
+                for obj in cls.__dict__.values():
+                    if isinstance(obj, type):
+                        walk_hash_classes(obj)
+                return
+
+            walk_hash_classes(Hash)
+
+            try:
+                yield
+            finally:
+                for cls, original_method in reversed(saved_methods):
+                    cls.init_cffi_backend = original_method
+            return
+
+        return manager()
+
     @parse_args
     def do_invoke(self, args):
         self.out = []
-        if args.time or args.time_with_sort:
-            self.hash_test_time()
+        if args.no_cffi:
+            with self.disable_hash_cffi():
+                if args.time or args.time_with_sort:
+                    self.hash_test_time()
+                else:
+                    self.hash_test()
         else:
-            self.hash_test()
+            if args.time or args.time_with_sort:
+                self.hash_test_time()
+            else:
+                self.hash_test()
         self.print_output(check_terminal_size=True)
         return
 
