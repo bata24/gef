@@ -75578,7 +75578,6 @@ class Hash:
     class KeccakBase:
         # Keccak-f[1600] parameters
         lanes = 25
-        rounds = 24
         # Rho offsets (index = x + 5*y)
         rho = (
             0x00, 0x01, 0x3e, 0x1c, 0x1b, 0x24, 0x2c, 0x06, 0x37, 0x14, 0x03, 0x0a, 0x2b, 0x19, 0x27,
@@ -75737,7 +75736,6 @@ class Hash:
 
     class TurboShakeBase:
         # Keccak-p[1600,12] with little-endian 64-bit lanes
-        rounds = 12
         domain = 0x1f
         rho = (
             0x00, 0x01, 0x3e, 0x1c, 0x1b, 0x24, 0x2c, 0x06, 0x37, 0x14, 0x03, 0x0a, 0x2b, 0x19, 0x27,
@@ -77632,7 +77630,6 @@ class Hash:
             self.w = 64
             self.n = 89
             self.c = 16
-            self.b = 64
             self.t0 = 0x11
             self.t1 = 0x12
             self.t2 = 0x15
@@ -77655,11 +77652,6 @@ class Hash:
                 raise TypeError("data must be bytes-like")
             self.buffer += bytes(data)
             return self
-
-        def copy(self):
-            other = self.__class__(key=self.key, L=self.L, r=self.r)
-            other.buffer = self.buffer
-            return other
 
         def digest(self):
             return self.hash(self.buffer)
@@ -78205,17 +78197,6 @@ class Hash:
                 self.update(data)
             return
 
-        def rol(self, x, n):
-            x &= self.mask
-            return ((x << n) | (x >> (self.word_bits - n))) & self.mask
-
-        def ror(self, x, n):
-            x &= self.mask
-            return ((x >> n) | (x << (self.word_bits - n))) & self.mask
-
-        def add(self, x, y):
-            return (x + y) & self.mask
-
         def parse_block_words(self, block):
             return [
                 int.from_bytes(block[i:i + self.word_bytes], "big")
@@ -78234,6 +78215,10 @@ class Hash:
             return t0, t1
 
         def g(self, v, a, b, c, d, m, r, i):
+
+            def ror(x, n):
+                return ((x >> n) | (x << (self.word_bits - n))) & self.mask
+
             s = self.sigma[r % 10]
             x = s[2 * i]
             y = s[2 * i + 1]
@@ -78242,14 +78227,14 @@ class Hash:
             r0, r1, r2, r3 = self.rot
 
             va = (v[a] + v[b] + (m[x] ^ cy)) & self.mask
-            vd = self.ror(v[d] ^ va, r0)
+            vd = ror(v[d] ^ va, r0)
             vc = (v[c] + vd) & self.mask
-            vb = self.ror(v[b] ^ vc, r1)
+            vb = ror(v[b] ^ vc, r1)
 
             va = (va + vb + (m[y] ^ cx)) & self.mask
-            vd = self.ror(vd ^ va, r2)
+            vd = ror(vd ^ va, r2)
             vc = (vc + vd) & self.mask
-            vb = self.ror(vb ^ vc, r3)
+            vb = ror(vb ^ vc, r3)
 
             v[a] = va
             v[b] = vb
@@ -79950,7 +79935,6 @@ class Hash:
         def __init__(self, seed=0):
             self.seed = seed & 0xffff_ffff_ffff_ffff
             self.buf = b""
-            self.total = 0
             return
 
         def update(self, data):
@@ -79960,7 +79944,6 @@ class Hash:
                 raise TypeError("data must be bytes-like")
             b = bytes(data)
             self.buf += b
-            self.total += len(b)
             return self
 
         def hexdigest(self):
@@ -81522,7 +81505,6 @@ class Hash:
     class MurmurHash3_x64_128(MurmurHash3Base):
         block_size = 16
         digest_size = 16
-        word_bits = [64, 64]
 
         def init_state(self):
             self.seed &= 0xffff_ffff_ffff_ffff
@@ -86451,11 +86433,6 @@ class Hash:
                 self.update(data)
             return
 
-        def copy(self):
-            other = self.__class__(seed=self.seed)
-            other.buf = bytearray(self.buf)
-            return other
-
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
@@ -86771,7 +86748,6 @@ class Hash:
             return struct.pack(">QQ", hi, lo)
 
     class KupynaBase:
-        matrix = (0x01, 0x01, 0x05, 0x01, 0x08, 0x06, 0x07, 0x04)
         s0 = (
             0xa8, 0x43, 0x5f, 0x06, 0x6b, 0x75, 0x6c, 0x59, 0x71, 0xdf, 0x87, 0x95, 0x17, 0xf0, 0xd8, 0x09,
             0x6d, 0xf3, 0x1d, 0xcb, 0xc9, 0x4d, 0x2c, 0xaf, 0x79, 0xe0, 0x97, 0xfd, 0x6f, 0x4b, 0x45,
@@ -89264,14 +89240,6 @@ class Hash:
                 self.update(data)
             return
 
-        def copy(self):
-            other = self.__class__(self.n)
-            other.state = self.state
-            other.buf = bytearray(self.buf)
-            other.bufpos = self.bufpos
-            other.overflow = self.overflow
-            return other
-
         def update_byte(self, data):
 
             def rol32(x, n):
@@ -89313,9 +89281,6 @@ class Hash:
                 self.update_byte(bytes([b]))
             return self
 
-        def finalize(self):
-            return
-
         def digest(self):
             return self.state.to_bytes(4, "little")
 
@@ -89345,13 +89310,6 @@ class Hash:
                 self.update(data)
             return
 
-        def copy(self):
-            other = self.__class__()
-            other.total = self.total
-            other.i = self.i
-            other.divisors = list(self.divisors)
-            return other
-
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
@@ -89360,9 +89318,6 @@ class Hash:
                 self.i = (self.i + 0x1c) % 0x1d
                 self.total += self.primes[self.i] * b
             return self
-
-        def finalize(self):
-            return
 
         def digest(self):
 
@@ -93991,11 +93946,6 @@ class Hash:
             self.squeezing = True
             return
 
-        def finalize(self):
-            if not self.squeezing:
-                self.switch_to_squeezing()
-            return
-
         def read(self, length):
             if length < 0:
                 raise ValueError("invalid output length")
@@ -94573,6 +94523,8 @@ class Hash:
         def update(self, data):
             if self.finalized:
                 raise ValueError("hash already finalized")
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             self.buf.extend(data)
             self.msg_len += len(data)
             return self
@@ -94779,6 +94731,8 @@ class Hash:
             return other
 
         def update(self, data):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
             data = bytes(data)
             for b in data:
                 bit = 0x80
@@ -95425,12 +95379,6 @@ class Hash:
             if data:
                 self.update(data)
             return
-
-        def copy(self):
-            other = self.__class__(seed=self.seed)
-            other.buf = bytearray(self.buf)
-            other.msg_len = self.msg_len
-            return other
 
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
@@ -99313,7 +99261,7 @@ class Hash:
                     temp = sum1(ch) & self.mask
                     temp = self.ror(temp, r0)
                     ch[7] = ch[6]
-                    ch[6] = self.update_ch6_first(ch, word)
+                    ch[6] = self.ror(ch[5], r1)
                     ch[5] = self.update_ch5_first(ch, w, i, i1, word)
                     ch[4] = self.ror(ch[3], r2)
                     selector = self.selector_first(word, i)
@@ -99369,9 +99317,6 @@ class Hash:
                 (word >> 25) & 31,
             )
 
-        def update_ch6_first(self, ch, word):
-            return self.ror(ch[5], (word >> 5) & 31)
-
         def update_ch5_first(self, ch, w, i, i1, word):
             return (ch[4] + w[((i + 3) % 8) + i1]) & 0xffff_ffff
 
@@ -99420,9 +99365,6 @@ class Hash:
                 (word >> 48) & 0x3f,
                 (word >> 48) & 0x3f,
             )
-
-        def update_ch6_first(self, ch, word):
-            return self.ror(ch[5], (word >> 6) & 0x3f)
 
         def update_ch5_first(self, ch, w, i, i1, word):
             return (self.ror(ch[4], (word >> 12) & 0x3f) + w[((i + 3) % 8) + i1]) & 0xffff_ffff_ffff_ffff
@@ -101891,7 +101833,6 @@ class Hash:
 
     class Lesamnta256Base(LesamntaBase):
         block_size = 32
-        block_bits = 256
 
         def f_func(self, words):
             s = self.sbox
@@ -101984,7 +101925,6 @@ class Hash:
 
     class Lesamnta512Base(LesamntaBase):
         block_size = 64
-        block_bits = 512
 
         def f_func(self, words):
             s = self.sbox
@@ -111170,9 +111110,6 @@ class Hash:
         def hexdigest(self):
             return self.digest().hex()
 
-        def finalize(self):
-            return self.digest()
-
         def reset(self):
             self.kk1 = list(Hash.AtelopusBase.skk1)
             self.val1 = self.bytes_to_word([self.kk1[0], self.kk1[64], self.kk1[128], self.kk1[192]])
@@ -111287,7 +111224,7 @@ class Hash:
                 val4 = (val4 ^ self.kk(words[pos2])) & 0xffff_ffff
 
                 temp1 = self.bytes_to_word([i & 0xff, (i + 1) & 0xff, (i + 2) & 0xff, (i + 3) & 0xff])
-                self.swap(temp1, self.g1((val1 + val2) & 0xffff_ffff) ^ self.g1((val3 + val4) & 0xffff_ffff))
+                self.swap(temp1, self.g1((val1 + val2) & 0xffff_ffff) ^ self.g2((val3 + val4) & 0xffff_ffff))
                 pos1 = (pos1 + 1) & self.bs1
                 pos2 = (pos2 + 1) & self.bs1
                 pos3 = (pos3 + 1) & self.bs1
@@ -111323,7 +111260,7 @@ class Hash:
                         val2 = (val2 + temp1) & 0xffff_ffff
                         val2 = (val2 ^ words[ix1]) & 0xffff_ffff
                         temp1 = (temp1 ^ self.kk(val1)) & 0xffff_ffff
-                        words[pos1] = (temp1 + self.kk(val2)) & 0xffff_ffff
+                        words[pos1] = self.g2((temp1 + self.kk(val2)) & 0xffff_ffff)
                         self.swap(temp1, val2)
                     else:
                         temp1 = words[pos1]
@@ -111333,7 +111270,7 @@ class Hash:
                         val2 = (val2 ^ self.f1(val1)) & 0xffff_ffff
                         val2 = (val2 + temp2) & 0xffff_ffff
                         val2 = (val2 ^ words[ix1]) & 0xffff_ffff
-                        words[pos2] = (temp2 + self.kk(val2)) & 0xffff_ffff
+                        words[pos2] = self.g1((temp2 + self.kk(val2)) & 0xffff_ffff)
                         words[pos1] = (temp1 ^ self.kk(val1)) & 0xffff_ffff
                         self.swap(words[pos1], val2)
                     if i < self.bs1:
@@ -113154,9 +113091,9 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "eec3f993d242a2973fc9b8c92e1b358686a73c63f179db9c3b4515a86aa7458a",
         # https://bench.cr.yp.to/supercop/supercop-20260330.tar.xz
         "Atelopus32":
-            "153e36e449f2c058de23e69b7b36312c1e02472b4571161ea8fcbac6c26a8f82",
+            "86f6b2c884292b0f9b54656e29127f14a1244a1eba861b9838309232f1f1958c",
         "Atelopus64":
-            "51d27e64407ba26d55bf0cdd13fa86b11869290d0e0b65e0294370f54273b532c76126ea8c6f22178e59a9377a6fc71f82150d7972c03c7ff370bc56b176dd8f",
+            "4141fa854eee7c26b44117531b4012d122b71a8ce5939e4fb344e13769fa8707cf7af08cc4b03357ec49aa5da3e3adff4733333e3133dd99e7d85f2c2eb35bbc",
         # https://hashing.tools/ascon
         "Ascon-Hash":
             "3375fb43372c49cbd48ac5bb6774e7cf5702f537b2cf854628edae1bd280059e",
