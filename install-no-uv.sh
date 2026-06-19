@@ -31,9 +31,17 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata
 apt-get install -y gdb-multiarch wget unzip
 apt-get install -y binutils python3-pip ruby-dev git file colordiff imagemagick
 
-# Since installing bpftool fails inside a container, it is excluded.
-if [ ! -f /.dockerenv ]; then
-    apt-get install -y bpftool
+# bpftool is no longer a standalone package; it ships in linux-tools-$(uname -r).
+# That package is tied to the running kernel and is frequently unavailable inside
+# containers (the host kernel's linux-tools may not exist in the image's repos),
+
+echo "[+] Install bpftool"
+if [ -z "$(command -v bpftool)" ]; then
+    KREL="$(uname -r)"
+    if ! apt-get install -y "linux-tools-${KREL}"; then
+        # Fall back to the generic meta-package, then the common linux-tools pkg.
+        apt-get install -y linux-tools-common
+    fi
 fi
 
 # Installing binwalk requires a large number of packages and takes a significant amount of time,
