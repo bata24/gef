@@ -116976,7 +116976,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("--offset-random", type=AddressUtil.parse_address,
                         help="[FOR DEVELOPER] user-specified offsetof(kmem_cache, random) when `kmem_cache.random` is falsely detected.")
     parser.add_argument("--offset-node", type=AddressUtil.parse_address,
-                        help="[FOR DEVELOPER] user-specified offsetof(kmem_cache, node) when `kmem_cache.node` is falsely detected.")
+                        help="[FOR DEVELOPER] user-specified offsetof(kmem_cache, node/per_node[0].node) when node is falsely detected.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -117002,59 +117002,54 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         "       +-slab_caches-+   | name                |   | |   | name        |   | name        |",
         " ...<->| list_head   |<->| list_head           |<------->| list_head   |<->| list_head   |<-> ...",
         "       +-------------+   | random              |   | |   | random      |   | random      |",
-        "                         | node[]              |-+ | |   | node[]      |   | node[]      |",
-        "                         +---------------------+ | | |   +-------------+   +-------------+",
-        "                                                 | | |",
-        "                                                 | | |     [sheaf/barn (the fastest path)]",
-        "    +--------------------------------------------+ | |                     +-->+-slab_sheaf-+",
-        "    |   +------------------------------------------+ |                     |   | barn_list  |",
-        "    |   |                               +------------+                     |   | size       |",
-        "    |   |     +-__per_cpu_offset-+      |                                  |   | objects[]  |",
-        "    |   +-----| cpu0_offset      |------+------->+-slub_percpu_sheaves-+   |   |  ptr       |->chunk",
-        "    |   |     | cpu1_offset      |               | main                |---+   |  ptr       |->chunk",
-        "    |   |     | cpu2_offset      |               | spare               |-->... |  ...       |",
-        "    |   |     | ...              |               +---------------------+       +------------+",
-        "    |   |     +------------------+",
-        "    |   |                                                  [active page freelist (fast path)]",
-        "    |   |                                                    +-chunk---+  +-chunk---+",
-        "    |   |                                                    | ^       |  | ^       |",
-        "    |   |                                                    | |offset |  | |offset |",
-        "    |   |                                                    | v       |  | v       |",
-        "    |   |                  +-------------------------------->| next    |->| next    |->NULL",
-        "    |   v (~6.19)          |                                 +---------+  +---------+",
-        "    |  +-kmem_cache_cpu-+  |",
-        "    |  | freelist       |--+                               [active page freelist (slow path)]",
-        "    |  | page/slab      |---->+-page/slab(active)--+         +-chunk---+  +-chunk---+",
-        "    |  | partial        |--+  | freelist           |----+    | ^       |  | ^       |",
-        "    |  +----------------+  |  |                    |    |    | |offset |  | |offset |",
-        "    |                      |  +------------------ -+    |    | v       |  | v       |",
-        "    |                      |                            +--->| next    |->| next    |->NULL",
-        "    |                      |                                 +---------+  +---------+",
-        "    |                      |",
-        "    |                      |                               [partial page freelist]",
-        "    |                      +->+-page/slab(partial)-+         +-chunk---+  +-chunk---+",
-        "    |                         | freelist           |----+    | ^       |  | ^       |",
-        "    |                         | next               |--+ |    | |offset |  | |offset |",
-        "    |                         +--------------------+  | |    | v       |  | v       |",
-        "    |                                                 | +--->| next    |->| next    |->NULL",
-        "    |                           +---------------------+      +---------+  +---------+",
-        "    |                           |",
-        "    |                           v                          [partial page freelist]",
-        "    |                         +-page/slab(partial)-+         +-chunk---+  +-chunk---+",
-        "    |                         | freelist           |----+    | ^       |  | ^       |",
-        "    |                         | next               |--+ |    | |offset |  | |offset |",
-        "    |                         +--------------------+  | |    | v       |  | v       |",
-        "    |                                                 | +--->| next    |->| next    |->NULL",
-        "    |                           +---------------------+      +---------+  +---------+",
-        "    |                           |",
-        "    |                           v",
-        "    +--+                       ...",
-        "       |                                                    [numa node partial page freelist]",
-        "       v                      +-page/slab(numa-node)+         +-chunk---+  +-chunk---+",
-        "      +-kmem_cache_node-+     | freelist            |----+    | ^       |  | ^       |",
-        "      | partial         |---->| next                |--+ |    | |offset |  | |offset |",
-        "      | (full)          |     +---------------------+  | |    | v       |  | v       |",
-        "  +---| barn (6.18~)    |                              | +--->| next    |->| next    |->NULL",
+        "                         | node[] (~7.0)       |-+ | |   | node[]      |   | node[]      |",
+        "                         | per_node[] (7.1~)   | | | |   +-------------+   +-------------+",
+        "  +----------------------|   [0].barn          | | | |",
+        "  |                      |   [0].node          |-+ | |",
+        "  |                      +---------------------+ | | |",
+        "  |                                              | | |",
+        "  |                                              | | |     [sheaf/barn (the fastest path)]",
+        "  |  +-------------------------------------------+ | |                     +-->+-slab_sheaf-+",
+        "  |  |  +------------------------------------------+ |                     |   | barn_list  |",
+        "  |  |  |                               +------------+                     |   | size       |",
+        "  |  |  |     +-__per_cpu_offset-+      |                                  |   | objects[]  |",
+        "  |  |  +-----| cpu0_offset      |------+------->+-slub_percpu_sheaves-+   |   |  ptr       |->chunk",
+        "  |  |  |     | cpu1_offset      |               | main                |---+   |  ptr       |->chunk",
+        "  |  |  |     | cpu2_offset      |               | spare               |-->... |  ...       |",
+        "  |  |  |     | ...              |               +---------------------+       +------------+",
+        "  |  |  |     +------------------+",
+        "  |  |  |                                                  [active page freelist (fast path)]",
+        "  |  |  |                                                    +-chunk---+  +-chunk---+",
+        "  |  |  |                                                    | ^       |  | ^       |",
+        "  |  |  |                                                    | |offset |  | |offset |",
+        "  |  |  |                                                    | v       |  | v       |",
+        "  |  |  |                  +-------------------------------->| next    |->| next    |->NULL",
+        "  |  |  v (~6.19)          |                                 +---------+  +---------+",
+        "  |  | +-kmem_cache_cpu-+  |",
+        "  |  | | freelist       |--+                               [active page freelist (slow path)]",
+        "  |  | | page/slab      |---->+-page/slab(active)--+         +-chunk---+  +-chunk---+",
+        "  |  | | partial        |--+  | freelist           |----+    | ^       |  | ^       |",
+        "  |  | +----------------+  |  |                    |    |    | |offset |  | |offset |",
+        "  |  |                     |  +------------------ -+    |    | v       |  | v       |",
+        "  |  |                     |                            +--->| next    |->| next    |->NULL",
+        "  |  |                     |                                 +---------+  +---------+",
+        "  |  |                     |",
+        "  |  |                     |                               [partial page freelist]",
+        "  |  |                     +->+-page/slab(partial)-+         +-chunk---+  +-chunk---+",
+        "  |  |                        | freelist           |----+    | ^       |  | ^       |",
+        "  |  |                        | next               |--+ |    | |offset |  | |offset |",
+        "  |  |                        +--------------------+  | |    | v       |  | v       |",
+        "  |  |                                                | +--->| next    |->| next    |->NULL",
+        "  |  |                          +---------------------+      +---------+  +---------+",
+        "  |  |                          |",
+        "  |  |                          v",
+        "  |  +-+                       ...",
+        "  |    |                                                    [numa node partial page freelist]",
+        "  |    v                      +-page/slab(numa-node)+         +-chunk---+  +-chunk---+",
+        "  |   +-kmem_cache_node-+     | freelist            |----+    | ^       |  | ^       |",
+        "  |   | partial         |---->| next                |--+ |    | |offset |  | |offset |",
+        "  |   | (full)          |     +---------------------+  | |    | v       |  | v       |",
+        "  +---| barn (6.18~7.0) |                              | +--->| next    |->| next    |->NULL",
         "  |   +-----------------+  +---------------------------+      +---------+  +---------+",
         "  |   | ...             |  |",
         "  |   |                 |  |                                [numa node partial page freelist]",
@@ -117064,8 +117059,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         "  |                           +---------------------+  | |    | v       |  | v       |",
         "  |                                                    | +--->| next    |->| next    |->NULL",
         "  |                        +---------------------------+      +---------+  +---------+",
-        "  |                        |",
-        "  +----+                   v",
+        "  +----+                   |",
+        "       |                   v",
         "       |                  ...",
         "       v",
         "      +-node_barn-----+         +-slab_sheaf-+    +-slab_sheaf-+",
@@ -117334,7 +117329,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             unsigned int useroffset;                 // kernel < 6.2 || (6.2 <= kernel && CONFIG_HARDENED_USERCOPY=y)
             unsigned int usersize;                   // kernel < 6.2 || (6.2 <= kernel && CONFIG_HARDENED_USERCOPY=y)
             struct kmem_cache_stats __percpu *cpu_stats // CONFIG_SLUB_STATS && 7.0 <= kernel
-            struct kmem_cache_node *node[MAX_NUMNODES];
+            struct kmem_cache_node *node[MAX_NUMNODES]; // kernel < 7.1 (<-- this includes SPINLOCK_MAGIC if CONFIG_DEBUG_SPINLOCK=y)
+            struct kmem_cache_per_node_ptrs {           // 7.1 <= kernel
+                struct node_barn *barn;                 // 7.1 <= kernel
+                struct kmem_cache_node *node;           // 7.1 <= kernel
+            } per_node[MAX_NUMNODES];                   // 7.1 <= kernel
         };
         """
 
@@ -117403,22 +117402,66 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_kmem_cache_offset_node(self):
+        kversion = Kernel.kernel_version()
+
         # fast path
-        try:
-            self.kmem_cache_offset_node = to_unsigned_long(
-                gdb.parse_and_eval("&((struct kmem_cache*)0).node")
-            )
+        if kversion < "7.1":
+            try:
+                self.kmem_cache_offset_node = to_unsigned_long(
+                    gdb.parse_and_eval("&((struct kmem_cache*)0).node")
+                )
+                self.kmem_cache_offset_barn = None
+                self.kmem_cache_node_step = current_arch.ptrsize
+                return
+            except gdb.error:
+                pass
+        else:
+            try:
+                self.kmem_cache_offset_barn = to_unsigned_long(
+                    gdb.parse_and_eval("&((struct kmem_cache*)0).per_node[0].barn")
+                )
+                self.kmem_cache_offset_node = to_unsigned_long(
+                    gdb.parse_and_eval("&((struct kmem_cache*)0).per_node[0].node")
+                )
+                self.kmem_cache_node_step = current_arch.ptrsize * 2
+                return
+            except gdb.error:
+                pass
+
+        # user specified
+        if self.args.offset_node is not None:
+            if kversion < "7.1":
+                self.kmem_cache_offset_node = self.args.offset_node
+                self.kmem_cache_offset_barn = None
+                self.kmem_cache_node_step = current_arch.ptrsize
+            else:
+                self.kmem_cache_offset_node = self.args.offset_node
+                self.kmem_cache_offset_barn = self.args.offset_node - current_arch.ptrsize
+                self.kmem_cache_node_step = current_arch.ptrsize * 2
             return
-        except gdb.error:
-            pass
 
         # slow path
-        if self.args.offset_node is not None:
-            self.kmem_cache_offset_node = self.args.offset_node
-            return
-
         self.kmem_cache_offset_node = None
-        kversion = Kernel.kernel_version()
+        self.kmem_cache_node_step = None
+
+        def set_kmem_cache_offset_from_node(offset):
+            self.kmem_cache_offset_node = offset
+            if kversion < "7.1":
+                self.kmem_cache_offset_barn = None
+                self.kmem_cache_node_step = current_arch.ptrsize
+            else:
+                self.kmem_cache_offset_barn = offset - current_arch.ptrsize
+                self.kmem_cache_node_step = current_arch.ptrsize * 2
+
+        def set_kmem_cache_offset_from_barn(offset):
+            if kversion < "7.1":
+                self.kmem_cache_offset_barn = None
+                self.kmem_cache_offset_node = offset
+                self.kmem_cache_node_step = current_arch.ptrsize
+            else:
+                self.kmem_cache_offset_barn = offset
+                self.kmem_cache_offset_node = offset + current_arch.ptrsize
+                self.kmem_cache_node_step = current_arch.ptrsize * 2
 
         """
         struct kmem_cache {
@@ -117442,7 +117485,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             unsigned int useroffset;                 // kernel < 6.2 || (6.2 <= kernel && CONFIG_HARDENED_USERCOPY=y)
             unsigned int usersize;                   // kernel < 6.2 || (6.2 <= kernel && CONFIG_HARDENED_USERCOPY=y)
             struct kmem_cache_stats __percpu *cpu_stats // CONFIG_SLUB_STATS && 7.0 <= kernel
-            struct kmem_cache_node *node[MAX_NUMNODES]; <-- this includes SPINLOCK_MAGIC if CONFIG_DEBUG_SPINLOCK=y
+            struct kmem_cache_node *node[MAX_NUMNODES]; // kernel < 7.1 (<-- this includes SPINLOCK_MAGIC if CONFIG_DEBUG_SPINLOCK=y)
+            struct kmem_cache_per_node_ptrs {           // 7.1 <= kernel
+                struct node_barn *barn;                 // 7.1 <= kernel
+                struct kmem_cache_node *node;           // 7.1 <= kernel
+            } per_node[MAX_NUMNODES];                   // 7.1 <= kernel
         }
         """
 
@@ -117465,7 +117512,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
                 # found
                 self.quiet_info("offset of node is found by heuristic way1")
-                self.kmem_cache_offset_node = candidate_offset
+                set_kmem_cache_offset_from_barn(candidate_offset)
                 return
 
         # helper functions (for way2, way4)
@@ -117547,7 +117594,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     if not is_random_seq(x):
                         # x is not random_seq, but node[0]
                         self.quiet_info("offset of node is found by heuristic way2-1")
-                        self.kmem_cache_offset_node = offset_random_seq
+                        set_kmem_cache_offset_from_barn(offset_random_seq)
                         return
                     else:
                         # x is random_seq, so skip it
@@ -117563,7 +117610,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     # 7.0+: cpu_stats is not a valid pointer, so this check will pass.
                     if is_valid_addr(y) and not is_random_seq(y):
                         self.quiet_info("offset of node is found by heuristic way2-2")
-                        self.kmem_cache_offset_node = offset_node
+                        set_kmem_cache_offset_from_barn(offset_node)
                         return
 
         # heuristic way 3 (relationship of user_offset, user_size, and object_size)
@@ -117612,7 +117659,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
             if found:
                 self.quiet_info("offset of node is found by heuristic way3")
-                self.kmem_cache_offset_node = node_offset
+                set_kmem_cache_offset_from_barn(node_offset)
                 return
 
         # heuristic way 4 (detect random_seq)
@@ -117629,7 +117676,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 if not is_random_seq(x):
                     # x is not random_seq, but node[0]
                     self.quiet_info("offset of node is found by heuristic way4-1")
-                    self.kmem_cache_offset_node = offset_random_seq
+                    set_kmem_cache_offset_from_barn(offset_random_seq)
                     return
                 else:
                     # x is random_seq, so skip it
@@ -117646,7 +117693,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 # 7.0+: cpu_stats is not a valid pointer, so this check will pass.
                 if is_valid_addr(y) and not is_random_seq(y):
                     self.quiet_info("offset of node is found by heuristic way4-2")
-                    self.kmem_cache_offset_node = offset_node
+                    set_kmem_cache_offset_from_barn(offset_node)
                     return
 
         # heuristic way 5 (consecutive kmem_cache)
@@ -117705,7 +117752,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     msg = "min_diff_pairs:{:d}/{:d}, ".format(len(min_diff_pairs), maxlen)
                     msg += "min_diff:{:#x}".format(min_diff)
                     self.quiet_info("offset of node is found by heuristic way5 ({:s})".format(msg))
-                    self.kmem_cache_offset_node = offset_after_list + offset_node_from_after_list
+                    set_kmem_cache_offset_from_node(offset_after_list + offset_node_from_after_list)
                     return
         return
 
@@ -117917,7 +117964,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             atomic_long_t nr_slabs;                  // if CONFIG_SLUB_DEBUG=y
             atomic_long_t total_objects;             // if CONFIG_SLUB_DEBUG=y
             struct list_head full;                   // if CONFIG_SLUB_DEBUG=y
-            struct node_barn *barn;                  // 6.18 <= kernel
+            struct node_barn *barn;                  // 6.18 <= kernel < 7.1
         };
         """
 
@@ -117948,6 +117995,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                             self.kmem_cache_node_offset_barn = offset_candidate
                             return
         return
+
+    def get_node_barn(self, kmem_cache_addr, kmem_cache_node, node_index):
+        if self.kmem_cache_offset_barn is not None:
+            return read_int_from_memory(kmem_cache_addr + self.kmem_cache_offset_barn + self.kmem_cache_node_step * node_index)
+        return read_int_from_memory(kmem_cache_node + self.kmem_cache_node_offset_barn)
 
     def resolve_node_barn_offset_sheaves_full(self):
         self.node_barn_offset_sheaves_full = None
@@ -117993,7 +118045,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     continue
 
                 # get barn
-                barn = read_int_from_memory(kmem_cache_node + self.kmem_cache_node_offset_barn)
+                barn = self.get_node_barn(kmem_cache_top, kmem_cache_node, 0)
                 if is_valid_addr(barn):
                     # search list_head
                     for i in range(0x20):
@@ -118023,11 +118075,13 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(slub_percpu_sheaves, main): {:#x}".format(self.slub_percpu_sheaves_offset_main))
 
         # offsetof(kmem_cache_node, barn)
-        self.resolve_kmem_cache_node_offset_barn()
-        if self.kmem_cache_node_offset_barn is None:
-            self.quiet_info("offsetof(kmem_cache_node, barn): Not found")
-            return
-        self.quiet_info("offsetof(kmem_cache_node, barn): {:#x}".format(self.kmem_cache_node_offset_barn))
+        if kversion < "7.1":
+            self.resolve_kmem_cache_node_offset_barn()
+            if self.kmem_cache_node_offset_barn is None:
+                self.quiet_info("offsetof(kmem_cache_node, barn): Not found")
+                return
+            else:
+                self.quiet_info("offsetof(kmem_cache_node, barn): {:#x}".format(self.kmem_cache_node_offset_barn))
 
         # offsetof(node_barn, sheaves_full)
         self.resolve_node_barn_offset_sheaves_full()
@@ -118119,7 +118173,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         unsigned int useroffset;                 // kernel < 6.2 || (6.2 <= kernel && CONFIG_HARDENED_USERCOPY=y)
         unsigned int usersize;                   // kernel < 6.2 || (6.2 <= kernel && CONFIG_HARDENED_USERCOPY=y)
         struct kmem_cache_stats __percpu *cpu_stats // CONFIG_SLUB_STATS && 7.0 <= kernel
-        struct kmem_cache_node *node[MAX_NUMNODES];
+        struct kmem_cache_node *node[MAX_NUMNODES]; // kernel < 7.1 (<-- this includes SPINLOCK_MAGIC if CONFIG_DEBUG_SPINLOCK=y)
+        struct kmem_cache_per_node_ptrs {           // 7.1 <= kernel
+            struct node_barn *barn;                 // 7.1 <= kernel
+            struct kmem_cache_node *node;           // 7.1 <= kernel
+        } per_node[MAX_NUMNODES];                   // 7.1 <= kernel
     };
 
     struct kmem_cache_cpu {
@@ -118209,7 +118267,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         atomic_long_t nr_slabs;                  // if CONFIG_SLUB_DEBUG=y
         atomic_long_t total_objects;             // if CONFIG_SLUB_DEBUG=y
         struct list_head full;                   // if CONFIG_SLUB_DEBUG=y
-        struct node_barn *barn;                  // 6.18 <= kernel
+        struct node_barn *barn;                  // 6.18 <= kernel < 7.1
     };
     """
 
@@ -118381,12 +118439,22 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         else:
             self.quiet_info("offsetof(kmem_cache, random): {:#x}".format(self.kmem_cache_offset_random))
 
-        # offsetof(kmem_cache, node)
+        # offsetof(kmem_cache, node) or offsetof(kmem_cache, per_node[0].node/barn)
         self.resolve_kmem_cache_offset_node()
-        if self.kmem_cache_offset_node is None:
-            self.quiet_info("offsetof(kmem_cache, node): Not found")
+        if kversion < "7.1":
+            if self.kmem_cache_offset_node is None:
+                self.quiet_info("offsetof(kmem_cache, node): Not found")
+            else:
+                self.quiet_info("offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node))
         else:
-            self.quiet_info("offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node))
+            if self.kmem_cache_offset_node is None:
+                self.quiet_info("offsetof(kmem_cache, per_node[0].node): Not found")
+            else:
+                self.quiet_info("offsetof(kmem_cache, per_node[0].node): {:#x}".format(self.kmem_cache_offset_node))
+            if self.kmem_cache_offset_barn is None:
+                self.quiet_info("offsetof(kmem_cache, per_node[0].barn): Not found")
+            else:
+                self.quiet_info("offsetof(kmem_cache, per_node[0].barn): {:#x}".format(self.kmem_cache_offset_barn))
 
         if kversion < "7.0":
             # offsetof(kmem_cache_cpu, freelist)
@@ -118880,7 +118948,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return node_page_list
 
     # for sheaf / barn
-    def walk_node_barn_list(self, kmem_cache, kmem_cache_node):
+    def walk_node_barn_list(self, kmem_cache, kmem_cache_node, node_index):
         if not self.sheaves_enabled:
             return
 
@@ -118899,7 +118967,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             return seen
 
         node_barn = {}
-        node_barn["address"] = read_int_from_memory(kmem_cache_node + self.kmem_cache_node_offset_barn)
+        node_barn["address"] = self.get_node_barn(kmem_cache["address"], kmem_cache_node, node_index)
         if is_valid_addr(node_barn["address"]):
             # full
             node_barn["sheaves_full"] = []
@@ -118930,6 +118998,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         kmem_cache_node_array = kmem_cache["address"] + self.kmem_cache_offset_node
         current_kmem_cache_node_ptr = kmem_cache_node_array
+        node_index = 0
         while True:
             current_kmem_cache_node = read_int_from_memory(current_kmem_cache_node_ptr)
             if current_kmem_cache_node == 0:
@@ -118953,10 +119022,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 kmem_cache["nodes_full"].append(node_page_list_full)
 
             # node barn
-            self.walk_node_barn_list(kmem_cache, current_kmem_cache_node)
+            self.walk_node_barn_list(kmem_cache, current_kmem_cache_node, node_index)
 
             # goto next
-            current_kmem_cache_node_ptr += current_arch.ptrsize
+            current_kmem_cache_node_ptr += self.kmem_cache_node_step
+            node_index += 1
         return
 
     # for CONFIG_SLAB_VIRTUAL
@@ -119398,7 +119468,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             if self.dump_target_node and "nodes_partial" in kmem_cache:
                 for node_index, node_page_list_partial in enumerate(kmem_cache["nodes_partial"]):
                     node_addr = read_int_from_memory(
-                        kmem_cache["address"] + self.kmem_cache_offset_node + current_arch.ptrsize * node_index,
+                        kmem_cache["address"] + self.kmem_cache_offset_node + self.kmem_cache_node_step * node_index,
                     )
                     self.out.append("    kmem_cache_node[{:d}]: {:#x}".format(node_index, node_addr))
 
