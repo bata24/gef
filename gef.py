@@ -12757,34 +12757,54 @@ def exclude_specific_arch(arch=()):
 def timeout(duration):
     """Decorator to handle timeout."""
 
+    def timeout_worker(conn, function, args, kwargs):
+        try:
+            result = function(*args, **kwargs)
+            conn.send((True, result))
+        except BaseException as e:
+            try:
+                conn.send((False, e))
+            except BaseException as send_error:
+                conn.send((False, RuntimeError("failed to send child result: %r" % send_error)))
+        finally:
+            conn.close()
+
     def wrapper(function):
         import multiprocessing
-        queue = multiprocessing.Queue(maxsize=1)
+        import multiprocessing.connection
+        import signal
 
-        def run_function(function, *args, **kwargs):
-            try:
-                # len(result) must be less than 0xffe8
-                result = function(*args, **kwargs)
-            except Exception as e:
-                queue.put((False, e))
-            else:
-                queue.put((True, result))
-            return
+        ctx = multiprocessing.get_context("fork")
 
+        @functools.wraps(function)
         def inner_f(*args, **kwargs):
-            fargs = [function] + list(args)
-            p = multiprocessing.Process(target=run_function, args=fargs, kwargs=kwargs)
+            parent_conn, child_conn = ctx.Pipe(duplex=False)
+            p = ctx.Process(target=timeout_worker, args=(child_conn, function, args, kwargs))
             p.start()
-            p.join(duration)
-            if p.is_alive():
-                p.kill()
-                raise multiprocessing.TimeoutError
-            assert queue.full()
-            success, result = queue.get()
-            if success:
-                return result
-            else:
+            child_conn.close()
+
+            ready = multiprocessing.connection.wait([parent_conn, p.sentinel], duration)
+
+            if parent_conn in ready:
+                success, result = parent_conn.recv()
+                parent_conn.close()
+                p.join()
+                if success:
+                    return result
                 raise result
+
+            parent_conn.close()
+            p.terminate()
+            p.join(0.2)
+
+            if p.is_alive():
+                if hasattr(p, "kill"):
+                    p.kill()
+                else:
+                    os.kill(p.pid, signal.SIGKILL)
+                p.join()
+
+            raise multiprocessing.TimeoutError
 
         return inner_f
 
