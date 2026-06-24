@@ -13418,8 +13418,11 @@ class ProcessMap:
             if orig_thread: # orig_thread may be None if under winedbg
                 for thread in gdb.selected_inferior().threads():
                     thread.switch() # change thread
-                    # note: for speed up, do not use current_arch.get_tls()
-                    tls = get_register("$fs_base" if is_x86_64() else "$gs_base") # get tls address
+                    tls = None
+                    if is_x86_64():
+                        tls = get_register("$fs_base") # note: for speed up
+                    if is_x86_32() or tls is None:
+                        tls = current_arch.get_tls()
                     tls_list.append([thread.num, tls, current_arch.sp])
                 orig_thread.switch() # revert thread
                 orig_frame.select()
