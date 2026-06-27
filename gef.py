@@ -22530,6 +22530,945 @@ class UnicornEmulateCommand(GenericCommand):
 
 
 @register_command
+class FutureCallsCommand(GenericCommand, BufferingOutput):
+    """Display future function calls from the current function."""
+
+    _cmdline_ = "future-calls"
+    _category_ = "01-h. Debugging Support - Emulation"
+    _aliases_ = ["fcalls"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("address", metavar="ADDRESS", nargs="?", type=AddressUtil.parse_address,
+                        help="the address to start from. (default: current_arch.pc)")
+    parser.add_argument("-d", "--depth", type=int, default=3,
+                        help="maximum call depth to descend into. (default: %(default)s)")
+    parser.add_argument("-b", "--nb-insn", type=int, default=2048,
+                        help="maximum number of instructions to emulate. (default: %(default)s)")
+    parser.add_argument("-N", "--nb-node", type=int, default=256,
+                        help="maximum number of call tree nodes to collect. (default: %(default)s)")
+    parser.add_argument("-n", "--no-pager", action="store_true",
+                        help="do not use the pager.")
+    parser.add_argument("--debug", action="store_true",
+                        help="show the faulting instruction for Unicorn errors.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}                         # display future calls from $pc",
+        "{0:s} -d 4                    # descend into callees up to depth 4",
+        "{0:s} -b 4096                 # emulate up to 4096 instructions",
+        "{0:s} -N 1024                 # collect up to 1024 tree nodes",
+        "{0:s} -n                      # do not use the pager",
+        "{0:s} --debug                 # show Unicorn fault details",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "This command is a best-effort concrete preview based on Unicorn emulation.",
+        "Only x86, x86-64, ARM32, and ARM64 are supported.",
+        "Only the current emulated path is followed for conditional branches.",
+    ])
+
+    class Node:
+        """A node in the future-calls tree."""
+
+        def __init__(self, address, insn_address=None, kind="call", label=None):
+            """Create a tree node for a call, return, or root entry."""
+            self.address = address
+            self.insn_address = insn_address
+            self.kind = kind
+            self.label = label
+            self.children = []
+            self.truncated = False
+            self.error = None
+            return
+
+        @staticmethod
+        def format_address(address):
+            """Format an address with the best symbol information available."""
+            if address is None:
+                return "UNKNOWN"
+            try:
+                addr = ProcessMap.lookup_address(address)
+                sym = Symbol.get_symbol_string(addr.value, nosymbol_string=" <NO_SYMBOL>")
+                return "{!s}{:s}".format(addr, sym)
+            except Exception:
+                return "{:#x} <NO_SYMBOL>".format(address)
+
+        @staticmethod
+        def reason_color(reason):
+            """Return the display color for a stop or truncation reason."""
+            warnings = (
+                "depth limit reached",
+                "instruction limit reached",
+                "loop detected",
+                "node limit reached",
+            )
+            return "yellow" if reason in warnings else "red"
+
+        @staticmethod
+        def color_reason(reason):
+            """Colorize a reason string for terminal output."""
+            return Color.colorify(reason, "bold {:s}".format(
+                FutureCallsCommand.Node.reason_color(reason),
+            ))
+
+        def lines(self):
+            """Render this node and its children as tree lines."""
+            text = self.label or self.format_address(self.address)
+            if self.kind == "ret":
+                text = "ret" if self.address is None else "ret -> {:s}".format(text)
+            if self.insn_address is not None:
+                tag = "at" if self.kind == "ret" else "from"
+                text += " [{:s} {:s}]".format(tag, self.format_address(self.insn_address))
+            if self.truncated:
+                text += " " + Color.colorify("[truncated]", "bold yellow")
+            if self.error:
+                color = self.reason_color(self.error)
+                text += " " + Color.colorify("[{:s}]".format(self.error), "bold {:s}".format(color))
+
+            lines = [text]
+            for i, child in enumerate(self.children):
+                child_lines = child.lines()
+                lines.append("+- " + child_lines[0])
+                prefix = "   " if i == len(self.children) - 1 else "|  "
+                lines.extend(prefix + line for line in child_lines[1:])
+            return lines
+
+    class Emulator:
+        """Small Unicorn wrapper for concrete future-calls exploration."""
+
+        def __init__(self, start_address):
+            """Initialize Unicorn state from the current inferior context."""
+            self.unicorn = sys.modules["unicorn"]
+            self.page_size = get_pagesize()
+            self.page_mask = ~(self.page_size - 1)
+            self.ptrsize = AddressUtil.ptr_width()
+            if Endian.is_big_endian():
+                raise OSError("Big endian is not supported")
+            self.endian = "little"
+            self.regs = UnicornKeystoneCapstone.get_unicorn_registers()
+            if is_arm64():
+                try:
+                    const = self.unicorn.arm64_const
+                    for reg, name in (
+                        ("$sp_el0", "UC_ARM64_REG_SP_EL0"),
+                        ("$tpidr_el0", "UC_ARM64_REG_TPIDR_EL0"),
+                        ("$tpidrro_el0", "UC_ARM64_REG_TPIDRRO_EL0"),
+                        ("$tpidr_el1", "UC_ARM64_REG_TPIDR_EL1"),
+                    ):
+                        uc_reg = getattr(const, name, None)
+                        if uc_reg is not None:
+                            self.regs.setdefault(reg, uc_reg)
+                except AttributeError:
+                    pass
+            self.pc_reg = next((self.regs[r] for r in ("$pc", "$rip", "$eip", "$ip") if r in self.regs), None)
+            if self.pc_reg is None:
+                raise OSError("Unsupported program counter register")
+            arch, mode = UnicornKeystoneCapstone.get_unicorn_arch()
+            self.emu = self.unicorn.Uc(arch, mode)
+            self.mapped = set()
+            self.aliases = {}
+            self.alias_base = 0x10_0000_0000 if is_64bit() else 0x1000_0000
+            self.alias_window = 0x1_0000_0000 if is_64bit() else 0x1000_0000
+            self.alias_stride = 0x4_0000_0000 if is_64bit() else 0x2000_0000
+            self.use_alias = is_64bit() and (is_in_kernel() or is_qemu_system() or is_kgdb() or is_vmware())
+            self.start_address = start_address
+            self.fs_base = None
+            self.gs_base = None
+            self.current_segment = None
+            self.per_cpu_bases = None
+            self.last_fault = None
+            self.last_map_error = None
+            self.last_map_source = None
+            hook = getattr(self.unicorn, "UC_HOOK_MEM_INVALID", None)
+            if hook is None:
+                hook = self.unicorn.UC_HOOK_MEM_READ_INVALID | self.unicorn.UC_HOOK_MEM_WRITE_INVALID
+                hook |= getattr(self.unicorn, "UC_HOOK_MEM_FETCH_INVALID", 0)
+            self.emu.hook_add(hook, self.mem_hook)
+            self.map_page(start_address, translate=False)
+            sp = self.read_gdb_register("$sp") or self.read_gdb_register("$rsp") or self.read_gdb_register("$esp")
+            if sp:
+                self.map_page(sp, zero_fill=True)
+            if is_x86_32() or is_x86_64():
+                for segment in ("fs", "gs"):
+                    base = None
+                    name = "${:s}_base".format(segment)
+                    base = self.read_gdb_register(name)
+                    if base is None:
+                        getter = getattr(current_arch, "get_{:s}".format(segment), None)
+                        if callable(getter):
+                            try:
+                                base = getter()
+                            except Exception:
+                                base = None
+                    if segment == "fs":
+                        self.fs_base = base
+                    else:
+                        self.gs_base = base
+                if self.fs_base is None and is_x86_64():
+                    self.fs_base = current_arch.get_tls()
+                if self.gs_base is None and is_x86_32():
+                    self.gs_base = current_arch.get_tls()
+                fs_base = self.fs_base
+                gs_base = self.gs_base
+                if is_x86_64():
+                    if self.use_alias:
+                        fs_base = 0 if fs_base is not None else None
+                        gs_base = 0
+                    elif fs_base is None:
+                        fs_base = current_arch.get_tls() or 0x2000
+                if is_x86_32() and gs_base is None:
+                    gs_base = current_arch.get_tls() or 0x2000
+                try:
+                    const = self.unicorn.x86_const
+                    scratch_pages = (0xf000, 0x10000, 0x20000, 0x30000)
+                    for msr, value in ((0xc0000100, fs_base), (0xc0000101, gs_base)):
+                        if value is None:
+                            continue
+                        value = AddressUtil.normalize_address(value)
+                        opcodes = b"\x0f\x30" # wrmsr
+                        for scratch in scratch_pages:
+                            scratch &= self.page_mask
+                            mapped_here = False
+                            if scratch in self.mapped:
+                                continue
+                            try:
+                                self.emu.mem_map(scratch, self.page_size, Permission.ALL)
+                                mapped_here = True
+                                self.emu.mem_write(scratch, opcodes)
+                                if is_x86_64():
+                                    self.emu.reg_write(const.UC_X86_REG_RAX, value & 0xffff_ffff)
+                                    self.emu.reg_write(const.UC_X86_REG_RDX, (value >> 32) & 0xffff_ffff)
+                                    self.emu.reg_write(const.UC_X86_REG_RCX, msr & 0xffff_ffff)
+                                else:
+                                    self.emu.reg_write(const.UC_X86_REG_EAX, value & 0xffff_ffff)
+                                    self.emu.reg_write(const.UC_X86_REG_EDX, (value >> 32) & 0xffff_ffff)
+                                    self.emu.reg_write(const.UC_X86_REG_ECX, msr & 0xffff_ffff)
+                                self.emu.emu_start(scratch, scratch + len(opcodes), count=1)
+                                self.last_map_error = None
+                                break
+                            except self.unicorn.UcError as e:
+                                self.last_map_error = "set_msr {:#x}: {!s}".format(msr, e)
+                            finally:
+                                if mapped_here:
+                                    try:
+                                        self.emu.mem_unmap(scratch, self.page_size)
+                                    except self.unicorn.UcError:
+                                        pass
+                except AttributeError:
+                    pass
+            if is_arm32() or is_arm64():
+                self.write_reg("$cpsr", self.read_gdb_register("$cpsr"))
+            if is_arm32():
+                current = None
+                if is_in_kernel() or is_qemu_system() or is_kgdb() or is_vmware():
+                    try:
+                        current = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
+                    except Exception:
+                        current = None
+                tls = self.read_gdb_register("$TPIDRURO") or self.read_gdb_register("$TPIDRURO_S")
+                if tls is None:
+                    try:
+                        tls = current_arch.get_tls()
+                    except Exception:
+                        tls = None
+                if tls is None:
+                    tls = current
+                self.arm32_c13_c0 = {
+                    2: self.read_gdb_register("$TPIDRURW") or self.read_gdb_register("$c13_c0_2"),
+                    3: tls or self.read_gdb_register("$c13_c0_3"),
+                    4: (
+                        self.read_gdb_register("$TPIDRPRW")
+                        or self.read_gdb_register("$c13_c0_4")
+                        or current
+                    ),
+                }
+            if is_arm64():
+                for reg, names in (
+                    ("$sp_el0", ("$sp_el0", "$SP_EL0")),
+                    ("$tpidr_el0", ("$tpidr_el0", "$TPIDR_EL0", "$tpidr")),
+                    ("$tpidrro_el0", ("$tpidrro_el0", "$TPIDRRO_EL0")),
+                    ("$tpidr_el1", ("$tpidr_el1", "$TPIDR_EL1")),
+                ):
+                    value = None
+                    for name in names:
+                        value = self.read_gdb_register(name)
+                        if value is not None:
+                            break
+                    if value is None and reg == "$tpidr_el0" and not is_in_kernel():
+                        try:
+                            value = current_arch.get_tls()
+                        except Exception:
+                            value = None
+                    self.write_reg(reg, value)
+
+            for reg in current_arch.all_registers:
+                if self.skip_register(reg):
+                    continue
+                self.write_reg(reg, self.read_gdb_register(reg))
+            return
+
+        def read_gdb_register(self, name):
+            """Read a register from GDB, using monitor access when needed."""
+            try:
+                extra = is_in_kernel() or is_qemu_system() or is_kgdb() or is_vmware()
+                return get_register(name, use_mbed_exec=extra, use_monitor=extra)
+            except Exception:
+                return None
+
+        def anchor(self, address):
+            """Return the address anchor used for kernel aliasing."""
+            if not self.use_alias:
+                return None
+            address = AddressUtil.normalize_address(address)
+            if is_64bit():
+                return address & 0xffff_ffff_0000_0000 if address >> 56 == 0xff else None
+            return address & 0xf000_0000 if address >= 0x8000_0000 else None
+
+        def arm64_kernel_address_candidates(self, address, allow_low=False):
+            """Build possible AArch64 kernel addresses from a truncated pointer."""
+            if not (is_arm64() and self.use_alias and is_in_kernel()):
+                return []
+            address = AddressUtil.normalize_address(address)
+            if (not allow_low and address < 0x1_0000_0000) or self.anchor(address) is not None:
+                return []
+
+            anchors = []
+            for anchor in self.aliases:
+                if anchor not in anchors:
+                    anchors.append(anchor)
+            start_anchor = self.anchor(self.start_address)
+            if start_anchor is not None and start_anchor not in anchors:
+                anchors.append(start_anchor)
+
+            candidates = []
+            offset = address & 0xffff_ffff
+            for anchor in anchors:
+                candidate = AddressUtil.normalize_address(anchor + offset)
+                if candidate != address and candidate not in candidates:
+                    candidates.append(candidate)
+            return candidates
+
+        def to_emu(self, address, create=True):
+            """Translate a GDB address into the Unicorn address space."""
+            address = AddressUtil.normalize_address(address)
+            anchor = self.anchor(address)
+            if anchor is None:
+                return address
+            if anchor not in self.aliases:
+                if not create:
+                    return address
+                self.aliases[anchor] = self.alias_base + len(self.aliases) * self.alias_stride
+            return self.aliases[anchor] + address - anchor
+
+        def from_emu(self, address):
+            """Translate a Unicorn address back into the GDB address space."""
+            address = AddressUtil.normalize_address(address)
+            for anchor, base in self.aliases.items():
+                if base <= address < base + self.alias_window:
+                    return anchor + address - base
+                if self.use_alias and is_x86_64():
+                    overflow = base + self.alias_window
+                    if overflow <= address < overflow + self.alias_window:
+                        return address - overflow
+            if self.use_alias and is_x86_64() and address & (1 << 47):
+                address |= 0xffff_0000_0000_0000
+            return AddressUtil.normalize_address(address)
+
+        def translate_pointers(self, data):
+            """Rewrite pointer-sized values in mapped data for Unicorn."""
+            if not self.use_alias:
+                return data
+            data = bytearray(data)
+            for i in range(0, len(data) - self.ptrsize + 1, self.ptrsize):
+                value = int.from_bytes(data[i:i + self.ptrsize], self.endian)
+                if self.anchor(value) is not None:
+                    value = self.to_emu(value)
+                    data[i:i + self.ptrsize] = int(value).to_bytes(self.ptrsize, self.endian)
+                    continue
+                for candidate in self.arm64_kernel_address_candidates(value):
+                    try:
+                        if is_valid_addr(candidate):
+                            value = self.to_emu(candidate)
+                            data[i:i + self.ptrsize] = int(value).to_bytes(self.ptrsize, self.endian)
+                            break
+                    except Exception:
+                        pass
+            return bytes(data)
+
+        def mem_hook(self, emu, access, address, size, value, _user_data):
+            """Map memory on demand when Unicorn reports an invalid access."""
+            try:
+                pc = self.from_emu(emu.reg_read(self.pc_reg))
+            except Exception:
+                pc = None
+            access_text = str(access)
+            for name in (
+                "UC_MEM_READ_UNMAPPED", "UC_MEM_WRITE_UNMAPPED", "UC_MEM_FETCH_UNMAPPED",
+                "UC_MEM_READ_PROT", "UC_MEM_WRITE_PROT", "UC_MEM_FETCH_PROT",
+                "UC_MEM_READ", "UC_MEM_WRITE", "UC_MEM_FETCH",
+            ):
+                if getattr(self.unicorn, name, None) == access:
+                    access_text = name
+                    break
+            is_write = access in (
+                getattr(self.unicorn, "UC_MEM_WRITE_UNMAPPED", -1),
+                getattr(self.unicorn, "UC_MEM_WRITE_PROT", -1),
+            )
+            is_fetch = access in (
+                getattr(self.unicorn, "UC_MEM_FETCH_UNMAPPED", -1),
+                getattr(self.unicorn, "UC_MEM_FETCH_PROT", -1),
+            )
+            self.last_fault = {
+                "pc": pc, "access": access_text, "address": self.from_emu(address),
+                "size": size, "value": self.from_emu(value) if value else value,
+            }
+            if address == 0:
+                return False
+
+            mapped = None
+            offset = self.from_emu(address)
+            if is_x86_64() and self.use_alias and self.current_segment == "gs" and offset < self.alias_window:
+                self.last_map_error = None
+                self.last_map_source = None
+                emu_page = AddressUtil.normalize_address(address) & self.page_mask
+                offset_page = self.from_emu(emu_page) & self.page_mask
+                if emu_page in self.mapped:
+                    mapped = True
+                else:
+                    bases = []
+                    if self.gs_base is not None:
+                        bases.append(("gs_base", self.gs_base))
+                    if self.per_cpu_bases is None:
+                        self.per_cpu_bases = []
+                        try:
+                            per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
+                            if per_cpu_offset:
+                                self.per_cpu_bases = KernelCurrentCommand.get_each_cpu_offset(per_cpu_offset)
+                        except Exception:
+                            self.per_cpu_bases = []
+                    if self.per_cpu_bases:
+                        try:
+                            cpu = max(0, gdb.selected_thread().num - 1)
+                        except Exception:
+                            cpu = 0
+                        if cpu >= len(self.per_cpu_bases):
+                            per_cpu_bases = self.per_cpu_bases
+                        else:
+                            per_cpu_bases = self.per_cpu_bases[cpu:cpu + 1]
+                            per_cpu_bases += self.per_cpu_bases[:cpu] + self.per_cpu_bases[cpu + 1:]
+                        bases.extend(("per_cpu", base) for base in per_cpu_bases)
+                    errors = []
+                    for name, base in bases:
+                        source_page = AddressUtil.normalize_address(base + offset_page) & self.page_mask
+                        data, error = self.read_page(source_page)
+                        if data is None:
+                            errors.append(error)
+                            continue
+                        try:
+                            self.emu.mem_map(emu_page, self.page_size, Permission.ALL)
+                        except self.unicorn.UcError as e:
+                            self.last_map_error = "mem_map {:#x}: {!s}".format(emu_page, e)
+                            mapped = False
+                            break
+                        self.mapped.add(emu_page)
+                        try:
+                            data = self.translate_pointers(data) if not is_fetch else data
+                            self.emu.mem_write(emu_page, data)
+                        except self.unicorn.UcError as e:
+                            self.last_map_error = "mem_write {:#x}: {!s}".format(emu_page, e)
+                            self.emu.mem_unmap(emu_page, self.page_size)
+                            self.mapped.discard(emu_page)
+                            mapped = False
+                            break
+                        self.last_map_source = "{:s}+{:#x}->{:#x}".format(name, offset_page, source_page)
+                        mapped = True
+                        break
+                    if mapped is None and bases:
+                        self.last_map_error = "; ".join(x for x in errors if x) or "per-cpu page not found"
+                        mapped = False
+            if mapped is None:
+                mapped = self.map_page(address, zero_fill=is_write, translate=not is_fetch, emu_address=True)
+            self.last_fault["mapped"] = mapped
+            if self.last_map_error:
+                self.last_fault["map_error"] = self.last_map_error
+            if self.last_map_source:
+                self.last_fault["map_source"] = self.last_map_source
+            return mapped
+
+        def read_page(self, page):
+            """Read one page from GDB, falling back to partial chunks."""
+            try:
+                return read_memory(page, self.page_size), None
+            except gdb.MemoryError:
+                data = bytearray(b"\x00" * self.page_size)
+                ok = False
+                for off in range(0, self.page_size, 0x100):
+                    try:
+                        chunk = read_memory(page + off, min(0x100, self.page_size - off))
+                        data[off:off + len(chunk)] = chunk
+                        ok = True
+                    except gdb.MemoryError:
+                        pass
+                if ok:
+                    return bytes(data), None
+            return None, "read_memory {:#x}-{:#x} failed".format(page, page + self.page_size)
+
+        def map_page(self, address, zero_fill=False, translate=True, emu_address=False):
+            """Map a GDB or Unicorn page into the emulator."""
+            self.last_map_error = None
+            self.last_map_source = None
+            if address is None:
+                self.last_map_error = "address is None"
+                return False
+            emu_page = (AddressUtil.normalize_address(address) if emu_address else self.to_emu(address)) & self.page_mask
+            page = self.from_emu(emu_page) & self.page_mask
+            if emu_page in self.mapped:
+                return True
+            try:
+                self.emu.mem_map(emu_page, self.page_size, Permission.ALL)
+            except self.unicorn.UcError as e:
+                self.last_map_error = "mem_map {:#x}: {!s}".format(emu_page, e)
+                return False
+            self.mapped.add(emu_page)
+
+            data, error = self.read_page(page)
+            if data is None:
+                errors = [error] if error else []
+                for candidate in self.arm64_kernel_address_candidates(page, allow_low=True):
+                    source_page = candidate & self.page_mask
+                    data, source_error = self.read_page(source_page)
+                    if data is not None:
+                        self.last_map_source = "aarch64_kernel+{:#x}->{:#x}".format(
+                            page & 0xffff_ffff, source_page,
+                        )
+                        break
+                    if source_error:
+                        errors.append(source_error)
+                if data is None:
+                    if not zero_fill:
+                        self.last_map_error = "; ".join(errors) if errors else error
+                        self.emu.mem_unmap(emu_page, self.page_size)
+                        self.mapped.discard(emu_page)
+                        return False
+                    data = b"\x00" * self.page_size
+
+            try:
+                self.emu.mem_write(emu_page, self.translate_pointers(data) if translate else data)
+            except self.unicorn.UcError as e:
+                self.last_map_error = "mem_write {:#x}: {!s}".format(emu_page, e)
+                self.emu.mem_unmap(emu_page, self.page_size)
+                self.mapped.discard(emu_page)
+                return False
+            return True
+
+        def write_reg(self, name, value):
+            """Write a GDB register value into Unicorn after translation."""
+            if value is None or name not in self.regs:
+                return
+            value = AddressUtil.normalize_address(value)
+            for candidate in self.arm64_kernel_address_candidates(value):
+                try:
+                    if is_valid_addr(candidate):
+                        value = candidate
+                        break
+                except Exception:
+                    pass
+            translated = self.to_emu(value, create=False)
+            if translated != value:
+                value = translated
+            elif self.anchor(value) is not None:
+                try:
+                    value = self.to_emu(value) if is_valid_addr(value) else value
+                except Exception:
+                    pass
+            try:
+                self.emu.reg_write(self.regs[name], value)
+            except self.unicorn.UcError:
+                pass
+            return
+
+        def skip_register(self, reg):
+            """Return whether a register should be skipped by bulk operations."""
+            if reg not in self.regs:
+                return True
+            if is_x86_64() and reg in ("$fs", "$gs", "$fs_base", "$gs_base"):
+                return True
+            if is_x86_32() and reg in X86.special_registers:
+                return True
+            if is_arm32() and reg.startswith("$c13_c0_"):
+                return True
+            if (is_arm32() or is_arm64()) and reg == "$cpsr":
+                return True
+            return False
+
+        def write_pc(self, address):
+            """Write the program counter in the Unicorn address space."""
+            self.emu.reg_write(self.pc_reg, self.to_emu(address))
+            return
+
+        def step(self, insn):
+            """Emulate one instruction and return a reason string on failure."""
+            self.last_fault = None
+            self.last_map_error = None
+            self.last_map_source = None
+            self.current_segment = None
+            if is_x86_32() or is_x86_64():
+                operands = " ".join(insn.operands).lower()
+                if "gs:" in operands:
+                    self.current_segment = "gs"
+                elif "fs:" in operands:
+                    self.current_segment = "fs"
+            if not self.map_page(insn.address, translate=False):
+                detail = " ({:s})".format(self.last_map_error) if self.last_map_error else ""
+                return "cannot map {:#x}{:s}".format(insn.address, detail)
+            start = self.to_emu(insn.address)
+            self.write_pc(insn.address)
+            if is_arm32():
+                rt = None
+                opc2 = None
+                if len(insn.opcodes) == 4:
+                    word = int.from_bytes(bytes(insn.opcodes), "little")
+                    opc1 = (word >> 21) & 0x7
+                    crn = (word >> 16) & 0xf
+                    coproc = (word >> 8) & 0xf
+                    crm = word & 0xf
+                    is_mrc = (word & 0x0f10_0010) == 0x0e10_0010
+                    if is_mrc and opc1 == 0 and crn == 13 and coproc == 15 and crm == 0:
+                        rt = (word >> 12) & 0xf
+                        opc2 = (word >> 5) & 0x7
+                if opc2 is None and insn.mnemonic == "mrc":
+                    operands = ", ".join(insn.operands).lower()
+                    match = re.search(
+                        r"p15,\s*#?(?:0x)?0,\s*r(\d+),\s*c13,\s*c0,\s*#?(?:0x)?([234])",
+                        operands,
+                    )
+                    if match:
+                        rt = int(match.group(1))
+                        opc2 = int(match.group(2), 16 if match.group(2).startswith("0x") else 10)
+                if opc2 is not None:
+                    value = self.arm32_c13_c0.get(opc2)
+                    dst = "$r{:d}".format(rt)
+                    if value is None:
+                        return "unsupported mrc p15, #0, {:s}, c13, c0, #{:d}".format(dst[1:], opc2)
+                    if rt == 15:
+                        self.write_pc(insn.address + 4)
+                        return None
+                    if dst not in self.regs:
+                        return "unsupported mrc destination {:s}".format(dst)
+                    try:
+                        self.emu.reg_write(self.regs[dst], AddressUtil.normalize_address(value))
+                        self.write_pc(insn.address + 4)
+                        return None
+                    except self.unicorn.UcError as e:
+                        return str(e)
+            if is_arm64() and insn.mnemonic in ("casa", "casl", "swpa", "swpl"):
+                operands = ", ".join(insn.operands).lower()
+                match = re.search(r"([xw](?:\d+|zr)), ([xw](?:\d+|zr)), \[(x\d+|sp)\]", operands)
+                if not match:
+                    return "unsupported {:s} operand".format(insn.mnemonic)
+                width = 8 if match.group(1)[0] == "x" else 4
+                old_reg = None if match.group(1).endswith("zr") else "$x" + match.group(1)[1:]
+                new_reg = None if match.group(2).endswith("zr") else "$x" + match.group(2)[1:]
+                base_reg = "$sp" if match.group(3) == "sp" else "$" + match.group(3)
+                if base_reg not in self.regs:
+                    return "unsupported {:s} base register".format(insn.mnemonic)
+                try:
+                    mem_addr = self.emu.reg_read(self.regs[base_reg])
+                    if not self.map_page(mem_addr, emu_address=True):
+                        detail = " ({:s})".format(self.last_map_error) if self.last_map_error else ""
+                        return "cannot map {:#x}{:s}".format(self.from_emu(mem_addr), detail)
+                    mem_data = bytes(self.emu.mem_read(mem_addr, width))
+                    mem_val = int.from_bytes(mem_data, "little")
+                    if old_reg is None:
+                        old_val = 0
+                    elif old_reg not in self.regs:
+                        return "unsupported {:s} old register".format(insn.mnemonic)
+                    else:
+                        old_val = self.emu.reg_read(self.regs[old_reg])
+                    if new_reg is None:
+                        new_val = 0
+                    elif new_reg not in self.regs:
+                        return "unsupported {:s} new register".format(insn.mnemonic)
+                    else:
+                        new_val = self.emu.reg_read(self.regs[new_reg])
+                    mask = (1 << (width * 8)) - 1
+                    old_val &= mask
+                    new_val &= mask
+                    if insn.mnemonic in ("casa", "casl") and old_val == mem_val:
+                        self.emu.mem_write(mem_addr, int(new_val).to_bytes(width, "little"))
+                    elif insn.mnemonic in ("swpa", "swpl"):
+                        self.emu.mem_write(mem_addr, int(new_val).to_bytes(width, "little"))
+                    if old_reg is not None:
+                        self.emu.reg_write(self.regs[old_reg], mem_val)
+                    self.write_pc(insn.address + 4)
+                    return None
+                except self.unicorn.UcError as e:
+                    return str(e)
+            try:
+                self.emu.emu_start(start, start + max(1, len(insn.opcodes)), count=1)
+            except self.unicorn.UcError as e:
+                recovered_pc = None
+                if is_x86_32() and self.last_fault is not None:
+                    fault = self.last_fault.get("address")
+                    access = self.last_fault.get("access")
+                    try:
+                        target = ContextCodeCommand.get_branch_addr(insn)
+                    except Exception:
+                        target = None
+                    if access in ("UC_MEM_FETCH_UNMAPPED", "UC_MEM_FETCH_PROT") and fault is not None and target is not None:
+                        fault = AddressUtil.normalize_address(fault)
+                        target = AddressUtil.normalize_address(target)
+                        if fault != target:
+                            if fault <= 0xffff and (target & 0xffff) == fault:
+                                recovered_pc = target
+                            elif fault <= 0xfffff and (target & 0xfffff) == fault:
+                                recovered_pc = target
+                if recovered_pc is not None:
+                    self.last_fault["recovered_pc"] = recovered_pc
+                    self.write_pc(recovered_pc)
+                    return None
+                return str(e)
+            finally:
+                self.current_segment = None
+            return None
+
+        def skip_to(self, saved, address):
+            """Restore saved registers and continue at the given address."""
+            for reg, value in saved.items():
+                if self.skip_register(reg):
+                    continue
+                try:
+                    self.emu.reg_write(self.regs[reg], value)
+                except self.unicorn.UcError:
+                    pass
+            self.write_pc(address)
+            return
+
+    def __init__(self):
+        """Initialize the GDB command with location completion."""
+        super().__init__(complete=gdb.COMPLETE_LOCATION)
+        return
+
+    def valid_target(self, address):
+        """Check whether an address is suitable as a call target."""
+        return address is not None and address != 0 and address < AddressUtil.get_vmem_end()
+
+    def add_child(self, parent, child):
+        """Append a child node while enforcing the node limit."""
+        if self.node_count >= self.args.nb_node:
+            self.mark_truncated(parent, "node limit reached")
+            return None
+        self.node_count += 1
+        parent.children.append(child)
+        return child
+
+    def mark_truncated(self, node, reason):
+        """Mark a node as truncated and record its reason."""
+        node.truncated = True
+        node.error = reason
+        self.truncated_reasons.add(reason)
+        if reason in ("node limit reached", "instruction limit reached"):
+            self.stop_reasons.add(reason)
+        return
+
+    def step(self, tracer, parent, insn):
+        """Step the emulator and record debug information on failure."""
+        if self.insn_count >= self.args.nb_insn:
+            self.mark_truncated(parent, "instruction limit reached")
+            return False
+        self.insn_count += 1
+        reason = tracer.step(insn)
+        if reason is None:
+            return True
+        if self.args.debug:
+            operands = ", ".join(insn.operands)
+            text = "{:#x}: {:s}{:s}".format(insn.address, insn.mnemonic, " " + operands if operands else "")
+            opcodes = bytes(insn.opcodes).hex() if getattr(insn, "opcodes", None) else ""
+            extra = ", bytes={:s}".format(opcodes) if opcodes else ""
+            colored_reason = self.Node.color_reason(reason)
+            if tracer.last_fault is None:
+                event = "{:s} -> {:s}{:s}".format(text, colored_reason, extra)
+            else:
+                fault = tracer.last_fault
+                for key in ("map_error", "map_source", "recovered_pc"):
+                    if fault.get(key) is not None:
+                        val = fault[key]
+                        if isinstance(val, int):
+                            val = "{:#x}".format(val)
+                        extra += ", {:s}={:s}".format(key, str(val))
+                pc = "None" if fault.get("pc") is None else "{:#x}".format(fault.get("pc"))
+                addr = "None" if fault.get("address") is None else "{:#x}".format(fault.get("address"))
+                event = "{:s} -> {:s}, pc={:s}, access={:s}, fault={:s}, size={:d}, mapped={!s}{:s}".format(
+                    text, colored_reason, pc, fault["access"], addr,
+                    fault["size"], fault.get("mapped"), extra,
+                )
+            if event not in self.debug_events:
+                self.debug_events.append(event)
+        self.mark_truncated(parent, reason)
+        return False
+
+    def walk(self, parent, tracer, start_address, depth, return_address=None):
+        """Walk one concrete path and recursively collect future calls."""
+        if not self.valid_target(start_address):
+            self.mark_truncated(parent, "invalid target")
+            return False
+        tracer.write_pc(start_address)
+        seen_pcs = set()
+        seen_edges = set()
+
+        while True:
+            if self.node_count >= self.args.nb_node:
+                self.mark_truncated(parent, "node limit reached")
+                return False
+            if self.insn_count >= self.args.nb_insn:
+                self.mark_truncated(parent, "instruction limit reached")
+                return False
+
+            pc = tracer.from_emu(tracer.emu.reg_read(tracer.pc_reg))
+            if return_address is not None and pc == return_address:
+                return True
+            if pc in seen_pcs:
+                parent.error = "loop detected"
+                self.stop_reasons.add("loop detected")
+                return False
+            seen_pcs.add(pc)
+
+            if pc is None or pc == 0:
+                insn = None
+            else:
+                try:
+                    insn = get_insn(pc)
+                except (gdb.MemoryError, gdb.error):
+                    insn = None
+            if insn is None:
+                self.mark_truncated(parent, "cannot disassemble {:#x}".format(pc))
+                return False
+
+            if current_arch.is_ret(insn):
+                child = self.add_child(parent, self.Node(return_address, insn.address, kind="ret"))
+                if child is None or return_address is None:
+                    return child is not None
+                return self.step(tracer, parent, insn)
+
+            if current_arch.is_call(insn):
+                try:
+                    next_pc = Disasm.gef_instruction_n(insn.address, 1).address
+                except Exception:
+                    next_pc = AddressUtil.normalize_address(insn.address + max(1, len(insn.opcodes)))
+                try:
+                    static_target = ContextCodeCommand.get_branch_addr(insn)
+                except Exception:
+                    static_target = None
+                regs = {}
+                for reg, uc_reg in tracer.regs.items():
+                    if tracer.skip_register(reg):
+                        continue
+                    try:
+                        regs[reg] = tracer.emu.reg_read(uc_reg)
+                    except tracer.unicorn.UcError:
+                        pass
+                reason = None
+                if self.step(tracer, parent, insn):
+                    target = tracer.from_emu(tracer.emu.reg_read(tracer.pc_reg))
+                else:
+                    reason = parent.error
+                    if self.stop_reasons.intersection(("node limit reached", "instruction limit reached")):
+                        return False
+                    parent.error = None
+                    parent.truncated = False
+                    target = static_target if self.valid_target(static_target) else None
+
+                edge = (insn.address, target)
+                if edge in seen_edges:
+                    tracer.skip_to(regs, next_pc)
+                    continue
+                seen_edges.add(edge)
+
+                label = None
+                if not self.valid_target(target):
+                    operands = ", ".join(insn.operands)
+                    label = "UNKNOWN ({:s}{:s})".format(
+                        insn.mnemonic, " " + operands if operands else "",
+                    )
+                    if reason:
+                        label += " - {:s}".format(reason)
+                child = self.add_child(parent, self.Node(target, insn.address, label=label))
+                if child is None:
+                    return False
+                if reason is not None or not self.valid_target(target):
+                    child.truncated = True
+                    child.error = reason
+                    if reason:
+                        self.truncated_reasons.add(reason)
+                    tracer.skip_to(regs, next_pc)
+                    continue
+                if depth <= 0:
+                    self.mark_truncated(child, "depth limit reached")
+                    tracer.skip_to(regs, next_pc)
+                    continue
+                if not self.walk(child, tracer, target, depth - 1, next_pc):
+                    if self.stop_reasons.intersection(("node limit reached", "instruction limit reached")):
+                        return False
+                    tracer.skip_to(regs, next_pc)
+                continue
+
+            if not self.step(tracer, parent, insn):
+                return False
+
+    @parse_args
+    @only_if_gdb_running
+    @require_arch_set
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @ModuleLoader.load_unicorn
+    def do_invoke(self, args):
+        """Parse command arguments and print the collected call tree."""
+        if current_arch.unicorn_support is False:
+            warn("This command is not supported on this architecture")
+            return
+        if self.args.depth < 0 or self.args.nb_insn <= 0 or self.args.nb_node <= 0:
+            err("Invalid argument")
+            return
+
+        self.out = []
+        self.insn_count = 0
+        self.node_count = 1
+        self.stop_reasons = set()
+        self.truncated_reasons = set()
+        self.debug_events = []
+        start_address = self.args.address or current_arch.pc
+        root = self.Node(start_address, kind="root")
+
+        try:
+            tracer = self.Emulator(start_address)
+        except Exception as e:
+            err("Failed to initialize Unicorn: {!s}".format(e))
+            return
+
+        self.walk(root, tracer, start_address, self.args.depth)
+        self.out.extend(root.lines())
+        self.out.append("")
+        self.out.append("Explored: nodes={:d}/{:d}, instructions={:d}/{:d}, depth={:d}".format(
+            self.node_count, self.args.nb_node, self.insn_count, self.args.nb_insn, self.args.depth,
+        ))
+        reasons = set(self.stop_reasons)
+        if reasons:
+            self.out.append("Stop reason: {:s}".format(", ".join(
+                self.Node.color_reason(reason) for reason in sorted(reasons)
+            )))
+        if self.truncated_reasons:
+            self.out.append("Truncated: {:s}".format(", ".join(
+                self.Node.color_reason(reason) for reason in sorted(self.truncated_reasons)
+            )))
+        if self.args.debug and self.debug_events:
+            self.out.append("Debug:")
+            self.out.extend("- " + x for x in self.debug_events[:32])
+            if len(self.debug_events) > 32:
+                self.out.append("- ... {:d} more".format(len(self.debug_events) - 32))
+        self.print_output(check_terminal_size=not self.args.no_pager)
+        return
+
+
+@register_command
 class AngrCommand(GenericCommand):
     """Use angr to find simple constraints."""
 

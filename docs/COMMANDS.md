@@ -2026,6 +2026,50 @@ But it assumes that there is a `ret` after `call __stack_chk_fail@plt`.
 Note that it will fail if there is a `ret` before `call __stack_chk_fail@plt`.
 ```
 
+## future-calls
+
+Display future function calls from the current function.
+
+- Alias: `fcalls`
+
+### Syntax
+
+```text
+usage: future-calls [-h] [-d DEPTH] [-b NB_INSN] [-N NB_NODE] [-n] [--debug] [ADDRESS]
+
+positional arguments:
+  ADDRESS               the address to start from. (default: current_arch.pc)
+
+options:
+  -h, --help            show this help message and exit
+  -d, --depth DEPTH     maximum call depth to descend into. (default: 3)
+  -b, --nb-insn NB_INSN
+                        maximum number of instructions to emulate. (default: 2048)
+  -N, --nb-node NB_NODE
+                        maximum number of call tree nodes to collect. (default: 256)
+  -n, --no-pager        do not use the pager.
+  --debug               show the faulting instruction for Unicorn errors.
+```
+
+### Examples
+
+```gdb
+future-calls                         # display future calls from $pc
+future-calls -d 4                    # descend into callees up to depth 4
+future-calls -b 4096                 # emulate up to 4096 instructions
+future-calls -N 1024                 # collect up to 1024 tree nodes
+future-calls -n                      # do not use the pager
+future-calls --debug                 # show Unicorn fault details
+```
+
+### Notes
+
+```text
+This command is a best-effort concrete preview based on Unicorn emulation.
+Only x86, x86-64, ARM32, and ARM64 are supported.
+Only the current emulated path is followed for conditional branches.
+```
+
 ## unicorn-emulate
 
 Use Unicorn-Engine to emulate the behavior of the binary.
@@ -2723,6 +2767,7 @@ options:
 
 Display registered destructor functions.
 
+- Alias: `exithandlers`
 
 ### Syntax
 
@@ -4807,7 +4852,7 @@ Calculate and check hash from constant inputs.
 ### Syntax
 
 ```text
-usage: hash test [-h] [-f REGEX] [-l LENGTH_FILTER] [-s] [-t | -T] [--size SIZE] [-n]
+usage: hash test [-h] [-f REGEX] [-l LENGTH_FILTER] [-s] [-t | -T] [--size SIZE] [--no-cffi] [-n]
 
 options:
   -h, --help            show this help message and exit
@@ -4818,6 +4863,7 @@ options:
   -t, --time            measure the time taken to compute the hash using large bytes of data.
   -T, --time-with-sort  measure and sort the time taken to compute the hash using large bytes of data.
   --size SIZE           the data size of 'AAAA...' to measure the time taken to compute the hash.
+  --no-cffi             disable CFFI accelerated hash implementations during this test.
   -n, --no-pager        do not use the pager.
 ```
 
@@ -6200,12 +6246,13 @@ Trace malloc/free to check heap integrity for UAF / Double-Free.
 ### Syntax
 
 ```text
-usage: heap tracer [-h] [-d] [-r]
+usage: heap tracer [-h] [-d] [-o] [-r]
 
 options:
   -h, --help            show this help message and exit
   -d, --dump-current-list
                         show the tracked allocations.
+  -o, --output          also dump to file.
   -r, --reset           remove breakpoints etc.
 ```
 
@@ -6856,7 +6903,7 @@ Simplified mimalloc structure:
 
 ## musl-heap-dump
 
-musl v1.2.5 (src/malloc/mallocng) heap reusable chunks viewer (x64/x86 only).
+musl v1.2.6 (src/malloc/mallocng) heap reusable chunks viewer (x64/x86 only).
 
 
 ### Syntax
@@ -6873,6 +6920,46 @@ options:
                         the active index of dump target.
   -n, --no-pager        do not use the pager.
   -v, --verbose         also dump an empty active index.
+```
+
+### Notes
+
+```text
+Simplified musl mallocng structure:
+
++-malloc_context------+
+| ...                 |
+| active[0] ----------|----+
+| active[1]           |    |
+| ...                 |    |
+| active[47]          |    |
+| free_meta_head      |    |
+| avail_meta          |    |
+| meta_area_head      |    |
+| meta_area_tail      |    |
++---------------------+    |
+                           v
+                 +-meta-------------+      +-meta-------------+
+                 | avail_mask       |      | avail_mask       |
+                 | freed_mask       |      | freed_mask       |
+                 | sizeclass        |      | sizeclass        |
+                 | last_idx         |      | last_idx         |
+                 | freeable         |      | freeable         |
+                 | maplen           |      | maplen           |
+        ...<---->| prev / next      |<---->| prev / next      |<----> ...
+                 | mem              |--+   | mem              |--+
+                 +------------------+  |   +------------------+  |
+                                       v                         v
+                              +-group-------------+      +-group-------------+
+                              | meta              |      | meta              |
+                              | active_idx        |      | active_idx        |
+                              | pad               |      | pad               |
+                              | storage[]         |      | storage[]         |
+                              |  chunk[0]         |      |  chunk[0]         |
+                              |  chunk[1]         |      |  chunk[1]         |
+                              |  chunk[2]         |      |  chunk[2]         |
+                              |  ...              |      |  ...              |
+                              +-------------------+      +-------------------+
 ```
 
 ## scalloc-heap-dump
@@ -9685,7 +9772,7 @@ options:
   --offset-random OFFSET_RANDOM
                         [FOR DEVELOPER] user-specified offsetof(kmem_cache, random) when `kmem_cache.random` is falsely detected.
   --offset-node OFFSET_NODE
-                        [FOR DEVELOPER] user-specified offsetof(kmem_cache, node) when `kmem_cache.node` is falsely detected.
+                        [FOR DEVELOPER] user-specified offsetof(kmem_cache, node/per_node[0].node) when node is falsely detected.
 ```
 
 ### Examples
@@ -9714,59 +9801,54 @@ Simplified SLUB structure:
        +-slab_caches-+   | name                |   | |   | name        |   | name        |
  ...<->| list_head   |<->| list_head           |<------->| list_head   |<->| list_head   |<-> ...
        +-------------+   | random              |   | |   | random      |   | random      |
-                         | node[]              |-+ | |   | node[]      |   | node[]      |
-                         +---------------------+ | | |   +-------------+   +-------------+
-                                                 | | |
-                                                 | | |     [sheaf/barn (the fastest path)]
-    +--------------------------------------------+ | |                     +-->+-slab_sheaf-+
-    |   +------------------------------------------+ |                     |   | barn_list  |
-    |   |                               +------------+                     |   | size       |
-    |   |     +-__per_cpu_offset-+      |                                  |   | objects[]  |
-    |   +-----| cpu0_offset      |------+------->+-slub_percpu_sheaves-+   |   |  ptr       |->chunk
-    |   |     | cpu1_offset      |               | main                |---+   |  ptr       |->chunk
-    |   |     | cpu2_offset      |               | spare               |-->... |  ...       |
-    |   |     | ...              |               +---------------------+       +------------+
-    |   |     +------------------+
-    |   |                                                  [active page freelist (fast path)]
-    |   |                                                    +-chunk---+  +-chunk---+
-    |   |                                                    | ^       |  | ^       |
-    |   |                                                    | |offset |  | |offset |
-    |   |                                                    | v       |  | v       |
-    |   |                  +-------------------------------->| next    |->| next    |->NULL
-    |   v (~6.19)          |                                 +---------+  +---------+
-    |  +-kmem_cache_cpu-+  |
-    |  | freelist       |--+                               [active page freelist (slow path)]
-    |  | page/slab      |---->+-page/slab(active)--+         +-chunk---+  +-chunk---+
-    |  | partial        |--+  | freelist           |----+    | ^       |  | ^       |
-    |  +----------------+  |  |                    |    |    | |offset |  | |offset |
-    |                      |  +------------------ -+    |    | v       |  | v       |
-    |                      |                            +--->| next    |->| next    |->NULL
-    |                      |                                 +---------+  +---------+
-    |                      |
-    |                      |                               [partial page freelist]
-    |                      +->+-page/slab(partial)-+         +-chunk---+  +-chunk---+
-    |                         | freelist           |----+    | ^       |  | ^       |
-    |                         | next               |--+ |    | |offset |  | |offset |
-    |                         +--------------------+  | |    | v       |  | v       |
-    |                                                 | +--->| next    |->| next    |->NULL
-    |                           +---------------------+      +---------+  +---------+
-    |                           |
-    |                           v                          [partial page freelist]
-    |                         +-page/slab(partial)-+         +-chunk---+  +-chunk---+
-    |                         | freelist           |----+    | ^       |  | ^       |
-    |                         | next               |--+ |    | |offset |  | |offset |
-    |                         +--------------------+  | |    | v       |  | v       |
-    |                                                 | +--->| next    |->| next    |->NULL
-    |                           +---------------------+      +---------+  +---------+
-    |                           |
-    |                           v
-    +--+                       ...
-       |                                                    [numa node partial page freelist]
-       v                      +-page/slab(numa-node)+         +-chunk---+  +-chunk---+
-      +-kmem_cache_node-+     | freelist            |----+    | ^       |  | ^       |
-      | partial         |---->| next                |--+ |    | |offset |  | |offset |
-      | (full)          |     +---------------------+  | |    | v       |  | v       |
-  +---| barn (6.18~)    |                              | +--->| next    |->| next    |->NULL
+                         | node[] (~7.0)       |-+ | |   | node[]      |   | node[]      |
+                         | per_node[] (7.1~)   | | | |   +-------------+   +-------------+
+  +----------------------|   [0].barn          | | | |
+  |                      |   [0].node          |-+ | |
+  |                      +---------------------+ | | |
+  |                                              | | |
+  |                                              | | |     [sheaf/barn (the fastest path)]
+  |  +-------------------------------------------+ | |                     +-->+-slab_sheaf-+
+  |  |  +------------------------------------------+ |                     |   | barn_list  |
+  |  |  |                               +------------+                     |   | size       |
+  |  |  |     +-__per_cpu_offset-+      |                                  |   | objects[]  |
+  |  |  +-----| cpu0_offset      |------+------->+-slub_percpu_sheaves-+   |   |  ptr       |->chunk
+  |  |  |     | cpu1_offset      |               | main                |---+   |  ptr       |->chunk
+  |  |  |     | cpu2_offset      |               | spare               |-->... |  ...       |
+  |  |  |     | ...              |               +---------------------+       +------------+
+  |  |  |     +------------------+
+  |  |  |                                                  [active page freelist (fast path)]
+  |  |  |                                                    +-chunk---+  +-chunk---+
+  |  |  |                                                    | ^       |  | ^       |
+  |  |  |                                                    | |offset |  | |offset |
+  |  |  |                                                    | v       |  | v       |
+  |  |  |                  +-------------------------------->| next    |->| next    |->NULL
+  |  |  v (~6.19)          |                                 +---------+  +---------+
+  |  | +-kmem_cache_cpu-+  |
+  |  | | freelist       |--+                               [active page freelist (slow path)]
+  |  | | page/slab      |---->+-page/slab(active)--+         +-chunk---+  +-chunk---+
+  |  | | partial        |--+  | freelist           |----+    | ^       |  | ^       |
+  |  | +----------------+  |  |                    |    |    | |offset |  | |offset |
+  |  |                     |  +------------------ -+    |    | v       |  | v       |
+  |  |                     |                            +--->| next    |->| next    |->NULL
+  |  |                     |                                 +---------+  +---------+
+  |  |                     |
+  |  |                     |                               [partial page freelist]
+  |  |                     +->+-page/slab(partial)-+         +-chunk---+  +-chunk---+
+  |  |                        | freelist           |----+    | ^       |  | ^       |
+  |  |                        | next               |--+ |    | |offset |  | |offset |
+  |  |                        +--------------------+  | |    | v       |  | v       |
+  |  |                                                | +--->| next    |->| next    |->NULL
+  |  |                          +---------------------+      +---------+  +---------+
+  |  |                          |
+  |  |                          v
+  |  +-+                       ...
+  |    |                                                    [numa node partial page freelist]
+  |    v                      +-page/slab(numa-node)+         +-chunk---+  +-chunk---+
+  |   +-kmem_cache_node-+     | freelist            |----+    | ^       |  | ^       |
+  |   | partial         |---->| next                |--+ |    | |offset |  | |offset |
+  |   | (full)          |     +---------------------+  | |    | v       |  | v       |
+  +---| barn (6.18~7.0) |                              | +--->| next    |->| next    |->NULL
   |   +-----------------+  +---------------------------+      +---------+  +---------+
   |   | ...             |  |
   |   |                 |  |                                [numa node partial page freelist]
@@ -9776,8 +9858,8 @@ Simplified SLUB structure:
   |                           +---------------------+  | |    | v       |  | v       |
   |                                                    | +--->| next    |->| next    |->NULL
   |                        +---------------------------+      +---------+  +---------+
-  |                        |
-  +----+                   v
+  +----+                   |
+       |                   v
        |                  ...
        v
       +-node_barn-----+         +-slab_sheaf-+    +-slab_sheaf-+
