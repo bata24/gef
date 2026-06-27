@@ -38583,6 +38583,7 @@ class DestructorDumpCommand(GenericCommand):
 
     _cmdline_ = "dtor-dump"
     _category_ = "02-e. Process Information - Complex Structure Information"
+    _aliases_ = ["exithandlers"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-r", "--remote", action="store_true",
