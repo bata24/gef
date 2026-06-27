@@ -40458,11 +40458,12 @@ class FormatStringSearchCommand(GenericCommand):
 class TraceMallocBreakpoint(gdb.Breakpoint):
     """Track allocations for malloc() etc."""
 
-    def __init__(self, name, loc):
+    def __init__(self, name, loc, output_filename):
         super().__init__("*{:#x}".format(loc.value), gdb.BP_BREAKPOINT, internal=True)
         self.silent = True
         self.name = name
         self.loc = loc
+        self.output_filename = output_filename
         return
 
     def check_nested(self):
@@ -40506,14 +40507,14 @@ class TraceMallocBreakpoint(gdb.Breakpoint):
             _, size = current_arch.get_ith_parameter(2)
             nmemb = 1
 
-        TraceMallocRetBreakpoint(self.name, nmemb, size, memptr, alignment)
+        TraceMallocRetBreakpoint(self.name, nmemb, size, memptr, alignment, self.output_filename)
         return False
 
 
 class TraceMallocRetBreakpoint(gdb.Breakpoint):
     """Internal breakpoint to retrieve the return value of malloc() etc."""
 
-    def __init__(self, name, nmemb, size, memptr, alignment):
+    def __init__(self, name, nmemb, size, memptr, alignment, output_filename):
         ret_addr = gdb.newest_frame().older().pc()
         super().__init__("*{:#x}".format(ret_addr), gdb.BP_BREAKPOINT, internal=True)
         self.silent = True
@@ -40522,6 +40523,7 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
         self.size = size
         self.memptr = memptr
         self.alignment = alignment
+        self.output_filename = output_filename
         self.tid = Pid.get_tid()
         GlibcHeapTracerCommand.clear_disabled_breakpoints()
         return
@@ -40553,31 +40555,55 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
                     return Color.colorify("${:+#x}".format(v - heap_base), "lilac")
             return ""
 
-        # show information
-        text1 = "{:s} - {!s}{:s}{:s}".format(
+        def get_result():
+            text1 = "{!s}{:s}{:s}".format(
+                allocated,
+                Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
+                get_offset_str(allocated.value),
+            )
+            padlen = 28 - len(Color.remove_color(text1))
+            text1 += " " * padlen
+            return text1
+
+        def get_function_and_args():
+            if self.name in ["malloc", "valloc"]:
+                text2 = "{:s}({:#x})".format(
+                    self.name, self.size,
+                )
+            elif self.name == "calloc":
+                text2 = "{:s}({:#x}, {:#x})".format(
+                    self.name, self.nmemb, self.size,
+                )
+            elif self.name in ["aligned_alloc", "memalign"]:
+                text2 = "{:s}({:#x}, {:#x})".format(
+                    self.name, self.alignment, self.size,
+                )
+            elif self.name == "posix_memalign":
+                text2 = "{:s}({:#x}, {:#x}, {:#x})".format(
+                    self.name, self.memptr, self.alignment, self.size,
+                )
+            return text2
+
+        def get_caller():
+            try:
+                caller = get_insn_prev().address
+                caller = ProcessMap.lookup_address(caller)
+                sym = Symbol.get_symbol_string(caller.value, nosymbol_string=" <NO_SYMBOL>")
+                return "{!s}{:s}".format(caller, sym)
+            except Exception:
+                return ""
+
+        # dump
+        line = "{:s} - {:s} = {:s} @ {:s}".format(
             Color.colorify("Heap-Analysis", "bold yellow"),
-            allocated,
-            Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
-            get_offset_str(allocated.value),
+            get_result(),
+            get_function_and_args(),
+            get_caller(),
         )
-        if self.name in ["malloc", "valloc"]:
-            text2 = "{:s}({:#x})".format(
-                self.name, self.size,
-            )
-        elif self.name == "calloc":
-            text2 = "{:s}({:#x}, {:#x})".format(
-                self.name, self.nmemb, self.size,
-            )
-        elif self.name in ["aligned_alloc", "memalign"]:
-            text2 = "{:s}({:#x}, {:#x})".format(
-                self.name, self.alignment, self.size,
-            )
-        elif self.name == "posix_memalign":
-            text2 = "{:s}({:#x}, {:#x}, {:#x})".format(
-                self.name, self.memptr, self.alignment, self.size,
-            )
-        padlen = 44 - len(Color.remove_color(text1))
-        gef_print("{:s}{:s} = {:s}".format(text1, " " * padlen, text2))
+        gef_print(line)
+
+        if self.output_filename:
+            open(self.output_filename, "a").write(line + "\n")
         return
 
     def check_inconsistency(self, allocated):
@@ -40643,11 +40669,12 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
 class TraceReallocBreakpoint(gdb.Breakpoint):
     """Track re-allocations for realloc() etc."""
 
-    def __init__(self, name, loc):
+    def __init__(self, name, loc, output_filename):
         super().__init__("*{:#x}".format(loc.value), gdb.BP_BREAKPOINT, internal=True)
         self.silent = True
         self.name = name
         self.loc = loc
+        self.output_filename = output_filename
         return
 
     def check_nested(self):
@@ -40679,14 +40706,14 @@ class TraceReallocBreakpoint(gdb.Breakpoint):
             _, nmemb = current_arch.get_ith_parameter(1)
             _, size = current_arch.get_ith_parameter(2)
 
-        TraceReallocRetBreakpoint(self.name, old_loc, nmemb, size)
+        TraceReallocRetBreakpoint(self.name, old_loc, nmemb, size, self.output_filename)
         return False
 
 
 class TraceReallocRetBreakpoint(gdb.Breakpoint):
     """Internal breakpoint to retrieve the return value of realloc() etc."""
 
-    def __init__(self, name, old_loc, nmemb, size):
+    def __init__(self, name, old_loc, nmemb, size, output_filename):
         ret_addr = gdb.newest_frame().older().pc()
         super().__init__("*{:#x}".format(ret_addr), gdb.BP_BREAKPOINT, internal=True)
         self.silent = True
@@ -40695,6 +40722,7 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
         self.nmemb = nmemb
         self.size = size
         self.tid = Pid.get_tid()
+        self.output_filename = output_filename
         GlibcHeapTracerCommand.clear_disabled_breakpoints()
         return
 
@@ -40725,43 +40753,69 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
                     return Color.colorify("${:+#x}".format(v - heap_base), "lilac")
             return ""
 
-        # get action index
-        idx = self.search_allocated_index(self.old_loc)
-        if idx is None:
-            action_index_s = ""
-        else:
-            action_index = GlibcHeapTracerCommand.heap_allocated_list[idx][0]
-            action_index_s = "{:s}".format(Color.colorify("#{:d}".format(action_index), "bold cyan"))
+        def get_result():
+            text1 = "{!s}{:s}{:s}".format(
+                new_loc,
+                Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
+                get_offset_str(new_loc.value),
+            )
+            padlen = 28 - len(Color.remove_color(text1))
+            text1 += " " * padlen
+            return text1
 
-        # check realloc result type
-        if self.old_loc.value == 0:
-            extra = Color.colorify("return new chunk", "bold yellow")
-        elif self.old_loc.value != new_loc.value:
-            extra = Color.colorify("return another chunk", "bold red")
-        else:
-            extra = Color.colorify("return same chunk", "bold green")
+        def get_function_and_args():
+            # get action index
+            idx = self.search_allocated_index(self.old_loc)
+            if idx is None:
+                action_index_s = ""
+            else:
+                action_index = GlibcHeapTracerCommand.heap_allocated_list[idx][0]
+                action_index_s = "{:s}".format(Color.colorify("#{:d}".format(action_index), "bold cyan"))
 
-        # show information
-        text1 = "{:s} - {!s}{:s}{:s}".format(
+            if self.name == "realloc":
+                text2 = "{:s}({!s}{:s}{:s}, {:#x})".format(
+                    self.name,
+                    self.old_loc if self.old_loc.value != 0 else Color.boldify("NULL"),
+                    action_index_s, get_offset_str(self.old_loc.value), self.size,
+                )
+            elif self.name == "reallocarray":
+                text2 = "{:s}({!s}{:s}{:s}, {:#x}, {:#x})".format(
+                    self.name,
+                    self.old_loc if self.old_loc.value != 0 else Color.boldify("NULL"),
+                    action_index_s, get_offset_str(self.old_loc.value), self.nmemb, self.size,
+                )
+            return text2
+
+        def get_result_type():
+            if self.old_loc.value == 0:
+                result_type = Color.colorify("return new chunk", "bold yellow")
+            elif self.old_loc.value != new_loc.value:
+                result_type = Color.colorify("return another chunk", "bold red")
+            else:
+                result_type = Color.colorify("return same chunk", "bold green")
+            return result_type
+
+        def get_caller():
+            try:
+                caller = get_insn_prev().address
+                caller = ProcessMap.lookup_address(caller)
+                sym = Symbol.get_symbol_string(caller.value, nosymbol_string=" <NO_SYMBOL>")
+                return "{!s}{:s}".format(caller, sym)
+            except Exception:
+                return ""
+
+        # dump
+        line = "{:s} - {:s} = {:s} @ {:s} // {:s}".format(
             Color.colorify("Heap-Analysis", "bold yellow"),
-            new_loc,
-            Color.colorify("#{:d}".format(GlibcHeapTracerCommand.heap_action_index), "bold cyan"),
-            get_offset_str(new_loc.value),
+            get_result(),
+            get_function_and_args(),
+            get_caller(),
+            get_result_type(),
         )
-        if self.name == "realloc":
-            text2 = "{:s}({!s}{:s}{:s}, {:#x})  // {:s}".format(
-                self.name,
-                self.old_loc if self.old_loc.value != 0 else Color.boldify("NULL"),
-                action_index_s, get_offset_str(self.old_loc.value), self.size, extra,
-            )
-        elif self.name == "reallocarray":
-            text2 = "{:s}({!s}{:s}{:s}, {:#x}, {:#x})  // {:s}".format(
-                self.name,
-                self.old_loc if self.old_loc.value != 0 else Color.boldify("NULL"),
-                action_index_s, get_offset_str(self.old_loc.value), self.nmemb, self.size, extra,
-            )
-        padlen = 44 - len(Color.remove_color(text1))
-        gef_print("{:s}{:s} = {:s}".format(text1, " " * padlen, text2))
+        gef_print(line)
+
+        if self.output_filename:
+            open(self.output_filename, "a").write(line + "\n")
         return
 
     def check_double_free(self, to_free):
@@ -40864,11 +40918,12 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
 class TraceFreeBreakpoint(gdb.Breakpoint):
     """Track calls to free() and attempts to detect inconsistencies."""
 
-    def __init__(self, name, loc):
+    def __init__(self, name, loc, output_filename):
         super().__init__("*{:#x}".format(loc.value), gdb.BP_BREAKPOINT, internal=True)
         self.silent = True
         self.name = name
         self.loc = loc
+        self.output_filename = output_filename
         return
 
     def search_allocated_index(self, addr):
@@ -40901,24 +40956,45 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
                     return Color.colorify("${:+#x}".format(v - heap_base), "lilac")
             return ""
 
-        # get action index
-        idx = self.search_allocated_index(to_free)
-        if idx is None:
-            action_index_s = ""
-        else:
-            action_index = GlibcHeapTracerCommand.heap_allocated_list[idx][0]
-            action_index_s = "{:s}".format(Color.colorify("#{:d}".format(action_index), "bold cyan"))
+        def get_result():
+            return " " * 28
 
-        # show information
-        text1 = "{:s} -".format(
+        def get_function_and_args():
+            # get action index
+            idx = self.search_allocated_index(to_free)
+            if idx is None:
+                action_index_s = ""
+            else:
+                action_index = GlibcHeapTracerCommand.heap_allocated_list[idx][0]
+                action_index_s = "{:s}".format(Color.colorify("#{:d}".format(action_index), "bold cyan"))
+
+            text2 = "free({!s}{:s}{:s})".format(
+                to_free if to_free.value != 0 else Color.boldify("NULL"),
+                action_index_s, get_offset_str(to_free.value),
+            )
+            return text2
+
+        def get_caller():
+            try:
+                caller = gdb.selected_frame().older().pc()
+                caller = get_insn_prev(caller).address
+                caller = ProcessMap.lookup_address(caller)
+                sym = Symbol.get_symbol_string(caller.value, nosymbol_string=" <NO_SYMBOL>")
+                return "{!s}{:s}".format(caller, sym)
+            except Exception:
+                return ""
+
+        # dump
+        line = "{:s} - {:s} = {:s} @ {:s}".format(
             Color.colorify("Heap-Analysis", "bold yellow"),
+            get_result(),
+            get_function_and_args(),
+            get_caller(),
         )
-        text2 = "free({!s}{:s}{:s})".format(
-            to_free if to_free.value != 0 else Color.boldify("NULL"),
-            action_index_s, get_offset_str(to_free.value),
-        )
-        padlen = 44 - len(Color.remove_color(text1))
-        gef_print("{:s}{:s} = {:s}".format(text1, " " * padlen, text2))
+        gef_print(line)
+
+        if self.output_filename:
+            open(self.output_filename, "a").write(line + "\n")
         return
 
     def check_double_free(self, to_free):
@@ -41001,6 +41077,7 @@ class GlibcHeapTracerCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-d", "--dump-current-list", action="store_true", help="show the tracked allocations.")
+    parser.add_argument("-o", "--output", action="store_true", help="also dump to file.")
     parser.add_argument("-r", "--reset", action="store_true", help="remove breakpoints etc.")
     _syntax_ = parser.format_help()
 
@@ -41058,7 +41135,7 @@ class GlibcHeapTracerCommand(GenericCommand):
             except gdb.error:
                 warn("breakpoint setup failed: {:#x}".format(name))
                 return
-            bp = bp_class(name, address)
+            bp = bp_class(name, address, self.output_filename)
             GlibcHeapTracerCommand.heap_breakpoints.append(bp)
             return
 
@@ -41121,6 +41198,13 @@ class GlibcHeapTracerCommand(GenericCommand):
         if args.reset:
             self.clean(None)
             return
+
+        if args.output:
+            tmp_fd, tmp_path = GefUtil.mkstemp(prefix="heap-tracer", suffix=".log")
+            os.fdopen(tmp_fd, "w").write("")
+            self.output_filename = tmp_path
+        else:
+            self.output_filename = ""
 
         self.setup()
         return
