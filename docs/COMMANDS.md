@@ -2067,19 +2067,68 @@ future-calls --debug                 # show Unicorn fault details
 ```text
 This command is a best-effort concrete preview based on Unicorn emulation.
 Only x86, x86-64, ARM32, and ARM64 are supported.
-Only the current emulated path is followed for conditional branches.
 ```
 
 ## unicorn-emulate
 
-Use Unicorn-Engine to emulate the behavior of the binary.
+Use Unicorn-Engine to emulate the behavior of the binary (in-process, no script generation).
 
 - Alias: `emulate`
 
 ### Syntax
 
 ```text
-usage: unicorn-emulate [-h] [-f FROM_LOCATION] [-g NB_GADGET | -t TO_LOCATION | -n NB_INSN] [-i] [-s] [-v] [-S] [-A] [-E] [-I] [-q]
+usage: unicorn-emulate [-h] [-f FROM_LOCATION] [-g NB_GADGET | -t TO_LOCATION | -n NB_INSN] [-i] [-v] [-S] [-A] [-E] [-q]
+
+options:
+  -h, --help            show this help message and exit
+  -f, --from-location FROM_LOCATION
+                        specifies the start address of the emulated run. (default: current_arch.pc)
+  -g, --nb-gadget NB_GADGET
+                        the number of gadgets to execute. (default mode, NB_GADGET: 10)
+  -t, --to-location TO_LOCATION
+                        the end address of the emulated run.
+  -n, --nb-insn NB_INSN
+                        the number of instructions from `FROM_LOCATION`.
+  -i, --only-insns      show only instructions (no registers, memories, etc).
+  -v, --verbose         displays the register values for each executed instruction.
+  -S, --add-sse         initialization and display XMM registers (x64/x86 only).
+  -A, --avoid-avx-neon-opt-func
+                        patch GOT to replace (e.g., __XXX_avx2 with XXX), as Unicorn does not support them.
+  -E, --emulate-mmap    [FOR DEVELOPER] used internally in gef, please don't use it.
+  -q, --quiet           quiet execution.
+```
+
+### Examples
+
+```gdb
+unicorn-emulate -g 10               # from $pc to the point where 10 instructions are executed
+unicorn-emulate -n 5                # from $pc to 5 later instructions (assume it is no branch)
+unicorn-emulate -t 0x805678a4       # from $pc to specified address
+```
+
+### Notes
+
+```text
+This command emulates entirely inside gef, without generating an external script or dumping memory to files.
+Memory is mapped on demand from the inferior, so Linux kernel emulation is supported (like future-calls).
+Kernel emulation is only supported on x86, x86-64, ARM32, and ARM64.
+Big endian is not supported.
+unicorn does not support emulating syscall. (use -E for a best-effort mmap/munmap/brk emulation)
+unicorn does not support some instructions. (e.g., xsavec, xrstor, vpbroadcastb, vldr, etc.)
+unicorn does not emulate ARM kernel-provided-user-helpers like $pc=0xffff0fe0, 0xffff0fc0, etc.
+see: https://www.kernel.org/doc/Documentation/arm/kernel_user_helpers.txt
+```
+
+## unicorn-emulate-script
+
+Use Unicorn-Engine to emulate the behavior of the binary (generates and runs a standalone script).
+
+
+### Syntax
+
+```text
+usage: unicorn-emulate-script [-h] [-f FROM_LOCATION] [-g NB_GADGET | -t TO_LOCATION | -n NB_INSN] [-i] [-s] [-v] [-S] [-A] [-E] [-q]
 
 options:
   -h, --help            show this help message and exit
@@ -2099,16 +2148,15 @@ options:
   -A, --avoid-avx-neon-opt-func
                         patch GOT to replace (e.g., __XXX_avx2 with XXX), as Unicorn does not support them.
   -E, --emulate-mmap    [FOR DEVELOPER] used internally in gef, please don't use it.
-  -I, --emulate-insn    [FOR DEVELOPER] used internally in gef, please don't use it.
   -q, --quiet           quiet execution.
 ```
 
 ### Examples
 
 ```gdb
-unicorn-emulate -g 10               # from $pc to the point where 4 instructions are executed
-unicorn-emulate -n 5                # from $pc to 5 later instructions (assume it is no branch)
-unicorn-emulate -t 0x805678a4 -s    # from $pc to specified address with saving script
+unicorn-emulate-script -g 10               # from $pc to the point where 4 instructions are executed
+unicorn-emulate-script -n 5                # from $pc to 5 later instructions (assume it is no branch)
+unicorn-emulate-script -t 0x805678a4 -s    # from $pc to specified address with saving script
 ```
 
 ### Notes
@@ -6272,7 +6320,7 @@ Emulate with unicorn to check errors when allocating a zero-initialized chunk.
 ### Syntax
 
 ```text
-usage: heap try-calloc [-h] [-a CALLER_ADDRESS] [-s] [-c COMMAND] [-v] SIZE NMEMB
+usage: heap try-calloc [-h] [-a CALLER_ADDRESS] [-c COMMAND] [-v] SIZE NMEMB
 
 positional arguments:
   SIZE                  the size to be allocated.
@@ -6282,8 +6330,6 @@ options:
   -h, --help            show this help message and exit
   -a, --calloc-addr CALLER_ADDRESS
                         the memory address of calloc().
-  -s, --skip-emulation, --save
-                        do not run, just save the script.
   -c, --command COMMAND
                         command to be executed after emulation succeeds, with the memory state temporarily reflected.
   -v, --verbose         show internal state.
@@ -6319,7 +6365,7 @@ Emulate with unicorn to check errors when freeing a chunk.
 ### Syntax
 
 ```text
-usage: heap try-free [-h] [-a CALLER_ADDRESS] [-s] [-c COMMAND] [-v] ADDRESS
+usage: heap try-free [-h] [-a CALLER_ADDRESS] [-c COMMAND] [-v] ADDRESS
 
 positional arguments:
   ADDRESS               the memory address to be freed.
@@ -6328,8 +6374,6 @@ options:
   -h, --help            show this help message and exit
   -a, --free-addr CALLER_ADDRESS
                         the memory address of free().
-  -s, --skip-emulation, --save
-                        do not run, just save the script.
   -c, --command COMMAND
                         command to be executed after emulation succeeds, with the memory state temporarily reflected.
   -v, --verbose         show internal state.
@@ -6365,7 +6409,7 @@ Emulate with unicorn to check errors when allocating a chunk.
 ### Syntax
 
 ```text
-usage: heap try-malloc [-h] [-a CALLER_ADDRESS] [-s] [-c COMMAND] [-v] SIZE
+usage: heap try-malloc [-h] [-a CALLER_ADDRESS] [-c COMMAND] [-v] SIZE
 
 positional arguments:
   SIZE                  the size to be allocated.
@@ -6374,8 +6418,6 @@ options:
   -h, --help            show this help message and exit
   -a, --malloc-addr CALLER_ADDRESS
                         the memory address of malloc().
-  -s, --skip-emulation, --save
-                        do not run, just save the script.
   -c, --command COMMAND
                         command to be executed after emulation succeeds, with the memory state temporarily reflected.
   -v, --verbose         show internal state.
@@ -6411,7 +6453,7 @@ Emulate with unicorn to check errors when re-allocating a chunk.
 ### Syntax
 
 ```text
-usage: heap try-realloc [-h] [-a CALLER_ADDRESS] [-s] [-c COMMAND] [-v] ADDRESS SIZE
+usage: heap try-realloc [-h] [-a CALLER_ADDRESS] [-c COMMAND] [-v] ADDRESS SIZE
 
 positional arguments:
   ADDRESS               the memory address to be re-allocated.
@@ -6421,8 +6463,6 @@ options:
   -h, --help            show this help message and exit
   -a, --realloc-addr CALLER_ADDRESS
                         the memory address of realloc().
-  -s, --skip-emulation, --save
-                        do not run, just save the script.
   -c, --command COMMAND
                         command to be executed after emulation succeeds, with the memory state temporarily reflected.
   -v, --verbose         show internal state.
