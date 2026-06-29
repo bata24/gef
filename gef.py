@@ -2247,22 +2247,6 @@ class Elf:
         # both partial and full have PT_GNU_RELRO
         return bool(self.get_phdr(Elf.Phdr.PT_GNU_RELRO))
 
-    def get_dynamic_data(self):
-        # find dynamic
-        phdr = self.get_phdr(Elf.Phdr.PT_DYNAMIC)
-        if phdr is None:
-            return None
-
-        # read dynamic
-        fd = open(self.filename, "rb")
-        fd.seek(phdr.p_offset)
-        data = fd.read(phdr.p_filesz)
-        fd.close()
-
-        # unpack
-        data = slice_unpack(data, self.get_bits() // 8)
-        return data
-
     def is_full_relro(self):
         data = self.get_dynamic_data()
         if data is None:
@@ -2276,25 +2260,95 @@ class Elf:
                 return bool(value & 0x08) # DF_BIND_NOW
         return False
 
-    def has_rpath(self):
+    def vaddr_to_offset(self, vaddr):
+        for phdr in self.phdrs:
+            if phdr.p_type != Elf.Phdr.PT_LOAD:
+                continue
+            start = phdr.p_vaddr
+            end = phdr.p_vaddr + phdr.p_filesz
+            if start <= vaddr < end:
+                return phdr.p_offset + vaddr - start
+        return None
+
+    def read_cstring_from_vaddr(self, vaddr, size=0x1000):
+        if self.filename:
+            offset = self.vaddr_to_offset(vaddr)
+            if offset is None:
+                return None
+            with open(self.filename, "rb") as fd:
+                fd.seek(offset)
+                data = fd.read(size)
+            return self.get_string_from_data(data, 0)
+
+        if self.addr:
+            addrs = [vaddr]
+            if self.is_pie():
+                addrs.append(self.addr + vaddr)
+            for addr in addrs:
+                try:
+                    data = read_memory(addr, size)
+                    return self.get_string_from_data(data, 0)
+                except Exception:
+                    continue
+        return None
+
+    def get_string_from_data(self, data, offset):
+        if offset >= len(data):
+            return None
+        end = data.find(b"\x00", offset)
+        if end < 0:
+            return None
+        return data[offset:end].decode(errors="replace")
+
+    def get_dynamic_data(self):
+        data = self.read_shdr(".dynamic")
+        if data is None:
+            data = self.read_phdr(Elf.Phdr.PT_DYNAMIC)
+        if data is None:
+            return None
+        return slice_unpack(data, self.get_bits() // 8)
+
+    def get_dynamic_value(self, tag_type):
         data = self.get_dynamic_data()
         if data is None:
-            return False
+            return None
 
-        for tag, _ in slicer(data, 2):
-            if tag == 0xf: # DT_RPATH
-                return True
-        return False
+        for tag, val in slicer(data, 2):
+            if tag == 0x0: # DT_NULL
+                break
+            if tag == tag_type:
+                return val
+        return None
 
-    def has_runpath(self):
-        data = self.get_dynamic_data()
-        if data is None:
-            return False
+    def get_dynamic_string(self, tag_type):
+        val = self.get_dynamic_value(tag_type)
+        if val is None:
+            return None
+        dynstr = self.read_shdr(".dynstr")
+        if dynstr is not None:
+            result = self.get_string_from_data(dynstr, val)
+            if result is not None:
+                return result
+        strtab = self.get_dynamic_value(0x5) # DT_STRTAB
+        if strtab is None:
+            return None
+        strsz = self.get_dynamic_value(0xa) # DT_STRSZ
+        size = 0x1000
+        if strsz is not None and val < strsz:
+            size = strsz - val
+        return self.read_cstring_from_vaddr(strtab + val, size)
 
-        for tag, _ in slicer(data, 2):
-            if tag == 0x1d: # DT_RUNPATH
-                return True
-        return False
+    def has_rpath(self): # noqa
+        return self.get_rpath() is not None
+
+    def get_rpath(self):
+        return self.get_dynamic_string(0xf) # DT_RPATH
+
+    def has_runpath(self): # noqa
+        return self.get_runpath() is not None
+
+    def get_runpath(self):
+        return self.get_dynamic_string(0x1d) # DT_RUNPATH
 
     def has_pac_heuristic(self):
         pac_ops = [
@@ -2444,10 +2498,10 @@ class Elf:
             sec["PAC"] = self.has_pac_heuristic()
 
         # RPATH
-        sec["RPATH"] = self.has_rpath()
+        sec["RPATH"] = self.get_rpath()
 
         # RUNPATH
-        sec["RUNPATH"] = self.has_runpath()
+        sec["RUNPATH"] = self.get_runpath()
 
         # Clang CFI (detected only when `-fno-sanitize-trap=all`)
         if self.is_static() and self.is_stripped():
@@ -29681,9 +29735,9 @@ class ChecksecCommand(GenericCommand):
 
         # Debug information
         if sec["Debuginfo"]:
-            gef_print("{:<40s}: {:s}".format("Debuginfo", Color.colorify("Found", "bold red")))
+            gef_print("{:<40s}: {:s}".format("Debuginfo", Color.colorify("With debuginfo", "bold red")))
         else:
-            gef_print("{:<40s}: {:s}".format("Debuginfo", Color.colorify("Stripped", "bold green")))
+            gef_print("{:<40s}: {:s}".format("Debuginfo", Color.colorify("No debuginfo", "bold green")))
 
         # Intel CET
         self.check_CET_SHSTK(sec)
@@ -29695,11 +29749,11 @@ class ChecksecCommand(GenericCommand):
 
         # RPATH
         if sec["RPATH"]:
-            gef_print("{:<40s}: {:s}".format("RPATH", Color.colorify("Found", "bold red")))
+            gef_print("{:<40s}: {:s} ({!r})".format("RPATH", Color.colorify("Found", "bold red"), sec["RPATH"]))
 
         # RUNPATH
         if sec["RUNPATH"]:
-            gef_print("{:<40s}: {:s}".format("RUNPATH", Color.colorify("Found", "bold red")))
+            gef_print("{:<40s}: {:s} ({!r})".format("RUNPATH", Color.colorify("Found", "bold red"), sec["RUNPATH"]))
 
         # Clang CFI
         if sec["Clang CFI"]:
