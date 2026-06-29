@@ -100,10 +100,12 @@ import binascii
 import codecs
 import collections
 import configparser
+import contextlib
 import ctypes
 import datetime
 import functools
 import hashlib
+import io
 import itertools
 import json
 import os
@@ -189,7 +191,6 @@ def perf(f): # noqa
 
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
-        import io
         import line_profiler
         pr = line_profiler.LineProfiler()
         pr.add_function(f)
@@ -211,7 +212,6 @@ def cperf(f): # noqa
     def wrapper(*args, **kwargs):
         import cProfile
         import pstats
-        import io
         pr = cProfile.Profile()
         pr.enable()
         ret = f(*args, **kwargs)
@@ -21972,6 +21972,8 @@ class UnicornEmulator:
             # instruction trace counter and tracked memory changes (for the diff dump)
             self.count = 0
             self.changed_mem = {}
+            self.failed = None        # set by run(): the reason string when emulation stops abnormally (else None)
+            self.last_syscall = None  # set by handle_syscall(): the first syscall number encountered (else None)
             hook = getattr(self.unicorn, "UC_HOOK_MEM_INVALID", None)
             if hook is None:
                 hook = self.unicorn.UC_HOOK_MEM_READ_INVALID | self.unicorn.UC_HOOK_MEM_WRITE_INVALID
@@ -22641,6 +22643,8 @@ class UnicornEmulator:
                 sysno = self.emu.reg_read(self.regs[syscall_register])
             else:
                 sysno = None
+            if sysno is not None and self.last_syscall is None:
+                self.last_syscall = sysno
             if self.kwargs["emulate_mmap"] and sysno is not None:
                 for emulate in (self.emulate_mmap, self.emulate_munmap, self.emulate_brk):
                     if emulate(sysno):
@@ -22975,6 +22979,7 @@ class UnicornEmulator:
                         break
             except KeyboardInterrupt:
                 failed = "interrupted"
+            self.failed = failed
 
             if failed is not None and not kwargs["quiet"]:
                 gef_print("========================= Emulation failed =========================")
@@ -23188,6 +23193,25 @@ class UnicornEmulateCommand(GenericCommand):
             "emulate_mmap": args.emulate_mmap,
         }
 
+        if nb_gadget is None:
+            ok("Starting emulation: {:#x}  ->  {:#x}".format(start_insn, end_insn))
+        else:
+            ok("Starting emulation: {:#x}  ->  after {:d} instructions are executed".format(
+                start_insn, nb_gadget,
+            ))
+
+        UnicornEmulateCommand.run_in_process(kwargs)
+        return
+
+    @staticmethod
+    @contextlib.contextmanager
+    def emulation_session(kwargs):
+        """Set up the in-process Unicorn emulator the same way for every caller.
+
+        Locks the scheduler, resets gef caches, builds the Emulator and yields it
+        (or None if init failed); the scheduler state is restored on exit. Callers
+        drive the emulator as they need: `run_in_process` runs a linear emulation,
+        `future-calls` walks the call tree."""
         # thread locking
         sched_lock = gdb.parameter("scheduler-locking")
         try:
@@ -23198,29 +23222,40 @@ class UnicornEmulateCommand(GenericCommand):
         Cache.reset_gef_caches(all=True)
 
         try:
-            if nb_gadget is None:
-                ok("Starting emulation: {:#x}  ->  {:#x}".format(start_insn, end_insn))
-            else:
-                ok("Starting emulation: {:#x}  ->  after {:d} instructions are executed".format(
-                    start_insn, nb_gadget,
-                ))
-
             try:
                 emulator = UnicornEmulator.Emulator(kwargs)
             except Exception as e:
                 err("Failed to initialize Unicorn: {!s}".format(e))
-                return
-
-            if kwargs["patch_got"]:
-                emulator.patch_got()
-            emulator.run(kwargs)
+                emulator = None
+            yield emulator
         finally:
             # revert
             try:
                 gdb.execute("set scheduler-locking {:s}".format(sched_lock), to_string=True)
             except gdb.error:
                 pass
-        return
+
+    @staticmethod
+    def run_in_process(kwargs, suppress_output=False):
+        """Run a linear in-process emulation and return the Emulator instance.
+
+        Shared by `unicorn-emulate` and `heap try-free`: the latter reads the result
+        straight off the returned object (`.failed`, `.last_syscall`, `.changed_mem`,
+        registers) instead of parsing the printed dump, and passes suppress_output=True
+        to hide that dump. Returns None if init failed."""
+        with UnicornEmulateCommand.emulation_session(kwargs) as emulator:
+            if emulator is not None:
+                if kwargs["patch_got"]:
+                    emulator.patch_got()
+                # Only run()'s dump is redirected. patch_got() above must keep the real
+                # stdout, otherwise its inner `gdb.execute(..., to_string=True)` capture
+                # ends up empty (a Python-level stdout swap defeats gdb's to_string).
+                if suppress_output:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        emulator.run(kwargs)
+                else:
+                    emulator.run(kwargs)
+            return emulator
 
 
 @register_command
@@ -24197,23 +24232,21 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
         start_address = self.args.address or current_arch.pc
         root = UnicornEmulator.Node(start_address, kind="root")
 
-        try:
-            tracer = UnicornEmulator.Emulator({
-                "start_insn": start_address,
-                "end_insn": 0,
-                "nb_gadget": None,
-                "add_sse": False,
-                "verbose": False,
-                "quiet": True,
-                "only_insns": True,
-                "patch_got": False,
-                "emulate_mmap": False,
-            })
-        except Exception as e:
-            err("Failed to initialize Unicorn: {!s}".format(e))
-            return
+        with UnicornEmulateCommand.emulation_session({
+            "start_insn": start_address,
+            "end_insn": 0,
+            "nb_gadget": None,
+            "add_sse": False,
+            "verbose": False,
+            "quiet": True,
+            "only_insns": True,
+            "patch_got": False,
+            "emulate_mmap": False,
+        }) as tracer:
+            if tracer is None:
+                return
+            self.walk(root, tracer, start_address, self.args.depth)
 
-        self.walk(root, tracer, start_address, self.args.depth)
         self.out.extend(root.lines())
         self.out.append("")
         self.out.append("Explored: nodes={:d}/{:d}, instructions={:d}/{:d}, depth={:d}".format(
@@ -26243,135 +26276,123 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         Info = collections.namedtuple("Info", dic.keys())
         return Info(*dic.values())
 
-    def get_reason(self, res):
-        """From the results of unicorn-emulate, get the reason why the run failed."""
-        if "UC_ERR_READ_UNMAPPED" in res:
+    def get_reason(self, emulator):
+        """From the emulator state, get the reason why the run failed."""
+        if emulator.failed and "UC_ERR_READ_UNMAPPED" in emulator.failed:
             return "Memory read error"
 
-        if "UC_ERR_WRITE_UNMAPPED" in res:
+        if emulator.failed and "UC_ERR_WRITE_UNMAPPED" in emulator.failed:
             return "Memory write error"
 
-        # heuristic search
-        if "Modified memories (before | after)" in res:
-            # In cases where emulation fails, an interrupt or system call has occurred.
-            # When execution stops, any memory that has been modified up to this point
-            # will likely contain a pointer to the error message.
-            # e.g.,
-            # ========================= Modified memories (before | after) =========================
-            # 0x00007fffffffd6f0 | 0x00007fffffffd724 0x00007fff00000038 | 0x00007fffffffd724 0x00007ffff7c9094e |
-            # 0x00007fffffffd700 | 0x00007fff015c0adc 0x00007ffff7fc5860 | 0x00007fffffffd730 0x0000000000000000 |
-            # 0x00007fffffffd710 | 0x000000005702b738 0x00007ffff7fc5bac | 0x000000005702b738 0x00007fff00000010 |
-            # 0x00007fffffffd720 | 0x00000000f7fbd160 0x0000000000000000 | 0x00007fffffffd820 0x00007fffffffd7b0 |
-            modified_memories = res[res.find("Modified memories (before | after)"):]
-            modified_memories = Color.remove_color(modified_memories)
-            message_strings = set()
-            for line in modified_memories.splitlines():
-                # search pointer of `after`
-                if line.count("|") != 3:
-                    continue
-                after_memories = line.split("|")[-2]
-                for x in after_memories.strip().split():
-                    addr = int(x, 16)
-                    s = read_cstring_from_memory(addr)
-                    if not s:
-                        continue
-                    if len(s) <= current_arch.ptrsize: # too short
-                        continue
-                    if " " not in s or "(" not in s or ")" not in s: # wrong message
-                        continue
-                    message_strings.add(s)
-            if message_strings:
-                if len(message_strings) == 1:
-                    return list(message_strings)[0]
-                return str(list(message_strings))
+        # heuristic search:
+        # In cases where emulation fails, an interrupt or system call has occurred.
+        # When execution stops, any memory that has been modified up to this point will
+        # likely contain a pointer to the error message, so scan the pointer-aligned
+        # words the run modified and read their `after` value as a candidate pointer.
+        ptrsize = current_arch.ptrsize
+        word_addrs = {addr & ~(ptrsize - 1) for addr, change in emulator.changed_mem.items()
+                      if change["after"] != change["before"]}
+        message_strings = set()
+        for word_addr in word_addrs:
+            try:
+                ptr = int.from_bytes(bytes(emulator.emu.mem_read(word_addr, ptrsize)), "little")
+            except Exception:
+                continue
+            s = read_cstring_from_memory(ptr)
+            if not s:
+                continue
+            if len(s) <= ptrsize: # too short
+                continue
+            if " " not in s or "(" not in s or ")" not in s: # wrong message
+                continue
+            message_strings.add(s)
+        if message_strings:
+            if len(message_strings) == 1:
+                return list(message_strings)[0]
+            return str(list(message_strings))
 
-        if "UC_ERR_INSN_INVALID" in res:
+        if emulator.failed and "UC_ERR_INSN_INVALID" in emulator.failed:
             return "Maybe try to execute unicorn unsupported instruction"
         return "???"
 
-    def get_syscall(self, res):
-        """From the results of unicorn-emulate, get information about the system calls that were called."""
-        # syscall=N is detected and displayed by unicorn-emulate.
-        m = re.search(r"syscall=(\d+)", res)
-        if not m:
+    def get_syscall(self, emulator):
+        """From the emulator state, get information about the system call that was called."""
+        # the first syscall number encountered during emulation, recorded by the emulator
+        if emulator.last_syscall is None:
             return None
 
         # match against syscall_table
-        syscall_num = int(m.group(1))
-        syscall_table = Syscall.get_syscall_table()
-        syscall_entry = syscall_table.nr_table.get(syscall_num, None)
-        if syscall_entry:
-            syscall_name = syscall_entry.name
-        else:
-            syscall_name = "???"
-        return syscall_num, syscall_name
+        syscall_entry = Syscall.get_syscall_table().nr_table.get(emulator.last_syscall, None)
+        syscall_name = syscall_entry.name if syscall_entry else "???"
+        return emulator.last_syscall, syscall_name
 
-    def get_allocated_address(self, res):
-        """From the results of unicorn-emulate, get the allocated address."""
-        final_registers = res[res.find("Final registers"):]
+    def get_allocated_address(self, emulator):
+        """From the emulator state, get the allocated address (the return register)."""
         if is_x86_64():
-            m = re.search(r"\$rax\s+=\s+(0x\S+)", final_registers)
+            reg = "$rax"
         elif is_x86_32():
-            m = re.search(r"\$eax\s+=\s+(0x\S+)", final_registers)
+            reg = "$eax"
         elif is_arm32():
-            m = re.search(r"\$r0\s+=\s+(0x\S+)", final_registers)
+            reg = "$r0"
         elif is_arm64():
-            m = re.search(r"\$x0\s+=\s+(0x\S+)", final_registers)
-        allocated_address = int(m.group(1), 16)
-        return allocated_address
+            reg = "$x0"
+        return emulator.from_emu(emulator.emu.reg_read(emulator.regs[reg]))
 
-    def print_result(self, name, res):
+    def print_result(self, name, emulator):
         """Print the result of an emulation run, displaying errors or success messages based on system call outcomes."""
-        if "Emulation failed" in res:
+        syscall = self.get_syscall(emulator)
+        if emulator.failed is not None:
             # fail
             success = False
 
             # The system call that could not be emulated
-            syscall = self.get_syscall(res)
             if syscall:
                 err("Trace failed: system call emulation error: {:d} (={:s})".format(syscall[0], syscall[1]))
 
             # If write* system call was called, it is assumed that an abort was called.
             # By investigating the changed memory address, the reason may be found.
             if not syscall or "write" in syscall[1]:
-                reason = self.get_reason(res)
+                reason = self.get_reason(emulator)
                 err("{:s} failed: {:s}".format(name, Color.boldify(reason)))
         else:
             # success
             success = True
 
             # The system call that could be emulated
-            syscall = self.get_syscall(res)
             if syscall:
                 info("System call emulated: {:d} (={:s})".format(syscall[0], syscall[1]))
 
             if name == "free":
                 ok("{:s} succeeded".format(name))
             else:
-                allocated_address = self.get_allocated_address(res)
+                allocated_address = self.get_allocated_address(emulator)
                 ok("{:s} succeeded: {:s}".format(name, Color.colorify_hex(allocated_address, "bold")))
         return success
 
-    def make_patch_info_from_emulation_result(self, res):
-        """Parse emulation output and create a dictionary of memory patches from modified memory regions."""
+    def changed_mem_patches(self, emulator):
+        """Coalesce the bytes the emulation modified into {address: bytes} patches."""
+        changed = {emulator.from_emu(addr): change["after"]
+                   for addr, change in emulator.changed_mem.items()
+                   if change["after"] != change["before"]}
         patches = {}
-        if "Modified memories (before | after)" in res:
-            modified_memories = res[res.find("Modified memories (before | after)"):]
-            modified_memories = Color.remove_color(modified_memories)
-            for line in modified_memories.splitlines():
-                # search pointer of `after`
-                if line.count("|") != 3:
-                    continue
-                addr = int(line.split("|")[0], 16)
-                after_memories = line.split("|")[-2]
-                values = [int(x, 16) for x in after_memories.strip().split()]
-                values = [x.to_bytes(current_arch.ptrsize, "little") for x in values]
-                patches[addr] = b"".join(values)
+        start = None
+        buf = bytearray()
+        for addr in sorted(changed):
+            if start is not None and addr == start + len(buf):
+                buf.append(changed[addr])
+            else:
+                if start is not None:
+                    patches[start] = bytes(buf)
+                start, buf = addr, bytearray([changed[addr]])
+        if start is not None:
+            patches[start] = bytes(buf)
         return patches
 
+    @ModuleLoader.load_capstone
+    @ModuleLoader.load_unicorn
     def doit(self, name, arg1, arg2):
         """For each of free, malloc, realloc, and calloc, generate a patch to memory,
-        emulate the execution, collect and interpret the output, and then undoe the patch."""
+        emulate the execution, read the result directly from the emulator, then undo the patch."""
         caller_address = self.get_caller_address(name)
         if caller_address is None:
             err("Could not find `{:s}`".format(name))
@@ -26392,26 +26413,31 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                 info("patch hex {:#x} {:s}".format(patch_addr, patch_code.hex()))
             PatchCommand.PatchInfo(patch_addr, patch_code, tag=tag).patch(silent=not self.args.verbose)
 
-        # execute
-        option = ["-t", hex(patch_info.stop_address), "-A", "-E"]
-        res = ""
-        try:
-            if self.args.verbose:
-                info("unicorn-emulate {:s}".format(" ".join(option)))
-            res = gdb.execute("unicorn-emulate {:s}".format(" ".join(option)), to_string=True)
-            if self.args.verbose:
-                gef_print(res.rstrip())
-        except Exception:
-            pass
+        # execute: run the emulation in-process and read its result directly, instead of
+        # invoking the `unicorn-emulate` command and parsing its text output.
+        # equivalent to `unicorn-emulate -t <stop_address> -A -E`.
+        kwargs = {
+            "start_insn": current_arch.pc,
+            "end_insn": patch_info.stop_address,
+            "nb_gadget": None,
+            "add_sse": False,
+            "verbose": False,
+            "quiet": False,
+            "only_insns": False,
+            "patch_got": True,    # -A
+            "emulate_mmap": True, # -E
+        }
+        # we read the emulator state directly, so suppress its printed dump unless -v
+        emulator = UnicornEmulateCommand.run_in_process(kwargs, suppress_output=not self.args.verbose)
 
         # print
-        if res:
-            success = self.print_result(name, res)
+        if emulator is not None:
+            success = self.print_result(name, emulator)
 
             # temporarily execute command
             if success and self.args.command:
                 # temporarily reflects changes in memory
-                patches = self.make_patch_info_from_emulation_result(res)
+                patches = self.changed_mem_patches(emulator)
                 for addr, value in patches.items():
                     PatchCommand.PatchInfo(addr, value, tag=tag).patch(silent=not self.args.verbose)
                 # do command
@@ -116049,8 +116075,6 @@ class HashTestCommand(HashCommand, BufferingOutput):
         return
 
     def disable_hash_cffi(self):
-        import contextlib
-
         def disabled_init_cffi_backend(hash_obj):
             hash_obj.USE_CFFI = False
             return
