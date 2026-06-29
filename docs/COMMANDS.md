@@ -9770,9 +9770,7 @@ Dump SLUB free-list reachable from slab_caches.
 ### Syntax
 
 ```text
-usage: slub-dump [-h] [-hh] [-hs] [-l] [-L] [--meta] [--cpu CPU] [-R] [-s] [-v] [-vv] [--only-partial | --only-node] [--skip-sheaf] [--hexdump-used SIZE] [--hexdump-freed SIZE] [--telescope-used SIZE] [--telescope-freed SIZE] [--slub-debug-y] [-r] [-n] [-q] [--tlbflush-queue] [--skip-page2virt] [--no-xor]
-                 [--no-byte-swap] [--offset-random OFFSET_RANDOM] [--offset-node OFFSET_NODE]
-                 [SLUB_CACHE_NAME ...]
+usage: slub-dump [-h] [-hh] [-hs] [-l] [-L] [--meta] [--cpu CPU] [-R] [-s] [-v] [-vv] [--only-partial | --only-node] [--skip-sheaf] [--hexdump-used SIZE] [--hexdump-freed SIZE] [--telescope-used SIZE] [--telescope-freed SIZE] [--slub-debug-y] [-r] [-n] [-q] [--tlbflush-queue] [--skip-page2virt] [--no-xor] [--no-byte-swap] [--offset-random OFFSET_RANDOM] [--offset-node OFFSET_NODE] [SLUB_CACHE_NAME ...]
 
 positional arguments:
   SLUB_CACHE_NAME       filter by specific slub cache name.
@@ -10873,10 +10871,7 @@ Perform CRC32 reverse calculation limited to ASCII character range.
 ### Syntax
 
 ```text
-usage: crc32rev [-h] [-p POLY] [--poly-reflected] [-i INIT_VALUE] [-o XOROUT] [--refin] [--no-refin] [--refout] [--no-refout]
-                [--preset {,base,ieee,isohdlc,adccp,v42,xz,pkzip,aixm,q,autosar,base91d,d,bzip2,aal5,dectb,b,cdromedc,cksum,posix,iscsi,base91c,castagnoli,interlaken,c,nvme,jamcrc,mef,mpeg2,ether,xfer,koopman,k}] [-l] [--prefix PREFIX] [--suffix SUFFIX] [--prefix-hex PREFIX_HEX] [--suffix-hex SUFFIX_HEX]
-                [--charset CHARSET] [-b BRIDGE_LENGTH] [-c] [-k IDX CHAR] [-K IDX HEX_CHAR] [-n]
-                [WANTED_CRC]
+usage: crc32rev [-h] [-p POLY] [--poly-reflected] [-i INIT_VALUE] [-o XOROUT] [--refin] [--no-refin] [--refout] [--no-refout] [--preset {,base,ieee,isohdlc,adccp,v42,xz,pkzip,aixm,q,autosar,base91d,d,bzip2,aal5,dectb,b,cdromedc,cksum,posix,iscsi,base91c,castagnoli,interlaken,c,nvme,jamcrc,mef,mpeg2,ether,xfer,koopman,k}] [-l] [--prefix PREFIX] [--suffix SUFFIX] [--prefix-hex PREFIX_HEX] [--suffix-hex SUFFIX_HEX] [--charset CHARSET] [-b BRIDGE_LENGTH] [-c] [-k IDX CHAR] [-K IDX HEX_CHAR] [-n] [WANTED_CRC]
 
 positional arguments:
   WANTED_CRC            target CRC value (hex).

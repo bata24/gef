@@ -156893,9 +156893,22 @@ class GefDumpCommandsCommand(GenericCommand):
         summary = getattr(instance.__class__, "__doc__", "")
         return self.normalize_text(summary)
 
+    def syntax_for_dump(self, instance):
+        """Render the command syntax with an effectively infinite width."""
+        parser = getattr(instance, "parser", None)
+        if parser is None:
+            return getattr(instance, "_syntax_", None)
+
+        old_formatter = parser.formatter_class
+        parser.formatter_class = lambda prog: argparse.HelpFormatter(prog, width=10**7)
+        try:
+            return parser.format_help()
+        finally:
+            parser.formatter_class = old_formatter
+
     def render_command(self, command_name, instance):
         """Render a single command as Markdown."""
-        syntax = getattr(instance, "_syntax_", None)
+        syntax = self.syntax_for_dump(instance)
         example = getattr(instance, "_example_", None)
         note = getattr(instance, "_note_", None)
         aliases = self.get_aliases(instance)
