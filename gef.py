@@ -77470,9 +77470,9 @@ class Hash:
         def finalize(self):
             # Keccak padding: pad10*1 with domain separation 0x01 (Keccak, not SHA3)
             self.buf.append(0x01)
-            while (len(self.buf) % self.rate_bytes) != (self.rate_bytes - 1):
+            while len(self.buf) < self.rate_bytes:
                 self.buf.append(0x00)
-            self.buf.append(0x80)
+            self.buf[-1] ^= 0x80
 
             while len(self.buf) >= self.rate_bytes:
                 block = bytes(self.buf[:self.rate_bytes])
@@ -79398,7 +79398,7 @@ class Hash:
 
     class NTLM:
         # NT hash: MD4(UTF-16LE(password))
-        digest_size = 32
+        digest_size = 16
 
         def __init__(self, data=b""):
             if not isinstance(data, (bytes, bytearray, memoryview)):
@@ -79684,6 +79684,86 @@ class Hash:
         digest_bits = 256
 
     class MD6_512(MD6Base):
+        digest_bits = 512
+
+    class MD6SpecBase(MD6Base):
+        def first_bits(self, data, d_bits):
+            # NIST SHA-3 API compatibility: return the leading d bits from hashval.
+            if d_bits == 0:
+                return b""
+            total_bits = len(data) * 8
+            if d_bits > total_bits:
+                raise ValueError("d_bits larger than available bits")
+            if (d_bits & 7) == 0:
+                return data[:d_bits // 8]
+            keep_bytes = (d_bits + 7) // 8
+            head = data[:keep_bytes]
+            excess = keep_bytes * 8 - d_bits
+            return head[:-1] + bytes([head[-1] & (0xff << excess)])
+
+        def hash(self, data):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            M = bytes(data)
+            K_words = self.make_key_words()
+            keylen = len(self.key)
+
+            def C(B_words, ell, i, z, p):
+                V = self.pack_control(self.r, self.L, z, p, keylen, self.digest_bits)
+                U = self.pack_node_id(ell, i)
+                return self.compress(self.Q + K_words + [U, V] + B_words, self.r)
+
+            if self.L == 0:
+                block_words = 48
+                block_bytes = block_words * 8
+                n_blocks = (len(M) + block_bytes - 1) // block_bytes or 1
+                C_prev = [0] * self.c
+                for i in range(n_blocks):
+                    block = M[i * block_bytes:(i + 1) * block_bytes]
+                    p = block_bytes * 8 - len(block) * 8 if i == n_blocks - 1 else 0
+                    B_words = C_prev + self.bytes_to_words_be(block + b"\x00" * (block_bytes - len(block)), block_words)
+                    C_prev = C(B_words, self.L + 1, i, 1 if i == n_blocks - 1 else 0, p)
+                return self.first_bits(self.words_to_bytes_be(C_prev), self.digest_bits)
+
+            block_bytes = 512
+            n_blocks = (len(M) + block_bytes - 1) // block_bytes or 1
+            chunks = []
+            for i in range(n_blocks):
+                block = M[i * block_bytes:(i + 1) * block_bytes]
+                p = block_bytes * 8 - len(block) * 8 if i == n_blocks - 1 else 0
+                B_words = self.bytes_to_words_be(block + b"\x00" * (block_bytes - len(block)), 64)
+                chunks.append(C(B_words, 1, i, 1 if n_blocks == 1 else 0, p))
+
+            if n_blocks == 1:
+                return self.first_bits(self.words_to_bytes_be(chunks[0]), self.digest_bits)
+
+            ell = 2
+            while True:
+                groups = [chunks[i:i + 4] for i in range(0, len(chunks), 4)]
+                if len(groups) == 1 and len(groups[0]) == 1:
+                    return self.first_bits(self.words_to_bytes_be(groups[0][0]), self.digest_bits)
+
+                next_chunks = []
+                for i, group in enumerate(groups):
+                    B_words = []
+                    for group_chunk in group:
+                        B_words.extend(group_chunk)
+                    used_bits = len(B_words) * 64
+                    B_words.extend([0] * (64 - len(B_words)))
+                    next_chunks.append(C(B_words, ell, i, 1 if len(groups) == 1 else 0, 4096 - used_bits))
+
+                if len(next_chunks) == 1 and len(groups) == 1:
+                    return self.first_bits(self.words_to_bytes_be(next_chunks[0]), self.digest_bits)
+                chunks = next_chunks
+                ell += 1
+
+    class MD6_128Spec(MD6SpecBase):
+        digest_bits = 128
+
+    class MD6_256Spec(MD6SpecBase):
+        digest_bits = 256
+
+    class MD6_512Spec(MD6SpecBase):
         digest_bits = 512
 
     class RIPEMDBase:
@@ -80144,6 +80224,9 @@ class Hash:
         def make_padding(self):
             msg_bits = self.total * 8
             buf_len = len(self.buf)
+            if buf_len == self.block_size - self.length_bytes - 1:
+                return bytes([0x80 | self.pad_delim]) + msg_bits.to_bytes(self.length_bytes, "big")
+
             pad_zero_len = (
                 self.block_size - ((buf_len + 1 + 1 + self.length_bytes) % self.block_size)
             ) % self.block_size
@@ -80667,9 +80750,9 @@ class Hash:
                 self.cs_block.extend(mv[off:off + take])
                 off += take
 
-                # Compress full 64-byte blocks as long as we have them, but do not compress
-                # the last block of the chunk here (so at most 15 blocks are compressed).
-                while len(self.cs_block) >= self.block_len and self.cs_blocks_compressed < 15:
+                # Compress full 64-byte blocks as long as more than one block is buffered,
+                # but do not compress the last block of the chunk here.
+                while len(self.cs_block) > self.block_len and self.cs_blocks_compressed < 15:
                     block = bytes(self.cs_block[:self.block_len])
                     del self.cs_block[:self.block_len]
 
@@ -85117,7 +85200,7 @@ class Hash:
             for i in range(12):
                 h[(i + 11) % 12] = (h[(i + 11) % 12] + h[(i + 1) % 12]) & 0xffff_ffff_ffff_ffff
                 h[(i + 2) % 12] ^= h[(i + 11) % 12]
-                h[(i + 1) % 12] = self.rol64(h[i], rc[i])
+                h[(i + 1) % 12] = self.rol64(h[(i + 1) % 12], rc[i])
             return h
 
         def end(self, h):
@@ -85181,7 +85264,7 @@ class Hash:
                 if remainder >= 16:
                     c = (c + u64le(message, pos)) & 0xffff_ffff_ffff_ffff
                     d = (d + u64le(message, pos + 8)) & 0xffff_ffff_ffff_ffff
-                    a, b, c, d = self.short_mix(a, b, c, d)
+                    a, b, c, d = self.short_mix([a, b, c, d])
                     pos += 16
                     remainder -= 16
 
@@ -85664,14 +85747,6 @@ class Hash:
             return self
 
         def digest(self):
-            c = self.copy()
-            c.finalize()
-            out = bytearray()
-            for w in c.result_words:
-                out.extend(c.bswap64(w).to_bytes(8, "big"))
-            return bytes(out)
-
-        def hexdigest(self):
 
             def bswap64(x):
                 x &= 0xffff_ffff_ffff_ffff
@@ -85679,10 +85754,13 @@ class Hash:
 
             c = self.copy()
             c.finalize()
-            parts = []
+            out = bytearray()
             for w in c.result_words:
-                parts.append(format(bswap64(w), "016x"))
-            return "".join(parts)
+                out.extend(bswap64(w).to_bytes(8, "big"))
+            return bytes(out)
+
+        def hexdigest(self):
+            return self.digest().hex()
 
         def finalize(self):
             if self.finalized:
@@ -88095,6 +88173,60 @@ class Hash:
             0x4490_6568_b77b_9832, 0xcd8d_6cae_5345_5532, 0xf7b5_2127_5642_2129, 0x2468_85e1_de0d_225b, 0xa8cb_5ce3_3449_973f,
         )
 
+    class AsconNISTBase(AsconBase):
+        init_iv = 0
+
+        def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.digest_size = self.digest_bits // 8
+            self.x0 = self.init_iv
+            self.x1 = 0
+            self.x2 = 0
+            self.x3 = 0
+            self.x4 = 0
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.permute(12)
+            if data:
+                self.update(data)
+            return
+
+        def finalize(self):
+            m = len(self.buf)
+            pad_len = self.block_size - m
+            block = bytes(self.buf) + b"\x01" + b"\x00" * (pad_len - 1)
+            self.buf.clear()
+            self.absorb_block(block)
+            self.permute(12)
+            return
+
+        def absorb_block(self, block):
+            if len(block) != self.block_size:
+                raise ValueError("invalid block size")
+            self.x0 ^= int.from_bytes(block, "little")
+            self.x0 &= 0xffff_ffff_ffff_ffff
+            return
+
+        def squeeze(self, out_len):
+            if not isinstance(out_len, int) or out_len < 0:
+                raise ValueError("out_len must be a non-negative integer")
+            out = bytearray()
+            while len(out) < out_len:
+                out.extend(int(self.x0 & 0xffff_ffff_ffff_ffff).to_bytes(8, "little"))
+                self.permute(self.b_rounds)
+            return bytes(out[:out_len])
+
+    class AsconNIST(AsconNISTBase):
+        digest_bits = 256
+        b_rounds = 12
+        init_iv = 0x0000_0801_00cc_0002
+
+    class AsconXNIST(AsconNISTBase):
+        digest_bits = 512
+        b_rounds = 12
+        init_iv = 0x0000_0800_00cc_0003
+
     class RSHash:
         digest_size = 4
 
@@ -90195,35 +90327,30 @@ class Hash:
         def not32(self, x):
             return x ^ 0xffff_ffff
 
-        def init_aes_tables(self):
-            if hasattr(self, "aes0"):
-                return
-            te0 = [0] * 256
-            for i in range(256):
-                s = self.sbox[i]
-                s2 = self.xtime(s)
-                s3 = s2 ^ s
-                te0[i] = ((s2 << 0x18) | (s << 0x10) | (s << 0x08) | s3) & 0xffff_ffff
-            te1 = [self.rol32(x, 0x08) for x in te0]
-            te2 = [self.rol32(x, 0x10) for x in te0]
-            te3 = [self.rol32(x, 0x18) for x in te0]
-            Hash.SHAvite3Base.aes0 = [self.swap32(x) for x in te0]
-            Hash.SHAvite3Base.aes1 = [self.swap32(x) for x in te3]
-            Hash.SHAvite3Base.aes2 = [self.swap32(x) for x in te2]
-            Hash.SHAvite3Base.aes3 = [self.swap32(x) for x in te1]
-            return
-
         def aes_round_nokey(self, x0, x1, x2, x3):
-            self.init_aes_tables()
-            a0 = self.aes0
-            a1 = self.aes1
-            a2 = self.aes2
-            a3 = self.aes3
-            y0 = a0[(x0 >> 0x00) & 0xff] ^ a1[(x1 >> 0x08) & 0xff] ^ a2[(x2 >> 0x10) & 0xff] ^ a3[(x3 >> 0x18) & 0xff]
-            y1 = a0[(x1 >> 0x00) & 0xff] ^ a1[(x2 >> 0x08) & 0xff] ^ a2[(x3 >> 0x10) & 0xff] ^ a3[(x0 >> 0x18) & 0xff]
-            y2 = a0[(x2 >> 0x00) & 0xff] ^ a1[(x3 >> 0x08) & 0xff] ^ a2[(x0 >> 0x10) & 0xff] ^ a3[(x1 >> 0x18) & 0xff]
-            y3 = a0[(x3 >> 0x00) & 0xff] ^ a1[(x0 >> 0x08) & 0xff] ^ a2[(x1 >> 0x10) & 0xff] ^ a3[(x2 >> 0x18) & 0xff]
-            return y0, y1, y2, y3
+            sbox = self.sbox
+
+            def mix_column(a, b, c, d):
+                a2 = self.xtime(a)
+                b2 = self.xtime(b)
+                c2 = self.xtime(c)
+                d2 = self.xtime(d)
+                a3 = a2 ^ a
+                b3 = b2 ^ b
+                c3 = c2 ^ c
+                d3 = d2 ^ d
+                return ((a2 ^ b3 ^ c ^ d) << 24) | ((a ^ b2 ^ c3 ^ d) << 16) | ((a ^ b ^ c2 ^ d3) << 8) | (a3 ^ b ^ c ^ d2)
+
+            words = (x0 & 0xffff_ffff, x1 & 0xffff_ffff, x2 & 0xffff_ffff, x3 & 0xffff_ffff)
+            b = [
+                ((x >> 24) & 0xff, (x >> 16) & 0xff, (x >> 8) & 0xff, x & 0xff)
+                for x in words
+            ]
+            y0 = mix_column(sbox[b[0][0]], sbox[b[1][1]], sbox[b[2][2]], sbox[b[3][3]])
+            y1 = mix_column(sbox[b[1][0]], sbox[b[2][1]], sbox[b[3][2]], sbox[b[0][3]])
+            y2 = mix_column(sbox[b[2][0]], sbox[b[3][1]], sbox[b[0][2]], sbox[b[1][3]])
+            y3 = mix_column(sbox[b[3][0]], sbox[b[0][1]], sbox[b[1][2]], sbox[b[2][3]])
+            return y0 & 0xffff_ffff, y1 & 0xffff_ffff, y2 & 0xffff_ffff, y3 & 0xffff_ffff
 
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
@@ -90477,30 +90604,30 @@ class Hash:
         block_size = 64
         digest_bits = 224
         iv = (
-            0x6774_f31c, 0x990a_e210, 0xc87d_4274, 0xc954_6371, 0x62b2_aea8, 0x4b58_01d8, 0x1b70_2860, 0x842f_3017,
+            0xc4c6_7795, 0xc0b1_817f, 0xead8_8924, 0x1abb_1bb0, 0xe0c2_9152, 0xbde0_46ba, 0xaeee_cf99, 0x58d5_09d8,
         )
 
     class SHAvite3_256(SHAvite3Base):
         block_size = 64
         digest_bits = 256
         iv = (
-            0x49bb_3e47, 0x2674_860d, 0xa8b3_92ac, 0x021a_c4e6, 0x4092_83cf, 0x620e_5d86, 0x6d92_9dcb, 0x96cc_2a8b,
+            0x3eec_f551, 0xbf10_819b, 0xe6dc_8559, 0xf3e2_3fd5, 0x431a_ec73, 0x79e3_f731, 0x9832_5f05, 0xa92a_31f1,
         )
 
     class SHAvite3_384(SHAvite3Base):
         block_size = 128
         digest_bits = 384
         iv = (
-            0x83df_1545, 0xf9aa_ec13, 0xf480_3cb0, 0x11fe_1f47, 0xda6c_d269, 0x4f53_fcd7, 0x9505_29a2, 0x9790_8147,
-            0xb0a4_d7af, 0x2b91_32bf, 0x226e_607d, 0x3c0f_8d7c, 0x487b_3f0f, 0x0436_3e22, 0x0155_c99c, 0xec2e_20d3,
+            0x71f4_8510, 0xa903_a8ac, 0xfe32_16dd, 0x0b2d_2ad4, 0x6672_900a, 0x4103_2819, 0x15a7_d780, 0xb3ca_b8d9,
+            0x34ef_4711, 0xde01_9fe8, 0x4d67_4dc4, 0xe056_d96b, 0xa35c_016b, 0xdd90_3ba7, 0x8c1b_09b4, 0x2c3e_9f25,
         )
 
     class SHAvite3_512(SHAvite3Base):
         block_size = 128
         digest_bits = 512
         iv = (
-            0x72fc_cdd8, 0x79ca_4727, 0x128a_077b, 0x40d5_5aec, 0xd190_1a06, 0x430a_e307, 0xb29f_5cd1, 0xdf07_fbfc,
-            0x8e45_d73d, 0x681a_b538, 0xbde8_6578, 0xdd57_7e47, 0xe275_eade, 0x502d_9fcd, 0xb935_7178, 0x022a_4b9a,
+            0xd565_2b63, 0x25f1_e6ea, 0xb18f_48fa, 0xa1ee_3a47, 0xc8b6_7b07, 0xbdce_48d3, 0xe393_7b78, 0x05db_5186,
+            0x613b_e326, 0xa11f_a303, 0x90c8_33d4, 0x79ce_e316, 0x1e1a_f00f, 0x2829_b165, 0x23b2_5f80, 0x21e1_1499,
         )
 
     class LaneBase:
@@ -91071,6 +91198,7 @@ class Hash:
         pack_format = "<I"
 
         def compute_value(self, message, seed):
+            seed &= 0xffff_ffff
             h = self.fasthash64(message, seed)
             v = (h - (h >> 32)) & 0xffff_ffff
             return v
@@ -91100,6 +91228,12 @@ class Hash:
             x &= 0xffff_ffff
             return x
 
+        def signed_char(self, x):
+            x &= 0xff
+            if x & 0x80:
+                return x - 0x100
+            return x
+
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
@@ -91127,14 +91261,14 @@ class Hash:
             if rem == 3:
                 digest = self.u32(digest + (message[index] | (message[index + 1] << 8)))
                 digest ^= self.u32(digest << 16)
-                digest ^= self.u32(message[index + 2] << 18)
+                digest ^= self.u32(self.signed_char(message[index + 2]) << 18)
                 digest = self.u32(digest + (digest >> 11))
             elif rem == 2:
                 digest = self.u32(digest + (message[index] | (message[index + 1] << 8)))
                 digest ^= self.u32(digest << 11)
                 digest = self.u32(digest + (digest >> 17))
             elif rem == 1:
-                digest = self.u32(digest + message[index])
+                digest = self.u32(digest + self.signed_char(message[index]))
                 digest ^= self.u32(digest << 10)
                 digest = self.u32(digest + (digest >> 1))
 
@@ -91309,7 +91443,7 @@ class Hash:
                 if not self.divisors:
                     s = str(self.total)
                     return s
-                parts = [str(x) for x in self.moddiv_list()]
+                parts = [str(x) for x in moddiv_list()]
                 s = "/".join(parts)
                 return s
 
@@ -93304,7 +93438,7 @@ class Hash:
         block_size = 4
         digest_size = 28
         iv = (
-            0xc396_7a67, 0xc3bc_6c20, 0x4bc3_bcc3, 0xa7c3_bc6b, 0x2c20_4b61, 0x7468_6f6c, 0x6965_6b65, 0x2055_6e69,
+            0x3c96_7a67, 0x3cbc_6c20, 0xb4c3_43c3, 0xa73c_bc6b, 0x2c20_4b61, 0x7468_6f6c, 0x6965_6b65, 0x2055_6e69,
         )
 
     class Hamsi256(HamsiBase):
@@ -95990,9 +96124,10 @@ class Hash:
                             self.bytes_in_queue = 0
                 return
 
-            def pad_and_switch_to_squeezing_phase(self):
+            def pad_and_switch_to_squeezing_phase(self, suffix=0):
                 for i in range(self.bytes_in_queue, self.rate_bytes):
                     self.queue[i] = 0
+                self.queue[self.bytes_in_queue] ^= suffix
                 self.queue[self.rate_bytes - 1] ^= 0x80
                 self.kangaroo_absorb(self.queue, 0)
                 self.kangaroo_extract()
@@ -96168,7 +96303,7 @@ class Hash:
             if self.curr_node == 0:
                 self.tree.absorb(self.first, 0, len(self.first))
             else:
-                self.leaf.absorb(self.intermediate, 0, len(self.intermediate))
+                self.leaf.pad_and_switch_to_squeezing_phase(self.intermediate[0])
                 chain_value = bytearray(self.chain_len)
                 self.leaf.squeeze(chain_value, 0, self.chain_len)
                 self.tree.absorb(chain_value, 0, self.chain_len)
@@ -96182,14 +96317,13 @@ class Hash:
         def switch_to_squeezing(self):
             self.process_data(self.personal, 0, len(self.personal))
             if self.curr_node == 0:
-                self.tree.absorb(self.single, 0, len(self.single))
-                self.tree.pad_and_switch_to_squeezing_phase()
+                self.tree.pad_and_switch_to_squeezing_phase(self.single[0])
             else:
                 self.switch_leaf(False)
                 node_count_encoded = self.length_encode(self.curr_node)
                 self.tree.absorb(node_count_encoded, 0, len(node_count_encoded))
-                self.tree.absorb(self.final, 0, len(self.final))
-                self.tree.pad_and_switch_to_squeezing_phase()
+                self.tree.absorb(self.final, 0, len(self.final) - 1)
+                self.tree.pad_and_switch_to_squeezing_phase(self.final[-1])
             self.squeezing = True
             return
 
@@ -99896,9 +100030,6 @@ class Hash:
             fill_size = space_left + 1 - space_needed
 
             fill_source = bytearray(self.first_block)
-            if len(fill_source) < self.first_block_size and residue:
-                need = self.first_block_size - len(fill_source)
-                fill_source.extend(residue[:need])
             if not fill_source:
                 fill_source = bytearray(b"\x00" * self.first_block_size)
 
@@ -100988,8 +101119,8 @@ class Hash:
         digest_size = 28
         hash_bit_len = 224
         INIT = (
-            0xbb67_ae85_84ca_a73b, 0x2574_2d70_78b8_3b89, 0x25d8_34cc_53da_4798, 0xc720_a648_6e45_a6e2,
-            0x490b_cfd9_5ef1_5dbd, 0xa993_0aae_1222_8f87,
+            0xa54f_f53a_5f1d_36f1, 0xcea7_e61f_c37a_20d5, 0x4a77_fe7b_7841_5dfc, 0x8e34_a6fe_8e2d_f92a,
+            0x4e5b_408c_9c97_d4d8, 0x24a0_5eee_2992_2401,
         )
 
     class CHI256(CHIBase):
@@ -100997,8 +101128,8 @@ class Hash:
         digest_size = 32
         hash_bit_len = 256
         INIT = (
-            0x3c6e_f372_fe94_f82b, 0xe739_80c0_b9db_9068, 0x2104_4ed7_e744_e4a3, 0xf0d8_d423_a183_1d2a,
-            0x4ecf_e162_a7a4_f6fe, 0x068e_08b6_b7e3_04fe,
+            0x510e_527f_ade6_82d1, 0xde49_e330_e42b_4cbb, 0x29ba_5a45_5316_e0c6, 0x5507_cd18_e9e5_1e69,
+            0x4f9b_11c8_1009_a030, 0xe3d3_775f_1553_85c6,
         )
 
     class CHI384(CHIBase):
@@ -101282,7 +101413,8 @@ class Hash:
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
             self.state = list(self.iv)
-            self.buf = bytearray()
+            self.block = bytearray(self.block_size + 1)
+            self.buf_len = 0
             self.msg_len = 0
             if data:
                 self.update(data)
@@ -101291,20 +101423,23 @@ class Hash:
         def copy(self):
             other = self.__class__()
             other.state = list(self.state)
-            other.buf = bytearray(self.buf)
+            other.block = bytearray(self.block)
+            other.buf_len = self.buf_len
             other.msg_len = self.msg_len
             return other
 
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            data = bytes(data)
+            for value in bytes(data):
+                self.block[self.buf_len] |= value
+                self.block[self.buf_len + 1] = 0
+                self.buf_len += 1
+                if self.buf_len == self.block_size:
+                    self.compress(bytes(self.block[:self.block_size]))
+                    self.buf_len = 0
+                    self.block[0] = self.block[self.block_size]
             self.msg_len += len(data)
-            self.buf.extend(data)
-            while len(self.buf) >= self.block_size:
-                block = bytes(self.buf[:self.block_size])
-                del self.buf[:self.block_size]
-                self.compress(block)
             return self
 
         def digest(self):
@@ -101320,20 +101455,14 @@ class Hash:
 
         def finalize(self):
             bit_len = self.msg_len * 8
-            self.buf.append(0x80)
+            self.block[self.buf_len] = 0x80
             if (bit_len % (self.block_size * 8)) > self.length_block_threshold:
-                while len(self.buf) < self.block_size:
-                    self.buf.append(0x00)
-                block = bytes(self.buf[:self.block_size])
-                self.buf.clear()
-                self.compress(block)
-            while len(self.buf) < (self.block_size - self.length_size):
-                self.buf.append(0x00)
-            self.buf.extend(bit_len.to_bytes(self.length_size, "big"))
-            while len(self.buf) >= self.block_size:
-                block = bytes(self.buf[:self.block_size])
-                del self.buf[:self.block_size]
-                self.compress(block)
+                self.compress(bytes(self.block[:self.block_size]))
+                for i in range(self.block_size):
+                    self.block[i] = 0
+            length = bit_len.to_bytes(self.length_size, "big")
+            self.block[self.block_size - self.length_size:self.block_size] = length
+            self.compress(bytes(self.block[:self.block_size]))
             return
 
         def compress(self, block):
@@ -101432,7 +101561,8 @@ class Hash:
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
             self.state = list(self.iv)
-            self.buf = bytearray()
+            self.block = bytearray(self.block_size + 1)
+            self.buf_len = 0
             self.msg_len = 0
             if data:
                 self.update(data)
@@ -101441,20 +101571,23 @@ class Hash:
         def copy(self):
             other = self.__class__()
             other.state = list(self.state)
-            other.buf = bytearray(self.buf)
+            other.block = bytearray(self.block)
+            other.buf_len = self.buf_len
             other.msg_len = self.msg_len
             return other
 
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            data = bytes(data)
+            for value in bytes(data):
+                self.block[self.buf_len] |= value
+                self.block[self.buf_len + 1] = 0
+                self.buf_len += 1
+                if self.buf_len == self.block_size:
+                    self.compress(bytes(self.block[:self.block_size]))
+                    self.buf_len = 0
+                    self.block[0] = self.block[self.block_size]
             self.msg_len += len(data)
-            self.buf.extend(data)
-            while len(self.buf) >= self.block_size:
-                block = bytes(self.buf[:self.block_size])
-                del self.buf[:self.block_size]
-                self.compress(block)
             return self
 
         def digest(self):
@@ -101470,14 +101603,14 @@ class Hash:
 
         def finalize(self):
             bit_len = self.msg_len * 8
-            self.buf.append(0x80)
-            while (len(self.buf) % self.block_size) != (self.block_size - self.length_size):
-                self.buf.append(0x00)
-            self.buf.extend(bit_len.to_bytes(self.length_size, "big"))
-            while len(self.buf) >= self.block_size:
-                block = bytes(self.buf[:self.block_size])
-                del self.buf[:self.block_size]
-                self.compress(block)
+            self.block[self.buf_len] = 0x80
+            if self.buf_len + 1 > self.block_size - self.length_size:
+                self.compress(bytes(self.block[:self.block_size]))
+                for i in range(self.block_size):
+                    self.block[i] = 0
+            length = bit_len.to_bytes(self.length_size, "big")
+            self.block[self.block_size - self.length_size:self.block_size] = length
+            self.compress(bytes(self.block[:self.block_size]))
             return
 
         def ror(self, x, n):
@@ -110398,14 +110531,8 @@ class Hash:
                 return [bytes(buf[i:i + 64]) for i in range(0, len(buf), 64)]
 
             blocks = pad_block_from_buffer()
-            if not blocks:
-                return
-            if len(self.buf) != 0:
-                for block in blocks:
-                    self.process_block(block, apply_initial_swap=True)
-            else:
-                if self.msg_len == 0:
-                    self.process_block(blocks[0], apply_initial_swap=True)
+            for block in blocks:
+                self.process_block(block, apply_initial_swap=True)
             return
 
         def make_digest(self):
@@ -113471,7 +113598,7 @@ class Hash:
                 val4 = (val4 ^ self.kk(words[pos2])) & 0xffff_ffff
 
                 temp1 = self.bytes_to_word([i & 0xff, (i + 1) & 0xff, (i + 2) & 0xff, (i + 3) & 0xff])
-                self.swap(temp1, self.g1((val1 + val2) & 0xffff_ffff) ^ self.g2((val3 + val4) & 0xffff_ffff))
+                self.swap(temp1, self.g1((val1 + val2) & 0xffff_ffff) ^ self.g1((val3 + val4) & 0xffff_ffff))
                 pos1 = (pos1 + 1) & self.bs1
                 pos2 = (pos2 + 1) & self.bs1
                 pos3 = (pos3 + 1) & self.bs1
@@ -113507,7 +113634,7 @@ class Hash:
                         val2 = (val2 + temp1) & 0xffff_ffff
                         val2 = (val2 ^ words[ix1]) & 0xffff_ffff
                         temp1 = (temp1 ^ self.kk(val1)) & 0xffff_ffff
-                        words[pos1] = self.g2((temp1 + self.kk(val2)) & 0xffff_ffff)
+                        words[pos1] = (temp1 + self.kk(val2)) & 0xffff_ffff
                         self.swap(temp1, val2)
                     else:
                         temp1 = words[pos1]
@@ -113517,7 +113644,7 @@ class Hash:
                         val2 = (val2 ^ self.f1(val1)) & 0xffff_ffff
                         val2 = (val2 + temp2) & 0xffff_ffff
                         val2 = (val2 ^ words[ix1]) & 0xffff_ffff
-                        words[pos2] = self.g1((temp2 + self.kk(val2)) & 0xffff_ffff)
+                        words[pos2] = (temp2 + self.kk(val2)) & 0xffff_ffff
                         words[pos1] = (temp1 ^ self.kk(val1)) & 0xffff_ffff
                         self.swap(words[pos1], val2)
                     if i < self.bs1:
@@ -114860,7 +114987,7 @@ class Hash:
             pi = math.pi
             for i, b in enumerate(data):
                 val = float(b)
-                denominator = (e * val + msg_len + i + 1) / s1
+                denominator = (e * val + (msg_len + i) + 1) / s1
                 s0 += numerator / denominator
                 s0 = 1.0 / s0
                 s1 += val + pi
@@ -115624,6 +115751,9 @@ class HashCommand(GenericCommand):
         yield ("MD6-128", Hash.MD6_128())
         yield ("MD6-256", Hash.MD6_256())
         yield ("MD6-512", Hash.MD6_512())
+        yield ("MD6-128Spec", Hash.MD6_128Spec())
+        yield ("MD6-256Spec", Hash.MD6_256Spec())
+        yield ("MD6-512Spec", Hash.MD6_512Spec())
         yield ("MeshHash-224", Hash.MeshHash224())
         yield ("MeshHash-256", Hash.MeshHash256())
         yield ("MeshHash-384", Hash.MeshHash384())
@@ -115704,6 +115834,8 @@ class HashCommand(GenericCommand):
         yield ("Ascon-HashA", Hash.AsconA())
         yield ("Ascon-Xof", Hash.AsconX())
         yield ("Ascon-XofA", Hash.AsconXA())
+        yield ("Ascon-Hash-NIST", Hash.AsconNIST())
+        yield ("Ascon-Xof-NIST", Hash.AsconXNIST())
         yield ("Atelopus32", Hash.Atelopus32())
         yield ("Atelopus64", Hash.Atelopus64())
         yield ("Bash256", Hash.Bash256())
@@ -116503,7 +116635,7 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "ee1e53e892bedd72d753bd4c9f704201708fb9b79177816051ebca1dc1af7ee928b8996df0862bbea24503be2781b1a036079a88627d4d248f2d0ec77b579b7f",
         # https://github.com/aidansteele/sphlib
         "Hamsi-224":
-            "0e0bd268a3c7d9ca55b12a03ae18d4322394178d042d0e28c8b7da9b",
+            "a2795086539b3dcc04a3c07254fb58e52bd19023471bc4dd211a03bc",
         "Hamsi-256":
             "415e7fa87a20d942012c9b458507c247498043e09381a165a893e4d22c52246c",
         "Hamsi-384":
@@ -116532,13 +116664,13 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "f12f6893f4535d360b07ec15be706e5921b0358d736e61cb2e7ffd2157cd119dc1aeecbf2f1ac73552dc052ad4edcf8cbe87073a4db4d1b4f6a31e39edf5a96d",
         # https://github.com/aidansteele/sphlib
         "SHAvite3-224":
-            "12a8401b9f8465ef01201698b66a21d3fb030c995f237da20377bafe",
+            "5f36479c37002931f947ec68cd28053dabac3a9c5402dae56731ffe6",
         "SHAvite3-256":
-            "eb43e5be6d6cab5d81910dec375120106936879e55e27188735e240144a36a66",
+            "0bd7e34337708e2ae6a081101ac7c9b3289b14cfba847a16a7e920ccc64a4486",
         "SHAvite3-384":
-            "67e488432df469c810797aaa65c7e6622096c094439fedebba892ccab1547332f9fa506f9ea1ecf6d150a896141eeba6",
+            "bfa207abe1ca60a5b42455b7db1b2866773bf2c64011ba5ee23ef488aefa99f137b892f096e7a06279335a7acada97b6",
         "SHAvite3-512":
-            "4dbd97835c4e5cfa14799884a7adc96688dd808ff53d5c4cfe7db89a55ee98d0260791ec0c9b5466482ab3f6f236da7e65e1cb6d1ee624f61a5b2b79f63c4120",
+            "e5a1e3886265f77b333fb05e4df7c368810ffa23d68f03bf2056f34545af7d55471d7bd30799e1924ae556b892683546c3e1e36a267ad970539e20c915c0bfc4",
         # https://github.com/aidansteele/sphlib
         "SIMD-224":
             "964ff29db5c3d88794c6c488b274d77c52d5ff07509c5aa8d67a14b8",
@@ -116614,11 +116746,11 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "501341c228f121fbb1abd3b682c5b23ba7f06987fecedd3d09ca3c9855f611e64e8c6daf13ee0c5e5ef8f4d04e6751fa",
         "Cheetah-512":
             "b6888c9afc8f60cd62252571da8009ae10fa8458778f0fb596deb542fec9e1771171879a4c0e38410e257d119305d201b39c8d4c106c03756ee05e62635c5e7e",
-        # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/CHI.zip
+        # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/CHIUpdate.zip
         "CHI-224":
-            "b3a3ba88e77c107ed348e077cdfe67fdd915f7bd5396f4463ac916d3",
+            "f70dd2cf4e8dc0a31bdd0042869fc8625e689eb76ce1bfa9f9cc9aef",
         "CHI-256":
-            "9473b99489da9a8e6b23a1477c287940125caeab3b3eeeab4d2ac2520a9c1049",
+            "82eb5d92f5557637acf890cd1358b918b102c23d8c6d72c1454f4fec4df24b04",
         "CHI-384":
             "f03857ce38f1b57eb8c23259741913d0728a2be831250df71824c5154cb68970b5c320c3f15904dfb3ff11d2b37dfc5d",
         "CHI-512":
@@ -116749,6 +116881,13 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "977592608c45c9923340338450fdcccc21a68888e1e6350e133c5186cd9736ee",
         "MD6-512":
             "dcba0c6593fbd83a0f5f148588baa79530579c1f5e7f19d500fe282d137bff465106f25c9f0619b4082a730683d5f58311c0c1913068e91b0ebdf9ace3ff5b9e",
+        # NIST SHA-3 API compatible output.
+        "MD6-128Spec":
+            "b8d2f34ebd0d13235a82a017f3513fa1",
+        "MD6-256Spec":
+            "bb39b085ecab47210e78a5f7b1198c2461676beed62fa1146f0ad573d94aa26a",
+        "MD6-512Spec":
+            "f654f23684eda8ef1ba9204cdb0ca18b25da97142a7315354c474f0aa2ec9e4322dccf0c700a8e711aa9d04a839c90c02816e063462060ce0156e99b7e155ece",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/MeshHash.zip
         "MeshHash-224":
             "d282dbd98285891d65912cde56bccb031a03187f4b348ec649da9893",
@@ -116922,9 +117061,9 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "eec3f993d242a2973fc9b8c92e1b358686a73c63f179db9c3b4515a86aa7458a",
         # https://bench.cr.yp.to/supercop/supercop-20260330.tar.xz
         "Atelopus32":
-            "86f6b2c884292b0f9b54656e29127f14a1244a1eba861b9838309232f1f1958c",
+            "153e36e449f2c058de23e69b7b36312c1e02472b4571161ea8fcbac6c26a8f82",
         "Atelopus64":
-            "4141fa854eee7c26b44117531b4012d122b71a8ce5939e4fb344e13769fa8707cf7af08cc4b03357ec49aa5da3e3adff4733333e3133dd99e7d85f2c2eb35bbc",
+            "51d27e64407ba26d55bf0cdd13fa86b11869290d0e0b65e0294370f54273b532c76126ea8c6f22178e59a9377a6fc71f82150d7972c03c7ff370bc56b176dd8f",
         # https://hashing.tools/ascon
         "Ascon-Hash":
             "3375fb43372c49cbd48ac5bb6774e7cf5702f537b2cf854628edae1bd280059e",
@@ -116936,6 +117075,11 @@ class HashTestCommand(HashCommand, BufferingOutput):
         "Ascon-XofA":
             "5c32bbe73bd8ea9191435d72cc973a2bb2d8f40410de6188e06c65b78401759c30a3f1b24ea251b12d468d729aad6570883b82438e798020d0ebb3e920490629" \
             "051c64fe2ddb2ff14b89e9d2352cfda9bbffe4601d0e5bffb6c4b8165c44172cc0dc76430d7a38fbb5b57134936c53648989c49e79052fb1040a8b0a7f43e0ad",
+        # NIST SP 800-232 / little-endian notation.
+        "Ascon-Hash-NIST":
+            "23414503bf4bde7ad0e85aec94c22ae2d7cd807996b537f9564fc2974053f139",
+        "Ascon-Xof-NIST":
+            "f3df449acea2811a43db747c1caa208f3402a17e5ceb43315455d7deff1ffc90dfaeadf6db61b74253d29d9e8abedb662540aa0368fee3c2ed625b81e05ab732",
         # https://apmi.bsu.by/assets/files/std/bash-spec24.pdf
         "Bash256":
             "0f5b5ad80c410e46cc9cc6de516b8c61e0d41bb4b5ed3233b3c665b7e9214314",
