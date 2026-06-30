@@ -108,6 +108,7 @@ import hashlib
 import io
 import itertools
 import json
+import math
 import os
 import re
 import struct
@@ -89851,7 +89852,6 @@ class Hash:
 
             def isqrt(self, x):
                 if self.gmpy2 is None:
-                    import math
                     return math.isqrt(int(x))
                 return self.gmpy2.isqrt(x)
 
@@ -92278,6 +92278,282 @@ class Hash:
                 loop_steps=self.FINAL_LOOP_STEPS,
                 final_xors=self.FINAL_XORS,
                 out_words=self.FINAL_OUT_WORDS,
+            )
+            return
+
+    class Fugue2:
+        digest_size = 32
+
+        sbox = (
+            0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+            0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+            0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+            0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+            0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+            0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+            0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+            0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+            0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+            0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+            0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+            0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+            0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+            0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+            0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+            0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
+        )
+
+        initial_state = (
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0xda63_1be0, 0xe907_87c4, 0xec8e_a9e9, 0x1539_6ba4,
+            0x2c57_dea6, 0xbe3c_743f, 0x17b3_0541, 0xc6a1_8045,
+        )
+
+        def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.__class__.ensure_tables()
+            self.state = list(self.initial_state)
+            self.buf = bytearray()
+            self.msg_len = 0
+            self.word_index = 0
+            self.final_ptr = 0
+            if data:
+                self.update(data)
+            return
+
+        @classmethod
+        def ensure_tables(cls):
+            if hasattr(cls, "aes_style_table"):
+                return
+
+            def f2(x):
+                return ((x << 1) ^ (0x1b if x & 0x80 else 0)) & 0xff
+
+            def f4(x):
+                return f2(f2(x))
+
+            def f7(x):
+                return f4(x) ^ f2(x) ^ x
+
+            def bytes2word(a, b, c, d):
+                return a ^ (b << 8) ^ (c << 16) ^ (d << 24)
+
+            def u0(x):
+                return bytes2word(x, x, f7(x), f4(x))
+
+            def u1(x):
+                return bytes2word(f4(x), x, x, f7(x))
+
+            def u2(x):
+                return bytes2word(f7(x), f4(x), x, x)
+
+            def u3(x):
+                return bytes2word(x, f7(x), f4(x), x)
+
+            cls.aes_style_table = (
+                tuple(u0(x) for x in cls.sbox),
+                tuple(u1(x) for x in cls.sbox),
+                tuple(u2(x) for x in cls.sbox),
+                tuple(u3(x) for x in cls.sbox),
+            )
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.state = list(self.state)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.word_index = self.word_index
+            other.final_ptr = self.final_ptr
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            if not data:
+                return self
+
+            self.msg_len += len(data)
+            state = self.state
+            table = self.__class__.aes_style_table
+            word_index = self.word_index
+            pos = 0
+
+            if self.buf:
+                need = 4 - len(self.buf)
+                self.buf.extend(data[:need])
+                pos = min(need, len(data))
+                if len(self.buf) == 4:
+                    word_index = self.round_word(state, int.from_bytes(self.buf, "little"), word_index, table)
+                    self.buf.clear()
+
+            end = pos + ((len(data) - pos) // 4) * 4
+            while pos < end:
+                word_index = self.round_word(state, int.from_bytes(data[pos:pos + 4], "little"), word_index, table)
+                pos += 4
+
+            if pos < len(data):
+                self.buf.extend(data[pos:])
+
+            self.word_index = word_index
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            out = bytearray()
+            for offset in (1, 2, 3, 4, 15, 16, 17, 18):
+                out.extend(c.state[(c.final_ptr + offset) % 30].to_bytes(4, "little"))
+            return bytes(out)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            bit_len = self.msg_len * 8
+            state = self.state
+            table = self.__class__.aes_style_table
+            word_index = self.word_index
+
+            if self.buf:
+                word = int.from_bytes(self.buf + b"\x00" * (4 - len(self.buf)), "little")
+                word_index = self.round_word(state, word, word_index, table)
+                self.buf.clear()
+
+            bit_len_bytes = bit_len.to_bytes(8, "big")
+            word_index = self.round_word(state, int.from_bytes(bit_len_bytes[:4], "little"), word_index, table)
+            word_index = self.round_word(state, int.from_bytes(bit_len_bytes[4:], "little"), word_index, table)
+            ptr = -3 * (word_index % 10)
+
+            for j in range(26):
+                self.sub_round(state, -3 * (((word_index + j) % 10) + 1), table)
+
+            ptr = ptr - 18
+            for _ in range(13):
+                ptr = self.final_sub_round(state, ptr, 15, 15, table)
+                ptr = self.final_sub_round(state, ptr, 14, 16, table)
+
+            state[(ptr + 4) % 30] ^= state[ptr % 30]
+            state[(ptr + 15) % 30] ^= state[ptr % 30]
+
+            self.word_index = word_index
+            self.final_ptr = ptr
+            return
+
+        def round_word(self, state, word, word_index, table):
+            num = word_index % 10
+            ptr = -3 * num
+            state[(ptr + 4) % 30] ^= state[ptr % 30]
+            state[ptr % 30] = word
+            state[(ptr + 14) % 30] ^= state[ptr % 30]
+            state[(ptr + 20) % 30] ^= state[ptr % 30]
+            state[(ptr + 8) % 30] ^= state[(ptr + 1) % 30]
+            self.sub_round(state, -3 * (num + 1), table)
+            return word_index + 1
+
+        def sub_round(self, state, ptr, table):
+            state[ptr % 30] ^= state[(ptr + 4) % 30]
+            state[(ptr + 1) % 30] ^= state[(ptr + 5) % 30]
+            state[(ptr + 2) % 30] ^= state[(ptr + 6) % 30]
+            state[(ptr + 15) % 30] ^= state[(ptr + 4) % 30]
+            state[(ptr + 16) % 30] ^= state[(ptr + 5) % 30]
+            state[(ptr + 17) % 30] ^= state[(ptr + 6) % 30]
+            self.super_mix(state, ptr, table)
+            return
+
+        def final_sub_round(self, state, ptr, shift, cross, table):
+            state[(ptr + 4) % 30] ^= state[ptr % 30]
+            state[(ptr + cross) % 30] ^= state[ptr % 30]
+            ptr = (ptr - shift) % 30
+            self.super_mix(state, ptr, table)
+            return ptr
+
+        def super_mix(self, state, ptr, table):
+
+            def rol32(x, n):
+                return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
+
+            table0, table1, table2, table3 = table
+
+            x = state[(ptr + 3) % 30]
+            tmp = table0[x & 0xff]
+            row0 = tmp
+            col3 = tmp
+            tmp = table1[(x >> 8) & 0xff]
+            row1 = tmp
+            col3 ^= tmp
+            tmp = table2[(x >> 16) & 0xff]
+            row2 = tmp
+            col3 ^= tmp
+            tmp = table3[(x >> 24) & 0xff]
+            col3 ^= tmp
+
+            x = state[ptr % 30]
+            tmp = table0[x & 0xff]
+            col0 = tmp
+            tmp = table1[(x >> 8) & 0xff]
+            col0 ^= tmp
+            row1 ^= tmp
+            tmp = table2[(x >> 16) & 0xff]
+            col0 ^= tmp
+            row2 ^= tmp
+            tmp = table3[(x >> 24) & 0xff]
+            col0 ^= tmp
+            row3 = tmp
+
+            x = state[(ptr + 1) % 30]
+            tmp = table0[x & 0xff]
+            col1 = tmp
+            row0 ^= tmp
+            tmp = table1[(x >> 8) & 0xff]
+            col1 ^= tmp
+            tmp = table2[(x >> 16) & 0xff]
+            col1 ^= tmp
+            row2 ^= tmp
+            tmp = table3[(x >> 24) & 0xff]
+            col1 ^= tmp
+            row3 ^= tmp
+
+            x = state[(ptr + 2) % 30]
+            tmp = table0[x & 0xff]
+            col2 = tmp
+            row0 ^= tmp
+            tmp = table1[(x >> 8) & 0xff]
+            col2 ^= tmp
+            row1 ^= tmp
+            tmp = table2[(x >> 16) & 0xff]
+            col2 ^= tmp
+            tmp = table3[(x >> 24) & 0xff]
+            col2 ^= tmp
+            row3 ^= tmp
+
+            state[ptr % 30] = (
+                ((row0 ^ col0) & 0xff) ^ ((row1 ^ col1) & 0xff00) ^
+                ((row2 ^ col2) & 0xff_0000) ^ ((row3 ^ col3) & 0xff00_0000)
+            )
+            state[(ptr + 1) % 30] = (
+                ((row0 ^ col1) & 0xff) ^ ((row1 ^ col2) & 0xff00) ^
+                ((row2 ^ col3) & 0xff_0000) ^ ((row3 ^ col0) & 0xff00_0000)
+            )
+
+            row0 = rol32(row0, 16)
+            row1 = rol32(row1, 16)
+            row2 = rol32(row2, 16)
+            row3 = rol32(row3, 16)
+            state[(ptr + 2) % 30] = (
+                ((row0 ^ col2) & 0xff) ^ ((row1 ^ col3) & 0xff00) ^
+                ((row2 ^ col0) & 0xff_0000) ^ ((row3 ^ col1) & 0xff00_0000)
+            )
+
+            row0 = rol32(row0, 24)
+            row1 = rol32(row1, 24)
+            row2 = rol32(row2, 24)
+            row3 = rol32(row3, 24)
+            state[(ptr + 3) % 30] = (
+                ((row0 ^ col3) & 0xff) ^ ((row1 ^ col0) & 0xff00) ^
+                ((row2 ^ col1) & 0xff_0000) ^ ((row3 ^ col2) & 0xff00_0000)
             )
             return
 
@@ -114515,6 +114791,585 @@ class Hash:
         mpr_input_mask = 0x03ffff
         mix_phase_rounds = 8
 
+    class Floppsy:
+        digest_size = 8
+
+        def __init__(self, data=b"", seed=0):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            if not isinstance(seed, int):
+                raise TypeError("seed must be int")
+            if not 0 <= seed <= 0xffff_ffff:
+                raise ValueError("seed must be in range(0, 2**32)")
+            self.seed = seed
+            self.s0 = 0.0
+            self.s1 = 0.0
+            self.numerator = 1.0
+            self.msg_len = 0
+            self.setup(float(seed))
+            self.round_seed(struct.pack("<I", seed))
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__(seed=self.seed)
+            other.s0 = self.s0
+            other.s1 = self.s1
+            other.numerator = self.numerator
+            other.msg_len = self.msg_len
+            return other
+
+        def setup(self, init):
+            if init != 0.0:
+                v = init + 1.0 / init
+                self.s0 += v ** (1.0 / 3.0)
+                self.s1 += v ** (1.0 / 7.0)
+            else:
+                self.s0 += 3.0
+                self.s1 += 1.0 / 7.0
+            return
+
+        def round_seed(self, data):
+            s0 = self.s0
+            s1 = self.s1
+            numerator = 1.0
+            e = math.e
+            pi = math.pi
+            for i, b in enumerate(data):
+                val = float(b)
+                denominator = (e * val + i + 1) / s1
+                s0 += numerator / denominator
+                s0 = 1.0 / s0
+                s1 += val + pi
+                s1 = numerator / s1
+                numerator = denominator + 1.0
+            self.s0 = s0
+            self.s1 = s1
+            return
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            s0 = self.s0
+            s1 = self.s1
+            numerator = self.numerator
+            msg_len = self.msg_len
+            e = math.e
+            pi = math.pi
+            for i, b in enumerate(data):
+                val = float(b)
+                denominator = (e * val + msg_len + i + 1) / s1
+                s0 += numerator / denominator
+                s0 = 1.0 / s0
+                s1 += val + pi
+                s1 = numerator / s1
+                numerator = denominator + 1.0
+            self.s0 = s0
+            self.s1 = s1
+            self.numerator = numerator
+            self.msg_len = msg_len + len(data)
+            return self
+
+        def digest(self):
+            w0, w1, w2, w3 = struct.unpack("<4I", struct.pack("<2d", self.s0, self.s1))
+            h0 = (w0 + w3) & 0xffff_ffff
+            h1 = (w1 + w2) & 0xffff_ffff
+            return struct.pack(">2I", h0, h1)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+    class Gage1h256Base:
+        digest_size = 32
+        SBOX = (
+            0x1, 0x0, 0x3, 0x2, 0x0, 0x2, 0x1, 0x3, 0x2, 0x3, 0x0, 0x1, 0x3, 0x1, 0x2, 0x0,
+        )
+        LEADERS = (
+            0x0, 0x3, 0x0, 0x3, 0x0, 0x1, 0x2, 0x3, 0x2, 0x1, 0x2, 0x3, 0x2, 0x1, 0x2, 0x3,
+            0x0, 0x1, 0x2, 0x3, 0x2, 0x3, 0x0, 0x3, 0x2, 0x3, 0x2, 0x3, 0x2, 0x1, 0x2, 0x1,
+        )
+
+        @classmethod
+        def ensure_tables(cls):
+            if not hasattr(Hash.Gage1h256Base, "bit_shuffle_tables"):
+                Hash.Gage1h256Base.bit_shuffle_tables = {}
+
+            state_size = (cls.capacity_bits + cls.rate_bits) // 8
+            if state_size not in Hash.Gage1h256Base.bit_shuffle_tables:
+                rows = []
+                for i in range(state_size):
+                    rows.append(tuple((i + j) % state_size for j in range(8)))
+                Hash.Gage1h256Base.bit_shuffle_tables[state_size] = tuple(rows)
+
+            cls.bit_shuffle_table = Hash.Gage1h256Base.bit_shuffle_tables[state_size]
+            return
+
+        def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.ensure_tables()
+            self.state_size = (self.capacity_bits + self.rate_bits) // 8
+            self.rate_size = self.rate_bits // 8
+            self.state = bytearray(self.state_size)
+            self.buf = bytearray()
+            self.msg_len = 0
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.state_size = self.state_size
+            other.rate_size = self.rate_size
+            other.state = bytearray(self.state)
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            other.bit_shuffle_table = self.bit_shuffle_table
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+
+            data = bytes(data)
+            data_len = len(data)
+            if data_len == 0:
+                return self
+
+            self.msg_len += data_len
+            rate_size = self.rate_size
+            offset = 0
+            buf = self.buf
+
+            if buf:
+                need = rate_size - len(buf)
+                buf.extend(data[:need])
+                offset = need
+                if len(buf) == rate_size:
+                    self.absorb_block(buf)
+                    buf.clear()
+
+            while offset + rate_size <= data_len:
+                self.absorb_block(data[offset:offset + rate_size])
+                offset += rate_size
+
+            if offset < data_len:
+                buf.extend(data[offset:])
+
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return c.squeeze()
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            rate_size = self.rate_size
+            buf = self.buf
+            buf.append(0x80)
+            while len(buf) % rate_size != 0:
+                buf.append(0x00)
+
+            offset = 0
+            buf_len = len(buf)
+            while offset < buf_len:
+                self.absorb_block(buf[offset:offset + rate_size])
+                offset += rate_size
+            buf.clear()
+            return
+
+        def squeeze(self):
+            out = bytearray()
+            digest_size = self.digest_size
+            rate_size = self.rate_size
+            state = self.state
+            while len(out) < digest_size:
+                out.extend(state[:rate_size])
+                self.qpermutation()
+            return bytes(out[:digest_size])
+
+        def absorb_block(self, block):
+            state = self.state
+            for i, x in enumerate(block):
+                state[i] ^= x
+            self.qpermutation()
+            return
+
+        def qpermutation(self):
+
+            def dtransform(state, leader, sbox):
+                ldr = leader
+                for i, x in enumerate(state):
+                    c0 = x >> 6
+                    y0 = sbox[(ldr << 2) | c0]
+                    ldr = c0
+
+                    c1 = (x >> 4) & 0x3
+                    y1 = sbox[(ldr << 2) | c1]
+                    ldr = c1
+
+                    c2 = (x >> 2) & 0x3
+                    y2 = sbox[(ldr << 2) | c2]
+                    ldr = c2
+
+                    c3 = x & 0x3
+                    y3 = sbox[(ldr << 2) | c3]
+                    ldr = c3
+
+                    state[i] = (y0 << 6) | (y1 << 4) | (y2 << 2) | y3
+                return
+
+            def bit_shuffle(state, bit_shuffle_table):
+                old = bytes(state)
+                for i, indexes in enumerate(bit_shuffle_table):
+                    i0, i1, i2, i3, i4, i5, i6, i7 = indexes
+                    state[i] = (
+                        (old[i7] & 0x80)
+                        | ((old[i5] & 0x20) << 1)
+                        | ((old[i3] & 0x08) << 2)
+                        | ((old[i0] & 0x01) << 4)
+                        | ((old[i1] & 0x02) << 2)
+                        | (old[i2] & 0x04)
+                        | ((old[i6] & 0x40) >> 5)
+                        | ((old[i4] & 0x10) >> 4)
+                    )
+                return
+
+            dtransform(self.state, self.LEADERS[0], self.SBOX)
+            for i in range(1, 32):
+                bit_shuffle(self.state, self.bit_shuffle_table)
+                dtransform(self.state, self.LEADERS[i], self.SBOX)
+            return
+
+    class Gage1h256c224r008(Gage1h256Base):
+        capacity_bits = 224
+        rate_bits = 8
+        block_size = 1
+
+    class Gage1h256c224r016(Gage1h256Base):
+        capacity_bits = 224
+        rate_bits = 16
+        block_size = 2
+
+    class Gage1h256c224r032(Gage1h256Base):
+        capacity_bits = 224
+        rate_bits = 32
+        block_size = 4
+
+    class Gage1h256c224r064(Gage1h256Base):
+        capacity_bits = 224
+        rate_bits = 64
+        block_size = 8
+
+    class Gage1h256c256r016(Gage1h256Base):
+        capacity_bits = 256
+        rate_bits = 16
+        block_size = 2
+
+    class Gage1h256c256r032(Gage1h256Base):
+        capacity_bits = 256
+        rate_bits = 32
+        block_size = 4
+
+    class Gage1h256c256r064(Gage1h256Base):
+        capacity_bits = 256
+        rate_bits = 64
+        block_size = 8
+
+    class Gage1h256c256r128(Gage1h256Base):
+        capacity_bits = 256
+        rate_bits = 128
+        block_size = 16
+
+    class Gage1h256c512r032(Gage1h256Base):
+        capacity_bits = 512
+        rate_bits = 32
+        block_size = 4
+
+    class Gage1h256c512r064(Gage1h256Base):
+        capacity_bits = 512
+        rate_bits = 64
+        block_size = 8
+
+    class Gimli24:
+        digest_size = 32
+
+        def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.state = bytearray(48)
+            self.buf = bytearray()
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.state = bytearray(self.state)
+            other.buf = bytearray(self.buf)
+            return other
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            if not data:
+                return self
+
+            state = self.state
+            data_pos = 0
+            data_len = len(data)
+
+            if self.buf:
+                take = min(16 - len(self.buf), data_len)
+                self.buf.extend(data[:take])
+                data_pos = take
+                if len(self.buf) == 16:
+                    for i, b in enumerate(self.buf):
+                        state[i] ^= b
+                    self.permutation()
+                    self.buf.clear()
+
+            while data_pos + 16 <= data_len:
+                block = data[data_pos:data_pos + 16]
+                for i, b in enumerate(block):
+                    state[i] ^= b
+                self.permutation()
+                data_pos += 16
+
+            if data_pos < data_len:
+                self.buf.extend(data[data_pos:])
+            return self
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            return bytes(c.state[:16]) + c.squeeze_more()
+
+        def hexdigest(self):
+            return self.digest().hex()
+
+        def finalize(self):
+            state = self.state
+            buf = self.buf
+            for i, b in enumerate(buf):
+                state[i] ^= b
+            state[len(buf)] ^= 0x01
+            state[47] ^= 0x01
+            self.permutation()
+            buf.clear()
+            return
+
+        def squeeze_more(self):
+            self.permutation()
+            return bytes(self.state[:16])
+
+        def permutation(self):
+
+            def rol32(x, n):
+                return ((x << n) | (x >> (32 - n))) & 0xffff_ffff
+
+            state = self.state
+            s = [int.from_bytes(state[i:i + 4], "little") for i in range(0, 48, 4)]
+
+            for round_num in range(24, 0, -1):
+                for col in range(4):
+                    x = rol32(s[col], 24)
+                    y = rol32(s[col + 4], 9)
+                    z = s[col + 8]
+                    s[col + 8] = (x ^ (z << 1) ^ ((y & z) << 2)) & 0xffff_ffff
+                    s[col + 4] = (y ^ x ^ ((x | z) << 1)) & 0xffff_ffff
+                    s[col] = (z ^ y ^ ((x & y) << 3)) & 0xffff_ffff
+
+                if (round_num & 3) == 0:
+                    s[0], s[1] = s[1], s[0]
+                    s[2], s[3] = s[3], s[2]
+                    s[0] ^= 0x9e37_7900 | round_num
+                elif (round_num & 3) == 2:
+                    s[0], s[2] = s[2], s[0]
+                    s[1], s[3] = s[3], s[1]
+
+            for i, x in enumerate(s):
+                state[i * 4:i * 4 + 4] = x.to_bytes(4, "little")
+            return
+
+    class Heron256:
+        digest_size = 32
+
+        mask64 = 0xffff_ffff_ffff_ffff
+        mask512 = (1 << 512) - 1
+        max_msg_len = (1 << 61) - 1
+
+        ct0_ct1 = 0x14f1_c272_3279_c419
+        ct2_ct3 = 0x4b8e_a41d_0cc8_0863
+        ct4_bytes = (
+            0xd2, 0x80, 0x62, 0xe1, 0xe7, 0x1d, 0x3d, 0xda, 0xe3, 0xc4, 0xd1, 0x58, 0xa7, 0xf0, 0x67, 0xac,
+            0x94, 0x93, 0x50, 0x56, 0x8e, 0xe5, 0xc6, 0x3d, 0xf5, 0xa0, 0xce, 0xc3, 0xd3, 0x3d, 0xa5, 0xa7,
+            0x7d, 0xe8, 0x92, 0xac, 0xe8, 0xfd, 0x9b, 0x12, 0xfb, 0x62, 0x5a, 0x84, 0xf1, 0x5a, 0x53, 0x23,
+            0xd9, 0x3d, 0x39, 0x95, 0x9a, 0x48, 0x5a, 0x71, 0xda, 0xb8, 0xec, 0xd1, 0x9d, 0x9b, 0x3e, 0x2e,
+        )
+        ct4 = int.from_bytes(bytes(ct4_bytes), "big")
+
+        def __init__(self, data=b""):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            self.s0 = self.ct0_ct1
+            self.s1 = self.ct2_ct3
+            self.s2 = self.ct0_ct1
+            self.s3 = self.ct2_ct3
+            self.s4 = self.ct4
+            self.buf = bytearray()
+            self.msg_len = 0
+            if data:
+                self.update(data)
+            return
+
+        def copy(self):
+            other = self.__class__()
+            other.s0 = self.s0
+            other.s1 = self.s1
+            other.s2 = self.s2
+            other.s3 = self.s3
+            other.s4 = self.s4
+            other.buf = bytearray(self.buf)
+            other.msg_len = self.msg_len
+            return other
+
+        def hash_byte(self, mbyte):
+            s0 = self.s0
+            s1 = self.s1
+            s2 = self.s2
+            s3 = self.s3
+            s4 = self.s4
+            mask64 = self.mask64
+            mask512 = self.mask512
+
+            for i in range(8):
+                m = (mbyte >> i) & 1
+
+                x0 = (s0 >> 33) & 1
+                y0 = (s0 >> 34) & 1
+                x1 = (s1 >> 31) & 1
+                y1 = (s1 >> 39) & 1
+                x2 = (s2 >> 32) & 1
+                y2 = (s2 >> 59) & 1
+                x3 = (s3 >> 48) & 1
+                y3 = (s3 >> 49) & 1
+
+                a = 1 ^ (x0 & y0) ^ (x1 & y1) ^ (x2 & y2) ^ (x3 & y3) ^ m
+                b = (x0 & y2) ^ (y0 & y3) ^ (x1 & x3) ^ (y1 & x2) ^ ((s0 >> 31) & 1)
+
+                f0 = (s0 >> 63) ^ ((s0 >> 32) & 1) ^ ((s0 >> 31) & 1) ^ ((s1 >> 50) & 1)
+                f1 = (s1 >> 63) ^ ((s1 >> 35) & 1) ^ ((s1 >> 33) & 1) ^ ((s2 >> 62) & 1)
+                f2 = (s2 >> 63) ^ ((s2 >> 41) & 1) ^ ((s2 >> 36) & 1) ^ ((s3 >> 37) & 1)
+                f3 = (s3 >> 63) ^ ((s3 >> 55) & 1) ^ ((s3 >> 44) & 1) ^ ((s0 >> 32) & 1)
+
+                s0 = ((s0 << 1) & mask64) | f0
+                s1 = ((s1 << 1) & mask64) | f1
+                s2 = ((s2 << 1) & mask64) | f2
+                s3 = ((s3 << 1) & mask64) | f3
+
+                d = s4 >> 511
+                s4 = ((s4 << 1) & mask512) | (d ^ b)
+                b = d
+
+                if a:
+                    s0 ^= 1
+                    s2 ^= 1
+                if b:
+                    s1 ^= 1
+                    s3 ^= 1
+
+            self.s0 = s0
+            self.s1 = s1
+            self.s2 = s2
+            self.s3 = s3
+            self.s4 = s4
+            return
+
+        def process_block(self, block):
+            for x in block:
+                self.hash_byte(x)
+            for _ in range(4):
+                self.hash_byte(0)
+            return
+
+        def update(self, data):
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes-like")
+            data = bytes(data)
+            if self.msg_len + len(data) > self.max_msg_len:
+                raise OverflowError("message is too long")
+            self.msg_len += len(data)
+
+            offset = 0
+            data_len = len(data)
+            if self.buf:
+                need = 4 - len(self.buf)
+                take = min(need, data_len)
+                self.buf.extend(data[:take])
+                offset = take
+                if len(self.buf) < 4:
+                    return self
+                self.process_block(self.buf)
+                self.buf.clear()
+
+            while offset + 4 <= data_len:
+                self.process_block(data[offset:offset + 4])
+                offset += 4
+
+            if offset < data_len:
+                self.buf.extend(data[offset:])
+            return self
+
+        def finalize(self):
+            if self.msg_len == 0:
+                for _ in range(4):
+                    self.hash_byte(0)
+            elif self.buf:
+                buf_len = len(self.buf)
+                for x in self.buf:
+                    self.hash_byte(x)
+                for _ in range(4 - buf_len):
+                    self.hash_byte(0)
+                for _ in range(4):
+                    self.hash_byte(0)
+                self.buf.clear()
+
+            bit_len_bytes = (self.msg_len * 8).to_bytes(8, "big")
+            for i in range(128):
+                if i < 64:
+                    u = bit_len_bytes[i & 7] ^ self.ct4_bytes[i]
+                else:
+                    u = bit_len_bytes[i & 7]
+
+                tmp = 0
+                s4 = self.s4
+                for j in range(8):
+                    tmp |= ((s4 >> (255 - j)) & 1) << j
+                self.hash_byte(u ^ tmp)
+            return
+
+        def digest(self):
+            c = self.copy()
+            c.finalize()
+            out = bytearray(32)
+            s4 = c.s4
+            for i in range(32):
+                x = 0
+                for j in range(8):
+                    x |= ((s4 >> (255 - 8 * i - j)) & 1) << j
+                out[i] = x
+            return bytes(out)
+
+        def hexdigest(self):
+            return self.digest().hex()
+
 
 @register_command
 class HashCommand(GenericCommand):
@@ -114897,6 +115752,18 @@ class HashCommand(GenericCommand):
         yield ("FNV0a-512", Hash.FNV_512(variant="fnv0a"))
         yield ("FNV0a-1024", Hash.FNV_1024(variant="fnv0a"))
         yield ("FORK-256", Hash.FORK256())
+        yield ("Fugue2", Hash.Fugue2())
+        yield ("Gage1h256c224r008", Hash.Gage1h256c224r008())
+        yield ("Gage1h256c224r016", Hash.Gage1h256c224r016())
+        yield ("Gage1h256c224r032", Hash.Gage1h256c224r032())
+        yield ("Gage1h256c224r064", Hash.Gage1h256c224r064())
+        yield ("Gage1h256c256r016", Hash.Gage1h256c256r016())
+        yield ("Gage1h256c256r032", Hash.Gage1h256c256r032())
+        yield ("Gage1h256c256r064", Hash.Gage1h256c256r064())
+        yield ("Gage1h256c256r128", Hash.Gage1h256c256r128())
+        yield ("Gage1h256c512r032", Hash.Gage1h256c512r032())
+        yield ("Gage1h256c512r064", Hash.Gage1h256c512r064())
+        yield ("Gimli24", Hash.Gimli24())
         yield ("GOST", Hash.GOST()) # codespell:ignore
         yield ("GOST94cp", Hash.GOST94cp()) # codespell:ignore
         yield ("HAS-160", Hash.HAS160())
@@ -114915,6 +115782,7 @@ class HashCommand(GenericCommand):
         yield ("HAVAL-256,3", Hash.HAVAL(digest_bits=256, passes=3))
         yield ("HAVAL-256,4", Hash.HAVAL(digest_bits=256, passes=4))
         yield ("HAVAL-256,5", Hash.HAVAL(digest_bits=256, passes=5))
+        yield ("Heron256", Hash.Heron256())
         yield ("KangarooTwelve128-128", Hash.KangarooTwelve128(digest_bits=128))
         yield ("KangarooTwelve128-256", Hash.KangarooTwelve128(digest_bits=256))
         yield ("KangarooTwelve128-512", Hash.KangarooTwelve128(digest_bits=512))
@@ -114998,6 +115866,7 @@ class HashCommand(GenericCommand):
         yield ("FarmHash-128 (fp)", Hash.FarmHash128())
         yield ("FastHash-32", Hash.FastHash32())
         yield ("FastHash-64", Hash.FastHash64())
+        yield ("Floppsy", Hash.Floppsy())
         yield ("GxHash-32", Hash.GxHash32())
         yield ("GxHash-64", Hash.GxHash64())
         yield ("GxHash-128", Hash.GxHash128())
@@ -116178,6 +117047,33 @@ class HashTestCommand(HashCommand, BufferingOutput):
         # https://github.com/jonelo/jacksum
         "FORK-256":
             "290f4a3bc99dd6edc87400af4d4daa10362b0fea41d7cd41710f4e9fe0964428",
+        # https://github.com/jedisct1/supercop/tree/master/crypto_hash
+        "Fugue2":
+            "26165b0033ce91412e4c2bea741d86cc1570e354460652547132f8a65851542c",
+        # https://github.com/jedisct1/supercop/tree/master/crypto_hash
+        "Gage1h256c224r008":
+            "a711967f4b428dc658c1899f1ad809b0c9751577685a3bad998793963adcafa8",
+        "Gage1h256c224r016":
+            "9af9c3e206ff9ca4e6918b59453d8485a2b876f17027b500c494fea606333110",
+        "Gage1h256c224r032":
+            "67f17fe261539358947cb0a5758e349f7bedc7dc415478ef3429edf6f58fc531",
+        "Gage1h256c224r064":
+            "a1be53011f25609d58728992c56db21a9c1fd9c562d545eeca136756fc70a2e3",
+        "Gage1h256c256r016":
+            "5ce5a473a20770bc4efff157f452e8121d65d7ff6cfdd184af4e8eda71ff0120",
+        "Gage1h256c256r032":
+            "aa1fa5f3b1303d6880bd6fbb102c46b7dbfe83d0c9790c63e58c4d4592eebcf5",
+        "Gage1h256c256r064":
+            "3d9252cf9153fa532e4f914bf43db31432ba161f7414b4216ada4bde87cf5f90",
+        "Gage1h256c256r128":
+            "20d124fe0f6d8ee7d28ffb7f4e675c7ab43da63d5e0f8aa564e20e2526c4d000",
+        "Gage1h256c512r032":
+            "8812241a19d4e737132d0ab85ef1174bc172e81bb079c512890d08ce81547603",
+        "Gage1h256c512r064":
+            "bcef726f4f5d1efaa1505043fde124bff564a7e251021a6936fce41cffa22a7e",
+        # https://github.com/jedisct1/supercop/tree/master/crypto_hash
+        "Gimli24":
+            "db89c277a0bf1e586537951d350a955014b7c7528e97c3745a5f5f4190297552",
         # https://github.com/jonelo/jacksum
         "GOST": # codespell:ignore
             "77b7fa410c9ac58a25f49bca7d0468c9296529315eaca76bd1a10f376d1f4294",
@@ -116217,6 +117113,9 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "c0d4c6ea514105fd1a9c38a238553fb7fa21d4127eb1a3035a75ce9d06a83d96",
         "HAVAL-256,5":
             "b89c551cdfe2e06dbd4cea2be1bc7d557416c58ebb4d07cbc94e49f710c55be4",
+        # https://github.com/jedisct1/supercop/tree/master/crypto_hash
+        "Heron256":
+            "8c3a469c33223e5c4c212cd70c967822cdf14a9034532507e81e54c9733fb441",
         # https://marekknapek.github.io/hash/
         "KangarooTwelve128-128":
             "b4f249b4f77c58df170aa4d1723db112",
@@ -116405,6 +117304,9 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "136bd7e4",
         "FastHash-64":
             "4611ffb633a627d2",
+        # https://github.com/DO-SAY-GO/floppsy
+        "Floppsy":
+            "94bb454833d02837",
         # https://github.com/ogxd/gxhash
         "GxHash-32":
             "0bc03dd6",
@@ -155978,7 +156880,6 @@ class VisualDumpCommand(GenericCommand):
         if args.width and args.width > 0:
             img_width = args.width
         else:
-            import math
             img_width = int(math.sqrt(len(data)))
         while len(data) % img_width:
             data += b"\0"
@@ -158436,7 +159337,6 @@ class GefUtil:
     @staticmethod
     @Cache.cache_this_session
     def log2(x):
-        import math
         return int(math.log2(x))
 
     @staticmethod
