@@ -138131,7 +138131,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         "                 | last_idx         |      | last_idx         |",
         "                 | freeable         |      | freeable         |",
         "                 | maplen           |      | maplen           |",
-        "        ...<---->| prev / next      |<---->| prev / next      |<----> ...",
+        "        ...<---->| prev / next      |<---->| prev / next      |<---->...",
         "                 | mem              |--+   | mem              |--+",
         "                 +------------------+  |   +------------------+  |",
         "                                       v                         v",
