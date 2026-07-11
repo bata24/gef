@@ -122244,7 +122244,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # set up for heuristic search from freelist
         freelist = list(freelist_fastpath) + page["freelist"]
-        freelist = [x for x in freelist if isinstance(x, int) and x != 0] # ignore str and last 0
+        freelist = [x for x in freelist if isinstance(x, int) and x != 0] # ignore str and 0
         if not freelist:
             return None
 
@@ -122574,6 +122574,41 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         )
         return
 
+    # for sheaf / barn
+    def get_sheaf_objects(self, kmem_cache):
+        objects = []
+
+        # cpu sheaves
+        if "cpu_sheaves" in kmem_cache:
+            for cpu_sheaves in kmem_cache["cpu_sheaves"].values():
+                for name in ["main", "spare"]:
+                    if name in cpu_sheaves and "objects" in cpu_sheaves[name]:
+                        objects += cpu_sheaves[name]["objects"]
+
+        # node barn
+        if "node_barn" in kmem_cache:
+            for node_barn in kmem_cache["node_barn"]:
+                for name in ["sheaves_full", "sheaves_empty"]:
+                    if name in node_barn:
+                        for sheaf in node_barn[name]:
+                            if "objects" in sheaf:
+                                objects += sheaf["objects"]
+        return objects
+
+    # for sheaf / barn
+    def get_page_sheaf_objects(self, kmem_cache, page):
+        if page["virt_addr"] is None:
+            return []
+
+        start_addr = page["virt_addr"] + kmem_cache["red_left_pad"]
+        end_addr = page["virt_addr"] + page["num_pages"] * get_pagesize()
+        return [
+            chunk for chunk in self.get_sheaf_objects(kmem_cache)
+            if isinstance(chunk, int)
+            and start_addr <= chunk < end_addr
+            and (chunk - start_addr) % kmem_cache["size"] == 0
+        ]
+
     def walk_caches(self, target_names, cpus):
         current_kmem_cache = self.get_next_kmem_cache(self.slab_caches, point_to_base=False)
         parsed_caches = [{"name": "slab_caches", "next": current_kmem_cache}]
@@ -122639,14 +122674,17 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         self.walk_caches_partial_page(cpu, kmem_cache)
             # parse cpu_sheaves
             if self.dump_target_cpu_sheaves:
-                for cpu in cpus:
+                # Do not use `cpus` list, use `range(self.ncpus)`.
+                # Since a node page is not dedicated to a specific CPU, chunks within the node page might
+                # reside in CPU 1's main sheaf, even if, for example, `--cpu 0` is specified.
+                for cpu in range(self.ncpus):
                     self.walk_cpu_sheaves(cpu, kmem_cache)
             # parse node
             if self.dump_target_node:
                 self.walk_caches_node_page(kmem_cache)
         return parsed_caches
 
-    def dump_page_print_layout(self, tag, kmem_cache, page, freelist, freelist_fastpath):
+    def dump_page_print_layout(self, tag, kmem_cache, page, freelist, freelist_fastpath, freelist_sheaf):
         used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
 
@@ -122672,6 +122710,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 else:
                     next_msg = "next: {:#x}".format(next_chunk)
                 chunk_s = Color.colorify_hex(chunk, freed_address_color)
+                is_freed = True
             elif chunk in freelist[:-1]:
                 next_chunk = freelist[freelist.index(chunk) + 1]
                 if isinstance(next_chunk, str):
@@ -122681,12 +122720,18 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 if tag == "active":
                     next_msg += " (slow path)"
                 chunk_s = Color.colorify_hex(chunk, freed_address_color)
+                is_freed = True
+            elif chunk in freelist_sheaf:
+                next_msg = "in-use (sheaf)"
+                chunk_s = Color.colorify_hex(chunk, freed_address_color)
+                is_freed = True
             else:
                 if page["objects"] <= idx:
                     next_msg = "never-used"
                 else:
                     next_msg = "in-use"
                 chunk_s = Color.colorify_hex(chunk, used_address_color)
+                is_freed = False
             self.out.append("        {:7s}   {:#05x} {:s} ({:s})".format(
                 "layout:" if idx == 0 else "", idx, chunk_s, next_msg,
             ))
@@ -122697,7 +122742,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 h = hexdump(peeked_data, 0x10, base=chunk, unit=current_arch.ptrsize)
                 self.out.append(h)
 
-            if self.args.hexdump_freed and next_msg.startswith("next: "):
+            if self.args.hexdump_freed and is_freed:
                 peeked_data = read_memory(chunk, self.args.hexdump_freed)
                 h = hexdump(peeked_data, 0x10, base=chunk, unit=current_arch.ptrsize)
                 self.out.append(h)
@@ -122708,7 +122753,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     line = DereferenceCommand.pprint_dereferenced(chunk, i)
                     self.out.append(line)
 
-            if self.args.telescope_freed and next_msg.startswith("next: "):
+            if self.args.telescope_freed and is_freed:
                 n = self.args.telescope_freed // current_arch.ptrsize
                 for i in range(n):
                     line = DereferenceCommand.pprint_dereferenced(chunk, i)
@@ -122792,16 +122837,21 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             return
 
         freelist = page["freelist"]
+        freelist_sheaf = self.get_page_sheaf_objects(kmem_cache, page)
         if tag == "active":
-            freelist_len = len(set(freelist + freelist_fastpath)) - 1 # ignore last 0
+            freelist_len = len(set(
+                x for x in freelist + freelist_fastpath + freelist_sheaf
+                if isinstance(x, int) and x != 0 # ignore str and 0
+            ))
             inuse = page["objects"] - freelist_len
         else:
-            inuse = page["inuse"]
+            freelist_set = set(x for x in freelist if isinstance(x, int))
+            inuse = page["inuse"] - len(set(freelist_sheaf) - freelist_set)
         self.out.append("        in-use: {:d}/{:d}".format(inuse, page["objects"]))
         self.out.append("        frozen: {:d}".format(page["frozen"]))
 
         # print layout
-        self.dump_page_print_layout(tag, kmem_cache, page, freelist, freelist_fastpath)
+        self.dump_page_print_layout(tag, kmem_cache, page, freelist, freelist_fastpath, freelist_sheaf)
 
         # print freelist
         self.dump_page_print_freelist(tag, kmem_cache, page, freelist, freelist_fastpath)
@@ -123798,7 +123848,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             return
 
         if tag == "active":
-            freelist_len = len(freelist) - 1 # ignore last 0
+            freelist_len = len(set(x for x in freelist if isinstance(x, int) and x != 0)) # ignore str and last 0
             inuse = page["objects"] - freelist_len
         else:
             inuse = page["inuse"]
