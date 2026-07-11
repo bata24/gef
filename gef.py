@@ -130598,9 +130598,6 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         else:
             config["parameters"] = {}
 
-        if param_name in config["parameters"]:
-            return
-
         config["parameters"][param_name] = str(getattr(self, param_name))
         with open(cfg_file_name, "w") as cfg_file:
             config.write(cfg_file)
@@ -131718,8 +131715,13 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         # failed, but if args.rescan was not specified originally
         if not self.args.rescan:
             self.quiet_info("Try to rescan (ignore cached config)")
-            self.kallsyms = []
-            ret = self.parse_kallsyms()
+            original_rescan = self.args.rescan
+            self.args.rescan = True
+            try:
+                self.kallsyms = []
+                ret = self.parse_kallsyms()
+            finally:
+                self.args.rescan = original_rescan
             if ret:
                 return True
 
