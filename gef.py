@@ -15413,6 +15413,7 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
         self.add_setting("heap_freelist_hint", "bold blue", "Color of the freelist hint used heap")
         self.add_setting("heap_page_address", "bold", "Color of the page address used heap")
         self.add_setting("heap_management_address", "bright_blue", "Color of the management address used heap")
+        self.add_setting("heap_slab_address", "lilac", "Color of the slab management address used heap")
         self.add_setting("heap_corrupted_msg", "bold red", "Color of the corrupted message used heap")
         return
 
@@ -122810,6 +122811,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         label_active_color = Config.get_gef_setting("theme.heap_label_active")
         label_inactive_color = Config.get_gef_setting("theme.heap_label_inactive")
         heap_page_color = Config.get_gef_setting("theme.heap_page_address")
+        slab_address_color = Config.get_gef_setting("theme.heap_slab_address")
         freelist_fastpath = list(freelist_fastpath)
 
         # page address
@@ -122817,7 +122819,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             tag_s = Color.colorify("{:s} page".format(tag), label_active_color)
         else:
             tag_s = Color.colorify("{:s} page".format(tag), label_inactive_color)
-        self.out.append("      {:s}: {:#x}".format(tag_s, page["address"]))
+        page_addr_s = Color.colorify_hex(page["address"], slab_address_color)
+        self.out.append("      {:s}: {:s}".format(tag_s, page_addr_s))
 
         # fast return if invalid
         if not is_valid_addr(page["address"]):
@@ -122839,13 +122842,13 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         freelist = page["freelist"]
         freelist_sheaf = self.get_page_sheaf_objects(kmem_cache, page)
         if tag == "active":
-            freelist_len = len(set(
+            freelist_len = len({
                 x for x in freelist + freelist_fastpath + freelist_sheaf
                 if isinstance(x, int) and x != 0 # ignore str and 0
-            ))
+            })
             inuse = page["objects"] - freelist_len
         else:
-            freelist_set = set(x for x in freelist if isinstance(x, int))
+            freelist_set = {x for x in freelist if isinstance(x, int)}
             inuse = page["inuse"] - len(set(freelist_sheaf) - freelist_set)
         self.out.append("        in-use: {:d}/{:d}".format(inuse, page["objects"]))
         self.out.append("        frozen: {:d}".format(page["frozen"]))
@@ -122861,12 +122864,15 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     def dump_slub_tlbflush_queue(self, parsed_slabs):
         chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
         not_mapped_virt = Config.get_gef_setting("theme.address_valid_but_none")
+        slab_address_color = Config.get_gef_setting("theme.heap_slab_address")
         # dump
-        self.out.append("slub_tlbflush_queue @ {:#x}".format(self.slub_tlbflush_queue))
+        queue_addr_s = Color.colorify_hex(self.slub_tlbflush_queue, slab_address_color)
+        self.out.append("slub_tlbflush_queue @ {:s}".format(queue_addr_s))
         for slab in parsed_slabs:
             slab_addr = slab["address"]
             self.out.append("")
-            self.out.append("  slab: {:#x}".format(slab_addr))
+            slab_addr_s = Color.colorify_hex(slab_addr, slab_address_color)
+            self.out.append("  slab: {:s}".format(slab_addr_s))
             self.out.append("    kmem_cache: {:s}".format(Color.colorify(slab["slab_cache_name"], chunk_label_color)))
             # virtual address is not mapped here
             virt = "{:#x}".format(self.page2virt_for_slab_virtual(slab_addr))
@@ -122876,8 +122882,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     # for sheaf / barn
     def dump_sheaf(self, sheaf, tag):
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        slab_address_color = Config.get_gef_setting("theme.heap_slab_address")
 
-        self.out.append("      {:s}: {:#x}".format(tag, sheaf["address"]))
+        sheaf_addr_s = Color.colorify_hex(sheaf["address"], slab_address_color)
+        self.out.append("      {:s}: {:s}".format(tag, sheaf_addr_s))
         self.out.append("        size: {:d}".format(sheaf["size"]))
 
         if self.args.simple:
@@ -122904,15 +122912,41 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return
 
     # for sheaf / barn
+    def dump_node_barn(self, node_barn):
+        if not node_barn.get("address"):
+            return
+
+        slab_address_color = Config.get_gef_setting("theme.heap_slab_address")
+        node_barn_addr_s = Color.colorify_hex(node_barn["address"], slab_address_color)
+        self.out.append("      node_barn: {:s}".format(node_barn_addr_s))
+
+        for name in ["sheaves_full", "sheaves_empty"]:
+            sheaves = node_barn.get(name, [])
+            if len(sheaves) == 0:
+                self.out.append("        {:14s} (none)".format(name + ":"))
+                continue
+
+            for i, sheaf in enumerate(sheaves):
+                if i == 0:
+                    sheaf_addr_s = Color.colorify_hex(sheaf["address"], slab_address_color)
+                    self.out.append("        {:14s} {:s}".format(name + ":", sheaf_addr_s))
+                else:
+                    sheaf_addr_s = Color.colorify_hex(sheaf["address"], slab_address_color)
+                    self.out.append("                       {:s}".format(sheaf_addr_s))
+        return
+
+    # for sheaf / barn
     def dump_sheaves(self, cpu_sheaves, kmem_cache, cpu):
         label_active_color = Config.get_gef_setting("theme.heap_label_active")
         label_inactive_color = Config.get_gef_setting("theme.heap_label_inactive")
+        slab_address_color = Config.get_gef_setting("theme.heap_slab_address")
         kversion = Kernel.kernel_version()
 
         if not cpu_sheaves.get("address"):
             return
 
-        self.out.append("    slub_percpu_sheaves (cpu{:d}): {:#x}".format(cpu, cpu_sheaves["address"]))
+        cpu_sheaves_addr_s = Color.colorify_hex(cpu_sheaves["address"], slab_address_color)
+        self.out.append("    slub_percpu_sheaves (cpu{:d}): {:s}".format(cpu, cpu_sheaves_addr_s))
 
         # main
         if "main" in cpu_sheaves:
@@ -122934,15 +122968,18 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
         label_inactive_color = Config.get_gef_setting("theme.heap_label_inactive")
+        slab_address_color = Config.get_gef_setting("theme.heap_slab_address")
 
-        self.out.append("slab_caches @ {:#x}".format(self.slab_caches))
+        slab_caches_s = Color.colorify_hex(self.slab_caches, slab_address_color)
+        self.out.append("slab_caches @ {:s}".format(slab_caches_s))
         for kmem_cache in parsed_caches[1:]:
             if target_names != [] and kmem_cache["name"] not in target_names:
                 continue
 
             # dump kmem_cache metadata
             self.out.append("")
-            self.out.append("  kmem_cache: {:#x}".format(kmem_cache["address"]))
+            kmem_cache_addr_s = Color.colorify_hex(kmem_cache["address"], slab_address_color)
+            self.out.append("  kmem_cache: {:s}".format(kmem_cache_addr_s))
             self.out.append("    name: {:s}".format(Color.colorify(kmem_cache["name"], chunk_label_color)))
             self.out.append("    flags: {:#x} ({:s})".format(kmem_cache["flags"], kmem_cache["flags_str"]))
             object_size_s = Color.colorify_hex(kmem_cache["object_size"], chunk_size_color)
@@ -122968,21 +123005,26 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     len(kmem_cache["freed_slabs_normal"]), nr_freed_pages,
                 ))
                 for idx, slab in enumerate(kmem_cache["freed_slabs_normal"]):
-                    self.out.append("             {:#05x} {:#x}".format(idx, slab["address"]))
+                    slab_addr_s = Color.colorify_hex(slab["address"], slab_address_color)
+                    self.out.append("             {:#05x} {:s}".format(idx, slab_addr_s))
 
                 # freed_slabs_min
                 self.out.append("    freed_slabs_min: {:#d}/{:#d}".format(
                     len(kmem_cache["freed_slabs_min"]), nr_freed_pages,
                 ))
                 for idx, slab in enumerate(kmem_cache["freed_slabs_min"]):
-                    self.out.append("             {:#05x} {:#x}".format(idx, slab["address"]))
+                    slab_addr_s = Color.colorify_hex(slab["address"], slab_address_color)
+                    self.out.append("             {:#05x} {:s}".format(idx, slab_addr_s))
 
             # dump each cpu
             for cpu in cpus:
                 # dump kmem_cache_cpu
                 if self.dump_target_kmem_cache_cpu:
-                    self.out.append("    kmem_cache_cpu (cpu{:d}): {:#x}".format(
-                        cpu, kmem_cache["kmem_cache_cpu"][cpu]["address"],
+                    kmem_cache_cpu_addr_s = Color.colorify_hex(
+                        kmem_cache["kmem_cache_cpu"][cpu]["address"], slab_address_color,
+                    )
+                    self.out.append("    kmem_cache_cpu (cpu{:d}): {:s}".format(
+                        cpu, kmem_cache_cpu_addr_s,
                     ))
 
                     # dump active
@@ -123012,7 +123054,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     node_addr = read_int_from_memory(
                         kmem_cache["address"] + self.kmem_cache_offset_node + self.kmem_cache_node_step * node_index,
                     )
-                    self.out.append("    kmem_cache_node[{:d}]: {:#x}".format(node_index, node_addr))
+                    node_addr_s = Color.colorify_hex(node_addr, slab_address_color)
+                    self.out.append("    kmem_cache_node[{:d}]: {:s}".format(node_index, node_addr_s))
 
                     # node list (partial)
                     printed_count = 0
@@ -123037,19 +123080,15 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                             ))
 
                     # barn list (6.18~)
-                    if "node_barn" in kmem_cache:
-                        for node_barn in kmem_cache["node_barn"]:
-                            if "sheaves_full" in node_barn:
-                                for sheaves_full in node_barn["sheaves_full"]:
-                                    self.dump_sheaf(sheaves_full, Color.colorify("node full sheaf", "underline"))
-                            if "sheaves_empty" in node_barn:
-                                for sheaves_empty in node_barn["sheaves_empty"]:
-                                    self.dump_sheaf(sheaves_empty, Color.colorify("node empty sheaf", "underline"))
+                    if "node_barn" in kmem_cache and node_index < len(kmem_cache["node_barn"]):
+                        self.dump_node_barn(kmem_cache["node_barn"][node_index])
 
-            self.out.append("    next: {:#x}".format(kmem_cache["next"]))
+            next_addr_s = Color.colorify_hex(kmem_cache["next"], slab_address_color)
+            self.out.append("    next: {:s}".format(next_addr_s))
         return
 
     def dump_names(self, parsed_caches):
+        slab_address_color = Config.get_gef_setting("theme.heap_slab_address")
         name_width = max(len(k["name"]) for k in parsed_caches[1:])
 
         if not self.args.quiet:
@@ -123066,8 +123105,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             objsz = "{0:d} ({0:#x})".format(kmem_cache["object_size"])
             chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
             chunk_name = kmem_cache["name"]
-            address = kmem_cache["address"]
-            self.out.append("{:18s} {:18s} {:{:d}s} {:#x}".format(objsz, chunksz, chunk_name, name_width, address))
+            address = Color.colorify_hex(kmem_cache["address"], slab_address_color)
+            self.out.append("{:18s} {:18s} {:{:d}s} {:s}".format(objsz, chunksz, chunk_name, name_width, address))
         return
 
     def slubwalk(self, target_names, cpu):
@@ -123853,7 +123892,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             return
 
         if tag == "active":
-            freelist_len = len(set(x for x in freelist if isinstance(x, int) and x != 0)) # ignore str and last 0
+            freelist_len = len({x for x in freelist if isinstance(x, int) and x != 0}) # ignore str and last 0
             inuse = page["objects"] - freelist_len
         else:
             inuse = page["inuse"]
