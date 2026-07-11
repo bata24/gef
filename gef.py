@@ -122170,7 +122170,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 0x0000_8000: "SLAB_CACHE_DMA32",
                 0x0000_4000: "SLAB_CACHE_DMA",
                 0x0000_2000: "SLAB_HWCACHE_ALIGN",
-                0x0000_1000: "SKAB_KMALLOC", # v6.1 <= kernel
+                0x0000_1000: "SLAB_KMALLOC", # v6.1 <= kernel
                 0x0000_0800: "SLAB_POISON",
                 0x0000_0400: "SLAB_RED_ZONE",
                 #0x0000_0200: "",
@@ -122909,19 +122909,24 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         label_inactive_color = Config.get_gef_setting("theme.heap_label_inactive")
         kversion = Kernel.kernel_version()
 
+        if not cpu_sheaves.get("address"):
+            return
+
+        self.out.append("    slub_percpu_sheaves (cpu{:d}): {:#x}".format(cpu, cpu_sheaves["address"]))
+
         # main
         if "main" in cpu_sheaves:
             if cpu_sheaves["main"]["address"]:
                 if kversion < "7.0":
-                    tag = Color.colorify("main sheaf", label_active_color) + " (cpu{:d}) (fastest path)".format(cpu)
+                    tag = Color.colorify("main sheaf", label_active_color) + " (fastest path)"
                 else:
-                    tag = Color.colorify("main sheaf", label_active_color) + " (cpu{:d})".format(cpu)
+                    tag = Color.colorify("main sheaf", label_active_color)
                 self.dump_sheaf(cpu_sheaves["main"], tag)
 
         # spare
         if "spare" in cpu_sheaves:
             if cpu_sheaves["spare"]["address"]:
-                tag = Color.colorify("spare sheaf", label_inactive_color) + " (cpu{:d})".format(cpu)
+                tag = Color.colorify("spare sheaf", label_inactive_color)
                 self.dump_sheaf(cpu_sheaves["spare"], tag)
         return
 
