@@ -134056,6 +134056,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     _category_ = "05-c. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("-a", "--all", action="store_true", help="dump all thread_alloc.")
     parser.add_argument("-l", "--laden", action="store_true", help="dump laden (large or inactive slabs).")
     parser.add_argument("-r", "--remote", action="store_true", help="dump remote_alloc (WIP).")
@@ -134064,6 +134065,26 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     _note_ = [
+        "Simplified snmalloc structure:",
+        "",
+        "+-Alloc (ThreadAlloc::alloc)-+",
+        "| small_fast_free_lists[43]  |    +-free chunk-+   +-free chunk-+",
+        "|  [0]                       |--->| next       |-->| next       |-->NULL",
+        "|  [1]                       |    +------------+   +------------+",
+        "|  ...                       |",
+        "| ...                        |    +-SlabMetadataCache-+   +-SeqSet----+   +-BackendSlabMetadata-+",
+        "| alloc_classes[43]          | +->| available         |-->| head.next |-->| node.next           |-->...",
+        "|  [0]                       |-+  | unused            |   | head.prev |   | node.prev           |",
+        "|  [1]                       |    | length            |   +-----------+   | free_queue.head     |-+  +-free chunk-+",
+        "|  ...                       |    +-------------------+                   | free_queue.end      | +->| next       |-->NULL",
+        "| laden                      |-+                                          | ...                 |    +------------+",
+        "| ...                        | +->SeqSet (same structure as above)        +---------------------+",
+        "| remote_alloc               |",
+        "|   list                     |    +-RemoteMessage-+   +-RemoteMessage-+",
+        "|     front                  |--->| next          |-->| next          |-->...",
+        "| ...                        |    +---------------+   +---------------+",
+        "+----------------------------+",
+        "",
         "This command dumps the following four categories:",
         "- small_fast_free_lists: Free list per small size class (fast path).",
         "- alloc_classes: Per size class list of active slabs.",
