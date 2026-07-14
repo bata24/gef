@@ -24849,8 +24849,10 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
                 self.out.append("    [{:#x}] = {:#x},".format(i, int(arena.binmap[i])))
             self.out.append("  },")
             self.out.append("  next = {:#x},".format(int(arena.next)))
-            self.out.append("  next_free = {:#x},".format(int(arena.next_free)))
-            self.out.append("  attached_threads = {:#x},".format(int(arena.attached_threads)))
+            if get_libc_version() >= (2, 19):
+                self.out.append("  next_free = {:#x},".format(int(arena.next_free)))
+            if get_libc_version() >= (2, 23):
+                self.out.append("  attached_threads = {:#x},".format(int(arena.attached_threads)))
             self.out.append("  system_mem = {:#x},".format(int(arena.system_mem)))
             self.out.append("  max_system_mem = {:#x},".format(int(arena.max_system_mem)))
             self.out.append("}")
@@ -28881,11 +28883,11 @@ class ElfInfoCommand(GenericCommand):
     }
 
     types = {
-        Elf.ET_NONE : "No file type",
-        Elf.ET_REL  : "Relocatable",
-        Elf.ET_EXEC : "Executable",
-        Elf.ET_DYN  : "Shared",
-        Elf.ET_CORE : "Core",
+        Elf.ET_NONE : "No file type (ET_NONE)",
+        Elf.ET_REL  : "Relocatable (ET_REL)",
+        Elf.ET_EXEC : "Executable (ET_EXEC)",
+        Elf.ET_DYN  : "Shared (ET_DYN)",
+        Elf.ET_CORE : "Core (ET_CORE)",
     }
 
     machines = {
@@ -54652,7 +54654,7 @@ class HeapbaseCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     @staticmethod
-    def heap_base_from_symbol(force_heuristic):
+    def heap_base_from_symbol(force_heuristic=False):
         # The value of mp_->sbrk_base is correct in x86 or x64.
         # However, for architectures that have TLS in the bss area (such as ARM or ARM64),
         # the start position of the heap seems to shift by the amount of the area used as the TLS variable.
@@ -54668,7 +54670,7 @@ class HeapbaseCommand(GenericCommand):
             return None
 
     @staticmethod
-    def heap_base_from_info_proc_map(force_heuristic):
+    def heap_base_from_info_proc_map(force_heuristic=False):
         # For non-static binaries, this is mostly sufficient.
         if force_heuristic:
             return None
@@ -54679,10 +54681,25 @@ class HeapbaseCommand(GenericCommand):
         except Exception:
             return None
 
-        if elf.is_static():
-            return None
+        # In the case of dynamic linking
+        if not elf.is_static():
+            return ProcessMap.get_section_base_address("[heap]")
 
-        return ProcessMap.get_section_base_address("[heap]")
+        # In the case of static or static-PIE
+        ld_targets = (
+            "ld-2.", "ld-linux-", "ld-linux.", # glibc
+            "ld64-uClibc-", "ld-uClibc-", "ld64-uClibc.", "ld-uClibc.", # uClibc
+        )
+        ld = ProcessMap.get_section_base_address_by_list(ld_targets)
+        if ld and codebase == ld:
+            # When a binary is launched through the dynamic linker, the linker itself is treated as
+            # the target and is always detected as static (because linker has no .interp always).
+            # This result is not meaningful because the actual loaded binary should be checked instead.
+            # In practice, binaries launched this way are almost always dynamically linked,
+            # so using info proc to determine the heap base is appropriate for this case.
+            return ProcessMap.get_section_base_address("[heap]")
+
+        return None
 
     @staticmethod
     def heap_base_from_tcache():
