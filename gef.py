@@ -3614,7 +3614,7 @@ class GlibcHeap:
             return None
         main_arena = read_int_from_memory(main_arena_ptr)
 
-        heap_base = HeapbaseCommand.heap_base()
+        heap_base = HeapBaseCommand.heap_base()
         if heap_base is None:
             return None
 
@@ -4196,7 +4196,7 @@ class GlibcHeap:
         @property
         def heap_base(self):
             if self.is_main_arena:
-                return HeapbaseCommand.heap_base()
+                return HeapBaseCommand.heap_base()
             else:
                 return self.addr + self.sizeof
 
@@ -14132,13 +14132,13 @@ class ProcessMap:
     @Cache.cache_this_session
     def get_codebase():
         filepath = Path.get_filepath(append_proc_root_prefix=is_container_attach())
-        bin_base = ProcessMap.get_section_base_address(filepath)
-        if bin_base is not None:
-            return bin_base
+        code_base = ProcessMap.get_section_base_address(filepath)
+        if code_base is not None:
+            return code_base
 
         filepath = Path.get_filepath_from_info_proc()
-        bin_base = ProcessMap.get_section_base_address(filepath)
-        return bin_base
+        code_base = ProcessMap.get_section_base_address(filepath)
+        return code_base
 
 
 class EventHandler:
@@ -54587,7 +54587,7 @@ class SyscallArgsCommand(GenericCommand):
 
 
 @register_command
-class CodebaseCommand(GenericCommand):
+class CodeBaseCommand(GenericCommand):
     """Display various base addresses."""
 
     _cmdline_ = "codebase"
@@ -54595,16 +54595,18 @@ class CodebaseCommand(GenericCommand):
     _aliases_ = ["base"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-s", "--set", metavar="ADDR", type=AddressUtil.parse_address, help="user specific address.")
+    parser.add_argument("-r", "--reset", action="store_true", help="reset user specific address.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
-    def define_section_variable(self, elf, bin_base, section_name):
+    def define_section_variable(self, elf, code_base, section_name):
         sec = elf.get_shdr(section_name)
         if not sec:
             return
 
         if elf.is_pie():
-            addr = sec.sh_addr + bin_base
+            addr = sec.sh_addr + code_base
         else:
             addr = sec.sh_addr
 
@@ -54618,38 +54620,51 @@ class CodebaseCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
-        # The codebase may be heuristically determined from the memory map.
-        bin_base = ProcessMap.get_codebase()
-        if bin_base is None:
-            self.quiet_err("Could not find the binary base")
-            return
+        # user specific
+        if args.set is not None:
+            self.code_base_user_specific = args.set
+
+        if args.reset:
+            if hasattr(self, "code_base_user_specific"):
+                delattr(self, "code_base_user_specific")
+
+        code_base = getattr(self, "code_base_user_specific", None)
+
+        # auto estimation
+        if not is_valid_addr(code_base):
+            # The codebase may be heuristically determined from the memory map.
+            code_base = ProcessMap.get_codebase()
+            if code_base is None:
+                self.quiet_err("Could not find the binary base")
+                return
+
+        # print
         self.quiet_print(titlify("code base"))
-        gdb.execute(f"set $codebase = {bin_base:#x}")
-        self.quiet_print(f"$codebase = {bin_base:#x}")
-        gdb.execute(f"set $binbase = {bin_base:#x}")
-        self.quiet_print(f"$binbase = {bin_base:#x}")
+        gdb.execute(f"set $codebase = {code_base:#x}")
+        self.quiet_print(f"$codebase = {code_base:#x}")
 
         # Any other area should use a section header.
         elf = Elf.get_elf()
         if elf is None or not elf.is_valid():
             self.quiet_err("Failed to load an ELF")
             return
-
-        self.define_section_variable(elf, bin_base, ".text")
-        self.define_section_variable(elf, bin_base, ".rodata")
-        self.define_section_variable(elf, bin_base, ".data")
-        self.define_section_variable(elf, bin_base, ".bss")
+        self.define_section_variable(elf, code_base, ".text")
+        self.define_section_variable(elf, code_base, ".rodata")
+        self.define_section_variable(elf, code_base, ".data")
+        self.define_section_variable(elf, code_base, ".bss")
         return
 
 
 @register_command
-class HeapbaseCommand(GenericCommand):
+class HeapBaseCommand(GenericCommand):
     """Display heap base address."""
 
     _cmdline_ = "heapbase"
     _category_ = "02-b. Process Information - Base Address"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-s", "--set", metavar="ADDR", type=AddressUtil.parse_address, help="user specific address.")
+    parser.add_argument("-r", "--reset", action="store_true", help="reset user specific address.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
@@ -54794,19 +54809,23 @@ class HeapbaseCommand(GenericCommand):
     @staticmethod
     @Cache.cache_this_session_skip_None_cache
     def heap_base(force_heuristic=False):
-        heap_base = HeapbaseCommand.heap_base_from_symbol(force_heuristic)
+        heap_base = getattr(HeapBaseCommand, "heap_base_user_specific", None)
         if is_valid_addr(heap_base):
             return heap_base
 
-        heap_base = HeapbaseCommand.heap_base_from_info_proc_map(force_heuristic)
+        heap_base = HeapBaseCommand.heap_base_from_symbol(force_heuristic)
         if is_valid_addr(heap_base):
             return heap_base
 
-        heap_base = HeapbaseCommand.heap_base_from_tcache()
+        heap_base = HeapBaseCommand.heap_base_from_info_proc_map(force_heuristic)
         if is_valid_addr(heap_base):
             return heap_base
 
-        heap_base = HeapbaseCommand.heap_base_from_mp()
+        heap_base = HeapBaseCommand.heap_base_from_tcache()
+        if is_valid_addr(heap_base):
+            return heap_base
+
+        heap_base = HeapBaseCommand.heap_base_from_mp()
         if is_valid_addr(heap_base):
             return heap_base
 
@@ -54816,25 +54835,38 @@ class HeapbaseCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        heap = HeapbaseCommand.heap_base()
-        if heap is None:
+        # user specific
+        if args.set is not None:
+            HeapBaseCommand.heap_base_user_specific = args.set
+            Cache.reset_gef_caches(all=True)
+
+        if args.reset:
+            if hasattr(HeapBaseCommand, "heap_base_user_specific"):
+                delattr(HeapBaseCommand, "heap_base_user_specific")
+
+        # auto estimation
+        heap_base = HeapBaseCommand.heap_base()
+        if heap_base is None:
             err("Could not find the heap")
             return
 
+        # print
         self.quiet_print(titlify("Heap base"))
-        gdb.execute(f"set $heapbase = {heap:#x}")
-        self.quiet_print(f"$heapbase = {heap:#x}")
+        gdb.execute(f"set $heapbase = {heap_base:#x}")
+        self.quiet_print(f"$heapbase = {heap_base:#x}")
         return
 
 
 @register_command
-class LibcCommand(GenericCommand):
+class LibcBaseCommand(GenericCommand):
     """Display libc base address."""
 
     _cmdline_ = "libc"
     _category_ = "02-b. Process Information - Base Address"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-s", "--set", metavar="ADDR", type=AddressUtil.parse_address, help="user specific address.")
+    parser.add_argument("-r", "--reset", action="store_true", help="reset user specific address.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
@@ -54857,8 +54889,8 @@ class LibcCommand(GenericCommand):
             ab_path = os.path.normpath(os.path.join(os.path.dirname(ab_path), os.readlink(ab_path)))
         return os.path.basename(a) == os.path.basename(ab_path)
 
-    def libc_calc_hash(self, libc_targets):
-        libc = ProcessMap.process_lookup_path(libc_targets)
+    def libc_calc_hash(self, libc_base):
+        libc = ProcessMap.process_lookup_address(libc_base)
         real_libc_path = None
 
         if is_container_attach():
@@ -54871,7 +54903,7 @@ class LibcCommand(GenericCommand):
             if is_qemu_user():
                 data = None
                 for maps in ProcessMap.get_process_maps(outer=True):
-                    if not LibcCommand.is_same_filename(maps.path, libc.path):
+                    if not LibcBaseCommand.is_same_filename(maps.path, libc.path):
                         continue
                     real_libc_path = maps.path
                     data = open(real_libc_path, "rb").read()
@@ -54912,43 +54944,57 @@ class LibcCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
-        Cache.reset_gef_caches(all=True) # get_process_maps may be caching old information
+        # user specific
+        if args.set is not None:
+            self.libc_base_user_specific = args.set
 
-        libc_targets = (
-            "libc-2.", "libc.so.6", # glibc
-            "libuClibc-", "/libc.so.0", # uClibc
-        )
+        if args.reset:
+            if hasattr(self, "libc_base_user_specific"):
+                delattr(self, "libc_base_user_specific")
 
-        libc = ProcessMap.get_section_base_address_by_list(libc_targets)
-        if libc is None:
-            err("Could not find the libc")
-            if not args.quiet:
-                self.show_libc_assume_version()
-            return
+        libc_base = getattr(self, "libc_base_user_specific", None)
 
+        # auto estimation
+        if not is_valid_addr(libc_base):
+            Cache.reset_gef_caches(all=True) # get_process_maps may be caching old information
+
+            libc_targets = (
+                "libc-2.", "libc.so.6", # glibc
+                "libuClibc-", "/libc.so.0", # uClibc
+            )
+            libc_base = ProcessMap.get_section_base_address_by_list(libc_targets)
+            if libc_base is None:
+                err("Could not find the libc")
+                if not args.quiet:
+                    self.show_libc_assume_version()
+                return
+
+        # print
         self.quiet_print(titlify("libc info"))
-        gdb.execute(f"set $libc = {libc:#x}")
-        self.quiet_print(f"$libc = {libc:#x}")
+        gdb.execute(f"set $libc = {libc_base:#x}")
+        self.quiet_print(f"$libc = {libc_base:#x}")
 
         if not args.quiet:
-            self.libc_calc_hash(libc_targets)
+            self.libc_calc_hash(libc_base)
             self.show_libc_assume_version()
         return
 
 
 @register_command
-class LdCommand(GenericCommand):
+class LdBaseCommand(GenericCommand):
     """Display ld base address."""
 
     _cmdline_ = "ld"
     _category_ = "02-b. Process Information - Base Address"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-s", "--set", metavar="ADDR", type=AddressUtil.parse_address, help="user specific address.")
+    parser.add_argument("-r", "--reset", action="store_true", help="reset user specific address.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
-    def ld_calc_hash(self, ld_targets):
-        ld = ProcessMap.process_lookup_path(ld_targets)
+    def ld_calc_hash(self, ld_base):
+        ld = ProcessMap.process_lookup_address(ld_base)
         real_ld_path = None
 
         if is_container_attach():
@@ -54961,7 +55007,7 @@ class LdCommand(GenericCommand):
             if is_qemu_user():
                 data = None
                 for maps in ProcessMap.get_process_maps(outer=True):
-                    if not LibcCommand.is_same_filename(maps.path, ld.path):
+                    if not LibcBaseCommand.is_same_filename(maps.path, ld.path):
                         continue
                     real_ld_path = maps.path
                     data = open(real_ld_path, "rb").read()
@@ -54992,24 +55038,36 @@ class LdCommand(GenericCommand):
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
-        Cache.reset_gef_caches(all=True) # get_process_maps may be caching old information
+        # user specific
+        if args.set is not None:
+            self.ld_base_user_specific = args.set
 
-        ld_targets = (
-            "ld-2.", "ld-linux-", "ld-linux.", # glibc
-            "ld64-uClibc-", "ld-uClibc-", "ld64-uClibc.", "ld-uClibc.", # uClibc
-        )
+        if args.reset:
+            if hasattr(self, "ld_base_user_specific"):
+                delattr(self, "ld_base_user_specific")
 
-        ld = ProcessMap.get_section_base_address_by_list(ld_targets)
-        if ld is None:
-            err("Could not find the ld")
-            return
+        ld_base = getattr(self, "ld_base_user_specific", None)
 
+        # auto estimation
+        if not is_valid_addr(ld_base):
+            Cache.reset_gef_caches(all=True) # get_process_maps may be caching old information
+
+            ld_targets = (
+                "ld-2.", "ld-linux-", "ld-linux.", # glibc
+                "ld64-uClibc-", "ld-uClibc-", "ld64-uClibc.", "ld-uClibc.", # uClibc
+            )
+            ld_base = ProcessMap.get_section_base_address_by_list(ld_targets)
+            if ld_base is None:
+                err("Could not find the ld")
+                return
+
+        # print
         self.quiet_print(titlify("ld info"))
-        gdb.execute(f"set $ld = {ld:#x}")
-        self.quiet_print(f"$ld = {ld:#x}")
+        gdb.execute(f"set $ld = {ld_base:#x}")
+        self.quiet_print(f"$ld = {ld_base:#x}")
 
         if not args.quiet:
-            self.ld_calc_hash(ld_targets)
+            self.ld_calc_hash(ld_base)
         return
 
 
@@ -135366,7 +135424,7 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
                 return None
         else:
             # get glibc heap (for d8)
-            heap_base = HeapbaseCommand.heap_base()
+            heap_base = HeapBaseCommand.heap_base()
             if not heap_base:
                 err("Could not find the glibc heap")
                 return None
@@ -136222,7 +136280,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             chromium_rw_maps = [p for p in chromium_rw_maps if (p.page_start & mask) == (codebase & mask) and p.path != filepath]
         elif is_32bit():
             mask = 0xff00_0000
-            heapbase = HeapbaseCommand.heap_base()
+            heapbase = HeapBaseCommand.heap_base()
             chromium_rw_maps = [p for p in maps if p.permission.value == Permission.READ | Permission.WRITE]
             chromium_rw_maps = [p for p in chromium_rw_maps if p.page_start < heapbase and p.path != filepath]
 
