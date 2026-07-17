@@ -75248,14 +75248,14 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class StringsCommand(GenericCommand, BufferingOutput):
-    """Search ASCII string (recursively) from specific location."""
+    """Search ASCII strings recursively from a location or all userland regions."""
 
     _cmdline_ = "strings"
     _category_ = "03-a. Memory - Search"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
-                        help="the start location to search for.")
+    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address, nargs="?",
+                        help="the start location to search for. (default: all userland regions)")
     parser.add_argument("end_location", metavar="END_LOCATION", type=AddressUtil.parse_address, nargs="?",
                         help="the end location to search for. (default: end of region or LOCATION+0x1000)")
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="REGEXP include filter.")
@@ -75266,9 +75266,11 @@ class StringsCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-s", "--skip-save", action="store_true", help="do not save the output.")
     parser.add_argument("-m", "--minlen", type=int, default=7, help="minimum string length (default: %(default)s)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="disable the progress bar.")
     _syntax_ = parser.format_help()
 
     _example_ = [
+        "{0:s}                                                   # search all userland regions",
         "{0:s} 0x00007ffffffde000 0x00007ffffffff000             # exact specification",
         "{0:s} 0x00007ffffffde000                                # guess the search end location",
         "{0:s} -m 10 0x00007ffffffde000 0x00007ffffffff000       # filter by length",
@@ -75289,9 +75291,11 @@ class StringsCommand(GenericCommand, BufferingOutput):
         seen_addr = []
         seen_cstr = []
 
-        while queue:
-            location, search_range, depth = queue.pop(0)
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
+        show_progress = len(queue) > 1
+        queue_iter = tqdm(queue, leave=False, total=len(queue)) if show_progress else queue
 
+        for location, search_range, depth in queue_iter:
             # get data
             data = b""
             try:
@@ -75333,28 +75337,37 @@ class StringsCommand(GenericCommand, BufferingOutput):
                 if is_valid_addr(addr):
                     queue.append((addr, self.args.range, depth - 1))
                     seen_addr.append(addr)
+                    if show_progress and hasattr(queue_iter, "total"):
+                        queue_iter.total = len(queue)
         return
 
     @parse_args
     @only_if_gdb_running
     def do_invoke(self, args):
-        if args.end_location:
-            if args.end_location < args.location:
-                err("Invalid END_LOCATION")
+        if args.location is None:
+            if is_qemu_system() or is_kgdb() or is_in_kernel():
+                err("Searching all regions is only supported in userland")
                 return
-            first_range = args.end_location - args.location
+            maps = ProcessMap.get_process_maps_exclude_special_regions()
+            queue = [(m.page_start, m.size, args.depth) for m in maps]
         else:
-            loc = ProcessMap.lookup_address(args.location)
-            if loc.valid:
-                first_range = loc.section.page_end - args.location
+            if args.end_location:
+                if args.end_location < args.location:
+                    err("Invalid END_LOCATION")
+                    return
+                first_range = args.end_location - args.location
             else:
-                first_range = get_pagesize()
+                loc = ProcessMap.lookup_address(args.location)
+                if loc.valid:
+                    first_range = loc.section.page_end - args.location
+                else:
+                    first_range = get_pagesize()
+            queue = [(args.location, first_range, args.depth)]
 
         self.out = []
-        queue = [(args.location, first_range, args.depth)]
         self.search_ascii(queue)
 
-        if not args.skip_save:
+        if not args.skip_save and self.out:
             tmp_fd, tmp_path = GefUtil.mkstemp(prefix="strings", suffix=".txt")
             os.fdopen(tmp_fd, "w").write("\n".join(self.out))
             info("The output is saved to {:s}".format(tmp_path))

@@ -2442,11 +2442,13 @@ Display various base addresses.
 ### Syntax
 
 ```text
-usage: codebase [-h] [-q]
+usage: codebase [-h] [-s ADDR] [-r] [-q]
 
 options:
-  -h, --help   show this help message and exit
-  -q, --quiet  quiet execution.
+  -h, --help      show this help message and exit
+  -s, --set ADDR  user specific address.
+  -r, --reset     reset user specific address.
+  -q, --quiet     quiet execution.
 ```
 
 ## fsbase
@@ -2493,11 +2495,13 @@ Display heap base address.
 ### Syntax
 
 ```text
-usage: heapbase [-h] [-q]
+usage: heapbase [-h] [-s ADDR] [-r] [-q]
 
 options:
-  -h, --help   show this help message and exit
-  -q, --quiet  quiet execution.
+  -h, --help      show this help message and exit
+  -s, --set ADDR  user specific address.
+  -r, --reset     reset user specific address.
+  -q, --quiet     quiet execution.
 ```
 
 ## ld
@@ -2508,11 +2512,13 @@ Display ld base address.
 ### Syntax
 
 ```text
-usage: ld [-h] [-q]
+usage: ld [-h] [-s ADDR] [-r] [-q]
 
 options:
-  -h, --help   show this help message and exit
-  -q, --quiet  quiet execution.
+  -h, --help      show this help message and exit
+  -s, --set ADDR  user specific address.
+  -r, --reset     reset user specific address.
+  -q, --quiet     quiet execution.
 ```
 
 ## libc
@@ -2523,11 +2529,13 @@ Display libc base address.
 ### Syntax
 
 ```text
-usage: libc [-h] [-q]
+usage: libc [-h] [-s ADDR] [-r] [-q]
 
 options:
-  -h, --help   show this help message and exit
-  -q, --quiet  quiet execution.
+  -h, --help      show this help message and exit
+  -s, --set ADDR  user specific address.
+  -r, --reset     reset user specific address.
+  -q, --quiet     quiet execution.
 ```
 
 ## tls
@@ -3521,16 +3529,16 @@ because it is difficult to implement regular expression searches that span multi
 
 ## strings
 
-Search ASCII string (recursively) from specific location.
+Search ASCII strings recursively from a location or all userland regions.
 
 
 ### Syntax
 
 ```text
-usage: strings [-h] [-f FILTER] [-e EXCLUDE] [-d DEPTH] [-r RANGE] [-s] [-m MINLEN] [-n] LOCATION [END_LOCATION]
+usage: strings [-h] [-f FILTER] [-e EXCLUDE] [-d DEPTH] [-r RANGE] [-s] [-m MINLEN] [-n] [-q] [LOCATION] [END_LOCATION]
 
 positional arguments:
-  LOCATION              the start location to search for.
+  LOCATION              the start location to search for. (default: all userland regions)
   END_LOCATION          the end location to search for. (default: end of region or LOCATION+0x1000)
 
 options:
@@ -3543,11 +3551,13 @@ options:
   -s, --skip-save       do not save the output.
   -m, --minlen MINLEN   minimum string length (default: 7)
   -n, --no-pager        do not use the pager.
+  -q, --quiet           disable the progress bar.
 ```
 
 ### Examples
 
 ```gdb
+strings                                                   # search all userland regions
 strings 0x00007ffffffde000 0x00007ffffffff000             # exact specification
 strings 0x00007ffffffde000                                # guess the search end location
 strings -m 10 0x00007ffffffde000 0x00007ffffffff000       # filter by length
@@ -6837,34 +6847,35 @@ options:
 ```text
 Simplified Hoard structure:
 
-                                  +-SmallHeap-+
-                                  | ...       |
-                                  +-----------+
-                                        ^
-                                        |
-     +-superblock-------------------+   |      +-superblock--+   +-superblock--+
-     | vtable                       |   |      | vtable      |   | vtable      |
-     | magic                        |   |      | magic       |   | magic       |
-     | objectSize                   |   |      | objectSize  |   | objectSize  |
-     | totalObjects                 |   |      | ...         |   | ...         |
-     | owner                        |---+      | prev        |<->| prev        |<-> ...
-...<-> prev                         |<-------->| next        |   | next        |
-     | next                         |--------->| ...         |   | ...         |
-     | reapableObjects              |          | freeList    |   | freeList    |
-     | objectsFree                  |          | start       |   | start       |
-     | start                        |--+       | position    |   | position    |
-     | position                     |  |       +-------------+   +-------------+
-     | freeList                     |--|--+
-     +------------------------------+  |  |
-                                       |  |       [free object freelist]
-                                       |  |        +-object--+  +-object--+
-                                       |  +------->| next    |->| next    |->NULL
-                                       |           +---------+  +---------+
-                                       |
-                                       |          [unused objects]
-                                       |           +-object--+  +-object--+
-                                       +---------->|         |  |         |  ...
-                                                   +---------+  +---------+
+                       +-SmallHeap-+
+                       | ...       |
+                       +-----------+
+                             ^
+      +-superblock-------+   |
+      | vtable           |   |
+      | magic            |   |
+      | objectSize       |   |      +-superblock--+   +-superblock--+
+      | totalObjects     |   |      |             |   |             |
+      | owner            |---+      | ...         |   | ...         |
+...<--| prev             |<---------| prev        |<--| prev        |<--...
+...-->| next             |--------->| next        |-->| next        |-->...
+      | reapableObjects  |          | ...         |   | ...         |
+      | objectsFree      |          |             |   |             |
+      | start            |--+       +-------------+   +-------------+
+      | position         |  |
+      | freeList         |-----+     [free object freelist]
+      +------------------+  |  |     +-object--+   +-object--+
+                            |  +---->| next    |-->| next    |-->NULL
+                            |        +---------+   +---------+
+                            |
+                            |        [unused objects]
+                            |        +-object--+
+                            +------->|         |
+                                     +---------+
+                                     | ...     |
+                                     +---------+
+                                     |         |
+                                     +---------+
 
 * This command scans anonymous writable mappings and detects superblocks by vtable and magic.
 * `--superblock` can be used to specify superblocks manually.
@@ -6986,7 +6997,7 @@ Simplified musl mallocng structure:
                  | last_idx         |      | last_idx         |
                  | freeable         |      | freeable         |
                  | maplen           |      | maplen           |
-        ...<---->| prev / next      |<---->| prev / next      |<----> ...
+        ...<---->| prev / next      |<---->| prev / next      |<---->...
                  | mem              |--+   | mem              |--+
                  +------------------+  |   +------------------+  |
                                        v                         v
@@ -7073,20 +7084,41 @@ snmalloc (as of June 2025) heap free-list viewer (x64 only).
 ### Syntax
 
 ```text
-usage: snmalloc-heap-dump [-h] [-a] [-l] [-r] [-n] [-v]
+usage: snmalloc-heap-dump [-h] [-hh] [-a] [-l] [-r] [-n] [-v]
 
 options:
-  -h, --help      show this help message and exit
-  -a, --all       dump all thread_alloc.
-  -l, --laden     dump laden (large or inactive slabs).
-  -r, --remote    dump remote_alloc (WIP).
-  -n, --no-pager  do not use the pager.
-  -v, --verbose   display also empty freelists.
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  -a, --all           dump all thread_alloc.
+  -l, --laden         dump laden (large or inactive slabs).
+  -r, --remote        dump remote_alloc (WIP).
+  -n, --no-pager      do not use the pager.
+  -v, --verbose       display also empty freelists.
 ```
 
 ### Notes
 
 ```text
+Simplified snmalloc structure:
+
++-Alloc (ThreadAlloc::alloc)-+
+| small_fast_free_lists[43]  |    +-free chunk-+   +-free chunk-+
+|  [0]                       |--->| next       |-->| next       |-->NULL
+|  [1]                       |    +------------+   +------------+
+|  ...                       |
+| ...                        |    +-SlabMetadataCache-+   +-SeqSet----+   +-BackendSlabMetadata-+
+| alloc_classes[43]          | +->| available         |-->| head.next |-->| node.next           |-->...
+|  [0]                       |-+  | unused            |   | head.prev |   | node.prev           |
+|  [1]                       |    | length            |   +-----------+   | free_queue.head     |-+  +-free chunk-+
+|  ...                       |    +-------------------+                   | free_queue.end      | +->| next       |-->NULL
+| laden                      |-+                                          | ...                 |    +------------+
+| ...                        | +->SeqSet (same structure as above)        +---------------------+
+| remote_alloc               |
+|   list                     |    +-RemoteMessage-+   +-RemoteMessage-+
+|     front                  |--->| next          |-->| next          |-->...
+| ...                        |    +---------------+   +---------------+
++----------------------------+
+
 This command dumps the following four categories:
 - small_fast_free_lists: Free list per small size class (fast path).
 - alloc_classes: Per size class list of active slabs.
