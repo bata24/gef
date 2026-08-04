@@ -6839,17 +6839,17 @@ class Architecture:
     def get_ra(self, insn, frame):
         pass
 
-    @abc.abstractmethod
     def get_tls(self):
-        pass
+        return None
 
-    @abc.abstractmethod
+    def get_canary_offset(self):
+        return None
+
     def decode_cookie(self, value, cookie):
-        pass
+        return value
 
-    @abc.abstractmethod
     def encode_cookie(self, value, cookie):
-        pass
+        return value
 
     @property
     def pc(self):
@@ -7839,6 +7839,9 @@ class X86(Architecture):
             return None
         return self.get_gs()
 
+    def get_canary_offset(self):
+        return 0x14
+
     def decode_cookie(self, value, cookie):
         return ror(value, 9, 32) ^ cookie
 
@@ -7995,6 +7998,9 @@ class X86_64(X86):
             return None
         return self.get_fs()
 
+    def get_canary_offset(self):
+        return 0x28
+
     def decode_cookie(self, value, cookie):
         return ror(value, 17, 64) ^ cookie
 
@@ -8099,7 +8105,7 @@ class X86_64(X86):
         return b"".join([p64(v) for v in values])
 
 
-class X86_16(X86):
+class X86_16(Architecture):
     """GEF representation of i8086 architecture."""
 
     arch = "X86"
@@ -8108,6 +8114,14 @@ class X86_16(X86):
     load_condition = [
         "I8086",
     ]
+
+    general_registers = X86.general_registers
+    special_registers = X86.special_registers
+    virtual_registers = X86.virtual_registers
+    flag_register = X86.flag_register
+    all_registers = X86.all_registers
+    alias_registers = X86.alias_registers
+    flags_table = X86.flags_table
 
     seg_extended_registers = {
         "$cs:$ip": ["$cs", "$pc"],
@@ -8124,10 +8138,29 @@ class X86_16(X86):
     syscall_parameters = None
 
     bit_length = 16
+    endianness = X86.endianness
+    instruction_length = X86.instruction_length
+    has_delay_slot = X86.has_delay_slot
+    has_syscall_delay_slot = X86.has_syscall_delay_slot
+    has_ret_delay_slot = X86.has_ret_delay_slot
+    stack_grow_down = X86.stack_grow_down
+    tls_supported = False
+
+    keystone_support = X86.keystone_support
+    capstone_support = X86.capstone_support
+    unicorn_support = X86.unicorn_support
+
+    nop_insn = X86.nop_insn
+    infloop_insn = X86.infloop_insn
+    trap_insn = X86.trap_insn
+    ret_insn  = X86.ret_insn
+    syscall_insn = b"\xcd\x21" # int 0x21
 
     def __init__(self):
         gdb.execute("gef config context_code.use_capstone True")
         return
+
+    flag_register_to_human = X86.flag_register_to_human
 
     def is_syscall(self, insn):
         try:
@@ -8135,11 +8168,16 @@ class X86_16(X86):
         except Exception:
             return False
 
+    is_call = X86.is_call
+
     def is_jump(self, insn):
         return insn.mnemonic in ["jmp", "ljmp"] or self.is_conditional_branch(insn)
 
     def is_ret(self, insn):
         return insn.mnemonic in ["ret", "retf", "iret"]
+
+    is_conditional_branch = X86.is_conditional_branch
+    is_branch_taken = X86.is_branch_taken
 
     def get_ra(self, insn, frame):
         ra = None
@@ -8161,6 +8199,8 @@ class X86_16(X86):
         except gdb.error:
             pass
         return ra
+
+    get_ith_parameter = X86.get_ith_parameter
 
     A20 = True
 
@@ -8432,6 +8472,9 @@ class PPC(Architecture):
         tls = get_register("$r2")
         return adjust_offset(tls)
 
+    def get_canary_offset(self):
+        return -0x8
+
     def decode_cookie(self, value, cookie):
         return value ^ cookie
 
@@ -8493,6 +8536,9 @@ class PPC64(PPC):
 
         tls = get_register("$r13")
         return adjust_offset(tls)
+
+    def get_canary_offset(self):
+        return -0x10
 
 
 class SPARC(Architecture):
@@ -8556,7 +8602,8 @@ class SPARC(Architecture):
     def flag_register_to_human(self, val=None):
         # https://courses.grainger.illinois.edu/cs423/sp2011/lectures/sim_public/sparcv8.pdf
         if val is None:
-            val = get_register(self.flag_register)
+            reg = self.flag_register
+            val = get_register(reg)
         return Architecture.flags_to_human(val, self.flags_table)
 
     def is_syscall(self, insn):
@@ -8683,6 +8730,9 @@ class SPARC(Architecture):
     def get_tls(self):
         return get_register("$g7")
 
+    def get_canary_offset(self):
+        return 0x14
+
     def decode_cookie(self, value, cookie):
         return value ^ cookie
 
@@ -8753,6 +8803,9 @@ class SPARC64(SPARC):
     bit_length = 64
 
     syscall_insn = b"\x6d\x20\xd0\x91" # trap 0x6d
+
+    def get_canary_offset(self):
+        return 0x28
 
     def is_syscall(self, insn):
         try:
@@ -9432,6 +9485,9 @@ class S390X(Architecture):
         hi = get_register("$acr0")
         lo = get_register("$acr1")
         return (hi << 32) | lo
+
+    def get_canary_offset(self):
+        return 0x28
 
     def decode_cookie(self, value, cookie):
         return value ^ cookie
@@ -16506,7 +16562,7 @@ class PrintFormatCommand(GenericCommand):
 
 @register_command
 class CanaryCommand(GenericCommand):
-    """Display the canary value of the current process from auxv information."""
+    """Display the canary value of the current process."""
 
     _cmdline_ = "canary"
     _category_ = "02-f. Process Information - Security"
@@ -16517,21 +16573,52 @@ class CanaryCommand(GenericCommand):
     @staticmethod
     @Cache.cache_this_session
     def gef_read_canary():
-        """Read the canary of a running process using Auxiliary Vector.
-        Return a tuple of (canary, location) if found, None otherwise."""
+        """Read the current stack canary and return its value and location."""
         if is_in_kernel():
             return None
 
         try:
-            auxval = Auxv.get_auxiliary_values()
-            if not auxval:
+            libc_version = get_libc_version()
+        except Exception:
+            libc_version = None
+
+        if libc_version and libc_version >= (2, 44):
+            # from glibc 2.44, AT_RANDOM will be refilled
+            canary_offset = current_arch.get_canary_offset()
+            if canary_offset is not None:
+                try:
+                    tls = current_arch.get_tls()
+                    if tls is not None:
+                        canary_location = tls + canary_offset
+                        canary = read_int_from_memory(canary_location)
+                        # The canary address in TLS differs between threads, so only cache its value.
+                        return canary, None
+                except Exception:
+                    return None
+            else:
+                try:
+                    canary_location = int(gdb.parse_and_eval("&__stack_chk_guard"))
+                    canary = read_int_from_memory(canary_location)
+                    return canary, canary_location
+                except (gdb.error, gdb.MemoryError):
+                    return None
+        else:
+            try:
+                auxval = Auxv.get_auxiliary_values()
+                if not auxval:
+                    return None
+                canary_location = auxval["AT_RANDOM"]
+                canary = read_int_from_memory(canary_location)
+                if Endian.is_big_endian():
+                    if is_64bit():
+                        canary &= 0x00ff_ffff_ffff_ffff
+                    elif is_32bit():
+                        canary &= 0x00ff_ffff
+                else:
+                    canary &= ~0xff
+                return canary, canary_location
+            except (KeyError, gdb.MemoryError):
                 return None
-            canary_location = auxval["AT_RANDOM"]
-            canary = read_int_from_memory(canary_location)
-            canary &= ~0xff
-            return canary, canary_location
-        except (KeyError, gdb.MemoryError):
-            return None
 
     def dump_canary(self):
         res = CanaryCommand.gef_read_canary()
@@ -16539,11 +16626,12 @@ class CanaryCommand(GenericCommand):
             err("Failed to get the canary")
             return
 
-        canary, location = res
+        canary, canary_location = res
         gef_print(titlify("Canary value"))
-        info("Found AT_RANDOM at {!s}, reading {:d} bytes".format(
-            ProcessMap.lookup_address(location), current_arch.ptrsize,
-        ))
+        if canary_location is not None:
+            info("Found canary at {!s}, reading {:d} bytes".format(
+                ProcessMap.lookup_address(canary_location), current_arch.ptrsize,
+            ))
         info("The canary is {:s}".format(Color.colorify_hex(canary, "bold")))
 
         gef_print(titlify("Found canaries"))
@@ -37866,7 +37954,7 @@ class DereferenceCommand(GenericCommand):
         if not is_qemu_system() and not is_vmware() and not is_kgdb():
             res = CanaryCommand.gef_read_canary()
             if res:
-                canary, location = res
+                canary, _ = res
                 if canary != 0: # when Golang binary, canary is 0
                     if current_address_value == canary:
                         extra.append("canary")
