@@ -151206,8 +151206,19 @@ class PageInfoCommand(GenericCommand):
 
     def get_slot6_kind(self, slot6_raw):
         slot6_s32 = self.u32_to_s32(slot6_raw)
-        pgty_mapcount_underflow_shifted = self.u32_to_s32(0xff << 24)
-        if slot6_s32 < pgty_mapcount_underflow_shifted:
+        kversion = Kernel.kernel_version()
+
+        if kversion >= "6.12":
+            pgty_mapcount_underflow_shifted = self.u32_to_s32(0xff << 24)
+            has_type = slot6_s32 < pgty_mapcount_underflow_shifted
+        elif  kversion >= "6.11":
+            page_mapcount_reserve = self.u32_to_s32(0xffff0000) 
+            has_type = slot6_s32 < page_mapcount_reserve
+        else:
+            page_mapcount_reserve = -128
+            has_type = slot6_s32 < page_mapcount_reserve
+
+        if has_type:
             return "type"
         return "mapcount"
 
