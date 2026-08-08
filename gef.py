@@ -127466,7 +127466,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
         else:
             virt = Kernel.page2virt(page)
             offset = virt & get_pagesize_mask_low()
-        
+
         phys = self.page2phys_wrapper(page)
 
         if phys is None:
@@ -127513,14 +127513,14 @@ class BuddyContainsCommand(BuddyDumpCommand):
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
         PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
         PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
- 
+
         size = PAGE_SIZE << order
         head_phys = head_pfn << PAGE_SHIFT
         head_virt = Kernel.page2virt(head_page)
- 
+
         page_str = Color.colorify("{:#x}".format(head_page), freed_address_color)
         size_str = Color.colorify_hex(size, chunk_size_color)
- 
+
         gef_print("order: {:d} ({:#x} bytes, {:d} pages)".format(order, size, 1 << order))
         if head_virt is not None:
             virt_str = "{:#x}-{:#x}".format(head_virt, head_virt + size)
@@ -127542,7 +127542,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
         self.quiet_print("phys: {:#x} (pfn: {:#x})".format(phys, pfn))
         if offset_in_page:
             self.quiet_print("remarks: {:s} to page (offset: +{:#x})".format(Color.redify("unaligned"), offset_in_page,))
-        
+
         if self.is_page_buddy(page):
             head_page = page
             head_pfn = pfn
@@ -127556,7 +127556,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
                 Color.colorify("unknown", used_address_color),
             ))
             gef_print("remarks: no PG_buddy head page found, run buddy-contains without skipping free lists.")
- 
+
         # Part of a larger block
         elif head_page != page:
             self.quiet_print("status: {:s}".format(
@@ -127581,7 +127581,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
             BuddyDumpCommand.maps = PageMap.get_page_maps(None)
             if BuddyDumpCommand.maps is None:
                 return None
- 
+
         node_entries = []
         tqdm = GefUtil.get_tqdm(not self.args.quiet)
         for i, node in tqdm(enumerate(self.nodes), leave=False, total=len(self.nodes), desc="node"):
@@ -127596,7 +127596,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
                 return False
             npages = entry.size // KernelAddressHeuristicFinder.consts().PAGE_SIZE
             return entry.page <= page < entry.page + npages * self.sizeof_struct_page
- 
+
         for node_title, zone_entries in node_entries:
             for zone_title, zone_entry in zone_entries:
                 if "per_cpu_pageset" in zone_entry:
@@ -127615,8 +127615,8 @@ class BuddyContainsCommand(BuddyDumpCommand):
                                         "sub_title": "cpu: {:d}".format(cpu_num),
                                         "list_title": pcp_title,
                                     }
-                                    
- 
+
+
                 if "free_area" in zone_entry:
                     for order_title, free_lists, has_any in zone_entry["free_area"]:
                         if not has_any:
@@ -127681,7 +127681,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
         else:
             page = self.get_page()
             if page is None:
-                return 
+                return
             self.parse_free_lists(page)
 
         return
@@ -127697,7 +127697,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
         if self.args.skip_free_list and kversion < "4.18":
             self.quiet_err("Unsupported before v4.18")
             return
-        
+
         if kversion < "3.1":
             self.quiet_err("Unsupported before v3.1")
             return
@@ -127719,15 +127719,15 @@ class BuddyContainsCommand(BuddyDumpCommand):
         if not self.initialize():
             self.quiet_err("Failed to initialize")
             return
- 
+
         self.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
-        if self.sizeof_struct_page is None: 
+        if self.sizeof_struct_page is None:
             self.quiet_err("Could not find sizeof(struct page)")
-            return 
+            return
 
         self.buddy_contains()
         return
- 
+
 @register_command
 class KernelPipeCommand(GenericCommand, BufferingOutput):
     """Dump pipe information."""
@@ -151564,7 +151564,7 @@ class PageInfoCommand(GenericCommand):
             pgty_mapcount_underflow_shifted = PageInfoCommand.u32_to_s32(0xff << 24)
             has_type = slot6_s32 < pgty_mapcount_underflow_shifted
         elif  kversion >= "6.11":
-            page_mapcount_reserve = PageInfoCommand.u32_to_s32(0xffff0000) 
+            page_mapcount_reserve = PageInfoCommand.u32_to_s32(0xffff0000)
             has_type = slot6_s32 < page_mapcount_reserve
         else:
             page_mapcount_reserve = -128
