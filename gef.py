@@ -127388,22 +127388,39 @@ class BuddyContainsCommand(BuddyDumpCommand):
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address, help="target address.")
     parser.add_argument("-p", "--page", action="store_true",
                         help="interpret ADDRESS as a `struct page` address instead of a virtual address.")
+    parser.add_argument("-L", "--skip-free-list", action="store_true",
+                        help="do not walk the free lists use struct page metadata only. "
+                             "pcp free pages and zone/mtype/cpu cannot be reported in this mode.")
+    parser.add_argument("-Q", "--skip-phys", action="store_true", help="skip virt -> phys translation.")
+    parser.add_argument("-M", "--use-physmap", action="store_true",
+                        help="use physmap for virt -> phys translation (x64/arm64 only).")
     parser.add_argument("--MIGRATE_PCPTYPES", type=int, choices=[3, 4], default=3,
                         help="use specify value; linux: 3, android: 4 (2023~).")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
+    _note_ = [
+        "Given an address, resolves which buddy allocator block contains it.",
+        "",
+        "A free block of order N is described by its head page only, page->private holds the",
+        "order and PG_buddy is set on the head, while the tail pages carry neither. So a page",
+        "that was merged into a higher order block cannot be identified from its own struct",
+        "",
+        "Two modes:",
+        "  default        : walk the free lists like buddy-dump and locate the block.",
+        "  -L             : read struct page flags only but cannot report pcp free pages,",
+    ]
+    _note_ = "\n".join(_note_)
+
     _example_ = [
-        "{0:s} 0xffff888003c01234",
-        "{0:s} -p 0xffffea00000f0040    # ADDRESS is a `struct page`",
+        "{0:s} 0xffff96a7c2144000",
+        "{0:s} -p 0xffffca7640004040    # ADDRESS is a struct page",
+        "{0:s} -L 0xffff96a7c2144000    # Skip free lists",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
-    
-    _note_ = "TEST BUDDY CONTAINS"
 
-    def fill_dump_args(self):
+    def fill_buddy_dump_args(self):
         self.args.zone_filter = None
         self.args.order_filter = None
         self.args.mtype_filter = None
@@ -127424,20 +127441,30 @@ class BuddyContainsCommand(BuddyDumpCommand):
             return int(r.group(1), 16)
         return None
 
-    def resolve_target(self):
+    def get_page(self):
         if self.args.page:
             page = self.args.address
             if not is_valid_addr(page):
                 self.quiet_err("Invalid page address")
                 return None
-            virt = Kernel.page2virt(page)
-            offset = 0
         else:
             virt = self.args.address
             page = Kernel.virt2page(virt & get_pagesize_mask_high())
             if page is None:
                 self.quiet_err("Failed to resolve page from virt")
                 return None
+        return page
+
+    def resolve_target(self):
+        page = self.get_page()
+        if page is None:
+            return None
+
+        if self.args.page:
+            virt = self.args.address
+            offset = 0
+        else:
+            virt = Kernel.page2virt(page)
             offset = virt & get_pagesize_mask_low()
         
         phys = self.page2phys_wrapper(page)
@@ -127471,7 +127498,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
             head_pfn = pfn & ~((1 << order) - 1)
             head_page = page - (pfn - head_pfn) * self.sizeof_struct_page
 
-            # Just for good measures 
+            # Just for good measures
             if not is_valid_addr(head_page):
                 continue
             if not self.is_page_buddy(head_page):
@@ -127481,8 +127508,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
             return head_page, head_pfn, order
         return None, None, None
 
-    def print_block_info(self, page, pfn, head_page, head_pfn, order):
-        """Print the block a page belongs to, following buddy-dump's Entry style."""
+    def print_block_info(self, head_page, head_pfn, order):
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
         PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
@@ -127506,17 +127532,9 @@ class BuddyContainsCommand(BuddyDumpCommand):
         ))
         return
 
-    def buddy_contains(self):
+    def parse_page(self, page, pfn, phys, virt, offset_in_page):
         used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
         PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
-        PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
-
-        ret = self.resolve_target()
-        if ret is None:
-            return
-
-        page, virt, phys, offset_in_page = ret
-        pfn = phys >> PAGE_SHIFT
 
         self.quiet_print("page: {:#x}".format(page))
         if virt is not None:
@@ -127524,8 +127542,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
         self.quiet_print("phys: {:#x} (pfn: {:#x})".format(phys, pfn))
         if offset_in_page:
             self.quiet_print("remarks: {:s} to page (offset: +{:#x})".format(Color.redify("unaligned"), offset_in_page,))
-
-        # Early test is_page_buddy
+        
         if self.is_page_buddy(page):
             head_page = page
             head_pfn = pfn
@@ -127533,35 +127550,140 @@ class BuddyContainsCommand(BuddyDumpCommand):
         else:
             head_page, head_pfn, order = self.find_head_page(page, pfn)
 
-        # Not in buddy
+        # Not in buddy ?
         if head_page is None:
             self.quiet_print("status: {:s}".format(
                 Color.colorify("unknown", used_address_color),
             ))
-            gef_print("remarks: no PG_buddy head page found.")
-            gef_print("remarks: the page is in-use, a free pcp page, or a compound tail; "
-                      "a free-list walk is needed to determine which.")
+            gef_print("remarks: no PG_buddy head page found, run buddy-contains without skipping free lists.")
  
         # Part of a larger block
         elif head_page != page:
             self.quiet_print("status: {:s}".format(
                 Color.colorify("in buddy (part of a larger block)", "bold green"),
             ))
-            self.print_block_info(page, pfn, head_page, head_pfn, order)
+            self.print_block_info(head_page, head_pfn, order)
             gef_print("remarks: this page is page[{:d}] of the block, +{:#x} bytes from base".format(
                 pfn - head_pfn, (pfn - head_pfn) * PAGE_SIZE,
             ))
-            if virt is not None:
-                gef_print("remarks: target offset from block base: +{:#x}".format(
-                    (pfn - head_pfn) * PAGE_SIZE + offset_in_page,
-                ))
- 
+
         # Present in the buddy and it's the head of the block
         else:
             self.quiet_print("status: {:s}".format(
                 Color.colorify("in buddy (head page)", "bold green"),
             ))
-            self.print_block_info(page, pfn, head_page, head_pfn, order)
+            self.print_block_info(head_page, head_pfn, order)
+
+        return
+
+    def get_lists(self, page):
+        if not self.args.skip_phys and not self.args.use_physmap:
+            BuddyDumpCommand.maps = PageMap.get_page_maps(None)
+            if BuddyDumpCommand.maps is None:
+                return None
+ 
+        node_entries = []
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
+        for i, node in tqdm(enumerate(self.nodes), leave=False, total=len(self.nodes), desc="node"):
+            title = "node[{:d}] @ {:#x}".format(i, node)
+            node_entries.append([title, self.dump_node(node)])
+
+        return node_entries
+
+    def find_in_lists(self, node_entries, page):
+        def contains(entry):
+            if entry is None:
+                return False
+            npages = entry.size // KernelAddressHeuristicFinder.consts().PAGE_SIZE
+            return entry.page <= page < entry.page + npages * self.sizeof_struct_page
+ 
+        for node_title, zone_entries in node_entries:
+            for zone_title, zone_entry in zone_entries:
+                if "per_cpu_pageset" in zone_entry:
+                    for cpu_num, pcp_all_entries in zone_entry["per_cpu_pageset"].items():
+                        for pcp_title, pcp_entries, has_any in pcp_all_entries:
+                            if not has_any:
+                                continue
+                            for entry in pcp_entries:
+                                if contains(entry):
+                                    return {
+                                        "kind": "pcp",
+                                        "entry": entry,
+                                        "node_title": node_title,
+                                        "zone_title": zone_title,
+                                        "section_title": "per_cpu_pageset",
+                                        "sub_title": "cpu: {:d}".format(cpu_num),
+                                        "list_title": pcp_title,
+                                    }
+                                    
+ 
+                if "free_area" in zone_entry:
+                    for order_title, free_lists, has_any in zone_entry["free_area"]:
+                        if not has_any:
+                            continue
+                        for mtype_title, free_list, has_any2 in free_lists:
+                            if not has_any2:
+                                continue
+                            for entry in free_list:
+                                if contains(entry):
+                                    return {
+                                        "kind": "free_area",
+                                        "entry": entry,
+                                        "node_title": node_title,
+                                        "zone_title": zone_title,
+                                        "section_title": "free_area",
+                                        "sub_title": order_title,
+                                        "list_title": mtype_title,
+                                    }
+        return None
+
+    def parse_free_lists(self, page):
+        used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
+        PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+
+        lists = self.get_lists(page)
+        if lists is None:
+            self.quiet_err("Failed to resolve maps")
+            return
+
+        found = self.find_in_lists(lists, page)
+
+        if found is None:
+            self.quiet_print("status: {:s}".format(Color.colorify("in-use", used_address_color)))
+            gef_print("remarks: not found in any free_area or pcp list.")
+            return
+
+        entry = found["entry"]
+        gef_print(titlify(found["node_title"]))
+        gef_print(titlify(found["zone_title"]))
+        gef_print(titlify(found["section_title"]))
+        gef_print(found["sub_title"])
+        gef_print(found["list_title"])
+        gef_print(str(entry).rstrip())
+
+        if entry.page != page:
+            index = (page - entry.page) // self.sizeof_struct_page
+            gef_print("remarks: this page is page[{:d}] of the block, +{:#x} bytes from base".format(
+                index, index * PAGE_SIZE,
+            ))
+        return
+
+    def buddy_contains(self):
+        PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
+
+        if self.args.skip_free_list:
+            ret = self.resolve_target()
+            if ret is None:
+                return
+            page, virt, phys, offset_in_page = ret
+            pfn = phys >> PAGE_SHIFT
+            self.parse_page(page, pfn, phys, virt, offset_in_page)
+        else:
+            page = self.get_page()
+            if page is None:
+                return 
+            self.parse_free_lists(page)
+
         return
 
     @parse_args
@@ -127571,22 +127693,28 @@ class BuddyContainsCommand(BuddyDumpCommand):
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.kernel_version()
-        # will change later depending on the method
-        if kversion < "4.18":
+
+        if self.args.skip_free_list and kversion < "4.18":
+            self.quiet_err("Unsupported before v4.18")
+            return
+        
+        if kversion < "3.1":
             self.quiet_err("Unsupported before v3.1")
             return
 
-        # TODO: Add me later
-        # if self.args.use_physmap:
-            # if not (is_x86_64() or is_arm64()):
-                # self.quiet_err("Unsupported architecture")
-                # return
+        if self.args.skip_free_list and (self.args.skip_phys or self.args.use_physmap):
+            self.quiet_warn("options -Q/-M are ignored with -L")
 
-        # parse args
+        if self.args.use_physmap:
+            if not (is_x86_64() or is_arm64()):
+                self.quiet_err("Unsupported architecture")
+                return
+
+            # parse args
         if args.rescan:
             self.initialized = False
 
-        self.fill_dump_args()
+        self.fill_buddy_dump_args()
         self.quiet_info("Wait for memory scan")
         if not self.initialize():
             self.quiet_err("Failed to initialize")
@@ -127594,7 +127722,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
  
         self.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
         if self.sizeof_struct_page is None: 
-            err("Could not find sizeof(struct page)")
+            self.quiet_err("Could not find sizeof(struct page)")
             return 
 
         self.buddy_contains()
