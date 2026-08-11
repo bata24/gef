@@ -65143,6 +65143,14 @@ class Kernel:
         return None
 
     @staticmethod
+    def page2phys(page):
+        ret = gdb.execute("page2phys {:#x}".format(page), to_string=True)
+        r = re.search(r"Phys: (\S+)", ret)
+        if r:
+            return int(r.group(1), 16)
+        return None
+
+    @staticmethod
     def virt2page(virt):
         ret = gdb.execute("virt2page {:#x}".format(virt), to_string=True)
         r = re.search(r"Page: (\S+)", ret)
@@ -127157,7 +127165,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
                         physmap = KernelAddressHeuristicFinder.consts().physmap_base
                     if physmap is not None:
                         phys = virt - physmap
-                else:
+                elif BuddyDumpCommand.maps is not None:
                     phys = PageMap.v2p_from_map(virt, BuddyDumpCommand.maps)
 
             if virt is not None:
@@ -127300,14 +127308,23 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
         # parse pcp entries
         MAX_ENTRIES = self.args.count
+        seen = set()
         while current != list_i:
+            if current in seen:
+                self.buddy_list_scan_incomplete = True
+                break
+            seen.add(current)
             page = current - self.offset_lru
             entry = self.Entry(page, size, is_highmem, self.args, cpu_num=cpu_num)
             entries.append(entry)
             if MAX_ENTRIES and len(entries) >= MAX_ENTRIES:
                 entries.append(None)  # sentinel for "..."
                 break
-            current = read_int_from_memory(current)
+            try:
+                current = read_int_from_memory(current)
+            except gdb.MemoryError:
+                self.buddy_list_scan_incomplete = True
+                break
         return pcp_title, entries, bool(len(entries))
 
     def dump_pcp(self, zone, is_highmem):
@@ -127348,14 +127365,23 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
         # parse free list
         MAX_ENTRIES = self.args.count
+        seen = set()
         while current != free_list:
+            if current in seen:
+                self.buddy_list_scan_incomplete = True
+                break
+            seen.add(current)
             page = current - self.offset_lru
             entry = self.Entry(page, size, is_highmem, self.args)
             entries.append(entry)
             if MAX_ENTRIES and len(entries) >= MAX_ENTRIES:
                 entries.append(None)  # sentinel for "..."
                 break
-            current = read_int_from_memory(current)
+            try:
+                current = read_int_from_memory(current)
+            except gdb.MemoryError:
+                self.buddy_list_scan_incomplete = True
+                break
         return mtype_title, entries, bool(len(entries))
 
     def dump_free_area(self, free_area, order, is_highmem):
@@ -127540,14 +127566,15 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             self.quiet_err("Unsupported before v3.1")
             return
 
+        # parse args
         if self.args.use_physmap:
             if not (is_x86_64() or is_arm64()):
                 self.quiet_err("Unsupported architecture")
                 return
 
-        # parse args
         if args.rescan:
             self.initialized = False
+
         self.args.sort = args.sort_verbose or args.sort
         self.args.verbose = args.vverbose or args.verbose
         if self.args.sort or self.args.verbose:
@@ -127583,9 +127610,11 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         self.print_output(check_terminal_size=True)
         return
 
+
 @register_command
 class BuddyContainsCommand(BuddyDumpCommand):
     """Resolves which buddy block an address belongs to."""
+
     _cmdline_ = "buddy-contains"
     _category_ = "06-h. Qemu-system/KGDB Cooperation - Linux Allocator"
     _aliases_ = []
@@ -127614,8 +127643,8 @@ class BuddyContainsCommand(BuddyDumpCommand):
         "that was merged into a higher order block cannot be identified from its own struct",
         "",
         "Two modes:",
-        "  default        : walk the free lists like buddy-dump and locate the block.",
-        "  -L             : read struct page flags only but cannot report pcp free pages,",
+        "  default: walk the free lists like buddy-dump and locate the block.",
+        "  -L     : read struct page flags only but cannot report pcp free pages.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -127638,20 +127667,17 @@ class BuddyContainsCommand(BuddyDumpCommand):
         self.args.sort_verbose = False
         self.args.vverbose = False
         self.args.count = 0
+        self.buddy_list_scan_incomplete = False
         return
-
-    def page2phys_wrapper(self, page):
-        ret = gdb.execute("page2phys {:#x}".format(page), to_string=True)
-        r = re.search(r"Phys: (\S+)", ret)
-        if r:
-            return int(r.group(1), 16)
-        return None
 
     def get_page(self):
         if self.args.page:
             page = self.args.address
             if not is_valid_addr(page):
                 self.quiet_err("Invalid page address")
+                return None
+            if Kernel.page2phys(page) is None:
+                self.quiet_err("Invalid or unaligned struct page address")
                 return None
         else:
             virt = self.args.address
@@ -127666,19 +127692,16 @@ class BuddyContainsCommand(BuddyDumpCommand):
         if page is None:
             return None
 
+        virt = Kernel.page2virt(page)
         if self.args.page:
-            virt = self.args.address
             offset = 0
         else:
-            virt = Kernel.page2virt(page)
-            offset = virt & get_pagesize_mask_low()
+            offset = self.args.address & get_pagesize_mask_low()
 
-        phys = self.page2phys_wrapper(page)
-
+        phys = Kernel.page2phys(page)
         if phys is None:
             self.quiet_err("Failed to resolve phys from page")
             return None
-
         return page, virt, phys, offset
 
     def get_buddy_order(self, page):
@@ -127733,9 +127756,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
         else:
             virt_str = "(no direct map)"
         phys_str = "{:#x}-{:#x}".format(head_phys, head_phys + size)
-        gef_print("    page:{:s}  size:{:s}  virt:{:s}  phys:{:s}".format(
-            page_str, size_str, virt_str, phys_str,
-        ))
+        gef_print("    page:{:s}  size:{:s}  virt:{:s}  phys:{:s}".format(page_str, size_str, virt_str, phys_str))
         return
 
     def parse_page(self, page, pfn, phys, virt, offset_in_page):
@@ -127747,20 +127768,21 @@ class BuddyContainsCommand(BuddyDumpCommand):
             self.quiet_print("virt: {:#x}".format(virt))
         self.quiet_print("phys: {:#x} (pfn: {:#x})".format(phys, pfn))
         if offset_in_page:
-            self.quiet_print("remarks: {:s} to page (offset: +{:#x})".format(Color.redify("unaligned"), offset_in_page,))
+            self.quiet_print("remarks: {:s} to page (offset: +{:#x})".format(Color.redify("unaligned"), offset_in_page))
 
         if self.is_page_buddy(page):
-            head_page = page
-            head_pfn = pfn
             order = self.get_buddy_order(page)
+            if order is None:
+                self.quiet_print("status: {:s}".format(Color.colorify("unknown", used_address_color)))
+                gef_print("remarks: PG_buddy is set but buddy order is invalid or unreadable.")
+                return
+            head_page, head_pfn = page, pfn
         else:
             head_page, head_pfn, order = self.find_head_page(page, pfn)
 
         # Not in buddy ?
         if head_page is None:
-            self.quiet_print("status: {:s}".format(
-                Color.colorify("unknown", used_address_color),
-            ))
+            self.quiet_print("status: {:s}".format(Color.colorify("unknown", used_address_color)))
             gef_print("remarks: no PG_buddy head page found, run buddy-contains without skipping free lists.")
 
         # Part of a larger block
@@ -127775,28 +127797,20 @@ class BuddyContainsCommand(BuddyDumpCommand):
 
         # Present in the buddy and it's the head of the block
         else:
-            self.quiet_print("status: {:s}".format(
-                Color.colorify("in buddy (head page)", "bold green"),
-            ))
+            self.quiet_print("status: {:s}".format(Color.colorify("in buddy (head page)", "bold green")))
             self.print_block_info(head_page, head_pfn, order)
-
         return
 
     def get_lists(self, page):
-        if not self.args.skip_phys and not self.args.use_physmap:
-            BuddyDumpCommand.maps = PageMap.get_page_maps(None)
-            if BuddyDumpCommand.maps is None:
-                return None
-
         node_entries = []
         tqdm = GefUtil.get_tqdm(not self.args.quiet)
         for i, node in tqdm(enumerate(self.nodes), leave=False, total=len(self.nodes), desc="node"):
             title = "node[{:d}] @ {:#x}".format(i, node)
             node_entries.append([title, self.dump_node(node)])
-
         return node_entries
 
     def find_in_lists(self, node_entries, page):
+
         def contains(entry):
             if entry is None:
                 return False
@@ -127848,18 +127862,22 @@ class BuddyContainsCommand(BuddyDumpCommand):
         PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
 
         lists = self.get_lists(page)
-        if lists is None:
-            self.quiet_err("Failed to resolve maps")
-            return
-
         found = self.find_in_lists(lists, page)
 
         if found is None:
-            self.quiet_print("status: {:s}".format(Color.colorify("in-use", used_address_color)))
-            gef_print("remarks: not found in any free_area or pcp list.")
+            if self.buddy_list_scan_incomplete:
+                self.quiet_print("status: {:s}".format(Color.colorify("unknown", used_address_color)))
+                gef_print("remarks: allocator list scan was incomplete due to unreadable or cyclic list data.")
+            else:
+                self.quiet_print("status: {:s}".format(Color.colorify("in-use", used_address_color)))
+                gef_print("remarks: not found in any free_area or pcp list.")
             return
 
         entry = found["entry"]
+        if not entry.is_highmem and not self.args.skip_phys and not self.args.use_physmap:
+            BuddyDumpCommand.maps = PageMap.get_page_maps(None)
+            if BuddyDumpCommand.maps is None:
+                self.quiet_warn("Failed to resolve maps; physical address output is unavailable")
         gef_print(titlify(found["node_title"]))
         gef_print(titlify(found["zone_title"]))
         gef_print(titlify(found["section_title"]))
@@ -127889,7 +127907,6 @@ class BuddyContainsCommand(BuddyDumpCommand):
             if page is None:
                 return
             self.parse_free_lists(page)
-
         return
 
     @parse_args
@@ -127899,28 +127916,30 @@ class BuddyContainsCommand(BuddyDumpCommand):
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.kernel_version()
-
-        if self.args.skip_free_list and kversion < "4.18":
-            self.quiet_err("Unsupported before v4.18")
-            return
-
         if kversion < "3.1":
             self.quiet_err("Unsupported before v3.1")
             return
 
+        if self.args.skip_free_list and kversion < "4.18":
+            self.quiet_err("Unsupported before v4.18 when skip_free_list")
+            return
+
+        # parse args
         if self.args.skip_free_list and (self.args.skip_phys or self.args.use_physmap):
-            self.quiet_warn("options -Q/-M are ignored with -L")
+            self.quiet_err("options -Q/-M cannot be used with -L")
+            return
 
         if self.args.use_physmap:
             if not (is_x86_64() or is_arm64()):
                 self.quiet_err("Unsupported architecture")
                 return
 
-            # parse args
         if args.rescan:
             self.initialized = False
 
         self.fill_buddy_dump_args()
+
+        # initialize
         self.quiet_info("Wait for memory scan")
         if not self.initialize():
             self.quiet_err("Failed to initialize")
@@ -127931,6 +127950,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
             self.quiet_err("Could not find sizeof(struct page)")
             return
 
+        # doit
         self.buddy_contains()
         return
 
