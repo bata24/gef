@@ -5462,7 +5462,7 @@ GH = GlibcHeap # noqa
 
 
 @Cache.cache_this_session
-def get_libc_version(verbose=False):
+def get_libc_version(verbose=False, silent=False):
     """Detect and return the glibc version as a tuple, using cache, configuration,
     process maps, or system fallback."""
 
@@ -5542,16 +5542,19 @@ def get_libc_version(verbose=False):
         return libc_version
 
     # resolve from system libc
-    if not is_container_attach():
+    if not is_remote_debug() and not is_container_attach():
         libc_version = get_system_libc_version()
         if libc_version is not None:
             if verbose:
                 info("Resolve from system libc")
             return libc_version
 
+    if silent:
+        return None
+
     err("The libc version could not be determined.")
     err("Please specify it with the following command: `gef config libc.assume_version (2,39)`")
-    raise
+    raise RuntimeError("The libc version could not be determined")
 
 
 def titlify(text, color=None, msg_color=None, horizontal_line="-"):
@@ -6845,10 +6848,33 @@ class Architecture:
     def get_canary_offset(self):
         return None
 
+    @property
+    def ptr_mangle_rotation(self):
+        if hasattr(self, "__ptr_mangle_rotation"):
+            return self.__ptr_mangle_rotation
+
+        # glibc 2.44 check
+        libc_version = get_libc_version(silent=True)
+        if libc_version is not None and libc_version >= (2, 44):
+            self.__ptr_mangle_rotation = current_arch.ptrsize * 2 + 1
+        else:
+            self.__ptr_mangle_rotation = None
+        return self.__ptr_mangle_rotation
+
     def decode_cookie(self, value, cookie):
-        return value
+        if self.ptr_mangle_rotation is not None: # glibc 2.44+ use architecture-independent calculation formulas
+            return ror(value, self.ptr_mangle_rotation, self.ptrsize * 8) ^ cookie
+        return self.decode_cookie_legacy(value, cookie)
 
     def encode_cookie(self, value, cookie):
+        if self.ptr_mangle_rotation is not None: # glibc 2.44+ use architecture-independent calculation formulas
+            return rol(value ^ cookie, self.ptr_mangle_rotation, self.ptrsize * 8)
+        return self.encode_cookie_legacy(value, cookie)
+
+    def decode_cookie_legacy(self, value, cookie):
+        return value
+
+    def encode_cookie_legacy(self, value, cookie):
         return value
 
     @property
@@ -7092,10 +7118,10 @@ class RISCV(Architecture):
     def get_tls(self):
         return get_register("$tp")
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return value
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return value
 
 
@@ -7513,10 +7539,10 @@ class ARM(Architecture):
         ret = ExecAsm(codes).exec_code()
         return ret["reg"]["$r2"]
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
 
@@ -7842,10 +7868,10 @@ class X86(Architecture):
     def get_canary_offset(self):
         return 0x14
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return ror(value, 9, 32) ^ cookie
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return rol(value ^ cookie, 9, 32)
 
     def get_fs(self):
@@ -8001,10 +8027,10 @@ class X86_64(X86):
     def get_canary_offset(self):
         return 0x28
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return ror(value, 17, 64) ^ cookie
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return rol(value ^ cookie, 17, 64)
 
     def get_fs(self):
@@ -8475,10 +8501,10 @@ class PPC(Architecture):
     def get_canary_offset(self):
         return -0x8
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
 
@@ -8733,10 +8759,10 @@ class SPARC(Architecture):
     def get_canary_offset(self):
         return 0x14
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
 
@@ -9030,10 +9056,10 @@ class MIPS(Architecture):
         tls = ret["reg"]["$v1"]
         return adjust_offset(tls)
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return value
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return value
 
 
@@ -9489,10 +9515,10 @@ class S390X(Architecture):
     def get_canary_offset(self):
         return 0x28
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
 
@@ -9607,10 +9633,10 @@ class SH4(Architecture):
     def get_tls(self):
         return get_register("$gbr")
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
 
@@ -9868,10 +9894,10 @@ class M68K(Architecture):
         tls = ret["reg"]["$d0"]
         return adjust_offset(tls)
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return value
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return value
 
 
@@ -10008,10 +10034,10 @@ class ALPHA(Architecture):
         ret = ExecAsm(codes).exec_code()
         return ret["reg"]["$v0"]
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
 
@@ -10356,10 +10382,10 @@ class HPPA(Architecture):
         ret = ExecAsm(codes).exec_code()
         return ret["reg"]["$ret0"]
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return value
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return value
 
 
@@ -10490,10 +10516,10 @@ class OR1K(Architecture):
     def get_tls(self):
         return get_register("$r10")
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return value
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return value
 
 
@@ -10630,10 +10656,10 @@ class NIOS2(Architecture):
         tls = get_register("$r23")
         return adjust_offset(tls)
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
 
@@ -10765,10 +10791,10 @@ class MICROBLAZE(Architecture):
     def get_tls(self):
         return get_register("$r21")
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return value
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return value
 
 
@@ -11258,10 +11284,10 @@ class LOONGARCH64(Architecture):
     def get_tls(self):
         return get_register("$r2")
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
 
@@ -11540,10 +11566,10 @@ class ARC(Architecture):
     def get_tls(self):
         return get_register("$r25")
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return value
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return value
 
 
@@ -11724,10 +11750,10 @@ class CSKY(Architecture):
     def get_tls(self):
         return get_register("$r31")
 
-    def decode_cookie(self, value, cookie):
+    def decode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
-    def encode_cookie(self, value, cookie):
+    def encode_cookie_legacy(self, value, cookie):
         return value ^ cookie
 
 
@@ -11835,10 +11861,10 @@ class CSKY(Architecture):
 #    #def get_tls(self):
 #    #    return None
 #
-#    #def decode_cookie(self, value, cookie):
+#    #def decode_cookie_legacy(self, value, cookie):
 #    #    return value ^ cookie
 #
-#    #def encode_cookie(self, value, cookie):
+#    #def encode_cookie_legacy(self, value, cookie):
 #    #    return value ^ cookie
 
 
@@ -16577,11 +16603,7 @@ class CanaryCommand(GenericCommand):
         if is_in_kernel():
             return None
 
-        try:
-            libc_version = get_libc_version()
-        except Exception:
-            libc_version = None
-
+        libc_version = get_libc_version(silent=True)
         if libc_version and libc_version >= (2, 44):
             # from glibc 2.44, AT_RANDOM will be refilled
             canary_offset = current_arch.get_canary_offset()
@@ -19935,11 +19957,150 @@ class PtrDemangleCommand(GenericCommand):
                        help="the value to demangle.")
     group.add_argument("--source", action="store_true",
                        help="shows the source instead of displaying demangled value.")
+    parser.add_argument("-f", "--force-heuristic", action="store_true", help="do not use symbols to detect PTR_MANGLE")
     _syntax_ = parser.format_help()
 
     @staticmethod
+    def get_relro_range(base):
+        elf = Elf.get_elf(base)
+        if elf is None:
+            return None
+        phdr = elf.get_phdr(Elf.Phdr.PT_GNU_RELRO)
+        if phdr is None:
+            return None
+
+        load_bias = base if elf.e_type == Elf.ET_DYN else 0
+        start = align_to_ptrsize(load_bias + phdr.p_vaddr)
+        end = align_to_ptrsize(load_bias + phdr.p_vaddr + phdr.p_memsz)
+        if start + current_arch.ptrsize > end:
+            return None
+        return start, end
+
+    @staticmethod
+    def get_cookie_from_rtld_relro(libc_version):
+        # Find _dl_argv and nearby guard variables in rtld RELRO when available.
+        try:
+            auxv = Auxv.get_auxiliary_values()
+            if not auxv or not auxv.get("AT_BASE"):
+                return None
+            relro = PtrDemangleCommand.get_relro_range(auxv["AT_BASE"])
+        except (gdb.error, gdb.MemoryError):
+            return None
+        if relro is None:
+            return None
+
+        def is_stack_address(addr):
+            return ProcessMap.lookup_address(addr).is_in_stack_segment()
+
+        start, end = relro
+        ptrsize = current_arch.ptrsize
+        # _dl_skip_args occupied one slot between _dl_argv and the guards until glibc 2.35.
+        guard_distance = 1 + int(libc_version < (2, 36)) + int(current_arch.get_canary_offset() is None)
+
+        """
+        x86_64 glibc 2.44
+        0x7ffff7ffcab0|+0x0000|+000: __pointer_chk_guard_local: 0xc1e710f8603f8d46
+        0x7ffff7ffcab8|+0x0008|+001: _dl_argv                 : 0x00007fffffffe538  ->  0x00007fffffffe769  ->  ...
+        0x7ffff7ffcac0|+0x0010|+002: _dl_argc                 : 0x0000000000000001
+
+        x86_64 glibc 2.35
+        0x7ffff7ffcab0|+0x0000|+000: __pointer_chk_guard_local: 0xf6bede021604f3c4
+        0x7ffff7ffcab8|+0x0008|+001: _dl_skip_args            : 0x0000000000000000
+        0x7ffff7ffcac0|+0x0010|+002: _dl_argv                 : 0x00007fffffffe738  ->  0x00007fffffffe93e  ->  ...
+        0x7ffff7ffcac8|+0x0018|+003: _dl_argc                 : 0x0000000000000001
+        """
+
+        for argv_slot in range(start, end, ptrsize):
+            try:
+                argv = read_int_from_memory(argv_slot)
+                if not is_stack_address(argv) or not is_stack_address(read_int_from_memory(argv)):
+                    continue
+            except (gdb.error, gdb.MemoryError, TypeError):
+                continue
+
+            for direction in (-1, 1):
+                argc_slot = argv_slot + direction * ptrsize
+                if argc_slot < start or argc_slot + 4 > end:
+                    continue
+                try:
+                    # _dl_argc check
+                    argc = u32(read_memory(argc_slot, 4))
+                    if not 1 <= argc <= 0x1000:
+                        continue
+                    # _dl_argv_check
+                    if any(not is_stack_address(read_int_from_memory(argv + i * ptrsize)) for i in range(min(argc, 4))):
+                        continue
+                    if read_int_from_memory(argv + argc * ptrsize) != 0:
+                        continue
+
+                    guard_slot = argv_slot - direction * ptrsize * guard_distance
+                    if not start <= guard_slot or guard_slot + ptrsize > end:
+                        continue
+                    cookie = read_int_from_memory(guard_slot)
+                    if cookie != 0:
+                        return cookie
+                except (gdb.error, gdb.MemoryError, TypeError):
+                    pass
+        return None
+
+    @staticmethod
+    def get_cookie_from_static_relro():
+        # In a stripped static binary, keep only RELRO slots that are zero in the file and randomized at runtime.
+        codebase = ProcessMap.get_codebase()
+        if codebase is None:
+            return None
+
+        elf = Elf.get_elf(codebase)
+        if elf is None or not elf.is_static():
+            return None
+
+        relro = PtrDemangleCommand.get_relro_range(codebase)
+        if relro is None:
+            return None
+
+        canary = None
+        try:
+            res = CanaryCommand.gef_read_canary()
+            if res is not None:
+                canary = res[0]
+        except Exception:
+            pass
+
+        start, end = relro
+        ptrsize = current_arch.ptrsize
+        unpack = u64 if ptrsize == 8 else u32
+        bits = ptrsize * 8
+        candidates = []
+        for addr in range(start, end, ptrsize):
+            try:
+                cookie = read_int_from_memory(addr)
+            except gdb.MemoryError:
+                continue
+            if cookie == 0 or cookie == canary or is_valid_addr(cookie):
+                continue
+            ones = bin(cookie).count("1")
+            if not bits // 4 <= ones <= bits * 3 // 4:
+                continue
+
+            section = ProcessMap.process_lookup_address(addr)
+            if section is None or not section.path or section.path.startswith("["):
+                continue
+            path = Path.append_proc_root(section.path) if is_container_attach() else section.path
+            try:
+                with open(path, "rb") as fd:
+                    fd.seek(section.offset + addr - section.page_start)
+                    original = fd.read(ptrsize)
+                if len(original) == ptrsize and unpack(original) == 0:
+                    candidates.append(cookie)
+            except (OSError, ValueError):
+                pass
+
+        candidates = list(dict.fromkeys(candidates))
+        return candidates[0] if len(candidates) == 1 else None
+
+    @staticmethod
     @Cache.cache_until_next
-    def get_cookie():
+    def get_cookie(force_heuristic=False):
         if is_in_kernel():
             return None
         if is_arm32_cortex_m():
@@ -19947,29 +20108,51 @@ class PtrDemangleCommand(GenericCommand):
         if is_qiling():
             return None
 
+        if not force_heuristic:
+            # glibc 2.44 stores the pointer guard in a RELRO variable on every architecture.
+            # rtld and several architectures used these variables before 2.44.
+            for symbol in ("&__pointer_chk_guard", "&__pointer_chk_guard_local"):
+                try:
+                    cookie_ptr = AddressUtil.parse_address(symbol)
+                    return read_int_from_memory(cookie_ptr)
+                except (gdb.error, OverflowError):
+                    pass
+
+        libc_version = get_libc_version(silent=True)
+        if libc_version is None:
+            return None
+
+        # rtld keeps a RELRO copy of the pointer guard.
+        cookie = PtrDemangleCommand.get_cookie_from_rtld_relro(libc_version)
+        if cookie is not None:
+            return cookie
+
+        if libc_version >= (2, 44):
+            return PtrDemangleCommand.get_cookie_from_static_relro()
+
+        # fast path for x86/x64
         try:
+            # x86 stored the pointer guard in the TCB.
             if is_x86_64():
                 tls = current_arch.get_tls()
-                cookie = read_int_from_memory(tls + 0x30)
-                return cookie
-            elif is_x86_32():
+                if tls is not None:
+                    return read_int_from_memory(tls + 0x30)
+            if is_x86_32():
                 tls = current_arch.get_tls()
-                cookie = read_int_from_memory(tls + 0x18)
-                return cookie
-            elif is_arm32() or is_arm64():
-                cookie_ptr = AddressUtil.parse_address("&__pointer_chk_guard_local")
-                cookie = read_int_from_memory(cookie_ptr)
-                return cookie
+                if tls is not None:
+                    return read_int_from_memory(tls + 0x18)
         except (gdb.error, OverflowError):
             pass
 
-        # generic
+        # generic slow path
         try:
             auxv = Auxv.get_auxiliary_values()
             if auxv is None:
                 Cache.reset_gef_caches()
                 auxv = Auxv.get_auxiliary_values()
+            # The pointer guard is derived from the second uintptr_t at AT_RANDOM.
             if auxv and "AT_RANDOM" in auxv:
+                # Old s390x instead reused the stack guard with its least significant byte cleared.
                 if is_s390x():
                     cookie = read_int_from_memory(auxv["AT_RANDOM"]) & 0x00ff_ffff_ffff_ffff
                 else:
@@ -19978,6 +20161,10 @@ class PtrDemangleCommand(GenericCommand):
                     return cookie
         except gdb.error:
             pass
+
+        # Before glibc 2.44, try the static RELRO fallback on architectures where GEF does not have a TCB canary offset.
+        if current_arch.get_canary_offset() is None:
+            return PtrDemangleCommand.get_cookie_from_static_relro()
         return None
 
     @parse_args
@@ -19989,9 +20176,12 @@ class PtrDemangleCommand(GenericCommand):
         if args.source:
             s = GefUtil.get_source(current_arch.decode_cookie)
             gef_print(s)
+            gef_print()
+            s = GefUtil.get_source(current_arch.decode_cookie_legacy)
+            gef_print(s)
             return
 
-        cookie = self.get_cookie()
+        cookie = PtrDemangleCommand.get_cookie(force_heuristic=args.force_heuristic)
         if cookie is None:
             return
         info("Cookie is {:s}".format(Color.colorify_hex(cookie, "bold")))
@@ -20020,6 +20210,7 @@ class PtrMangleCommand(GenericCommand):
                        help="the value to mangle.")
     group.add_argument("--source", action="store_true",
                        help="shows the source instead of displaying mangled value.")
+    parser.add_argument("-f", "--force-heuristic", action="store_true", help="do not use symbols to detect PTR_MANGLE")
     _syntax_ = parser.format_help()
 
     @parse_args
@@ -20031,9 +20222,12 @@ class PtrMangleCommand(GenericCommand):
         if args.source:
             s = GefUtil.get_source(current_arch.encode_cookie)
             gef_print(s)
+            gef_print()
+            s = GefUtil.get_source(current_arch.encode_cookie_legacy)
+            gef_print(s)
             return
 
-        cookie = PtrDemangleCommand.get_cookie()
+        cookie = PtrDemangleCommand.get_cookie(force_heuristic=args.force_heuristic)
         if cookie is None:
             return
         info("Cookie is {:s}".format(Color.colorify_hex(cookie, "bold")))
@@ -20052,6 +20246,7 @@ class SearchMangledPtrCommand(GenericCommand):
     _aliases_ = ["cookie"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-f", "--force-heuristic", action="store_true", help="do not use symbols to detect PTR_MANGLE")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="shows the section currently being searched.")
     _syntax_ = parser.format_help()
@@ -20124,7 +20319,7 @@ class SearchMangledPtrCommand(GenericCommand):
     @require_arch_set
     def do_invoke(self, args):
         # init
-        cookie = PtrDemangleCommand.get_cookie()
+        cookie = PtrDemangleCommand.get_cookie(force_heuristic=args.force_heuristic)
         if cookie is None:
             return
         info("Cookie is {:s}".format(Color.colorify_hex(cookie, "bold")))
