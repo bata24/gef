@@ -3119,7 +3119,7 @@ options:
 
 ## canary
 
-Display the canary value of the current process from auxv information.
+Display the canary value of the current process.
 
 
 ### Syntax
@@ -3227,14 +3227,16 @@ Demangle a mangled value by PTR_MANGLE.
 ### Syntax
 
 ```text
-usage: ptr-demangle [-h] (--source | VALUE)
+usage: ptr-demangle [-h] [-f] (--source | VALUE)
 
 positional arguments:
-  VALUE       the value to demangle.
+  VALUE                 the value to demangle.
 
 options:
-  -h, --help  show this help message and exit
-  --source    shows the source instead of displaying demangled value.
+  -h, --help            show this help message and exit
+  --source              shows the source instead of displaying demangled value.
+  -f, --force-heuristic
+                        do not use symbols to detect PTR_MANGLE
 ```
 
 ## ptr-mangle
@@ -3245,14 +3247,16 @@ Mangle a pointer value by PTR_MANGLE.
 ### Syntax
 
 ```text
-usage: ptr-mangle [-h] (--source | VALUE)
+usage: ptr-mangle [-h] [-f] (--source | VALUE)
 
 positional arguments:
-  VALUE       the value to mangle.
+  VALUE                 the value to mangle.
 
 options:
-  -h, --help  show this help message and exit
-  --source    shows the source instead of displaying mangled value.
+  -h, --help            show this help message and exit
+  --source              shows the source instead of displaying mangled value.
+  -f, --force-heuristic
+                        do not use symbols to detect PTR_MANGLE
 ```
 
 ## search-mangled-ptr
@@ -3264,11 +3268,13 @@ Search for mangled values in RW memory.
 ### Syntax
 
 ```text
-usage: search-mangled-ptr [-h] [-v]
+usage: search-mangled-ptr [-h] [-f] [-v]
 
 options:
-  -h, --help     show this help message and exit
-  -v, --verbose  shows the section currently being searched.
+  -h, --help            show this help message and exit
+  -f, --force-heuristic
+                        do not use symbols to detect PTR_MANGLE
+  -v, --verbose         shows the section currently being searched.
 ```
 
 # 02-g. Process Information - Symbol
@@ -9471,6 +9477,53 @@ syscall-table-view --filter write
 ```
 
 # 06-h. Qemu-system/KGDB Cooperation - Linux Allocator
+## buddy-contains
+
+Resolves which buddy block an address belongs to.
+
+
+### Syntax
+
+```text
+usage: buddy-contains [-h] [-p] [-L] [-Q] [-M] [--MIGRATE_PCPTYPES {3,4}] [-r] [-q] ADDRESS
+
+positional arguments:
+  ADDRESS               target address.
+
+options:
+  -h, --help            show this help message and exit
+  -p, --page            interpret ADDRESS as a `struct page` address instead of a virtual address.
+  -L, --skip-free-list  do not walk the free lists use struct page metadata only. pcp free pages and zone/mtype/cpu cannot be reported in this mode.
+  -Q, --skip-phys       skip virt -> phys translation.
+  -M, --use-physmap     use physmap for virt -> phys translation (x64/arm64 only).
+  --MIGRATE_PCPTYPES {3,4}
+                        use specify value; linux: 3, android: 4 (2023~).
+  -r, --rescan          do not use cache.
+  -q, --quiet           show result only.
+```
+
+### Examples
+
+```gdb
+buddy-contains 0xffff96a7c2144000
+buddy-contains -p 0xffffca7640004040    # ADDRESS is a struct page
+buddy-contains -L 0xffff96a7c2144000    # Skip free lists
+```
+
+### Notes
+
+```text
+Given an address, resolves which buddy allocator block contains it.
+
+A free block of order N is described by its head page only, page->private holds the
+order and PG_buddy is set on the head, while the tail pages carry neither. So a page
+that was merged into a higher order block cannot be identified from its own struct
+
+Two modes:
+  default: walk the free lists like buddy-dump and locate the block.
+  -L     : read struct page flags only but cannot report pcp free pages.
+```
+
 ## buddy-dump
 
 Dump the zone of the page allocator (buddy allocator) free-list.

@@ -179,6 +179,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/kmem-cache-alias.png)
 - `buddy-dump`: dumps the zone of the page allocator (buddy allocator) free-list.
     - ![](images/buddy-dump.png)
+- `buddy-contains`: resolves which buddy allocator block contains it.
+    - ![](images/buddy-contains.png)
 - `vmalloc-dump`: dumps `vmalloc` used-list and freed-list.
     - ![](images/vmalloc-dump.png)
 - `page`: displays the transformation between a `struct page` and its virtual/physical address.
