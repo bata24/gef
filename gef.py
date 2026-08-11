@@ -40264,11 +40264,14 @@ class DynamicCommand(GenericCommand, BufferingOutput):
 
         current = dynamic.value
         while True:
-            addr = current
-            tag = read_int_from_memory(current)
-            current += current_arch.ptrsize
-            val = read_int_from_memory(current)
-            current += current_arch.ptrsize
+            try:
+                addr = current
+                tag = read_int_from_memory(current)
+                current += current_arch.ptrsize
+                val = read_int_from_memory(current)
+                current += current_arch.ptrsize
+            except gdb.MemoryError:
+                break
 
             if remain_size is None:
                 if tag not in DT_TABLE:
@@ -40294,7 +40297,9 @@ class DynamicCommand(GenericCommand, BufferingOutput):
             try:
                 dynamic = AddressUtil.parse_address("(void*) &_DYNAMIC")
                 dynamic = ProcessMap.lookup_address(dynamic)
-                return dynamic
+                # patchelf may leave _DYNAMIC pointing to a clobbered old .dynamic section.
+                if read_memory(dynamic.value, 4) != b"\x5a\x5a\x5a\x5a":
+                    return dynamic
             except gdb.error:
                 pass
 
@@ -40373,6 +40378,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @require_arch_set
     def do_invoke(self, args):
+        dynamic_size = args.dynamic_size
         if args.dynamic_address:
             dynamic = ProcessMap.lookup_address(args.dynamic_address)
         else:
@@ -40382,9 +40388,16 @@ class DynamicCommand(GenericCommand, BufferingOutput):
                 err("Failed to get _DYNAMIC")
                 return
 
+            if dynamic_size is None:
+                try:
+                    elf = Elf.get_elf(args.elf_address or args.filename)
+                    dynamic_size = elf.get_phdr(Elf.Phdr.PT_DYNAMIC).p_memsz
+                except Exception:
+                    dynamic_size = None
+
         self.out = []
         try:
-            self.dump_dynamic(dynamic, args.dynamic_size)
+            self.dump_dynamic(dynamic, dynamic_size)
         except Exception:
             err("Failed to parse _DYNAMIC")
             return
