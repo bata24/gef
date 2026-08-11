@@ -40428,7 +40428,8 @@ class DestructorDumpCommand(GenericCommand):
             return a + "[???]"
 
     """
-    glibc 2.37~
+    glibc 2.44 uses the unified XOR-and-rotate pointer mangling algorithm on every architecture.
+    The compatibility matrix below applies to glibc 2.37 through 2.43.
 
     x86_32: dynamic symboled: linkmap-relative
     x86_32: dynamic stripped: linkmap-relative
@@ -40493,55 +40494,55 @@ class DestructorDumpCommand(GenericCommand):
     riscv64: dynamic symboled: linkmap-relative
     riscv64: dynamic stripped: linkmap-relative
     riscv64: static symboled: msymbols
-    riscv64: static stripped: NG (PTR_MANGLE is no-XOR)
+    riscv64: static stripped: unsupported (PTR_MANGLE is no-XOR)
 
     riscv32: dynamic symboled: linkmap-relative
     riscv32: dynamic stripped: linkmap-relative
     riscv32: static symboled: msymbols
-    riscv32: static stripped: NG (PTR_MANGLE is no-XOR)
+    riscv32: static stripped: unsupported (PTR_MANGLE is no-XOR)
 
     or1k: dynamic symboled: linkmap-relative
     or1k: dynamic stripped: linkmap-relative
     or1k: static symboled: msymbols
-    or1k: static stripped: NG (PTR_MANGLE is no-XOR)
+    or1k: static stripped: unsupported (PTR_MANGLE is no-XOR)
 
     arc32: dynamic symboled: linkmap-relative
     arc32: dynamic stripped: linkmap-relative
     arc32: static symboled: msymbols
-    arc32: static stripped: NG (PTR_MANGLE is no-XOR)
+    arc32: static stripped: unsupported (PTR_MANGLE is no-XOR)
 
-    m68k: dynamic symboled: NG (link_map is not in TLS and PTR_MANGLE is no-XOR)
-    m68k: dynamic stripped: NG (link_map is not in TLS and PTR_MANGLE is no-XOR)
+    m68k: dynamic symboled: unsupported (link_map is not in TLS and PTR_MANGLE is no-XOR)
+    m68k: dynamic stripped: unsupported (link_map is not in TLS and PTR_MANGLE is no-XOR)
     m68k: static symboled: msymbols
-    m68k: static stripped: NG (PTR_MANGLE is no-XOR)
+    m68k: static stripped: unsupported (PTR_MANGLE is no-XOR)
 
-    mips32: dynamic symboled: NG (link_map is not in TLS and PTR_MANGLE is no-XOR)
-    mips32: dynamic stripped: NG (link_map is not in TLS and PTR_MANGLE is no-XOR)
+    mips32: dynamic symboled: unsupported (link_map is not in TLS and PTR_MANGLE is no-XOR)
+    mips32: dynamic stripped: unsupported (link_map is not in TLS and PTR_MANGLE is no-XOR)
     mips32: static symboled: msymbols
-    mips32: static stripped: NG (PTR_MANGLE is no-XOR)
+    mips32: static stripped: unsupported (PTR_MANGLE is no-XOR)
 
-    mips64: dynamic symboled: NG (link_map is not in TLS and PTR_MANGLE is no-XOR)
-    mips64: dynamic stripped: NG (link_map is not in TLS and PTR_MANGLE is no-XOR)
+    mips64: dynamic symboled: unsupported (link_map is not in TLS and PTR_MANGLE is no-XOR)
+    mips64: dynamic stripped: unsupported (link_map is not in TLS and PTR_MANGLE is no-XOR)
     mips64: static symboled: msymbols
-    mips64: static stripped: NG (PTR_MANGLE is no-XOR)
+    mips64: static stripped: unsupported (PTR_MANGLE is no-XOR)
 
-    hppa32: dynamic symboled: NG (link_map is not in TLS and PTR_MANGLE is no-XOR)
-    hppa32: dynamic stripped: NG (link_map is not in TLS and PTR_MANGLE is no-XOR)
+    hppa32: dynamic symboled: unsupported (link_map is not in TLS and PTR_MANGLE is no-XOR)
+    hppa32: dynamic stripped: unsupported (link_map is not in TLS and PTR_MANGLE is no-XOR)
     hppa32: static symboled: msymbols
-    hppa32: static stripped: NG (PTR_MANGLE is no-XOR)
+    hppa32: static stripped: unsupported (PTR_MANGLE is no-XOR)
 
-    microblaze: dynamic symboled: NG (link_map is not in TLS and PTR_MANGLE is no-XOR)
-    microblaze: dynamic stripped: NG (link_map is not in TLS and PTR_MANGLE is no-XOR)
+    microblaze: dynamic symboled: unsupported (link_map is not in TLS and PTR_MANGLE is no-XOR)
+    microblaze: dynamic stripped: unsupported (link_map is not in TLS and PTR_MANGLE is no-XOR)
     microblaze: static symboled: msymbols
-    microblaze: static stripped: NG (PTR_MANGLE is no-XOR)
+    microblaze: static stripped: unsupported (PTR_MANGLE is no-XOR)
 
-    arc64: dynamic symboled: NG (link_map is not in TLS and PTR_MANGLE is no-XOR)
-    arc64: dynamic stripped: NG (link_map is not in TLS and PTR_MANGLE is no-XOR)
+    arc64: dynamic symboled: unsupported (link_map is not in TLS and PTR_MANGLE is no-XOR)
+    arc64: dynamic stripped: unsupported (link_map is not in TLS and PTR_MANGLE is no-XOR)
     arc64: static symboled: msymbols
-    arc64: static stripped: NG (PTR_MANGLE is no-XOR)
+    arc64: static stripped: unsupported (PTR_MANGLE is no-XOR)
 
-    csky: dynamic symboled: ???
-    csky: dynamic stripped: ???
+    csky: dynamic symboled: untested
+    csky: dynamic stripped: untested
     csky: static symboled: msymbols
     csky: static stripped: heuristic
     """
@@ -40586,8 +40587,8 @@ class DestructorDumpCommand(GenericCommand):
         tls_dtor_list = main_thread_tls_dtor_list - main_tls + current_arch.get_tls()
         return tls_dtor_list
 
-    def get_dtor_list_from_linkmap_relative(self):
-        if self.codebase is None:
+    def get_dtor_list_from_linkmap_relative(self, codebase):
+        if codebase is None:
             return None
 
         direction = TlsCommand.get_direction()
@@ -40625,7 +40626,7 @@ class DestructorDumpCommand(GenericCommand):
                 continue
 
             candidate_codebase = read_int_from_memory(candidate_link_map)
-            if candidate_codebase == self.codebase:
+            if candidate_codebase == codebase:
                 # found
                 if is_s390x():
                     tls_dtor_list = tls + (current_arch.ptrsize * (i + 1)) * direction
@@ -40684,9 +40685,11 @@ class DestructorDumpCommand(GenericCommand):
                 return addr
         return None
 
-    def dump_tls_dtors(self, offset_tls_dtor_list):
+    def dump_tls_dtors(self, offset_tls_dtor_list, cookie, codebase):
         info("Probably only exists in glibc")
-        if not self.tls:
+
+        tls = current_arch.get_tls()
+        if tls is None or not is_valid_addr(tls):
             err("Could not find the TLS")
             return
 
@@ -40713,7 +40716,7 @@ class DestructorDumpCommand(GenericCommand):
         # method 3 (from link-map)
         if tls_dtor_list is None:
             if not self.elf.is_static():
-                tls_dtor_list = self.get_dtor_list_from_linkmap_relative()
+                tls_dtor_list = self.get_dtor_list_from_linkmap_relative(codebase)
 
         # method 4 (from tls with likely pattern)
         if tls_dtor_list is None:
@@ -40749,7 +40752,7 @@ class DestructorDumpCommand(GenericCommand):
                 err("Memory read error at {:#x}".format(current))
                 break
 
-            decoded_fn = current_arch.decode_cookie(func.value, self.cookie)
+            decoded_fn = current_arch.decode_cookie(func.value, cookie)
             decoded_fn = ProcessMap.lookup_address(decoded_fn)
             sym = Symbol.get_symbol_string(decoded_fn.value)
 
@@ -40773,7 +40776,7 @@ class DestructorDumpCommand(GenericCommand):
             current = next.value
         return
 
-    def dump_exit_funcs(self, name):
+    def dump_exit_funcs(self, name, cookie):
         try:
             head_p = AddressUtil.parse_address("&" + name)
         except gdb.error:
@@ -40819,7 +40822,7 @@ class DestructorDumpCommand(GenericCommand):
                 break
             if fn.value == 0:
                 continue
-            decoded_fn = current_arch.decode_cookie(fn.value, self.cookie)
+            decoded_fn = current_arch.decode_cookie(fn.value, cookie)
             decoded_fn = ProcessMap.lookup_address(decoded_fn)
             sym = Symbol.get_symbol_string(decoded_fn.value)
 
@@ -40856,15 +40859,15 @@ class DestructorDumpCommand(GenericCommand):
             current = dic["next"]
         return
 
-    def dump_fini(self):
-        if not self.codebase:
+    def dump_fini(self, codebase):
+        if not codebase:
             return None
 
         DT_TABLE = DynamicCommand.get_DT_TABLE()
 
         if self.elf.has_dynamic():
             # Parse all loaded libraries.
-            for link_map in self.yield_link_map(self.codebase):
+            for link_map in self.yield_link_map(codebase):
                 # get dynamic
                 dynamic = DynamicCommand.get_dynamic(link_map.load_address or link_map.name, silent=True)
                 if dynamic is None:
@@ -40901,23 +40904,23 @@ class DestructorDumpCommand(GenericCommand):
                 return
 
             fini = shdr.sh_addr
-            if fini < self.codebase:
-                fini += self.codebase
+            if fini < codebase:
+                fini += codebase
             gef_print(self.local_filepath)
             fini = ProcessMap.lookup_address(fini)
             sym = Symbol.get_symbol_string(fini.value)
             gef_print("    -> {!s}{:s}".format(fini, sym))
         return
 
-    def dump_fini_array(self):
-        if not self.codebase:
+    def dump_fini_array(self, codebase):
+        if not codebase:
             return None
 
         DT_TABLE = DynamicCommand.get_DT_TABLE()
 
         if self.elf.has_dynamic():
             # Parse all loaded libraries.
-            for link_map in self.yield_link_map(self.codebase):
+            for link_map in self.yield_link_map(codebase):
                 # get dynamic
                 dynamic = DynamicCommand.get_dynamic(link_map.load_address or link_map.name, silent=True)
                 if dynamic is None:
@@ -41046,41 +41049,36 @@ class DestructorDumpCommand(GenericCommand):
 
         # codebase
         if remote_filepath:
-            self.codebase = ProcessMap.get_section_base_address(remote_filepath)
+            codebase = ProcessMap.get_section_base_address(remote_filepath)
         elif local_filepath:
-            self.codebase = ProcessMap.get_section_base_address(local_filepath)
-        if self.codebase is None:
-            self.codebase = ProcessMap.get_section_base_address(Path.get_filepath(append_proc_root_prefix=False))
-        if self.codebase is None:
-            self.codebase = ProcessMap.get_section_base_address(Path.get_filepath_from_info_proc())
-        if self.codebase is None:
+            codebase = ProcessMap.get_section_base_address(local_filepath)
+        if codebase is None:
+            codebase = ProcessMap.get_section_base_address(Path.get_filepath(append_proc_root_prefix=False))
+        if codebase is None:
+            codebase = ProcessMap.get_section_base_address(Path.get_filepath_from_info_proc())
+        if codebase is None:
             warn("Could not find codebase")
 
-        # tls
-        self.tls = current_arch.get_tls()
-        if self.tls is None or not is_valid_addr(self.tls):
-            warn("Could not find tls")
-
         # cookie
-        self.cookie = PtrDemangleCommand.get_cookie()
-        if self.cookie is None:
+        cookie = PtrDemangleCommand.get_cookie()
+        if cookie is None:
             warn("Could not find cookie")
 
         # dump
         gef_print(titlify("tls_dtor_list: registered by __cxa_thread_atexit_impl()"))
-        self.dump_tls_dtors(args.tdl)
+        self.dump_tls_dtors(args.tdl, cookie, codebase)
 
         gef_print(titlify("__exit_funcs: registered by atexit(), on_exit()"))
-        self.dump_exit_funcs("__exit_funcs")
+        self.dump_exit_funcs("__exit_funcs", cookie)
 
         gef_print(titlify("__quick_exit_funcs: registered by at_quick_exit()"))
-        self.dump_exit_funcs("__quick_exit_funcs")
+        self.dump_exit_funcs("__quick_exit_funcs", cookie)
 
         gef_print(titlify(".fini_array section"))
-        self.dump_fini_array()
+        self.dump_fini_array(codebase)
 
         gef_print(titlify(".fini section"))
-        self.dump_fini()
+        self.dump_fini(codebase)
 
         # cleanup
         if tmp_filepath and os.path.exists(tmp_filepath):
