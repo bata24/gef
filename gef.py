@@ -147,8 +147,11 @@ def update_gef(argv):
     if hash_gef_local == hash_gef_remote:
         print("[-] No update")
     else:
-        with open(gef_local, "wb") as f:
+        tmp_fd, tmp_local = tempfile.mkstemp(dir=os.path.dirname(gef_local), prefix="gef-")
+        with os.fdopen(tmp_fd, "wb") as f:
             f.write(gef_remote_data)
+        os.chmod(tmp_local, os.stat(gef_local).st_mode & 0o7777)
+        os.replace(tmp_local, gef_local)
         print("[+] Updated")
     return 0
 
@@ -2875,11 +2878,13 @@ class Elf:
 class Instruction:
     """GEF representation of a CPU instruction."""
 
-    RE_SPLIT_LAST_OPERAND_X86_64 = re.compile(r"(.*?)\s+(#.+)$")
-    RE_SPLIT_LAST_OPERAND_ARM64 = re.compile(r"//.+$")
-    RE_SPLIT_LAST_OPERAND_ARM32 = re.compile(r";.+$")
-    RE_SPLIT_LAST_OPERAND_MICROBLAZE = re.compile(r"//.+$")
-    RE_SPLIT_LAST_OPERAND_LOONGARCH64 = re.compile(r"(# .*)$")
+    # The comment is glued to the last operand (e.g. `mov w0, #0x1234    // #4660`),
+    # so the operand part is optional and the comment part is group(2).
+    RE_SPLIT_LAST_OPERAND_X86_64 = re.compile(r"(?:(.*?)\s+)?(#.+)$")
+    RE_SPLIT_LAST_OPERAND_ARM64 = re.compile(r"(?:(.*?)\s+)?(//.+)$")
+    RE_SPLIT_LAST_OPERAND_ARM32 = re.compile(r"(?:(.*?)\s+)?([@;].+)$")
+    RE_SPLIT_LAST_OPERAND_MICROBLAZE = re.compile(r"(?:(.*?)\s+)?(//.+)$")
+    RE_SPLIT_LAST_OPERAND_LOONGARCH64 = re.compile(r"(?:(.*?)\s+)?(# .*)$")
     RE_SPLIT_ELEM = re.compile(r"([*%\[\](): ]|(?<![#@%])(?<=.)[-+]|<.+>)")
     RE_IS_DIGIT_COMMENT = re.compile(r"#?-?(0x[0-9a-f]+|\d+)")
     RE_SPLIT_SYMBOL = re.compile(r"(.*?)<(.+)>(.*)$")
@@ -2918,31 +2923,31 @@ class Instruction:
 
     @property
     def location(self):
-        if hasattr(self, "__location"):
-            return self.__location
+        if hasattr(self, "cached_location"):
+            return self.cached_location
         # evaluate when needed
-        self.__location = Symbol.get_symbol_string(self.address, nosymbol_string=" <NO_SYMBOL>")
-        return self.__location
+        self.cached_location = Symbol.get_symbol_string(self.address, nosymbol_string=" <NO_SYMBOL>")
+        return self.cached_location
 
     @property
     def is_branch(self):
         """Return whether it is a branch instruction. Cache the results."""
-        if hasattr(self, "__is_branch"):
-            return self.__is_branch
+        if hasattr(self, "cached_is_branch"):
+            return self.cached_is_branch
 
         if current_arch.is_syscall(self):
-            self.__is_branch = True
+            self.cached_is_branch = True
         elif current_arch.is_call(self):
-            self.__is_branch = True
+            self.cached_is_branch = True
         elif current_arch.is_jump(self):
-            self.__is_branch = True
+            self.cached_is_branch = True
         elif current_arch.is_ret(self):
-            self.__is_branch = True
+            self.cached_is_branch = True
         elif current_arch.is_conditional_branch(self):
-            self.__is_branch = True
+            self.cached_is_branch = True
         else:
-            self.__is_branch = False
-        return self.__is_branch
+            self.cached_is_branch = False
+        return self.cached_is_branch
 
     def get_color(self, highlight, config_name):
         """A wrapper to easily retrieve color-related configurations."""
@@ -2977,30 +2982,23 @@ class Instruction:
         comment = ""
         last_operand = operands[-1]
         if is_x86_64():
-            r = self.RE_SPLIT_LAST_OPERAND_X86_64.match(last_operand) # r"(.*?)\s+(#.+)$"
-            if r:
-                last_operand = r.group(1)
-                comment = r.group(2)
-                operands = operands[:-1] + [last_operand]
+            r = self.RE_SPLIT_LAST_OPERAND_X86_64.match(last_operand)
         elif is_arm64():
-            r = self.RE_SPLIT_LAST_OPERAND_ARM64.match(last_operand) # r"//.+$"
-            if r:
-                comment = last_operand
-                operands = operands[:-1]
+            r = self.RE_SPLIT_LAST_OPERAND_ARM64.match(last_operand)
         elif is_arm32() or is_arm32_cortex_m():
-            r = self.RE_SPLIT_LAST_OPERAND_ARM32.match(last_operand) # r";.+$"
-            if r:
-                comment = last_operand
-                operands = operands[:-1]
+            r = self.RE_SPLIT_LAST_OPERAND_ARM32.match(last_operand)
         elif is_microblaze():
-            r = self.RE_SPLIT_LAST_OPERAND_MICROBLAZE.match(last_operand) # r"//.+$"
-            if r:
-                comment = last_operand
-                operands = operands[:-1]
+            r = self.RE_SPLIT_LAST_OPERAND_MICROBLAZE.match(last_operand)
         elif is_loongarch64():
-            r = self.RE_SPLIT_LAST_OPERAND_LOONGARCH64.match(last_operand) # r"(# .*)$"
-            if r:
-                comment = r.group(1)
+            r = self.RE_SPLIT_LAST_OPERAND_LOONGARCH64.match(last_operand)
+        else:
+            r = None
+        if r:
+            comment = r.group(2)
+            if r.group(1):
+                operands = operands[:-1] + [r.group(1)]
+            else:
+                # the last operand is the comment itself
                 operands = operands[:-1]
         return operands, comment
 
@@ -3316,9 +3314,9 @@ class GlibcHeap:
         @property
         def sizeof(self):
             if get_libc_version() >= (2, 35):
-                end = self.addrof_pad + (-3 * self.size_t.sizeof) & self.MALLOC_ALIGN_MASK
+                end = self.addrof_pad + ((-3 * self.size_t.sizeof) & self.MALLOC_ALIGN_MASK)
             else:
-                end = self.addrof_pad + (-6 * self.size_t.sizeof) & self.MALLOC_ALIGN_MASK
+                end = self.addrof_pad + ((-6 * self.size_t.sizeof) & self.MALLOC_ALIGN_MASK)
             return end - self.addr
 
         # struct members
@@ -3888,6 +3886,8 @@ class GlibcHeap:
 
         tls = current_arch.get_tls()
         if tls is None:
+            orig_thread.switch() # revert thread
+            orig_frame.select()
             return None
 
         direction = TlsCommand.get_direction()
@@ -3916,6 +3916,7 @@ class GlibcHeap:
                 continue
 
             next_addr = to_unsigned_long(candidate_arena.next)
+            seen_arena = []
             while True:
                 if not is_valid_addr(next_addr):
                     break
@@ -3923,6 +3924,10 @@ class GlibcHeap:
                     orig_thread.switch() # revert thread
                     orig_frame.select()
                     return addr
+                if next_addr in seen_arena:
+                    # broken `next` chain, give up this candidate
+                    break
+                seen_arena.append(next_addr)
                 next_addr = to_unsigned_long(GlibcHeap.MallocStateStruct(next_addr).next)
 
         # not found
@@ -3963,7 +3968,8 @@ class GlibcHeap:
                     mstate_size = GlibcHeap.MallocStateStruct(0).sizeof
                     return malloc_hook_addr - current_arch.ptrsize - mstate_size
                 else:
-                    raise
+                    # unsupported architecture; fall through to plan 3
+                    raise gdb.error("unsupported architecture")
             except gdb.error:
                 pass
 
@@ -5671,7 +5677,7 @@ class String:
                 # e.g., `pi String.str2bytes(b"\xc5\x82".decode("utf-8"))`
                 # In that case, you should simply encode it as UTF-8.
                 return x.encode("utf-8")
-        raise
+        raise TypeError("str2bytes: expected bytes or str, but {!s}".format(type(x)))
 
     @staticmethod
     def bytes2str(x):
@@ -5680,7 +5686,7 @@ class String:
             return x
         if isinstance(x, bytes):
             return "".join(chr(xx) for xx in x)
-        raise
+        raise TypeError("bytes2str: expected bytes or str, but {!s}".format(type(x)))
 
     @staticmethod # noqa
     def bits2bytes(a, endian="big"):
@@ -5858,6 +5864,8 @@ def rol(val, bits, arch_bits=64):
 def hexdump(source, length=0x10, separator=".", color=True, show_symbol=True, base=0x00, unit=1):
     """Return the hexdump of `src` argument."""
 
+    WIDTH = 0x10 # the number of bytes the hex/ascii columns are aligned to
+
     style = {
         "nonprintable": "yellow",
         "printable": "white",
@@ -5895,9 +5903,9 @@ def hexdump(source, length=0x10, separator=".", color=True, show_symbol=True, ba
         chunk = bytearray(source[i : i + length])
 
         if unit == 1:
-            padlen = (0x10 - len(chunk)) * 3
+            padlen = (WIDTH - len(chunk)) * 3
         else:
-            padlen = (0x10 - len(chunk)) // unit * (unit * 2 + 3)
+            padlen = (WIDTH - len(chunk)) // unit * (unit * 2 + 3)
             if len(chunk) % unit:
                 padlen += ((unit - len(chunk) % unit) * 2)
 
@@ -5905,12 +5913,12 @@ def hexdump(source, length=0x10, separator=".", color=True, show_symbol=True, ba
         if unit > 1:
             hexa = ["0x" + "".join(x[::-1]) for x in slicer(hexa, unit)]
         if unit == 1:
-            hexa[min(len(hexa), 8) - 1] += " " # double the blank at the 8th byte
+            hexa[min(len(hexa), WIDTH // 2) - 1] += " " # double the blank at the 8th byte
         hexa = " ".join(hexa)
         padded_hexa = hexa + " " * padlen
 
         text = "".join([chr(b) if 0x20 <= b < 0x7f else separator for b in chunk])
-        text_padlen = 0x10 - len(text)
+        text_padlen = WIDTH - len(text)
         padded_text = text + " " * text_padlen
 
         tmp.append([addr, sym, hexa, padded_hexa, padded_text])
@@ -6853,16 +6861,16 @@ class Architecture:
 
     @property
     def ptr_mangle_rotation(self):
-        if hasattr(self, "__ptr_mangle_rotation"):
-            return self.__ptr_mangle_rotation
+        if hasattr(self, "cached_ptr_mangle_rotation"):
+            return self.cached_ptr_mangle_rotation
 
         # glibc 2.44 check
         libc_version = get_libc_version(silent=True)
         if libc_version is not None and libc_version >= (2, 44):
-            self.__ptr_mangle_rotation = current_arch.ptrsize * 2 + 1
+            self.cached_ptr_mangle_rotation = current_arch.ptrsize * 2 + 1
         else:
-            self.__ptr_mangle_rotation = None
-        return self.__ptr_mangle_rotation
+            self.cached_ptr_mangle_rotation = None
+        return self.cached_ptr_mangle_rotation
 
     def decode_cookie(self, value, cookie):
         if self.ptr_mangle_rotation is not None: # glibc 2.44+ use architecture-independent calculation formulas
@@ -7022,6 +7030,8 @@ class RISCV(Architecture):
         return False
 
     def is_jump(self, insn):
+        if self.is_ret(insn):
+            return False
         if self.is_conditional_branch(insn):
             return True
         if insn.mnemonic in ["c.j", "c.jr", "j", "jr"]:
@@ -7032,8 +7042,8 @@ class RISCV(Architecture):
         mnemo = insn.mnemonic
         if mnemo == "ret": # gdb interpret "jalr zero, ra, 0" as "ret"
             return True
-        if mnemo == "c.jalr":
-            return insn.operands[0] == "ra"
+        if mnemo in ["c.jr", "jr"]:
+            return bool(insn.operands) and insn.operands[0] == "ra"
         return False
 
     def is_conditional_branch(self, insn):
@@ -9298,7 +9308,7 @@ class S390X(Architecture):
                 return True
             if insn.mnemonic in ["cib", "cij"]:
                 return True
-            conditions = ["h", "l", "ne"]
+            conditions = ["e", "h", "l", "ne", "nl", "nh"]
             for cc in conditions:
                 if insn.mnemonic == f"crb{cc}": # alias for `crb r,r,N`
                     return True
@@ -9315,7 +9325,7 @@ class S390X(Architecture):
                 return True
             if insn.mnemonic in ["cgib", "cgij"]:
                 return True
-            conditions = ["h", "l", "ne"]
+            conditions = ["e", "h", "l", "ne", "nl", "nh"]
             for cc in conditions:
                 if insn.mnemonic == f"cgrb{cc}": # alias for `cgrb r,r,N`
                     return True
@@ -9332,7 +9342,7 @@ class S390X(Architecture):
                 return True
             if insn.mnemonic in ["clib", "clij"]:
                 return True
-            conditions = ["h", "l", "ne"]
+            conditions = ["e", "h", "l", "ne", "nl", "nh"]
             for cc in conditions:
                 if insn.mnemonic == f"clrb{cc}": # alias for `clrb r,r,N, ...`
                     return True
@@ -9349,7 +9359,7 @@ class S390X(Architecture):
                 return True
             if insn.mnemonic in ["clgib", "clgij"]:
                 return True
-            conditions = ["h", "l", "ne"]
+            conditions = ["e", "h", "l", "ne", "nl", "nh"]
             for cc in conditions:
                 if insn.mnemonic == f"clgrb{cc}": # alias for `clgrb r,r,N, ...`
                     return True
@@ -9433,7 +9443,10 @@ class S390X(Architecture):
             else:
                 raise
 
-            mask = insn.opcodes[4] >> 4
+            if re.match(r"c[lg]{0,2}i[bj]", insn.mnemonic):
+                mask = insn.opcodes[1] & 0b1111
+            else:
+                mask = insn.opcodes[4] >> 4
             reg1 = insn.operands[0]
             reg2_or_imm = insn.operands[1]
 
@@ -9469,13 +9482,13 @@ class S390X(Architecture):
 
         extra_msg = " ["
         if get_register("$pswm") is not None:
-            addressing0 = (get_register("$pswm") >> 31) & 1
-            addressing1 = (get_register("$pswm") >> 32) & 1
+            EA = (get_register("$pswm") >> 32) & 1
+            BA = (get_register("$pswm") >> 31) & 1
             addressing_mode = {
                 (0, 0): "24-bit",
                 (0, 1): "31-bit",
                 (1, 1): "64-bit",
-            }[addressing0, addressing1]
+            }.get((EA, BA), "invalid")
             extra_msg += "AddressingMode={:s}, ".format(addressing_mode)
 
         cc1 = (val >> flags["cc1"]) & 1
@@ -9965,11 +9978,17 @@ class ALPHA(Architecture):
         return insn.mnemonic in ["callsys"]
 
     def is_call(self, insn):
-        return insn.mnemonic in ["br", "bsr", "jsr"]
+        if insn.mnemonic in ["bsr", "jsr"]:
+            return True
+        if insn.mnemonic == "br":
+            return len(insn.operands) > 1 and insn.operands[0] == "ra"
+        return False
 
     def is_jump(self, insn):
         if self.is_conditional_branch(insn):
             return True
+        if insn.mnemonic == "br":
+            return not self.is_call(insn)
         return insn.mnemonic in ["jmp"]
 
     def is_ret(self, insn):
@@ -10353,10 +10372,11 @@ class HPPA(Architecture):
             return key, val
         else:
             i -= len(self.function_parameters)
-            ret0 = get_register("$ret0")
             sp = current_arch.sp
             sz = current_arch.ptrsize
-            loc = ret0 - (i * sz)
+            # PA-RISC keeps the argument home locations below sp;
+            # arg0..arg3 at sp-0x24..sp-0x30, then arg4 at sp-0x34 and downward.
+            loc = sp - 0x34 - (i * sz)
             val = read_int_from_memory(loc)
             key = "[sp - {:#x}]".format(sp - loc)
             return key, val
@@ -11902,7 +11922,10 @@ def write_memory(addr, data):
                 return None
 
             ret = write_memory_via_proc_mem(pid, addr + offset, data, length)
-            after = read_memory(addr, length)
+            try:
+                after = read_memory(addr, length)
+            except gdb.MemoryError:
+                after = None
 
             if ret:
                 if after == data[:length]:
@@ -13772,6 +13795,8 @@ class ProcessMap:
 
             # get interp
             elf = get_ehdr(addr & get_pagesize_mask_high())
+            if elf is None:
+                return None
             phdr = elf.get_phdr(Elf.Phdr.PT_INTERP)
             if phdr is None:
                 return None
@@ -13789,6 +13814,8 @@ class ProcessMap:
 
             # get dynamic
             elf = get_ehdr(addr & get_pagesize_mask_high())
+            if elf is None:
+                return None
             phdr = elf.get_phdr(Elf.Phdr.PT_DYNAMIC)
             if phdr is None:
                 return None
@@ -13878,7 +13905,7 @@ class ProcessMap:
             auxv = Auxv.get_auxiliary_values()
             if auxv and "AT_PHDR" in auxv:
                 elf = get_ehdr(auxv["AT_PHDR"] & get_pagesize_mask_high())
-                phdr = elf.get_phdr(Elf.Phdr.PT_GNU_STACK)
+                phdr = elf.get_phdr(Elf.Phdr.PT_GNU_STACK) if elf else None
                 if phdr:
                     stack_permission = ElfInfoCommand.pflags[phdr.p_flags].lower()
                 else:
@@ -18927,13 +18954,13 @@ class XtapCommand(GenericCommand):
     def close_stdout_stderr(self):
         self.stdout = 1
         self.stdout_bak = os.dup(self.stdout)
-        f = open("/dev/null")
+        f = open("/dev/null", "w")
         os.dup2(f.fileno(), self.stdout)
         f.close()
 
         self.stderr = 2
         self.stderr_bak = os.dup(self.stderr)
-        f = open("/dev/null")
+        f = open("/dev/null", "w")
         os.dup2(f.fileno(), self.stderr)
         f.close()
         return
@@ -19655,9 +19682,15 @@ class SearchPatternCommand(GenericCommand):
                          <------->
                        -ofs     ofs
                 """
-                ofs = len(pattern) - 1
+                # `pattern` may contain regex escapes (e.g. rb"\\x41"), so the number of
+                # bytes it matches is not len(pattern).
+                try:
+                    ofs = len(codecs.escape_decode(pattern)[0]) - 1
+                except (ValueError, UnicodeDecodeError):
+                    ofs = len(pattern) - 1
                 tmp_mem = old_mem[-ofs:] + mem[:ofs]
-                r = tmp_mem.find(pattern)
+                m = re.search(pattern, tmp_mem)
+                r = m.start() if m else -1
                 if r >= 0:
                     if self.accept_match(chunk_addr - ofs + r, locations):
                         # read dump data
@@ -19753,6 +19786,9 @@ class SearchPatternCommand(GenericCommand):
             elif is_arm64():
                 perm = line.split("/")[-1][:3]
                 perm = Permission.from_process_maps(perm.lower())
+            else:
+                # unknown format for this architecture; do not filter by permission
+                perm = Permission.from_process_maps("rwx")
             yield Section(page_start=addr_start, page_end=addr_end, permission=perm)
         return None
 
@@ -23301,6 +23337,9 @@ class UnicornEmulator:
                 return "cannot map {:#x}{:s}".format(insn.address, detail)
             start = self.to_emu(insn.address)
             self.write_pc(insn.address)
+            # ARM: emu_start selects Thumb mode from bit 0 of the start address (see step_one).
+            if is_arm32() and (self.emu.reg_read(self.regs["$cpsr"]) & 0x20):
+                start |= 1
             if is_arm32():
                 rt = None
                 opc2 = None
@@ -24824,8 +24863,11 @@ class StubBreakpoint(gdb.Breakpoint):
 
     def stop(self):
         m = "Ignoring call to '{:s}' ".format(self.func)
-        m += "(setting return value to {:#x})".format(self.retval)
-        gdb.execute("return (unsigned int){:#x}".format(self.retval))
+        if self.retval is None:
+            gdb.execute("return")
+        else:
+            m += "(setting return value to {:#x})".format(self.retval)
+            gdb.execute("return (unsigned int){:#x}".format(self.retval))
         ok(m)
         return False
 
@@ -28795,8 +28837,10 @@ class AsmListCommand(GenericCommand):
                     if rm == 0b101: # special case; [REG + disp32]
                         bytecode = modrm + DISP32
                     elif rm == 0b100: # use sib; [INDEX * SCALE + BASE]
+                        bytecode = []
                         for sib in sib_list:
-                            bytecode = modrm + "{:02X}".format(sib)
+                            b = modrm + "{:02X}".format(sib)
+                            bytecode.append(b)
                     else: # [REG]
                         bytecode = modrm
                 elif mod == 0b01:
@@ -29621,10 +29665,12 @@ class ElfInfoCommand(GenericCommand):
             if self.args.verbose:
                 if s.sh_size > 0x1000: # heuristic value
                     self.out.append("Skip because too large ({:#x} > 0x1000)".format(s.sh_size))
+                elif elf.filename is None:
+                    self.out.append("Skip because it is parsed from memory")
                 else:
-                    fd = open(elf.filename, "rb")
-                    fd.seek(s.sh_offset, 0)
-                    section_data = fd.read(s.sh_size)
+                    with open(elf.filename, "rb") as fd:
+                        fd.seek(s.sh_offset, 0)
+                        section_data = fd.read(s.sh_size)
                     self.out.append(hexdump(section_data, show_symbol=False, base=s.sh_offset))
         return
 
@@ -31988,7 +32034,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
 
             table_cnt = 0
             if table_enc == (self.DW_EH_PE_datarel | self.DW_EH_PE_sdata4):
-                while fde_count and data[pos:]:
+                while table_cnt < fde_count and data[pos:]:
                     entries.append(self.SeparatorEntry(pos, "Table[{:4d}]".format(table_cnt)))
 
                     new_pos, initial_loc = self.read_4sbyte(data, pos)
@@ -36171,7 +36217,7 @@ class ContextThreadsCommand(GenericCommand):
         lines = []
         for thread in threads:
             # selected, tid
-            tid = str(thread.ptid[1]) or str(thread.ptid[2]) or "???"
+            tid = str(thread.ptid[1] or thread.ptid[2] or "???")
             if thread == selected_thread:
                 line = "[*{:s}] ".format(
                     Color.colorify("Thread Id:{:d}, tid:{:s}".format(thread.num, tid), "bold green"),
@@ -40135,7 +40181,7 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
             current += current_arch.ptrsize
             val = ProcessMap.lookup_address(read_int_from_memory(current))
             current += current_arch.ptrsize
-            if tag not in DT_TABLE:
+            if tag not in DT_TABLE or DT_TABLE[tag] == "DT_NULL":
                 if not silent:
                     info("Could not find link_map")
                 return None
@@ -52381,7 +52427,7 @@ arm_OPTEE_syscall_list = [
     [0x31, "syscall_storage_next_enum", ["unsigned long obj_enum", "TEE_ObjectInfo *info", "void *obj_id", "uint64_t *len"]],
     [0x32, "syscall_storage_obj_read", ["unsigned long obj", "void *data", "size_t len", "uint64_t *count"]],
     [0x33, "syscall_storage_obj_write", ["unsigned long obj", "void *data", "size_t len"]],
-    [0x34, "syscall_storage_obj_trunc", ["unsigned long obj, size_t len"]],
+    [0x34, "syscall_storage_obj_trunc", ["unsigned long obj", "size_t len"]],
     [0x35, "syscall_storage_obj_seek", ["unsigned long obj", "int32_t offset", "unsigned long whence"]],
     [0x36, "syscall_obj_generate_key", ["unsigned long obj", "unsigned long key_size", "const struct utee_attribute *params", "unsigned long param_count"]],
     [0x37, "syscall_not_supported", []],
@@ -52399,7 +52445,7 @@ arm_OPTEE_syscall_list = [
     [0x43, "syscall_not_supported", []],
     [0x44, "syscall_not_supported", []],
     [0x45, "syscall_not_supported", []],
-    [0x46, "syscall_cache_operation", ["void *va, size_t len", "unsigned long op"]],
+    [0x46, "syscall_cache_operation", ["void *va", "size_t len", "unsigned long op"]],
 ]
 
 
@@ -54100,7 +54146,7 @@ class SyscallALPHA(Syscall):
         ], # arch/alpha/kernel/osf_sys.c
         "sys_getdtablesize": [], # arch/alpha/kernel/osf_sys.c
         "sys_osf_select": [
-            "int, n, fd_set __user *inp", "fd_set __user *outp",
+            "int n", "fd_set __user *inp", "fd_set __user *outp",
             "fd_set __user *exp", "struct timeval32 __user *tvp",
         ], # arch/alpha/kernel/osf_sys.c
         "sys_osf_getpriority": [
@@ -57703,7 +57749,7 @@ class UnsignedCommand(GenericCommand):
             shift = (2 ** i) * 8
 
             msb_mask = 1 << (shift - 1)
-            if (1 << shift) > args.value and args.value & msb_mask == 0:
+            if args.value > 0 and (1 << shift) > args.value and args.value & msb_mask == 0:
                 value = args.value * -1
             else:
                 value = args.value
@@ -58765,6 +58811,8 @@ class KernelConstsX86(KernelConstsBase):
             self.cached_PAGE_OFFSET = 0x7800_0000 # VMSPLIT_2G_OPT
         elif 0x4000_0000 <= kern_min:
             self.cached_PAGE_OFFSET = 0x4000_0000 # VMSPLIT_1G
+        else:
+            self.cached_PAGE_OFFSET = None
         return self.cached_PAGE_OFFSET
 
     @property
@@ -59775,6 +59823,8 @@ class KernelConstsArm32(KernelConstsBase):
             self.cached_PAGE_OFFSET = 0x8000_0000 # VMSPLIT_2G
         elif 0x4000_0000 - 0x0100_0000 <= kern_min:
             self.cached_PAGE_OFFSET = 0x4000_0000 # VMSPLIT_1G
+        else:
+            self.cached_PAGE_OFFSET = None
         return self.cached_PAGE_OFFSET
 
     @property
@@ -60044,6 +60094,8 @@ class KernelConstsArm32(KernelConstsBase):
 
     @property
     def PHYS_PFN_OFFSET(self):
+        if self.PHYS_OFFSET is None:
+            return None
         return self.PHYS_OFFSET >> self.PAGE_SHIFT
 
     @property
@@ -60191,6 +60243,8 @@ class KernelConstsArm64(KernelConstsBase):
     @property
     def CONFIG_ARM64_VA_BITS(self):
         tcr = self.TCR_EL1()
+        if tcr is None:
+            return None
         T1SZ = (tcr >> 16) & 0b111111
         region_end = 2 ** 64
         region_start = region_end - (2 ** (64 - T1SZ))
@@ -60371,8 +60425,10 @@ class KernelConstsArm64(KernelConstsBase):
             else:
                 return self.VA_BITS_MIN
         elif "6.9" <= self.kversion:
-            if self.VA_BITS > 48:
+            if self.VA_BITS and self.VA_BITS > 48:
                 tcr = self.TCR_EL1()
+                if tcr is None:
+                    return None
                 return (64 - ((tcr >> 16) & 63))
             else:
                 return self.VA_BITS
@@ -60965,11 +61021,11 @@ class KernelAddressHeuristicFinder:
                     ...
                 }
                 """
-                if kversion < "5.15":
+                if kversion and kversion < "5.15":
                     v = read_int_from_memory(current_thread_info + current_arch.ptrsize * 3)
                     if v and is_valid_addr(v):
                         return v
-                elif kversion < "5.18":
+                elif kversion and kversion < "5.18":
                     v = read_int_from_memory(current_thread_info + current_arch.ptrsize * 2)
                     if v and is_valid_addr(v):
                         return v
@@ -62963,7 +63019,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # vdso_info is introduced from v5.8
-        if kversion < "5.8":
+        if kversion is None or kversion < "5.8":
             return None
 
         # plan 2 (available v5.8 or later)
@@ -63782,7 +63838,7 @@ class KernelAddressHeuristicFinder:
                 return x
 
         kversion = Kernel.kernel_version()
-        if kversion < "5.2":
+        if kversion is None or kversion < "5.2":
             return None
 
         # plan 2 (available v4.7~; here, always True)
@@ -63823,7 +63879,7 @@ class KernelAddressHeuristicFinder:
                 g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
             for x in g:
                 if is_arm32() or is_arm64():
-                    if kversion < "6.9":
+                    if kversion and kversion < "6.9":
                         count = 2
                     else:
                         count = 1
@@ -64747,13 +64803,13 @@ class Kernel:
                         dic["ro_base"] = vaddr
                         dic["ro_size"] = size
                         dic["ro_end"] = vaddr + size
-                        ro_base_map_index = text_base_map_index + i
+                        ro_base_map_index = text_base_map_index + 1 + i
                 elif dic["ro_end"] == vaddr:
                     # merge contiguous region.
                     # This is important because .rodata may be split into GLOBAL and non-GLOBAL areas.
                     dic["ro_size"] += size
                     dic["ro_end"] += size
-                    ro_base_map_index = text_base_map_index + i
+                    ro_base_map_index = text_base_map_index + 1 + i
                 else:
                     break
 
@@ -64776,13 +64832,13 @@ class Kernel:
                             dic["ro_base"] = vaddr
                             dic["ro_size"] = size
                             dic["ro_end"] = vaddr + size
-                            ro_base_map_index = text_base_map_index + i
+                            ro_base_map_index = text_base_map_index + 1 + i
                     elif dic["ro_end"] == vaddr:
                         # merge contiguous region.
                         # This is important because .rodata may be split into GLOBAL and non-GLOBAL areas.
                         dic["ro_size"] += size
                         dic["ro_end"] += size
-                        ro_base_map_index = text_base_map_index + i
+                        ro_base_map_index = text_base_map_index + 1 + i
                     else:
                         break
 
@@ -69628,7 +69684,11 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
 
         # make blank ELF
         text_base &= get_pagesize_mask_high()
-        text_end = entries[-1][0]
+        if not entries:
+            self.quiet_err("No symbols")
+            return
+        # `entries` is in symtab order, not sorted by address
+        text_end = max(entry[0] for entry in entries)
         blank_elf = AddSymbolTemporaryCommand.create_blank_elf(text_base, text_end)
         if blank_elf is None:
             self.quiet_err("Failed to create blank ELF")
@@ -73252,7 +73312,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             current = init_net
             is_seen = Symbol.get_ksymaddr("is_seen")
             if is_seen:
-                while True:
+                for _ in range(0x1000): # avoid unbounded scan
                     v = self.read_int_from_memory(current)
                     if v == is_seen:
                         self.net_ctset = current
@@ -73267,7 +73327,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             # set_is_seen is found in 3 places (v5.19~), so Symbol.get_ksymaddr should not be used.
             set_is_seen = Symbol.get_ksymaddr_multiple("set_is_seen")
             if set_is_seen:
-                while True:
+                for _ in range(0x1000): # avoid unbounded scan
                     v = self.read_int_from_memory(current)
                     if v in set_is_seen:
                         self.user_ctset = current
@@ -73644,6 +73704,18 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         self.offset_mount_mnt_mountpoint = current_arch.ptrsize * 3
         self.offset_mount_mnt = current_arch.ptrsize * 4
 
+        sb = fs_supers - self.offset_s_instances
+        head = read_int_from_memory(sb + self.offset_s_mounts)
+        for delta in (0, current_arch.ptrsize):
+            mount = head - self.offset_mount_mnt_instance - delta
+            if not is_valid_addr(mount):
+                continue
+            if read_int_from_memory(mount + self.offset_mount_mnt + current_arch.ptrsize) == sb:
+                self.offset_mount_mnt_instance += delta
+                self.offset_mount_mnt_devname += delta
+                break
+        self.quiet_info("offsetof(mount, mnt_instance): {:#x}".format(self.offset_mount_mnt_instance))
+
         # vfsmount->mnt_root
         self.offset_vfsmount_mnt_root = 0
 
@@ -73751,14 +73823,14 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
                 if name is None:
                     name_ptr = read_int_from_memory(dentry + offset_d_iname - current_arch.ptrsize * 2)
                     name = read_cstring_from_memory(name_ptr)
-                filepath.append(name)
+                filepath.append(name or "???")
                 break
 
             name = read_cstring_from_memory(dentry + offset_d_iname)
             if name is None:
                 name_ptr = read_int_from_memory(dentry + offset_d_iname - current_arch.ptrsize * 2)
                 name = read_cstring_from_memory(name_ptr)
-            filepath.append(name)
+            filepath.append(name or "???")
 
             parent = read_int_from_memory(dentry + offset_d_parent)
             dentry = parent
@@ -75080,7 +75152,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
             # align to 32bit / 64bit
             cur = AddressUtil.normalize_address(addr + offset)
             # is aligned?
-            if cur & 0x7 != 0:
+            if cur & (current_arch.ptrsize - 1) != 0:
                 continue
             # is kernel address?
             # TODO: more suitable check for kernel address
@@ -75396,12 +75468,16 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
             # - Read prb_desc and printk_info based on seq number.
             seq_based_desc = read_desc_i(rb["desc_ring"]["descs"], seq & seq_mask)
             seq_based_info = read_info_i(rb["desc_ring"]["infos"], seq & seq_mask)
+            if not seq_based_desc or not seq_based_info:
+                break
 
             # desc_read_finalized_seq, desc_read
             # - Read prb_desc and printk_info based on id number.
             id = seq_based_desc["state_var"] & state_var_id_mask
             id_based_desc = read_desc_i(rb["desc_ring"]["descs"], id & seq_mask)
             id_based_info = read_info_i(rb["desc_ring"]["infos"], id & seq_mask)
+            if not id_based_desc or not id_based_info:
+                break
             # - Determine whether it is the last entry based on the state and seq values.
             if (id_based_desc["state_var"] & state_var_id_mask) != id: # desc_miss
                 break
@@ -76004,7 +76080,7 @@ class ExecAsm:
             return
 
         self.stdout_bak = os.dup(self.stdout)
-        f = open("/dev/null")
+        f = open("/dev/null", "w")
         os.dup2(f.fileno(), self.stdout)
         f.close()
         EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
@@ -120733,7 +120809,7 @@ class IiCommand(GenericCommand):
             if r:
                 addrs.append(int(r.group(1), 16))
         insn_sizes = [(x, y - x) for x, y in zip(addrs[:-1], addrs[1:])]
-        max_insn_width = max(x[1] for x in insn_sizes) * 2
+        max_insn_width = max([x[1] for x in insn_sizes], default=0) * 2
 
         # print
         for i, line in enumerate(res.splitlines()[:-1]):
@@ -122828,7 +122904,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         if not is_valid_addr(node_page_head):
             return node_page_list
         current_node_page = read_int_from_memory(node_page_head)
+        seen = [] # avoid infinity loop
         while current_node_page != node_page_head:
+            if current_node_page in seen:
+                break
+            seen.append(current_node_page)
             node_page = {}
             node_page["address"] = current_node_page - self.page_offset_next
             if not is_valid_addr(node_page["address"]):
@@ -124120,7 +124200,11 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             if not is_valid_addr(node_page_head):
                 break
             current_node_page = read_int_from_memory(node_page_head)
+            seen = [] # avoid infinity loop
             while current_node_page != node_page_head:
+                if current_node_page in seen:
+                    break
+                seen.append(current_node_page)
                 node_page = {}
                 node_page["address"] = current_node_page - self.slab_offset_next
                 if not is_valid_addr(node_page["address"]):
@@ -126365,7 +126449,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                 # filtering by name
                 if self.args.names:
                     for filter_name in self.args.names:
-                        if child["logical_name"] in filter_name:
+                        if filter_name in child["logical_name"]:
                             keep_this_group = True
                             break
             if real_aliases == 0 and not keep_this_group:
@@ -133032,7 +133116,7 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
                 p = read_int_from_memory(val + self.ThreadCache_offset_next)
                 b = read_int_from_memory(val + self.ThreadCache_offset_next + current_arch.ptrsize)
                 candidate_next.append(p)
-                candidate_next.append(b)
+                candidate_prev.append(b)
                 candidate_thread_heaps.append(val)
 
             orig_thread.switch() # revert thread
@@ -133440,6 +133524,9 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         return mspan
 
     def dump_mspan_data(self, mspan):
+        if not mspan.chunk_size:
+            # `--verbose` does not filter out the span of chunk_size == 0
+            return
         chunk_data = read_memory(mspan.start_addr, mspan.end_addr - mspan.start_addr)
         chunk_hexdump = hexdump(chunk_data, base=mspan.start_addr, color=False, unit=8)
         lines = chunk_hexdump.splitlines()
@@ -139395,6 +139482,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                 self.out.append("  Unused chunks list: {}".format(repr(state)))
 
                 # dump chunks
+                # `state` has one character per slot, so "F" means the group has a single freed slot
                 if state != "F" or self.args.verbose:
                     dic = {"A": "Avail", "F": "Freed", "U": "Used"}
                     for i in range(meta.last_idx + 1):
@@ -149071,6 +149159,9 @@ class PagewalkArm64Command(PagewalkCommand):
             if not self.silent:
                 self.merging()
                 self.vttbrel2_mappings = self.mappings.copy()
+        else:
+            # the caller reads self.mappings to build el2_mappings, so restore it from the cache
+            self.mappings = self.vttbrel2_mappings.copy()
 
         if not self.silent:
             self.make_out(self.vttbrel2_mappings)
@@ -152549,13 +152640,13 @@ class ExecUntilCommand(GenericCommand):
     def close_stdout_stderr(self):
         self.stdout = 1
         self.stdout_bak = os.dup(self.stdout)
-        f = open("/dev/null")
+        f = open("/dev/null", "w")
         os.dup2(f.fileno(), self.stdout)
         f.close()
 
         self.stderr = 2
         self.stderr_bak = os.dup(self.stderr)
-        f = open("/dev/null")
+        f = open("/dev/null", "w")
         os.dup2(f.fileno(), self.stderr)
         f.close()
         return
@@ -153173,6 +153264,9 @@ class ExecUntilLibcCodeCommand(ExecUntilCommand):
     def do_invoke(self, args):
         libc_targets = ("libc-2.", "libc.so.6", "libuClibc-")
         libc = ProcessMap.process_lookup_path(libc_targets)
+        if libc is None:
+            err("Could not find the libc")
+            return
         maps = ProcessMap.get_process_maps()
         self.libc_addrs = [p for p in maps if p.permission.value & Permission.EXECUTE and p.path == libc.path]
         if not self.libc_addrs:
@@ -153467,6 +153561,7 @@ class CallUsermodehelperSetupBreakpoint(gdb.Breakpoint):
     def stop(self):
         ptr1, addr1 = current_arch.get_ith_parameter(0)
         ptr2, addr2 = current_arch.get_ith_parameter(1)
+        argv_addr = addr2
         path = read_cstring_from_memory(addr1)
         argv = []
         while True:
@@ -153477,7 +153572,7 @@ class CallUsermodehelperSetupBreakpoint(gdb.Breakpoint):
             argv.append("'{:s}'".format(string))
             addr2 += current_arch.ptrsize
         gef_print("{:s}: {:#x} -> '{:s}'".format(ptr1, addr1, path))
-        gef_print("{:s}: {:#x} -> [{:s}]".format(ptr2, addr2, ",".join(argv)))
+        gef_print("{:s}: {:#x} -> [{:s}]".format(ptr2, argv_addr, ",".join(argv)))
         return False # continue
 
 
