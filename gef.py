@@ -2382,14 +2382,15 @@ class Elf:
         Canary, NX, PIE, RELRO, Fortify, Static, Symbol, Debuginfo, CET,
         RPATH/RUNPATH, and Clang CFI/SafeStack."""
 
-        def exists_sym(dynstr, strtab, keywords):
-            if dynstr:
+        def exists_sym(dynstr, strtab, keywords, prefix=False):
+            for table in [dynstr, strtab]:
+                if not table:
+                    continue
                 for kw in keywords:
-                    if kw in dynstr:
-                        return True
-            if strtab:
-                for kw in keywords:
-                    if kw in strtab:
+                    if prefix:
+                        if any(sym.startswith(kw) for sym in table):
+                            return True
+                    elif kw in table:
                         return True
             return False
 
@@ -2508,13 +2509,13 @@ class Elf:
         if self.is_static() and self.is_stripped():
             sec["Clang CFI"] = None
         else:
-            sec["Clang CFI"] = exists_sym(dynstr, strtab, ["__ubsan_handle_cfi_"])
+            sec["Clang CFI"] = exists_sym(dynstr, strtab, [b"__ubsan_handle_cfi_"], prefix=True)
 
         # Clang SafeStack
         if self.is_static() and self.is_stripped():
             sec["Clang SafeStack"] = None
         else:
-            sec["Clang SafeStack"] = exists_sym(dynstr, strtab, ["__safestack_init"])
+            sec["Clang SafeStack"] = exists_sym(dynstr, strtab, [b"__safestack_init"])
         return sec
 
     class Phdr:
@@ -6571,16 +6572,18 @@ class Checksec:
     def get_cet_status_via_procfs():
         # https://www.kernel.org/doc/html/next/arch/x86/shstk.html
         dic = {}
+        pid = Pid.get_pid(remote=True) if is_remote_debug() else Pid.get_pid()
+        if not pid:
+            return None
         if is_remote_debug():
-            if Pid.get_pid(remote=True):
-                remote_status = "/proc/{:d}/status".format(Pid.get_pid(remote=True))
+            remote_status = "/proc/{:d}/status".format(pid)
             data = Path.read_remote_file(remote_status, as_byte=True) # qemu-user is failed here, it is ok
             if not data:
                 return None
         else:
-            if Pid.get_pid():
-                local_status = "/proc/{:d}/status".format(Pid.get_pid())
-            data = open(local_status, "rb").read()
+            local_status = "/proc/{:d}/status".format(pid)
+            with open(local_status, "rb") as fd:
+                data = fd.read()
             if not data:
                 return None
 
@@ -9439,11 +9442,11 @@ class S390X(Architecture):
                 val2 = trans(get_register(reg2_or_imm))
             else:
                 val2 = trans(int(reg2_or_imm, 0))
-            if (mask & 0b1) and val1 == val2:
+            if (mask & 0b1000) and val1 == val2:
                 return True, "{:s}=={:s}".format(reg1, reg2_or_imm)
-            if (mask & 0b10) and val1 < val2:
+            if (mask & 0b100) and val1 < val2:
                 return True, "{:s}<{:s}".format(reg1, reg2_or_imm)
-            if (mask & 0b100) and val1 > val2:
+            if (mask & 0b10) and val1 > val2:
                 return True, "{:s}>{:s}".format(reg1, reg2_or_imm)
             return False, ""
 
@@ -11242,13 +11245,13 @@ class LOONGARCH64(Architecture):
 
         v0 = get_register(alias_inverse.get(ops[0], ops[0]))
         if v0 is None:
-            return False
+            return False, ""
         v0s = u2i(v0)
 
         if mnemo not in ["beqz", "bnez"]:
             v1 = get_register(alias_inverse.get(ops[1], ops[1]))
             if v1 is None:
-                return False
+                return False, ""
             v1s = u2i(v1)
 
         taken, reason = False, ""
@@ -12553,8 +12556,12 @@ def u64(x, s=False):
 @Cache.cache_this_session
 def u128(x):
     """Unpack one oword respecting the current architecture endianness."""
-    upper = struct.unpack("{}Q".format(Endian.endian_str()), x[8:])[0]
-    lower = struct.unpack("{}Q".format(Endian.endian_str()), x[:8])[0]
+    if Endian.endian_str() == ">":
+        upper = struct.unpack(">Q", x[:8])[0]
+        lower = struct.unpack(">Q", x[8:])[0]
+    else:
+        upper = struct.unpack("<Q", x[8:])[0]
+        lower = struct.unpack("<Q", x[:8])[0]
     return (upper << 64) | lower
 
 
@@ -29542,6 +29549,9 @@ class ElfInfoCommand(GenericCommand):
         return
 
     def phdr_info(self, elf):
+        if not elf.phdrs:
+            self.out.append("Not loaded")
+            return
         name_width = max([len(self.ptype.get(p.p_type, "UNKNOWN")) for p in elf.phdrs])
 
         fmt = "[{:>2s}] {:{:d}s} {:>12s} {:>12s} {:>12s} {:>12s} {:>12s} {:5s} {:>8s}"
@@ -32472,7 +32482,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                         regname = self.get_register_name(op1)
                         entries.append(self.DataEntry(
                             pos, data[pos:new_pos],
-                            indent + "restore_extended r{:d} ({:s})".fomart(op1, regname),
+                            indent + "restore_extended r{:d} ({:s})".format(op1, regname),
                         ))
                     elif opcode == self.DW_CFA_undefined:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
@@ -33084,7 +33094,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                 elif op in [self.DW_OP_xderef_size]:
                     new_pos, d = self.read_1ubyte(data, new_pos)
                     typ = {1: "uchar", 2: "ushort", 4: "uint", 8: "ulong"}[d]
-                    extra_s = "pop; pop; push *({:s}*)(popped_value2_as_segment:popped_value1)".forma(typ)
+                    extra_s = "pop; pop; push *({:s}*)(popped_value2_as_segment:popped_value1)".format(typ)
                     entries.append(self.DataEntry(
                         pos, data[pos:new_pos],
                         indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
@@ -33138,7 +33148,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                         indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
                         None, extra_s,
                     ))
-                elif op in [self.DW_OP_const2u]:
+                elif op in [self.DW_OP_const2s]:
                     new_pos, d = self.read_2sbyte(data, new_pos)
                     extra_s = "push {:#x}".format(d)
                     entries.append(self.DataEntry(
@@ -33245,7 +33255,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                     ))
                 elif op in [self.DW_OP_fbreg]:
                     new_pos, d = self.get_sleb128(data, new_pos)
-                    regname = "push frame_base{:*#x}".format(d)
+                    extra_s = "push frame_base{:+#x}".format(d)
                     entries.append(self.DataEntry(
                         pos, data[pos:new_pos],
                         indent + "[{:#04x}] {:s} {:#x}".format(offset, op_name, d),
@@ -34663,7 +34673,7 @@ class ContextRegistersCommand(GenericCommand):
                 lines = gdb.execute("fpu", to_string=True).splitlines()
                 for reg in to_print_regs:
                     for line in lines:
-                        if ("$" + re.sub(r"[()]", reg, "")) in line.split(":")[0]:
+                        if ("$" + re.sub(r"[()]", "", reg)) in line.split(":")[0]:
                             gef_print(line, redirect=redirect)
                             if reg in to_save_regs:
                                 printed_extra_regs["fpu"] = printed_extra_regs.get("fpu", []) + [reg]
@@ -38347,11 +38357,17 @@ class DereferenceCommand(GenericCommand):
                 v = self.read_int_from_memory(current_address)
                 if v % current_arch.ptrsize == 0 and is_valid_addr(v):
                     args = self.args # backup
+                    tags_dict = self.tags_dict
+                    max_tag_width = self.max_tag_width
+                    reader = self.read_int_from_memory
                     cmd = "dereference --depth {:d} --no-pager {:#x} {:#x}".format(
                         self.args.depth - 1, v, self.args.depth_nb_lines,
                     )
                     ret = gdb.execute(cmd, to_string=True)
                     self.args = args # revert
+                    self.tags_dict = tags_dict
+                    self.max_tag_width = max_tag_width
+                    self.read_int_from_memory = reader
                     for line in ret.splitlines():
                         out.append("      " + line)
 
@@ -56199,7 +56215,7 @@ class MmxSetCommand(GenericCommand):
             "$mm0": b"\x0f\x6f\x00", # movq  mm0, qword ptr [rax]
             "$mm1": b"\x0f\x6f\x08", # movq  mm1, qword ptr [rax]
             "$mm2": b"\x0f\x6f\x10", # movq  mm2, qword ptr [rax]
-            "$mm3": b"\x0f\x6f\x08", # movq  mm3, qword ptr [rax]
+            "$mm3": b"\x0f\x6f\x18", # movq  mm3, qword ptr [rax]
             "$mm4": b"\x0f\x6f\x20", # movq  mm4, qword ptr [rax]
             "$mm5": b"\x0f\x6f\x28", # movq  mm5, qword ptr [rax]
             "$mm6": b"\x0f\x6f\x30", # movq  mm6, qword ptr [rax]
@@ -58429,7 +58445,7 @@ class KernelAddressHeuristicFinderUtil:
                 v = int(m.group(3), 16)
                 if srcreg in add1time:
                     w = AddressUtil.normalize_address(add1time[srcreg] + v)
-                    if not skip_msb_check or AddressUtil.is_msb_on(w):
+                    if skip_msb_check or AddressUtil.is_msb_on(w):
                         if not read_valid or is_valid_addr_addr(w):
                             if skip <= 0:
                                 yield w
@@ -58949,6 +58965,8 @@ class KernelConstsX86(KernelConstsBase):
 
     @property # noqa
     def MODULES_LEN(self):
+        # Note: the kernel itself defines it in this (reversed) order for x86_32.
+        # See arch/x86/include/asm/pgtable_32_areas.h
         return self.MODULES_VADDR - self.MODULES_END
 
     @property
@@ -61329,13 +61347,14 @@ class KernelAddressHeuristicFinder:
         sys_write = Symbol.get_ksymaddr("__x64_sys_write")
         sys_open = Symbol.get_ksymaddr("__x64_sys_open")
         sys_close = Symbol.get_ksymaddr("__x64_sys_close")
-        seq_to_find = p64(sys_read) + p64(sys_write) + p64(sys_open) + p64(sys_close)
-        kinfo = Kernel.get_kernel_layout()
-        if kinfo and kinfo.ro_base:
-            ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
-            sys_call_table_offset = ro_data.find(seq_to_find)
-            if sys_call_table_offset >= 0:
-                return kinfo.ro_base + sys_call_table_offset
+        if None not in [sys_read, sys_write, sys_open, sys_close]:
+            seq_to_find = p64(sys_read) + p64(sys_write) + p64(sys_open) + p64(sys_close)
+            kinfo = Kernel.get_kernel_layout()
+            if kinfo and kinfo.ro_base:
+                ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
+                sys_call_table_offset = ro_data.find(seq_to_find)
+                if sys_call_table_offset >= 0:
+                    return kinfo.ro_base + sys_call_table_offset
         return None
 
     @staticmethod
@@ -64425,7 +64444,7 @@ class KernelAddressHeuristicFinder:
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             addr = Symbol.get_ksymaddr("slub_addr_current")
             if addr:
-                return
+                return addr
 
         # plan 2 (from vaddr_ranges_first_valid_slab)
         addr = Symbol.get_ksymaddr("vaddr_ranges_first_valid_slab")
@@ -64601,8 +64620,8 @@ class Kernel:
             if dic["text_base"] and dic["text_end"]:
                 dic["text_size"] = dic["text_end"] - dic["text_base"]
 
-            dic["rw_base"] = Symbol.get_symbol_by_monitor("_stext")
-            dic["rw_end"] = Symbol.get_symbol_by_monitor("_etext")
+            dic["rw_base"] = Symbol.get_symbol_by_monitor("_sdata")
+            dic["rw_end"] = Symbol.get_symbol_by_monitor("_edata")
             if dic["rw_base"] and dic["rw_end"]:
                 dic["rw_size"] = dic["rw_end"] - dic["rw_base"]
 
@@ -64622,8 +64641,8 @@ class Kernel:
             if dic["text_base"] and dic["text_end"]:
                 dic["text_size"] = dic["text_end"] - dic["text_base"]
 
-            dic["rw_base"] = Symbol.get_ksymaddr("_stext")
-            dic["rw_end"] = Symbol.get_ksymaddr("_etext")
+            dic["rw_base"] = Symbol.get_ksymaddr("_sdata")
+            dic["rw_end"] = Symbol.get_ksymaddr("_edata")
             if dic["rw_base"] and dic["rw_end"]:
                 dic["rw_size"] = dic["rw_end"] - dic["rw_base"]
 
@@ -67648,7 +67667,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # fast path
         try:
             return to_unsigned_long(
-                gdb.parse_and_eval("&((struct inode*)0).i_no")
+                gdb.parse_and_eval("&((struct inode*)0).i_ino")
             )
         except gdb.error:
             pass
@@ -67884,7 +67903,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             offset_sighand += current_arch.ptrsize
         else:
             offset_sighand += current_arch.ptrsize * 2
-        return offset_sighand + current_arch.ptrsize
+        return offset_sighand
 
     def get_offset_action(self, sighand):
         """
@@ -71219,7 +71238,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
                 return "/dev/irlpt{:d}".format(minor - 16)
         elif major == 162:
             if minor == 0:
-                return "/dev/rawctl",
+                return "/dev/rawctl"
             elif 1 <= minor:
                 return "/dev/raw/raw{:d}".format(minor)
         elif major == 164:
@@ -73588,28 +73607,37 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             struct list_head mnt_mounts;
             struct list_head mnt_child;
             struct list_head mnt_instance; // ~v6.17 // <-- s_mounts points here (~v6.17)
+            struct mount *mnt_next_for_sb; // v6.18~ // ptrsize * 2 (with mnt_pprev_for_sb, replaces mnt_instance)
+            struct mount **mnt_pprev_for_sb; // v6.18~
             const char *mnt_devname;
             ...
         } __randomize_layout;
         """
         # mount->mnt_instance
-        if kversion < "6.18":
-            common1 = current_arch.ptrsize * 4 # mnt_hash ~ mnt_mount_point
-            if kversion < "5.12":
-                sizeof_vfsmount = current_arch.ptrsize * 3
-            else:
-                sizeof_vfsmount = current_arch.ptrsize * 4
-            if kversion < "3.13":
-                sizeof_union = 0
-            elif kversion < "6.12":
-                sizeof_union = current_arch.ptrsize * 2
-            else:
-                sizeof_union = current_arch.ptrsize * 3
-            sizeof_ifdef = current_arch.ptrsize # for x86/x64/ARM/ARM64, CONFIG_SMP is 'y' in almost all cases
-            common2 = current_arch.ptrsize * 4 # mnt_mounts ~ mnt_child
-            self.offset_mount_mnt_instance = common1 + sizeof_vfsmount + sizeof_union + sizeof_ifdef + common2
+        common1 = current_arch.ptrsize * 4 # mnt_hash ~ mnt_mount_point
+        if kversion < "5.12":
+            sizeof_vfsmount = current_arch.ptrsize * 3
         else:
+            sizeof_vfsmount = current_arch.ptrsize * 4
+        if kversion < "3.13":
+            sizeof_union = 0
+        elif kversion < "6.12":
+            sizeof_union = current_arch.ptrsize * 2
+        else:
+            sizeof_union = current_arch.ptrsize * 3
+        sizeof_ifdef = current_arch.ptrsize # for x86/x64/ARM/ARM64, CONFIG_SMP is 'y' in almost all cases
+        common2 = current_arch.ptrsize * 4 # mnt_mounts ~ mnt_child
+        offset_after_mnt_child = common1 + sizeof_vfsmount + sizeof_union + sizeof_ifdef + common2
+        if kversion < "6.18":
+            # s_mounts points to mount->mnt_instance
+            self.offset_mount_mnt_instance = offset_after_mnt_child
+        else:
+            # s_mounts points to the top of struct mount, because mnt_instance is
+            # replaced by mnt_next_for_sb/mnt_pprev_for_sb (same size, 2 pointers)
             self.offset_mount_mnt_instance = 0
+        # mnt_devname is placed just after mnt_instance (~v6.17) / mnt_pprev_for_sb (v6.18~),
+        # so its offset from the top of struct mount is unchanged
+        self.offset_mount_mnt_devname = offset_after_mnt_child + current_arch.ptrsize * 2
 
         # mount->{mnt_parent,mnt_mountpoint,mnt}
         self.offset_mount_mnt_parent = current_arch.ptrsize * 2
@@ -73750,11 +73778,8 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         return mount, filepath
 
     def get_dev_name(self, mnt_instance):
-        offset_mount_mnt_instance = current_arch.ptrsize * 14
-        offset_mount_mnt_devname = current_arch.ptrsize * 16
-
-        mnt = mnt_instance - offset_mount_mnt_instance
-        devname_p = read_int_from_memory(mnt + offset_mount_mnt_devname)
+        mnt = mnt_instance - self.offset_mount_mnt_instance
+        devname_p = read_int_from_memory(mnt + self.offset_mount_mnt_devname)
         devname = read_cstring_from_memory(devname_p)
         return devname
 
@@ -75631,7 +75656,7 @@ class StringsCommand(GenericCommand, BufferingOutput):
 
             # search for the pointer for recursive
             aligned_data = data[current_arch.ptrsize - location % current_arch.ptrsize:]
-            if len(aligned_data) % 8:
+            if len(aligned_data) % current_arch.ptrsize:
                 aligned_data = aligned_data[:-(len(aligned_data) % current_arch.ptrsize)]
             for addr in slice_unpack(aligned_data, current_arch.ptrsize):
                 if addr in seen_addr:
@@ -125492,9 +125517,9 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         if kversion < "4.18":
             self.page_offset_units = current_arch.ptrsize * 3
         elif kversion < "5.17":
-            self.page_offset_freelist = current_arch.ptrsize * 6
+            self.page_offset_units = current_arch.ptrsize * 6
         else:
-            self.page_offset_freelist = current_arch.ptrsize * 5
+            self.page_offset_units = current_arch.ptrsize * 5
         self.quiet_info("offsetof({:s}, units): {:#x}".format(Kernel.slab_page_str(), self.page_offset_units))
 
         self.initialized = True
@@ -126414,7 +126439,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                         break
                     if filter_name in v["alias"]:
                         break
-                    if filter_name in v["slab_cache_name"]:
+                    if v["slab_cache_name"] and filter_name in v["slab_cache_name"]:
                         break
                 else:
                     continue
@@ -128975,7 +129000,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             union_array = m + self.offset_union_array
             self.out.append(fmt.format(i, m, t1, key_size, val_size, max_ents, union_array))
 
-            if self.verbose:
+            if self.args.verbose:
                 if map_type == 2: # ARRAY
                     res = gdb.execute("dereference -n {:#x} {:#x}".format(union_array, max_ents), to_string=True)
                     self.out.append(res.rstrip())
@@ -133331,7 +133356,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         } // total: 0xa0 bytes
         """
         self.offset_next = self.get_struct_offset("runtime.mspan", "next") or 0x0
-        self.offset_prev = self.get_struct_offset("runtime.mspan", "next") or 0x8
+        self.offset_prev = self.get_struct_offset("runtime.mspan", "prev") or 0x8
         self.offset_startAddr = self.get_struct_offset("runtime.mspan", "startAddr") or 0x18
         self.offset_npages = self.get_struct_offset("runtime.mspan", "npages") or 0x20
         self.offset_nelems = self.get_struct_offset("runtime.mspan", "nelems") or 0x32
@@ -133841,7 +133866,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
         # pattern1: HoardSuperblockHeaderHelper->_freeList
         freeList = read_int_from_memory(sb + current_arch.ptrsize * 11)
         if freeList:
-            return freeList
+            return [freeList]
 
         # pattern2: thread variable holds it
         objectSize = read_int_from_memory(sb + current_arch.ptrsize * 2)
@@ -141706,7 +141731,7 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
             offsetof_link = offsetof_flags + current_arch.ptrsize
             offsetof_uuid = offsetof_link + current_arch.ptrsize * 2
             offsetof_ops = offsetof_uuid + 16
-            offsetof_ref_count = offsetof_ops + 4 * 2
+            offsetof_ref_count = offsetof_ops + current_arch.ptrsize + 4 * 2
         else:
             offsetof_uuid = 0
             offsetof_ops = offsetof_uuid + 16
@@ -142525,9 +142550,9 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
                     )
                     chunk += bsize
                 if chunk % 8:
-                    self.out.append(Color.colorify("unaligned orrupted", corrupted_msg_color))
+                    self.out.append(Color.colorify("unaligned corrupted", corrupted_msg_color))
                     break
-            return
+        return
 
     @parse_args
     @only_if_gdb_running
@@ -143651,9 +143676,9 @@ class CetCommand(GenericCommand):
         IA32_S_CET = MsrCommand.read_msr(0x6a2)
         sd = self.decode_cet_bits(IA32_S_CET)
         if sd is not None:
-            self.print_cet_bits("IA32_S_CET ({:#x})".format(IA32_S_CET), ud)
+            self.print_cet_bits("IA32_S_CET ({:#x})".format(IA32_S_CET), sd)
         else:
-            gef_print("IA_32_U_CET = N/A")
+            gef_print("IA_32_S_CET = N/A")
 
         IA32_PL0_SSP = MsrCommand.read_msr(0x6a4)
         IA32_PL1_SSP = MsrCommand.read_msr(0x6a5)
@@ -147179,8 +147204,9 @@ class PagewalkArmCommand(PagewalkCommand):
                 6: 0x0400_0000,
                 7: 0x0200_0000,
             }[self.N]
-        pl1_base = ((TTBR1_EL1 & 0xffff_ffff) >> x) << x
         # Whenever TTBCR.N is nonzero, the size of the translation table addressed by TTBR1 is 16KB (N=0).
+        x1 = 14
+        pl1_base = ((TTBR1_EL1 & 0xffff_ffff) >> x1) << x1
         self.N = 0
         if pl1_vabase is not None:
             self.quiet_info_add_out("$TTBR1_EL1{}: {:#x}".format(self.suffix, TTBR1_EL1))
@@ -149820,7 +149846,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
 
         VMALLOC_START = KernelAddressHeuristicFinder.get_VMALLOC_START()
         VMALLOC_END = KernelAddressHeuristicFinder.get_VMALLOC_END()
-        if VMALLOC_END and VMALLOC_END:
+        if VMALLOC_START and VMALLOC_END:
             self.insert_region_range(VMALLOC_START, VMALLOC_END, "vmalloc")
         return
 
@@ -155623,7 +155649,7 @@ class KmallocAllocatedByCommand(GenericCommand):
                 msg += b"AAAA"                     # data
                 yield ("sendmsg(sv[0], &msg, 0)", "sendmsg", [sv0, msg, 0])
                 self.skipped_syscall.add("sendmmsg")
-                yield ("recvmsg(sv[1], &msg, 0)", "sendmsg", [sv1, msg, 0])
+                yield ("recvmsg(sv[1], &msg, 0)", "recvmsg", [sv1, msg, 0])
                 self.skipped_syscall.add("recvmmsg")
                 yield ("shutdown(sv[0], SHUT_RDWR)", "shutdown", [sv0, 2])
                 yield ("close(sv[0])", "close", [sv0])
