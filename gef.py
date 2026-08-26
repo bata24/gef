@@ -62290,7 +62290,7 @@ class KernelAddressHeuristicFinder:
         if kversion and "2.4" <= kversion:
             addr = Symbol.get_ksymaddr("free_pages")
             if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
                 if is_x86_32():
                     # 0xc12f491b <free_pages+27>:  mov    eax,DWORD PTR [eax*8-0x3d19e3a0]
                     # gef> x/w -0x3d19e3a0
@@ -62334,7 +62334,7 @@ class KernelAddressHeuristicFinder:
         if kversion and "2.4" <= kversion:
             addr = Symbol.get_ksymaddr("free_pages")
             if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
                 if is_x86_32():
                     g = itertools.chain(
                         # 0xd3bf91d9 <free_pages+13>:  mov    ecx,DWORD PTR ds:0xd4f337c4
@@ -62354,7 +62354,7 @@ class KernelAddressHeuristicFinder:
                     )
                 for x in g:
                     v = read_int_from_memory(x)
-                    if v != 0:
+                    if v != 0 and is_valid_addr(v):
                         return v
         return None
 
