@@ -64997,6 +64997,7 @@ class Kernel:
                         dic["ro_size"] = end - addr
                         dic["ro_end"] = end
                         dic["text_size"] -= dic["ro_size"]
+                        dic["text_end"] = addr
                         # In this case, rw_base is not detected.
                         # This is because ksymaddr-remote appears to provide better results.
                         dic["rw_base"] = 0
