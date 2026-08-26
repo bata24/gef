@@ -64229,10 +64229,26 @@ class KernelAddressHeuristicFinder:
         kinfo = Kernel.get_kernel_layout()
         if kinfo.ro_base and kinfo.ro_size and is_valid_addr(kinfo.ro_base):
             ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
+            rw_base = kinfo.ro_base
             if kinfo.rw_base and kinfo.rw_size:
+                rw_base = kinfo.rw_base
                 rw_data = read_memory(kinfo.rw_base, min(kinfo.rw_size, 0x1000000))
             else:
                 rw_data = ro_data
+                # On kernels where the linear mapping is RWX, get_kernel_layout() cannot
+                # distinguish .data from the rest of the mapping.  Search the contiguous
+                # area immediately following .rodata, where ioport_resource is defined.
+                if kinfo.ro_end and kinfo.maps:
+                    rw_end = kinfo.ro_end
+                    for vaddr, size, _perm in kinfo.maps:
+                        if vaddr <= rw_end < vaddr + size or vaddr == rw_end:
+                            rw_end = max(rw_end, vaddr + size)
+                        elif vaddr > rw_end:
+                            break
+                    rw_size = min(rw_end - kinfo.ro_end, 0x1000000)
+                    if rw_size:
+                        rw_base = kinfo.ro_end
+                        rw_data = read_memory(rw_base, rw_size)
             pos = -1
             while True:
                 # search for aligned string from .rodata
@@ -64255,10 +64271,7 @@ class KernelAddressHeuristicFinder:
                     if pos2 % current_arch.ptrsize != 0:
                         continue
                     # TODO: How to find the exact value of sizeof(resource_size_t)
-                    if kinfo.rw_base and kinfo.rw_size:
-                        maybe_ioport_resource = kinfo.rw_base + pos2 - current_arch.ptrsize * 2
-                    else:
-                        maybe_ioport_resource = kinfo.ro_base + pos2 - current_arch.ptrsize * 2
+                    maybe_ioport_resource = rw_base + pos2 - current_arch.ptrsize * 2
                     return maybe_ioport_resource
         return None
 
