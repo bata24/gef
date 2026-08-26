@@ -61532,18 +61532,26 @@ class KernelAddressHeuristicFinder:
                 return x
 
         # plan 3 (search for the memory)
-        sys_restart_syscall = Symbol.get_ksymaddr("sys_restart_syscall")
-        sys_exit = Symbol.get_ksymaddr("sys_exit")
-        sys_fork = Symbol.get_ksymaddr("sys_fork")
-        sys_read = Symbol.get_ksymaddr("sys_read")
-        if None not in [sys_restart_syscall, sys_exit, sys_fork, sys_read]:
-            if is_x86_64():
-                seq_to_find = p64(sys_restart_syscall) + p64(sys_exit) + p64(sys_fork) + p64(sys_read)
-            else:
-                seq_to_find = p32(sys_restart_syscall) + p32(sys_exit) + p32(sys_fork) + p32(sys_read)
-            kinfo = Kernel.get_kernel_layout()
-            if kinfo and kinfo.ro_base:
-                ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
+        # Since v4.17, syscall wrappers use the __ia32_sys_* names.  Keep the
+        # legacy sys_* sequence as a fallback for older kernels.
+        symbol_sequences = [
+            ("__ia32_sys_restart_syscall", "__ia32_sys_exit", "__ia32_sys_fork", "__ia32_sys_read"),
+            ("sys_restart_syscall", "sys_exit", "sys_fork", "sys_read"),
+        ]
+        address_sequences = []
+        for symbol_sequence in symbol_sequences:
+            syscall_addrs = [Symbol.get_ksymaddr(symbol) for symbol in symbol_sequence]
+            if None not in syscall_addrs:
+                address_sequences.append(syscall_addrs)
+        if not address_sequences:
+            return None
+
+        kinfo = Kernel.get_kernel_layout()
+        if kinfo and kinfo.ro_base:
+            ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
+            pack = p64 if is_x86_64() else p32
+            for syscall_addrs in address_sequences:
+                seq_to_find = b"".join(pack(addr) for addr in syscall_addrs)
                 sys_call_table_offset = ro_data.find(seq_to_find)
                 if sys_call_table_offset >= 0:
                     return kinfo.ro_base + sys_call_table_offset
