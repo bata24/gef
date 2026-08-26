@@ -63313,13 +63313,16 @@ class KernelAddressHeuristicFinder:
         if kversion and "5.13" <= kversion:
             addr = Symbol.get_ksymaddr("kmsg_dump_rewind")
             if addr:
-                res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
+                res = gdb.execute("x/60i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res, read_valid=True)
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res, read_valid=True)
                 elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res, read_valid=True)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res, read_valid=True),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res, read_valid=True),
+                    )
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res, read_valid=True)
                 for x in g:
@@ -63361,7 +63364,7 @@ class KernelAddressHeuristicFinder:
         if kversion and "3.5" <= kversion:
             addr = Symbol.get_ksymaddr("devkmsg_open")
             if addr:
-                res = gdb.execute("x/50i {:#x}".format(addr), to_string=True)
+                res = gdb.execute("x/80i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
                 elif is_x86_32():
