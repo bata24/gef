@@ -122936,9 +122936,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         # alignment check for each candidate_top_pages
         valid_top_pages = []
         for cand_top in candidate_top_pages:
+            start_addr = cand_top + kmem_cache["red_left_pad"]
             for chunk in freelist:
                 # divisible?
-                if (chunk - cand_top) % chunk_size != 0:
+                if (chunk - start_addr) % chunk_size != 0:
                     break
             else:
                 valid_top_pages.append(cand_top)
@@ -122948,6 +122949,56 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         # confirm if there is only one valid pattern
         if len(valid_top_pages) == 1:
             return valid_top_pages[0]
+
+        # heuristic detection pattern 3 (x86_32 FLATMEM)
+        # Use the x86_32 direct map and FLATMEM relationships instead:
+        #
+        #   PFN = (candidate_top_page - PAGE_OFFSET) / PAGE_SIZE
+        #   page_address = mem_map + PFN * sizeof(struct page)
+        #
+        # Therefore, for each possible top page:
+        #
+        #   sizeof(struct page) = (page_address - mem_map) / PFN
+        #
+        # e.g., a two-page slab with freed chunks found only on the second page:
+        #
+        #   candidate 1: 0xXXXX0000  <-- actual top page
+        #   candidate 2: 0xXXXX1000  <-- one-page-shifted false candidate (freed chunks are observed only here)
+        #
+        # Check all candidate pages to see if they satisfy this formula, and if there is only one candidate, select it.
+        if is_x86_32():
+            consts = KernelAddressHeuristicFinder.consts()
+            mem_map = consts.mem_map
+            page_offset = consts.PAGE_OFFSET
+            page_delta = page["address"] - mem_map if mem_map is not None else -1
+            if page_offset is not None and page_delta > 0:
+                most_top_page = min_page - (page["num_pages"] - 1) * get_pagesize()
+                min_struct_page_size = max(
+                    self.page_offset_freelist + current_arch.ptrsize,
+                    self.page_offset_inuse_objects_frozen + 4,
+                    self.page_offset_next + current_arch.ptrsize * 2,
+                    self.page_offset_slab_cache + current_arch.ptrsize,
+                )
+                valid_top_pages = []
+                for cand_top in range(most_top_page, min_page + get_pagesize(), get_pagesize()):
+                    pfn = (cand_top - page_offset) // get_pagesize()
+                    if pfn <= 0 or page_delta % pfn:
+                        continue
+                    struct_page_size = page_delta // pfn
+                    if not (min_struct_page_size <= struct_page_size <= get_pagesize()):
+                        continue
+                    if struct_page_size % current_arch.ptrsize:
+                        continue
+                    start_addr = cand_top + kmem_cache["red_left_pad"]
+                    end_addr = cand_top + page["num_pages"] * get_pagesize()
+                    if all(
+                        start_addr <= chunk < end_addr
+                        and (chunk - start_addr) % kmem_cache["size"] == 0
+                        for chunk in freelist
+                    ):
+                        valid_top_pages.append(cand_top)
+                if len(valid_top_pages) == 1:
+                    return valid_top_pages[0]
 
         # not found
         return None
