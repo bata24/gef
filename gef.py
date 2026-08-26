@@ -61014,6 +61014,7 @@ class KernelAddressHeuristicFinder:
                 elif is_x86_32():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.x86_dword_ptr_ds(res),
+                        KernelAddressHeuristicFinderUtil.x86_mov_noptr_ds(res),
                         KernelAddressHeuristicFinderUtil.x86_dword_ptr_fs(res, skip_msb_check=True),
                     )
                 for x in g:
