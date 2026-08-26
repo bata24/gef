@@ -292,7 +292,7 @@ class DisplayHook:
             return "\n".join(f)
 
         name = type(o).__name__
-        width = GefUtil.get_terminal_size()[1] + len(I1(idt))
+        width = GefUtil.get_terminal_size()[1] - len(I1(idt))
 
         if name in ("int", "long"):
             return hex(o)
@@ -2037,7 +2037,7 @@ class Elf:
             self.pos = 0
             self.filename = None
         else:
-            raise
+            raise TypeError("Elf: unsupported source: {!r}".format(elf))
 
         # off 0x0
         self.e_magic, self.e_class, self.e_endianness, self.e_eiversion = struct.unpack(">IBBB", self.read(7))
@@ -2109,7 +2109,7 @@ class Elf:
         elif self.addr is not None:
             v = read_memory(self.addr + self.pos, size)
         else:
-            raise
+            raise ValueError("Elf.read: neither file nor address is set")
         self.pos += size
         return v
 
@@ -2119,7 +2119,7 @@ class Elf:
         elif self.addr is not None:
             self.pos = off
         else:
-            raise
+            raise ValueError("Elf.seek: neither file nor address is set")
         return
 
     def is_valid(self):
@@ -2130,7 +2130,7 @@ class Elf:
             return 64
         if self.e_class == Elf.ELF_32_BITS:
             return 32
-        raise
+        raise ValueError("Elf.get_bits: invalid e_class: {!r}".format(self.e_class))
 
     def get_phdr(self, p_type):
         for phdr in self.phdrs:
@@ -2676,7 +2676,7 @@ class Elf:
         SHT_GNU_INCREMENTAL_INPUTS         = 0x6fff_4700
         SHT_LLVM_ODRTAB                    = 0x6fff_4c00
         SHT_LLVM_LINKER_OPTIONS            = 0x6fff_4c01
-        SHT_LLVM_CALL_GRAPH_PROFILE        = 0x6fff_4c02
+        SHT_LLVM_CALL_GRAPH_PROFILE_V0     = 0x6fff_4c02 # noqa: F841
         SHT_LLVM_ADDRSIG                   = 0x6fff_4c03
         SHT_LLVM_DEPENDENT_LIBRARIES       = 0x6fff_4c04
         SHT_LLVM_SYMPART                   = 0x6fff_4c05
@@ -4769,13 +4769,17 @@ class GlibcHeap:
                     new_list = self.bins_dict_for_address.get(address, []) + [m]
                     self.bins_dict_for_address[address] = new_list
 
+            fastbins_table = GlibcHeap.get_binsize_table()["fastbins"]
             for fastbin_idx, fastbin_list in self.cached_fastbins_list.items():
                 for address in set(fastbin_list):
                     if not isinstance(address, int):
                         continue
                     pos = ",".join([str(i + 1) for i, x in enumerate(fastbin_list) if x == address])
-                    sz = GlibcHeap.get_binsize_table()["fastbins"][fastbin_idx]["size"]
-                    m = "fastbins[idx={:d},sz={:#x}][{:s}/{:d}]".format(fastbin_idx, sz, pos, len(fastbin_list))
+                    if fastbin_idx in fastbins_table:
+                        sz = fastbins_table[fastbin_idx]["size"]
+                        m = "fastbins[idx={:d},sz={:#x}][{:s}/{:d}]".format(fastbin_idx, sz, pos, len(fastbin_list))
+                    else:
+                        m = "fastbins[idx={:d}][{:s}/{:d}]".format(fastbin_idx, pos, len(fastbin_list))
                     new_list = self.bins_dict_for_address.get(address, []) + [m]
                     self.bins_dict_for_address[address] = new_list
 
@@ -4861,6 +4865,8 @@ class GlibcHeap:
             elif isinstance(address_or_chunk, int):
                 address = address_or_chunk
                 base_address = address_or_chunk
+            else:
+                return []
 
             info = []
             if not hasattr(self, "bins_dict_for_address"):
@@ -5793,7 +5799,7 @@ def slice_unpack(data, n):
     elif n == 16:
         return [u128(data[i:i + 16]) for i in range(0, len(data), 16)]
     else:
-        raise
+        raise ValueError("slice_unpack: unsupported size: {!r}".format(n))
 
 
 def align(value, align):
@@ -5838,12 +5844,12 @@ def xor(a, b=None):
             return bytes([c1 ^ c2 for (c1, c2) in zip(a, itertools.cycle(b))])
         elif isinstance(a, bytearray) and isinstance(b, bytearray):
             return bytearray([c1 ^ c2 for (c1, c2) in zip(a, itertools.cycle(b))])
-        raise
+        raise TypeError("xor: unsupported operand types: {!s}, {!s}".format(type(a), type(b)))
 
     if b is None:
         if hasattr(a, "__iter__"):
             return functools.reduce(_xor, a)
-        raise
+        raise TypeError("xor: unsupported operand type: {!s}".format(type(a)))
     return _xor(a, b)
 
 
@@ -9441,7 +9447,7 @@ class S390X(Architecture):
             elif not signed and bit == 64:
                 trans = lambda a: a & 0xffff_ffff_ffff_ffff
             else:
-                raise
+                raise ValueError("for_compare: unsupported bit length: {!r}".format(bit))
 
             if re.match(r"c[lg]{0,2}i[bj]", insn.mnemonic):
                 mask = insn.opcodes[1] & 0b1111
@@ -10421,6 +10427,7 @@ class HPPA64(HPPA):
     # qemu does not support hppa64, so this could not be tested.
 
     load_condition = [
+        "HPPA2.0W",
     ]
 
     bit_length = 64
@@ -10795,9 +10802,9 @@ class MICROBLAZE(Architecture):
         else:
             sp = current_arch.sp
             sz = current_arch.ptrsize
-            loc = sp + (i * sz)
+            loc = sp + ((i + 1) * sz)
             val = read_int_from_memory(loc)
-            key = "[sp + {:#x}]".format(i * sz)
+            key = "[sp + {:#x}]".format((i + 1) * sz)
             return key, val
 
     def get_ra(self, insn, frame):
@@ -10911,7 +10918,7 @@ class XTENSA(Architecture):
             v0 = get_register(ops[0])
             v1 = get_register(ops[1])
             taken, reason = v0 == v1, "{:s}=={:s}".format(ops[0], ops[1])
-        if mnemo == "beqi":
+        elif mnemo == "beqi":
             v0 = get_register(ops[0])
             v1 = int(ops[1])
             taken, reason = v0 == v1, "{:s}=={:s}".format(ops[0], ops[1])
@@ -11422,13 +11429,13 @@ class ARC(Architecture):
             return True
         if insn.mnemonic in ["b", "b.d", "b_s"]:
             return True
-        if insn.mnemonic in ["j", "j.d"]:
+        if insn.mnemonic in ["j", "j.d", "j_s", "j_s.d"]:
             if insn.operands != ["[blink]"]:
                 return True
         return False
 
     def is_ret(self, insn):
-        if insn.mnemonic in ["j", "j_s", "j_s.d"] and insn.operands == ["[blink]"]:
+        if insn.mnemonic in ["j", "j.d", "j_s", "j_s.d"] and insn.operands == ["[blink]"]:
             return True
         return False
 
@@ -11493,9 +11500,10 @@ class ARC(Architecture):
         carry = bool(val & (1 << flags["carry"]))
 
         if len(ops) >= 2:
-            pI = lambda a: struct.pack("<I", a & 0xffff_ffff)
-            ui = lambda a: struct.unpack("<i", a)[0]
-            u2i = lambda a: ui(pI(a))
+            if self.bit_length == 64:
+                u2i = lambda a: struct.unpack("<q", struct.pack("<Q", a & 0xffff_ffff_ffff_ffff))[0]
+            else:
+                u2i = lambda a: struct.unpack("<i", struct.pack("<I", a & 0xffff_ffff))[0]
             v0u = get_register(ops[0])
             if v0u is None:
                 v0u = int(ops[0], 0)
@@ -13574,7 +13582,8 @@ class ProcessMap:
         else:
             if not os.path.exists(proc_map_file):
                 return []
-            lines = open(proc_map_file, "r").readlines()
+            with open(proc_map_file, "r") as fdw:
+                lines = fdw.readlines()
 
         # tls and $sp of each threads
         extra_info = []
@@ -17425,7 +17434,7 @@ class ProcInfoCommand(GenericCommand):
             return []
         try:
             name = re.search(r"\((.+)\)", stat).group(1)
-        except IndexError:
+        except AttributeError:
             name = "???"
         other = re.sub(r"\(.+\) ", "", stat).split()
         res = [int(other[0]), name, other[1]] + [int(x) for x in other[2:]]
@@ -18091,7 +18100,8 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
         data = data.replace(b"tx_queue ", b"tx_queue:")
         data = data.replace(b" tr ", b" tr:")
         tmp_fd, tmp_filename = GefUtil.mkstemp(prefix="proc-dump")
-        os.fdopen(tmp_fd, "wb").write(data)
+        with os.fdopen(tmp_fd, "wb") as fdw:
+            fdw.write(data)
         ret = GefUtil.gef_execute_external([column_command, "-t", tmp_filename], as_list=True)
         os.unlink(tmp_filename)
         self.out.extend(ret)
@@ -18110,7 +18120,8 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
         data = re.sub(rb"\|\s*Transmit", b"|Transmit", data)
 
         tmp_fd, tmp_filename = GefUtil.mkstemp(prefix="proc-dump")
-        os.fdopen(tmp_fd, "wb").write(data)
+        with os.fdopen(tmp_fd, "wb") as fdw:
+            fdw.write(data)
         ret = GefUtil.gef_execute_external([column_command, "-t", tmp_filename], as_list=True)
         os.unlink(tmp_filename)
 
@@ -18129,9 +18140,9 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_igmp(self, path):
-        fd = open(path, "rb")
-        for line in fd.readlines():
-            self.out.append(String.bytes2str(line.rstrip())) # no-lstrip
+        with open(path, "rb") as fd:
+            for line in fd.readlines():
+                self.out.append(String.bytes2str(line.rstrip())) # no-lstrip
         return
 
     def dump_netstat(self, path):
@@ -18157,8 +18168,9 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
             return
 
         try:
-            for line in fd.readlines():
-                self.out.append(String.bytes2str(line).strip())
+            with fd:
+                for line in fd.readlines():
+                    self.out.append(String.bytes2str(line).strip())
         except OSError:
             self.out.append("{:s} Parse failed".format(Color.colorify("[!]", "bold red")))
         return
@@ -18486,7 +18498,8 @@ class SmartMemoryDumpCommand(GenericCommand):
                 return
 
             # write
-            open(filepath, "wb").write(data)
+            with open(filepath, "wb") as fdw:
+                fdw.write(data)
             info("Saved to {:s} ({:s})".format(filepath, size_str))
         else:
             info("It will be saved to {:s} ({:s})".format(filepath, size_str))
@@ -18973,7 +18986,8 @@ class XtapCommand(GenericCommand):
         return
 
     def force_write_stdout(self, msg):
-        open("/proc/self/fd/0", "wb").write(msg)
+        with open("/proc/self/fd/0", "wb") as fdw:
+            fdw.write(msg)
         return
 
     def dump_transfer(self, name, direction, fd, label, data):
@@ -20521,14 +20535,16 @@ class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
         if os.path.exists(output_path) and not args.rescan:
             # read previous output
             info("A previously used file found, will be reused")
-            self.out = open(output_path).read().splitlines()
+            with open(output_path) as fdw:
+                self.out = fdw.read().splitlines()
         else:
             # doit
             self.out = []
             self.exec_search()
             # save
             if output_path:
-                open(output_path, "w").write("\n".join(self.out).rstrip())
+                with open(output_path, "w") as fdw:
+                    fdw.write("\n".join(self.out).rstrip())
 
         # output
         self.print_output()
@@ -23009,7 +23025,7 @@ class UnicornEmulator:
             for (mr1, mr2) in zip(regions[:-1], regions[1:]):
                 if is_64bit() and mr1[0] >= 0x8000_0000_0000_0000: # avoid around [vsyscall]
                     continue
-                if mr1[0] - mr2[1] >= a2:
+                if mr1[0] - (mr2[1] + 1) >= a2:
                     map_start = mr1[0] - a2
                     break
             if map_start is None:
@@ -23019,7 +23035,8 @@ class UnicornEmulator:
                 self.emu.reg_write(self.regs[entry.ret_regs[0]], map_start)
             except Exception:
                 return False
-            self.mapped.add(map_start & self.page_mask)
+            for page in range(map_start & self.page_mask, map_start + a2, self.page_size):
+                self.mapped.add(page)
             gef_print("  --> syscall={:d} (emulated)".format(sysno))
             gef_print("    --> {:#x} = mmap({:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x})".format(
                 map_start, a1, a2, a3, a4, a5, a6,
@@ -23622,7 +23639,7 @@ class UnicornEmulateScriptCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     _example_ = [
-        "{0:s} -g 10               # from $pc to the point where 4 instructions are executed",
+        "{0:s} -g 10               # from $pc to the point where 10 gadgets are executed",
         "{0:s} -n 5                # from $pc to 5 later instructions (assume it is no branch)",
         "{0:s} -t 0x805678a4 -s    # from $pc to specified address with saving script",
     ]
@@ -24153,7 +24170,8 @@ class UnicornEmulateScriptCommand(GenericCommand):
             if sect.permission & Permission.READ:
                 code = read_memory(sect.page_start, sect.size)
                 loc = os.path.join(kwargs["dloc"], "{:s}-{:#x}.raw".format(filename, sect.page_start))
-                open(loc, "wb").write(bytes(code))
+                with open(loc, "wb") as fdw:
+                    fdw.write(bytes(code))
                 content += "    emu.mem_write({:#x}, open('{:s}', 'rb').read())\n".format(sect.page_start, loc)
 
         # memory patch to avoid avx/neon optimized function
@@ -24663,7 +24681,8 @@ class AngrCommand(GenericCommand):
             if sect.permission & Permission.READ:
                 code = read_memory(sect.page_start, sect.size)
                 loc = os.path.join(dloc, "{:s}-{:#x}.raw".format(filename, sect.page_start))
-                open(loc, "wb").write(bytes(code))
+                with open(loc, "wb") as fdw:
+                    fdw.write(bytes(code))
                 yield sect, loc
         return None
 
@@ -25969,15 +25988,16 @@ class GlibcHeapBinsDump:
 
             if m or verbose:
                 bin_table = GlibcHeap.get_binsize_table()["fastbins"]
+                bins_addr = ProcessMap.lookup_address(arena.addrof_fastbins_i(i))
+                fd = ProcessMap.lookup_address(read_int_from_memory(bins_addr.value))
                 if i in bin_table:
-                    size = bin_table[i]["size"]
-                    bins_addr = ProcessMap.lookup_address(arena.addrof_fastbins_i(i))
-                    fd = ProcessMap.lookup_address(read_int_from_memory(bins_addr.value))
                     self.out.append("fastbins[idx={:d}, size={:#x}, @{!s}]: fd={!s}".format(
-                        i, size, bins_addr, fd,
+                        i, bin_table[i]["size"], bins_addr, fd,
                     ))
-                    if m:
-                        self.out.extend(m)
+                else:
+                    self.out.append("fastbins[idx={:d}, @{!s}]: fd={!s}".format(i, bins_addr, fd))
+                if m:
+                    self.out.extend(m)
 
         self.info_add_out("Found {:d} valid chunks in fastbins".format(nb_chunk))
         return
@@ -27589,7 +27609,8 @@ class GlibcHeapDumpImageCommand(GenericCommand):
         data = b"".join(data_parts)
 
         tmp_fd, tmp_path = GefUtil.mkstemp(prefix="heap-dump-image", suffix=".raw")
-        os.fdopen(tmp_fd, "wb").write(data)
+        with os.fdopen(tmp_fd, "wb") as fdw:
+            fdw.write(data)
         return tmp_path
 
     def make_command_line(self, image_path):
@@ -28029,8 +28050,8 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                 ascii_2.append(Color.colorify(a2, color_dict[is_same, is_size2_e, is_underline2, is_used2]))
 
             # blank coloring
-            sep1 = Color.colorify(" ", " ".join(color_dict[True, False, is_underline1, is_used1]))
-            sep2 = Color.colorify(" ", " ".join(color_dict[True, False, is_underline2, is_used2]))
+            sep1 = Color.colorify(" ", color_dict[True, False, is_underline1, is_used1])
+            sep2 = Color.colorify(" ", color_dict[True, False, is_underline2, is_used2])
             hex_1_joined = sep1.join(hex_1)
             hex_2_joined = sep2.join(hex_2)
             ascii_1_joined = sep1.join(ascii_1)
@@ -29723,7 +29744,8 @@ class ElfInfoCommand(GenericCommand):
                 err("Failed to read remote filepath")
                 return
             tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix="elf-info", suffix=".elf")
-            os.fdopen(tmp_fd, "wb").write(data)
+            with os.fdopen(tmp_fd, "wb") as fdw:
+                fdw.write(data)
             local_filepath = tmp_filepath
             del data
 
@@ -30173,7 +30195,8 @@ class ChecksecCommand(GenericCommand):
                 err("Failed to read remote filepath")
                 return
             tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix="checksec", suffix=".elf")
-            os.fdopen(tmp_fd, "wb").write(data)
+            with os.fdopen(tmp_fd, "wb") as fdw:
+                fdw.write(data)
             local_filepath = tmp_filepath
             del data
 
@@ -31741,7 +31764,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
             elif isinstance(self.raw_data, bytes):
                 raw_data_s = " ".join(["{:02x}".format(x) for x in self.raw_data])
             else:
-                raise
+                raise TypeError("unsupported raw_data type: {!s}".format(type(self.raw_data)))
 
             if isinstance(self.value, str):
                 value_s = self.value
@@ -31750,7 +31773,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
             elif isinstance(self.value, list):
                 value_s = " ".join(["{:#018x}".format(x) for x in self.value])
             else:
-                raise
+                raise TypeError("unsupported value type: {!s}".format(type(self.value)))
 
             if self.extra:
                 extra_s = "  |  {:s}".format(self.extra)
@@ -31914,7 +31937,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         elif (encoding & 0xf) == self.DW_EH_PE_sdata8:
             pos, res = self.read_8sbyte(data, pos)
         else:
-            raise
+            raise ValueError("read_encoded: unsupported encoding: {:#x}".format(encoding))
         return pos, res
 
     def get_encoding_str(self, fde_encoding):
@@ -33747,7 +33770,8 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                 err("Failed to read remote filepath")
                 return
             tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix="dwarf-exception-handler", suffix=".elf")
-            os.fdopen(tmp_fd, "wb").write(data)
+            with os.fdopen(tmp_fd, "wb") as fdw:
+                fdw.write(data)
             local_filepath = tmp_filepath
             del data
 
@@ -36874,19 +36898,19 @@ class LoadFileCommand(GenericCommand):
             return
 
         # read file and write to memory
-        fd = open(args.file_path, "rb")
-        if args.file_offset > 0:
-            fd.seek(args.file_offset, 0)
+        with open(args.file_path, "rb") as fd:
+            if args.file_offset > 0:
+                fd.seek(args.file_offset, 0)
 
-        pos = args.location
-        remain_size = data_size
-        while remain_size > 0:
-            data = fd.read(min(0x1000, remain_size))
-            if len(data) == 0:
-                break
-            write_memory(pos, data)
-            pos += len(data)
-            remain_size -= len(data)
+            pos = args.location
+            remain_size = data_size
+            while remain_size > 0:
+                data = fd.read(min(0x1000, remain_size))
+                if len(data) == 0:
+                    break
+                write_memory(pos, data)
+                pos += len(data)
+                remain_size -= len(data)
         return
 
 
@@ -36982,19 +37006,19 @@ class LoadFileMmapCommand(GenericCommand):
             return
 
         # read file and write to memory
-        fd = open(args.file_path, "rb")
-        if args.file_offset > 0:
-            fd.seek(args.file_offset, 0)
+        with open(args.file_path, "rb") as fd:
+            if args.file_offset > 0:
+                fd.seek(args.file_offset, 0)
 
-        pos = data_start
-        remain_size = data_size
-        while remain_size > 0:
-            data = fd.read(min(0x1000, remain_size))
-            if len(data) == 0:
-                break
-            write_memory(pos, data)
-            pos += len(data)
-            remain_size -= len(data)
+            pos = data_start
+            remain_size = data_size
+            while remain_size > 0:
+                data = fd.read(min(0x1000, remain_size))
+                if len(data) == 0:
+                    break
+                write_memory(pos, data)
+                pos += len(data)
+                remain_size -= len(data)
         return
 
 
@@ -38165,7 +38189,7 @@ class DereferenceCommand(GenericCommand):
 
         addrs, error = AddressUtil.recursive_dereference(current_address, phys=phys)
         if len(addrs) == 1 and not error: # cannot access this area
-            raise
+            raise gdb.MemoryError("Cannot access memory at address {:#x}".format(current_address))
 
         # create address link list
         link = AddressUtil.recursive_dereference_to_string(
@@ -40137,7 +40161,12 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
         tag_maxlen = max(len(x) for x in members) + 1
 
         current = link_map.value
+        seen = set()
         while True:
+            if current in seen:
+                self.err_add_out("Loop detected")
+                break
+            seen.add(current)
             l_name = ProcessMap.lookup_address(read_int_from_memory(current + current_arch.ptrsize * 1))
             name = read_cstring_from_memory(l_name.value)
             l_next = ProcessMap.lookup_address(read_int_from_memory(current + current_arch.ptrsize * 3))
@@ -41296,7 +41325,8 @@ class DestructorDumpCommand(GenericCommand):
                 err("Failed to read remote filepath")
                 return
             tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix="dtor-dump", suffix=".elf")
-            os.fdopen(tmp_fd, "wb").write(data)
+            with os.fdopen(tmp_fd, "wb") as fdw:
+                fdw.write(data)
             local_filepath = tmp_filepath
             del data
 
@@ -42223,7 +42253,8 @@ class GotCommand(GenericCommand, BufferingOutput):
                 self.quiet_err("Failed to read remote filepath")
                 return
             tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix="got", suffix=".elf")
-            os.fdopen(tmp_fd, "wb").write(data)
+            with os.fdopen(tmp_fd, "wb") as fdw:
+                fdw.write(data)
             local_filepath = tmp_filepath
             del data
 
@@ -52619,7 +52650,7 @@ class Syscall:
                 args = [x.strip() for x in args.split(",")]
                 if name in dic:
                     err("Duplicate: {:s}".format(name))
-                    raise
+                    raise KeyError("Duplicate: {:s}".format(name))
                 if len(args) == 1 and args[0] == "void":
                     dic[name] = []
                 else:
@@ -52950,7 +52981,7 @@ class SyscallX86_64(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             if abi in ["common", "64"]:
                 syscall_list.append([nr, name, sc_def[func]])
             if abi in ["common", "x32"]:
@@ -53051,7 +53082,7 @@ class SyscallX86_32Emulated(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -53138,7 +53169,7 @@ class SyscallX86_32Native(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -53179,7 +53210,7 @@ class SyscallARM64(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -53267,7 +53298,7 @@ class SyscallARM32Emulated(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
 
         syscall_list += cls.arch_specific_extra
@@ -53332,7 +53363,7 @@ class SyscallARM32Native(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
 
         syscall_list += cls.arch_specific_extra
@@ -53404,7 +53435,7 @@ class SyscallMIPS32(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -53474,7 +53505,7 @@ class SyscallMIPSN32(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -53532,7 +53563,7 @@ class SyscallMIPS64(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -53620,7 +53651,7 @@ class SyscallPPC32(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -53677,7 +53708,7 @@ class SyscallPPC64(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -53741,7 +53772,7 @@ class SyscallSPARC32(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -53833,7 +53864,7 @@ class SyscallSPARC64(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -53881,7 +53912,7 @@ class SyscallRISCV32(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -53929,7 +53960,7 @@ class SyscallRISCV64(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -53989,7 +54020,7 @@ class SyscallS390X(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -54050,7 +54081,7 @@ class SyscallSH4(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -54109,7 +54140,7 @@ class SyscallM68K(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -54261,7 +54292,7 @@ class SyscallALPHA(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -54365,7 +54396,7 @@ class SyscallHPPA32(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -54439,7 +54470,7 @@ class SyscallHPPA64(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -54483,7 +54514,7 @@ class SyscallOR1K(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -54529,7 +54560,7 @@ class SyscallNIOS2(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -54573,7 +54604,7 @@ class SyscallMICROBLAZE(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -54615,7 +54646,7 @@ class SyscallXTENSA(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -54665,7 +54696,7 @@ class SyscallCRIS(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -54705,7 +54736,7 @@ class SyscallLOONGARCH64(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -54766,7 +54797,7 @@ class SyscallARC(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -54816,7 +54847,7 @@ class SyscallCSKY(Syscall):
                 continue
             if func not in sc_def:
                 err("Not found: {:s}".format(func))
-                raise
+                raise KeyError("Not found: {:s}".format(func))
             syscall_list.append([nr, name, sc_def[func]])
         return syscall_list
 
@@ -64954,7 +64985,7 @@ class Kernel:
                 return (int(v[0]), int(v[1]), 0)
             elif len(v) == 3:
                 return (int(v[0]), int(v[1]), int(v[2]))
-            raise
+            raise ValueError("Unsupported version string: {!r}".format(_v))
 
         def __ge__(self, v):
             return self.to_version_tuple(v) <= self.version_tuple
@@ -65060,6 +65091,8 @@ class Kernel:
         kallsyms = __gef_command_instances__["ksymaddr-remote"].kallsyms
         for i, (addr, _, _) in enumerate(kallsyms):
             if addr == first_func:
+                if i + 1 >= len(kallsyms):
+                    return None
                 next_func = kallsyms[i + 1][0]
                 first_func_size = next_func - first_func
                 return first_func_size
@@ -66998,7 +67031,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                             offset_ma_flags = offset_ma_root - 8
                     break
             else:
-                raise
+                raise RuntimeError("Could not find offsetof(mm_struct, mm_mt.ma_root)")
 
             self.ma_root_raw = read_int_from_memory(mm + offset_ma_root)
             self.ma_flags = read_int32_from_memory(mm + offset_ma_flags)
@@ -67549,7 +67582,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                         offset_mnt = cand_offset_mnt - current_arch.ptrsize * 2
                         break
                 else:
-                    raise
+                    raise RuntimeError("Could not find offsetof(file, f_path.mnt)")
         elif "6.12" <= kversion:
             if is_64bit():
                 offset_mnt = 64
@@ -67602,7 +67635,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     offset_mnt = cand_offset_mnt
                     break
                 else:
-                    raise
+                    raise RuntimeError("Could not find offsetof(file, f_path.mnt)")
         return offset_mnt
 
     def get_offset_dentry(self, offset_mnt):
@@ -68814,7 +68847,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                             prog = read_int_from_memory(orig_prog + current_arch.ptrsize)
                             data = read_memory(prog, cnt * 8)
                             tmp_fd, tmp_path = GefUtil.mkstemp(prefix="ktask")
-                            os.fdopen(tmp_fd, "wb").write(data)
+                            with os.fdopen(tmp_fd, "wb") as fdw:
+                                fdw.write(data)
                             ret = GefUtil.gef_execute_external(
                                 self.seccomp_tools_command + [tmp_path], as_list=True,
                             )
@@ -69093,6 +69127,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             return None
 
         module_addrs = []
+        seen = set()
         current = modules
         while True:
             try:
@@ -69101,6 +69136,9 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                 return None
             if addr == modules:
                 break
+            if addr in seen:
+                return None
+            seen.add(addr)
             module_addrs.append(addr - current_arch.ptrsize)
             current = addr
         return module_addrs
@@ -69839,6 +69877,7 @@ class KernelModuleLoadCommand(GenericCommand):
             return None
 
         module_addrs = []
+        seen = set()
         current = modules
         while True:
             try:
@@ -69847,6 +69886,9 @@ class KernelModuleLoadCommand(GenericCommand):
                 return None
             if addr == modules:
                 break
+            if addr in seen:
+                return None
+            seen.add(addr)
             module_addrs.append(addr - current_arch.ptrsize)
             current = addr
         return module_addrs
@@ -73757,13 +73799,14 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
-        current = dentry
-        while True:
+        offset_d_iname = None
+        for current in range(dentry, dentry + 0x100, current_arch.ptrsize):
             name = read_int_from_memory(current)
             if 0 < name - current <= 0x20:
                 offset_d_iname = name - dentry
                 break
-            current += current_arch.ptrsize
+        if offset_d_iname is None:
+            return None
 
         self.offset_d_iname = offset_d_iname
         return offset_d_iname
@@ -73794,6 +73837,8 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         if not is_valid_addr(dentry):
             return None
         offset_d_iname = self.get_offset_d_iname(dentry)
+        if offset_d_iname is None:
+            return None
         offset_d_parent = self.get_offset_d_parent(dentry, offset_d_iname)
 
         def is_root(dentry):
@@ -74174,7 +74219,11 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
 
             i = 512
             while True:
-                v = read_int_from_memory(timer_base + current_arch.ptrsize * i)
+                try:
+                    v = read_int_from_memory(timer_base + current_arch.ptrsize * i)
+                except gdb.MemoryError:
+                    self.quiet_err("Memory read error")
+                    return False
                 if v != 0 and not is_valid_addr(v):
                     self.roughly_sizeof_timer_base = current_arch.ptrsize * i
                     break
@@ -75507,7 +75556,7 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
             elif ((begin + (1 << size_bits)) >> size_bits) == (next >> size_bits):
                 src = rb["text_data_ring"]["data"]
             else:
-                raise
+                raise ValueError("Corrupted printk ring buffer descriptor")
             size = seq_based_info["text_len"]
             src += current_arch.ptrsize
             if size:
@@ -80167,7 +80216,7 @@ class Hash:
                 if len(M_ell) == self.c * 8:
                     return self.last_bits(M_ell, self.digest_bits)
                 M_ell_minus_1 = M_ell
-            raise
+            raise AssertionError("MD6Base.hash: unreachable")
 
     class MD6_128(MD6Base):
         digest_bits = 128
@@ -119325,11 +119374,13 @@ class Crc32revCommand(GenericCommand):
             refout = True
         if self.args.no_refout:
             refout = False
-        assert refin == refout
+        if refin != refout:
+            err("refin and refout must have the same value")
+            return False
         # build
         CRC = collections.namedtuple("CRC", ["poly", "rpoly", "init_value", "xorout", "refin", "refout"])
         self.CRC = CRC(poly, rpoly, init_value, xorout, refin, refout)
-        return
+        return True
 
     def build_tables(self):
         """Build forward / reverse table and the inverse index used by backward steps."""
@@ -119480,7 +119531,8 @@ class Crc32revCommand(GenericCommand):
 
     def find_reverse(self, prefix, suffix, lengths, charset, known_map):
         """Search charset-limited bridges of lengths."""
-        self.build_crc()
+        if not self.build_crc():
+            return
         self.build_tables()
 
         init_value = self.CRC.init_value
@@ -126955,7 +127007,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
                     ]
             else:
                 err("MIGRATE_TYPES: {:#x}".format(self.MIGRATE_TYPES))
-                raise
+                raise ValueError("Unsupported MIGRATE_TYPES: {:#x}".format(self.MIGRATE_TYPES))
 
             self.MIGRATE_PCPTYPES = 3
 
@@ -127002,7 +127054,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
                 ]
             else:
                 err("MIGRATE_TYPES: {:#x}".format(self.MIGRATE_TYPES))
-                raise
+                raise ValueError("Unsupported MIGRATE_TYPES: {:#x}".format(self.MIGRATE_TYPES))
             self.MIGRATE_PCPTYPES = 4
         return
 
@@ -127351,7 +127403,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             kversion = Kernel.kernel_version()
 
             if kversion < "5.14":
-                raise
+                raise ValueError("Unsupported kernel version for pcp lists: {!s}".format(kversion))
             elif "5.14" <= kversion < "6.0":
                 # indices 12..14 are "base=4 + migratetype"
                 base = PAGE_ALLOC_COSTLY_ORDER + 1
@@ -128725,7 +128777,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             if (x & 2) != 2: # tag
                 continue
             y = read_cstring_from_memory(x)
-            if y and len(y) > 8 or y == "bpf":
+            if (y and len(y) > 8) or y == "bpf":
                 continue
             z = read_int_from_memory(x)
             if is_valid_addr(z):
@@ -129009,7 +129061,8 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
                     prog = read_int_from_memory(orig_prog + current_arch.ptrsize)
                     data = read_memory(prog, cnt * 8)
                     tmp_fd, tmp_path = GefUtil.mkstemp(prefix="kbpf")
-                    os.fdopen(tmp_fd, "wb").write(data)
+                    with os.fdopen(tmp_fd, "wb") as fdw:
+                        fdw.write(data)
                     ret = GefUtil.gef_execute_external(
                         self.seccomp_tools_command + [tmp_path], as_list=True,
                     )
@@ -130239,7 +130292,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                             offset_ma_flags = offset_ma_root - 8
                     break
             else:
-                raise
+                raise RuntimeError("Could not find offsetof(maple_tree, ma_root)")
 
             self.ma_root_raw = read_int_from_memory(ptr + offset_ma_root)
             self.ma_flags = read_int_from_memory(ptr + offset_ma_flags)
@@ -131260,7 +131313,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
                 "handle_exception", # 4.19~
             ]
         else:
-            raise
+            raise NotImplementedError("Unsupported architecture")
 
         # parse symbol
         tmp_kallsyms = []
@@ -138240,10 +138293,16 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def dump_freelist(self, head):
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
 
         cur = head
         cnt = 0
+        seen = set()
         while True:
+            if cur in seen:
+                self.out.append(" -> {:s}".format(Color.colorify("loop detected", corrupted_msg_color)))
+                break
+            seen.add(cur)
             if cur == 0 and cnt > 0:
                 self.out.append(" -> {:s} (num: {:#x})".format(Color.colorify_hex(cur, freed_address_color), cnt))
             else:
@@ -142614,7 +142673,7 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
                     flink = read_int_from_memory(chunk + current_arch.ptrsize * 2)
                     blink = read_int_from_memory(chunk + current_arch.ptrsize * 3)
                 except gdb.MemoryError:
-                    self.out.append(Color.colorify("unaligned orrupted", corrupted_msg_color))
+                    self.out.append(Color.colorify("unaligned corrupted", corrupted_msg_color))
                     break
                 bsize_inv = (-bsize) & 0xffff_ffff
                 if bsize_inv < 0x8000_0000: # used
@@ -143218,7 +143277,7 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             o(c(eax, 12, 1,           "EAX    12: Reenlightenment controls"))
             o(c(eax, 13, 0x7_ffff,    "EAX 31-13: Reserved"))
             o(c(edx,  0, 0xf,         "EDX  3- 0: Reserved"))
-            o(c(eax,  4, 1,           "EDX     4: Hypercall input params via XMM registers"))
+            o(c(edx,  4, 1,           "EDX     4: Hypercall input params via XMM registers"))
             o(c(edx,  5, 0x3ff,       "EDX 14- 5: Reserved"))
             o(c(edx, 15, 1,           "EDX    15: Hypercall output via XMM registers"))
             o(c(edx, 16, 1,           "EDX    16: Reserved"))
@@ -143348,7 +143407,7 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             o(c(edx, 12, 1,           "EDX    12: Core power reporting"))
             o(c(edx, 13, 1,           "EDX    13: Connected standby"))
             o(c(edx, 14, 1,           "EDX    14: RAPL (Running Average Power Limit)"))
-            o(c(edx, 15, 0x1_ffff,    "EAX 31-15: Reserved"))
+            o(c(edx, 15, 0x1_ffff,    "EDX 31-15: Reserved"))
         elif id == 0x8000_0008:
             o("eax: Extended Address Length Information")
             o(c(eax,  0, 0xff,        "EAX  7- 0: Physical address length"))
@@ -143465,7 +143524,7 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             o(c(edx, 11, 1,           "EDX    11: PHE_EN (Padlock Hash Engine ENabled)"))
             o(c(edx, 12, 1,           "EDX    12: PMM (Padlock Montgomery Multiplier available)"))
             o(c(edx, 13, 1,           "EDX    13: PMM_EN (Padlock Montgomery Multiplier ENabled)"))
-            o(c(edx, 14, 0x3_ffff,    "EAX 31-14: Reserved"))
+            o(c(edx, 14, 0x3_ffff,    "EDX 31-14: Reserved"))
         return
 
     @parse_args
@@ -144341,7 +144400,7 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         # XCR0
         # QEMU's monitor does not currently support displaying XCR0. Therefore, this code will not be executed.
         self.out.append(titlify("XCR0 (Extended Control Register 0)"))
-        desc = "Contain task priority level"
+        desc = "Contain the processor extended state components that are enabled by the OS via XSAVE/XRSTOR"
         bit_info = [
             [19, "APX", "Intel APX",
              "Enables Intel APX; EGPR (R16-R31) state is managed via XSAVE"],
@@ -146826,7 +146885,7 @@ class PagewalkArmCommand(PagewalkCommand):
                 if ((entry >> 19) & 1) == 1:
                     flags.append("NS")
             else:
-                raise
+                raise ValueError("Unsupported descriptor: {:#x}".format(entry))
 
             # calc next table (drop the flag bits)
             if has_next_level(entry):
@@ -147682,7 +147741,7 @@ class PagewalkArm64Command(PagewalkCommand):
                         offset = addr - va
                         return pa + offset, sz - offset
                 else: # not found
-                    raise
+                    raise gdb.MemoryError("Could not translate {:#x} via the EL2 mappings".format(addr))
 
             out = b""
             while size > 0:
@@ -148116,7 +148175,7 @@ class PagewalkArm64Command(PagewalkCommand):
                     if has_next_level(entry):
                         if is_stage2:
                             # VTTBR_EL2 does not have level -1
-                            raise
+                            raise ValueError("VTTBR_EL2 does not have level -1")
                         elif is_2VAranges:
                             if ((entry >> 59) & 1) == 1:
                                 flags.append("PXNTable-1")
@@ -148133,7 +148192,7 @@ class PagewalkArm64Command(PagewalkCommand):
                                 flags.append("NSTable-1")
                     else:
                         # In ARMv8.7, level -1 has no block descriptors
-                        raise
+                        raise ValueError("level -1 has no block descriptors")
 
                     # calc next table / output phys addr (drop the flag bits)
                     if has_next_level(entry):
@@ -148144,7 +148203,7 @@ class PagewalkArm64Command(PagewalkCommand):
                             next_level_table = entry & 0x0003_ffff_ffff_f000
                     else:
                         # In ARMv8.7, level -1 has no block descriptors
-                        raise
+                        raise ValueError("level -1 has no block descriptors")
 
                     # make entry
                     if has_next_level(entry):
@@ -148152,7 +148211,7 @@ class PagewalkArm64Command(PagewalkCommand):
                         entry_type = "TABLE"
                     else:
                         # In ARMv8.7, level -1 has no block descriptors
-                        raise
+                        raise ValueError("level -1 has no block descriptors")
 
                     # dump
                     if self.args.print_each_level:
@@ -148298,7 +148357,7 @@ class PagewalkArm64Command(PagewalkCommand):
                                 phys_addr = entry & 0x0003_ffff_fffe_0000
                         else:
                             # In ARMv8.7, level 0 + no-FEAT_LPA has no block descriptors
-                            raise
+                            raise ValueError("level 0 has no block descriptors without FEAT_LPA")
 
                     # make entry
                     if has_next_level(entry):
@@ -148316,7 +148375,7 @@ class PagewalkArm64Command(PagewalkCommand):
                             GB512.append([virt_addr, phys_addr, page_size, page_count, flag_string])
                             entry_type = "512GB-PAGE"
                         else:
-                            raise
+                            raise ValueError("a 512GB page is available only with the 4KB granule")
 
                     # dump
                     if self.args.print_each_level:
@@ -148795,7 +148854,7 @@ class PagewalkArm64Command(PagewalkCommand):
                             flags.append("PBHA={:#x}".format((entry >> 59) & 0b1111))
                     else:
                         # In ARMv8.7, level 3 has no table descriptors
-                        raise
+                        raise ValueError("level 3 has no table descriptors")
 
                     # calc next table / output phys addr (drop the flag bits)
                     if is_4k_granule:
@@ -152659,7 +152718,8 @@ class ExecUntilCommand(GenericCommand):
         return
 
     def force_write_stdout(self, msg):
-        open("/proc/self/fd/0", "wb").write(msg)
+        with open("/proc/self/fd/0", "wb") as fdw:
+            fdw.write(msg)
         return
 
     def check_jump_taken(self, insn):
@@ -152682,7 +152742,7 @@ class ExecUntilCommand(GenericCommand):
                 return not taken
             else:
                 return False # non-conditional, so always jump
-        raise
+        raise ValueError("check_jump_taken: unexpected filter combination")
 
     def get_breakpoint_list(self):
         lines = gdb.execute("info breakpoints", to_string=True).splitlines()
@@ -155367,7 +155427,7 @@ class KmallocAllocatedByCommand(GenericCommand):
             yield ("pipe(&pipefd[])", "pipe", [pipefd_array])
             _pipefd2 = read_int32_from_memory(current_arch.sp)
             pipefd3 = read_int32_from_memory(current_arch.sp + 4)
-            yield ("tee(pipefd[0], pipefd[3], 0", "tee", [pipefd0, pipefd3])
+            yield ("tee(pipefd[0], pipefd[3], 0)", "tee", [pipefd0, pipefd3])
             yield ("close_range(pipefd[0], pipefd[3], 0)", "close_range", [pipefd0, pipefd3, 0])
 
             yield "mknod -> unlink"
@@ -155563,7 +155623,7 @@ class KmallocAllocatedByCommand(GenericCommand):
                     "io_getevents", [ctx_id, 1, 1, events, timeout],
                 )
                 self.tested_syscall.add("io_pgetevents")
-                yield ("clode(fd)", "close", [fd])
+                yield ("close(fd)", "close", [fd])
                 yield ("io_destroy(ctx_id)", "io_destroy", [ctx_id])
 
             yield "io_uring_setup -> mmap -> io_uring_enter -> io_uring_register -> munmap"
@@ -157784,7 +157844,8 @@ class SixelMemoryCommand(GenericCommand):
             return
 
         tmp_fd, tmp_path = GefUtil.mkstemp(prefix="sixel-memory", suffix=".img")
-        os.fdopen(tmp_fd, "wb").write(data)
+        with os.fdopen(tmp_fd, "wb") as fdw:
+            fdw.write(data)
         os.system("{!r} {!r} sixel:-".format(convert_command, tmp_path))
 
         if args.decode_barcode:
@@ -158035,7 +158096,8 @@ class VisualDumpCommand(GenericCommand):
         img_height = len(data) // img_width
 
         tmp_fd, tmp_path = GefUtil.mkstemp(prefix="vhexdump", suffix=".raw")
-        os.fdopen(tmp_fd, "wb").write(data)
+        with os.fdopen(tmp_fd, "wb") as fdw:
+            fdw.write(data)
 
         if args.auto_width_inclement:
             # if the width is too large, processing will be slow
@@ -158087,7 +158149,8 @@ class FiletypeMemoryCommand(GenericCommand):
 
         dumpfile_name = "filetype_{:#x}-{:#x}.dat".format(start_address, end_address)
         filepath = os.path.join(GEF_TEMP_DIR, dumpfile_name)
-        open(filepath, "wb").write(data)
+        with open(filepath, "wb") as fdw:
+            fdw.write(data)
 
         try:
             gef_print(titlify("file {!r}".format(filepath)))
@@ -158192,7 +158255,8 @@ class BinwalkMemoryCommand(GenericCommand):
                     data = read_memory(start, end - start)
                 except gdb.MemoryError:
                     continue
-                open(filepath, "wb").write(data)
+                with open(filepath, "wb") as fdw:
+                    fdw.write(data)
                 binwalk.scan(filepath, signature=True)
                 os.unlink(filepath)
             else:
@@ -160544,8 +160608,9 @@ class GefUtil:
 
         def _show_code_line(fname, idx):
             fname = os.path.expanduser(os.path.expandvars(fname))
-            __data = open(fname, "r").read().splitlines()
-            return __data[idx - 1] if idx < len(__data) else ""
+            with open(fname, "r") as f:
+                data = f.read().splitlines()
+            return data[idx - 1] if 0 < idx <= len(data) else ""
 
         gef_print("")
         exc_type, exc_value, exc_traceback = sys.exc_info()
@@ -160795,7 +160860,8 @@ class Gef:
             if not os.path.exists(gef_venv_conf):
                 return False
 
-            content = open(gef_venv_conf, "rb").read().decode()
+            with open(gef_venv_conf, "rb") as fdw:
+                content = fdw.read().decode()
             for line in content.splitlines():
                 if line.startswith("GEF_VENV_SYS_PATH="):
                     Gef.GEF_VENV_SYS_PATH = line[len("GEF_VENV_SYS_PATH="):]
