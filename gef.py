@@ -63879,6 +63879,44 @@ class KernelAddressHeuristicFinder:
 
     @staticmethod
     @switch_to_intel_syntax
+    def get_vmap_nodes_busy_head():
+        kversion = Kernel.kernel_version()
+        if kversion is None or kversion < "6.9":
+            return None
+
+        offset = ((current_arch.ptrsize * 3 * 256 + 5 + current_arch.ptrsize - 1)
+                  & ~(current_arch.ptrsize - 1)) + current_arch.ptrsize
+
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            x = Symbol.get_ksymaddr("vmap_nodes")
+            if x:
+                return read_int_from_memory(x) + offset
+
+        addr = Symbol.get_ksymaddr("find_vmap_area")
+        if addr:
+            res = gdb.execute("x/100i {:#x}".format(addr), to_string=True)
+            if is_x86_64():
+                g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+            elif is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+            elif is_arm64():
+                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
+            elif is_arm32():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                    KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                )
+            for x in g:
+                for i in range(128):
+                    vmap_nodes = read_int_from_memory(x + current_arch.ptrsize * i)
+                    if is_valid_addr(vmap_nodes):
+                        head = vmap_nodes + offset
+                        if is_double_link_list(head, min_len=5):
+                            return head
+        return None
+
+    @staticmethod
+    @switch_to_intel_syntax
     def get_free_vmap_area_list():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -63934,7 +63972,7 @@ class KernelAddressHeuristicFinder:
                         count = 1
                 else:
                     count = 1
-                for i in range(16):
+                for i in range(128):
                     a = x + current_arch.ptrsize * i
                     if is_double_link_list(a, min_len=3):
                         count -= 1
@@ -130959,17 +130997,17 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
     _note_ = [
         "Simplified vmalloc structure:"
         "",
-        "                           +-vmap_area--+",
-        "                           | va_start   |",
-        "(~v6.8)                    | va_end     |",
-        "+---------------------+    | ...        |",
-        "| vmap_area_list      |--->| list       |--->...",
-        "+---------------------+    | ...        |",
-        "                           | vm         |---->+-vm_struct--+",
-        "                           | ...        |     | ...        |",
-        "                           +------------+     | flags      |",
-        "                                              | ...        |",
-        "                                              +------------+",
+        "                                       +-vmap_area--+",
+        "                                       | va_start   |",
+        "                                       | va_end     |",
+        "+---------------------------------+    | ...        |",
+        "| vmap_area_list (~v6.8)          |--->| list       |--->...",
+        "| vmap_nodes[0].busy.head (v6.9~) |    | ...        |",
+        "+---------------------------------+    | vm         |---->+-vm_struct--+",
+        "                                       | ...        |     | ...        |",
+        "                                       +------------+     | flags      |",
+        "                                                          | ...        |",
+        "                                                          +------------+",
         "                           +-vmap_area--+",
         "                           | va_start   |",
         "(v5.2~)                    | va_end     |",
@@ -131026,14 +131064,20 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
 
         kversion = Kernel.kernel_version()
 
-        if kversion and kversion < "6.9":
+        if kversion is None:
+            self.vmap_area_list = None
+        elif kversion < "6.9":
             self.vmap_area_list = KernelAddressHeuristicFinder.get_vmap_area_list()
             if not self.vmap_area_list:
                 self.quiet_err("Could not find vmap_area_list")
             else:
                 self.quiet_info("vmap_area_list: {:#x}".format(self.vmap_area_list))
         else:
-            self.vmap_area_list = None
+            self.vmap_area_list = KernelAddressHeuristicFinder.get_vmap_nodes_busy_head()
+            if not self.vmap_area_list:
+                self.quiet_err("Could not find vmap_nodes[0].busy.head")
+            else:
+                self.quiet_info("vmap_nodes[0].busy.head: {:#x}".format(self.vmap_area_list))
 
         if kversion and "5.2" <= kversion:
             self.free_vmap_area_list = KernelAddressHeuristicFinder.get_free_vmap_area_list()
@@ -131193,7 +131237,7 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
 
         # parse used list
         if not args.only_freed:
-            if kversion and kversion < "6.9":
+            if self.vmap_area_list:
                 areas += self.parse_vmap_area_list(self.vmap_area_list, used=True)
 
         # parse freed list
