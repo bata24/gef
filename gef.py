@@ -58620,10 +58620,17 @@ class KernelAddressHeuristicFinderUtil:
                 if reg in bases:
                     add1time[reg] = bases[reg] + v
                     continue
-            m = re.search(r"ldr\s+\w+,\s*\[(\w+),\s*#(\d+)\]", line)
+            m = re.search(r"add\s+(\w+),\s*(\w+),\s*\w+,\s*lsl\s*#\d+", line)
+            if m:
+                dstreg = m.group(1)
+                srcreg = m.group(2)
+                if srcreg in add1time:
+                    add1time[dstreg] = add1time[srcreg]
+                    continue
+            m = re.search(r"ldr\s+\w+,\s*\[(\w+)(?:,\s*#(\d+))?\]", line)
             if m:
                 reg = m.group(1)
-                v = int(m.group(2), 0)
+                v = int(m.group(2), 0) if m.group(2) else 0
                 if reg in add1time:
                     w = AddressUtil.normalize_address(add1time[reg] + v)
                     if not skip_msb_check and not AddressUtil.is_msb_on(w):
@@ -61328,7 +61335,10 @@ class KernelAddressHeuristicFinder:
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_array_base(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.x64_qword_ptr_array_base(res),
+                        KernelAddressHeuristicFinderUtil.x64_lea_reg_const(res),
+                    )
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x86_dword_ptr_array4_base(res)
                 elif is_arm64():
