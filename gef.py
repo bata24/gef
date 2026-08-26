@@ -127334,34 +127334,47 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             virt_str = "???"
             phys_str = "???"
 
+            phys = Kernel.page2phys(self.page)
+            if phys is None:
+                return virt_str, phys_str
+
+            align = AddressUtil.get_format_address_width()
+            if not self.args.skip_phys:
+                phys_str = "{:#0{:d}x}-{:#0{:d}x}".format(phys, align, phys + self.size, align)
+
             if self.is_highmem:
                 return virt_str, phys_str
 
+            consts = KernelAddressHeuristicFinder.consts()
+            page_offset = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+
+            if is_arm64():
+                physmap = consts.physmap_base
+            elif is_arm32():
+                phys_offset = consts.PHYS_OFFSET
+                if page_offset is None or phys_offset is None:
+                    physmap = None
+                else:
+                    physmap = AddressUtil.normalize_address(page_offset - phys_offset)
+            else:
+                physmap = page_offset
+
+            if physmap is None:
+                virt = Kernel.page2virt(self.page)
+            else:
+                virt = AddressUtil.normalize_address(physmap + phys)
+                page_offset_end = KernelAddressHeuristicFinder.get_PAGE_OFFSET_END()
+                if page_offset is not None and page_offset_end is not None and not (
+                    page_offset <= virt and virt + self.size <= page_offset_end
+                ):
+                    virt = Kernel.page2virt(self.page)
+
+            if virt is None:
+                return virt_str, phys_str
+
+            virt_str = "{:#0{:d}x}-{:#0{:d}x}".format(virt, align, virt + self.size, align)
             heap_page_color = Config.get_gef_setting("theme.heap_page_address")
-            align = AddressUtil.get_format_address_width()
-
-            virt = Kernel.page2virt(self.page)
-            phys = None
-
-            if virt:
-                if self.args.skip_phys:
-                    pass
-                elif self.args.use_physmap:
-                    if is_x86_64():
-                        physmap = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
-                    elif is_arm64():
-                        physmap = KernelAddressHeuristicFinder.consts().physmap_base
-                    if physmap is not None:
-                        phys = virt - physmap
-                elif BuddyDumpCommand.maps is not None:
-                    phys = PageMap.v2p_from_map(virt, BuddyDumpCommand.maps)
-
-            if virt is not None:
-                virt_str = "{:#0{:d}x}-{:#0{:d}x}".format(virt, align, virt + self.size, align)
-                virt_str = Color.colorify(virt_str, heap_page_color)
-
-            if phys is not None:
-                phys_str = "{:#0{:d}x}-{:#0{:d}x}".format(phys, align, phys + self.size, align)
+            virt_str = Color.colorify(virt_str, heap_page_color)
             return virt_str, phys_str
 
         def __str__(self):
@@ -127774,7 +127787,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             return
 
         # do not use cache
-        if not self.args.skip_phys and not self.args.use_physmap:
+        if self.args.sort_verbose and not self.args.skip_phys and not self.args.use_physmap:
             BuddyDumpCommand.maps = PageMap.get_page_maps(None)
             if BuddyDumpCommand.maps is None:
                 self.quiet_err("Failed to resolve maps")
@@ -128062,10 +128075,6 @@ class BuddyContainsCommand(BuddyDumpCommand):
             return
 
         entry = found["entry"]
-        if not entry.is_highmem and not self.args.skip_phys and not self.args.use_physmap:
-            BuddyDumpCommand.maps = PageMap.get_page_maps(None)
-            if BuddyDumpCommand.maps is None:
-                self.quiet_warn("Failed to resolve maps; physical address output is unavailable")
         gef_print(titlify(found["node_title"]))
         gef_print(titlify(found["zone_title"]))
         gef_print(titlify(found["section_title"]))
