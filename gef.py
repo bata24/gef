@@ -64426,7 +64426,10 @@ class KernelAddressHeuristicFinder:
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
-                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
                 for x in g:
                     return x
         return None
@@ -130659,12 +130662,14 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
 
         ofs_irq = align_to_ptrsize(self.offset_irq + 4 * 2)
         for i in range(100):
-            x = read_int_from_memory(desc + ofs_irq + current_arch.ptrsize * i)
-            y = read_int_from_memory(desc + ofs_irq + current_arch.ptrsize * (i + 1))
-            if not is_valid_addr(x) and not is_valid_addr(y):
+            x = any(is_valid_addr(read_int_from_memory(d + ofs_irq + current_arch.ptrsize * i)) for d in descs)
+            y = any(is_valid_addr(read_int_from_memory(d + ofs_irq + current_arch.ptrsize * (i + 1))) for d in descs)
+            if not x and not y:
                 ofs_action_candidate = ofs_irq + current_arch.ptrsize * i - current_arch.ptrsize
-                action_candidate = read_int_from_memory(desc + ofs_action_candidate)
-                if is_valid_addr_addr(action_candidate):
+                values = [x for x in (read_int_from_memory(d + ofs_action_candidate) for d in set(descs)) if x]
+                if len(values) != len(set(values)):
+                    continue
+                if any(is_valid_addr_addr(x) for x in values):
                     self.offset_action = ofs_action_candidate
                     self.quiet_info("offsetof(irq_desc, action): {:#x}".format(self.offset_action))
                     break
@@ -130693,13 +130698,11 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         self.offset_handler = 0
         self.quiet_info("offsetof(irqaction, handler): {:#x}".format(self.offset_handler))
 
-        action = read_int_from_memory(desc + self.offset_action)
+        actions = [x for x in (read_int_from_memory(d + self.offset_action) for d in descs) if is_valid_addr(x)]
         for i in range(100):
-            x = read_int_from_memory(action + current_arch.ptrsize * i)
-            if not is_valid_addr(x):
-                continue
-            s = read_cstring_from_memory(x)
-            if s and len(s) >= 4:
+            names = [read_int_from_memory(a + current_arch.ptrsize * i) for a in actions]
+            names = [x for x in names if is_valid_addr(x) and read_cstring_from_memory(x)]
+            if len(names) * 2 > len(actions):
                 self.offset_name = current_arch.ptrsize * i
                 self.quiet_info("offsetof(irqaction, name): {:#x}".format(self.offset_name))
                 break
