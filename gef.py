@@ -128206,14 +128206,6 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         self.offset_i_pipe = offset_i_pipe
         self.quiet_info("offsetof(inode, i_pipe): {:#x}".format(self.offset_i_pipe))
 
-        # pipe_inode_info->bufs
-        offset_bufs = self.get_offset_bufs(pipe_files)
-        if not offset_bufs:
-            self.quiet_err("Could not find pipe_inode_info->bufs")
-            return False
-        self.offset_bufs = offset_bufs
-        self.quiet_info("offsetof(pipe_inode_info, bufs): {:#x}".format(self.offset_bufs))
-
         kversion = Kernel.kernel_version()
         if "5.5" <= kversion:
             # pipe_inode_info->{head,tail,max_usage,ring_size}
@@ -128223,9 +128215,13 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 return False
             self.offset_head = ret
             self.quiet_info("offsetof(pipe_inode_info, head): {:#x}".format(self.offset_head))
-            self.offset_tail = self.offset_head + 4
+            if kversion >= "6.14" and is_32bit():
+                self.sizeof_pipe_index_t = 2
+            else:
+                self.sizeof_pipe_index_t = 4
+            self.offset_tail = self.offset_head + self.sizeof_pipe_index_t
             self.quiet_info("offsetof(pipe_inode_info, tail): {:#x}".format(self.offset_tail))
-            self.offset_max_usage = self.offset_tail + 4
+            self.offset_max_usage = self.offset_tail + self.sizeof_pipe_index_t
             self.quiet_info("offsetof(pipe_inode_info, max_usage): {:#x}".format(self.offset_max_usage))
             self.offset_ring_size = self.offset_max_usage + 4
             self.quiet_info("offsetof(pipe_inode_info, ring_size): {:#x}".format(self.offset_ring_size))
@@ -128262,6 +128258,14 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(pipe_buffer, flags): {:#x}".format(self.offset_flags))
         self.sizeof_pipe_buffer = align_to_ptrsize(self.offset_flags + 4) + current_arch.ptrsize
         self.quiet_info("sizeof(pipe_buffer): {:#x}".format(self.sizeof_pipe_buffer))
+
+        # pipe_inode_info->bufs
+        offset_bufs = self.get_offset_bufs(pipe_files)
+        if not offset_bufs:
+            self.quiet_err("Could not find pipe_inode_info->bufs")
+            return False
+        self.offset_bufs = offset_bufs
+        self.quiet_info("offsetof(pipe_inode_info, bufs): {:#x}".format(self.offset_bufs))
 
         self.initialized = True
         return True
@@ -128355,7 +128359,43 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
 
     def get_offset_bufs(self, pipe_files):
         """
-        [v5.5~]
+        [v6.7~]
+        struct pipe_inode_info {
+            struct mutex mutex;
+            wait_queue_head_t rd_wait, wr_wait;
+            unsigned int head; // ~v6.13
+            unsigned int tail; // ~v6.13
+            union {                      // v6.14~
+                unsigned long head_tail; // v6.14~
+                struct {                 // v6.14~
+                    pipe_index_t head;   // v6.14~ 32bit:ushort, 64bit:uint
+                    pipe_index_t tail;   // v6.14~ 32bit:ushort, 64bit:uint
+                };                       // v6.14~
+            };                           // v6.14~
+            unsigned int max_usage;
+            unsigned int ring_size;
+            unsigned int nr_accounted;
+            unsigned int readers;
+            unsigned int writers;
+            unsigned int files;
+            unsigned int r_counter;
+            unsigned int w_counter;
+            bool poll_usage;
+        #ifdef CONFIG_WATCH_QUEUE
+            bool note_loss;
+        #endif
+            struct page *tmp_page; // ~v6.14
+            struct page *tmp_page[2]; // v6.15~
+            struct fasync_struct *fasync_readers;
+            struct fasync_struct *fasync_writers;
+            struct pipe_buffer *bufs;
+            struct user_struct *user;
+        #ifdef CONFIG_WATCH_QUEUE
+            struct watch_queue *watch_queue;
+        #endif
+        };
+
+        [v5.5~v6.6]
         struct pipe_inode_info {
             struct mutex mutex;
             wait_queue_head_t rd_wait, wr_wait; // v5.6~
@@ -128373,7 +128413,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             unsigned int files;
             unsigned int r_counter;
             unsigned int w_counter;
-            bool poll_usage; // v5.10~
+            unsigned int poll_usage; // v5.10, v5.13~ (unsigned int or bool)
             struct page *tmp_page;
             struct fasync_struct *fasync_readers;
             struct fasync_struct *fasync_writers;
@@ -128412,7 +128452,96 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         };
         """
 
-        # plan 1
+        # plan 1: validate the complete pipe buffer ring. This also works for
+        # empty pipes and does not depend on allocator metadata.
+        pipe_inode_infos = []
+        for _file, inode in pipe_files:
+            pipe_inode_info = read_int_from_memory(inode + self.offset_i_pipe)
+            if pipe_inode_info not in pipe_inode_infos:
+                pipe_inode_infos.append(pipe_inode_info)
+
+        kversion = Kernel.kernel_version()
+        PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        fallback_offset = None
+        for i in range(0x80):
+            offset_bufs = current_arch.ptrsize * i
+            found = True
+            followed_by_user = True
+            for pipe_inode_info in pipe_inode_infos:
+                if not is_valid_addr_addr(pipe_inode_info + offset_bufs):
+                    found = False
+                    break
+                # Prefer the usual `bufs, user` pointer pair when `user` is present.
+                if not is_valid_addr_addr(pipe_inode_info + offset_bufs + current_arch.ptrsize):
+                    followed_by_user = False
+
+                bufs = read_int_from_memory(pipe_inode_info + offset_bufs)
+                if bufs == pipe_inode_info or is_double_link_list(pipe_inode_info + offset_bufs):
+                    found = False
+                    break
+
+                if kversion >= "5.5":
+                    ring_size = read_int32_from_memory(pipe_inode_info + self.offset_ring_size)
+                    if kversion >= "6.14" and is_32bit():
+                        head_tail = read_int32_from_memory(pipe_inode_info + self.offset_head)
+                        head = head_tail & 0xffff
+                        tail = head_tail >> 16
+                        pipe_index_mask = 0xffff
+                    else:
+                        head = read_int32_from_memory(pipe_inode_info + self.offset_head)
+                        tail = read_int32_from_memory(pipe_inode_info + self.offset_tail)
+                        pipe_index_mask = 0xffff_ffff
+                    used = (head - tail) & pipe_index_mask
+                else:
+                    ring_size = read_int32_from_memory(pipe_inode_info + self.offset_buffers)
+                    used = read_int32_from_memory(pipe_inode_info + self.offset_nrbuf)
+
+                if ring_size == 0 or ring_size > 0x10000:
+                    found = False
+                    break
+                if ring_size & (ring_size - 1):
+                    found = False
+                    break
+                if used > ring_size:
+                    found = False
+                    break
+                if not is_valid_addr(bufs + ring_size * self.sizeof_pipe_buffer - 1):
+                    found = False
+                    break
+
+                for idx in range(ring_size):
+                    base = bufs + idx * self.sizeof_pipe_buffer
+                    page = read_int_from_memory(base + self.offset_page)
+                    offset = read_int32_from_memory(base + self.offset_offset)
+                    len_ = read_int32_from_memory(base + self.offset_len)
+                    ops = read_int_from_memory(base + self.offset_len + 4)
+                    flags = read_int32_from_memory(base + self.offset_flags)
+                    if page and not is_valid_addr(page):
+                        found = False
+                        break
+                    if offset > PAGE_SIZE or len_ > PAGE_SIZE or offset + len_ > PAGE_SIZE:
+                        found = False
+                        break
+                    if ops and not is_valid_addr(ops):
+                        found = False
+                        break
+                    if flags & ~0x7f:
+                        found = False
+                        break
+                if not found:
+                    break
+            if found:
+                if followed_by_user:
+                    self.quiet_info("offset of bufs is found by pipe buffer ring (way1-1)")
+                    return offset_bufs
+                if fallback_offset is None:
+                    fallback_offset = offset_bufs
+
+        if fallback_offset is not None:
+            self.quiet_info("offset of bufs is found by pipe buffer ring (way1-2)")
+            return fallback_offset
+
+        # plan 2
         seen = []
         for _file, inode in pipe_files:
             if inode in seen:
@@ -128458,11 +128587,10 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                     if is_valid_addr_addr(bufs + current_arch.ptrsize * 5): # private
                         continue
                 # found
-                self.quiet_info("offset of bufs is found by heuristic way1")
+                self.quiet_info("offset of bufs is found by heuristic way2")
                 return offset_bufs
 
-        # plan 2
-        kversion = Kernel.kernel_version()
+        # plan 3
         inode = pipe_files[0][1]
         pipe_inode_info = read_int_from_memory(inode + self.offset_i_pipe)
         for i in range(0x80):
@@ -128481,55 +128609,52 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 continue
             # pipe_inode_info is allocated from kmalloc-1k (x64) or kmalloc-512 (x86)
             if re.search(r"kmalloc(-cg)?-(1k|1024|512)", ret):
-                self.quiet_info("offset of bufs is found by heuristic way2-1")
+                self.quiet_info("offset of bufs is found by heuristic way3-1")
                 return current_arch.ptrsize * i
             # before v5.5, pipe_buffer is allocated not from slub, but `user` is allocated from slub.
             if kversion < "5.5" and "uid_cache" in ret:
-                self.quiet_info("offset of bufs is found by heuristic way2-2")
+                self.quiet_info("offset of bufs is found by heuristic way3-2")
                 return current_arch.ptrsize * (i - 1)
         return None
 
     def get_offset_head_or_nrbuf(self, pipe_files):
         inode = pipe_files[0][1]
         pipe_inode_info = read_int_from_memory(inode + self.offset_i_pipe)
+        kversion = Kernel.kernel_version()
 
         for i in range(3, 0x40):
-            if is_64bit():
-                # head||tail/nrbuf||curbuf is not address
-                v1 = read_int_from_memory(pipe_inode_info + current_arch.ptrsize * i)
-                if is_valid_addr(v1):
+            offset = current_arch.ptrsize * i
+            if kversion < "5.5":
+                nrbuf = read_int32_from_memory(pipe_inode_info + offset)
+                curbuf = read_int32_from_memory(pipe_inode_info + offset + 4)
+                buffers = read_int32_from_memory(pipe_inode_info + offset + 8)
+                if buffers == 0 or buffers > 0x10000 or buffers & (buffers - 1):
                     continue
-                # head/nrbuf is too large
-                v1_32 = read_int32_from_memory(pipe_inode_info + current_arch.ptrsize * i)
-                if v1_32 > 0x100:
+                if nrbuf > buffers or curbuf >= buffers:
                     continue
-                # max_usage||ring_size/buffers||readers is not address
-                v2 = read_int_from_memory(pipe_inode_info + current_arch.ptrsize * (i + 1))
-                if is_valid_addr(v2):
-                    continue
-                # max_usage/buffers is too large or zero
-                v2_32 = read_int32_from_memory(pipe_inode_info + current_arch.ptrsize * (i + 1))
-                if v2_32 > 0x100 or v2_32 == 0:
-                    continue
-                return current_arch.ptrsize * i
+                return offset
+
+            if kversion >= "6.14" and is_32bit():
+                head_tail = read_int32_from_memory(pipe_inode_info + offset)
+                head = head_tail & 0xffff
+                tail = head_tail >> 16
+                max_usage = read_int32_from_memory(pipe_inode_info + offset + 4)
+                ring_size = read_int32_from_memory(pipe_inode_info + offset + 8)
+                pipe_index_mask = 0xffff
             else:
-                # head/nrbuf is not address
-                v1 = read_int_from_memory(pipe_inode_info + current_arch.ptrsize * i)
-                if is_valid_addr(v1):
-                    continue
-                # head/nrbuf is too large
-                v1_32 = read_int32_from_memory(pipe_inode_info + current_arch.ptrsize * i)
-                if v1_32 > 0x100:
-                    continue
-                # max_usage/buffers is not address
-                v2 = read_int_from_memory(pipe_inode_info + current_arch.ptrsize * (i + 2))
-                if is_valid_addr(v2):
-                    continue
-                # max_usage/buffers is too large or zero
-                v2_32 = read_int32_from_memory(pipe_inode_info + current_arch.ptrsize * (i + 2))
-                if v2_32 > 0x100 or v2_32 == 0:
-                    continue
-                return current_arch.ptrsize * i
+                head = read_int32_from_memory(pipe_inode_info + offset)
+                tail = read_int32_from_memory(pipe_inode_info + offset + 4)
+                max_usage = read_int32_from_memory(pipe_inode_info + offset + 8)
+                ring_size = read_int32_from_memory(pipe_inode_info + offset + 12)
+                pipe_index_mask = 0xffff_ffff
+            used = (head - tail) & pipe_index_mask
+            if ring_size == 0 or ring_size > 0x10000:
+                continue
+            if ring_size & (ring_size - 1):
+                continue
+            if max_usage == 0 or max_usage > ring_size or used > max_usage:
+                continue
+            return offset
         return None
 
     def get_pipe_files(self):
@@ -128594,13 +128719,21 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             self.out.append("    pipe_buffer: {:#x}".format(pipe_buffer))
 
             if "5.5" <= kversion:
-                head = read_int32_from_memory(pipe_inode_info + self.offset_head)
-                tail = read_int32_from_memory(pipe_inode_info + self.offset_tail)
+                if kversion >= "6.14" and is_32bit():
+                    head_tail = read_int32_from_memory(pipe_inode_info + self.offset_head)
+                    head = head_tail & 0xffff
+                    tail = head_tail >> 16
+                    pipe_index_mask = 0xffff
+                else:
+                    head = read_int32_from_memory(pipe_inode_info + self.offset_head)
+                    tail = read_int32_from_memory(pipe_inode_info + self.offset_tail)
+                    pipe_index_mask = 0xffff_ffff
                 max_usage = read_int32_from_memory(pipe_inode_info + self.offset_max_usage)
                 ring_size = read_int32_from_memory(pipe_inode_info + self.offset_ring_size)
                 self.out.append("    head: {:d}, tail: {:d}, max: {:d}, ring_size: {:d}".format(
                     head, tail, max_usage, ring_size,
                 ))
+                used = (head - tail) & pipe_index_mask
             else:
                 nrbuf = read_int32_from_memory(pipe_inode_info + self.offset_nrbuf)
                 curbuf = read_int32_from_memory(pipe_inode_info + self.offset_curbuf)
@@ -128611,8 +128744,9 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 head = curbuf + nrbuf
                 tail = curbuf
                 max_usage = buffers
+                used = nrbuf
 
-            used_range = [x % max_usage for x in range(tail, head)]
+            used_range = {(tail + x) % max_usage for x in range(used)}
             for idx in range(max_usage):
                 base = pipe_buffer + self.sizeof_pipe_buffer * idx
                 page = read_int_from_memory(base + self.offset_page)
