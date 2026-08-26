@@ -73748,12 +73748,33 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
 
         sb = fs_supers - self.offset_s_instances
         head = read_int_from_memory(sb + self.offset_s_mounts)
-        for delta in (0, current_arch.ptrsize):
-            mount = head - self.offset_mount_mnt_instance - delta
+
+        # CONFIG_SMP=n uses two ints here instead of a percpu pointer. This is one pointer wider only on 32-bit kernels.
+        # Since v6.18 s_mounts points directly to struct mount, the mnt_sb check below cannot detect it;
+        # identify the two adjacent list_head fields instead.
+        if kversion >= "6.18" and is_32bit():
+            mount = head
+            offset_mnt_mounts = offset_after_mnt_child - common2
+            for delta in (0, current_arch.ptrsize):
+                a = mount + offset_mnt_mounts + delta
+                b = mount + offset_mnt_mounts + delta + current_arch.ptrsize * 2
+                if is_double_link_list(a) and is_double_link_list(b):
+                    self.offset_mount_mnt_devname += delta
+                    break
+
+        if kversion >= "6.18":
+            deltas = (0,)
+        else:
+            deltas = (0, -current_arch.ptrsize, current_arch.ptrsize)
+        for delta in deltas:
+            offset_mount_mnt_instance = self.offset_mount_mnt_instance + delta
+            if offset_mount_mnt_instance < 0:
+                continue
+            mount = head - offset_mount_mnt_instance
             if not is_valid_addr(mount):
                 continue
             if read_int_from_memory(mount + self.offset_mount_mnt + current_arch.ptrsize) == sb:
-                self.offset_mount_mnt_instance += delta
+                self.offset_mount_mnt_instance = offset_mount_mnt_instance
                 self.offset_mount_mnt_devname += delta
                 break
         self.quiet_info("offsetof(mount, mnt_instance): {:#x}".format(self.offset_mount_mnt_instance))
@@ -73804,6 +73825,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             name = read_int_from_memory(current)
             if 0 < name - current <= 0x20:
                 offset_d_iname = name - dentry
+                self.offset_dname_name = current - dentry
                 break
         if offset_d_iname is None:
             return None
@@ -73811,19 +73833,18 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         self.offset_d_iname = offset_d_iname
         return offset_d_iname
 
-    def get_offset_d_parent(self, dentry, offset_d_iname):
+    def get_offset_d_parent(self, dentry):
         if hasattr(self, "offset_d_parent") and self.offset_d_parent is not None:
             return self.offset_d_parent
 
-        offset_dname_name = offset_d_iname - current_arch.ptrsize * 2
-        if read_int_from_memory(dentry + offset_dname_name) == 0: # skip if padding
-            offset_dname_name -= current_arch.ptrsize
-        offset_d_parent = offset_dname_name - 0x8 - current_arch.ptrsize
-        if read_int_from_memory(dentry + offset_d_parent) == 0: # skip if padding
-            offset_d_parent -= current_arch.ptrsize
-
-        self.offset_d_parent = offset_d_parent
-        return offset_d_parent
+        # dentry is mnt_root here, so d_parent must point back to itself. Find
+        # that pointer instead of assuming that alignment padding is zero.
+        offset_d_parent = self.offset_dname_name - 0x8 - current_arch.ptrsize
+        for offset in (offset_d_parent, offset_d_parent - current_arch.ptrsize):
+            if read_int_from_memory(dentry + offset) == dentry:
+                self.offset_d_parent = offset
+                return offset
+        return None
 
     def get_mount(self, mnt_instance):
         mount = mnt_instance - self.offset_mount_mnt_instance
@@ -73839,7 +73860,9 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         offset_d_iname = self.get_offset_d_iname(dentry)
         if offset_d_iname is None:
             return None
-        offset_d_parent = self.get_offset_d_parent(dentry, offset_d_iname)
+        offset_d_parent = self.get_offset_d_parent(dentry)
+        if offset_d_parent is None:
+            return None
 
         def is_root(dentry):
             return dentry == read_int_from_memory(dentry + offset_d_parent)
@@ -73864,17 +73887,13 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
                     switched = True
                     continue
 
-                name = read_cstring_from_memory(dentry + offset_d_iname)
-                if name is None:
-                    name_ptr = read_int_from_memory(dentry + offset_d_iname - current_arch.ptrsize * 2)
-                    name = read_cstring_from_memory(name_ptr)
+                name_ptr = read_int_from_memory(dentry + self.offset_dname_name)
+                name = read_cstring_from_memory(name_ptr)
                 filepath.append(name or "???")
                 break
 
-            name = read_cstring_from_memory(dentry + offset_d_iname)
-            if name is None:
-                name_ptr = read_int_from_memory(dentry + offset_d_iname - current_arch.ptrsize * 2)
-                name = read_cstring_from_memory(name_ptr)
+            name_ptr = read_int_from_memory(dentry + self.offset_dname_name)
+            name = read_cstring_from_memory(name_ptr)
             filepath.append(name or "???")
 
             parent = read_int_from_memory(dentry + offset_d_parent)
@@ -73926,7 +73945,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
 
         # devname
         if devname == "???":
-            devname = self.get_dev_name(s_mounts)
+            devname = self.get_dev_name(s_mounts) or "???"
         else:
             devname += " (guessed)"
 
