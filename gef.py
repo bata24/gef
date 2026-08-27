@@ -31108,6 +31108,8 @@ class KernelChecksecCommand(GenericCommand):
         if modprobe_path:
             additional = "modprobe_path: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
+        elif KernelAddressHeuristicFinder.get_modules() is None:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), "CONFIG_MODULES=n"))
         else:
             additional = "modprobe_path: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
