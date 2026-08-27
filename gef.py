@@ -61178,6 +61178,59 @@ class KernelAddressHeuristicFinder:
                         min_distance_task = (task, distance)
                 if min_distance_task[0] is not None:
                     return min_distance_task[0]
+
+        # plan 4 (from init_task.comm and init_thread_union on arm32)
+        # Before v5.15, thread_info is stored at the bottom of the kernel stack and
+        # contains a backlink to task_struct.  This also works when every CPU is in
+        # user mode and no current kernel stack is visible through $sp.
+        if is_arm32() and kversion and kversion < "5.15":
+            kinfo = Kernel.get_kernel_layout()
+            if kinfo.rw_base and kinfo.rw_size:
+                try:
+                    rw_data = read_memory(kinfo.rw_base, min(kinfo.rw_size, 0x100_0000))
+                except gdb.MemoryError:
+                    rw_data = b""
+
+                page_offset = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+                pos = -1
+                while page_offset:
+                    pos = rw_data.find(b"swapper/0\0", pos + 1)
+                    if pos == -1:
+                        break
+
+                    comm = kinfo.rw_base + pos
+                    start = max(0, pos - 0x2000)
+                    task_data = rw_data[start:pos]
+                    for i in range(0, len(task_data) - current_arch.ptrsize + 1, current_arch.ptrsize):
+                        stack = u32(task_data[i:i + current_arch.ptrsize])
+                        if stack < page_offset or stack & 0x1fff:
+                            continue
+                        try:
+                            task = read_int_from_memory(stack + current_arch.ptrsize * 3)
+                        except gdb.MemoryError:
+                            continue
+                        if not kinfo.rw_base + start <= task < comm:
+                            continue
+
+                        offset_tasks = get_offset_tasks(task)
+                        if offset_tasks is None:
+                            continue
+
+                        # Verify the inferred comm offset against several tasks so a
+                        # coincidental aligned pointer cannot be accepted as init_task.
+                        offset_comm = comm - task
+                        task_pos = task + offset_tasks
+                        try:
+                            for _ in range(5):
+                                name_addr = task_pos - offset_tasks + offset_comm
+                                name = read_memory(name_addr, 16).split(b"\0", 1)[0]
+                                if not name or any(c < 0x20 or c >= 0x7f for c in name):
+                                    break
+                                task_pos = read_int_from_memory(task_pos)
+                            else:
+                                return task
+                        except gdb.MemoryError:
+                            continue
         return None
 
     @staticmethod
@@ -66053,6 +66106,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             return kstack # CONFIG_THREAD_INFO_IN_TASK=n
 
     def has_seccomp(self, task_addr):
+        if self.offset_stack is None:
+            return None
         thread_info = self.get_thread_info(task_addr, self.offset_stack)
         if thread_info is None:
             return None
@@ -68384,9 +68439,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         if self.offset_stack is None:
             self.offset_stack = self.get_offset_stack(task_addrs)
         if self.offset_stack is None:
-            self.quiet_err("Could not find task_struct->stack")
-            return False
-        self.quiet_info("offsetof(task_struct, stack): {:#x}".format(self.offset_stack))
+            self.quiet_info("offsetof(task_struct, stack): None")
+        else:
+            self.quiet_info("offsetof(task_struct, stack): {:#x}".format(self.offset_stack))
 
         # task_struct->pid
         if self.offset_pid is None:
@@ -68429,7 +68484,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(cred, uid): {:#x}".format(self.offset_uid))
 
         # kstack_top->saved_ptregs
-        if self.args.print_regs:
+        if self.args.print_regs and self.offset_stack is not None:
             if self.offset_ptregs is None:
                 self.kstack_size, self.offset_ptregs = self.get_offset_ptregs(task_addrs, self.offset_stack)
             if self.offset_ptregs is None:
@@ -68437,6 +68492,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 return False
             self.quiet_info("kstack size: {:#x}".format(self.kstack_size))
             self.quiet_info("offsetof(kstack_top, saved ptregs): {:#x}".format(self.offset_ptregs))
+        elif self.args.print_regs:
+            self.quiet_warn("Could not find saved ptregs without task_struct->stack; skipping registers")
 
         # vm_area_struct->vm_mm
         # vm_area_struct->vm_flags
@@ -68789,7 +68846,12 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 if task not in self.args.task_filter:
                     continue
 
-            kstack = read_int_from_memory(task + self.offset_stack)
+            if self.offset_stack is None:
+                kstack = None
+                kstack_str = "-"
+            else:
+                kstack = read_int_from_memory(task + self.offset_stack)
+                kstack_str = "{:#018x}".format(kstack)
             pid = read_int32_from_memory(task + self.offset_pid)
             cred = read_int_from_memory(task + self.offset_cred)
 
@@ -68830,14 +68892,17 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 kcanary = "None"
 
             # seccomp
-            if self.has_seccomp(task):
+            seccomp_enabled = self.has_seccomp(task)
+            if seccomp_enabled is None:
+                seccomp = "Unknown"
+            elif seccomp_enabled:
                 seccomp = "Enabled"
             else:
                 seccomp = "Disabled"
 
             # make output
-            self.out.append("{:#018x} {:<7s} {:<3s} {:<7d} {:<16s} {:#018x} [{:s}] {:<8s} {:#018x} {:<18s}".format(
-                task, currentN, proctype, pid, comm_string, cred, uids_str, seccomp, kstack, kcanary,
+            self.out.append("{:#018x} {:<7s} {:<3s} {:<7d} {:<16s} {:#018x} [{:s}] {:<8s} {:<18s} {:<18s}".format(
+                task, currentN, proctype, pid, comm_string, cred, uids_str, seccomp, kstack_str, kcanary,
             ).rstrip())
 
             # skip additional information when swapper/N
@@ -68858,7 +68923,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                         ).rstrip())
 
             # additional information (regs)
-            if proctype == "U" and self.args.print_regs:
+            if proctype == "U" and self.args.print_regs and kstack is not None and self.offset_ptregs is not None:
                 additional = True
                 regs = self.get_regs(kstack, self.offset_ptregs)
                 nr_table = Syscall.get_syscall_table().nr_table
@@ -150759,9 +150824,10 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         kstacks = []
         for line in res.splitlines():
             line = line.split()
-            if len(line) >= 2:
-                kstack = int(line[-2], 16)
-                kstacks.append(kstack & 0xffff)
+            if len(line) < 2 or line[-2] == "-":
+                continue
+            kstack = int(line[-2], 16)
+            kstacks.append(kstack & 0xffff)
 
         # calc kstack size
         kstacks = sorted(set(kstacks))
@@ -150777,6 +150843,8 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         # kstack
         for line in res.splitlines():
             elems = line.split()
+            if len(elems) < 4 or elems[-2] == "-":
+                continue
             pid, kstack = int(elems[3]), int(elems[-2], 16)
             process_name = line.split(maxsplit=4)[4][:16].strip()
             description = "kstack PID:{:d} ({:s})".format(pid, process_name)
