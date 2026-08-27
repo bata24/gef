@@ -123209,6 +123209,12 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 break
             if current_kmem_cache_node & 0b111:
                 break
+            if not is_valid_addr(current_kmem_cache_node):
+                break
+
+            node_page_head = current_kmem_cache_node + self.kmem_cache_node_offset_partial
+            if not is_double_link_list(node_page_head):
+                break
 
             # node list (partial)
             node_page_list_partial = self.walk_node_list(
@@ -123410,14 +123416,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         end_virt = page["virt_addr"] + page["num_pages"] * get_pagesize()
         start_addr = page["virt_addr"] + kmem_cache["red_left_pad"]
 
-        if kmem_cache["red_left_pad"]:
-            chunk_s = Color.colorify_hex(page["virt_addr"], used_address_color)
-            self.out.append("        {:7s}   {:#05x} {:s} ({:s})".format("layout:", 0, chunk_s, "never-used"))
-            start_idx = 1
-        else:
-            start_idx = 0
-
-        for idx, chunk in enumerate(range(start_addr, end_virt, kmem_cache["size"]), start=start_idx):
+        for idx, chunk in enumerate(range(start_addr, end_virt, kmem_cache["size"])):
+            if chunk + kmem_cache["size"] > end_virt:
+                break
             if chunk in freelist_fastpath[:-1]:
                 next_chunk = freelist_fastpath[freelist_fastpath.index(chunk) + 1]
                 if isinstance(next_chunk, str):
@@ -123487,8 +123488,15 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         chunk_idx = ""
                         msg = chunk_addr
                     else:
-                        chunk_idx = (chunk_addr - page["virt_addr"]) // kmem_cache["size"]
-                        if chunk_idx < 0 or page["objects"] <= chunk_idx:
+                        chunk_offset = chunk_addr - page["virt_addr"] - kmem_cache["red_left_pad"]
+                        chunk_idx = chunk_offset // kmem_cache["size"]
+                        end_virt = page["virt_addr"] + page["num_pages"] * get_pagesize()
+                        if (
+                            chunk_offset < 0
+                            or chunk_offset % kmem_cache["size"]
+                            or chunk_addr + kmem_cache["size"] > end_virt
+                            or page["objects"] <= chunk_idx
+                        ):
                             chunk_idx = ""
                         else:
                             chunk_idx = "{:#05x}".format(chunk_idx)
