@@ -61033,11 +61033,12 @@ class KernelAddressHeuristicFinder:
     def get_current_task_for_current_thread():
         if is_arm32():
             # plan 1 (from special register)
+            page_offset = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
             r = get_register("$TPIDRURO")
-            if r and is_valid_addr(r):
+            if r and r >= page_offset and is_valid_addr(r):
                 return r
             r = get_register("$TPIDRURO_S")
-            if r and is_valid_addr(r):
+            if r and r >= page_offset and is_valid_addr(r):
                 return r
 
             # plan 2 (from stack top)
@@ -61046,7 +61047,7 @@ class KernelAddressHeuristicFinder:
 
             # check if valid kernel address or not
             current_thread_info = current_arch.sp & ~0x1fff
-            if current_thread_info < KernelAddressHeuristicFinder.get_PAGE_OFFSET():
+            if current_thread_info < page_offset:
                 return None
 
             kversion = Kernel.kernel_version()
