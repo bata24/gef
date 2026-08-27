@@ -126582,6 +126582,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
 
     _note_ = [
         "This command requires CONFIG_SYSFS=y.",
+        "CONFIG_SLUB_TINY=y is unsupported because slab sysfs is unavailable.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -126981,7 +126982,11 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         if not hasattr(self, "allocator"):
             self.allocator = Kernel.get_slab_type()
 
-        if self.allocator not in ["SLUB", "SLUB_TINY"]:
+        if self.allocator == "SLUB_TINY":
+            self.quiet_err("Unsupported: CONFIG_SLUB_TINY has no slab sysfs support")
+            return
+
+        if self.allocator != "SLUB":
             self.quiet_err("Unsupported: SLAB, SLOB, Unknown allocator")
             return
 
