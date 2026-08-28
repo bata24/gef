@@ -129751,6 +129751,11 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         if hasattr(self, "initialized") and self.initialized:
             return True
 
+        self.sysvipc_disabled = False
+        self.sysvipc_uninitialized = False
+        for attr in ("offset_xa_head", "sizeof_ipc_ids"):
+            if hasattr(self, attr):
+                delattr(self, attr)
         if ipc_ns_list == []:
             return False
 
@@ -129808,9 +129813,10 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         # offsetof(ipc_ids, ipcs_idr.idr_rt.xa_head): tagged valid pointer is `xa_head`.
         # sizeof(ids[0]): find two `xa_head` and calculate the distance.
         init_ipc_ns = ipc_ns_list[0]
-        found = []
-        first_xa_flags = None
-        for i in range(6, 120):
+        candidates = {}
+        # DEBUG_LOCK_ALLOC makes struct ipc_ids large enough that ids[2]'s
+        # xa_head can be beyond the old 120-pointer scan window.
+        for i in range(6, 256):
             base = self.offset_ids + current_arch.ptrsize * i
             """
             [x64 before using IPC]
@@ -129846,11 +129852,11 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             0xc1b4e114|+0x0034|+013: 0x00000001
             """
 
-            # xa_flags
-            x = read_int_from_memory(init_ipc_ns + base - current_arch.ptrsize)
-            if x == 0 or is_valid_addr(x):
-                continue
-            if first_xa_flags is not None and first_xa_flags != x:
+            # xa_flags is the 32-bit field immediately before xa_head. Reading
+            # a pointer-sized value on 64-bit also includes xa_lock, whose
+            # transient state must not affect matching the three ipc_ids.
+            xa_flags = read_int32_from_memory(init_ipc_ns + base - 4)
+            if xa_flags == 0 or is_valid_addr(xa_flags):
                 continue
 
             # xa_head
@@ -129867,34 +129873,57 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
                 z2 = read_int_from_memory(init_ipc_ns + base + current_arch.ptrsize * 2) # idr_next
                 if is_valid_addr(z1) or is_valid_addr(z2):
                     continue
-                if y and z1 == 0 and z2 == 0:
-                    continue
             else:
                 z = read_int_from_memory(init_ipc_ns + base + current_arch.ptrsize) # idr_base, idr_next
                 if is_valid_addr(z): # idr_base, idr_next
                     continue
-                if y and z == 0:
-                    continue
 
-            # first found
-            if not hasattr(self, "offset_xa_head"):
-                self.offset_xa_head = base - self.offset_ids
-                first_xa_flags = x
+            offset = base - self.offset_ids
+            candidates.setdefault(xa_flags, {})[offset] = y
 
-            # found
-            found.append(base - self.offset_ids)
-
-            # exit loop?
-            if len(found) >= 2:
-                self.sizeof_ipc_ids = found[1] - found[0]
+        # ids[3] are contiguous. Requiring three equally spaced candidates avoids
+        # locking onto an unrelated zero-valued field before an empty xa_head.
+        for heads in candidates.values():
+            offsets = sorted(heads)
+            offset_set = set(offsets)
+            for first_pos, first in enumerate(offsets):
+                for second in offsets[first_pos + 1:]:
+                    size = second - first
+                    if current_arch.ptrsize * 8 <= size and first < size and first + size * 2 in offset_set:
+                        self.offset_xa_head = first
+                        self.sizeof_ipc_ids = size
+                        break
+                if hasattr(self, "offset_xa_head"):
+                    break
+            if hasattr(self, "offset_xa_head"):
                 break
-        else:
+
+        if not hasattr(self, "offset_xa_head"):
+            if all(
+                read_int_from_memory(init_ipc_ns + current_arch.ptrsize * i) == 0
+                for i in range(32)
+            ):
+                if Symbol.get_ksymaddr("sem_init"):
+                    self.sysvipc_uninitialized = True
+                    self.quiet_info("SYSVIPC is enabled, but ipc_ids is not initialized")
+                    return False
+                self.sysvipc_disabled = True
+                self.quiet_info("SYSVIPC is disabled")
+                return False
             self.quiet_err("Could not find ipc_namespace->ids[0].ipcs_idr.idr_rt.xa_head")
             self.quiet_err("Not recognized sizeof(struct ipc_ids)")
-            self.quiet_err("Maybe CONFIG_SYSVIPC=n")
+            self.quiet_err("SYSVIPC is enabled, but the ipc_ids layout could not be determined")
             return False
         self.quiet_info("offsetof(ipc_ids, ipcs_idr.idr_rt.xa_head): {:#x}".format(self.offset_xa_head))
         self.quiet_info("sizeof(struct ipc_ids): {:#x}".format(self.sizeof_ipc_ids))
+        self.ipc_objects_present = any(
+            read_int_from_memory(
+                ipc_ns + self.offset_ids + self.sizeof_ipc_ids * i + self.offset_xa_head
+            )
+            for ipc_ns in ipc_ns_list for i in range(3)
+        )
+        if not self.ipc_objects_present:
+            self.quiet_info("SYSVIPC is enabled, but no IPC objects are present")
 
         # xa_node
         """
@@ -129940,11 +129969,18 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             refcount_t refcount;
         } ____cacheline_aligned_in_smp __randomize_layout;
         """
-        self.offset_id = 4 + 4
-        self.offset_key = self.offset_id + 4
-        self.offset_uid = self.offset_key + 4
-        self.offset_gid = self.offset_uid + 4
-        self.offset_mode = self.offset_gid + 4 + 4 + 4
+        try:
+            self.offset_id = to_unsigned_long(gdb.parse_and_eval("&((struct kern_ipc_perm*)0).id"))
+            self.offset_key = to_unsigned_long(gdb.parse_and_eval("&((struct kern_ipc_perm*)0).key"))
+            self.offset_uid = to_unsigned_long(gdb.parse_and_eval("&((struct kern_ipc_perm*)0).uid"))
+            self.offset_gid = to_unsigned_long(gdb.parse_and_eval("&((struct kern_ipc_perm*)0).gid"))
+            self.offset_mode = to_unsigned_long(gdb.parse_and_eval("&((struct kern_ipc_perm*)0).mode"))
+        except gdb.error:
+            self.offset_id = 4 + 4
+            self.offset_key = self.offset_id + 4
+            self.offset_uid = self.offset_key + 4
+            self.offset_gid = self.offset_uid + 4
+            self.offset_mode = self.offset_gid + 4 + 4 + 4
 
         self.initialized = True
         return True
@@ -130169,7 +130205,8 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
 
         ret = self.initialize(ipc_ns_list)
         if not ret:
-            self.quiet_err("Failed to initialize")
+            if not self.sysvipc_disabled and not self.sysvipc_uninitialized:
+                self.quiet_err("Failed to initialize")
             return
 
         self.out = []
