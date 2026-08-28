@@ -70472,7 +70472,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         "This command requires CONFIG_RANDSTRUCT=n.",
         "If there are too many block devices, detection may fail.",
         "This is because block devices are not managed in a single location,",
-        "so the list of bdev_cache obtained from the slub-dump results is used.",
+        "so the bdev_cache dump is supplemented with block devices referenced by mounted filesystems.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -70487,8 +70487,10 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
             ret = gdb.execute("slub-dump --quiet --no-pager -vv bdev_cache", to_string=True)
         elif allocator == "SLUB_TINY":
             ret = gdb.execute("slub-tiny-dump --quiet --no-pager bdev_cache", to_string=True)
+        elif allocator == "SLAB":
+            ret = gdb.execute("slab-dump --quiet --no-pager bdev_cache", to_string=True)
         else:
-            self.quiet_err("Unsupported: SLAB, SLOB, Unknown allocator")
+            self.quiet_err("Unsupported: SLOB, Unknown allocator")
             return None
 
         bdevs = []
@@ -70499,6 +70501,62 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
                 continue
             bdev = int(r.group(1), 16)
             bdevs.append(bdev)
+        return bdevs
+
+    def get_mounted_bdev_list(self):
+        """Get bdevs which the slab allocator lists cannot reach."""
+        ret = gdb.execute("kfilesystems --quiet --no-pager --skip-mount-path", to_string=True)
+        kversion = Kernel.kernel_version()
+        ptrsize = current_arch.ptrsize
+
+        # Until v6.17 s_mounts is a list head pointing at mount->mnt_instance.
+        # Since v6.18 it points directly at struct mount.
+        common1 = ptrsize * 4
+        sizeof_vfsmount = ptrsize * (3 if kversion < "5.12" else 4)
+        if kversion < "3.13":
+            sizeof_union = 0
+        elif kversion < "6.12":
+            sizeof_union = ptrsize * 2
+        else:
+            sizeof_union = ptrsize * 3
+        offset_mnt_instance = common1 + sizeof_vfsmount + sizeof_union + ptrsize + ptrsize * 4
+
+        bdevs = []
+        for line in ret.splitlines():
+            fields = Color.remove_color(line).split()
+            if len(fields) < 8 or not fields[2].startswith("0x"):
+                continue
+            try:
+                major, minor = int(fields[-5]), int(fields[-4])
+                super_block = int(fields[2], 16)
+                mount = int(fields[-3], 16)
+            except ValueError:
+                continue
+            if major == 0:
+                continue
+
+            if kversion < "6.18":
+                mount_links = {
+                    mount + offset_mnt_instance + delta
+                    for delta in (-ptrsize, 0, ptrsize)
+                }
+                offset_s_bdev = ptrsize * 2
+            else:
+                mount_links = {mount}
+                offset_s_bdev = ptrsize
+
+            # s_mounts is before s_instances, which kfilesystems searches within
+            # the first 100 pointer-sized fields of struct super_block.
+            for offset in range(0, ptrsize * 100, ptrsize):
+                if read_int_from_memory(super_block + offset) not in mount_links:
+                    continue
+                bdev = read_int_from_memory(super_block + offset + offset_s_bdev)
+                if not is_valid_addr(bdev):
+                    break
+                bdev_major, bdev_minor, _ = self.get_dev_num(bdev)
+                if (bdev_major, bdev_minor) == (major, minor):
+                    bdevs.append(bdev)
+                break
         return bdevs
 
     @staticmethod
@@ -70797,7 +70855,9 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
-        bdevs = self.get_bdev_list()
+        bdevs = self.get_bdev_list() or []
+        bdevs.extend(self.get_mounted_bdev_list())
+        bdevs = list(set(bdevs))
         if not bdevs:
             self.quiet_err("Could not find any bdev")
             return
