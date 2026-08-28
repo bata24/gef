@@ -73657,38 +73657,38 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(file_system_type, name): {:#x}".format(self.offset_name))
 
         # file_system_type->next
+        best_next = None
+        best_score = (1, False)
         for i in range(10):
             offset_next = current_arch.ptrsize * i
-            valid = True
             current = read_int_from_memory(self.file_systems)
-            seen = []
-            while current != 0:
-                if not is_valid_addr(current):
-                    valid = False
+            seen = set()
+            for _scan_index in range(0x1000): # avoid unbounded scan
+                if current == 0:
                     break
-                seen.append(current)
+                if current in seen or not is_valid_addr(current):
+                    break
                 name_addr = read_int_from_memory(current)
                 if not is_valid_addr(name_addr):
-                    valid = False
                     break
                 name = read_cstring_from_memory(name_addr)
-                if len(name) == 0:
-                    valid = False
+                if not name:
                     break
+                seen.add(current)
                 current = read_int_from_memory(current + offset_next)
-                if current in seen:
-                    valid = False
-                    break
 
-            if len(seen) == 1:
-                valid = False
+            # A registered module can be unreadable through the QEMU gdbstub.
+            # Prefer the candidate that yields the longest valid prefix instead
+            # of rejecting the whole chain when its tail cannot be read.
+            score = (len(seen), current == 0)
+            if score > best_score:
+                best_next = offset_next
+                best_score = score
 
-            if valid:
-                self.offset_next = offset_next
-                break
-        else:
+        if best_next is None:
             self.quiet_err("Could not find file_system_type->next")
             return False
+        self.offset_next = best_next
         self.quiet_info("offsetof(file_system_type, next): {:#x}".format(self.offset_next))
 
         self.offset_fs_supers = self.offset_next + current_arch.ptrsize
@@ -74103,7 +74103,15 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         fst = read_int_from_memory(self.file_systems)
+        seen = set()
         while fst != 0:
+            if fst in seen:
+                self.quiet_warn("Stopped at cyclic file_system_type: {:#x}".format(fst))
+                break
+            if not is_valid_addr(fst):
+                self.quiet_warn("Stopped at unreadable file_system_type: {:#x}".format(fst))
+                break
+            seen.add(fst)
             # parse file_system_type
             self.parse_file_system_type(fst)
             # go to next
