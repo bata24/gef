@@ -63996,6 +63996,26 @@ class KernelAddressHeuristicFinder:
                         count -= 1
                     if count == 0:
                         return a
+
+        # plan 3 (free_vmap_area directly references the free tree/list)
+        # v7.1 may place vmap_notify_list and free_vmap_area_list in different
+        # sections, so the bounded scan from register_vmap_purge_notifier above
+        # can no longer reach the latter.
+        addr = Symbol.get_ksymaddr("free_vmap_area")
+        if addr:
+            res = gdb.execute("x/200i {:#x}".format(addr), to_string=True)
+            if is_x86_64() or is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
+            elif is_arm64():
+                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
+            elif is_arm32():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                    KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                )
+            for x in g:
+                if is_double_link_list(x, min_len=3):
+                    return x
         return None
 
     @staticmethod
