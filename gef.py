@@ -131095,42 +131095,46 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
-        # net->dev_base_head
+        # net->dev_base_head, net_device->dev_list
+        found = False
         for i in range(0x100):
             candidate_offset = current_arch.ptrsize * i
 
             addr = self.init_net + candidate_offset
-            if not is_double_link_list(addr):
+            if not is_double_link_list(addr, min_len=1):
                 continue
 
-            cand_netdev = read_int_from_memory(addr)
-            if not is_double_link_list(cand_netdev + current_arch.ptrsize * 2): # napi_list
-                continue
-            if not is_double_link_list(cand_netdev + current_arch.ptrsize * 4): # unreg_list
-                continue
-            if not is_double_link_list(cand_netdev + current_arch.ptrsize * 6): # close_list
-                continue
-            if not is_double_link_list(cand_netdev + current_arch.ptrsize * 8): # ptype_all
-                continue
-            break # found
+            nodes = []
+            current = read_int_from_memory(addr)
+            while current != addr:
+                nodes.append(current)
+                current = read_int_from_memory(current)
+
+            for j in range(0x100):
+                offset_dev_list = current_arch.ptrsize * j
+                names = [read_cstring_from_memory(node - offset_dev_list, 0x10) for node in nodes]
+                if any(
+                    not name
+                    or len(name) >= 0x10
+                    or name in (".", "..")
+                    or any(c.isspace() or c in "/:" for c in name)
+                    for name in names
+                ):
+                    continue
+                if "lo" not in names:
+                    continue
+
+                self.offset_dev_base_head = candidate_offset
+                self.offset_dev_list = offset_dev_list
+                found = True
+                break
+            if found:
+                break
         else:
             self.quiet_err("Could not find net->dev_base_head")
             return False
 
-        self.offset_dev_base_head = candidate_offset
         self.quiet_info("offsetof(net, dev_base_head): {:#x}".format(self.offset_dev_base_head))
-
-        # net_device->dev_list
-        netdev_dev_list = read_int_from_memory(self.init_net + self.offset_dev_base_head)
-        for i in range(0x20):
-            candidate_offset = current_arch.ptrsize * i
-            if read_cstring_from_memory(netdev_dev_list - candidate_offset) == "lo":
-                break
-        else:
-            self.quiet_err("Could not find net_device->dev_list")
-            return False
-
-        self.offset_dev_list = candidate_offset
         self.quiet_info("offsetof(net_device, dev_list): {:#x}".format(self.offset_dev_list))
 
         return True
