@@ -63892,13 +63892,35 @@ class KernelAddressHeuristicFinder:
             if x:
                 return read_int_from_memory(x) + offset
 
+        def indirect_heads(sources):
+            for source in sources:
+                for i in range(128):
+                    node_addr = source + current_arch.ptrsize * i
+                    if not is_valid_addr(node_addr):
+                        break
+                    vmap_nodes = read_int_from_memory(node_addr)
+                    if is_valid_addr(vmap_nodes):
+                        yield vmap_nodes + offset
+
         addr = Symbol.get_ksymaddr("find_vmap_area")
         if addr:
             res = gdb.execute("x/100i {:#x}".format(addr), to_string=True)
+            direct_heads = ()
             if is_x86_64():
-                g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res, read_valid=True),
+                    KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, read_valid=True),
+                )
             elif is_x86_32():
-                g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+                # Static vmap_nodes[]: find_vmap_area reads busy.root.rb_node directly.
+                direct_heads = (
+                    root + current_arch.ptrsize
+                    for root in KernelAddressHeuristicFinderUtil.x64_x86_dword_ptr_src(res, read_valid=True)
+                )
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.x86_dword_ptr_ds(res, read_valid=True),
+                    KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, read_valid=True),
+                )
             elif is_arm64():
                 g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
             elif is_arm32():
@@ -63906,13 +63928,9 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                 )
-            for x in g:
-                for i in range(128):
-                    vmap_nodes = read_int_from_memory(x + current_arch.ptrsize * i)
-                    if is_valid_addr(vmap_nodes):
-                        head = vmap_nodes + offset
-                        if is_double_link_list(head, min_len=5):
-                            return head
+            for head in itertools.chain(direct_heads, indirect_heads(g)):
+                if is_double_link_list(head, min_len=5):
+                    return head
         return None
 
     @staticmethod
