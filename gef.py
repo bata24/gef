@@ -122902,6 +122902,32 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             if r is not None:
                 return r
 
+            # page2virt may fail even when an x86_32 FLATMEM page belongs to
+            # the permanent direct map.  Convert the page descriptor directly
+            # so full slabs do not depend on having a freelist to find vaddr.
+            if is_x86_32():
+                consts = KernelAddressHeuristicFinder.consts()
+                if consts.CONFIG_FLATMEM:
+                    mem_map = consts.mem_map
+                    page_offset = consts.PAGE_OFFSET
+                    page_offset_end = consts.PAGE_OFFSET_END
+                    sizeof_struct_page = consts.sizeof_struct_page
+                    if (
+                        mem_map is not None
+                        and page_offset is not None
+                        and page_offset_end is not None
+                        and sizeof_struct_page
+                    ):
+                        page_delta = page["address"] - mem_map
+                        if page_delta >= 0 and page_delta % sizeof_struct_page == 0:
+                            pfn = page_delta // sizeof_struct_page
+                            virt = page_offset + pfn * get_pagesize()
+                            if page_offset <= virt < page_offset_end:
+                                return virt
+
+        return self.page2virt_by_freelist(page, kmem_cache, freelist_fastpath)
+
+    def page2virt_by_freelist(self, page, kmem_cache, freelist_fastpath=()):
         # set up for heuristic search from freelist
         freelist = list(freelist_fastpath) + page["freelist"]
         freelist = [x for x in freelist if isinstance(x, int) and x != 0] # ignore str and 0
@@ -123410,7 +123436,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
 
         if page["virt_addr"] is None:
-            self.out.append("        layout: Failed to the get first page")
+            self.out.append("        layout: Failed to get the first page")
             return
 
         end_virt = page["virt_addr"] + page["num_pages"] * get_pagesize()
@@ -124502,7 +124528,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
 
         if page["virt_addr"] is None:
-            self.out.append("        layout: Failed to the get first page")
+            self.out.append("        layout: Failed to get the first page")
             return
 
         end_virt = page["virt_addr"] + page["num_pages"] * get_pagesize()
