@@ -62427,6 +62427,34 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @switch_to_intel_syntax
     def get_clocksource_list():
+
+        def looks_like_clocksource_list(addr):
+            if not is_double_link_list(addr, min_len=1):
+                return False
+
+            current = read_int_from_memory(addr)
+            name_addr = read_int_from_memory(current - current_arch.ptrsize)
+            if not is_valid_addr(name_addr):
+                return False
+            try:
+                name = read_cstring_from_memory(name_addr)
+            except gdb.MemoryError:
+                return False
+            if not name or len(name) > 64 or not name.isprintable():
+                return False
+
+            for i in range(7, 64):
+                clocksource = current - current_arch.ptrsize * i
+                read = read_int_from_memory(clocksource)
+                if not is_valid_addr(read):
+                    continue
+                mask = read_int64_from_memory(clocksource + 8)
+                mult = read_int32_from_memory(clocksource + 16)
+                shift = read_int32_from_memory(clocksource + 20)
+                if mask and mult and shift <= 64:
+                    return True
+            return False
+
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             x = Symbol.get_ksymaddr("clocksource_list")
@@ -62452,7 +62480,17 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
                 for x in g:
-                    return x
+                    if not is_arm32() and not is_arm64():
+                        return x
+                    if looks_like_clocksource_list(x):
+                        return x
+
+                    # ARM compilers may materialize a nearby base address and use an immediate offset for
+                    # clocksource_list. Recover the actual list head instead of returning the unadjusted base.
+                    for offset in range(current_arch.ptrsize, 0x1000, current_arch.ptrsize):
+                        for candidate in (x + offset, x - offset):
+                            if candidate > 0 and looks_like_clocksource_list(candidate):
+                                return candidate
         return None
 
     @staticmethod
@@ -74262,11 +74300,50 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
             struct module *owner;
         };
         """
+        kinfo = Kernel.get_kernel_layout()
+        if kinfo.text_base is None or kinfo.text_end is None:
+            return None
+
+        nodes = []
         current = read_int_from_memory(clocksource)
-        for i in range(7, 20):
+        while current != clocksource:
+            if current in nodes or not is_valid_addr(current):
+                return None
+            nodes.append(current)
+            current = read_int_from_memory(current)
+        if not nodes:
+            return None
+
+        if is_x86_32():
+            base_mask_offsets = (4, 8)
+        elif is_arm32():
+            # AAPCS aligns u64 to 8 bytes, while the legacy APCS ABI aligns it to 4.
+            base_mask_offsets = (8, 4)
+        else:
+            base_mask_offsets = (current_arch.ptrsize,)
+        # Some old kernels have cycle_last between read and mask. Check both
+        # layouts instead of applying the extra u64 to every v3.x kernel.
+        mask_offsets = tuple(dict.fromkeys(
+            offset for base in base_mask_offsets for offset in (base, base + 8)
+        ))
+
+        for i in range(5, 64):
             candidate_offset = i * current_arch.ptrsize
-            v = read_int_from_memory(current - candidate_offset)
-            if is_valid_addr(v):
+            for node in nodes:
+                candidate = node - candidate_offset
+                read = read_int_from_memory(candidate)
+                if not (kinfo.text_base <= read < kinfo.text_end):
+                    break
+
+                for mask_offset in mask_offsets:
+                    mask = read_int64_from_memory(candidate + mask_offset)
+                    mult = read_int32_from_memory(candidate + mask_offset + 8)
+                    shift = read_int32_from_memory(candidate + mask_offset + 12)
+                    if mask and mask & (mask + 1) == 0 and mult and shift <= 64:
+                        break
+                else:
+                    break
+            else:
                 return candidate_offset
         return None
 
@@ -74286,6 +74363,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
 
         offset_list = self.get_offset_list(clocksource_list)
         if offset_list is None:
+            self.quiet_err("Could not determine offsetof(clocksource, list) from clocksource_list")
             return
         self.quiet_info("offsetof(clocksource, list): {:#x}".format(offset_list))
 
