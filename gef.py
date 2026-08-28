@@ -6020,16 +6020,6 @@ class Symbol:
             return None
 
     @staticmethod
-    def get_ksymaddr_symbol(addr):
-        """e.g., 0xffffffff9f6bd2a0 -> 'commit_creds'"""
-        try:
-            res = gdb.execute("ksymaddr-remote --quiet --no-pager {:#x}".format(addr), to_string=True)
-            res = res.splitlines()[-1]
-            return res.split()[2]
-        except (gdb.error, IndexError):
-            return None
-
-    @staticmethod
     def get_symbol_by_monitor(symbol):
         if not is_kdb():
             return None
@@ -76212,12 +76202,8 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
                 break
 
             # check symbol
-            symbol = Symbol.get_symbol_string(syscall_function_addr)
-            if symbol is None:
-                symbol = Symbol.get_ksymaddr_symbol(syscall_function_addr)
-                if symbol is None:
-                    symbol = " <NO_SYMBOL>"
-            elif "+" in symbol:
+            symbol = Symbol.get_symbol_string(syscall_function_addr, nosymbol_string=" <NO_SYMBOL>")
+            if "+" in symbol:
                 break
 
             # check if valid insn or not
