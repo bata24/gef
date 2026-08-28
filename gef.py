@@ -128742,7 +128742,10 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                     if v == 0x10:
                         count_0x10 += 1
                     if count_0x10 > 1 or count_0x01 > 3:
-                        return current_arch.ptrsize * (j + 2)
+                        offset_i_pipe = current_arch.ptrsize * (j + 2)
+                        if self.get_offset_head_or_nrbuf(pipe_files, offset_i_pipe) is not None:
+                            return offset_i_pipe
+                        break
 
         # plan 2
         for i in range(0x100):
@@ -128759,7 +128762,9 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             # Other candidates found are kmalloc-2k, kmalloc-1024 and inode_cache (these are false positives),
             # so these should be excluded.
             if re.search(r"kmalloc(-cg)?-(64|96|128|192|256|512)", ret):
-                return current_arch.ptrsize * i
+                offset_i_pipe = current_arch.ptrsize * i
+                if self.get_offset_head_or_nrbuf(pipe_files, offset_i_pipe) is not None:
+                    return offset_i_pipe
 
         return None
 
@@ -129023,44 +129028,64 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 return current_arch.ptrsize * (i - 1)
         return None
 
-    def get_offset_head_or_nrbuf(self, pipe_files):
-        inode = pipe_files[0][1]
-        pipe_inode_info = read_int_from_memory(inode + self.offset_i_pipe)
+    def get_offset_head_or_nrbuf(self, pipe_files, offset_i_pipe=None):
+        if offset_i_pipe is None:
+            offset_i_pipe = self.offset_i_pipe
+
+        pipe_inode_infos = []
+        seen_inodes = []
+        for _file_addr, inode in pipe_files:
+            if inode in seen_inodes:
+                continue
+            seen_inodes.append(inode)
+            if not is_valid_addr_addr(inode + offset_i_pipe):
+                return None
+            pipe_inode_info = read_int_from_memory(inode + offset_i_pipe)
+            pipe_inode_infos.append(pipe_inode_info)
+
         kversion = Kernel.kernel_version()
 
         for i in range(3, 0x40):
             offset = current_arch.ptrsize * i
-            if kversion < "5.5":
-                nrbuf = read_int32_from_memory(pipe_inode_info + offset)
-                curbuf = read_int32_from_memory(pipe_inode_info + offset + 4)
-                buffers = read_int32_from_memory(pipe_inode_info + offset + 8)
-                if buffers == 0 or buffers > 0x10000 or buffers & (buffers - 1):
+            found = True
+            for pipe_inode_info in pipe_inode_infos:
+                if kversion < "5.5":
+                    nrbuf = read_int32_from_memory(pipe_inode_info + offset)
+                    curbuf = read_int32_from_memory(pipe_inode_info + offset + 4)
+                    buffers = read_int32_from_memory(pipe_inode_info + offset + 8)
+                    if buffers == 0 or buffers > 0x10000 or buffers & (buffers - 1):
+                        found = False
+                        break
+                    if nrbuf > buffers or curbuf >= buffers:
+                        found = False
+                        break
                     continue
-                if nrbuf > buffers or curbuf >= buffers:
-                    continue
-                return offset
 
-            if kversion >= "6.14" and is_32bit():
-                head_tail = read_int32_from_memory(pipe_inode_info + offset)
-                head = head_tail & 0xffff
-                tail = head_tail >> 16
-                max_usage = read_int32_from_memory(pipe_inode_info + offset + 4)
-                ring_size = read_int32_from_memory(pipe_inode_info + offset + 8)
-                pipe_index_mask = 0xffff
-            else:
-                head = read_int32_from_memory(pipe_inode_info + offset)
-                tail = read_int32_from_memory(pipe_inode_info + offset + 4)
-                max_usage = read_int32_from_memory(pipe_inode_info + offset + 8)
-                ring_size = read_int32_from_memory(pipe_inode_info + offset + 12)
-                pipe_index_mask = 0xffff_ffff
-            used = (head - tail) & pipe_index_mask
-            if ring_size == 0 or ring_size > 0x10000:
-                continue
-            if ring_size & (ring_size - 1):
-                continue
-            if max_usage == 0 or max_usage > ring_size or used > max_usage:
-                continue
-            return offset
+                if kversion >= "6.14" and is_32bit():
+                    head_tail = read_int32_from_memory(pipe_inode_info + offset)
+                    head = head_tail & 0xffff
+                    tail = head_tail >> 16
+                    max_usage = read_int32_from_memory(pipe_inode_info + offset + 4)
+                    ring_size = read_int32_from_memory(pipe_inode_info + offset + 8)
+                    pipe_index_mask = 0xffff
+                else:
+                    head = read_int32_from_memory(pipe_inode_info + offset)
+                    tail = read_int32_from_memory(pipe_inode_info + offset + 4)
+                    max_usage = read_int32_from_memory(pipe_inode_info + offset + 8)
+                    ring_size = read_int32_from_memory(pipe_inode_info + offset + 12)
+                    pipe_index_mask = 0xffff_ffff
+                used = (head - tail) & pipe_index_mask
+                if ring_size == 0 or ring_size > 0x10000:
+                    found = False
+                    break
+                if ring_size & (ring_size - 1):
+                    found = False
+                    break
+                if max_usage == 0 or max_usage > ring_size or used > max_usage:
+                    found = False
+                    break
+            if found:
+                return offset
         return None
 
     def get_pipe_files(self):
