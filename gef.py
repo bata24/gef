@@ -150840,7 +150840,10 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             line = line.split()
             if len(line) < 2 or line[-2] == "-":
                 continue
-            kstack = int(line[-2], 16)
+            try:
+                kstack = int(line[-2], 16)
+            except ValueError:
+                continue
             kstacks.append(kstack & 0xffff)
 
         # calc kstack size
@@ -150859,8 +150862,11 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             elems = line.split()
             if len(elems) < 4 or elems[-2] == "-":
                 continue
-            pid, kstack = int(elems[3]), int(elems[-2], 16)
-            process_name = line.split(maxsplit=4)[4][:16].strip()
+            try:
+                pid, kstack = int(elems[3]), int(elems[-2], 16)
+                process_name = line.split(maxsplit=4)[4][:16].strip()
+            except (ValueError, IndexError):
+                continue
             description = "kstack PID:{:d} ({:s})".format(pid, process_name)
             self.insert_region(kstack, kstack_size, description)
         return
