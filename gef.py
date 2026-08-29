@@ -71411,7 +71411,8 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
     _note_ = "\n".join(_note_)
 
     @staticmethod
-    def get_cdev_name(major, minor):
+    def guess_cdev_path(major, minor):
+        """Guess a device path from the static major/minor allocation table."""
         # https://www.kernel.org/doc/Documentation/admin-guide/devices.txt
         # https://github.com/lrs-lang/lib/blob/master/src/dev/lib.rs
         dev_name_list = {
@@ -72499,7 +72500,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         for (major, minor), m in sorted(merged.items()):
-            guessed_name = KernelCharacterDevicesCommand.get_cdev_name(major, minor)
+            guessed_name = KernelCharacterDevicesCommand.guess_cdev_path(major, minor)
             if not args.verbose:
                 if m["chrdev"] == 0:
                     continue
