@@ -129367,7 +129367,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
 
     def get_pipe_files(self):
         # struct file of pipe
-        ret = gdb.execute("ktask --quiet --no-pager --user-process-only --print-fd", to_string=True)
+        ret = gdb.execute("ktask --no-pager --user-process-only --print-fd", to_string=True)
         pipe_files = []
         for line in ret.splitlines():
             m = re.search(r"\d+\s+(0x\S+) 0x\S+ (0x\S+) pipe:\[\d+\]", line)
@@ -129378,6 +129378,12 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             pipe_files.append((file, inode))
         if pipe_files:
             self.quiet_info("Num of pipe: {:d}".format(len({x[1] for x in pipe_files})))
+            return pipe_files
+
+        for line in Color.remove_color(ret).splitlines():
+            if line.startswith("[!]"):
+                self.quiet_err(line[3:].lstrip())
+                return None
         return pipe_files
 
     def get_flags_str(self, flags_value):
@@ -129510,6 +129516,8 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             return
 
         pipe_files = self.get_pipe_files()
+        if pipe_files is None:
+            return
         if not pipe_files:
             self.quiet_info("Nothing to dump")
             return
