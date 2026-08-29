@@ -64766,6 +64766,155 @@ KFU = KernelAddressHeuristicFinderUtil # for convenience using from python-inter
 class Kernel:
     """A collection of utility functions that are related to kernel specific features."""
 
+    class XArray:
+        """Parse Linux XArrays and share their detected layout between commands.
+
+        How to use:
+            xa = Kernel.XArray(prog_idr)      # Kernel.XArray(prog_idr, xa_head_offset) skips the search below
+            if xa.find_head_offset(current_arch.ptrsize * 20) is None:
+                ...                           # offsetof(idr, idr_rt.xa_head) is not found
+            xa.head_offset                    # -> the found offset
+            xa.parse()                        # -> [entry, entry, ...]
+
+        struct xarray {
+            spinlock_t xa_lock;
+            gfp_t xa_flags;
+            void __rcu *xa_head; // this points root xa_node. (lower 2-bits are some flags)
+        };
+
+        struct xa_node {
+            unsigned char shift;
+            unsigned char offset;
+            unsigned char count;
+            unsigned char nr_values;
+            struct xa_node __rcu *parent;
+            struct xarray *array;
+            union {
+                struct list_head private_list;
+                struct rcu_head rcu_head;
+            };
+            void __rcu *slots[XA_CHUNK_SIZE];
+            union {
+                unsigned long tags[XA_MAX_MARKS][XA_MARK_LONGS];
+                unsigned long marks[XA_MAX_MARKS][XA_MARK_LONGS];
+            };
+        };
+        """
+
+        ptrsize = None
+        offset_xa_head = None
+        offset_shift = 0
+        offset_count = 2
+        offset_array = None
+        offset_slots = None
+
+        def __init__(self, address, xa_head_offset=None):
+            """Set the address of the struct including the xarray. `xa_head_offset` is used if it is already known."""
+            self.initialize_layout()
+            self.address = address
+            self.head_offset = xa_head_offset
+            return
+
+        @classmethod
+        def initialize_layout(cls):
+            """Calculate the layout of xa_node for the current architecture."""
+            if cls.ptrsize == current_arch.ptrsize:
+                return
+
+            cls.ptrsize = current_arch.ptrsize
+            cls.offset_xa_head = None
+            cls.offset_array = align(4, cls.ptrsize) + cls.ptrsize
+            # Four u8 fields are followed by parent, array and a two-pointer union.
+            cls.offset_slots = cls.ptrsize * 5
+            return
+
+        @classmethod
+        def is_node(cls, entry):
+            """Return True if `entry` points to a xa_node."""
+            cls.initialize_layout()
+            if entry & 3 != 2:
+                return False
+
+            pointer_mask = (1 << (cls.ptrsize * 8)) - 1
+            error_entry = ((-4095 << 2) | 2) & pointer_mask
+            # Small internal entries are sibling/retry/zero; top entries encode errno.
+            return 4096 < entry < error_entry
+
+        @classmethod
+        def cache_head_offset(cls, head_address, entry):
+            """Return True if `entry` at `head_address` is xa_head, then cache offsetof(the struct, xa_head)."""
+            if not cls.is_node(entry):
+                return False
+
+            node = entry - 2
+            if not is_valid_addr(node):
+                return False
+
+            array = read_int_from_memory(node + cls.offset_array)
+            offset = head_address - array
+            if offset < 0 or offset >= cls.ptrsize * 10 or offset % cls.ptrsize:
+                return False
+
+            cls.offset_xa_head = offset
+            return True
+
+        def find_head_offset(self, max_offset):
+            """Search offsetof(the struct, xa_head) heuristically. Return None if it is not found."""
+            if self.head_offset is not None:
+                return self.head_offset
+
+            cls = type(self)
+            if cls.offset_xa_head is not None:
+                self.head_offset = cls.offset_xa_head
+                return self.head_offset
+
+            for offset in range(0, max_offset, cls.ptrsize):
+                entry = read_int_from_memory(self.address + offset)
+                if cls.cache_head_offset(self.address + offset, entry):
+                    self.head_offset = offset
+                    return self.head_offset
+            return None
+
+        def parse(self):
+            """Return the list of all entries in the xarray."""
+            cls = type(self)
+            head_offset = self.head_offset
+            if head_offset is None:
+                head_offset = cls.offset_xa_head
+            if self.address == 0 or head_offset is None:
+                return []
+
+            entry = read_int_from_memory(self.address + head_offset)
+            return self.parse_entry(entry)
+
+        def parse_entry(self, entry):
+            """Return the list of all entries under `entry` recursively."""
+            cls = type(self)
+            if entry == 0:
+                return []
+
+            if not cls.is_node(entry):
+                if entry & 3 == 0 and is_valid_addr(entry):
+                    return [entry]
+                return []
+
+            node = entry - 2
+            count = read_int8_from_memory(node + cls.offset_count)
+            if count == 0:
+                return []
+
+            slots = node + cls.offset_slots
+            elems = []
+            for i in range(64): # 16 or 64
+                child = read_int_from_memory(slots + cls.ptrsize * i)
+                if child == 0:
+                    continue
+                elems += self.parse_entry(child)
+                count -= 1
+                if count == 0:
+                    break
+            return elems
+
     @staticmethod
     @Cache.cache_until_next
     def get_maps():
@@ -129326,33 +129475,6 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def parse_xarray(self, ptr, root=False):
-        if ptr == 0:
-            return []
-
-        ptr &= ~3 # untagged
-
-        if root:
-            node = read_int_from_memory(ptr + self.offset_xa_head)
-            return self.parse_xarray(node)
-
-        shift = read_int8_from_memory(ptr + self.offset_shift)
-        count = read_int8_from_memory(ptr + self.offset_count)
-        slots = ptr + self.offset_slots
-        elems = []
-        for i in range(64): # 16 or 64
-            x = read_int_from_memory(slots + current_arch.ptrsize * i)
-            if x == 0:
-                continue
-            if shift:
-                elems += self.parse_xarray(x)
-            else:
-                elems.append(x)
-            count -= 1
-            if count == 0:
-                break
-        return elems
-
     def initialize(self):
         # get global address
         prog_idr = KernelAddressHeuristicFinder.get_prog_idr()
@@ -129367,70 +129489,24 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
 
         kversion = Kernel.kernel_version()
 
-        """
-        struct xarray {
-            spinlock_t xa_lock;
-            gfp_t xa_flags;
-            void __rcu *xa_head;
-        };
-        """
-        # idr->idr_rt->xa_head
-        base = prog_idr + 4 * 2
-        max_sizeof_idr = abs(prog_idr - map_idr)
-        for i in range(20):
-            pos = base + current_arch.ptrsize * i
-            if (pos - prog_idr) >= max_sizeof_idr:
-                continue
-            x = read_int_from_memory(pos)
-            if not is_valid_addr(x):
-                continue
-            if (x & 2) != 2: # tag
-                continue
-            y = read_cstring_from_memory(x)
-            if (y and len(y) > 8) or y == "bpf":
-                continue
-            z = read_int_from_memory(x)
-            if is_valid_addr(z):
-                continue
-            self.offset_xa_head = pos - prog_idr
-            self.quiet_info("offsetof(xarray, xa_head): {:#x}".format(self.offset_xa_head))
-            break
-        else:
+        # idr->idr_rt->xa_head; see Kernel.XArray for struct xarray and struct xa_node
+        max_sizeof_idr = min(abs(prog_idr - map_idr), current_arch.ptrsize * 20)
+        prog_xarray = Kernel.XArray(prog_idr)
+        if prog_xarray.find_head_offset(max_sizeof_idr) is None:
             err("Could not find xa_head. (maybe uninitialized?)")
             return False
+        self.quiet_info("offsetof(xarray, xa_head): {:#x}".format(prog_xarray.head_offset))
 
-        """
-        struct xa_node {
-            unsigned char shift;
-            unsigned char offset;
-            unsigned char count;
-            unsigned char nr_values;
-            struct xa_node __rcu *parent;
-            struct xarray *array;
-            union {
-                struct list_head private_list;
-                struct rcu_head rcu_head;
-            };
-            void __rcu *slots[XA_CHUNK_SIZE];
-            union {
-                unsigned long tags[XA_MAX_MARKS][XA_MARK_LONGS];
-                unsigned long marks[XA_MAX_MARKS][XA_MARK_LONGS];
-            };
-        };
-        """
         # xa_node->{shift,count,slots}
-        self.offset_shift = 0
-        self.offset_count = 2
-        self.offset_slots = current_arch.ptrsize * 5
-        self.quiet_info("offsetof(xa_node, shift): {:#x}".format(self.offset_shift))
-        self.quiet_info("offsetof(xa_node, count): {:#x}".format(self.offset_count))
-        self.quiet_info("offsetof(xa_node, slots): {:#x}".format(self.offset_slots))
+        self.quiet_info("offsetof(xa_node, shift): {:#x}".format(prog_xarray.offset_shift))
+        self.quiet_info("offsetof(xa_node, count): {:#x}".format(prog_xarray.offset_count))
+        self.quiet_info("offsetof(xa_node, slots): {:#x}".format(prog_xarray.offset_slots))
 
         # parse progs, maps
         try:
-            progs = self.parse_xarray(prog_idr, root=True)
+            progs = prog_xarray.parse()
             self.quiet_info("Num of progs: {:#x}".format(len(progs)))
-            maps = self.parse_xarray(map_idr, root=True)
+            maps = Kernel.XArray(map_idr).parse()
             self.quiet_info("Num of maps: {:#x}".format(len(maps)))
         except gdb.MemoryError:
             self.quiet_err("Not found")
@@ -129958,27 +130034,23 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             # a pointer-sized value on 64-bit also includes xa_lock, whose
             # transient state must not affect matching the three ipc_ids.
             xa_flags = read_int32_from_memory(init_ipc_ns + base - 4)
-            if xa_flags == 0 or is_valid_addr(xa_flags):
+            if xa_flags == 0:
                 continue
 
             # xa_head
             y = read_int_from_memory(init_ipc_ns + base)
             if y:
-                if not is_valid_addr(y):
-                    continue
-                if y & 0x2 != 0x2: # xa_head is NULL or tagged address
+                if Kernel.XArray.is_node(y):
+                    if not is_valid_addr(y - 2):
+                        continue
+                elif y & 3 or not is_valid_addr(y):
                     continue
 
             # idr_base, idr_next
-            if is_32bit():
-                z1 = read_int_from_memory(init_ipc_ns + base + current_arch.ptrsize) # idr_base
-                z2 = read_int_from_memory(init_ipc_ns + base + current_arch.ptrsize * 2) # idr_next
-                if is_valid_addr(z1) or is_valid_addr(z2):
-                    continue
-            else:
-                z = read_int_from_memory(init_ipc_ns + base + current_arch.ptrsize) # idr_base, idr_next
-                if is_valid_addr(z): # idr_base, idr_next
-                    continue
+            idr_base = read_int32_from_memory(init_ipc_ns + base + current_arch.ptrsize)
+            idr_next = read_int32_from_memory(init_ipc_ns + base + current_arch.ptrsize + 4)
+            if idr_base != 0 or idr_next > 1 << 24:
+                continue
 
             offset = base - self.offset_ids
             candidates.setdefault(xa_flags, {})[offset] = y
@@ -129992,8 +130064,24 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
                 for second in offsets[first_pos + 1:]:
                     size = second - first
                     if current_arch.ptrsize * 8 <= size and first < size and first + size * 2 in offset_set:
+                        valid = True
+                        for index in range(3):
+                            in_use = read_int32_from_memory(
+                                init_ipc_ns + self.offset_ids + size * index
+                            )
+                            if in_use > 1 << 24 or (in_use and not heads[first + size * index]):
+                                valid = False
+                                break
+                        if not valid:
+                            continue
                         self.offset_xa_head = first
                         self.sizeof_ipc_ids = size
+                        for index in range(3):
+                            offset = first + size * index
+                            if Kernel.XArray.cache_head_offset(
+                                init_ipc_ns + self.offset_ids + offset, heads[offset]
+                            ):
+                                break
                         break
                 if hasattr(self, "offset_xa_head"):
                     break
@@ -130026,31 +130114,6 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         )
         if not self.ipc_objects_present:
             self.quiet_info("SYSVIPC is enabled, but no IPC objects are present")
-
-        # xa_node
-        """
-        struct xa_node {
-            unsigned char shift;
-            unsigned char offset;
-            unsigned char count;
-            unsigned char nr_values;
-            struct xa_node __rcu *parent;
-            struct xarray *array;
-            union {
-                struct list_head private_list;
-                struct rcu_head rcu_head;
-            };
-            void __rcu *slots[XA_CHUNK_SIZE];
-            union {
-                unsigned long tags[XA_MAX_MARKS][XA_MARK_LONGS];
-                unsigned long marks[XA_MAX_MARKS][XA_MARK_LONGS];
-            };
-        };
-        """
-        # xa_node->{shift,count,slots}
-        self.offset_shift = 0
-        self.offset_count = 2
-        self.offset_slots = current_arch.ptrsize * 5
 
         # kern_ipc_perm
         """
@@ -130087,34 +130150,6 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         self.initialized = True
         return True
 
-    def parse_xarray(self, ptr, root=False):
-        if ptr == 0:
-            return []
-
-        ptr &= ~3 # untagged
-
-        if root:
-            # ptr is &ipc_ids[i]
-            node = read_int_from_memory(ptr + self.offset_xa_head)
-            return self.parse_xarray(node)
-
-        shift = read_int8_from_memory(ptr + self.offset_shift)
-        count = read_int8_from_memory(ptr + self.offset_count)
-        slots = ptr + self.offset_slots
-        elems = []
-        for i in range(64): # 16 or 64
-            x = read_int_from_memory(slots + current_arch.ptrsize * i)
-            if x == 0:
-                continue
-            if shift:
-                elems += self.parse_xarray(x)
-            else:
-                elems.append(x)
-            count -= 1
-            if count == 0:
-                break
-        return elems
-
     def dump_ipc_sem_ids(self, ipc_ids_ptr):
         """
         struct sem_array {
@@ -130132,7 +130167,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         legend = ["sem_array", "semid", "key", "uid", "gid", "perms", "nsems"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        elems = self.parse_xarray(ipc_ids_ptr, root=True)
+        elems = Kernel.XArray(ipc_ids_ptr, self.offset_xa_head).parse()
         for e in elems:
             semid = read_int32_from_memory(e + self.offset_id)
             key = read_int32_from_memory(e + self.offset_key)
@@ -130191,7 +130226,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         legend = ["msg_queue", "msqid", "key", "uid", "gid", "perms", "used-bytes", "messages"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        elems = self.parse_xarray(ipc_ids_ptr, root=True)
+        elems = Kernel.XArray(ipc_ids_ptr, self.offset_xa_head).parse()
         for e in elems:
             msqid = read_int32_from_memory(e + self.offset_id)
             key = read_int32_from_memory(e + self.offset_key)
@@ -130252,7 +130287,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         legend = ["shmid_kernel", "shmid", "key", "uid", "gid", "perms", "bytes", "nattch"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        elems = self.parse_xarray(ipc_ids_ptr, root=True)
+        elems = Kernel.XArray(ipc_ids_ptr, self.offset_xa_head).parse()
         for e in elems:
             shmid = read_int32_from_memory(e + self.offset_id)
             key = read_int32_from_memory(e + self.offset_key)
@@ -130872,33 +130907,6 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def parse_xarray(self, ptr, root=False):
-        if ptr == 0:
-            return []
-
-        ptr &= ~3 # untagged
-
-        if root:
-            node = read_int_from_memory(ptr + self.offset_xa_head)
-            return self.parse_xarray(node)
-
-        shift = read_int8_from_memory(ptr + self.offset_shift)
-        count = read_int8_from_memory(ptr + self.offset_count)
-        slots = ptr + self.offset_slots
-        elems = []
-        for i in range(64): # 16 or 64
-            x = read_int_from_memory(slots + current_arch.ptrsize * i)
-            if x == 0:
-                continue
-            if shift:
-                elems += self.parse_xarray(x)
-            else:
-                elems.append(x)
-            count -= 1
-            if count == 0:
-                break
-        return elems
-
     class MapleTree:
         """Linux v6.5 introduces maple_tree to irq. This is a simple parser."""
         MT_FLAGS_HEIGHT_MASK = 0x7c
@@ -131017,48 +131025,13 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                 self.quiet_err("Could not find irq_desc_tree")
                 return False
 
-            for i in range(0, 10):
-                # xa_head
-                x = read_int_from_memory(self.irq_desc_tree + current_arch.ptrsize * i)
-                if not x:
-                    continue
-                if not is_valid_addr(x):
-                    continue
-                if x & 0x2 != 0x2: # xa_head is NULL or tagged address
-                    continue
-                self.offset_xa_head = current_arch.ptrsize * i
-                self.quiet_info("offsetof(xarray, xa_head): {:#x}".format(self.offset_xa_head))
-                break
-            else:
+            self.irq_xarray = Kernel.XArray(self.irq_desc_tree)
+            if self.irq_xarray.find_head_offset(current_arch.ptrsize * 10) is None:
                 self.quiet_err("Could not find xa_head. (maybe uninitialized?)")
                 return False
+            self.quiet_info("offsetof(xarray, xa_head): {:#x}".format(self.irq_xarray.head_offset))
 
-            # xa_node
-            """
-            struct xa_node {
-                unsigned char shift;
-                unsigned char offset;
-                unsigned char count;
-                unsigned char nr_values;
-                struct xa_node __rcu *parent;
-                struct xarray *array;
-                union {
-                    struct list_head private_list;
-                    struct rcu_head rcu_head;
-                };
-                void __rcu *slots[XA_CHUNK_SIZE];
-                union {
-                    unsigned long tags[XA_MAX_MARKS][XA_MARK_LONGS];
-                    unsigned long marks[XA_MAX_MARKS][XA_MARK_LONGS];
-                };
-            };
-            """
-            # xa_node->{shift,count,slots}
-            self.offset_shift = 0
-            self.offset_count = 2
-            self.offset_slots = current_arch.ptrsize * 5
-
-            descs = self.parse_xarray(self.irq_desc_tree, root=True)
+            descs = self.irq_xarray.parse()
 
         else:
             # "6.5" <= kversion
@@ -131190,7 +131163,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         kversion = Kernel.kernel_version()
 
         if kversion < "6.5":
-            descs = self.parse_xarray(self.irq_desc_tree, root=True)
+            descs = self.irq_xarray.parse()
         else:
             descs = list(self.MapleTree(self.sparse_irqs).iters)
 
