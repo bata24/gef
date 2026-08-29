@@ -64765,7 +64765,10 @@ class Kernel:
             lh.parse()                                           # -> [entry, entry, ...] (None if the list is broken)
             lh.parse(include_head=True)                          # -> the struct including the list head is also listed
             lh.iter_entries()                                    # -> iterate lazily, and just stop if the list is broken
+            lh.iter_entries(backward=True)                       # -> follow `prev` instead of `next`
             lh.broken                                            # -> True if the last walk stopped halfway
+            lh.broken_at                                         # -> the address the last walk stopped at
+            lh.broken_reason                                     # -> "unreadable" or "cyclic"
 
         struct list_head {
             struct list_head *next;
@@ -64778,6 +64781,8 @@ class Kernel:
             self.address = address
             self.offset = offset
             self.broken = False
+            self.broken_at = None
+            self.broken_reason = None
             return
 
         def parse(self, include_head=False):
@@ -64787,9 +64792,16 @@ class Kernel:
                 return None
             return entries
 
-        def iter_entries(self, include_head=False):
-            """Iterate the structs linked from the list head. Just stop there if the list is broken."""
+        def iter_entries(self, include_head=False, backward=False):
+            """Iterate the structs linked from the list head. Just stop there if the list is broken.
+
+            `backward` follows `prev` instead of `next`, which allows to pick up the entries
+            located behind an unreadable one.
+            """
             self.broken = False
+            self.broken_at = None
+            self.broken_reason = None
+            link = current_arch.ptrsize if backward else 0
             if include_head:
                 yield self.address - self.offset
 
@@ -64797,14 +64809,18 @@ class Kernel:
             current = self.address
             while True:
                 try:
-                    current = read_int_from_memory(current)
+                    current = read_int_from_memory(current + link)
                 except gdb.MemoryError:
                     self.broken = True
+                    self.broken_at = current - self.offset
+                    self.broken_reason = "unreadable"
                     return
                 if current == self.address: # went around the list
                     return
                 if current in seen: # the list is broken
                     self.broken = True
+                    self.broken_at = current - self.offset
+                    self.broken_reason = "cyclic"
                     return
                 seen.add(current)
                 yield current - self.offset
@@ -69614,7 +69630,21 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             return None
 
         # struct module { enum module_state state; struct list_head list; ... };
-        return Kernel.ListHead(modules, current_arch.ptrsize).parse()
+        lh = Kernel.ListHead(modules, current_arch.ptrsize)
+        entries = list(lh.iter_entries())
+        if lh.broken:
+            self.quiet_warn("Stopped at {:s} module: {:#x}".format(lh.broken_reason, lh.broken_at))
+            # the list is circular and doubly-linked, so the entries located behind the broken
+            # one are still reachable by following `prev` from the list head
+            seen = set(entries)
+            backward = list(lh.iter_entries(backward=True))
+            if lh.broken:
+                self.quiet_warn("Stopped at {:s} module: {:#x} (backward)".format(lh.broken_reason, lh.broken_at))
+            entries += [x for x in reversed(backward) if x not in seen]
+            # the entries the walks stopped at are unreadable, they must not be passed to the
+            # `struct module` layout heuristics
+            entries = [x for x in entries if is_valid_addr(x)]
+        return entries
 
     def get_offset_name(self, module_addrs):
         # fast path
