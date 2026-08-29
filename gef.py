@@ -70150,8 +70150,12 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         return None
 
     def initialize(self):
+        # module->kallsyms is used only by -s/--resolve-symbol and -a/--apply-symbol.
+        need_kallsyms = self.args.resolve_symbol or self.args.apply_symbol
+
         if hasattr(self, "initialized"):
-            return True
+            if not need_kallsyms or self.offset_kallsyms is not None:
+                return True
 
         kversion = Kernel.kernel_version()
         if kversion is None:
@@ -70203,11 +70207,15 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             self.quiet_info("offsetof(module, module_core): {:#x}".format(self.offset_module_core))
 
         # module->kallsyms
-        self.offset_kallsyms = self.get_offset_kallsyms(self.module_addrs)
-        if self.offset_kallsyms is None:
-            self.quiet_err("Could not find module->kallsyms")
-            return False
-        self.quiet_info("offsetof(module, kallsyms): {:#x}".format(self.offset_kallsyms))
+        # do not give up the whole module list when it is not needed and unresolvable
+        if need_kallsyms:
+            self.offset_kallsyms = self.get_offset_kallsyms(self.module_addrs)
+            if self.offset_kallsyms is None:
+                self.quiet_err("Could not find module->kallsyms")
+                return False
+            self.quiet_info("offsetof(module, kallsyms): {:#x}".format(self.offset_kallsyms))
+        else:
+            self.offset_kallsyms = None
 
         self.initialized = True
         return True
