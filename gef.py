@@ -64915,6 +64915,234 @@ class Kernel:
                     break
             return elems
 
+    class MapleTree:
+        """Parse Linux maple trees and share their detected layout between commands.
+
+        Linux v6.1 introduces maple_tree for mm_struct.mm_mt, v6.5 for sparse_irqs.
+
+        How to use:
+            mt = Kernel.MapleTree(mm)         # Kernel.MapleTree(mm, ma_root_offset) skips the search below
+            if mt.find_root_offset(current_arch.ptrsize * 0x20) is None:
+                ...                           # offsetof(mm_struct, mm_mt.ma_root) is not found
+            mt.root_offset                    # -> the found offset
+            mt.parse()                        # -> [entry, entry, ...]
+            mt.get_next()                     # -> entry (pop one by one, None if exhausted)
+
+        struct maple_tree {
+            union {
+                spinlock_t ma_lock;
+                lockdep_map_p ma_external_lock;
+            };
+            unsigned int ma_flags; // v6.6~
+            void __rcu *ma_root; // this points root maple_node. (lower 8-bits are some flags)
+            unsigned int ma_flags; // ~v6.5
+        };
+
+        struct maple_node {
+            union {
+                struct {
+                    struct maple_pnode *parent;
+                    void __rcu *slot[MAPLE_NODE_SLOTS]; // 64-bit: 31; 32-bit: 63
+                };
+                struct {
+                    void *pad;
+                    struct rcu_head rcu;
+                    struct maple_enode *piv_parent;
+                    unsigned char parent_slot;
+                    enum maple_type type;
+                    unsigned char slot_len;
+                    unsigned int ma_flags;
+                };
+                struct maple_range_64 {
+                    struct maple_pnode *parent;
+                    unsigned long pivot[MAPLE_RANGE64_SLOTS - 1];     // 64-bit: 15; 32-bit: 31
+                    union {
+                        void __rcu *slot[MAPLE_RANGE64_SLOTS];        // 64-bit: 16; 32-bit: 32
+                        struct {
+                            void __rcu *pad[MAPLE_RANGE64_SLOTS - 1]; // 64-bit: 15; 32-bit: 31
+                            struct maple_metadata meta;
+                        };
+                    };
+                } mr64;
+                struct maple_arange_64 {
+                    struct maple_pnode *parent;
+                    unsigned long pivot[MAPLE_ARANGE64_SLOTS - 1]; // 64-bit: 9;  32-bit: 20
+                    void __rcu *slot[MAPLE_ARANGE64_SLOTS];        // 64-bit: 10; 32-bit: 21
+                    unsigned long gap[MAPLE_ARANGE64_SLOTS];       // 64-bit: 10; 32-bit: 21
+                    struct maple_metadata meta;
+                } ma64;
+                struct maple_alloc {
+                    unsigned long total;
+                    unsigned char node_count;
+                    unsigned int request_count;
+                    struct maple_alloc *slot[MAPLE_ALLOC_SLOTS]; // 64-bit: 30; 32-bit: 31
+                } alloc;
+            };
+        };
+        """
+
+        MT_FLAGS_HEIGHT_MASK = 0x7c
+        MT_FLAGS_HEIGHT_OFFSET = 0x02
+        MAPLE_NODE_TYPE_SHIFT = 0x03
+        MAPLE_NODE_TYPE_MASK = 0x0f
+        MAPLE_NODE_POINTER_MASK = 0xff
+        MAPLE_DENSE = 0
+        MAPLE_LEAF_64 = 1
+        MAPLE_RANGE_64 = 2
+        MAPLE_ARANGE_64 = 3
+
+        ptrsize = None
+        num_alloc_slots = None
+        num_range64_slots = None
+        num_arange64_slots = None
+        offset_alloc_slot = None
+        offset_range64_slot = None
+        offset_arange64_slot = None
+
+        def __init__(self, address, ma_root_offset=None):
+            """Set the address of the struct including the maple_tree. `ma_root_offset` is used if it is already known."""
+            self.initialize_layout()
+            self.address = address
+            self.root_offset = ma_root_offset
+            self.ma_root = None
+            self.ma_flags = None
+            self.max_depth = 0
+            self.seen = set()
+            self.walker = None
+            return
+
+        @classmethod
+        def initialize_layout(cls):
+            """Calculate the layout of maple_node for the current architecture."""
+            if cls.ptrsize == current_arch.ptrsize:
+                return
+
+            cls.ptrsize = current_arch.ptrsize
+            if is_64bit():
+                num_node_slots = 31
+                cls.num_range64_slots = 16
+                cls.num_arange64_slots = 10
+                cls.num_alloc_slots = num_node_slots - 1
+                # maple_alloc: total (unsigned long), node_count and request_count.
+                cls.offset_alloc_slot = cls.ptrsize * 2
+            else:
+                num_node_slots = 63
+                cls.num_range64_slots = 32
+                cls.num_arange64_slots = 21
+                cls.num_alloc_slots = num_node_slots - 2
+                cls.offset_alloc_slot = cls.ptrsize * 3
+            # maple_{a,}range_64: parent is followed by pivot[NR_SLOTS - 1], then slot[].
+            cls.offset_range64_slot = cls.ptrsize * cls.num_range64_slots
+            cls.offset_arange64_slot = cls.ptrsize * cls.num_arange64_slots
+            return
+
+        @classmethod
+        def is_root(cls, entry):
+            """Return True if `entry` looks like ma_root, which points to the root maple_node."""
+            # ma_root holds a maple_enode, whose lower 8-bits keep the node type.
+            # 0x0e: maple_leaf_64 (= a small tree), 0x1e: maple_arange_64 (e.g., mm_struct.mm_mt)
+            return is_valid_addr(entry) and (entry & 0xff) in [0x1e, 0x0e]
+
+        def find_root_offset(self, max_offset):
+            """Search offsetof(the struct, ma_root) heuristically. Return None if it is not found.
+
+            ____cacheline_aligned_in_smp attribute, spinlock_t and lockdep_map_p can be different size
+            in each environment or situation, so search for it.
+
+            [x64 v6.4.2]
+            0xffff8bedc104db00|+0x0000|+000: 0x0000000000000000   // union  <-- maple_tree
+            0xffff8bedc104db08|+0x0008|+001: 0xffff8bedc1a6601e   // ma_root
+            0xffff8bedc104db10|+0x0010|+002: 0x000000000000030b   // ma_flags
+
+            [x64 v6.6.1]
+            0xffff972801b78a38|+0x0040|+008: 0x0000000000000000   // (the end of cacheline?)
+            0xffff972801b78a40|+0x0040|+008: 0x0000030b00000000   // ma_flags || union  <-- maple_tree
+            0xffff972801b78a48|+0x0048|+009: 0xffff972801b0cc1e   // ma_root
+            """
+            if self.root_offset is not None:
+                return self.root_offset
+
+            cls = type(self)
+            for offset in range(0, max_offset, cls.ptrsize):
+                entry = read_int_from_memory(self.address + offset)
+                if cls.is_root(entry):
+                    self.root_offset = offset
+                    return self.root_offset
+            return None
+
+        def read_root(self):
+            """Read ma_root and ma_flags using the detected offset. Return False if the offset is unknown."""
+            if self.root_offset is None:
+                return False
+
+            kversion = Kernel.kernel_version()
+            if kversion < "6.6":
+                offset_ma_flags = self.root_offset + type(self).ptrsize
+            else:
+                offset_ma_flags = self.root_offset - 4
+                if is_64bit() and read_int32_from_memory(self.address + offset_ma_flags) == 0:
+                    offset_ma_flags = self.root_offset - 8
+
+            self.ma_root = read_int_from_memory(self.address + self.root_offset)
+            self.ma_flags = read_int32_from_memory(self.address + offset_ma_flags)
+            self.max_depth = (self.ma_flags & self.MT_FLAGS_HEIGHT_MASK) >> self.MT_FLAGS_HEIGHT_OFFSET
+            return True
+
+        def parse(self):
+            """Return the list of all leaf entries in the maple_tree."""
+            return list(self.iter_entries())
+
+        def iter_entries(self):
+            """Iterate all leaf entries in the maple_tree lazily."""
+            # Re-read the root every time, because the tree may be updated after the last walk.
+            if not self.read_root():
+                return
+            self.seen = set()
+            yield from self.parse_node(self.ma_root, 1)
+            return
+
+        def get_next(self, _=None):
+            """Return the next leaf entry, or None if all entries are consumed."""
+            # Pop one entry. The unused argument is for compatibility with the vm_next based walker.
+            if self.walker is None:
+                self.walker = self.iter_entries()
+            return next(self.walker, None)
+
+        def parse_node(self, entry, depth):
+            """Iterate the leaf entries under `entry` recursively."""
+            if entry in self.seen:
+                return
+            self.seen.add(entry)
+
+            if self.max_depth < depth:
+                return
+
+            cls = type(self)
+            pointer = entry & ~(cls.MAPLE_NODE_POINTER_MASK)
+            node_type = (entry >> cls.MAPLE_NODE_TYPE_SHIFT) & cls.MAPLE_NODE_TYPE_MASK
+
+            if node_type == cls.MAPLE_DENSE:
+                slot_top, num_slots, is_leaf = pointer + cls.offset_alloc_slot, cls.num_alloc_slots, True
+            elif node_type == cls.MAPLE_LEAF_64:
+                slot_top, num_slots, is_leaf = pointer + cls.offset_range64_slot, cls.num_range64_slots, True
+            elif node_type == cls.MAPLE_RANGE_64:
+                slot_top, num_slots, is_leaf = pointer + cls.offset_range64_slot, cls.num_range64_slots, False
+            elif node_type == cls.MAPLE_ARANGE_64:
+                slot_top, num_slots, is_leaf = pointer + cls.offset_arange64_slot, cls.num_arange64_slots, False
+            else:
+                return
+
+            for i in range(num_slots):
+                slot = read_int_from_memory(slot_top + cls.ptrsize * i)
+                if (slot & ~(cls.MAPLE_NODE_TYPE_MASK)) == 0:
+                    continue
+                if is_leaf:
+                    if is_valid_addr(slot):
+                        yield slot
+                else:
+                    yield from self.parse_node(slot, depth + 1)
+            return
+
     @staticmethod
     @Cache.cache_until_next
     def get_maps():
@@ -67333,139 +67561,6 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 return offset_user_ns
         return None
 
-    class MapleTree:
-        """Linux v6.1 introduces maple_tree. This is a simple parser."""
-        MT_FLAGS_HEIGHT_MASK = 0x7c
-        MT_FLAGS_HEIGHT_OFFSET = 0x02
-        MAPLE_NODE_TYPE_SHIFT = 0x03
-        MAPLE_NODE_TYPE_MASK = 0x0f
-        MAPLE_NODE_POINTER_MASK = 0xff
-        MAPLE_DENSE = 0
-        MAPLE_LEAF_64 = 1
-        MAPLE_RANGE_64 = 2
-        MAPLE_ARANGE_64 = 3
-
-        def __init__(self, mm, quiet):
-            self.quiet = quiet
-            kversion = Kernel.kernel_version()
-            """
-            struct mm_struct {
-                struct {
-                    struct {
-                        atomic_t mm_count;
-                    } ____cacheline_aligned_in_smp; // v6.4~
-                    struct maple_tree {
-                        union {
-                            spinlock_t ma_lock;
-                            lockdep_map_p ma_external_lock;
-                        };
-                        unsigned int ma_flags; // v6.6~
-                        void __rcu *ma_root; // this points root maple_node. (lower 8-bits are some flags)
-                        unsigned int ma_flags; // ~v6.5
-                    } mm_mt;
-                    ...
-                } __randomize_layout;
-                ...
-            };
-            """
-
-            # ____cacheline_aligned_in_smp attribute, spinlock_t and lockdep_map_p can be different size
-            # in each environment or situation, so search for it heuristically.
-            for i in range(0x20):
-                x = read_int_from_memory(mm + current_arch.ptrsize * i)
-                """
-                [x64 v6.4.2]
-                0xffff8bedc104db00|+0x0000|+000: 0x0000000000000000   // union  <-- mm_mt
-                0xffff8bedc104db08|+0x0008|+001: 0xffff8bedc1a6601e   // ma_root
-                0xffff8bedc104db10|+0x0010|+002: 0x000000000000030b   // ma_flags
-
-                [x64 v6.6.1]
-                0xffff972801b78a38|+0x0040|+008: 0x0000000000000000   // (the end of cacheline?)
-                0xffff972801b78a40|+0x0040|+008: 0x0000030b00000000   // ma_flags || union  <-- mm_mt
-                0xffff972801b78a48|+0x0048|+009: 0xffff972801b0cc1e   // ma_root
-                """
-                if is_valid_addr(x) and (x & 0xff) in [0x1e, 0x0e]:
-                    offset_ma_root = current_arch.ptrsize * i
-                    if kversion < "6.6":
-                        offset_ma_flags = offset_ma_root + current_arch.ptrsize
-                    else:
-                        offset_ma_flags = offset_ma_root - 4
-                        if is_64bit() and read_int32_from_memory(mm + offset_ma_flags) == 0:
-                            offset_ma_flags = offset_ma_root - 8
-                    break
-            else:
-                raise RuntimeError("Could not find offsetof(mm_struct, mm_mt.ma_root)")
-
-            self.ma_root_raw = read_int_from_memory(mm + offset_ma_root)
-            self.ma_flags = read_int32_from_memory(mm + offset_ma_flags)
-            self.max_depth = (self.ma_flags & self.MT_FLAGS_HEIGHT_MASK) >> self.MT_FLAGS_HEIGHT_OFFSET
-
-            if is_64bit():
-                self.MAPLE_NODE_SLOTS = 31
-                self.MAPLE_RANGE64_SLOTS = 16
-                self.MAPLE_ARANGE64_SLOTS = 10
-                self.MAPLE_ALLOC_SLOTS = self.MAPLE_NODE_SLOTS - 1
-                self.maple_range_64_offset_slot = current_arch.ptrsize * self.MAPLE_RANGE64_SLOTS
-                self.maple_arange_64_offset_slot = current_arch.ptrsize * self.MAPLE_ARANGE64_SLOTS
-                self.maple_alloc_offset_slot = current_arch.ptrsize * 2
-            else:
-                self.MAPLE_NODE_SLOTS = 63
-                self.MAPLE_RANGE64_SLOTS = 32
-                self.MAPLE_ARANGE64_SLOTS = 21
-                self.MAPLE_ALLOC_SLOTS = self.MAPLE_NODE_SLOTS - 2
-                self.maple_range_64_offset_slot = current_arch.ptrsize * self.MAPLE_RANGE64_SLOTS
-                self.maple_arange_64_offset_slot = current_arch.ptrsize * self.MAPLE_ARANGE64_SLOTS
-                self.maple_alloc_offset_slot = current_arch.ptrsize * 3
-
-            self.seen = set()
-            self.iters = self.parse_node(self.ma_root_raw, 1)
-            return
-
-        def get_next(self, _=None):
-            # iterate all `vm_area_struct` pointers
-            for addr in self.iters:
-                return addr
-            return None
-
-        def parse_node(self, entry, depth):
-            if entry in self.seen:
-                return
-            self.seen.add(entry)
-
-            if self.max_depth < depth:
-                return
-
-            pointer = entry & ~(self.MAPLE_NODE_POINTER_MASK)
-            node_type = (entry >> self.MAPLE_NODE_TYPE_SHIFT) & self.MAPLE_NODE_TYPE_MASK
-
-            if node_type == self.MAPLE_DENSE:
-                slot_top = pointer + self.maple_alloc_offset_slot
-                for i in range(self.MAPLE_ALLOC_SLOTS):
-                    slot = read_int_from_memory(slot_top + current_arch.ptrsize * i)
-                    if (slot & ~(self.MAPLE_NODE_TYPE_MASK)) != 0:
-                        if is_valid_addr(slot):
-                            yield slot
-            elif node_type == self.MAPLE_LEAF_64:
-                slot_top = pointer + self.maple_range_64_offset_slot
-                for i in range(self.MAPLE_RANGE64_SLOTS):
-                    slot = read_int_from_memory(slot_top + current_arch.ptrsize * i)
-                    if (slot & ~(self.MAPLE_NODE_TYPE_MASK)) != 0:
-                        if is_valid_addr(slot):
-                            yield slot
-            elif node_type == self.MAPLE_RANGE_64:
-                slot_top = pointer + self.maple_range_64_offset_slot
-                for i in range(self.MAPLE_RANGE64_SLOTS):
-                    slot = read_int_from_memory(slot_top + current_arch.ptrsize * i)
-                    if (slot & ~(self.MAPLE_NODE_TYPE_MASK)) != 0:
-                        yield from self.parse_node(slot, depth + 1)
-            elif node_type == self.MAPLE_ARANGE_64:
-                slot_top = pointer + self.maple_arange_64_offset_slot
-                for i in range(self.MAPLE_ARANGE64_SLOTS):
-                    slot = read_int_from_memory(slot_top + current_arch.ptrsize * i)
-                    if (slot & ~(self.MAPLE_NODE_TYPE_MASK)) != 0:
-                        yield from self.parse_node(slot, depth + 1)
-            return
-
     def get_vm_area_struct(self, mm):
         kversion = Kernel.kernel_version()
         if kversion is None:
@@ -67515,63 +67610,19 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     struct {
                         atomic_t mm_count;
                     } ____cacheline_aligned_in_smp; // v6.4~
-                    struct maple_tree {
-                        union {
-                            spinlock_t ma_lock;
-                            lockdep_map_p ma_external_lock;
-                        };
-                        unsigned int ma_flags; // v6.6~
-                        void __rcu *ma_root; // this points root maple_node. (lower 8-bits are some flags)
-                        unsigned int ma_flags; // ~v6.5
-                    } mm_mt;
+                    struct maple_tree mm_mt;
                     ...
                 } __randomize_layout;
                 ...
             };
 
-            struct maple_node {
-                union {
-                    struct {
-                        struct maple_pnode *parent;
-                        void __rcu *slot[MAPLE_NODE_SLOTS]; // 64-bit: 31; 32-bit: 63
-                    };
-                    struct {
-                        void *pad;
-                        struct rcu_head rcu;
-                        struct maple_enode *piv_parent;
-                        unsigned char parent_slot;
-                        enum maple_type type;
-                        unsigned char slot_len;
-                        unsigned int ma_flags;
-                    };
-                    struct maple_range_64 {
-                        struct maple_pnode *parent;
-                        unsigned long pivot[MAPLE_RANGE64_SLOTS - 1];     // 64-bit: 15; 32-bit: 31
-                        union {
-                            void __rcu *slot[MAPLE_RANGE64_SLOTS];        // 64-bit: 16; 32-bit: 32
-                            struct {
-                                void __rcu *pad[MAPLE_RANGE64_SLOTS - 1]; // 64-bit: 15; 32-bit: 31
-                                struct maple_metadata meta;
-                            };
-                        };
-                    } mr64;
-                    struct maple_arange_64 {
-                        struct maple_pnode *parent;
-                        unsigned long pivot[MAPLE_ARANGE64_SLOTS - 1]; // 64-bit: 9;  32-bit: 20
-                        void __rcu *slot[MAPLE_ARANGE64_SLOTS];        // 64-bit: 10; 32-bit: 21
-                        unsigned long gap[MAPLE_ARANGE64_SLOTS];       // 64-bit: 10; 32-bit: 21
-                        struct maple_metadata meta;
-                    } ma64;
-                    struct maple_alloc {
-                        unsigned long total;
-                        unsigned char node_count;
-                        unsigned int request_count;
-                        struct maple_alloc *slot[MAPLE_ALLOC_SLOTS]; // 64-bit: 30; 32-bit: 31
-                    } alloc;
-                };
-            };
+            See Kernel.MapleTree for struct maple_tree and struct maple_node.
             """
-            get_next_vma_area_struct = self.MapleTree(mm, self.args.quiet).get_next
+            mm_mt = Kernel.MapleTree(mm)
+            if mm_mt.find_root_offset(current_arch.ptrsize * 0x20) is None:
+                raise RuntimeError("Could not find offsetof(mm_struct, mm_mt.ma_root)")
+
+            get_next_vma_area_struct = mm_mt.get_next
             vm_area_struct = get_next_vma_area_struct()
 
             """
@@ -130907,112 +130958,6 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    class MapleTree:
-        """Linux v6.5 introduces maple_tree to irq. This is a simple parser."""
-        MT_FLAGS_HEIGHT_MASK = 0x7c
-        MT_FLAGS_HEIGHT_OFFSET = 0x02
-        MAPLE_NODE_TYPE_SHIFT = 0x03
-        MAPLE_NODE_TYPE_MASK = 0x0f
-        MAPLE_NODE_POINTER_MASK = 0xff
-        MAPLE_DENSE = 0
-        MAPLE_LEAF_64 = 1
-        MAPLE_RANGE_64 = 2
-        MAPLE_ARANGE_64 = 3
-
-        def __init__(self, ptr):
-            kversion = Kernel.kernel_version()
-
-            # ____cacheline_aligned_in_smp attribute, spinlock_t and lockdep_map_p can be different size
-            # in each environment or situation, so search heuristically.
-            for i in range(0x10):
-                x = read_int_from_memory(ptr + current_arch.ptrsize * i)
-                """
-                [x64 v6.4.2]
-                0xffff8bedc104db00|+0x0000|+000: 0x0000000000000000   // union
-                0xffff8bedc104db08|+0x0008|+001: 0xffff8bedc1a6601e   // ma_root
-                0xffff8bedc104db10|+0x0010|+002: 0x000000000000030b   // ma_flags
-
-                [x64 v6.6.1]
-                0xffff972801b78a38|+0x0040|+008: 0x0000000000000000   // (the end of cacheline?)
-                0xffff972801b78a40|+0x0040|+008: 0x0000030b00000000   // ma_flags || union
-                0xffff972801b78a48|+0x0048|+009: 0xffff972801b0cc1e   // ma_root
-                """
-                if is_valid_addr(x) and (x & 0xff) in [0x1e, 0x0e]:
-                    offset_ma_root = current_arch.ptrsize * i
-                    if kversion < "6.6":
-                        offset_ma_flags = offset_ma_root + current_arch.ptrsize
-                    else:
-                        offset_ma_flags = offset_ma_root - 4
-                        if is_64bit() and read_int32_from_memory(ptr + offset_ma_flags) == 0:
-                            offset_ma_flags = offset_ma_root - 8
-                    break
-            else:
-                raise RuntimeError("Could not find offsetof(maple_tree, ma_root)")
-
-            self.ma_root_raw = read_int_from_memory(ptr + offset_ma_root)
-            self.ma_flags = read_int_from_memory(ptr + offset_ma_flags)
-            self.max_depth = (self.ma_flags & self.MT_FLAGS_HEIGHT_MASK) >> self.MT_FLAGS_HEIGHT_OFFSET
-
-            if is_64bit():
-                self.MAPLE_NODE_SLOTS = 31
-                self.MAPLE_RANGE64_SLOTS = 16
-                self.MAPLE_ARANGE64_SLOTS = 10
-                self.MAPLE_ALLOC_SLOTS = self.MAPLE_NODE_SLOTS - 1
-                self.maple_range_64_offset_slot = current_arch.ptrsize * self.MAPLE_RANGE64_SLOTS
-                self.maple_arange_64_offset_slot = current_arch.ptrsize * self.MAPLE_ARANGE64_SLOTS
-                self.maple_alloc_offset_slot = current_arch.ptrsize * 2
-            else:
-                self.MAPLE_NODE_SLOTS = 63
-                self.MAPLE_RANGE64_SLOTS = 32
-                self.MAPLE_ARANGE64_SLOTS = 21
-                self.MAPLE_ALLOC_SLOTS = self.MAPLE_NODE_SLOTS - 2
-                self.maple_range_64_offset_slot = current_arch.ptrsize * self.MAPLE_RANGE64_SLOTS
-                self.maple_arange_64_offset_slot = current_arch.ptrsize * self.MAPLE_ARANGE64_SLOTS
-                self.maple_alloc_offset_slot = current_arch.ptrsize * 3
-
-            self.seen = set()
-            self.iters = self.parse_node(self.ma_root_raw, 1)
-            return
-
-        def parse_node(self, entry, depth):
-            if entry in self.seen:
-                return
-            self.seen.add(entry)
-
-            if self.max_depth < depth:
-                return
-
-            pointer = entry & ~(self.MAPLE_NODE_POINTER_MASK)
-            node_type = (entry >> self.MAPLE_NODE_TYPE_SHIFT) & self.MAPLE_NODE_TYPE_MASK
-
-            if node_type == self.MAPLE_DENSE:
-                slot_top = pointer + self.maple_alloc_offset_slot
-                for i in range(self.MAPLE_ALLOC_SLOTS):
-                    slot = read_int_from_memory(slot_top + current_arch.ptrsize * i)
-                    if (slot & ~(self.MAPLE_NODE_TYPE_MASK)) != 0:
-                        if is_valid_addr(slot):
-                            yield slot
-            elif node_type == self.MAPLE_LEAF_64:
-                slot_top = pointer + self.maple_range_64_offset_slot
-                for i in range(self.MAPLE_RANGE64_SLOTS):
-                    slot = read_int_from_memory(slot_top + current_arch.ptrsize * i)
-                    if (slot & ~(self.MAPLE_NODE_TYPE_MASK)) != 0:
-                        if is_valid_addr(slot):
-                            yield slot
-            elif node_type == self.MAPLE_RANGE_64:
-                slot_top = pointer + self.maple_range_64_offset_slot
-                for i in range(self.MAPLE_RANGE64_SLOTS):
-                    slot = read_int_from_memory(slot_top + current_arch.ptrsize * i)
-                    if (slot & ~(self.MAPLE_NODE_TYPE_MASK)) != 0:
-                        yield from self.parse_node(slot, depth + 1)
-            elif node_type == self.MAPLE_ARANGE_64:
-                slot_top = pointer + self.maple_arange_64_offset_slot
-                for i in range(self.MAPLE_ARANGE64_SLOTS):
-                    slot = read_int_from_memory(slot_top + current_arch.ptrsize * i)
-                    if (slot & ~(self.MAPLE_NODE_TYPE_MASK)) != 0:
-                        yield from self.parse_node(slot, depth + 1)
-            return
-
     def initialize(self):
         if hasattr(self, "initialized") and self.initialized:
             return True
@@ -131040,7 +130985,13 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                 self.quiet_err("Could not find sparse_irqs")
                 return False
 
-            descs = list(self.MapleTree(self.sparse_irqs).iters)
+            self.irq_maple = Kernel.MapleTree(self.sparse_irqs)
+            if self.irq_maple.find_root_offset(current_arch.ptrsize * 0x10) is None:
+                self.quiet_err("Could not find offsetof(maple_tree, ma_root)")
+                return False
+            self.quiet_info("offsetof(maple_tree, ma_root): {:#x}".format(self.irq_maple.root_offset))
+
+            descs = self.irq_maple.parse()
 
         if not descs:
             self.quiet_err("Could not find any valid irq_desc")
@@ -131165,7 +131116,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         if kversion < "6.5":
             descs = self.irq_xarray.parse()
         else:
-            descs = list(self.MapleTree(self.sparse_irqs).iters)
+            descs = self.irq_maple.parse()
 
         entries = {}
         for desc in descs:
