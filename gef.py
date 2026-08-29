@@ -70436,7 +70436,21 @@ class KernelModuleLoadCommand(GenericCommand):
             return None
 
         # struct module { enum module_state state; struct list_head list; ... };
-        return Kernel.ListHead(modules, current_arch.ptrsize).parse()
+        lh = Kernel.ListHead(modules, current_arch.ptrsize)
+        entries = list(lh.iter_entries())
+        if lh.broken:
+            self.quiet_warn("Stopped at {:s} module: {:#x}".format(lh.broken_reason, lh.broken_at))
+            # the list is circular and doubly-linked, so the entries located behind the broken
+            # one are still reachable by following `prev` from the list head
+            seen = set(entries)
+            backward = list(lh.iter_entries(backward=True))
+            if lh.broken:
+                self.quiet_warn("Stopped at {:s} module: {:#x} (backward)".format(lh.broken_reason, lh.broken_at))
+            entries += [x for x in reversed(backward) if x not in seen]
+            # the entries the walks stopped at are unreadable, they must not be passed to the
+            # `struct module` layout heuristics
+            entries = [x for x in entries if is_valid_addr(x)]
+        return entries
 
     def get_offset_name(self, module_addrs):
         # fast path
