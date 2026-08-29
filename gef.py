@@ -61138,17 +61138,6 @@ class KernelAddressHeuristicFinder:
                     return offset_tasks
             return None
 
-        def get_task_list(task, offset_tasks):
-            pos = task + offset_tasks
-            task_list = [pos]
-            # validating candidate offset
-            while True:
-                pos = read_int_from_memory(pos)
-                if pos in task_list:
-                    break
-                task_list.append(pos)
-            return [x - offset_tasks for x in task_list]
-
         # plan 3 (from current)
         current = None
         if is_arm64() or is_arm32():
@@ -61169,7 +61158,8 @@ class KernelAddressHeuristicFinder:
         if current:
             offset_tasks = get_offset_tasks(current)
             if offset_tasks:
-                task_list = get_task_list(current, offset_tasks)
+                # `current` itself is also a task, so it is included.
+                task_list = Kernel.ListHead(current + offset_tasks, offset_tasks).parse(include_head=True) or []
                 kinfo = Kernel.get_kernel_layout()
                 min_distance_task = (None, 0xffff_ffff_ffff_ffff)
                 for task in task_list:
@@ -64766,6 +64756,59 @@ KFU = KernelAddressHeuristicFinderUtil # for convenience using from python-inter
 class Kernel:
     """A collection of utility functions that are related to kernel specific features."""
 
+    class ListHead:
+        """Parse Linux circular doubly-linked lists.
+
+        How to use:
+            lh = Kernel.ListHead(modules, current_arch.ptrsize)  # the address of the list head, then
+                                                                 # offsetof(the struct, the list_head)
+            lh.parse()                                           # -> [entry, entry, ...] (None if the list is broken)
+            lh.parse(include_head=True)                          # -> the struct including the list head is also listed
+            lh.iter_entries()                                    # -> iterate lazily, and just stop if the list is broken
+            lh.broken                                            # -> True if the last walk stopped halfway
+
+        struct list_head {
+            struct list_head *next;
+            struct list_head *prev;
+        };
+        """
+
+        def __init__(self, address, offset=0):
+            """Set the address of the list head. `offset` is offsetof(the struct, the list_head)."""
+            self.address = address
+            self.offset = offset
+            self.broken = False
+            return
+
+        def parse(self, include_head=False):
+            """Return the list of the structs linked from the list head. Return None if the list is broken."""
+            entries = list(self.iter_entries(include_head))
+            if self.broken:
+                return None
+            return entries
+
+        def iter_entries(self, include_head=False):
+            """Iterate the structs linked from the list head. Just stop there if the list is broken."""
+            self.broken = False
+            if include_head:
+                yield self.address - self.offset
+
+            seen = {self.address}
+            current = self.address
+            while True:
+                try:
+                    current = read_int_from_memory(current)
+                except gdb.MemoryError:
+                    self.broken = True
+                    return
+                if current == self.address: # went around the list
+                    return
+                if current in seen: # the list is broken
+                    self.broken = True
+                    return
+                seen.add(current)
+                yield current - self.offset
+
     class XArray:
         """Parse Linux XArrays and share their detected layout between commands.
 
@@ -66330,18 +66373,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return None
 
     def get_task_list(self, init_task, offset_tasks):
-        pos = init_task + offset_tasks
-        task_list = [pos]
-        # validating candidate offset
-        while True:
-            try:
-                pos = read_int_from_memory(pos)
-            except gdb.MemoryError:
-                return None
-            if pos in task_list:
-                break
-            task_list.append(pos)
-        return [x - offset_tasks for x in task_list]
+        # init_task itself is also a task, so it is included.
+        return Kernel.ListHead(init_task + offset_tasks, offset_tasks).parse(include_head=True)
 
     def get_offset_mm(self, task_addr, offset_tasks):
         """
@@ -68347,30 +68380,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         kversion = Kernel.kernel_version()
 
         for task in task_addrs:
-            seen = []
             if kversion < "6.7":
-                lwp = task
-                while lwp not in seen:
-                    seen.append(lwp)
-                    try:
-                        lwp = read_int_from_memory(lwp + self.offset_thread_group) - self.offset_thread_group
-                    except gdb.MemoryError:
-                        break
-                lwp_task_addrs.extend(seen)
-
+                # `task` itself is also a thread, so it is included.
+                head = task + self.offset_thread_group
+                lwps = Kernel.ListHead(head, self.offset_thread_group).iter_entries(include_head=True)
             else:
                 signal = read_int_from_memory(task + self.offset_signal)
                 head = signal + self.offset_thread_head
-                seen = [head]
-                curr = read_int_from_memory(head)
-                while curr not in seen:
-                    seen.append(curr)
-                    lwp = curr - self.offset_thread_group
-                    lwp_task_addrs.append(lwp)
-                    try:
-                        curr = read_int_from_memory(curr)
-                    except gdb.MemoryError:
-                        break
+                lwps = Kernel.ListHead(head, self.offset_thread_group).iter_entries()
+            lwp_task_addrs.extend(lwps)
         return lwp_task_addrs
 
     def get_offset_nsproxy(self, task_addr, offset_files):
@@ -69595,22 +69613,8 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         if modules is None:
             return None
 
-        module_addrs = []
-        seen = set()
-        current = modules
-        while True:
-            try:
-                addr = read_int_from_memory(current)
-            except gdb.MemoryError:
-                return None
-            if addr == modules:
-                break
-            if addr in seen:
-                return None
-            seen.add(addr)
-            module_addrs.append(addr - current_arch.ptrsize)
-            current = addr
-        return module_addrs
+        # struct module { enum module_state state; struct list_head list; ... };
+        return Kernel.ListHead(modules, current_arch.ptrsize).parse()
 
     def get_offset_name(self, module_addrs):
         # fast path
@@ -70345,22 +70349,8 @@ class KernelModuleLoadCommand(GenericCommand):
         if modules is None:
             return None
 
-        module_addrs = []
-        seen = set()
-        current = modules
-        while True:
-            try:
-                addr = read_int_from_memory(current)
-            except gdb.MemoryError:
-                return None
-            if addr == modules:
-                break
-            if addr in seen:
-                return None
-            seen.add(addr)
-            module_addrs.append(addr - current_arch.ptrsize)
-            current = addr
-        return module_addrs
+        # struct module { enum module_state state; struct list_head list; ... };
+        return Kernel.ListHead(modules, current_arch.ptrsize).parse()
 
     def get_offset_name(self, module_addrs):
         # fast path
@@ -74641,13 +74631,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
         if kinfo.text_base is None or kinfo.text_end is None:
             return None
 
-        nodes = []
-        current = read_int_from_memory(clocksource)
-        while current != clocksource:
-            if current in nodes or not is_valid_addr(current):
-                return None
-            nodes.append(current)
-            current = read_int_from_memory(current)
+        nodes = Kernel.ListHead(clocksource).parse()
         if not nodes:
             return None
 
@@ -74711,15 +74695,13 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
             legend = ["address", width, "name", "read", width, "symbol", width]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        current = read_int_from_memory(clocksource_list)
-        while current != clocksource_list:
+        for current in Kernel.ListHead(clocksource_list).iter_entries():
             cs = current - offset_list
             read = read_int_from_memory(cs)
             read_sym = Symbol.get_symbol_string(read, nosymbol_string=" <NO_SYMBOL>")
             name_addr = read_int_from_memory(current - current_arch.ptrsize)
             name = read_cstring_from_memory(name_addr)
             self.out.append("{:#0{:d}x} {:20s} {:#0{:d}x}{:s}".format(cs, width, name, read, width, read_sym))
-            current = read_int_from_memory(current)
 
         self.print_output(check_terminal_size=True)
         return
@@ -121818,15 +121800,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
     @Cache.cache_until_next
     def parse_kmem_caches_for_initialize(self):
-        seen = [self.slab_caches]
-        current = self.slab_caches
-        while True:
-            current = read_int_from_memory(current)
-            if current in seen:
-                break
-            seen.append(current)
-        kmem_caches = seen[1:] # skip slab_caches itself
-        return kmem_caches
+        # `slab_caches` is a static list head, so it should not be broken.
+        return Kernel.ListHead(self.slab_caches).parse() or []
 
     def resolve_kmem_cache_offset_list(self):
         """
@@ -124534,15 +124509,8 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
     @Cache.cache_until_next
     def parse_kmem_caches_for_initialize(self):
-        seen = [self.slab_caches]
-        current = self.slab_caches
-        while True:
-            current = read_int_from_memory(current)
-            if current in seen:
-                break
-            seen.append(current)
-        kmem_caches = seen[1:] # skip slab_caches itself
-        return kmem_caches
+        # `slab_caches` is a static list head, so it should not be broken.
+        return Kernel.ListHead(self.slab_caches).parse() or []
 
     def resolve_kmem_cache_offset_list(self):
         # fast path
@@ -125451,15 +125419,8 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
 
     @Cache.cache_until_next
     def parse_kmem_caches_for_initialize(self):
-        seen = [self.slab_caches]
-        current = self.slab_caches
-        while True:
-            current = read_int_from_memory(current)
-            if current in seen:
-                break
-            seen.append(current)
-        kmem_caches = seen[1:] # skip slab_caches itself
-        return kmem_caches
+        # `slab_caches` is a static list head, so it should not be broken.
+        return Kernel.ListHead(self.slab_caches).parse() or []
 
     def resolve_kmem_cache_offset_node(self):
         # fast path
@@ -128153,23 +128114,15 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
         # parse pcp entries
         MAX_ENTRIES = self.args.count
-        seen = set()
-        while current != list_i:
-            if current in seen:
-                self.buddy_list_scan_incomplete = True
-                break
-            seen.add(current)
-            page = current - self.offset_lru
+        pcp_list = Kernel.ListHead(list_i, self.offset_lru)
+        for page in pcp_list.iter_entries():
             entry = self.Entry(page, size, is_highmem, self.args, cpu_num=cpu_num)
             entries.append(entry)
             if MAX_ENTRIES and len(entries) >= MAX_ENTRIES:
                 entries.append(None)  # sentinel for "..."
                 break
-            try:
-                current = read_int_from_memory(current)
-            except gdb.MemoryError:
-                self.buddy_list_scan_incomplete = True
-                break
+        if pcp_list.broken:
+            self.buddy_list_scan_incomplete = True
         return pcp_title, entries, bool(len(entries))
 
     def dump_pcp(self, zone, is_highmem):
@@ -128210,23 +128163,15 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
         # parse free list
         MAX_ENTRIES = self.args.count
-        seen = set()
-        while current != free_list:
-            if current in seen:
-                self.buddy_list_scan_incomplete = True
-                break
-            seen.add(current)
-            page = current - self.offset_lru
+        free_area_list = Kernel.ListHead(free_list, self.offset_lru)
+        for page in free_area_list.iter_entries():
             entry = self.Entry(page, size, is_highmem, self.args)
             entries.append(entry)
             if MAX_ENTRIES and len(entries) >= MAX_ENTRIES:
                 entries.append(None)  # sentinel for "..."
                 break
-            try:
-                current = read_int_from_memory(current)
-            except gdb.MemoryError:
-                self.buddy_list_scan_incomplete = True
-                break
+        if free_area_list.broken:
+            self.buddy_list_scan_incomplete = True
         return mtype_title, entries, bool(len(entries))
 
     def dump_free_area(self, free_area, order, is_highmem):
@@ -130880,14 +130825,9 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
         legend = ["dma_buf", "size", "exp_name", "name", "file", "priv"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        seen = [self.db_list]
-        current = read_int_from_memory(self.db_list)
-        while True:
+        for current in Kernel.ListHead(self.db_list).iter_entries():
             if not is_valid_addr(current):
                 break
-            if current in seen:
-                break
-            seen.append(current)
 
             # calc top
             dma_buf = current - self.offset_list_node
@@ -130916,9 +130856,6 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
             # dump sgl
             sgl = read_int_from_memory(priv + self.offset_sg_table)
             self.dump_sgl(sgl)
-
-            # go to next
-            current = read_int_from_memory(current)
         return
 
     @parse_args
@@ -131320,13 +131257,8 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
         # `struct net_device` is a very complex struct, and detecting the offset of its members is very difficult.
         # My best effort is to detect only names and addresses.
 
-        head = current = self.init_net + self.offset_dev_base_head
-        while True:
-            current = read_int_from_memory(current)
-            if current == head:
-                break
-
-            netdev = current - self.offset_dev_list
+        head = self.init_net + self.offset_dev_base_head
+        for netdev in Kernel.ListHead(head, self.offset_dev_list).iter_entries():
             name = read_cstring_from_memory(netdev)
             self.out.append("{:#018x} {:s}".format(netdev, name))
 
@@ -131506,16 +131438,8 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
         if head is None or not is_valid_addr(head):
             return []
 
-        seen = [head]
-        current = read_int_from_memory(head)
-        idx = 0
         areas = []
-        while True:
-            if current in seen:
-                break
-            seen.append(current)
-
-            vmap_area = current - self.offset_list
+        for vmap_area in Kernel.ListHead(head, self.offset_list).iter_entries():
             va_start = read_int_from_memory(vmap_area)
             va_end = read_int_from_memory(vmap_area + current_arch.ptrsize)
             va_size = va_end - va_start
@@ -131528,13 +131452,6 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
                 else:
                     flags = 0
             areas.append([used, va_start, va_end, va_size, flags])
-
-            try:
-                current = read_int_from_memory(current)
-            except gdb.MemoryError:
-                break
-
-            idx += 1
         return areas
 
     def get_flags(self, flags_value):
@@ -152730,10 +152647,7 @@ class HighMemDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_slot(self, page_slot):
-        seen = [page_slot]
-        current = read_int_from_memory(page_slot)
-        while current not in seen:
-            seen.append(current)
+        for current in Kernel.ListHead(page_slot).iter_entries():
             if not is_valid_addr(current):
                 break
             try:
@@ -152743,7 +152657,6 @@ class HighMemDumpCommand(GenericCommand, BufferingOutput):
                 self.err_add_out("Corrupted? ({:#x})".format(current))
                 break
             self.dump_entry(page, virt)
-            current = read_int_from_memory(current)
         return
 
     def dump_table(self, page_address_htable):
