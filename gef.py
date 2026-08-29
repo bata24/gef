@@ -70132,8 +70132,8 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                 if not is_valid_addr(cand_symtab):
                     valid = False
                     break
-                cand_num_symtab = read_int_from_memory(cand_kallsyms + current_arch.ptrsize * 1)
-                if is_valid_addr(cand_num_symtab) or cand_num_symtab == 0:
+                cand_num_symtab = read_int32_from_memory(cand_kallsyms + current_arch.ptrsize * 1)
+                if cand_num_symtab == 0 or cand_num_symtab > 0x10_0000:
                     valid = False
                     break
                 cand_strtab = read_int_from_memory(cand_kallsyms + current_arch.ptrsize * 2)
@@ -70217,7 +70217,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
 
         symtab = read_int_from_memory(kallsyms + current_arch.ptrsize * 0)
         sizeof_symtab_entry = 24 if is_64bit() else 16
-        num_symtab = read_int_from_memory(kallsyms + current_arch.ptrsize * 1)
+        num_symtab = read_int32_from_memory(kallsyms + current_arch.ptrsize * 1)
         strtab = read_int_from_memory(kallsyms + current_arch.ptrsize * 2)
         strtab_pos = 0
         if "5.2" <= kversion:
