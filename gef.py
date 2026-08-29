@@ -40648,7 +40648,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
 
         dynamic = ProcessMap.lookup_address(dynamic)
         if not silent:
-            info("_DNYAMIC: {!s} [{!s}]".format(dynamic, dynamic.section.permission))
+            info("_DYNAMIC: {!s} [{!s}]".format(dynamic, dynamic.section.permission))
         return dynamic
 
     @parse_args
@@ -55487,13 +55487,13 @@ class MagicCommand(GenericCommand):
         perm = addr.section.permission
         if is_ascii_string(addr.value):
             val = read_cstring_from_memory(addr.value)
-            gef_print("{:45s} {!s} [{!s}] (+{:#010x}) -> {:s}".format(
+            gef_print("{:45s} {!s} [{!s}] ({:+#011x}) -> {:s}".format(
                 sym, addr, perm, addr.value - base, val,
             ))
         else:
             val = ProcessMap.lookup_address(read_int_from_memory(addr.value))
             val_sym = Symbol.get_symbol_string(val.value)
-            gef_print("{:45s} {!s} [{!s}] (+{:#010x}) -> {:s}{:s}".format(
+            gef_print("{:45s} {!s} [{!s}] ({:+#011x}) -> {:s}{:s}".format(
                 sym, addr, perm, addr.value - base, val.long_fmt(), val_sym,
             ))
         return
@@ -55737,12 +55737,12 @@ class KernelMagicCommand(GenericCommand):
             ))
         elif to_string:
             val = read_cstring_from_memory(addr) or "???"
-            gef_print("{:42s} {:#0{:d}x} [{:3s}] (+{:#010x}) -> {:s}".format(
+            gef_print("{:42s} {:#0{:d}x} [{:3s}] ({:+#011x}) -> {:s}".format(
                 sym, addr, width, perm, addr - base, val,
             ))
         else:
             val = read_int_from_memory(addr)
-            gef_print("{:42s} {:#0{:d}x} [{:3s}] (+{:#010x}) -> {:#0{:d}x}".format(
+            gef_print("{:42s} {:#0{:d}x} [{:3s}] ({:+#011x}) -> {:#0{:d}x}".format(
                 sym, addr, width, perm, addr - base, val, width,
             ))
         return
@@ -66131,7 +66131,7 @@ class KernelCurrentCommand(GenericCommand):
             if r is not None:
                 self.offset_comm = int(r.group(1), 16)
             else:
-                self.quiet_err("ktask is failed")
+                self.quiet_err("ktask failed")
                 self.offset_comm = False
 
         if self.offset_comm is False:
@@ -68732,7 +68732,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         if self.offset_comm is None:
             self.offset_comm = self.get_offset_comm(task_addrs)
         if self.offset_comm is None:
-            self.quiet_err("Could not find task_struct->comm[TASK_CMM_LEN]")
+            self.quiet_err("Could not find task_struct->comm[TASK_COMM_LEN]")
             return False
         self.quiet_info("offsetof(task_struct, comm): {:#x}".format(self.offset_comm))
 
@@ -76524,7 +76524,7 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
 
     def syscall_table_view(self, orig_tag, sys_call_table_addr, syscall_list, nr_base=0):
         if syscall_list is None:
-            self.quiet_add_out("{} {}".format(Color.colorify("[+]", "bold red"), "Could not find the syscall table"))
+            self.quiet_add_out("{} {}".format(Color.colorify("[!]", "bold red"), "Could not find the syscall table"))
             return
 
         if sys_call_table_addr is None:
@@ -76536,7 +76536,7 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
                 self.quiet_add_out("{:s} is removed from 6.6.26.".format(removed_table[0]))
                 self.quiet_add_out("each entry is embedded in `{:s}()` as call instruction.".format(removed_table[1]))
             else:
-                self.quiet_add_out("{} {}".format(Color.colorify("[+]", "bold red"), "Could not find the symbol"))
+                self.quiet_add_out("{} {}".format(Color.colorify("[!]", "bold red"), "Could not find the symbol"))
             return
 
         # It maintains the cache both when running with and without symbols.
@@ -142362,7 +142362,7 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
         if len(candidate_head) == 0:
             err("Could not find &tee_ctxes")
         elif len(candidate_head) > 1:
-            warn("Found multiple canddiate for &tee_ctxes")
+            warn("Found multiple candidate for &tee_ctxes")
         return candidate_head
 
     def get_flags_str(self, flags_value):
@@ -142826,9 +142826,9 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
                 candidate_head.append([head_addr, entries])
 
         if len(candidate_head) == 0:
-            err("Could not find &tee_ctxes")
+            err("Could not find &reg_shm_list")
         elif len(candidate_head) > 1:
-            warn("Found multiple canddiate for &reg_shm_list")
+            warn("Found multiple candidate for &reg_shm_list")
         return candidate_head
 
     def dump_list(self, list_heads):
@@ -156815,7 +156815,7 @@ class KernelTraceCommand(GenericCommand):
         # from the guest's terminal. Therefore, we decided not to disable it.
 
         # doit
-        info("Setup is complete (set {:d} braekpoints). continuing...".format(len(breakpoints)))
+        info("Setup is complete (set {:d} breakpoints). continuing...".format(len(breakpoints)))
         gdb.execute("continue")
 
         # clean up
