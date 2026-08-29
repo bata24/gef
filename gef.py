@@ -61121,18 +61121,30 @@ class KernelAddressHeuristicFinder:
         # 2. Select the task with the smallest distance from the kernel .data section.
         # This method can also be applied to x86/x64 as long as `current_task` can be obtained.
 
-        def get_offset_tasks(current_task):
+        def get_offset_tasks(current_task, require_init_task=False):
             # search for init_task->tasks
             # On CPU1, the task list is doubly linked, but on others it is not.
             # For example:
             #   CPU1: cpu1_current_task <-> task1 <-> task2 <-> ... <-> cpu1_current_task
             #   CPU2: cpu2_current_task  -> task1 <-> task2 <-> ... <-> cpu1_current_task
             # Therefore, we should read one element at a time and verify the linkage.
+            kinfo = Kernel.get_kernel_layout() if require_init_task else None
             for i in range(0x200):
                 offset_tasks = current_arch.ptrsize * i
                 current_task_tasks = current_task + offset_tasks
                 if not is_valid_addr(current_task_tasks):
                     return None
+                if require_init_task and kinfo.rw_base and kinfo.rw_size:
+                    task_list = KernelTaskCommand.get_task_list(current_task, offset_tasks)
+                    rw_end = kinfo.rw_base + kinfo.rw_size
+                    has_init_task = any(
+                        kinfo.rw_base <= task < rw_end
+                        or (is_64bit() and task >= kinfo.rw_base)
+                        for task in task_list
+                    )
+                    if len(task_list) > 5 and has_init_task:
+                        return offset_tasks
+                    continue
                 task1 = read_int_from_memory(current_task_tasks)
                 if is_double_link_list(task1, min_len=5):
                     return offset_tasks
@@ -61156,11 +61168,14 @@ class KernelAddressHeuristicFinder:
                         current_ptr = AddressUtil.normalize_address(cpu_base + current_task)
                         current = read_int_from_memory(current_ptr)
         if current:
-            offset_tasks = get_offset_tasks(current)
+            kinfo = Kernel.get_kernel_layout()
+            if kinfo.rw_base and kinfo.rw_size and kinfo.rw_base <= current < kinfo.rw_base + kinfo.rw_size:
+                return current
+
+            offset_tasks = get_offset_tasks(current, require_init_task=True)
             if offset_tasks:
                 # `current` itself is also a task, so it is included.
-                task_list = Kernel.ListHead(current + offset_tasks, offset_tasks).parse(include_head=True) or []
-                kinfo = Kernel.get_kernel_layout()
+                task_list = KernelTaskCommand.get_task_list(current, offset_tasks)
                 min_distance_task = (None, 0xffff_ffff_ffff_ffff)
                 for task in task_list:
                     distance = abs((kinfo.rw_base or kinfo.text_base) - task)
@@ -66372,6 +66387,41 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.offset_orig_prog = None
         return
 
+    @staticmethod
+    def get_task_list(task, offset_tasks):
+        # `task` itself is also a task, so it is included.
+        head = task + offset_tasks
+        lh = Kernel.ListHead(head, offset_tasks)
+        task_list = []
+        forward_valid = False
+        backward_valid = False
+        try:
+            if is_valid_addr_addr(head):
+                next_head = read_int_from_memory(head)
+                forward_valid = read_int_from_memory(next_head + current_arch.ptrsize) == head
+        except (gdb.MemoryError, OverflowError):
+            pass
+        try:
+            if is_valid_addr_addr(head + current_arch.ptrsize):
+                prev_head = read_int_from_memory(head + current_arch.ptrsize)
+                backward_valid = read_int_from_memory(prev_head) == head
+        except (gdb.MemoryError, OverflowError):
+            pass
+        if forward_valid:
+            try:
+                task_list.extend(lh.iter_entries(include_head=True))
+            except (gdb.MemoryError, OverflowError):
+                pass
+        seen = set(task_list)
+        backward = []
+        if backward_valid:
+            try:
+                backward.extend(lh.iter_entries(include_head=True, backward=True))
+            except (gdb.MemoryError, OverflowError):
+                pass
+        task_list += [x for x in reversed(backward) if x not in seen]
+        return [x for x in task_list if is_valid_addr(x)]
+
     def get_offset_tasks(self, init_task):
         # fast path
         try:
@@ -66385,13 +66435,10 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # search for init_task->tasks
         for i in range(0x200):
             offset_tasks = current_arch.ptrsize * i
-            if is_double_link_list(init_task + offset_tasks, min_len=5):
+            task_list = KernelTaskCommand.get_task_list(init_task, offset_tasks)
+            if len(task_list) > 5:
                 return offset_tasks
         return None
-
-    def get_task_list(self, init_task, offset_tasks):
-        # init_task itself is also a task, so it is included.
-        return Kernel.ListHead(init_task + offset_tasks, offset_tasks).parse(include_head=True)
 
     def get_offset_mm(self, task_addr, offset_tasks):
         """
@@ -68707,7 +68754,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(task_struct, tasks): {:#x}".format(self.offset_tasks))
 
         # task addresses
-        task_addrs = self.get_task_list(init_task, self.offset_tasks)
+        task_addrs = KernelTaskCommand.get_task_list(init_task, self.offset_tasks)
         if task_addrs is None:
             self.quiet_err("Failed to list each tasks")
             return False
