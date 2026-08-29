@@ -70964,6 +70964,10 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
+        if Kernel.kernel_version() is None:
+            self.quiet_err("Could not find Linux kernel")
+            return
+
         bdevs = self.get_bdev_list() or []
         bdevs.extend(self.get_mounted_bdev_list())
         bdevs = list(set(bdevs))
@@ -128173,6 +128177,9 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.kernel_version()
+        if kversion is None:
+            self.quiet_err("Could not find Linux kernel")
+            return
         if kversion < "3.1":
             self.quiet_err("Unsupported before v3.1")
             return
