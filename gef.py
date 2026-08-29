@@ -76666,9 +76666,13 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
                 "x86_32": ("ia32_sys_call_table", "ia32_sys_call"),
                 "x86_x32": ("x32_sys_call_table", "x32_sys_call"),
             }.get(orig_tag)
-            if removed_table and Symbol.get_ksymaddr(removed_table[1]):
+            kversion = Kernel.kernel_version()
+            if removed_table and kversion and "6.6.26" <= kversion:
                 self.quiet_add_out("{:s} is removed from 6.6.26.".format(removed_table[0]))
-                self.quiet_add_out("each entry is embedded in `{:s}()` as call instruction.".format(removed_table[1]))
+                if Symbol.get_ksymaddr(removed_table[1]):
+                    self.quiet_add_out("each entry is embedded in `{:s}()` as call instruction.".format(removed_table[1]))
+                else:
+                    self.quiet_add_out("`{:s}()` is unavailable; the corresponding ABI may be disabled.".format(removed_table[1]))
             else:
                 self.quiet_add_out("{} {}".format(Color.colorify("[!]", "bold red"), "Could not find the symbol"))
             return
