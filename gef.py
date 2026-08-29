@@ -65143,6 +65143,51 @@ class Kernel:
                     yield from self.parse_node(slot, depth + 1)
             return
 
+    class RBTree:
+        """Parse Linux red-black trees.
+
+        How to use:
+            rb = Kernel.RBTree(htb + offset_rb_root)   # the address of the struct rb_root
+            rb.parse()                                 # -> [rb_node, rb_node, ...] (not sorted)
+
+        struct rb_root {
+            struct rb_node *rb_node;
+        };
+
+        struct rb_node {
+            unsigned long __rb_parent_color; // the lowest bit is the color (0:RB_RED, 1:RB_BLACK)
+            struct rb_node *rb_right;
+            struct rb_node *rb_left;
+        };
+        """
+
+        def __init__(self, address):
+            """Set the address of the struct rb_root."""
+            self.address = address
+            return
+
+        def parse(self):
+            """Return the list of all rb_nodes in the tree."""
+            if self.address == 0:
+                return []
+
+            return self.parse_node(read_int_from_memory(self.address))
+
+        def parse_node(self, rb_node):
+            """Return the list of the rb_nodes under `rb_node` recursively."""
+            if not rb_node or not is_valid_addr(rb_node):
+                return []
+
+            right = read_int_from_memory(rb_node + current_arch.ptrsize * 1) & ~1 # remove RB_BLACK
+            left = read_int_from_memory(rb_node + current_arch.ptrsize * 2) & ~1 # remove RB_BLACK
+
+            ret = [rb_node]
+            if right:
+                ret += self.parse_node(right)
+            if left:
+                ret += self.parse_node(left)
+            return ret
+
     @staticmethod
     @Cache.cache_until_next
     def get_maps():
@@ -74936,20 +74981,6 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         self.initialized = True
         return True
 
-    def parse_rb_node(self, rb_node):
-        if not rb_node or not is_valid_addr(rb_node):
-            return []
-
-        right = read_int_from_memory(rb_node + current_arch.ptrsize * 1) & ~1 # remove RB_BLACK
-        left = read_int_from_memory(rb_node + current_arch.ptrsize * 2) & ~1 # remove RB_BLACK
-
-        ret = [rb_node]
-        if right:
-            ret += self.parse_rb_node(right)
-        if left:
-            ret += self.parse_rb_node(left)
-        return ret
-
     def dump_hrtimer(self):
         """
         struct hrtimer {
@@ -75005,8 +75036,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                     legend = ["hrtimer", "expires", "time_to_expired", "function", "symbol"]
                     self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-                rb_node = read_int_from_memory(htb + self.offset_rb_root)
-                for hrtimer in self.parse_rb_node(rb_node):
+                for hrtimer in Kernel.RBTree(htb + self.offset_rb_root).parse():
                     expires = read_int64_from_memory(hrtimer + current_arch.ptrsize * 3)
                     function = read_int_from_memory(hrtimer + current_arch.ptrsize * 3 + 8 * 2)
                     if is_32bit() and not is_valid_addr(function):
@@ -126855,20 +126885,6 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def parse_rb_node(self, rb_node):
-        if not rb_node or not is_valid_addr(rb_node):
-            return []
-
-        right = read_int_from_memory(rb_node + current_arch.ptrsize * 1) & ~1 # remove RB_BLACK
-        left = read_int_from_memory(rb_node + current_arch.ptrsize * 2) & ~1 # remove RB_BLACK
-
-        ret = [rb_node]
-        if right:
-            ret += self.parse_rb_node(right)
-        if left:
-            ret += self.parse_rb_node(left)
-        return ret
-
     def initialize(self):
         if hasattr(self, "initialized") and self.initialized:
             return True
@@ -126984,11 +127000,10 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         # get children_root
         kset = read_int_from_memory(self.slab_kset)
         sd = read_int_from_memory(kset + self.offset_kobj_sd)
-        children_root = read_int_from_memory(sd + self.offset_dir_children)
 
         # parse
         alias_groups = {}
-        nodes = self.parse_rb_node(children_root)
+        nodes = Kernel.RBTree(sd + self.offset_dir_children).parse()
         for node in nodes:
             node = node - self.offset_rb
             name_ptr = read_int_from_memory(node + self.offset_name)
