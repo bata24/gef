@@ -66129,7 +66129,6 @@ class KernelCurrentCommand(GenericCommand):
 
         # not found
         if __per_cpu_offset is None:
-            self.quiet_err("Failed to resolve `__per_cpu_offset`")
             return None
 
         # found
@@ -66198,10 +66197,12 @@ class KernelCurrentCommand(GenericCommand):
                 gef_print("current (cpu{:d}): {:#x} {:s}".format(i, task, self.get_comm_str(task)))
         else:
             # pattern 2: current_task is the address that stores a pointer to the current task (not per_cpu).
-            self.quiet_info("__per_cpu_offset is unused")
             task = read_int_from_memory(current_task)
             if is_valid_addr(task):
+                self.quiet_info("__per_cpu_offset is unused")
                 gef_print("current: {:#x} {:s}".format(task, self.get_comm_str(task)))
+            else:
+                self.quiet_err("Failed to resolve `__per_cpu_offset`")
         return
 
     @parse_args
