@@ -122241,10 +122241,14 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     found = False
                     break
 
-                # And check that the immediately following node is a valid address
+                # And check that the immediately following node is a valid address.
+                # node[x] points to a separately allocated kmem_cache_node, so it never
+                # points to itself. A self-referential value means an empty list_head
+                # embedded in kmem_cache (e.g. kobj_remove_work.entry, which exists in
+                # kernel < 5.9), not node.
                 node_offset = candidate_offset + 4 + 4
                 node_addr = read_int_from_memory(kmem_cache_top + node_offset)
-                if not is_valid_addr(node_addr):
+                if not is_valid_addr(node_addr) or node_addr == kmem_cache_top + node_offset:
                     if kversion < "7.0":
                         found = False
                         break
@@ -122252,7 +122256,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         # cpu_stats may exist (if CONFIG_SLUB_STATS=y)
                         node_offset = candidate_offset + 4 + 4 + current_arch.ptrsize
                         node_addr = read_int_from_memory(kmem_cache_top + node_offset)
-                        if not is_valid_addr(node_addr):
+                        if not is_valid_addr(node_addr) or node_addr == kmem_cache_top + node_offset:
                             found = False
                             break
 
