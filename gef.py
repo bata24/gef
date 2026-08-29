@@ -76299,7 +76299,15 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
             return
 
         if sys_call_table_addr is None:
-            self.quiet_add_out("{} {}".format(Color.colorify("[+]", "bold red"), "Could not find the symbol"))
+            removed_table = {
+                "x86_32": ("ia32_sys_call_table", "ia32_sys_call"),
+                "x86_x32": ("x32_sys_call_table", "x32_sys_call"),
+            }.get(orig_tag)
+            if removed_table and Symbol.get_ksymaddr(removed_table[1]):
+                self.quiet_add_out("{:s} is removed from 6.6.26.".format(removed_table[0]))
+                self.quiet_add_out("each entry is embedded in `{:s}()` as call instruction.".format(removed_table[1]))
+            else:
+                self.quiet_add_out("{} {}".format(Color.colorify("[+]", "bold red"), "Could not find the symbol"))
             return
 
         # It maintains the cache both when running with and without symbols.
@@ -76358,23 +76366,13 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
             sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x64()
             self.syscall_table_view("x86_64", sys_call_table_addr, Syscall.get_syscall_table("X86", "64"))
 
-            kversion = Kernel.kernel_version()
-
             self.quiet_add_out(titlify("ia32_sys_call_table"))
-            if kversion < "6.6.26":
-                sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x86()
-                self.syscall_table_view("x86_32", sys_call_table_addr, Syscall.get_syscall_table("X86", "32"))
-            else:
-                self.quiet_add_out("ia32_sys_call_table is removed from 6.6.26.")
-                self.quiet_add_out("each entry is embedded in `ia32_sys_call()` as call instruction.")
+            sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x86()
+            self.syscall_table_view("x86_32", sys_call_table_addr, Syscall.get_syscall_table("X86", "32"))
 
             self.quiet_add_out(titlify("x32_sys_call_table"))
-            if kversion < "6.6.26":
-                sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x32()
-                self.syscall_table_view("x86_x32", sys_call_table_addr, Syscall.get_syscall_table("X86", "64"), nr_base=0x4000_0000)
-            else:
-                self.quiet_add_out("x32_sys_call_table is removed from 6.6.26.")
-                self.quiet_add_out("each entry is embedded in `x32_sys_call()` as call instruction.")
+            sys_call_table_addr = KernelAddressHeuristicFinder.get_sys_call_table_x32()
+            self.syscall_table_view("x86_x32", sys_call_table_addr, Syscall.get_syscall_table("X86", "64"), nr_base=0x4000_0000)
 
         elif is_arm32():
             self.quiet_add_out(titlify("sys_call_table (arm32)"))
