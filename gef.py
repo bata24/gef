@@ -61066,7 +61066,14 @@ class KernelAddressHeuristicFinder:
                 return None
         elif is_arm64():
             # plan 1 (from special register)
-            return get_register("$SP_EL0")
+            # sp_el0 holds the current task only while the CPU is in EL1.
+            # In EL0 it is the user stack pointer and must not be interpreted
+            # as a task_struct address.
+            if not is_in_kernel():
+                return None
+            r = get_register("$SP_EL0")
+            if r and AddressUtil.is_msb_on(r) and is_valid_addr(r):
+                return r
         return None
 
     @staticmethod
@@ -65675,12 +65682,18 @@ class KernelCurrentCommand(GenericCommand):
         threads = sorted(threads, key=lambda th: th.num)
         for thread in threads:
             thread.switch() # change thread
+            cpu_num = thread.num - 1 # ?
             task = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
             if task is None:
+                if is_arm64():
+                    cpsr = get_register(current_arch.flag_register)
+                    if cpsr is not None and ((cpsr >> 2) & 0b11) == 0:
+                        gef_print(
+                            "current (cpu{:d}): unavailable "
+                            "(CPU is in EL0; sp_el0 holds a user stack pointer)".format(cpu_num)
+                        )
                 continue
-            if is_valid_addr(task):
-                cpu_num = thread.num - 1 # ?
-                gef_print("current (cpu{:d}): {:#x} {:s}".format(cpu_num, task, self.get_comm_str(task)))
+            gef_print("current (cpu{:d}): {:#x} {:s}".format(cpu_num, task, self.get_comm_str(task)))
         orig_thread.switch() # revert thread
         orig_frame.select()
         return
