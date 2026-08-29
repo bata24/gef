@@ -73695,7 +73695,16 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
 
             # ctl_table(s)
             ctl_table = self.read_int_from_memory(ctl_dir)
+            # Since v6.10 the array has no sentinel element, so it must be bounded by `ctl_table_size`.
+            # Without this, the walk runs into the next array and dumps its entries twice.
+            ctl_table_end = None
+            if self.offset_ctl_table_size is not None:
+                num_entries = self.read_int32_from_memory(ctl_dir + self.offset_ctl_table_size)
+                if num_entries <= 0x1000: # sanity check
+                    ctl_table_end = ctl_table + self.sizeof_ctl_table * num_entries
             while ctl_table not in self.seen_ctl_table:
+                if ctl_table_end is not None and ctl_table >= ctl_table_end:
+                    break
                 self.seen_ctl_table.add(ctl_table)
 
                 # param_path
@@ -73876,6 +73885,14 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             else:
                 self.offset_handler = 0x10
                 self.sizeof_ctl_table = 0x20
+
+        # struct ctl_table_header
+        # `ctl_table_size` is placed just after `ctl_table`. It is needed because the sentinel
+        # element at the end of the ctl_table array is removed since v6.10.
+        if kversion < "6.6":
+            self.offset_ctl_table_size = None
+        else:
+            self.offset_ctl_table_size = current_arch.ptrsize
 
         # struct ctl_table_root
         self.offset_lookup = current_arch.ptrsize + self.offset_rb_node + current_arch.ptrsize
