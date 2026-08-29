@@ -61192,7 +61192,12 @@ class KernelAddressHeuristicFinder:
         if current:
             kinfo = Kernel.get_kernel_layout()
             if kinfo.rw_base and kinfo.rw_size and kinfo.rw_base <= current < kinfo.rw_base + kinfo.rw_size:
-                return current
+                try:
+                    current_data = read_memory(current, get_pagesize())
+                except gdb.MemoryError:
+                    current_data = b""
+                if b"swapper/0\0" in current_data:
+                    return current
 
             offset_tasks = get_offset_tasks(current, require_init_task=True)
             if offset_tasks:
@@ -65151,7 +65156,7 @@ class Kernel:
             0xffff8bedc104db10|+0x0010|+002: 0x000000000000030b   // ma_flags
 
             [x64 v6.6.1]
-            0xffff972801b78a38|+0x0040|+008: 0x0000000000000000   // (the end of cacheline?)
+            0xffff972801b78a38|+0x0038|+007: 0x0000000000000000   // (the end of cacheline?)
             0xffff972801b78a40|+0x0040|+008: 0x0000030b00000000   // ma_flags || union  <-- maple_tree
             0xffff972801b78a48|+0x0048|+009: 0xffff972801b0cc1e   // ma_root
             """
@@ -66202,7 +66207,14 @@ class KernelCurrentCommand(GenericCommand):
             cpu_num = thread.num - 1 # ?
             task = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
             if task is None:
-                if is_arm64():
+                if is_arm32():
+                    cpsr = get_register(current_arch.flag_register)
+                    if cpsr is not None and (cpsr & 0b11111) == 0b10000:
+                        reason = "CPU is in USR mode; sp holds a user stack pointer"
+                    else:
+                        reason = "failed to resolve current task"
+                    gef_print("current (cpu{:d}): unavailable ({:s})".format(cpu_num, reason))
+                elif is_arm64():
                     cpsr = get_register(current_arch.flag_register)
                     if cpsr is not None and ((cpsr >> 2) & 0b11) == 0:
                         gef_print(
