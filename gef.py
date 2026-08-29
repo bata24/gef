@@ -55747,6 +55747,17 @@ class KernelMagicCommand(GenericCommand):
             ))
         return
 
+    def print_kernel_value(self, sym, value):
+        if not self.should_be_print(sym):
+            return
+
+        width = AddressUtil.get_format_address_width()
+        if value is None:
+            gef_print("{:42s} {:>{:d}s}".format(sym, "Not found", width))
+        else:
+            gef_print("{:42s} {:#0{:d}x}".format(sym, value, width))
+        return
+
     def magic_kernel(self):
         info("Wait for memory scan")
         kversion = Kernel.kernel_version()
@@ -55937,10 +55948,21 @@ class KernelMagicCommand(GenericCommand):
             self.resolve_and_print_kernel(
                 "VMEMMAP_END", None, maps, KernelAddressHeuristicFinder.get_VMEMMAP_END,
             )
-        if is_x86_64():
-            self.resolve_and_print_kernel(
-                "phys_base (kbase@phys)", text_base, maps, KernelAddressHeuristicFinder.get_phys_base,
-            )
+        if is_x86_64() and (
+            self.should_be_print("phys_base (load delta)") or self.should_be_print("kbase@phys")
+        ):
+            try:
+                phys_base = KernelAddressHeuristicFinder.get_phys_base()
+            except Exception:
+                phys_base = None
+            self.print_kernel_value("phys_base (load delta)", phys_base)
+
+            start_kernel_map = KernelAddressHeuristicFinder.consts().START_KERNEL_map
+            if phys_base is None or start_kernel_map is None:
+                kbase_phys = None
+            else:
+                kbase_phys = AddressUtil.normalize_address(phys_base + text_base - start_kernel_map)
+            self.print_kernel_value("kbase@phys", kbase_phys)
         if is_x86_32() or is_arm32():
             self.resolve_and_print_kernel(
                 "mem_map (struct page[])", None, maps, KernelAddressHeuristicFinder.get_mem_map,
