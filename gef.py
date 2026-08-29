@@ -127172,13 +127172,29 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                 self.quiet_err("Could not find key: {:s}".format(original_slab_cache_name))
                 continue
 
+            target_name = alias_groups[slab_cache_name]["alias"]
+            target_size = re.search(r"^:[A-Za-z]*-?(\d+)$", target_name)
+            if target_size and int(target_size.group(1)) != chunk_size:
+                # Different caches may have the same name. In that case sysfs keeps
+                # only the last alias, so use the unclaimed group with the right size.
+                candidates = []
+                for k, v in alias_groups.items():
+                    group_size = re.search(r"^:[A-Za-z]*-?(\d+)$", k)
+                    if v["alias"] == "-" and not v["slab_cache_name"] and group_size:
+                        if int(group_size.group(1)) == chunk_size:
+                            candidates.append(k)
+                if len(candidates) != 1:
+                    self.quiet_err("Could not resolve duplicate cache name: {:s}".format(slab_cache_name))
+                    continue
+                target_name = candidates[0]
+
             for k in alias_groups.keys():
                 # already resolved
                 if alias_groups[k]["slab_cache_name"]:
                     continue
 
                 if alias_groups[k]["alias"] == "-":
-                    if k == alias_groups[slab_cache_name]["alias"]:
+                    if k == target_name:
                         # k: ":0000256" -> "-"
                         # slab_cache_name: "key_jar" -> ":0000256"
                         alias_groups[k]["slab_cache_name"] = slab_cache_name
@@ -127191,7 +127207,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                         alias_groups[k]["object_size"] = object_size
                         alias_groups[k]["chunk_size"] = chunk_size
                 else:
-                    if alias_groups[k]["alias"] == alias_groups[slab_cache_name]["alias"]:
+                    if alias_groups[k]["alias"] == target_name:
                         # k: "key_jar" -> ":0000256"
                         # slab_cache_name: "key_jar" -> ":0000256"
                         alias_groups[k]["slab_cache_name"] = slab_cache_name
@@ -127203,32 +127219,32 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
 
-        # group entries by their Physical Cache Name
+        # group entries by their physical sysfs node
         merged_groups = {}
         for name, info in alias_groups.items():
             if not info["slab_cache_name"]:
                 continue
 
-            phys_name = info["slab_cache_name"]
-            if phys_name not in merged_groups:
-                merged_groups[phys_name] = []
+            phys_id = name if info["alias"] == "-" else info["alias"]
+            if phys_id not in merged_groups:
+                merged_groups[phys_id] = []
 
             entry = info.copy()
             entry["logical_name"] = name
-            merged_groups[phys_name].append(entry)
+            merged_groups[phys_id].append(entry)
 
         # list keys
         if self.args.names:
             target_phys_groups = set()
 
             # Check every physical group
-            for phys_name, children in merged_groups.items():
+            for phys_id, children in merged_groups.items():
                 matched_group = False
                 for child in children:
                     child_name = child["logical_name"]
                     for filter_name in self.args.names:
                         if filter_name in child_name:
-                            target_phys_groups.add(phys_name)
+                            target_phys_groups.add(phys_id)
                             matched_group = True
                             break
 
@@ -127245,16 +127261,18 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
 
         # sort by keys
         if self.args.sort_by_size:
-            sorted_phys_names = sorted(keys_to_process,
+            sorted_phys_ids = sorted(keys_to_process,
                 key=lambda k: (merged_groups[k][0]["object_size"] if merged_groups[k] else 0))
         else:
-            sorted_phys_names = sorted(keys_to_process)
+            sorted_phys_ids = sorted(keys_to_process,
+                key=lambda k: merged_groups[k][0]["slab_cache_name"])
 
         # print
         self.out.append(titlify("Merged Slab Caches"))
         found_merge = False
-        for phys_name in sorted_phys_names:
-            children = merged_groups[phys_name]
+        for phys_id in sorted_phys_ids:
+            children = merged_groups[phys_id]
+            phys_name = children[0]["slab_cache_name"]
 
             # MERGE-ONLY LOGIC:
             # We want to hide groups that are just [PhysicalOwner, SysfsID]
