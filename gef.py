@@ -64349,7 +64349,7 @@ class KernelAddressHeuristicFinder:
                             return x
 
         # plan 3 (from .rodata)
-        kinfo = Kernel.get_kernel_layout()
+        kinfo = Kernel.get_kernel_layout(apply_data_range_hint=False)
         if kinfo.ro_base and kinfo.ro_size and is_valid_addr(kinfo.ro_base):
             ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
             rw_base = kinfo.ro_base
@@ -65440,9 +65440,46 @@ class Kernel:
 
         return None
 
+    # No caching intentionally
+    @staticmethod
+    def get_kernel_data_range_hint(kinfo):
+        """Resolve the kernel .data/.bss range from the iomem resource tree."""
+        if not (is_qemu_system() or is_vmware()) or not kinfo.ro_base:
+            return None
+
+        try:
+            res = gdb.execute("kdevio --quiet --no-pager", to_string=True)
+            resources = re.findall(
+                r"\s(0x[0-9a-f]+)-(0x[0-9a-f]+)\s+Kernel (data|bss)\s",
+                Color.remove_color(res),
+            )
+            data = next((x for x in resources if x[2] == "data"), None)
+            if data is None:
+                return None
+
+            phys_start = int(data[0], 16)
+            phys_end = max(int(x[1], 16) for x in resources)
+            phys_ro_base = Kernel.v2p(kinfo.ro_base)
+            if phys_ro_base is None:
+                return None
+
+            rw_base = AddressUtil.normalize_address(kinfo.ro_base + phys_start - phys_ro_base)
+            rw_end = AddressUtil.normalize_address(rw_base + phys_end - phys_start + 1)
+            if kinfo.ro_end <= rw_base < rw_end and is_valid_addr(rw_end - 1):
+                return rw_base, rw_end
+        except (gdb.error, gdb.MemoryError, StopIteration, ValueError):
+            pass
+        return None
+
     @staticmethod
     @Cache.cache_this_session
-    def get_kernel_layout():
+    def get_kernel_layout(apply_data_range_hint=True):
+        """Resolve the kernel memory layout.
+
+        `apply_data_range_hint` controls whether the iomem resource hint is used
+        to refine the kernel .data/.bss range. GEF internals disable it while
+        resolving symbols and resources to avoid circular dependencies.
+        """
         dic = {
             "maps": None,
             "text_base": None,
@@ -65458,6 +65495,24 @@ class Kernel:
             "has_none": False,
         }
         Kinfo = collections.namedtuple("Kinfo", dic.keys())
+
+        def build_kinfo():
+            dic["has_none"] = None in dic.values()
+            kinfo = Kinfo(*dic.values())
+            if not apply_data_range_hint:
+                return kinfo
+
+            data_hint = Kernel.get_kernel_data_range_hint(kinfo)
+            if data_hint is None:
+                return kinfo
+
+            rw_base, rw_end = data_hint
+            kinfo = kinfo._replace(
+                rw_base=rw_base,
+                rw_size=rw_end - rw_base,
+                rw_end=rw_end,
+            )
+            return kinfo._replace(has_none=None in kinfo[:-1])
 
         if is_kdb():
             # no-symbol, but monitor may be used
@@ -65477,8 +65532,7 @@ class Kernel:
             if dic["ro_base"] and dic["ro_end"]:
                 dic["ro_size"] = dic["ro_end"] - dic["ro_base"]
 
-            dic["has_none"] = None in dic.values()
-            return Kinfo(*dic.values())
+            return build_kinfo()
 
         if is_kgdb():
             # use symbol
@@ -65498,14 +65552,12 @@ class Kernel:
             if dic["ro_base"] and dic["ro_end"]:
                 dic["ro_size"] = dic["ro_end"] - dic["ro_base"]
 
-            dic["has_none"] = None in dic.values()
-            return Kinfo(*dic.values())
+            return build_kinfo()
 
         # Could not find the maps, so fast return
         dic["maps"] = Kernel.get_maps()
         if dic["maps"] is None:
-            dic["has_none"] = None in dic.values()
-            return Kinfo(*dic.values())
+            return build_kinfo()
 
         # 1a. search for the kernel base exact way
         if is_x86():
@@ -65565,8 +65617,7 @@ class Kernel:
                         break
                 else:
                     # Not found, so fast return
-                    dic["has_none"] = None in dic.values()
-                    return Kinfo(*dic.values())
+                    return build_kinfo()
 
         # 2a. search for the kernel RO base
         # If the `-enable-kvm` option for qemu-system is not enabled,
@@ -65667,8 +65718,7 @@ class Kernel:
                         break
             else:
                 # Not found, so fast return
-                dic["has_none"] = None in dic.values()
-                return Kinfo(*dic.values())
+                return build_kinfo()
 
         else:
             # 3. Search for the kernel RW base.
@@ -65685,8 +65735,7 @@ class Kernel:
                                 dic["rw_end"] = vaddr + size
                                 break
 
-        dic["has_none"] = None in dic.values()
-        return Kinfo(*dic.values())
+        return build_kinfo()
 
     @staticmethod
     @Cache.cache_this_session
@@ -65785,7 +65834,7 @@ class Kernel:
                 return Kernel.KernelVersion(linux_banner, version_string, major, minor, patch)
 
         # slow path
-        kinfo = Kernel.get_kernel_layout()
+        kinfo = Kernel.get_kernel_layout(apply_data_range_hint=False)
         if kinfo.has_none:
             return None
         area = []
@@ -133257,7 +133306,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
 
         # Slow path
         try:
-            kinfo = Kernel.get_kernel_layout()
+            kinfo = Kernel.get_kernel_layout(apply_data_range_hint=False)
             if kinfo.has_none:
                 return False
         except gdb.MemoryError:
