@@ -66662,16 +66662,17 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 if (v & 0x1fff) != 0:
                     break
                 if not is_valid_addr(v):
-                    break
+                    zcount += 1
+                    continue
             else:
                 found = True
 
-            # For unknown reasons, processes without a stack are sometimes observed.
+            # For unknown reasons, processes without a readable stack are sometimes observed.
             # 0xffffa122c17db000 U   106     chal.sh ... 0xffffa43100218000 0xd16ef01535a35500
             # 0xffffa122c17da000 U   108     socat   ... 0xffffa43100278000 0x3d378b9e6f59bf00
             # 0xffffa122c17dc000 U   109     chal    ... 0xffffa431002d4000 0x277c67d5e5854500
             # 0xffffa122c17dd000 K   110     3       ... 0x0000000000000000 0x22a999743f180500 <-- here
-            # Therefore, a small number of NULL pointers are allowed.
+            # Therefore, a small number of NULL or unreadable pointers are allowed.
             if zcount > len(task_addrs) // 10:
                 found = False
 
