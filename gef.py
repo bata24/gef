@@ -64619,7 +64619,11 @@ class KernelAddressHeuristicFinder:
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
                 elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
+                    res = re.split(r"\bret\b", res, maxsplit=1)[0]
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                    )
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
                 for x in g:
