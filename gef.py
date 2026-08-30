@@ -66427,6 +66427,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     def __init__(self):
         super().__init__()
         # task_struct
+        self.init_task = None
         self.offset_tasks = None
         self.offset_mm = None
         self.offset_stack = None
@@ -68817,7 +68818,32 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     return sizeof_action
         return None
 
+    def show_init_task_recovery_hint(self):
+        if self.args.init_task is not None:
+            return
+
+        if self.init_task is not None:
+            try:
+                kinfo = Kernel.get_kernel_layout()
+            except (gdb.error, gdb.MemoryError):
+                kinfo = None
+            image_starts = [] if kinfo is None else [x for x in (kinfo.text_base, kinfo.ro_base, kinfo.rw_base) if x]
+            image_ends = [] if kinfo is None else [x for x in (kinfo.text_end, kinfo.ro_end, kinfo.rw_end) if x]
+            if image_starts and image_ends:
+                image_start = min(image_starts)
+                image_end = max(image_ends)
+                if image_start <= self.init_task < image_end:
+                    return
+                self.quiet_warn(
+                    "Hint: init_task looks outside the kernel image "
+                    "(kbase: {:#x} - {:#x}).".format(image_start, image_end)
+                )
+
+        self.quiet_warn("Retry with: ktask --init-task <addr>")
+        return
+
     def initialize(self):
+        self.init_task = None
         kversion = Kernel.kernel_version()
         if kversion is None:
             self.quiet_err("Could not find Linux kernel")
@@ -68828,6 +68854,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             init_task = self.args.init_task
         else:
             init_task = KernelAddressHeuristicFinder.get_init_task()
+        self.init_task = init_task
         if init_task is None:
             self.quiet_err("Could not find init_task")
             return False
@@ -68843,7 +68870,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # task addresses
         task_addrs = KernelTaskCommand.get_task_list(init_task, self.offset_tasks)
-        if task_addrs is None:
+        if not task_addrs:
             self.quiet_err("Failed to list each tasks")
             return False
         self.quiet_info("Number of tasks: {:d}".format(len(task_addrs)))
@@ -69541,6 +69568,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.filepath_cache = {}
         ret = self.initialize()
         if ret is False:
+            self.show_init_task_recovery_hint()
             return
         task_addrs = ret
 
