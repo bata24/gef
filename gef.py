@@ -73705,7 +73705,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-s", "--skip-symlink", action="store_true", help="do not follow symlink (net.* and user.*).")
     parser.add_argument("-e", "--exact", action="store_true", help="use exact match.")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="dump zero-sized entries too.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="dump zero-sized entries and proc_handler too.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
@@ -73794,59 +73794,63 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                     return True
             return False
 
+    def get_handler_symbol(self, handler):
+        if not hasattr(self, "kallsyms_by_address"):
+            kallsyms = __gef_command_instances__["ksymaddr-remote"].kallsyms
+            self.kallsyms_by_address = {addr: name for addr, name, _ in kallsyms}
+        name = self.kallsyms_by_address.get(handler)
+        if name:
+            return " <{:s}>".format(name)
+        return Symbol.get_symbol_string(handler, nosymbol_string=" <NO_SYMBOL>")
+
     def dump_data(self, ctl_table, param_path, mode):
         if not self.should_be_print(param_path):
             return
 
         maxlen = self.read_int32_from_memory(ctl_table + self.offset_maxlen)
-        # data
         data_addr = self.read_int_from_memory(ctl_table + current_arch.ptrsize)
-        if data_addr and self.is_valid_addr(data_addr):
-            # type from handler
-            handler = self.read_int_from_memory(ctl_table + self.offset_handler)
+        handler = self.read_int_from_memory(ctl_table + self.offset_handler)
+
+        handler_info = ""
+        if self.args.verbose:
+            handler_info = " {:#018x}{:s}".format(handler, self.get_handler_symbol(handler))
+
+        if not data_addr:
+            data_addr_str = "-"
+            data_val = "-"
+        elif self.is_valid_addr(data_addr):
+            data_addr_str = "{:#018x}".format(data_addr)
             # data length
             if handler in self.str_types:
-                data_val = self.read_cstring_from_memory(data_addr)
-                self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {!r}".format(
-                    param_path, data_addr, maxlen, mode, data_val,
-                )) # allow None
+                data_val = "{!r}".format(self.read_cstring_from_memory(data_addr)) # allow None
             elif maxlen == 4:
-                data_val = self.read_int32_from_memory(data_addr)
-                self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {:#018x}".format(
-                    param_path, data_addr, maxlen, mode, data_val,
-                ))
+                data_val = "{:#018x}".format(self.read_int32_from_memory(data_addr))
             elif maxlen == 8:
-                data_val = self.read_int64_from_memory(data_addr)
-                self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {:#018x}".format(
-                    param_path, data_addr, maxlen, mode, data_val,
-                ))
+                data_val = "{:#018x}".format(self.read_int64_from_memory(data_addr))
             elif maxlen == 1:
-                data_val = self.read_int8_from_memory(data_addr)
-                self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {:#018x}".format(
-                    param_path, data_addr, maxlen, mode, data_val,
-                ))
+                data_val = "{:#018x}".format(self.read_int8_from_memory(data_addr))
             elif maxlen == 0:
-                if self.args.verbose:
-                    self.out.append("{:<56s} {:#018x} {:#07x} {:#010o}".format(
-                        param_path, data_addr, maxlen, mode,
-                    ))
+                if not self.args.verbose:
+                    return
+                data_val = "-"
             else:
                 # type from heuristic
                 data_val = self.read_cstring_from_memory(data_addr)
                 if data_val and data_val.isprintable() and len(data_val) >= 2:
-                    self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {!r}".format(
-                        param_path, data_addr, maxlen, mode, data_val,
-                    ))
+                    data_val = "{!r}".format(data_val)
                 else:
-                    data_val = self.read_int_from_memory(data_addr)
-                    self.out.append("{:<56s} {:#018x} {:#07x} {:#010o} {:#018x}".format(
-                        param_path, data_addr, maxlen, mode, data_val,
-                    ))
+                    data_val = "{:#018x}".format(self.read_int_from_memory(data_addr))
         else:
-            if self.args.verbose:
-                self.out.append("{:<56s} {:#018x} {:#07x} {:#010o}".format(
-                    param_path, data_addr, maxlen, mode,
-                ))
+            if not self.args.verbose:
+                return
+            data_addr_str = "{:#018x}".format(data_addr)
+            data_val = "-"
+
+        if self.args.verbose:
+            data_val = "{:<18s}".format(data_val)
+        self.out.append("{:<56s} {:<18s} {:#07x} {:#010o} {:s}{:s}".format(
+            param_path, data_addr_str, maxlen, mode, data_val, handler_info,
+        ))
 
         return
 
@@ -74188,6 +74192,9 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         if not args.quiet:
             fmt = "{:<56s} {:<18s} {:<7s} {:<10s} {:<s}"
             legend = ["ParamName", "ParamAddress", "MaxLen", "Mode", "ParamValue"]
+            if args.verbose:
+                fmt = "{:<56s} {:<18s} {:<7s} {:<10s} {:<18s} {:<s}"
+                legend.append("ProcHandler")
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         # progress setup
