@@ -13325,6 +13325,37 @@ def is_in_kernel():
     return False
 
 
+@Cache.cache_until_next
+def is_in_kpti_transition():
+    """Return whether arm64 is stopped while switching TTBR1 for KPTI."""
+    if not is_arm64() or not is_in_kernel():
+        return False
+
+    pc = current_arch.pc
+    sp = current_arch.sp
+    instruction_length = current_arch.instruction_length
+    if pc is None or sp is None:
+        return False
+
+    # `msr ttbr1_el1, x0` is encoded as 0xd518_2020. The source register xN is
+    # encoded in the low 5 bits, so mask them out when matching the instruction.
+    try:
+        code = read_memory(pc - 8 * instruction_length, 17 * instruction_length)
+    except gdb.MemoryError:
+        return False
+    if not any(insn & 0xffff_ffe0 == 0xd518_2020 for insn in slice_unpack(code, 4)):
+        return False
+
+    if not is_valid_addr(sp):
+        return True
+
+    # If kallsyms was already resolved, also check a known regular kernel mapping.
+    command = __gef_command_instances__.get("ksymaddr-remote")
+    kallsyms = command.kallsyms if command else []
+    known_address = next((addr for addr, name, typ in kallsyms if name == "_stext"), None)
+    return known_address is not None and not is_valid_addr(known_address)
+
+
 @Cache.cache_this_session
 def is_support_secure_world():
     if not is_arm32() and not is_arm64():
@@ -14314,6 +14345,7 @@ class EventHandler:
 
     __gef_check_once__ = True # the flag to process only once at startup
     __gef_check_disabled_bp__ = False # the flag to remove unnecessary breakpoints
+    kpti_transition_active = False
 
     @staticmethod
     def hook_stop_handler(event):
@@ -14346,6 +14378,11 @@ class EventHandler:
         if current_arch is None:
             set_arch(get_arch())
 
+        kpti_transition = is_in_kpti_transition()
+        if kpti_transition and not EventHandler.kpti_transition_active:
+            warn("Stopped during a KPTI page-table transition; continue briefly and retry.")
+        EventHandler.kpti_transition_active = kpti_transition
+
         # set `c`, `ni` and `si` command hooks for qemu-user and pin
         if EventHandler.__gef_check_once__:
             if is_qemu_user() or is_pin():
@@ -14361,7 +14398,7 @@ class EventHandler:
                 gdb.execute("gef config context.disable_auxv True")
 
         # If the silent command is specified for a breakpoint, skip `context` command.
-        context_flag = True
+        context_flag = not kpti_transition
         if isinstance(event, gdb.BreakpointEvent):
             if event.breakpoint.is_valid() and event.breakpoint.enabled:
                 if event.breakpoint.commands:
@@ -14400,6 +14437,7 @@ class EventHandler:
     def exit_handler(_event):
         """GDB event handler for exit cases."""
         Cache.reset_gef_caches(all=True)
+        EventHandler.kpti_transition_active = False
         return
 
     @staticmethod
