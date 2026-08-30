@@ -64376,17 +64376,33 @@ class KernelAddressHeuristicFinder:
         """
         ptrsize = current_arch.ptrsize
 
-        first = None
+        # Collect every pointer that points back into `hrtimer_cpu_base` itself. With
+        # CONFIG_DEBUG_LOCK_ALLOC these are not only `clock_base[i].cpu_base`: `lock.dep_map.key`
+        # is a lockdep self-reference placed before `clock_base[]`, and `clock_base[i].seq.lock`
+        # points to `&cpu_base->lock` inside every element. So the first hit is not necessarily
+        # `clock_base[0].cpu_base`, and the repeat of a same pointer is not necessarily the stride.
+        candidates = []
         for i in range(0x400 // ptrsize):
             try:
                 v = read_int_from_memory(hrtimer_cpu_base + ptrsize * i)
             except gdb.MemoryError:
                 return None
-            if first is None:
-                if abs(v - hrtimer_cpu_base) < 0x40:
-                    first = (ptrsize * i, v)
-            elif v == first[1]:
-                return first[0], ptrsize * i - first[0]
+            if abs(v - hrtimer_cpu_base) < 0x40:
+                candidates.append((ptrsize * i, v))
+
+        # `clock_base[i].index == i` (HRTIMER_BASE_MONOTONIC, _REALTIME, _BOOTTIME, _TAI, ...)
+        # tells the real head and stride apart from the lockdep pointers. Every supported
+        # version has 4 clock bases or more.
+        for (offset, v), (next_offset, next_v) in itertools.combinations(candidates, 2):
+            if v != next_v:
+                continue
+            size = next_offset - offset
+            try:
+                index = [u32(read_memory(hrtimer_cpu_base + offset + size * n + ptrsize, 4)) for n in range(4)]
+            except gdb.MemoryError:
+                continue
+            if index == [0, 1, 2, 3]:
+                return offset, size
         return None
 
     @staticmethod
