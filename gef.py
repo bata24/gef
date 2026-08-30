@@ -395,7 +395,20 @@ class Cache:
     __gef_caches__ = {"until_next": {}, "this_session": {}}
 
     @staticmethod
-    def cache_wrap(life_time, f, skip_None_cache=False):
+    def cache_wrap(life_time, f, cache_None=True, per_cpu=False):
+
+        def cpu_context():
+            """Return the identifier of the current CPU context, i.e., the selected gdb thread.
+            Some kernel heuristics return a different answer depending on which CPU is selected,
+            so their cache must be separated by this value."""
+
+            try:
+                thread = gdb.selected_thread()
+            except Exception:
+                return None
+            if thread is None:
+                return None
+            return getattr(thread, "global_num", None) or thread.num
 
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
@@ -405,11 +418,11 @@ class Cache:
 
             try:
                 kw = tuple(sorted(kwargs.items()))
-                key = (args, kw)
+                key = (cpu_context(), args, kw) if per_cpu else (args, kw)
                 return fcache[key]
             except KeyError:
                 ret = f(*args, **kwargs)
-                if skip_None_cache is False or ret is not None:
+                if cache_None or ret is not None:
                     fcache[key] = ret
                 return ret
             except TypeError:
@@ -418,20 +431,32 @@ class Cache:
         return wrapper
 
     @staticmethod
-    def cache_until_next(f):
-        return Cache.cache_wrap("until_next", f)
+    def cache_until_next(f=None, *, cache_None=True, per_cpu=False):
+        """Decorator for the "until_next" cache.
+        Usable bare (`@Cache.cache_until_next`) or with options
+        (`@Cache.cache_until_next(cache_None=False)`)."""
 
-    @staticmethod # noqa
-    def cache_until_next_skip_None_cache(f):
-        return Cache.cache_wrap("until_next", f, skip_None_cache=True)
+        if f is None: # called with options
+            return functools.partial(
+                Cache.cache_until_next, cache_None=cache_None, per_cpu=per_cpu,
+            )
+        if not callable(f):
+            raise TypeError("Cache.cache_until_next: the options must be keyword arguments")
+        return Cache.cache_wrap("until_next", f, cache_None=cache_None, per_cpu=per_cpu)
 
     @staticmethod
-    def cache_this_session(f):
-        return Cache.cache_wrap("this_session", f)
+    def cache_this_session(f=None, *, cache_None=True, per_cpu=False):
+        """Decorator for the "this_session" cache.
+        Usable bare (`@Cache.cache_this_session`) or with options
+        (`@Cache.cache_this_session(cache_None=False)`)."""
 
-    @staticmethod
-    def cache_this_session_skip_None_cache(f):
-        return Cache.cache_wrap("this_session", f, skip_None_cache=True)
+        if f is None: # called with options
+            return functools.partial(
+                Cache.cache_this_session, cache_None=cache_None, per_cpu=per_cpu,
+            )
+        if not callable(f):
+            raise TypeError("Cache.cache_this_session: the options must be keyword arguments")
+        return Cache.cache_wrap("this_session", f, cache_None=cache_None, per_cpu=per_cpu)
 
     @staticmethod
     def reset_gef_caches(all=False):
@@ -3936,7 +3961,7 @@ class GlibcHeap:
         return None
 
     @staticmethod
-    @Cache.cache_this_session_skip_None_cache
+    @Cache.cache_this_session(cache_None=False)
     def search_for_main_arena():
         """Search for the address of main_arena using multiple strategies and caches the result."""
         if is_arm64():
@@ -12644,6 +12669,29 @@ def switch_to_intel_syntax(f):
         return ret
 
     return wrapper
+
+
+def cpu_context_dependent(f):
+    """Decorator for the heuristics whose answer depends on which CPU (= gdb thread) is selected.
+    The result is memoized per CPU context, so an answer resolved on one CPU is never reused
+    on another one. If `KF.DEBUG_CONTEXT` is set, each resolution is reported together with
+    the CPU context it was resolved in."""
+
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        ret = f(*args, **kwargs)
+        if KernelAddressHeuristicFinder.DEBUG_CONTEXT:
+            thread = gdb.selected_thread()
+            cpu = "cpu{:d}".format(thread.num - 1) if thread else "cpu?" # thread.num is 1-origin
+            value = "None" if ret is None else "{:#x}".format(ret)
+            # Report to the real stderr, not via gef_print. These heuristics are often called
+            # from a nested `gdb.execute(..., to_string=True)`, which swallows gef_print().
+            sys.__stderr__.write("{} {:s}: {:s}() -> {:s}\n".format(
+                Color.colorify("[D]", "bold magenta"), cpu, f.__qualname__, value,
+            ))
+        return ret
+
+    return Cache.cache_until_next(wrapper, cache_None=False, per_cpu=True)
 
 
 def only_if_gdb_running(f):
@@ -55186,7 +55234,7 @@ class HeapBaseCommand(GenericCommand):
         return None
 
     @staticmethod
-    @Cache.cache_this_session_skip_None_cache
+    @Cache.cache_this_session(cache_None=False)
     def heap_base(force_heuristic=False):
         heap_base = getattr(HeapBaseCommand, "heap_base_user_specific", None)
         if is_valid_addr(heap_base):
@@ -60982,6 +61030,7 @@ class KernelAddressHeuristicFinder:
 
     USE_DIRECTLY = True # for debug
     USE_KSYSCTL = True # for debug
+    DEBUG_CONTEXT = False # for debug; report which CPU context resolved each cpu-dependent heuristic
     CONSTS = None
 
     @staticmethod
@@ -61093,6 +61142,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
+    @cpu_context_dependent
     def get_current_task_for_current_thread():
         if is_arm32():
             # plan 1 (from special register)
@@ -61148,6 +61198,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
+    @cpu_context_dependent
     @switch_to_intel_syntax
     def get_init_task():
         # plan 1 (directly)
@@ -65952,7 +66003,7 @@ class Kernel:
             return "{:d}.{:d}.{:d}".format(*self.version_tuple)
 
     @staticmethod
-    @Cache.cache_this_session_skip_None_cache
+    @Cache.cache_this_session(cache_None=False)
     def kernel_version():
         # fast path
         linux_banner = None
@@ -66000,7 +66051,7 @@ class Kernel:
         return None
 
     @staticmethod
-    @Cache.cache_this_session_skip_None_cache
+    @Cache.cache_this_session(cache_None=False)
     def kernel_cmdline():
         saved_command_line = None
         if is_kdb():
@@ -66364,17 +66415,26 @@ class KernelCurrentCommand(GenericCommand):
         self.quiet_info("Num of cpu: {:d} (guessed)".format(len(self.cpu_offset)))
         return self.cpu_offset
 
-    def get_comm_str(self, task_addr):
-        if self.offset_comm is None:
-            ret = gdb.execute("ktask --no-pager --meta", to_string=True)
-            r = re.search(r"offsetof\(task_struct, comm\): (0x\S+)", ret)
-            if r is not None:
-                self.offset_comm = int(r.group(1), 16)
-            else:
-                self.quiet_err("ktask failed")
-                self.offset_comm = False
+    def resolve_offset_comm(self, report_failure=True):
+        """Resolve `offsetof(task_struct, comm)` via `ktask`.
+        `ktask` resolves `init_task` from the CPU context of the selected thread and
+        the answer differs between CPUs, so this must not be called while another
+        thread is temporarily selected."""
 
-        if self.offset_comm is False:
+        if self.offset_comm is not None:
+            return self.offset_comm
+
+        ret = gdb.execute("ktask --no-pager --meta", to_string=True)
+        r = re.search(r"offsetof\(task_struct, comm\): (0x\S+)", ret)
+        if r is not None:
+            self.offset_comm = int(r.group(1), 16)
+        elif report_failure:
+            self.quiet_err("ktask failed")
+            self.offset_comm = False
+        return self.offset_comm
+
+    def get_comm_str(self, task_addr):
+        if self.resolve_offset_comm() is False:
             return "???"
 
         comm = read_cstring_from_memory(task_addr + self.offset_comm)
@@ -66383,6 +66443,9 @@ class KernelCurrentCommand(GenericCommand):
     def dump_current_arm(self):
         orig_thread = gdb.selected_thread()
         orig_frame = gdb.selected_frame()
+        # Resolve `offsetof(task_struct, comm)` before switching to another thread.
+        # If this CPU cannot resolve it, `get_comm_str()` retries later in the loop.
+        self.resolve_offset_comm(report_failure=False)
         threads = gdb.selected_inferior().threads()
         threads = sorted(threads, key=lambda th: th.num)
         for thread in threads:
