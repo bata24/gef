@@ -73803,7 +73803,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             return " <{:s}>".format(name)
         return Symbol.get_symbol_string(handler, nosymbol_string=" <NO_SYMBOL>")
 
-    def dump_data(self, ctl_table, param_path, mode):
+    def dump_data(self, ctl_table_header, ctl_table, param_path, mode):
         if not self.should_be_print(param_path):
             return
 
@@ -73812,8 +73812,12 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         handler = self.read_int_from_memory(ctl_table + self.offset_handler)
 
         handler_info = ""
+        header_info = ""
         if self.args.verbose:
             handler_info = " {:#018x}{:s}".format(handler, self.get_handler_symbol(handler))
+            ctset = self.read_int_from_memory(ctl_table_header + self.offset_set)
+            namespace = self.ctset_namespaces.get(ctset, "-")
+            header_info = "{:#018x} {:#018x} {:<23s} ".format(ctl_table_header, ctset, namespace)
 
         if not data_addr:
             data_addr_str = "-"
@@ -73848,8 +73852,8 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
 
         if self.args.verbose:
             data_val = "{:<18s}".format(data_val)
-        self.out.append("{:<56s} {:<18s} {:#07x} {:#010o} {:s}{:s}".format(
-            param_path, data_addr_str, maxlen, mode, data_val, handler_info,
+        self.out.append("{:<56s} {:<18s} {:#07x} {:#010o} {:s}{:s}{:s}".format(
+            param_path, data_addr_str, maxlen, mode, header_info, data_val, handler_info,
         ))
 
         return
@@ -73937,7 +73941,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                     break
                 else:
                     # If it's not a directory, it should hold data, so dump it.
-                    self.dump_data(ctl_table, param_path, mode)
+                    self.dump_data(ctl_dir, ctl_table, param_path, mode)
                     if self.args.exact and self.exact_found:
                         return
 
@@ -74108,6 +74112,10 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         # struct ctl_table_root
         self.offset_lookup = current_arch.ptrsize + self.offset_rb_node + current_arch.ptrsize
 
+        # struct ctl_table_header; `set` is immediately before `parent`.
+        self.offset_set = self.offset_parent - current_arch.ptrsize
+        self.ctset_namespaces = {self.sysctl_table_root: "global"}
+
         # the root for `net.*`; init_nsproxy.net_ns.sysctls
         self.net_ctset = None
         init_net = KernelAddressHeuristicFinder.get_init_net()
@@ -74119,6 +74127,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                     v = self.read_int_from_memory(current)
                     if v == is_seen:
                         self.net_ctset = current
+                        self.ctset_namespaces[current] = "net:{:#018x}".format(init_net)
                         break
                     current += current_arch.ptrsize
 
@@ -74134,6 +74143,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                     v = self.read_int_from_memory(current)
                     if v in set_is_seen:
                         self.user_ctset = current
+                        self.ctset_namespaces[current] = "user:{:#018x}".format(init_user_ns)
                         break
                     current += current_arch.ptrsize
 
@@ -74193,8 +74203,11 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             fmt = "{:<56s} {:<18s} {:<7s} {:<10s} {:<s}"
             legend = ["ParamName", "ParamAddress", "MaxLen", "Mode", "ParamValue"]
             if args.verbose:
-                fmt = "{:<56s} {:<18s} {:<7s} {:<10s} {:<18s} {:<s}"
-                legend.append("ProcHandler")
+                fmt = "{:<56s} {:<18s} {:<7s} {:<10s} {:<18s} {:<18s} {:<23s} {:<18s} {:<s}"
+                legend = [
+                    "ParamName", "ParamAddress", "MaxLen", "Mode", "CtlTableHeader", "CtlTableSet",
+                    "Namespace", "ParamValue", "ProcHandler",
+                ]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         # progress setup
