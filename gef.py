@@ -58759,6 +58759,49 @@ class KernelAddressHeuristicFinderUtil:
                     skip -= 1
                     continue
 
+    @staticmethod
+    def get_kernel_image_range():
+        """Return [start, end) of the kernel image (.text/.rodata/.data/.bss), or None if unknown."""
+        try:
+            kinfo = Kernel.get_kernel_layout()
+        except Exception:
+            return None
+        # `rw_end` is 0 when the RW area of an old (=RWX) kernel could not be detected.
+        if kinfo is None or not kinfo.text_base or not kinfo.text_size or not kinfo.rw_end:
+            return None
+        # The detected RW area may be truncated because .bss can be mapped as another region.
+        # Merge the regions that are contiguous with .text, but stop at a region larger than
+        # .text, because it is the linear map, not a part of the kernel image.
+        end = kinfo.text_base
+        for vaddr, size, _perm in kinfo.maps or []:
+            if vaddr < end:
+                continue
+            if vaddr != end or size > kinfo.text_size:
+                break
+            end = vaddr + size
+        return kinfo.text_base, max(end, kinfo.rw_end)
+
+    @staticmethod
+    def is_in_kernel_image(x):
+        """Sanity check for a symbol that is statically allocated in the kernel image.
+
+        `init_task`, `slab_caches`, `modprobe_path` and so on are always in the kernel image,
+        so a candidate outside of it is always wrong and must not be adopted.
+        It returns True when the kernel layout is unknown, to keep the legacy behavior."""
+        if x is None:
+            return False
+        image_range = KernelAddressHeuristicFinderUtil.get_kernel_image_range()
+        if image_range is None:
+            return True
+        return image_range[0] <= x < image_range[1]
+
+    @staticmethod
+    def filter_in_kernel_image(gen):
+        """Drop the candidates that are not in the kernel image."""
+        for x in gen:
+            if KernelAddressHeuristicFinderUtil.is_in_kernel_image(x):
+                yield x
+
 
 class KernelConstsBase:
     """A class that manages constants by version."""
@@ -61130,7 +61173,7 @@ class KernelAddressHeuristicFinder:
                         g = KernelAddressHeuristicFinderUtil.x64_x86_cmp_const(res)
                     elif is_x86_32():
                         g = KernelAddressHeuristicFinderUtil.x64_x86_cmp_const(res)
-                    for x in g:
+                    for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                         # There are cases where init_pid_ns is falsely detected as init_task.
                         # The initial value of kref is 2, so exclude this.
                         if not is_valid_addr(x):
@@ -61211,6 +61254,9 @@ class KernelAddressHeuristicFinder:
                 task_list = KernelTaskCommand.get_task_list(current, offset_tasks)
                 min_distance_task = (None, 0xffff_ffff_ffff_ffff)
                 for task in task_list:
+                    # Only `init_task` is statically allocated. The others are on the slab.
+                    if not KernelAddressHeuristicFinderUtil.is_in_kernel_image(task):
+                        continue
                     distance = abs((kinfo.rw_base or kinfo.text_base) - task)
                     if min_distance_task[1] > distance:
                         min_distance_task = (task, distance)
@@ -61836,7 +61882,7 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res, skip=1)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-                for x in g:
+                for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                     return x
 
         # plan 3 (available v5.9 or later)
@@ -61852,7 +61898,7 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_add(res)
-                for x in g:
+                for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                     return x
 
         # plan 4 (available v4.10 or before and CONFIG_MEMCG=y)
@@ -61868,7 +61914,7 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-                for x in g:
+                for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                     return x
 
         # plan 5 (available v3.11 ~ v4.10 and CONFIG_SLABINFO=y)
@@ -61886,7 +61932,7 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     # TODO
                     g = []
-                for x in g:
+                for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                     return x
 
         # plan 6 (available if CONFIG_SLAB=y)
@@ -61903,7 +61949,7 @@ class KernelAddressHeuristicFinder:
                 g = []
             elif is_arm32():
                 g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res, skip=1)
-            for x in g:
+            for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                 return x
 
         # plan 7 (available v2.6.24 ~ v3.10 and CONFIG_SLABINFO=y)
@@ -61922,7 +61968,7 @@ class KernelAddressHeuristicFinder:
                     elif is_arm32():
                         # TODO
                         g = []
-                    for x in g:
+                    for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                         v1 = read_int_from_memory(x)
                         v2 = read_int_from_memory(x + current_arch.ptrsize)
                         if is_valid_addr(v1) and is_valid_addr(v2):
@@ -61941,7 +61987,7 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-                for slab_mutex in g:
+                for slab_mutex in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                     for i in range(16):
                         x = slab_mutex + current_arch.ptrsize * i
                         if is_double_link_list(x, min_len=10):
@@ -61995,7 +62041,7 @@ class KernelAddressHeuristicFinder:
         # plan 2 (from ksysctl)
         if KernelAddressHeuristicFinder.USE_KSYSCTL:
             x = Kernel.get_ksysctl("kernel.modprobe")
-            if x:
+            if KernelAddressHeuristicFinderUtil.is_in_kernel_image(x):
                 return x
         return None
 
@@ -62011,7 +62057,7 @@ class KernelAddressHeuristicFinder:
         # plan 2 (from ksysctl)
         if KernelAddressHeuristicFinder.USE_KSYSCTL:
             x = Kernel.get_ksysctl("kernel.poweroff_cmd")
-            if x:
+            if KernelAddressHeuristicFinderUtil.is_in_kernel_image(x):
                 return x
         return None
 
@@ -62027,7 +62073,7 @@ class KernelAddressHeuristicFinder:
         # plan 2 (from ksysctl)
         if KernelAddressHeuristicFinder.USE_KSYSCTL:
             x = Kernel.get_ksysctl("kernel.core_pattern")
-            if x:
+            if KernelAddressHeuristicFinderUtil.is_in_kernel_image(x):
                 return x
         return None
 
