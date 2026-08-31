@@ -66835,6 +66835,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         for i in range(0x300):
             offset_comm = i * current_arch.ptrsize
             valid = True
+            names = set()
             for task in task_addrs:
                 if not is_ascii_string(task + offset_comm):
                     valid = False
@@ -66846,6 +66847,13 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 if len(s) < 2:
                     valid = False
                     break
+                names.add(s)
+            else:
+                # Every task gave the same string, so this is not `comm` but a pointer that is
+                # initialized to an identical value for all tasks (e.g. posix_cputimers_work.work.func).
+                # Depending on KASLR, such a pointer can be read as a short ASCII string.
+                if len(names) < 2:
+                    valid = False
             if valid:
                 return offset_comm
         return None
