@@ -2367,6 +2367,127 @@ class Elf:
             size = strsz - val
         return self.read_cstring_from_vaddr(strtab + val, size)
 
+    def get_gnu_properties(self):
+        """Return the entries in a NT_GNU_PROPERTY_TYPE_0 note."""
+        data = self.read_phdr(Elf.Phdr.PT_GNU_PROPERTY)
+        if not data:
+            data = self.read_shdr(".note.gnu.property")
+        if not data:
+            return {}
+
+        endian = "<" if self.e_endianness == Elf.LITTLE_ENDIAN else ">"
+        property_align = 8 if self.e_class == Elf.ELF_64_BITS else 4
+        properties = {}
+        note_pos = 0
+
+        while note_pos + 12 <= len(data):
+            namesz, descsz, note_type = struct.unpack_from("{}III".format(endian), data, note_pos)
+            note_pos += 12
+            if note_pos + namesz > len(data):
+                break
+            name = data[note_pos:note_pos + namesz]
+            note_pos = align(note_pos + namesz, 4)
+            if note_pos + descsz > len(data):
+                break
+            desc = data[note_pos:note_pos + descsz]
+            note_pos = align(note_pos + descsz, 4)
+
+            if note_type != 5 or name.rstrip(b"\0") != b"GNU": # NT_GNU_PROPERTY_TYPE_0
+                continue
+
+            property_pos = 0
+            while property_pos + 8 <= len(desc):
+                property_type, property_size = struct.unpack_from("{}II".format(endian), desc, property_pos)
+                value_pos = property_pos + 8
+                value_end = value_pos + property_size
+                if value_end > len(desc):
+                    break
+                properties[property_type] = desc[value_pos:value_end]
+                property_pos = align(value_end, property_align)
+        return properties
+
+    def get_gnu_property_value(self, property_type):
+        data = self.get_gnu_properties().get(property_type)
+        if data is None or len(data) < 4:
+            return None
+        endian = "<" if self.e_endianness == Elf.LITTLE_ENDIAN else ">"
+        return struct.unpack("{}I".format(endian), data[:4])[0]
+
+    def get_imported_symbols(self):
+        """Return undefined symbols from .dynsym."""
+        dynsym = self.get_shdr(".dynsym")
+        dynstr = self.read_shdr(".dynstr")
+        data = self.read_shdr(".dynsym")
+        if dynsym is None or dynstr is None or data is None:
+            return None
+
+        entry_size = dynsym.sh_entsize
+        if not entry_size:
+            entry_size = 24 if self.e_class == Elf.ELF_64_BITS else 16
+        minimum_entry_size = 24 if self.e_class == Elf.ELF_64_BITS else 16
+        if entry_size < minimum_entry_size:
+            return None
+        endian = "<" if self.e_endianness == Elf.LITTLE_ENDIAN else ">"
+        symbols = set()
+
+        for pos in range(0, len(data) - entry_size + 1, entry_size):
+            name_offset = struct.unpack_from("{}I".format(endian), data, pos)[0]
+            if self.e_class == Elf.ELF_64_BITS:
+                section_index = struct.unpack_from("{}H".format(endian), data, pos + 6)[0]
+            else:
+                section_index = struct.unpack_from("{}H".format(endian), data, pos + 14)[0]
+            if section_index != 0 or name_offset >= len(dynstr): # SHN_UNDEF
+                continue
+            end = dynstr.find(b"\0", name_offset)
+            if end < 0:
+                continue
+            symbols.add(dynstr[name_offset:end])
+        return symbols
+
+    def get_wx_load_ranges(self):
+        """Return direct RWX PT_LOAD ranges and page-rounded W/X overlaps."""
+        load_segments = [
+            phdr for phdr in self.phdrs
+            if phdr.p_type == Elf.Phdr.PT_LOAD and phdr.p_memsz
+        ]
+        direct = [
+            (phdr.p_vaddr, phdr.p_vaddr + phdr.p_memsz)
+            for phdr in load_segments
+            if phdr.p_flags & Elf.Phdr.PF_W and phdr.p_flags & Elf.Phdr.PF_X
+        ]
+
+        try:
+            page_size = get_pagesize()
+        except Exception:
+            page_size = 0x1000
+
+        writable = [phdr for phdr in load_segments if phdr.p_flags & Elf.Phdr.PF_W]
+        executable = [phdr for phdr in load_segments if phdr.p_flags & Elf.Phdr.PF_X]
+        overlaps = []
+        for writable_phdr in writable:
+            writable_start = writable_phdr.p_vaddr & ~(page_size - 1)
+            writable_end = align(writable_phdr.p_vaddr + writable_phdr.p_memsz, page_size)
+            for executable_phdr in executable:
+                if writable_phdr is executable_phdr:
+                    continue
+                executable_start = executable_phdr.p_vaddr & ~(page_size - 1)
+                executable_end = align(executable_phdr.p_vaddr + executable_phdr.p_memsz, page_size)
+                start = max(writable_start, executable_start)
+                end = min(writable_end, executable_end)
+                if start < end:
+                    overlaps.append((start, end))
+
+        def merge_ranges(ranges):
+            merged = []
+            for start, end in sorted(set(ranges)):
+                if merged and start <= merged[-1][1]:
+                    merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+                else:
+                    merged.append((start, end))
+            return merged
+
+        return merge_ranges(direct), merge_ranges(overlaps)
+
     def has_rpath(self): # noqa
         return self.get_rpath() is not None
 
@@ -2408,7 +2529,7 @@ class Elf:
     def checksec(self):
         """Check the following security properties of the ELF binary.
         Canary, NX, PIE, RELRO, Fortify, Static, Symbol, Debuginfo, CET,
-        RPATH/RUNPATH, and Clang CFI/SafeStack."""
+        AArch64 features, RPATH/RUNPATH, Clang CFI/SafeStack, W^X, and text relocations."""
 
         def exists_sym(dynstr, strtab, keywords, prefix=False):
             for table in [dynstr, strtab]:
@@ -2421,23 +2542,6 @@ class Elf:
                     elif kw in table:
                         return True
             return False
-
-        def get_features_from_note(note):
-            note = note[0x10:] # skip header
-            while note:
-                pr_type, note = u32(note[:4]), note[4:]
-                pr_datasz, note = u32(note[:4]), note[4:]
-                pr_data, note = note[:pr_datasz], note[pr_datasz:]
-
-                if pr_type == 0xc000_0002: # GNU_PROPERTY_X86_FEATURE_1_AND
-                    if pr_datasz == 4:
-                        return u32(pr_data)
-
-                pr_padding = 0
-                while (pr_datasz + pr_padding) % current_arch.ptrsize:
-                    pr_padding += 1
-                note = note[pr_padding:]
-            return 0
 
         dynstr = self.read_shdr(".dynstr")
         if dynstr:
@@ -2480,52 +2584,72 @@ class Elf:
         sec["Full RELRO"] = sec["Partial RELRO"] and self.is_full_relro()
 
         # Fortify
+        fortify_keywords = [
+            b"__memcpy_chk",
+            b"__memmove_chk",
+            b"__mempcpy_chk",
+            b"__memset_chk",
+            b"__printf_chk",
+            b"__fprintf_chk",
+            b"__dprintf_chk",
+            b"__sprintf_chk",
+            b"__asprintf_chk",
+            b"__snprintf_chk",
+            b"__wprintf_chk",
+            b"__fwprintf_chk",
+            b"__swprintf_chk",
+            b"__obstack_printf_chk",
+            b"__vprintf_chk",
+            b"__vfprintf_chk",
+            b"__vdprintf_chk",
+            b"__vsprintf_chk",
+            b"__vasprintf_chk",
+            b"__vsnprintf_chk",
+            b"__vwprintf_chk",
+            b"__vfwprintf_chk",
+            b"__vswprintf_chk",
+            b"__obstack_vprintf_chk",
+            b"__syslog_chk",
+            b"__vsyslog_chk",
+        ]
         if self.is_static() and self.is_stripped():
             sec["Fortify"] = None # it means unknown
         else:
-            keywords = [
-                b"__memcpy_chk",
-                b"__memmove_chk",
-                b"__mempcpy_chk",
-                b"__memset_chk",
-                b"__printf_chk",
-                b"__fprintf_chk",
-                b"__dprintf_chk",
-                b"__sprintf_chk",
-                b"__asprintf_chk",
-                b"__snprintf_chk",
-                b"__wprintf_chk",
-                b"__fwprintf_chk",
-                b"__swprintf_chk",
-                b"__obstack_printf_chk",
-                b"__vprintf_chk",
-                b"__vfprintf_chk",
-                b"__vdprintf_chk",
-                b"__vsprintf_chk",
-                b"__vasprintf_chk",
-                b"__vsnprintf_chk",
-                b"__vwprintf_chk",
-                b"__vfwprintf_chk",
-                b"__vswprintf_chk",
-                b"__obstack_vprintf_chk",
-                b"__syslog_chk",
-                b"__vsyslog_chk",
-            ]
-            sec["Fortify"] = exists_sym(dynstr, strtab, keywords)
+            sec["Fortify"] = exists_sym(dynstr, strtab, fortify_keywords)
+
+        # Count only observable dynamic imports; this is not source-level coverage.
+        imported_symbols = self.get_imported_symbols()
+        if imported_symbols is None or self.is_static():
+            sec["Fortified Imports"] = None
+            sec["Unfortified Candidates"] = None
+        else:
+            fortify_pairs = {keyword: keyword[2:-4] for keyword in fortify_keywords}
+            sec["Fortified Imports"] = len(imported_symbols & set(fortify_pairs))
+            sec["Unfortified Candidates"] = len(imported_symbols & set(fortify_pairs.values()))
 
         # CET flags via Ehdr
         if self.e_machine in (Elf.EM_X86_64, Elf.EM_386):
             sec["CET IBT flag"] = False
             sec["CET SHSTK flag"] = False
-            note_gnu_property = self.read_phdr(Elf.Phdr.PT_GNU_PROPERTY)
-            if note_gnu_property:
-                features = get_features_from_note(note_gnu_property)
+            features = self.get_gnu_property_value(0xc000_0002) # GNU_PROPERTY_X86_FEATURE_1_AND
+            if features is not None:
                 sec["CET IBT flag"] = features & 1 # GNU_PROPERTY_X86_FEATURE_1_IBT
                 sec["CET SHSTK flag"] = features & 2 # GNU_PROPERTY_X86_FEATURE_1_SHSTK
 
         # PAC
         if self.e_machine == Elf.EM_AARCH64:
             sec["PAC"] = self.has_pac_heuristic()
+            features = self.get_gnu_property_value(0xc000_0000) # GNU_PROPERTY_AARCH64_FEATURE_1_AND
+            features = features or 0
+            sec["AArch64 BTI flag"] = bool(features & 1)
+            sec["AArch64 PAC flag"] = bool(features & 2)
+            sec["AArch64 GCS flag"] = bool(features & 4)
+            sec["AArch64 BTI PLT"] = self.get_dynamic_value(0x7000_0001) is not None
+            sec["AArch64 PAC PLT"] = self.get_dynamic_value(0x7000_0003) is not None
+            sec["AArch64 MTE mode"] = self.get_dynamic_value(0x7000_0009)
+            sec["AArch64 MTE heap"] = self.get_dynamic_value(0x7000_000b) is not None
+            sec["AArch64 MTE stack"] = self.get_dynamic_value(0x7000_000c) is not None
+            sec["AArch64 MTE globals"] = self.get_dynamic_value(0x7000_000d) is not None
 
         # RPATH
         sec["RPATH"] = self.get_rpath()
@@ -2544,6 +2668,15 @@ class Elf:
             sec["Clang SafeStack"] = None
         else:
             sec["Clang SafeStack"] = exists_sym(dynstr, strtab, [b"__safestack_init"])
+
+        # Writable and executable load segments
+        sec["W^X LOAD segments"], sec["W^X page overlap"] = self.get_wx_load_ranges()
+
+        # Dynamic relocations against non-writable segments
+        dynamic_flags = self.get_dynamic_value(0x1e) # DT_FLAGS
+        sec["Text Relocations"] = self.get_dynamic_value(0x16) is not None # DT_TEXTREL
+        if dynamic_flags is not None:
+            sec["Text Relocations"] |= bool(dynamic_flags & 0x04) # DF_TEXTREL
         return sec
 
     class Phdr:
@@ -6653,6 +6786,26 @@ class Checksec:
         uq = lambda a: struct.unpack("<q", a)[0]
         u2i = lambda a: uq(pQ(a))
         return u2i(ret)
+
+    @staticmethod
+    @Cache.cache_until_next
+    def get_gcs_status():
+        """Return the arm64 Guarded Control Stack status flags."""
+        sp = current_arch.sp
+        backup = read_memory(sp, current_arch.ptrsize)
+        try:
+            res = gdb.execute("call-syscall prctl 74 {:#x} 0 0 0".format(sp), to_string=True) # PR_GET_SHADOW_STACK_STATUS
+            output_line = res.splitlines()[-1]
+            ret = int(output_line.split()[2], 0)
+            status = read_int_from_memory(sp)
+        except (gdb.error, gdb.MemoryError, IndexError, ValueError):
+            return None
+        finally:
+            write_memory(sp, backup)
+
+        if ret != 0:
+            return None
+        return status
 
 
 class Endian:
@@ -29877,8 +30030,7 @@ class ChecksecCommand(GenericCommand):
     _aliases_ = ["cs"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-r", "--remote", action="store_true",
-                        help="parse remote binary if download feature is available.")
+    parser.add_argument("-r", "--remote", action="store_true", help="parse remote binary if download feature is available.")
     parser.add_argument("-f", "--file", help="the file path to parse.")
     _syntax_ = parser.format_help()
 
@@ -30082,6 +30234,86 @@ class ChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format("MTE", msg))
         return
 
+    def check_AARCH64_ELF(self, sec):
+        if "AArch64 BTI flag" not in sec:
+            return
+
+        properties = [
+            ("AArch64 BTI feature flag", sec["AArch64 BTI flag"]),
+            ("AArch64 PAC feature flag", sec["AArch64 PAC flag"]),
+            ("AArch64 GCS feature flag", sec["AArch64 GCS flag"]),
+            ("AArch64 BTI-PLT", sec["AArch64 BTI PLT"]),
+            ("AArch64 PAC-PLT", sec["AArch64 PAC PLT"]),
+        ]
+        for name, enabled in properties:
+            state = Color.colorify("Found", "bold green") if enabled else Color.colorify("Not found", "bold red")
+            gef_print("{:<40s}: {:s}".format(name, state))
+
+        mte_mode = sec["AArch64 MTE mode"]
+        mte_regions = [
+            name for name, enabled in [
+                ("heap", sec["AArch64 MTE heap"]),
+                ("stack", sec["AArch64 MTE stack"]),
+                ("globals", sec["AArch64 MTE globals"]),
+            ] if enabled
+        ]
+        if mte_mode is None and not mte_regions:
+            gef_print("{:<40s}: {:s}".format("MTE ELF policy", Color.colorify("Not requested", "bold red")))
+        else:
+            modes = {0: "sync", 1: "async"}
+            mode = modes.get(mte_mode, "unspecified" if mte_mode is None else "{:#x}".format(mte_mode))
+            regions = ", ".join(mte_regions) if mte_regions else "none"
+            msg = Color.colorify("Requested", "bold green") + " (mode: {:s}, regions: {:s})".format(mode, regions)
+            gef_print("{:<40s}: {:s}".format("MTE ELF policy", msg))
+        return
+
+    def check_GCS(self, sec):
+        if "AArch64 GCS flag" not in sec:
+            return
+        if not is_arm64():
+            return
+        if not is_alive():
+            return
+        if is_rr():
+            return
+
+        status = Checksec.get_gcs_status()
+        if status is None:
+            msg = Color.colorify("Unsupported", "bold red")
+        elif status & 1: # PR_SHADOW_STACK_ENABLE
+            features = []
+            if status & 2:
+                features.append("write")
+            if status & 4:
+                features.append("push")
+            additional = " ({:s})".format(", ".join(features)) if features else ""
+            msg = Color.colorify("Enabled", "bold green") + additional
+        else:
+            msg = Color.colorify("Disabled", "bold red")
+        gef_print("{:<40s}: {:s}".format("GCS runtime status", msg))
+        return
+
+    def check_runtime_wx(self):
+        if not is_alive():
+            return
+
+        sections = [
+            section for section in (ProcessMap.get_process_maps() or [])
+            if section.is_writable() and section.is_executable()
+        ]
+        if not sections:
+            return
+
+        ranges = []
+        for section in sections[:4]:
+            path = " {:s}".format(section.path) if section.path else ""
+            ranges.append("{:#x}-{:#x}{:s}".format(section.page_start, section.page_end, path))
+        if len(sections) > 4:
+            ranges.append("... +{:d} more".format(len(sections) - 4))
+        msg = Color.colorify("RWX found", "bold red") + " ({:d}: {:s})".format(len(sections), ", ".join(ranges))
+        gef_print("{:<40s}: {:s}".format("Runtime W^X (current process)", msg))
+        return
+
     def check_system_ASLR(self):
         if is_remote_debug():
             msg = Color.grayify("Unknown")
@@ -30174,10 +30406,17 @@ class ChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format("RELRO", Color.colorify("No RELRO", "bold red")))
 
         # Fortify
-        if sec["Fortify"]:
-            gef_print("{:<40s}: {:s}".format("Fortify", Color.colorify("Found", "bold green")))
+        if sec["Fortify"] is None:
+            msg = Color.grayify("Unknown")
+        elif sec["Fortify"]:
+            msg = Color.colorify("Found", "bold green")
         else:
-            gef_print("{:<40s}: {:s}".format("Fortify", Color.colorify("Not found", "bold red")))
+            msg = Color.colorify("Not found", "bold red")
+        if sec["Fortified Imports"] is not None:
+            msg += " ({:d} fortified imports, {:d} unfortified candidates; observable imports)".format(
+                sec["Fortified Imports"], sec["Unfortified Candidates"],
+            )
+        gef_print("{:<40s}: {:s}".format("Fortify", msg))
 
         gef_print(titlify("Additional information"))
 
@@ -30207,8 +30446,10 @@ class ChecksecCommand(GenericCommand):
         self.check_CET_IBT(sec)
 
         # ARM64 PAC/MTE
+        self.check_AARCH64_ELF(sec)
         self.check_PAC(sec)
         self.check_MTE(sec)
+        self.check_GCS(sec)
 
         # RPATH
         if sec["RPATH"]:
@@ -30225,6 +30466,23 @@ class ChecksecCommand(GenericCommand):
         # Clang SafeStack
         if sec["Clang SafeStack"]:
             gef_print("{:<40s}: {:s}".format("Clang SafeStack", self.get_colored_msg(sec["Clang SafeStack"])))
+
+        # File and runtime W^X
+        direct = sec["W^X LOAD segments"]
+        overlaps = sec["W^X page overlap"]
+        if direct:
+            ranges = ", ".join("{:#x}-{:#x}".format(start, end) for start, end in direct)
+            msg = Color.colorify("RWX found", "bold red") + " ({:s})".format(ranges)
+            gef_print("{:<40s}: {:s}".format("File W^X LOAD segments", msg))
+
+        if overlaps:
+            ranges = ", ".join("{:#x}-{:#x}".format(start, end) for start, end in overlaps)
+            msg = Color.colorify("Found", "bold red") + " ({:s})".format(ranges)
+            gef_print("{:<40s}: {:s}".format("File W/X page overlap", msg))
+
+        if sec["Text Relocations"]:
+            gef_print("{:<40s}: {:s}".format("Text relocations", Color.colorify("Found", "bold red")))
+        self.check_runtime_wx()
 
         # ASLR
         self.check_system_ASLR()
