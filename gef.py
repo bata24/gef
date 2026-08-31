@@ -77070,7 +77070,21 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     @switch_to_intel_syntax
-    def parse_syscall_table(self, sys_call_table_addr):
+    def parse_syscall_table(self, sys_call_table_addr, tag):
+        ni_syscall_names = {
+            "x86": ["__ia32_sys_ni_syscall", "sys_ni_syscall"],
+            "x86_64": ["__x64_sys_ni_syscall", "sys_ni_syscall"],
+            "x86_32": ["__ia32_sys_ni_syscall", "sys_ni_syscall"],
+            "x86_x32": ["__x64_sys_ni_syscall", "sys_ni_syscall"],
+            "arm64": ["__arm64_sys_ni_syscall", "sys_ni_syscall"],
+            "arm64_32": ["__arm64_sys_ni_syscall", "sys_ni_syscall"],
+        }.get(tag, ["sys_ni_syscall"])
+        ni_syscalls = {}
+        for name in ni_syscall_names:
+            address = Symbol.get_ksymaddr(name)
+            if address is not None:
+                ni_syscalls[address] = name
+
         # scan
         cached_table = []
         i = 0
@@ -77086,6 +77100,8 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
 
             # check symbol
             symbol = Symbol.get_symbol_string(syscall_function_addr, nosymbol_string=" <NO_SYMBOL>")
+            if syscall_function_addr in ni_syscalls:
+                symbol = " <{:s}>".format(ni_syscalls[syscall_function_addr])
             if "+" in symbol:
                 break
 
@@ -77189,7 +77205,7 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
 
         # parse
         if tag not in self.cached_table:
-            self.cached_table[tag] = self.parse_syscall_table(sys_call_table_addr)
+            self.cached_table[tag] = self.parse_syscall_table(sys_call_table_addr, orig_tag)
 
         # print legend
         if not self.args.quiet:
