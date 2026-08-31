@@ -14376,7 +14376,7 @@ class EventHandler:
 
         # GEF will resolve the architecture if it is unknown.
         if current_arch is None:
-            set_arch(get_arch())
+            set_arch()
 
         kpti_transition = is_in_kpti_transition()
         if kpti_transition and not EventHandler.kpti_transition_active:
@@ -14421,7 +14421,7 @@ class EventHandler:
         """GDB event handler for new object file cases."""
         Cache.reset_gef_caches(all=True)
         if current_arch is None:
-            set_arch(get_arch())
+            set_arch()
 
         # delayed breakpoint for brva
         if BreakRelativeVirtualAddressCommand.delayed_bp_set is False and is_alive():
@@ -14922,8 +14922,7 @@ def get_arch():
 
 def set_arch(arch_str=None):
     """Set the current architecture.
-    If an arch is explicitly specified, use that one, otherwise try to parse it out of the current target.
-    If that fails, and default is specified, select and set that arch.
+    If an arch is explicitly specified, use that one. Otherwise prefer the loaded ELF and fall back to GDB.
     Return the selected arch, or raise an OSError."""
     global current_arch
 
@@ -14941,17 +14940,14 @@ def set_arch(arch_str=None):
         key = arch_str.upper()
 
     else:
-        # Determined from loaded ELF
-        elf = Elf.get_elf()
-        if elf is None or not elf.is_valid():
-            raise OSError("Could not determine architecture.")
-
-        if elf.e_machine not in [Elf.EM_MIPS, Elf.EM_RISCV, Elf.EM_PARISC]:
+        # Prefer a supported, unambiguous machine from the loaded ELF.
+        filename = gdb.current_progspace().filename
+        elf = Elf.get_elf(filename) if filename and os.access(filename, os.R_OK) else None
+        ambiguous_machines = [Elf.EM_MIPS, Elf.EM_RISCV, Elf.EM_PARISC]
+        if elf and elf.is_valid() and elf.e_machine in arches and elf.e_machine not in ambiguous_machines:
             key = elf.e_machine
-
         else:
-            # On some architectures, it is not possible to determine whether it is 32-bit or 64-bit
-            # from the ELF header e_machine. so we use the detection result of gdb.
+            # Fall back when there is no usable ELF, or e_machine cannot determine the ABI.
             key = get_arch().upper()
 
     # Even if it is determined to be MIPS64, if it is in 32-bit mode, it is n32.
@@ -160321,7 +160317,7 @@ class GefReloadCommand(GenericCommand):
             gef_print(line)
 
         if current_arch is None:
-            set_arch(get_arch())
+            set_arch()
 
         if not (is_qemu_user() or is_pin()):
             gdb.execute("define c\ncontinue\nend")
@@ -162265,7 +162261,7 @@ class Gef:
         # If GEF is loaded after gdb is connected
         if is_alive():
             if current_arch is None:
-                set_arch(get_arch())
+                set_arch()
         return
 
 
