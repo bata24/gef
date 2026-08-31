@@ -61281,6 +61281,18 @@ class KernelAddressHeuristicFinder:
         # 2. Select the task with the smallest distance from the kernel .data section.
         # This method can also be applied to x86/x64 as long as `current_task` can be obtained.
 
+        def looks_like_init_task(task):
+            # Only `init_task` has comm == "swapper/0" (or "swapper" when CONFIG_SMP=n),
+            # so this rejects a statically allocated list head of another member.
+            # For example, `task_struct.scx.tasks_node` (v6.12 or later) also links every task
+            # and its head `scx_tasks` is in the kernel .data section, but it is located
+            # before `tasks`, so it is found first.
+            try:
+                data = read_memory(task, get_pagesize())
+            except gdb.MemoryError:
+                return False
+            return b"swapper/0\0" in data or b"swapper\0" in data
+
         def get_offset_tasks(current_task, require_init_task=False):
             # search for init_task->tasks
             # On CPU1, the task list is doubly linked, but on others it is not.
@@ -61297,12 +61309,13 @@ class KernelAddressHeuristicFinder:
                 if require_init_task and kinfo.rw_base and kinfo.rw_size:
                     task_list = KernelTaskCommand.get_task_list(current_task, offset_tasks)
                     rw_end = kinfo.rw_base + kinfo.rw_size
-                    has_init_task = any(
-                        kinfo.rw_base <= task < rw_end
-                        or (is_64bit() and task >= kinfo.rw_base)
+                    has_init_task = len(task_list) > 5 and any(
+                        (kinfo.rw_base <= task < rw_end
+                         or (is_64bit() and task >= kinfo.rw_base))
+                        and looks_like_init_task(task)
                         for task in task_list
                     )
-                    if len(task_list) > 5 and has_init_task:
+                    if has_init_task:
                         return offset_tasks
                     continue
                 task1 = read_int_from_memory(current_task_tasks)
@@ -61330,11 +61343,7 @@ class KernelAddressHeuristicFinder:
         if current:
             kinfo = Kernel.get_kernel_layout()
             if kinfo.rw_base and kinfo.rw_size and kinfo.rw_base <= current < kinfo.rw_base + kinfo.rw_size:
-                try:
-                    current_data = read_memory(current, get_pagesize())
-                except gdb.MemoryError:
-                    current_data = b""
-                if b"swapper/0\0" in current_data:
+                if looks_like_init_task(current):
                     return current
 
             offset_tasks = get_offset_tasks(current, require_init_task=True)
