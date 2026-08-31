@@ -30560,6 +30560,96 @@ class KernelChecksecCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
+    def check_loadable_modules(self):
+        modules_symbol = KernelAddressHeuristicFinder.get_modules()
+        modules_disabled_addr = Kernel.get_ksysctl("kernel.modules_disabled")
+        modules_supported = modules_symbol is not None or modules_disabled_addr is not None
+        modules_disabled = None
+        if modules_disabled_addr is not None:
+            try:
+                modules_disabled = bool(read_int32_from_memory(modules_disabled_addr))
+            except gdb.MemoryError:
+                pass
+
+        if modules_supported is False:
+            state = Color.colorify("Unsupported", "bold green")
+        elif modules_disabled is True:
+            state = Color.colorify("Loading disabled", "bold green")
+        elif modules_disabled is False and modules_supported is True:
+            state = Color.colorify("Loading allowed", "bold red")
+        else:
+            state = Color.grayify("Unknown")
+        evidence = []
+        if modules_symbol is not None:
+            evidence.append("modules={:#x}".format(modules_symbol))
+        if modules_disabled is not None:
+            evidence.append("kernel.modules_disabled={:d}".format(int(modules_disabled)))
+        additional = ", ".join(evidence) if evidence else "runtime evidence not found"
+        gef_print("{:<40s}: {:s} ({:s})".format("Loadable modules", state, additional))
+        return
+
+    def check_io_uring_access(self):
+        supported = None
+        kversion = Kernel.kernel_version()
+        if kversion is not None and kversion < "5.1":
+            supported = False
+        else:
+            try:
+                output = gdb.execute("syscall-table-view -f io_uring_setup --quiet --no-pager", to_string=True)
+                clean_output = Color.remove_color(output)
+                if re.search(r"\]\s+valid\s+io_uring_setup\s", clean_output):
+                    supported = True
+                elif re.search(r"\]\s+invalid\s+io_uring_setup\s", clean_output):
+                    supported = False
+            except gdb.error:
+                pass
+
+        disabled_addr = Kernel.get_ksysctl("kernel.io_uring_disabled")
+        if disabled_addr is not None:
+            supported = True
+        if supported is False:
+            state = Color.colorify("Unsupported", "bold green")
+            gef_print("{:<40s}: {:s}".format("io_uring access", state))
+            return
+
+        if disabled_addr is None:
+            if supported is True:
+                state = Color.colorify("Unrestricted", "bold red")
+                additional = "kernel.io_uring_disabled: not available"
+                gef_print("{:<40s}: {:s} ({:s})".format("io_uring access", state, additional))
+            else:
+                gef_print("{:<40s}: {:s}".format("io_uring access", Color.grayify("Unknown")))
+            return
+        try:
+            disabled = read_int32_from_memory(disabled_addr)
+        except gdb.MemoryError:
+            gef_print("{:<40s}: {:s}".format("io_uring access", Color.grayify("Unknown")))
+            return
+
+        if disabled == 0:
+            state = Color.colorify("Unrestricted", "bold red")
+            additional = "kernel.io_uring_disabled=0"
+        elif disabled == 1:
+            state = Color.colorify("Privileged or group only", "bold yellow")
+            group_addr = Kernel.get_ksysctl("kernel.io_uring_group")
+            group = None
+            if group_addr is not None:
+                try:
+                    group = read_int32_from_memory(group_addr)
+                except gdb.MemoryError:
+                    pass
+            additional = "kernel.io_uring_disabled=1"
+            if group is not None:
+                additional += ", kernel.io_uring_group={:d}".format(group)
+        elif disabled == 2:
+            state = Color.colorify("Disabled", "bold green")
+            additional = "kernel.io_uring_disabled=2"
+        else:
+            state = Color.grayify("Unknown")
+            additional = "kernel.io_uring_disabled={:d}".format(disabled)
+        gef_print("{:<40s}: {:s} ({:s})".format("io_uring access", state, additional))
+        return
+
     def check_basic_information(self):
         kcmdline = Kernel.kernel_cmdline()
         if kcmdline is None or kcmdline.cmdline is None:
@@ -30814,15 +30904,86 @@ class KernelChecksecCommand(GenericCommand):
                 gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Enabled (maybe)", "bold green")))
         return
 
-    def check_rwx_page(self):
-        cfg = "RWX kernel page"
-        kinfo = Kernel.get_kernel_layout()
-        for m in kinfo.maps:
-            if m[2] == "RWX":
-                gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Found", "bold red")))
-                return
+    def get_module_ranges(self):
+        ranges = []
+        try:
+            output = gdb.execute("kmod --quiet --no-pager", to_string=True)
+        except gdb.error:
+            output = ""
+        for line in Color.remove_color(output).splitlines():
+            match = re.match(r"^0x[0-9a-f]+\s+(\S+)\s+(0x[0-9a-f]+)\s+(0x[0-9a-f]+)$", line.strip())
+            if not match:
+                continue
+            start = int(match.group(2), 16)
+            size = int(match.group(3), 16)
+            if size:
+                ranges.append((start, start + size, match.group(1)))
+        return ranges
 
-        gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Not found", "bold green")))
+    def check_rwx_page(self):
+        kinfo = Kernel.get_kernel_layout()
+        if not kinfo.maps:
+            for name in ["Kernel image W^X", "Module W^X", "Other vmalloc/JIT W^X"]:
+                gef_print("{:<40s}: {:s}".format(name, Color.grayify("Unknown")))
+            return
+
+        module_ranges = self.get_module_ranges()
+        module_area = None
+        try:
+            constants = KernelAddressHeuristicFinder.consts()
+            if constants.MODULES_VADDR is not None and constants.MODULES_END is not None:
+                module_area = tuple(sorted((constants.MODULES_VADDR, constants.MODULES_END)))
+        except (AttributeError, TypeError):
+            pass
+
+        kernel_bounds = [
+            value for value in [
+                kinfo.text_base, kinfo.text_end, kinfo.ro_base, kinfo.ro_end,
+                kinfo.rw_base, kinfo.rw_end,
+            ] if value is not None
+        ]
+        kernel_area = (min(kernel_bounds), max(kernel_bounds)) if kernel_bounds else None
+        categories = {"kernel": [], "module": [], "other": []}
+
+        for start, size, permission in kinfo.maps:
+            if "W" not in permission or "X" not in permission:
+                continue
+            end = start + size
+            label = ""
+            for module_start, module_end, module_name in module_ranges:
+                if start < module_end and module_start < end:
+                    label = module_name
+                    categories["module"].append((start, end, label))
+                    break
+            else:
+                if kernel_area and start < kernel_area[1] and kernel_area[0] < end:
+                    label = Symbol.get_symbol_string(start, nosymbol_string="").strip()
+                    categories["kernel"].append((start, end, label))
+                elif module_area and start < module_area[1] and module_area[0] < end:
+                    categories["other"].append((start, end, "module allocation area (unresolved/JIT)"))
+                else:
+                    label = Symbol.get_symbol_string(start, nosymbol_string="").strip()
+                    categories["other"].append((start, end, label))
+
+        def print_category(name, entries):
+            additional = []
+            if entries:
+                for start, end, label in entries[:4]:
+                    suffix = " {:s}".format(label) if label else ""
+                    additional.append("{:#x}-{:#x}{:s}".format(start, end, suffix))
+                if len(entries) > 4:
+                    additional.append("... +{:d} more".format(len(entries) - 4))
+                state = Color.colorify("Found", "bold red")
+                additional.insert(0, "{:d} observed mapping(s)".format(len(entries)))
+            else:
+                state = Color.colorify("Not found", "bold green")
+                additional.append("observed page tables")
+            gef_print("{:<40s}: {:s} ({:s})".format(name, state, ", ".join(additional)))
+            return
+
+        print_category("Kernel image W^X", categories["kernel"])
+        print_category("Module W^X", categories["module"])
+        print_category("Other vmalloc/JIT W^X", categories["other"])
         return
 
     def check_secure_world(self):
@@ -30851,6 +31012,57 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         else:
             gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Disabled", "bold red")))
+        return
+
+    def check_CONFIG_SLAB_FREELIST_RANDOM(self):
+        cfg = "CONFIG_SLAB_FREELIST_RANDOM"
+        try:
+            gdb.execute("slub-dump --meta --quiet --no-pager", to_string=True)
+            command = __gef_command_instances__["slub-dump"]
+            offset = getattr(command, "kmem_cache_offset_random_seq", None)
+        except (gdb.error, KeyError):
+            offset = None
+            command = None
+        if command is None or getattr(command, "kmem_cache_offset_list", None) is None:
+            gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
+            return
+        if offset is None:
+            additional = "offsetof(kmem_cache, random_seq): Not found"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+            return
+
+        selected = []
+        try:
+            for list_entry in command.parse_kmem_caches_for_initialize():
+                cache = list_entry - command.kmem_cache_offset_list
+                name_ptr = read_int_from_memory(cache + command.kmem_cache_offset_name)
+                name = read_cstring_from_memory(name_ptr)
+                if re.match(r"^kmalloc-(?:8|16|32|64|96|128|192|256|512)$", name):
+                    selected.append(cache)
+        except gdb.MemoryError:
+            selected = []
+
+        enabled = 0
+        checked = 0
+        for cache in selected:
+            try:
+                random_seq = read_int_from_memory(cache + offset)
+            except gdb.MemoryError:
+                continue
+            checked += 1
+            if random_seq and is_valid_addr(random_seq):
+                enabled += 1
+
+        additional = "{:#x} offset, {:d}/{:d} representative caches".format(offset, enabled, checked)
+        if checked == 0:
+            state = Color.grayify("Unknown")
+        elif enabled == checked:
+            state = Color.colorify("Enabled", "bold green")
+        elif enabled == 0:
+            state = Color.colorify("Disabled", "bold red")
+        else:
+            state = Color.colorify("Partial", "bold yellow")
+        gef_print("{:<40s}: {:s} ({:s})".format(cfg, state, additional))
         return
 
     def check_CONFIG_SLAB_VIRTUAL(self):
@@ -31732,7 +31944,10 @@ class KernelChecksecCommand(GenericCommand):
         gef_print("{:<40s}: {:s}".format("Allocator", allocator))
         if allocator == "SLUB":
             self.check_CONFIG_SLAB_FREELIST_HARDENED()
+            self.check_CONFIG_SLAB_FREELIST_RANDOM()
             self.check_CONFIG_SLAB_VIRTUAL()
+        gef_print(titlify("Kernel module"))
+        self.check_loadable_modules()
 
         gef_print(titlify("Security Module"))
         self.check_selinux()
@@ -31752,6 +31967,7 @@ class KernelChecksecCommand(GenericCommand):
         self.check_unprivileged_userfaultfd()
         self.check_unprivileged_bpf_disabled()
         self.check_kexec_load_disabled()
+        self.check_io_uring_access()
 
         gef_print(titlify("namespaces"))
         self.check_namespaces()
@@ -40722,6 +40938,10 @@ class DynamicCommand(GenericCommand, BufferingOutput):
             0x70000001: "DT_AARCH64_BTI_PLT",
             0x70000003: "DT_AARCH64_PAC_PLT",
             0x70000005: "DT_AARCH64_VARIANT_PCS",
+            0x70000009: "DT_AARCH64_MEMTAG_MODE",
+            0x7000000b: "DT_AARCH64_MEMTAG_HEAP",
+            0x7000000c: "DT_AARCH64_MEMTAG_STACK",
+            0x7000000d: "DT_AARCH64_MEMTAG_GLOBALS",
         },
         "alpha": {
             0x70000000: "DT_ALPHA_PLTRO",
@@ -123272,6 +123492,14 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     def resolve_kmem_cache_offset_node(self):
         kversion = Kernel.kernel_version()
 
+        self.kmem_cache_offset_random_seq = None
+        try:
+            self.kmem_cache_offset_random_seq = to_unsigned_long(
+                gdb.parse_and_eval("&((struct kmem_cache*)0).random_seq")
+            )
+        except gdb.error:
+            pass
+
         # fast path
         if kversion < "7.1":
             try:
@@ -123466,6 +123694,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         return
                     else:
                         # x is random_seq, so skip it
+                        self.kmem_cache_offset_random_seq = offset_random_seq
                         start_offset_node_search = offset_random_seq + current_arch.ptrsize
                 else:
                     # x is kasan_info or user_offset
@@ -123552,6 +123781,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     return
                 else:
                     # x is random_seq, so skip it
+                    self.kmem_cache_offset_random_seq = offset_random_seq
                     start_offset_node_search = offset_random_seq + current_arch.ptrsize
             else:
                 # x is kasan_info or user_offset
@@ -124313,6 +124543,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # offsetof(kmem_cache, node) or offsetof(kmem_cache, per_node[0].node/barn)
         self.resolve_kmem_cache_offset_node()
+        if self.kmem_cache_offset_random_seq is None:
+            self.quiet_info("offsetof(kmem_cache, random_seq): Not found")
+        else:
+            self.quiet_info("offsetof(kmem_cache, random_seq): {:#x}".format(self.kmem_cache_offset_random_seq))
         if kversion < "7.1":
             if self.kmem_cache_offset_node is None:
                 self.quiet_info("offsetof(kmem_cache, node): Not found")
