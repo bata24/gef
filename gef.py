@@ -76381,6 +76381,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-r", "--max-range", type=AddressUtil.parse_address, default=0,
                         help="allowable offset range for each reference. (default: %(default)s)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
     @Cache.cache_until_next
@@ -76454,7 +76455,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
             err("The depth must be larger than 0")
             return
 
-        info("Wait for memory scan")
+        self.quiet_info("Wait for memory scan")
 
         self.kinfo = Kernel.get_kernel_layout()
         if self.kinfo.has_none or self.kinfo.rwx:
@@ -76470,7 +76471,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
         rw_data = read_memory(self.kinfo.rw_base, self.kinfo.rw_size)
         rw_data = slice_unpack(rw_data, current_arch.ptrsize)
 
-        tqdm = GefUtil.get_tqdm()
+        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         for i, rw_d in tqdm(enumerate(rw_data), leave=False, total=len(rw_data)):
             rw_addr = self.kinfo.rw_base + i * current_arch.ptrsize
             backtrack_info = [(rw_addr, 0)]
