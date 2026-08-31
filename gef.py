@@ -76482,6 +76482,360 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class KernelDiffCommand(GenericCommand, BufferingOutput):
+    """Compare kernel information at two points in time."""
+
+    _cmdline_ = "kdiff"
+    _category_ = "06-k. Qemu-system/KGDB Cooperation - Other"
+
+    target_commands = {
+        "task": "ktask --quiet --no-pager --print-all-id --print-thread",
+        "module": "kmod --quiet --no-pager",
+        "sysctl": "ksysctl --quiet --no-pager --verbose",
+        "irq": "kirq --quiet --no-pager",
+        "syscall": "syscall-table-view --quiet --no-pager",
+        "idt": "idtinfo --quiet --no-pager",
+        "gdt": "gdtinfo --quiet --no-pager --only-gdt",
+    }
+    default_targets = ["task", "module", "sysctl", "irq", "syscall"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
+        subparsers = parser.add_subparsers(title="command", dest="action", required=True)
+    else:
+        subparsers = parser.add_subparsers(title="command", dest="action")
+
+    save_parser = subparsers.add_parser("save", help="append a snapshot.")
+    save_parser.add_argument("-t", "--target", action="append", choices=target_commands, default=[],
+                             help="target to snapshot; may be specified multiple times. (default: all)")
+    save_parser.add_argument("-c", "--command", action="append", default=[], metavar="COMMAND",
+                             help="additional GDB command to snapshot; may be specified multiple times.")
+
+    list_parser = subparsers.add_parser("list", help="list saved snapshots.")
+    list_parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+
+    diff_parser = subparsers.add_parser("diff", help="compare snapshots or a snapshot with current state.")
+    diff_parser.add_argument("index", metavar="N", nargs="*", type=int, help="snapshot index.")
+    diff_parser.add_argument("-t", "--target", action="append", choices=target_commands, default=[],
+                             help="target to compare; may be specified multiple times. (default: saved targets)")
+    diff_parser.add_argument("-c", "--command", action="append", default=[], metavar="COMMAND",
+                             help="additional GDB command to compare; may be specified multiple times.")
+    diff_parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+
+    clear_parser = subparsers.add_parser("clear", help="delete saved snapshots.")
+    clear_parser.add_argument("index", metavar="N|all", nargs="+", help="snapshot index or all.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} save                         # append a snapshot",
+        "{0:s} list                         # list saved snapshots",
+        "{0:s} diff 0 2                     # compare two saved snapshots",
+        "{0:s} diff 2                       # compare snapshot 2 with current state",
+        "{0:s} diff                         # compare the latest snapshot with current state",
+        "{0:s} clear 0 1                    # delete snapshots 0 and 1",
+        "{0:s} clear all                    # delete all snapshots",
+        "{0:s} save -t task -t syscall      # select targets",
+        "{0:s} save -c 'kops file_operations 0xffffffff81000000'",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "Snapshots are kept in /tmp/gef/kdiff-UID until `kdiff clear` removes them.",
+        "Compare snapshots taken from the same kernel instance.",
+        "Without -t, task/module/sysctl/irq/syscall and, on x86, IDT/GDT are compared.",
+        "Use -c to include address-specific tables such as `kops file_operations ADDRESS`.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def get_commands(self, args, saved_snapshot=None):
+        if args.target:
+            targets = args.target
+        elif args.command:
+            targets = []
+        elif saved_snapshot is not None:
+            return list(saved_snapshot)
+        else:
+            targets = self.default_targets[:]
+            if is_x86():
+                targets += ["idt", "gdt"]
+
+        commands = [self.target_commands[target] for target in targets]
+        commands += args.command
+        return list(dict.fromkeys(commands))
+
+    @staticmethod
+    def get_kernel_id():
+        kversion = Kernel.kernel_version()
+        kinfo = Kernel.get_kernel_layout()
+        version = None if kversion is None else [kversion.major, kversion.minor, kversion.patch]
+        return [current_arch.__class__.__name__, version, kinfo.text_base, kinfo.rw_base]
+
+    @staticmethod
+    def get_snapshot_directory():
+        return os.path.join(GEF_TEMP_DIR, "kdiff-{:d}".format(os.geteuid()))
+
+    @staticmethod
+    def get_saved_files():
+        directory = KernelDiffCommand.get_snapshot_directory()
+        if not os.path.exists(directory):
+            return []
+        paths = [path for path in GefUtil.walk(directory) if path.endswith(".json")]
+        return sorted(paths, key=os.path.getmtime)
+
+    @staticmethod
+    def load_snapshot(path):
+        try:
+            return json.loads(open(path).read())
+        except (OSError, ValueError) as e:
+            err("Failed to load {!r}: {!s}".format(path, e))
+            return None
+
+    def get_snapshot_by_index(self, index):
+        files = self.get_saved_files()
+        try:
+            path = files[index]
+        except IndexError:
+            err("Snapshot index out of range: {:d}".format(index))
+            return None
+        snapshot = self.load_snapshot(path)
+        if snapshot is None:
+            return None
+        return path, snapshot
+
+    @staticmethod
+    def save_snapshot(kernel_id, snapshot):
+        directory = KernelDiffCommand.get_snapshot_directory()
+        if not os.path.exists(directory):
+            os.mkdir(directory)
+        fd, path = GefUtil.mkstemp(dir=directory, prefix="snapshot", suffix=".json")
+        with os.fdopen(fd, "w") as f:
+            json.dump({"kernel": kernel_id, "commands": snapshot}, f)
+        return path
+
+    @staticmethod
+    def normalize_output(output):
+        lines = Color.remove_color(output).rstrip().splitlines()
+        normalized = []
+        for line in lines:
+            match = re.fullmatch(r"-+ (.*?) -+", line)
+            if match:
+                line = "--- {:s} ---".format(match.group(1))
+            elif re.fullmatch(r"-+", line):
+                line = "---"
+            normalized.append(line)
+        return normalized
+
+    def take_snapshot(self, commands):
+        Cache.reset_gef_caches()
+
+        # syscall-table-view keeps parsed entries beyond a stop event; force a fresh memory read.
+        syscall_command = __gef_command_instances__.get("syscall-table-view")
+        if syscall_command is not None:
+            syscall_command.cached_table = {}
+
+        snapshot = {}
+        original_terminal_size = GefUtil.__dict__["get_terminal_size"]
+        GefUtil.get_terminal_size = staticmethod(lambda redirect="": (600, 200))
+        try:
+            for command in commands:
+                if command.strip().split()[0] == self._cmdline_:
+                    err("Recursive kdiff command is not allowed")
+                    return None
+                try:
+                    output = gdb.execute(command, to_string=True)
+                except (gdb.error, gdb.MemoryError) as e:
+                    err("Failed to execute `{!s}`: {!s}".format(command, e))
+                    return None
+                snapshot[command] = self.normalize_output(output)
+        finally:
+            GefUtil.get_terminal_size = original_terminal_size
+        return snapshot
+
+    @staticmethod
+    def color_diff_line(line):
+        if line.startswith("+") and not line.startswith("+++"):
+            return Color.greenify(line)
+        if line.startswith("-") and not line.startswith("---"):
+            return Color.redify(line)
+        return line
+
+    def compare_snapshots(self, previous, current, previous_name, current_name):
+        import difflib
+        self.out = []
+        changed_commands = 0
+        commands = list(dict.fromkeys(list(previous) + list(current)))
+        for command in commands:
+            diff = list(difflib.unified_diff(
+                previous.get(command, []), current.get(command, []),
+                fromfile=previous_name, tofile=current_name, lineterm="", n=1,
+            ))
+            if not diff:
+                continue
+            changed_commands += 1
+            self.out.append(titlify(command))
+            self.out.extend(self.color_diff_line(line) for line in diff)
+
+        if not self.out:
+            ok("No kernel changes detected")
+            return
+
+        info("Changes detected in {:d} command{}".format(
+            changed_commands, "s" if changed_commands != 1 else "",
+        ))
+        self.print_output()
+        return
+
+    def list_snapshots(self, args):
+        files = self.get_saved_files()
+        fmt = "{:<3}  {:26s}  {:<9s}  {:<12s}  {:<8s}  {:s}"
+        legend = ["#", "mtime", "size", "kernel", "commands", "path"]
+        self.out = [GefUtil.make_legend(fmt.format(*legend))]
+        for index, path in enumerate(files):
+            snapshot = self.load_snapshot(path)
+            if snapshot is None:
+                continue
+            version = snapshot.get("kernel", [None, None])[1]
+            version = "?" if version is None else ".".join(str(x) for x in version)
+            mtime = datetime.datetime.fromtimestamp(os.path.getmtime(path))
+            self.out.append(fmt.format(
+                index, str(mtime), GefUtil.get_size_str(os.path.getsize(path), enable_color=False),
+                version, str(len(snapshot.get("commands", {}))), path,
+            ))
+        self.print_output()
+        return
+
+    def clear_snapshots(self, indexes, clear_all):
+        files = self.get_saved_files()
+        if clear_all:
+            paths = files
+        elif indexes:
+            paths = []
+            for index in indexes:
+                try:
+                    path = files[index]
+                except IndexError:
+                    err("Snapshot index out of range: {:d}".format(index))
+                    return
+                if path not in paths:
+                    paths.append(path)
+        else:
+            err("Specify snapshot indexes or use `kdiff clear all`")
+            return
+
+        for path in paths:
+            os.unlink(path)
+        info("Removed {:d} snapshot{}".format(len(paths), "s" if len(paths) != 1 else ""))
+        return
+
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_in_kernel_or_kpti_disabled
+    def save_current_snapshot(self, args):
+        commands = self.get_commands(args)
+        if not commands:
+            err("No snapshot target specified")
+            return
+
+        kernel_id = self.get_kernel_id()
+        info("Taking kernel snapshot ({:d} command{})".format(len(commands), "s" if len(commands) != 1 else ""))
+        snapshot = self.take_snapshot(commands)
+        if snapshot is None:
+            return
+
+        path = self.save_snapshot(kernel_id, snapshot)
+        index = self.get_saved_files().index(path)
+        ok("Kernel snapshot saved as [{:d}]: {:s}".format(index, path))
+        return
+
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_in_kernel_or_kpti_disabled
+    def compare_with_current(self, args, index):
+        ret = self.get_snapshot_by_index(index)
+        if ret is None:
+            return
+        _, saved = ret
+        saved_commands = saved.get("commands", {})
+        commands = self.get_commands(args, saved_commands)
+        if not commands:
+            err("No snapshot target specified")
+            return
+
+        kernel_id = self.get_kernel_id()
+        if kernel_id != saved.get("kernel"):
+            err("The snapshot belongs to a different kernel")
+            return
+
+        info("Taking kernel snapshot ({:d} command{})".format(len(commands), "s" if len(commands) != 1 else ""))
+        current = self.take_snapshot(commands)
+        if current is None:
+            return
+        previous = {command: saved_commands.get(command, []) for command in commands}
+        self.compare_snapshots(previous, current, "snapshot[{:d}]".format(index), "current")
+        return
+
+    def compare_saved_snapshots(self, index1, index2):
+        ret1 = self.get_snapshot_by_index(index1)
+        ret2 = self.get_snapshot_by_index(index2)
+        if ret1 is None or ret2 is None:
+            return
+        _, snapshot1 = ret1
+        _, snapshot2 = ret2
+        if snapshot1.get("kernel") != snapshot2.get("kernel"):
+            err("The snapshots belong to different kernels")
+            return
+        self.compare_snapshots(
+            snapshot1.get("commands", {}), snapshot2.get("commands", {}),
+            "snapshot[{:d}]".format(index1), "snapshot[{:d}]".format(index2),
+        )
+        return
+
+    @parse_args
+    def do_invoke(self, args):
+        if args.action == "save":
+            self.save_current_snapshot(args)
+            return
+        if args.action == "list":
+            self.list_snapshots(args)
+            return
+        if args.action == "clear":
+            if "all" in args.index:
+                if args.index != ["all"]:
+                    err("Do not combine all with snapshot indexes")
+                    return
+                self.clear_snapshots([], True)
+                return
+            try:
+                indexes = [int(value, 0) for value in args.index]
+            except ValueError:
+                err("Snapshot indexes must be integers")
+                return
+            self.clear_snapshots(indexes, False)
+            return
+
+        indexes = args.index
+        if len(indexes) > 2:
+            err("Specify at most two snapshot indexes")
+            return
+        if len(indexes) == 2:
+            if args.target or args.command:
+                err("Target options cannot be used when comparing saved snapshots")
+                return
+            self.compare_saved_snapshots(*indexes)
+            return
+
+        files = self.get_saved_files()
+        if not files:
+            err("No snapshots; run `kdiff save` first")
+            return
+        index = indexes[0] if indexes else len(files) - 1
+        self.compare_with_current(args, index)
+        return
+
+
+@register_command
 class KernelDmesgCommand(GenericCommand, BufferingOutput):
     """Dump the ring buffer of the dmesg area."""
 

@@ -2154,7 +2154,7 @@ options:
 ### Examples
 
 ```gdb
-unicorn-emulate-script -g 10               # from $pc to the point where 4 instructions are executed
+unicorn-emulate-script -g 10               # from $pc to the point where 10 gadgets are executed
 unicorn-emulate-script -n 5                # from $pc to 5 later instructions (assume it is no branch)
 unicorn-emulate-script -t 0x805678a4 -s    # from $pc to specified address with saving script
 ```
@@ -8578,7 +8578,7 @@ kbdev -q
 This command requires CONFIG_RANDSTRUCT=n.
 If there are too many block devices, detection may fail.
 This is because block devices are not managed in a single location,
-so the list of bdev_cache obtained from the slub-dump results is used.
+so the bdev_cache dump is supplemented with block devices referenced by mounted filesystems.
 ```
 
 ## kbpf
@@ -9348,7 +9348,7 @@ options:
   -s, --skip-symlink   do not follow symlink (net.* and user.*).
   -e, --exact          use exact match.
   -r, --rescan         do not use cache.
-  -v, --verbose        dump zero-sized entries too.
+  -v, --verbose        dump zero-sized entries and proc_handler too.
   -n, --no-pager       do not use the pager.
   -q, --quiet          enable quiet mode.
 ```
@@ -9417,38 +9417,40 @@ options:
 ```text
 Simplified timer structure (per-cpu):
 
-+-timer_bases[0]----+    +-timer_list--+    +-timer_list--+
-| ...               |    | entry       |    | entry       |
-| vectors[0]        |--->|   next      |--->|   next      |--->...
-| ...               |    |   pprev     |    |   pprev     |
-| vectors[512or576] |    | expires     |    | expires     |
-| ...               |    | function    |    | function    |
-+-timer_bases[1]----+    | ...         |    | ...         |
-| ...               |    +-------------+    +-------------+
-| vectors[0]        |
-| ...               |
-| vectors[512or576] |
-| ...               |
-+-------------------+
++-timer_bases[0]-----+    +-timer_list--+    +-timer_list--+
+| ...                |    | entry       |    | entry       |
+| vectors[0]         |--->|   next      |--->|   next      |--->...
+| ...                |    |   pprev     |    |   pprev     |
+| vectors[512or576]  |    | expires     |    | expires     |
+| ...                |    | function    |    | function    |
++-timer_bases[1]-----+    | ...         |    | ...         |
+| ...                |    +-------------+    +-------------+
+| vectors[0]         |
+| ...                |
+| vectors[512or576]  |
+| ...                |
++-timer_bases[2]-----+ <-- v6.10~
+| ...                |
++--------------------+
 
 Simplified hrtimer structure (per-cpu):
 
-+-hrtimer_cpu_bases-+
-| ...               |
-| clock_bases[0]    |   +--->+-hrtimer------+
-|   ...             |   |    | node         |
-|   clockid         |   |    |   node       |
-|   ...             |   |    |     color    |
-|   active          |   |    |     right    |--->hrtimer
-|      rb_root      |   |    |     left     |--->hrtimer
-|        rb_root    |---+    |   expires    |
-|        ...        |        | ...          |
-|   get_time        |        | function     |
-|   ...             |        | ...          |
-| ...               |        +--------------+
-| clock_bases[8]    |
-|   ...             |
-+-------------------+
++-hrtimer_cpu_bases--+
+| ...                |
+| clock_bases[0]     |   +--->+-hrtimer-------+
+|   ...              |   |    | node          |
+|   clockid          |   |    |   node        |
+|   ...              |   |    |     color     |
+|   active           |   |    |     right     |--->hrtimer
+|      rb_root       |   |    |     left      |--->hrtimer
+|        rb_root     |---+    |   prev(v7.1~) |--->hrtimer
+|        ...         |        |   next(v7.1~) |--->hrtimer
+|   get_time(~v6.17) |        |   expires     |
+|   ...              |        | ...           |
+| ...                |        | function      |
+| clock_bases[8]     |        | ...           |
+|   ...              |        +---------------+
++--------------------+
 ```
 
 ## syscall-table-view
@@ -9642,6 +9644,7 @@ options:
 
 ```text
 This command requires CONFIG_SYSFS=y.
+CONFIG_SLUB_TINY=y is unsupported because slab sysfs is unavailable.
 ```
 
 ## slab-contains
@@ -10116,17 +10119,17 @@ vmalloc-dump -q
 
 ```text
 Simplified vmalloc structure:
-                           +-vmap_area--+
-                           | va_start   |
-(~v6.8)                    | va_end     |
-+---------------------+    | ...        |
-| vmap_area_list      |--->| list       |--->...
-+---------------------+    | ...        |
-                           | vm         |---->+-vm_struct--+
-                           | ...        |     | ...        |
-                           +------------+     | flags      |
-                                              | ...        |
-                                              +------------+
+                                       +-vmap_area--+
+                                       | va_start   |
+                                       | va_end     |
++---------------------------------+    | ...        |
+| vmap_area_list (~v6.8)          |--->| list       |--->...
+| vmap_nodes[0].busy.head (v6.9~) |    | ...        |
++---------------------------------+    | vm         |---->+-vm_struct--+
+                                       | ...        |     | ...        |
+                                       +------------+     | flags      |
+                                                          | ...        |
+                                                          +------------+
                            +-vmap_area--+
                            | va_start   |
 (v5.2~)                    | va_end     |
@@ -10554,6 +10557,50 @@ xsm /16xw --virt 0x783ae3d0  # secure memory ASLR is supported
 ```
 
 # 06-k. Qemu-system/KGDB Cooperation - Other
+## kdiff
+
+Compare kernel information at two points in time.
+
+
+### Syntax
+
+```text
+usage: kdiff [-h] {save,list,diff,clear} ...
+
+options:
+  -h, --help            show this help message and exit
+
+command:
+  {save,list,diff,clear}
+    save                append a snapshot.
+    list                list saved snapshots.
+    diff                compare snapshots or a snapshot with current state.
+    clear               delete saved snapshots.
+```
+
+### Examples
+
+```gdb
+kdiff save                         # append a snapshot
+kdiff list                         # list saved snapshots
+kdiff diff 0 2                     # compare two saved snapshots
+kdiff diff 2                       # compare snapshot 2 with current state
+kdiff diff                         # compare the latest snapshot with current state
+kdiff clear 0 1                    # delete snapshots 0 and 1
+kdiff clear all                    # delete all snapshots
+kdiff save -t task -t syscall      # select targets
+kdiff save -c 'kops file_operations 0xffffffff81000000'
+```
+
+### Notes
+
+```text
+Snapshots are kept in /tmp/gef/kdiff-UID until `kdiff clear` removes them.
+Compare snapshots taken from the same kernel instance.
+Without -t, task/module/sysctl/irq/syscall and, on x86, IDT/GDT are compared.
+Use -c to include address-specific tables such as `kops file_operations ADDRESS`.
+```
+
 ## ksearch-code-ptr
 
 Search the code pointer in kernel data area.
@@ -10562,7 +10609,7 @@ Search the code pointer in kernel data area.
 ### Syntax
 
 ```text
-usage: ksearch-code-ptr [-h] [-d DEPTH] [-r MAX_RANGE] [-n]
+usage: ksearch-code-ptr [-h] [-d DEPTH] [-r MAX_RANGE] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
@@ -10570,6 +10617,7 @@ options:
   -r, --max-range MAX_RANGE
                         allowable offset range for each reference. (default: 0)
   -n, --no-pager        do not use the pager.
+  -q, --quiet           enable quiet mode.
 ```
 
 ## qemu-device-info

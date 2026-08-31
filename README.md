@@ -260,6 +260,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/knetdev.png)
 - `ksearch-code-ptr`: searches for the code pointer in kernel data area.
     - ![](images/ksearch-code-ptr.png)
+- `kdiff`: compares kernel information (function pointers, etc.) at two points in time.
 - `thunk-tracer`: collects and displays the thunk function addresses that are called automatically (x64/x86 only).
     - If this address comes from RW area, this is useful for getting RIP.
     - ![](images/thunk-tracer.png)
