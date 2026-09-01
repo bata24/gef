@@ -55602,7 +55602,7 @@ class CodeBaseCommand(GenericCommand):
         self.quiet_print(titlify(section_name))
         var_name = section_name.lstrip(".")
         self.quiet_print("${:s} = {:#x}".format(var_name, addr))
-        gdb.execute("set ${:s} = {:#x}".format(var_name, addr))
+        gdb.set_convenience_variable(var_name, addr)
         return
 
     @parse_args
@@ -55629,7 +55629,7 @@ class CodeBaseCommand(GenericCommand):
 
         # print
         self.quiet_print(titlify("code base"))
-        gdb.execute(f"set $codebase = {code_base:#x}")
+        gdb.set_convenience_variable("codebase", code_base)
         self.quiet_print(f"$codebase = {code_base:#x}")
 
         # Any other area should use a section header.
@@ -55841,7 +55841,7 @@ class HeapBaseCommand(GenericCommand):
 
         # print
         self.quiet_print(titlify("Heap base"))
-        gdb.execute(f"set $heapbase = {heap_base:#x}")
+        gdb.set_convenience_variable("heapbase", heap_base)
         self.quiet_print(f"$heapbase = {heap_base:#x}")
         return
 
@@ -55960,7 +55960,7 @@ class LibcBaseCommand(GenericCommand):
 
         # print
         self.quiet_print(titlify("libc info"))
-        gdb.execute(f"set $libc = {libc_base:#x}")
+        gdb.set_convenience_variable("libc", libc_base)
         self.quiet_print(f"$libc = {libc_base:#x}")
 
         if not args.quiet:
@@ -56052,7 +56052,7 @@ class LdBaseCommand(GenericCommand):
 
         # print
         self.quiet_print(titlify("ld info"))
-        gdb.execute(f"set $ld = {ld_base:#x}")
+        gdb.set_convenience_variable("ld", ld_base)
         self.quiet_print(f"$ld = {ld_base:#x}")
 
         if not args.quiet:
@@ -71776,7 +71776,7 @@ class KernelModuleLoadCommand(GenericCommand):
                 attribute_list += current_arch.ptrsize
 
                 # unneeded, but for convenience
-                gdb.execute("set ${:s} = {:#x}".format(name.replace(".", "").replace("-", ""), addr))
+                gdb.set_convenience_variable(name.replace(".", "").replace("-", ""), addr)
 
             # load
             command = " ".join(['-s {:s} {:#x}'.format(name, addr) for (name, addr) in sections])
@@ -162684,10 +162684,10 @@ class GefUtil:
     @staticmethod
     def gef_convenience(value):
         """Define a new convenience value."""
-        var_name = "$_gef{:d}".format(GefUtil.__gef_convenience_vars_index__)
+        var_name = "_gef{:d}".format(GefUtil.__gef_convenience_vars_index__)
         GefUtil.__gef_convenience_vars_index__ += 1
-        gdb.execute('set {:s} = "{:s}"'.format(var_name, value))
-        return var_name
+        gdb.set_convenience_variable(var_name, value)
+        return "${:s}".format(var_name)
 
     class ArgparseExitProxyException(Exception):
         pass
