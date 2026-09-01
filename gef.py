@@ -61859,24 +61859,9 @@ class KernelAddressHeuristicFinder:
                     return offset_tasks
             return None
 
-        # plan 3 (from current)
-        current = None
-        if is_arm64() or is_arm32():
-            current = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
-        elif is_x86_64() or is_x86_32():
-            current_task = KernelAddressHeuristicFinder.get_current_task()
-            if current_task:
-                if AddressUtil.is_msb_on(current_task) and is_valid_addr(current_task):
-                    # no __per_cpu_offset
-                    current = read_int_from_memory(current_task)
-                else:
-                    # use __per_cpu_offset
-                    p = KernelAddressHeuristicFinder.get_per_cpu_offset()
-                    if p and is_valid_addr(p):
-                        cpu_base = read_int_from_memory(p)
-                        current_ptr = AddressUtil.normalize_address(cpu_base + current_task)
-                        current = read_int_from_memory(current_ptr)
-        if current:
+        def get_init_task_from_current(current):
+            if current is None:
+                return None
             kinfo = Kernel.get_kernel_layout()
             if kinfo.rw_base and kinfo.rw_size and kinfo.rw_base <= current < kinfo.rw_base + kinfo.rw_size:
                 if looks_like_init_task(current):
@@ -61896,6 +61881,52 @@ class KernelAddressHeuristicFinder:
                         min_distance_task = (task, distance)
                 if min_distance_task[0] is not None:
                     return min_distance_task[0]
+            return None
+
+        # plan 3 (from current)
+        current = None
+        if is_arm64() or is_arm32():
+            current = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
+        elif is_x86_64() or is_x86_32():
+            current_task = KernelAddressHeuristicFinder.get_current_task()
+            if current_task:
+                if AddressUtil.is_msb_on(current_task) and is_valid_addr(current_task):
+                    # no __per_cpu_offset
+                    current = read_int_from_memory(current_task)
+                else:
+                    # use __per_cpu_offset
+                    p = KernelAddressHeuristicFinder.get_per_cpu_offset()
+                    if p and is_valid_addr(p):
+                        cpu_base = read_int_from_memory(p)
+                        current_ptr = AddressUtil.normalize_address(cpu_base + current_task)
+                        current = read_int_from_memory(current_ptr)
+
+        init_task = get_init_task_from_current(current)
+        if init_task is not None:
+            return init_task
+
+        # On ARM, another CPU may have a readable current task and a complete task list.
+        if is_arm64() or is_arm32():
+            orig_thread = gdb.selected_thread()
+            try:
+                orig_frame = gdb.selected_frame()
+            except gdb.error:
+                orig_frame = None
+            try:
+                for thread in sorted(gdb.selected_inferior().threads(), key=lambda th: th.num):
+                    if thread == orig_thread:
+                        continue
+                    thread.switch()
+                    current = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
+                    init_task = get_init_task_from_current(current)
+                    if init_task is not None:
+                        break
+            finally:
+                orig_thread.switch()
+                if orig_frame is not None:
+                    orig_frame.select()
+            if init_task is not None:
+                return init_task
 
         # plan 4 (from init_task.comm and init_thread_union on arm32)
         # Before v5.15, thread_info is stored at the bottom of the kernel stack and
@@ -67068,10 +67099,10 @@ class KernelCurrentCommand(GenericCommand):
                 elif is_arm64():
                     cpsr = get_register(current_arch.flag_register)
                     if cpsr is not None and ((cpsr >> 2) & 0b11) == 0:
-                        gef_print(
-                            "current (cpu{:d}): unavailable "
-                            "(CPU is in EL0; sp_el0 holds a user stack pointer)".format(cpu_num)
-                        )
+                        reason = "CPU is in EL0; sp_el0 holds a user stack pointer"
+                    else:
+                        reason = "failed to resolve current task"
+                    gef_print("current (cpu{:d}): unavailable ({:s})".format(cpu_num, reason))
                 continue
             gef_print("current (cpu{:d}): {:#x} {:s}".format(cpu_num, task, self.get_comm_str(task)))
         orig_thread.switch() # revert thread
