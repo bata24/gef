@@ -6344,7 +6344,7 @@ class ModuleLoader:
 class Disasm:
     """A collection of utility functions that makes disassemble."""
 
-    __gef_prev_arch__ = None # previous valid result of gdb.selected_frame().architecture()
+    __gef_prev_arch__ = None # previous valid result of GefUtil.get_architecture()
 
     @staticmethod
     def gdb_disassemble(start_pc, nb_insn=None, end_pc=None):
@@ -6354,10 +6354,10 @@ class Disasm:
             return None
 
         try:
-            arch = gdb.selected_frame().architecture()
+            arch = GefUtil.get_architecture()
             Disasm.__gef_prev_arch__ = arch
         except gdb.error:
-            # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
+            # The architecture may be unresolvable for unknown reasons (often during kernel startup).
             # At this time arch cannot be resolved, but if it was successful before, it will be used.
             if Disasm.__gef_prev_arch__ is None:
                 raise
@@ -15049,13 +15049,13 @@ def get_arch():
     """Return the binary's architecture."""
     if is_alive():
         try:
-            arch = gdb.selected_frame().architecture()
+            arch = GefUtil.get_architecture()
             name = arch.name()
             # check i386 or i8086
             if name != "i386":
                 return name
         except gdb.error:
-            # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
+            # The architecture may be unresolvable for unknown reasons (often during kernel startup).
             # Resolve by moving to the slow path.
             pass
 
@@ -162653,6 +162653,18 @@ class GefUtil:
             return gdb.lookup_type(_type).strip_typedefs()
         except RuntimeError:
             return None
+
+    @staticmethod
+    def get_architecture():
+        """Return the gdb.Architecture of the current target. It raises gdb.error if unavailable.
+
+        The inferior is preferred over the selected frame because it keeps the architecture
+        without building a frame. The selected frame does not exist before the process starts,
+        and building it can fail (e.g., ARM32 halted at the exception vector, where the frame
+        pointer still holds an unmapped userland value)."""
+        if hasattr(gdb.Inferior, "architecture"): # gdb 10.1~
+            return gdb.selected_inferior().architecture()
+        return gdb.selected_frame().architecture()
 
     @staticmethod
     def get_tqdm(use_tqdm=True):
