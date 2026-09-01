@@ -31318,28 +31318,34 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_integrity(self):
         cfg = "Integrity (IMA/EVM)"
-        integrity_iintcache_init = Symbol.get_ksymaddr("integrity_iintcache_init")
-        if integrity_iintcache_init is None:
-            additional = "integrity_iintcache_init: Not found"
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
+        # integrity_iintcache_init only means CONFIG_INTEGRITY=y and it is removed from linux 6.9,
+        # so use the initializer of each feature instead.
+        ima_init = Symbol.get_ksymaddr("ima_init")
+        init_evm = Symbol.get_ksymaddr("init_evm")
+        found = "ima_init: {:s}, init_evm: {:s}".format(
+            "Found" if ima_init is not None else "Not found",
+            "Found" if init_evm is not None else "Not found",
+        )
+        if ima_init is None and init_evm is None:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), found))
             return
 
-        kcmdline = Kernel.kernel_cmdline()
+        # ima_appraise= is meaningless if IMA itself is not compiled in.
+        kcmdline = Kernel.kernel_cmdline() if ima_init is not None else None
         if kcmdline and "ima_appraise=enforce" in kcmdline.cmdline:
-            additional = "integrity_iintcache_init: Found, ima_appraise=enforce is in cmdline"
+            additional = found + ", ima_appraise=enforce is in cmdline"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         elif kcmdline and "ima_appraise=off" in kcmdline.cmdline:
-            additional = "integrity_iintcache_init: Found, ima_appraise=off is in cmdline"
+            additional = found + ", ima_appraise=off is in cmdline"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         elif kcmdline and "ima_appraise=log" in kcmdline.cmdline:
-            additional = "integrity_iintcache_init: Found, ima_appraise=log is in cmdline"
+            additional = found + ", ima_appraise=log is in cmdline"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Permissive", "bold red"), additional))
         elif kcmdline and "ima_appraise=fix" in kcmdline.cmdline:
-            additional = "integrity_iintcache_init: Found, ima_appraise=fix is in cmdline"
+            additional = found + ", ima_appraise=fix is in cmdline"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Permissive", "bold red"), additional))
         else:
-            additional = "integrity_iintcache_init: Found"
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", found))
         return
 
     def check_loadpin(self):
