@@ -78504,6 +78504,7 @@ class TlsCommand(GenericCommand, BufferingOutput):
                 thread.switch()
             except gdb.error:
                 msg += " - Failed to switch to this thread"
+                gef_print(msg)
                 continue
             tls = current_arch.get_tls()
             msg += " - {:#x}".format(tls)
