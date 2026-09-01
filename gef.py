@@ -13563,7 +13563,11 @@ class Pid:
     def get_tcp_sess(pid):
         # get inode information from opened file descriptor
         inodes = []
-        for openfd in os.listdir("/proc/{:d}/fd".format(pid)):
+        try:
+            openfds = os.listdir("/proc/{:d}/fd".format(pid))
+        except (FileNotFoundError, ProcessLookupError, OSError):
+            return [] # the process is already gone, or it is not ours
+        for openfd in openfds:
             try:
                 fdname = os.readlink("/proc/{:d}/fd/{:s}".format(pid, openfd))
             except (FileNotFoundError, ProcessLookupError, OSError):
@@ -13581,7 +13585,11 @@ class Pid:
 
         # get connection information
         sessions = []
-        with open("/proc/{:d}/net/tcp".format(pid)) as fd:
+        try:
+            fd = open("/proc/{:d}/net/tcp".format(pid))
+        except (FileNotFoundError, ProcessLookupError, OSError):
+            return [] # the process is already gone, or it is not ours
+        with fd:
             for line in fd.readlines()[1:]:
                 _, laddr, raddr, status, _, _, _, _, _, inode = line.split()[:10]
                 if status != "01": # ESTABLISHED
@@ -13652,10 +13660,12 @@ class Pid:
 
         def get_external_pipe_inodes(pid):
             inodes = set()
-            if not os.path.exists("/proc/{:d}/".format(pid)):
-                return inodes
             # get inode information from opened file descriptor
-            for openfd in os.listdir("/proc/{:d}/fd".format(pid)):
+            try:
+                openfds = os.listdir("/proc/{:d}/fd".format(pid))
+            except (FileNotFoundError, ProcessLookupError, OSError):
+                return inodes # the process is already gone, or it is not ours
+            for openfd in openfds:
                 try:
                     fdname = os.readlink("/proc/{:d}/fd/{:s}".format(pid, openfd))
                 except (FileNotFoundError, ProcessLookupError, OSError):
@@ -30867,6 +30877,10 @@ class KernelChecksecCommand(GenericCommand):
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
             elif is_in_kernel():
                 lines = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --simple --disable-color").splitlines()
+                if not lines:
+                    additional = "pagewalk gave no memory map"
+                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+                    return
                 for line in lines:
                     if "USER" in line and "R-X" in line:
                         # If the qemu startup option does not include `-cpu kvm64`,
@@ -60580,6 +60594,9 @@ class KernelConstsArm32(KernelConstsBase):
             Maps = collections.namedtuple("Maps", dic.keys())
             maps.append(Maps(*dic.values()))
 
+        if maps == []: # `pagewalk` failed, or stopped in user mode
+            return None
+
         physmap = maps[0]
         for m in maps[1:]:
             if physmap.vaddr_end != m.vaddr_start:
@@ -60622,6 +60639,8 @@ class KernelConstsArm32(KernelConstsBase):
 
     @property
     def VMALLOC_START(self):
+        if self.high_memory is None:
+            return None
         return (self.high_memory + self.VMALLOC_OFFSET) & ~(self.VMALLOC_OFFSET - 1)
 
     @property
@@ -146731,6 +146750,7 @@ class PageMap:
         res = gdb.execute(command, to_string=True)
         if 'Exception raised' in res:
             gef_print(res)
+            return "" # the output is polluted by the traceback, so it must not be parsed
         return res
 
     @staticmethod
