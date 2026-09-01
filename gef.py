@@ -123814,6 +123814,29 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 found = False
 
             if found:
+                # random_seq is placed just before user_offset if CONFIG_SLAB_FREELIST_RANDOM=y.
+                # way1, way2 and way4 are 64-bit only, so this is the only chance to detect it on 32-bit.
+                # kasan_info may be inserted between them if CONFIG_KASAN=y (sizeof: 8 or 12).
+                # Some caches have no random_seq even if it is enabled, so decide by majority.
+                sample_caches = kmem_caches[:16]
+                for sizeof_kasan_info in [0, 8, 12]:
+                    if sizeof_kasan_info % current_arch.ptrsize: # random_seq is a pointer
+                        continue
+                    offset_random_seq = candidate_offset - sizeof_kasan_info - current_arch.ptrsize
+                    if offset_random_seq < start_offset:
+                        continue
+                    random_seq_count = 0
+                    for kmem_cache in sample_caches:
+                        kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
+                        x = read_int_from_memory(kmem_cache_top + offset_random_seq)
+                        try:
+                            if is_valid_addr(x) and is_random_seq(x):
+                                random_seq_count += 1
+                        except gdb.MemoryError:
+                            pass
+                    if random_seq_count > len(sample_caches) // 2:
+                        self.kmem_cache_offset_random_seq = offset_random_seq
+                        break
                 self.quiet_info("offset of node is found by heuristic way3")
                 set_kmem_cache_offset_from_barn(node_offset)
                 return
