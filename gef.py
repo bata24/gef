@@ -31670,12 +31670,42 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_CONFIG_DEBUG_INFO_BTF(self):
         cfg = "CONFIG_DEBUG_INFO_BTF"
-        __start_BTF = Symbol.get_ksymaddr("__start_BTF")
-        if __start_BTF:
+        start_btf = Symbol.get_ksymaddr("__start_BTF")
+        if start_btf:
             additional = "__start_BTF: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
+            return
+
+        # __start_BTF is not present in runtime kallsyms when CONFIG_KALLSYMS_ALL=n.
+        command = __gef_command_instances__.get("ksymaddr-remote")
+        kernel_img = getattr(command, "kernel_img", b"")
+        endian = Endian.endian_str()
+        header_fmt = endian + "HBBIIIII"
+        header_size = struct.calcsize(header_fmt)
+        magic = struct.pack(endian + "H", 0xeb9f)
+        pos = kernel_img.find(magic)
+        while 0 <= pos <= len(kernel_img) - header_size:
+            _, version, _, header_len, type_off, type_len, str_off, str_len = struct.unpack_from(header_fmt, kernel_img, pos)
+            payload_end = header_len + max(type_off + type_len, str_off + str_len)
+            str_start = pos + header_len + str_off
+            if (version == 1 and header_len >= header_size and type_len and str_len
+                    and type_off + type_len <= str_off and payload_end <= len(kernel_img) - pos
+                    and kernel_img[str_start:str_start + 1] == b"\0"):
+                btf_addr = getattr(command, "ro_base", 0) + pos
+                additional = "BTF header: Found at {:#x} (__start_BTF hidden)".format(btf_addr)
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
+                return
+            pos = kernel_img.find(magic, pos + 1)
+
+        if kernel_img:
+            additional = "BTF header: Not found"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
+            return
+
+        additional = "__start_BTF: Not found"
+        if Symbol.get_ksymaddr("modprobe_path") is None and KernelAddressHeuristicFinder.get_modules() is not None:
+            gef_print("{:<40s}: {:s} ({:s}, CONFIG_KALLSYMS_ALL=n)".format(cfg, Color.grayify("Unknown"), additional))
         else:
-            additional = "__start_BTF: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
         return
 
