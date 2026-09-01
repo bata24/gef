@@ -31590,7 +31590,6 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_namespaces(self):
         kversion = Kernel.kernel_version()
-        ksysctl_ret = Kernel.get_ksysctl("kernel.version")
         cfgs = [
             ["4.9", "user.max_user_namespaces"],
             ["4.9", "user.max_pid_namespaces"],
@@ -31601,31 +31600,37 @@ class KernelChecksecCommand(GenericCommand):
             ["4.9", "user.max_cgroup_namespaces"],
             ["5.6", "user.max_time_namespaces"],
         ]
-        prev_fail = False
+        supported_cfgs = [cfg for kv, cfg in cfgs if not kversion < kv]
+        addrs = {}
+        if supported_cfgs:
+            # A ksysctl tree walk is slow, so resolve all namespace limits in one pass.
+            filters = " ".join("-f {:s}".format(cfg) for cfg in supported_cfgs)
+            try:
+                ret = gdb.execute("ksysctl --quiet --no-pager {:s}".format(filters), to_string=True)
+            except gdb.error:
+                ret = ""
+            for line in ret.splitlines():
+                fields = line.split()
+                if len(fields) < 2 or fields[0] not in supported_cfgs:
+                    continue
+                try:
+                    addrs[fields[0]] = int(fields[1], 16)
+                except ValueError:
+                    pass
+
         for kv, cfg in cfgs:
             if kversion < kv:
                 additional = "{:s}: implemented from linux {:s}".format(cfg, kv)
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unimplemented", "bold red"), additional))
                 continue
 
-            if not ksysctl_ret: # maybe CONFIG_RANDSTRUCT=y
-                additional = "{:s}: Not found".format(cfg)
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
-                continue
-
-            if prev_fail: # Kernel.get_ksysctl is very slow, so skip if previous Kernel.get_ksysctl() was failed
-                additional = "{:s}: Not found".format(cfg)
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
-                continue
-
-            addr = Kernel.get_ksysctl(cfg) # very slow
+            addr = addrs.get(cfg)
             if addr is None:
                 additional = "{:s}: Not found".format(cfg)
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
-                prev_fail = True
                 continue
 
-            val = read_int32_from_memory(addr)
+            val = read_int_from_memory(addr)
             if val:
                 gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("{:d}".format(val), "bold red")))
             else:
