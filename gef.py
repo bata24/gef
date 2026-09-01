@@ -66881,17 +66881,17 @@ class KernelbaseCommand(GenericCommand):
         self.out = []
         if kinfo.text_base:
             self.out.append("kernel text:   {:#x}-{:#x} ({:#x} bytes)".format(kinfo.text_base, kinfo.text_end, kinfo.text_size))
-            gdb.execute(f"set $kbase = {kinfo.text_base:#x}")
+            gdb.set_convenience_variable("kbase", kinfo.text_base)
         else:
             err("Failed to resolve kernel text")
         if kinfo.ro_base:
             self.out.append("kernel rodata: {:#x}-{:#x} ({:#x} bytes)".format(kinfo.ro_base, kinfo.ro_end, kinfo.ro_size))
-            gdb.execute(f"set $kro_base = {kinfo.ro_base:#x}")
+            gdb.set_convenience_variable("kro_base", kinfo.ro_base)
         else:
             err("Failed to resolve kernel rodata")
         if kinfo.rw_base:
             self.out.append("kernel data:   {:#x}-{:#x} ({:#x} bytes)".format(kinfo.rw_base, kinfo.rw_end, kinfo.rw_size))
-            gdb.execute(f"set $kdata_base = {kinfo.rw_base:#x}")
+            gdb.set_convenience_variable("kdata_base", kinfo.rw_base)
         else:
             err("Failed to resolve kernel data")
         if self.out:
