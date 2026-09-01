@@ -61725,6 +61725,13 @@ class KernelAddressHeuristicFinder:
             # We need to consider the case where Linux and RTOS are running on different CPUs at the same time.
             # If the stack is not the address the kernel expects to use, it should not be interpreted as a task.
 
+            # The kernel stack of the current task is banked to SVC mode. In the other modes `sp` is
+            # either the user stack (USR, SYS) or the small per-CPU exception stack that cpu_init()
+            # allocates in the kernel .data (FIQ, IRQ, ABT, UND, MON), so it is not a thread_info.
+            cpsr = get_register(current_arch.flag_register)
+            if cpsr is not None and (cpsr & 0b11111) != 0b10011:
+                return None
+
             # check if valid kernel address or not
             current_thread_info = current_arch.sp & ~0x1fff
             if current_thread_info < page_offset:
@@ -67034,7 +67041,13 @@ class KernelCurrentCommand(GenericCommand):
 
     def dump_current_arm(self):
         orig_thread = gdb.selected_thread()
-        orig_frame = gdb.selected_frame()
+        try:
+            orig_frame = gdb.selected_frame()
+        except gdb.error:
+            # The selected frame is not always readable (e.g., ARM32 halted at the exception vector,
+            # where the frame pointer still holds an unmapped userland value).
+            # Reverting the thread is enough because this command never selects an outer frame.
+            orig_frame = None
         # Resolve `offsetof(task_struct, comm)` before switching to another thread.
         # If this CPU cannot resolve it, `get_comm_str()` retries later in the loop.
         self.resolve_offset_comm(report_failure=False)
@@ -67062,7 +67075,8 @@ class KernelCurrentCommand(GenericCommand):
                 continue
             gef_print("current (cpu{:d}): {:#x} {:s}".format(cpu_num, task, self.get_comm_str(task)))
         orig_thread.switch() # revert thread
-        orig_frame.select()
+        if orig_frame is not None:
+            orig_frame.select()
         return
 
     def dump_current_x86(self):
