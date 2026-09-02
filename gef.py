@@ -61921,7 +61921,10 @@ class KernelAddressHeuristicFinder:
                 for thread in sorted(gdb.selected_inferior().threads(), key=lambda th: th.num):
                     if thread == orig_thread:
                         continue
-                    thread.switch()
+                    try:
+                        thread.switch()
+                    except gdb.error:
+                        continue
                     current = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
                     init_task = get_init_task_from_current(current)
                     if init_task is not None:
