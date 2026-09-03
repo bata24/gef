@@ -13349,7 +13349,14 @@ def get_register(regname, use_mbed_exec=False, use_monitor=False):
         regname = "$" + regname
 
     try:
-        value = gdb.parse_and_eval(regname)
+        # `read_register` is about 2.7x faster than `parse_and_eval` for the same register
+        # (0.97us vs 2.69us for $rax, 6.95us vs 13.78us for $pc), but it only knows the
+        # real and pseudo registers of the target, so keep `parse_and_eval` as a fallback.
+        try:
+            value = gdb.selected_frame().read_register(regname[1:])
+        except (gdb.error, ValueError):
+            value = gdb.parse_and_eval(regname)
+
         if value.type.code == gdb.TYPE_CODE_INT:
             return to_unsigned_long(value)
         elif value.type.name == "vec128":
@@ -20547,6 +20554,22 @@ class PtrDemangleCommand(GenericCommand):
         return candidates[0] if len(candidates) == 1 else None
 
     @staticmethod
+    @Cache.cache_this_session
+    def get_cookie_symbols():
+        """Return the pointer guard symbols that gdb is able to resolve.
+        gdb keeps no cache for a symbol it failed to find, so it rescans every symtab on
+        each attempt (2.5ms once the glibc debug symbols are loaded). get_cookie runs on
+        every stop, so the symbols that do not exist are dropped here once."""
+        symbols = []
+        for symbol in ("&__pointer_chk_guard", "&__pointer_chk_guard_local"):
+            try:
+                AddressUtil.parse_address(symbol)
+            except (gdb.error, OverflowError, ValueError):
+                continue
+            symbols.append(symbol)
+        return symbols
+
+    @staticmethod
     @Cache.cache_until_next
     def get_cookie(force_heuristic=False):
         if is_in_kernel():
@@ -20559,7 +20582,7 @@ class PtrDemangleCommand(GenericCommand):
         if not force_heuristic:
             # glibc 2.44 stores the pointer guard in a RELRO variable on every architecture.
             # rtld and several architectures used these variables before 2.44.
-            for symbol in ("&__pointer_chk_guard", "&__pointer_chk_guard_local"):
+            for symbol in PtrDemangleCommand.get_cookie_symbols():
                 try:
                     cookie_ptr = AddressUtil.parse_address(symbol)
                     return read_int_from_memory(cookie_ptr)
