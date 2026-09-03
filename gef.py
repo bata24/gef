@@ -119,6 +119,17 @@ import time
 import traceback
 
 
+# argparse translates every string it formats via gettext, but `gettext.find()` does not
+# cache its misses, so each call rescans the whole localedir. GEF evaluates
+# `parser.format_help()` at import time for each of its 400+ commands, which makes this
+# lookup the single largest part of the load time. There is no `messages` catalog for
+# argparse anyway, so make the translation a no-op while this file is being imported and
+# restore it at the very bottom. This is exactly what argparse itself falls back to when
+# `gettext` is unavailable.
+ARGPARSE_GETTEXT = argparse._
+argparse._ = lambda message: message
+
+
 def http_get(url):
     """Basic HTTP wrapper for GET request."""
     import urllib.request
@@ -557,24 +568,26 @@ def gef_print(x="", less=False, redirect=None, skip_color=False, *args, **kwargs
         return
 
     # write to file and less
+    # the trailing newline is what print() would have added on the non-pager path.
+    # Without it the next output continues on the same line when stdout is not a tty.
     if isinstance(x, bytes):
         tmp_fd, tmp_path = GefUtil.mkstemp(prefix="gef_print", suffix=".txt")
-        os.fdopen(tmp_fd, "wb").write(x)
+        os.fdopen(tmp_fd, "wb").write(x + b"\n")
     else:
         try:
             # this is faster than converting to bytes and then writing.
             tmp_fd, tmp_path = GefUtil.mkstemp(prefix="gef_print", suffix=".txt")
-            os.fdopen(tmp_fd, "w").write(x)
+            os.fdopen(tmp_fd, "w").write(x + "\n")
         except Exception:
             # fallback if a write error occurs
             # tmp_fd is closed at this point, so delete it and reopen it
             os.unlink(tmp_path)
             tmp_fd, tmp_path = GefUtil.mkstemp(prefix="gef_print", suffix=".txt")
-            os.fdopen(tmp_fd, "wb").write(String.str2bytes(x))
+            os.fdopen(tmp_fd, "wb").write(String.str2bytes(x) + b"\n")
 
     # less
     less_option = Config.get_gef_setting("gef.less_option")
-    os.system("{!r} {:s} {!r}".format(less, less_option, tmp_path))
+    GefUtil.os_system("{!r} {:s} {!r}".format(less, less_option, tmp_path))
 
     # cleanup
     keep_pager_result = Config.get_gef_setting("gef.keep_pager_result")
@@ -27939,7 +27952,7 @@ class GlibcHeapDumpImageCommand(GenericCommand):
 
         # show
         cmd = self.make_command_line(image_path)
-        os.system(cmd)
+        GefUtil.os_system(cmd)
         os.unlink(image_path)
 
         if args.save_as_png:
@@ -28709,7 +28722,7 @@ class RpCommand(GenericCommand, BufferingOutput):
         cmd = "{!r} --file={!r} --rop={:d} {:s}--unique > {!r}".format(rp, path, ropN, aops, output_path)
         gef_print(titlify(cmd))
         if not os.path.exists(output_path):
-            os.system(cmd)
+            GefUtil.os_system(cmd)
         return output_path
 
     def apply_filter(self, rp_output_path, base_address):
@@ -30019,9 +30032,9 @@ class ElfInfoCommand(GenericCommand):
             except FileNotFoundError:
                 less = False
             if args.no_pager or not less:
-                os.system("LANG=C {!r} -a --wide {!r}".format(readelf, local_filepath))
+                GefUtil.os_system("LANG=C {!r} -a --wide {!r}".format(readelf, local_filepath))
             else:
-                os.system("LANG=C {!r} -a --wide {!r} | {!r}".format(readelf, local_filepath, less))
+                GefUtil.os_system("LANG=C {!r} -a --wide {!r} | {!r}".format(readelf, local_filepath, less))
             if tmp_filepath and os.path.exists(tmp_filepath):
                 os.unlink(tmp_filepath)
             return
@@ -56758,7 +56771,7 @@ class OneGadgetCommand(GenericCommand):
             res = self.get_filtered_result(one_gadget_command, libc.path)
             gef_print(res)
         else:
-            os.system("{!r} {!r} -l 1".format(one_gadget_command, libc.path))
+            GefUtil.os_system("{!r} {!r} -l 1".format(one_gadget_command, libc.path))
         return
 
 
@@ -56832,7 +56845,7 @@ class SeccompCommand(GenericCommand):
         for comm in commands:
             comm += f"{path!r}"
             gef_print(titlify(comm))
-            os.system(comm)
+            GefUtil.os_system(comm)
         return
 
 
@@ -133309,7 +133322,7 @@ class KtypesCommand(GenericCommand, BufferingOutput):
         open(raw_path, "wb").write(content)
 
         # raw -> vmlinux.h
-        os.system("{!r} btf dump file {!r} format c > {!r}".format(GefUtil.which("bpftool"), raw_path, header_path))
+        GefUtil.os_system("{!r} btf dump file {!r} format c > {!r}".format(GefUtil.which("bpftool"), raw_path, header_path))
         return header_path
 
     @parse_args
@@ -133375,7 +133388,7 @@ class KtypesLoadCommand(KtypesCommand):
             gcc, opt, source_path, obj_path,
         )
         info(cmd)
-        os.system(cmd)
+        GefUtil.os_system(cmd)
 
         if not os.path.exists(obj_path):
             return None
@@ -134983,7 +134996,7 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         # apply vmlinux-to-elf
         cmd = "{!r} {!r} {!r} --base-address={:#x}".format(vmlinux2elf, dumped_mem_file, symboled_vmlinux_file, kinfo.text_base)
         warn("Execute `{:s}`".format(cmd))
-        os.system(cmd)
+        GefUtil.os_system(cmd)
 
         # Error
         if not os.path.exists(symboled_vmlinux_file) or os.path.getsize(symboled_vmlinux_file) == 0:
@@ -159059,11 +159072,11 @@ class AddSymbolTemporaryCommand(GenericCommand):
             # When adding symbols, it is not necessary to match the architecture of the ELF to be created
             # and the architecture of the debugged kernel. Regardless of the architecture of the kernel
             # you are debugging, create an ELF using gcc in the host environment.
-            os.system("{!r} {!r} -no-pie -o {!r}".format(gcc, fname, blank_elf))
+            GefUtil.os_system("{!r} {!r} -no-pie -o {!r}".format(gcc, fname, blank_elf))
             os.unlink(fname)
             # delete unneeded section for faster (`ksymaddr-remote-apply` will embed many symbols)
-            os.system("{!r} --only-keep-debug {!r}".format(objcopy, blank_elf))
-            os.system("{!r} --strip-all {!r}".format(objcopy, blank_elf))
+            GefUtil.os_system("{!r} --only-keep-debug {!r}".format(objcopy, blank_elf))
+            GefUtil.os_system("{!r} --strip-all {!r}".format(objcopy, blank_elf))
             elf = Elf.get_elf(blank_elf)
             for s in elf.shdrs:
                 if s.sh_name == "": # null, skip
@@ -159080,7 +159093,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
                     continue
                 if s.sh_name == ".bss": # broken if remove
                     continue
-                os.system("{!r} --remove-section={!r} {!r} 2>/dev/null".format(
+                GefUtil.os_system("{!r} --remove-section={!r} {!r} 2>/dev/null".format(
                     objcopy, s.sh_name, blank_elf,
                 ))
         else:
@@ -159134,7 +159147,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
             elf = Elf.get_elf(blank_elf)
 
         # fix .text base address
-        os.system("{!r} --change-section-address .text={:#x} {!r} 2>/dev/null".format(
+        GefUtil.os_system("{!r} --change-section-address .text={:#x} {!r} 2>/dev/null".format(
             objcopy, text_base, blank_elf,
         ))
 
@@ -159189,7 +159202,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
 
         # embedding symbols
         relative_addr = args.function_start - text_base
-        os.system("{!r} --add-symbol {!r}=.text:{:#x},global,function {!r} 2>/dev/null".format(
+        GefUtil.os_system("{!r} --add-symbol {!r}=.text:{:#x},global,function {!r} 2>/dev/null".format(
             objcopy, args.function_name, relative_addr, sym_elf,
         ))
 
@@ -160074,7 +160087,7 @@ class SixelMemoryCommand(GenericCommand):
         tmp_fd, tmp_path = GefUtil.mkstemp(prefix="sixel-memory", suffix=".img")
         with os.fdopen(tmp_fd, "wb") as fdw:
             fdw.write(data)
-        os.system("{!r} {!r} sixel:-".format(convert_command, tmp_path))
+        GefUtil.os_system("{!r} {!r} sixel:-".format(convert_command, tmp_path))
 
         if args.decode_barcode:
             self.decode_barcode(tmp_path)
@@ -160342,13 +160355,13 @@ class VisualDumpCommand(GenericCommand):
                 info(cmd)
                 # Ctrl+C is consumed by os.system, so it cannot escape from the python loop.
                 # Therefore, it is judged by the execution result.
-                e = os.system(cmd)
+                e = GefUtil.os_system(cmd)
                 if e != 0:
                     break
         else:
             cmd = self.make_command_line(img_width, img_height, tmp_path)
             info(cmd)
-            os.system(cmd)
+            GefUtil.os_system(cmd)
 
         os.unlink(tmp_path)
         return
@@ -160383,14 +160396,14 @@ class FiletypeMemoryCommand(GenericCommand):
         try:
             gef_print(titlify("file {!r}".format(filepath)))
             file_command = GefUtil.which("file")
-            os.system("{!r} {!r}".format(file_command, filepath))
+            GefUtil.os_system("{!r} {!r}".format(file_command, filepath))
         except FileNotFoundError as e:
             warn("{}".format(e))
 
         try:
             gef_print(titlify("magika {!r}".format(filepath)))
             magika_command = GefUtil.which("magika")
-            os.system("{!r} {!r}".format(magika_command, filepath))
+            GefUtil.os_system("{!r} {!r}".format(magika_command, filepath))
         except FileNotFoundError as e:
             warn("{}".format(e))
 
@@ -162880,6 +162893,16 @@ class GefUtil:
         return
 
     @staticmethod
+    def os_system(cmd):
+        """Execute an external command, letting it write to our stdout directly.
+
+        The child inherits our stdout, so anything still sitting in the python buffer
+        has to go out first. Otherwise the child's output jumps ahead of it whenever
+        stdout is not a tty (e.g. gdb -batch redirected to a file)."""
+        sys.stdout.flush()
+        return os.system(cmd)
+
+    @staticmethod
     def gef_execute_external(command, as_list=False, *args, **kwargs):
         """Execute an external command and return the result."""
         env = os.environ.copy()
@@ -163298,6 +163321,11 @@ class Gef:
             if current_arch is None:
                 set_arch()
         return
+
+
+# restore the translation neutralized just after the imports
+argparse._ = ARGPARSE_GETTEXT
+del ARGPARSE_GETTEXT
 
 
 if __name__ == "__main__":
