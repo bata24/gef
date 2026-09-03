@@ -69880,6 +69880,278 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.quiet_warn("Retry with: ktask --init-task <addr>")
         return
 
+    def disable_option(self, *options):
+        """Disable the option(s) whose necessary offsets are not found, instead of aborting whole command."""
+        for option in options:
+            if getattr(self.args, option, False):
+                setattr(self.args, option, False)
+                self.quiet_warn("Disabled --{:s}".format(option.replace("_", "-")))
+        return
+
+    def initialize_ptregs_offset(self, task_addrs):
+        if self.offset_ptregs is None:
+            self.kstack_size, self.offset_ptregs = self.get_offset_ptregs(task_addrs, self.offset_stack)
+        if self.offset_ptregs is None:
+            self.quiet_err("Could not find saved ptregs")
+            return False
+        self.quiet_info("kstack size: {:#x}".format(self.kstack_size))
+        self.quiet_info("offsetof(kstack_top, saved ptregs): {:#x}".format(self.offset_ptregs))
+        return True
+
+    def initialize_vma_offsets(self, task_addrs):
+        if self.offset_vm_mm is None:
+            self.offset_vm_mm = self.get_offset_vm_mm(task_addrs, self.offset_mm)
+        if self.offset_vm_mm is None:
+            self.quiet_err("Could not find vm_area_struct->vm_mm")
+            return False
+        self.quiet_info("offsetof(vm_area_struct, vm_mm): {:#x}".format(self.offset_vm_mm))
+
+        if self.offset_vm_flags is None:
+            self.offset_vm_flags = self.get_offset_vm_flags(self.offset_vm_mm)
+        if self.offset_vm_flags is None:
+            self.quiet_err("Could not find vm_area_struct->vm_flags")
+            return False
+        self.quiet_info("offsetof(vm_area_struct, vm_flags): {:#x}".format(self.offset_vm_flags))
+
+        if self.offset_vm_file is None:
+            self.offset_vm_file = self.get_offset_vm_file(task_addrs, self.offset_mm, self.offset_vm_flags)
+        if self.offset_vm_file is None:
+            self.quiet_err("Could not find vm_area_struct->vm_file")
+            return False
+        self.quiet_info("offsetof(vm_area_struct, vm_file): {:#x}".format(self.offset_vm_file))
+
+        if self.offset_mnt is None:
+            mm = read_int_from_memory(task_addrs[1] + self.offset_mm)
+            current, _ = self.get_vm_area_struct(mm)
+            self.quiet_info("vm_area_struct (init process): {:#x}".format(current))
+            vm_file = read_int_from_memory(current + self.offset_vm_file)
+            self.quiet_info("vm_file (init process): {:#x}".format(vm_file))
+            self.offset_mnt = self.get_offset_mnt(vm_file)
+        if self.offset_mnt is None:
+            self.quiet_err("Could not find file->f_path.mnt")
+            return False
+        self.quiet_info("offsetof(file, f_path.mnt): {:#x}".format(self.offset_mnt))
+
+        if self.offset_dentry is None:
+            self.offset_dentry = self.get_offset_dentry(self.offset_mnt)
+        self.quiet_info("offsetof(file, f_path.dentry): {:#x}".format(self.offset_dentry))
+
+        if self.offset_d_iname is None:
+            mm = read_int_from_memory(task_addrs[1] + self.offset_mm)
+            current, _ = self.get_vm_area_struct(mm)
+            vm_file = read_int_from_memory(current + self.offset_vm_file)
+            dentry = read_int_from_memory(vm_file + self.offset_dentry)
+            self.offset_d_iname = self.get_offset_d_iname(dentry)
+        self.quiet_info("offsetof(dentry, d_iname): {:#x}".format(self.offset_d_iname))
+
+        if self.offset_d_inode is None:
+            self.offset_d_inode = self.get_offset_d_inode(self.offset_d_iname)
+        self.quiet_info("offsetof(dentry, d_inode): {:#x}".format(self.offset_d_inode))
+
+        if self.offset_d_parent is None:
+            dentry = read_int_from_memory(vm_file + self.offset_dentry)
+            self.offset_d_parent = self.get_offset_d_parent(dentry, self.offset_d_iname)
+        self.quiet_info("offsetof(dentry, d_parent): {:#x}".format(self.offset_d_parent))
+
+        if self.offset_i_ino is None:
+            dentry = read_int_from_memory(vm_file + self.offset_dentry)
+            inode = read_int_from_memory(dentry + self.offset_d_inode)
+            self.offset_i_ino = self.get_offset_i_ino(inode)
+        self.quiet_info("offsetof(inode, i_ino): {:#x}".format(self.offset_i_ino))
+        return True
+
+    def initialize_files_offset(self, task_addrs):
+        if self.offset_files is None:
+            self.offset_files = self.get_offset_files(task_addrs, self.offset_comm)
+        if self.offset_files is None:
+            self.quiet_err("Could not find task_struct->files")
+            return False
+        self.quiet_info("offsetof(task_struct, files): {:#x}".format(self.offset_files))
+        return True
+
+    def initialize_fdt_offset(self, task_addrs):
+        if self.offset_fdt is None:
+            self.offset_fdt = self.get_offset_fdt(task_addrs, self.offset_files)
+        if self.offset_fdt is None:
+            self.quiet_err("Could not find files_struct->fdt")
+            return False
+        self.quiet_info("offsetof(files_struct, fdt): {:#x}".format(self.offset_fdt))
+        return True
+
+    def initialize_nsproxy_offsets(self, task_addrs):
+        if self.offset_user_ns is None:
+            init_cred = read_int_from_memory(task_addrs[0] + self.offset_cred)
+            self.offset_user_ns = self.get_offset_user_ns(init_cred, self.offset_uid)
+        if self.offset_user_ns is None:
+            self.quiet_err("Could not find cred->user_ns")
+            return False
+        self.quiet_info("offsetof(cred, user_ns): {:#x}".format(self.offset_user_ns))
+
+        if self.offset_nsproxy is None:
+            self.offset_nsproxy = self.get_offset_nsproxy(task_addrs[0], self.offset_files)
+        if self.offset_nsproxy is None:
+            self.quiet_err("Could not find task_struct->nsproxy")
+            return False
+        self.quiet_info("offsetof(task_struct, nsproxy): {:#x}".format(self.offset_nsproxy))
+        return True
+
+    def initialize_thread_offsets(self, task_addrs, kversion):
+        if self.offset_group_leader is None:
+            self.offset_group_leader = self.get_offset_group_leader(self.offset_pid, self.offset_kcanary)
+        self.quiet_info("offsetof(task_struct, group_leader): {:#x}".format(self.offset_group_leader))
+
+        if self.offset_thread_group is None:
+            self.offset_thread_group = self.get_offset_thread_group(self.offset_group_leader)
+        if self.offset_thread_group is None:
+            self.quiet_err("Could not find task_struct->thread_group")
+            return False
+        if "6.7" <= kversion:
+            self.quiet_info("offsetof(task_struct, thread_node): {:#x}".format(self.offset_thread_group))
+        else:
+            self.quiet_info("offsetof(task_struct, thread_group): {:#x}".format(self.offset_thread_group))
+
+        if "6.7" <= kversion:
+            if self.offset_signal is None:
+                self.offset_signal = self.get_offset_signal(self.offset_nsproxy)
+            self.quiet_info("offsetof(task_struct, signal): {:#x}".format(self.offset_signal))
+
+            if self.offset_thread_head is None:
+                self.offset_thread_head = self.get_offset_thread_head(task_addrs[0], self.offset_signal)
+            if self.offset_thread_head is None:
+                self.quiet_err("Could not find signal->thread_head")
+                return False
+            self.quiet_info("offsetof(signal, thread_head): {:#x}".format(self.offset_thread_head))
+        return True
+
+    def initialize_sighand_offsets(self, task_addrs):
+        if self.offset_sighand is None:
+            self.offset_sighand = self.get_offset_sighand(task_addrs[0], self.offset_files)
+        if self.offset_sighand is None:
+            self.quiet_err("Could not find task_struct->sighand")
+            return False
+        self.quiet_info("offsetof(task_struct, sighand): {:#x}".format(self.offset_sighand))
+
+        if self.offset_action is None:
+            sighand = read_int_from_memory(task_addrs[1] + self.offset_sighand)
+            self.offset_action = self.get_offset_action(sighand)
+        if self.offset_action is None:
+            self.quiet_err("Could not find sighand_struct->action")
+            return False
+        self.quiet_info("offsetof(sighand_struct, action): {:#x}".format(self.offset_action))
+
+        if self.sizeof_action is None:
+            self.sizeof_action = self.get_sizeof_action(
+                task_addrs, self.offset_sighand, self.offset_action, self.offset_mm,
+            )
+        if self.sizeof_action is None:
+            self.quiet_err("Could not find sizeof(action[0])")
+            return False
+        self.quiet_info("sizeof(action[0]): {:#x}".format(self.sizeof_action))
+
+        self.signame_list = {
+            1: "SIGHUP",
+            2: "SIGINT",
+            3: "SIGQUIT",
+            4: "SIGILL",
+            5: "SIGTRAP",
+            6: "SIGABRT",
+            7: "SIGBUS",
+            8: "SIGFPE",
+            9: "SIGKILL",
+            10: "SIGUSR1",
+            11: "SIGSEGV",
+            12: "SIGUSR2",
+            13: "SIGPIPE",
+            14: "SIGALRM",
+            15: "SIGTERM",
+            16: "SIGSTKFLT",
+            17: "SIGCHLD",
+            18: "SIGCONT",
+            19: "SIGSTOP",
+            20: "SIGTSTP",
+            21: "SIGTTIN",
+            22: "SIGTTOU",
+            23: "SIGURG",
+            24: "SIGXCPU",
+            25: "SIGXFSZ",
+            26: "SIGVTALRM",
+            27: "SIGPROF",
+            28: "SIGWINCH",
+            29: "SIGIO",
+            30: "SIGPWR",
+            31: "SIGSYS",
+            32: "SIGCANCEL", # from glibc source code
+            33: "SIGSETXID", # from glibc source code
+            34: "SIGRTMIN",
+            # 35 ... 49: SIGRTMIN+i
+            # 50 ... 63: SIGRTMAX-i
+            64: "SIGRTMAX",
+        }
+        for i in range(35, 50):
+            self.signame_list[i] = "SIGRTMIN+{:d}".format(i - 34)
+        for i in range(63, 49, -1):
+            self.signame_list[i] = "SIGRTMAX-{:d}".format(64 - i)
+        return True
+
+    def initialize_seccomp_offsets(self, task_addrs):
+        if self.offset_signal is None:
+            self.offset_signal = self.get_offset_signal(self.offset_nsproxy)
+        self.quiet_info("offsetof(task_struct, signal): {:#x}".format(self.offset_signal))
+
+        if self.offset_seccomp is None:
+            self.offset_seccomp = self.get_offset_seccomp(task_addrs, self.offset_signal)
+        if self.offset_seccomp is None:
+            self.quiet_err("Could not find task_struct->seccomp")
+            return False
+        self.quiet_info("offsetof(task_struct, seccomp): {:#x}".format(self.offset_seccomp))
+
+        if self.offset_prev is None:
+            self.offset_prev = self.get_offset_prev(task_addrs, self.offset_seccomp)
+        if self.offset_prev is None:
+            self.quiet_err("Could not find seccomp_filter->prev")
+            return False
+        self.quiet_info("offsetof(seccomp_filter, prev): {:#x}".format(self.offset_prev))
+
+        if self.offset_prog is None:
+            self.offset_prog = self.get_offset_prog(self.offset_prev)
+        if self.offset_prog is None:
+            self.quiet_err("Could not find seccomp_filter->prog")
+            return False
+        self.quiet_info("offsetof(seccomp_filter, prog): {:#x}".format(self.offset_prog))
+
+        if self.offset_bpf_func is None:
+            self.offset_bpf_func = self.get_offset_bpf_func(task_addrs, self.offset_seccomp, self.offset_prog)
+        if self.offset_bpf_func is None:
+            self.quiet_err("Could not find bpf_prog->bpf_func")
+            return False
+        self.quiet_info("offsetof(bpf_prog, bpf_func): {:#x}".format(self.offset_bpf_func))
+
+        if self.offset_orig_prog is None:
+            self.offset_orig_prog = self.get_offset_orig_prog(self.offset_bpf_func)
+        if self.offset_orig_prog is None:
+            self.quiet_err("Could not find bpf_prog->orig_prog")
+            return False
+        self.quiet_info("offsetof(bpf_prog, orig_prog): {:#x}".format(self.offset_orig_prog))
+
+        self.offset_jited_len = 16
+
+        try:
+            self.seccomp_tools_command = [GefUtil.which("ceccomp"), "disasm", "-c", "always"]
+            self.quiet_info("ceccomp is found")
+        except FileNotFoundError:
+            try:
+                self.seccomp_tools_command = [GefUtil.which("seccomp-tools"), "disasm"]
+                self.quiet_info("seccomp-tools is found")
+                if is_arm32():
+                    self.quiet_warn("`seccomp-tools` is not supported on ARM32. "
+                                    "Consider using `ceccomp` instead, as it supports ARM32.")
+                    self.quiet_info("GEF uses `capstone-disassemble bpf_func`")
+                    self.seccomp_tools_command = None
+            except FileNotFoundError:
+                self.quiet_info("Could not find ceccomp or seccomp-tools, GEF uses `capstone-disassemble bpf_func`")
+                self.seccomp_tools_command = None
+        return True
+
     def initialize(self):
         self.init_task = None
         kversion = Kernel.kernel_version()
@@ -69971,13 +70243,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # kstack_top->saved_ptregs
         if self.args.print_regs and self.offset_stack is not None:
-            if self.offset_ptregs is None:
-                self.kstack_size, self.offset_ptregs = self.get_offset_ptregs(task_addrs, self.offset_stack)
-            if self.offset_ptregs is None:
-                self.quiet_err("Could not find saved ptregs")
-                return False
-            self.quiet_info("kstack size: {:#x}".format(self.kstack_size))
-            self.quiet_info("offsetof(kstack_top, saved ptregs): {:#x}".format(self.offset_ptregs))
+            if self.initialize_ptregs_offset(task_addrs) is False:
+                self.disable_option("print_regs")
         elif self.args.print_regs:
             self.quiet_warn("Could not find saved ptregs without task_struct->stack; skipping registers")
 
@@ -69991,259 +70258,47 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # dentry->d_inode
         # inode->i_ino
         if self.args.print_maps or self.args.print_fd:
-            if self.offset_vm_mm is None:
-                self.offset_vm_mm = self.get_offset_vm_mm(task_addrs, self.offset_mm)
-            if self.offset_vm_mm is None:
-                self.quiet_err("Could not find vm_area_struct->vm_mm")
-                return False
-            self.quiet_info("offsetof(vm_area_struct, vm_mm): {:#x}".format(self.offset_vm_mm))
-
-            if self.offset_vm_flags is None:
-                self.offset_vm_flags = self.get_offset_vm_flags(self.offset_vm_mm)
-            if self.offset_vm_flags is None:
-                self.quiet_err("Could not find vm_area_struct->vm_flags")
-                return False
-            self.quiet_info("offsetof(vm_area_struct, vm_flags): {:#x}".format(self.offset_vm_flags))
-
-            if self.offset_vm_file is None:
-                self.offset_vm_file = self.get_offset_vm_file(task_addrs, self.offset_mm, self.offset_vm_flags)
-            if self.offset_vm_file is None:
-                self.quiet_err("Could not find vm_area_struct->vm_file")
-                return False
-            self.quiet_info("offsetof(vm_area_struct, vm_file): {:#x}".format(self.offset_vm_file))
-
-            if self.offset_mnt is None:
-                mm = read_int_from_memory(task_addrs[1] + self.offset_mm)
-                current, _ = self.get_vm_area_struct(mm)
-                self.quiet_info("vm_area_struct (init process): {:#x}".format(current))
-                vm_file = read_int_from_memory(current + self.offset_vm_file)
-                self.quiet_info("vm_file (init process): {:#x}".format(vm_file))
-                self.offset_mnt = self.get_offset_mnt(vm_file)
-            if self.offset_mnt is None:
-                self.quiet_err("Could not find file->f_path.mnt")
-                return False
-            self.quiet_info("offsetof(file, f_path.mnt): {:#x}".format(self.offset_mnt))
-
-            if self.offset_dentry is None:
-                self.offset_dentry = self.get_offset_dentry(self.offset_mnt)
-            self.quiet_info("offsetof(file, f_path.dentry): {:#x}".format(self.offset_dentry))
-
-            if self.offset_d_iname is None:
-                mm = read_int_from_memory(task_addrs[1] + self.offset_mm)
-                current, _ = self.get_vm_area_struct(mm)
-                vm_file = read_int_from_memory(current + self.offset_vm_file)
-                dentry = read_int_from_memory(vm_file + self.offset_dentry)
-                self.offset_d_iname = self.get_offset_d_iname(dentry)
-            self.quiet_info("offsetof(dentry, d_iname): {:#x}".format(self.offset_d_iname))
-
-            if self.offset_d_inode is None:
-                self.offset_d_inode = self.get_offset_d_inode(self.offset_d_iname)
-            self.quiet_info("offsetof(dentry, d_inode): {:#x}".format(self.offset_d_inode))
-
-            if self.offset_d_parent is None:
-                dentry = read_int_from_memory(vm_file + self.offset_dentry)
-                self.offset_d_parent = self.get_offset_d_parent(dentry, self.offset_d_iname)
-            self.quiet_info("offsetof(dentry, d_parent): {:#x}".format(self.offset_d_parent))
-
-            if self.offset_i_ino is None:
-                dentry = read_int_from_memory(vm_file + self.offset_dentry)
-                inode = read_int_from_memory(dentry + self.offset_d_inode)
-                self.offset_i_ino = self.get_offset_i_ino(inode)
-            self.quiet_info("offsetof(inode, i_ino): {:#x}".format(self.offset_i_ino))
+            if self.initialize_vma_offsets(task_addrs) is False:
+                self.disable_option("print_maps", "print_fd")
 
         # task_struct->files
         if self.args.print_fd or self.args.print_sighand or self.args.print_namespace or \
             ("6.7" <= kversion and self.args.print_thread) or self.args.print_seccomp:
-            if self.offset_files is None:
-                self.offset_files = self.get_offset_files(task_addrs, self.offset_comm)
-            if self.offset_files is None:
-                self.quiet_err("Could not find task_struct->files")
-                return False
-            self.quiet_info("offsetof(task_struct, files): {:#x}".format(self.offset_files))
+            if self.initialize_files_offset(task_addrs) is False:
+                self.disable_option("print_fd", "print_sighand", "print_namespace", "print_seccomp")
+                if "6.7" <= kversion:
+                    self.disable_option("print_thread")
 
         # files_struct->fdt
         if self.args.print_fd:
-            if self.offset_fdt is None:
-                self.offset_fdt = self.get_offset_fdt(task_addrs, self.offset_files)
-            if self.offset_fdt is None:
-                self.quiet_err("Could not find files_struct->fdt")
-                return False
-            self.quiet_info("offsetof(files_struct, fdt): {:#x}".format(self.offset_fdt))
+            if self.initialize_fdt_offset(task_addrs) is False:
+                self.disable_option("print_fd")
 
         # cred->user_ns
         # task_struct->nsproxy
         if self.args.print_namespace or ("6.7" <= kversion and self.args.print_thread) or self.args.print_seccomp:
-            if self.offset_user_ns is None:
-                init_cred = read_int_from_memory(task_addrs[0] + self.offset_cred)
-                self.offset_user_ns = self.get_offset_user_ns(init_cred, self.offset_uid)
-            if self.offset_user_ns is None:
-                self.quiet_err("Could not find cred->user_ns")
-                return False
-            self.quiet_info("offsetof(cred, user_ns): {:#x}".format(self.offset_user_ns))
-
-            if self.offset_nsproxy is None:
-                self.offset_nsproxy = self.get_offset_nsproxy(task_addrs[0], self.offset_files)
-            if self.offset_nsproxy is None:
-                self.quiet_err("Could not find task_struct->nsproxy")
-                return False
-            self.quiet_info("offsetof(task_struct, nsproxy): {:#x}".format(self.offset_nsproxy))
+            if self.initialize_nsproxy_offsets(task_addrs) is False:
+                self.disable_option("print_namespace", "print_seccomp")
+                if "6.7" <= kversion:
+                    self.disable_option("print_thread")
 
         # task_struct->group_leader
         # task_struct->thread_group
         # task_struct->signal (6.7~)
         # signal->thread_head (6.7~)
         if self.args.print_thread:
-            if self.offset_group_leader is None:
-                self.offset_group_leader = self.get_offset_group_leader(self.offset_pid, self.offset_kcanary)
-            self.quiet_info("offsetof(task_struct, group_leader): {:#x}".format(self.offset_group_leader))
-
-            if self.offset_thread_group is None:
-                self.offset_thread_group = self.get_offset_thread_group(self.offset_group_leader)
-            if self.offset_thread_group is None:
-                self.quiet_err("Could not find task_struct->thread_group")
-                return False
-            if "6.7" <= kversion:
-                self.quiet_info("offsetof(task_struct, thread_node): {:#x}".format(self.offset_thread_group))
-            else:
-                self.quiet_info("offsetof(task_struct, thread_group): {:#x}".format(self.offset_thread_group))
-
-            if "6.7" <= kversion:
-                if self.offset_signal is None:
-                    self.offset_signal = self.get_offset_signal(self.offset_nsproxy)
-                self.quiet_info("offsetof(task_struct, signal): {:#x}".format(self.offset_signal))
-
-                if self.offset_thread_head is None:
-                    self.offset_thread_head = self.get_offset_thread_head(task_addrs[0], self.offset_signal)
-                self.quiet_info("offsetof(signal, thread_head): {:#x}".format(self.offset_thread_head))
+            if self.initialize_thread_offsets(task_addrs, kversion) is False:
+                self.disable_option("print_thread")
 
         # task_struct->sighand
         if self.args.print_sighand:
-            if self.offset_sighand is None:
-                self.offset_sighand = self.get_offset_sighand(task_addrs[0], self.offset_files)
-            if self.offset_sighand is None:
-                self.quiet_err("Could not find task_struct->sighand")
-                return False
-            self.quiet_info("offsetof(task_struct, sighand): {:#x}".format(self.offset_sighand))
-
-            if self.offset_action is None:
-                sighand = read_int_from_memory(task_addrs[1] + self.offset_sighand)
-                self.offset_action = self.get_offset_action(sighand)
-            if self.offset_action is None:
-                self.quiet_err("Could not find sighand_struct->action")
-                return False
-            self.quiet_info("offsetof(sighand_struct, action): {:#x}".format(self.offset_action))
-
-            if self.sizeof_action is None:
-                self.sizeof_action = self.get_sizeof_action(
-                    task_addrs, self.offset_sighand, self.offset_action, self.offset_mm,
-                )
-            if self.sizeof_action is None:
-                self.quiet_err("Could not find sizeof(action[0])")
-                return False
-            self.quiet_info("sizeof(action[0]): {:#x}".format(self.sizeof_action))
-
-            self.signame_list = {
-                1: "SIGHUP",
-                2: "SIGINT",
-                3: "SIGQUIT",
-                4: "SIGILL",
-                5: "SIGTRAP",
-                6: "SIGABRT",
-                7: "SIGBUS",
-                8: "SIGFPE",
-                9: "SIGKILL",
-                10: "SIGUSR1",
-                11: "SIGSEGV",
-                12: "SIGUSR2",
-                13: "SIGPIPE",
-                14: "SIGALRM",
-                15: "SIGTERM",
-                16: "SIGSTKFLT",
-                17: "SIGCHLD",
-                18: "SIGCONT",
-                19: "SIGSTOP",
-                20: "SIGTSTP",
-                21: "SIGTTIN",
-                22: "SIGTTOU",
-                23: "SIGURG",
-                24: "SIGXCPU",
-                25: "SIGXFSZ",
-                26: "SIGVTALRM",
-                27: "SIGPROF",
-                28: "SIGWINCH",
-                29: "SIGIO",
-                30: "SIGPWR",
-                31: "SIGSYS",
-                32: "SIGCANCEL", # from glibc source code
-                33: "SIGSETXID", # from glibc source code
-                34: "SIGRTMIN",
-                # 35 ... 49: SIGRTMIN+i
-                # 50 ... 63: SIGRTMAX-i
-                64: "SIGRTMAX",
-            }
-            for i in range(35, 50):
-                self.signame_list[i] = "SIGRTMIN+{:d}".format(i - 34)
-            for i in range(63, 49, -1):
-                self.signame_list[i] = "SIGRTMAX-{:d}".format(64 - i)
+            if self.initialize_sighand_offsets(task_addrs) is False:
+                self.disable_option("print_sighand")
 
         # task_struct->seccomp
         if self.args.print_seccomp:
-            if self.offset_signal is None:
-                self.offset_signal = self.get_offset_signal(self.offset_nsproxy)
-            self.quiet_info("offsetof(task_struct, signal): {:#x}".format(self.offset_signal))
-
-            if self.offset_seccomp is None:
-                self.offset_seccomp = self.get_offset_seccomp(task_addrs, self.offset_signal)
-            if self.offset_seccomp is None:
-                self.quiet_err("Could not find task_struct->seccomp")
-                return False
-            self.quiet_info("offsetof(task_struct, seccomp): {:#x}".format(self.offset_seccomp))
-
-            if self.offset_prev is None:
-                self.offset_prev = self.get_offset_prev(task_addrs, self.offset_seccomp)
-            if self.offset_prev is None:
-                self.quiet_err("Could not find seccomp_filter->prev")
-                return False
-            self.quiet_info("offsetof(seccomp_filter, prev): {:#x}".format(self.offset_prev))
-
-            if self.offset_prog is None:
-                self.offset_prog = self.get_offset_prog(self.offset_prev)
-            if self.offset_prog is None:
-                self.quiet_err("Could not find seccomp_filter->prog")
-                return False
-            self.quiet_info("offsetof(seccomp_filter, prog): {:#x}".format(self.offset_prog))
-
-            if self.offset_bpf_func is None:
-                self.offset_bpf_func = self.get_offset_bpf_func(task_addrs, self.offset_seccomp, self.offset_prog)
-            if self.offset_bpf_func is None:
-                self.quiet_err("Could not find bpf_prog->bpf_func")
-                return False
-            self.quiet_info("offsetof(bpf_prog, bpf_func): {:#x}".format(self.offset_bpf_func))
-
-            if self.offset_orig_prog is None:
-                self.offset_orig_prog = self.get_offset_orig_prog(self.offset_bpf_func)
-            if self.offset_orig_prog is None:
-                self.quiet_err("Could not find bpf_prog->orig_prog")
-                return False
-            self.quiet_info("offsetof(bpf_prog, orig_prog): {:#x}".format(self.offset_orig_prog))
-
-            self.offset_jited_len = 16
-
-            try:
-                self.seccomp_tools_command = [GefUtil.which("ceccomp"), "disasm", "-c", "always"]
-                self.quiet_info("ceccomp is found")
-            except FileNotFoundError:
-                try:
-                    self.seccomp_tools_command = [GefUtil.which("seccomp-tools"), "disasm"]
-                    self.quiet_info("seccomp-tools is found")
-                    if is_arm32():
-                        self.quiet_warn("`seccomp-tools` is not supported on ARM32. "
-                                        "Consider using `ceccomp` instead, as it supports ARM32.")
-                        self.quiet_info("GEF uses `capstone-disassemble bpf_func`")
-                        self.seccomp_tools_command = None
-                except FileNotFoundError:
-                    self.quiet_info("Could not find ceccomp or seccomp-tools, GEF uses `capstone-disassemble bpf_func`")
-                    self.seccomp_tools_command = None
+            if self.initialize_seccomp_offsets(task_addrs) is False:
+                self.disable_option("print_seccomp")
 
         return task_addrs
 
