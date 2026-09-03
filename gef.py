@@ -6163,24 +6163,27 @@ class Symbol:
     @staticmethod
     def get_ksymaddr(sym):
         """e.g., 'commit_creds' -> 0xffffffff9f6bd2a0"""
-        try:
-            res = gdb.execute("ksymaddr-remote --quiet --no-pager --exact {:s}".format(sym), to_string=True)
-            return int(res.split()[0], 16)
-        except (gdb.error, IndexError, ValueError):
+        out = Symbol.get_ksymaddr_multiple(sym)
+        if not out:
             return None
+        return out[0]
 
     @staticmethod
     def get_ksymaddr_multiple(sym):
         """e.g., 'set_is_seen' -> [0xffffffffba146db0,0xffffffffba6d84e0,0xffffffffba6dd170]"""
-        out = []
-        try:
-            ret = gdb.execute("ksymaddr-remote --quiet --no-pager --exact {:s}".format(sym), to_string=True)
-            for line in ret.splitlines():
-                addr = int(line.split()[0], 16)
-                out.append(addr)
-            return out
-        except (gdb.error, IndexError, ValueError):
+        command = __gef_command_instances__.get("ksymaddr-remote")
+        if command is None:
             return None
+        if not command.kallsyms:
+            # Not parsed yet. Executing the command parses it, then keeps it in command.kallsyms.
+            try:
+                gdb.execute("ksymaddr-remote --quiet --no-pager --exact {:s}".format(sym), to_string=True)
+            except gdb.error:
+                return None
+            if not command.kallsyms:
+                return None
+        # Once parsed, use the dict. Re-executing the command re-scans all the symbols for each call.
+        return list(command.get_kallsyms_map().get(sym, []))
 
     @staticmethod
     def get_symbol_by_monitor(symbol):
@@ -133451,6 +133454,8 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         #
         """
         self.kallsyms = []
+        self.kallsyms_map = {}
+        self.kallsyms_map_src = None # the list self.kallsyms_map was built from
         return
 
     def get_loaded_vmlinux_path(self):
@@ -133598,6 +133603,21 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             except IndexError:
                 pass
         return
+
+    def get_kallsyms_map(self):
+        """Return self.kallsyms as a {name: [addr, ...]} dict.
+        Symbol.get_ksymaddr is called hundreds of times by some commands, and scanning
+        all the symbols for each call is too slow."""
+        if not self.kallsyms:
+            return {} # do not memoize, since kallsyms may be resolved later
+        if self.kallsyms_map_src is not self.kallsyms:
+            # self.kallsyms is replaced with a new list when it is (re-)parsed
+            kallsyms_map = {}
+            for addr, name, _typ in self.kallsyms:
+                kallsyms_map.setdefault(name, []).append(addr)
+            self.kallsyms_map = kallsyms_map
+            self.kallsyms_map_src = self.kallsyms
+        return self.kallsyms_map
 
     def print_kallsyms(self, keywords, types, smart):
         if is_32bit():
