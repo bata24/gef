@@ -134402,6 +134402,11 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         dp = []
         step = 4
 
+        # Hoist loop-invariant lookups out of the DP loop below (hot path in `ks -rv`).
+        kernel_img = self.kernel_img
+        markers = self.offset_kallsyms_markers
+        is_v61_or_later = self.kernel_version >= (6, 1, 0)
+
         position = self.offset_kallsyms_names
         # kallsyms_names should be aligned.
         # This optimization is based on experience and is applied for now.
@@ -134470,17 +134475,17 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             # dp[i] contains num_syms as interpreted from `kallsyms_makers - i` as the start of kallsyms_names.
             # dp[i] == -1 means invalid.
             range_start = position
-            range_end = self.offset_kallsyms_markers
+            range_end = markers
             range_end -= len(dp) # shortcut the already checked results.
             for pos in range(range_end, range_start - 1, -1):
-                symbol_size = self.kernel_img[pos]
+                symbol_size = kernel_img[pos]
                 is_big_symbol = False # default
 
                 # check if big symbol (6.1~)
-                if self.kernel_version >= (6, 1, 0):
+                if is_v61_or_later:
                     if symbol_size & 0x80:
                         low = symbol_size & 0x7f
-                        high = self.kernel_img[pos + 1]
+                        high = kernel_img[pos + 1]
                         symbol_size = (high << 7) | low
                         is_big_symbol = True
 
@@ -134498,9 +134503,11 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
                 #                                                                  dp[3]=-1 dp[2]=0  dp[1]=0
                 # 0xffffffffb46b4b48: 0x00*    0x00     0x00     0x00     0xb0     0x0a     0x00     0x00
                 #                     dp[0]=0
-                dp_len = len(dp)
+                # At this point len(dp) always equals `markers - pos` (exactly one
+                # entry is appended per iteration), so compute it without len().
+                dp_len = markers - pos
                 if is_big_symbol:
-                    dp_len = len(dp) - 1
+                    dp_len -= 1
                 if symbol_size >= dp_len:
                     dp.append(-1) # exceed the kallsyms_markers
                     continue
