@@ -133748,12 +133748,8 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
                     length = (high << 7) | low
 
             # make symbol_name
-            symbol_name = ""
-            for _ in range(length):
-                symbol_token_index = self.kernel_img[position]
-                symbol_token = tokens[symbol_token_index]
-                position += 1
-                symbol_name += symbol_token
+            symbol_name = "".join([tokens[i] for i in self.kernel_img[position:position + length]])
+            position += length
             symbol_names.append(symbol_name)
 
         for addr, name in zip(self.kernel_addresses, symbol_names):
