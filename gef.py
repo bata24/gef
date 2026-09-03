@@ -419,18 +419,27 @@ class Cache:
             return None
         return getattr(thread, "global_num", None) or thread.num
 
+    # A marker that never compares equal to a user argument, so a key built from kwargs
+    # cannot collide with a key that is the bare `args` tuple.
+    __kwargs_marker__ = object()
+
     @staticmethod
     def cache_wrap(life_time, f, cache_None=True, per_cpu=False):
+        # The name and the per-function dict are resolved once here instead of on every call.
+        # The dict is therefore kept alive across resets, so the reset clears it in place.
+        fname = f"{f.__module__}:{f.__qualname__}"
+        fcache = Cache.__gef_caches__[life_time].setdefault(fname, {})
 
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
-            caches = Cache.__gef_caches__[life_time]
-            fname = f"{f.__module__}:{f.__qualname__}"
-            fcache = caches.setdefault(fname, {})
+            if kwargs:
+                key = (Cache.__kwargs_marker__, args, tuple(sorted(kwargs.items())))
+            else:
+                key = args
+            if per_cpu:
+                key = (Cache.cpu_context(), key)
 
             try:
-                kw = tuple(sorted(kwargs.items()))
-                key = (Cache.cpu_context(), args, kw) if per_cpu else (args, kw)
                 return fcache[key]
             except KeyError:
                 ret = f(*args, **kwargs)
@@ -475,11 +484,13 @@ class Cache:
         """Clear the cache of GEF.
         By default, it only clears caches of `until_next` type."""
 
-        Cache.__gef_caches__["until_next"].clear()
+        for fcache in Cache.__gef_caches__["until_next"].values():
+            fcache.clear()
         MemoryCache.reset()
 
         if all:
-            Cache.__gef_caches__["this_session"].clear()
+            for fcache in Cache.__gef_caches__["this_session"].values():
+                fcache.clear()
 
         # gdb cache
         try:
@@ -493,8 +504,8 @@ class Cache:
         """Clear the cache of specified function."""
 
         fname = f"{f.__module__}:{f.__qualname__}"
-        Cache.__gef_caches__["until_next"].pop(fname, None)
-        Cache.__gef_caches__["this_session"].pop(fname, None)
+        Cache.__gef_caches__["until_next"].get(fname, {}).clear()
+        Cache.__gef_caches__["this_session"].get(fname, {}).clear()
         return
 
 
