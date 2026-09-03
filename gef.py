@@ -5223,10 +5223,33 @@ class GlibcHeap:
 
             self.size_addr = AddressUtil.normalize_address(self.address - self.ptrsize)
             self.prev_size_addr = self.chunk_base_address
+            self.header = None
             return
 
+        def read_header_int(self, addr, offset):
+            """Return the header word at `addr`, which is `offset` bytes from the chunk base.
+
+            The header fields used to be read one by one, which costs up to 7 `read_memory`
+            per chunk. Read the whole header at once instead and memoize it.
+            If the whole header is not readable (e.g. the chunk is at the end of a mapping),
+            fall back to reading the word alone, so that gdb.MemoryError is raised at
+            exactly the same place as before."""
+            if self.header is None:
+                self.header = b""
+                # If normalize_address() wrapped one of the addresses around, the fields
+                # are not contiguous and the header cannot be read at once.
+                if self.ptrsize in (4, 8) and self.size_addr == self.chunk_base_address + self.ptrsize:
+                    try:
+                        self.header = read_memory(self.chunk_base_address, self.ptrsize * 6)
+                    except gdb.MemoryError:
+                        pass
+            if self.header:
+                unpack = u64 if self.ptrsize == 8 else u32
+                return unpack(self.header[offset:offset + self.ptrsize])
+            return read_int_from_memory(addr)
+
         def get_chunk_size(self):
-            return read_int_from_memory(self.size_addr) & (~0x07)
+            return self.read_header_int(self.size_addr, self.ptrsize) & (~0x07)
 
         @property
         def size(self):
@@ -5241,7 +5264,7 @@ class GlibcHeap:
             return cursz - self.ptrsize
 
         def get_prev_chunk_size(self):
-            return read_int_from_memory(self.prev_size_addr)
+            return self.read_header_int(self.prev_size_addr, 0)
 
         def get_next_chunk(self):
             try:
@@ -5255,10 +5278,10 @@ class GlibcHeap:
             try:
                 # Not a single-linked-list (sll) or no Safe-Linking support yet
                 if not sll or get_libc_version() < (2, 32):
-                    return read_int_from_memory(self.address)
+                    return self.read_header_int(self.address, self.ptrsize * 2)
                 # Unmask ("reveal") the Safe-Linking pointer
                 else:
-                    return read_int_from_memory(self.address) ^ (self.address >> 12)
+                    return self.read_header_int(self.address, self.ptrsize * 2) ^ (self.address >> 12)
             except gdb.MemoryError:
                 return None
 
@@ -5270,7 +5293,7 @@ class GlibcHeap:
 
         def get_bkw_ptr(self):
             try:
-                return read_int_from_memory(self.address + self.ptrsize)
+                return self.read_header_int(self.address + self.ptrsize, self.ptrsize * 3)
             except gdb.MemoryError:
                 return None
 
@@ -5281,14 +5304,14 @@ class GlibcHeap:
         bk = bck # for compat
 
         def get_fd_nextsize_ptr(self):
-            return read_int_from_memory(self.address + self.ptrsize * 2)
+            return self.read_header_int(self.address + self.ptrsize * 2, self.ptrsize * 4)
 
         @property
         def fd_nextsize(self):
             return self.get_fd_nextsize_ptr()
 
         def get_bk_nextsize_ptr(self):
-            return read_int_from_memory(self.address + self.ptrsize * 3)
+            return self.read_header_int(self.address + self.ptrsize * 3, self.ptrsize * 5)
 
         @property
         def bk_nextsize(self):
@@ -5296,13 +5319,13 @@ class GlibcHeap:
         # endif freed functions
 
         def has_p_bit(self):
-            return read_int_from_memory(self.size_addr) & 0x01
+            return self.read_header_int(self.size_addr, self.ptrsize) & 0x01
 
         def has_m_bit(self):
-            return read_int_from_memory(self.size_addr) & 0x02
+            return self.read_header_int(self.size_addr, self.ptrsize) & 0x02
 
         def has_n_bit(self):
-            return read_int_from_memory(self.size_addr) & 0x04
+            return self.read_header_int(self.size_addr, self.ptrsize) & 0x04
 
         def is_used(self):
             # Check if the current block is used by:
