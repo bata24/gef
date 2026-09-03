@@ -4911,10 +4911,11 @@ class GlibcHeap:
             # dict[address] = ["bins info1", "bins info2", ...]
             self.bins_dict_for_address = {}
             for tcache_idx, tcache_list in self.cached_tcache_list.items():
+                position_table = GefUtil.make_position_table(tcache_list)
                 for address in tcache_list:
                     if not isinstance(address, int):
                         continue
-                    pos = ",".join([str(i + 1) for i, x in enumerate(tcache_list) if x == address])
+                    pos = position_table[address]
                     if "size" in  GlibcHeap.get_binsize_table()["tcache"][tcache_idx]:
                         sz = GlibcHeap.get_binsize_table()["tcache"][tcache_idx]["size"]
                         m = "tcache[idx={:d},sz={:#x}][{:s}/{:d}]".format(tcache_idx, sz, pos, len(tcache_list))
@@ -4929,10 +4930,11 @@ class GlibcHeap:
 
             fastbins_table = GlibcHeap.get_binsize_table()["fastbins"]
             for fastbin_idx, fastbin_list in self.cached_fastbins_list.items():
+                position_table = GefUtil.make_position_table(fastbin_list)
                 for address in set(fastbin_list):
                     if not isinstance(address, int):
                         continue
-                    pos = ",".join([str(i + 1) for i, x in enumerate(fastbin_list) if x == address])
+                    pos = position_table[address]
                     if fastbin_idx in fastbins_table:
                         sz = fastbins_table[fastbin_idx]["size"]
                         m = "fastbins[idx={:d},sz={:#x}][{:s}/{:d}]".format(fastbin_idx, sz, pos, len(fastbin_list))
@@ -4944,29 +4946,32 @@ class GlibcHeap:
             # dict[base_address] = ["bins info1", "bins info2", ...]
             self.bins_dict_for_base_address = {}
             for _, unsortedbin_list in self.cached_unsortedbin_list.items():
+                position_table = GefUtil.make_position_table(unsortedbin_list)
                 for base_address in unsortedbin_list:
                     if not isinstance(base_address, int):
                         continue
-                    pos = ",".join([str(i + 1) for i, x in enumerate(unsortedbin_list) if x == base_address])
+                    pos = position_table[base_address]
                     m = "unsortedbins[{:s}/{:d}]".format(pos, len(unsortedbin_list))
                     new_list = self.bins_dict_for_base_address.get(base_address, []) + [m]
                     self.bins_dict_for_base_address[base_address] = new_list
 
             for smallbin_idx, smallbin_list in self.cached_smallbins_list.items():
+                position_table = GefUtil.make_position_table(smallbin_list)
                 for base_address in smallbin_list:
                     if not isinstance(base_address, int):
                         continue
-                    pos = ",".join([str(i + 1) for i, x in enumerate(smallbin_list) if x == base_address])
+                    pos = position_table[base_address]
                     sz = GlibcHeap.get_binsize_table()["small_bins"][smallbin_idx]["size"]
                     m = "smallbins[idx={:d},sz={:#x}][{:s}/{:d}]".format(smallbin_idx, sz, pos, len(smallbin_list))
                     new_list = self.bins_dict_for_base_address.get(base_address, []) + [m]
                     self.bins_dict_for_base_address[base_address] = new_list
 
             for largebin_idx, largebin_list in self.cached_largebins_list.items():
+                position_table = GefUtil.make_position_table(largebin_list)
                 for base_address in largebin_list:
                     if not isinstance(base_address, int):
                         continue
-                    pos = ",".join([str(i + 1) for i, x in enumerate(largebin_list) if x == base_address])
+                    pos = position_table[base_address]
                     sz_min = GlibcHeap.get_binsize_table()["large_bins"][largebin_idx]["size_min"]
                     sz_max = GlibcHeap.get_binsize_table()["large_bins"][largebin_idx]["size_max"]
                     m = "largebins[idx={:d},sz={:#x}-{:#x}][{:s}/{:d}]".format(
@@ -142399,14 +142404,16 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
         # dict[address] = ["bins info1", "bins info2", ...]
         self.bins_dict_for_address = {}
         for fastbin_idx, fastbin_list in self.bins_info["fastbins"].items():
+            position_table = GefUtil.make_position_table(fastbin_list)
             for address in fastbin_list:
-                pos = ",".join([str(i + 1) for i, x in enumerate(fastbin_list) if x == address])
+                pos = position_table[address]
                 sz = self.fast_size_table[fastbin_idx][is_32bit()]
                 m = "fastbins[idx={:d},sz={:#x}][{:s}/{:d}]".format(fastbin_idx, sz, pos, len(fastbin_list))
                 self.bins_dict_for_address[address] = self.bins_dict_for_address.get(address, []) + [m]
         for smallbin_idx, smallbin_list in self.bins_info["small_bins"].items():
+            position_table = GefUtil.make_position_table(smallbin_list)
             for address in smallbin_list:
-                pos = ",".join([str(i + 1) for i, x in enumerate(smallbin_list) if x == address])
+                pos = position_table[address]
                 if smallbin_idx == 0:
                     m = "unsortedbins[{:s}/{:d}]".format(pos, len(smallbin_list))
                 else:
@@ -142418,8 +142425,9 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
                     m = "smallbins[idx={:d},sz={:s}][{:s}/{:d}]".format(smallbin_idx, sz, pos, len(smallbin_list))
                 self.bins_dict_for_address[address] = self.bins_dict_for_address.get(address, []) + [m]
         for largebin_idx, largebin_list in self.bins_info["large_bins"].items():
+            position_table = GefUtil.make_position_table(largebin_list)
             for address in largebin_list:
-                pos = ",".join([str(i + 1) for i, x in enumerate(largebin_list) if x == address])
+                pos = position_table[address]
                 size = self.size_table[self.NSMALLBINS + largebin_idx][is_32bit()]
                 if isinstance(size, tuple):
                     sz = "{:#x}-{:#x}".format(size[0], size[1])
@@ -162918,6 +162926,19 @@ class GefUtil:
         if not keep_root:
             os.rmdir(directory)
         return
+
+    @staticmethod
+    def make_position_table(bin_list):
+        """Return dict[element] = "1-origin positions joined by comma".
+
+        e.g.: [0xa, 0xb, 0xa] -> {0xa: "1,3", 0xb: "2"}
+        Making the table at once is much faster than scanning bin_list for each element,
+        which is O(n^2) and gets very slow when a bin has thousands of chunks.
+        """
+        positions = {}
+        for i, x in enumerate(bin_list):
+            positions.setdefault(x, []).append(str(i + 1))
+        return {x: ",".join(pos) for x, pos in positions.items()}
 
     @staticmethod
     def make_legend(msg):
