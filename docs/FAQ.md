@@ -246,10 +246,8 @@ To use these commands fully, you need to manually install the necessary packages
 |`asm`|-|`keystone-engine`|-|
 |`base-n-decode`|-|`codext`|-|
 |`base-n-encode`|-|`codext`|-|
-|`crc`|-|`crccheck`|-|
 |`hash`(FSB hash) |-|`gmpy2`|-|
 |`hash`(for faster) |-|`cffi`|-|
-|`uefi-ovmf-info`|-|`crccheck`|-|
 |`filetype-memory`|`file`|`magika`|-|
 |`ropper`|-|`ropper`|-|
 |`vmlinux-to-elf-apply`|-|`vmlinux-to-elf`|-|

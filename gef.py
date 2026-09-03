@@ -6441,21 +6441,6 @@ class ModuleLoader:
         return wrapper
 
 
-    def load_crccheck(f):
-        """Decorator wrapper to load crccheck."""
-
-        @functools.wraps(f)
-        def wrapper(*args, **kwargs):
-            try:
-                __import__("crccheck")
-                return f(*args, **kwargs)
-            except ImportError as err:
-                msg = "Missing `crccheck` package for Python, try installing with `pip install crccheck`"
-                raise ImportWarning(msg) from err
-
-        return wrapper
-
-
     def load_codext(f):
         """Decorator wrapper to load codext."""
 
@@ -121352,6 +121337,267 @@ class JsonValueCommand(JsonCommand):
         return
 
 
+class CrcEngine:
+    """Parameterized CRC calculator. This is a substitute of the `crccheck` package."""
+
+    REFLECT8 = bytes(int("{:08b}".format(i)[::-1], 2) for i in range(256))
+
+    # name, width, poly, initvalue, reflect_input, reflect_output, xor_output
+    PARAMETERS = [
+        ("CrcBase", 0, 0x0, 0x0, False, False, 0x0),
+        ("Crc8Base", 8, 0x7, 0x0, False, False, 0x0),
+        ("Crc16Base", 16, 0x1021, 0x0, False, False, 0x0),
+        ("Crc32Base", 32, 0x4c11db7, 0xffffffff, True, True, 0xffffffff),
+        ("Crc3Gsm", 3, 0x3, 0x0, False, False, 0x7),
+        ("Crc3Rohc", 3, 0x3, 0x7, True, True, 0x0),
+        ("Crc4G704", 4, 0x3, 0x0, True, True, 0x0),
+        ("Crc4Itu", 4, 0x3, 0x0, True, True, 0x0),
+        ("Crc4Interlaken", 4, 0x3, 0xf, False, False, 0xf),
+        ("Crc5EpcC1G2", 5, 0x9, 0x9, False, False, 0x0),
+        ("Crc5Epc", 5, 0x9, 0x9, False, False, 0x0),
+        ("Crc5G704", 5, 0x15, 0x0, True, True, 0x0),
+        ("Crc5Itu", 5, 0x15, 0x0, True, True, 0x0),
+        ("Crc5Usb", 5, 0x5, 0x1f, True, True, 0x1f),
+        ("Crc6Cdma2000A", 6, 0x27, 0x3f, False, False, 0x0),
+        ("Crc6Cdma2000B", 6, 0x7, 0x3f, False, False, 0x0),
+        ("Crc6Darc", 6, 0x19, 0x0, True, True, 0x0),
+        ("Crc6G704", 6, 0x3, 0x0, True, True, 0x0),
+        ("Crc6Itu", 6, 0x3, 0x0, True, True, 0x0),
+        ("Crc6Gsm", 6, 0x2f, 0x0, False, False, 0x3f),
+        ("Crc7Mmc", 7, 0x9, 0x0, False, False, 0x0),
+        ("Crc7", 7, 0x9, 0x0, False, False, 0x0),
+        ("Crc7Rohc", 7, 0x4f, 0x7f, True, True, 0x0),
+        ("Crc7Umts", 7, 0x45, 0x0, False, False, 0x0),
+        ("Crc8Autosar", 8, 0x2f, 0xff, False, False, 0xff),
+        ("Crc8Bluetooth", 8, 0xa7, 0x0, True, True, 0x0),
+        ("Crc8Cdma2000", 8, 0x9b, 0xff, False, False, 0x0),
+        ("Crc8Darc", 8, 0x39, 0x0, True, True, 0x0),
+        ("Crc8DvbS2", 8, 0xd5, 0x0, False, False, 0x0),
+        ("Crc8GsmA", 8, 0x1d, 0x0, False, False, 0x0),
+        ("Crc8GsmB", 8, 0x49, 0x0, False, False, 0xff),
+        ("Crc8Hitag", 8, 0x1d, 0xff, False, False, 0x0),
+        ("Crc8I4321", 8, 0x7, 0x0, False, False, 0x55),
+        ("Crc8Itu", 8, 0x7, 0x0, False, False, 0x55),
+        ("Crc8ICode", 8, 0x1d, 0xfd, False, False, 0x0),
+        ("Crc8Lte", 8, 0x9b, 0x0, False, False, 0x0),
+        ("Crc8MaximDow", 8, 0x31, 0x0, True, True, 0x0),
+        ("Crc8Maxim", 8, 0x31, 0x0, True, True, 0x0),
+        ("CrcDow", 8, 0x31, 0x0, True, True, 0x0),
+        ("Crc8MifareMad", 8, 0x1d, 0xc7, False, False, 0x0),
+        ("Crc8Nrsc5", 8, 0x31, 0xff, False, False, 0x0),
+        ("Crc8Opensafety", 8, 0x2f, 0x0, False, False, 0x0),
+        ("Crc8Rohc", 8, 0x7, 0xff, True, True, 0x0),
+        ("Crc8SaeJ1850", 8, 0x1d, 0xff, False, False, 0xff),
+        ("Crc8Smbus", 8, 0x7, 0x0, False, False, 0x0),
+        ("Crc8", 8, 0x7, 0x0, False, False, 0x0),
+        ("Crc8Tech3250", 8, 0x1d, 0xff, True, True, 0x0),
+        ("Crc8Aes", 8, 0x1d, 0xff, True, True, 0x0),
+        ("Crc8Ebu", 8, 0x1d, 0xff, True, True, 0x0),
+        ("Crc8Wcdma", 8, 0x9b, 0x0, True, True, 0x0),
+        ("Crc10Atm", 10, 0x233, 0x0, False, False, 0x0),
+        ("Crc10", 10, 0x233, 0x0, False, False, 0x0),
+        ("Crc10I610", 10, 0x233, 0x0, False, False, 0x0),
+        ("Crc10Cdma2000", 10, 0x3d9, 0x3ff, False, False, 0x0),
+        ("Crc10Gsm", 10, 0x175, 0x0, False, False, 0x3ff),
+        ("Crc11Flexray", 11, 0x385, 0x1a, False, False, 0x0),
+        ("Crc11", 11, 0x385, 0x1a, False, False, 0x0),
+        ("Crc11Umts", 11, 0x307, 0x0, False, False, 0x0),
+        ("Crc12Cdma2000", 12, 0xf13, 0xfff, False, False, 0x0),
+        ("Crc12Dect", 12, 0x80f, 0x0, False, False, 0x0),
+        ("Crc12X", 12, 0x80f, 0x0, False, False, 0x0),
+        ("Crc12Gsm", 12, 0xd31, 0x0, False, False, 0xfff),
+        ("Crc12Umts", 12, 0x80f, 0x0, False, True, 0x0),
+        ("Crc123Gpp", 12, 0x80f, 0x0, False, True, 0x0),
+        ("Crc13Bbc", 13, 0x1cf5, 0x0, False, False, 0x0),
+        ("Crc14Darc", 14, 0x805, 0x0, True, True, 0x0),
+        ("Crc14Gsm", 14, 0x202d, 0x0, False, False, 0x3fff),
+        ("Crc15Can", 15, 0x4599, 0x0, False, False, 0x0),
+        ("Crc15", 15, 0x4599, 0x0, False, False, 0x0),
+        ("Crc15Mpt1327", 15, 0x6815, 0x0, False, False, 0x1),
+        ("Crc16Arc", 16, 0x8005, 0x0, True, True, 0x0),
+        ("CrcArc", 16, 0x8005, 0x0, True, True, 0x0),
+        ("Crc16Lha", 16, 0x8005, 0x0, True, True, 0x0),
+        ("CrcIbm", 16, 0x8005, 0x0, True, True, 0x0),
+        ("Crc16Cdma2000", 16, 0xc867, 0xffff, False, False, 0x0),
+        ("Crc16Cms", 16, 0x8005, 0xffff, False, False, 0x0),
+        ("Crc16Dds110", 16, 0x8005, 0x800d, False, False, 0x0),
+        ("Crc16DectR", 16, 0x589, 0x0, False, False, 0x1),
+        ("Crc16R", 16, 0x589, 0x0, False, False, 0x1),
+        ("Crc16DectX", 16, 0x589, 0x0, False, False, 0x0),
+        ("Crc16X", 16, 0x589, 0x0, False, False, 0x0),
+        ("Crc16Dnp", 16, 0x3d65, 0x0, True, True, 0xffff),
+        ("Crc16En13757", 16, 0x3d65, 0x0, False, False, 0xffff),
+        ("Crc16Genibus", 16, 0x1021, 0xffff, False, False, 0xffff),
+        ("Crc16Darc", 16, 0x1021, 0xffff, False, False, 0xffff),
+        ("Crc16Epc", 16, 0x1021, 0xffff, False, False, 0xffff),
+        ("Crc16EpcC1G2", 16, 0x1021, 0xffff, False, False, 0xffff),
+        ("Crc16ICode", 16, 0x1021, 0xffff, False, False, 0xffff),
+        ("Crc16Gsm", 16, 0x1021, 0x0, False, False, 0xffff),
+        ("Crc16Ibm3740", 16, 0x1021, 0xffff, False, False, 0x0),
+        ("Crc16Autosar", 16, 0x1021, 0xffff, False, False, 0x0),
+        ("Crc16CcittFalse", 16, 0x1021, 0xffff, False, False, 0x0),
+        ("Crc16IbmSdlc", 16, 0x1021, 0xffff, True, True, 0xffff),
+        ("Crc16IsoHdlc", 16, 0x1021, 0xffff, True, True, 0xffff),
+        ("Crc16IsoIec144433B", 16, 0x1021, 0xffff, True, True, 0xffff),
+        ("Crc16X25", 16, 0x1021, 0xffff, True, True, 0xffff),
+        ("CrcB", 16, 0x1021, 0xffff, True, True, 0xffff),
+        ("CrcX25", 16, 0x1021, 0xffff, True, True, 0xffff),
+        ("Crc16IsoIec144433A", 16, 0x1021, 0xc6c6, True, True, 0x0),
+        ("CrcA", 16, 0x1021, 0xc6c6, True, True, 0x0),
+        ("Crc16Kermit", 16, 0x1021, 0x0, True, True, 0x0),
+        ("Crc16Ccitt", 16, 0x1021, 0x0, True, True, 0x0),
+        ("Crc16CcittTrue", 16, 0x1021, 0x0, True, True, 0x0),
+        ("Crc16V41Lsb", 16, 0x1021, 0x0, True, True, 0x0),
+        ("CrcCcitt", 16, 0x1021, 0x0, True, True, 0x0),
+        ("CrcKermit", 16, 0x1021, 0x0, True, True, 0x0),
+        ("Crc16Lj1200", 16, 0x6f63, 0x0, False, False, 0x0),
+        ("Crc16M17", 16, 0x5935, 0xffff, False, False, 0x0),
+        ("Crc16MaximDow", 16, 0x8005, 0x0, True, True, 0xffff),
+        ("Crc16Maxim", 16, 0x8005, 0x0, True, True, 0xffff),
+        ("Crc16Mcrf4Xx", 16, 0x1021, 0xffff, True, True, 0x0),
+        ("Crc16Mcrf4XX", 16, 0x1021, 0xffff, True, True, 0x0),
+        ("Crcc16Mcrf4xx", 16, 0x1021, 0xffff, True, True, 0x0),
+        ("Crc16Modbus", 16, 0x8005, 0xffff, True, True, 0x0),
+        ("CrcModbus", 16, 0x8005, 0xffff, True, True, 0x0),
+        ("Crc16Nrsc5", 16, 0x80b, 0xffff, True, True, 0x0),
+        ("Crc16OpensafetyA", 16, 0x5935, 0x0, False, False, 0x0),
+        ("Crc16OpensafetyB", 16, 0x755b, 0x0, False, False, 0x0),
+        ("Crc16Profibus", 16, 0x1dcf, 0xffff, False, False, 0xffff),
+        ("Crc16Iec611582", 16, 0x1dcf, 0xffff, False, False, 0xffff),
+        ("Crc16Riello", 16, 0x1021, 0xb2aa, True, True, 0x0),
+        ("Crc16SpiFujitsu", 16, 0x1021, 0x1d0f, False, False, 0x0),
+        ("Crc16AugCcitt", 16, 0x1021, 0x1d0f, False, False, 0x0),
+        ("Crc16T10Dif", 16, 0x8bb7, 0x0, False, False, 0x0),
+        ("Crc16Teledisk", 16, 0xa097, 0x0, False, False, 0x0),
+        ("Crc16Tms37157", 16, 0x1021, 0x89ec, True, True, 0x0),
+        ("Crc16Umts", 16, 0x8005, 0x0, False, False, 0x0),
+        ("Crc16Buypass", 16, 0x8005, 0x0, False, False, 0x0),
+        ("Crc16Verifone", 16, 0x8005, 0x0, False, False, 0x0),
+        ("Crc16Usb", 16, 0x8005, 0xffff, True, True, 0xffff),
+        ("Crc16Xmodem", 16, 0x1021, 0x0, False, False, 0x0),
+        ("Crc16Acorn", 16, 0x1021, 0x0, False, False, 0x0),
+        ("Crc16Lte", 16, 0x1021, 0x0, False, False, 0x0),
+        ("Crc16V41Msb", 16, 0x1021, 0x0, False, False, 0x0),
+        ("CrcXmodem", 16, 0x1021, 0x0, False, False, 0x0),
+        ("CrcZmodem", 16, 0x1021, 0x0, False, False, 0x0),
+        ("Crc16", 16, 0x1021, 0x0, False, False, 0x0),
+        ("Crc17CanFd", 17, 0x1685b, 0x0, False, False, 0x0),
+        ("Crc21CanFd", 21, 0x102899, 0x0, False, False, 0x0),
+        ("Crc24Ble", 24, 0x65b, 0x555555, True, True, 0x0),
+        ("Crc24FlexrayA", 24, 0x5d6dcb, 0xfedcba, False, False, 0x0),
+        ("Crc24FlexrayB", 24, 0x5d6dcb, 0xabcdef, False, False, 0x0),
+        ("Crc24Interlaken", 24, 0x328b63, 0xffffff, False, False, 0xffffff),
+        ("Crc24LteA", 24, 0x864cfb, 0x0, False, False, 0x0),
+        ("Crc24LteB", 24, 0x800063, 0x0, False, False, 0x0),
+        ("Crc24Openpgp", 24, 0x864cfb, 0xb704ce, False, False, 0x0),
+        ("Crc24", 24, 0x864cfb, 0xb704ce, False, False, 0x0),
+        ("Crc24OpenPgp", 24, 0x864cfb, 0xb704ce, False, False, 0x0),
+        ("Crc24Os9", 24, 0x800063, 0xffffff, False, False, 0xffffff),
+        ("Crc30Cdma", 30, 0x2030b9c7, 0x3fffffff, False, False, 0x3fffffff),
+        ("Crc31Philips", 31, 0x4c11db7, 0x7fffffff, False, False, 0x7fffffff),
+        ("Crc32Aixm", 32, 0x814141ab, 0x0, False, False, 0x0),
+        ("Crc32Q", 32, 0x814141ab, 0x0, False, False, 0x0),
+        ("Crc32q", 32, 0x814141ab, 0x0, False, False, 0x0),
+        ("Crc32Autosar", 32, 0xf4acfb13, 0xffffffff, True, True, 0xffffffff),
+        ("Crc32Base91D", 32, 0xa833982b, 0xffffffff, True, True, 0xffffffff),
+        ("Crc32D", 32, 0xa833982b, 0xffffffff, True, True, 0xffffffff),
+        ("Crc32d", 32, 0xa833982b, 0xffffffff, True, True, 0xffffffff),
+        ("Crc32Bzip2", 32, 0x4c11db7, 0xffffffff, False, False, 0xffffffff),
+        ("Crc32Aal5", 32, 0x4c11db7, 0xffffffff, False, False, 0xffffffff),
+        ("Crc32DectB", 32, 0x4c11db7, 0xffffffff, False, False, 0xffffffff),
+        ("Crc32B", 32, 0x4c11db7, 0xffffffff, False, False, 0xffffffff),
+        ("Crc32CdRomEdc", 32, 0x8001801b, 0x0, True, True, 0x0),
+        ("Crc32Cksum", 32, 0x4c11db7, 0x0, False, False, 0xffffffff),
+        ("CrcCksum", 32, 0x4c11db7, 0x0, False, False, 0xffffffff),
+        ("Crc32Posix", 32, 0x4c11db7, 0x0, False, False, 0xffffffff),
+        ("Crc32Iscsi", 32, 0x1edc6f41, 0xffffffff, True, True, 0xffffffff),
+        ("Crc32Base91C", 32, 0x1edc6f41, 0xffffffff, True, True, 0xffffffff),
+        ("Crc32Castagnoli", 32, 0x1edc6f41, 0xffffffff, True, True, 0xffffffff),
+        ("Crc32Interlaken", 32, 0x1edc6f41, 0xffffffff, True, True, 0xffffffff),
+        ("Crc32C", 32, 0x1edc6f41, 0xffffffff, True, True, 0xffffffff),
+        ("Crc32c", 32, 0x1edc6f41, 0xffffffff, True, True, 0xffffffff),
+        ("Crc32IsoHdlc", 32, 0x4c11db7, 0xffffffff, True, True, 0xffffffff),
+        ("Crc32", 32, 0x4c11db7, 0xffffffff, True, True, 0xffffffff),
+        ("Crc32Adccp", 32, 0x4c11db7, 0xffffffff, True, True, 0xffffffff),
+        ("Crc32V42", 32, 0x4c11db7, 0xffffffff, True, True, 0xffffffff),
+        ("Crc32Xz", 32, 0x4c11db7, 0xffffffff, True, True, 0xffffffff),
+        ("CrcPkzip", 32, 0x4c11db7, 0xffffffff, True, True, 0xffffffff),
+        ("Crc32Jamcrc", 32, 0x4c11db7, 0xffffffff, True, True, 0x0),
+        ("CrcJamcrc", 32, 0x4c11db7, 0xffffffff, True, True, 0x0),
+        ("Crc32Mef", 32, 0x741b8cd7, 0xffffffff, True, True, 0x0),
+        ("Crc32Mpeg2", 32, 0x4c11db7, 0xffffffff, False, False, 0x0),
+        ("Crc32Xfer", 32, 0xaf, 0x0, False, False, 0x0),
+        ("CrcXfer", 32, 0xaf, 0x0, False, False, 0x0),
+        ("Crc40Gsm", 40, 0x4820009, 0x0, False, False, 0xffffffffff),
+        ("Crc64Ecma182", 64, 0x42f0e1eba9ea3693, 0x0, False, False, 0x0),
+        ("Crc64", 64, 0x42f0e1eba9ea3693, 0x0, False, False, 0x0),
+        ("Crc64GoIso", 64, 0x1b, 0xffffffffffffffff, True, True, 0xffffffffffffffff),
+        ("Crc64Ms", 64, 0x259c84cba6426349, 0xffffffffffffffff, True, True, 0x0),
+        ("Crc64Nvme", 64, 0xad93d23594c93659, 0xffffffffffffffff, True, True, 0xffffffffffffffff),
+        ("Crc64Redis", 64, 0xad93d23594c935a9, 0x0, True, True, 0x0),
+        ("Crc64We", 64, 0x42f0e1eba9ea3693, 0xffffffffffffffff, False, False, 0xffffffffffffffff),
+        ("Crc64Xz", 64, 0x42f0e1eba9ea3693, 0xffffffffffffffff, True, True, 0xffffffffffffffff),
+        ("Crc64GoEcma", 64, 0x42f0e1eba9ea3693, 0xffffffffffffffff, True, True, 0xffffffffffffffff),
+        ("Crc82Darc", 82, 0x308c0111011401440411, 0x0, True, True, 0x0),
+        # CRC-32K (Koopman), which is not included in the crccheck package
+        ("Crc32K", 32, 0x741b8cd7, 0xffffffff, True, True, 0xffffffff),
+        ("Crc32Koopman", 32, 0x741b8cd7, 0xffffffff, True, True, 0xffffffff),
+    ]
+
+    def __init__(self, width, poly, initvalue, reflect_input, reflect_output, xor_output):
+        self.params = (width, poly, initvalue, reflect_input, reflect_output, xor_output)
+        self._width = width
+        self.poly = poly
+        self.initvalue = initvalue
+        self.reflect_input = reflect_input
+        self.reflect_output = reflect_output
+        self.xor_output = xor_output
+        self.value = initvalue
+        return
+
+    def process(self, data):
+        crc = self.value
+        highbit = 1 << (self._width - 1) # ValueError is raised if width is 0
+        mask = (1 << self._width) - 1
+        poly = self.poly
+        shift = self._width - 8
+        if shift < 0:
+            # enlarge temporarily to fit 8-bit
+            diff8 = -shift
+            mask, shift, highbit = 0xff, 0, 0x80
+            crc <<= diff8
+            poly <<= diff8
+        else:
+            diff8 = 0
+        table = self.REFLECT8 if self.reflect_input else None
+        for byte in data:
+            if table:
+                byte = table[byte]
+            crc ^= byte << shift
+            for _ in range(8):
+                if crc & highbit:
+                    crc = (crc << 1) ^ poly
+                else:
+                    crc <<= 1
+            crc &= mask
+        if diff8:
+            crc >>= diff8
+        self.value = crc
+        return self
+
+    def final(self):
+        crc = self.value
+        if self.reflect_output:
+            crc = int("{:0{:d}b}".format(crc, self._width)[::-1], 2)
+        return crc ^ self.xor_output
+
+    def finalhex(self):
+        return self.final().to_bytes((self._width + 7) // 8, "big").hex()
+
+    def calchex(self, data):
+        return CrcEngine(*self.params).process(data).finalhex()
+
+
 @register_command
 class CrcCommand(GenericCommand, BufferingOutput):
     """The base command to calculate crc."""
@@ -121381,65 +121627,10 @@ class CrcCommand(GenericCommand, BufferingOutput):
         return
 
     def get_valid_crc_funcs(self):
-        import crccheck
-        for cname in crccheck.crc.__dict__:
+        for cname, *params in CrcEngine.PARAMETERS:
             if self.args.filter and not any(filt.search(cname) for filt in self.args.filter):
                 continue
-            if not cname.startswith("Crc"):
-                continue
-            if cname.startswith("Crccheck"):
-                continue
-            try:
-                cfunc = getattr(crccheck.crc, cname)()
-            except TypeError:
-                continue
-            yield (cname, cfunc)
-
-        class Crc32kWrapper:
-            def __init__(self):
-                self.buf = b""
-                return
-
-            def cfunc(self, data):
-                # CRC-32K (Koopman) polynomial:
-                # normal:   0x741B8CD7
-                # reflected 0xEB31D82E  (LSB-first bit processing)
-                poly_reflected = 0xeb31_d82e
-                init = 0xffff_ffff
-                xorout = 0xffff_ffff
-
-                crc = init & 0xffff_ffff
-                for b in data:
-                    crc ^= b
-                    for _ in range(8):
-                        if crc & 1:
-                            crc = (crc >> 1) ^ poly_reflected
-                        else:
-                            crc >>= 1
-                        crc &= 0xffff_ffff
-
-                crc ^= xorout
-                return crc & 0xffff_ffff
-
-            def process(self, value):
-                self.buf += value
-                return
-
-            def calchex(self, value):
-                crc = self.cfunc(value)
-                return "{:08x}".format(crc)
-
-            def finalhex(self):
-                crc = self.cfunc(self.buf)
-                return "{:08x}".format(crc)
-
-            def width(self):
-                return 32
-
-        for cname in ["Crc32K", "Crc32Koopman"]:
-            if self.args.filter and not any(filt.search(cname) for filt in self.args.filter):
-                continue
-            yield (cname, Crc32kWrapper())
+            yield (cname, CrcEngine(*params))
         return None
 
     def make_line(self, cname, cfunc, crc):
@@ -121513,7 +121704,6 @@ class CrcMemoryCommand(CrcCommand):
 
     @parse_args
     @only_if_gdb_running
-    @ModuleLoader.load_crccheck
     def do_invoke(self, args):
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
@@ -121574,7 +121764,6 @@ class CrcFileCommand(CrcCommand):
 
     @parse_args
     @only_if_gdb_running
-    @ModuleLoader.load_crccheck
     def do_invoke(self, args):
         self.out = []
         if not os.path.exists(args.filename):
@@ -121626,7 +121815,6 @@ class CrcValueCommand(CrcCommand):
         return
 
     @parse_args
-    @ModuleLoader.load_crccheck
     def do_invoke(self, args):
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
@@ -122173,7 +122361,7 @@ class BaseNDecodeValueCommand(BaseNDecodeCommand):
         return
 
     @parse_args
-    @ModuleLoader.load_crccheck
+    @ModuleLoader.load_codext
     def do_invoke(self, args):
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
@@ -122316,7 +122504,7 @@ class BaseNEncodeValueCommand(BaseNEncodeCommand):
         return
 
     @parse_args
-    @ModuleLoader.load_crccheck
+    @ModuleLoader.load_codext
     def do_invoke(self, args):
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
@@ -158780,7 +158968,6 @@ class UefiOvmfInfoCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     def check_crc32(self, addr):
-        import crccheck
         size = u32(read_physmem(addr + 0xc, 0x4))
         if size <= 0 or size > 0x1000:
             return False
@@ -158790,7 +158977,7 @@ class UefiOvmfInfoCommand(GenericCommand):
         data = read_physmem(addr, 0x10)
         data += p64(0x0) # crc is zero when calculate
         data += read_physmem(addr + 0x18, size - 0x18)
-        calculated_crc = crccheck.crc.Crc32().calc(data)
+        calculated_crc = binascii.crc32(data)
         return calculated_crc == crc
 
     def read_structure(self, addr, structure):
@@ -159238,7 +159425,6 @@ class UefiOvmfInfoCommand(GenericCommand):
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     @only_if_specific_arch(arch=("x86_32", "x86_64"))
-    @ModuleLoader.load_crccheck
     def do_invoke(self, args):
         gef_print(titlify("SEC (Security) phase variables"))
         gef_print("Unimplemented")
@@ -162032,9 +162218,6 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
                 continue
             if not self.check_load_package(decorators, "@ModuleLoader.load_binwalk", "binwalk"):
                 self.add_out(cmdline, False, "binwalk package is unavailable")
-                continue
-            if not self.check_load_package(decorators, "@ModuleLoader.load_crccheck", "crccheck"):
-                self.add_out(cmdline, False, "crccheck package is unavailable")
                 continue
             if not self.check_load_package(decorators, "@ModuleLoader.load_codext", "codext"):
                 self.add_out(cmdline, False, "codext package is unavailable")
