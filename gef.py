@@ -487,6 +487,7 @@ class Cache:
         for fcache in Cache.__gef_caches__["until_next"].values():
             fcache.clear()
         MemoryCache.reset()
+        Color.cached_disabled = None
 
         if all:
             for fcache in Cache.__gef_caches__["this_session"].values():
@@ -1178,8 +1179,23 @@ class Color:
 
     NO_COLOR = None
 
+    # `attrs` comes from the theme settings, so the number of distinct keys is small.
+    cached_escapes = {}
+
+    # `colorify` is one of the hottest paths, so the setting lookup is memoized here.
+    # It is dropped by `Cache.reset_gef_caches`, which every write to `gef.disable_color`
+    # goes through (`Config.set_gef_setting`, `add_setting`, `gef config`, `gef restore`).
+    cached_disabled = None
+
     @staticmethod
     def disable_color():
+        if Color.cached_disabled is not None:
+            return Color.cached_disabled
+        Color.cached_disabled = Color.disable_color_uncached()
+        return Color.cached_disabled
+
+    @staticmethod
+    def disable_color_uncached():
         if Config.get_gef_setting("gef.disable_color") is True:
             return True
         if Color.NO_COLOR is None:
@@ -1197,12 +1213,15 @@ class Color:
         if Color.disable_color():
             return str(text)
 
-        colors = Color.colors
-        escapes = [colors[attr] for attr in attrs.split() if attr in colors]
-        if len(escapes) == 0:
+        escapes = Color.cached_escapes.get(attrs)
+        if escapes is None:
+            colors = Color.colors
+            escapes = "".join([colors[attr] for attr in attrs.split() if attr in colors])
+            Color.cached_escapes[attrs] = escapes
+        if not escapes:
             return str(text)
 
-        out = "".join(escapes) + str(text) + colors["normal"]
+        out = escapes + str(text) + Color.colors["normal"]
         return out
 
     @staticmethod
@@ -128768,7 +128787,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
 
         # parse slub-dump
         cmd = {"SLUB": "slub-dump", "SLUB_TINY": "slub-tiny-dump"}[self.allocator]
-        res = gdb.execute("{:s} --list --no-pager --quiet".format(cmd), to_string=True)
+        res = Color.remove_color(gdb.execute("{:s} --list --no-pager --quiet".format(cmd), to_string=True))
         used_names = []
         for line in res.splitlines():
             r = re.search(r"(\d+)\s+\(0x\S+\)\s+(\d+)\s+\(0x\S+\)\s+(\S+)\s+0x\S+$", line)
