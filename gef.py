@@ -5031,7 +5031,7 @@ class GlibcHeap:
             self.bins_dict_for_address = {}
             for tcache_idx, tcache_list in self.cached_tcache_list.items():
                 position_table = GefUtil.make_position_table(tcache_list)
-                for address in tcache_list:
+                for address in set(tcache_list):
                     if not isinstance(address, int):
                         continue
                     pos = position_table[address]
@@ -5066,7 +5066,7 @@ class GlibcHeap:
             self.bins_dict_for_base_address = {}
             for _, unsortedbin_list in self.cached_unsortedbin_list.items():
                 position_table = GefUtil.make_position_table(unsortedbin_list)
-                for base_address in unsortedbin_list:
+                for base_address in set(unsortedbin_list):
                     if not isinstance(base_address, int):
                         continue
                     pos = position_table[base_address]
@@ -5076,7 +5076,7 @@ class GlibcHeap:
 
             for smallbin_idx, smallbin_list in self.cached_smallbins_list.items():
                 position_table = GefUtil.make_position_table(smallbin_list)
-                for base_address in smallbin_list:
+                for base_address in set(smallbin_list):
                     if not isinstance(base_address, int):
                         continue
                     pos = position_table[base_address]
@@ -5087,7 +5087,7 @@ class GlibcHeap:
 
             for largebin_idx, largebin_list in self.cached_largebins_list.items():
                 position_table = GefUtil.make_position_table(largebin_list)
-                for base_address in largebin_list:
+                for base_address in set(largebin_list):
                     if not isinstance(base_address, int):
                         continue
                     pos = position_table[base_address]
