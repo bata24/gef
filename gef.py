@@ -36549,6 +36549,20 @@ class ContextSourceCommand(GenericCommand):
         self.add_setting("nb_lines", 6, "Number of source code after $pc")
         return
 
+    # Reading the whole file on every step dominates this pane when the source is large.
+    # Only the last file is kept, keyed by (path, mtime), because stepping stays in one file.
+    cached_source = None # (fpath, mtime, lines)
+
+    def get_source_lines(self, fpath):
+        mtime = os.path.getmtime(fpath)
+        cached = ContextSourceCommand.cached_source
+        if cached is not None and cached[0] == fpath and cached[1] == mtime:
+            return cached[2]
+        with open(fpath, "r") as f:
+            lines = [x.rstrip() for x in f.readlines()]
+        ContextSourceCommand.cached_source = (fpath, mtime, lines)
+        return lines
+
     def get_source_breakpoints(self, file_base_name):
         breakpoints = gdb.breakpoints()
         if not breakpoints:
@@ -36621,8 +36635,7 @@ class ContextSourceCommand(GenericCommand):
             if not symtab.is_valid():
                 return
             fpath = symtab.fullname()
-            with open(fpath, "r") as f:
-                lines = [x.rstrip() for x in f.readlines()]
+            lines = self.get_source_lines(fpath)
         except Exception:
             return
 
@@ -161350,6 +161363,10 @@ class GefRestoreCommand(GenericCommand):
 
                 # set
                 Config.__gef_config__[key][0] = new_value
+
+        # `Config.get_gef_setting` is cached, so the values read before this point
+        # (e.g. while loading the commands) must be dropped, as `gef config` does.
+        Cache.reset_gef_caches(all=True)
 
         # ensure that the temporary directory always exists
         abspath = os.path.expanduser(GEF_TEMP_DIR)
