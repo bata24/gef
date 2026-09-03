@@ -146863,7 +146863,7 @@ class PageMap:
     """A collection of utility functions that are related to memory map from page tables."""
 
     @staticmethod
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_cpu=True)
     def get_page_maps_by_pagewalk(command):
         if is_kgdb():
             info("Start `pagewalk`")
@@ -146950,6 +146950,7 @@ class PageMap:
         return maps
 
     @staticmethod
+    @Cache.cache_until_next(per_cpu=True)
     def get_page_maps(FORCE_PREFIX_S, verbose=False):
         if is_arm64():
             if FORCE_PREFIX_S is True:
