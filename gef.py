@@ -19909,6 +19909,12 @@ class SearchPatternCommand(GenericCommand):
 
         locations = []
         old_mem = b""
+        # `pattern` may contain regex escapes (e.g. rb"\\x41"), so the number of
+        # bytes it matches is not len(pattern).
+        try:
+            ofs = len(codecs.escape_decode(pattern)[0]) - 1
+        except (ValueError, UnicodeDecodeError):
+            ofs = len(pattern) - 1
         tqdm = GefUtil.get_tqdm(self.args.verbose)
         for chunk_addr in tqdm(range(start_address, end_address, step), leave=False):
             # read
@@ -19921,7 +19927,9 @@ class SearchPatternCommand(GenericCommand):
                 mem = mem.hex().encode()
 
             # cases where step boundaries are crossed
-            if not self.args.hex_regex and old_mem and mem:
+            # `ofs == 0` means the pattern matches only 1 byte, so it never crosses a boundary.
+            # It must be skipped, otherwise `old_mem[-0:]` would rescan the whole previous chunk.
+            if not self.args.hex_regex and old_mem and mem and ofs:
                 # Considering cases where the step size boundary is crossed,
                 # the check is performed within the range of -ofs to ofs size.
                 """
@@ -19936,19 +19944,13 @@ class SearchPatternCommand(GenericCommand):
                          <------->
                        -ofs     ofs
                 """
-                # `pattern` may contain regex escapes (e.g. rb"\\x41"), so the number of
-                # bytes it matches is not len(pattern).
-                try:
-                    ofs = len(codecs.escape_decode(pattern)[0]) - 1
-                except (ValueError, UnicodeDecodeError):
-                    ofs = len(pattern) - 1
                 tmp_mem = old_mem[-ofs:] + mem[:ofs]
                 m = re.search(pattern, tmp_mem)
                 r = m.start() if m else -1
                 if r >= 0:
                     if self.accept_match(chunk_addr - ofs + r, locations):
                         # read dump data
-                        data = (old_mem[-ofs:] + mem)[r:][:0x10]
+                        data = (old_mem[-ofs:] + mem[:ofs + 0x10])[r:][:0x10]
 
                         # add
                         locations.append((chunk_addr - ofs + r, data))
@@ -19976,9 +19978,9 @@ class SearchPatternCommand(GenericCommand):
 
                 # read dump data
                 if self.args.hex_regex:
-                    data = bytes.fromhex(mem.decode())[start_pos:][:0x10]
+                    data = bytes.fromhex(mem[match.start():match.start() + 0x20].decode())
                 else:
-                    data = mem[start_pos:][:0x10]
+                    data = mem[start_pos:start_pos + 0x10]
                 if len(data) < 0x10:
                     lack = self.read_data(chunk_addr + step, 0x10 - len(data), end_address)
                     if lack:
