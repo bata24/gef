@@ -232,7 +232,6 @@ To use these commands fully, you need to manually install the necessary packages
 |`ktask -S`|-|-|`ceccomp` or `seccomp-tools`|
 |`seccomp-tools`|-|-|`ceccomp` or `seccomp-tools`|
 |`onegadget`|-|-|`one_gadget`|
-|Progress Indicator|-|`tqdm`|-|
 |`angr`|-|`angr`|-|
 |`asm-list`|-|`capstone`|-|
 |`capstone-disassemble`|-|`capstone`|-|

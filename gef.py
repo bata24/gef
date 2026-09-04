@@ -6341,6 +6341,120 @@ class Symbol:
         return v
 
 
+class ProgressBar:
+    """A progress bar for a slow loop. This is a substitute of the `tqdm` package."""
+
+    # If non-ASCII characters are included, they will affect
+    # the processing of dev/update-syscalls/update-syscalls.py and
+    # other programs for developing, so they should be written in hexadecimal.
+    BLOCKS = b" \xe2\x96\x8f\xe2\x96\x8e\xe2\x96\x8d\xe2\x96\x8c\xe2\x96\x8b\xe2\x96\x8a\xe2\x96\x89\xe2\x96\x88".decode()
+    MIN_INTERVAL = 0.1 # the same value as the default of tqdm
+
+    def __init__(self, iterable=None, total=None, desc=None, disable=False):
+        self.iterable = iterable
+        self.disable = disable
+        if total is None and iterable is not None:
+            try:
+                total = len(iterable)
+            except TypeError:
+                pass
+        self.total = total
+        self.desc = desc
+        self.n = 0
+        self.start_time = time.time()
+        self.last_draw_time = 0
+        self.last_width = 0
+        self.closed = False
+        self.refresh(force=True)
+        return
+
+    def __iter__(self):
+        for elem in self.iterable:
+            yield elem
+            self.update(1)
+        self.close()
+        return
+
+    def update(self, n=1):
+        self.n += n
+        self.refresh()
+        return
+
+    def set_description(self, desc):
+        self.desc = desc
+        self.refresh()
+        return
+
+    def __del__(self):
+        # some callers leave the bar without closing it, so erase it here like tqdm does
+        try:
+            self.close()
+        except Exception:
+            pass
+        return
+
+    def close(self):
+        if self.closed or self.disable:
+            return
+        self.closed = True
+        sys.stderr.write("\r" + " " * self.last_width + "\r")
+        sys.stderr.flush()
+        return
+
+    def refresh(self, force=False):
+        if self.disable:
+            return
+        now = time.time()
+        if not force and now - self.last_draw_time < self.MIN_INTERVAL:
+            return
+        self.last_draw_time = now
+        line = self.render()
+        sys.stderr.write("\r" + line.ljust(self.last_width))
+        sys.stderr.flush()
+        self.last_width = len(line)
+        return
+
+    @staticmethod
+    def format_time(sec):
+        m, s = divmod(int(sec), 60)
+        h, m = divmod(m, 60)
+        if h:
+            return "{:d}:{:02d}:{:02d}".format(h, m, s)
+        return "{:02d}:{:02d}".format(m, s)
+
+    @staticmethod
+    def format_rate(rate):
+        if rate == 0:
+            return "?it/s"
+        if rate >= 1:
+            return "{:.2f}it/s".format(rate)
+        return "{:.2f}s/it".format(1 / rate)
+
+    def make_bar(self, frac, width):
+        if width <= 0:
+            return ""
+        filled, part = divmod(int(frac * width * 8), 8)
+        bar = self.BLOCKS[-1] * filled
+        if filled < width:
+            bar += self.BLOCKS[part] + " " * (width - filled - 1)
+        return bar
+
+    def render(self):
+        elapsed = time.time() - self.start_time
+        rate = self.n / elapsed if elapsed else 0
+        desc = "{:s}: ".format(self.desc) if self.desc else ""
+        if not self.total:
+            return "{:s}{:d}it [{:s}, {:s}]".format(desc, self.n, self.format_time(elapsed), self.format_rate(rate))
+        frac = min(self.n / self.total, 1.0)
+        remain = self.format_time(max(self.total - self.n, 0) / rate) if rate else "?"
+        left = "{:s}{:3.0f}%|".format(desc, frac * 100)
+        right = "| {:d}/{:d} [{:s}<{:s}, {:s}]".format(
+            self.n, self.total, self.format_time(elapsed), remain, self.format_rate(rate),
+        )
+        width = GefUtil.get_terminal_size()[1] - len(left) - len(right) - 1
+        return left + self.make_bar(frac, width) + right
+
+
 class ModuleLoader:
     def load_capstone(f):
         """Decorator wrapper to load capstone."""
@@ -19779,8 +19893,7 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
         locations = []
 
         old_mem = b""
-        tqdm = GefUtil.get_tqdm()
-        for chunk_addr in tqdm(range(start_address, end_address, step), leave=False):
+        for chunk_addr in ProgressBar(range(start_address, end_address, step)):
             # read
             mem = self.read_data(chunk_addr, step, end_address)
             if mem is None:
@@ -20056,8 +20169,7 @@ class SearchPatternCommand(GenericCommand):
             ofs = len(codecs.escape_decode(pattern)[0]) - 1
         except (ValueError, UnicodeDecodeError):
             ofs = len(pattern) - 1
-        tqdm = GefUtil.get_tqdm(self.args.verbose)
-        for chunk_addr in tqdm(range(start_address, end_address, step), leave=False):
+        for chunk_addr in ProgressBar(range(start_address, end_address, step), disable=not self.args.verbose):
             # read
             mem = self.read_data(chunk_addr, step, end_address)
             if mem is None:
@@ -25849,6 +25961,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
 
         freelist_hint_color = Config.get_gef_setting("theme.heap_freelist_hint")
         current_chunk = GlibcHeap.GlibcChunk(arena, dump_start, from_base=True)
+        pbar = ProgressBar(total=max(arena.top - dump_start, 0))
 
         while True:
             if current_chunk.chunk_base_address == arena.top:
@@ -25880,6 +25993,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
                 self.out.append(h)
 
             # goto next
+            pbar.update(current_chunk.size)
             next_chunk = current_chunk.get_next_chunk()
             if next_chunk is None:
                 break
@@ -25887,6 +26001,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
                 self.err_add_out("Corrupted: next_chunk_address is invalid")
                 break
             current_chunk = next_chunk
+        pbar.close()
         return
 
     @parse_args
@@ -26016,6 +26131,7 @@ class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         current_chunk = GlibcHeap.GlibcChunk(arena, dump_start, from_base=True)
+        pbar = ProgressBar(total=max(arena.top - dump_start, 0))
         while True:
             if current_chunk.chunk_base_address == arena.top:
                 self.out.append(self.make_line(arena, current_chunk))
@@ -26031,6 +26147,7 @@ class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
             self.out.append(line)
 
             # goto next
+            pbar.update(current_chunk.size)
             next_chunk = current_chunk.get_next_chunk()
             if next_chunk is None:
                 break
@@ -26038,6 +26155,7 @@ class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
                 self.err_add_out("Corrupted: next_chunk_address is invalid")
                 break
             current_chunk = next_chunk
+        pbar.close()
         return
 
     @parse_args
@@ -27777,12 +27895,7 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
             # So it detects the end of the page from arena.top.
             end = arena.top + GlibcHeap.GlibcChunk(arena, arena.top, from_base=True).size
 
-        try:
-            from tqdm import tqdm
-        except ImportError:
-            tqdm = None
-        if tqdm:
-            pbar = tqdm(total=end - dump_start, leave=False)
+        pbar = ProgressBar(total=end - dump_start)
 
         addr = dump_start
         i = 0
@@ -27816,14 +27929,12 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
             addr += chunk.size
             i += 1
 
-            if tqdm:
-                pbar.update(chunk.size)
+            pbar.update(chunk.size)
 
             if max_count and max_count <= i:
                 break
 
-        if tqdm:
-            pbar.close()
+        pbar.close()
         return
 
     @parse_args
@@ -27906,12 +28017,7 @@ class GlibcHeapDumpImageCommand(GenericCommand):
             # So it detects the end of the page from arena.top.
             end = arena.top + GlibcHeap.GlibcChunk(arena, arena.top, from_base=True).size
 
-        try:
-            from tqdm import tqdm
-        except ImportError:
-            tqdm = None
-        if tqdm:
-            pbar = tqdm(total=end - dump_start, leave=False)
+        pbar = ProgressBar(total=end - dump_start)
 
         chunks = []
         err_msg = None
@@ -27948,14 +28054,12 @@ class GlibcHeapDumpImageCommand(GenericCommand):
             addr += chunk.size
             i += 1
 
-            if tqdm:
-                pbar.update(chunk.size)
+            pbar.update(chunk.size)
 
             if max_count and max_count <= i:
                 break
 
-        if tqdm:
-            pbar.close()
+        pbar.close()
         return chunks, err_msg
 
     def generate_image(self, chunks):
@@ -28394,8 +28498,7 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
             return s
 
         # process block
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for pos in tqdm(range(0, max_size, double_ptrsize), leave=False):
+        for pos in ProgressBar(range(0, max_size, double_ptrsize), disable=self.args.quiet):
             # skip or not
             raw16_1 = raw1[pos : pos + double_ptrsize]
             raw16_2 = raw2[pos : pos + double_ptrsize]
@@ -70361,8 +70464,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 init_nsproxy = read_int_from_memory(task_addrs[0] + self.offset_nsproxy)
 
         # task parse
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for task in tqdm(task_addrs, leave=False, desc="task"):
+        for task in ProgressBar(task_addrs, desc="task", disable=self.args.quiet):
             comm_string = read_cstring_from_memory(task + self.offset_comm)
             if self.args.filter:
                 if not any(re_pattern.search(comm_string) for re_pattern in self.args.filter):
@@ -70569,7 +70671,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                         seccomp, mode_str, filter_count, filter_current,
                     ))
 
-                    for i in tqdm(range(filter_count), leave=False, desc="filter"):
+                    for i in ProgressBar(range(filter_count), desc="filter", disable=self.args.quiet):
                         if not filter_current:
                             break
                         prog = read_int_from_memory(filter_current + self.offset_prog)
@@ -71433,8 +71535,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         #    gef_print("typetab: {:#x}".format(typetab))
 
         entries = []
-        tqdm = GefUtil.get_tqdm(not self.args.quiet and not self.args.apply_symbol)
-        for i in tqdm(range(num_symtab), leave=False):
+        for i in ProgressBar(range(num_symtab), disable=self.args.quiet or self.args.apply_symbol):
             sym_addr = read_int_from_memory(symtab + sizeof_symtab_entry * i + current_arch.ptrsize)
             sym_name = read_cstring_from_memory(strtab + strtab_pos)
             strtab_pos += len(sym_name) + 1
@@ -71532,8 +71633,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                 self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         kversion = Kernel.kernel_version()
-        tqdm = GefUtil.get_tqdm(not self.args.quiet and not self.args.apply_symbol)
-        for module in tqdm(self.module_addrs, leave=False):
+        for module in ProgressBar(self.module_addrs, disable=self.args.quiet or self.args.apply_symbol):
             name_string = read_cstring_from_memory(module + self.offset_name)
             if self.args.filter:
                 if not any(re_pattern.search(name_string) for re_pattern in self.args.filter):
@@ -75291,11 +75391,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         # progress setup
         pbar = None
         if not args.quiet:
-            try:
-                from tqdm import tqdm
-                pbar = tqdm(total=None, leave=False)
-            except ImportError:
-                pass
+            pbar = ProgressBar(total=None)
 
         # parse rb_tree
         self.seen_ctl_dir = set()
@@ -77121,8 +77217,7 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
         if is_kgdb():
             info("The config is often near the top of .rodata; once found, the search stops early.")
             ro_data = b""
-            tqdm = GefUtil.get_tqdm(not self.args.quiet)
-            for pos in tqdm(range(0, kinfo.ro_size, 0x1000), leave=False):
+            for pos in ProgressBar(range(0, kinfo.ro_size, 0x1000), disable=self.args.quiet):
                 if not is_valid_addr(kinfo.ro_base + pos):
                     err("Memory read error")
                     return
@@ -77289,8 +77384,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
         rw_data = read_memory(self.kinfo.rw_base, self.kinfo.rw_size)
         rw_data = slice_unpack(rw_data, current_arch.ptrsize)
 
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for i, rw_d in tqdm(enumerate(rw_data), leave=False, total=len(rw_data)):
+        for i, rw_d in ProgressBar(enumerate(rw_data), total=len(rw_data), disable=self.args.quiet):
             rw_addr = self.kinfo.rw_base + i * current_arch.ptrsize
             backtrack_info = [(rw_addr, 0)]
             self.search(backtrack_info, rw_d, args.max_range, args.depth - 1)
@@ -78133,9 +78227,8 @@ class StringsCommand(GenericCommand, BufferingOutput):
         seen_addr = []
         seen_cstr = []
 
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         show_progress = len(queue) > 1
-        queue_iter = tqdm(queue, leave=False, total=len(queue)) if show_progress else queue
+        queue_iter = ProgressBar(queue, total=len(queue), disable=self.args.quiet) if show_progress else queue
 
         for location, search_range, depth in queue_iter:
             # get data
@@ -78179,7 +78272,7 @@ class StringsCommand(GenericCommand, BufferingOutput):
                 if is_valid_addr(addr):
                     queue.append((addr, self.args.range, depth - 1))
                     seen_addr.append(addr)
-                    if show_progress and hasattr(queue_iter, "total"):
+                    if show_progress:
                         queue_iter.total = len(queue)
         return
 
@@ -119136,9 +119229,8 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
         return hfunc.hexdigest()
 
     def process(self):
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         hash_funcs = list(self.get_valid_hash_funcs())
-        pbar = tqdm(hash_funcs, leave=False, total=len(hash_funcs))
+        pbar = ProgressBar(hash_funcs, total=len(hash_funcs), disable=self.args.quiet)
         for elem in pbar:
             if isinstance(elem, str):
                 if self.args.smart:
@@ -119153,10 +119245,7 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
                 continue
 
             if not self.args.quiet:
-                try:
-                    pbar.set_description(hname)
-                except Exception:
-                    pass
+                pbar.set_description(hname)
 
             h = self.calc_hash(hfunc, self.args.location, self.args.location + self.args.size)
             if h is False:
@@ -119224,9 +119313,8 @@ class HashFileCommand(HashCommand, BufferingOutput):
         return hfunc.hexdigest()
 
     def process(self, filename, start_pos, end_pos):
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         hash_funcs = list(self.get_valid_hash_funcs())
-        pbar = tqdm(hash_funcs, leave=False, total=len(hash_funcs))
+        pbar = ProgressBar(hash_funcs, total=len(hash_funcs), disable=self.args.quiet)
         for elem in pbar:
             if isinstance(elem, str):
                 if self.args.smart:
@@ -119241,10 +119329,7 @@ class HashFileCommand(HashCommand, BufferingOutput):
                 continue
 
             if not self.args.quiet:
-                try:
-                    pbar.set_description(hname)
-                except Exception:
-                    pass
+                pbar.set_description(hname)
 
             h = self.calc_hash(hfunc, filename, start_pos, end_pos)
             if h is False:
@@ -119304,9 +119389,8 @@ class HashValueCommand(HashCommand, BufferingOutput):
         return
 
     def process(self, value):
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         hash_funcs = list(self.get_valid_hash_funcs())
-        pbar = tqdm(hash_funcs, leave=False, total=len(hash_funcs))
+        pbar = ProgressBar(hash_funcs, total=len(hash_funcs), disable=self.args.quiet)
         for elem in pbar:
             if isinstance(elem, str):
                 if self.args.smart:
@@ -119321,10 +119405,7 @@ class HashValueCommand(HashCommand, BufferingOutput):
                 continue
 
             if not self.args.quiet:
-                try:
-                    pbar.set_description(hname)
-                except Exception:
-                    pass
+                pbar.set_description(hname)
 
             hfunc.update(value)
             h = hfunc.hexdigest()
@@ -120626,9 +120707,8 @@ class HashTestCommand(HashCommand, BufferingOutput):
         category = None
         result = []
 
-        tqdm = GefUtil.get_tqdm()
         hash_funcs = list(self.get_valid_hash_funcs())
-        pbar = tqdm(hash_funcs, leave=False, total=len(hash_funcs))
+        pbar = ProgressBar(hash_funcs, total=len(hash_funcs))
         for i, elem in enumerate(pbar):
             if isinstance(elem, str):
                 category = elem
@@ -120638,10 +120718,7 @@ class HashTestCommand(HashCommand, BufferingOutput):
             if not self.should_be_displayed(hname, hfunc):
                 continue
 
-            try:
-                pbar.set_description(hname)
-            except Exception:
-                pass
+            pbar.set_description(hname)
 
             start_time_real = time.perf_counter()
             hfunc.update(value)
@@ -125927,8 +126004,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             return parsed_caches # fast return
 
         # second, parse kmem_cache_cpu
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for kmem_cache in tqdm(parsed_caches[1:], leave=False): # parsed_caches[0] is slab_caches, so skip
+        for kmem_cache in ProgressBar(parsed_caches[1:], disable=self.args.quiet): # parsed_caches[0] is slab_caches, so skip
             if self.dump_target_kmem_cache_cpu:
                 # parse kmem_cache_cpu
                 kmem_cache["kmem_cache_cpu"] = {}
@@ -127035,8 +127111,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             return parsed_caches # fast return
 
         # second, parse node then update
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for kmem_cache in tqdm(parsed_caches[1:], leave=False): # parsed_caches[0] is slab_caches, so skip
+        for kmem_cache in ProgressBar(parsed_caches[1:], disable=self.args.quiet): # parsed_caches[0] is slab_caches, so skip
             # parse node
             self.walk_caches_node_page(kmem_cache)
 
@@ -127863,8 +127938,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             return parsed_caches
 
         # second, parse array_cache and node
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for kmem_cache in tqdm(parsed_caches[1:], leave=False): # parsed_caches[0] is slab_caches, so skip
+        for kmem_cache in ProgressBar(parsed_caches[1:], disable=self.args.quiet): # parsed_caches[0] is slab_caches, so skip
             # parse array_cache
             kmem_cache["array_cache"] = {}
             kmem_cache["array_cache"]["freelist_all"] = []
@@ -130223,15 +130297,14 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             per_cpu_pageset = [AddressUtil.normalize_address(cpuoff + per_cpu_pageset) for cpuoff in self.cpu_offset]
 
         # parse each cpu
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         sizeof_list_head = current_arch.ptrsize * 2
         pcp_all_entries = {}
-        for cpu_num, pcp in tqdm(enumerate(per_cpu_pageset), leave=False, desc="cpu", total=len(per_cpu_pageset)):
+        for cpu_num, pcp in ProgressBar(enumerate(per_cpu_pageset), desc="cpu", total=len(per_cpu_pageset), disable=self.args.quiet):
             if self.args.cpu and cpu_num not in self.args.cpu:
                 continue
             # parse each pcp list
             pcp_entries = []
-            for i in tqdm(range(self.NR_PCP_LISTS), leave=False, desc="pcplist"):
+            for i in ProgressBar(range(self.NR_PCP_LISTS), desc="pcplist", disable=self.args.quiet):
                 if self.args.pcp_index_filter and i not in self.args.pcp_index_filter:
                     continue
                 lists_i = pcp + self.offset_lists + sizeof_list_head * i
@@ -130272,11 +130345,10 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         order_title = "order: {:d} ({:s} bytes)".format(order, size_str)
 
         # prase free area
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         sizeof_list_head = current_arch.ptrsize * 2
         free_lists = []
         has_any = False
-        for mtype in tqdm(range(self.MIGRATE_TYPES), leave=False, desc="mtype"):
+        for mtype in ProgressBar(range(self.MIGRATE_TYPES), desc="mtype", disable=self.args.quiet):
             if self.args.mtype_filter and mtype not in self.args.mtype_filter:
                 continue
             free_list = free_area + sizeof_list_head * mtype
@@ -130293,10 +130365,9 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             zone_entry["per_cpu_pageset"] = self.dump_pcp(zone, is_highmem)
 
         # parse free_area
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         if not self.args.only_pcp:
             free_area_entries = []
-            for order in tqdm(range(self.MAX_ORDER), leave=False, desc="order"):
+            for order in ProgressBar(range(self.MAX_ORDER), desc="order", disable=self.args.quiet):
                 if self.args.order_filter and order not in self.args.order_filter:
                     continue
                 free_area_i = zone + self.offset_free_area + self.sizeof_free_area * order
@@ -130306,9 +130377,8 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         return zone_entry
 
     def dump_node(self, node):
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
         zone_entries = []
-        for i in tqdm(range(self.MAX_NR_ZONES), leave=False, desc="zone"):
+        for i in ProgressBar(range(self.MAX_NR_ZONES), desc="zone", disable=self.args.quiet):
             zone = node + self.sizeof_zone * i
             name_ptr = read_int_from_memory(zone + self.offset_name)
             name = read_cstring_from_memory(name_ptr)
@@ -130351,8 +130421,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         prev_size = None
         first = True
         align = AddressUtil.get_format_address_width()
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for entry in tqdm(all_entries, leave=False):
+        for entry in ProgressBar(all_entries, disable=self.args.quiet):
             # for simple sort
             if not self.args.sort_verbose:
                 self.out.append(str(entry))
@@ -130395,19 +130464,18 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def make_output(self, node_entries):
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
 
-        for node_title, zone_entries in tqdm(node_entries, leave=False, desc="node"):
+        for node_title, zone_entries in ProgressBar(node_entries, desc="node", disable=self.args.quiet):
             self.out.append(titlify(node_title))
 
-            for zone_title, zone_entry in tqdm(zone_entries, leave=False, desc="zone"):
+            for zone_title, zone_entry in ProgressBar(zone_entries, desc="zone", disable=self.args.quiet):
                 self.out.append(titlify(zone_title))
 
                 if "per_cpu_pageset" in zone_entry:
                     self.out.append(titlify("per_cpu_pageset"))
-                    for cpu_num, pcp_all_entries in tqdm(zone_entry["per_cpu_pageset"].items(), leave=False, desc="cpu"):
+                    for cpu_num, pcp_all_entries in ProgressBar(zone_entry["per_cpu_pageset"].items(), desc="cpu", disable=self.args.quiet):
                         self.out.append("cpu: {:d}".format(cpu_num))
-                        for pcp_title, pcp_entries, has_any in tqdm(pcp_all_entries, leave=False, desc="pcplist"):
+                        for pcp_title, pcp_entries, has_any in ProgressBar(pcp_all_entries, desc="pcplist", disable=self.args.quiet):
                             if not has_any and not self.args.vverbose:
                                 continue
                             self.out.append(pcp_title)
@@ -130419,11 +130487,11 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
                 if "free_area" in zone_entry:
                     self.out.append(titlify("free_area"))
-                    for order_title, free_lists, has_any in tqdm(zone_entry["free_area"], leave=False, desc="order"):
+                    for order_title, free_lists, has_any in ProgressBar(zone_entry["free_area"], desc="order", disable=self.args.quiet):
                         if not has_any and not self.args.vverbose:
                             continue
                         self.out.append(order_title)
-                        for mtype_title, free_list, has_any2 in tqdm(free_lists, leave=False, desc="mtype"):
+                        for mtype_title, free_list, has_any2 in ProgressBar(free_lists, desc="mtype", disable=self.args.quiet):
                             if not has_any2 and not self.args.vverbose:
                                 continue
                             self.out.append(mtype_title)
@@ -130476,8 +130544,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
         # dump
         node_entries = []
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for i, node in tqdm(enumerate(self.nodes), leave=False, total=len(self.nodes), desc="node"):
+        for i, node in ProgressBar(enumerate(self.nodes), total=len(self.nodes), desc="node", disable=self.args.quiet):
             title = "node[{:d}] @ {:#x}".format(i, node)
             res = self.dump_node(node)
             node_entries.append([title, res])
@@ -130685,8 +130752,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
 
     def get_lists(self, page):
         node_entries = []
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for i, node in tqdm(enumerate(self.nodes), leave=False, total=len(self.nodes), desc="node"):
+        for i, node in ProgressBar(enumerate(self.nodes), total=len(self.nodes), desc="node", disable=self.args.quiet):
             title = "node[{:d}] @ {:#x}".format(i, node)
             node_entries.append([title, self.dump_node(node)])
         return node_entries
@@ -138983,8 +139049,7 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
             stdout_oldfd = V8ListMapsCommand.redirect_stdout(self.output_path)
             if stdout_oldfd is None:
                 raise RuntimeError("Failed to redirect: {:s}".format(self.output_path))
-            tqdm = GefUtil.get_tqdm()
-            for idx in tqdm(range(sidx, eidx), leave=False):
+            for idx in ProgressBar(range(sidx, eidx)):
                 v = heap_contents[idx]
                 gdb.execute("v8 {:#x}".format(v), to_string=True)
         finally:
@@ -139432,12 +139497,7 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
         else:
             addr = start + 0x10
 
-        try:
-            from tqdm import tqdm
-        except ImportError:
-            tqdm = None
-        if tqdm:
-            pbar = tqdm(total=limit - start, leave=False)
+        pbar = ProgressBar(total=limit - start)
 
         count = 0
         while addr < limit:
@@ -139511,15 +139571,13 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
                 total_size = header_size + variable_size
             addr += total_size
 
-            if tqdm:
-                pbar.update(total_size)
+            pbar.update(total_size)
 
             count += 1
         return
 
     def walk_spaces(self, target_regions, cage_base):
-        tqdm = GefUtil.get_tqdm()
-        for start, limit, perm, path in tqdm(target_regions, leave=False):
+        for start, limit, perm, path in ProgressBar(target_regions):
             self.out.append(titlify("{:#x}-{:#x} {:s} {:s}".format(start, limit, perm, path)))
             self.walk_space(start, limit, cage_base)
         return
@@ -142986,12 +143044,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
             # So it detects the end of the page from malloc_state.top.
             end = malloc_state.top + uClibcNgHeap.uClibcChunk(malloc_state.top, from_base=True).size
 
-        try:
-            from tqdm import tqdm
-        except ImportError:
-            tqdm = None
-        if tqdm:
-            pbar = tqdm(total=end - dump_start, leave=False)
+        pbar = ProgressBar(total=end - dump_start)
 
         addr = dump_start
         i = 0
@@ -143026,14 +143079,12 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
             addr += chunk.size
             i += 1
 
-            if tqdm:
-                pbar.update(chunk.size)
+            pbar.update(chunk.size)
 
             if max_count and max_count <= i:
                 break
 
-        if tqdm:
-            pbar.close()
+        pbar.close()
         return
 
     @parse_args
@@ -148577,8 +148628,7 @@ class PagewalkX64Command(PagewalkCommand):
             self.bits["PT_BITS"],
             self.bits["OFFSET"],
         ])
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for va_base, table_base, parent_flags in tqdm(self.TABLES, leave=False, desc="PML5E"):
+        for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PML5E", disable=self.args.quiet):
             entries = self.read_physmem_cache(table_base, 2 ** self.bits["PML5T_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
@@ -148651,8 +148701,7 @@ class PagewalkX64Command(PagewalkCommand):
             self.bits["PT_BITS"],
             self.bits["OFFSET"],
         ])
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for va_base, table_base, parent_flags in tqdm(self.TABLES, leave=False, desc="PML4E"):
+        for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PML4E", disable=self.args.quiet):
             entries = self.read_physmem_cache(table_base, 2 ** self.bits["PML4T_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
@@ -148733,8 +148782,7 @@ class PagewalkX64Command(PagewalkCommand):
             self.bits["PT_BITS"],
             self.bits["OFFSET"],
         ])
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for va_base, table_base, parent_flags in tqdm(self.TABLES, leave=False, desc="PDPE"):
+        for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PDPE", disable=self.args.quiet):
             entries = self.read_physmem_cache(table_base, 2 ** self.bits["PDPT_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
@@ -148831,8 +148879,7 @@ class PagewalkX64Command(PagewalkCommand):
             self.bits["PT_BITS"],
             self.bits["OFFSET"],
         ])
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for va_base, table_base, parent_flags in tqdm(self.TABLES, leave=False, desc="PDE"):
+        for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PDE", disable=self.args.quiet):
             entries = self.read_physmem_cache(table_base, 2 ** self.bits["PDT_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
@@ -148933,8 +148980,7 @@ class PagewalkX64Command(PagewalkCommand):
         bit_shift = self.bits["OFFSET"]
         flag_cache = {}
 
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for va_base, table_base, parent_flags in tqdm(self.TABLES, leave=False, desc="PTE"):
+        for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PTE", disable=self.args.quiet):
             entries = self.read_physmem_cache(table_base, 2 ** self.bits["PT_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
@@ -149596,8 +149642,7 @@ class PagewalkArmCommand(PagewalkCommand):
         SMALL = []
         COUNT = 0
 
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for va_base, table_base, parent_flags in tqdm(LEVEL1, leave=False, desc="LEVEL 2"):
+        for va_base, table_base, parent_flags in ProgressBar(LEVEL1, desc="LEVEL 2", disable=self.args.quiet):
             entries = self.read_physmem_cache(table_base, 4 * (2 ** 8))
             entries = slice_unpack(entries, 4)
             COUNT += len(entries)
@@ -149797,8 +149842,7 @@ class PagewalkArmCommand(PagewalkCommand):
         LEVEL2 = []
         MB = []
         COUNT = 0
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for va_base, table_base, parent_flags in tqdm(LEVEL1, leave=False, desc="LEVEL 2"):
+        for va_base, table_base, parent_flags in ProgressBar(LEVEL1, desc="LEVEL 2", disable=self.args.quiet):
             entries = self.read_physmem_cache(table_base, 8 * (2 ** 9))
             entries = slice_unpack(entries, 8)
             COUNT += len(entries)
@@ -149882,7 +149926,7 @@ class PagewalkArmCommand(PagewalkCommand):
         KB = []
         COUNT = 0
 
-        for va_base, table_base, parent_flags in tqdm(LEVEL2, leave=False, desc="LEVEL 3"):
+        for va_base, table_base, parent_flags in ProgressBar(LEVEL2, desc="LEVEL 3", disable=self.args.quiet):
             entries = self.read_physmem_cache(table_base, 8 * (2 ** 9))
             entries = slice_unpack(entries, 8)
             COUNT += len(entries)
@@ -150798,7 +150842,6 @@ class PagewalkArm64Command(PagewalkCommand):
         flags = []
         TABLE_BASE = [[region_start, table_base, flags]]
 
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
 
         # level -1 parse for 4KB granule
         if not self.silent:
@@ -150809,7 +150852,7 @@ class PagewalkArm64Command(PagewalkCommand):
             )
             LEVELM1 = []
             COUNT = 0
-            for va_base, table_base, parent_flags in tqdm(TABLE_BASE, leave=False, desc="LEVEL -1"):
+            for va_base, table_base, parent_flags in ProgressBar(TABLE_BASE, desc="LEVEL -1", disable=self.args.quiet):
                 entries = self.read_mem_wrapper(table_base, 8 * entries_per_table)
                 entries = slice_unpack(entries, 8)
                 COUNT += len(entries)
@@ -150899,7 +150942,7 @@ class PagewalkArm64Command(PagewalkCommand):
             LEVEL0 = []
             GB512 = []
             COUNT = 0
-            for va_base, table_base, parent_flags in tqdm(LEVELM1, leave=False, desc="LEVEL 0"):
+            for va_base, table_base, parent_flags in ProgressBar(LEVELM1, desc="LEVEL 0", disable=self.args.quiet):
                 entries = self.read_mem_wrapper(table_base, 8 * entries_per_table)
                 entries = slice_unpack(entries, 8)
                 COUNT += len(entries)
@@ -151066,7 +151109,7 @@ class PagewalkArm64Command(PagewalkCommand):
             TB4 = []
             GB64 = []
             COUNT = 0
-            for va_base, table_base, parent_flags in tqdm(LEVEL0, leave=False, desc="LEVEL 1"):
+            for va_base, table_base, parent_flags in ProgressBar(LEVEL0, desc="LEVEL 1", disable=self.args.quiet):
                 entries = self.read_mem_wrapper(table_base, 8 * entries_per_table)
                 entries = slice_unpack(entries, 8)
                 COUNT += len(entries)
@@ -151244,7 +151287,7 @@ class PagewalkArm64Command(PagewalkCommand):
             MB32 = []
             MB512 = []
             COUNT = 0
-            for va_base, table_base, parent_flags in tqdm(LEVEL1, leave=False, desc="LEVEL 2"):
+            for va_base, table_base, parent_flags in ProgressBar(LEVEL1, desc="LEVEL 2", disable=self.args.quiet):
                 entries = self.read_mem_wrapper(table_base, 8 * entries_per_table)
                 entries = slice_unpack(entries, 8)
                 COUNT += len(entries)
@@ -151423,7 +151466,7 @@ class PagewalkArm64Command(PagewalkCommand):
             COUNT = 0
             flag_cache = {}
 
-            for va_base, table_base, parent_flags in tqdm(LEVEL2, leave=False, desc="LEVEL 3"):
+            for va_base, table_base, parent_flags in ProgressBar(LEVEL2, desc="LEVEL 3", disable=self.args.quiet):
                 entries = self.read_mem_wrapper(table_base, 8 * entries_per_table)
                 entries = slice_unpack(entries, 8)
                 COUNT += len(entries)
@@ -152936,8 +152979,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         self.quiet_info("Resolving full slub (skip if target region size >= 0x200000)")
 
         old_regions = list(self.regions.items())[::]
-        tqdm = GefUtil.get_tqdm()
-        for _region_addr, region in tqdm(old_regions, leave=False):
+        for _region_addr, region in ProgressBar(old_regions):
             if "slab cache" in region.description:
                 continue
             if region.perm != "rw-":
@@ -154232,11 +154274,10 @@ class SlabVirtualCommand(GenericCommand):
 
             # Scan backing_folio referenced from slab-virtual area (so slow)
             vmemmap_entries = []
-            tqdm = GefUtil.get_tqdm(not self.args.quiet)
             self.quiet_info("Wait for memory scan")
-            for slab in tqdm(range(
+            for slab in ProgressBar(range(
                     slab_of_slub_addr_base, slab_of_slub_addr_current, self.slab_meta_entry_size,
-                ), leave=False):
+                ), disable=self.args.quiet):
                 backing_folio = read_int_from_memory(slab + self.slab_offset_backing_folio)
                 if not is_valid_addr(backing_folio):
                     continue
@@ -158839,7 +158880,7 @@ class KernelTraceCommand(GenericCommand):
     parser.add_argument("-e", "--exclude", action="append", type=re.compile, default=[],
                         help="function exclude filter (REGEXP).")
     parser.add_argument("-c", "--commit", action="store_true", help="actually perform ktrace.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="skip tqdm and displaying function name.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="skip the progress bar and displaying function name.")
     _syntax_ = parser.format_help()
 
     _note_ = [
@@ -158886,8 +158927,7 @@ class KernelTraceCommand(GenericCommand):
         # list target functions
         res = gdb.execute("ksymaddr-remote --quiet --no-pager --type t", to_string=True)
         target_functions = []
-        tqdm = GefUtil.get_tqdm(not args.quiet)
-        for line in tqdm(res.splitlines(), leave=False):
+        for line in ProgressBar(res.splitlines(), disable=args.quiet):
             func_addr, _, func_name = line.split()
             func_addr = int(func_addr, 16)
 
@@ -161111,8 +161151,7 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
         SYMBOL_FILE_PATTERN = re.compile(r"^Object file (/.*):$")
         build_id_dict = self.get_build_ids()
 
-        tqdm = GefUtil.get_tqdm(not self.args.quiet)
-        for line in tqdm(ret.splitlines(), leave=False):
+        for line in ProgressBar(ret.splitlines(), disable=self.args.quiet):
             line = line.strip()
 
             # blank line
@@ -161254,8 +161293,7 @@ class TypesCommand(GenericCommand, BufferingOutput):
             Config.set_gef_setting("context.smart_cpp_function_name", True)
 
         # formatting typenames
-        tqdm = GefUtil.get_tqdm()
-        for type_name in tqdm(type_names, leave=False):
+        for type_name in ProgressBar(type_names):
             if self.args.verbose:
                 ret = gdb.execute("dt -n {!r}".format(type_name), to_string=True)
                 if not ret or (" is not struct or union" in ret) or ("Could not find " in ret):
@@ -163164,19 +163202,6 @@ class GefUtil:
         if hasattr(gdb.Inferior, "architecture"): # gdb 10.1~
             return gdb.selected_inferior().architecture()
         return gdb.selected_frame().architecture()
-
-    @staticmethod
-    def get_tqdm(use_tqdm=True):
-        """Return the tqdm progress bar if available and enabled;
-        otherwise returns a passthrough function."""
-        tqdm = lambda x, leave=None, total=None, desc=None: x # noqa: F841
-        if not use_tqdm:
-            return tqdm
-        try:
-            from tqdm import tqdm
-        except ImportError:
-            pass
-        return tqdm
 
     __gef_convenience_vars_index__ = 0 # $_gef1, $_gef2, ...
 
