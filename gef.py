@@ -69986,7 +69986,22 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(kstack_top, saved ptregs): {:#x}".format(self.offset_ptregs))
         return True
 
+    def get_init_vm_file(self, task_addrs):
+        """Return vm_file of the first vm_area_struct of the init process. Resolved at most once per invocation."""
+        if self.init_vm_file is None:
+            mm = read_int_from_memory(task_addrs[1] + self.offset_mm)
+            current, _ = self.get_vm_area_struct(mm)
+            self.quiet_info("vm_area_struct (init process): {:#x}".format(current))
+            self.init_vm_file = read_int_from_memory(current + self.offset_vm_file)
+            self.quiet_info("vm_file (init process): {:#x}".format(self.init_vm_file))
+        return self.init_vm_file
+
     def initialize_vma_offsets(self, task_addrs):
+        # The offsets below are cached in the instance, so a previous invocation may have
+        # resolved only some of them. Each block that needs vm_file takes it from
+        # get_init_vm_file(), instead of relying on a variable set by another block.
+        self.init_vm_file = None
+
         if self.offset_vm_mm is None:
             self.offset_vm_mm = self.get_offset_vm_mm(task_addrs, self.offset_mm)
         if self.offset_vm_mm is None:
@@ -70009,12 +70024,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(vm_area_struct, vm_file): {:#x}".format(self.offset_vm_file))
 
         if self.offset_mnt is None:
-            mm = read_int_from_memory(task_addrs[1] + self.offset_mm)
-            current, _ = self.get_vm_area_struct(mm)
-            self.quiet_info("vm_area_struct (init process): {:#x}".format(current))
-            vm_file = read_int_from_memory(current + self.offset_vm_file)
-            self.quiet_info("vm_file (init process): {:#x}".format(vm_file))
-            self.offset_mnt = self.get_offset_mnt(vm_file)
+            self.offset_mnt = self.get_offset_mnt(self.get_init_vm_file(task_addrs))
         if self.offset_mnt is None:
             self.quiet_err("Could not find file->f_path.mnt")
             return False
@@ -70025,10 +70035,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(file, f_path.dentry): {:#x}".format(self.offset_dentry))
 
         if self.offset_d_iname is None:
-            mm = read_int_from_memory(task_addrs[1] + self.offset_mm)
-            current, _ = self.get_vm_area_struct(mm)
-            vm_file = read_int_from_memory(current + self.offset_vm_file)
-            dentry = read_int_from_memory(vm_file + self.offset_dentry)
+            dentry = read_int_from_memory(self.get_init_vm_file(task_addrs) + self.offset_dentry)
             self.offset_d_iname = self.get_offset_d_iname(dentry)
         self.quiet_info("offsetof(dentry, d_iname): {:#x}".format(self.offset_d_iname))
 
@@ -70037,12 +70044,12 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(dentry, d_inode): {:#x}".format(self.offset_d_inode))
 
         if self.offset_d_parent is None:
-            dentry = read_int_from_memory(vm_file + self.offset_dentry)
+            dentry = read_int_from_memory(self.get_init_vm_file(task_addrs) + self.offset_dentry)
             self.offset_d_parent = self.get_offset_d_parent(dentry, self.offset_d_iname)
         self.quiet_info("offsetof(dentry, d_parent): {:#x}".format(self.offset_d_parent))
 
         if self.offset_i_ino is None:
-            dentry = read_int_from_memory(vm_file + self.offset_dentry)
+            dentry = read_int_from_memory(self.get_init_vm_file(task_addrs) + self.offset_dentry)
             inode = read_int_from_memory(dentry + self.offset_d_inode)
             self.offset_i_ino = self.get_offset_i_ino(inode)
         self.quiet_info("offsetof(inode, i_ino): {:#x}".format(self.offset_i_ino))
