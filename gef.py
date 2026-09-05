@@ -77281,11 +77281,12 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
+    @Cache.cache_this_session(cache_None=False)
     def get_config(self):
         kinfo = Kernel.get_kernel_layout()
         if kinfo.ro_base is None:
             err("Not recognized .rodata")
-            return False
+            return None
 
         if is_kgdb():
             info("The config is often near the top of .rodata; once found, the search stops early.")
@@ -77306,7 +77307,7 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
         start_pos = ro_data.find(b"IKCFG_ST")
         if start_pos == -1:
             err("Could not find IKCFG_ST, this kernel may be built as CONFIG_IKCONFIG_PROC=n")
-            return False
+            return None
         end_pos = ro_data.find(b"IKCFG_ED")
 
         info("IKCFG_ST: {:#x}".format(kinfo.ro_base + start_pos))
@@ -77315,11 +77316,10 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
 
         import gzip
         try:
-            self.configs = String.bytes2str(gzip.decompress(configz))
+            return String.bytes2str(gzip.decompress(configz))
         except gzip.BadGzipFile:
             err("Gzip decompress error")
-            return False
-        return True
+            return None
 
     @parse_args
     @only_if_gdb_running
@@ -77329,18 +77329,14 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
-        if not hasattr(self, "configs"):
-            self.configs = None
-
         if args.rescan:
-            self.configs = None
+            Cache.clear_cache_for(self.get_config)
 
-        if self.configs is None:
-            ret = self.get_config()
-            if not ret:
-                return
+        configs = self.get_config()
+        if configs is None:
+            return
 
-        self.out = self.configs.splitlines()
+        self.out = configs.splitlines()
 
         if args.filter:
             out = []
