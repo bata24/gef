@@ -2192,17 +2192,18 @@ class Elf:
 
     def __init__(self, elf=None, file_offset=0):
         """Instantiate an ELF object."""
+        self.filename = None
+        self.addr = None
+        self.e_magic = None
         if elf is None:
             elf = Path.get_filepath()
             if elf is None:
-                self.e_magic = None
                 err("Could not find the path")
                 return
 
         if isinstance(elf, str):
             if not os.access(elf, os.R_OK):
                 err("'{:s}' not found/readable".format(elf))
-                self.e_magic = None
                 return
             self.fd = open(elf, "rb")
             self.addr = None
@@ -2268,7 +2269,7 @@ class Elf:
         return
 
     def __repr__(self):
-        if not hasattr(self, "filename"):
+        if self.e_magic is None:
             msg = '<{:s}.{:s} object at {:#x}, invalid>'.format(
                 self.__module__, self.__class__.__name__, id(self),
             )
