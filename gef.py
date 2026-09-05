@@ -153606,24 +153606,23 @@ class PageCommand(GenericCommand):
         super().__init__(prefix=prefix, complete=complete)
         return
 
-    def initialize(self):
-        if hasattr(PageCommand, "initialized") and PageCommand.initialized:
-            return True
-
+    @staticmethod
+    @Cache.cache_this_session(cache_None=False)
+    def initialize():
         info("Wait for memory scan")
 
         PageCommand.PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
 
         if is_x86_64():
             PageCommand.VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
-            if self.VMEMMAP_START is None:
+            if PageCommand.VMEMMAP_START is None:
                 err("Could not find VMEMMAP_START")
-                return False
+                return None
 
             PageCommand.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
-            if self.sizeof_struct_page is None:
+            if PageCommand.sizeof_struct_page is None:
                 err("Could not find sizeof(struct page)")
-                return False
+                return None
 
         elif is_x86_32():
             if KernelAddressHeuristicFinder.consts().CONFIG_FLATMEM:
@@ -153631,7 +153630,7 @@ class PageCommand(GenericCommand):
                 PageCommand.mem_map = KernelAddressHeuristicFinder.consts().mem_map
                 sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
                 if sizeof_struct_page is None:
-                    return False
+                    return None
                 PageCommand.sizeof_struct_page = sizeof_struct_page
 
             elif KernelAddressHeuristicFinder.consts().CONFIG_SPARSEMEM:
@@ -153639,7 +153638,7 @@ class PageCommand(GenericCommand):
                 PageCommand.mem_section = KernelAddressHeuristicFinder.consts().mem_section
                 sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
                 if sizeof_struct_page is None:
-                    return False
+                    return None
                 PageCommand.sizeof_struct_page = sizeof_struct_page
                 PageCommand.SECTION_HAS_MEM_MAP = KernelAddressHeuristicFinder.consts().SECTION_HAS_MEM_MAP
                 PageCommand.sizeof_mem_section = KernelAddressHeuristicFinder.consts().sizeof_mem_section
@@ -153650,23 +153649,23 @@ class PageCommand(GenericCommand):
 
             else:
                 err("Could not find mem_map and mem_section")
-                return False
+                return None
 
         elif is_arm64():
             PageCommand.VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
-            if self.VMEMMAP_START is None:
+            if PageCommand.VMEMMAP_START is None:
                 err("Could not find VMEMMAP_START")
-                return False
+                return None
 
             PageCommand.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
-            if self.sizeof_struct_page is None:
+            if PageCommand.sizeof_struct_page is None:
                 err("Could not find sizeof(struct page)")
-                return False
+                return None
 
             memstart_addr = KernelAddressHeuristicFinder.consts().memstart_addr
             if memstart_addr is None:
                 err("Could not find memstart_addr")
-                return False
+                return None
 
             pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
             uq = lambda a: struct.unpack("<q", a)[0]
@@ -153680,7 +153679,7 @@ class PageCommand(GenericCommand):
                 sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
                 if sizeof_struct_page is None:
                     err("Could not find sizeof(struct page)")
-                    return False
+                    return None
                 PageCommand.sizeof_struct_page = sizeof_struct_page
                 PageCommand.PHYS_PFN_OFFSET = KernelAddressHeuristicFinder.consts().PHYS_PFN_OFFSET
 
@@ -153690,7 +153689,7 @@ class PageCommand(GenericCommand):
                 sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
                 if sizeof_struct_page is None:
                     err("Could not find sizeof(struct page)")
-                    return False
+                    return None
                 PageCommand.sizeof_struct_page = sizeof_struct_page
                 PageCommand.sizeof_mem_section = KernelAddressHeuristicFinder.consts().sizeof_mem_section
                 PageCommand.SECTION_HAS_MEM_MAP = KernelAddressHeuristicFinder.consts().SECTION_HAS_MEM_MAP
@@ -153702,9 +153701,8 @@ class PageCommand(GenericCommand):
 
             else:
                 err("Could not find mem_map and mem_section")
-                return False
+                return None
 
-        PageCommand.initialized = True
         return True
 
     def page2phys(self, page):
@@ -153905,7 +153903,7 @@ class PageToVirtCommand(PageCommand, BufferingOutput):
     @only_if_in_kernel
     def do_invoke(self, args):
         if args.rescan:
-            PageCommand.initialized = False
+            Cache.clear_cache_for(self.initialize)
 
         if is_arm64():
             kversion = Kernel.kernel_version()
@@ -153913,8 +153911,7 @@ class PageToVirtCommand(PageCommand, BufferingOutput):
                 err("Unsupported before v4.7")
                 return
 
-        ret = self.initialize()
-        if ret is False:
+        if not self.initialize():
             err("Failed to initialize")
             return
 
@@ -153963,7 +153960,7 @@ class PageFromVirtCommand(PageCommand, BufferingOutput):
     @only_if_in_kernel
     def do_invoke(self, args):
         if args.rescan:
-            PageCommand.initialized = False
+            Cache.clear_cache_for(self.initialize)
 
         if is_arm64():
             kversion = Kernel.kernel_version()
@@ -153971,8 +153968,7 @@ class PageFromVirtCommand(PageCommand, BufferingOutput):
                 err("Unsupported before v4.7")
                 return
 
-        ret = self.initialize()
-        if ret is False:
+        if not self.initialize():
             err("Failed to initialize")
             return
 
@@ -154024,7 +154020,7 @@ class PageToPhysCommand(PageCommand, BufferingOutput):
     @only_if_in_kernel
     def do_invoke(self, args):
         if args.rescan:
-            PageCommand.initialized = False
+            Cache.clear_cache_for(self.initialize)
 
         if is_arm64():
             kversion = Kernel.kernel_version()
@@ -154032,8 +154028,7 @@ class PageToPhysCommand(PageCommand, BufferingOutput):
                 err("Unsupported before v4.7")
                 return
 
-        ret = self.initialize()
-        if ret is False:
+        if not self.initialize():
             err("Failed to initialize")
             return
 
@@ -154076,7 +154071,7 @@ class PhysToPageCommand(PageCommand, BufferingOutput):
     @only_if_in_kernel
     def do_invoke(self, args):
         if args.rescan:
-            PageCommand.initialized = False
+            Cache.clear_cache_for(self.initialize)
 
         if is_arm64():
             kversion = Kernel.kernel_version()
@@ -154084,8 +154079,7 @@ class PhysToPageCommand(PageCommand, BufferingOutput):
                 err("Unsupported before v4.7")
                 return
 
-        ret = self.initialize()
-        if ret is False:
+        if not self.initialize():
             err("Failed to initialize")
             return
 
