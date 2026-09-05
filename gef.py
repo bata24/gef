@@ -28729,12 +28729,10 @@ class RegistersCommand(GenericCommand):
             all_registers = current_arch.all_registers
         return all_registers
 
-    def check_unavailable_regs(self):
-        """Detect and record unavailable registers for later display handling."""
-        if hasattr(self, "regs_to_check_unavailable"):
-            return
-
-        self.regs_to_check_unavailable = []
+    @Cache.cache_this_session
+    def get_unavailable_regs(self):
+        """Return registers that may be unavailable when their values are displayed."""
+        unavailable_regs = []
         for regname in self.get_all_registers():
             try:
                 reg = gdb.parse_and_eval(regname)
@@ -28744,8 +28742,8 @@ class RegistersCommand(GenericCommand):
             if reg.type.code == gdb.TYPE_CODE_VOID:
                 continue
             if str(reg) == "<unavailable>":
-                self.regs_to_check_unavailable.append(regname)
-        return
+                unavailable_regs.append(regname)
+        return tuple(unavailable_regs)
 
     def get_regname_color(self, regname, regvalue):
         """Return the appropriate color for a register name based on whether its value has changed."""
@@ -28782,7 +28780,7 @@ class RegistersCommand(GenericCommand):
             lines.append(line)
         return lines
 
-    def dump_regs(self, target_regs):
+    def dump_regs(self, target_regs, unavailable_regs):
         """Format and return register values for display, with color, alignment, and optional dereferencing."""
         aliased_registers = current_arch.get_aliased_registers()
         widest = current_arch.get_aliased_registers_name_max()
@@ -28801,7 +28799,7 @@ class RegistersCommand(GenericCommand):
                 continue
 
             # str(reg) is slow, so skip if unneeded
-            if regname in self.regs_to_check_unavailable:
+            if regname in unavailable_regs:
                 # for qiling framework, fs_base/gs_base (x86), cpsr/fpsr/fpcr (Aarch64) are unavailable
                 if str(reg) == "<unavailable>":
                     padreg = aliased_registers.get(regname, regname).ljust(widest, " ")
@@ -28885,14 +28883,14 @@ class RegistersCommand(GenericCommand):
     @only_if_gdb_running
     @require_arch_set
     def do_invoke(self, args):
-        self.check_unavailable_regs()
+        unavailable_regs = self.get_unavailable_regs()
 
         if args.registers:
             target_regs = args.registers
         else:
             target_regs = self.get_all_registers()
 
-        out = self.dump_regs(target_regs)
+        out = self.dump_regs(target_regs, unavailable_regs)
         if out:
             gef_print("\n".join(out))
         return
