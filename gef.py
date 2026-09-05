@@ -133458,6 +133458,7 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
@@ -133475,16 +133476,16 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            return True
+        self.meta = []
 
         # init_net
         self.init_net = KernelAddressHeuristicFinder.get_init_net()
         if self.init_net is None:
-            self.quiet_err("Could not find init_net")
-            return False
-        self.quiet_info("init_net: {:#x}".format(self.init_net))
+            self.meta.append((self.quiet_err, "Could not find init_net"))
+            return None
+        self.meta.append((self.quiet_info, "init_net: {:#x}".format(self.init_net)))
 
         """
         struct net {
@@ -133541,11 +133542,11 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
             if found:
                 break
         else:
-            self.quiet_err("Could not find net->dev_base_head")
-            return False
+            self.meta.append((self.quiet_err, "Could not find net->dev_base_head"))
+            return None
 
-        self.quiet_info("offsetof(net, dev_base_head): {:#x}".format(self.offset_dev_base_head))
-        self.quiet_info("offsetof(net_device, dev_list): {:#x}".format(self.offset_dev_list))
+        self.meta.append((self.quiet_info, "offsetof(net, dev_base_head): {:#x}".format(self.offset_dev_base_head)))
+        self.meta.append((self.quiet_info, "offsetof(net_device, dev_list): {:#x}".format(self.offset_dev_list)))
 
         return True
 
@@ -133577,7 +133578,13 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
         self.quiet_info("Wait for memory scan")
 
         ret = self.initialize()
-        if ret is False:
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
+            return
+
+        if args.meta:
             return
 
         self.out = []
