@@ -77589,7 +77589,7 @@ class KernelDiffCommand(GenericCommand, BufferingOutput):
         # syscall-table-view keeps parsed entries beyond a stop event; force a fresh memory read.
         syscall_command = __gef_command_instances__.get("syscall-table-view")
         if syscall_command is not None:
-            syscall_command.cached_table = {}
+            Cache.clear_cache_for(syscall_command.parse_syscall_table)
 
         snapshot = {}
         original_terminal_size = GefUtil.__dict__["get_terminal_size"]
@@ -78377,8 +78377,10 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
+    @Cache.cache_this_session
     @switch_to_intel_syntax
     def parse_syscall_table(self, sys_call_table_addr, tag):
+        tag = tag.removeprefix("symboled_")
         ni_syscall_names = {
             "x86": ["__ia32_sys_ni_syscall", "sys_ni_syscall"],
             "x86_64": ["__x64_sys_ni_syscall", "sys_ni_syscall"],
@@ -78394,7 +78396,7 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
                 ni_syscalls[address] = name
 
         # scan
-        cached_table = []
+        table = []
         i = 0
         while True:
             addr = sys_call_table_addr + i * current_arch.ptrsize
@@ -78479,9 +78481,9 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
                 elif len(insn.operands) == 3 and insn.operands[-1] == "// #-38":
                     is_valid = False
 
-            cached_table.append([i, addr, syscall_function_addr, symbol, is_valid])
+            table.append([i, addr, syscall_function_addr, symbol, is_valid])
             i += 1
-        return cached_table
+        return table
 
     def syscall_table_view(self, orig_tag, sys_call_table_addr, syscall_list, nr_base=0):
         if syscall_list is None:
@@ -78511,9 +78513,8 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
         except gdb.error:
             tag = orig_tag
 
-        # parse
-        if tag not in self.cached_table:
-            self.cached_table[tag] = self.parse_syscall_table(sys_call_table_addr, orig_tag)
+        # parse. `tag` keeps the results with and without symbols separate.
+        table = self.parse_syscall_table(sys_call_table_addr, tag)
 
         # print legend
         if not self.args.quiet:
@@ -78523,11 +78524,11 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
 
         # for duplication check
         seen_count = {}
-        for _, _, syscall_function_addr, _, _ in self.cached_table[tag]:
+        for _, _, syscall_function_addr, _, _ in table:
             seen_count[syscall_function_addr] = seen_count.get(syscall_function_addr, 0) + 1
 
         # print
-        for i, addr, syscall_function_addr, symbol, is_valid in self.cached_table[tag]:
+        for i, addr, syscall_function_addr, symbol, is_valid in table:
             nr = nr_base + i
             if nr in syscall_list.nr_table:
                 expected_name = syscall_list.nr_table[nr].name
@@ -78589,9 +78590,6 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        if not hasattr(self, "cached_table"):
-            self.cached_table = {}
-
         self.out = []
         self.dump_syscall_table()
         self.print_output(check_terminal_size=True)
