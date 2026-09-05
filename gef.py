@@ -128695,7 +128695,7 @@ class SlabContainsCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address, help="target address.")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
@@ -128723,98 +128723,88 @@ class SlabContainsCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            return True
-
-        cmd = {"SLUB": "slub-dump", "SLAB": "slab-dump", "SLUB_TINY": "slub-tiny-dump"}[self.allocator]
+    @Cache.cache_this_session(cache_None=False)
+    def initialize(self, allocator):
+        cmd = {"SLUB": "slub-dump", "SLAB": "slab-dump", "SLUB_TINY": "slub-tiny-dump"}[allocator]
         res = gdb.execute("{:s} --meta".format(cmd), to_string=True)
 
         r = re.search(r"offsetof\((?:page|slab), slab_cache\): (0x\S+)", res)
         if not r:
-            return False
+            return None
         self.page_offset_slab_cache = int(r.group(1), 16)
-        if self.args.verbose:
-            info("offsetof({:s}, slab_cache): {:#x}".format(Kernel.slab_page_str(), self.page_offset_slab_cache))
 
         r = re.search(r"offsetof\((?:page|slab), next\): (0x\S+)", res)
         if not r:
-            return False
+            return None
         self.page_offset_next = int(r.group(1), 16)
-        if self.args.verbose:
-            info("offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next))
 
         r = re.search(r"offsetof\(kmem_cache, name\): (0x\S+)", res)
         if not r:
-            return False
+            return None
         self.kmem_cache_offset_name = int(r.group(1), 16)
-        if self.args.verbose:
-            info("offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name))
 
         r = re.search(r"offsetof\(kmem_cache, size\): (0x\S+)", res)
         if not r:
-            return False
+            return None
         self.kmem_cache_offset_size = int(r.group(1), 16)
-        if self.args.verbose:
-            info("offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size))
 
         r = re.search(r"offsetof\(kmem_cache, object_size\): (0x\S+)", res)
         if not r:
-            return False
+            return None
         self.kmem_cache_offset_object_size = int(r.group(1), 16)
-        if self.args.verbose:
-            info("offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size))
 
         # for aligned check
-        if self.allocator in ["SLUB", "SLUB_TINY"]:
+        if allocator in ["SLUB", "SLUB_TINY"]:
             r = re.search(r"offsetof\(kmem_cache, red_left_pad\): (0x\S+)", res)
             if not r:
-                return False
+                return None
             self.kmem_cache_offset_red_left_pad = int(r.group(1), 16)
-            if self.args.verbose:
-                info("offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad))
 
-        if self.allocator == "SLAB":
+        if allocator == "SLAB":
             r = re.search(r"offsetof\((?:page|slab), s_mem\): (0x\S+)", res)
             if not r:
-                return False
+                return None
             self.page_offset_s_mem = int(r.group(1), 16)
-            if self.args.verbose:
-                info("offsetof({:s}, s_mem): {:#x}".format(Kernel.slab_page_str(), self.page_offset_s_mem))
 
         # for slab-virtual
+        self.slab_virtual_enabled = False
         if is_x86_64():
             r = re.search(r"offsetof\(kmem_cache, freed_slabs_min\): (0x\S+)", res)
             if r:
                 self.slab_virtual_enabled = True
-                if self.args.verbose:
-                    info("offsetof(kmem_cache, freed_slabs_min): {:#x}".format(int(r.group(1), 16)))
-            else:
-                self.slab_virtual_enabled = False
-        else:
-            self.slab_virtual_enabled = False
+                self.kmem_cache_offset_freed_slabs_min = int(r.group(1), 16)
 
         # for num of pages
-        if self.allocator in ["SLUB", "SLUB_TINY"]:
+        if allocator in ["SLUB", "SLUB_TINY"]:
             r = re.search(r"offsetof\((?:page|slab), inuse_objects_frozen\): (0x\S+)", res)
             if not r:
-                return False
+                return None
             self.page_offset_inuse_objects_frozen = int(r.group(1), 16)
-            if self.args.verbose:
-                info("offsetof({:s}, inuse_objects_frozen): {:#x}".format(
-                    Kernel.slab_page_str(), self.page_offset_inuse_objects_frozen,
-                ))
 
-        elif self.allocator == "SLAB":
+        elif allocator == "SLAB":
             r = re.search(r"offsetof\(kmem_cache, gfporder\): (0x\S+)", res)
             if not r:
-                return False
+                return None
             self.kmem_cache_offset_gfporder = int(r.group(1), 16)
-            if self.args.verbose:
-                info("offsetof(kmem_cache, gfporder): {:#x}".format(self.kmem_cache_offset_gfporder))
-
-        self.initialized = True
         return True
+
+    def print_meta(self):
+        info("offsetof({:s}, slab_cache): {:#x}".format(Kernel.slab_page_str(), self.page_offset_slab_cache))
+        info("offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next))
+        info("offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name))
+        info("offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size))
+        info("offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size))
+        if self.allocator in ["SLUB", "SLUB_TINY"]:
+            info("offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad))
+        if self.allocator == "SLAB":
+            info("offsetof({:s}, s_mem): {:#x}".format(Kernel.slab_page_str(), self.page_offset_s_mem))
+        if self.slab_virtual_enabled:
+            info("offsetof(kmem_cache, freed_slabs_min): {:#x}".format(self.kmem_cache_offset_freed_slabs_min))
+        if self.allocator in ["SLUB", "SLUB_TINY"]:
+            info("offsetof({:s}, inuse_objects_frozen): {:#x}".format(Kernel.slab_page_str(), self.page_offset_inuse_objects_frozen))
+        elif self.allocator == "SLAB":
+            info("offsetof(kmem_cache, gfporder): {:#x}".format(self.kmem_cache_offset_gfporder))
+        return
 
     def virt2page_wrapper(self, vaddr):
         if self.slab_virtual_enabled:
@@ -128984,23 +128974,20 @@ class SlabContainsCommand(GenericCommand):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
-        if not hasattr(self, "initialized"):
-            self.initialized = False
-
         if args.rescan:
-            self.initialized = False
+            Cache.clear_cache_for(self.initialize)
 
-        if not hasattr(self, "allocator"):
-            self.allocator = Kernel.get_slab_type()
-
+        self.allocator = Kernel.get_slab_type()
         if self.allocator not in ["SLUB", "SLUB_TINY", "SLAB"]:
             self.quiet_err("Unsupported: SLOB, Unknown allocator")
             return
 
-        ret = self.initialize()
-        if not ret:
+        if not self.initialize(self.allocator):
             self.quiet_err("Failed to initialize")
             return
+
+        if args.meta:
+            self.print_meta()
 
         self.slab_contains()
         return
