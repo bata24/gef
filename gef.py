@@ -76740,6 +76740,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
     _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
@@ -76781,21 +76782,21 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            return True
+        self.meta = []
 
         # pci_root_buses
         self.pci_root_buses = KernelAddressHeuristicFinder.get_pci_root_buses()
         if not self.pci_root_buses:
-            self.quiet_err("Could not find pci_root_buses (maybe, CONFIG_PCI is not set)")
-            return False
-        self.quiet_info("pci_root_buses: {:#x}".format(self.pci_root_buses))
+            self.meta.append((self.quiet_err, "Could not find pci_root_buses (maybe, CONFIG_PCI is not set)"))
+            return None
+        self.meta.append((self.quiet_info, "pci_root_buses: {:#x}".format(self.pci_root_buses)))
 
         first_root_bus = read_int_from_memory(self.pci_root_buses)
         if self.pci_root_buses == first_root_bus:
-            warn("No PCI devices found")
-            return False
+            self.meta.append((warn, "No PCI devices found"))
+            return None
 
         # pci_bus->{node,children,devices}
         """
@@ -76847,11 +76848,11 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             if is_valid_addr(v):
                 if read_cstring_from_memory(v) == "0000:00":
                     self.offset_pci_bus_dev = current_arch.ptrsize * i
-                    self.quiet_info("offsetof(pci_bus, dev): {:#x}".format(self.offset_pci_bus_dev))
+                    self.meta.append((self.quiet_info, "offsetof(pci_bus, dev): {:#x}".format(self.offset_pci_bus_dev)))
                     break
         else:
-            self.quiet_err("Could not find pci_bus->dev")
-            return False
+            self.meta.append((self.quiet_err, "Could not find pci_bus->dev"))
+            return None
 
         # pci_dev->{bus_list,vendor,device,subsystem_vendor,subsystem_device,class,revision}
         """
@@ -76900,11 +76901,11 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             if is_valid_addr(v):
                 if read_cstring_from_memory(v) == "0000:00:00.0":
                     self.offset_pci_dev_dev = current_arch.ptrsize * i
-                    self.quiet_info("offsetof(pci_dev, dev): {:#x}".format(self.offset_pci_dev_dev))
+                    self.meta.append((self.quiet_info, "offsetof(pci_dev, dev): {:#x}".format(self.offset_pci_dev_dev)))
                     break
         else:
-            self.quiet_err("Could not find pci_dev->dev")
-            return False
+            self.meta.append((self.quiet_err, "Could not find pci_dev->dev"))
+            return None
 
         # pci_dev->resource
         """
@@ -76925,32 +76926,31 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
                 if read_cstring_from_memory(v) == "0000:00:00.0":
                     self.offset_pci_dev_resource = ofs_base + current_arch.ptrsize * i - 0x10
                     self.sizeof_resource = 0x10 + current_arch.ptrsize * 6
-                    self.quiet_info("offsetof(pci_dev, resource): {:#x}".format(self.offset_pci_dev_resource))
+                    self.meta.append((self.quiet_info, "offsetof(pci_dev, resource): {:#x}".format(self.offset_pci_dev_resource)))
                     break
         else:
-            self.quiet_err("Could not find pci_dev->resource")
-            return False
+            self.meta.append((self.quiet_err, "Could not find pci_dev->resource"))
+            return None
 
         # pci.ids
         pci_ids_file_name = "/usr/share/misc/pci.ids"
-        if os.path.exists(pci_ids_file_name):
-            self.quiet_info("use {:s}".format(pci_ids_file_name))
+        if os.path.exists(pci_ids_file_name) and os.path.getsize(pci_ids_file_name) > 0:
+            self.meta.append((self.quiet_info, "use {:s}".format(pci_ids_file_name)))
             content = open(pci_ids_file_name).read()
         else:
             pci_ids_file_name = os.path.join(GEF_TEMP_DIR, "pci.ids")
-            if os.path.exists(pci_ids_file_name):
-                self.quiet_info("use {:s}".format(pci_ids_file_name))
+            if os.path.exists(pci_ids_file_name) and os.path.getsize(pci_ids_file_name) > 0:
+                self.meta.append((self.quiet_info, "use {:s}".format(pci_ids_file_name)))
                 content = open(pci_ids_file_name).read()
             else:
                 url = "https://raw.githubusercontent.com/pciutils/pciids/master/pci.ids"
-                self.quiet_info("use {:s}".format(url))
+                self.meta.append((self.quiet_info, "use {:s}".format(url)))
                 content = String.bytes2str(http_get(url) or "")
-                if not content:
-                    self.quiet_info("Connection timed out: {:s}".format(url))
-                open(pci_ids_file_name, "w").write(content)
+                if content:
+                    open(pci_ids_file_name, "w").write(content)
+                else:
+                    self.meta.append((self.quiet_info, "Connection timed out: {:s}".format(url)))
         self.pci_ids = self.parse_pci_ids(content)
-
-        self.initialized = True
         return True
 
     def parse_pci_ids(self, content):
@@ -77225,7 +77225,14 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
-        if not self.initialize():
+        ret = self.initialize()
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
+            return
+
+        if args.meta:
             return
 
         self.out = []
