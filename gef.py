@@ -74917,6 +74917,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="REGEXP filter.")
     parser.add_argument("-s", "--skip-symlink", action="store_true", help="do not follow symlink (net.* and user.*).")
     parser.add_argument("-e", "--exact", action="store_true", help="use exact match.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-v", "--verbose", action="store_true", help="dump zero-sized entries and proc_handler too.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
@@ -75174,15 +75175,15 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         self.sysctl_dump(left, pbar)
         return
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            return True
+        self.meta = []
 
         self.sysctl_table_root = KernelAddressHeuristicFinder.get_sysctl_table_root()
         if self.sysctl_table_root is None:
-            self.quiet_err("Could not find sysctl_table_root")
-            return False
-        self.quiet_info("sysctl_table_root: {:#x}".format(self.sysctl_table_root))
+            self.meta.append((self.quiet_err, "Could not find sysctl_table_root"))
+            return None
+        self.meta.append((self.quiet_info, "sysctl_table_root: {:#x}".format(self.sysctl_table_root)))
 
         """
         struct ctl_table_root {
@@ -75383,10 +75384,8 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
 
         self.root_ctl_dir = self.sysctl_table_root + current_arch.ptrsize
         self.root_rb_node = self.read_int_from_memory(self.root_ctl_dir + self.offset_rb_node)
-        self.quiet_info("root_ctl_dir: {:#x}".format(self.root_ctl_dir))
-        self.quiet_info("root_rb_node: {:#x}".format(self.root_rb_node))
-
-        self.initialized = True
+        self.meta.append((self.quiet_info, "root_ctl_dir: {:#x}".format(self.root_ctl_dir)))
+        self.meta.append((self.quiet_info, "root_rb_node: {:#x}".format(self.root_rb_node)))
         return True
 
     @parse_args
@@ -75402,12 +75401,18 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             return
 
         if args.rescan:
-            self.initialized = False
-            Cache.reset_gef_caches(all=True)
+            Cache.clear_cache_for(self.initialize)
 
         self.quiet_info("Wait for memory scan")
 
-        if not self.initialize():
+        ret = self.initialize()
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
+            return
+
+        if args.meta:
             return
 
         # legend
