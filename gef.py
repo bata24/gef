@@ -1542,7 +1542,7 @@ class AddressUtil:
             raise ValueError
         # Don't enclose it in a try-catch. This is because it is used with argparse,
         # and is intended to raise an exception if parsing fails.
-        return to_unsigned_long(gdb.parse_and_eval(addr))
+        return GefUtil.parse_and_eval_unsigned(addr)
 
     @staticmethod
     def parse_string_range(s):
@@ -35934,7 +35934,7 @@ class ContextCodeCommand(GenericCommand):
         #   x86/x64 (default): call ... [rip+0x1111] # 0xAABBCCDD
         if " # 0x" in ops and not is_loongarch64():
             addr = ContextCodeCommand.RE_SUB_BRANCH_ADDR1.sub(r"\1", ops)
-            ptr = to_unsigned_long(gdb.parse_and_eval(addr))
+            ptr = GefUtil.parse_and_eval_unsigned(addr)
             try:
                 if to_str:
                     return "{:#x}".format(read_int_from_memory(ptr))
@@ -35950,7 +35950,7 @@ class ContextCodeCommand(GenericCommand):
         #   loongarch64: bnez $t1, -8 (0x7ffff8) # 0x120000868
         if " # 0x" in ops and is_loongarch64():
             addr = ContextCodeCommand.RE_SUB_BRANCH_ADDR2.sub(r"\1", ops)
-            ptr = to_unsigned_long(gdb.parse_and_eval(addr))
+            ptr = GefUtil.parse_and_eval_unsigned(addr)
             if to_str:
                 return "{:#x}".format(ptr)
             else:
@@ -35968,7 +35968,7 @@ class ContextCodeCommand(GenericCommand):
                 if is_x86_64():
                     addr = addr.replace("$rip", "$rip+{:#x}".format(len(insn.opcodes)))
                 try:
-                    ptr = to_unsigned_long(gdb.parse_and_eval(addr))
+                    ptr = GefUtil.parse_and_eval_unsigned(addr)
                 except gdb.error:
                     return None
                 try:
@@ -35988,7 +35988,7 @@ class ContextCodeCommand(GenericCommand):
         if is_x86_64():
             if " PTR fs:" in ops or " ptr fs:" in ops:
                 ofs = ContextCodeCommand.RE_SUB_BRANCH_ADDR4.sub(r"\2", ops)
-                ofs = to_unsigned_long(gdb.parse_and_eval(ofs))
+                ofs = GefUtil.parse_and_eval_unsigned(ofs)
                 fs = current_arch.get_fs()
                 try:
                     if to_str:
@@ -36007,7 +36007,7 @@ class ContextCodeCommand(GenericCommand):
         if is_x86_32():
             if " PTR gs:" in ops or " ptr gs:" in ops:
                 ofs = ContextCodeCommand.RE_SUB_BRANCH_ADDR5.sub(r"\2", ops)
-                ofs = to_unsigned_long(gdb.parse_and_eval(ofs))
+                ofs = GefUtil.parse_and_eval_unsigned(ofs)
                 gs = current_arch.get_gs()
                 try:
                     if to_str:
@@ -36055,9 +36055,9 @@ class ContextCodeCommand(GenericCommand):
         if "0x" in ops:
             addr = ContextCodeCommand.RE_SUB_BRANCH_ADDR7.sub(r"\1", ops)
             if to_str:
-                return "{:#x}".format(to_unsigned_long(gdb.parse_and_eval(addr)))
+                return "{:#x}".format(GefUtil.parse_and_eval_unsigned(addr))
             else:
-                return to_unsigned_long(gdb.parse_and_eval(addr))
+                return GefUtil.parse_and_eval_unsigned(addr)
 
         # is there register(s)?
         #   x86/x64: call   rax
@@ -66897,7 +66897,7 @@ class Kernel:
         def resolve_syms_safely(syms):
             for sym in syms:
                 try:
-                    return to_unsigned_long(gdb.parse_and_eval(sym))
+                    return GefUtil.parse_and_eval_unsigned(sym)
                 except gdb.error:
                     pass
             return None
@@ -67643,7 +67643,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     def get_offset_tasks(self, init_task):
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct task_struct*)0).tasks"))
+            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).tasks")
         except gdb.error:
             pass
 
@@ -67683,7 +67683,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct task_struct*)0).mm"))
+            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).mm")
         except gdb.error:
             pass
 
@@ -67710,7 +67710,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct task_struct*)0).comm"))
+            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).comm")
         except gdb.error:
             pass
 
@@ -67759,7 +67759,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct task_struct*)0).cred"))
+            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).cred")
         except gdb.error:
             pass
 
@@ -67791,7 +67791,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct task_struct*)0).stack"))
+            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).stack")
         except gdb.error:
             pass
 
@@ -67831,7 +67831,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     def get_thread_info(self, task_addr, offset_stack):
         # fast path
         try:
-            return task_addr + to_unsigned_long(gdb.parse_and_eval("&((struct task_struct*)0).thread_info"))
+            return task_addr + GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).thread_info")
         except gdb.error:
             try:
                 # task_struct exists but has no thread_info member
@@ -68120,7 +68120,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct task_struct*)0).pid"))
+            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).pid")
         except gdb.error:
             pass
 
@@ -68171,7 +68171,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct task_struct*)0).stack_canary"))
+            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).stack_canary")
         except gdb.error:
             try:
                 # task_struct exists but has no stack_canary member
@@ -68223,7 +68223,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         """
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct task_struct*)0).group_leader"))
+            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).group_leader")
         except gdb.error:
             pass
 
@@ -68252,7 +68252,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         """
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct task_struct*)0).thread_group"))
+            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).thread_group")
         except gdb.error:
             pass
 
@@ -68278,7 +68278,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         """
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct task_struct*)0).signal"))
+            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).signal")
         except gdb.error:
             pass
 
@@ -68322,7 +68322,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct task_struct*)0).seccomp"))
+            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).seccomp")
         except gdb.error:
             pass
 
@@ -68447,7 +68447,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct seccomp_filter*)0).prev"))
+            return GefUtil.parse_and_eval_unsigned("&((struct seccomp_filter*)0).prev")
         except gdb.error:
             pass
 
@@ -68488,7 +68488,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     def get_offset_prog(self, offset_prev):
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct seccomp_filter*)0).prog"))
+            return GefUtil.parse_and_eval_unsigned("&((struct seccomp_filter*)0).prog")
         except gdb.error:
             pass
 
@@ -68510,7 +68510,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct bpf_prog*)0).bpf_func"))
+            return GefUtil.parse_and_eval_unsigned("&((struct bpf_prog*)0).bpf_func")
         except gdb.error:
             pass
 
@@ -68545,7 +68545,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     def get_offset_orig_prog(self, offset_bpf_func):
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct bpf_prog*)0).orig_prog"))
+            return GefUtil.parse_and_eval_unsigned("&((struct bpf_prog*)0).orig_prog")
         except gdb.error:
             pass
 
@@ -68582,7 +68582,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct signal_struct*)0).thread_head"))
+            return GefUtil.parse_and_eval_unsigned("&((struct signal_struct*)0).thread_head")
         except gdb.error:
             pass
 
@@ -68625,7 +68625,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct task_struct*)0).files"))
+            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).files")
         except gdb.error:
             pass
 
@@ -68684,7 +68684,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct files_struct*)0).fdt"))
+            return GefUtil.parse_and_eval_unsigned("&((struct files_struct*)0).fdt")
         except gdb.error:
             pass
 
@@ -68737,7 +68737,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         """
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct cred*)0).uid"))
+            return GefUtil.parse_and_eval_unsigned("&((struct cred*)0).uid")
         except gdb.error:
             pass
 
@@ -68879,7 +68879,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         """
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct cred*)0).user_ns"))
+            return GefUtil.parse_and_eval_unsigned("&((struct cred*)0).user_ns")
         except gdb.error:
             pass
 
@@ -69037,7 +69037,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct vm_area_struct*)0).vm_mm"))
+            return GefUtil.parse_and_eval_unsigned("&((struct vm_area_struct*)0).vm_mm")
         except gdb.error:
             pass
 
@@ -69065,7 +69065,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     def get_offset_vm_flags(self, offset_vm_mm):
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct vm_area_struct*)0).vm_flags"))
+            return GefUtil.parse_and_eval_unsigned("&((struct vm_area_struct*)0).vm_flags")
         except gdb.error:
             pass
 
@@ -69092,7 +69092,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct vm_area_struct*)0).vm_file"))
+            return GefUtil.parse_and_eval_unsigned("&((struct vm_area_struct*)0).vm_file")
         except gdb.error:
             pass
 
@@ -69309,8 +69309,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         """
         # fast path
         try:
-            f_path = to_unsigned_long(gdb.parse_and_eval("&((struct file*)0).f_path"))
-            mnt = to_unsigned_long(gdb.parse_and_eval("&((struct path*)0).mnt"))
+            f_path = GefUtil.parse_and_eval_unsigned("&((struct file*)0).f_path")
+            mnt = GefUtil.parse_and_eval_unsigned("&((struct path*)0).mnt")
             return f_path + mnt
         except gdb.error:
             pass
@@ -69429,8 +69429,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     def get_offset_dentry(self, offset_mnt):
         # fast path
         try:
-            f_path = to_unsigned_long(gdb.parse_and_eval("&((struct file*)0).f_path"))
-            dentry = to_unsigned_long(gdb.parse_and_eval("&((struct path*)0).dentry"))
+            f_path = GefUtil.parse_and_eval_unsigned("&((struct file*)0).f_path")
+            dentry = GefUtil.parse_and_eval_unsigned("&((struct path*)0).dentry")
             return f_path + dentry
         except gdb.error:
             pass
@@ -69463,7 +69463,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         """
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct dentry*)0).d_iname"))
+            return GefUtil.parse_and_eval_unsigned("&((struct dentry*)0).d_iname")
         except gdb.error:
             pass
 
@@ -69481,7 +69481,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     def get_offset_d_inode(self, offset_d_iname):
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct dentry*)0).d_inode"))
+            return GefUtil.parse_and_eval_unsigned("&((struct dentry*)0).d_inode")
         except gdb.error:
             pass
 
@@ -69492,7 +69492,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     def get_offset_d_parent(self, dentry, offset_d_iname):
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct dentry*)0).d_parent"))
+            return GefUtil.parse_and_eval_unsigned("&((struct dentry*)0).d_parent")
         except gdb.error:
             pass
 
@@ -69539,7 +69539,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         """
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct inode*)0).i_ino"))
+            return GefUtil.parse_and_eval_unsigned("&((struct inode*)0).i_ino")
         except gdb.error:
             pass
 
@@ -69702,7 +69702,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct task_struct*)0).nsproxy"))
+            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).nsproxy")
         except gdb.error:
             pass
 
@@ -69743,7 +69743,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct task_struct*)0).sighand"))
+            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).sighand")
         except gdb.error:
             pass
 
@@ -69804,7 +69804,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         """
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct sighand_struct*)0).action"))
+            return GefUtil.parse_and_eval_unsigned("&((struct sighand_struct*)0).action")
         except gdb.error:
             pass
 
@@ -69898,7 +69898,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("sizeof(struct k_sigaction)"))
+            return GefUtil.parse_and_eval_unsigned("sizeof(struct k_sigaction)")
         except gdb.error:
             pass
 
@@ -71011,7 +71011,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
     def get_offset_name(self, module_addrs):
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).name"))
+            return GefUtil.parse_and_eval_unsigned("&((struct module*)0).name")
         except gdb.error:
             pass
 
@@ -71106,8 +71106,8 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         """
         # fast path
         try:
-            offset_mem = to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).mem"))
-            offset_size = to_unsigned_long(gdb.parse_and_eval("&((struct module_memory*)0).size"))
+            offset_mem = GefUtil.parse_and_eval_unsigned("&((struct module*)0).mem")
+            offset_size = GefUtil.parse_and_eval_unsigned("&((struct module_memory*)0).size")
             return offset_mem, offset_mem + offset_size
         except gdb.error:
             pass
@@ -71254,7 +71254,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         """
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).init_layout"))
+            return GefUtil.parse_and_eval_unsigned("&((struct module*)0).init_layout")
         except gdb.error:
             pass
 
@@ -71367,7 +71367,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         """
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).module_core"))
+            return GefUtil.parse_and_eval_unsigned("&((struct module*)0).module_core")
         except gdb.error:
             pass
 
@@ -71421,7 +71421,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         """
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).kallsyms"))
+            return GefUtil.parse_and_eval_unsigned("&((struct module*)0).kallsyms")
         except gdb.error:
             pass
 
@@ -71778,7 +71778,7 @@ class KernelModuleLoadCommand(GenericCommand):
     def get_offset_name(self, module_addrs):
         # fast path
         try:
-            return to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).name"))
+            return GefUtil.parse_and_eval_unsigned("&((struct module*)0).name")
         except gdb.error:
             pass
 
@@ -71814,7 +71814,7 @@ class KernelModuleLoadCommand(GenericCommand):
         """
         # fast path
         try:
-            offset_sect_attrs = to_unsigned_long(gdb.parse_and_eval("&((struct module*)0).sect_attrs"))
+            offset_sect_attrs = GefUtil.parse_and_eval_unsigned("&((struct module*)0).sect_attrs")
             # Taking for granted the information we get is accurate we can reliably retrieve module->sect_attrs
             sect_attrs = read_int_from_memory(module_addr + offset_sect_attrs)
             return offset_sect_attrs, sect_attrs
@@ -71953,12 +71953,12 @@ class KernelModuleLoadCommand(GenericCommand):
         # fast path
         try:
             if kversion < "3.11":
-                offset_attrs = to_unsigned_long(gdb.parse_and_eval("&((struct attribute_group*)0).attrs"))
+                offset_attrs = GefUtil.parse_and_eval_unsigned("&((struct attribute_group*)0).attrs")
                 attrs_arr_ptr = read_int_from_memory(self.cached_sect_attrs + offset_attrs)
                 return offset_attrs, attrs_arr_ptr
             else:
                 # It is possible to use attrs or bin_attrs, so check both.
-                offset_attrs = to_unsigned_long(gdb.parse_and_eval("&((struct attribute_group*)0).attrs"))
+                offset_attrs = GefUtil.parse_and_eval_unsigned("&((struct attribute_group*)0).attrs")
                 attrs_arr_ptr = read_int_from_memory(self.cached_sect_attrs + offset_attrs)
                 if is_valid_addr(attrs_arr_ptr):
                     return offset_attrs, attrs_arr_ptr
@@ -71995,8 +71995,8 @@ class KernelModuleLoadCommand(GenericCommand):
         # fast path
         try:
             if kversion < "6.14":
-                return to_unsigned_long(gdb.parse_and_eval("&((struct module_sect_attr*)0).address"))
-            return to_unsigned_long(gdb.parse_and_eval("&((struct bin_attribute*)0).private"))
+                return GefUtil.parse_and_eval_unsigned("&((struct module_sect_attr*)0).address")
+            return GefUtil.parse_and_eval_unsigned("&((struct bin_attribute*)0).private")
         except gdb.error:
             pass
 
@@ -124004,7 +124004,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            self.kmem_cache_offset_list = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache*)0).list"))
+            self.kmem_cache_offset_list = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).list")
             return
         except gdb.error:
             pass
@@ -124045,7 +124045,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         # fast path
         try:
             # find kmem_cache.random
-            self.kmem_cache_offset_random = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache*)0).random"))
+            self.kmem_cache_offset_random = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).random")
             return
         except gdb.error:
             try:
@@ -124164,14 +124164,14 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         self.kmem_cache_offset_random_seq = None
         try:
-            self.kmem_cache_offset_random_seq = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache*)0).random_seq"))
+            self.kmem_cache_offset_random_seq = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).random_seq")
         except gdb.error:
             pass
 
         # fast path
         if kversion < "7.1":
             try:
-                self.kmem_cache_offset_node = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache*)0).node"))
+                self.kmem_cache_offset_node = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).node")
                 self.kmem_cache_offset_barn = None
                 self.kmem_cache_node_step = current_arch.ptrsize
                 return
@@ -124179,8 +124179,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 pass
         else:
             try:
-                self.kmem_cache_offset_barn = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache*)0).per_node[0].barn"))
-                self.kmem_cache_offset_node = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache*)0).per_node[0].node"))
+                self.kmem_cache_offset_barn = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).per_node[0].barn")
+                self.kmem_cache_offset_node = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).per_node[0].node")
                 self.kmem_cache_node_step = current_arch.ptrsize * 2
                 return
             except gdb.error:
@@ -124615,7 +124615,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     def resolve_kmem_cache_node_offset_partial(self):
         # fast path
         try:
-            self.kmem_cache_node_offset_partial = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache_node*)0).partial"))
+            self.kmem_cache_node_offset_partial = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache_node*)0).partial")
             return
         except gdb.error:
             pass
@@ -124655,7 +124655,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            self.slub_percpu_sheaves_offset_main = to_unsigned_long(gdb.parse_and_eval("&((struct slub_percpu_sheaves*)0).main"))
+            self.slub_percpu_sheaves_offset_main = GefUtil.parse_and_eval_unsigned("&((struct slub_percpu_sheaves*)0).main")
             return
         except gdb.error:
             pass
@@ -124723,7 +124723,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            self.kmem_cache_node_offset_barn = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache_node*)0).barn"))
+            self.kmem_cache_node_offset_barn = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache_node*)0).barn")
             return
         except gdb.error:
             pass
@@ -124781,7 +124781,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            self.node_barn_offset_sheaves_full = to_unsigned_long(gdb.parse_and_eval("&((struct node_barn*)0).sheaves_full"))
+            self.node_barn_offset_sheaves_full = GefUtil.parse_and_eval_unsigned("&((struct node_barn*)0).sheaves_full")
             return
         except gdb.error:
             pass
@@ -126685,7 +126685,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     def resolve_kmem_cache_offset_list(self):
         # fast path
         try:
-            self.kmem_cache_offset_list = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache*)0).list"))
+            self.kmem_cache_offset_list = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).list")
             return
         except gdb.error:
             pass
@@ -126709,7 +126709,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     def resolve_kmem_cache_offset_node(self):
         # fast path
         try:
-            self.kmem_cache_offset_node = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache*)0).node"))
+            self.kmem_cache_offset_node = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).node")
             return
         except gdb.error:
             pass
@@ -126762,7 +126762,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     def resolve_kmem_cache_node_offset_partial(self):
         # fast path
         try:
-            self.kmem_cache_node_offset_partial = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache_node*)0).partial"))
+            self.kmem_cache_node_offset_partial = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache_node*)0).partial")
             return
         except gdb.error:
             pass
@@ -127599,7 +127599,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     def resolve_kmem_cache_offset_node(self):
         # fast path
         try:
-            self.kmem_cache_offset_node = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache*)0).node"))
+            self.kmem_cache_offset_node = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).node")
             return
         except gdb.error:
             pass
@@ -127644,7 +127644,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     def resolve_kmem_cache_node_offset_slabs_partial(self):
         # fast path
         try:
-            self.kmem_cache_node_offset_slabs_partial = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache_node*)0).slabs_partial"))
+            self.kmem_cache_node_offset_slabs_partial = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache_node*)0).slabs_partial")
             return
         except gdb.error:
             pass
@@ -129554,8 +129554,8 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     def resolve_zone_offset_name(self):
         # fast path
         try:
-            self.offset_name = to_unsigned_long(gdb.parse_and_eval("&((struct zone*)0).name"))
-            self.sizeof_zone = to_unsigned_long(gdb.parse_and_eval("sizeof(struct zone)"))
+            self.offset_name = GefUtil.parse_and_eval_unsigned("&((struct zone*)0).name")
+            self.sizeof_zone = GefUtil.parse_and_eval_unsigned("sizeof(struct zone)")
             return
         except gdb.error:
             pass
@@ -129579,9 +129579,9 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         kversion = Kernel.kernel_version()
         try:
             if kversion < "5.14":
-                self.offset_per_cpu_pageset = to_unsigned_long(gdb.parse_and_eval("&((struct zone*)0).pageset"))
+                self.offset_per_cpu_pageset = GefUtil.parse_and_eval_unsigned("&((struct zone*)0).pageset")
             else:
-                self.offset_per_cpu_pageset = to_unsigned_long(gdb.parse_and_eval("&((struct zone*)0).per_cpu_pageset"))
+                self.offset_per_cpu_pageset = GefUtil.parse_and_eval_unsigned("&((struct zone*)0).per_cpu_pageset")
             return
         except gdb.error:
             pass
@@ -129648,7 +129648,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            self.offset_lists = to_unsigned_long(gdb.parse_and_eval("&((struct per_cpu_pages*)0).lists"))
+            self.offset_lists = GefUtil.parse_and_eval_unsigned("&((struct per_cpu_pages*)0).lists")
             return
         except gdb.error:
             pass
@@ -129666,9 +129666,9 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            self.NR_PCP_LISTS = to_unsigned_long(gdb.parse_and_eval(
+            self.NR_PCP_LISTS = GefUtil.parse_and_eval_unsigned(
                 "sizeof(((struct per_cpu_pages*)0).lists) / sizeof(((struct per_cpu_pages*)0).lists[0])",
-            ))
+            )
             return
         except gdb.error:
             # In some environments, the size of list_head is not saved, resulting in division by 0.
@@ -129691,9 +129691,9 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     def resolve_MAX_NR_ZONES(self):
         # fast path
         try:
-            self.MAX_NR_ZONES = to_unsigned_long(gdb.parse_and_eval(
+            self.MAX_NR_ZONES = GefUtil.parse_and_eval_unsigned(
                 "sizeof(((struct zone*)0).lowmem_reserve) / sizeof(((struct zone*)0).lowmem_reserve[0])",
-            ))
+            )
             return
         except gdb.error:
             pass
@@ -129718,7 +129718,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         """
         # fast path
         try:
-            self.offset_free_area = to_unsigned_long(gdb.parse_and_eval("&((struct zone*)0).free_area"))
+            self.offset_free_area = GefUtil.parse_and_eval_unsigned("&((struct zone*)0).free_area")
             return
         except gdb.error:
             pass
@@ -129740,9 +129740,9 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     def resolve_MIGRATE_TYPES(self):
         # fast path
         try:
-            self.MIGRATE_TYPES = to_unsigned_long(gdb.parse_and_eval(
+            self.MIGRATE_TYPES = GefUtil.parse_and_eval_unsigned(
                 "sizeof(((struct free_area*)0).free_list) / sizeof(((struct free_area*)0).free_list[0])",
-            ))
+            )
             return
         except gdb.error:
             pass
@@ -129883,9 +129883,9 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     def resolve_MAX_ORDER(self):
         # fast path
         try:
-            self.MAX_ORDER = to_unsigned_long(gdb.parse_and_eval(
+            self.MAX_ORDER = GefUtil.parse_and_eval_unsigned(
                 "sizeof(((struct zone*)0).free_area) / sizeof(((struct zone*)0).free_area[0])",
-            ))
+            )
             return
         except gdb.error:
             pass
@@ -132391,11 +132391,11 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         } ____cacheline_aligned_in_smp __randomize_layout;
         """
         try:
-            self.offset_id = to_unsigned_long(gdb.parse_and_eval("&((struct kern_ipc_perm*)0).id"))
-            self.offset_key = to_unsigned_long(gdb.parse_and_eval("&((struct kern_ipc_perm*)0).key"))
-            self.offset_uid = to_unsigned_long(gdb.parse_and_eval("&((struct kern_ipc_perm*)0).uid"))
-            self.offset_gid = to_unsigned_long(gdb.parse_and_eval("&((struct kern_ipc_perm*)0).gid"))
-            self.offset_mode = to_unsigned_long(gdb.parse_and_eval("&((struct kern_ipc_perm*)0).mode"))
+            self.offset_id = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).id")
+            self.offset_key = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).key")
+            self.offset_uid = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).uid")
+            self.offset_gid = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).gid")
+            self.offset_mode = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).mode")
         except gdb.error:
             self.offset_id = 4 + 4
             self.offset_key = self.offset_id + 4
@@ -163344,6 +163344,11 @@ class AliasesListCommand(AliasesCommand, BufferingOutput):
 
 class GefUtil:
     """A collection of utility functions that are related to GEF basic features."""
+
+    @staticmethod
+    def parse_and_eval_unsigned(expression):
+        """Evaluate a GDB expression and return its unsigned address-sized value."""
+        return to_unsigned_long(gdb.parse_and_eval(expression))
 
     @staticmethod
     @Cache.cache_until_next
