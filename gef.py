@@ -129005,6 +129005,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-s", "--sort-by-size", action="store_true", help="sort by object size.")
     parser.add_argument("-m", "--merged-only", action="store_true",
                         help="show only merged caches grouped by physical cache.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
@@ -129015,15 +129016,15 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            return True
+        self.meta = []
 
         self.slab_kset = KernelAddressHeuristicFinder.get_slab_kset()
         if self.slab_kset is None:
-            self.quiet_err("Could not find slab_kset")
-            return False
-        self.quiet_info("slab_kset: {:#x}".format(self.slab_kset))
+            self.meta.append((self.quiet_err, "Could not find slab_kset"))
+            return None
+        self.meta.append((self.quiet_info, "slab_kset: {:#x}".format(self.slab_kset)))
 
         """
         struct kset {
@@ -129053,11 +129054,11 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                 continue
             # found
             self.offset_kobj_sd = current_arch.ptrsize * (i + 6)
-            self.quiet_info("offsetof(kset, kobj.sd): {:#x}".format(self.offset_kobj_sd))
+            self.meta.append((self.quiet_info, "offsetof(kset, kobj.sd): {:#x}".format(self.offset_kobj_sd)))
             break
         else:
-            self.quiet_err("Could not find offsetof(kset, kobj.sd)")
-            return False
+            self.meta.append((self.quiet_err, "Could not find offsetof(kset, kobj.sd)"))
+            return None
 
         """
         struct kernfs_node {
@@ -129114,16 +129115,15 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                 self.offset_union += current_arch.ptrsize
             self.offset_dir_children = self.offset_union + current_arch.ptrsize
             self.offset_symlink_target_kn = self.offset_union
-            self.quiet_info("offsetof(kernfs_node, name): {:#x}".format(self.offset_name))
-            self.quiet_info("offsetof(kernfs_node, rb): {:#x}".format(self.offset_rb))
-            self.quiet_info("offsetof(kernfs_node, dir.children): {:#x}".format(self.offset_dir_children))
-            self.quiet_info("offsetof(kernfs_node, symlink.target_kn): {:#x}".format(self.offset_symlink_target_kn))
+            self.meta.append((self.quiet_info, "offsetof(kernfs_node, name): {:#x}".format(self.offset_name)))
+            self.meta.append((self.quiet_info, "offsetof(kernfs_node, rb): {:#x}".format(self.offset_rb)))
+            self.meta.append((self.quiet_info, "offsetof(kernfs_node, dir.children): {:#x}".format(self.offset_dir_children)))
+            self.meta.append((self.quiet_info, "offsetof(kernfs_node, symlink.target_kn): {:#x}".format(self.offset_symlink_target_kn)))
             break
         else:
-            self.quiet_err("Could not find offsetof(kernfs_node, name)")
-            return False
+            self.meta.append((self.quiet_err, "Could not find offsetof(kernfs_node, name)"))
+            return None
 
-        self.initialized = True
         return True
 
     def parse_kmem_cache_alias(self):
@@ -129411,8 +129411,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             self.quiet_err("Unsupported before v3.14")
             return
 
-        if not hasattr(self, "allocator"):
-            self.allocator = Kernel.get_slab_type()
+        self.allocator = Kernel.get_slab_type()
 
         if self.allocator == "SLUB_TINY":
             self.quiet_err("Unsupported: CONFIG_SLUB_TINY has no slab sysfs support")
@@ -129423,8 +129422,14 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             return
 
         ret = self.initialize()
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
         if not ret:
             self.quiet_err("Failed to initialize")
+            return
+
+        if args.meta:
             return
 
         self.out = []
