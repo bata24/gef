@@ -1628,11 +1628,12 @@ class AddressUtil:
         recursion = Config.get_gef_setting("dereference.max_recursion")
         blacklist = AddressUtil.get_recursive_dereference_blacklist()
         addr_list = []
+        addr_set = set()
         error = None
 
         while recursion > 0:
             # check loop
-            if addr in addr_list:
+            if addr in addr_set:
                 if addr == 0 and len(addr_list) == 1:
                     # the case that address 0x0 is valid and first element is 0x0 (i.e. telescope 0x0).
                     # but no error because it is generally unnecessary information.
@@ -1643,6 +1644,7 @@ class AddressUtil:
 
             # not loop
             addr_list.append(addr)
+            addr_set.add(addr)
 
             # check blacklist
             if any(bstart <= addr < bend for bstart, bend in blacklist):
@@ -4220,7 +4222,7 @@ class GlibcHeap:
                 continue
 
             next_addr = to_unsigned_long(candidate_arena.next)
-            seen_arena = []
+            seen_arena = set()
             while True:
                 if not is_valid_addr(next_addr):
                     break
@@ -4231,7 +4233,7 @@ class GlibcHeap:
                 if next_addr in seen_arena:
                     # broken `next` chain, give up this candidate
                     break
-                seen_arena.append(next_addr)
+                seen_arena.add(next_addr)
                 next_addr = to_unsigned_long(GlibcHeap.MallocStateStruct(next_addr).next)
 
         # not found
@@ -4891,13 +4893,15 @@ class GlibcHeap:
 
                 # parse list
                 chunks = []
+                chunk_addresses = set()
                 while chunk is not None:
-                    if chunk.address in chunks:
+                    if chunk.address in chunk_addresses:
                         chunks.append(chunk.address)
                         chunks.append("Loop detected")
                         break # loop detected
 
                     chunks.append(chunk.address)
+                    chunk_addresses.add(chunk.address)
                     next_chunk = chunk.get_fwd_ptr(True)
                     if next_chunk is None:
                         chunks.append("Corrupted")
@@ -4934,13 +4938,15 @@ class GlibcHeap:
 
                 # parse list
                 chunks = []
+                chunk_addresses = set()
                 while chunk is not None:
-                    if chunk.address in chunks:
+                    if chunk.address in chunk_addresses:
                         chunks.append(chunk.address)
                         chunks.append("Loop detected")
                         break # loop detected
 
                     chunks.append(chunk.address)
+                    chunk_addresses.add(chunk.address)
                     next_chunk = chunk.get_fwd_ptr(True)
                     if next_chunk is None:
                         chunks.append("Corrupted")
@@ -4969,18 +4975,20 @@ class GlibcHeap:
 
             corrupted = False
             chunks_bk = []
+            chunks_bk_addresses = set()
 
             # first: process backward
             while bk != head:
                 chunk = GlibcHeap.GlibcChunk(self, bk, from_base=True)
 
-                if chunk.chunk_base_address in chunks_bk:
+                if chunk.chunk_base_address in chunks_bk_addresses:
                     chunks_bk.append(chunk.chunk_base_address)
                     chunks_bk.append("Loop detected")
                     corrupted = True
                     break
 
                 chunks_bk.append(chunk.chunk_base_address)
+                chunks_bk_addresses.add(chunk.chunk_base_address)
 
                 bk = chunk.bck
                 if bk is None:
@@ -4993,15 +5001,18 @@ class GlibcHeap:
             if corrupted:
                 # second: process forward
                 chunks_fw = []
+                chunks_fw_addresses = set()
+                chunk_addresses = set(chunks)
                 while fw != head:
                     chunk = GlibcHeap.GlibcChunk(self, fw, from_base=True)
 
-                    if chunk.chunk_base_address in chunks:
+                    if chunk.chunk_base_address in chunk_addresses:
                         break # meet backward's list
-                    if chunk.chunk_base_address in chunks_fw:
+                    if chunk.chunk_base_address in chunks_fw_addresses:
                         break # loop
 
                     chunks_fw.append(chunk.chunk_base_address)
+                    chunks_fw_addresses.add(chunk.chunk_base_address)
                     fw = chunk.fwd
                     if fw is None:
                         break # corrupted
@@ -12760,7 +12771,7 @@ def is_single_link_list(addr):
     # | head |-->| next |--> ... -->| next |--> NULL
     # +------+   +------+           +------+
 
-    seen = []
+    seen = set()
     while True:
         if addr == 0:
             return True
@@ -12768,7 +12779,7 @@ def is_single_link_list(addr):
             return False
         if not is_valid_addr(addr):
             return False
-        seen.append(addr)
+        seen.add(addr)
         addr = read_int_from_memory(addr)
 
 
@@ -12782,12 +12793,14 @@ def is_double_link_list(addr, min_len=0):
 
     # list next pointer
     seen = []
+    seen_addresses = set()
     while True:
         if not is_valid_addr(addr):
             return False
-        if addr in seen:
+        if addr in seen_addresses:
             break
         seen.append(addr)
+        seen_addresses.add(addr)
         addr = read_int_from_memory(addr)
 
     if addr != seen[0]:
@@ -13802,7 +13815,7 @@ class Pid:
     @staticmethod
     def get_tcp_sess(pid):
         # get inode information from opened file descriptor
-        inodes = []
+        inodes = set()
         try:
             openfds = os.listdir("/proc/{:d}/fd".format(pid))
         except (FileNotFoundError, ProcessLookupError, OSError):
@@ -13814,7 +13827,7 @@ class Pid:
                 continue
             if fdname.startswith("socket:["):
                 inode = fdname[8:-1]
-                inodes.append(inode)
+                inodes.add(inode)
 
         def decode(addr):
             ip, port = addr.split(":")
@@ -14420,12 +14433,14 @@ class ProcessMap:
 
             # contiguous areas are removed from the queue
             merged_queue = []
+            merged_addresses = set()
             for addr in sorted(queue):
                 if not is_valid_addr(addr):
                     continue
-                if addr - get_pagesize() in merged_queue:
+                if addr - get_pagesize() in merged_addresses:
                     continue
                 merged_queue.append(addr)
+                merged_addresses.add(addr)
 
             # add regions
             new_regions = []
@@ -14630,7 +14645,7 @@ class ProcessMap:
         """Retrieve all the files loaded by debuggee."""
         lines = gdb.execute("info files", to_string=True).splitlines()
         info_files = []
-        seen = []
+        seen = set()
         for line in lines:
             line = line.strip()
             if not line:
@@ -14639,7 +14654,7 @@ class ProcessMap:
                 continue
             if line in seen:
                 continue
-            seen.append(line)
+            seen.add(line)
 
             blobs = [x.strip() for x in line.split(" ")]
             addr_start = int(blobs[0], 16)
@@ -26422,6 +26437,7 @@ class GlibcHeapBinsDump:
 
             chunk = arena.get_tcachebins_i(i)
             chunks = []
+            chunk_addresses = set()
             m = []
 
             # Only print the entry if there are valid chunks. Don't trust count
@@ -26430,7 +26446,7 @@ class GlibcHeapBinsDump:
                     break
                 try:
                     m.append(" -> {!s}".format(chunk))
-                    if chunk.address in chunks:
+                    if chunk.address in chunk_addresses:
                         m.append(Color.colorify(
                             " -> {:#x} [Loop detected]".format(chunk.address),
                             corrupted_msg_color,
@@ -26438,6 +26454,7 @@ class GlibcHeapBinsDump:
                         break
 
                     chunks.append(chunk.address)
+                    chunk_addresses.add(chunk.address)
                     nb_chunk += 1
 
                     next_chunk = chunk.get_fwd_ptr(True)
@@ -26497,6 +26514,7 @@ class GlibcHeapBinsDump:
 
             chunk = arena.get_fastbins_i(i)
             chunks = []
+            chunk_addresses = set()
             m = []
 
             while True:
@@ -26505,7 +26523,7 @@ class GlibcHeapBinsDump:
 
                 try:
                     m.append(" -> {!s}".format(chunk))
-                    if chunk.address in chunks:
+                    if chunk.address in chunk_addresses:
                         m.append(Color.colorify(
                             " -> {:#x} [Loop detected]".format(chunk.chunk_base_address),
                             corrupted_msg_color,
@@ -26516,6 +26534,7 @@ class GlibcHeapBinsDump:
                         m.append(Color.colorify("[Incorrect fastbin_index]", corrupted_msg_color))
 
                     chunks.append(chunk.address)
+                    chunk_addresses.add(chunk.address)
                     nb_chunk += 1
 
                     next_chunk = chunk.get_fwd_ptr(True)
@@ -26577,7 +26596,7 @@ class GlibcHeapBinsDump:
 
         # follow the link backward
         mb = []
-        seen_bk = []
+        seen_bk = set()
         nb_chunk = 0
         while bk != head:
             chunk = GlibcHeap.GlibcChunk(arena, bk, from_base=True)
@@ -26588,7 +26607,7 @@ class GlibcHeapBinsDump:
                 ))
                 corrupted = True
                 break
-            seen_bk.append(chunk.address)
+            seen_bk.add(chunk.address)
             try:
                 mb.append(" -> {!s}".format(chunk))
             except gdb.MemoryError:
@@ -26604,7 +26623,7 @@ class GlibcHeapBinsDump:
         if corrupted:
             # follow the link forward
             mf = []
-            seen_fw = []
+            seen_fw = set()
             while fw != head:
                 chunk = GlibcHeap.GlibcChunk(arena, fw, from_base=True)
                 if chunk.address in seen_bk:
@@ -26615,7 +26634,7 @@ class GlibcHeapBinsDump:
                         corrupted_msg_color,
                     ))
                     break
-                seen_fw.append(chunk.address)
+                seen_fw.add(chunk.address)
                 try:
                     mf.append(" -> {!s}".format(chunk))
                 except gdb.MemoryError:
@@ -29482,7 +29501,7 @@ class AsmListCommand(GenericCommand):
 
         # parse it
         valid_patterns = []
-        seen_patterns = []
+        seen_patterns = set()
         for insn in x86_insns:
             opcodes = insn[3]
             attr = insn[4].split()
@@ -29514,7 +29533,7 @@ class AsmListCommand(GenericCommand):
                 opstr = asm.mnemonic + " " + asm.op_str
                 # add
                 valid_patterns.append([hex_code, opstr, opcodes, attr])
-                seen_patterns.append(hex_code)
+                seen_patterns.add(hex_code)
 
         self.cache = valid_patterns
         return valid_patterns
@@ -36774,7 +36793,7 @@ class ContextSourceCommand(GenericCommand):
             return []
 
         m = []
-        seen_symbol = []
+        seen_symbol = set()
         while current_block and not current_block.is_static:
             for sym in current_block:
                 if sym.is_function:
@@ -36798,7 +36817,7 @@ class ContextSourceCommand(GenericCommand):
                         continue
 
                     if sym.name not in seen_symbol:
-                        seen_symbol.append(sym.name)
+                        seen_symbol.add(sym.name)
                         msg = "{} = {}".format(Color.yellowify(sym.name), val)
                         m.append(msg)
             current_block = current_block.superblock
@@ -39040,6 +39059,7 @@ class DereferenceCommand(GenericCommand):
     @Cache.cache_until_next
     def get_frame_pcs():
         frames = []
+        frame_addresses = set()
         try:
             frame = gdb.newest_frame()
             no_ret_addr = [0, 0xffff_ffff, 0xffff_ffff_ffff_ffff]
@@ -39047,9 +39067,10 @@ class DereferenceCommand(GenericCommand):
                 pc = frame.pc()
                 if pc in no_ret_addr:
                     break
-                if pc in frames:
+                if pc in frame_addresses:
                     break
                 frames.append(pc)
+                frame_addresses.add(pc)
                 frame = frame.older()
         except gdb.error:
             pass
@@ -39221,7 +39242,7 @@ class DereferenceCommand(GenericCommand):
         has_tag |= bool(self.args.slab_contains_unaligned)
 
         out = []
-        seen = []
+        seen = set()
         for idx in range(from_idx, to_idx, step):
             current_address = start_address + idx * current_arch.ptrsize
             try:
@@ -39232,7 +39253,7 @@ class DereferenceCommand(GenericCommand):
                         if out == [] or out[-1] != "*":
                             out.append("*")
                         continue
-                    seen.append(v)
+                    seen.add(v)
 
                 # valid address filtering
                 if self.args.is_addr:
@@ -43287,7 +43308,7 @@ class GotAllCommand(GenericCommand, BufferingOutput):
         extra_args = "{:s} {:s} {:s} {:s} {:s}".format(verbose, remote, cppfilt, exact, " ".join(args.filter))
 
         self.out = []
-        processed = []
+        processed = set()
         for m in ProcessMap.get_process_maps():
             if not m.path:
                 continue
@@ -43305,7 +43326,7 @@ class GotAllCommand(GenericCommand, BufferingOutput):
             ret = gdb.execute("got -f {!r} -n {:s}".format(m.path, extra_args), to_string=True)
             self.out.extend(ret.splitlines())
             self.out.append("")
-            processed.append(m.path)
+            processed.add(m.path)
 
         self.print_output(check_terminal_size=True)
         return
@@ -68107,7 +68128,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         pid_max = 0x400000 if is_64bit() else 0x8000
         for i in range(0x400):
             found = False
-            seen_pid = []
+            seen_pid = set()
             # swapper/0 has pid 0. Don't use it as it will cause false positives.
             for j, task in enumerate(task_addrs[1:]):
                 v1 = read_int32_from_memory(task + (i + 0) * 4)
@@ -68120,7 +68141,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     break
                 if v1 in seen_pid:
                     break
-                seen_pid.append(v1)
+                seen_pid.add(v1)
             else:
                 found = True
 
@@ -69801,7 +69822,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     continue
 
                 current = read_int_from_memory(head)
-                seen = []
+                seen = set()
                 while True:
                     if current == head:
                         found = True
@@ -69810,7 +69831,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                         break
                     if current in seen:
                         break
-                    seen.append(current)
+                    seen.add(current)
                     current = read_int_from_memory(current)
                 if found:
                     break
@@ -73571,14 +73592,16 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
         self.quiet_info("chrdevs: {:#x}".format(chrdevs))
 
         chrdev_addrs = []
+        chrdev_seen = set()
         for i in range(255):
             chrdevs_i = chrdevs + i * current_arch.ptrsize
             if not is_valid_addr(chrdevs_i):
                 self.quiet_err("Memory read error")
                 return None
             addr = read_int_from_memory(chrdevs_i)
-            while addr and addr not in chrdev_addrs:
+            while addr and addr not in chrdev_seen:
                 chrdev_addrs.append(addr)
+                chrdev_seen.add(addr)
                 if not is_valid_addr(addr):
                     self.quiet_err("Memory read error")
                     return None
@@ -73642,7 +73665,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
             return None
 
         cdev_addrs = []
-        seen = []
+        seen = set()
         for i in range(255):
             addr = read_int_from_memory(cdev_map_ + i * current_arch.ptrsize)
             while addr:
@@ -73652,7 +73675,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
                 minor = dev & ((1 << 20) - 1)
                 if cdev and cdev not in seen:
                     cdev_addrs.append([cdev, major, minor])
-                    seen.append(cdev)
+                    seen.add(cdev)
                 addr = read_int_from_memory(addr)
         return cdev_addrs
 
@@ -77110,7 +77133,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             return
 
         while dev not in self.seen_dev:
-            self.seen_dev.append(dev)
+            self.seen_dev.add(dev)
 
             # parse device info
             dev_name = read_cstring_from_memory(read_int_from_memory(dev + self.offset_pci_dev_dev))
@@ -77180,17 +77203,17 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             return
 
         while bus not in self.seen_bus:
-            self.seen_bus.append(bus)
+            self.seen_bus.add(bus)
             bus_name = read_cstring_from_memory(read_int_from_memory(bus + self.offset_pci_bus_dev))
             self.out.append(titlify("Bus {:s}: {:#x}".format(bus_name, bus)))
 
             # parse device
-            self.seen_dev.append(bus + self.offset_pci_bus_devices)
+            self.seen_dev.add(bus + self.offset_pci_bus_devices)
             dev = read_int_from_memory(bus + self.offset_pci_bus_devices)
             self.walk_devices(dev)
 
             # parse child
-            self.seen_bus.append(bus + self.offset_pci_bus_children)
+            self.seen_bus.add(bus + self.offset_pci_bus_children)
             first_child_bus = read_int_from_memory(bus + self.offset_pci_bus_children)
             self.walk_pci_bus(first_child_bus)
 
@@ -77200,8 +77223,8 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
 
     def dump_pci(self):
         first_root_bus = read_int_from_memory(self.pci_root_buses)
-        self.seen_bus = [self.pci_root_buses]
-        self.seen_dev = []
+        self.seen_bus = {self.pci_root_buses}
+        self.seen_dev = set()
         self.walk_pci_bus(first_root_bus)
         return
 
@@ -78256,7 +78279,7 @@ class StringsCommand(GenericCommand, BufferingOutput):
         return strings_result
 
     def search_ascii(self, queue):
-        seen_addr = []
+        seen_addr = set()
         seen_cstr = []
 
         show_progress = len(queue) > 1
@@ -78303,7 +78326,7 @@ class StringsCommand(GenericCommand, BufferingOutput):
                     continue
                 if is_valid_addr(addr):
                     queue.append((addr, self.args.range, depth - 1))
-                    seen_addr.append(addr)
+                    seen_addr.add(addr)
                     if show_progress:
                         queue_iter.total = len(queue)
         return
@@ -123996,7 +124019,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         for candidate_offset in range(current_arch.ptrsize * 2, max_offset, current_arch.ptrsize):
             # backward search for the start of `struct kmem_cache`
             found = True
-            seen = []
+            seen = set()
             for kmem_cache in kmem_caches:
                 val = read_int_from_memory(kmem_cache - candidate_offset)
                 if val in [0, 0xffff_ffff, 0xffff_ffff_ffff_ffff]:
@@ -124006,7 +124029,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     found = False
                     break
                 else:
-                    seen.append(val)
+                    seen.add(val)
 
                 for cpuoff in self.cpu_offset: # allow []
                     if not is_valid_addr(AddressUtil.normalize_address(val + cpuoff)):
@@ -124077,7 +124100,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             candidate_offset = current_arch.ptrsize * i
             found = True
             count = 0
-            seen = []
+            seen = set()
             for kmem_cache in kmem_caches:
                 if not is_valid_addr(kmem_cache + candidate_offset):
                     found = False
@@ -124099,7 +124122,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     if val in seen:
                         found = False
                         break
-                    seen.append(val)
+                    seen.add(val)
 
             if found:
                 # Too few random numbers
@@ -125662,6 +125685,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
 
         freelist = [chunk]
+        seen = {chunk}
         while chunk:
             try:
                 addr = chunk + kmem_cache["offset"]
@@ -125678,12 +125702,13 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     chunk, Color.colorify("Corrupted (Not aligned)", corrupted_msg_color),
                 ))
                 break
-            if chunk in freelist:
+            if chunk in seen:
                 freelist.append("{:#x}: {:s}".format(
                     chunk, Color.colorify("Corrupted (Loop detected)", corrupted_msg_color),
                 ))
                 break
             freelist.append(chunk)
+            seen.add(chunk)
         return freelist
 
     def walk_caches_active_page(self, cpu, kmem_cache):
@@ -125711,6 +125736,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
     def walk_caches_partial_page(self, cpu, kmem_cache):
         kmem_cache["kmem_cache_cpu"][cpu]["partial_pages"] = []
+        seen = set()
         current_partial_page = read_int_from_memory(
             kmem_cache["kmem_cache_cpu"][cpu]["address"] + self.kmem_cache_cpu_offset_partial,
         )
@@ -125734,7 +125760,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             partial_page["virt_addr"] = self.page2virt(partial_page, kmem_cache)
             kmem_cache["kmem_cache_cpu"][cpu]["partial_pages"].append(partial_page)
             next_partial_page = read_int_from_memory(current_partial_page + self.page_offset_next)
-            if next_partial_page in [x["address"] for x in kmem_cache["kmem_cache_cpu"][cpu]["partial_pages"]]:
+            seen.add(current_partial_page)
+            if next_partial_page in seen:
                 break
             current_partial_page = next_partial_page
         return
@@ -125745,11 +125772,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         if not is_valid_addr(node_page_head):
             return node_page_list
         current_node_page = read_int_from_memory(node_page_head)
-        seen = [] # avoid infinity loop
+        seen = set() # avoid infinity loop
         while current_node_page != node_page_head:
             if current_node_page in seen:
                 break
-            seen.append(current_node_page)
+            seen.add(current_node_page)
             node_page = {}
             node_page["address"] = current_node_page - self.page_offset_next
             if not is_valid_addr(node_page["address"]):
@@ -125781,10 +125808,12 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         def read_link_list(addr):
             seen = []
+            seen_addresses = set()
             while is_valid_addr(addr):
-                if addr in seen:
+                if addr in seen_addresses:
                     break
                 seen.append(addr)
+                seen_addresses.add(addr)
                 addr = read_int_from_memory(addr)
             if len(seen) >= 1:
                 seen = seen[1:] # skip first
@@ -126993,6 +127022,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
 
         freelist = [chunk]
+        seen = {chunk}
         while chunk:
             try:
                 addr = chunk + kmem_cache["offset"]
@@ -127007,12 +127037,13 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
                     chunk, Color.colorify("Corrupted (Not aligned)", corrupted_msg_color),
                 ))
                 break
-            if chunk in freelist:
+            if chunk in seen:
                 freelist.append("{:#x}: {:s}".format(
                     chunk, Color.colorify("Corrupted (Loop detected)", corrupted_msg_color),
                 ))
                 break
             freelist.append(chunk)
+            seen.add(chunk)
         return freelist
 
     def walk_caches_node_page(self, kmem_cache):
@@ -127034,11 +127065,11 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             if not is_valid_addr(node_page_head):
                 break
             current_node_page = read_int_from_memory(node_page_head)
-            seen = [] # avoid infinity loop
+            seen = set() # avoid infinity loop
             while current_node_page != node_page_head:
                 if current_node_page in seen:
                     break
-                seen.append(current_node_page)
+                seen.add(current_node_page)
                 node_page = {}
                 node_page["address"] = current_node_page - self.slab_offset_next
                 if not is_valid_addr(node_page["address"]):
@@ -127864,11 +127895,11 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     def walk_node_list(self, node_page_head, current_node_page, kmem_cache):
         kversion = Kernel.kernel_version()
         node_page_list = []
-        seen = [] # avoid infinity loop
+        seen = set() # avoid infinity loop
         while current_node_page != node_page_head:
             if current_node_page in seen:
                 break
-            seen.append(current_node_page)
+            seen.add(current_node_page)
             node_page = {}
             node_page["address"] = current_node_page - self.page_offset_next
             if not is_valid_addr(node_page["address"]):
@@ -128477,11 +128508,11 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         return freelist
 
     def walk_page_freelist(self, head):
-        seen = [head]
+        seen = {head}
         page_freelist = []
         current = read_int_from_memory(head)
         while True:
-            seen.append(current)
+            seen.add(current)
             page = {}
             page["address"] = current - self.page_offset_next
             page["units"] = read_int32_from_memory(page["address"] + self.page_offset_units)
@@ -131314,11 +131345,11 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             return fallback_offset
 
         # plan 2
-        seen = []
+        seen = set()
         for _file, inode in pipe_files:
             if inode in seen:
                 continue
-            seen.append(inode)
+            seen.add(inode)
             pipe_inode_info = read_int_from_memory(inode + self.offset_i_pipe)
             for i in range(0x40):
                 offset_bufs = current_arch.ptrsize * i
@@ -131394,11 +131425,11 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             offset_i_pipe = self.offset_i_pipe
 
         pipe_inode_infos = []
-        seen_inodes = []
+        seen_inodes = set()
         for _file_addr, inode in pipe_files:
             if inode in seen_inodes:
                 continue
-            seen_inodes.append(inode)
+            seen_inodes.add(inode)
             if not is_valid_addr_addr(inode + offset_i_pipe):
                 return None
             pipe_inode_info = read_int_from_memory(inode + offset_i_pipe)
@@ -132510,12 +132541,12 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             if self.args.verbose:
                 if offsets is not None:
                     current = e + offset_q_messages
-                    seen = [current]
+                    seen = {current}
                     while is_valid_addr(current):
                         current = read_int_from_memory(current)
                         if current in seen:
                             break
-                        seen.append(current)
+                        seen.add(current)
                         self.out.append("msg_msg: {:#x}".format(current))
                         res = gdb.execute("dereference -n {:#x} 8".format(current), to_string=True)
                         self.out.append(res.rstrip())
@@ -132700,7 +132731,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
             return []
         if addr in self.seen:
             return []
-        self.seen.append(addr)
+        self.seen.add(addr)
 
         """
         struct resource {
@@ -132747,7 +132778,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
         if sizeof_resource_size_t is None:
             err("Not recognized sizeof(resource_size_t)")
             return []
-        self.seen = []
+        self.seen = set()
         return self.dump_resource(addr, sizeof_resource_size_t)
 
     @parse_args
@@ -136026,11 +136057,11 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
         real_length = 0
         error = False
         if chunk != 0: # freelist exists
-            seen = []
+            seen = set()
             out = []
             while chunk != 0:
                 real_length += 1
-                seen.append(chunk)
+                seen.add(chunk)
                 # corrupted memory check
                 try:
                     new_chunk = read_int_from_memory(chunk)
@@ -136101,10 +136132,10 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
         chunk = read_int_from_memory(freelist + self.TCEntry_offset_head)
 
         if chunk != 0: # freelist exists
-            seen = []
+            seen = set()
             out = []
             while chunk != 0:
-                seen.append(chunk)
+                seen.add(chunk)
                 # corrupted memory check
                 try:
                     new_chunk = read_int_from_memory(chunk)
@@ -136670,7 +136701,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
                 self.out.append(titlify(title))
 
                 current = pool.matrix[i][j]
-                seen = []
+                seen = set()
                 while True:
                     if not is_valid_addr(current):
                         if current == 0:
@@ -136685,7 +136716,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
                         self.out.append(msg)
                         break
 
-                    seen.append(current)
+                    seen.add(current)
 
                     prev_hdr = read_int_from_memory(current + current_arch.ptrsize * 0)
                     size = read_int_from_memory(current + current_arch.ptrsize * 1)
@@ -136892,12 +136923,12 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
 
         for current in self.get_freelist_start(sb):
             self.out.append("freelist @{:#x}:".format(current))
-            seen = []
+            seen = set()
             while True:
                 if current in seen:
                     self.out.append(Color.colorify(" -> {:#x} (loop) ".format(current), corrupted_msg_color))
                     break
-                seen.append(current)
+                seen.add(current)
                 if current and not is_valid_addr(current):
                     self.out.append(Color.colorify(" -> {:#x} (corrupted) ".format(current), corrupted_msg_color))
                     break
@@ -137592,13 +137623,13 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             shift = key0 & 0x3f
             return ror(addr, shift) ^ key1
 
-        seen = []
+        seen = set()
         while True:
             # loop check
             if current in seen:
                 self.out.append(Color.colorify(" -> {:#x} (loop) ".format(current), corrupted_msg_color))
                 break
-            seen.append(current)
+            seen.add(current)
 
             # check wrong value
             if current != 0 and not is_valid_addr(current):
@@ -137687,11 +137718,11 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def find_page_chain_head(self, mi_page, page_owner, heap):
         current = mi_page
-        seen = []
+        seen = set()
         while True:
             if current in seen:
                 break
-            seen.append(current)
+            seen.add(current)
             prev_page = self.read_page_link(current, self.offset_page_prev)
             if prev_page == 0:
                 break
@@ -137702,18 +137733,18 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def dump_page_chain(self, mi_page, page_owner, heap, seen):
         current = self.find_page_chain_head(mi_page, page_owner, heap)
-        chain_seen = []
+        chain_seen = set()
         while True:
             if current == 0 or not is_valid_addr(current):
                 break
             if current in chain_seen:
                 break
-            chain_seen.append(current)
+            chain_seen.add(current)
             if not self.is_page_of_owner(current, page_owner, heap):
                 break
             if current not in seen:
                 self.dump_page(current)
-                seen.append(current)
+                seen.add(current)
             next_page = self.read_page_link(current, self.offset_page_next)
             if next_page == 0:
                 break
@@ -137721,7 +137752,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_page_owner(self, page_owner, heap):
-        seen = []
+        seen = set()
         for i in range(self.MI_PAGES_DIRECT):
             addr = page_owner + self.offset_pages_free_direct + current_arch.ptrsize * i
             if not is_valid_addr(addr):
@@ -137739,7 +137770,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.dump_page_owner(mi_heap, mi_heap)
             return None
 
-        seen = []
+        seen = set()
         field_offsets = []
         if self.offset_heap_theaps is not None:
             field_offsets.append(self.offset_heap_theaps)
@@ -137755,7 +137786,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
                     break
                 self.out.append("mi_theap_t: {:#x}".format(theap))
                 self.dump_page_owner(theap, mi_heap)
-                seen.append(theap)
+                seen.add(theap)
                 if self.offset_theap_hnext is None:
                     break
                 if not is_valid_addr(theap + self.offset_theap_hnext):
@@ -137791,10 +137822,10 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
         self.out.append("mi_heap_main: {:#x}".format(mi_heap_main))
         mi_heap = mi_heap_main
-        seen = []
+        seen = set()
         while is_valid_addr(mi_heap) and mi_heap not in seen:
             self.out.append("mi_heap_t: {:#x}".format(mi_heap))
-            seen.append(mi_heap)
+            seen.add(mi_heap)
             self.dump_heap(mi_heap)
             if not is_valid_addr(mi_heap + self.offset_heap_next):
                 break
@@ -137981,6 +138012,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         # travase next
         cur = head
         seen = []
+        seen_addresses = set()
         while True:
             if cur == 0:
                 seen.append(cur)
@@ -137988,10 +138020,11 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             if not is_valid_addr(cur):
                 seen.append(cur)
                 return seen, Color.colorify("(corrupted)", corrupted_msg_color)
-            if cur in seen:
+            if cur in seen_addresses:
                 seen.append(cur)
                 return seen, Color.colorify("(loop detected)", corrupted_msg_color)
             seen.append(cur)
+            seen_addresses.add(cur)
             cur = read_int_from_memory(cur)
         return seen, None
 
@@ -138002,13 +138035,15 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         # travarse next
         cur = head
         seen = []
+        seen_addresses = set()
         while True:
             if not is_valid_addr(cur):
                 seen.append(cur)
                 return seen, Color.colorify("(corrupted)", corrupted_msg_color)
-            if cur in seen:
+            if cur in seen_addresses:
                 break
             seen.append(cur)
+            seen_addresses.add(cur)
             cur = read_int_from_memory(cur)
 
         if cur != seen[0]:
@@ -140814,7 +140849,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         text = ""
         cnt = 0
         chunk = head
-        seen = []
+        seen = set()
         while chunk:
             if cnt % 6 == 0:
                 if cnt > 0:
@@ -140845,7 +140880,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
             text += "-> " + Color.colorify_hex(chunk, freed_address_color) + " "
             cnt += 1
-            seen.append(chunk)
+            seen.add(chunk)
             chunk = next_chunk
 
         if cnt > 0:
@@ -141493,6 +141528,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
         cur = self.decode_aba_address(head) if decode_head else head
         seen = []
+        seen_addresses = set()
         while True:
             if cur == 0:
                 seen.append(cur)
@@ -141500,7 +141536,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             if not is_valid_addr(cur):
                 seen.append(cur)
                 return seen, Color.colorify("(corrupted)", corrupted_msg_color)
-            if cur in seen:
+            if cur in seen_addresses:
                 seen.append(cur)
                 return seen, Color.colorify("(loop detected)", corrupted_msg_color)
             if dchunk:
@@ -141511,6 +141547,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                     seen.append(cur)
                     return seen, Color.colorify("(corrupted: not aligned)", corrupted_msg_color)
             seen.append(cur)
+            seen_addresses.add(cur)
             try:
                 cur = read_int_from_memory(cur + next_offset)
             except gdb.MemoryError:
@@ -141523,14 +141560,16 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
         cur = head
         seen = []
+        seen_addresses = set()
         while cur != 0:
             if not is_valid_addr(cur):
                 seen.append(cur)
                 return seen, Color.colorify("(corrupted)", corrupted_msg_color)
-            if cur in seen:
+            if cur in seen_addresses:
                 seen.append(cur)
                 return seen, Color.colorify("(loop detected)", corrupted_msg_color)
             seen.append(cur)
+            seen_addresses.add(cur)
             cur = read_int_from_memory(cur + self.offset_dchunk_next)
 
         for i, chunk in enumerate(seen):
@@ -142346,7 +142385,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify("active[{:2d}] (chunk_size={:#x})".format(idx, self.class_to_size(idx))))
 
             # iterate list of meta
-            seen = []
+            seen = set()
             while current not in seen:
                 meta = self.read_meta(current)
                 self.out.append("meta @ {:s}".format(Color.colorify_hex(meta.addr, management_color)))
@@ -142374,7 +142413,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                         self.dump_chunk(group, dic[state[-i - 1]])
                     self.out.append("")
 
-                seen.append(current)
+                seen.add(current)
                 current = meta.next
         return
 
@@ -142854,9 +142893,9 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
                 ))
 
             if n != 0:
-                seen = []
+                seen = set()
                 while is_valid_addr(n) and n not in seen:
-                    seen.append(n)
+                    seen.add(n)
                     chunk = uClibcNgHeap.uClibcChunk(n, from_base=True)
                     self.out.append(" -> {}".format(chunk.to_str(is_fastbin=True)))
                     n = chunk.get_fwd_ptr(True)
@@ -142881,9 +142920,9 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
                 ))
 
             if n and addr - current_arch.ptrsize * 2 != n:
-                seen = [addr - current_arch.ptrsize * 2]
+                seen = {addr - current_arch.ptrsize * 2}
                 while is_valid_addr(n) and n not in seen:
-                    seen.append(n)
+                    seen.add(n)
                     chunk = uClibcNgHeap.uClibcChunk(n, from_base=True)
                     self.out.append(" -> {}".format(chunk.to_str()))
                     n = chunk.fwd
@@ -142904,9 +142943,9 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
                 ))
 
             if addr - current_arch.ptrsize * 2 != n:
-                seen = [addr - current_arch.ptrsize * 2]
+                seen = {addr - current_arch.ptrsize * 2}
                 while is_valid_addr(n) and n not in seen:
-                    seen.append(n)
+                    seen.add(n)
                     chunk = uClibcNgHeap.uClibcChunk(n, from_base=True)
                     self.out.append(" -> {}".format(chunk.to_str()))
                     n = chunk.fwd
@@ -142994,8 +143033,10 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
         for i in range(self.NFASTBINS):
             addr, n, size = malloc_state.fastbins[i]
             seen = []
-            while n and n not in seen:
+            seen_addresses = set()
+            while n and n not in seen_addresses:
                 seen.append(n)
+                seen_addresses.add(n)
                 try:
                     chunk = uClibcNgHeap.uClibcChunk(n, from_base=True)
                     n = chunk.get_fwd_ptr(True)
@@ -143006,8 +143047,10 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
         for i in range(len(malloc_state.smallbins)):
             addr, n, p, size = malloc_state.smallbins[i]
             seen = []
-            while n and addr - current_arch.ptrsize * 2 != n and n not in seen:
+            seen_addresses = set()
+            while n and addr - current_arch.ptrsize * 2 != n and n not in seen_addresses:
                 seen.append(n)
+                seen_addresses.add(n)
                 try:
                     chunk = uClibcNgHeap.uClibcChunk(n, from_base=True)
                     n = chunk.fwd
@@ -143018,8 +143061,10 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
         for i in range(len(malloc_state.largebins)):
             addr, n, p, size = malloc_state.largebins[i]
             seen = []
-            while n and addr - current_arch.ptrsize * 2 != n and n not in seen:
+            seen_addresses = set()
+            while n and addr - current_arch.ptrsize * 2 != n and n not in seen_addresses:
                 seen.append(n)
+                seen_addresses.add(n)
                 try:
                     chunk = uClibcNgHeap.uClibcChunk(n, from_base=True)
                     n = chunk.fwd
@@ -144978,7 +145023,7 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
 
         def is_slist_head(addr, head_next, offset):
             current = head_next
-            seen = [current]
+            seen = {current}
             while True:
                 current_next = read_int_from_memory(current + offset)
                 if current_next is None:
@@ -144989,7 +145034,7 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
 
                 if current_next in seen:
                     return False
-                seen.append(current)
+                seen.add(current_next)
 
                 current = current_next
             return False
@@ -145040,7 +145085,7 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
                 continue
 
             current = next_value
-            seen = []
+            seen = set()
             entries = []
             found = True
             while current:
@@ -145057,7 +145102,7 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
                 cookie = read_int_from_memory(current + offsetof_cookie)
                 mm = read_int_from_memory(current + offsetof_mm)
                 page_offset = read_int_from_memory(current + offsetof_page_offset)
-                seen.append(current)
+                seen.add(current)
 
                 # check ops
                 if is_valid_rw_addr(ops): # r-x
@@ -145288,15 +145333,15 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
             link_list_count = 1
             flink_cur = data[i + 2]
             blink_cur = data[i + 3]
-            flink_seen = []
-            blink_seen = []
+            flink_seen = set()
+            blink_seen = set()
             while True:
                 if flink_cur in flink_seen:
                     break
                 if blink_cur in blink_seen:
                     break
-                flink_seen.append(flink_cur)
-                blink_seen.append(blink_cur)
+                flink_seen.add(flink_cur)
+                blink_seen.add(blink_cur)
                 try:
                     flink_cur = read_int_from_memory(flink_cur + current_arch.ptrsize * 2)
                     blink_cur = read_int_from_memory(blink_cur + current_arch.ptrsize * 3)
@@ -145314,8 +145359,9 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
     def parse_flink(self, head):
         current = head
         flinks = []
-        seen = [current]
+        seen = {current}
         while True:
+            seen.add(current)
             try:
                 prevfree = read_int_from_memory(current + current_arch.ptrsize * 0)
                 bsize = read_int_from_memory(current + current_arch.ptrsize * 1)
@@ -145337,18 +145383,18 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
             flinks.append(Chunk(*chunk.values()))
             if flink == head:
                 break
-            if flink in seen[1:]:
+            if flink in seen:
                 flinks.append("loop detected")
                 break
-            seen.append(current)
             current = flink
         return flinks
 
     def parse_blink(self, head):
         current = head
         blinks = []
-        seen = [current]
+        seen = {current}
         while True:
+            seen.add(current)
             try:
                 prevfree = read_int_from_memory(current + current_arch.ptrsize * 0)
                 bsize = read_int_from_memory(current + current_arch.ptrsize * 1)
@@ -145370,10 +145416,9 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
             blinks.append(Chunk(*chunk.values()))
             if blink == head:
                 break
-            if blink in seen[1:]:
+            if blink in seen:
                 blinks.append("loop detected")
                 break
-            seen.append(current)
             current = blink
         return blinks
 
@@ -145481,12 +145526,12 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify("pool[{:d}] @ {:#x} - {:#x}".format(i, pool_start, pool_end)))
 
             chunk = pool_start
-            seen = []
+            seen = set()
             while chunk < pool_end:
                 if chunk in seen:
                     self.out.append(Color.colorify("loop detected", corrupted_msg_color))
                     break
-                seen.append(chunk)
+                seen.add(chunk)
                 try:
                     prevfree = read_int_from_memory(chunk + current_arch.ptrsize * 0)
                     bsize = read_int_from_memory(chunk + current_arch.ptrsize * 1)
@@ -155324,7 +155369,7 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
         # skip if seen
         if ops in self.seen:
             return
-        self.seen.append(ops)
+        self.seen.add(ops)
 
         # print
         indent = "  " * level
@@ -155396,12 +155441,12 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
             return
 
         # dump system_memory
-        self.seen = []
+        self.seen = set()
         self.quiet_info_add_out("system_memory")
         self.dump_region(self.system_memory, 0)
 
         # dump system_io
-        self.seen = []
+        self.seen = set()
         self.quiet_info_add_out("system_io")
         self.dump_region(self.system_io, 0)
 
@@ -156500,7 +156545,7 @@ class ThunkBreakpoint(gdb.Breakpoint):
         self.sym = sym
         self.reg = reg
         self.maps = maps
-        self.seen = []
+        self.seen = set()
         return
 
     def search_perm(self, target):
@@ -156522,7 +156567,7 @@ class ThunkBreakpoint(gdb.Breakpoint):
         if (caller_address, target_address) in self.seen:
             return False # continue
         else:
-            self.seen.append((caller_address, target_address))
+            self.seen.add((caller_address, target_address))
 
         # get caller address, symbol
         caller_symbol = Symbol.get_symbol_string(caller_address, nosymbol_string=" <NO_SYMBOL>")
@@ -159929,7 +159974,7 @@ class WalkLinkListCommand(GenericCommand, BufferingOutput):
     def walk_link_list(self, head, offset):
         indent = " " * 12
         current = head
-        seen = [current]
+        seen = {current}
         idx = 1
         while True:
             try:
@@ -159958,10 +160003,10 @@ class WalkLinkListCommand(GenericCommand, BufferingOutput):
             if flink == head:
                 self.out[-1] += " (head)"
                 break
-            if flink in seen[1:]:
+            if flink in seen:
                 self.err_add_out("loop detected")
                 break
-            seen.append(current)
+            seen.add(flink)
             current = flink
             idx += 1
         return
