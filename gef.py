@@ -128368,68 +128368,67 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
     };
     """
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            if not self.args.meta and not self.args.rescan:
-                return True
+        self.meta = []
 
         kversion = Kernel.kernel_version()
         if not kversion:
-            self.quiet_err("Failed to resolve kernel version")
-            return False
+            self.meta.append((self.quiet_err, "Failed to resolve kernel version"))
+            return None
 
         # resolve slab_caches
         self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
         if self.slab_caches is None:
-            self.quiet_err("Failed to resolve `slab_caches`")
-            return False
+            self.meta.append((self.quiet_err, "Failed to resolve `slab_caches`"))
+            return None
         else:
-            self.quiet_info("slab_caches: {:#x}".format(self.slab_caches))
+            self.meta.append((self.quiet_info, "slab_caches: {:#x}".format(self.slab_caches)))
 
         # resolve global freelists
         self.free_slob_large = Symbol.get_ksymaddr("free_slob_large")
         if self.free_slob_large is None:
-            self.quiet_err("Failed to resolve `free_slob_large`")
-            return False
+            self.meta.append((self.quiet_err, "Failed to resolve `free_slob_large`"))
+            return None
         else:
-            self.quiet_info("free_slob_large: {:#x}".format(self.free_slob_large))
+            self.meta.append((self.quiet_info, "free_slob_large: {:#x}".format(self.free_slob_large)))
 
         self.free_slob_medium = Symbol.get_ksymaddr("free_slob_medium")
         if self.free_slob_medium is None:
-            self.quiet_err("Failed to resolve `free_slob_medium`")
-            return False
+            self.meta.append((self.quiet_err, "Failed to resolve `free_slob_medium`"))
+            return None
         else:
-            self.quiet_info("free_slob_medium: {:#x}".format(self.free_slob_medium))
+            self.meta.append((self.quiet_info, "free_slob_medium: {:#x}".format(self.free_slob_medium)))
 
         self.free_slob_small = Symbol.get_ksymaddr("free_slob_small")
         if self.free_slob_small is None:
-            self.quiet_err("Failed to resolve `free_slob_small`")
-            return False
+            self.meta.append((self.quiet_err, "Failed to resolve `free_slob_small`"))
+            return None
         else:
-            self.quiet_info("free_slob_small: {:#x}".format(self.free_slob_small))
+            self.meta.append((self.quiet_info, "free_slob_small: {:#x}".format(self.free_slob_small)))
 
         # offsetof(kmem_cache, list)
         if kversion < "4.16":
             self.kmem_cache_offset_list = current_arch.ptrsize * 3 + 4 * 4
         else:
             self.kmem_cache_offset_list = current_arch.ptrsize * 3 + 4 * 6
-        self.quiet_info("offsetof(kmem_cache, list): {:#x}".format(self.kmem_cache_offset_list))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, list): {:#x}".format(self.kmem_cache_offset_list)))
 
         # offsetof(kmem_cache, name)
         self.kmem_cache_offset_name = self.kmem_cache_offset_list - current_arch.ptrsize * 3
-        self.quiet_info("offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name)))
 
         # offsetof(kmem_cache, object_size)
         self.kmem_cache_offset_object_size = 0
-        self.quiet_info("offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size)))
 
         # offsetof(kmem_cache, size)
         self.kmem_cache_offset_size = 4
-        self.quiet_info("offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size)))
 
         # offsetof(kmem_cache, flags)
         self.kmem_cache_offset_flags = 4 * 3
-        self.quiet_info("offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags)))
 
         # offsetof(page, next) / offsetof(slab, next)
         if kversion < "4.16":
@@ -128440,7 +128439,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             self.page_offset_next = current_arch.ptrsize
         else:
             self.page_offset_next = current_arch.ptrsize
-        self.quiet_info("offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next))
+        self.meta.append((self.quiet_info, "offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next)))
 
         # offsetof(page, freelist) / offsetof(slab, freelist)
         if kversion < "4.18":
@@ -128449,7 +128448,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             self.page_offset_freelist = current_arch.ptrsize * 4
         else:
             self.page_offset_freelist = current_arch.ptrsize * 4
-        self.quiet_info("offsetof({:s}, freelist): {:#x}".format(Kernel.slab_page_str(), self.page_offset_freelist))
+        self.meta.append((self.quiet_info, "offsetof({:s}, freelist): {:#x}".format(Kernel.slab_page_str(), self.page_offset_freelist)))
 
         # offsetof(page, units) / offsetof(slab, units)
         if kversion < "4.18":
@@ -128458,9 +128457,8 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             self.page_offset_units = current_arch.ptrsize * 6
         else:
             self.page_offset_units = current_arch.ptrsize * 5
-        self.quiet_info("offsetof({:s}, units): {:#x}".format(Kernel.slab_page_str(), self.page_offset_units))
+        self.meta.append((self.quiet_info, "offsetof({:s}, units): {:#x}".format(Kernel.slab_page_str(), self.page_offset_units)))
 
-        self.initialized = True
         return True
 
     def get_next_kmem_cache(self, addr, point_to_base=True):
@@ -128627,7 +128625,14 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def slobwalk(self, target_names):
-        if self.initialize() is False:
+        if self.args.rescan:
+            Cache.clear_cache_for(self.initialize)
+
+        ret = self.initialize()
+        if self.args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
             self.quiet_err("Initialization failed")
             return
 
