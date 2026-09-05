@@ -3234,33 +3234,24 @@ class Instruction:
         self.size = len(opcodes)
         return
 
-    @property
+    @functools.cached_property
     def location(self):
-        if hasattr(self, "cached_location"):
-            return self.cached_location
-        # evaluate when needed
-        self.cached_location = Symbol.get_symbol_string(self.address, nosymbol_string=" <NO_SYMBOL>")
-        return self.cached_location
+        return Symbol.get_symbol_string(self.address, nosymbol_string=" <NO_SYMBOL>")
 
-    @property
+    @functools.cached_property
     def is_branch(self):
         """Return whether it is a branch instruction. Cache the results."""
-        if hasattr(self, "cached_is_branch"):
-            return self.cached_is_branch
-
         if current_arch.is_syscall(self):
-            self.cached_is_branch = True
+            return True
         elif current_arch.is_call(self):
-            self.cached_is_branch = True
+            return True
         elif current_arch.is_jump(self):
-            self.cached_is_branch = True
+            return True
         elif current_arch.is_ret(self):
-            self.cached_is_branch = True
+            return True
         elif current_arch.is_conditional_branch(self):
-            self.cached_is_branch = True
-        else:
-            self.cached_is_branch = False
-        return self.cached_is_branch
+            return True
+        return False
 
     def get_color(self, highlight, config_name):
         """A wrapper to easily retrieve color-related configurations."""
