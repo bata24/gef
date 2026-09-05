@@ -70994,6 +70994,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
     parser.add_argument("--symbol-unsort", action="store_true",
                         help="print resolved symbols without sorting by address.")
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="REGEXP filter.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
@@ -71043,30 +71044,26 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
     _note_ = "\n".join(_note_)
 
     def get_modules_list(self, modules):
-        # use cache
-        if self.module_addrs:
-            return self.module_addrs
-
-        # slow path
         if modules is None:
-            return None
+            return None, []
 
+        meta = []
         # struct module { enum module_state state; struct list_head list; ... };
         lh = Kernel.ListHead(modules, current_arch.ptrsize)
         entries = list(lh.iter_entries())
         if lh.broken:
-            self.quiet_warn("Stopped at {:s} module: {:#x}".format(lh.broken_reason, lh.broken_at))
+            meta.append((self.quiet_warn, "Stopped at {:s} module: {:#x}".format(lh.broken_reason, lh.broken_at)))
             # the list is circular and doubly-linked, so the entries located behind the broken
             # one are still reachable by following `prev` from the list head
             seen = set(entries)
             backward = list(lh.iter_entries(backward=True))
             if lh.broken:
-                self.quiet_warn("Stopped at {:s} module: {:#x} (backward)".format(lh.broken_reason, lh.broken_at))
+                meta.append((self.quiet_warn, "Stopped at {:s} module: {:#x} (backward)".format(lh.broken_reason, lh.broken_at)))
             entries += [x for x in reversed(backward) if x not in seen]
             # the entries the walks stopped at are unreadable, they must not be passed to the
             # `struct module` layout heuristics
             entries = [x for x in entries if is_valid_addr(x)]
-        return entries
+        return entries, meta
 
     def get_offset_name(self, module_addrs):
         # fast path
@@ -71523,75 +71520,71 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                 return offset_kallsyms
         return None
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        # module->kallsyms is used only by -s/--resolve-symbol and -a/--apply-symbol.
-        need_kallsyms = self.args.resolve_symbol or self.args.apply_symbol
-
-        if hasattr(self, "initialized"):
-            if not need_kallsyms or self.offset_kallsyms is not None:
-                return True
+        self.meta = []
 
         kversion = Kernel.kernel_version()
         if kversion is None:
-            self.quiet_err("Failed to resolve kernel version")
-            return False
+            self.meta.append((self.quiet_err, "Failed to resolve kernel version"))
+            return None
 
         # modules
         self.modules = KernelAddressHeuristicFinder.get_modules()
         if self.modules is None:
-            self.quiet_err("Could not find modules (CONFIG_MODULES may not be set)")
-            return False
-        self.quiet_info("modules: {:#x}".format(self.modules))
+            self.meta.append((self.quiet_err, "Could not find modules (CONFIG_MODULES may not be set)"))
+            return None
+        self.meta.append((self.quiet_info, "modules: {:#x}".format(self.modules)))
 
-        # modules list
-        self.module_addrs = self.get_modules_list(self.modules)
-        if self.module_addrs is None:
-            return False
-        if self.module_addrs == []:
-            self.quiet_err("Could not find any modules")
-            return False
+        # the module list is live, so it is only a sample for the heuristics below
+        module_addrs = self.get_modules_list(self.modules)[0]
+        if module_addrs is None:
+            return None
+        if module_addrs == []:
+            self.meta.append((self.quiet_err, "Could not find any modules"))
+            return None
 
         # module->name
-        self.offset_name = self.get_offset_name(self.module_addrs)
+        self.offset_name = self.get_offset_name(module_addrs)
         if self.offset_name is None:
-            self.quiet_err("Could not find module->name[MODULE_NAME_LEN]")
-            return False
-        self.quiet_info("offsetof(module, name): {:#x}".format(self.offset_name))
+            self.meta.append((self.quiet_err, "Could not find module->name[MODULE_NAME_LEN]"))
+            return None
+        self.meta.append((self.quiet_info, "offsetof(module, name): {:#x}".format(self.offset_name)))
 
         # modules->{mem,mem_size,module_core}
         if "6.4" <= kversion:
-            ret = self.get_offset_mem(self.module_addrs)
+            ret = self.get_offset_mem(module_addrs)
             if ret is None:
-                self.quiet_err("Could not find module->mem")
-                return False
+                self.meta.append((self.quiet_err, "Could not find module->mem"))
+                return None
             self.offset_mem, self.offset_mem_size = ret
-            self.quiet_info("offsetof(module, mem): {:#x}".format(self.offset_mem))
-            self.quiet_info("offsetof(module, mem.size): {:#x}".format(self.offset_mem_size))
+            self.meta.append((self.quiet_info, "offsetof(module, mem): {:#x}".format(self.offset_mem)))
+            self.meta.append((self.quiet_info, "offsetof(module, mem.size): {:#x}".format(self.offset_mem_size)))
         elif "4.5" <= kversion:
-            self.offset_init_layout = self.get_offset_init_layout(self.module_addrs)
+            self.offset_init_layout = self.get_offset_init_layout(module_addrs)
             if self.offset_init_layout is None:
-                self.quiet_err("Could not find module->init_layout")
-                return False
-            self.quiet_info("offsetof(module, init_layout): {:#x}".format(self.offset_init_layout))
+                self.meta.append((self.quiet_err, "Could not find module->init_layout"))
+                return None
+            self.meta.append((self.quiet_info, "offsetof(module, init_layout): {:#x}".format(self.offset_init_layout)))
         else: # kversion < v4.5
-            self.offset_module_core = self.get_offset_module_core(self.module_addrs)
+            self.offset_module_core = self.get_offset_module_core(module_addrs)
             if self.offset_module_core is None:
-                self.quiet_err("Could not find module->module_core")
-                return False
-            self.quiet_info("offsetof(module, module_core): {:#x}".format(self.offset_module_core))
+                self.meta.append((self.quiet_err, "Could not find module->module_core"))
+                return None
+            self.meta.append((self.quiet_info, "offsetof(module, module_core): {:#x}".format(self.offset_module_core)))
+        return True
 
-        # module->kallsyms
-        # do not give up the whole module list when it is not needed and unresolvable
-        if need_kallsyms:
-            self.offset_kallsyms = self.get_offset_kallsyms(self.module_addrs)
-            if self.offset_kallsyms is None:
-                self.quiet_err("Could not find module->kallsyms")
-                return False
-            self.quiet_info("offsetof(module, kallsyms): {:#x}".format(self.offset_kallsyms))
-        else:
-            self.offset_kallsyms = None
+    @Cache.cache_this_session(cache_None=False)
+    def resolve_offset_kallsyms(self):
+        self.meta = []
 
-        self.initialized = True
+        # module->kallsyms is used only by -s/--resolve-symbol and -a/--apply-symbol,
+        # so do not give up the whole module list when it is unresolvable
+        self.offset_kallsyms = self.get_offset_kallsyms(self.module_addrs)
+        if self.offset_kallsyms is None:
+            self.meta.append((self.quiet_err, "Could not find module->kallsyms"))
+            return None
+        self.meta.append((self.quiet_info, "offsetof(module, kallsyms): {:#x}".format(self.offset_kallsyms)))
         return True
 
     def parse_kallsyms(self, kallsyms):
@@ -71750,21 +71743,37 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         self.quiet_info("Wait for memory scan")
 
         # initialize
-        self.module_addrs = None
         ret = self.initialize()
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
         if not ret:
             self.quiet_err("Failed to initialize")
             return
 
         # get module addrs
-        if not self.module_addrs:
-            self.module_addrs = self.get_modules_list(self.modules)
+        self.module_addrs, meta = self.get_modules_list(self.modules)
+        for func, line in meta:
+            func(line)
         if self.module_addrs is None:
             return
         if self.module_addrs == []:
             self.quiet_err("Could not find any modules")
             return
         self.quiet_info("Num of modules: {:#x}".format(len(self.module_addrs)))
+
+        # module->kallsyms
+        if args.resolve_symbol or args.apply_symbol:
+            ret = self.resolve_offset_kallsyms()
+            if args.meta or not ret:
+                for func, line in self.meta:
+                    func(line)
+            if not ret:
+                self.quiet_err("Failed to initialize")
+                return
+
+        if args.meta:
+            return
 
         # parse modules
         self.out = []
