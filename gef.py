@@ -131007,6 +131007,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                         help="filter by specific struct inode.")
     parser.add_argument("-f", "--file-filter", type=AddressUtil.parse_address, default=[], action="append",
                         help="filter by specific struct file.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
@@ -131046,49 +131047,51 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def initialize(self, pipe_files):
-        if hasattr(self, "initialized") and self.initialized:
-            return True
+    @Cache.cache_this_session(cache_None=False)
+    def initialize(self):
+        # handed over from the caller; it is only a sample for the heuristics below
+        pipe_files = self.pipe_files_temp
+        self.meta = []
 
         # inode->i_pipe
         offset_i_pipe = self.get_offset_i_pipe(pipe_files)
         if not offset_i_pipe:
-            self.quiet_err("Could not find inode->i_pipe")
-            return False
+            self.meta.append((self.quiet_err, "Could not find inode->i_pipe"))
+            return None
         self.offset_i_pipe = offset_i_pipe
-        self.quiet_info("offsetof(inode, i_pipe): {:#x}".format(self.offset_i_pipe))
+        self.meta.append((self.quiet_info, "offsetof(inode, i_pipe): {:#x}".format(self.offset_i_pipe)))
 
         kversion = Kernel.kernel_version()
         if "5.5" <= kversion:
             # pipe_inode_info->{head,tail,max_usage,ring_size}
             ret = self.get_offset_head_or_nrbuf(pipe_files)
             if ret is None:
-                self.quiet_err("Could not find pipe_inode_info->head")
-                return False
+                self.meta.append((self.quiet_err, "Could not find pipe_inode_info->head"))
+                return None
             self.offset_head = ret
-            self.quiet_info("offsetof(pipe_inode_info, head): {:#x}".format(self.offset_head))
+            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, head): {:#x}".format(self.offset_head)))
             if kversion >= "6.14" and is_32bit():
                 self.sizeof_pipe_index_t = 2
             else:
                 self.sizeof_pipe_index_t = 4
             self.offset_tail = self.offset_head + self.sizeof_pipe_index_t
-            self.quiet_info("offsetof(pipe_inode_info, tail): {:#x}".format(self.offset_tail))
+            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, tail): {:#x}".format(self.offset_tail)))
             self.offset_max_usage = self.offset_tail + self.sizeof_pipe_index_t
-            self.quiet_info("offsetof(pipe_inode_info, max_usage): {:#x}".format(self.offset_max_usage))
+            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, max_usage): {:#x}".format(self.offset_max_usage)))
             self.offset_ring_size = self.offset_max_usage + 4
-            self.quiet_info("offsetof(pipe_inode_info, ring_size): {:#x}".format(self.offset_ring_size))
+            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, ring_size): {:#x}".format(self.offset_ring_size)))
         else:
             # pipe_inode_info->{nrbuf,curbuf,buffers}
             ret = self.get_offset_head_or_nrbuf(pipe_files)
             if ret is None:
-                self.quiet_err("Could not find pipe_inode_info->nrbuf")
-                return False
+                self.meta.append((self.quiet_err, "Could not find pipe_inode_info->nrbuf"))
+                return None
             self.offset_nrbuf = ret
-            self.quiet_info("offsetof(pipe_inode_info, nrbuf): {:#x}".format(self.offset_nrbuf))
+            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, nrbuf): {:#x}".format(self.offset_nrbuf)))
             self.offset_curbuf = self.offset_nrbuf + 4
-            self.quiet_info("offsetof(pipe_inode_info, curbuf): {:#x}".format(self.offset_curbuf))
+            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, curbuf): {:#x}".format(self.offset_curbuf)))
             self.offset_buffers = self.offset_curbuf + 4
-            self.quiet_info("offsetof(pipe_inode_info, buffers): {:#x}".format(self.offset_buffers))
+            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, buffers): {:#x}".format(self.offset_buffers)))
 
         # pipe_buffer->{page, offset, len, flags}
         """
@@ -131101,25 +131104,23 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         };
         """
         self.offset_page = 0
-        self.quiet_info("offsetof(pipe_buffer, page): {:#x}".format(self.offset_page))
+        self.meta.append((self.quiet_info, "offsetof(pipe_buffer, page): {:#x}".format(self.offset_page)))
         self.offset_offset = current_arch.ptrsize
-        self.quiet_info("offsetof(pipe_buffer, offset): {:#x}".format(self.offset_offset))
+        self.meta.append((self.quiet_info, "offsetof(pipe_buffer, offset): {:#x}".format(self.offset_offset)))
         self.offset_len = self.offset_offset + 4
-        self.quiet_info("offsetof(pipe_buffer, len): {:#x}".format(self.offset_len))
+        self.meta.append((self.quiet_info, "offsetof(pipe_buffer, len): {:#x}".format(self.offset_len)))
         self.offset_flags = self.offset_len + 4 + current_arch.ptrsize
-        self.quiet_info("offsetof(pipe_buffer, flags): {:#x}".format(self.offset_flags))
+        self.meta.append((self.quiet_info, "offsetof(pipe_buffer, flags): {:#x}".format(self.offset_flags)))
         self.sizeof_pipe_buffer = align_to_ptrsize(self.offset_flags + 4) + current_arch.ptrsize
-        self.quiet_info("sizeof(pipe_buffer): {:#x}".format(self.sizeof_pipe_buffer))
+        self.meta.append((self.quiet_info, "sizeof(pipe_buffer): {:#x}".format(self.sizeof_pipe_buffer)))
 
         # pipe_inode_info->bufs
         offset_bufs = self.get_offset_bufs(pipe_files)
         if not offset_bufs:
-            self.quiet_err("Could not find pipe_inode_info->bufs")
-            return False
+            self.meta.append((self.quiet_err, "Could not find pipe_inode_info->bufs"))
+            return None
         self.offset_bufs = offset_bufs
-        self.quiet_info("offsetof(pipe_inode_info, bufs): {:#x}".format(self.offset_bufs))
-
-        self.initialized = True
+        self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, bufs): {:#x}".format(self.offset_bufs)))
         return True
 
     def get_offset_i_pipe(self, pipe_files):
@@ -131389,13 +131390,13 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                     break
             if found:
                 if followed_by_user:
-                    self.quiet_info("offset of bufs is found by pipe buffer ring (way1-1)")
+                    self.meta.append((self.quiet_info, "offset of bufs is found by pipe buffer ring (way1-1)"))
                     return offset_bufs
                 if fallback_offset is None:
                     fallback_offset = offset_bufs
 
         if fallback_offset is not None:
-            self.quiet_info("offset of bufs is found by pipe buffer ring (way1-2)")
+            self.meta.append((self.quiet_info, "offset of bufs is found by pipe buffer ring (way1-2)"))
             return fallback_offset
 
         # plan 2
@@ -131444,7 +131445,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                     if is_valid_addr_addr(bufs + current_arch.ptrsize * 5): # private
                         continue
                 # found
-                self.quiet_info("offset of bufs is found by heuristic way2")
+                self.meta.append((self.quiet_info, "offset of bufs is found by heuristic way2"))
                 return offset_bufs
 
         # plan 3
@@ -131466,11 +131467,11 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 continue
             # pipe_inode_info is allocated from kmalloc-1k (x64) or kmalloc-512 (x86)
             if re.search(r"kmalloc(-cg)?-(1k|1024|512)", ret):
-                self.quiet_info("offset of bufs is found by heuristic way3-1")
+                self.meta.append((self.quiet_info, "offset of bufs is found by heuristic way3-1"))
                 return current_arch.ptrsize * i
             # before v5.5, pipe_buffer is allocated not from slub, but `user` is allocated from slub.
             if kversion < "5.5" and "uid_cache" in ret:
-                self.quiet_info("offset of bufs is found by heuristic way3-2")
+                self.meta.append((self.quiet_info, "offset of bufs is found by heuristic way3-2"))
                 return current_arch.ptrsize * (i - 1)
         return None
 
@@ -131691,8 +131692,18 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             self.quiet_info("Nothing to dump")
             return
 
-        ret = self.initialize(pipe_files)
-        if ret is False:
+        # the pipe list is live data, so it must not become a cache key of
+        # `initialize()`. Hand it over as a temporary attribute instead.
+        self.pipe_files_temp = pipe_files
+        ret = self.initialize()
+        del self.pipe_files_temp
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
+            return
+
+        if args.meta:
             return
 
         # dump
