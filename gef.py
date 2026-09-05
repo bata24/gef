@@ -63338,8 +63338,11 @@ class KernelAddressHeuristicFinder:
             if allocator in ["SLUB", "SLUB_TINY"]:
                 command = {"SLUB": "slub-dump --node --skip-sheaf", "SLUB_TINY": "slub-tiny-dump"}[allocator]
                 for n in [8, 16, 32, 64, 128, 192, 256, 512]:
+                    # this is called from page2virt, and slub-dump calls page2virt again to warm it up.
+                    # `--skip-page2virt` is needed here, the same as in `Kernel.get_page_virt_pair()`,
+                    # otherwise page2virt recurses into itself dozens of times.
                     ret = gdb.execute(
-                        "{:s} --simple --no-pager --quiet kmalloc-{:d}".format(command, n),
+                        "{:s} --simple --no-pager --quiet --skip-page2virt kmalloc-{:d}".format(command, n),
                         to_string=True,
                     )
                     r = re.findall(r"(?:active|partial|node) page: (0x\S\S+)", Color.remove_color(ret))
@@ -123995,9 +123998,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            self.kmem_cache_offset_list = to_unsigned_long(
-                gdb.parse_and_eval("&((struct kmem_cache*)0).list")
-            )
+            self.kmem_cache_offset_list = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache*)0).list"))
             return
         except gdb.error:
             pass
@@ -124038,9 +124039,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         # fast path
         try:
             # find kmem_cache.random
-            self.kmem_cache_offset_random = to_unsigned_long(
-                gdb.parse_and_eval("&((struct kmem_cache*)0).random")
-            )
+            self.kmem_cache_offset_random = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache*)0).random"))
             return
         except gdb.error:
             try:
@@ -124159,18 +124158,14 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         self.kmem_cache_offset_random_seq = None
         try:
-            self.kmem_cache_offset_random_seq = to_unsigned_long(
-                gdb.parse_and_eval("&((struct kmem_cache*)0).random_seq")
-            )
+            self.kmem_cache_offset_random_seq = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache*)0).random_seq"))
         except gdb.error:
             pass
 
         # fast path
         if kversion < "7.1":
             try:
-                self.kmem_cache_offset_node = to_unsigned_long(
-                    gdb.parse_and_eval("&((struct kmem_cache*)0).node")
-                )
+                self.kmem_cache_offset_node = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache*)0).node"))
                 self.kmem_cache_offset_barn = None
                 self.kmem_cache_node_step = current_arch.ptrsize
                 return
@@ -124178,12 +124173,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 pass
         else:
             try:
-                self.kmem_cache_offset_barn = to_unsigned_long(
-                    gdb.parse_and_eval("&((struct kmem_cache*)0).per_node[0].barn")
-                )
-                self.kmem_cache_offset_node = to_unsigned_long(
-                    gdb.parse_and_eval("&((struct kmem_cache*)0).per_node[0].node")
-                )
+                self.kmem_cache_offset_barn = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache*)0).per_node[0].barn"))
+                self.kmem_cache_offset_node = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache*)0).per_node[0].node"))
                 self.kmem_cache_node_step = current_arch.ptrsize * 2
                 return
             except gdb.error:
@@ -124272,7 +124263,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     continue
 
                 # found
-                self.quiet_info("offset of node is found by heuristic way1")
+                self.meta.append((self.quiet_info, "offset of node is found by heuristic way1"))
                 set_kmem_cache_offset_from_barn(candidate_offset)
                 return
 
@@ -124354,7 +124345,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     # At this point, x is random_seq or node[0]
                     if not is_random_seq(x):
                         # x is not random_seq, but node[0]
-                        self.quiet_info("offset of node is found by heuristic way2-1")
+                        self.meta.append((self.quiet_info, "offset of node is found by heuristic way2-1"))
                         set_kmem_cache_offset_from_barn(offset_random_seq)
                         return
                     else:
@@ -124371,7 +124362,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     y = read_int_from_memory(kmem_cache_0_top + offset_node)
                     # 7.0+: cpu_stats is not a valid pointer, so this check will pass.
                     if is_valid_addr(y) and not is_random_seq(y):
-                        self.quiet_info("offset of node is found by heuristic way2-2")
+                        self.meta.append((self.quiet_info, "offset of node is found by heuristic way2-2"))
                         set_kmem_cache_offset_from_barn(offset_node)
                         return
 
@@ -124447,7 +124438,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     if random_seq_count > len(sample_caches) // 2:
                         self.kmem_cache_offset_random_seq = offset_random_seq
                         break
-                self.quiet_info("offset of node is found by heuristic way3")
+                self.meta.append((self.quiet_info, "offset of node is found by heuristic way3"))
                 set_kmem_cache_offset_from_barn(node_offset)
                 return
 
@@ -124464,7 +124455,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 # At this point, x is random_seq or node[0]
                 if not is_random_seq(x):
                     # x is not random_seq, but node[0]
-                    self.quiet_info("offset of node is found by heuristic way4-1")
+                    self.meta.append((self.quiet_info, "offset of node is found by heuristic way4-1"))
                     set_kmem_cache_offset_from_barn(offset_random_seq)
                     return
                 else:
@@ -124482,7 +124473,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 y = read_int_from_memory(kmem_cache_0_top + offset_node)
                 # 7.0+: cpu_stats is not a valid pointer, so this check will pass.
                 if is_valid_addr(y) and not is_random_seq(y):
-                    self.quiet_info("offset of node is found by heuristic way4-2")
+                    self.meta.append((self.quiet_info, "offset of node is found by heuristic way4-2"))
                     set_kmem_cache_offset_from_barn(offset_node)
                     return
 
@@ -124541,7 +124532,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     maxlen = len(list(itertools.combinations(kmem_caches, 2)))
                     msg = "min_diff_pairs:{:d}/{:d}, ".format(len(min_diff_pairs), maxlen)
                     msg += "min_diff:{:#x}".format(min_diff)
-                    self.quiet_info("offset of node is found by heuristic way5 ({:s})".format(msg))
+                    self.meta.append((self.quiet_info, "offset of node is found by heuristic way5 ({:s})".format(msg)))
                     set_kmem_cache_offset_from_node(offset_after_list + offset_node_from_after_list)
                     return
         return
@@ -124586,13 +124577,13 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # parse kmem_cache for CONFIG_SLAB_VIRTUAL
         if self.slab_virtual_enabled:
-            self.quiet_info("CONFIG_SLAB_VIRTUAL: detected")
+            self.meta.append((self.quiet_info, "CONFIG_SLAB_VIRTUAL: detected"))
 
             # 1. get global queue buffering freed slabs
             self.slub_tlbflush_queue = KernelAddressHeuristicFinder.get_slub_tlbflush_queue()
             if not self.slub_tlbflush_queue:
                 return False
-            self.quiet_info("slub_tlbflush_queue: {:#x}".format(self.slub_tlbflush_queue))
+            self.meta.append((self.quiet_info, "slub_tlbflush_queue: {:#x}".format(self.slub_tlbflush_queue)))
 
             # 2. parse extra members of kmem_cache
             #   - kmem_cache->nr_freed_pages (6.1-based, 6.12-based) or kmem_cache->virtual.nr_freed_pages (6.6-based)
@@ -124604,32 +124595,21 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.kmem_cache_offset_nr_freed_pages = offset_freed_slabs_normal - current_arch.ptrsize * 1
             else:
                 self.kmem_cache_offset_nr_freed_pages = offset_freed_slabs_min + current_arch.ptrsize * 2
-            self.quiet_info("offsetof(kmem_cache, nr_freed_pages): {:#x}".format(
-                self.kmem_cache_offset_nr_freed_pages,
-            ))
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache, nr_freed_pages): {:#x}".format(self.kmem_cache_offset_nr_freed_pages)))
 
             # offsetof(kmem_cache, freed_slabs_normal)
             self.kmem_cache_offset_freed_slabs_normal = offset_freed_slabs_normal
-            self.quiet_info("offsetof(kmem_cache, freed_slabs_normal): {:#x}".format(
-                self.kmem_cache_offset_freed_slabs_normal,
-            ))
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache, freed_slabs_normal): {:#x}".format(self.kmem_cache_offset_freed_slabs_normal)))
 
             # offsetof(kmem_cache, freed_slabs_min)
             self.kmem_cache_offset_freed_slabs_min = offset_freed_slabs_min
-            self.quiet_info("offsetof(kmem_cache, freed_slabs_min): {:#x}".format(
-                self.kmem_cache_offset_freed_slabs_min,
-            ))
-        else:
-            if self.args.tlbflush_queue:
-                warn("CONFIG_SLAB_VIRTUAL is not enabled (maybe), option `--tlbflush-queue` is ignored.")
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache, freed_slabs_min): {:#x}".format(self.kmem_cache_offset_freed_slabs_min)))
         return
 
     def resolve_kmem_cache_node_offset_partial(self):
         # fast path
         try:
-            self.kmem_cache_node_offset_partial = to_unsigned_long(
-                gdb.parse_and_eval("&((struct kmem_cache_node*)0).partial")
-            )
+            self.kmem_cache_node_offset_partial = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache_node*)0).partial"))
             return
         except gdb.error:
             pass
@@ -124669,9 +124649,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            self.slub_percpu_sheaves_offset_main = to_unsigned_long(
-                gdb.parse_and_eval("&((struct slub_percpu_sheaves*)0).main")
-            )
+            self.slub_percpu_sheaves_offset_main = to_unsigned_long(gdb.parse_and_eval("&((struct slub_percpu_sheaves*)0).main"))
             return
         except gdb.error:
             pass
@@ -124739,9 +124717,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            self.kmem_cache_node_offset_barn = to_unsigned_long(
-                gdb.parse_and_eval("&((struct kmem_cache_node*)0).barn")
-            )
+            self.kmem_cache_node_offset_barn = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache_node*)0).barn"))
             return
         except gdb.error:
             pass
@@ -124799,9 +124775,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # fast path
         try:
-            self.node_barn_offset_sheaves_full = to_unsigned_long(
-                gdb.parse_and_eval("&((struct node_barn*)0).sheaves_full")
-            )
+            self.node_barn_offset_sheaves_full = to_unsigned_long(gdb.parse_and_eval("&((struct node_barn*)0).sheaves_full"))
             return
         except gdb.error:
             pass
@@ -124860,25 +124834,25 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         # offsetof(slub_percpu_sheaves, main)
         self.resolve_slub_percpu_sheaves_offset_main()
         if self.slub_percpu_sheaves_offset_main is None:
-            self.quiet_info("offsetof(slub_percpu_sheaves, main): Not found")
+            self.meta.append((self.quiet_info, "offsetof(slub_percpu_sheaves, main): Not found"))
             return
-        self.quiet_info("offsetof(slub_percpu_sheaves, main): {:#x}".format(self.slub_percpu_sheaves_offset_main))
+        self.meta.append((self.quiet_info, "offsetof(slub_percpu_sheaves, main): {:#x}".format(self.slub_percpu_sheaves_offset_main)))
 
         # offsetof(kmem_cache_node, barn)
         if kversion < "7.1":
             self.resolve_kmem_cache_node_offset_barn()
             if self.kmem_cache_node_offset_barn is None:
-                self.quiet_info("offsetof(kmem_cache_node, barn): Not found")
+                self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, barn): Not found"))
                 return
             else:
-                self.quiet_info("offsetof(kmem_cache_node, barn): {:#x}".format(self.kmem_cache_node_offset_barn))
+                self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, barn): {:#x}".format(self.kmem_cache_node_offset_barn)))
 
         # offsetof(node_barn, sheaves_full)
         self.resolve_node_barn_offset_sheaves_full()
         if self.node_barn_offset_sheaves_full is None:
-            self.quiet_info("offsetof(node_barn, sheaves_full): Not found")
+            self.meta.append((self.quiet_info, "offsetof(node_barn, sheaves_full): Not found"))
             return
-        self.quiet_info("offsetof(node_barn, sheaves_full): {:#x}".format(self.node_barn_offset_sheaves_full))
+        self.meta.append((self.quiet_info, "offsetof(node_barn, sheaves_full): {:#x}".format(self.node_barn_offset_sheaves_full)))
 
         # offsetof(slub_percpu_sheaves, spare)
         self.slub_percpu_sheaves_offset_spare = self.slub_percpu_sheaves_offset_main + current_arch.ptrsize
@@ -125135,45 +125109,44 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     };
     """
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            if not self.args.meta and not self.args.rescan:
-                return True
+        self.meta = []
 
         kversion = Kernel.kernel_version()
         if not kversion:
-            self.quiet_err("Failed to resolve kernel version")
-            return False
+            self.meta.append((self.quiet_err, "Failed to resolve kernel version"))
+            return None
 
         # resolve slab_caches
         self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
         if self.slab_caches is None:
-            self.quiet_err("Failed to resolve `slab_caches`")
-            return False
+            self.meta.append((self.quiet_err, "Failed to resolve `slab_caches`"))
+            return None
         else:
-            self.quiet_info("slab_caches: {:#x}".format(self.slab_caches))
+            self.meta.append((self.quiet_info, "slab_caches: {:#x}".format(self.slab_caches)))
 
         # resolve __per_cpu_offset
         __per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
         if __per_cpu_offset is None:
-            self.quiet_info("__per_cpu_offset: Not found")
+            self.meta.append((self.quiet_info, "__per_cpu_offset: Not found"))
             self.cpu_offset = []
             self.ncpus = 1
         else:
-            self.quiet_info("__per_cpu_offset: {:#x}".format(__per_cpu_offset))
+            self.meta.append((self.quiet_info, "__per_cpu_offset: {:#x}".format(__per_cpu_offset)))
             self.cpu_offset = Kernel.get_each_cpu_offset(__per_cpu_offset)
             self.ncpus = len(self.cpu_offset)
 
         # offsetof(kmem_cache, list)
         self.resolve_kmem_cache_offset_list()
         if self.kmem_cache_offset_list is None:
-            self.quiet_info("offsetof(kmem_cache, list): Not found")
-            return False
-        self.quiet_info("offsetof(kmem_cache, list): {:#x}".format(self.kmem_cache_offset_list))
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache, list): Not found"))
+            return None
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, list): {:#x}".format(self.kmem_cache_offset_list)))
 
         # offsetof(kmem_cache, name)
         self.kmem_cache_offset_name = self.kmem_cache_offset_list - current_arch.ptrsize
-        self.quiet_info("offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name)))
 
         # for CONFIG_SLAB_VIRTUAL
         self.resolve_for_CONFIG_SLAB_VIRTUAL()
@@ -125181,7 +125154,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         # offsetof(kmem_cache, cpu_slab)
         if kversion < "7.0":
             self.kmem_cache_offset_cpu_slab = 0
-            self.quiet_info("offsetof(kmem_cache, cpu_slab): {:#x}".format(self.kmem_cache_offset_cpu_slab))
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache, cpu_slab): {:#x}".format(self.kmem_cache_offset_cpu_slab)))
 
         # offsetof(kmem_cache, flags)
         if kversion < "6.18":
@@ -125194,76 +125167,76 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.kmem_cache_offset_flags = current_arch.ptrsize * 2
         else:
             self.kmem_cache_offset_flags = current_arch.ptrsize
-        self.quiet_info("offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags)))
 
         # offsetof(kmem_cache, cpu_sheaves)
         if kversion < "6.18":
             self.kmem_cache_offset_cpu_sheaves = None
         else:
             self.kmem_cache_offset_cpu_sheaves = self.kmem_cache_offset_flags - current_arch.ptrsize
-            self.quiet_info("offsetof(kmem_cache, cpu_sheaves): {:#x}".format(self.kmem_cache_offset_cpu_sheaves))
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache, cpu_sheaves): {:#x}".format(self.kmem_cache_offset_cpu_sheaves)))
 
         # offsetof(kmem_cache, size)
         self.kmem_cache_offset_size = self.kmem_cache_offset_flags + current_arch.ptrsize * 2
-        self.quiet_info("offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size)))
 
         # offsetof(kmem_cache, object_size)
         self.kmem_cache_offset_object_size = self.kmem_cache_offset_size + 4
-        self.quiet_info("offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size)))
 
         # offsetof(kmem_cache, offset)
         if kversion < "5.9":
             self.kmem_cache_offset_offset = self.kmem_cache_offset_object_size + 4
         else:
             self.kmem_cache_offset_offset = self.kmem_cache_offset_object_size + 4 + 8
-        self.quiet_info("offsetof(kmem_cache, offset): {:#x}".format(self.kmem_cache_offset_offset))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, offset): {:#x}".format(self.kmem_cache_offset_offset)))
 
         # offsetof(kmem_cache, red_left_pad)
         self.kmem_cache_offset_red_left_pad = self.kmem_cache_offset_name - current_arch.ptrsize
-        self.quiet_info("offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad)))
 
         # offsetof(kmem_cache, random)
         self.resolve_kmem_cache_offset_random()
         if self.kmem_cache_offset_random is None:
-            self.quiet_info("offsetof(kmem_cache, random): Not found")
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache, random): Not found"))
         else:
-            self.quiet_info("offsetof(kmem_cache, random): {:#x}".format(self.kmem_cache_offset_random))
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache, random): {:#x}".format(self.kmem_cache_offset_random)))
 
         # offsetof(kmem_cache, node) or offsetof(kmem_cache, per_node[0].node/barn)
         self.resolve_kmem_cache_offset_node()
         if self.kmem_cache_offset_random_seq is None:
-            self.quiet_info("offsetof(kmem_cache, random_seq): Not found")
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache, random_seq): Not found"))
         else:
-            self.quiet_info("offsetof(kmem_cache, random_seq): {:#x}".format(self.kmem_cache_offset_random_seq))
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache, random_seq): {:#x}".format(self.kmem_cache_offset_random_seq)))
         if kversion < "7.1":
             if self.kmem_cache_offset_node is None:
-                self.quiet_info("offsetof(kmem_cache, node): Not found")
+                self.meta.append((self.quiet_info, "offsetof(kmem_cache, node): Not found"))
             else:
-                self.quiet_info("offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node))
+                self.meta.append((self.quiet_info, "offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node)))
         else:
             if self.kmem_cache_offset_node is None:
-                self.quiet_info("offsetof(kmem_cache, per_node[0].node): Not found")
+                self.meta.append((self.quiet_info, "offsetof(kmem_cache, per_node[0].node): Not found"))
             else:
-                self.quiet_info("offsetof(kmem_cache, per_node[0].node): {:#x}".format(self.kmem_cache_offset_node))
+                self.meta.append((self.quiet_info, "offsetof(kmem_cache, per_node[0].node): {:#x}".format(self.kmem_cache_offset_node)))
             if self.kmem_cache_offset_barn is None:
-                self.quiet_info("offsetof(kmem_cache, per_node[0].barn): Not found")
+                self.meta.append((self.quiet_info, "offsetof(kmem_cache, per_node[0].barn): Not found"))
             else:
-                self.quiet_info("offsetof(kmem_cache, per_node[0].barn): {:#x}".format(self.kmem_cache_offset_barn))
+                self.meta.append((self.quiet_info, "offsetof(kmem_cache, per_node[0].barn): {:#x}".format(self.kmem_cache_offset_barn)))
 
         if kversion < "7.0":
             # offsetof(kmem_cache_cpu, freelist)
             self.kmem_cache_cpu_offset_freelist = 0
-            self.quiet_info("offsetof(kmem_cache_cpu, freelist): {:#x}".format(self.kmem_cache_cpu_offset_freelist))
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache_cpu, freelist): {:#x}".format(self.kmem_cache_cpu_offset_freelist)))
 
             # offsetof(kmem_cache_cpu, page or slab)
             self.kmem_cache_cpu_offset_page = current_arch.ptrsize * 2
-            self.quiet_info("offsetof(kmem_cache_cpu, {:s}): {:#x}".format(
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache_cpu, {:s}): {:#x}".format(
                 Kernel.slab_page_str(), self.kmem_cache_cpu_offset_page,
-            ))
+            )))
 
             # offsetof(kmem_cache_cpu, partial)
             self.kmem_cache_cpu_offset_partial = current_arch.ptrsize * 3
-            self.quiet_info("offsetof(kmem_cache_cpu, partial): {:#x}".format(self.kmem_cache_cpu_offset_partial))
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache_cpu, partial): {:#x}".format(self.kmem_cache_cpu_offset_partial)))
 
         # offsetof(page, next) / offsetof(slab, next)
         if self.slab_virtual_enabled:
@@ -125284,9 +125257,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.page_offset_next = current_arch.ptrsize
             else:
                 self.page_offset_next = current_arch.ptrsize * 2
-        self.quiet_info("offsetof({:s}, next): {:#x}".format(
-            Kernel.slab_page_str(), self.page_offset_next,
-        ))
+        self.meta.append((self.quiet_info, "offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next)))
 
         # offsetof(page, freelist) / offsetof(slab, freelist)
         if self.slab_virtual_enabled:
@@ -125305,9 +125276,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.page_offset_freelist = current_arch.ptrsize * 4
             else:
                 self.page_offset_freelist = current_arch.ptrsize * 4
-        self.quiet_info("offsetof({:s}, freelist): {:#x}".format(
-            Kernel.slab_page_str(), self.page_offset_freelist,
-        ))
+        self.meta.append((self.quiet_info, "offsetof({:s}, freelist): {:#x}".format(Kernel.slab_page_str(), self.page_offset_freelist)))
 
         # offsetof(page, slab_cache) / offsetof(slab, slab_cache)
         if self.slab_virtual_enabled:
@@ -125328,15 +125297,13 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.page_offset_slab_cache = current_arch.ptrsize * 3
             else:
                 self.page_offset_slab_cache = current_arch.ptrsize
-        self.quiet_info("offsetof({:s}, slab_cache): {:#x}".format(
-            Kernel.slab_page_str(), self.page_offset_slab_cache,
-        ))
+        self.meta.append((self.quiet_info, "offsetof({:s}, slab_cache): {:#x}".format(Kernel.slab_page_str(), self.page_offset_slab_cache)))
 
         # offsetof(page, inuse_objects_frozen) / offsetof(slab, inuse_objects_frozen)
         self.page_offset_inuse_objects_frozen = self.page_offset_freelist + current_arch.ptrsize
-        self.quiet_info("offsetof({:s}, inuse_objects_frozen): {:#x}".format(
+        self.meta.append((self.quiet_info, "offsetof({:s}, inuse_objects_frozen): {:#x}".format(
             Kernel.slab_page_str(), self.page_offset_inuse_objects_frozen,
-        ))
+        )))
 
         # parse extra members of `struct slab` for CONFIG_SLAB_VIRTUAL=y
         if self.slab_virtual_enabled:
@@ -125351,14 +125318,14 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.page_offset_flush_list_elem = current_arch.ptrsize * 2
             else: # 6.12
                 self.page_offset_flush_list_elem = current_arch.ptrsize * 3
-            self.quiet_info("offsetof(slab, flush_list_elem): {:#x}".format(self.page_offset_flush_list_elem))
+            self.meta.append((self.quiet_info, "offsetof(slab, flush_list_elem): {:#x}".format(self.page_offset_flush_list_elem)))
 
         # offsetof(kmem_cache_node, partial)
         self.resolve_kmem_cache_node_offset_partial()
         if self.kmem_cache_node_offset_partial is None:
-            self.quiet_info("offsetof(kmem_cache_node, partial): Not found")
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, partial): Not found"))
         else:
-            self.quiet_info("offsetof(kmem_cache_node, partial): {:#x}".format(self.kmem_cache_node_offset_partial))
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, partial): {:#x}".format(self.kmem_cache_node_offset_partial)))
 
         # offsetof(kmem_cache_node, full)
         if self.kmem_cache_node_offset_partial is None:
@@ -125369,7 +125336,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         # for sheaves / barn
         self.resolve_sheaves()
 
-        self.initialized = True
         return True
 
     @staticmethod
@@ -126395,17 +126361,13 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.out.append("    nr_freed_pages: {:#d}".format(nr_freed_pages))
 
                 # freed_slabs_normal/freed_slabs
-                self.out.append("    freed_slabs_normal: {:#d}/{:#d}".format(
-                    len(kmem_cache["freed_slabs_normal"]), nr_freed_pages,
-                ))
+                self.out.append("    freed_slabs_normal: {:#d}/{:#d}".format(len(kmem_cache["freed_slabs_normal"]), nr_freed_pages))
                 for idx, slab in enumerate(kmem_cache["freed_slabs_normal"]):
                     slab_addr_s = Color.colorify_hex(slab["address"], slab_address_color)
                     self.out.append("             {:#05x} {:s}".format(idx, slab_addr_s))
 
                 # freed_slabs_min
-                self.out.append("    freed_slabs_min: {:#d}/{:#d}".format(
-                    len(kmem_cache["freed_slabs_min"]), nr_freed_pages,
-                ))
+                self.out.append("    freed_slabs_min: {:#d}/{:#d}".format(len(kmem_cache["freed_slabs_min"]), nr_freed_pages))
                 for idx, slab in enumerate(kmem_cache["freed_slabs_min"]):
                     slab_addr_s = Color.colorify_hex(slab["address"], slab_address_color)
                     self.out.append("             {:#05x} {:s}".format(idx, slab_addr_s))
@@ -126417,9 +126379,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     kmem_cache_cpu_addr_s = Color.colorify_hex(
                         kmem_cache["kmem_cache_cpu"][cpu]["address"], slab_address_color,
                     )
-                    self.out.append("    kmem_cache_cpu (cpu{:d}): {:s}".format(
-                        cpu, kmem_cache_cpu_addr_s,
-                    ))
+                    self.out.append("    kmem_cache_cpu (cpu{:d}): {:s}".format(cpu, kmem_cache_cpu_addr_s))
 
                     # dump active
                     if self.dump_target_active:
@@ -126457,9 +126417,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         self.dump_page(node_page, kmem_cache, "node")
                         printed_count += 1
                     if printed_count == 0:
-                        self.out.append("      {:s}: (none)".format(
-                            Color.colorify("node pages", label_inactive_color),
-                        ))
+                        self.out.append("      {:s}: (none)".format(Color.colorify("node pages", label_inactive_color)))
 
                     # node list (full; exists when CONFIG_SLUB_DEBUG=y)
                     if "nodes_full" in kmem_cache:
@@ -126469,9 +126427,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                             self.dump_page(node_page, kmem_cache, "node (full)")
                             printed_count += 1
                         if printed_count == 0:
-                            self.out.append("      {:s}: (none)".format(
-                                Color.colorify("node (full) pages", label_inactive_color),
-                            ))
+                            self.out.append("      {:s}: (none)".format(Color.colorify("node (full) pages", label_inactive_color)))
 
                     # barn list (6.18~)
                     if "node_barn" in kmem_cache and node_index < len(kmem_cache["node_barn"]):
@@ -126504,7 +126460,14 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def slubwalk(self, target_names, cpu):
-        if self.initialize() is False:
+        if self.args.rescan:
+            Cache.clear_cache_for(self.initialize)
+
+        ret = self.initialize()
+        if self.args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
             self.quiet_err("Initialization failed")
             return
 
@@ -126534,6 +126497,15 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         parsed_caches = self.walk_caches(target_names, target_cpus)
         self.dump_caches(target_names, target_cpus, parsed_caches)
+        return
+
+    @Cache.cache_this_session
+    def warmup_page2virt(self):
+        if is_x86() or is_arm32():
+            args = self.args # backup
+            gdb.execute("page2virt 0", to_string=True)
+            # self.args will be overwritten. this is workaround.
+            self.args = args # revert
         return
 
     @parse_args
@@ -126569,13 +126541,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         # If a recursive call is made, various parameters held by self will be destroyed.
         # It's very tricky, but if we make sure to call page2virt first,
         # no further calls will be made and it will work without any problems.
-        if not hasattr(self, "initialized"):
-            if is_x86() or is_arm32():
-                if not args.skip_page2virt:
-                    args = self.args # backup
-                    gdb.execute("page2virt 0", to_string=True)
-                    # self.args will be overwritten. this is workaround.
-                    self.args = args # revert
+        if not args.skip_page2virt:
+            self.warmup_page2virt()
 
         if args.no_byte_swap is None:
             self.swap = None
