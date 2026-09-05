@@ -133157,6 +133157,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
@@ -133186,23 +133187,23 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            return True
+        self.meta = []
 
         kversion = Kernel.kernel_version()
 
         if kversion < "6.5":
             self.irq_desc_tree = KernelAddressHeuristicFinder.get_irq_desc_tree()
             if self.irq_desc_tree is None:
-                self.quiet_err("Could not find irq_desc_tree")
-                return False
+                self.meta.append((self.quiet_err, "Could not find irq_desc_tree"))
+                return None
 
             self.irq_xarray = Kernel.XArray(self.irq_desc_tree)
             if self.irq_xarray.find_head_offset(current_arch.ptrsize * 10) is None:
-                self.quiet_err("Could not find xa_head. (maybe uninitialized?)")
-                return False
-            self.quiet_info("offsetof(xarray, xa_head): {:#x}".format(self.irq_xarray.head_offset))
+                self.meta.append((self.quiet_err, "Could not find xa_head. (maybe uninitialized?)"))
+                return None
+            self.meta.append((self.quiet_info, "offsetof(xarray, xa_head): {:#x}".format(self.irq_xarray.head_offset)))
 
             descs = self.irq_xarray.parse()
 
@@ -133210,20 +133211,20 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
             # "6.5" <= kversion
             self.sparse_irqs = KernelAddressHeuristicFinder.get_sparse_irqs()
             if self.sparse_irqs is None:
-                self.quiet_err("Could not find sparse_irqs")
-                return False
+                self.meta.append((self.quiet_err, "Could not find sparse_irqs"))
+                return None
 
             self.irq_maple = Kernel.MapleTree(self.sparse_irqs)
             if self.irq_maple.find_root_offset(current_arch.ptrsize * 0x10) is None:
-                self.quiet_err("Could not find offsetof(maple_tree, ma_root)")
-                return False
-            self.quiet_info("offsetof(maple_tree, ma_root): {:#x}".format(self.irq_maple.root_offset))
+                self.meta.append((self.quiet_err, "Could not find offsetof(maple_tree, ma_root)"))
+                return None
+            self.meta.append((self.quiet_info, "offsetof(maple_tree, ma_root): {:#x}".format(self.irq_maple.root_offset)))
 
             descs = self.irq_maple.parse()
 
         if not descs:
-            self.quiet_err("Could not find any valid irq_desc")
-            return False
+            self.meta.append((self.quiet_err, "Could not find any valid irq_desc"))
+            return None
 
         # irq_desc->{irq,action}
         """
@@ -133271,7 +133272,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         else:
             # ARM may have invalid descs[irq=0]
             desc = descs[-1]
-        self.quiet_info("desc: {:#x}".format(desc))
+        self.meta.append((self.quiet_info, "desc: {:#x}".format(desc)))
 
         for i in range(100):
             x = read_int_from_memory(desc + current_arch.ptrsize * i)
@@ -133280,11 +133281,11 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                     self.offset_irq = current_arch.ptrsize * i - 8
                 else:
                     self.offset_irq = current_arch.ptrsize * i - 12 # for padding
-                self.quiet_info("offsetof(irq_desc, irq_data.irq): {:#x}".format(self.offset_irq))
+                self.meta.append((self.quiet_info, "offsetof(irq_desc, irq_data.irq): {:#x}".format(self.offset_irq)))
                 break
         else:
-            self.quiet_err("Could not find irq_desc->irq_data.irq")
-            return False
+            self.meta.append((self.quiet_err, "Could not find irq_desc->irq_data.irq"))
+            return None
 
         ofs_irq = align_to_ptrsize(self.offset_irq + 4 * 2)
         for i in range(100):
@@ -133297,11 +133298,11 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                     continue
                 if any(is_valid_addr_addr(x) for x in values):
                     self.offset_action = ofs_action_candidate
-                    self.quiet_info("offsetof(irq_desc, action): {:#x}".format(self.offset_action))
+                    self.meta.append((self.quiet_info, "offsetof(irq_desc, action): {:#x}".format(self.offset_action)))
                     break
         else:
-            self.quiet_err("Could not find irq_desc->action")
-            return False
+            self.meta.append((self.quiet_err, "Could not find irq_desc->action"))
+            return None
 
         # irqaction->{handler,name}
         """
@@ -133322,7 +133323,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         } ____cacheline_internodealigned_in_smp;
         """
         self.offset_handler = 0
-        self.quiet_info("offsetof(irqaction, handler): {:#x}".format(self.offset_handler))
+        self.meta.append((self.quiet_info, "offsetof(irqaction, handler): {:#x}".format(self.offset_handler)))
 
         actions = [x for x in (read_int_from_memory(d + self.offset_action) for d in descs) if is_valid_addr(x)]
         for i in range(100):
@@ -133330,11 +133331,11 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
             names = [x for x in names if is_valid_addr(x) and read_cstring_from_memory(x)]
             if len(names) * 2 > len(actions):
                 self.offset_name = current_arch.ptrsize * i
-                self.quiet_info("offsetof(irqaction, name): {:#x}".format(self.offset_name))
+                self.meta.append((self.quiet_info, "offsetof(irqaction, name): {:#x}".format(self.offset_name)))
                 break
         else:
-            self.quiet_err("Could not find irqaction->name")
-            return False
+            self.meta.append((self.quiet_err, "Could not find irqaction->name"))
+            return None
 
         return True
 
@@ -133399,7 +133400,13 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
             return
 
         ret = self.initialize()
-        if ret is False:
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
+            return
+
+        if args.meta:
             return
 
         self.out = []
