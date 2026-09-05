@@ -132197,6 +132197,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("-v", "--verbose", action="store_true", help="dump the beginning of msg_msg.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
@@ -132240,21 +132241,20 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
                 ipc_ns_list.append(x)
         return ipc_ns_list
 
-    def initialize(self, ipc_ns_list):
-        if hasattr(self, "initialized") and self.initialized:
-            return True
+    @Cache.cache_this_session(cache_None=False)
+    def initialize(self):
+        # handed over from the caller; the list is live, so it must not become a cache key
+        ipc_ns_list = self.ipc_ns_list_temp
+        self.meta = []
 
         self.sysvipc_disabled = False
         self.sysvipc_uninitialized = False
-        for attr in ("offset_xa_head", "sizeof_ipc_ids"):
-            if hasattr(self, attr):
-                delattr(self, attr)
         if ipc_ns_list == []:
-            return False
+            return None
 
         if ipc_ns_list == [0]:
-            err("Could not find valid ipc_ns (maybe CONFIG_SYSVIPC=n)")
-            return False
+            self.meta.append((err, "Could not find valid ipc_ns (maybe CONFIG_SYSVIPC=n)"))
+            return None
 
         # ipc_namespace
         """
@@ -132301,12 +132301,14 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             self.offset_ids = 0
         else:
             self.offset_ids = current_arch.ptrsize
-        self.quiet_info("offsetof(ipc_namespace, ids): {:#x}".format(self.offset_ids))
+        self.meta.append((self.quiet_info, "offsetof(ipc_namespace, ids): {:#x}".format(self.offset_ids)))
 
         # offsetof(ipc_ids, ipcs_idr.idr_rt.xa_head): tagged valid pointer is `xa_head`.
         # sizeof(ids[0]): find two `xa_head` and calculate the distance.
         init_ipc_ns = ipc_ns_list[0]
         candidates = {}
+        offset_xa_head = None
+        sizeof_ipc_ids = None
         # DEBUG_LOCK_ALLOC makes struct ipc_ids large enough that ids[2]'s
         # xa_head can be beyond the old 120-pointer scan window.
         for i in range(6, 256):
@@ -132389,8 +132391,8 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
                                 break
                         if not valid:
                             continue
-                        self.offset_xa_head = first
-                        self.sizeof_ipc_ids = size
+                        offset_xa_head = first
+                        sizeof_ipc_ids = size
                         for index in range(3):
                             offset = first + size * index
                             if Kernel.XArray.cache_head_offset(
@@ -132398,37 +132400,31 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
                             ):
                                 break
                         break
-                if hasattr(self, "offset_xa_head"):
+                if offset_xa_head is not None:
                     break
-            if hasattr(self, "offset_xa_head"):
+            if offset_xa_head is not None:
                 break
 
-        if not hasattr(self, "offset_xa_head"):
+        if offset_xa_head is None:
             if all(
                 read_int_from_memory(init_ipc_ns + current_arch.ptrsize * i) == 0
                 for i in range(32)
             ):
                 if Symbol.get_ksymaddr("sem_init"):
                     self.sysvipc_uninitialized = True
-                    self.quiet_info("SYSVIPC is enabled, but ipc_ids is not initialized")
-                    return False
+                    self.meta.append((self.quiet_info, "SYSVIPC is enabled, but ipc_ids is not initialized"))
+                    return None
                 self.sysvipc_disabled = True
-                self.quiet_info("SYSVIPC is disabled")
-                return False
-            self.quiet_err("Could not find ipc_namespace->ids[0].ipcs_idr.idr_rt.xa_head")
-            self.quiet_err("Not recognized sizeof(struct ipc_ids)")
-            self.quiet_err("SYSVIPC is enabled, but the ipc_ids layout could not be determined")
-            return False
-        self.quiet_info("offsetof(ipc_ids, ipcs_idr.idr_rt.xa_head): {:#x}".format(self.offset_xa_head))
-        self.quiet_info("sizeof(struct ipc_ids): {:#x}".format(self.sizeof_ipc_ids))
-        self.ipc_objects_present = any(
-            read_int_from_memory(
-                ipc_ns + self.offset_ids + self.sizeof_ipc_ids * i + self.offset_xa_head
-            )
-            for ipc_ns in ipc_ns_list for i in range(3)
-        )
-        if not self.ipc_objects_present:
-            self.quiet_info("SYSVIPC is enabled, but no IPC objects are present")
+                self.meta.append((self.quiet_info, "SYSVIPC is disabled"))
+                return None
+            self.meta.append((self.quiet_err, "Could not find ipc_namespace->ids[0].ipcs_idr.idr_rt.xa_head"))
+            self.meta.append((self.quiet_err, "Not recognized sizeof(struct ipc_ids)"))
+            self.meta.append((self.quiet_err, "SYSVIPC is enabled, but the ipc_ids layout could not be determined"))
+            return None
+        self.offset_xa_head = offset_xa_head
+        self.sizeof_ipc_ids = sizeof_ipc_ids
+        self.meta.append((self.quiet_info, "offsetof(ipc_ids, ipcs_idr.idr_rt.xa_head): {:#x}".format(self.offset_xa_head)))
+        self.meta.append((self.quiet_info, "sizeof(struct ipc_ids): {:#x}".format(self.sizeof_ipc_ids)))
 
         # kern_ipc_perm
         """
@@ -132462,8 +132458,23 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             self.offset_gid = self.offset_uid + 4
             self.offset_mode = self.offset_gid + 4 + 4 + 4
 
-        self.initialized = True
         return True
+
+    @Cache.cache_this_session(cache_None=False)
+    def get_offset_sem_nsems(self):
+        # handed over from the caller; the samples are live, so they must not become a cache key.
+        # Keep trying until one of them matches, then reuse the layout for every semaphore array.
+        for sem_array in self.sem_elems_temp:
+            for i in range(1, 64):
+                # search pending_alter, pending_const, list_id
+                base = self.offset_mode + current_arch.ptrsize * i
+                addrs = [
+                    read_int_from_memory(sem_array + base + current_arch.ptrsize * j)
+                    for j in range(6)
+                ]
+                if all(is_valid_addr(x) for x in addrs):
+                    return base + current_arch.ptrsize * 6
+        return None
 
     def dump_ipc_sem_ids(self, ipc_ids_ptr):
         """
@@ -132483,6 +132494,10 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         elems = Kernel.XArray(ipc_ids_ptr, self.offset_xa_head).parse()
+        self.sem_elems_temp = elems
+        offset_sem_nsems = self.get_offset_sem_nsems()
+        del self.sem_elems_temp
+
         for e in elems:
             semid = read_int32_from_memory(e + self.offset_id)
             key = read_int32_from_memory(e + self.offset_key)
@@ -132490,17 +132505,8 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             gid = read_int32_from_memory(e + self.offset_gid)
             mode = read_int16_from_memory(e + self.offset_mode)
 
-            if not hasattr(self, "offset_sem_nsems"):
-                for i in range(1, 64):
-                    # search pending_alter, pending_const, list_id
-                    base = self.offset_mode + current_arch.ptrsize * i
-                    addrs = [read_int_from_memory(e + base + current_arch.ptrsize * j) for j in range(6)]
-                    if all(is_valid_addr(x) for x in addrs):
-                        # found
-                        self.offset_sem_nsems = base + current_arch.ptrsize * 6
-                        break
-            if hasattr(self, "offset_sem_nsems"):
-                nsems = read_int_from_memory(e + self.offset_sem_nsems)
+            if offset_sem_nsems is not None:
+                nsems = read_int_from_memory(e + offset_sem_nsems)
                 self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:d}".format(
                     e, semid, key, uid, gid, mode, nsems,
                 ))
@@ -132510,6 +132516,28 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
                 ))
 
         return
+
+    @Cache.cache_this_session(cache_None=False)
+    def get_offsets_msg(self):
+        # handed over from the caller; the samples are live, so they must not become a cache key.
+        # Keep trying until one of them matches, then reuse the layout for every message queue.
+        for msg_queue in self.msg_elems_temp:
+            for i in range(1, 64):
+                # search q_messages, q_receivers, q_senders
+                base = self.offset_mode + current_arch.ptrsize * i
+                addrs = [
+                    read_int_from_memory(msg_queue + base + current_arch.ptrsize * j)
+                    for j in range(6)
+                ]
+                if all(is_valid_addr(x) for x in addrs):
+                    x = read_int_from_memory(msg_queue + base + current_arch.ptrsize * 6)
+                    if not is_valid_addr(x):
+                        return (
+                            base - current_arch.ptrsize * 5,
+                            base - current_arch.ptrsize * 4,
+                            base,
+                        )
+        return None
 
     def dump_ipc_msg_ids(self, ipc_ids_ptr):
         """
@@ -132542,6 +132570,10 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         elems = Kernel.XArray(ipc_ids_ptr, self.offset_xa_head).parse()
+        self.msg_elems_temp = elems
+        offsets = self.get_offsets_msg()
+        del self.msg_elems_temp
+
         for e in elems:
             msqid = read_int32_from_memory(e + self.offset_id)
             key = read_int32_from_memory(e + self.offset_key)
@@ -132549,22 +132581,10 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             gid = read_int32_from_memory(e + self.offset_gid)
             mode = read_int16_from_memory(e + self.offset_mode)
 
-            if not hasattr(self, "offset_q_cbytes"):
-                for i in range(1, 64):
-                    # search q_messages, q_receivers, q_senders
-                    base = self.offset_mode + current_arch.ptrsize * i
-                    addrs = [read_int_from_memory(e + base + current_arch.ptrsize * j) for j in range(6)]
-                    if all(is_valid_addr(x) for x in addrs):
-                        x = read_int_from_memory(e + base + current_arch.ptrsize * 6)
-                        if not is_valid_addr(x):
-                            # found
-                            self.offset_q_cbytes = base - current_arch.ptrsize * 5
-                            self.offset_q_qnum = base - current_arch.ptrsize * 4
-                            self.offset_q_messages = base
-                            break
-            if hasattr(self, "offset_q_cbytes"):
-                q_cbytes = read_int_from_memory(e + self.offset_q_cbytes)
-                q_qnum = read_int_from_memory(e + self.offset_q_qnum)
+            if offsets is not None:
+                offset_q_cbytes, offset_q_qnum, offset_q_messages = offsets
+                q_cbytes = read_int_from_memory(e + offset_q_cbytes)
+                q_qnum = read_int_from_memory(e + offset_q_qnum)
                 self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:<#10x} {:<d}".format(
                     e, msqid, key, uid, gid, mode, q_cbytes, q_qnum,
                 ))
@@ -132574,8 +132594,8 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
                 ))
 
             if self.args.verbose:
-                if hasattr(self, "offset_q_messages"):
-                    current = e + self.offset_q_messages
+                if offsets is not None:
+                    current = e + offset_q_messages
                     seen = [current]
                     while is_valid_addr(current):
                         current = read_int_from_memory(current)
@@ -132586,6 +132606,22 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
                         res = gdb.execute("dereference -n {:#x} 8".format(current), to_string=True)
                         self.out.append(res.rstrip())
         return
+
+    @Cache.cache_this_session(cache_None=False)
+    def get_offset_shm(self):
+        # handed over from the caller; the samples are live, so they must not become a cache key.
+        # `shm_segsz` is the size requested by the user, so it is not always a multiple of the
+        # page size. Keep trying until one of them matches, then reuse it for every segment.
+        for kern_ipc_perm in self.shm_elems_temp:
+            for i in range(1, 64):
+                # search shm_file and shm_segsz
+                base = self.offset_mode + current_arch.ptrsize * i
+                x = read_int_from_memory(kern_ipc_perm + base)
+                y = read_int_from_memory(kern_ipc_perm + base + current_arch.ptrsize * 2)
+                if is_valid_addr(x) and y != 0 and y % 0x1000 == 0:
+                    # found
+                    return base + current_arch.ptrsize, base + current_arch.ptrsize * 2
+        return None
 
     def dump_ipc_shm_ids(self, ipc_ids_ptr):
         """
@@ -132603,6 +132639,10 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         elems = Kernel.XArray(ipc_ids_ptr, self.offset_xa_head).parse()
+        self.shm_elems_temp = elems
+        offsets = self.get_offset_shm()
+        del self.shm_elems_temp
+
         for e in elems:
             shmid = read_int32_from_memory(e + self.offset_id)
             key = read_int32_from_memory(e + self.offset_key)
@@ -132610,20 +132650,10 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             gid = read_int32_from_memory(e + self.offset_gid)
             mode = read_int16_from_memory(e + self.offset_mode)
 
-            if not hasattr(self, "offset_shm_nattch"):
-                for i in range(1, 64):
-                    # search shm_file and shm_segsz
-                    base = self.offset_mode + current_arch.ptrsize * i
-                    x = read_int_from_memory(e + base)
-                    y = read_int_from_memory(e + base + current_arch.ptrsize * 2)
-                    if is_valid_addr(x) and y != 0 and y % 0x1000 == 0:
-                        # found
-                        self.offset_shm_nattch = base + current_arch.ptrsize
-                        self.offset_shm_segsz = base + current_arch.ptrsize * 2
-                        break
-            if hasattr(self, "offset_shm_nattch"):
-                nattch = read_int_from_memory(e + self.offset_shm_nattch)
-                segsz = read_int_from_memory(e + self.offset_shm_segsz)
+            if offsets:
+                offset_shm_nattch, offset_shm_segsz = offsets
+                nattch = read_int_from_memory(e + offset_shm_nattch)
+                segsz = read_int_from_memory(e + offset_shm_segsz)
                 self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:<#10x} {:<d}".format(
                     e, shmid, key, uid, gid, mode, segsz, nattch,
                 ))
@@ -132655,11 +132685,29 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             self.quiet_info("Nothing to dump")
             return
 
-        ret = self.initialize(ipc_ns_list)
+        self.ipc_ns_list_temp = ipc_ns_list
+        ret = self.initialize()
+        del self.ipc_ns_list_temp
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
         if not ret:
             if not self.sysvipc_disabled and not self.sysvipc_uninitialized:
                 self.quiet_err("Failed to initialize")
             return
+
+        if args.meta:
+            return
+
+        # the presence of IPC objects is live, so it must not be cached
+        ipc_objects_present = any(
+            read_int_from_memory(
+                ipc_ns + self.offset_ids + self.sizeof_ipc_ids * i + self.offset_xa_head
+            )
+            for ipc_ns in ipc_ns_list for i in range(3)
+        )
+        if not ipc_objects_present:
+            self.quiet_info("SYSVIPC is enabled, but no IPC objects are present")
 
         self.out = []
         for i, ipc_ns in enumerate(ipc_ns_list):
