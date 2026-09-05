@@ -71792,6 +71792,7 @@ class KernelModuleLoadCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("name", type=str, help="name of the loaded module to search for by `kmod`.")
     parser.add_argument("path", type=str, help="path to compiled kernel module.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
@@ -71808,30 +71809,28 @@ class KernelModuleLoadCommand(GenericCommand):
     _note_ = "\n".join(_note_)
 
     def get_modules_list(self, modules):
-        # use cache
-        if self.module_addrs:
-            return self.module_addrs
-
-        # slow path
+        # the warnings are returned instead of printed, because this is also called from the
+        # cached `initialize()`, where they would be printed only once and out of order
         if modules is None:
-            return None
+            return None, []
 
+        meta = []
         # struct module { enum module_state state; struct list_head list; ... };
         lh = Kernel.ListHead(modules, current_arch.ptrsize)
         entries = list(lh.iter_entries())
         if lh.broken:
-            self.quiet_warn("Stopped at {:s} module: {:#x}".format(lh.broken_reason, lh.broken_at))
+            meta.append((self.quiet_warn, "Stopped at {:s} module: {:#x}".format(lh.broken_reason, lh.broken_at)))
             # the list is circular and doubly-linked, so the entries located behind the broken
             # one are still reachable by following `prev` from the list head
             seen = set(entries)
             backward = list(lh.iter_entries(backward=True))
             if lh.broken:
-                self.quiet_warn("Stopped at {:s} module: {:#x} (backward)".format(lh.broken_reason, lh.broken_at))
+                meta.append((self.quiet_warn, "Stopped at {:s} module: {:#x} (backward)".format(lh.broken_reason, lh.broken_at)))
             entries += [x for x in reversed(backward) if x not in seen]
             # the entries the walks stopped at are unreadable, they must not be passed to the
             # `struct module` layout heuristics
             entries = [x for x in entries if is_valid_addr(x)]
-        return entries
+        return entries, meta
 
     def get_offset_name(self, module_addrs):
         # fast path
@@ -71998,9 +71997,10 @@ class KernelModuleLoadCommand(GenericCommand):
         sectname = read_cstring_from_memory(nameptr)
         if sectname is None or not sectname.startswith((".", "__", "_")):
             if sectname and len(sectname) >= 4:
-                self.quiet_info(
+                self.meta.append((
+                    self.quiet_info,
                     "possible section name (rejected for not starting with \".\", \"__\" or \"_\"): {:s}".format(sectname),
-                )
+                ))
             return False
         return True
 
@@ -72068,7 +72068,7 @@ class KernelModuleLoadCommand(GenericCommand):
             curr_attr += current_arch.ptrsize
 
         if len(attrs_arr) < 2:
-            self.quiet_err("module->sect_attrs.grp.bin_attrs has too few elements")
+            self.meta.append((self.quiet_err, "module->sect_attrs.grp.bin_attrs has too few elements"))
             return None
 
         # Find size of struct bin_attribute by pointer arithmetic from list (assuming they are contiguous and in order)
@@ -72136,81 +72136,76 @@ class KernelModuleLoadCommand(GenericCommand):
                 return module
         return None
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        if hasattr(self, "initialized"):
-            return True
+        self.meta = []
 
         kversion = Kernel.kernel_version()
         if kversion is None:
-            self.quiet_err("Failed to resolve kernel version")
-            return False
-
-        if kversion < "3.0":
-            self.quiet_err("Unsupported before v3.0")
-            return False
+            self.meta.append((self.quiet_err, "Failed to resolve kernel version"))
+            return None
 
         # modules
         self.modules = KernelAddressHeuristicFinder.get_modules()
         if self.modules is None:
-            self.quiet_err("Could not find modules (maybe, CONFIG_MODULES is not set)")
-            return False
-        self.quiet_info("modules: {:#x}".format(self.modules))
+            self.meta.append((self.quiet_err, "Could not find modules (maybe, CONFIG_MODULES is not set)"))
+            return None
+        self.meta.append((self.quiet_info, "modules: {:#x}".format(self.modules)))
 
         # modules list
-        self.module_addrs = self.get_modules_list(self.modules)
-        if self.module_addrs is None:
-            return False
-        if self.module_addrs == []:
-            self.quiet_err("Could not find any modules")
-            return False
+        module_addrs = self.get_modules_list(self.modules)[0]
+        if module_addrs is None:
+            return None
+        if module_addrs == []:
+            self.meta.append((self.quiet_err, "Could not find any modules"))
+            return None
 
         # module->name
-        self.offset_name = self.get_offset_name(self.module_addrs)
+        self.offset_name = self.get_offset_name(module_addrs)
         if self.offset_name is None:
-            self.quiet_err("Could not find module->name[MODULE_NAME_LEN]")
-            return False
-        self.quiet_info("offsetof(module, name): {:#x}".format(self.offset_name))
+            self.meta.append((self.quiet_err, "Could not find module->name[MODULE_NAME_LEN]"))
+            return None
+        self.meta.append((self.quiet_info, "offsetof(module, name): {:#x}".format(self.offset_name)))
 
         # Find requested module
-        self.req_module = self.get_requested_module(self.module_addrs)
+        self.req_module = self.get_requested_module(module_addrs)
         if self.req_module is None:
-            self.quiet_err("Could not find requested module")
-            return False
-        self.quiet_info(f"module: {hex(self.req_module)}")
+            self.meta.append((self.quiet_err, "Could not find requested module"))
+            return None
+        self.meta.append((self.quiet_info, f"module: {hex(self.req_module)}"))
 
         # module->sect_attrs
         self.offset_sect_attrs, self.cached_sect_attrs = self.get_offset_sect_attrs(self.req_module)
         if self.offset_sect_attrs is None:
-            self.quiet_err("Could not find module->sect_attrs")
-            return False
-        self.quiet_info("offsetof(module, sect_attrs): {:#x}".format(self.offset_sect_attrs))
+            self.meta.append((self.quiet_err, "Could not find module->sect_attrs"))
+            return None
+        self.meta.append((self.quiet_info, "offsetof(module, sect_attrs): {:#x}".format(self.offset_sect_attrs)))
 
         # sect_attrs.grp.{attrs,bin_attrs}
         self.offset_attrs, self.cached_attribute_arr_ptr = self.get_offset_bin_attrs()
         if self.offset_attrs is None:
-            self.quiet_err("Could not find module->sect_attrs.grp.{attrs,bin_attrs}")
-            return False
-        self.quiet_info("offsetof(module_sect_attrs, grp.{{attrs,bin_attrs}}): {:#x}".format(self.offset_attrs))
+            self.meta.append((self.quiet_err, "Could not find module->sect_attrs.grp.{attrs,bin_attrs}"))
+            return None
+        self.meta.append((self.quiet_info, "offsetof(module_sect_attrs, grp.{{attrs,bin_attrs}}): {:#x}".format(self.offset_attrs)))
 
         # ~6.13: module_sect_attr.address
         # 6.14~: bin_attribute.private
         self.offset_address = self.get_offset_address()
         if self.offset_address is None:
             if kversion < "6.14":
-                self.quiet_err("Could not find offset of module_sect_attr.address (section address)")
+                self.meta.append((self.quiet_err, "Could not find offset of module_sect_attr.address (section address)"))
             else:
-                self.quiet_err("Could not find offset of bin_attribute.private (section address)")
-            return False
+                self.meta.append((self.quiet_err, "Could not find offset of bin_attribute.private (section address)"))
+            return None
         if kversion < "6.14":
-            self.quiet_info("offsetof(module_sect_attr, address): {:#x}".format(self.offset_address))
+            self.meta.append((self.quiet_info, "offsetof(module_sect_attr, address): {:#x}".format(self.offset_address)))
         else:
-            self.quiet_info("offsetof(bin_attribute, private): {:#x}".format(self.offset_address))
+            self.meta.append((self.quiet_info, "offsetof(bin_attribute, private): {:#x}".format(self.offset_address)))
 
-        self.initialized = True
         return True
 
-    def kmod_load(self):
-        for module in self.module_addrs:
+    def kmod_load(self, module_addrs):
+        for module in module_addrs:
             name_string = read_cstring_from_memory(module + self.offset_name)
             if name_string != self.args.name:
                 continue
@@ -72254,25 +72249,39 @@ class KernelModuleLoadCommand(GenericCommand):
             self.quiet_err("Could not find {:s}".format(args.path))
             return
 
+        kversion = Kernel.kernel_version()
+        if kversion is None:
+            self.quiet_err("Could not find Linux kernel")
+            return
+        if kversion < "3.0":
+            self.quiet_err("Unsupported before v3.0")
+            return
+
         # initialize
-        self.module_addrs = None
         ret = self.initialize()
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
         if not ret:
             self.quiet_err("Failed to initialize")
             return
 
         # get module addrs
-        if not self.module_addrs:
-            self.module_addrs = self.get_modules_list(self.modules)
-        if self.module_addrs is None:
+        module_addrs, meta = self.get_modules_list(self.modules)
+        for func, line in meta:
+            func(line)
+        if module_addrs is None:
             return
-        if self.module_addrs == []:
+        if module_addrs == []:
             self.quiet_err("Could not find any modules")
             return
-        self.quiet_info("Num of modules: {:#x}".format(len(self.module_addrs)))
+        self.quiet_info("Num of modules: {:#x}".format(len(module_addrs)))
+
+        if args.meta:
+            return
 
         # doit
-        self.kmod_load()
+        self.kmod_load(module_addrs)
         return
 
 
