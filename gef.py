@@ -7315,17 +7315,13 @@ class Architecture:
         return None
 
     @property
+    @Cache.cache_this_session(until_new_objfile=True)
     def ptr_mangle_rotation(self):
-        if hasattr(self, "cached_ptr_mangle_rotation"):
-            return self.cached_ptr_mangle_rotation
-
         # glibc 2.44 check
         libc_version = get_libc_version(silent=True)
         if libc_version is not None and libc_version >= (2, 44):
-            self.cached_ptr_mangle_rotation = current_arch.ptrsize * 2 + 1
-        else:
-            self.cached_ptr_mangle_rotation = None
-        return self.cached_ptr_mangle_rotation
+            return current_arch.ptrsize * 2 + 1
+        return None
 
     def decode_cookie(self, value, cookie):
         if self.ptr_mangle_rotation is not None: # glibc 2.44+ use architecture-independent calculation formulas
@@ -7370,40 +7366,36 @@ class Architecture:
             key = "[sp + {:#x}]".format(i * sz)
             return key, val
 
-    def get_aliased_registers(self):
-        # use cache
-        if hasattr(self, "aliased_registers"):
-            return self.aliased_registers
-
+    @functools.cached_property
+    def aliased_registers(self):
         # {"$zero":"$zero/$x0", ...}
-        self.aliased_registers = {}
+        aliased_registers = {}
         for reg in self.all_registers:
             if self.alias_registers and reg in self.alias_registers:
                 reg_str = "{:s}/{:s}".format(reg, self.alias_registers[reg])
             else:
                 reg_str = reg
-            self.aliased_registers[reg] = reg_str
+            aliased_registers[reg] = reg_str
+        return aliased_registers
+
+    def get_aliased_registers(self):
         return self.aliased_registers
 
-    def get_aliased_registers_name_max(self):
-        # use cache
-        if hasattr(self, "aliased_registers_max_len"):
-            return self.aliased_registers_max_len
-
+    @functools.cached_property
+    def aliased_registers_name_max_len(self):
         # max(len("$zero/$x0"), ...)
-        maxlen = max([len(v) for v in self.get_aliased_registers().values() if v != self.flag_register])
-        self.aliased_registers_max_len = maxlen
-        return self.aliased_registers_max_len
+        return max(len(v) for v in self.get_aliased_registers().values() if v != self.flag_register)
+
+    def get_aliased_registers_name_max(self):
+        return self.aliased_registers_name_max_len
+
+    @functools.cached_property
+    def registers_name_max_len(self):
+        # max(len("$x0"), ...)
+        return max(len(v) for v in self.all_registers if v != self.flag_register)
 
     def get_registers_name_max(self):
-        # use cache
-        if hasattr(self, "registers_max_len"):
-            return self.registers_max_len
-
-        # max(len("$x0"), ...)
-        maxlen = max([len(v) for v in self.all_registers if v != self.flag_register])
-        self.registers_max_len = maxlen
-        return self.registers_max_len
+        return self.registers_name_max_len
 
     @staticmethod
     def flags_to_human(reg_value, value_table):
