@@ -75464,6 +75464,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("-s", "--skip-mount-path", action="store_true", help="skip resolving path.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
@@ -75495,16 +75496,16 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            return True
+        self.meta = []
 
         # file_systems
         self.file_systems = KernelAddressHeuristicFinder.get_file_systems()
         if self.file_systems is None:
-            self.quiet_err("Could not find file_systems")
-            return
-        self.quiet_info("file_systems: {:#x}".format(self.file_systems))
+            self.meta.append((self.quiet_err, "Could not find file_systems"))
+            return None
+        self.meta.append((self.quiet_info, "file_systems: {:#x}".format(self.file_systems)))
 
         """
         struct file_system_type {
@@ -75530,7 +75531,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         """
         # file_system_type->name
         self.offset_name = 0
-        self.quiet_info("offsetof(file_system_type, name): {:#x}".format(self.offset_name))
+        self.meta.append((self.quiet_info, "offsetof(file_system_type, name): {:#x}".format(self.offset_name)))
 
         # file_system_type->next
         best_next = None
@@ -75562,13 +75563,13 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
                 best_score = score
 
         if best_next is None:
-            self.quiet_err("Could not find file_system_type->next")
-            return False
+            self.meta.append((self.quiet_err, "Could not find file_system_type->next"))
+            return None
         self.offset_next = best_next
-        self.quiet_info("offsetof(file_system_type, next): {:#x}".format(self.offset_next))
+        self.meta.append((self.quiet_info, "offsetof(file_system_type, next): {:#x}".format(self.offset_next)))
 
         self.offset_fs_supers = self.offset_next + current_arch.ptrsize
-        self.quiet_info("offsetof(file_system_type, fs_supers): {:#x}".format(self.offset_fs_supers))
+        self.meta.append((self.quiet_info, "offsetof(file_system_type, fs_supers): {:#x}".format(self.offset_fs_supers)))
 
         """
         struct super_block {
@@ -75584,14 +75585,14 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         """
         # super_block->s_dev
         self.offset_s_dev = current_arch.ptrsize * 2
-        self.quiet_info("offsetof(super_block, s_dev): {:#x}".format(self.offset_s_dev))
+        self.meta.append((self.quiet_info, "offsetof(super_block, s_dev): {:#x}".format(self.offset_s_dev)))
 
         # super_block->s_instances
         current = read_int_from_memory(self.file_systems)
         while True:
             if current == 0:
-                self.quiet_err("Could not find file_systems who has valid fs_supers")
-                return False
+                self.meta.append((self.quiet_err, "Could not find file_systems who has valid fs_supers"))
+                return None
             fs_supers = read_int_from_memory(current + self.offset_fs_supers)
             if is_valid_addr(fs_supers):
                 break
@@ -75618,9 +75619,9 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
                 self.offset_s_instances = offset_base
                 break
         else:
-            self.quiet_err("Could not find super_block->s_instances")
-            return False
-        self.quiet_info("offsetof(super_block, s_instances): {:#x}".format(self.offset_s_instances))
+            self.meta.append((self.quiet_err, "Could not find super_block->s_instances"))
+            return None
+        self.meta.append((self.quiet_info, "offsetof(super_block, s_instances): {:#x}".format(self.offset_s_instances)))
 
         """
         struct super_block { // ~v3.11
@@ -75671,7 +75672,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             self.offset_s_mounts = self.offset_s_instances - current_arch.ptrsize * 6
         else:
             self.offset_s_mounts = self.offset_s_instances - current_arch.ptrsize * 5
-        self.quiet_info("offsetof(super_block, s_mounts): {:#x}".format(self.offset_s_mounts))
+        self.meta.append((self.quiet_info, "offsetof(super_block, s_mounts): {:#x}".format(self.offset_s_mounts)))
 
         """
         struct mount { // <-- s_mounts points here (v6.18~)
@@ -75768,12 +75769,10 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
                 self.offset_mount_mnt_instance = offset_mount_mnt_instance
                 self.offset_mount_mnt_devname += delta
                 break
-        self.quiet_info("offsetof(mount, mnt_instance): {:#x}".format(self.offset_mount_mnt_instance))
+        self.meta.append((self.quiet_info, "offsetof(mount, mnt_instance): {:#x}".format(self.offset_mount_mnt_instance)))
 
         # vfsmount->mnt_root
         self.offset_vfsmount_mnt_root = 0
-
-        self.initialized = True
         return True
 
     def get_fst_name(self, fst):
@@ -75787,10 +75786,8 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         name = KernelBlockDevicesCommand.get_bdev_name(major, minor)
         return major, minor, name
 
-    def get_offset_d_iname(self, dentry):
-        if hasattr(self, "offset_d_iname") and self.offset_d_iname is not None:
-            return self.offset_d_iname
-
+    @Cache.cache_this_session(cache_None=False)
+    def get_offset_dentry(self, dentry):
         """
         struct dentry {
             unsigned int d_flags;
@@ -75811,30 +75808,21 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
-        offset_d_iname = None
+        offset_dname_name = None
         for current in range(dentry, dentry + 0x100, current_arch.ptrsize):
             name = read_int_from_memory(current)
             if 0 < name - current <= 0x20:
-                offset_d_iname = name - dentry
-                self.offset_dname_name = current - dentry
+                offset_dname_name = current - dentry
                 break
-        if offset_d_iname is None:
+        if offset_dname_name is None:
             return None
-
-        self.offset_d_iname = offset_d_iname
-        return offset_d_iname
-
-    def get_offset_d_parent(self, dentry):
-        if hasattr(self, "offset_d_parent") and self.offset_d_parent is not None:
-            return self.offset_d_parent
 
         # dentry is mnt_root here, so d_parent must point back to itself. Find
         # that pointer instead of assuming that alignment padding is zero.
-        offset_d_parent = self.offset_dname_name - 0x8 - current_arch.ptrsize
+        offset_d_parent = offset_dname_name - 0x8 - current_arch.ptrsize
         for offset in (offset_d_parent, offset_d_parent - current_arch.ptrsize):
             if read_int_from_memory(dentry + offset) == dentry:
-                self.offset_d_parent = offset
-                return offset
+                return offset_dname_name, offset
         return None
 
     def get_mount(self, mnt_instance):
@@ -75848,12 +75836,10 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
 
         if not is_valid_addr(dentry):
             return None
-        offset_d_iname = self.get_offset_d_iname(dentry)
-        if offset_d_iname is None:
+        ret = self.get_offset_dentry(dentry)
+        if ret is None:
             return None
-        offset_d_parent = self.get_offset_d_parent(dentry)
-        if offset_d_parent is None:
-            return None
+        offset_dname_name, offset_d_parent = ret
 
         def is_root(dentry):
             return dentry == read_int_from_memory(dentry + offset_d_parent)
@@ -75878,12 +75864,12 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
                     switched = True
                     continue
 
-                name_ptr = read_int_from_memory(dentry + self.offset_dname_name)
+                name_ptr = read_int_from_memory(dentry + offset_dname_name)
                 name = read_cstring_from_memory(name_ptr)
                 filepath.append(name or "???")
                 break
 
-            name_ptr = read_int_from_memory(dentry + self.offset_dname_name)
+            name_ptr = read_int_from_memory(dentry + offset_dname_name)
             name = read_cstring_from_memory(name_ptr)
             filepath.append(name or "???")
 
@@ -76010,7 +75996,14 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             err("Unsupported before v3.3")
             return
 
-        if not self.initialize():
+        ret = self.initialize()
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
+            return
+
+        if args.meta:
             return
 
         self.out = []
