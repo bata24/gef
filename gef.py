@@ -127585,9 +127585,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     def resolve_kmem_cache_offset_node(self):
         # fast path
         try:
-            self.kmem_cache_offset_node = to_unsigned_long(
-                gdb.parse_and_eval("&((struct kmem_cache*)0).node")
-            )
+            self.kmem_cache_offset_node = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache*)0).node"))
             return
         except gdb.error:
             pass
@@ -127632,9 +127630,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     def resolve_kmem_cache_node_offset_slabs_partial(self):
         # fast path
         try:
-            self.kmem_cache_node_offset_slabs_partial = to_unsigned_long(
-                gdb.parse_and_eval("&((struct kmem_cache_node*)0).slabs_partial")
-            )
+            self.kmem_cache_node_offset_slabs_partial = to_unsigned_long(gdb.parse_and_eval("&((struct kmem_cache_node*)0).slabs_partial"))
             return
         except gdb.error:
             pass
@@ -127672,32 +127668,31 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                 return
         return
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            if not self.args.meta and not self.args.rescan:
-                return True
+        self.meta = []
 
         kversion = Kernel.kernel_version()
         if not kversion:
-            self.quiet_err("Failed to resolve kernel version")
-            return False
+            self.meta.append((self.quiet_err, "Failed to resolve kernel version"))
+            return None
 
         # resolve slab_caches
         self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
         if self.slab_caches is None:
-            self.quiet_err("Failed to resolve `slab_caches`")
-            return False
+            self.meta.append((self.quiet_err, "Failed to resolve `slab_caches`"))
+            return None
         else:
-            self.quiet_info("slab_caches: {:#x}".format(self.slab_caches))
+            self.meta.append((self.quiet_info, "slab_caches: {:#x}".format(self.slab_caches)))
 
         # resolve __per_cpu_offset
         __per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
         if __per_cpu_offset is None:
-            self.quiet_info("__per_cpu_offset: Not found")
+            self.meta.append((self.quiet_info, "__per_cpu_offset: Not found"))
             self.cpu_offset = []
             self.ncpus = 1
         else:
-            self.quiet_info("__per_cpu_offset: {:#x}".format(__per_cpu_offset))
+            self.meta.append((self.quiet_info, "__per_cpu_offset: {:#x}".format(__per_cpu_offset)))
             self.cpu_offset = Kernel.get_each_cpu_offset(__per_cpu_offset)
             self.ncpus = len(self.cpu_offset)
 
@@ -127708,50 +127703,50 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.kmem_cache_offset_list = current_arch.ptrsize * 7 + 4 * 10
         else:
             self.kmem_cache_offset_list = current_arch.ptrsize * 4 + 4 * 12
-        self.quiet_info("offsetof(kmem_cache, list): {:#x}".format(self.kmem_cache_offset_list))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, list): {:#x}".format(self.kmem_cache_offset_list)))
 
         # offsetof(kmem_cache, name)
         self.kmem_cache_offset_name = self.kmem_cache_offset_list - current_arch.ptrsize
-        self.quiet_info("offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name)))
 
         # offsetof(kmem_cache, size)
         if "3.18" <= kversion:
             self.kmem_cache_offset_size = current_arch.ptrsize + 4 * 3
         else:
             self.kmem_cache_offset_size = 4 * 3
-        self.quiet_info("offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size)))
 
         # offsetof(kmem_cache, flags)
         self.kmem_cache_offset_flags = self.kmem_cache_offset_size + 4 * 3
-        self.quiet_info("offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags)))
 
         # offsetof(kmem_cache, num)
         self.kmem_cache_offset_num = self.kmem_cache_offset_flags + 4
-        self.quiet_info("offsetof(kmem_cache, num): {:#x}".format(self.kmem_cache_offset_num))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, num): {:#x}".format(self.kmem_cache_offset_num)))
 
         # offsetof(kmem_cache, gfporder)
         self.kmem_cache_offset_gfporder = self.kmem_cache_offset_num + 4
-        self.quiet_info("offsetof(kmem_cache, gfporder): {:#x}".format(self.kmem_cache_offset_gfporder))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, gfporder): {:#x}".format(self.kmem_cache_offset_gfporder)))
 
         # offsetof(kmem_cache, object_size)
         self.kmem_cache_offset_object_size = self.kmem_cache_offset_list + current_arch.ptrsize * 2 + 4
-        self.quiet_info("offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size)))
 
         # offsetof(kmem_cache, node)
         self.resolve_kmem_cache_offset_node()
         if self.kmem_cache_offset_node is None:
-            self.quiet_info("offsetof(kmem_cache, node): Not found")
-            return False
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache, node): Not found"))
+            return None
         else:
-            self.quiet_info("offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node))
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node)))
 
         # offsetof(kmem_cache, cpu_cache) / offsetof(kmem_cache, array)
         if "3.18" <= kversion:
             self.kmem_cache_offset_cpu_cache = 0
-            self.quiet_info("offsetof(kmem_cache, cpu_cache): {:#x}".format(self.kmem_cache_offset_cpu_cache))
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache, cpu_cache): {:#x}".format(self.kmem_cache_offset_cpu_cache)))
         else:
             self.kmem_cache_offset_array = self.kmem_cache_offset_node + current_arch.ptrsize
-            self.quiet_info("offsetof(kmem_cache, array): {:#x}".format(self.kmem_cache_offset_array))
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache, array): {:#x}".format(self.kmem_cache_offset_array)))
 
         # offsetof(page, next) / offsetof(slab, next)
         if kversion < "4.16":
@@ -127764,7 +127759,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.page_offset_next = current_arch.ptrsize
         else:
             self.page_offset_next = current_arch.ptrsize * 2
-        self.quiet_info("offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next))
+        self.meta.append((self.quiet_info, "offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next)))
 
         # offsetof(page, freelist) / offsetof(slab, freelist)
         if kversion < "4.18":
@@ -127775,7 +127770,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.page_offset_freelist = current_arch.ptrsize * 4
         else:
             self.page_offset_freelist = current_arch.ptrsize * 4
-        self.quiet_info("offsetof({:s}, freelist): {:#x}".format(Kernel.slab_page_str(), self.page_offset_freelist))
+        self.meta.append((self.quiet_info, "offsetof({:s}, freelist): {:#x}".format(Kernel.slab_page_str(), self.page_offset_freelist)))
 
         # offsetof(page, slab_cache) / offsetof(slab, slab_cache)
         if kversion < "4.16" and is_32bit():
@@ -127788,7 +127783,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.page_offset_slab_cache = current_arch.ptrsize * 3
         else:
             self.page_offset_slab_cache = current_arch.ptrsize
-        self.quiet_info("offsetof({:s}, slab_cache): {:#x}".format(Kernel.slab_page_str(), self.page_offset_slab_cache))
+        self.meta.append((self.quiet_info, "offsetof({:s}, slab_cache): {:#x}".format(Kernel.slab_page_str(), self.page_offset_slab_cache)))
 
         # offsetof(page, s_mem) / offsetof(slab, s_mem)
         if kversion < "4.18":
@@ -127799,7 +127794,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.page_offset_s_mem = 8 + current_arch.ptrsize * 5
         else:
             self.page_offset_s_mem = 8 + current_arch.ptrsize * 5
-        self.quiet_info("offsetof({:s}, s_mem): {:#x}".format(Kernel.slab_page_str(), self.page_offset_s_mem))
+        self.meta.append((self.quiet_info, "offsetof({:s}, s_mem): {:#x}".format(Kernel.slab_page_str(), self.page_offset_s_mem)))
 
         # offsetof(page, active) / offsetof(slab, active)
         if kversion < "4.18":
@@ -127810,31 +127805,31 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.page_offset_active = current_arch.ptrsize * 6
         else:
             self.page_offset_active = current_arch.ptrsize * 6
-        self.quiet_info("offsetof({:s}, active): {:#x}".format(Kernel.slab_page_str(), self.page_offset_active))
+        self.meta.append((self.quiet_info, "offsetof({:s}, active): {:#x}".format(Kernel.slab_page_str(), self.page_offset_active)))
 
         # offsetof(kmem_cache_node, slabs_partial)
         self.resolve_kmem_cache_node_offset_slabs_partial()
         if self.kmem_cache_node_offset_slabs_partial is None:
-            self.quiet_info("offsetof(kmem_cache_node, slabs_partial): Not found")
-            return False
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, slabs_partial): Not found"))
+            return None
         else:
-            self.quiet_info("offsetof(kmem_cache_node, slabs_partial): {:#x}".format(self.kmem_cache_node_offset_slabs_partial))
+            self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, slabs_partial): {:#x}".format(self.kmem_cache_node_offset_slabs_partial)))
 
         # offsetof(kmem_cache_node, slabs_full)
         self.kmem_cache_node_offset_slabs_full = self.kmem_cache_node_offset_slabs_partial + current_arch.ptrsize * 2
-        self.quiet_info("offsetof(kmem_cache_node, slabs_full): {:#x}".format(self.kmem_cache_node_offset_slabs_full))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, slabs_full): {:#x}".format(self.kmem_cache_node_offset_slabs_full)))
 
         # offsetof(kmem_cache_node, slabs_free)
         self.kmem_cache_node_offset_slabs_free = self.kmem_cache_node_offset_slabs_full + current_arch.ptrsize * 2
-        self.quiet_info("offsetof(kmem_cache_node, slabs_free): {:#x}".format(self.kmem_cache_node_offset_slabs_free))
+        self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, slabs_free): {:#x}".format(self.kmem_cache_node_offset_slabs_free)))
 
         # offsetof(array_cache, avail)
         self.array_cache_offset_avail = 0
-        self.quiet_info("offsetof(array_cache, avail): {:#x}".format(self.array_cache_offset_avail))
+        self.meta.append((self.quiet_info, "offsetof(array_cache, avail): {:#x}".format(self.array_cache_offset_avail)))
 
         # offsetof(array_cache, limit)
         self.array_cache_offset_limit = 4
-        self.quiet_info("offsetof(array_cache, limit): {:#x}".format(self.array_cache_offset_limit))
+        self.meta.append((self.quiet_info, "offsetof(array_cache, limit): {:#x}".format(self.array_cache_offset_limit)))
 
         # offsetof(array_cache, entry)
         if "3.17" <= kversion:
@@ -127842,9 +127837,8 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         else:
             sizeof_raw_spinlock_t = self.kmem_cache_node_offset_slabs_partial
             self.array_cache_offset_entry = 4 * 4 + sizeof_raw_spinlock_t
-        self.quiet_info("offsetof(array_cache, entry): {:#x}".format(self.array_cache_offset_entry))
+        self.meta.append((self.quiet_info, "offsetof(array_cache, entry): {:#x}".format(self.array_cache_offset_entry)))
 
-        self.initialized = True
         return True
 
     def get_next_kmem_cache(self, addr, point_to_base=True):
@@ -128206,7 +128200,14 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def slabwalk(self, target_names, cpu):
-        if self.initialize() is False:
+        if self.args.rescan:
+            Cache.clear_cache_for(self.initialize)
+
+        ret = self.initialize()
+        if self.args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
             self.quiet_err("Initialization failed")
             return
 
