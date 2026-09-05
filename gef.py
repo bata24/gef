@@ -133664,11 +133664,8 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            if not self.args.meta and not self.args.rescan:
-                return True
-
         """
         struct vmap_area {
             unsigned long va_start;
@@ -133710,33 +133707,6 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
 
         kversion = Kernel.kernel_version()
 
-        if kversion is None:
-            self.vmap_area_list = None
-        elif kversion < "6.9":
-            self.vmap_area_list = KernelAddressHeuristicFinder.get_vmap_area_list()
-            if not self.vmap_area_list:
-                self.quiet_err("Could not find vmap_area_list")
-            else:
-                self.quiet_info("vmap_area_list: {:#x}".format(self.vmap_area_list))
-        else:
-            self.vmap_area_list = KernelAddressHeuristicFinder.get_vmap_nodes_busy_head()
-            if not self.vmap_area_list:
-                self.quiet_err("Could not find vmap_nodes[0].busy.head")
-            else:
-                self.quiet_info("vmap_nodes[0].busy.head: {:#x}".format(self.vmap_area_list))
-
-        if kversion and "5.2" <= kversion:
-            self.free_vmap_area_list = KernelAddressHeuristicFinder.get_free_vmap_area_list()
-            if not self.free_vmap_area_list:
-                self.quiet_err("Could not find free_vmap_area_list")
-            else:
-                self.quiet_info("free_vmap_area_list: {:#x}".format(self.free_vmap_area_list))
-        else:
-            self.free_vmap_area_list = None
-
-        if not self.vmap_area_list and not self.free_vmap_area_list:
-            return False
-
         # vmap_area->list
         if kversion and "5.4" <= kversion:
             self.offset_list = current_arch.ptrsize * 5
@@ -133744,7 +133714,6 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             self.offset_list = current_arch.ptrsize * 7
         else:
             self.offset_list = current_arch.ptrsize * 6
-        self.quiet_info("offsetof(vmap_area, list): {:#x}".format(self.offset_list))
 
         # vmap_area->vm
         if kversion and "5.4" <= kversion:
@@ -133753,14 +133722,46 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             self.offset_vm = self.offset_list + current_arch.ptrsize * 3
         else:
             self.offset_vm = self.offset_list + current_arch.ptrsize * 4
-        self.quiet_info("offsetof(vmap_area, vm): {:#x}".format(self.offset_vm))
 
         # vm_struct->flags
         self.offset_flags = current_arch.ptrsize * 3
-        self.quiet_info("offsetof(vm_struct, flags): {:#x}".format(self.offset_flags))
 
-        self.initialized = True
+        if kversion is None:
+            self.vmap_area_list = None
+        elif kversion < "6.9":
+            self.vmap_area_list = KernelAddressHeuristicFinder.get_vmap_area_list()
+        else:
+            self.vmap_area_list = KernelAddressHeuristicFinder.get_vmap_nodes_busy_head()
+
+        if kversion and "5.2" <= kversion:
+            self.free_vmap_area_list = KernelAddressHeuristicFinder.get_free_vmap_area_list()
+        else:
+            self.free_vmap_area_list = None
+
+        if not self.vmap_area_list and not self.free_vmap_area_list:
+            return None
         return True
+
+    def print_meta(self):
+        kversion = Kernel.kernel_version()
+
+        if kversion is not None:
+            name = "vmap_area_list" if kversion < "6.9" else "vmap_nodes[0].busy.head"
+            if self.vmap_area_list:
+                self.quiet_info("{:s}: {:#x}".format(name, self.vmap_area_list))
+            else:
+                self.quiet_err("Could not find {:s}".format(name))
+
+        if kversion and "5.2" <= kversion:
+            if self.free_vmap_area_list:
+                self.quiet_info("free_vmap_area_list: {:#x}".format(self.free_vmap_area_list))
+            else:
+                self.quiet_err("Could not find free_vmap_area_list")
+
+        self.quiet_info("offsetof(vmap_area, list): {:#x}".format(self.offset_list))
+        self.quiet_info("offsetof(vmap_area, vm): {:#x}".format(self.offset_vm))
+        self.quiet_info("offsetof(vm_struct, flags): {:#x}".format(self.offset_flags))
+        return
 
     def parse_vmap_area_list(self, head, used):
         if head is None or not is_valid_addr(head):
@@ -133854,11 +133855,16 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
+        if args.rescan:
+            Cache.clear_cache_for(self.initialize)
+
         ret = self.initialize()
-        if ret is False:
+        if args.meta or not ret:
+            self.print_meta()
+        if not ret:
             return
 
-        if self.args.meta:
+        if args.meta:
             return
 
         self.out = []
