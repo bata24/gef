@@ -5044,33 +5044,30 @@ class GlibcHeap:
                 chunks_all[i] = self.get_bins_list(i)
             return chunks_all
 
-        def reset_cache(self):
-            """Make some caches.
-                - cached_XXX_list
-                - cached_XXX_addr_list
-                - bins_dict_for_address
-                - bins_dict_for_base_address
-            """
-            # cached_XXX_list = {bin_idx1: [chunk, chunk, ...], bin_idx2: [chunk, chunk, ...]}
-            self.cached_tcache_list = self.get_tcache_list()
-            self.cached_fastbins_list = self.get_fastbins_list()
-            self.cached_unsortedbin_list = self.get_unsortedbin_list()
-            self.cached_smallbins_list = self.get_smallbins_list()
-            self.cached_largebins_list = self.get_largebins_list()
+        @Cache.cache_until_next
+        def get_freelist_cache(self):
+            # bin_idx -> [chunk, chunk, ...]
+            tcache_lists = self.get_tcache_list()
+            fastbins_lists = self.get_fastbins_list()
+            unsortedbin_lists = self.get_unsortedbin_list()
+            smallbins_lists = self.get_smallbins_list()
+            largebins_lists = self.get_largebins_list()
 
             def int_filter(a):
                 return {x for x in a if isinstance(x, int)}
 
-            # cacheed_XXX_addr_list = {chunk, chunk, ...}
-            self.cached_tcache_addr_list = int_filter(set().union(*self.cached_tcache_list.values()))
-            self.cached_fastbins_addr_list = int_filter(set().union(*self.cached_fastbins_list.values()))
-            self.cached_unsortedbin_addr_list = int_filter(self.cached_unsortedbin_list[0])
-            self.cached_smallbins_addr_list = int_filter(set().union(*self.cached_smallbins_list.values()))
-            self.cached_largebins_addr_list = int_filter(set().union(*self.cached_largebins_list.values()))
+            # bin type -> {chunk, chunk, ...}
+            addr_lists = {
+                "tcache": int_filter(set().union(*tcache_lists.values())),
+                "fastbins": int_filter(set().union(*fastbins_lists.values())),
+                "unsortedbin": int_filter(unsortedbin_lists[0]),
+                "smallbins": int_filter(set().union(*smallbins_lists.values())),
+                "largebins": int_filter(set().union(*largebins_lists.values())),
+            }
 
             # dict[address] = ["bins info1", "bins info2", ...]
-            self.bins_dict_for_address = {}
-            for tcache_idx, tcache_list in self.cached_tcache_list.items():
+            bins_dict_for_address = {}
+            for tcache_idx, tcache_list in tcache_lists.items():
                 position_table = GefUtil.make_position_table(tcache_list)
                 for address in set(tcache_list):
                     if not isinstance(address, int):
@@ -5085,11 +5082,11 @@ class GlibcHeap:
                         m = "tcache[idx={:d},sz={:#x}-{:#x}][{:s}/{:d}]".format(
                             tcache_idx, sz_min, sz_max, pos, len(tcache_list),
                         )
-                    new_list = self.bins_dict_for_address.get(address, []) + [m]
-                    self.bins_dict_for_address[address] = new_list
+                    new_list = bins_dict_for_address.get(address, []) + [m]
+                    bins_dict_for_address[address] = new_list
 
             fastbins_table = GlibcHeap.get_binsize_table()["fastbins"]
-            for fastbin_idx, fastbin_list in self.cached_fastbins_list.items():
+            for fastbin_idx, fastbin_list in fastbins_lists.items():
                 position_table = GefUtil.make_position_table(fastbin_list)
                 for address in set(fastbin_list):
                     if not isinstance(address, int):
@@ -5100,22 +5097,22 @@ class GlibcHeap:
                         m = "fastbins[idx={:d},sz={:#x}][{:s}/{:d}]".format(fastbin_idx, sz, pos, len(fastbin_list))
                     else:
                         m = "fastbins[idx={:d}][{:s}/{:d}]".format(fastbin_idx, pos, len(fastbin_list))
-                    new_list = self.bins_dict_for_address.get(address, []) + [m]
-                    self.bins_dict_for_address[address] = new_list
+                    new_list = bins_dict_for_address.get(address, []) + [m]
+                    bins_dict_for_address[address] = new_list
 
             # dict[base_address] = ["bins info1", "bins info2", ...]
-            self.bins_dict_for_base_address = {}
-            for _, unsortedbin_list in self.cached_unsortedbin_list.items():
+            bins_dict_for_base_address = {}
+            for _, unsortedbin_list in unsortedbin_lists.items():
                 position_table = GefUtil.make_position_table(unsortedbin_list)
                 for base_address in set(unsortedbin_list):
                     if not isinstance(base_address, int):
                         continue
                     pos = position_table[base_address]
                     m = "unsortedbins[{:s}/{:d}]".format(pos, len(unsortedbin_list))
-                    new_list = self.bins_dict_for_base_address.get(base_address, []) + [m]
-                    self.bins_dict_for_base_address[base_address] = new_list
+                    new_list = bins_dict_for_base_address.get(base_address, []) + [m]
+                    bins_dict_for_base_address[base_address] = new_list
 
-            for smallbin_idx, smallbin_list in self.cached_smallbins_list.items():
+            for smallbin_idx, smallbin_list in smallbins_lists.items():
                 position_table = GefUtil.make_position_table(smallbin_list)
                 for base_address in set(smallbin_list):
                     if not isinstance(base_address, int):
@@ -5123,10 +5120,10 @@ class GlibcHeap:
                     pos = position_table[base_address]
                     sz = GlibcHeap.get_binsize_table()["small_bins"][smallbin_idx]["size"]
                     m = "smallbins[idx={:d},sz={:#x}][{:s}/{:d}]".format(smallbin_idx, sz, pos, len(smallbin_list))
-                    new_list = self.bins_dict_for_base_address.get(base_address, []) + [m]
-                    self.bins_dict_for_base_address[base_address] = new_list
+                    new_list = bins_dict_for_base_address.get(base_address, []) + [m]
+                    bins_dict_for_base_address[base_address] = new_list
 
-            for largebin_idx, largebin_list in self.cached_largebins_list.items():
+            for largebin_idx, largebin_list in largebins_lists.items():
                 position_table = GefUtil.make_position_table(largebin_list)
                 for base_address in set(largebin_list):
                     if not isinstance(base_address, int):
@@ -5137,34 +5134,33 @@ class GlibcHeap:
                     m = "largebins[idx={:d},sz={:#x}-{:#x}][{:s}/{:d}]".format(
                         largebin_idx, sz_min, sz_max, pos, len(largebin_list),
                     )
-                    new_list = self.bins_dict_for_base_address.get(base_address, []) + [m]
-                    self.bins_dict_for_base_address[base_address] = new_list
+                    new_list = bins_dict_for_base_address.get(base_address, []) + [m]
+                    bins_dict_for_base_address[base_address] = new_list
+            return addr_lists, bins_dict_for_address, bins_dict_for_base_address
+
+        def reset_cache(self): # noqa
+            Cache.clear_cache_for(self.get_freelist_cache)
             return
 
         def is_chunk_in_tcache(self, chunk):
-            if not hasattr(self, "cached_tcache_addr_list"):
-                self.reset_cache()
-            return chunk.address in self.cached_tcache_addr_list
+            addr_lists, _, _ = self.get_freelist_cache()
+            return chunk.address in addr_lists["tcache"]
 
         def is_chunk_in_fastbins(self, chunk):
-            if not hasattr(self, "cached_fastbins_addr_list"):
-                self.reset_cache()
-            return chunk.address in self.cached_fastbins_addr_list
+            addr_lists, _, _ = self.get_freelist_cache()
+            return chunk.address in addr_lists["fastbins"]
 
         def is_chunk_in_unsortedbin(self, chunk):
-            if not hasattr(self, "cached_unsortedbin_addr_list"):
-                self.reset_cache()
-            return chunk.chunk_base_address in self.cached_unsortedbin_addr_list
+            addr_lists, _, _ = self.get_freelist_cache()
+            return chunk.chunk_base_address in addr_lists["unsortedbin"]
 
         def is_chunk_in_smallbins(self, chunk):
-            if not hasattr(self, "cached_smallbins_addr_list"):
-                self.reset_cache()
-            return chunk.chunk_base_address in self.cached_smallbins_addr_list
+            addr_lists, _, _ = self.get_freelist_cache()
+            return chunk.chunk_base_address in addr_lists["smallbins"]
 
         def is_chunk_in_largebins(self, chunk):
-            if not hasattr(self, "cached_largebins_addr_list"):
-                self.reset_cache()
-            return chunk.chunk_base_address in self.cached_largebins_addr_list
+            addr_lists, _, _ = self.get_freelist_cache()
+            return chunk.chunk_base_address in addr_lists["largebins"]
 
         def is_chunk_in_freelists(self, chunk):
             if self.is_chunk_in_tcache(chunk):
@@ -5191,14 +5187,10 @@ class GlibcHeap:
             else:
                 return []
 
+            _, bins_dict_for_address, bins_dict_for_base_address = self.get_freelist_cache()
             info = []
-            if not hasattr(self, "bins_dict_for_address"):
-                self.reset_cache()
-            info.extend(self.bins_dict_for_address.get(address, []))
-
-            if not hasattr(self, "bins_dict_for_base_address"):
-                self.reset_cache()
-            info.extend(self.bins_dict_for_base_address.get(base_address, []))
+            info.extend(bins_dict_for_address.get(address, []))
+            info.extend(bins_dict_for_base_address.get(base_address, []))
 
             if not skip_top:
                 if base_address == self.top:
