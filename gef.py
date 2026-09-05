@@ -129505,6 +129505,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
                         help="use physmap for virt -> phys translation to speed up (when KGDB mode, x64/arm64 only).")
     parser.add_argument("--MIGRATE_PCPTYPES", type=int, choices=[3, 4], default=3,
                         help="use specify value; linux: 3, android: 4 (2023~).")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-c", "--count", metavar="N", type=AddressUtil.parse_address, default=5,
                         help="max entries to read per list (default: %(default)s, 0=unlimited). -s/-S/-v/-vv override this to 0.")
@@ -129921,9 +129922,9 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         self.MAX_ORDER = (current - free_area) // self.sizeof_free_area
         return
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            return True
+        self.meta = []
 
         # per_cpu_offset
         __per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
@@ -129935,7 +129936,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         # search for node_data
         node_data = KernelAddressHeuristicFinder.get_node_data()
         if node_data:
-            self.quiet_info("node_data: {:#x}".format(node_data))
+            self.meta.append((self.quiet_info, "node_data: {:#x}".format(node_data)))
             # parse each node (*pglist_data)
             self.nodes = []
             current = node_data
@@ -129949,13 +129950,13 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         else:
             first_node = KernelAddressHeuristicFinder.get_node_data0()
             if first_node:
-                self.quiet_info("first_node: {:#x}".format(first_node))
+                self.meta.append((self.quiet_info, "first_node: {:#x}".format(first_node)))
                 self.nodes = [first_node]
             else:
-                self.quiet_err("Failed to resolve node_data or first_node")
-                return False
+                self.meta.append((self.quiet_err, "Failed to resolve node_data or first_node"))
+                return None
 
-        self.quiet_info("num of nodes: {:d}".format(len(self.nodes)))
+        self.meta.append((self.quiet_info, "num of nodes: {:d}".format(len(self.nodes))))
         assert len(self.nodes) > 0
 
         """
@@ -130047,16 +130048,16 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
         # zone->name, sizeof(struct zone)
         self.resolve_zone_offset_name()
-        self.quiet_info("offsetof(zone, name): {:#x}".format(self.offset_name))
-        self.quiet_info("sizeof(zone): {:#x}".format(self.sizeof_zone))
+        self.meta.append((self.quiet_info, "offsetof(zone, name): {:#x}".format(self.offset_name)))
+        self.meta.append((self.quiet_info, "sizeof(zone): {:#x}".format(self.sizeof_zone)))
 
         # zone->per_cpu_pageset
         self.resolve_zone_offset_per_cpu_pageset()
         if self.offset_per_cpu_pageset is None:
-            self.quiet_err("Failed to resolve per_cpu_pageset")
-            return False
+            self.meta.append((self.quiet_err, "Failed to resolve per_cpu_pageset"))
+            return None
         else:
-            self.quiet_info("offsetof(zone, per_cpu_pageset): {:#x}".format(self.offset_per_cpu_pageset))
+            self.meta.append((self.quiet_info, "offsetof(zone, per_cpu_pageset): {:#x}".format(self.offset_per_cpu_pageset)))
 
         # per_cpu_pageset->lists
         if __per_cpu_offset is None:
@@ -130065,35 +130066,32 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             per_cpu_pageset = read_int_from_memory(self.nodes[0] + self.offset_per_cpu_pageset) + self.cpu_offset[0]
             per_cpu_pageset = AddressUtil.normalize_address(per_cpu_pageset)
         self.resolve_per_cpu_pages_offset_lists(per_cpu_pageset)
-        self.quiet_info("offsetof(per_cpu_pages, lists): {:#x}".format(self.offset_lists))
+        self.meta.append((self.quiet_info, "offsetof(per_cpu_pages, lists): {:#x}".format(self.offset_lists)))
 
         # NR_PCP_LISTS
         self.resolve_NR_PCP_LISTS(per_cpu_pageset)
-        self.quiet_info("NR_PCP_LISTS: {:d}".format(self.NR_PCP_LISTS))
+        self.meta.append((self.quiet_info, "NR_PCP_LISTS: {:d}".format(self.NR_PCP_LISTS)))
 
         # MAX_NR_ZONES
         self.resolve_MAX_NR_ZONES()
-        self.quiet_info("MAX_NR_ZONES: {:d}".format(self.MAX_NR_ZONES))
+        self.meta.append((self.quiet_info, "MAX_NR_ZONES: {:d}".format(self.MAX_NR_ZONES)))
 
         # zone->free_area
         self.resolve_zone_offset_free_area()
-        self.quiet_info("offsetof(zone, free_area): {:#x}".format(self.offset_free_area))
+        self.meta.append((self.quiet_info, "offsetof(zone, free_area): {:#x}".format(self.offset_free_area)))
 
         # MIGRATE_TYPES
         self.resolve_MIGRATE_TYPES()
-        self.quiet_info("MIGRATE_TYPES: {:d}".format(self.MIGRATE_TYPES))
-
-        # migratetype_names
-        self.resolve_migratetype_names()
+        self.meta.append((self.quiet_info, "MIGRATE_TYPES: {:d}".format(self.MIGRATE_TYPES)))
 
         # sizeof(free_area)
         sizeof_list_head =  current_arch.ptrsize * 2
         self.sizeof_free_area = sizeof_list_head * self.MIGRATE_TYPES + current_arch.ptrsize
-        self.quiet_info("sizeof(free_area): {:#x}".format(self.sizeof_free_area))
+        self.meta.append((self.quiet_info, "sizeof(free_area): {:#x}".format(self.sizeof_free_area)))
 
         # MAX_ORDER
         self.resolve_MAX_ORDER()
-        self.quiet_info("MAX_ORDER: {:d}".format(self.MAX_ORDER))
+        self.meta.append((self.quiet_info, "MAX_ORDER: {:d}".format(self.MAX_ORDER)))
 
         """
         struct page { // v5.18~
@@ -130130,7 +130128,6 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         else:
             self.offset_lru = current_arch.ptrsize * 3 + 8
 
-        self.initialized = True
         return True
 
     class Entry:
@@ -130567,7 +130564,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
                 return
 
         if args.rescan:
-            self.initialized = False
+            Cache.clear_cache_for(self.initialize)
 
         self.args.sort = args.sort_verbose or args.sort
         self.args.verbose = args.vverbose or args.verbose
@@ -130576,8 +130573,18 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
         # initialize
         self.quiet_info("Wait for memory scan")
-        if not self.initialize():
+        ret = self.initialize()
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
             return
+
+        if args.meta:
+            return
+
+        # migratetype_names
+        self.resolve_migratetype_names()
 
         # do not use cache
         if self.args.sort_verbose and not self.args.skip_phys and not self.args.use_physmap:
@@ -130624,6 +130631,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
                         help="use physmap for virt -> phys translation (x64/arm64 only).")
     parser.add_argument("--MIGRATE_PCPTYPES", type=int, choices=[3, 4], default=3,
                         help="use specify value; linux: 3, android: 4 (2023~).")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
@@ -130923,14 +130931,21 @@ class BuddyContainsCommand(BuddyDumpCommand):
                 return
 
         if args.rescan:
-            self.initialized = False
+            Cache.clear_cache_for(self.initialize)
 
         self.fill_buddy_dump_args()
 
         # initialize
         self.quiet_info("Wait for memory scan")
-        if not self.initialize():
+        ret = self.initialize()
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
             self.quiet_err("Failed to initialize")
+            return
+
+        if args.meta:
             return
 
         self.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
