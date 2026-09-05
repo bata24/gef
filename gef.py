@@ -136236,10 +136236,8 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
             return None
         return tp.sizeof
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            return True
-
         self.PageShift = 13
         self.PageSize = 1 << self.PageShift
 
@@ -136286,7 +136284,6 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         self.offset_allocBits = self.get_struct_offset("runtime.mspan", "allocBits") or 0x40
         self.offset_spanclass = self.get_struct_offset("runtime.mspan", "spanClass") or 0x62
 
-        self.initialized = True
         return True
 
     def get_mheap_(self):
@@ -136437,7 +136434,8 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         self.out = []
-        self.initialize()
+        if not self.initialize():
+            return
 
         if args.mspan is not None:
             mspans = [self.parse_mspan(args.mspan)]
