@@ -28462,9 +28462,12 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
         return
 
     class LightRangeDict:
+        DEFAULT_UNSET = object()
+
         def __init__(self):
             self.starts = []
             self.items = []
+            self.default = self.DEFAULT_UNSET
             return
 
         def add(self, start, stop, value):
@@ -28491,7 +28494,7 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                 start, stop, value = self.items[i]
                 if key < stop:
                     return value
-            if hasattr(self, "default"):
+            if self.default is not self.DEFAULT_UNSET:
                 return self.default
             raise KeyError(key)
 
