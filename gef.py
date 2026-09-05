@@ -141192,79 +141192,73 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            return True
+    # SSMalloc/include-x86_64/cpu.h
+    PAGE_SIZE = 0x1000
+    CHUNK_DATA_SIZE = 0x10 * PAGE_SIZE
+    DEFAULT_BLOCK_CLASS = 100
+    MAX_CORE_ID = 8
+    BLOCK_BUF_CNT = 16
+    #LARGE_CLASS = 100
+    DUMMY_CLASS = 101
+    #LARGE_OWNER = 0xdead
+    ABA_ADDR_BIT = 48
+    ABA_ADDR_MASK = (1 << ABA_ADDR_BIT) - 1
 
-        # SSMalloc/include-x86_64/cpu.h
-        self.PAGE_SIZE = 0x1000
-        self.CHUNK_DATA_SIZE = 0x10 * self.PAGE_SIZE
-        self.DEFAULT_BLOCK_CLASS = 100
-        self.MAX_CORE_ID = 8
-        self.BLOCK_BUF_CNT = 16
-        #self.LARGE_CLASS = 100
-        self.DUMMY_CLASS = 101
-        #self.LARGE_OWNER = 0xdead
-        self.ABA_ADDR_BIT = 48
-        self.ABA_ADDR_MASK = (1 << self.ABA_ADDR_BIT) - 1
+    # queue.h / double-list.h derived sizes on x86_64
+    #sizeof_linked_list_elem = 0x18
+    sizeof_linked_list = 0x10
+    #sizeof_seq_queue = 0x8
+    sizeof_queue = 0x40
+    sizeof_obj_buf = 0x20
+    sizeof_dchunk = 0x100
+    CHUNK_SIZE = CHUNK_DATA_SIZE + sizeof_dchunk
+    MAX_FREE_CHUNK = (4 * 0x100000) // CHUNK_SIZE
 
-        # queue.h / double-list.h derived sizes on x86_64
-        #self.sizeof_linked_list_elem = 0x18
-        self.sizeof_linked_list = 0x10
-        #self.sizeof_seq_queue = current_arch.ptrsize
-        self.sizeof_queue = 0x40
-        self.sizeof_obj_buf = 0x20
-        self.sizeof_dchunk = 0x100
-        self.CHUNK_SIZE = self.CHUNK_DATA_SIZE + self.sizeof_dchunk
-        self.MAX_FREE_CHUNK = (4 * 0x100000) // self.CHUNK_SIZE
+    # dchunk_t offsets
+    offset_dchunk_next = 0x8
+    offset_dchunk_prev = 0x10
+    offset_dchunk_numa_node = 0x18
+    offset_dchunk_owner = 0x40
+    offset_dchunk_size_cls = 0x48
+    offset_dchunk_state = 0x80
+    offset_dchunk_free_blk_cnt = 0x84
+    offset_dchunk_blk_cnt = 0x88
+    offset_dchunk_free_head = 0x90
+    offset_dchunk_block_size = 0x98
+    offset_dchunk_free_mem = 0xa0
+    offset_dchunk_remote_free_head = 0xc0
 
-        # dchunk_t offsets
-        self.offset_dchunk_next = current_arch.ptrsize
-        self.offset_dchunk_prev = current_arch.ptrsize * 2
-        self.offset_dchunk_numa_node = 0x18
-        self.offset_dchunk_owner = 0x40
-        self.offset_dchunk_size_cls = 0x48
-        self.offset_dchunk_state = 0x80
-        self.offset_dchunk_free_blk_cnt = 0x84
-        self.offset_dchunk_blk_cnt = 0x88
-        self.offset_dchunk_free_head = 0x90
-        self.offset_dchunk_block_size = 0x98
-        self.offset_dchunk_free_mem = 0xa0
-        self.offset_dchunk_remote_free_head = 0xc0
+    # lheap_t offsets
+    offset_lheap_numa_node = 0x18
+    offset_lheap_free_head = 0x20
+    offset_lheap_free_cnt = 0x28
+    offset_lheap_foreground = 0x30
+    offset_lheap_background = 0x350
+    offset_lheap_dummy_chunk = 0x9c0
+    offset_lheap_block_bufs = 0xac0
+    offset_lheap_need_gc = 0xcc0
 
-        # lheap_t offsets
-        self.offset_lheap_numa_node = 0x18
-        self.offset_lheap_free_head = 0x20
-        self.offset_lheap_free_cnt = 0x28
-        self.offset_lheap_foreground = 0x30
-        self.offset_lheap_background = 0x350
-        self.offset_lheap_dummy_chunk = 0x9c0
-        self.offset_lheap_block_bufs = 0xac0
-        self.offset_lheap_need_gc = 0xcc0
+    # obj_buf_t offsets
+    offset_obj_buf_dc = 0x0
+    offset_obj_buf_first = 0x8
+    offset_obj_buf_free_head = 0x10
+    offset_obj_buf_count = 0x18
 
-        # obj_buf_t offsets
-        self.offset_obj_buf_dc = 0x0
-        self.offset_obj_buf_first = 0x8
-        self.offset_obj_buf_free_head = 0x10
-        self.offset_obj_buf_count = 0x18
+    # gpool_t offsets, pthread_mutex_t is 0x28 bytes on Linux/x86_64 glibc
+    offset_gpool_pool_start = 0x28
+    offset_gpool_pool_end = 0x30
+    offset_gpool_free_start = 0x38
+    offset_gpool_free_dc_head = 0x40
+    offset_gpool_free_lh_head = 0x240
+    offset_gpool_released_dc_head = 0x440
 
-        # gpool_t offsets, pthread_mutex_t is 0x28 bytes on Linux/x86_64 glibc
-        self.offset_gpool_pool_start = 0x28
-        self.offset_gpool_pool_end = 0x30
-        self.offset_gpool_free_start = 0x38
-        self.offset_gpool_free_dc_head = 0x40
-        self.offset_gpool_free_lh_head = 0x240
-        self.offset_gpool_released_dc_head = 0x440
+    state_names = {
+        0: "FOREGROUND",
+        1: "BACKGROUND",
+        2: "FULL",
+    }
 
-        self.state_names = {
-            0: "FOREGROUND",
-            1: "BACKGROUND",
-            2: "FULL",
-        }
-        self.class_to_size_list = self.build_class_to_size_list()
-        self.initialized = True
-        return True
-
+    @Cache.cache_this_session(cache_None=False)
     def build_class_to_size_list(self):
         try:
             cls2size = AddressUtil.parse_address("&cls2size")
@@ -141296,9 +141290,10 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return class_to_size_list
 
     def class_to_size(self, size_cls):
-        if size_cls < 0 or size_cls >= len(self.class_to_size_list):
+        class_to_size_list = self.build_class_to_size_list()
+        if size_cls < 0 or size_cls >= len(class_to_size_list):
             return 0
-        return self.class_to_size_list[size_cls]
+        return class_to_size_list[size_cls]
 
     def decode_aba_address(self, value):
         return value & self.ABA_ADDR_MASK
@@ -141549,10 +141544,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 self.out.append("{:s} @ {:#x}: dummy_chunk".format(title or "dchunk", dchunk_addr))
             return False
 
-        if dchunk.size_cls >= len(self.class_to_size_list):
-            size = 0
-        else:
-            size = self.class_to_size(dchunk.size_cls)
+        size = self.class_to_size(dchunk.size_cls)
 
         free_list, error = self.parse_single_link_list(dchunk.free_head, dchunk=dchunk)
         remote_list, remote_error = self.parse_single_link_list(dchunk.remote_head, dchunk=dchunk)
@@ -141797,8 +141789,6 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         self.out = []
-        if self.initialize() is False:
-            return
 
         local_heap_list = self.get_local_heap_list(args.all)
         if not local_heap_list:
