@@ -1284,19 +1284,13 @@ class Address:
         self.value = addr
         return
 
-    @property
+    @functools.cached_property
     def section(self):
-        if hasattr(self, "cached_section"):
-            return self.cached_section
-        self.cached_section = ProcessMap.process_lookup_address(self.value)
-        return self.cached_section
+        return ProcessMap.process_lookup_address(self.value)
 
-    @property
+    @functools.cached_property
     def info(self):
-        if hasattr(self, "cached_info"):
-            return self.cached_info
-        self.cached_info = ProcessMap.file_lookup_address(self.value)
-        return self.cached_info
+        return ProcessMap.file_lookup_address(self.value)
 
     @property
     def valid(self):
