@@ -55964,8 +55964,7 @@ class CodeBaseCommand(GenericCommand):
             self.code_base_user_specific = args.set
 
         if args.reset:
-            if hasattr(self, "code_base_user_specific"):
-                delattr(self, "code_base_user_specific")
+            self.code_base_user_specific = None
 
         code_base = getattr(self, "code_base_user_specific", None)
 
@@ -56288,8 +56287,7 @@ class LibcBaseCommand(GenericCommand):
             self.libc_base_user_specific = args.set
 
         if args.reset:
-            if hasattr(self, "libc_base_user_specific"):
-                delattr(self, "libc_base_user_specific")
+            self.libc_base_user_specific = None
 
         libc_base = getattr(self, "libc_base_user_specific", None)
 
@@ -56382,8 +56380,7 @@ class LdBaseCommand(GenericCommand):
             self.ld_base_user_specific = args.set
 
         if args.reset:
-            if hasattr(self, "ld_base_user_specific"):
-                delattr(self, "ld_base_user_specific")
+            self.ld_base_user_specific = None
 
         ld_base = getattr(self, "ld_base_user_specific", None)
 
