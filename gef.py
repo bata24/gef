@@ -137863,10 +137863,8 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 return [(gdb.selected_thread().num, thread_alloc)]
         return None
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            return True
-
         try:
             self.NUM_SMALL_SIZECLASSES = AddressUtil.parse_address('snmalloc::NUM_SMALL_SIZECLASSES')
         except gdb.error:
@@ -137913,8 +137911,6 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.offset_remote_alloc = AddressUtil.parse_address("&((('snmalloc::Alloc'*)0)->remote_alloc)")
         except gdb.error:
             self.offset_remote_alloc = 0x2000 # hardcoded value
-
-        self.initialized = True
         return True
 
     @Cache.cache_this_session
@@ -138238,7 +138234,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         self.out = []
-        if self.initialize() is False:
+        if not self.initialize():
             return
 
         # get thread_alloc
