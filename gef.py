@@ -136896,6 +136896,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-m", "--mi-heap-main", type=AddressUtil.parse_address,
                         help="the address of _mi_heap_main (v2.x) / heap_main (v3.x).")
     parser.add_argument("-D", "--dump-chunk", action="store_true", help="dump each chunks.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
@@ -136946,6 +136947,8 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "* If symbols are not available, GEF scans the TLS area for automatic detection.",
     ]
     _note_ = "\n".join(_note_)
+
+    MI_PAGES_DIRECT = 130
 
     def read_page_field(self, addr, size):
         if not is_valid_addr(addr):
@@ -137271,6 +137274,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
         return -2, False
 
+    @Cache.cache_this_session(cache_None=False)
     def search_pages_free_direct(self, owner, heap=None):
         if heap is None:
             heap = owner
@@ -137339,6 +137343,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             return False
         return True
 
+    @Cache.cache_this_session(cache_None=False)
     def search_theap_fields(self, heap):
         found = []
         for i in range(64):
@@ -137355,6 +137360,8 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             if heap_offset is None:
                 continue
             found.append((field_offset, theap, ret, heap_offset))
+        if not found:
+            return None
         return found
 
     def first_page_from_owner(self, owner, heap):
@@ -137386,31 +137393,31 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         self.offset_page_next = layout["next_offset"]
         self.offset_page_prev = layout["prev_offset"]
 
-        self.quiet_info("offsetof(mi_page_t, xheap/theap/heap): {:#x}".format(self.offset_page_owner))
-        self.quiet_info("offsetof(mi_page_t, free): {:#x}".format(self.offset_free))
-        self.quiet_info("offsetof(mi_page_t, local_free): {:#x}".format(self.offset_local_free))
-        self.quiet_info("offsetof(mi_page_t, used): {:#x}".format(self.offset_used))
-        self.quiet_info("offsetof(mi_page_t, capacity): {:#x}".format(self.offset_capacity))
+        self.meta.append((self.quiet_info, "offsetof(mi_page_t, xheap/theap/heap): {:#x}".format(self.offset_page_owner)))
+        self.meta.append((self.quiet_info, "offsetof(mi_page_t, free): {:#x}".format(self.offset_free)))
+        self.meta.append((self.quiet_info, "offsetof(mi_page_t, local_free): {:#x}".format(self.offset_local_free)))
+        self.meta.append((self.quiet_info, "offsetof(mi_page_t, used): {:#x}".format(self.offset_used)))
+        self.meta.append((self.quiet_info, "offsetof(mi_page_t, capacity): {:#x}".format(self.offset_capacity)))
         if self.offset_block_size_size == 4:
-            self.quiet_info("offsetof(mi_page_t, xblock_size): {:#x}".format(self.offset_block_size))
+            self.meta.append((self.quiet_info, "offsetof(mi_page_t, xblock_size): {:#x}".format(self.offset_block_size)))
         else:
-            self.quiet_info("offsetof(mi_page_t, block_size): {:#x}".format(self.offset_block_size))
+            self.meta.append((self.quiet_info, "offsetof(mi_page_t, block_size): {:#x}".format(self.offset_block_size)))
         if self.offset_page_start is None:
-            self.quiet_info("offsetof(mi_page_t, page_start): Not found")
+            self.meta.append((self.quiet_info, "offsetof(mi_page_t, page_start): Not found"))
         else:
-            self.quiet_info("offsetof(mi_page_t, page_start): {:#x}".format(self.offset_page_start))
+            self.meta.append((self.quiet_info, "offsetof(mi_page_t, page_start): {:#x}".format(self.offset_page_start)))
         if self.offset_keys0 is None:
-            self.quiet_info("offsetof(mi_page_t, keys0): Not found")
-            self.quiet_info("offsetof(mi_page_t, keys1): Not found")
+            self.meta.append((self.quiet_info, "offsetof(mi_page_t, keys0): Not found"))
+            self.meta.append((self.quiet_info, "offsetof(mi_page_t, keys1): Not found"))
         else:
-            self.quiet_info("offsetof(mi_page_t, keys0): {:#x}".format(self.offset_keys0))
-            self.quiet_info("offsetof(mi_page_t, keys1): {:#x}".format(self.offset_keys1))
+            self.meta.append((self.quiet_info, "offsetof(mi_page_t, keys0): {:#x}".format(self.offset_keys0)))
+            self.meta.append((self.quiet_info, "offsetof(mi_page_t, keys1): {:#x}".format(self.offset_keys1)))
         if self.offset_page_next is None:
-            self.quiet_info("offsetof(mi_page_t, next): Not found")
-            self.quiet_info("offsetof(mi_page_t, prev): Not found")
+            self.meta.append((self.quiet_info, "offsetof(mi_page_t, next): Not found"))
+            self.meta.append((self.quiet_info, "offsetof(mi_page_t, prev): Not found"))
         else:
-            self.quiet_info("offsetof(mi_page_t, next): {:#x}".format(self.offset_page_next))
-            self.quiet_info("offsetof(mi_page_t, prev): {:#x}".format(self.offset_page_prev))
+            self.meta.append((self.quiet_info, "offsetof(mi_page_t, next): {:#x}".format(self.offset_page_next)))
+            self.meta.append((self.quiet_info, "offsetof(mi_page_t, prev): {:#x}".format(self.offset_page_prev)))
         return True
 
     def infer_old_heap_next_offset(self):
@@ -137428,7 +137435,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
     def setup_heap_next_offset(self):
         if self.uses_theap:
             self.offset_heap_next = current_arch.ptrsize * 2
-            self.quiet_info("offsetof(mi_heap_t, next): {:#x}".format(self.offset_heap_next))
+            self.meta.append((self.quiet_info, "offsetof(mi_heap_t, next): {:#x}".format(self.offset_heap_next)))
             return True
 
         if self.offset_pages_free_direct <= current_arch.ptrsize:
@@ -137439,17 +137446,15 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.offset_heap_next = self.offset_pages_free_direct - current_arch.ptrsize * 2
 
         if self.offset_heap_next < 0:
-            err("Not found valid mi_heap_t next")
-            return False
-        self.quiet_info("offsetof(mi_heap_t, next): {:#x}".format(self.offset_heap_next))
+            self.meta.append((err, "Not found valid mi_heap_t next"))
+            return None
+        self.meta.append((self.quiet_info, "offsetof(mi_heap_t, next): {:#x}".format(self.offset_heap_next)))
         return True
 
     def initialize(self, heap_main):
-        if getattr(self, "initialized", False):
-            return True
+        self.meta = []
 
-        self.quiet_info("mi_heap_t: {:#x}".format(heap_main))
-        self.MI_PAGES_DIRECT = 130
+        self.meta.append((self.quiet_info, "mi_heap_t: {:#x}".format(heap_main)))
         self.heap_main_for_offsets = heap_main
         self.uses_theap = False
         self.offset_heap_theap = None
@@ -137462,22 +137467,22 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         if ret is not None:
             page_owner = heap_main
             self.offset_pages_free_direct = ret
-            self.quiet_info("offsetof(mi_heap_t, pages_free_direct): {:#x}".format(self.offset_pages_free_direct))
+            self.meta.append((self.quiet_info, "offsetof(mi_heap_t, pages_free_direct): {:#x}".format(self.offset_pages_free_direct)))
         else:
             found = self.search_theap_fields(heap_main)
-            if len(found) == 0:
-                err("Not found valid mi_heap_t or mi_theap_t")
-                return False
+            if found is None:
+                self.meta.append((err, "Not found valid mi_heap_t or mi_theap_t"))
+                return None
 
             self.uses_theap = True
             self.offset_heap_theap = found[0][0]
             page_owner = found[0][1]
             self.offset_pages_free_direct = found[0][2]
             self.offset_theap_heap = found[0][3]
-            self.quiet_info("offsetof(mi_heap_t, theap/theaps): {:#x}".format(self.offset_heap_theap))
-            self.quiet_info("mi_theap_t: {:#x}".format(page_owner))
-            self.quiet_info("offsetof(mi_theap_t, heap): {:#x}".format(self.offset_theap_heap))
-            self.quiet_info("offsetof(mi_theap_t, pages_free_direct): {:#x}".format(self.offset_pages_free_direct))
+            self.meta.append((self.quiet_info, "offsetof(mi_heap_t, theap/theaps): {:#x}".format(self.offset_heap_theap)))
+            self.meta.append((self.quiet_info, "mi_theap_t: {:#x}".format(page_owner)))
+            self.meta.append((self.quiet_info, "offsetof(mi_theap_t, heap): {:#x}".format(self.offset_theap_heap)))
+            self.meta.append((self.quiet_info, "offsetof(mi_theap_t, pages_free_direct): {:#x}".format(self.offset_pages_free_direct)))
 
             for field_offset, _theap, _ret, _heap_offset in found:
                 if field_offset > self.offset_heap_theap:
@@ -137485,27 +137490,25 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
                     break
             if self.offset_heap_theaps is None:
                 self.offset_heap_theaps = self.offset_heap_theap
-            self.quiet_info("offsetof(mi_heap_t, theaps): {:#x}".format(self.offset_heap_theaps))
+            self.meta.append((self.quiet_info, "offsetof(mi_heap_t, theaps): {:#x}".format(self.offset_heap_theaps)))
 
             self.offset_theap_tnext = self.offset_pages_free_direct - current_arch.ptrsize * 10
             self.offset_theap_hnext = self.offset_pages_free_direct - current_arch.ptrsize * 8
             if self.offset_theap_tnext >= 0:
-                self.quiet_info("offsetof(mi_theap_t, tnext): {:#x}".format(self.offset_theap_tnext))
+                self.meta.append((self.quiet_info, "offsetof(mi_theap_t, tnext): {:#x}".format(self.offset_theap_tnext)))
             if self.offset_theap_hnext >= 0:
-                self.quiet_info("offsetof(mi_theap_t, hnext): {:#x}".format(self.offset_theap_hnext))
+                self.meta.append((self.quiet_info, "offsetof(mi_theap_t, hnext): {:#x}".format(self.offset_theap_hnext)))
 
         mi_page, layout = self.first_page_from_owner(page_owner, heap_main)
         if mi_page is None or layout is None:
-            err("Not found initialized mi_page_t")
-            return False
+            self.meta.append((err, "Not found initialized mi_page_t"))
+            return None
 
         if not self.setup_page_offsets(mi_page, page_owner, heap_main, layout):
-            return False
+            return None
 
         if not self.setup_heap_next_offset():
-            return False
-
-        self.initialized = True
+            return None
         return True
 
     def get_mi_heap_main(self):
@@ -137731,7 +137734,14 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 err("Could not find _mi_heap_main and mi_heap")
                 return
 
-        if not self.initialize(mi_heap_main):
+        ret = self.initialize(mi_heap_main)
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
+            return
+
+        if args.meta:
             return
 
         self.out = []
