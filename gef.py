@@ -132857,6 +132857,7 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
@@ -132894,11 +132895,14 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
+        self.meta = []
+
         kversion = Kernel.kernel_version()
         if kversion is None:
-            err("Could not find kernel version")
-            return False
+            self.meta.append((err, "Could not find kernel version"))
+            return None
         if "5.10" <= kversion < "6.10":
             self.db_list = KernelAddressHeuristicFinder.get_db_list()
         elif "6.10" <= kversion < "6.16":
@@ -132906,20 +132910,20 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
         else:
             self.db_list = KernelAddressHeuristicFinder.get_dmabuf_list()
         if self.db_list is None:
-            err("Could not find db_list (maybe DMA_SHARED_BUFFER=n)")
-            return False
+            self.meta.append((err, "Could not find db_list (maybe DMA_SHARED_BUFFER=n)"))
+            return None
 
         if "5.10" <= kversion < "6.10":
-            self.quiet_info("db_list: {:#x}".format(self.db_list))
+            self.meta.append((self.quiet_info, "db_list: {:#x}".format(self.db_list)))
         elif "6.10" <= kversion < "6.16":
-            self.quiet_info("debugfs_list: {:#x}".format(self.db_list))
+            self.meta.append((self.quiet_info, "debugfs_list: {:#x}".format(self.db_list)))
         else:
-            self.quiet_info("dmabuf_list: {:#x}".format(self.db_list))
+            self.meta.append((self.quiet_info, "dmabuf_list: {:#x}".format(self.db_list)))
 
         first_dma_buf = read_int_from_memory(self.db_list)
         if first_dma_buf == self.db_list:
-            warn("Nothing to dump")
-            return False
+            self.meta.append((warn, "Nothing to dump"))
+            return None
 
         """
         struct dma_buf {
@@ -132995,19 +132999,19 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
                 continue
 
             self.offset_list_node = current_arch.ptrsize * (i + 4)
-            self.quiet_info("offsetof(dma_buf, list_node): {:#x}".format(self.offset_list_node))
+            self.meta.append((self.quiet_info, "offsetof(dma_buf, list_node): {:#x}".format(self.offset_list_node)))
             break
         else:
-            err("Could not find dma_buf->list_node")
-            return False
+            self.meta.append((err, "Could not find dma_buf->list_node"))
+            return None
 
         # dma_buf->{size,file,priv}
         self.offset_size = 0
         self.offset_file = current_arch.ptrsize
         self.offset_priv = self.offset_list_node + current_arch.ptrsize * 2
-        self.quiet_info("offsetof(dma_buf, size): {:#x}".format(self.offset_size))
-        self.quiet_info("offsetof(dma_buf, file): {:#x}".format(self.offset_file))
-        self.quiet_info("offsetof(dma_buf, priv): {:#x}".format(self.offset_priv))
+        self.meta.append((self.quiet_info, "offsetof(dma_buf, size): {:#x}".format(self.offset_size)))
+        self.meta.append((self.quiet_info, "offsetof(dma_buf, file): {:#x}".format(self.offset_file)))
+        self.meta.append((self.quiet_info, "offsetof(dma_buf, priv): {:#x}".format(self.offset_priv)))
 
         # dma_buf->{exp_name,name}
         for i in range(1, 50):
@@ -133017,12 +133021,12 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
             if s and len(s) >= 3:
                 self.offset_exp_name = current_arch.ptrsize * i
                 self.offset_name = current_arch.ptrsize * (i + 1)
-                self.quiet_info("offsetof(dma_buf, exp_name): {:#x}".format(self.offset_exp_name))
-                self.quiet_info("offsetof(dma_buf, name): {:#x}".format(self.offset_name))
+                self.meta.append((self.quiet_info, "offsetof(dma_buf, exp_name): {:#x}".format(self.offset_exp_name)))
+                self.meta.append((self.quiet_info, "offsetof(dma_buf, name): {:#x}".format(self.offset_name)))
                 break
         else:
-            err("Could not find dma_buf->{exp_name,name}")
-            return False
+            self.meta.append((err, "Could not find dma_buf->{exp_name,name}"))
+            return None
 
         """
         struct system_heap_buffer {
@@ -133048,9 +133052,9 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
                 self.offset_sg_table = current_arch.ptrsize * (i + 1)
                 break
         else:
-            err("Could not find system_heap_buffer->sg_table")
-            return False
-        self.quiet_info("offsetof(system_heap_buffer, sg_table): {:#x}".format(self.offset_sg_table))
+            self.meta.append((err, "Could not find system_heap_buffer->sg_table"))
+            return None
+        self.meta.append((self.quiet_info, "offsetof(system_heap_buffer, sg_table): {:#x}".format(self.offset_sg_table)))
         return True
 
     def dump_sgl(self, sg):
@@ -133173,7 +133177,13 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
             return
 
         ret = self.initialize()
-        if ret is False:
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
+            return
+
+        if args.meta:
             return
 
         self.out = []
