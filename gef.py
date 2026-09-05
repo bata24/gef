@@ -155092,6 +155092,7 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-s", "--smart", action="store_true",
                         help="show only entries where read or write is not the default.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
@@ -155199,22 +155200,22 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
         # slow path
         return self.get_memory_region("I/O")
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            return True
+        self.meta = []
 
         # root (system_memory, system_io)
         self.system_memory = self.get_system_memory()
         if self.system_memory is None:
-            self.quiet_err("Could not find system_memory")
-            return False
-        self.quiet_info_add_out("system_memory: {:#x}".format(self.system_memory))
+            self.meta.append((self.quiet_err, "Could not find system_memory"))
+            return None
+        self.meta.append((self.quiet_info_add_out, "system_memory: {:#x}".format(self.system_memory)))
 
         self.system_io = self.get_system_io()
         if self.system_io is None:
-            self.quiet_err("Could not find system_io")
-            return False
-        self.quiet_info_add_out("system_io: {:#x}".format(self.system_io))
+            self.meta.append((self.quiet_err, "Could not find system_io"))
+            return None
+        self.meta.append((self.quiet_info_add_out, "system_io: {:#x}".format(self.system_io)))
 
         # name
         for offset in range(0, 0x100, current_arch.ptrsize):
@@ -155226,9 +155227,9 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
                 self.offset_name = offset
                 break
         else:
-            self.quiet_err("Could not find offsetof(MemoryRegion, name)")
-            return False
-        self.quiet_info_add_out("offsetof(MemoryRegion, name): {:#x}".format(self.offset_name))
+            self.meta.append((self.quiet_err, "Could not find offsetof(MemoryRegion, name)"))
+            return None
+        self.meta.append((self.quiet_info_add_out, "offsetof(MemoryRegion, name): {:#x}".format(self.offset_name)))
 
         # ops
         for offset in range(0, 0x80, current_arch.ptrsize):
@@ -155252,18 +155253,16 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
             self.offset_ops = offset
             break
         else:
-            self.quiet_err("Could not find offsetof(MemoryRegion, ops)")
-            return False
-        self.quiet_info_add_out("offsetof(MemoryRegion, ops): {:#x}".format(self.offset_ops))
+            self.meta.append((self.quiet_err, "Could not find offsetof(MemoryRegion, ops)"))
+            return None
+        self.meta.append((self.quiet_info_add_out, "offsetof(MemoryRegion, ops): {:#x}".format(self.offset_ops)))
 
         # subregions, subregions_link
         self.offset_subregions = self.offset_name - current_arch.ptrsize * 6
-        self.quiet_info_add_out("offsetof(MemoryRegion, subregions): {:#x}".format(self.offset_subregions))
+        self.meta.append((self.quiet_info_add_out, "offsetof(MemoryRegion, subregions): {:#x}".format(self.offset_subregions)))
         self.offset_subregions_link = self.offset_name - current_arch.ptrsize * 4
-        self.quiet_info_add_out("offsetof(MemoryRegion, subregions_link): {:#x}".format(self.offset_subregions_link))
-
-        self.initialized = True
-        return
+        self.meta.append((self.quiet_info_add_out, "offsetof(MemoryRegion, subregions_link): {:#x}".format(self.offset_subregions_link)))
+        return True
 
     def make_symbol_string(self, addr):
         addr = ProcessMap.lookup_address(addr)
@@ -155338,7 +155337,15 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
     @require_arch_set
     def do_invoke(self, args):
         self.out = []
-        if self.initialize() is False:
+        ret = self.initialize()
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
+            return
+
+        if args.meta:
+            self.print_output(check_terminal_size=True)
             return
 
         # dump system_memory
