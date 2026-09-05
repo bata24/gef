@@ -76162,6 +76162,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
@@ -76206,17 +76207,17 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            return True
+        self.meta = []
 
         # resolve __per_cpu_offset
         __per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
         if __per_cpu_offset is None:
-            self.quiet_info("__per_cpu_offset: Not found")
+            self.meta.append((self.quiet_info, "__per_cpu_offset: Not found"))
             self.cpu_offset = []
         else:
-            self.quiet_info("__per_cpu_offset: {:#x}".format(__per_cpu_offset))
+            self.meta.append((self.quiet_info, "__per_cpu_offset: {:#x}".format(__per_cpu_offset)))
             self.cpu_offset = Kernel.get_each_cpu_offset(__per_cpu_offset)
 
         ### classic timer (unit: tick)
@@ -76224,9 +76225,9 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         # timer_bases
         self.timer_bases = KernelAddressHeuristicFinder.get_timer_bases()
         if not self.timer_bases:
-            self.quiet_err("timer_bases: Not found")
-            return False
-        self.quiet_info("timer_bases: {:#x}".format(self.timer_bases))
+            self.meta.append((self.quiet_err, "timer_bases: Not found"))
+            return None
+        self.meta.append((self.quiet_info, "timer_bases: {:#x}".format(self.timer_bases)))
 
         # per_cpu_timer_bases
         if self.cpu_offset == []:
@@ -76243,7 +76244,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
             self.nr_bases = 2 # BASE_STD, BASE_DEF
         else:
             self.nr_bases = 3 # BASE_LOCAL, BASE_GLOBAL, BASE_DEF
-        self.quiet_info("nr_bases: {:d}".format(self.nr_bases))
+        self.meta.append((self.quiet_info, "nr_bases: {:d}".format(self.nr_bases)))
 
         # sizeof(struct timer_base)
         """
@@ -76273,8 +76274,8 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                 try:
                     v = read_int_from_memory(timer_base + current_arch.ptrsize * i)
                 except gdb.MemoryError:
-                    self.quiet_err("Memory read error")
-                    return False
+                    self.meta.append((self.quiet_err, "Memory read error"))
+                    return None
                 if v != 0 and not is_valid_addr(v):
                     self.roughly_sizeof_timer_base = current_arch.ptrsize * i
                     break
@@ -76283,18 +76284,18 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         # jiffies
         self.jiffies = KernelAddressHeuristicFinder.get_jiffies()
         if not self.jiffies:
-            self.quiet_err("jiffies: Not found")
-            return False
-        self.quiet_info("jiffies: {:#x}".format(self.jiffies))
+            self.meta.append((self.quiet_err, "jiffies: Not found"))
+            return None
+        self.meta.append((self.quiet_info, "jiffies: {:#x}".format(self.jiffies)))
 
         ### High-resolution kernel timer (unit: nano seconds)
 
         # hrtimer_bases
         self.hrtimer_bases = KernelAddressHeuristicFinder.get_hrtimer_bases()
         if not self.hrtimer_bases:
-            self.quiet_err("hrtimer_bases: Not found")
-            return False
-        self.quiet_info("hrtimer_bases: {:#x}".format(self.hrtimer_bases))
+            self.meta.append((self.quiet_err, "hrtimer_bases: Not found"))
+            return None
+        self.meta.append((self.quiet_info, "hrtimer_bases: {:#x}".format(self.hrtimer_bases)))
 
         # per_cpu_hrtimer_bases
         if self.cpu_offset == []:
@@ -76415,8 +76416,8 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         if anchor:
             self.offset_clock_base, self.sizeof_hrtimer_clock_base = anchor
         elif "6.18" <= kversion:
-            self.quiet_err("clock_base: Not found")
-            return False
+            self.meta.append((self.quiet_err, "clock_base: Not found"))
+            return None
         self.offset_clockid = current_arch.ptrsize + 4 # cpu_base, index
 
         if kversion < "6.18":
@@ -76430,8 +76431,8 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                 try:
                     v = read_int_from_memory(hrtimer_cpu_base + ofs)
                 except gdb.MemoryError:
-                    self.quiet_err("Memory read error")
-                    return False
+                    self.meta.append((self.quiet_err, "Memory read error"))
+                    return None
                 if v == ktime_get:
                     ktime_get_ofs = ofs
                 elif v == ktime_get_real:
@@ -76455,8 +76456,6 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         self.offset_function = current_arch.ptrsize * 3 + 8 * 2
         if "6.18" <= kversion:
             self.resolve_hrtimer_member_offset()
-
-        self.initialized = True
         return True
 
     def resolve_hrtimer_member_offset(self):
@@ -76716,7 +76715,14 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
 
         self.quiet_info("Wait for memory scan")
 
-        if not self.initialize():
+        ret = self.initialize()
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
+            return
+
+        if args.meta:
             return
 
         self.out = []
