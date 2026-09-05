@@ -138841,11 +138841,7 @@ class CageCommand(GenericCommand, BufferingOutput):
         if area_start is not None and area_size is not None:
             area_end = area_start + area_size
             if area_start <= entry.page_start < area_end:
-                # keep trusted space address
-                if entry.permission.value == Permission.READ | Permission.WRITE:
-                    v = read_int_from_memory(entry.page_start)
-                    self.trusted_space_high = v & 0x0000_ffff_0000_0000
-                    return True
+                return entry.permission.value == Permission.READ | Permission.WRITE
         return False
 
     def is_shared_trusted_pointer_table(self, entry):
@@ -138913,10 +138909,10 @@ class CageCommand(GenericCommand, BufferingOutput):
         area_end = area_start + (1 * 1024 * 1024 * 1024 * 1024) # 1TB
         return area_start <= entry.page_start < area_end
 
-    def is_trusted_space(self, entry):
-        if not hasattr(self, "trusted_space_high"):
+    def is_trusted_space(self, entry, trusted_space_high):
+        if trusted_space_high is None:
             return False
-        if self.trusted_space_high == (entry.page_start & 0x0000_ffff_0000_0000):
+        if trusted_space_high == (entry.page_start & 0x0000_ffff_0000_0000):
             return True
         return False
 
@@ -138936,6 +138932,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             args.verbose = True
 
         self.out = []
+        trusted_space_high = None
         # To find the trusted_space from the trusted_pointer_table, traverse it in reverse order
         for entry in maps[::-1]:
             # location filtering
@@ -138972,6 +138969,8 @@ class CageCommand(GenericCommand, BufferingOutput):
             elif self.is_cpp_heap_pointer_table(entry):
                 self.dump_entry(entry, "[v8:cpp_heap_pointer_table]")
             elif self.is_trusted_pointer_table(entry):
+                value = read_int_from_memory(entry.page_start)
+                trusted_space_high = value & 0x0000_ffff_0000_0000
                 self.dump_entry(entry, "[v8:trusted_pointer_table]")
             elif self.is_shared_trusted_pointer_table(entry):
                 self.dump_entry(entry, "[v8:shared_trusted_pointer_table]")
@@ -138991,7 +138990,7 @@ class CageCommand(GenericCommand, BufferingOutput):
                 self.dump_entry(entry, "[v8:ArrayBuffer]")
             elif self.is_cage(entry):
                 self.dump_entry(entry, "[v8:cage]")
-            elif self.is_trusted_space(entry):
+            elif self.is_trusted_space(entry, trusted_space_high):
                 self.dump_entry(entry, "[v8:trusted_space]")
             else:
                 if args.vvverbose:
