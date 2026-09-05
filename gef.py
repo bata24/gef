@@ -135643,6 +135643,7 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
         """
         gef> dt 'tcmalloc::ThreadCache'
@@ -135796,7 +135797,7 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
             0x0003e000, 0x00040000,
         ]
 
-        return
+        return True
 
     def get_heap_key(self):
         # for future use
@@ -136126,7 +136127,8 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         self.out = []
-        self.initialize()
+        if not self.initialize():
+            return
         if args.central:
             self.dump_central_cache()
         else:
