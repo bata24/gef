@@ -140828,8 +140828,14 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         elif self.args.target_buffer_root == "ab":
             self.args.target_buffer_root = "array_buffer"
 
+        if args.debug:
+            # the debug print is emitted from inside the cached `get_roots_heuristic()`
+            Cache.clear_cache_for(self.get_roots_heuristic)
+
         self.out = []
-        for r in self.get_roots(args.force_heuristic):
+        roots = self.get_roots(args.force_heuristic)
+
+        for r in roots:
 
             ok = False
             if args.target_buffer_root == "fast_malloc":
