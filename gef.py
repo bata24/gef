@@ -525,6 +525,22 @@ class Cache:
             pass
         return
 
+    @staticmethod
+    def peek_cache_for(f, *args):
+        """Return the cached value of `f(*args)` without calling it, or None if it is not
+        cached yet. For the callers that must not trigger the computation, e.g. to avoid
+        a recursion. A function declared `cache_None=False` never stores None, so None
+        always means "not resolved yet"."""
+
+        fname = f"{f.__module__}:{f.__qualname__}"
+        if hasattr(f, "__self__"):
+            args = (f.__self__,) + args
+        for caches in Cache.__gef_caches__.values():
+            fcache = caches.get(fname)
+            if fcache is not None:
+                return fcache.get(args)
+        return None
+
     @staticmethod # noqa
     def clear_cache_for(f):
         """Clear the cache of specified function."""
@@ -6336,21 +6352,34 @@ class Symbol:
         return out[0]
 
     @staticmethod
-    def get_ksymaddr_multiple(sym):
-        """e.g., 'set_is_seen' -> [0xffffffffba146db0,0xffffffffba6d84e0,0xffffffffba6dd170]"""
+    def get_kallsyms(parse=True):
+        """Return ([[addr, name, type], ...], {name: [addr, ...]}), or None if unavailable.
+        With `parse=False`, return None instead of parsing when it is not parsed yet.
+        Some callers must not trigger a parse, e.g. to avoid a recursion."""
         command = __gef_command_instances__.get("ksymaddr-remote")
         if command is None:
             return None
-        if not command.kallsyms:
-            # Not parsed yet. Executing the command parses it, then keeps it in command.kallsyms.
+        if not parse:
+            return Cache.peek_cache_for(command.get_kallsyms)
+        if not hasattr(command, "args"):
+            # Never run, so `get_kallsyms()` has no `self.args` to read yet. Run it once.
+            # The keyword matches nothing, so it does not print the whole symbol table.
             try:
-                gdb.execute("ksymaddr-remote --quiet --no-pager --exact {:s}".format(sym), to_string=True)
+                gdb.execute("ksymaddr-remote --quiet --no-pager --exact ''", to_string=True)
             except gdb.error:
                 return None
-            if not command.kallsyms:
-                return None
-        # Once parsed, use the dict. Re-executing the command re-scans all the symbols for each call.
-        return list(command.get_kallsyms_map().get(sym, []))
+        # Once parsed, this is a cache hit. Re-executing the command would walk all the
+        # symbols again for each call.
+        return command.get_kallsyms()
+
+    @staticmethod
+    def get_ksymaddr_multiple(sym):
+        """e.g., 'set_is_seen' -> [0xffffffffba146db0,0xffffffffba6d84e0,0xffffffffba6dd170]"""
+        ret = Symbol.get_kallsyms()
+        if ret is None:
+            return None
+        kallsyms, kallsyms_map = ret
+        return list(kallsyms_map.get(sym, []))
 
     @staticmethod
     def get_symbol_by_monitor(symbol):
@@ -13818,10 +13847,14 @@ def is_in_kpti_transition():
         return True
 
     # If kallsyms was already resolved, also check a known regular kernel mapping.
-    command = __gef_command_instances__.get("ksymaddr-remote")
-    kallsyms = command.kallsyms if command else []
-    known_address = next((addr for addr, name, typ in kallsyms if name == "_stext"), None)
-    return known_address is not None and not is_valid_addr(known_address)
+    ret = Symbol.get_kallsyms(parse=False)
+    if ret is None:
+        return False
+    kallsyms, kallsyms_map = ret
+    known_addresses = kallsyms_map.get("_stext", [])
+    if not known_addresses:
+        return False
+    return not is_valid_addr(known_addresses[0])
 
 
 @Cache.cache_this_session(cache_None=False)
@@ -61897,7 +61930,7 @@ class KernelConstsArm64(KernelConstsBase):
 
         # Prevent recursion:
         #   read_physmem -> kgdb_use_physmap -> get_ksymaddr -> pagewalk -> read_physmem -> ...
-        if not __gef_command_instances__["ksymaddr-remote"].kallsyms:
+        if Symbol.get_kallsyms(parse=False) is None:
             # None does not cache, because kallsyms may be resolved later
             return None
 
@@ -67057,7 +67090,10 @@ class Kernel:
         first_func = Symbol.get_ksymaddr(func_name)
         if first_func is None:
             return None
-        kallsyms = __gef_command_instances__["ksymaddr-remote"].kallsyms
+        ret = Symbol.get_kallsyms()
+        if ret is None:
+            return None
+        kallsyms, kallsyms_map = ret
         for i, (addr, _, _) in enumerate(kallsyms):
             if addr == first_func:
                 if i + 1 >= len(kallsyms):
@@ -75011,13 +75047,20 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                     return True
             return False
 
+    @Cache.cache_this_session(cache_None=False, until_new_objfile=True)
+    def get_kallsyms_by_address(self):
+        ret = Symbol.get_kallsyms()
+        if ret is None:
+            return None
+        kallsyms, kallsyms_map = ret
+        return {addr: name for addr, name, _typ in kallsyms}
+
     def get_handler_symbol(self, handler):
-        if not hasattr(self, "kallsyms_by_address"):
-            kallsyms = __gef_command_instances__["ksymaddr-remote"].kallsyms
-            self.kallsyms_by_address = {addr: name for addr, name, _ in kallsyms}
-        name = self.kallsyms_by_address.get(handler)
-        if name:
-            return " <{:s}>".format(name)
+        kallsyms_by_address = self.get_kallsyms_by_address()
+        if kallsyms_by_address:
+            name = kallsyms_by_address.get(handler)
+            if name:
+                return " <{:s}>".format(name)
         return Symbol.get_symbol_string(handler, nosymbol_string=" <NO_SYMBOL>")
 
     def dump_data(self, ctl_table_header, ctl_table, param_path, mode):
@@ -134073,21 +134116,6 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        """
-        # Do not use dict; There are cases where multiple symbols with the same name exist.
-        # cat /proc/kallsyms |grep set_is_seen
-        ffffffff812326e0 t set_is_seen
-        ffffffff81d58900 t set_is_seen
-        ffffffff81d5cab0 t set_is_seen
-        #
-        """
-        self.kallsyms = []
-        self.kallsyms_map = {}
-        self.kallsyms_map_src = None # the list self.kallsyms_map was built from
-        return
-
     def get_loaded_vmlinux_path(self):
         if self.args.ignore_loaded_vmlinux:
             return None
@@ -134129,7 +134157,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             nm = GefUtil.which(Config.get_gef_setting("gef.nm_command"))
         except FileNotFoundError as e:
             self.quiet_err("{}".format(e))
-            return
+            return None
         result = GefUtil.gef_execute_external([nm, filename], as_list=True)
 
         # distinctive addresses to use for rebasing
@@ -134171,18 +134199,17 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             if text_base_hint:
                 diff = text_base_hint - target_found["handler"]
                 if diff & get_pagesize_mask_low() == 0:
-                    self.kallsyms = []
+                    kallsyms = []
                     for addr, name, typ in tmp_kallsyms:
                         # don't rebase per-cpu offset
                         if addr >= 0x4000_0000:
                             # This value is the lowest boundary between ARM32 kernel and userland.
                             addr += diff
-                        self.kallsyms.append([addr, name, typ])
-                    return
+                        kallsyms.append([addr, name, typ])
+                    return kallsyms
 
         # fail, use as is
-        self.kallsyms = tmp_kallsyms
-        return
+        return tmp_kallsyms
 
     def get_token_table(self):
         # Parse symbol name tokens
@@ -134199,9 +134226,6 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         return tokens
 
     def read_kallsyms(self):
-        if self.kallsyms: # resolved already
-            return
-
         tokens = self.get_token_table()
         symbol_names = []
         position = self.offset_kallsyms_names
@@ -134223,29 +134247,38 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             position += length
             symbol_names.append(symbol_name)
 
+        kallsyms = []
         for addr, name in zip(self.kernel_addresses, symbol_names):
             try:
-                self.kallsyms.append([addr, name[1:], name[0]])
+                kallsyms.append([addr, name[1:], name[0]])
             except IndexError:
                 pass
-        return
+        return kallsyms
 
-    def get_kallsyms_map(self):
-        """Return self.kallsyms as a {name: [addr, ...]} dict.
-        Symbol.get_ksymaddr is called hundreds of times by some commands, and scanning
-        all the symbols for each call is too slow."""
-        if not self.kallsyms:
-            return {} # do not memoize, since kallsyms may be resolved later
-        if self.kallsyms_map_src is not self.kallsyms:
-            # self.kallsyms is replaced with a new list when it is (re-)parsed
-            kallsyms_map = {}
-            for addr, name, _typ in self.kallsyms:
-                kallsyms_map.setdefault(name, []).append(addr)
-            self.kallsyms_map = kallsyms_map
-            self.kallsyms_map_src = self.kallsyms
-        return self.kallsyms_map
+    @Cache.cache_this_session(cache_None=False, until_new_objfile=True)
+    def get_kallsyms(self):
+        """Parse kallsyms and return ([[addr, name, type], ...], {name: [addr, ...]}).
+        Return None if it could not be parsed.
+        The map is built here because Symbol.get_ksymaddr is called hundreds of times by
+        some commands, and scanning all the symbols for each call is too slow.
+        `--rescan`, `--vmlinux-file` and `-I` select the parse source instead of changing
+        the result, so they are read from `self.args` and the caller clears this cache."""
+        kallsyms = self.parse_main()
+        if not kallsyms:
+            return None
 
-    def print_kallsyms(self, keywords, types, smart):
+        # Do not use a dict for kallsyms itself; there are cases where multiple symbols
+        # with the same name exist.
+        # cat /proc/kallsyms |grep set_is_seen
+        # ffffffff812326e0 t set_is_seen
+        # ffffffff81d58900 t set_is_seen
+        # ffffffff81d5cab0 t set_is_seen
+        kallsyms_map = {}
+        for addr, name, _typ in kallsyms:
+            kallsyms_map.setdefault(name, []).append(addr)
+        return kallsyms, kallsyms_map
+
+    def print_kallsyms(self, kallsyms, keywords, types, smart):
         if is_32bit():
             fmt = "{:#010x} {:s} {:s}"
         else:
@@ -134253,9 +134286,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
 
         if types:
             types = [t.lower() for t in types]
-            kallsyms = [entry for entry in self.kallsyms if entry[2].lower() in types]
-        else:
-            kallsyms = self.kallsyms
+            kallsyms = [entry for entry in kallsyms if entry[2].lower() in types]
 
         if smart:
             ignore_list = (
@@ -134343,6 +134374,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
                     break
         return True
 
+    @Cache.cache_this_session
     def get_cfg_name(self):
         h = hashlib.sha256(String.str2bytes(self.version_string)).hexdigest()[-16:]
         major, minor, patch = self.kernel_version
@@ -134350,14 +134382,21 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         return cfg_file_name
 
     def save_config(self, param_name):
+        self.config_updates[param_name] = str(getattr(self, param_name))
+        return
+
+    def flush_config(self):
+        if not self.config_updates:
+            return
+
         cfg_file_name = self.get_cfg_name()
         config = configparser.ConfigParser()
         if os.path.exists(cfg_file_name):
             config.read(cfg_file_name)
-        else:
+        if "parameters" not in config:
             config["parameters"] = {}
 
-        config["parameters"][param_name] = str(getattr(self, param_name))
+        config["parameters"].update(self.config_updates)
         with open(cfg_file_name, "w") as cfg_file:
             config.write(cfg_file)
         return
@@ -134382,8 +134421,8 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         return True
 
     def print_saved_config(self):
-        if hasattr(self, "version_string"):
-            cfg_file_name = self.get_cfg_name()
+        cfg_file_name = Cache.peek_cache_for(self.get_cfg_name)
+        if cfg_file_name is not None:
             info("path: {:s}".format(cfg_file_name))
             if os.path.exists(cfg_file_name):
                 gef_print(titlify("content (hexlified)"))
@@ -134802,7 +134841,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         """
 
         # take the last element of kallsyms_marker
-        if hasattr(self, "offset_kallsyms_seqs_of_names"): # maybe 6.1.42~6.8
+        if (6, 1, 42) <= self.kernel_version < (6, 9, 0):
             kallsyms_markers_end = self.offset_kallsyms_seqs_of_names
         else:
             kallsyms_markers_end = self.offset_kallsyms_token_table
@@ -135284,7 +135323,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         self.verbose_info("kallsyms_addresses: {:#x}".format(self.ro_base + self.offset_kallsyms_addresses_or_offsets))
         return True
 
-    def initialize(self):
+    def initialize_scan(self):
         ret = self.get_kernel_version()
         if not ret:
             return False
@@ -135339,10 +135378,17 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         self.save_config("ro_size")
         return True
 
+    def initialize(self):
+        self.config_updates = {}
+        try:
+            return self.initialize_scan()
+        finally:
+            self.flush_config()
+
     def arm64_fast_path(self):
         if not is_in_kernel():
             self.quiet_info("Use slow path")
-            return False
+            return None
 
         # This path is more faster because it does not use pagewalk.
         # Instead of finding ro_base from pagewalk results, it finds ro_base by scanning the kernel version.
@@ -135360,7 +135406,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             except gdb.MemoryError:
                 # reached to the end of ro_base
                 self.quiet_info("Use slow path")
-                return False
+                return None
 
             # '\n\0' is needed to avoid false positives in the dmesg buffer.
             r = re.search(rb"Linux version (\d+\.[\d.]*\d)[ -~]+\n\0", candidate_rodata)
@@ -135381,7 +135427,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         ])
         if not ret:
             self.quiet_info("Use slow path")
-            return False
+            return None
 
         # Restore ro_base with considering kASLR.
         self.quiet_info("Use fast path")
@@ -135393,29 +135439,25 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         ret = self.initialize()
         if not ret:
             self.quiet_info("Use slow path")
-            return False
+            return None
 
-        self.read_kallsyms()
-        return True
+        return self.read_kallsyms()
 
     def parse_kallsyms(self):
-        if self.kallsyms:
-            return True # use cache
-
         # Fast path when reattaching GDB after executing this command once (ARM64 only).
         if is_arm64():
-            ret = self.arm64_fast_path()
-            if ret:
-                return True
+            kallsyms = self.arm64_fast_path()
+            if kallsyms:
+                return kallsyms
 
         # Slow path
         try:
             kinfo = Kernel.get_kernel_layout(apply_data_range_hint=False)
             if kinfo.has_none:
-                return False
+                return None
         except gdb.MemoryError:
             self.quiet_err("Memory read error")
-            return False
+            return None
 
         if not kinfo.rwx:
             # On modern kernels, ro_size can be trusted, so it only tries to parse once.
@@ -135425,7 +135467,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             self.verbose_info("ro_base: {:#x}-{:#x}".format(self.ro_base, self.ro_base + self.ro_size))
             ret = self.initialize()
             if not ret:
-                return False
+                return None
         else:
             # Older kernel that has the RWX attribute don't trust ro_size.
             # Very large values of ro_size can be detected.
@@ -135446,37 +135488,31 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
                     break
             else:
                 # not found
-                return False
+                return None
 
         # here, we got all offsets to read kallsyms
-        self.read_kallsyms()
-        return True
+        return self.read_kallsyms()
 
     def parse_main(self):
-        if self.kallsyms:
-            return True
-
         # specified vmlinux parse
         if self.args.vmlinux_file:
             if not os.path.exists(self.args.vmlinux_file):
                 self.quiet_err("Could not find vmlinux file")
-                return False
+                return None
             self.quiet_info("Parse from file: {!s}".format(self.args.vmlinux_file))
-            self.parse_vmlinux(self.args.vmlinux_file)
-            return True
+            return self.parse_vmlinux(self.args.vmlinux_file)
 
         # loaded vmlinux parse
         loaded_vmlinux = self.get_loaded_vmlinux_path()
         if loaded_vmlinux:
             self.quiet_info("Parse from file: {!s}".format(loaded_vmlinux))
-            self.parse_vmlinux(loaded_vmlinux)
-            return True
+            return self.parse_vmlinux(loaded_vmlinux)
 
         # normal parse
         self.quiet_info("Wait for memory scan")
-        ret = self.parse_kallsyms()
-        if ret:
-            return True
+        kallsyms = self.parse_kallsyms()
+        if kallsyms:
+            return kallsyms
 
         # failed, but if args.rescan was not specified originally
         if not self.args.rescan:
@@ -135484,15 +135520,14 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             original_rescan = self.args.rescan
             self.args.rescan = True
             try:
-                self.kallsyms = []
-                ret = self.parse_kallsyms()
+                kallsyms = self.parse_kallsyms()
             finally:
                 self.args.rescan = original_rescan
-            if ret:
-                return True
+            if kallsyms:
+                return kallsyms
 
         self.quiet_err("Failed to parse")
-        return False
+        return None
 
     @parse_args
     @only_if_gdb_running
@@ -135503,14 +135538,16 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             self.print_saved_config()
             return
 
-        if self.args.rescan:
-            self.kallsyms = []
+        # these select the parse source and are read inside the cached `get_kallsyms()`
+        if args.rescan or args.vmlinux_file or args.ignore_loaded_vmlinux:
+            Cache.clear_cache_for(self.get_kallsyms)
 
-        ret = self.parse_main()
-        if not ret:
+        ret = self.get_kallsyms()
+        if ret is None:
             return
+        kallsyms, kallsyms_map = ret
 
-        self.print_kallsyms(args.keyword, args.type, args.smart)
+        self.print_kallsyms(kallsyms, args.keyword, args.type, args.smart)
         self.print_output(check_terminal_size=True)
         return
 
