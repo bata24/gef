@@ -4411,7 +4411,7 @@ class GlibcHeap:
                 return 12
 
         @staticmethod
-        @Cache.cache_this_session
+        @Cache.cache_this_session(until_new_objfile=True)
         def TCACHE_MAX_BINS():
             if get_libc_version() < (2, 42):
                 return 0x40
@@ -4419,7 +4419,7 @@ class GlibcHeap:
                 return GlibcHeap.GlibcArena.TCACHE_SMALL_BINS() + GlibcHeap.GlibcArena.TCACHE_LARGE_BINS()
 
         @staticmethod
-        @Cache.cache_this_session
+        @Cache.cache_this_session(until_new_objfile=True)
         def TCACHE_FILL_COUNT():
             v = Config.get_gef_setting("heap.tcache_max_count")
             if v != -1:
@@ -5563,7 +5563,7 @@ class GlibcHeap:
             return "\n".join(msg)
 
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(until_new_objfile=True)
     def get_binsize_table():
         """Return a dictionary containing size information for tcache, fastbins, unsorted bin,
         small bins, and large bins, based on architecture and libc version."""
@@ -5804,7 +5804,7 @@ class GlibcHeap:
 GH = GlibcHeap # noqa
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(until_new_objfile=True)
 def get_libc_version(verbose=False, silent=False):
     """Detect and return the glibc version as a tuple, using cache, configuration,
     process maps, or system fallback."""
@@ -6276,7 +6276,7 @@ class Symbol:
     # Fortunately, symbol information rarely changes.
     # The cache is retained until explicitly cleared.
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(until_new_objfile=True)
     def gdb_get_location(address):
         """e.g., 0xffffffff9f6bd2a0 -> ('commit_creds', 0)"""
         if address is None:
@@ -6304,7 +6304,7 @@ class Symbol:
         return name, offset
 
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(until_new_objfile=True)
     def get_symbol_string(addr, nosymbol_string=""):
         """e.g., 0xffffffff9f6bd2a1 -> ' <commit_creds+0x1>'. Be careful to include leading spaces."""
         try:
@@ -13534,9 +13534,11 @@ def get_register(regname, use_mbed_exec=False, use_monitor=False):
     return None
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_remote_debug():
     """GDB mode determination function for remote debugging."""
+    if not is_alive():
+        return None
     try:
         connection = gdb.selected_inferior().connection
         if connection is None:
@@ -13553,16 +13555,20 @@ def is_remote_debug():
 # However, it cannot detect that traffic is being redirected to another host.
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_normal_run():
     """GDB mode determination function for normal running."""
+    if not is_alive():
+        return None
     ret = gdb.execute("info files", to_string=True)
     return "Using the running image of child" in ret
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_attach():
     """GDB mode determination function for attaching."""
+    if not is_alive():
+        return None
     try:
         return gdb.selected_inferior().was_attached
     except AttributeError:
@@ -13570,9 +13576,11 @@ def is_attach():
         return "Using the running image of attached" in ret
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_container_attach():
     """GDB mode determination function for attaching another namespace."""
+    if not is_alive():
+        return None
     filename = gdb.current_progspace().filename
     if filename and filename.startswith("target:"):
         return True
@@ -13587,9 +13595,11 @@ def is_container_attach():
     return False
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_pin():
     """GDB mode determination function for pin and SDE."""
+    if not is_alive():
+        return None
     if not is_remote_debug():
         return False
     try:
@@ -13600,9 +13610,11 @@ def is_pin():
     return "intel.name=" in response
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_qemu():
     """GDB mode determination function for qemu-user or qemu-system."""
+    if not is_alive():
+        return None
     if not is_remote_debug():
         return False
     try:
@@ -13613,9 +13625,11 @@ def is_qemu():
     return "ENABLE=" in response
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_qemu_user():
     """GDB mode determination function for qemu-user gdb stub."""
+    if not is_alive():
+        return None
     if is_qemu() is False:
         return False
     try:
@@ -13626,9 +13640,11 @@ def is_qemu_user():
     return "Text=" in response
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_qemu_system():
     """GDB mode determination function for qemu-system gdb stub."""
+    if not is_alive():
+        return None
     if is_qemu() is False:
         return False
     try:
@@ -13639,9 +13655,11 @@ def is_qemu_system():
     return 'received: ""' in response
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_over_serial():
     """GDB mode determination function for serial device."""
+    if not is_alive():
+        return None
     if not is_remote_debug():
         return False
     try:
@@ -13652,13 +13670,15 @@ def is_over_serial():
         return False
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_kgdb():
     """GDB mode determination function for KGDB."""
     # Forcing KGDB mode is useful when KGDB is being used via agent-proxy
     # and thus GDB cannot see the serial device name.
     if Config.get_gef_setting("gef.kgdb_force") is True:
         return True
+    if not is_alive():
+        return None
     return bool((is_x86_64() or is_arm64()) and is_over_serial())
 
 
@@ -13667,9 +13687,11 @@ def kgdb_has_system_registers():
     return Config.get_gef_setting("gef.kgdb_system_registers") is True
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_kdb():
     """GDB mode determination function for KDB (over KGDB)."""
+    if not is_alive():
+        return None
     if not is_kgdb():
         return False
     try:
@@ -13680,9 +13702,11 @@ def is_kdb():
     return bool(r)
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_vmware():
     """GDB mode determination function for VMware gdb stub."""
+    if not is_alive():
+        return None
     if not is_remote_debug():
         return False
     # The `monitor help` command takes a very long time in kgdb mode.
@@ -13697,9 +13721,11 @@ def is_vmware():
         return False
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_qiling():
     """GDB mode determination function for qiling framework gdb stub."""
+    if not is_alive():
+        return None
     if not is_remote_debug():
         return False
     pid = Pid.get_pid(remote=True)
@@ -13711,15 +13737,19 @@ def is_qiling():
     return False
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_rr():
     """GDB mode determination function for rr."""
+    if not is_alive():
+        return None
     return Pid.get_pid_from_tcp_session(filepath="rr") is not None
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_wine():
     """GDB mode determination function for winedbg."""
+    if not is_alive():
+        return None
     return Pid.get_pid_from_tcp_session(filepath="wineserver") is not None
 
 
@@ -13794,8 +13824,10 @@ def is_in_kpti_transition():
     return known_address is not None and not is_valid_addr(known_address)
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_support_secure_world():
+    if not is_alive():
+        return None
     if not is_arm32() and not is_arm64():
         return False
     if not is_qemu_system():
@@ -13821,9 +13853,11 @@ def is_in_secure():
     return (scr & 0b1) == 0
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_kvm_enabled():
     """GDB mode determination function for KVM."""
+    if not is_alive():
+        return None
     try:
         res = gdb.execute("monitor info kvm", to_string=True)
         return "enabled" in res
@@ -13831,9 +13865,11 @@ def is_kvm_enabled():
         return False
 
 
-@Cache.cache_this_session
+@Cache.cache_this_session(cache_None=False)
 def is_smp_enabled():
     """GDB mode determination function for smp."""
+    if not is_alive():
+        return None
     try:
         res = gdb.execute("monitor info cpus", to_string=True)
         return len(res.splitlines()) >= 2
@@ -13973,9 +14009,11 @@ class Pid:
         return None
 
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(cache_None=False)
     def get_pid(remote=False):
         """Return the PID of the debuggee process."""
+        if not is_alive():
+            return None
         if is_pin():
             return Pid.get_pid_from_tcp_session()
         elif is_qemu_user() or is_qemu_system():
@@ -13987,7 +14025,7 @@ class Pid:
             return Pid.get_pid_wine()
         elif remote is False and is_remote_debug():
             return None # gdbserver etc.
-        return gdb.selected_inferior().pid
+        return gdb.selected_inferior().pid or None
 
     @staticmethod
     def get_tid():
@@ -14012,7 +14050,7 @@ class Path:
         return os.path.join(prefix, relative_path)
 
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(cache_None=False)
     def get_filepath(append_proc_root_prefix=True):
         """Return the local absolute path of the file currently debugged."""
         filepath = gdb.current_progspace().filename
@@ -14055,7 +14093,7 @@ class Path:
         return None
 
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(cache_None=False)
     def get_filename():
         """Return the full filename of the file currently debugged."""
         filename = Path.get_filepath()
@@ -14165,15 +14203,17 @@ class ProcessMap:
     # Fortunately, memory maps rarely change.
     # The cache is cleared and rechecked when the `vmmap` command is called explicitly.
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(cache_None=False)
     def get_explored_regions():
         """Return sections from auxv exploring."""
 
         if Config.get_gef_setting("context.disable_vmmap"):
             return []
 
+        if not is_alive():
+            return None
         if current_arch is None:
-            return []
+            return None
 
         def is_valid_addr_fast(addr):
             try:
@@ -14565,7 +14605,7 @@ class ProcessMap:
             ProcessMap.__gef_use_info_proc_mappings__ = False
 
         # slow path
-        return ProcessMap.get_explored_regions() # use cache
+        return ProcessMap.get_explored_regions() or [] # use cache
 
     @staticmethod
     @Cache.cache_until_next
@@ -14666,7 +14706,7 @@ class ProcessMap:
     # Fortunately, zone information rarely changes.
     # The cache is retained until explicitly cleared.
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(until_new_objfile=True)
     def get_info_files():
         """Retrieve all the files loaded by debuggee."""
         lines = gdb.execute("info files", to_string=True).splitlines()
@@ -14771,7 +14811,7 @@ class ProcessMap:
         return None
 
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(cache_None=False)
     def get_codebase():
         filepath = Path.get_filepath(append_proc_root_prefix=is_container_attach())
         code_base = ProcessMap.get_section_base_address(filepath)
@@ -15507,7 +15547,7 @@ class Auxv:
     # Fortunately, auxv rarely changes.
     # The cache is retained until explicitly cleared.
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(cache_None=False)
     def get_auxiliary_values(force_heuristic=False):
         """Retrieve the auxiliary values of the current execution.
         Return None if not running, or a dict() of values."""
@@ -15557,7 +15597,6 @@ class Auxv:
         return fast_path() or slow_path()
 
 
-@Cache.cache_this_session
 def get_pagesize():
     """Get the page size from auxiliary values."""
     auxval = Auxv.get_auxiliary_values()
@@ -15566,7 +15605,6 @@ def get_pagesize():
     return auxval["AT_PAGESZ"]
 
 
-@Cache.cache_this_session
 def get_pagesize_mask_low():
     """Get the page size mask from auxiliary values."""
     auxval = Auxv.get_auxiliary_values()
@@ -15575,7 +15613,6 @@ def get_pagesize_mask_low():
     return auxval["AT_PAGESZ"] - 1
 
 
-@Cache.cache_this_session
 def get_pagesize_mask_high():
     """Get the page size mask from auxiliary values."""
     auxval = Auxv.get_auxiliary_values()
@@ -17160,7 +17197,7 @@ class CanaryCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(cache_None=False)
     def gef_read_canary():
         """Read the current stack canary and return its value and location."""
         if is_in_kernel():
@@ -21909,7 +21946,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
         # finally, look for possible values for given prefix
         return [s for s in regs if s and s.startswith(text.strip())]
 
-    @Cache.cache_this_session
+    @Cache.cache_this_session(cache_None=False)
     def get_stub_address(self, reg_name):
         if not is_alive():
             return None
@@ -66866,7 +66903,7 @@ class Kernel:
         return build_kinfo()
 
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(cache_None=False)
     def get_kernel_base():
 
         def resolve_syms_safely(syms):
@@ -67036,8 +67073,10 @@ class Kernel:
         return None
 
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(cache_None=False)
     def get_slab_type():
+        if not is_alive():
+            return None
         # Cases where ksymaddr-remote is not working properly
         if not Symbol.get_ksymaddr("commit_creds"):
             return "Unknown"
@@ -67080,8 +67119,10 @@ class Kernel:
             return "slab"
 
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(cache_None=False)
     def get_page_virt_pair():
+        if not is_alive():
+            return None
         allocator = Kernel.get_slab_type()
 
         if allocator in ["SLUB", "SLUB_TINY"]:
@@ -139671,8 +139712,10 @@ class V8Command(GenericCommand):
         return gdbinit_filename
 
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(cache_None=False)
     def is_chromium():
+        if not is_alive():
+            return None
         maps = ProcessMap.get_process_maps()
         for m in maps:
             if m.path.startswith("[anon:partition_alloc]"):
