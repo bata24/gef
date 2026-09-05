@@ -15962,9 +15962,8 @@ class BufferingOutput:
         return
 
     def print_output(self, check_terminal_size=False, skip_color=False):
-        if not hasattr(self, "out"):
-            return
-        if not self.out:
+        out = getattr(self, "out", None)
+        if not out:
             return
 
         def do_check_term_size(lines):
@@ -15986,9 +15985,9 @@ class BufferingOutput:
         if not check_terminal_size:
             less = not self.args.no_pager
         else:
-            less = do_check_term_size(self.out)
+            less = do_check_term_size(out)
 
-        gef_print("\n".join(self.out), less=less, skip_color=skip_color)
+        gef_print("\n".join(out), less=less, skip_color=skip_color)
         return
 
 
