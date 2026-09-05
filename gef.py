@@ -154115,8 +154115,10 @@ class SlabVirtualCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     modes = ["to_virt", "to_page", "from_virt", "from_page"]
-    parser.add_argument("mode", choices=modes, help="conversion mode.")
-    parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address, help="the address to convert.")
+    parser.add_argument("mode", choices=modes, nargs="?", help="conversion mode.")
+    parser.add_argument("address", metavar="ADDRESS", nargs="?", type=AddressUtil.parse_address,
+                        help="the address to convert.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
@@ -154175,24 +154177,24 @@ class SlabVirtualCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
-        if hasattr(self, "initialized") and self.initialized:
-            return True
+        self.meta = []
 
         self.PAGE_SHIFT = 12
         P4D_SHIFT = 39
 
         self.SLAB_BASE_ADDR = (-3 << P4D_SHIFT) & 0xffff_ffff_ffff_ffff
-        self.quiet_info("SLAB_BASE_ADDR: {:#x}".format(self.SLAB_BASE_ADDR))
+        self.meta.append((self.quiet_info, "SLAB_BASE_ADDR: {:#x}".format(self.SLAB_BASE_ADDR)))
 
         self.SLAB_END_ADDR = self.SLAB_BASE_ADDR + (1 << P4D_SHIFT)
-        self.quiet_info("SLAB_END_ADDR: {:#x}".format(self.SLAB_END_ADDR))
+        self.meta.append((self.quiet_info, "SLAB_END_ADDR: {:#x}".format(self.SLAB_END_ADDR)))
 
         SLAB_VPAGES = (self.SLAB_END_ADDR - self.SLAB_BASE_ADDR) >> self.PAGE_SHIFT
-        self.quiet_info("SLAB_VPAGES: {:#x}".format(SLAB_VPAGES))
+        self.meta.append((self.quiet_info, "SLAB_VPAGES: {:#x}".format(SLAB_VPAGES)))
 
         self.sizeof_struct_page = 0x40
-        self.quiet_info("sizeof(struct page): {:#x}".format(self.sizeof_struct_page))
+        self.meta.append((self.quiet_info, "sizeof(struct page): {:#x}".format(self.sizeof_struct_page)))
 
         kversion = Kernel.kernel_version()
 
@@ -154285,26 +154287,25 @@ class SlabVirtualCommand(GenericCommand):
             """
             self.slab_meta_entry_size = 0x70 # sizeof(struct slab)
 
-        self.quiet_info("SLAB_META_SIZE: {:#x}".format(self.SLAB_META_SIZE))
-        self.quiet_info("single slab meta size: {:#x}".format(self.slab_meta_entry_size))
+        self.meta.append((self.quiet_info, "SLAB_META_SIZE: {:#x}".format(self.SLAB_META_SIZE)))
+        self.meta.append((self.quiet_info, "single slab meta size: {:#x}".format(self.slab_meta_entry_size)))
 
         # offsetof(slab, compound_slab_head)         if kernel != 6.6
         # offsetof(virtual_slab, compound_slab_head) if kernel == 6.6
         # offsetof(slab, backing_folio)
         if kversion < "6.6" or "6.12" <= kversion:
             self.slab_offset_compound_slab_head = 0
-            self.quiet_info("offsetof(slab, compound_slab_head): {:#x}".format(self.slab_offset_compound_slab_head))
+            self.meta.append((self.quiet_info, "offsetof(slab, compound_slab_head): {:#x}".format(self.slab_offset_compound_slab_head)))
             self.slab_offset_backing_folio = current_arch.ptrsize
         else: # 6.6
             self.slab_offset_compound_slab_head = current_arch.ptrsize * 8
-            self.quiet_info("offsetof(virtual_slab, compound_slab_head): {:#x}".format(self.slab_offset_compound_slab_head))
+            self.meta.append((self.quiet_info, "offsetof(virtual_slab, compound_slab_head): {:#x}".format(self.slab_offset_compound_slab_head)))
             self.slab_offset_backing_folio = 0
-        self.quiet_info("offsetof(slab, backing_folio): {:#x}".format(self.slab_offset_backing_folio))
+        self.meta.append((self.quiet_info, "offsetof(slab, backing_folio): {:#x}".format(self.slab_offset_backing_folio)))
 
         self.SLAB_DATA_BASE_ADDR = self.SLAB_BASE_ADDR + self.SLAB_META_SIZE
-        self.quiet_info("SLAB_DATA_BASE_ADDR: {:#x}".format(self.SLAB_DATA_BASE_ADDR))
+        self.meta.append((self.quiet_info, "SLAB_DATA_BASE_ADDR: {:#x}".format(self.SLAB_DATA_BASE_ADDR)))
 
-        self.initialized = True
         return True
 
     def is_slab_virtual_meta(self, slab):
@@ -154454,6 +154455,10 @@ class SlabVirtualCommand(GenericCommand):
     @only_if_specific_arch(arch=("x86_64",))
     @only_if_in_kernel
     def do_invoke(self, args):
+        if not args.meta and (args.mode is None or args.address is None):
+            err("mode and ADDRESS are needed")
+            return
+
         kversion = Kernel.kernel_version()
         if kversion < "6.1":
             err("Unsupported before v6.1")
@@ -154465,11 +154470,17 @@ class SlabVirtualCommand(GenericCommand):
             return
 
         if args.rescan:
-            self.initialized = False
+            Cache.clear_cache_for(self.initialize)
 
         ret = self.initialize()
-        if ret is False:
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
             err("Failed to initialize")
+            return
+
+        if args.meta:
             return
 
         out = []
