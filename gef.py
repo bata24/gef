@@ -59893,18 +59893,21 @@ class KernelConstsX86(KernelConstsBase):
             return self.cached_PAGE_OFFSET
         kern_min = Kernel.get_maps()[0][0]
         if 0xc000_0000 <= kern_min:
-            self.cached_PAGE_OFFSET = 0xc000_0000 # VMSPLIT_3G
+            page_offset = 0xc000_0000 # VMSPLIT_3G
         elif 0xb000_0000 <= kern_min:
-            self.cached_PAGE_OFFSET = 0xb000_0000 # VMSPLIT_3G_OPT
+            page_offset = 0xb000_0000 # VMSPLIT_3G_OPT
         elif 0x8000_0000 <= kern_min:
-            self.cached_PAGE_OFFSET = 0x8000_0000 # VMSPLIT_2G
+            page_offset = 0x8000_0000 # VMSPLIT_2G
         elif 0x7800_0000 <= kern_min:
-            self.cached_PAGE_OFFSET = 0x7800_0000 # VMSPLIT_2G_OPT
+            page_offset = 0x7800_0000 # VMSPLIT_2G_OPT
         elif 0x4000_0000 <= kern_min:
-            self.cached_PAGE_OFFSET = 0x4000_0000 # VMSPLIT_1G
+            page_offset = 0x4000_0000 # VMSPLIT_1G
         else:
-            self.cached_PAGE_OFFSET = None
-        return self.cached_PAGE_OFFSET
+            # None does not cache, because `Kernel.get_maps()` is per-stop and
+            # may be incomplete when this is called
+            return None
+        self.cached_PAGE_OFFSET = page_offset
+        return page_offset
 
     @property
     def __PAGE_OFFSET(self):
@@ -60312,10 +60315,16 @@ class KernelConstsX64(KernelConstsBase):
             return None
         page, vaddr = ret
         pfn = (vaddr - self.PAGE_OFFSET) >> self.PAGE_SHIFT
-        sizeof_struct_page_value = align_to_ptrsize((page - self.VMEMMAP_START) // pfn)
-        if sizeof_struct_page_value != 0:
-            self.cached_sizeof_struct_page = sizeof_struct_page_value
-        return sizeof_struct_page_value
+        if pfn == 0:
+            return None
+
+        size = align_to_ptrsize((page - self.VMEMMAP_START) // pfn)
+        if size == 0:
+            # 0 is never a valid size, and the callers only check for None
+            return None
+
+        self.cached_sizeof_struct_page = size
+        return size
 
     @property
     def CONFIG_X86_5LEVEL(self):
@@ -60697,7 +60706,9 @@ class KernelConstsX64(KernelConstsBase):
     @property
     def VMEMMAP_END(self):
         if "3.0" <= self.kversion:
-            return self.VMEMMAP_START + self.SZ_1T
+            vmemmap_start = self.VMEMMAP_START
+            if vmemmap_start is not None:
+                return vmemmap_start + self.SZ_1T
         return None
 
     @property
@@ -60907,16 +60918,19 @@ class KernelConstsArm32(KernelConstsBase):
         if 0xc000_0000 - 0x0100_0000 <= kern_min:
             # 0xbf000000-0xc0000000 is kernel module area.
             # Even if it is VMSPLIT_3G, this is used.
-            self.cached_PAGE_OFFSET = 0xc000_0000 # VMSPLIT_3G
+            page_offset = 0xc000_0000 # VMSPLIT_3G
         elif 0xb000_0000 - 0x0100_0000 <= kern_min:
-            self.cached_PAGE_OFFSET = 0xb000_0000 # VMSPLIT_3G_OPT
+            page_offset = 0xb000_0000 # VMSPLIT_3G_OPT
         elif 0x8000_0000 - 0x0100_0000 <= kern_min:
-            self.cached_PAGE_OFFSET = 0x8000_0000 # VMSPLIT_2G
+            page_offset = 0x8000_0000 # VMSPLIT_2G
         elif 0x4000_0000 - 0x0100_0000 <= kern_min:
-            self.cached_PAGE_OFFSET = 0x4000_0000 # VMSPLIT_1G
+            page_offset = 0x4000_0000 # VMSPLIT_1G
         else:
-            self.cached_PAGE_OFFSET = None
-        return self.cached_PAGE_OFFSET
+            # None does not cache, because `Kernel.get_maps()` is per-stop and
+            # may be incomplete when this is called
+            return None
+        self.cached_PAGE_OFFSET = page_offset
+        return page_offset
 
     @property
     def CONFIG_HIGHMEM(self):
@@ -61920,7 +61934,7 @@ class KernelConstsArm64(KernelConstsBase):
             return self.cached_physmap_base
 
         if self.PAGE_OFFSET is None:
-            self.cached_physmap_base = None
+            # None does not cache, because PAGE_OFFSET may be resolved later
             return None
 
         # physmap_base is used in KGDB mode when pseudo reading physical addresses without page walking.
@@ -61936,7 +61950,7 @@ class KernelConstsArm64(KernelConstsBase):
 
         memstart_addr = Symbol.get_ksymaddr("memstart_addr")
         if memstart_addr is None:
-            self.cached_physmap_base = None
+            # None does not cache, because the symbol may be resolved later
             return None
 
         PHYS_OFFSET = read_int_from_memory(memstart_addr)
@@ -61978,21 +61992,21 @@ class KernelAddressHeuristicFinder:
     USE_DIRECTLY = True # for debug
     USE_KSYSCTL = True # for debug
     DEBUG_CONTEXT = False # for debug; report which CPU context resolved each cpu-dependent heuristic
-    CONSTS = None
 
     @staticmethod
+    @Cache.cache_this_session(cache_None=False, until_new_objfile=True)
     def consts():
-        if KernelAddressHeuristicFinder.CONSTS:
-            return KernelAddressHeuristicFinder.CONSTS
+        # each property memoizes its own value on the returned object, so dropping the
+        # object here drops every one of them
         if is_x86_64():
-            KernelAddressHeuristicFinder.CONSTS = KernelConstsX64()
+            return KernelConstsX64()
         elif is_x86_32():
-            KernelAddressHeuristicFinder.CONSTS = KernelConstsX86()
+            return KernelConstsX86()
         elif is_arm64():
-            KernelAddressHeuristicFinder.CONSTS = KernelConstsArm64()
+            return KernelConstsArm64()
         elif is_arm32():
-            KernelAddressHeuristicFinder.CONSTS = KernelConstsArm32()
-        return KernelAddressHeuristicFinder.CONSTS
+            return KernelConstsArm32()
+        return None
 
     @staticmethod
     @switch_to_intel_syntax
