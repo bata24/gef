@@ -398,12 +398,14 @@ def hexoff(): # noqa
 
 
 class Cache:
-    """Manage the gef cache. The cache has 2 types: "until_next" and "this_session".
-    "until_next": Cached for a very short period of time. Cleared every time an instruction is stepped, etc.
-    "this_session": Cached until gdb exits.
+    """Manage the gef cache. The 2 types are named after what invalidates them.
+    "until_next": a step, or a memory or register change.
+    "this_session": the target itself changing (exit, `set_arch`, `gef reset-cache`, `--rescan`).
+    A `this_session` entry declared `until_new_objfile=True` is dropped when a symbol file is loaded too.
     Note: each command may have its own cache outside this mechanism. Not all caches are centralized here."""
 
     __gef_caches__ = {"until_next": {}, "this_session": {}}
+    __objfile_caches__ = [] # the `this_session` caches that a newly loaded symbol file stales
 
     @staticmethod
     def cpu_context():
@@ -424,11 +426,13 @@ class Cache:
     __kwargs_marker__ = object()
 
     @staticmethod
-    def cache_wrap(life_time, f, cache_None=True, per_cpu=False):
+    def cache_wrap(life_time, f, cache_None=True, per_cpu=False, until_new_objfile=False):
         # The name and the per-function dict are resolved once here instead of on every call.
         # The dict is therefore kept alive across resets, so the reset clears it in place.
         fname = f"{f.__module__}:{f.__qualname__}"
         fcache = Cache.__gef_caches__[life_time].setdefault(fname, {})
+        if until_new_objfile:
+            Cache.__objfile_caches__.append(fcache)
 
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
@@ -446,8 +450,22 @@ class Cache:
                 if cache_None or ret is not None:
                     fcache[key] = ret
                 return ret
-            except TypeError:
-                return f(*args, **kwargs)
+            except TypeError as e:
+                bad = []
+                for i, a in enumerate(args):
+                    try:
+                        hash(a)
+                    except TypeError:
+                        bad.append("args[{:d}]: {:s}".format(i, type(a).__name__))
+                for k, v in kwargs.items():
+                    try:
+                        hash(v)
+                    except TypeError:
+                        bad.append("{:s}: {:s}".format(k, type(v).__name__))
+                raise TypeError(
+                    "Cache: {:s} got an unhashable argument ({:s}), so it cannot be cached. "
+                    "Pass a hashable value, e.g. tuple(x) instead of a list.".format(fname, ", ".join(bad))
+                ) from e
 
         return wrapper
 
@@ -466,23 +484,27 @@ class Cache:
         return Cache.cache_wrap("until_next", f, cache_None=cache_None, per_cpu=per_cpu)
 
     @staticmethod
-    def cache_this_session(f=None, *, cache_None=True, per_cpu=False):
+    def cache_this_session(f=None, *, cache_None=True, per_cpu=False, until_new_objfile=False):
         """Decorator for the "this_session" cache.
         Usable bare (`@Cache.cache_this_session`) or with options
-        (`@Cache.cache_this_session(cache_None=False)`)."""
+        (`@Cache.cache_this_session(cache_None=False)`).
+        Set `until_new_objfile` if loading a symbol file can change the value."""
 
         if f is None: # called with options
             return functools.partial(
                 Cache.cache_this_session, cache_None=cache_None, per_cpu=per_cpu,
+                until_new_objfile=until_new_objfile,
             )
         if not callable(f):
             raise TypeError("Cache.cache_this_session: the options must be keyword arguments")
-        return Cache.cache_wrap("this_session", f, cache_None=cache_None, per_cpu=per_cpu)
+        return Cache.cache_wrap("this_session", f, cache_None=cache_None, per_cpu=per_cpu,
+                                until_new_objfile=until_new_objfile)
 
     @staticmethod
-    def reset_gef_caches(all=False):
-        """Clear the cache of GEF.
-        By default, it only clears caches of `until_next` type."""
+    def reset_gef_caches(all=False, new_objfile=False):
+        """Clear the gef caches. By default only `until_next`.
+        `all` also clears `this_session`.
+        `new_objfile` clears the `this_session` entries declared `until_new_objfile`."""
 
         for fcache in Cache.__gef_caches__["until_next"].values():
             fcache.clear()
@@ -491,6 +513,9 @@ class Cache:
 
         if all:
             for fcache in Cache.__gef_caches__["this_session"].values():
+                fcache.clear()
+        elif new_objfile:
+            for fcache in Cache.__objfile_caches__:
                 fcache.clear()
 
         # gdb cache
@@ -505,8 +530,8 @@ class Cache:
         """Clear the cache of specified function."""
 
         fname = f"{f.__module__}:{f.__qualname__}"
-        Cache.__gef_caches__["until_next"].get(fname, {}).clear()
-        Cache.__gef_caches__["this_session"].get(fname, {}).clear()
+        for caches in Cache.__gef_caches__.values():
+            caches.get(fname, {}).clear()
         return
 
 
@@ -14842,7 +14867,7 @@ class EventHandler:
     @staticmethod
     def new_objfile_handler(_event):
         """GDB event handler for new object file cases."""
-        Cache.reset_gef_caches(all=True)
+        Cache.reset_gef_caches(new_objfile=True)
         if current_arch is None:
             set_arch()
 
@@ -161816,7 +161841,7 @@ class GefReloadCommand(GenericCommand):
 
 @register_command
 class GefResetCacheCommand(GenericCommand):
-    """Reset all caches (both Cache.cache_until_next and Cache.cache_this_session)."""
+    """Reset all caches."""
 
     _cmdline_ = "gef reset-cache"
     _category_ = "99. GEF Maintenance Command"
