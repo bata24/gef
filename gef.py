@@ -156954,7 +156954,7 @@ class KmallocTracerCommand(GenericCommand):
     parser.add_argument("-d", "--dump-chunk", action="store_true", help="dump the first 0x40 bytes of each chunk.")
     parser.add_argument("-p", "--enable-page-allocator-trace", action="store_true",
                         help="in addition to kmalloc and kfree, it also monitors __alloc_pages and __free_pages.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="print meta information.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -156999,33 +156999,24 @@ class KmallocTracerCommand(GenericCommand):
         return
 
     @staticmethod
-    def initialize(allocator, verbose):
-        if allocator != "SLUB":
-            # Do nothing other than SLUB.
-            return None
-
+    @Cache.cache_this_session(cache_None=False)
+    def get_extra_info():
         res = gdb.execute("slub-dump --meta", to_string=True)
 
         r = re.search(r"offsetof\((?:page|slab), slab_cache\): (0x\S+)", res)
         if not r:
-            return False
+            return None
         page_offset_slab_cache = int(r.group(1), 16)
-        if verbose:
-            info("offsetof({:s}, slab_cache): {:#x}".format(Kernel.slab_page_str(), page_offset_slab_cache))
 
         r = re.search(r"offsetof\(kmem_cache, name\): (0x\S+)", res)
         if not r:
-            return False
+            return None
         kmem_cache_offset_name = int(r.group(1), 16)
-        if verbose:
-            info("offsetof(kmem_cache, name): {:#x}".format(kmem_cache_offset_name))
 
         r = re.search(r"offsetof\(kmem_cache, size\): (0x\S+)", res)
         if not r:
-            return False
+            return None
         kmem_cache_offset_size = int(r.group(1), 16)
-        if verbose:
-            info("offsetof(kmem_cache, size): {:#x}".format(kmem_cache_offset_size))
 
         # create extra_info
         dic = {
@@ -157429,15 +157420,13 @@ class KmallocTracerCommand(GenericCommand):
             # fall through
 
         # initialize
-        if not hasattr(self, "initialized"):
-            ret = KmallocTracerCommand.initialize(allocator, args.verbose)
-            if ret is False:
+        self.extra_info = None
+        if allocator == "SLUB":
+            self.extra_info = KmallocTracerCommand.get_extra_info()
+            if self.extra_info is None:
                 err("Failed to initialize")
                 return
-            self.initialized = True
-            self.extra_info = ret # allow None
-        else:
-            if args.verbose and self.extra_info:
+            if args.meta:
                 info("offsetof({:s}, slab_cache): {:#x}".format(Kernel.slab_page_str(), self.extra_info.page_offset_slab_cache))
                 info("offsetof(kmem_cache, name): {:#x}".format(self.extra_info.kmem_cache_offset_name))
                 info("offsetof(kmem_cache, size): {:#x}".format(self.extra_info.kmem_cache_offset_size))
@@ -157490,7 +157479,7 @@ class KmallocAllocatedByCommand(GenericCommand):
     parser.add_argument("-N", "--print-null", action="store_true", help="display free(NULL).")
     parser.add_argument("-t", "--backtrace", action="store_true", help="display backtrace.")
     parser.add_argument("-d", "--dump-chunk", action="store_true", help="dump the first 0x40 bytes of each chunk.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="print meta information.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -158836,15 +158825,13 @@ class KmallocAllocatedByCommand(GenericCommand):
             # fall through
 
         # initialize
-        if not hasattr(self, "initialized"):
-            ret = KmallocTracerCommand.initialize(allocator, args.verbose)
-            if ret is False:
+        self.extra_info = None
+        if allocator == "SLUB":
+            self.extra_info = KmallocTracerCommand.get_extra_info()
+            if self.extra_info is None:
                 err("Failed to initialize")
                 return
-            self.initialized = True
-            self.extra_info = ret # allow None
-        else:
-            if args.verbose and self.extra_info:
+            if args.meta:
                 info("offsetof({:s}, slab_cache): {:#x}".format(Kernel.slab_page_str(), self.extra_info.page_offset_slab_cache))
                 info("offsetof(kmem_cache, name): {:#x}".format(self.extra_info.kmem_cache_offset_name))
                 info("offsetof(kmem_cache, size): {:#x}".format(self.extra_info.kmem_cache_offset_size))
