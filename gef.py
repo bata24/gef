@@ -132710,30 +132710,28 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def dump_resource(self, addr):
+    @Cache.cache_this_session(cache_None=False)
+    def get_sizeof_resource_size_t(self):
+        addr = self.resource_addr_temp
+        name_ptr = read_int_from_memory(addr + 0x8 * 2) # sizeof(resource_size_t) == 8
+        if name_ptr and is_valid_addr(name_ptr):
+            name = read_cstring_from_memory(name_ptr)
+            if name in ["PCI IO", "PCI mem"]:
+                return 0x8
+
+        name_ptr = read_int_from_memory(addr + 0x4 * 2) # sizeof(resource_size_t) == 4
+        if name_ptr and is_valid_addr(name_ptr):
+            name = read_cstring_from_memory(name_ptr)
+            if name in ["PCI IO", "PCI mem"]:
+                return 0x4
+        return None
+
+    def dump_resource(self, addr, sizeof_resource_size_t):
         if not is_valid_addr(addr):
             return []
         if addr in self.seen:
             return []
         self.seen.append(addr)
-
-        if not hasattr(self, "sizeof_resource_size_t"):
-            name_ptr = read_int_from_memory(addr + 0x8 * 2) # sizeof(resource_size_t) == 8
-            if name_ptr and is_valid_addr(name_ptr):
-                name = read_cstring_from_memory(name_ptr)
-                if name in ["PCI IO", "PCI mem"]:
-                    self.sizeof_resource_size_t = 0x8
-
-        if not hasattr(self, "sizeof_resource_size_t"):
-            name_ptr = read_int_from_memory(addr + 0x4 * 2) # sizeof(resource_size_t) == 4
-            if name_ptr and is_valid_addr(name_ptr):
-                name = read_cstring_from_memory(name_ptr)
-                if name in ["PCI IO", "PCI mem"]:
-                    self.sizeof_resource_size_t = 0x4
-
-        if not hasattr(self, "sizeof_resource_size_t"):
-            err("Not recognized sizeof(resource_size_t)")
-            return []
 
         """
         struct resource {
@@ -132745,33 +132743,43 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
             struct resource *parent, *sibling, *child;
         };
         """
-        if self.sizeof_resource_size_t == 8:
+        if sizeof_resource_size_t == 8:
             start = read_int64_from_memory(addr)
             end = read_int64_from_memory(addr + 8)
-        elif self.sizeof_resource_size_t == 4:
+        elif sizeof_resource_size_t == 4:
             start = read_int32_from_memory(addr)
             end = read_int32_from_memory(addr + 4)
-        name = read_cstring_from_memory(read_int_from_memory(addr + self.sizeof_resource_size_t * 2))
-        flags = read_int_from_memory(addr + self.sizeof_resource_size_t * 2 + current_arch.ptrsize)
+        name = read_cstring_from_memory(read_int_from_memory(addr + sizeof_resource_size_t * 2))
+        flags = read_int_from_memory(addr + sizeof_resource_size_t * 2 + current_arch.ptrsize)
 
         ret = [(addr, start, end, name, flags)]
 
         kversion = Kernel.kernel_version()
         if "4.5" <= kversion:
-            parent = read_int_from_memory(addr + self.sizeof_resource_size_t * 2 + current_arch.ptrsize * 3)
-            ret += self.dump_resource(parent)
-            sibling = read_int_from_memory(addr + self.sizeof_resource_size_t * 2 + current_arch.ptrsize * 4)
-            ret += self.dump_resource(sibling)
-            child = read_int_from_memory(addr + self.sizeof_resource_size_t * 2 + current_arch.ptrsize * 5)
-            ret += self.dump_resource(child)
+            parent = read_int_from_memory(addr + sizeof_resource_size_t * 2 + current_arch.ptrsize * 3)
+            ret += self.dump_resource(parent, sizeof_resource_size_t)
+            sibling = read_int_from_memory(addr + sizeof_resource_size_t * 2 + current_arch.ptrsize * 4)
+            ret += self.dump_resource(sibling, sizeof_resource_size_t)
+            child = read_int_from_memory(addr + sizeof_resource_size_t * 2 + current_arch.ptrsize * 5)
+            ret += self.dump_resource(child, sizeof_resource_size_t)
         else:
-            parent = read_int_from_memory(addr + self.sizeof_resource_size_t * 2 + current_arch.ptrsize * 2)
-            ret += self.dump_resource(parent)
-            sibling = read_int_from_memory(addr + self.sizeof_resource_size_t * 2 + current_arch.ptrsize * 3)
-            ret += self.dump_resource(sibling)
-            child = read_int_from_memory(addr + self.sizeof_resource_size_t * 2 + current_arch.ptrsize * 4)
-            ret += self.dump_resource(child)
+            parent = read_int_from_memory(addr + sizeof_resource_size_t * 2 + current_arch.ptrsize * 2)
+            ret += self.dump_resource(parent, sizeof_resource_size_t)
+            sibling = read_int_from_memory(addr + sizeof_resource_size_t * 2 + current_arch.ptrsize * 3)
+            ret += self.dump_resource(sibling, sizeof_resource_size_t)
+            child = read_int_from_memory(addr + sizeof_resource_size_t * 2 + current_arch.ptrsize * 4)
+            ret += self.dump_resource(child, sizeof_resource_size_t)
         return ret
+
+    def get_resources(self, addr):
+        self.resource_addr_temp = addr
+        sizeof_resource_size_t = self.get_sizeof_resource_size_t()
+        del self.resource_addr_temp
+        if sizeof_resource_size_t is None:
+            err("Not recognized sizeof(resource_size_t)")
+            return []
+        self.seen = []
+        return self.dump_resource(addr, sizeof_resource_size_t)
 
     @parse_args
     @only_if_gdb_running
@@ -132790,8 +132798,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
         else:
             info("ioport_resource: {:#x}".format(ioport_resource))
 
-            self.seen = []
-            resources = self.dump_resource(ioport_resource)
+            resources = self.get_resources(ioport_resource)
             if resources:
                 name_width = max(len(res[3]) for res in resources)
             else:
@@ -132814,8 +132821,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
         else:
             info("iomem_resource: {:#x}".format(iomem_resource))
 
-            self.seen = []
-            resources = self.dump_resource(iomem_resource)
+            resources = self.get_resources(iomem_resource)
             if resources:
                 name_width = max(len(res[3]) for res in resources)
             else:
