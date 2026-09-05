@@ -131713,6 +131713,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("-p", "--only-progs", action="store_true", help="print progs only.")
     parser.add_argument("-m", "--only-maps", action="store_true", help="print maps only.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
@@ -131762,42 +131763,46 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
+    @Cache.cache_this_session(cache_None=False)
     def initialize(self):
+        self.meta = []
+
         # get global address
         prog_idr = KernelAddressHeuristicFinder.get_prog_idr()
         if not prog_idr:
-            return False
-        self.quiet_info("prog_idr: {:#x}".format(prog_idr))
+            return None
+        self.meta.append((self.quiet_info, "prog_idr: {:#x}".format(prog_idr)))
 
         map_idr = KernelAddressHeuristicFinder.get_map_idr()
         if not map_idr:
-            return False
-        self.quiet_info("map_idr: {:#x}".format(map_idr))
+            return None
+        self.meta.append((self.quiet_info, "map_idr: {:#x}".format(map_idr)))
 
         kversion = Kernel.kernel_version()
 
         # idr->idr_rt->xa_head; see Kernel.XArray for struct xarray and struct xa_node
         max_sizeof_idr = min(abs(prog_idr - map_idr), current_arch.ptrsize * 20)
-        prog_xarray = Kernel.XArray(prog_idr)
-        if prog_xarray.find_head_offset(max_sizeof_idr) is None:
-            err("Could not find xa_head. (maybe uninitialized?)")
-            return False
-        self.quiet_info("offsetof(xarray, xa_head): {:#x}".format(prog_xarray.head_offset))
+        self.prog_xarray = Kernel.XArray(prog_idr)
+        self.map_xarray = Kernel.XArray(map_idr)
+        if self.prog_xarray.find_head_offset(max_sizeof_idr) is None:
+            self.meta.append((err, "Could not find xa_head. (maybe uninitialized?)"))
+            return None
+        self.meta.append((self.quiet_info, "offsetof(xarray, xa_head): {:#x}".format(self.prog_xarray.head_offset)))
 
         # xa_node->{shift,count,slots}
-        self.quiet_info("offsetof(xa_node, shift): {:#x}".format(prog_xarray.offset_shift))
-        self.quiet_info("offsetof(xa_node, count): {:#x}".format(prog_xarray.offset_count))
-        self.quiet_info("offsetof(xa_node, slots): {:#x}".format(prog_xarray.offset_slots))
+        self.meta.append((self.quiet_info, "offsetof(xa_node, shift): {:#x}".format(self.prog_xarray.offset_shift)))
+        self.meta.append((self.quiet_info, "offsetof(xa_node, count): {:#x}".format(self.prog_xarray.offset_count)))
+        self.meta.append((self.quiet_info, "offsetof(xa_node, slots): {:#x}".format(self.prog_xarray.offset_slots)))
 
         # parse progs, maps
         try:
-            progs = prog_xarray.parse()
-            self.quiet_info("Num of progs: {:#x}".format(len(progs)))
-            maps = Kernel.XArray(map_idr).parse()
-            self.quiet_info("Num of maps: {:#x}".format(len(maps)))
+            progs = self.prog_xarray.parse()
+            self.meta.append((self.quiet_info, "Num of progs: {:#x}".format(len(progs))))
+            maps = self.map_xarray.parse()
+            self.meta.append((self.quiet_info, "Num of maps: {:#x}".format(len(maps))))
         except gdb.MemoryError:
-            self.quiet_err("Not found")
-            return False
+            self.meta.append((self.quiet_err, "Not found"))
+            return None
 
         """
         struct bpf_prog {
@@ -131842,29 +131847,29 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             self.offset_aux = align_to_ptrsize(self.offset_tag + 8)
             self.offset_bpf_func = self.offset_aux + current_arch.ptrsize * 2
         self.offset_orig_prog = self.offset_aux + current_arch.ptrsize
-        self.quiet_info("offsetof(bpf_prog, type): {:#x}".format(self.offset_prog_type))
-        self.quiet_info("offsetof(bpf_prog, expected_attach_type): {:#x}".format(self.offset_expected_attach_type))
-        self.quiet_info("offsetof(bpf_prog, len): {:#x}".format(self.offset_len))
-        self.quiet_info("offsetof(bpf_prog, jited_len): {:#x}".format(self.offset_jited_len))
-        self.quiet_info("offsetof(bpf_prog, tag): {:#x}".format(self.offset_tag))
-        self.quiet_info("offsetof(bpf_prog, aux): {:#x}".format(self.offset_aux))
-        self.quiet_info("offsetof(bpf_prog, bpf_func): {:#x}".format(self.offset_bpf_func))
-        self.quiet_info("offsetof(bpf_prog, orig_prog): {:#x}".format(self.offset_orig_prog))
+        self.meta.append((self.quiet_info, "offsetof(bpf_prog, type): {:#x}".format(self.offset_prog_type)))
+        self.meta.append((self.quiet_info, "offsetof(bpf_prog, expected_attach_type): {:#x}".format(self.offset_expected_attach_type)))
+        self.meta.append((self.quiet_info, "offsetof(bpf_prog, len): {:#x}".format(self.offset_len)))
+        self.meta.append((self.quiet_info, "offsetof(bpf_prog, jited_len): {:#x}".format(self.offset_jited_len)))
+        self.meta.append((self.quiet_info, "offsetof(bpf_prog, tag): {:#x}".format(self.offset_tag)))
+        self.meta.append((self.quiet_info, "offsetof(bpf_prog, aux): {:#x}".format(self.offset_aux)))
+        self.meta.append((self.quiet_info, "offsetof(bpf_prog, bpf_func): {:#x}".format(self.offset_bpf_func)))
+        self.meta.append((self.quiet_info, "offsetof(bpf_prog, orig_prog): {:#x}".format(self.offset_orig_prog)))
 
         try:
             self.seccomp_tools_command = [GefUtil.which("ceccomp"), "disasm", "-c", "always"]
-            self.quiet_info("ceccomp is found")
+            self.meta.append((self.quiet_info, "ceccomp is found"))
         except FileNotFoundError:
             try:
                 self.seccomp_tools_command = [GefUtil.which("seccomp-tools"), "disasm"]
-                self.quiet_info("seccomp-tools is found")
+                self.meta.append((self.quiet_info, "seccomp-tools is found"))
                 if is_arm32():
-                    self.quiet_warn("`seccomp-tools` is not supported on ARM32. "
-                                    "Consider using `ceccomp` instead, as it supports ARM32.")
-                    self.quiet_info("GEF uses `capstone-disassemble bpf_func`")
+                    self.meta.append((self.quiet_warn, "`seccomp-tools` is not supported on ARM32. "
+                                                      "Consider using `ceccomp` instead, as it supports ARM32."))
+                    self.meta.append((self.quiet_info, "GEF uses `capstone-disassemble bpf_func`"))
                     self.seccomp_tools_command = None
             except FileNotFoundError:
-                self.quiet_info("Could not find ceccomp or seccomp-tools, GEF uses `capstone-disassemble bpf_func`")
+                self.meta.append((self.quiet_info, "Could not find ceccomp or seccomp-tools, GEF uses `capstone-disassemble bpf_func`"))
                 self.seccomp_tools_command = None
 
         if maps:
@@ -131891,10 +131896,10 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             self.offset_key_size = self.offset_map_type + 4
             self.offset_value_size = self.offset_key_size + 4
             self.offset_max_entries = self.offset_value_size + 4
-            self.quiet_info("offsetof(bpf_map, map_type): {:#x}".format(self.offset_map_type))
-            self.quiet_info("offsetof(bpf_map, key_size): {:#x}".format(self.offset_key_size))
-            self.quiet_info("offsetof(bpf_map, value_size): {:#x}".format(self.offset_value_size))
-            self.quiet_info("offsetof(bpf_map, max_entries): {:#x}".format(self.offset_max_entries))
+            self.meta.append((self.quiet_info, "offsetof(bpf_map, map_type): {:#x}".format(self.offset_map_type)))
+            self.meta.append((self.quiet_info, "offsetof(bpf_map, key_size): {:#x}".format(self.offset_key_size)))
+            self.meta.append((self.quiet_info, "offsetof(bpf_map, value_size): {:#x}".format(self.offset_value_size)))
+            self.meta.append((self.quiet_info, "offsetof(bpf_map, max_entries): {:#x}".format(self.offset_max_entries)))
 
             """
             struct bpf_array {
@@ -131926,11 +131931,11 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
                 y = read_int32_from_memory(pos + 4)
                 if x == value_size_aligned_8 and y == index_mask:
                     self.offset_union_array = (pos - maps[0]) + 4 * 2 + current_arch.ptrsize
-                    self.quiet_info("offsetof(bpf_array, union_array): {:#x}".format(self.offset_union_array))
+                    self.meta.append((self.quiet_info, "offsetof(bpf_array, union_array): {:#x}".format(self.offset_union_array)))
                     break
             else:
-                return False
-        return progs, maps
+                return None
+        return True
 
     def dump_bpf_progs(self, progs):
         self.out.append(titlify("prog_idr"))
@@ -132143,10 +132148,22 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
 
         # init
         ret = self.initialize()
-        if ret is False:
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
             self.quiet_err("Failed to initialize")
             return
-        progs, maps = ret
+
+        if args.meta:
+            return
+
+        try:
+            progs = self.prog_xarray.parse()
+            maps = self.map_xarray.parse()
+        except gdb.MemoryError:
+            self.quiet_err("Not found")
+            return
 
         # dump
         self.out = []
