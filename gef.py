@@ -63603,6 +63603,72 @@ class KernelAddressHeuristicFinder:
 
     @staticmethod
     @switch_to_intel_syntax
+    def get_current_clocksource(clocksource_addresses):
+        """Return the clocksource currently used by timekeeping."""
+        clocksource_addresses = set(clocksource_addresses)
+        if not clocksource_addresses:
+            return None
+
+        # plan 1: curr_clocksource is the selector's authoritative pointer.
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            addr = Symbol.get_ksymaddr("curr_clocksource")
+            if addr:
+                try:
+                    current = read_int_from_memory(addr)
+                except (gdb.MemoryError, MemoryError):
+                    current = None
+                if current in clocksource_addresses:
+                    return current
+
+        # plan 2: timekeeping_notify() compares its argument with
+        # timekeeper.tkr_mono.clock. Recover that referenced pointer and only
+        # accept it when it points to an entry in clocksource_list.
+        addr = Symbol.get_ksymaddr("timekeeping_notify")
+        if not addr:
+            return None
+        try:
+            res = gdb.execute("x/80i {:#x}".format(addr), to_string=True)
+        except gdb.error:
+            return None
+
+        if is_x86_64():
+            locations = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
+        elif is_x86_32():
+            locations = itertools.chain(
+                KernelAddressHeuristicFinderUtil.x86_dword_ptr_ds(res),
+                KernelAddressHeuristicFinderUtil.x86_noptr_ds(res),
+            )
+        elif is_arm64():
+            locations = itertools.chain(
+                KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res),
+                KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res),
+                KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+            )
+        elif is_arm32():
+            locations = itertools.chain(
+                KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
+                KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
+                KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+            )
+        else:
+            return None
+
+        seen = set()
+        for location in locations:
+            if location in seen:
+                continue
+            seen.add(location)
+            try:
+                current = read_int_from_memory(location)
+            except (gdb.MemoryError, MemoryError):
+                continue
+            if current in clocksource_addresses:
+                return current
+        return None
+
+    @staticmethod
+    @switch_to_intel_syntax
     def get_capability_hooks():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -76113,20 +76179,29 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
             return
         self.quiet_info("offsetof(clocksource, list): {:#x}".format(offset_list))
 
-        self.out = []
-        width = AddressUtil.get_format_address_width()
-        if not args.quiet:
-            fmt = "{:<{:d}s} {:20s} {:<{:d}s} {:<{:d}s}"
-            legend = ["address", width, "name", "read", width, "symbol", width]
-            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
+        entries = []
         for current in Kernel.ListHead(clocksource_list).iter_entries():
             cs = current - offset_list
             read = read_int_from_memory(cs)
             read_sym = Symbol.get_symbol_string(read, nosymbol_string=" <NO_SYMBOL>")
             name_addr = read_int_from_memory(current - current_arch.ptrsize)
             name = read_cstring_from_memory(name_addr)
-            self.out.append("{:#0{:d}x} {:20s} {:#0{:d}x}{:s}".format(cs, width, name, read, width, read_sym))
+            entries.append((cs, name, read, read_sym))
+
+        active = KernelAddressHeuristicFinder.get_current_clocksource(tuple(entry[0] for entry in entries))
+
+        self.out = []
+        width = AddressUtil.get_format_address_width()
+        if not args.quiet:
+            fmt = "{:<{:d}s} {:20s} {:8s} {:<{:d}s} {:<{:d}s}"
+            legend = ["address", width, "name", "status", "read", width, "symbol", width]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+        for cs, name, read, read_sym in entries:
+            status = "active" if cs == active else ""
+            self.out.append("{:#0{:d}x} {:20s} {:8s} {:#0{:d}x}{:s}".format(
+                cs, width, name, status, read, width, read_sym,
+            ))
 
         self.print_output(check_terminal_size=True)
         return
