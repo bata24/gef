@@ -59729,6 +59729,38 @@ class KernelAddressHeuristicFinderUtil:
             if KernelAddressHeuristicFinderUtil.is_in_kernel_image(x):
                 yield x
 
+    @staticmethod
+    def is_idr(x):
+        """Return True if `x` is the base of a `struct idr` whose xarray is populated.
+
+        `xa_node->array` points back to the xarray itself, so it identifies the base address.
+        It cannot decide anything while the xarray is empty or holds a single entry,
+        but the caller cannot use the result in that case either."""
+        cls = Kernel.XArray
+        cls.initialize_layout()
+        for offset in range(0, current_arch.ptrsize * 20, cls.ptrsize):
+            if not is_valid_addr(x + offset):
+                return False
+            if cls.cache_head_offset(x + offset, read_int_from_memory(x + offset)):
+                return True
+        return False
+
+    @staticmethod
+    def select_idr(gen):
+        """Return the candidate that is really a `struct idr`, not the adjacent `*_idr_lock`.
+
+        The anchor functions take the lock before touching the idr, so newer kernels
+        materialize `&*_idr_lock` first. The lock lives in .bss and the idr in .data,
+        so adopting the lock is not a slight deviation the caller can absorb.
+        Fall back to the first candidate to keep the legacy behavior."""
+        first = None
+        for x in gen:
+            if first is None:
+                first = x
+            if KernelAddressHeuristicFinderUtil.is_idr(x):
+                return x
+        return first
+
 
 class KernelConstsBase:
     """A class that manages constants by version."""
@@ -64937,8 +64969,7 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)
-                for x in g:
-                    return x
+                return KernelAddressHeuristicFinderUtil.select_idr(g)
         return None
 
     @staticmethod
@@ -64970,8 +65001,7 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)
-                for x in g:
-                    return x
+                return KernelAddressHeuristicFinderUtil.select_idr(g)
         return None
 
     @staticmethod
