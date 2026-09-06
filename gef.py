@@ -59857,19 +59857,14 @@ class KernelConstsX86(KernelConstsBase):
     def PAGE_OFFSET_END(self):
         return self.high_memory
 
-    @property
+    @functools.cached_property
     def high_memory(self):
-        if hasattr(self, "cached_high_memory"):
-            return self.cached_high_memory
-
         max_hm = AddressUtil.normalize_address(-128 << 20)
         vmalloc_start = KernelAddressHeuristicFinder._get_VMALLOC_START()
         if vmalloc_start is None:
-            self.cached_high_memory = max_hm
-        else:
-            real_hm = vmalloc_start - self.VMALLOC_OFFSET
-            self.cached_high_memory = min(real_hm, max_hm)
-        return self.cached_high_memory
+            return max_hm
+        real_hm = vmalloc_start - self.VMALLOC_OFFSET
+        return min(real_hm, max_hm)
 
     @property
     def __FIXADDR_TOP(self):
@@ -60047,19 +60042,13 @@ class KernelConstsX86(KernelConstsBase):
         # See arch/x86/include/asm/pgtable_32_areas.h
         return self.MODULES_VADDR - self.MODULES_END
 
-    @property
+    @functools.cached_property
     def mem_map(self):
-        if hasattr(self, "cached_mem_map"):
-            return self.cached_mem_map
-        self.cached_mem_map = KernelAddressHeuristicFinder.get_mem_map()
-        return self.cached_mem_map
+        return KernelAddressHeuristicFinder.get_mem_map()
 
-    @property
+    @functools.cached_property
     def mem_section(self):
-        if hasattr(self, "cached_mem_section"):
-            return self.cached_mem_section
-        self.cached_mem_section = KernelAddressHeuristicFinder.get_mem_section()
-        return self.cached_mem_section
+        return KernelAddressHeuristicFinder.get_mem_section()
 
     @property
     def CONFIG_FLATMEM(self):
@@ -61047,19 +61036,13 @@ class KernelConstsArm32(KernelConstsBase):
         self.cached_PHYS_OFFSET = AddressUtil.normalize_address(phys_kbase - (linear_kbase - self.PAGE_OFFSET))
         return self.cached_PHYS_OFFSET
 
-    @property
+    @functools.cached_property
     def mem_map(self):
-        if hasattr(self, "cached_mem_map"):
-            return self.cached_mem_map
-        self.cached_mem_map = KernelAddressHeuristicFinder.get_mem_map()
-        return self.cached_mem_map
+        return KernelAddressHeuristicFinder.get_mem_map()
 
-    @property
+    @functools.cached_property
     def mem_section(self):
-        if hasattr(self, "cached_mem_section"):
-            return self.cached_mem_section
-        self.cached_mem_section = KernelAddressHeuristicFinder.get_mem_section()
-        return self.cached_mem_section
+        return KernelAddressHeuristicFinder.get_mem_section()
 
     @property
     def CONFIG_FLATMEM(self):
