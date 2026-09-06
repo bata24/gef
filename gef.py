@@ -59460,6 +59460,7 @@ class KernelAddressHeuristicFinderUtil:
                 reg = m.group(1)
                 base = int(m.group(2), 16)
                 bases[reg] = base
+                add1time.pop(reg, None) # adrp overwrites reg, so the pending add1time is stale
                 continue
             m = re.search(r"add\s+(\w+),\s*(\w+),\s*#(0x\w+)", line)
             if m:
@@ -65643,7 +65644,10 @@ class KernelAddressHeuristicFinder:
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
                 elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                    )
                 elif is_arm32():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
@@ -65665,7 +65669,10 @@ class KernelAddressHeuristicFinder:
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
                 elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                    )
                 elif is_arm32():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
@@ -65701,7 +65708,10 @@ class KernelAddressHeuristicFinder:
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
                 elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                    )
                 elif is_arm32():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
@@ -65743,6 +65753,31 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v6.16 or later)
         if kversion and "6.16" <= kversion:
+            addr = Symbol.get_ksymaddr("dma_buf_iter_begin")
+            if addr:
+                res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
+                if is_x86_64():
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
+                elif is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
+                elif is_arm64():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                    )
+                elif is_arm32():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
+                # x64/x86 embeds &dmabuf_list itself as an immediate,
+                # so it works even if dmabuf_list_mutex is placed far away in .bss
+                for x in g:
+                    if is_double_link_list(x):
+                        return x
+
+        # plan 3 (available v6.16 or later)
+        if kversion and "6.16" <= kversion:
             addr = Symbol.get_ksymaddr("dma_buf_file_release")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
@@ -65751,7 +65786,10 @@ class KernelAddressHeuristicFinder:
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
                 elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                    )
                 elif is_arm32():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
